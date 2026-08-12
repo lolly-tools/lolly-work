@@ -1,0 +1,66 @@
+# Release — on a v* tag, build and push the container images to GHCR:
+#   server        — deploy/compose/Dockerfile, repo root context
+#   render-worker — workers/render/Dockerfile (Chromium tier), its own context
+# Images are tagged with the version (tag minus the leading v) and latest.
+# CI (ci.yml) is the quality gate; this workflow only packages and publishes.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  server-image:
+    name: server image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      # Multi-arch (amd64 + arm64): the edge story is Rancher-managed k3s, and
+      # edge nodes are frequently ARM — an amd64-only manifest is an instant
+      # ImagePullBackOff snag there. All runtime deps ship linux-arm64 builds
+      # (resvg native binary; jsdom/pg are pure JS).
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      # deploy/helm/values.yaml image.repository matches this push target
+      # (ghcr.io/lolly-tools/lolly-work-server) under the lolly-tools org, and
+      # the chart's empty image.tag defaults to appVersion — kept in sync with
+      # package.json "version", so `helm install` pulls exactly this build.
+      - name: Build and push (amd64 + arm64)
+        run: |
+          IMAGE="ghcr.io/${{ github.repository_owner }}/lolly-work-server"
+          VERSION="${GITHUB_REF_NAME#v}"
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            -f deploy/compose/Dockerfile -t "$IMAGE:$VERSION" -t "$IMAGE:latest" --push .
+
+  render-worker-image:
+    name: render-worker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      # Multi-arch like the server (Playwright ships linux-arm64 Chromium).
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      # Build context is workers/render itself (see its Dockerfile header).
+      # deploy/helm/values.yaml renderWorker.image.repository already points at
+      # ghcr.io/lolly-tools/lolly-work-render-worker, which matches this under
+      # the lolly-tools org.
+      - name: Build and push (amd64 + arm64)
+        run: |
+          IMAGE="ghcr.io/${{ github.repository_owner }}/lolly-work-render-worker"
+          VERSION="${GITHUB_REF_NAME#v}"
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            -t "$IMAGE:$VERSION" -t "$IMAGE:latest" --push workers/render

@@ -1,0 +1,73 @@
+{
+  "version": 3,
+  "generatedAt": "2026-08-08T00:00:00Z",
+  "tools": [
+    {
+      "id": "color-palette",
+      "name": "Palette Lab",
+      "description": "Grow a palette from one seed colour — harmony accents, perceptual OKLab ramps and WCAG/APCA readability badges, with DTCG tokens and CSV export.",
+      "version": "2.1.0",
+      "status": "community",
+      "category": "utility",
+      "formats": [
+        "svg",
+        "png",
+        "jpg",
+        "webp",
+        "csv"
+      ],
+      "width": 1600,
+      "height": 1000,
+      "exportable": true,
+      "icon": "icon.svg"
+    },
+    {
+      "id": "mesh-gradient",
+      "name": "Mesh Gradient",
+      "description": "Soft mesh-style gradients from your brand swatches. Drag the colour points right on the canvas.",
+      "version": "1.0.0",
+      "status": "official",
+      "category": "everyone",
+      "formats": [
+        "svg",
+        "png",
+        "jpg",
+        "webp",
+        "avif",
+        "webm",
+        "mp4"
+      ],
+      "width": 1600,
+      "height": 900,
+      "exportable": true,
+      "icon": "icon.svg"
+    },
+    {
+      "id": "qr-code",
+      "name": "QR Code Generator",
+      "description": "QR codes for any URL, with full color and style control.",
+      "version": "2.0.0",
+      "status": "official",
+      "category": "everyone",
+      "formats": [
+        "svg",
+        "emf",
+        "eps",
+        "eps-cmyk",
+        "dxf",
+        "pdf",
+        "pdf-cmyk",
+        "cmyk-tiff",
+        "tiff",
+        "png",
+        "jpeg",
+        "webp",
+        "avif"
+      ],
+      "width": 600,
+      "height": 600,
+      "exportable": true,
+      "icon": "icon.svg"
+    }
+  ]
+}

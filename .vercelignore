@@ -1,0 +1,7 @@
+# The `vendor/lolly` git submodule is the SOURCE for re-pinning the engine
+# (npm run repin-engine -- --apply packs it into vendor/@lolly/*). Deploys consume
+# the committed, self-contained vendor/@lolly/* artifact — never the submodule — so
+# keep the (large) submodule out of the upload. It stays un-inited on Vercel's
+# non-recursive git checkout anyway; this covers `vercel` CLI deploys from a local
+# tree where it IS inited.
+vendor/lolly

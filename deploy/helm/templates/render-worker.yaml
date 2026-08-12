@@ -1,0 +1,108 @@
+{{- if .Values.renderWorker.enabled }}
+{{- if not .Values.existingSecret }}
+{{- if not .Values.renderWorker.secret }}
+{{- fail "renderWorker.secret is required when renderWorker.enabled (or provide it via existingSecret). openssl rand -hex 32" }}
+{{- end }}
+{{- end }}
+{{- if not .Values.renderWorker.webBase }}
+{{- fail "renderWorker.webBase is required when renderWorker.enabled — a served Lolly web shell the worker drives (LOLLY_WEB_BASE)" }}
+{{- end }}
+{{- $name := printf "%s-render-worker" (include "lolly-work.fullname" .) }}
+{{- $tag := default .Chart.AppVersion .Values.renderWorker.image.tag }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "lolly-work.labels" . | nindent 4 }}
+    app.kubernetes.io/component: render-worker
+spec:
+  {{- if not .Values.renderWorker.autoscaling.enabled }}
+  replicas: {{ .Values.renderWorker.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "lolly-work.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: render-worker
+  template:
+    metadata:
+      labels:
+        {{- include "lolly-work.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: render-worker
+    spec:
+      serviceAccountName: {{ include "lolly-work.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.renderWorker.runtimeClassName }}
+      runtimeClassName: {{ . }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: render-worker
+          image: "{{ .Values.renderWorker.image.repository }}:{{ $tag }}"
+          imagePullPolicy: {{ .Values.renderWorker.image.pullPolicy }}
+          # The worker launches Chromium (--no-sandbox); it needs a writable /tmp
+          # and cannot use readOnlyRootFilesystem, but stays non-root + drops caps.
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - name: PORT
+              value: {{ .Values.renderWorker.service.port | quote }}
+            - name: LOLLY_WEB_BASE
+              value: {{ .Values.renderWorker.webBase | quote }}
+            - name: LW_RENDER_MAX_CONCURRENT
+              value: {{ .Values.renderWorker.maxConcurrent | quote }}
+            - name: LW_RENDER_WORKER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lolly-work.secretName" . }}
+                  key: LW_RENDER_WORKER_SECRET
+          ports:
+            - name: http
+              containerPort: {{ .Values.renderWorker.service.port }}
+          # Liveness: is the process alive at all — independent of load, never
+          # driven by the concurrency cap below.
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          # Readiness: is this pod able to take MORE work right now. /readyz
+          # flips to 503 the moment LW_RENDER_MAX_CONCURRENT contexts are open
+          # (plans/23 §3.C), so k8s stops routing new requests to a saturated
+          # pod without killing it — the "removed from readiness when
+          # saturated" line of plans/22 §5.
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.renderWorker.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "lolly-work.labels" . | nindent 4 }}
+    app.kubernetes.io/component: render-worker
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "lolly-work.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: render-worker
+  ports:
+    - name: http
+      port: {{ .Values.renderWorker.service.port }}
+      targetPort: http
+{{- end }}

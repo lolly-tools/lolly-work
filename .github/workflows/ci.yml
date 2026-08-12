@@ -1,0 +1,125 @@
+# Quality gate — runs on every push to main and every PR.
+# Independent gates run in parallel; every one exits non-zero on failure and BLOCKS:
+#   test       — full suite under Node 24, with a postgres:17 service so the
+#                gated store conformance run (tests/store-postgres.test.ts)
+#                actually executes instead of skipping. `pretest` re-verifies
+#                the vendored engine pin (MPL "consumed unmodified" check).
+#   typecheck  — tsc --noEmit across the repo.
+#   audit      — npm audit on production deps (blocks on HIGH/CRITICAL) + SBOM
+#                freshness (scripts/build-sbom.ts --check fails on drift).
+#   package    — the server container image must build (deploy/compose/
+#                Dockerfile); nothing is pushed here, release.yml does that.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# Cancel an in-flight run when new commits land on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    # Disposable Postgres for the store conformance suite. The test drops and
+    # recreates the `public` schema itself, then runs the migrations runner —
+    # the service only has to provide an empty lollywork_test database.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: lollywork_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Full test suite (postgres store un-skipped)
+        env:
+          # tests/store-postgres.test.ts gates on this exact variable; without
+          # it the conformance run skips silently and the gate is not real.
+          LW_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/lollywork_test
+        run: npm test
+
+  typecheck:
+    name: typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # The worker keeps its own package.json (playwright-core lives there, not
+      # in the root tree — the plane never imports it). Its tests import
+      # workers/render/src/server.ts, which pulls the worker into the root tsc
+      # project, so its types must be installed for typecheck to see them.
+      - name: Install worker deps
+        run: npm ci --prefix workers/render
+
+      - name: Typecheck (tsc --noEmit)
+        run: npm run typecheck
+
+  audit:
+    name: npm audit (high+critical) + SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Audit — block on high/critical (production deps only)
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Full advisory report (non-blocking, for the log)
+        if: always()
+        run: npm audit || true
+
+      # The committed SBOM is generated from package-lock.json; --check
+      # recomputes it and fails on any drift vs what is checked in, so the
+      # SBOM can't go stale against the installed graph.
+      - name: SBOM up to date (fails on drift)
+        run: node scripts/build-sbom.ts --check
+
+  # Packaging gate — the image release.yml ships must at least build on every
+  # change. Build only, no registry login, nothing pushed.
+  package:
+    name: container image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the server image (no push)
+        run: docker build -f deploy/compose/Dockerfile .

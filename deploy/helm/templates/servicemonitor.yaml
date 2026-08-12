@@ -1,0 +1,32 @@
+{{- /*
+Prometheus Operator ServiceMonitor. /metrics is loopback-only unless
+LW_METRICS_TOKEN is set, so scraping authenticates with that bearer token read
+straight from the same secret. Requires the Prometheus Operator CRDs.
+*/ -}}
+{{- if .Values.metrics.serviceMonitor.enabled -}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "lolly-work.fullname" . }}
+  {{- with .Values.metrics.serviceMonitor.namespace }}
+  namespace: {{ . }}
+  {{- end }}
+  labels:
+    {{- include "lolly-work.labels" . | nindent 4 }}
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "lolly-work.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
+      bearerTokenSecret:
+        name: {{ include "lolly-work.secretName" . }}
+        key: LW_METRICS_TOKEN
+        optional: false
+{{- end }}

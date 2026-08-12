@@ -1,0 +1,26 @@
+# deps / local state
+node_modules/
+data/
+.env
+*.local
+
+# instance data mounts — packs are data, never committed (same rule as the OSS repo's views)
+packs/*
+!packs/.gitkeep
+# EXCEPTION: the curated demo pack IS committed — it's the small, static, Tier-A
+# tool set the hosted sandbox (deploy/vercel, lolly.work) bundles into the
+# Function via vercel.json includeFiles. See packs/demo/README.md.
+!packs/demo
+
+# instance config carries deployment specifics; commit only the example
+instance.json
+instance.yaml
+
+# macOS
+.DS_Store
+.vercel
+.env*
+
+# plans are local-only working documents — never committed (public-MPL prep; history
+# handling for already-committed plans is the plans/24 flip-day decision)
+plans/

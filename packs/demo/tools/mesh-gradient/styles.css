@@ -1,0 +1,97 @@
+.mg-wrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.mg-wrap svg.mg-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.mg-dots {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* Hover-revealed drag handles for the colour points. Hidden at rest so the
+   gradient reads clean; data-export-hide keeps them out of every export. */
+.mg-dot {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  margin: -11px 0 0 -11px;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  background: var(--dot-c, #888);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(0, 0, 0, 0.15);
+  cursor: grab;
+  pointer-events: auto;
+  touch-action: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.mg-wrap:hover .mg-dot,
+.mg-dot:focus-visible,
+.mg-dot:active {
+  opacity: 1;
+}
+
+.mg-dot:active {
+  cursor: grabbing;
+}
+
+/* Shuffle buttons — hover-revealed like the dots, excluded from exports. */
+.mg-actions {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  gap: 6px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.mg-wrap:hover .mg-actions,
+.mg-actions:focus-within {
+  opacity: 1;
+}
+
+.mg-act {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  background: rgba(15, 18, 23, 0.55);
+  color: #fff;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+}
+
+.mg-act:hover {
+  background: rgba(15, 18, 23, 0.78);
+}
+
+.mg-act svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* No hover on touch — keep the handles gently visible. */
+@media (pointer: coarse) {
+  .mg-dot {
+    opacity: 0.85;
+  }
+
+  .mg-actions {
+    opacity: 0.9;
+  }
+}

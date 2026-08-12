@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "skipLibCheck": true
+  },
+  "include": ["server/src/**/*.ts", "cli/**/*.ts", "tests/**/*.ts", "api/**/*.ts", "scripts/**/*.ts"],
+  "//exclude": "capture-console.ts drives Playwright + runs in-page DOM code; like workers/render it can't be checked by this Node-only, DOM-free program.",
+  "exclude": ["scripts/capture-console.ts"]
+}

@@ -1,0 +1,35 @@
+{
+  "instance": {
+    "name": "Lolly Work — Demo",
+    "baseUrl": "https://lolly.work",
+    "pack": "packs/demo"
+  },
+  "idp": {
+    "issuer": "",
+    "clientId": "",
+    "displayName": "Demo sign-in",
+    "groupsClaim": "groups",
+    "claimMap": {
+      "firstname": "given_name",
+      "lastname": "family_name",
+      "email": "email",
+      "title": "title"
+    }
+  },
+  "policy": {
+    "defaultAccessMode": "open",
+    "telemetry": "standard",
+    "telemetryAttribution": "opt-in",
+    "guestLinks": { "enabled": true, "maxTtlHours": 168, "defaultTtlHours": 72 }
+  },
+  "render": { "allowHooksInFastPath": true },
+  "dev": {
+    "enabled": true,
+    "users": [
+      { "email": "admin@suse.example", "name": "Ada (Admin)", "groups": ["admin"] },
+      { "email": "brand@suse.example", "name": "Bruno (Brand lead)", "groups": ["brand-team", "approver"] },
+      { "email": "marketer@suse.example", "name": "Mira (Marketer)", "groups": ["marketing"] },
+      { "email": "contractor@suse.example", "name": "Cveta (Contractor)", "groups": ["contractors"] }
+    ]
+  }
+}

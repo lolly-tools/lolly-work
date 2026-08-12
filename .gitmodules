@@ -1,0 +1,3 @@
+[submodule "vendor/lolly"]
+	path = vendor/lolly
+	url = git@github.com:lolly-tools/lolly.git

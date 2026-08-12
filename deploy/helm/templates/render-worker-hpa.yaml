@@ -1,0 +1,24 @@
+{{- if and .Values.renderWorker.enabled .Values.renderWorker.autoscaling.enabled }}
+{{- $name := printf "%s-render-worker" (include "lolly-work.fullname" .) }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "lolly-work.labels" . | nindent 4 }}
+    app.kubernetes.io/component: render-worker
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ $name }}
+  minReplicas: {{ .Values.renderWorker.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.renderWorker.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.renderWorker.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}

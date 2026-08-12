@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <!-- Apply a pinned theme (light|dark|brand) before first paint so a saved
+       choice never flashes the OS default. app.js owns the cycle button + the
+       rest; this only restores the attribute. No stored pin → OS preference. -->
+  <script>try{var t=localStorage.getItem('lw-theme');if(t==='light'||t==='dark'||t==='brand')document.documentElement.setAttribute('data-theme',t);}catch(e){}</script>
+  <!-- Restore a collapsed sidebar before first paint so it never flashes wide. -->
+  <script>try{if(localStorage.getItem('lw-rail-collapsed')==='1')document.documentElement.setAttribute('data-rail','collapsed');}catch(e){}</script>
+  <!-- Static theme-color per OS preference so mobile/PWA browser chrome matches
+       the app (values track the --plane defaults). The pack/[data-theme] paths
+       don't update this yet — a follow-up app.js hook, not just markup. -->
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff">
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#030711">
+  <title>Console</title>
+  <link rel="stylesheet" href="/admin/styles.css">
+  <!-- The Lolly mark, matching the open-source /info docs (the green-and-white
+       swirl). A fixed product icon, so it is theme-independent and NOT brand-
+       tinted — the console tab reads as Lolly wherever it is deployed. -->
+  <link rel="icon" href="/admin/favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" sizes="192x192" href="/admin/icons/icon-192.png">
+  <link rel="apple-touch-icon" href="/admin/icons/apple-touch-icon.png">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <div id="app" class="app">
+    <p class="boot">Loading the console…</p>
+  </div>
+  <div id="tip" class="tip" hidden></div>
+  <!-- One shared polite live region; data-a11y-live so any future modal
+       inert-sweep skips it. announce() (app.js) pushes transient status here. -->
+  <div id="live" class="sr-only" aria-live="polite" data-a11y-live></div>
+  <script type="module" src="/admin/app.js"></script>
+</body>
+</html>

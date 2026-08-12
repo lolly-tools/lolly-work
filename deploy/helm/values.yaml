@@ -1,0 +1,534 @@
+# ============================================================================
+# lolly-work — Helm values
+# ============================================================================
+# THIS IS THE ONE FILE YOU EDIT. The control plane's north star is "absolutely
+# easy to deploy": a Kubernetes cluster + a Postgres connection string + this
+# file is all it takes.
+#
+# Minimum viable production install (chart-managed secret):
+#
+#   helm install lolly-work deploy/helm \
+#     --set database.url='postgres://user:pass@host:5432/lollywork' \
+#     --set-file config=instance.json \
+#     --set secrets.sessionSecret="$(openssl rand -hex 32)" \
+#     --set secrets.linkSecret="$(openssl rand -hex 32)"
+#
+# Recommended production install (bring-your-own secret from your platform's
+# secret store — see `existingSecret` below):
+#
+#   kubectl create secret generic lolly-work-secrets \
+#     --from-literal=DATABASE_URL=postgres://... \
+#     --from-literal=LW_SESSION_SECRET=... \
+#     --from-literal=LW_LINK_SECRET=...
+#   helm install lolly-work deploy/helm \
+#     --set existingSecret=lolly-work-secrets \
+#     --set-file config=instance.json
+# ============================================================================
+
+# Number of stateless app replicas. Default 2 for HA. The app holds NO local
+# state — sessions/guests/state tokens are HMAC-signed (LW_SESSION_SECRET) and
+# all durable data lives in Postgres — so replicas are freely interchangeable
+# AS LONG AS every replica shares the SAME LW_SESSION_SECRET and LW_LINK_SECRET
+# (see the `secrets:` block below for why generate-if-empty is unsafe here).
+# EXCEPTION: live-collaboration rooms (plans/14 §6, OSS plans/100 §7) hold
+# their Yjs document authority in the process memory of whichever replica
+# accepted that room's WebSocket upgrade — that one room is NOT freely
+# interchangeable across replicas the way HTTP requests are. See the
+# `ingress.annotations` comment below for what multi-replica needs.
+replicaCount: 2
+
+# Seconds Kubernetes waits after SIGTERM before SIGKILL. The app handles SIGTERM
+# by DRAINING live collab rooms (server/src/main.ts): each room quiesces into an
+# ordinary session revision before the process exits. Without enough grace the
+# pod is killed mid-drain and those rooms fall back to crash recovery — which is
+# bounded at SNAPSHOT_EVERY_OPS (500 ops) and is discarded outright if an
+# ordinary PUT bumps the session rev after the restart. So this is not a tuning
+# knob for tidiness: it is how much collaborative work a rolling deploy keeps.
+# Raise it if rooms are large or the database is slow (one revision write each).
+terminationGracePeriodSeconds: 60
+
+image:
+  # REQUIRED: there is no published image yet. Build it from the repo's
+  # deploy/compose/Dockerfile and push to a registry your cluster can pull:
+  #   docker build -f deploy/compose/Dockerfile -t <registry>/lolly-work:0.0.1 .
+  #   docker push <registry>/lolly-work:0.0.1
+  #
+  # The migrate Job runs `npm run migrate` (node scripts/migrate.ts); the stock
+  # deploy/compose/Dockerfile ships scripts/, migrations/, package.json and the
+  # installed production deps, so the image built above works for it as-is.
+  # Must match what .github/workflows/release.yml pushes:
+  # ghcr.io/<repository_owner>/lolly-work-server.
+  repository: ghcr.io/lolly-tools/lolly-work-server
+  # Empty ⇒ use the chart's appVersion. Pin an explicit, immutable tag or digest
+  # in production so upgrades are deliberate.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# imagePullSecrets: names of pre-created docker-registry secrets, if your
+# registry is private, e.g.  [{ name: my-regcred }]
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# ── Instance configuration (instance.json) ─────────────────────────────────
+# Rendered into a ConfigMap and mounted at /app/instance.json (LW_CONFIG).
+# Two ways to supply it:
+#   1) `--set-file config=instance.json` — passes the whole file as a string
+#      (recommended: author the JSON once, keep it in git).
+#   2) inline YAML below — the chart serialises it to JSON.
+# Secrets are NEVER placed here (they come from the `secrets:` block / env).
+# Note: `instance.baseUrl` MUST match the URL this deployment answers on (your
+# ingress host) — it drives OIDC redirect URIs and the Secure cookie flag.
+# `instance.pack` MUST match where the pack is mounted (see `pack:` below); with
+# pack.type=none catalog serving is degraded until you mount one.
+config:
+  instance:
+    name: "Lolly Work"
+    baseUrl: "https://lolly.example.com"
+    pack: "./packs/example"
+  idp:
+    issuer: ""
+    clientId: ""
+    groupsClaim: "groups"
+    claimMap:
+      firstname: "given_name"
+      lastname: "family_name"
+      email: "email"
+      title: "title"
+  policy:
+    defaultAccessMode: "gated"
+    telemetry: "standard"
+    telemetryAttribution: "opt-in"
+    guestLinks:
+      enabled: true
+      maxTtlHours: 168
+      defaultTtlHours: 72
+    sessionTtlHours: 12
+  render:
+    allowHooksInFastPath: false
+  audit:
+    # Audit-chain head hash on stdout at boot and hourly — your log pipeline
+    # captures it, which is the external anchor. Set intervalMinutes: 0 and
+    # onBoot: false to opt out.
+    headLog:
+      onBoot: true
+      intervalMinutes: 60
+  rateLimit:
+    enabled: true
+    # Behind an ingress you terminate at, set this to the number of trusted
+    # reverse proxies in front of the pod (usually 1) so per-IP rate limiting
+    # reads the real client from X-Forwarded-For instead of the ingress IP.
+    trustedProxyHops: 1
+    maxBuckets: 50000
+    auth: { capacity: 10, refillPerSec: 0.2 }
+    telemetry: { capacity: 120, refillPerSec: 4 }
+    link: { capacity: 30, refillPerSec: 1 }
+  dev:
+    # Keep dev auth OFF in production. It bypasses OIDC.
+    enabled: false
+    users: []
+  catalogProviders: []
+
+# ── Database (Postgres) ─────────────────────────────────────────────────────
+# The control plane needs exactly one thing beyond a cluster: a Postgres URL.
+# Provide it EITHER inline here (goes into the chart-managed Secret) OR via an
+# existing secret (see `database.existingSecret` and the top-level
+# `existingSecret`). If unset AND no existingSecret provides DATABASE_URL, the
+# server falls back to an in-memory store (evaluation only — state is lost on
+# every restart and replicas do NOT share it). Do not run HA on the memory store.
+database:
+  # postgres://user:password@host:5432/lollywork
+  url: ""
+  # Reference DATABASE_URL from a secret you manage instead of putting it inline.
+  # Takes precedence over `database.url`. Leave existingSecret empty to use the
+  # top-level `existingSecret` (if set) or the chart-managed secret.
+  existingSecret: ""
+  existingSecretKey: "DATABASE_URL"
+
+# ── Secrets ─────────────────────────────────────────────────────────────────
+# WHY THESE ARE NOT AUTO-GENERATED: LW_SESSION_SECRET and LW_LINK_SECRET sign
+# session/guest/state tokens and link signatures. Every replica MUST verify with
+# the SAME keys, and the keys MUST survive pod restarts and rollouts — otherwise
+# every user is logged out on each restart and requests hitting a different
+# replica fail signature checks. A "generate-if-empty" helper would mint a
+# different secret per render/replica, so this chart deliberately requires you
+# to set them (or reference an existing secret). Generate once, store safely,
+# rotate deliberately (session-secret rotation without a dual-key window is a
+# forced global logout).
+#
+# Two mutually exclusive ways to supply DATABASE_URL + the LW_* secrets:
+#
+#   Mode A (chart-managed): fill in `secrets.*` and `database.url` below. The
+#     chart creates a Secret. Convenient for a first install. On a FRESH install
+#     the chart annotates this Secret as a pre-install hook so the migrate Job
+#     (also a pre-install hook) can read DATABASE_URL before the main resources
+#     exist — see migrate-job.yaml.
+#
+#   Mode B (recommended for prod): set the top-level `existingSecret` to a
+#     secret you created in your platform's secret store. The chart then creates
+#     NO secret; the Deployment and migrate Job both read from yours. It must
+#     contain keys: DATABASE_URL, LW_SESSION_SECRET, LW_LINK_SECRET, and
+#     optionally LW_IDP_CLIENT_SECRET, LW_CREDENTIAL_SECRET, LW_METRICS_TOKEN.
+existingSecret: ""
+
+secrets:
+  # Required (chart-managed / Mode A). openssl rand -hex 32
+  sessionSecret: ""
+  linkSecret: ""
+  # Optional. OIDC client secret, when your IdP issues a confidential client.
+  idpClientSecret: ""
+  # Optional. Master key that seals stored provider credentials at rest.
+  # Required only once you store a provider credential through the console.
+  credentialSecret: ""
+  # Optional. Bearer token for GET /metrics. When empty, /metrics is
+  # loopback-only (never exposed). Set it to enable Prometheus scraping via the
+  # ServiceMonitor below. openssl rand -hex 32
+  metricsToken: ""
+
+# ── Chromium render worker (plans/07/11) ─────────────────────────────────────
+# Hooked / HTML-heavy tools can't run in the control plane's in-process jsdom
+# fast path; when enabled, they render in this ISOLATED browser worker (the
+# least-trusted content, blast-separated from the control plane). Off by default:
+# hooked tools 501 until it's enabled. When enabled, ALSO set
+# config.render.worker.url (above) to this service — e.g.
+#   http://RELEASE-lolly-work-render-worker:8791
+# and point renderWorker.webBase at a served Lolly web shell (the OSS web
+# deployment) that the worker drives.
+renderWorker:
+  enabled: false
+  # Shared HMAC key — MUST match config.render.worker on the app side; the chart
+  # puts it in the same Secret so both the app and the worker read it. When empty
+  # AND renderWorker.enabled, a guardrail fails the render (openssl rand -hex 32).
+  secret: ""
+  # The web shell the worker drives (LOLLY_WEB_BASE). Required when enabled.
+  webBase: ""
+  # Concurrent Chromium contexts (browser.newContext() calls) this pod allows
+  # open at once (plans/22 §5, plans/23 §3.C). Beyond this, the worker answers
+  # 503 RENDER_BUSY immediately instead of queueing — an in-worker queue would
+  # hide saturation from the HPA below, so scale REPLICAS/autoscaling.maxReplicas
+  # to add capacity, not this number. /readyz flips to 503 at the same
+  # threshold so a saturated pod is pulled from the Service.
+  maxConcurrent: 4
+  replicaCount: 1
+  image:
+    repository: ghcr.io/lolly-tools/lolly-work-render-worker
+    tag: ""          # defaults to .Chart.AppVersion
+    pullPolicy: IfNotPresent
+  service:
+    port: 8791
+  # The worker runs the least-trusted content — prefer a sandboxed runtimeClass
+  # (gVisor / Kata) here in production.
+  runtimeClassName: ""
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits: { cpu: "2", memory: 2Gi }
+  # Horizontal autoscaling — the render tier is the CPU-heavy part (each Chromium
+  # rasterise is a CPU burst), so scale on CPU. When enabled, replicaCount is
+  # ignored (the HPA owns the replica count between min and max). Renders are
+  # idempotent by cache-key, so scaling up/down mid-flight is safe. A custom
+  # queue-depth metric can replace CPU later (plans/07 §8, plans/22 §5).
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 8
+    targetCPUUtilizationPercentage: 70
+
+# ── C2PA export signing (plans/17 §16) ───────────────────────────────────────
+# When configured, every server-side export carries a real, signed C2PA Content
+# Credential (verifiable + tamper-evident). Off by default → unsigned provenance
+# (unchanged). Two ways to get a signing identity:
+#   1. One command, zero PKI:  lw c2pa init --org "Acme"
+#      → a signing-cert chain + a PKCS#8 key. Paste the key below and mount the
+#        cert (see below). Distribute the printed root cert to verifiers' trust
+#        lists to make the signature TRUSTED (not just valid).
+#   2. Corporate CA: use a signing chain your own CA issued (leaf first) + its key.
+c2pa:
+  # The PKCS#8 private-key PEM (the contents of c2pa-signing-key.pem). SECRET —
+  # goes into the chart Secret (or provide it via existingSecret under the key
+  # LW_C2PA_SIGNING_KEY). Empty ⇒ signing off.
+  signingKey: ""
+  # The cert is PUBLIC, so mount it yourself with extraVolumes/extraVolumeMounts
+  # (from a ConfigMap you create) and point config.render.c2pa.certFile at the
+  # mount path. Example — with the cert in a ConfigMap `lolly-c2pa-cert`:
+  #   config.render.c2pa.certFile: /etc/lolly/c2pa/signing-cert.pem
+  #   config.render.c2pa.claimGenerator: "Acme Lolly"
+  #   extraVolumes:
+  #     - name: c2pa-cert
+  #       configMap: { name: lolly-c2pa-cert }
+  #   extraVolumeMounts:
+  #     - name: c2pa-cert
+  #       mountPath: /etc/lolly/c2pa
+  #       readOnly: true
+
+# ── Migrations ──────────────────────────────────────────────────────────────
+# Schema ownership in the HA path: the app runs with LW_AUTO_MIGRATE=false so no
+# replica ever applies DDL (concurrent auto-migrate across replicas races). A
+# single Helm pre-install/pre-upgrade hook Job owns the schema — it runs once
+# per release, applies pending migrations, and must succeed before the new pods
+# roll. The Deployment refuses to start on a pending schema, so an upgrade that
+# skipped migrations fails loud instead of serving a half-migrated database.
+migrate:
+  enabled: true
+  # Command the hook Job runs. Must apply pending migrations against DATABASE_URL.
+  # Override if your image places the runner elsewhere (see the image note above).
+  command: ["npm", "run", "migrate"]
+  backoffLimit: 3
+  # Give a slow/large migration room; the Job has no deadline unless set.
+  activeDeadlineSeconds: 600
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: "1", memory: 512Mi }
+
+# ── Pack (brand catalog assets) ─────────────────────────────────────────────
+# The instance serves its catalog from a "pack" on disk (config.instance.pack,
+# default ./packs/example → /app/packs/example in the image). Default here is
+# `none`: no pack volume is mounted, mirroring the Vercel LW_PACK gap — the
+# console and API work but catalog serving is degraded until a real pack is
+# present. To serve a catalog, mount one and point config.instance.pack at it —
+# either a volume you populate (pvc/existingClaim/hostPath) or, simplest, an
+# OCI image via `image` + type=emptyDir below.
+pack:
+  # One of: none | pvc | existingClaim | hostPath | emptyDir
+  # (emptyDir is the pair for `image` below: per-pod scratch an initContainer
+  # fills — zero extra infrastructure, requires `image` to be set.)
+  type: none
+  # Where the pack is mounted in the container. config.instance.pack should
+  # resolve to a subdirectory here (e.g. mountPath /app/packs + pack ./packs/foo).
+  mountPath: /app/packs
+  readOnly: true
+  # Optional: deliver the pack from an OCI image — the standard "bake the brand
+  # pack into an image" pattern. Build an image whose filesystem carries the
+  # pack under /pack (any base with sh + cp works):
+  #   FROM busybox:stable
+  #   COPY packs/ /pack/          # → /pack/example/… in the image
+  # and set `image` to its pushed ref. When set, an initContainer runs THAT
+  # image and copies /pack/. into the pack volume before the server starts, so
+  # config.instance.pack (e.g. ./packs/example) resolves under mountPath. Pair
+  # with type=emptyDir (each pod copies its own; simplest) or with
+  # pvc/existingClaim if you want the copy to persist across restarts.
+  # type=none with `image` set FAILS at render — there is no volume to copy into.
+  image: ""
+  # type=pvc — the chart creates a PVC. Populate it yourself (init job /
+  # object-storage sync) OR set `image` above and let the initContainer fill it.
+  pvc:
+    size: 1Gi
+    accessModes: ["ReadWriteOnce"]
+    storageClassName: ""
+  # type=existingClaim — mount a PersistentVolumeClaim you already created.
+  existingClaim: ""
+  # type=hostPath — single-node/dev only. Avoid in multi-node clusters.
+  hostPath: ""
+
+# ── Web shell (Lolly shells/web/dist) ───────────────────────────────────────
+# The instance serves the built Lolly web shell same-origin at `/` when
+# config.instance.shellDir points at a dist — one origin, so session cookies
+# work and the shell's org/ governance seam activates. Default here is
+# disabled: console (/admin) + API only. To serve the shell, mount a built dist
+# and point config.instance.shellDir at it (with the defaults below:
+# config.instance.shellDir: /app/shell). Like `pack`, the path flows through
+# the instance.json ConfigMap — there is no env var.
+#
+# BOOT GUARD: under a non-open defaultAccessMode the server REFUSES to start
+# when the mounted dist is missing or predates the org governance module — a
+# stale shell would serve employees WITHOUT the session gate / locked-input UX
+# while the instance looks governed. Escape hatch (loud warning instead):
+#   extraEnv: [{ name: LW_ALLOW_STALE_SHELL, value: "1" }]
+shell:
+  enabled: false
+  # One of: pvc | existingClaim | hostPath | emptyDir (same semantics as pack
+  # above; emptyDir requires `image` below).
+  type: existingClaim
+  # Where the dist is mounted. config.instance.shellDir should point HERE (or
+  # at the subdirectory holding index.html, if your volume nests the dist).
+  mountPath: /app/shell
+  readOnly: true
+  # Optional: deliver the built dist from an OCI image, exactly like pack.image.
+  # Build an image carrying the dist under /shell (i.e. /shell/index.html):
+  #   FROM busybox:stable
+  #   COPY shells/web/dist/ /shell/
+  # When set (and shell.enabled), an initContainer copies /shell/. into the
+  # shell volume before the server starts. Pair with type=emptyDir for zero
+  # extra infrastructure; a fresh copy per rollout also keeps the boot guard
+  # above happy — the dist ages with the image tag you pin, not with a PVC.
+  image: ""
+  # type=pvc — the chart creates a PVC. Populate it with the built dist yourself
+  # OR set `image` above and let the initContainer fill it.
+  pvc:
+    size: 1Gi
+    accessModes: ["ReadWriteOnce"]
+    storageClassName: ""
+  # type=existingClaim — mount a PersistentVolumeClaim you already created.
+  existingClaim: ""
+  # type=hostPath — single-node/dev only. Avoid in multi-node clusters.
+  hostPath: ""
+
+# ── Networking ──────────────────────────────────────────────────────────────
+service:
+  type: ClusterIP
+  port: 80
+  # Container port the app listens on (PORT env). The image defaults to 8787.
+  targetPort: 8787
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # For cert-manager TLS, e.g.:
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+    #
+    # ── Sticky rooms for live collaboration (multi-replica only) ────────────
+    # Read this before running replicaCount > 1 with collab enabled. A collab
+    # room (lolly-work/plans/14 §6; OSS lolly/plans/100 §7 item 2) keeps its
+    # Yjs document authority in ONE replica's process memory — whichever pod
+    # accepted that room's `/ws/collab/:sessionId` upgrade. With more than one
+    # replica and no affinity, two collaborators editing the SAME session can
+    # land on TWO DIFFERENT pods, each holding its own independent room state
+    # that never converges — not a crash, just silent divergence until the
+    # next snapshot/reload papers over it. This is NOT the general "replicas
+    # are freely interchangeable" case described at the top of this file (see
+    # the `replicaCount` comment) — it is the one stateful exception to it.
+    #
+    # The fix is ROOM-id affinity at the ingress — every client for a given
+    # session must reach the same pod, regardless of which client connects
+    # first. Ordinary per-client cookie/IP stickiness is NOT enough: it keeps
+    # one reconnecting client pinned, but does nothing to route a SECOND
+    # collaborator's upgrade to the pod that already holds that room. For
+    # ingress-nginx, consistent-hash the upstream by the request path (which
+    # embeds the session id) instead of round-robin, e.g.:
+    #
+    #   nginx.ingress.kubernetes.io/upstream-hash-by: "$request_uri"
+    #
+    # Scope this to the collab path only if your controller supports per-path
+    # annotations or a separate Ingress object for `/ws/collab` — ordinary
+    # HTTP traffic should keep load-balancing normally. Other controllers
+    # expose the same idea under different names (Traefik: a sticky-session
+    # cookie is client-affinity only, not room-affinity — prefer a consistent-
+    # hashing IngressRoute middleware if available; cloud ALBs: consistent-
+    # hash / target-group stickiness keyed on path). This chart passes
+    # `annotations` through verbatim (see `templates/ingress.yaml`), so
+    # whichever mechanism your controller ships works with no chart change.
+    #
+    # This is a stop-gap, not the long-term fix — it works because "one node
+    # serves the org" is still the deployment assumption (lolly-work/plans/14
+    # §6). The real multi-replica answer, for whenever a deployment actually
+    # needs one node PER ROOM to stop being true, is Figma's fenced-lock
+    # journal: a `(lock UUID, file)` conditional-write pattern that lets a
+    # room's authority migrate through a database-arbitrated lock instead of
+    # living wherever a pod's memory happens to be (OSS lolly/plans/100 §7
+    # item 2) — not a pub/sub bus, which the plan explicitly defers until a
+    # real deployment needs one.
+  hosts:
+    - host: lolly.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+    # - secretName: lolly-work-tls
+    #   hosts:
+    #     - lolly.example.com
+
+# ── Observability ───────────────────────────────────────────────────────────
+metrics:
+  # Prometheus Operator ServiceMonitor. Requires secrets.metricsToken (or a
+  # LW_METRICS_TOKEN key in your existingSecret) — /metrics is loopback-only
+  # without a token, so scraping needs one.
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    # Extra labels so your Prometheus's serviceMonitorSelector picks it up.
+    labels: {}
+    namespace: ""
+
+# ── NetworkPolicy ───────────────────────────────────────────────────────────
+# Off by default. When enabled, restricts ingress to the app port and (if you
+# leave egress open) lets the pod reach Postgres, your IdP, and providers.
+networkPolicy:
+  enabled: false
+  # Allow ingress from these namespaces (by label). Empty ⇒ allow from any pod
+  # in the same namespace plus the ingress controller (you likely want to scope
+  # this to your ingress controller's namespace in production).
+  ingressNamespaceSelector: {}
+  # Leave egress unrestricted (recommended — the plane calls out to Postgres,
+  # OIDC, and catalog providers). Set false to also lock egress (then you must
+  # add explicit egress rules yourself; not templated here to avoid footguns).
+  allowAllEgress: true
+
+# ── Pod / container runtime ─────────────────────────────────────────────────
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  automountServiceAccountToken: false
+
+podAnnotations: {}
+podLabels: {}
+
+# Secure defaults: run as the image's non-root `node` user (uid 1000), no
+# privilege escalation, all capabilities dropped, read-only root filesystem
+# (a writable emptyDir is mounted at /tmp). Flip readOnlyRootFilesystem off only
+# if a curated pack or tool needs to write into the image.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+# Liveness/readiness both hit GET /healthz (cheap, unauthenticated). Readiness
+# gates traffic so a pod that is booting or (with LW_AUTO_MIGRATE=false) refusing
+# to start on a pending schema never receives requests.
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 15
+  timeoutSeconds: 3
+  failureThreshold: 3
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# Soft pod anti-affinity spreads replicas across nodes without blocking
+# scheduling on a small cluster. Set to "hard" to require distinct nodes.
+podAntiAffinity: soft
+
+nodeSelector: {}
+tolerations: []
+# Full override of affinity; when set, podAntiAffinity above is ignored.
+affinity: {}
+
+# Spread across zones/nodes if your cluster sets the topology labels.
+topologySpreadConstraints: []
+
+# Extra environment variables appended to BOTH the Deployment and the migrate
+# Job (kept in one place so they never drift). Use for non-secret tuning only.
+extraEnv: []
+  # - name: LW_SOMETHING
+  #   value: "value"
+
+# Extra volumes / mounts on the Deployment (e.g. a mounted seed config).
+extraVolumes: []
+extraVolumeMounts: []

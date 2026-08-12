@@ -1,0 +1,203 @@
+<div class="mg-wrap">
+  {{{svgContent}}}
+  <div class="mg-dots" data-export-hide aria-hidden="true" data-dots="{{dotsJson}}"></div>
+  <div class="mg-actions" data-export-hide data-palette="{{paletteJson}}">
+    <button type="button" class="mg-act" data-mg-act="colors" title="Shuffle colours (from the brand palette)" aria-label="Shuffle colours from the brand palette">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z"/></svg>
+    </button>
+    <button type="button" class="mg-act" data-mg-act="positions" title="Shuffle positions" aria-label="Shuffle colour point positions">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 18h1.4c1.3 0 2.5-.6 3.3-1.7l6.1-8.6c.8-1.1 2-1.7 3.3-1.7H22"/><path d="m18 2 4 4-4 4"/><path d="M2 6h1.9c1.5 0 2.9.9 3.6 2.2"/><path d="M22 18h-5.9c-1.3 0-2.6-.7-3.3-1.8l-.5-.8"/><path d="m18 14 4 4-4 4"/></svg>
+    </button>
+  </div>
+</div>
+<script>
+  (function () {
+    'use strict';
+    /* Draggable colour-point dots. Revealed on canvas hover, excluded from
+       every export via data-export-hide. During a drag the blob follows live
+       by moving its <radialGradient> cx/cy (userSpaceOnUse — no re-render);
+       the position only commits to the posN vector input on release, because
+       committing re-renders the tool and would tear the DOM out from under an
+       active drag. Commit = set both .vec-num fields, then fire one bubbling
+       'input' (the shell's vector commit handler re-reads every field). */
+    /* Own wrap = this script's previous sibling (offscreen compose/batch
+       stages mount extra .mg-wrap copies after the app root, so a global
+       last-match can grab the wrong instance). currentScript is null when the
+       shell executes detached — fall back to newest-wrap then. */
+    var cs = document.currentScript;
+    var wrap = cs && cs.previousElementSibling && cs.previousElementSibling.classList
+      && cs.previousElementSibling.classList.contains('mg-wrap')
+      ? cs.previousElementSibling
+      : null;
+    if (!wrap) {
+      var wraps = document.querySelectorAll('.mg-wrap');
+      wrap = wraps[wraps.length - 1];
+    }
+    if (!wrap) return;
+    /* Per-canvas commit channel (the shell binds it to THIS session's runtime,
+       so an edit never leaks to sibling designs in multi-edit). Absent offscreen
+       and in older shells — then commit() falls back to the sidebar poke below.
+       The stable canvas element also holds our focus marker so N mounted
+       instances don't stomp one shared window global. */
+    var canvasRoot = wrap.closest('[data-lolly-canvas]');
+    var commitFn = canvasRoot && canvasRoot.__lollyCommit;
+    var focusStore = canvasRoot || window;
+    var svg = wrap.querySelector('svg.mg-svg');
+    var dotsBox = wrap.querySelector('.mg-dots');
+    if (!svg || !dotsBox || dotsBox.dataset.mgWired) return;
+    dotsBox.dataset.mgWired = '1';
+
+    var pts;
+    try { pts = JSON.parse(dotsBox.getAttribute('data-dots') || '[]'); } catch (e) { pts = []; }
+    if (!Array.isArray(pts)) return;
+
+    function alive() { return document.contains(wrap); }
+
+    function commit(n, x, y) {
+      /* Preferred: 1:1 to this canvas's own runtime. */
+      if (commitFn) { commitFn('pos' + n, { x: Math.round(x), y: Math.round(y) }); return; }
+      /* Fallback (offscreen / legacy shell): poke the one sidebar control. */
+      var box = document.querySelector('[data-input-id="pos' + n + '"]');
+      if (!box) return;
+      var nx = box.querySelector('.vec-num[data-vec-field="x"]');
+      var ny = box.querySelector('.vec-num[data-vec-field="y"]');
+      if (!nx || !ny) return;
+      nx.value = String(Math.round(x));
+      ny.value = String(Math.round(y));
+      nx.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+
+    /* A commit re-renders the tool and replaces this DOM, so an arrow-key
+       nudge would lose focus after one press. Debounce the commit and leave a
+       marker so the next render's script re-focuses the same dot. */
+    var nudgeTimer = null;
+    function commitDebounced(n, x, y) {
+      clearTimeout(nudgeTimer);
+      nudgeTimer = setTimeout(function () {
+        if (!alive()) return;
+        focusStore.__mgFocusDot = { n: n, t: Date.now() };
+        commit(n, x, y);
+      }, 350);
+    }
+    /* Consume the marker only when fresh: a commit whose hydrated output is
+       byte-identical skips the repaint, and a stale marker must not steal
+       focus on some unrelated render minutes later. */
+    var refocusMark = focusStore.__mgFocusDot;
+    focusStore.__mgFocusDot = null;
+    var refocus = refocusMark && typeof refocusMark === 'object'
+      && Date.now() - refocusMark.t < 2000 ? refocusMark.n : null;
+
+    pts.forEach(function (pt, idx) {
+      var n = idx + 1;
+      var dot = document.createElement('button');
+      dot.type = 'button';
+      dot.className = 'mg-dot';
+      /* Not a tab stop: the canvas is a single role="img" for screen readers
+         and the sidebar X/Y fields are the accessible path. A click still
+         focuses the dot, so drag-then-arrow-key fine-tuning works. */
+      dot.tabIndex = -1;
+      dot.style.left = pt.x + '%';
+      dot.style.top = pt.y + '%';
+      dot.style.setProperty('--dot-c', pt.color);
+      dot.title = 'Colour point ' + n + ' — drag to move';
+      dotsBox.appendChild(dot);
+      if (refocus === n) { dot.focus(); refocus = null; }
+
+      var grad = svg.querySelector('#mg-g' + n);
+      var cur = { x: pt.x, y: pt.y };
+
+      function place(x, y) {
+        cur.x = x; cur.y = y;
+        dot.style.left = x + '%';
+        dot.style.top = y + '%';
+        if (grad) {
+          grad.setAttribute('cx', (x * 16).toFixed(1));
+          grad.setAttribute('cy', (y * 9).toFixed(1));
+        }
+      }
+
+      dot.addEventListener('pointerdown', function (e) {
+        e.preventDefault(); // stops text-selection/scroll — but also native focus
+        dot.focus();
+        /* A pending nudge commit firing mid-drag would re-render and tear the
+           dragged dot out from under the pointer capture. */
+        clearTimeout(nudgeTimer);
+        dot.setPointerCapture(e.pointerId);
+        var rect = wrap.getBoundingClientRect();
+        function toPct(ev) {
+          return {
+            x: Math.max(0, Math.min(100, (ev.clientX - rect.left) / rect.width * 100)),
+            y: Math.max(0, Math.min(100, (ev.clientY - rect.top) / rect.height * 100)),
+          };
+        }
+        function onMove(ev) {
+          if (!alive()) return;
+          var p = toPct(ev);
+          place(p.x, p.y);
+        }
+        function onUp() {
+          dot.removeEventListener('pointermove', onMove);
+          dot.removeEventListener('pointerup', onUp);
+          dot.removeEventListener('pointercancel', onUp);
+          if (alive()) {
+            focusStore.__mgFocusDot = { n: n, t: Date.now() }; // keep the dot focused across the commit re-render
+            commit(n, cur.x, cur.y);
+          }
+        }
+        dot.addEventListener('pointermove', onMove);
+        dot.addEventListener('pointerup', onUp);
+        dot.addEventListener('pointercancel', onUp);
+      });
+
+      /* Keyboard nudge: arrows move 1%, Shift+arrows 5%. */
+      dot.addEventListener('keydown', function (e) {
+        var d = e.shiftKey ? 5 : 1;
+        var dx = e.key === 'ArrowLeft' ? -d : e.key === 'ArrowRight' ? d : 0;
+        var dy = e.key === 'ArrowUp' ? -d : e.key === 'ArrowDown' ? d : 0;
+        if (!dx && !dy) return;
+        e.preventDefault();
+        place(Math.max(0, Math.min(100, cur.x + dx)), Math.max(0, Math.min(100, cur.y + dy)));
+        commitDebounced(n, cur.x, cur.y);
+      });
+    });
+
+    /* Shuffle buttons. Both write CONCRETE values into the sidebar inputs
+       (hex into the native colour input, rounded x/y into the vector fields),
+       so the shuffled state is deterministic — the URL, saves and re-renders
+       reproduce it exactly; no randomness survives into the render path. */
+    var actions = wrap.querySelector('.mg-actions');
+    if (actions && !actions.dataset.mgWired) {
+      actions.dataset.mgWired = '1';
+      var palette;
+      try { palette = JSON.parse(actions.getAttribute('data-palette') || '[]'); } catch (e) { palette = []; }
+      palette = (Array.isArray(palette) ? palette : []).filter(function (v) {
+        return /^#[0-9a-f]{6}$/i.test(String(v));
+      });
+
+      actions.addEventListener('click', function (e) {
+        var btn = e.target && e.target.closest ? e.target.closest('[data-mg-act]') : null;
+        if (!btn || !alive()) return;
+        if (btn.getAttribute('data-mg-act') === 'positions') {
+          for (var i = 1; i <= pts.length; i++) {
+            commit(i, 5 + Math.random() * 90, 5 + Math.random() * 90);
+          }
+        } else if (btn.getAttribute('data-mg-act') === 'colors' && palette.length >= 2) {
+          var pool = [];
+          for (var j = 1; j <= pts.length; j++) {
+            if (!pool.length) pool = palette.slice();
+            var pick = pool.splice(Math.floor(Math.random() * pool.length), 1)[0];
+            /* Preferred: 1:1 to this canvas's own runtime. */
+            if (commitFn) { commitFn('color' + j, pick); continue; }
+            /* Fallback (offscreen / legacy shell): poke the one sidebar control. */
+            var inp = document.querySelector('input[type="color"][data-input-id="color' + j + '"]');
+            if (inp) {
+              inp.value = pick;
+              inp.dispatchEvent(new Event('input', { bubbles: true }));
+              inp.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+          }
+        }
+      });
+    }
+  })();
+</script>

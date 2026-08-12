@@ -1,0 +1,214 @@
+{{- include "lolly-work.validate" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "lolly-work.fullname" . }}
+  labels:
+    {{- include "lolly-work.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "lolly-work.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        # Roll pods when the rendered config changes.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "lolly-work.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "lolly-work.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      # SIGTERM drains live collab rooms into session revisions — see the values
+      # comment. Too short and a rolling deploy loses collaborative work.
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if .Values.affinity }}
+      affinity:
+        {{- toYaml .Values.affinity | nindent 8 }}
+      {{- else if eq .Values.podAntiAffinity "hard" }}
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  {{- include "lolly-work.selectorLabels" . | nindent 18 }}
+              topologyKey: kubernetes.io/hostname
+      {{- else if eq .Values.podAntiAffinity "soft" }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    {{- include "lolly-work.selectorLabels" . | nindent 20 }}
+                topologyKey: kubernetes.io/hostname
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if and .Values.pack.image (eq .Values.pack.type "none") }}
+      {{- fail "pack.image is set but pack.type=none leaves it no volume to copy into — set pack.type (emptyDir is the zero-infra pair for pack.image)" }}
+      {{- end }}
+      {{- if and .Values.shell.image (not .Values.shell.enabled) }}
+      {{- fail "shell.image is set but shell.enabled=false — enable the shell (and set config.instance.shellDir) or unset shell.image" }}
+      {{- end }}
+      {{- $packInit := and (ne .Values.pack.type "none") (.Values.pack.image | default "") }}
+      {{- $shellInit := and .Values.shell.enabled (.Values.shell.image | default "") }}
+      {{- if or $packInit $shellInit }}
+      initContainers:
+        {{- if $packInit }}
+        # Copies the pack baked into pack.image (at /pack) into the pack volume
+        # so the server starts with the catalog present. The volume is mounted
+        # writable here and read-only in the server container.
+        - name: pack-from-image
+          image: {{ .Values.pack.image }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["sh", "-c", "cp -a /pack/. /pack-volume/"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: pack
+              mountPath: /pack-volume
+        {{- end }}
+        {{- if $shellInit }}
+        # Same pattern for the web shell dist baked into shell.image (at /shell).
+        - name: shell-from-image
+          image: {{ .Values.shell.image }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["sh", "-c", "cp -a /shell/. /shell-volume/"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: shell
+              mountPath: /shell-volume
+        {{- end }}
+      {{- end }}
+      containers:
+        - name: server
+          image: {{ include "lolly-work.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.targetPort }}
+              protocol: TCP
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: PORT
+              value: {{ .Values.service.targetPort | quote }}
+            - name: LW_CONFIG
+              value: /app/instance.json
+            # HA path: the migrate Job owns the schema, so no replica applies DDL
+            # and each refuses to start on a pending schema.
+            - name: LW_AUTO_MIGRATE
+              value: "false"
+            {{- include "lolly-work.secretEnv" . | nindent 12 }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /app/instance.json
+              subPath: instance.json
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            {{- if ne .Values.pack.type "none" }}
+            - name: pack
+              mountPath: {{ .Values.pack.mountPath }}
+              readOnly: {{ .Values.pack.readOnly }}
+            {{- end }}
+            {{- if .Values.shell.enabled }}
+            - name: shell
+              mountPath: {{ .Values.shell.mountPath }}
+              readOnly: {{ .Values.shell.readOnly }}
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "lolly-work.fullname" . }}-config
+        - name: tmp
+          emptyDir: {}
+        {{- if eq .Values.pack.type "pvc" }}
+        - name: pack
+          persistentVolumeClaim:
+            claimName: {{ include "lolly-work.fullname" . }}-pack
+        {{- else if eq .Values.pack.type "existingClaim" }}
+        - name: pack
+          persistentVolumeClaim:
+            claimName: {{ required "pack.existingClaim is required when pack.type=existingClaim" .Values.pack.existingClaim }}
+        {{- else if eq .Values.pack.type "hostPath" }}
+        - name: pack
+          hostPath:
+            path: {{ required "pack.hostPath is required when pack.type=hostPath" .Values.pack.hostPath }}
+            type: Directory
+        {{- else if eq .Values.pack.type "emptyDir" }}
+        {{- if not .Values.pack.image }}
+        {{- fail "pack.type=emptyDir requires pack.image (the initContainer that fills the per-pod volume)" }}
+        {{- end }}
+        - name: pack
+          emptyDir: {}
+        {{- else if ne .Values.pack.type "none" }}
+        {{- fail (printf "unknown pack.type %q (one of: none | pvc | existingClaim | hostPath | emptyDir)" .Values.pack.type) }}
+        {{- end }}
+        {{- if .Values.shell.enabled }}
+        {{- if eq .Values.shell.type "pvc" }}
+        - name: shell
+          persistentVolumeClaim:
+            claimName: {{ include "lolly-work.fullname" . }}-shell
+        {{- else if eq .Values.shell.type "existingClaim" }}
+        - name: shell
+          persistentVolumeClaim:
+            claimName: {{ required "shell.existingClaim is required when shell.type=existingClaim" .Values.shell.existingClaim }}
+        {{- else if eq .Values.shell.type "hostPath" }}
+        - name: shell
+          hostPath:
+            path: {{ required "shell.hostPath is required when shell.type=hostPath" .Values.shell.hostPath }}
+            type: Directory
+        {{- else if eq .Values.shell.type "emptyDir" }}
+        {{- if not .Values.shell.image }}
+        {{- fail "shell.type=emptyDir requires shell.image (the initContainer that fills the per-pod volume)" }}
+        {{- end }}
+        - name: shell
+          emptyDir: {}
+        {{- else }}
+        {{- fail (printf "unknown shell.type %q (one of: pvc | existingClaim | hostPath | emptyDir)" .Values.shell.type) }}
+        {{- end }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}

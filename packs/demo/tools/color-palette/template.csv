@@ -1,0 +1,3 @@
+name,hex,on,wcag,level,apca,target,reach
+{{#each csvRows}}{{csvCell name}},{{csvCell hex}},{{csvCell on}},{{csvCell wcag}},{{csvCell level}},{{csvCell apca}},{{csvCell target}},{{csvCell reach}}
+{{/each}}

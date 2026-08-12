@@ -1,0 +1,43 @@
+{
+  "instance": {
+    "name": "SUSE Content Automation",
+    "baseUrl": "http://localhost:8787",
+    "pack": "./packs/example"
+  },
+  "idp": {
+    "issuer": "",
+    "clientId": "",
+    "displayName": "",
+    "groupsClaim": "groups",
+    "claimMap": {
+      "firstname": "given_name",
+      "lastname": "family_name",
+      "email": "email",
+      "title": "title"
+    }
+  },
+  "policy": {
+    "defaultAccessMode": "gated",
+    "telemetry": "standard",
+    "telemetryAttribution": "opt-in",
+    "guestLinks": { "enabled": true, "maxTtlHours": 168, "defaultTtlHours": 72 }
+  },
+  "render": { "allowHooksInFastPath": false },
+  "dev": {
+    "enabled": true,
+    "users": [{ "email": "dev@example.test", "name": "Dev Admin", "groups": ["admin"] }]
+  },
+  "catalogProviders": [
+    {
+      "id": "example-brandfolder",
+      "kind": "brandfolder",
+      "label": "Example Brandfolder",
+      "credentialRef": "LW_PROVIDER_EXAMPLE_BRANDFOLDER_TOKEN",
+      "enabled": false,
+      "options": { "brandfolderId": "replace-with-brandfolder-id" },
+      "mapping": { "defaultType": "image", "sectionTags": true },
+      "exposure": { "groups": "*", "requireApproved": true, "tier": "reference" },
+      "sync": { "ttlSeconds": 300 }
+    }
+  ]
+}

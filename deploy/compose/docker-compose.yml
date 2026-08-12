@@ -1,0 +1,40 @@
+# Small-org / single-VM shape (plans/01 §4). DATABASE_URL selects the Postgres
+# store; LW_AUTO_MIGRATE defaults to true, so the server applies pending
+# migrations at boot — no separate migrate step on this single-node path.
+services:
+  server:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile
+    ports:
+      - "8787:8787"
+    environment:
+      LW_CONFIG: /app/instance.json
+      LW_SESSION_SECRET: ${LW_SESSION_SECRET:?set in .env}
+      LW_LINK_SECRET: ${LW_LINK_SECRET:?set in .env}
+      LW_IDP_CLIENT_SECRET: ${LW_IDP_CLIENT_SECRET:-}
+      DATABASE_URL: postgres://lolly:${PG_PASSWORD:-lolly}@db:5432/lollywork
+    volumes:
+      - ../../instance.json:/app/instance.json:ro
+      - ../../packs:/app/packs:ro
+      # Web shell (serve Lolly at `/`): mount a built shells/web/dist and point
+      # instance.shellDir at it (e.g. /app/shell). BOOT GUARD: under a non-open
+      # defaultAccessMode (the default is gated) the server REFUSES to start when
+      # instance.shellDir is set but the dist is missing or predates the org
+      # governance module. Escape hatch (loud warning instead of refusal): add
+      # LW_ALLOW_STALE_SHELL: "1" under environment above.
+      # - ../../shells/web/dist:/app/shell:ro
+    depends_on:
+      - db
+
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: lolly
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-lolly}
+      POSTGRES_DB: lollywork
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

@@ -1,0 +1,1215 @@
+/* lolly-work admin console — chrome that shares the lolly web shell's design
+   language (shells/web/src/styles): the SUSE/SUSE Mono type pair (the brand
+   faces, everywhere — 2026-08-11; the shell's Outfit default is overridden), the
+   same light / dark / brand palette family (white → near-black navy → colored
+   mid-tone chrome; teal accents), the shell's embossed control voice (border-
+   less fields with a white-alpha highlight over a soft drop; hover LIFTS,
+   :active PRESSES IN), its micro-label gesture and its 1rem corner. Chart
+   series + status colors stay the validated viz palette — never brand-themed.
+   Light/dark: OS preference plus a data-theme override that wins both ways.
+   No external assets (air-gap rule) — the fonts below are served from
+   console/fonts/ by the same /admin/* static handler as this sheet. */
+
+/* ── platform typefaces (SUSE + SUSE Mono, self-hosted) ───────────────────
+   The brand pair everywhere (decided 2026-08-11): views, charts, and every
+   component set either 'SUSE' or 'SUSE Mono' — no third face. Both variable
+   woff2s ship in /admin/fonts (air-gap safe), same files the demo pack serves
+   the landing page from; OFL-SUSE(.Mono).txt alongside. */
+@font-face {
+  font-family: 'SUSE';
+  src: url('/admin/fonts/SUSE[wght].woff2') format('woff2-variations');
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'SUSE Mono';
+  src: url('/admin/fonts/SUSEMono[wght].woff2') format('woff2-variations');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  color-scheme: light;
+  /* --pack-* custom properties are set at boot by applyPackTheme() (app.js,
+     plans/16 §2.1) from the instance's mounted brand pack tokens, when one is
+     mounted and offers a legible chrome color — the var() fallback below is
+     what every instance without a pack (or without a usable accent) gets.
+     The closed set of pack overrides applyPackTheme()/themeFromTokens() (app.js)
+     may set — nothing else is pack-themeable. Each is an accent- or surface-
+     shaped role with a light+dark pair; a missing slot is REMOVED (never blanked)
+     so the fallback here stays in charge:
+       --pack-accent-light / --pack-accent-dark        (nav/focus/primary fill)
+       --pack-on-accent-light / --pack-on-accent-dark  (text over the accent)
+       --pack-plane-light / --pack-plane-dark          (page tint)
+       --pack-surface-light / --pack-surface-dark      (card tint)
+     Chart series (--series-*) + status colors are NEVER touched — validated viz
+     palette, hardcoded regardless of brand. No --pack-radius / --pack-font-* :
+     radius is a static shape token below; fonts go through --font-sans/-mono. */
+  /* Shell light palette (tokens.css: --background/--card/--foreground family). */
+  --plane: var(--pack-plane-light, hsl(0 0% 100%));    /* page */
+  --surface: var(--pack-surface-light, hsl(0 0% 99%)); /* cards / chart surface */
+  --ink: hsl(224 71% 4%);                      /* body text — shell --foreground */
+  --ink-2: hsl(215 25% 27%);                   /* labels/subhead */
+  --muted: hsl(215 20% 38%);                   /* muted prose/labels — shell --muted-foreground, AA */
+  --grid: hsl(214 28% 88%);                    /* hairline dividers: table/section rules, stepper connectors */
+  --baseline: hsl(214 28% 84%);                /* control borders — shell --border/--input */
+  --hairline: rgba(2, 6, 23, 0.10);            /* faint card/tooltip/panel border (NOT the focus ring — that's --accent) */
+  --accent: var(--pack-accent-light, hsl(171 62% 12%)); /* shell --primary (SUSE dark teal #0c322c); white text ~15:1 */
+  --on-accent: var(--pack-on-accent-light, #fff); /* primary-button text — flips to black for a light accent */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --good: #0ca30c;
+  --good-text: #006300;
+  --warning: #fab219;
+  --serious: #ec835a;
+  --critical: #d03b3b;
+  /* Shape scale — the shell's rounded 1rem corner (tokens.css --radius) on
+     everything; controls take a slightly tighter cut so dense rows stay calm. */
+  --radius-sm: 0.7rem; /* controls: buttons, inputs, nav links, tooltip */
+  --radius: 1rem;      /* cards + panels — shell --radius */
+  --radius-lg: 1.25rem; /* elevated surfaces: sign-in card */
+  --radius-pill: 99px; /* chips, badges */
+  /* The shell's select chevron + embossed-control shadows, declared once. */
+  --field-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23888888' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  --emboss: inset 0 1px #fff1, 0 .1rem .3rem #0002;          /* resting field */
+  --emboss-hover: inset 0 1px #fff2, 0 .12rem .4rem #0004;   /* hover LIFTS */
+  --emboss-btn: inset 0 1px #fff3, 0 1px 3px #0002;          /* resting button */
+  /* Elevation — per-theme so a card still separates from the plane in dark,
+     where a near-black shadow on a near-black plane would vanish. */
+  --shadow-pop: 0 4px 14px rgba(0, 0, 0, 0.14);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.04), 0 16px 40px -16px rgba(0, 0, 0, 0.22);
+}
+/* Dark tokens live in TWO selectors that MUST stay in sync: the OS-preference
+   path (@media below) and the manual [data-theme="dark"] override further down.
+   Any token you change in one, change in the other, or the two paths diverge. */
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    /* Shell dark palette: near-black navy plane, Pine Green accent w/ dark ink. */
+    --plane: var(--pack-plane-dark, hsl(224 71% 4%));
+    --surface: var(--pack-surface-dark, hsl(222 47% 7%));
+    --ink: hsl(213 31% 91%);
+    --ink-2: hsl(215 22% 75%);
+    --muted: hsl(215 20% 65%);           /* shell dark --muted-foreground — AA on the navy plane */
+    --grid: hsl(217 33% 14%);
+    --baseline: hsl(217 33% 18%);
+    --hairline: rgba(255, 255, 255, 0.10);
+    --accent: var(--pack-accent-dark, hsl(151 57% 46%)); /* shell dark --primary (Pine Green #30ba78) */
+    --on-accent: var(--pack-on-accent-dark, hsl(171 62% 5%)); /* dark teal ink over Pine, per the shell */
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --good-text: #0ca30c;
+    /* Denser shadows read on a dark plane where a light-mode black shadow vanishes. */
+    --shadow-pop: 0 4px 18px rgba(0, 0, 0, 0.6);
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.5), 0 16px 40px -16px rgba(0, 0, 0, 0.7);
+  }
+}
+/* Manual dark override — KEEP IN SYNC with the @media block above. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --plane: var(--pack-plane-dark, hsl(224 71% 4%));
+  --surface: var(--pack-surface-dark, hsl(222 47% 7%));
+  --ink: hsl(213 31% 91%);
+  --ink-2: hsl(215 22% 75%);
+  --muted: hsl(215 20% 65%);
+  --grid: hsl(217 33% 14%);
+  --baseline: hsl(217 33% 18%);
+  --hairline: rgba(255, 255, 255, 0.10);
+  --accent: var(--pack-accent-dark, hsl(151 57% 46%));
+  --on-accent: var(--pack-on-accent-dark, hsl(171 62% 5%));
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --good-text: #0ca30c;
+  --shadow-pop: 0 4px 18px rgba(0, 0, 0, 0.6);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.5), 0 16px 40px -16px rgba(0, 0, 0, 0.7);
+}
+
+/* Brand theme — the third theme (mirrors the web shell's light/dark/brand set),
+   only ever reached by an explicit [data-theme="brand"] the toggle sets. A
+   colored, mid-toned dark chrome tinted by the instance's own accent: surfaces
+   are the accent hue pulled down to near-black via color-mix, so a green pack
+   yields green-tinted chrome and the no-pack default a blue-tinted one — the
+   same "Pine surfaces, Jungle accent" construction as the shell, made generic.
+   Viz series + status colors stay the hardcoded validated palette (never tinted).
+   color-mix is pure CSS — no external asset, air-gap-safe. */
+:root[data-theme="brand"] {
+  color-scheme: dark;
+  /* No-pack default is now the shell's own brand chrome: Pine Green accent
+     over teal-tinted near-black surfaces (shell [data-theme="brand"]). A pack
+     accent swaps the tint wholesale, same construction. */
+  --accent: var(--pack-accent-dark, hsl(151 57% 46%));
+  --on-accent: var(--pack-on-accent-dark, hsl(171 62% 5%));
+  --plane: color-mix(in oklab, var(--accent) 24%, #0a0e0d);
+  --surface: color-mix(in oklab, var(--accent) 18%, #131817);
+  --ink: hsl(160 30% 92%);
+  --ink-2: color-mix(in oklab, var(--accent) 12%, #c5cac6);
+  --muted: color-mix(in oklab, var(--accent) 9%, #97a09b);   /* AA on the tinted plane */
+  --grid: color-mix(in oklab, var(--accent) 22%, #272d2b);
+  --baseline: color-mix(in oklab, var(--accent) 28%, #37403d);
+  --hairline: rgba(255, 255, 255, 0.12);
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --good-text: #0ca30c;
+  --shadow-pop: 0 4px 18px rgba(0, 0, 0, 0.55);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.45), 0 16px 40px -16px rgba(0, 0, 0, 0.65);
+}
+
+/* Font stacks. --font-sans / --font-mono are set at boot by applyPackFonts()
+   (app.js) to the instance's brand faces (loaded from the served pack webfonts)
+   with the system stack appended; unset → the system stack via the var()
+   fallback, so a pack without brand fonts is byte-identical. */
+:root {
+  /* The shell's default pair (tokens.css --font-brand/--font-mono), self-hosted
+     above; the system stack is the tail, so a failed font load still reads. */
+  --font-sys: 'SUSE', ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono-sys: 'SUSE Mono', ui-monospace, SFMono-Regular, Menlo, "Cascadia Code", monospace;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--plane);
+  color: var(--ink);
+  font: 14px/1.5 var(--font-sans, var(--font-sys));
+  -webkit-font-smoothing: antialiased;
+}
+.boot { padding: 2rem; color: var(--muted); }
+
+/* ── shell ─────────────────────────────────────────────────────────────── */
+.app { display: grid; grid-template-columns: 208px 1fr; min-height: 100vh; min-height: 100dvh; }
+.rail {
+  border-right: 1px solid var(--grid);
+  padding: 14px 10px;
+  display: flex; flex-direction: column; gap: 2px;
+  /* 100dvh tracks the real visible viewport as mobile browser chrome shows/hides;
+     overflow-y keeps nav + sign-out reachable when the stack is taller than the
+     rail (short/landscape/zoomed viewports). */
+  position: sticky; top: 0; height: 100vh; height: 100dvh; overflow-y: auto;
+}
+/* Visually-hidden until focused — utilities shared across the shell. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+.skip {
+  position: fixed; left: 8px; top: -60px; z-index: 20;
+  background: var(--surface); color: var(--ink); border: 1px solid var(--baseline);
+  border-radius: var(--radius-sm); padding: 8px 12px; text-decoration: none;
+  transition: top 120ms;
+}
+.skip:focus { top: 8px; }
+.rail .brand {
+  font-weight: 700; letter-spacing: 0.005em; padding: 6px 10px 2px; font-size: 14.5px;
+}
+.rail .brand small { display: block; font-weight: 400; font-size: 12px; color: var(--muted); letter-spacing: 0; }
+.rail .brand-name { display: block; }
+
+/* ── inherited pack wordmark ───────────────────────────────────────────────
+   The real, theme-paired brand logo shown in the rail + sign-in gate when the
+   pack ships one (the generic two-disc mark is the graceful fallback). Both
+   variants are in the DOM; CSS reveals the on-theme one so an OS/theme flip
+   swaps the logo with no re-render. Chrome only — never a dataviz surface. */
+.brand-logo { display: inline-flex; align-items: center; }
+.brand-logo__img { display: block; width: auto; max-width: 100%; }
+.brand-logo__dark { display: none; }
+.brand-logo--rail .brand-logo__img { height: 21px; max-width: 148px; }
+.brand-logo--gate .brand-logo__img { height: 27px; max-width: 172px; }
+/* With a wordmark leading, the instance name demotes to a quiet secondary line. */
+.rail .brand.brand--logo { padding: 8px 10px 2px; }
+.rail .brand-sub { display: block; font-weight: 500; font-size: 12px; color: var(--muted); letter-spacing: 0; margin-top: 7px; }
+
+/* Reveal the variant that reads against the active plane (mirrors the accent
+   dark-mode structure: prefers-color-scheme with a [data-theme] override). */
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) .brand-logo__light { display: none; }
+  :root:where(:not([data-theme="light"])) .brand-logo__dark { display: block; }
+}
+:root[data-theme="dark"] .brand-logo__light { display: none; }
+:root[data-theme="dark"] .brand-logo__dark { display: block; }
+:root[data-theme="light"] .brand-logo__light { display: block; }
+:root[data-theme="light"] .brand-logo__dark { display: none; }
+/* Brand is a dark, colored chrome — show the dark-plane wordmark. */
+:root[data-theme="brand"] .brand-logo__light { display: none; }
+:root[data-theme="brand"] .brand-logo__dark { display: block; }
+
+/* Theme cycle button — one fixed icon top-right (light → dark → brand → …),
+   present on the gate and the app. Reflects the ACTIVE theme; click advances. */
+.theme-toggle {
+  position: fixed; top: 12px; right: 14px; z-index: 50;
+  width: 34px; height: 34px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--baseline); border-radius: var(--radius-pill);
+  background: var(--surface); color: var(--ink-2); cursor: pointer;
+  box-shadow: var(--shadow-pop);
+}
+.theme-toggle:hover { color: var(--ink); border-color: var(--accent); }
+.theme-toggle .nav-ico { width: 18px; height: 18px; }
+@media (prefers-reduced-motion: no-preference) {
+  .theme-toggle { transition: color .12s ease, border-color .12s ease; }
+}
+/* Quiet cross-navigation back to the gallery (plans/16 §2.4) — same shape as
+   a nav link, visually secondary so it never competes with the section list. */
+.rail .back {
+  display: block; color: var(--muted); text-decoration: none; font-size: 12.5px;
+  padding: 6px 10px; margin: 4px 0 8px; border-radius: var(--radius-sm);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rail .back:hover { background: color-mix(in oklab, var(--ink) 6%, transparent); color: var(--ink-2); }
+/* min-height:0 lets nav shrink below its content and scroll inside the rail
+   rather than pushing the session block out of a fixed-height container. */
+.rail nav { display: flex; flex-direction: column; gap: 2px; margin-top: 12px; flex: 1; min-height: 0; overflow-y: auto; }
+.rail a {
+  display: flex; align-items: center; gap: 10px;
+  color: var(--ink-2); text-decoration: none; padding: 7px 10px; border-radius: var(--radius-sm);
+}
+.rail a .nav-ico { width: 17px; height: 17px; flex: none; color: var(--muted); transition: color 100ms; }
+.rail a:hover { background: color-mix(in oklab, var(--ink) 6%, transparent); }
+.rail a:hover .nav-ico { color: var(--ink-2); }
+.rail a[aria-current="page"] {
+  color: var(--ink); background: color-mix(in oklab, var(--accent) 13%, transparent);
+  font-weight: 600;
+}
+.rail a[aria-current="page"] .nav-ico { color: var(--accent); }
+.rail .session { border-top: 1px solid var(--grid); padding-top: 10px; font-size: 12.5px; color: var(--ink-2); }
+.rail .session .who { color: var(--ink); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+
+/* Collapsible sidebar toggle + collapsed state. The collapsed rules mirror the
+   600px breakpoint (label-hiding) but key on [data-rail='collapsed'] so a user
+   can shrink the rail at any width; nav labels become sr-only, icons + current
+   marker stay. Persisted; applied pre-paint via the index.html inline script. */
+.rail-toggle {
+  align-self: flex-end; display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; padding: 0; margin: 2px 2px 4px;
+  background: none; border: 1px solid transparent; border-radius: var(--radius-sm);
+  color: var(--muted); cursor: pointer;
+}
+.rail-toggle:hover { color: var(--ink-2); background: color-mix(in oklab, var(--ink) 6%, transparent); }
+.rail-toggle svg { width: 16px; height: 16px; }
+@media (prefers-reduced-motion: no-preference) { .rail-toggle svg { transition: transform 120ms; } }
+:root[data-rail='collapsed'] .rail-toggle { align-self: center; }
+:root[data-rail='collapsed'] .rail-toggle svg { transform: rotate(180deg); }
+:root[data-rail='collapsed'] .app { grid-template-columns: 56px 1fr; }
+:root[data-rail='collapsed'] .rail { padding: 12px 6px; align-items: stretch; }
+:root[data-rail='collapsed'] .rail a { justify-content: center; padding: 9px 0; }
+:root[data-rail='collapsed'] .rail nav a > span { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+:root[data-rail='collapsed'] .rail .brand, :root[data-rail='collapsed'] .rail .brand-sub, :root[data-rail='collapsed'] .rail .back, :root[data-rail='collapsed'] .rail .session .who, :root[data-rail='collapsed'] .rail .session > div:not(:last-child) { display: none; }
+:root[data-rail='collapsed'] .rail .brand-logo--rail .brand-logo__img { max-width: 44px; }
+:root[data-rail='collapsed'] .rail .session { text-align: center; }
+
+/* min-width:0 lets the content track shrink so a wide table scrolls INSIDE its
+   .tbl-scroll wrapper instead of blowing out the grid track (which would drag
+   the sticky rail sideways with page-level horizontal scroll). */
+main { padding: 22px 26px 48px; max-width: 1060px; min-width: 0; }
+/* Below this width the fixed theme toggle overlaps the content column's top-right
+   (h1 ends, flush-right list-bar buttons); reserve a gutter so nothing is covered. */
+@media (max-width: 1332px) { main { padding-right: 56px; } }
+h1 { font-size: 20px; font-weight: 650; margin: 0 0 4px; letter-spacing: -0.01em; }
+.sub { color: var(--muted); margin: 0 0 20px; }
+/* Card/section titles take the shell's micro-label gesture — tiny, uppercase,
+   heavy, wide-tracked, muted (fields.css .field-label / .section-card-head). */
+h2 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; }
+/* A section divider heading inside a view (e.g. Overview's Seat utility block) —
+   more top air than an in-card h2 so it reads as a new section, not a card title. */
+.section-h { margin-top: 26px; }
+
+/* ── activity feed (Overview) ──────────────────────────────────────────────
+   A linear timeline: a small marker, a one-line human-readable sentence whose
+   nouns are links, and a clickable time + type. Filters sit in a wrapping bar. */
+.act-bar {
+  display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: end;
+  padding: 12px 14px; margin-bottom: 12px;
+  background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--radius);
+}
+.act-bar .field { margin: 0; }
+.act-bar input[type="search"] { min-width: 180px; }
+.act-bar-clear { align-self: end; }
+.act-host .act-list { list-style: none; margin: 0; padding: 0; }
+.act-row {
+  display: grid; grid-template-columns: 34px 1fr; gap: 12px; align-items: start;
+  padding: 11px 2px; border-top: 1px solid var(--grid);
+}
+.act-row:first-child { border-top: 0; }
+.act-thumb {
+  width: 34px; height: 34px; border-radius: var(--radius-sm); flex: none;
+  display: inline-flex; align-items: center; justify-content: center; overflow: hidden;
+}
+.act-thumb--badge {
+  background: color-mix(in oklab, var(--accent) 14%, var(--surface));
+  color: var(--accent); border: 1px solid var(--hairline);
+}
+.act-thumb--badge .nav-ico { width: 18px; height: 18px; }
+.act-thumb--img { object-fit: cover; background: var(--plane); border: 1px solid var(--hairline); }
+/* Tool tile icon in the governed-tools table: the pack's own SVG glyph, sized
+   and colour-inheriting (its stroke="currentColor" picks up the muted ink). */
+.tool-tile-icon { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; color: var(--ink-2); }
+.tool-tile-icon svg { width: 22px; height: 22px; }
+.act-body { min-width: 0; }
+.act-line { line-height: 1.5; color: var(--ink); overflow-wrap: anywhere; }
+.act-line .act-actor { font-weight: 600; }
+.act-obj { color: var(--accent); text-decoration: none; font-weight: 500; }
+.act-obj:hover { text-decoration: underline; }
+.act-meta { display: flex; gap: 10px; align-items: center; margin-top: 3px; }
+.act-time, .act-tag {
+  background: none; border: 0; padding: 0; cursor: pointer;
+  font: inherit; font-size: 12px; color: var(--muted);
+}
+.act-time:hover { color: var(--ink-2); text-decoration: underline; }
+.act-tag {
+  text-transform: uppercase; letter-spacing: .04em; font-size: 10.5px;
+  border: 1px solid var(--baseline); border-radius: var(--radius-pill); padding: 1px 8px;
+}
+.act-tag:hover { border-color: var(--accent); color: var(--accent); }
+.act-empty { padding: 16px 2px; color: var(--muted); }
+.act-more { margin-top: 12px; }
+@media (prefers-reduced-motion: no-preference) {
+  .act-obj, .act-time, .act-tag { transition: color .1s ease, border-color .1s ease; }
+}
+
+/* Searchable filter combobox (native <datalist>) — same footprint as a select. */
+.search-select { display: inline-flex; }
+.search-select input { min-width: 150px; }
+
+/* ── This Deploy: top tab bar + panel ────────────────────────────────────
+   Tabs reuse the sidebar nav icons; the panel hosts an existing view render. */
+.tabbar {
+  display: flex; flex-wrap: wrap; gap: 4px;
+  border-bottom: 1px solid var(--grid); margin: 4px 0 16px;
+}
+.tab {
+  display: inline-flex; align-items: center; gap: 7px;
+  background: none; border: 0; cursor: pointer;
+  padding: 8px 12px; margin-bottom: -1px;
+  color: var(--ink-2); font: inherit; font-weight: 500;
+  border-bottom: 2px solid transparent; border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+}
+.tab .nav-ico { width: 17px; height: 17px; }
+.tab:hover { color: var(--ink); background: color-mix(in oklab, var(--accent) 7%, transparent); }
+.tab[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
+/* The reused views render their own <h1>; the tab already titles it. */
+.inst-panel > h1:first-child { display: none; }
+@media (prefers-reduced-motion: no-preference) { .tab { transition: color .12s ease, background .12s ease; } }
+
+/* ── design system tab ─────────────────────────────────────────────────────*/
+.ds-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+.ds-group + .ds-group { margin-top: 16px; }
+.ds-group .detail-h { text-transform: none; }
+.ds-swatch { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.ds-chip { width: 34px; height: 34px; border-radius: var(--radius-sm); border: 1px solid var(--hairline); flex: none; }
+.ds-name { font-weight: 500; }
+.ds-val { font-size: 12px; color: var(--muted); }
+.ds-type { font-size: 22px; line-height: 1.3; padding: 4px 0; }
+.ds-shape { display: flex; flex-wrap: wrap; gap: 14px; }
+.ds-shape-box {
+  width: 84px; height: 64px; display: flex; align-items: flex-end; justify-content: center;
+  padding-bottom: 6px; font-size: 11px; color: var(--muted);
+  background: color-mix(in oklab, var(--accent) 10%, var(--surface)); border: 1px solid var(--hairline);
+}
+
+/* ── cards, tiles, grid ────────────────────────────────────────────────── */
+.grid { display: grid; gap: 14px; }
+.grid.tiles { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin-bottom: 14px; }
+.grid.two { grid-template-columns: 1fr 1fr; }
+/* Narrow: a compact rail — icon + label both stay (the glyphs make the tighter
+   width read cleanly); the brand line truncates rather than wrapping. */
+@media (max-width: 900px) {
+  .grid.two { grid-template-columns: 1fr; }
+  .app { grid-template-columns: 164px 1fr; }
+  .rail { padding: 12px 8px; }
+  .rail .brand { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rail .brand small { display: none; }
+  main { padding: 18px 16px 40px; }
+}
+/* Phone: the rail becomes a fixed BOTTOM tab bar — thumbs live at the bottom
+   of a phone, and a left strip costs width exactly where tables need it. Nav
+   labels stay in the DOM (sr-only) so links keep their accessible name; the
+   icon + aria-current still convey the section. Selectors are #app-anchored so
+   a persisted [data-rail='collapsed'] preference can't out-specificity them. */
+@media (max-width: 600px) {
+  #app.app { grid-template-columns: 1fr; }
+  #app .rail {
+    position: fixed; top: auto; bottom: 0; left: 0; right: 0; z-index: 40;
+    height: auto; min-height: 0; overflow: visible;
+    flex-direction: row; align-items: center; gap: 2px;
+    padding: 4px max(8px, env(safe-area-inset-right)) calc(4px + env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+    background: var(--surface);
+    border-right: 0; border-top: 1px solid var(--grid);
+  }
+  #app .rail nav { flex-direction: row; align-items: center; gap: 2px; margin: 0; flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; }
+  #app .rail a { flex: none; justify-content: center; padding: 11px 12px; }
+  #app .rail nav a > span { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  #app .rail .brand, #app .rail .brand-sub, #app .rail .back, #app .rail .rail-toggle,
+  #app .rail .session .who, #app .rail .session > div:not(:last-child) { display: none; }
+  #app .rail .session { border-top: 0; padding: 0; flex: none; }
+  #app .rail .session button { font-size: 12px; padding: 8px 10px; white-space: nowrap; }
+  /* Content gets the full width; bottom padding clears the fixed bar. */
+  #app main { padding: 16px 12px calc(84px + env(safe-area-inset-bottom)); }
+  /* Toast + detail sheet must clear the bar too. */
+  .toast { bottom: calc(76px + env(safe-area-inset-bottom)); }
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+/* Vertical rhythm between stacked cards — one value, not a per-card inline literal. */
+.stack { margin-top: 14px; }
+/* Margin reset for a heading/sub-text used as a flush title or a loading line
+   (a card/detail header, a "Loading…" note) — replaces repeated inline margin:0
+   so the reset is one shared rule, not a per-call literal. */
+.flush { margin: 0; }
+.tile .label { color: var(--muted); font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
+.tile .value { font-size: 26px; font-weight: 650; margin-top: 2px; }
+
+/* ── charts ────────────────────────────────────────────────────────────── */
+.chart svg { display: block; width: 100%; height: auto; }
+.legend { display: flex; gap: 14px; font-size: 12px; color: var(--ink-2); margin-bottom: 6px; }
+.legend .key { display: inline-flex; align-items: center; gap: 6px; }
+.legend .swatch { width: 10px; height: 10px; border-radius: 3px; }
+
+.hbar { display: grid; grid-template-columns: minmax(90px, 150px) 1fr; gap: 8px 10px; align-items: center; }
+.hbar .lbl { color: var(--ink-2); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+.hbar .track { display: flex; align-items: center; gap: 8px; min-height: 18px; }
+.hbar .bar { height: 14px; border-radius: 0 4px 4px 0; min-width: 2px; }
+.hbar .val { font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.empty { color: var(--muted); padding: 18px 0; }
+
+details.tbl { margin-top: 10px; }
+details.tbl summary { color: var(--muted); font-size: 12px; cursor: pointer; }
+
+/* ── tables ────────────────────────────────────────────────────────────── */
+/* One calm, dense, scannable style for every table. Header lives in <thead>
+   (scope="col"); body rows in <tbody> so the hover never lights the header.
+   Cells are single-line and centre-aligned; long values truncate with ellipsis
+   and carry a title. Numeric columns right-align with tabular figures and a bit
+   of separation so a count never hugs the next column. */
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+/* Column headers speak the shell micro-label. */
+th { text-align: left; color: var(--muted); font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+td { padding: 7px 10px 7px 0; border-bottom: 1px solid var(--grid); vertical-align: middle; }
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr:hover td { background: color-mix(in oklab, var(--ink) 4%, transparent); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; padding-right: 20px; }
+/* Constrained id/hash/mono columns: cap width, single line, graceful ellipsis. */
+.mono { font-family: var(--font-mono, var(--font-mono-sys)); font-size: 11.5px; color: var(--muted); }
+td.mono { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Generic truncating cell/inline span — one line, ellipsis, keeps rows calm. */
+.trunc { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+td.tags { max-width: 260px; }
+/* Every dataTable() is wrapped in this so a wide table scrolls in its own box
+   instead of widening the page (mirrors the .chain audit-strip's overflow).
+   Default is `clip` — unlike `auto` it creates NO scroll container, so the
+   sticky header below sticks against the page. dataTable() measures after
+   mount and adds .is-scrollx only when the table genuinely overflows; that
+   table trades sticky headers for horizontal scrolling. */
+.tbl-scroll { overflow-x: clip; }
+.tbl-scroll.is-scrollx { overflow-x: auto; }
+/* Column headers stay readable on a long scroll (25+ rows per page). The fill
+   matches the card the table sits on so rows slide beneath cleanly. */
+thead th { position: sticky; top: 0; background: var(--surface); z-index: 2; }
+
+/* status: color + icon + label, never color alone */
+.status { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; white-space: nowrap; }
+.status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none; }
+.status.live::before { background: var(--good); }
+.status.expired::before { background: var(--warning); }
+.status.revoked::before { background: var(--critical); }
+/* In-progress states use the chrome accent (not a validated dataviz status). */
+.status.review::before { background: var(--accent); }
+.chip {
+  display: inline-block; padding: 1px 7px; border-radius: var(--radius-pill); font-size: 11.5px;
+  border: 1px solid var(--hairline); color: var(--ink-2); white-space: nowrap;
+}
+/* When a chip is an actual control (e.g. Preview quick-picks) it stays visually
+   compact but the click/tap target meets the 24px minimum (WCAG 2.5.8). */
+button.chip { min-height: 24px; display: inline-flex; align-items: center; cursor: pointer; }
+/* "No constraint" chip — a dashed, muted outline so an unconstrained audience
+   ("Everyone") reads as a deliberate open state, not a stray label. */
+.chip-all { border-style: dashed; color: var(--muted); }
+/* A row of small chips (e.g. a humanised message audience). */
+.chips { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+/* Type chip + a quiet secondary descriptor (visibility groups, shell version). */
+.chip-side { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; }
+.chip-side .sec { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── approvals ─────────────────────────────────────────────────────────── */
+/* One shared card + horizontal stepper in BOTH sections; only the footer
+   affordance differs. Status colours (done → --good, rejected → --critical)
+   express STATE and are never brand-themed; --accent is the current-node ring
+   only (wayfinding chrome). No one-sided borders — a full 1px --grid card. */
+.appr-list { display: flex; flex-direction: column; gap: 14px; }
+.appr-card { border: 1px solid var(--grid); border-radius: var(--radius); padding: 14px 16px; background: var(--surface); }
+.appr-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.appr-headmain { min-width: 0; }
+.appr-title { font-weight: 600; }
+.appr-meta {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  color: var(--ink-2); font-size: 12.5px; margin-top: 4px;
+}
+.appr-meta .muted { color: var(--muted); }
+
+/* Stepper: connected nodes, filled connector up to the current node. */
+.stepper { list-style: none; display: flex; margin: 16px 0 0; padding: 0; }
+.step { flex: 1 1 0; min-width: 0; position: relative; padding: 0 8px; }
+.step-rail { display: flex; justify-content: center; }
+.step::before, .step::after {
+  content: ""; position: absolute; top: 12px; height: 2px; background: var(--grid);
+}
+.step::before { left: 0; width: calc(50% - 16px); }
+.step::after { right: 0; width: calc(50% - 16px); }
+.step:first-child::before { display: none; }
+.step:last-child::after { display: none; }
+/* A connector is filled green ONLY where progress has actually flowed THROUGH
+   it — between completed nodes. The half leaving a done node is green; the half
+   entering the current (not-yet-acted) node is dashed, so a run reads as "done
+   up to here, pending onward" instead of "both steps complete". */
+.step.done::after { background: var(--good); }
+.step.done::before, .step.rejected::before { background: var(--good); }
+/* Not-yet-traversed connectors muted + dashed (into/out of the current node,
+   and every unreached/pending/frozen segment). */
+.step.current::before, .step.current::after,
+.step.pending::before, .step.pending::after,
+.step.unreached::before, .step.unreached::after,
+.step.frozen::after {
+  background: repeating-linear-gradient(90deg, var(--grid) 0 4px, transparent 4px 7px);
+}
+
+.smark { display: block; }
+.smark-ring { fill: var(--surface); stroke: var(--grid); stroke-width: 2; }
+.smark-num { fill: var(--muted); font-size: 12px; font-weight: 700; }
+.smark-glyph { stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.smark-done .smark-ring { fill: var(--good); stroke: var(--good); }
+.smark-done .smark-glyph { stroke: #fff; }
+.smark-rejected .smark-ring { fill: var(--critical); stroke: var(--critical); }
+.smark-rejected .smark-glyph { stroke: #fff; }
+.smark-current .smark-ring { stroke: var(--accent); stroke-width: 2.75; }
+.smark-current .smark-num { fill: var(--accent); }
+.smark-frozen .smark-ring { stroke-dasharray: 3 2.6; }
+
+.step-body { margin-top: 8px; text-align: center; }
+.step-name { font-size: 13px; font-weight: 600; display: flex; gap: 6px; align-items: center; justify-content: center; flex-wrap: wrap; }
+.step-sub { margin-top: 3px; font-size: 11.5px; display: flex; gap: 6px; align-items: center; justify-content: center; flex-wrap: wrap; }
+.step-sub .muted { color: var(--muted); }
+.rule-badge {
+  display: inline-block; padding: 0 6px; border-radius: var(--radius-pill); font-size: 10.5px;
+  border: 1px solid var(--hairline); color: var(--ink-2);
+}
+/* 'You are here' — wayfinding chrome, correctly on-brand via --accent. */
+.turn-badge {
+  padding: 1px 7px; border-radius: var(--radius-pill); font-size: 10.5px; font-weight: 600;
+  background: var(--accent); color: var(--on-accent, #fff);
+}
+.step-wait, .step-routed { margin-top: 4px; font-size: 11px; color: var(--muted); }
+.step-act { margin-top: 6px; font-size: 11.5px; text-align: left; }
+.step-act-who { color: var(--ink-2); }
+.step-act-who .muted { color: var(--muted); }
+.step-quote {
+  margin: 3px 0 0; padding: 4px 8px; border-radius: 6px; font-size: 11.5px;
+  background: var(--plane); color: var(--ink-2);
+}
+.step-act.reject .step-act-who strong { color: var(--critical); }
+.step-act.reject .step-quote { color: var(--ink); font-weight: 500; }
+
+.cap-done .smark-ring { fill: var(--good); stroke: var(--good); }
+.cap-withdrawn .step-name { color: var(--muted); }
+
+.appr-foot { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--grid); }
+.appr-act { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.appr-act .cmt { width: min(280px, 60vw); }
+/* Fields are borderless (embossed) — "comment required" is a critical ring. */
+.appr-act .cmt.need { box-shadow: inset 0 1px #fff1, 0 0 0 2px color-mix(in oklab, var(--critical) 45%, transparent); }
+.appr-act .cmt.need:focus-visible { outline-color: var(--critical); }
+
+/* Below ~560px collapse to a vertical stepper: nodes stacked, one vertical
+   connector (::after) running down the marker rail, bodies indented beside. */
+@media (max-width: 560px) {
+  .stepper { flex-direction: column; }
+  .step { display: flex; align-items: flex-start; gap: 12px; padding: 0 0 14px; }
+  .step:last-child { padding-bottom: 0; }
+  .step-rail { flex: none; }
+  .step::before { display: none; }
+  .step::after { top: 26px; bottom: 0; left: 13px; width: 2px; height: auto; }
+  .step:last-child::after { display: none; }
+  /* Re-orient the dashed remainder to run vertically. */
+  .step.pending::after, .step.unreached::after, .step.frozen::after {
+    background: repeating-linear-gradient(180deg, var(--grid) 0 4px, transparent 4px 7px);
+  }
+  .step-body { margin-top: 2px; text-align: left; flex: 1 1 auto; min-width: 0; }
+  .step-name, .step-sub { justify-content: flex-start; }
+}
+
+/* ── catalog lifecycle ─────────────────────────────────────────────────── */
+/* One inline row so a catalog row stays single-line (never a 2-line stack). */
+.lc-actions { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; justify-content: flex-end; }
+.lc-actions input[type="date"] { width: auto; min-width: 112px; }
+.lc-actions button { white-space: nowrap; padding: 6px 9px; }
+
+/* ── catalog thumbnails + inspect ──────────────────────────────────────────
+   A square asset preview: the served image contained inside a bordered tile, or
+   a neutral placeholder (dashed, showing the type) when the asset has no
+   paintable preview or the image fails to load. Chrome only — the tile borders
+   use --hairline/--baseline, never a dataviz colour. */
+.cat-thumb {
+  width: var(--cat-thumb, 40px); height: var(--cat-thumb, 40px); flex: none;
+  border: 1px solid var(--hairline); border-radius: var(--radius-sm);
+  background: var(--plane); overflow: hidden;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.cat-thumb--btn { padding: 0; cursor: pointer; }
+.cat-thumb--btn:hover { border-color: var(--accent); filter: none; }
+.cat-thumb-img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.cat-thumb-ph {
+  width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
+  border: 1px dashed var(--baseline); border-radius: inherit; color: var(--muted);
+}
+.cat-thumb-ext { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; font-variant: small-caps; }
+/* Inspect header: the larger preview beside a metadata grid, stacking narrow. */
+.cat-detail { display: flex; gap: 16px; align-items: flex-start; }
+.cat-detail-meta { flex: 1 1 auto; min-width: 0; }
+@media (max-width: 560px) { .cat-detail { flex-direction: column; } }
+
+/* ── projects + multi-edit ─────────────────────────────────────────────── */
+.link-btn { color: var(--accent); text-decoration: none; cursor: pointer; font-weight: 500; }
+.link-btn:hover { text-decoration: underline; }
+.back-link { display: inline-block; color: var(--muted); text-decoration: none; font-size: 12.5px; margin-bottom: 8px; }
+.back-link:hover { color: var(--ink-2); }
+.me-result { margin-top: 12px; }
+.me-result:empty { display: none; }
+td.arrow { color: var(--muted); text-align: center; width: 1.5em; }
+
+/* ── forms & buttons — the shell's embossed control voice ──────────────────
+   Buttons and fields read as physical objects (buttons.css / fields.css):
+   a white-alpha top highlight over a soft dark drop instead of a hard outline,
+   hover LIFTS, :active presses IN, 0.12s colour-ish transitions, 13px control
+   text on the 1rem corner. Disabled is opacity + cursor, never a colour swap. */
+button, .btn {
+  font: inherit; font-size: 13px; color: var(--ink); background: var(--surface);
+  border: 1px solid var(--baseline); border-radius: var(--radius-sm); padding: 6px 14px; cursor: pointer;
+  box-shadow: var(--emboss-btn);
+  transition: background .12s, border-color .12s, color .12s, filter .12s;
+}
+button:hover:not(:disabled):not(.tab):not(.rail-toggle):not(.act-time):not(.act-tag):not(.link-btn):not(.col-sort):not(.alpha-btn), .btn:hover:not(:disabled) { border-color: color-mix(in oklab, var(--accent) 55%, transparent); }
+/* Ghost-shaped buttons stay flat — the emboss belongs to boxed controls only. */
+.tab, .rail-toggle, .act-time, .act-tag, .link-btn, button.chip,
+.tab:active, .rail-toggle:active, .act-time:active, .act-tag:active, .link-btn:active, button.chip:active { box-shadow: none; }
+/* --on-accent: white by default (matches the built-in accents); a pack whose
+   accent is light-toned (e.g. a mid-green "jungle") gets black text instead —
+   applyPackTheme() picks whichever reads better against the resolved color. */
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent, #fff); font-weight: 600; }
+button.primary:hover:not(:disabled) { filter: brightness(1.08); border-color: var(--accent); }
+button.danger { color: var(--critical); }
+button:active:not(:disabled):not(.tab):not(.rail-toggle):not(.act-time):not(.act-tag):not(.link-btn):not(.col-sort):not(.alpha-btn), .btn:active:not(:disabled) { box-shadow: inset 0 1px 3px #0003; }
+/* app.js sets btn.disabled while a request is in flight (the universal busy
+   state) — make that inert-ness visible, and kill the hover brightness. */
+button:disabled, .btn:disabled { opacity: 0.55; cursor: not-allowed; }
+button:disabled:hover, .btn:disabled:hover { filter: none; }
+input, select, textarea {
+  font: inherit; font-size: 13px; color: var(--ink); background: var(--plane);
+  border: 0; border-radius: var(--radius-sm); padding: 8px 11px; width: 100%;
+  box-shadow: var(--emboss);
+  transition: box-shadow .12s, background-position .12s;
+}
+input:hover:not(:disabled), select:hover:not(:disabled), textarea:hover:not(:disabled) { box-shadow: var(--emboss-hover); }
+input:focus, select:focus, textarea:focus { box-shadow: inset 0 1px #fff2, 0 0 0 3px color-mix(in oklab, var(--accent) 20%, transparent); }
+input::placeholder, textarea::placeholder { color: var(--muted); }
+/* Invalid only once the user has actually typed something wrong. */
+input:user-invalid, textarea:user-invalid { box-shadow: inset 0 1px #fff1, 0 0 0 2px color-mix(in oklab, var(--critical) 45%, transparent); }
+/* Selects drop the native widget for the shell's chevron; it drifts 1px down
+   on hover — the one-pixel promise that the thing opens downward. */
+select {
+  appearance: none; -webkit-appearance: none; cursor: pointer;
+  padding-inline-end: 32px;
+  background-image: var(--field-chevron);
+  background-repeat: no-repeat; background-position: right 10px center; background-size: 14px;
+}
+select:hover:not(:disabled), select:focus { background-position: right 10px calc(50% + 1px); }
+[dir="rtl"] select { background-position: left 10px center; }
+input:disabled, select:disabled, textarea:disabled { opacity: .5; cursor: not-allowed; }
+/* Native ticks/ranges/progress follow the accent; pickers follow the theme. */
+:where(input[type="checkbox"], input[type="radio"], input[type="range"], progress) { accent-color: var(--accent); }
+:where(input[type="checkbox"], input[type="radio"], input[type="range"]) { box-shadow: none; }
+:where(input[type="date"], input[type="time"], input[type="datetime-local"]) { color-scheme: inherit; }
+/* Field labels take the shell micro-label: tiny, uppercase, heavy, wide-tracked. */
+label { display: block; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 10px 0 4px; }
+/* Explicit row-gap so wrapped field groups keep their vertical rhythm from the
+   grid itself, not from the label's own margin. */
+.formrow { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 14px 12px; }
+/* Shared inline form/row-action error+status line (role="status" in JS) — used
+   everywhere a form or row action reports its result, not just approvals. */
+.form-err { color: var(--critical); font-size: 12px; flex-basis: 100%; margin-top: 6px; }
+.form-err:empty { display: none; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Programmatic focus targets (the router focuses each view's h1, detail panels
+   focus their heading) are announcement plumbing, not controls — no ring.
+   Mirrors the shell's `.app-view:focus { outline: none }`. */
+main:focus, h1[tabindex="-1"]:focus, h2[tabindex="-1"]:focus, h3[tabindex="-1"]:focus { outline: none; }
+
+/* ── audit chain strip (the signature element) ─────────────────────────── */
+.chain { display: flex; align-items: center; gap: 0; margin: 10px 0 16px; overflow-x: auto; padding: 6px 2px; }
+.chain .seg {
+  width: 22px; height: 10px; border: 2px solid var(--baseline); border-radius: 5px;
+  margin-left: -6px; background: var(--surface); flex: none; transition: border-color 120ms;
+}
+.chain .seg:first-child { margin-left: 0; }
+.chain .seg:hover, .chain .seg.hot { border-color: var(--accent); }
+.chain .seg.bad { border-color: var(--critical); background: color-mix(in oklab, var(--critical) 18%, var(--surface)); }
+.chain-badge { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; }
+.chain-badge .ok { color: var(--good-text); font-weight: 600; }
+.chain-badge .broken { color: var(--critical); font-weight: 600; }
+
+/* ── tooltip ───────────────────────────────────────────────────────────── */
+.tip {
+  position: fixed; z-index: 10; pointer-events: none;
+  background: var(--surface); color: var(--ink);
+  border: 1px solid var(--hairline); border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-pop);
+  padding: 7px 10px; font-size: 12px; max-width: 260px;
+}
+.tip .t-title { color: var(--muted); margin-bottom: 3px; }
+.tip .t-row { display: flex; align-items: center; gap: 6px; }
+.tip .swatch { width: 8px; height: 8px; border-radius: 2px; }
+
+/* ── sign-in gate ──────────────────────────────────────────────────────── */
+/* The gate is the sole child of the #app rail grid, so it must span both columns
+   (grid-column) or it's trapped in the 208px rail track and the card collapses.
+   Flex-centred so the card's width:100% resolves against the full viewport and
+   its max-width governs. */
+.gate { grid-column: 1 / -1; min-height: 100vh; min-height: 100dvh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.gate-card {
+  width: 100%; max-width: 400px;
+  background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--radius-lg);
+  padding: 28px 28px 24px;
+  box-shadow: var(--shadow-card);
+}
+.gate-head { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
+/* With a real wordmark leading, stack so the name/kicker sit beneath the logo
+   at full width instead of wrapping cramped beside it. */
+.gate-head--logo { flex-direction: column; align-items: flex-start; gap: 14px; }
+.gate-head--logo .gate-name { font-size: 14px; }
+/* The mark echoes the tab favicon: two discs on the brand accent chip. */
+.gate-mark { width: 36px; height: 36px; flex: none; border-radius: var(--radius); background: var(--accent); position: relative; }
+.gate-mark::before, .gate-mark::after {
+  content: ""; position: absolute; top: 50%; width: 12px; height: 12px; border-radius: 50%;
+  border: 2px solid var(--on-accent, #fff); transform: translateY(-50%);
+}
+.gate-mark::before { left: 7px; }
+.gate-mark::after { right: 7px; border-color: color-mix(in oklab, var(--on-accent, #fff) 55%, transparent); }
+.gate-name { font-weight: 700; font-size: 15px; line-height: 1.2; letter-spacing: 0.005em; }
+.gate-kicker { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.gate-lede { color: var(--ink-2); margin: 0 0 20px; font-size: 13.5px; line-height: 1.5; }
+.gate-form { display: flex; flex-direction: column; }
+.gate-form label { margin: 0 0 6px; }
+.gate-go {
+  display: flex; align-items: center; justify-content: center; width: 100%;
+  margin-top: 16px; padding: 10px 14px; font-size: 14px; font-weight: 600;
+  text-decoration: none; border-radius: var(--radius-sm);
+}
+.gate-hint { color: var(--muted); font-size: 11.5px; margin: 12px 0 0; text-align: center; }
+
+/* ── people directory + detail ─────────────────────────────────────────────
+   A paginated, filterable directory whose results container re-renders in place
+   while the filter controls (outside it) keep focus. The detail panel reuses
+   the card/chip/status grammar; only a few layout affordances are new. */
+.list-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+/* Jump-to-letter strip — quiet flat chips; the active letter takes the accent
+   fill (same voice as the primary button). Wraps on narrow viewports. */
+.alpha-bar { display: flex; flex-wrap: wrap; gap: 2px; margin: 12px 0 10px; }
+.alpha-btn {
+  min-width: 26px; padding: 3px 6px; text-align: center;
+  background: none; border: 1px solid transparent; border-radius: var(--radius-sm);
+  color: var(--muted); font-size: 12px; font-weight: 500; box-shadow: none;
+}
+.alpha-btn:hover:not(:disabled) { color: var(--ink); background: color-mix(in oklab, var(--ink) 6%, transparent); border-color: transparent; }
+.alpha-btn:active:not(:disabled) { box-shadow: none; }
+.alpha-btn.active { background: var(--accent); border-color: var(--accent); color: var(--on-accent, #fff); font-weight: 600; }
+.alpha-btn.active:hover:not(:disabled) { background: var(--accent); color: var(--on-accent, #fff); }
+/* A column header that sorts: looks like a <th> label (muted, no chrome) but is
+   a real button — full keyboard access, focus ring, 24px+ target via padding. */
+.col-sort {
+  font: inherit; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+  background: none; border: 0; padding: 2px 0; margin: 0; cursor: pointer; box-shadow: none;
+  display: inline-flex; align-items: center; gap: 3px;
+}
+.col-sort:hover:not(:disabled) { border: 0; }
+.col-sort:active:not(:disabled) { box-shadow: none; }
+.col-sort:hover { color: var(--ink-2); filter: none; }
+.col-sort.active { color: var(--ink); }
+.col-sort:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+.sort-caret { font-size: 9px; min-width: 7px; }
+th[aria-sort] { cursor: pointer; }
+
+/* Sections behind a disclosure (progressive disclosure) */
+.ov-section, .compose-section { margin-top: 22px; }
+/* In-card variant (People's folded filter row) — tighter rhythm than a
+   top-level section, and air under the summary once opened. */
+.filters-more { margin-top: 10px; }
+.filters-more[open] > summary { margin-bottom: 4px; }
+.ov-section > summary, .compose-section > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; }
+.ov-section > summary::-webkit-details-marker, .compose-section > summary::-webkit-details-marker { display: none; }
+.ov-section > summary::before, .compose-section > summary::before { content: '▸'; color: var(--muted); font-size: 11px; transition: transform .12s ease; }
+.ov-section[open] > summary::before, .compose-section[open] > summary::before { transform: rotate(90deg); }
+.ov-section > summary .section-h, .compose-section > summary .section-h { margin: 0; }
+.compose-section > form { margin-top: 12px; }
+.appr-steps > summary { cursor: pointer; font-size: 12.5px; color: var(--ink-2); width: max-content; }
+.appr-steps > summary:hover { color: var(--ink); }
+.appr-steps[open] > summary { margin-bottom: 8px; }
+
+/* "Needs attention" strip — the Overview's task list. Rendered only when
+   something is waiting; each row is ONE pill link: the destination view's nav
+   icon + the sentence, surrounded by its warning-level colour (border + wash
+   from the validated status palette — never brand-tinted). The icon+text ink
+   stays readable body ink; the level lives in the surround. */
+.needs-card { margin-bottom: 14px; }
+.needs-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.needs-link {
+  display: inline-flex; align-items: center; gap: 9px;
+  padding: 7px 14px 7px 10px; border-radius: var(--radius-pill);
+  border: 1px solid var(--lvl, var(--baseline));
+  background: color-mix(in oklab, var(--lvl, var(--muted)) 10%, transparent);
+  color: var(--ink); text-decoration: none; font-weight: 500;
+  max-width: 100%; min-width: 0;
+}
+.needs-link .nav-ico { width: 17px; height: 17px; flex: none; color: var(--lvl, var(--ink-2)); }
+.needs-link:hover {
+  background: color-mix(in oklab, var(--lvl, var(--muted)) 18%, transparent);
+  border-color: color-mix(in oklab, var(--lvl, var(--baseline)) 75%, var(--ink));
+}
+.needs-critical { --lvl: var(--critical); }
+.needs-warning { --lvl: var(--warning); }
+/* In-progress work uses the chrome accent, same rule as .status.review. */
+.needs-review { --lvl: var(--accent); }
+@media (prefers-reduced-motion: no-preference) {
+  .needs-link { transition: background .12s ease, border-color .12s ease; }
+}
+
+/* First-run zero-state banner */
+.zero-banner { border-style: dashed; }
+.zero-steps { margin: 8px 0 0; padding-left: 20px; color: var(--ink-2); font-size: 13px; line-height: 1.9; }
+
+/* Transient success toast (mutation confirmations) */
+.toast {
+  position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(8px);
+  background: var(--ink); color: var(--plane); font-size: 13px; font-weight: 500;
+  padding: 9px 16px; border-radius: 999px; box-shadow: 0 6px 24px rgba(0,0,0,.22);
+  opacity: 0; pointer-events: none; z-index: 60; max-width: 90vw;
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); pointer-events: auto; }
+@media (prefers-reduced-motion: no-preference) { .toast { transition: opacity .18s ease, transform .18s ease; } }
+
+/* Loading skeleton (loadingCard) */
+.skeleton-rows { display: flex; flex-direction: column; gap: 9px; margin-top: 12px; }
+.sk-row { height: 12px; border-radius: 6px; background: color-mix(in oklab, var(--ink) 9%, transparent); }
+.sk-row:nth-child(2) { width: 82%; } .sk-row:nth-child(3) { width: 68%; } .sk-row:nth-child(4) { width: 75%; }
+@media (prefers-reduced-motion: no-preference) {
+  .sk-row { background: linear-gradient(90deg, color-mix(in oklab, var(--ink) 7%, transparent) 25%, color-mix(in oklab, var(--ink) 13%, transparent) 37%, color-mix(in oklab, var(--ink) 7%, transparent) 63%); background-size: 400% 100%; animation: sk-shimmer 1.4s ease infinite; }
+  @keyframes sk-shimmer { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
+}
+
+/* Table QoL bar (dataTable): search + match count on the left, CSV export on
+   the right; the pager renders under the table. All client-side, all optional
+   — small tables stay a bare <table>. */
+.tbl-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
+.tbl-filter { min-width: 200px; width: auto; flex: 0 1 260px; }
+.tbl-filter-count { font-size: 12px; white-space: nowrap; }
+.tbl-csv { margin-left: auto; font-size: 12px; padding: 4px 11px; }
+.tbl-pager { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+.tbl-pager select { width: auto; }
+.tbl-pager button { white-space: nowrap; }
+.tbl-pager .tbl-page-note { font-size: 12px; color: var(--muted); }
+
+/* Audit view: the "what hash-chained means" progressive-disclosure explainer */
+.chain-explain { margin: 10px 0 4px; }
+.chain-explain > summary { cursor: pointer; font-size: 13px; font-weight: 500; color: var(--ink-2); width: max-content; }
+.chain-explain > summary:hover { color: var(--ink); }
+.chain-explain > p { margin-top: 8px; max-width: 68ch; }
+tr.row-click { cursor: pointer; }
+.pager { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.pager select { width: auto; }
+.pager button { white-space: nowrap; }
+
+/* Read-only identity grid in the detail panel — label over value, wrapping. */
+.idy-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px 18px; }
+.idy-l { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.idy-v { margin-top: 2px; }
+.detail-h { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 8px; }
+/* IdP (read-only) vs local (editable) groups, side by side then stacked. */
+.gr-split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 700px) { .gr-split { grid-template-columns: 1fr; } }
+.gr-label { font-size: 12px; color: var(--ink-2); margin-bottom: 6px; }
+.chk-list { display: flex; flex-direction: column; gap: 4px; }
+/* A checkbox row: inline (overrides the block <label> default + full-width
+   input, and the micro-label voice — a tick's text stays sentence-case body). */
+.chk { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 13px; font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--ink); }
+.chk input { width: auto; }
+/* Field + trailing button (create group / add tool) baseline-aligned. */
+.newgrp { align-items: end; }
+
+/* ── provider connect cards ─────────────────────────────────────────────────
+   A responsive grid of integration cards replacing the old single 'kind'
+   dropdown: each names an integration, a one-line description, and a Connect
+   button that opens the (unchanged) configure→test→create flow prefilled for
+   that kind. Nested cards sit on the plane so they separate from the host card. */
+.connect-grid { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+.connect-card { display: flex; flex-direction: column; gap: 10px; background: var(--plane); }
+.connect-card-body { flex: 1 1 auto; }
+.connect-name { font-weight: 600; }
+.connect-kind { margin-top: 1px; }
+.connect-blurb { color: var(--muted); font-size: 12.5px; margin: 6px 0 0; }
+.connect-card > button { align-self: flex-start; }
+
+/* Links: the signed URL cell — mono, capped, single-line with ellipsis (full
+   value on hover / via the row Copy button). */
+td.url-cell { max-width: 240px; }
+
+/* ── contractors (guest links) ─────────────────────────────────────────────── */
+.mint-out { border-color: var(--good); margin-top: 12px; }
+.url-line { word-break: break-all; margin: 8px 0; }
+
+/* ── phone card-list tables ─────────────────────────────────────────────────
+   Below 600px a wide table is a side-scrolling chore, so dataTable() marks
+   4-plus-column tables .tbl-cards and each row renders as a stacked card of
+   label/value pairs (the label is the column header, via td[data-label]).
+   The QoL bar (search / pager / CSV) works unchanged; sorting rides the bar's
+   search until a phone-side sort control earns its keep. */
+@media (max-width: 600px) {
+  .tbl-cards table, .tbl-cards tbody, .tbl-cards tr, .tbl-cards td { display: block; width: 100%; }
+  .tbl-cards thead { display: none; }
+  .tbl-cards tbody tr {
+    border: 1px solid var(--hairline); border-radius: var(--radius);
+    background: var(--surface); padding: 10px 12px; margin-bottom: 10px;
+  }
+  .tbl-cards tbody tr:hover td { background: none; }
+  .tbl-cards td {
+    display: flex; align-items: baseline; gap: 10px;
+    border: 0; padding: 3px 0; max-width: none; white-space: normal;
+  }
+  .tbl-cards td::before {
+    content: attr(data-label);
+    flex: 0 0 34%; min-width: 0;
+    font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); font-family: var(--font-sans, var(--font-sys));
+  }
+  /* A cell with no column label (icon/action columns) hangs its content under
+     the row without a ghost label gutter. */
+  .tbl-cards td:not([data-label]), .tbl-cards td[data-label=""] { display: block; }
+  .tbl-cards td:not([data-label])::before, .tbl-cards td[data-label=""]::before { content: none; }
+  .tbl-cards td.num, .tbl-cards th.num { text-align: left; padding-right: 0; }
+  .tbl-cards td.mono, .tbl-cards td.url-cell, .tbl-cards td.tags { max-width: none; white-space: normal; overflow-wrap: anywhere; }
+  .tbl-cards tr.row-click td { cursor: pointer; }
+  /* The QoL bar fits one line: search yields width instead of pushing CSV down. */
+  .tbl-filter { flex: 1 1 120px; min-width: 120px; }
+}
+
+/* ── People detail as a bottom sheet on narrow viewports ────────────────────
+   Opening a person keeps your place in the list; the sheet floats over it and
+   Close returns focus to the row that opened it (openDetail already does). */
+@media (max-width: 700px) {
+  .detail-sheet {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 55;
+    max-height: 82dvh; overflow-y: auto;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0; border-bottom: 0;
+    box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.35);
+    padding-bottom: calc(16px + env(safe-area-inset-bottom));
+  }
+}
+
+/* ── touch targets (WCAG 2.5.8) ─────────────────────────────────────────────
+   Mirrors the shell's coarse-pointer bump: the whole control row grows at
+   once. Ticks/radios keep their drawn size (the .chk row is the target). */
+@media (pointer: coarse) {
+  button, .btn, select,
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]) { min-height: 42px; }
+  button.chip, .act-tag { min-height: 32px; }
+  .act-time, .col-sort, .link-btn { min-height: 28px; }
+  .alpha-btn { min-width: 34px; min-height: 38px; }
+  .rail a { padding: 11px 13px; }
+  .theme-toggle { width: 42px; height: 42px; }
+}
+
+/* ── docs (the deployment's own documentation, rendered from docs/) ──────────
+   A contents rail beside one prose column. Prose is measure-capped like a
+   document, not stretched to the dashboard width, and reuses the shell's type
+   and table voice so the docs read as part of the console rather than a
+   pasted-in help site. */
+.docs-layout { display: grid; grid-template-columns: minmax(160px, 210px) minmax(0, 1fr); gap: 18px; align-items: start; }
+/* Sticky, and scrollable in its own right: the contents list is taller than a
+   laptop viewport, so without this the last group (the open-source link) would
+   be unreachable while the rail stayed pinned. */
+.docs-nav {
+  position: sticky; top: 8px; display: flex; flex-direction: column; gap: 14px;
+  max-height: calc(100dvh - 24px); overflow-y: auto; overscroll-behavior: contain;
+}
+.docs-group { display: flex; flex-direction: column; gap: 1px; }
+.docs-group-h { color: var(--muted); font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px;
+  display: flex; align-items: center; gap: 6px; }
+.docs-group-h .nav-ico { width: 13px; height: 13px; flex: none; }
+/* Vendored third-party marks in doc prose (docs/img/) — a quiet logo strip,
+   never full-width figures; alt text doubles as the hover title. */
+.doc-logos { display: flex; align-items: center; gap: 26px; margin: 14px 0 6px; }
+.doc-logos img { height: 40px; width: auto; }
+.docs-link {
+  color: var(--ink-2); text-decoration: none; font-size: 13px;
+  padding: 5px 8px; border-radius: var(--radius-sm);
+}
+.docs-link:hover { color: var(--ink); background: color-mix(in oklab, var(--accent) 7%, transparent); }
+.docs-link.is-current { color: var(--accent); background: color-mix(in oklab, var(--accent) 14%, transparent); font-weight: 500; }
+.docs-link--out { color: var(--ink-2); }
+.docs-note { color: var(--muted); font-size: 11.5px; margin: 4px 8px 0; }
+
+.doc-prose { max-width: 78ch; font-size: 14px; line-height: 1.62; color: var(--ink); }
+.doc-prose > :first-child { margin-top: 0; }
+.doc-prose h2 { font-size: 18px; margin: 26px 0 8px; }
+.doc-prose h3 { font-size: 15px; margin: 20px 0 6px; }
+.doc-prose h4 { font-size: 13.5px; color: var(--ink-2); margin: 16px 0 6px; }
+.doc-prose p { margin: 0 0 12px; }
+.doc-prose ul, .doc-prose ol { margin: 0 0 12px; padding-left: 20px; }
+.doc-prose li { margin-bottom: 4px; }
+.doc-prose a { color: var(--accent); }
+.doc-prose code { font-family: var(--font-mono, var(--font-mono-sys)); font-size: 12.5px; background: color-mix(in oklab, var(--ink) 6%, transparent); padding: 1px 5px; border-radius: 4px; }
+.doc-prose pre {
+  background: color-mix(in oklab, var(--ink) 5%, transparent);
+  border: 1px solid var(--hairline); border-radius: var(--radius-sm);
+  padding: 10px 12px; margin: 0 0 14px; overflow-x: auto;
+}
+.doc-prose pre code { background: none; padding: 0; font-size: 12px; line-height: 1.55; }
+.doc-prose blockquote { margin: 0 0 14px; padding-left: 12px; border-left: 2px solid var(--accent); color: var(--ink-2); }
+.doc-prose hr { border: 0; border-top: 1px solid var(--grid); margin: 22px 0; }
+/* Doc tables scroll in their own box and wrap their cells — reference tables
+   carry sentences, unlike the single-line dashboard tables. */
+.doc-tbl { overflow-x: auto; margin: 0 0 14px; }
+.doc-tbl td { white-space: normal; vertical-align: top; }
+.doc-tbl thead th { position: static; }
+
+@media (max-width: 780px) {
+  .docs-layout { grid-template-columns: 1fr; }
+  .docs-nav { position: static; }
+}
+
+/* ── documentation screenshots + their Content Credential ────────────────────
+   Every shot under docs/shots/ is an engine-rendered VECTOR SVG carrying a real
+   signed C2PA credential. The figure is the positioning context for the
+   credential line; width:fit-content so the line lands on the artwork's corner,
+   not out in the prose margin. Explicit max-width keeps a wide capture inside the
+   measure-capped column. */
+.doc-prose .shot { position: relative; width: fit-content; max-width: 100%; margin: 6px auto 22px; }
+.doc-prose .shot-img {
+  display: block; max-width: 100%; height: auto; margin: 0;
+  border-radius: 14px; background: var(--surface, #fff);
+  /* The OSS shot frame: an inset hairline ring + a soft, layered drop shadow so a
+     screenshot sits ON the page like a set-down sheet rather than pasted into it. */
+  box-shadow: inset 0 0 0 1px #0000001f, 0 3px 6px #0002, 0 6px 2em #00000014;
+}
+/* The ring is INK, so it inverts: a black hairline is invisible on a near-black
+   page. Dark/brand get a light ring and a deeper drop. */
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) .doc-prose .shot-img {
+    box-shadow: inset 0 0 0 1px #ffffff2e, 0 3px 8px #00000073, 0 6px 2em #0000004d;
+  }
+}
+:root[data-theme="dark"] .doc-prose .shot-img,
+:root[data-theme="brand"] .doc-prose .shot-img {
+  box-shadow: inset 0 0 0 1px #ffffff2e, 0 3px 8px #00000073, 0 6px 2em #0000004d;
+}
+:root[data-theme="light"] .doc-prose .shot-img {
+  box-shadow: inset 0 0 0 1px #0000001f, 0 3px 6px #0002, 0 6px 2em #00000014;
+}
+
+/* Show the theme-matching variant — a dark shot for a dark reader, a light shot
+   for a light one — mirroring the brand-logo dual-image toggle. `brand` is a
+   near-black theme (light text), so it takes the dark shot too. */
+.shot-img--dark, .shot-cred--dark { display: none; }
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) .shot-img--light { display: none; }
+  :root:where(:not([data-theme="light"])) .shot-img--dark { display: block; }
+  :root:where(:not([data-theme="light"])) .shot-cred--light { display: none; }
+  :root:where(:not([data-theme="light"])) .shot-cred--dark { display: flex; }
+}
+:root[data-theme="dark"] .shot-img--light, :root[data-theme="brand"] .shot-img--light,
+:root[data-theme="dark"] .shot-cred--light, :root[data-theme="brand"] .shot-cred--light { display: none; }
+:root[data-theme="dark"] .shot-img--dark, :root[data-theme="brand"] .shot-img--dark { display: block; }
+:root[data-theme="dark"] .shot-cred--dark, :root[data-theme="brand"] .shot-cred--dark { display: flex; }
+:root[data-theme="light"] .shot-img--light { display: block; }
+:root[data-theme="light"] .shot-img--dark { display: none; }
+:root[data-theme="light"] .shot-cred--light { display: flex; }
+:root[data-theme="light"] .shot-cred--dark { display: none; }
+/* The credential: at rest a single small imprint glyph, low opacity — a byline in
+   the corner. It becomes words only on hover, keyboard focus, or tap. */
+.shot-cred {
+  position: absolute; inset-block-end: .5rem; inset-inline-end: .55rem;
+  display: flex; flex-direction: row-reverse; align-items: flex-end; gap: 6px;
+  pointer-events: none;
+}
+.shot-cred-btn {
+  display: inline-grid; place-items: center; width: 22px; height: 22px; padding: 0;
+  color: var(--ink-2); background: color-mix(in oklab, var(--surface, #fff) 82%, transparent);
+  border: 1px solid var(--hairline); border-radius: 999px; cursor: pointer;
+  opacity: .55; pointer-events: auto; transition: opacity .15s ease;
+  backdrop-filter: blur(3px);
+}
+.shot-cred-btn:hover, .shot-cred:focus-within .shot-cred-btn, .shot-cred[data-open] .shot-cred-btn { opacity: 1; }
+.shot-cred--ai .shot-cred-btn { opacity: 1; color: var(--accent); border-color: var(--accent); }
+.shot-cred-line {
+  display: flex; flex-direction: column; gap: 5px; align-items: flex-end;
+  opacity: 0; pointer-events: none; transform: translateX(.4rem);
+  transition: opacity .16s ease, transform .16s ease;
+}
+.shot-cred-btn:hover + .shot-cred-line,
+.shot-cred-line:hover,
+.shot-cred:focus-within .shot-cred-line,
+.shot-cred[data-open] .shot-cred-line { opacity: 1; pointer-events: auto; transform: none; }
+.shot-cred-row { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; max-width: min(34rem, 88vw); }
+.prov-pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 10.5px; line-height: 1.5; white-space: nowrap;
+  padding: 2px 7px; border-radius: 999px;
+  background: color-mix(in oklab, var(--surface, #fff) 78%, transparent);
+  border: 1px solid var(--hairline); color: var(--ink-2);
+  backdrop-filter: blur(3px);
+}
+.prov-pill svg { flex: none; }
+.prov-sig { color: var(--ink); }
+.prov-entity { font-weight: 600; color: var(--ink); background: color-mix(in oklab, var(--accent) 12%, var(--surface, #fff)); border-color: color-mix(in oklab, var(--accent) 30%, transparent); padding: 1px 6px; }
+.prov-detail { color: var(--muted); }
+.shot-cred-do {
+  font-size: 10.5px; padding: 2px 8px; border-radius: 999px; text-decoration: none;
+  color: var(--accent); border: 1px solid color-mix(in oklab, var(--accent) 35%, transparent);
+  background: color-mix(in oklab, var(--surface, #fff) 78%, transparent); backdrop-filter: blur(3px);
+}
+.shot-cred-do:hover { background: color-mix(in oklab, var(--accent) 12%, var(--surface, #fff)); }
+
+/* ── verify view (client-side C2PA) ──────────────────────────────────────────*/
+.verify-drop {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  padding: 34px 20px; margin: 4px 0 16px; max-width: 560px; cursor: pointer;
+  color: var(--ink-2); text-align: center;
+  border: 1.5px dashed var(--hairline); border-radius: var(--radius); background: color-mix(in oklab, var(--ink) 2%, transparent);
+}
+.verify-drop:hover, .verify-drop:focus-visible, .verify-drop.is-drag { border-color: var(--accent); color: var(--ink); background: color-mix(in oklab, var(--accent) 6%, transparent); outline: none; }
+.verify-drop svg { width: 22px; height: 22px; }
+.verify-card { max-width: 620px; }
+.verify-hero { display: flex; align-items: center; gap: 10px; font-size: 15px; padding-bottom: 12px; margin-bottom: 12px; border-bottom: 1px solid var(--hairline); }
+.verify-hero svg { width: 20px; height: 20px; flex: none; }
+.verify-hero .muted { margin-left: auto; font-size: 12px; }
+.verify-hero.tone-good { color: var(--ok, #1a7f4b); }
+.verify-hero.tone-warn { color: var(--warn, #b26a00); }
+.verify-hero.tone-bad { color: var(--danger, #c0392b); }
+.verify-facts { display: grid; grid-template-columns: minmax(90px, auto) 1fr; gap: 4px 14px; margin: 0 0 14px; font-size: 13px; }
+.verify-facts dt { color: var(--muted); }
+.verify-facts dd { margin: 0; color: var(--ink); }
+.verify-checks { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.vchk { display: flex; align-items: flex-start; gap: 8px; font-size: 12.5px; color: var(--ink-2); }
+.vchk-dot { flex: none; width: 8px; height: 8px; margin-top: 5px; border-radius: 999px; background: var(--muted); }
+.vchk.ok .vchk-dot { background: var(--ok, #1a7f4b); }
+.vchk.note .vchk-dot { background: var(--warn, #b26a00); }
+.vchk.bad .vchk-dot { background: var(--danger, #c0392b); }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}

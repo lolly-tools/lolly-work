@@ -1,0 +1,27 @@
+apiVersion: v2
+name: lolly-work
+description: >-
+  Lolly Work control plane — identity, provisioning, governance, catalog
+  serving, and telemetry. Stateless HA app replicas in front of a Postgres you
+  bring (managed offering or CloudNativePG). One values file, sane secure
+  defaults, no external prerequisites beyond a cluster and a Postgres URL.
+type: application
+
+# Chart version — bump on any change to templates/values (SemVer for the chart).
+version: 0.1.0
+
+# The lolly-work server version this chart is designed against. Used as the
+# default image tag when image.tag is left empty. Keep in sync with the app's
+# package.json "version".
+appVersion: "0.1.2"
+
+home: https://lolly.work
+sources:
+  - https://lolly.work
+keywords:
+  - lolly
+  - control-plane
+  - governance
+  - catalog
+maintainers:
+  - name: Lolly Work

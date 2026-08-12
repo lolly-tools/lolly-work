@@ -1,0 +1,143 @@
+/**
+ * Standalone entry — node:http around the app handler. The same handler
+ * wraps into a Vercel function (deploy/vercel, when the trial project lands)
+ * and the container image unchanged.
+ *
+ *   LW_CONFIG=./instance.json PORT=8787 node server/src/main.ts
+ */
+import { createServer } from 'node:http';
+import { loadConfig, loadSecrets, parseAutoMigrate } from './config/instance.ts';
+import { createMemoryStore } from './store/memory.ts';
+import { createPostgresStore } from './store/postgres.ts';
+import { runMigrations, pendingMigrations } from './store/migrate.ts';
+import { buildApp } from './api/app.ts';
+import { createCollabGateway } from './collab/gateway.ts';
+import { auditHead } from './audit/head.ts';
+import { checkShellDist } from './lib/shell-dist.ts';
+import { readFileSync } from 'node:fs';
+import { validateConfigDocument, buildConfigDocument, diffConfigDocument, commitConfigApply, canonicalHash, diffSummary } from './policy/config-doc.ts';
+
+const config = loadConfig();
+const secrets = loadSecrets();
+
+// Governance UX must not silently vanish: under a non-open access mode, a shell
+// dist that is missing or predates the org/ governance module would serve
+// employees WITHOUT the session gate + locked-input UX — the instance looks
+// governed while the shell enforces nothing. Refuse to start instead (same
+// posture as the pending-schema guard below); LW_ALLOW_STALE_SHELL=1 downgrades
+// the refusal to a loud warning for dev/dogfooding.
+if (config.instance.shellDir && config.policy.defaultAccessMode !== 'open') {
+  const shell = checkShellDist(config.instance.shellDir);
+  if (!shell.present || !shell.hasOrgConfig) {
+    const why = shell.present
+      ? `shell dist at ${config.instance.shellDir} predates the org governance module (no org-config marker in assets/*.js)`
+      : `no shell dist at ${config.instance.shellDir} (index.html missing)`;
+    if (process.env.LW_ALLOW_STALE_SHELL === '1') {
+      console.warn(`[lolly-work] WARNING — ${why}; serving it anyway (LW_ALLOW_STALE_SHELL=1). This shell enforces NO session gate or locked-input UX.`);
+    } else {
+      console.error(`[lolly-work] REFUSING TO START — ${why}. Access mode is '${config.policy.defaultAccessMode}' but this shell cannot enforce it: employees would get no session gate or locked-input UX.`);
+      console.error('[lolly-work] Rebuild the shell (npm run build:web in the OSS repo) and redeploy it, or set LW_ALLOW_STALE_SHELL=1 to serve the stale dist with a loud warning.');
+      process.exit(1);
+    }
+  }
+}
+// DATABASE_URL → Postgres; unset → memory store (evaluation semantics: boot,
+// click around, gone on restart). With Postgres, LW_AUTO_MIGRATE (default true)
+// keeps the single-node one-command deploy by auto-applying at boot; set it false
+// for HA rollouts, where the server runs no DDL and refuses to start on a pending
+// schema (migrate explicitly with `npm run migrate` / `lw migrate` first).
+const databaseUrl = process.env.DATABASE_URL;
+const store = databaseUrl
+  ? await (async () => {
+      if (parseAutoMigrate()) {
+        const applied = await runMigrations(databaseUrl);
+        if (applied.length) console.log(`[lolly-work] migrations applied: ${applied.join(', ')}`);
+      } else {
+        const pending = await pendingMigrations(databaseUrl);
+        if (pending.length) {
+          console.error(`[lolly-work] REFUSING TO START — ${pending.length} pending migration(s): ${pending.join(', ')}`);
+          console.error('[lolly-work] LW_AUTO_MIGRATE is off. Run `npm run migrate` (or `lw migrate`) against this database, then restart.');
+          process.exit(1);
+        }
+        console.log('[lolly-work] schema current (auto-migrate off)');
+      }
+      return createPostgresStore(databaseUrl);
+    })()
+  : createMemoryStore();
+
+// Optional one-command governance seed (plan Rec 2): apply a policy-as-code
+// document at boot. Trusted (filesystem access), so it bypasses the owner-only
+// HTTP guard and may seed owner-only grants; it never enables providers or stores
+// credentials (those aren't in the document). Idempotent — safe to leave set.
+if (process.env.LW_SEED_CONFIG) {
+  const parsed = validateConfigDocument(JSON.parse(readFileSync(process.env.LW_SEED_CONFIG, 'utf8')));
+  if ('errors' in parsed) throw new Error(`LW_SEED_CONFIG invalid: ${parsed.errors.join('; ')}`);
+  const current = await buildConfigDocument(store);
+  const configIds = new Set((await store.listProviders()).filter((p) => p.managedBy === 'config').map((p) => p.id));
+  const diff = diffConfigDocument(current, parsed.doc, { prune: false }, configIds);
+  if (diff.conflicts.length) throw new Error(`LW_SEED_CONFIG touches config-managed providers: ${diff.conflicts.join(', ')}`);
+  await commitConfigApply(store, diff, 'system');
+  await store.appendAudit({ at: new Date().toISOString(), actor: 'system', action: 'config.apply', subject: `config:${canonicalHash(parsed.doc).slice(0, 16)}`, payload: { seed: true, ...diffSummary(diff) } });
+  console.log('[lolly-work] applied LW_SEED_CONFIG');
+}
+
+// Live collaboration rides the SAME server as the router — nothing in the HTTP
+// app handles `upgrade`, so the collab gateway hooks it here and path-matches
+// like a route (plans/14 §6, OSS plans/100 §7). Any upgrade that is not a collab
+// socket is destroyed rather than left hanging. Built BEFORE `buildApp` so its
+// room registry can be injected into the HTTP app as `listCollabRooms` — the
+// admin console's `GET /api/v1/collab/rooms` (see app.ts's `AppDeps`).
+const collab = createCollabGateway({ config, store, secrets });
+
+const app = buildApp({ config, store, secrets, listCollabRooms: () => collab.snapshot() });
+
+// External anchoring of the audit chain (plan Rec 5): emit the head hash so any
+// log pipeline captures it off-box. On by default (boot + hourly); intervalMinutes
+// 0 disables the timer. Unref'd so it never keeps the process alive on shutdown.
+const logAuditHead = async () => {
+  const h = await auditHead(store);
+  console.log(`[lolly-work] audit head seq=${h.seq} hash=${h.hash} count=${h.count} intact=${h.chainIntact}`);
+};
+if (config.audit.headLog.onBoot) await logAuditHead();
+if (config.audit.headLog.intervalMinutes > 0) {
+  setInterval(() => void logAuditHead(), config.audit.headLog.intervalMinutes * 60_000).unref();
+}
+
+const port = Number(process.env.PORT ?? 8787);
+
+const server = createServer((req, res) => void app(req, res));
+server.on('upgrade', (req, socket, head) => {
+  if (!collab.handleUpgrade(req, socket, head)) socket.destroy();
+});
+server.listen(port, () => {
+  console.log(`[lolly-work] ${config.instance.name} on :${port} (${config.policy.defaultAccessMode}, telemetry=${config.policy.telemetry}/${config.policy.telemetryAttribution})`);
+});
+
+// ORDERLY SHUTDOWN. `drain()` quiesces every live room into a session revision,
+// and the gateway's own doc comment says "a host that wants the writes to LAND
+// awaits this before exiting" — this is the host doing that. Without it every
+// SIGTERM (a rolling deploy, a pod eviction, Ctrl-C) kills live rooms
+// un-quiesced, and the crash-recovery fallback is bounded at SNAPSHOT_EVERY_OPS
+// and is discarded outright if any ordinary PUT bumps the rev after the restart —
+// so up to 500 ops of collaborative work would go, silently, on a routine deploy.
+//
+// Deployments must give this time to run: set `terminationGracePeriodSeconds`
+// above the worst-case drain (one revision write per live room).
+let shuttingDown = false;
+const shutdown = async (signal: string): Promise<void> => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[lolly-work] ${signal} — draining ${collab.rooms()} live collab room(s)`);
+  server.close(); // stop accepting; in-flight requests finish
+  try {
+    await collab.drain();
+  } catch (err) {
+    console.error('[lolly-work] collab drain failed:', (err as Error)?.message ?? err);
+  }
+  collab.close(); // sockets + sweeper; the rooms are already gone
+  console.log('[lolly-work] drained');
+  process.exit(0);
+};
+for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+  process.on(signal, () => void shutdown(signal));
+}

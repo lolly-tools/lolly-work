@@ -1,0 +1,18 @@
+{{- /*
+instance.json for the control plane, mounted read-only at /app/instance.json
+(LW_CONFIG). Accepts either a raw string (helm --set-file config=instance.json)
+or an inline YAML map in values (serialised to JSON here). Never holds secrets.
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "lolly-work.fullname" . }}-config
+  labels:
+    {{- include "lolly-work.labels" . | nindent 4 }}
+data:
+  instance.json: |-
+    {{- if kindIs "string" .Values.config }}
+    {{- .Values.config | nindent 4 }}
+    {{- else }}
+    {{- .Values.config | toPrettyJson | nindent 4 }}
+    {{- end }}

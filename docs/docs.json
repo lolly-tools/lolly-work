@@ -1,0 +1,137 @@
+{
+  "version": 1,
+  "title": "Deployment documentation",
+  "note": "Source of truth for the docs surfaced in the console (#/docs) and listed in docs/README.md. Add a file here or it gets no page.",
+  "oss": {
+    "label": "Open-source docs",
+    "path": "/info/",
+    "note": "Lolly OSS (engine, catalog, shells) documents itself at /info/ on any Lolly deployment. The console links there when this deploy serves or points at one."
+  },
+  "sections": [
+    {
+      "id": "start",
+      "icon": "overview",
+      "title": "Start here",
+      "docs": [
+        {
+          "slug": "overview",
+          "title": "What this deploy is",
+          "summary": "The control plane in one page: what it serves, the two-repo shape, and the trust model."
+        },
+        {
+          "slug": "install",
+          "title": "Installing",
+          "summary": "Nothing → running UI + CLI: hosted demo, 2-minute local run, systemd, Compose, Helm on RKE2/k3s — pick your row."
+        },
+        {
+          "slug": "quickstart",
+          "title": "Quickstart",
+          "summary": "From clone to a governed deploy — demo mode, split development, one-origin."
+        },
+        {
+          "slug": "deployment",
+          "title": "Deployment shapes",
+          "summary": "Helm/Rancher, Compose, Vercel, air-gap: what each path carries and what it doesn't."
+        }
+      ]
+    },
+    {
+      "id": "configure",
+      "icon": "instance",
+      "title": "Configure",
+      "docs": [
+        {
+          "slug": "configuration",
+          "title": "Configuration reference",
+          "summary": "Every instance.json key and every LW_* environment variable, with defaults."
+        },
+        {
+          "slug": "identity",
+          "title": "Identity and sessions",
+          "summary": "OIDC SSO, group mapping, member and guest sessions, the dev provider."
+        }
+      ]
+    },
+    {
+      "id": "govern",
+      "icon": "grants",
+      "title": "Govern",
+      "docs": [
+        {
+          "slug": "permissions",
+          "title": "Roles and grants",
+          "summary": "The seven roles, every action they carry, and deny-wins fine-grained grants."
+        },
+        {
+          "slug": "governance",
+          "title": "Policy and governance",
+          "summary": "Tool overlays, input locking, profile policy, feature flags, policy-as-code."
+        },
+        {
+          "slug": "catalog",
+          "title": "Catalog and content",
+          "summary": "Brand packs, catalog providers, exposure slices, expiry and stop-sharing."
+        },
+        {
+          "slug": "approvals",
+          "title": "Approvals",
+          "summary": "Chains, separation of duties, and what an approval can gate."
+        },
+        {
+          "slug": "sharing",
+          "title": "Rendering and sharing",
+          "summary": "Server renders, signed links, guest sessions, watermarks, provenance."
+        },
+        {
+          "slug": "c2pa",
+          "title": "Signing exports (C2PA)",
+          "summary": "Give this deploy a signing identity so exports carry a verifiable credential."
+        }
+      ]
+    },
+    {
+      "id": "operate",
+      "icon": "audit",
+      "title": "Operate",
+      "docs": [
+        {
+          "slug": "operations",
+          "title": "Operations runbook",
+          "summary": "Migrations, HA, backup, rate limits, metrics, upgrades, engine pin."
+        },
+        {
+          "slug": "telemetry",
+          "title": "Telemetry and dashboards",
+          "summary": "What is recorded, what never is, and how attribution consent works."
+        },
+        {
+          "slug": "audit",
+          "title": "Audit log",
+          "summary": "The hash-chained record, verification, and anchoring the head off-box."
+        }
+      ]
+    },
+    {
+      "id": "reference",
+      "icon": "docs",
+      "title": "Reference",
+      "docs": [
+        {
+          "slug": "api",
+          "title": "API surface",
+          "summary": "Every route the console and CLI use, with the action each one requires."
+        },
+        {
+          "slug": "cli",
+          "title": "lw CLI",
+          "summary": "Command reference for the admin CLI."
+        },
+        {
+          "slug": "status",
+          "title": "Status and roadmap",
+          "summary": "What is built, what is pending, and the honest gaps before go-live."
+        }
+      ]
+    }
+  ]
+}

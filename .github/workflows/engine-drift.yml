@@ -1,0 +1,33 @@
+# Engine lock-step cadence (docs/status.md "next three" #3, plans/23 R5):
+# a weekly report of how far the vendored engine pin has drifted from the OSS
+# repo's HEAD. A drifted pin fails the run — the red X IS the signal; re-pin
+# with `npm run repin-engine -- --apply` from a CLEAN OSS checkout (the
+# 2026-08-11 repin used a throwaway clone at HEAD so in-flight OSS work can
+# never be vendored — same idiom here).
+name: Engine drift
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'   # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    name: pin vs OSS HEAD
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone OSS repo at HEAD
+        run: git clone --depth 50 https://github.com/lolly-tools/lolly.git /tmp/lolly
+        # depth 50: enough history for the commits-behind count to resolve the
+        # pinned commit in the common case; an unknown count still reports.
+
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+
+      - name: Report drift (fail = re-pin due)
+        run: LOLLY_OSS_DIR=/tmp/lolly node scripts/repin-engine.ts --check

@@ -1,0 +1,17 @@
+{{- if and .Values.shell.enabled (eq .Values.shell.type "pvc") -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "lolly-work.fullname" . }}-shell
+  labels:
+    {{- include "lolly-work.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.shell.pvc.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.shell.pvc.size }}
+  {{- if .Values.shell.pvc.storageClassName }}
+  storageClassName: {{ .Values.shell.pvc.storageClassName }}
+  {{- end }}
+{{- end }}

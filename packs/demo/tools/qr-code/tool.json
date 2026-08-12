@@ -1,0 +1,84 @@
+{
+  "id": "qr-code",
+  "name": "QR Code Generator",
+  "description": "QR codes for any URL, with full color and style control.",
+  "a11yLabel": "QR code linking to {{default url \"(no URL set)\"}}",
+  "version": "2.0.0",
+  "engineVersion": "^1.0.0",
+  "status": "official",
+  "category": "everyone",
+  "tags": ["qr", "url", "link", "marketing"],
+  "featured": {
+    "order": 10,
+    "blurb": "QR codes in any brand colour"
+  },
+  "examples": [
+    { "label": "Ink on paper", "values": { "url": "https://lolly.tools", "color": "#1a1a2e", "background": "#faf7f2" } },
+    { "label": "Brand primary, joined modules", "values": { "url": "https://lolly.tools", "color": "{color.semantic.primary}", "background": "{color.semantic.surface}", "join": true } },
+    { "label": "Night mode", "values": { "url": "https://lolly.tools/gallery", "color": "#93c5fd", "background": "#0b1021", "padding": 6 } },
+    { "label": "High-redundancy seal", "values": { "url": "https://lolly.tools/#/valid", "ecl": "H", "padding": 2, "join": true, "color": "#0f766e", "background": "#ecfdf5" } }
+  ],
+  "render": {
+    "width": 600,
+    "height": 600,
+    "formats": ["svg", "emf", "eps", "eps-cmyk", "dxf", "pdf", "pdf-cmyk", "cmyk-tiff", "tiff", "png", "jpeg", "webp", "avif" ],
+    "actions": ["copy", "download", "save"],
+    "transparentBg": false
+  },
+  "inputs": [
+    {
+      "id": "url",
+      "label": "URL",
+      "type": "url",
+      "required": true,
+      "default": "https://lolly.tools"
+    },
+    {
+      "id": "color",
+      "label": "Module color",
+      "type": "color",
+      "default": "{color.semantic.text}"
+    },
+    {
+      "id": "background",
+      "label": "Background",
+      "type": "color",
+      "default": "{color.semantic.surface}"
+    },
+    {
+      "id": "ecl",
+      "label": "Error correction",
+      "type": "select",
+      "default": "M",
+      "options": [
+        { "value": "L", "label": "Low (7%)" },
+        { "value": "M", "label": "Medium (15%)" },
+        { "value": "Q", "label": "Quartile (25%)" },
+        { "value": "H", "label": "High (30%)" }
+      ]
+    },
+    {
+      "id": "padding",
+      "label": "Quiet zone",
+      "type": "number",
+      "display": "slider",
+      "default": 4,
+      "min": 0,
+      "max": 10,
+      "step": 1,
+      "help": "Modules of white space around the code. Minimum 4 recommended."
+    },
+    {
+      "id": "join",
+      "label": "Joined modules",
+      "type": "boolean",
+      "default": true,
+      "help": "Merge all modules into a single SVG path instead of one rect per module. Crisper at small sizes, and it removes the faint grid that independent antialiased edges produce between neighbouring modules."
+    }
+  ],
+  "hooks": {
+    "onInit": true,
+    "onInput": true,
+    "beforeExport": true
+  }
+}

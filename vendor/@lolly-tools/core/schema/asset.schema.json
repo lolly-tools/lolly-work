@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lolly.tools/schemas/asset.schema.json",
+  "title": "Asset Manifest Entry",
+  "description": "One asset in the global catalog. Tools resolve assets by id via host.assets.get(). The id is a forever-stable contract; the version moves.",
+  "type": "object",
+  "required": ["id", "type", "version", "tier", "formats"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(/[a-z0-9][a-z0-9-]*)+$",
+      "description": "Namespaced. e.g. 'suse/logo/primary', 'event/kubecon-2026/badge'. NEVER changes. NEVER reused for a different asset."
+    },
+    "name": { "type": "string" },
+    "description": { "type": "string" },
+    "type": {
+      "type": "string",
+      "enum": ["vector", "raster", "video", "audio", "lottie", "palette", "tokens", "font", "profile", "ratecard", "text", "data"]
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "SemVer. Bump on every byte change. Drives cache invalidation."
+    },
+    "tier": {
+      "type": "string",
+      "enum": ["core", "catalog", "on-demand"],
+      "description": "core = always bundled with app; catalog = synced at launch, cached; on-demand = fetched when used."
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Used by host.assets.query() and pickers to filter."
+    },
+    "formats": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Available format variants. The host picks the right one based on use.",
+      "items": {
+        "type": "object",
+        "required": ["format", "url", "checksum"],
+        "properties": {
+          "format": {
+            "type": "string",
+            "description": "e.g. 'svg', 'png@1x', 'png@2x', 'png@3x', 'webp', 'mp4', 'json'."
+          },
+          "url": {
+            "type": "string",
+            "description": "Relative to the catalog root, or absolute. Used by host to fetch bytes."
+          },
+          "checksum": {
+            "type": "string",
+            "pattern": "^sha256-",
+            "description": "SRI-format SHA-256. End-to-end integrity check."
+          },
+          "size": { "type": "integer", "description": "Bytes. Used for sync progress estimation." },
+          "width": { "type": "integer" },
+          "height": { "type": "integer" },
+          "depth": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 64,
+            "description": "Bits per channel of THIS file. Raster containers only (png/tiff/jpeg/webp). SNIFFED, NOT ASSERTED: absent means unknown or not raster — a container that buries depth in codec boxes (heic/avif) stays absent rather than guessing. Never hand-authored: `npm run build:catalog` writes it from a bounded header sniff and `npm run validate:catalog` re-sniffs to catch drift. Depth follows provenance (plans/61-deeprichpixels.md §10)."
+          },
+          "durationMs": { "type": "integer", "minimum": 0, "description": "Playback length in milliseconds, for video, audio and lottie assets." }
+        }
+      }
+    },
+    "locales": {
+      "type": "object",
+      "description": "Locale-specific format overrides. Key is BCP-47 locale tag. Value mirrors the 'formats' structure.",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "$ref": "#/properties/formats/items" }
+      }
+    },
+    "license": {
+      "type": "string",
+      "description": "e.g. 'internal', 'cc-by-4.0', 'all-rights-reserved'."
+    },
+    "aiGenerated": {
+      "type": "string",
+      "enum": ["full", "partial"],
+      "description": "Generative-AI provenance disclosure. 'full' = the asset is wholly AI-generated; 'partial' = it contains AI-generated elements (an AI-composited/edited work). Surfaces a violet 'GEN AI' pill in the catalog + a note in the asset details. Omit for human-made assets. Author this honestly — only for assets actually produced with a trained generative model."
+    },
+    "deprecated": {
+      "type": "boolean",
+      "default": false,
+      "description": "Soft-deprecate before removal. Existing references still resolve."
+    },
+    "replacedBy": {
+      "type": "string",
+      "description": "If deprecated, asset id that supersedes this one."
+    },
+    "prefetch": {
+      "type": "boolean",
+      "default": false,
+      "description": "Catalog tier only. If true, fetch bytes at sync time, not on first use."
+    },
+    "brandLock": {
+      "type": "boolean",
+      "default": false,
+      "description": "Tokens assets only. When true, this brand is authoritative: the app resolves ITS colours/fonts and IGNORES any user-installed brand, and the brand-customisation UI (the #/start wizard, brand fonts, brand-file import) is disabled. A locked catalog 'eats what it is given'. Omit/false for a customisable brand (e.g. lolly-start)."
+    }
+  }
+}

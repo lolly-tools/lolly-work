@@ -1,0 +1,63 @@
+lolly-work {{ .Chart.AppVersion }} — release "{{ .Release.Name }}" installed in namespace "{{ .Release.Namespace }}".
+
+Replicas:   {{ .Values.replicaCount }} (stateless; LW_AUTO_MIGRATE=false — the migrate hook owns the schema)
+Image:      {{ include "lolly-work.image" . }}
+Secrets:    {{ if .Values.existingSecret }}existing secret "{{ .Values.existingSecret }}" (Mode B){{ else }}chart-managed secret "{{ include "lolly-work.secretName" . }}" (Mode A){{ end }}
+Database:   {{ if .Values.database.existingSecret }}DATABASE_URL from secret "{{ .Values.database.existingSecret }}" key "{{ .Values.database.existingSecretKey }}"{{ else if .Values.database.url }}provided inline (chart secret){{ else if .Values.existingSecret }}expected in existing secret "{{ .Values.existingSecret }}" key DATABASE_URL{{ else }}NOT SET — server will use the in-memory store (evaluation only; state lost on restart, not shared across replicas). Set database.url or existingSecret for real use.{{ end }}
+
+{{- if .Values.migrate.enabled }}
+
+Migrations ran as a pre-install/pre-upgrade hook Job. Check it with:
+  kubectl logs -n {{ .Release.Namespace }} job/{{ include "lolly-work.fullname" . }}-migrate
+{{- else }}
+
+WARNING: migrate.enabled=false. With LW_AUTO_MIGRATE=false the pods will refuse
+to start on a pending schema. Apply migrations yourself before they roll.
+{{- end }}
+
+Reach the app:
+{{- if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}
+{{- end }}
+  (ensure config.instance.baseUrl matches this host — it drives OIDC redirects
+   and the Secure cookie flag.)
+{{- else }}
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "lolly-work.fullname" . }} 8787:{{ .Values.service.port }}
+  then open http://localhost:8787/healthz
+{{- end }}
+
+{{- if eq .Values.pack.type "none" }}
+
+NOTE: pack.type=none — no brand pack is mounted. The console and API work, but
+catalog SERVING is degraded (mirrors the Vercel LW_PACK gap). To serve a
+catalog, mount a pack (pack.type=pvc|existingClaim|hostPath) and point
+config.instance.pack at a subdirectory of {{ .Values.pack.mountPath }}.
+{{- else }}
+
+Pack mounted at {{ .Values.pack.mountPath }} (type={{ .Values.pack.type }}). Confirm
+config.instance.pack resolves inside it (currently "{{ .Values.config.instance.pack | default "see --set-file config" }}").
+{{- end }}
+
+{{- if .Values.shell.enabled }}
+
+Serving the web shell: dist mounted at {{ .Values.shell.mountPath }} (type={{ .Values.shell.type }}).
+Point config.instance.shellDir at the directory holding index.html. Under a
+non-open access mode the pods REFUSE to start if the dist is missing or
+predates the org governance module — a stale shell would serve employees
+without the session gate / locked-input UX. Rebuild the shell (npm run
+build:web in the OSS repo) and repopulate the volume; extraEnv
+LW_ALLOW_STALE_SHELL=1 downgrades the refusal to a loud warning.
+{{- else }}
+
+NOTE: shell.enabled=false — the Lolly web shell is not served from this
+deployment (console + API only). To serve it same-origin, mount a built
+shells/web/dist (shell.*) and point config.instance.shellDir at the mount.
+{{- end }}
+
+{{- if not .Values.existingSecret }}
+
+Reminder: LW_SESSION_SECRET / LW_LINK_SECRET are shared signing keys. Store them
+safely and rotate deliberately — session-secret rotation without a dual-key
+window forces a global logout.
+{{- end }}

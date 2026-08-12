@@ -1,0 +1,83 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# EVALUATION values — the one-file tyre-kick. NOT for production, loudly.
+#
+#   helm install lolly deploy/helm -f deploy/helm/values-eval.yaml
+#
+# gives a complete governed demo on any conformant cluster (verified on k3s and
+# designed for RKE2 — both Rancher-managed) with ZERO prerequisites: no
+# Postgres (in-memory store), no IdP (passwordless dev personas), no pack mount
+# (the image carries the demo pack), no TLS/ingress-controller opinions (the
+# cluster's default ingress class serves it).
+#
+# What "evaluation" means concretely:
+#   - state lives in memory: a pod restart is a factory reset (that is a
+#     feature for demos — every audience gets a clean instance)
+#   - the dev sign-in provider is ON (bypasses OIDC; never ship this)
+#   - secrets below are eval-grade literals so install is one command; a real
+#     deploy uses `existingSecret` and openssl-minted values (values.yaml top)
+#
+# The production path is the DEFAULT values.yaml + docs/deployment.md.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# One replica: the memory store is per-process — replicas would each hold their
+# own world. (Production default is 2 over Postgres.)
+replicaCount: 1
+
+# No database block at all ⇒ the server runs its in-memory store (values.yaml
+# "evaluation only" path). Add DATABASE_URL to graduate this install in place.
+
+secrets:
+  # Eval-grade, deliberately unremarkable. Rotate into existingSecret for
+  # anything beyond a demo.
+  sessionSecret: "eval-only-session-secret-not-for-production-0000"
+  linkSecret: "eval-only-link-secret-not-for-production-000000"
+
+# The pre-install migrate Job exists to own Postgres DDL — with no database it
+# would run against nothing and block the install. The memory store has no
+# schema to migrate; off.
+migrate:
+  enabled: false
+
+config:
+  instance:
+    name: "Lolly Work — evaluation"
+    # The demo pack rides inside the server image (Dockerfile: COPY packs/demo)
+    # precisely so this file needs no pack.image/PVC choreography.
+    pack: "/app/packs/demo"
+  policy:
+    # Gated shows the real sign-in gate; the dev personas below get through it.
+    defaultAccessMode: gated
+  render:
+    # The demo pack's tools ship hooks; with no Chromium worker they would 501.
+    # The pack is curated end-to-end (it ships IN this image), which is exactly
+    # the sanctioned case for running hooks in the in-process fast path — the
+    # same setting the hosted demo uses. Never set this for an uncurated pack.
+    allowHooksInFastPath: true
+  dev:
+    enabled: true   # passwordless personas — the reason this file is eval-only
+    users:
+      - { email: admin@eval.example,     name: Ada Admin,     groups: [admin] }
+      - { email: brand@eval.example,     name: Bram Brand,    groups: [brand-team] }
+      - { email: marketer@eval.example,  name: Mia Marketer,  groups: [marketing] }
+
+# No pack mount: instance.pack points into the image (above).
+pack:
+  type: none
+
+ingress:
+  enabled: true
+  className: ""   # empty ⇒ the cluster's default class: Traefik on k3s,
+                  # ingress-nginx on RKE2 — no per-distro values needed
+  hosts:
+    - host: ""    # empty host ⇒ match any — curl the node/LB IP and go
+      paths:
+        - { path: /, pathType: Prefix }
+
+# Small on purpose: an eval fits beside real workloads on an edge box.
+resources:
+  requests: { cpu: 100m, memory: 192Mi }
+  limits: { memory: 512Mi }
+
+# Render worker stays OFF (the default): svg+png render in-process; hooked
+# tools answer 501 honestly and org_config tells shells upfront. Enable
+# renderWorker + a real values file to demo the Chromium tier.

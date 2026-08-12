@@ -1,0 +1,553 @@
+#!/usr/bin/env node
+/**
+ * lw — the lolly-work admin CLI. A thin wrapper over the same API the console
+ * uses, so the two surfaces grow in parity by construction (plans: console
+ * first, CLI follows).
+ *
+ *   LW_BASE=https://lolly.example lw login --email admin@test   # dev provider
+ *   lw whoami | summary | fleet | links [--all] | links revoke <id>
+ *   lw msg send --title "…" [--severity action --groups a,b --max-engine 1.52.99]
+ *   lw audit verify
+ *
+ * Auth: dev-provider login stores the session cookie at
+ * ~/.config/lolly-work/session (0600). Against an OIDC instance, sign in in a
+ * browser and `lw login --cookie 'lw_session=…'` — a device-code flow is the
+ * planned replacement.
+ */
+import { parseArgs } from 'node:util';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
+const CONFIG_DIR = join(homedir(), '.config', 'lolly-work');
+const SESSION_FILE = join(CONFIG_DIR, 'session');
+
+const { positionals, values } = parseArgs({
+  allowPositionals: true,
+  options: {
+    base: { type: 'string' },
+    email: { type: 'string' },
+    cookie: { type: 'string' },
+    all: { type: 'boolean' },
+    title: { type: 'string' },
+    body: { type: 'string' },
+    kind: { type: 'string' },
+    severity: { type: 'string' },
+    groups: { type: 'string' },
+    shells: { type: 'string' },
+    'max-engine': { type: 'string' },
+    effect: { type: 'string' },
+    label: { type: 'string' },
+    options: { type: 'string' },
+    mapping: { type: 'string' },
+    exposure: { type: 'string' },
+    check: { type: 'boolean' },
+    out: { type: 'string' },
+    in: { type: 'string' },
+    org: { type: 'string' },
+    days: { type: 'string' },
+    'dry-run': { type: 'boolean' },
+    prune: { type: 'boolean' },
+    json: { type: 'boolean' },
+  },
+});
+
+const base = (values.base ?? process.env.LW_BASE ?? 'http://localhost:8787').replace(/\/+$/, '');
+
+function savedCookie(): string | null {
+  try { return readFileSync(SESSION_FILE, 'utf8').trim() || null; } catch { return null; }
+}
+
+async function call(path: string, opts: { method?: string; body?: unknown } = {}): Promise<unknown> {
+  const cookie = savedCookie();
+  const res = await fetch(`${base}${path}`, {
+    method: opts.method ?? 'GET',
+    headers: {
+      ...(cookie ? { cookie } : {}),
+      ...(opts.body !== undefined ? { 'content-type': 'application/json' } : {}),
+      'x-lolly-client': 'lw-cli engine/0',
+    },
+    ...(opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    const err = (data as { error?: { code?: string; message?: string } })?.error;
+    fail(`${res.status} ${err?.code ?? ''} ${err?.message ?? ''}`.trim());
+  }
+  return data;
+}
+
+function fail(msg: string): never {
+  console.error(`lw: ${msg}`);
+  process.exit(1);
+}
+
+function out(value: unknown): void {
+  if (values.json) console.log(JSON.stringify(value, null, 2));
+}
+
+/** Consent endpoints per OAuth provider kind. Scopes are read-only; the
+ *  offline/refresh grant is what the stored credential is. */
+function oauthFlowFor(
+  kind: string,
+  options: Record<string, unknown>,
+): { authorizeUrl: string; tokenUrl: string; authParams: Record<string, string> } | null {
+  if (kind === 'dropbox') {
+    return {
+      authorizeUrl: 'https://www.dropbox.com/oauth2/authorize',
+      tokenUrl: 'https://api.dropboxapi.com/oauth2/token',
+      authParams: { token_access_type: 'offline' },
+    };
+  }
+  if (kind === 'gdrive') {
+    return {
+      authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+      tokenUrl: 'https://oauth2.googleapis.com/token',
+      authParams: { access_type: 'offline', prompt: 'consent', scope: 'https://www.googleapis.com/auth/drive.readonly' },
+    };
+  }
+  if (kind === 'o365') {
+    const tenant = typeof options.tenant === 'string' ? options.tenant : 'common';
+    return {
+      authorizeUrl: `https://login.microsoftonline.com/${encodeURIComponent(tenant)}/oauth2/v2.0/authorize`,
+      tokenUrl: `https://login.microsoftonline.com/${encodeURIComponent(tenant)}/oauth2/v2.0/token`,
+      authParams: { scope: 'https://graph.microsoft.com/Files.Read.All offline_access' },
+    };
+  }
+  return null;
+}
+
+async function promptVisible(prompt: string): Promise<string> {
+  const { createInterface } = await import('node:readline');
+  const rl = createInterface({ input: process.stdin, output: process.stderr, terminal: true });
+  const answer = await new Promise<string>((resolve) => rl.question(prompt, resolve));
+  rl.close();
+  return answer.trim();
+}
+
+/** Prompt without echoing — for credentials (never argv, never shell history). */
+async function promptHidden(prompt: string): Promise<string> {
+  const { createInterface } = await import('node:readline');
+  process.stderr.write(prompt);
+  const rl = createInterface({ input: process.stdin, terminal: true });
+  // Swallow the echo: readline writes what it receives to output when terminal
+  // is true; with no output stream attached, keystrokes stay dark.
+  const answer = await new Promise<string>((resolve) => rl.question('', resolve));
+  rl.close();
+  process.stderr.write('\n');
+  return answer.trim();
+}
+
+const [cmd, sub] = positionals;
+
+switch (cmd) {
+  case 'login': {
+    if (values.cookie) {
+      mkdirSync(CONFIG_DIR, { recursive: true });
+      writeFileSync(SESSION_FILE, values.cookie, { mode: 0o600 });
+      console.log('session cookie saved.');
+      break;
+    }
+    const email = values.email ?? fail('--email required for dev login (or --cookie for a browser session)');
+    const res = await fetch(`${base}/api/auth/dev?email=${encodeURIComponent(email)}`, { redirect: 'manual' });
+    if (res.status !== 302) fail(`dev login refused (${res.status}) — is dev.enabled on, and the email in dev.users?`);
+    const cookie = res.headers.getSetCookie().find((c) => c.startsWith('lw_session='))?.split(';')[0];
+    if (!cookie) fail('no session cookie in response');
+    mkdirSync(CONFIG_DIR, { recursive: true });
+    writeFileSync(SESSION_FILE, cookie as string, { mode: 0o600 });
+    console.log(`signed in as ${email} against ${base}`);
+    break;
+  }
+
+  case 'whoami': {
+    const who = await call('/api/auth/session') as { kind: string; user?: { email: string; role: string; groups: string[] } };
+    out(who);
+    if (!values.json) console.log(who.kind === 'member' ? `${who.user?.email} (${who.user?.role}) groups: ${who.user?.groups.join(', ') || '—'}` : who.kind);
+    break;
+  }
+
+  case 'summary': {
+    const s = await call('/api/v1/telemetry/summary') as {
+      totals: { events: number; exports: number; activeUsers: number };
+      topTools: Array<{ toolId: string; count: number }>;
+    };
+    out(s);
+    if (!values.json) {
+      console.log(`events ${s.totals.events} · exports ${s.totals.exports} · attributed people ${s.totals.activeUsers}`);
+      for (const t of s.topTools) console.log(`  ${String(t.count).padStart(6)}  ${t.toolId}`);
+    }
+    break;
+  }
+
+  case 'fleet': {
+    const { clients } = await call('/api/v1/fleet') as { clients: Array<{ bucket: string; count: number; lastSeenAt: string }> };
+    out(clients);
+    if (!values.json) for (const c of clients) console.log(`${String(c.count).padStart(6)}  ${c.bucket}  (last ${c.lastSeenAt})`);
+    break;
+  }
+
+  case 'links': {
+    if (sub === 'revoke') {
+      const id = positionals[2] ?? fail('usage: lw links revoke <id>');
+      await call(`/api/v1/links/${id}/revoke`, { method: 'POST' });
+      console.log(`revoked ${id}`);
+      break;
+    }
+    const { links } = await call(`/api/v1/links${values.all ? '?all=1' : ''}`) as {
+      links: Array<{ id: string; kind: string; status: string; expiresAt: string; target: { toolId?: string; sessionId?: string } }>;
+    };
+    out(links);
+    if (!values.json) for (const l of links) console.log(`${l.status.padEnd(8)} ${l.kind.padEnd(11)} ${(l.target.toolId ?? l.target.sessionId ?? '—').padEnd(24)} exp ${l.expiresAt}  ${l.id}`);
+    break;
+  }
+
+  case 'msg': {
+    if (sub !== 'send') fail('usage: lw msg send --title "…"');
+    const title = values.title ?? fail('--title required');
+    const audience: Record<string, unknown> = {};
+    if (values.groups) audience.groups = values.groups.split(',').map((s) => s.trim());
+    if (values.shells) audience.shells = values.shells.split(',').map((s) => s.trim());
+    if (values['max-engine']) audience.maxEngine = values['max-engine'];
+    const msg = await call('/api/v1/messages', { method: 'POST', body: {
+      title, body: values.body, kind: values.kind ?? 'announcement', severity: values.severity ?? 'info', audience,
+    } });
+    out(msg);
+    if (!values.json) console.log(`sent ${(msg as { id: string }).id}`);
+    break;
+  }
+
+  // Catalog providers (plans/17 §10). Credentials are prompted, NEVER argv —
+  // argv leaks into shell history and process listings.
+  case 'providers': {
+    const id = positionals[2];
+    const parseJsonFlag = (name: 'options' | 'mapping' | 'exposure'): Record<string, unknown> | undefined => {
+      const raw = values[name];
+      if (raw === undefined) return undefined;
+      try { return JSON.parse(raw) as Record<string, unknown>; } catch { fail(`--${name} must be valid JSON`); }
+    };
+    switch (sub) {
+      case undefined:
+      case 'list': {
+        const { providers } = await call('/api/v1/catalog/providers') as {
+          providers: Array<{ id: string; kind: string; label: string; managedBy: string; enabled: boolean;
+            credential: { fingerprint: string } | null;
+            state: { assetCount: number; lastSyncAt: string | null; lastError: string | null } }>;
+        };
+        out(providers);
+        if (!values.json) {
+          for (const p of providers) {
+            const status = p.enabled ? (p.state.lastError ? 'error' : 'enabled') : 'disabled';
+            console.log(`${status.padEnd(9)} ${p.id.padEnd(20)} ${p.kind.padEnd(12)} ${String(p.state.assetCount).padStart(5)} assets  cred ${p.credential?.fingerprint ?? '—'}  ${p.managedBy === 'config' ? '[config]' : ''}`);
+            if (p.state.lastError) console.log(`          last error: ${p.state.lastError}`);
+          }
+        }
+        break;
+      }
+      case 'add': {
+        if (!id) fail('usage: lw providers add <id> --kind <kind> --label "…" [--options {json}] [--mapping {json}] [--exposure {json}]');
+        const options = parseJsonFlag('options');
+        const mapping = parseJsonFlag('mapping');
+        const exposure = parseJsonFlag('exposure');
+        const created = await call('/api/v1/catalog/providers', { method: 'POST', body: {
+          id, kind: values.kind ?? fail('--kind required'), label: values.label ?? fail('--label required'),
+          ...(options ? { options } : {}),
+          ...(mapping ? { mapping } : {}),
+          ...(exposure ? { exposure } : {}),
+        } });
+        out(created);
+        console.log(`created ${id} (disabled — set a credential, then enable)`);
+        break;
+      }
+      case 'credential': {
+        if (!id) fail('usage: lw providers credential <id>   (prompts for the secret)');
+        const secret = await promptHidden(`secret for ${id}: `);
+        if (!secret) fail('no secret entered');
+        const r = await call(`/api/v1/catalog/providers/${id}/credential`, { method: 'PUT', body: { secret } }) as { fingerprint: string; health: { ok: boolean } };
+        out(r);
+        console.log(`credential stored (${r.fingerprint}) — health ${r.health.ok ? 'ok' : 'FAILED'}`);
+        break;
+      }
+      case 'enable':
+      case 'disable':
+      case 'sync': {
+        if (!id) fail(`usage: lw providers ${sub} <id>`);
+        const r = await call(`/api/v1/catalog/providers/${id}/${sub}`, { method: 'POST' });
+        out(r);
+        console.log(sub === 'sync'
+          ? `synced ${id}: ${(r as { assetCount: number }).assetCount} assets`
+          : `${id} ${sub}d`);
+        break;
+      }
+      case 'health': {
+        if (!id) fail('usage: lw providers health <id>');
+        const h = await call(`/api/v1/catalog/providers/${id}/health`) as { ok: boolean; detail?: string };
+        out(h);
+        console.log(h.ok ? 'ok' : `unhealthy: ${h.detail ?? 'unknown'}`);
+        if (!h.ok) process.exit(2);
+        break;
+      }
+      case 'rm': {
+        if (!id) fail('usage: lw providers rm <id>');
+        await call(`/api/v1/catalog/providers/${id}`, { method: 'DELETE' });
+        console.log(`deleted ${id}`);
+        break;
+      }
+      // One-time OAuth consent for dropbox/gdrive/o365 (plans/17 §11 phase 4):
+      // loopback redirect + PKCE, then the refresh token goes through the same
+      // write-only credential endpoint as any API key. BYOT: the operator's
+      // own registered app — client ids are prompted, never shipped.
+      case 'auth': {
+        if (!id) fail('usage: lw providers auth <id>');
+        const rec = await call(`/api/v1/catalog/providers/${id}`) as { kind: string; options: Record<string, unknown> };
+        const flow = oauthFlowFor(rec.kind, rec.options);
+        if (!flow) fail(`provider kind ${rec.kind} does not use OAuth — use \`lw providers credential ${id}\``);
+        console.log(`Register a ${rec.kind} app of your own first (loopback redirect URIs must be allowed).`);
+        const clientId = await promptVisible('client id: ');
+        if (!clientId) fail('client id required');
+        const clientSecret = await promptHidden('client secret (empty for a public/PKCE-only app): ');
+
+        const { createServer } = await import('node:http');
+        const { createHash, randomBytes } = await import('node:crypto');
+        const verifier = randomBytes(32).toString('base64url');
+        const challenge = createHash('sha256').update(verifier).digest('base64url');
+        const state = randomBytes(12).toString('base64url');
+
+        const { code, redirect } = await new Promise<{ code: string; redirect: string }>((resolve, reject) => {
+          let redirect = '';
+          const srv = createServer((req2, res2) => {
+            const u = new URL(req2.url ?? '/', 'http://127.0.0.1');
+            if (u.pathname !== '/callback') { res2.writeHead(404); res2.end(); return; }
+            res2.writeHead(200, { 'content-type': 'text/html' });
+            res2.end('<p>Signed in — you can close this tab and return to the terminal.</p>');
+            srv.close();
+            if (u.searchParams.get('state') !== state) return reject(new Error('state mismatch — restart the flow'));
+            const c = u.searchParams.get('code');
+            c ? resolve({ code: c, redirect }) : reject(new Error(u.searchParams.get('error') ?? 'no code returned'));
+          });
+          srv.listen(0, '127.0.0.1', () => {
+            redirect = `http://127.0.0.1:${(srv.address() as { port: number }).port}/callback`;
+            const q = new URLSearchParams({
+              client_id: clientId, response_type: 'code', redirect_uri: redirect, state,
+              code_challenge: challenge, code_challenge_method: 'S256', ...flow.authParams,
+            });
+            console.log(`\nOpen this URL in a browser and approve read access:\n\n  ${flow.authorizeUrl}?${q}\n`);
+          });
+        });
+
+        const body = new URLSearchParams({
+          grant_type: 'authorization_code', code, redirect_uri: redirect,
+          client_id: clientId, code_verifier: verifier,
+          ...(clientSecret ? { client_secret: clientSecret } : {}),
+        });
+        const tokenRes = await fetch(flow.tokenUrl, {
+          method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: body.toString(),
+        });
+        const tokenData = await tokenRes.json() as { refresh_token?: string; error_description?: string };
+        if (!tokenRes.ok || !tokenData.refresh_token) {
+          fail(`token exchange failed: ${tokenData.error_description ?? tokenRes.status} (offline access must be granted)`);
+        }
+        const secretJson = JSON.stringify({ clientId, ...(clientSecret ? { clientSecret } : {}), refreshToken: tokenData.refresh_token });
+        const stored = await call(`/api/v1/catalog/providers/${id}/credential`, { method: 'PUT', body: { secret: secretJson } }) as { fingerprint: string; health: { ok: boolean } };
+        console.log(`credential stored (${stored.fingerprint}) — health ${stored.health.ok ? 'ok' : 'FAILED'}`);
+        break;
+      }
+      default:
+        fail('usage: lw providers [list|add|credential|auth|enable|disable|sync|health|rm]');
+    }
+    break;
+  }
+
+  // Grants (plans/03): lw grants list · lw grants add|rm <principal> <action> [<resource>] --effect deny|allow
+  case 'grants': {
+    if (sub === 'add' || sub === 'rm') {
+      const [, , principal, action, resource] = positionals;
+      if (!principal || !action) fail(`usage: lw grants ${sub} <principal> <action> [<resource>] --effect deny|allow`);
+      const effect = values.effect ?? 'deny';
+      const r = await call('/api/v1/grants', {
+        method: sub === 'add' ? 'POST' : 'DELETE',
+        body: { principal, action, resource: resource ?? '*', effect },
+      });
+      out(r);
+      console.log(`${sub === 'add' ? 'added' : 'removed'} ${effect} ${principal} ${action} ${resource ?? '*'}`);
+      break;
+    }
+    const { grants } = await call('/api/v1/grants') as {
+      grants: Array<{ principal: string; action: string; resource: string; effect: string }>;
+    };
+    out(grants);
+    if (!values.json) {
+      for (const g of grants) console.log(`${g.effect.padEnd(6)} ${g.principal.padEnd(24)} ${g.action.padEnd(28)} ${g.resource}`);
+      if (!grants.length) console.log('(no grants — role defaults only)');
+    }
+    break;
+  }
+
+  // Preview-as-group (plans/03): what would a member in these groups receive?
+  case 'preview': {
+    const groups = values.groups ?? positionals[1] ?? '';
+    const { preview, orgConfig } = await call(`/api/v1/org-config/preview?groups=${encodeURIComponent(groups)}`) as {
+      preview: { groups: string[]; role: string; hiddenTools: string[] };
+      orgConfig: { can: Record<string, boolean>; tools: Record<string, { inputs?: Array<{ id: string; access?: { level: string; value?: unknown; allow?: unknown[] } }>; hidden?: string[]; approvalChain?: string }> };
+    };
+    out({ preview, orgConfig });
+    if (!values.json) {
+      console.log(`as ${preview.groups.join(', ') || '(no groups)'} → role ${preview.role}`);
+      console.log('permissions:');
+      for (const [action, ok] of Object.entries(orgConfig.can)) console.log(`  ${ok ? '✓' : '✗'} ${action}`);
+      const toolIds = Object.keys(orgConfig.tools);
+      console.log(`visible governed tools: ${toolIds.join(', ') || '(none)'}`);
+      for (const id of toolIds) {
+        const t = orgConfig.tools[id];
+        for (const i of t?.inputs ?? []) {
+          const d = i.access?.level === 'locked' ? `= ${JSON.stringify(i.access.value)}`
+            : i.access?.level === 'choice' ? `∈ ${JSON.stringify(i.access.allow)}` : '';
+          console.log(`    ${id}.${i.id}: ${i.access?.level} ${d}`);
+        }
+        for (const h of t?.hidden ?? []) console.log(`    ${id}.${h}: hidden`);
+      }
+      if (preview.hiddenTools.length) console.log(`hidden from this group: ${preview.hiddenTools.join(', ')}`);
+    }
+    break;
+  }
+
+  case 'audit': {
+    if (sub === 'head') {
+      const head = await call('/api/v1/audit/head') as { seq: number; hash: string; at: string | null; count: number; chainIntact: boolean; badSeq?: number };
+      out(head);
+      if (!values.json) console.log(head.chainIntact
+        ? `head #${head.seq} · ${head.hash} · ${head.count} events · intact`
+        : `head #${head.seq} · ${head.hash} · CHAIN BROKEN at #${head.badSeq}`);
+      if (!head.chainIntact) process.exit(2);
+      break;
+    }
+    if (sub !== 'verify') fail('usage: lw audit verify|head');
+    const { chain, total } = await call('/api/v1/audit?limit=1') as { chain: { ok: boolean; badSeq?: number }; total: number };
+    out({ chain, total });
+    if (!values.json) console.log(chain.ok ? `chain intact · ${total} events` : `CHAIN BROKEN at #${chain.badSeq} · ${total} events`);
+    if (!chain.ok) process.exit(2);
+    break;
+  }
+
+  case 'export': {
+    const doc = await call('/api/v1/config/export');
+    const text = JSON.stringify(doc, null, 2);
+    const dest = values.out ?? positionals[1];
+    if (dest) { writeFileSync(dest, text + '\n'); console.error(`wrote ${dest}`); }
+    else console.log(text);
+    break;
+  }
+
+  case 'apply': {
+    const file = values.in ?? positionals[1] ?? fail('usage: lw apply <file> [--dry-run] [--prune]');
+    const body = JSON.parse(readFileSync(file, 'utf8'));
+    const qs = new URLSearchParams();
+    if (values['dry-run']) qs.set('dryRun', '1');
+    if (values.prune) qs.set('prune', '1');
+    const r = await call(`/api/v1/config/apply${qs.toString() ? `?${qs}` : ''}`, { method: 'POST', body }) as {
+      dryRun: boolean; hash: string; diff?: Record<string, { create: number; update: number; delete: number; unchanged: number }>; applied?: Record<string, { create: number; update: number; delete: number; unchanged: number }>;
+    };
+    out(r);
+    if (!values.json) {
+      const s = r.applied ?? r.diff ?? {};
+      console.log(`${r.dryRun ? 'dry-run' : 'applied'} · ${r.hash.slice(0, 16)}`);
+      for (const cat of ['grants', 'overlays', 'chains', 'providers', 'featureFlags'] as const) {
+        const c = s[cat];
+        if (c) console.log(`  ${cat.padEnd(13)} +${c.create} ~${c.update} -${c.delete} (=${c.unchanged})`);
+      }
+    }
+    break;
+  }
+
+  case 'c2pa': {
+    if (sub !== 'init') fail('usage: lw c2pa init [--org "Name"] [--out ./c2pa] [--days 365]');
+    // Local command: mints a self-contained C2PA signing identity (root + leaf)
+    // so exports can be signed with ZERO corporate PKI. For a trusted signature,
+    // an org instead drops in a cert issued by their own CA (see docs/c2pa.md).
+    const { mkdirSync } = await import('node:fs');
+    const { webcrypto } = await import('node:crypto');
+    const { subtle } = webcrypto;
+    type CK = Parameters<typeof subtle.exportKey>[1];
+    // Non-literal specifier so tsc doesn't resolve the engine's (browser-lib) types.
+    const engineSpec: string = '@lolly/engine';
+    const { generateCaRoot, issueLeafCert, derToPem } = await import(engineSpec) as {
+      generateCaRoot: (o: { commonName?: string; organization?: string; days?: number }) => Promise<{ certDer: Uint8Array; pkcs8Der: Uint8Array }>;
+      issueLeafCert: (o: Record<string, unknown>) => Promise<Uint8Array>;
+      derToPem: (der: Uint8Array, label: string) => string;
+    };
+    const org = values.org ?? 'Lolly';
+    const days = Number(values.days ?? 365);
+    const dir = values.out ?? './c2pa';
+    mkdirSync(dir, { recursive: true });
+
+    const root = await generateCaRoot({ commonName: `${org} Lolly Root`, organization: org, days: Math.max(days * 2, 3650) });
+    const pair = await subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']) as { publicKey: CK; privateKey: CK };
+    const spkiDer = new Uint8Array(await subtle.exportKey('spki', pair.publicKey));
+    const leafKey = new Uint8Array(await subtle.exportKey('pkcs8', pair.privateKey));
+    const leafCert = await issueLeafCert({
+      caCertDer: root.certDer, caPrivateKey: root.pkcs8Der, spkiDer,
+      email: `lolly@${org.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.invalid`,
+      commonName: `${org} Lolly Signer`, organization: org, days,
+    });
+
+    const certPath = `${dir}/c2pa-signing-cert.pem`;
+    const keyPath = `${dir}/c2pa-signing-key.pem`;
+    const rootPath = `${dir}/c2pa-root-cert.pem`;
+    // Chain: leaf first, then root — exactly what buildSigner expects.
+    writeFileSync(certPath, derToPem(leafCert, 'CERTIFICATE') + derToPem(root.certDer, 'CERTIFICATE'));
+    writeFileSync(keyPath, derToPem(leafKey, 'PRIVATE KEY'), { mode: 0o600 });
+    writeFileSync(rootPath, derToPem(root.certDer, 'CERTIFICATE'));
+
+    if (values.json) { out({ certFile: certPath, keyFile: keyPath, rootFile: rootPath }); break; }
+    console.log(`C2PA signing identity for "${org}" written to ${dir}/:
+  ${certPath}   ← public chain (leaf + root). Set instance.json render.c2pa.certFile to this.
+  ${keyPath}    ← SECRET private key. Provide as env LW_C2PA_SIGNING_KEY (do NOT commit).
+  ${rootPath}   ← the root cert; add it to verifiers' C2PA trust lists to make signatures trusted.
+
+Wire it up:
+  1. instance.json → "render": { "c2pa": { "certFile": "${certPath}", "claimGenerator": "${org} Lolly" } }
+  2. export LW_C2PA_SIGNING_KEY="$(cat ${keyPath})"
+  3. restart — every server-side export now carries a signed Content Credential.
+
+Already have a corporate CA? Skip this: point render.c2pa.certFile at your CA-issued
+signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead.`);
+    break;
+  }
+
+  case 'migrate': {
+    // Local infra command: talks to the DATABASE directly, not the API base.
+    const url = process.env.DATABASE_URL ?? fail('migrate needs DATABASE_URL — run it where the database is reachable (not via LW_BASE)');
+    const { runMigrations, pendingMigrations } = await import('../server/src/store/migrate.ts');
+    const { fileURLToPath } = await import('node:url');
+    const dir = fileURLToPath(new URL('../migrations', import.meta.url));
+    if (sub === 'status' || values.check) {
+      const pending = await pendingMigrations(url, dir);
+      out({ pending, current: pending.length === 0 });
+      if (!values.json) console.log(pending.length ? `${pending.length} pending: ${pending.join(', ')}` : 'schema current');
+      if (pending.length) process.exit(1);
+      break;
+    }
+    const applied = await runMigrations(url, dir);
+    out({ applied });
+    if (!values.json) console.log(applied.length ? `applied: ${applied.join(', ')}` : 'nothing to apply (schema current)');
+    break;
+  }
+
+  default:
+    console.log(`lw — lolly-work admin CLI (base: ${base})
+
+  login --email <dev-user>   sign in via the dev provider
+  login --cookie 'lw_session=…'   store a browser session
+  whoami · summary · fleet · audit verify|head
+  migrate [--check]          apply pending migrations (needs local DATABASE_URL; --check = status, exit 1 if pending)
+  c2pa init [--org N] [--out dir]   mint a C2PA signing identity (root+leaf) for real signed exports
+  export [--out file]        dump governance (grants, overlays, chains, providers, flags) as canonical JSON
+  apply <file> [--dry-run] [--prune]   apply a governance document (dry-run shows the diff; prune removes store-only entries)
+  links [--all] · links revoke <id>
+  providers [list] · providers add <id> --kind … --label "…" [--options/--mapping/--exposure {json}]
+  providers credential <id> (prompts) · auth <id> (OAuth consent) · enable|disable|sync|health|rm <id>
+  grants [list] · grants add|rm <principal> <action> [<resource>] --effect deny|allow
+  preview --groups a,b   what a member in those groups would receive
+  msg send --title "…" [--body --kind --severity --groups a,b --shells tauri --max-engine 1.52.99]
+
+  --base <url> or LW_BASE — instance to talk to · --json for machine output`);
+}
