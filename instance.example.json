@@ -39,5 +39,6 @@
       "exposure": { "groups": "*", "requireApproved": true, "tier": "reference" },
       "sync": { "ttlSeconds": 300 }
     }
-  ]
+  ],
+  "blobs": { "driver": "pg" }
 }

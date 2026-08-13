@@ -1,0 +1,59 @@
+# Brandfolder (kind: `brandfolder`)
+
+Federate a Brandfolder as a **read-only** catalog source. Brandfolder stays the source of
+truth; lolly stores references plus its own governance overlays.
+
+## What you need from Brandfolder
+
+- **A Brandfolder API key.** In Brandfolder: *My Profile → Integrations → API key* (an
+  admin-level key sees the whole Brandfolder). It is a bearer token — treat it as a secret.
+- **The Brandfolder id.** The `…/brandfolders/<id>` segment in the admin URL, or from the
+  v4 API. This is the `brandfolderId` option.
+- No app registration and no scopes to configure — Brandfolder's key is all-or-nothing, so
+  scope what federates with lolly-side **exposure** (below), not the key.
+
+## Credential shape
+
+A single bearer token string — the API key itself. Store it write-only:
+
+```bash
+lw providers credential acme-bf     # prompts; never argv, never shell history
+```
+
+## instance.json / `lw providers add`
+
+```json
+{
+  "id": "acme-bf",
+  "kind": "brandfolder",
+  "label": "Acme Brandfolder",
+  "options": { "brandfolderId": "tc3wvjm7jnpppp62k57qhrp" },
+  "exposure": { "groups": ["marketing"], "requireApproved": true, "tier": "reference" }
+}
+```
+
+- `options.brandfolderId` (required) — the Brandfolder id. `options.baseUrl` is for tests only.
+- `exposure.requireApproved: true` federates only assets Brandfolder marks **approved**.
+- Brandfolder's `availability_start`/`availability_end` import automatically as an
+  [availability window](../catalog.md#imported-availability-windows).
+
+## Verify
+
+```bash
+lw providers preview  --kind brandfolder --options '{"brandfolderId":"…"}'   # dry run, nothing stored
+lw providers health acme-bf
+```
+
+A good preview returns `health.ok: true` and a mapped sample. `401`/`403` means the key is
+wrong or lacks access; an empty sample under `requireApproved` means nothing is approved yet.
+
+## Notes / limits
+
+- Storage/thumbnail URLs are signed + short-lived — the driver re-fetches per request and
+  streams; no upstream URL is ever persisted, and fetches are pinned to `brandfolder.com` /
+  `bfldr.com` hosts (no open proxy).
+- Supports the **exit** (materialize → cutover, [catalog.md](../catalog.md#the-exit--materialize-a-source-into-your-own-store))
+  — the priority off-boarding path for SUSE.
+- Does **not** accept published exports (publish-out is Optimizely CMP only).
+
+See also: [catalog](../catalog.md) · [permissions](../permissions.md).

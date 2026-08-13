@@ -256,6 +256,8 @@ project *includes an integration for* those services and is not affiliated with 
 
 ## Related
 
+- **Per-provider setup (admin/owner):** [providers/](providers/) — one guide per platform
+  (Brandfolder, S3/MinIO, Optimizely CMP, git, Dropbox, Google Drive, M365).
 - Restricting tools and inputs: [governance](governance.md)
 - Serving and sharing what the catalog holds: [sharing](sharing.md)
 - Where provenance for federated assets comes from: [sharing](sharing.md#provenance) and
