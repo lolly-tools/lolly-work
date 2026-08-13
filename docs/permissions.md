@@ -21,16 +21,20 @@ anything up: a resource arrives as the set of selectors it satisfies (e.g.
 | `member` | the default for any signed-in user | viewer + `tool.use`, `session.create/edit/delete/share`, `project.create`, `export.download`, `export.request`, `link.create` |
 | `author` | group `author` | member + `catalog.submit` |
 | `approver` | group `approver` | member + `approval.act` |
-| `admin` | group `admin` | author ∪ approver + `catalog.publish`, `catalog.expire`, `catalog.provider.read`, `catalog.provider.manage`, `policy.edit`, `grant.edit`, `link.revoke`, `link.create-guest`, `message.send`, `telemetry.view`, `fleet.view`, `audit.export`, `project.manage`, `project.archive`, `approval.assign`, `export.server` |
-| `owner` | group `owner` | admin + `instance.config`, `catalog.provider.credential` |
+| `admin` | group `admin` | author ∪ approver + `catalog.publish`, `catalog.expire`, `catalog.hold`, `catalog.scan`, `catalog.provider.read`, `catalog.provider.manage`, `policy.edit`, `grant.edit`, `link.revoke`, `link.create-guest`, `message.send`, `telemetry.view`, `fleet.view`, `audit.export`, `project.manage`, `project.archive`, `approval.assign`, `export.server` |
+| `owner` | group `owner` | admin + `instance.config`, `catalog.provider.credential`, `catalog.provider.publish` |
 | `guest` | a guest-edit link | **nothing** — access is entirely link-scoped grants |
 
 Role comes from the effective group set (IdP ∪ local groups): the highest of `owner`,
 `admin`, `approver`, `author`, else `member`. See [identity](identity.md).
 
-Two actions stay **owner-only** on purpose: an admin can shape a catalog provider, but only
-an owner puts a credential in it or flips its kill switch, and only an owner changes deploy
-config.
+Three actions stay **owner-only** on purpose: an admin can shape a catalog provider and even
+materialize its bytes into the instance's own store, but only an owner puts a credential in
+it or flips its kill switch (including the exit's cutover), only an owner changes deploy
+config, and only an owner may **publish lolly exports out** to a destination DAM
+(`catalog.provider.publish` — an outbound write to a third party). Each is owner-grantable:
+an owner can hand it out per-resource through a grant, but an admin cannot mint it for
+themselves.
 
 ## Grants
 

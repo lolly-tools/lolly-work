@@ -15,6 +15,8 @@ import type { Message } from '../inbox/target.ts';
 import type { ClientInfo } from '../fleet/client-header.ts';
 import type { Approval, ApprovalState, Chain } from '../approvals/engine.ts';
 import type { LifecycleRow } from '../catalog/lifecycle.ts';
+import type { CredentialRow } from '../catalog/credentials.ts';
+import type { InstanceAssetRecord } from '../catalog/instance-assets.ts';
 import type { ProviderRecord, ProviderState } from '../catalog/providers/types.ts';
 
 export interface UserRecord {
@@ -276,6 +278,23 @@ export interface Store {
   putLifecycle(row: LifecycleRow): Promise<void>;
   getLifecycle(assetId: string): Promise<LifecycleRow | null>;
   listLifecycle(): Promise<LifecycleRow[]>;
+  /** Remove a lifecycle row (the exit's cutover moves it to the inst id). */
+  deleteLifecycle(assetId: string): Promise<void>;
+
+  // catalog content-credential detections (plans/27 §4)
+  putCredential(row: CredentialRow): Promise<void>;
+  getCredential(assetId: string): Promise<CredentialRow | null>;
+  listCredentials(): Promise<CredentialRow[]>;
+  deleteCredential(assetId: string): Promise<void>;
+
+  // instance assets + catalog aliases (plans/26 §4, plans/27 §5)
+  putInstanceAsset(rec: InstanceAssetRecord): Promise<void>;
+  getInstanceAsset(id: string): Promise<InstanceAssetRecord | null>;
+  listInstanceAssets(): Promise<InstanceAssetRecord[]>;
+  deleteInstanceAsset(id: string): Promise<void>;
+  putAlias(fromId: string, toId: string): Promise<void>;
+  getAlias(fromId: string): Promise<string | null>;
+  listAliases(): Promise<Array<{ fromId: string; toId: string }>>;
 
   // catalog providers (plans/17). Config, credential, and state move through
   // separate methods so the write-only credential path and the sync path can

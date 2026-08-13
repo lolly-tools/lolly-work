@@ -104,6 +104,7 @@ export function policyVersionOf(
   flagGovernance?: Map<string, FlagGovernance>,
   injectables?: Map<string, InjectableRecord>,
   render?: RenderCapabilities,
+  nearbyEnabled: boolean = true,
 ): string {
   const doc = {
     overlays: [...overlays.values()].sort((a, b) => a.toolId.localeCompare(b.toolId)),
@@ -117,6 +118,10 @@ export function policyVersionOf(
     // would leave every connected shell on a 304 with a stale capability set
     // until an unrelated policy edit happened to move the hash (plans/23 §3.A).
     render: render ?? renderCapabilities(false),
+    // Same reasoning as render: `can['collab.nearby']` rides in the payload, so an
+    // admin toggling policy.nearby.enabled must move the hash or connected shells
+    // sit on a stale 304 with the wrong capability (plans/26 §8).
+    nearby: nearbyEnabled,
   };
   return sha256Hex(canonicalJson(doc)).slice(0, 16);
 }
@@ -189,6 +194,13 @@ export function assembleOrgConfig(opts: {
     // decision structurally unable to drift apart.
     can[action] = action === 'collab.edit' ? mayEditCollab(principal, grants) : evaluate(principal, action, ['*'], grants);
   }
+  // collab.nearby is a DERIVED bit, not an RBAC action: the instance offers the
+  // "likely nearby" grouping (plans/26 §8) only when policy enables it AND the
+  // caller could join a collab at all. Never its own action string, so it cannot
+  // drift from collab.join — the same discipline the collab.edit note above keeps.
+  // `?? true` mirrors the loaded-config default (parseConfig deep-merges nearby in);
+  // hand-built test configs that omit `policy.nearby` get the enabled default.
+  can['collab.nearby'] = (config.policy.nearby?.enabled ?? true) && can['collab.join'] === true;
   return {
     instance: { name: config.instance.name },
     session: {
@@ -219,6 +231,6 @@ export function assembleOrgConfig(opts: {
       consented: user.telemetryConsent === true,
     },
     inboxUnread,
-    policyVersion: policyVersionOf(overlays, profilePolicy, flagGovernance, injectables, render),
+    policyVersion: policyVersionOf(overlays, profilePolicy, flagGovernance, injectables, render, config.policy.nearby?.enabled ?? true),
   };
 }

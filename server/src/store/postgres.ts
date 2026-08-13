@@ -19,6 +19,8 @@ import type { LinkRecord } from '../links/sign.ts';
 import type { StoredEvent } from '../telemetry/ingest.ts';
 import type { Message } from '../inbox/target.ts';
 import type { LifecycleRow, OnExpiry } from '../catalog/lifecycle.ts';
+import type { CredentialRow } from '../catalog/credentials.ts';
+import type { InstanceAssetRecord } from '../catalog/instance-assets.ts';
 import type { ProviderFragment, ProviderKind, ProviderRecord } from '../catalog/providers/types.ts';
 import {
   SESSION_REVISION_LIMIT, effectiveGroups,
@@ -101,6 +103,15 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     ...(r.valid_until ? { validUntil: new Date(r.valid_until as string).toISOString() } : {}),
     ...(r.revoked_at ? { revokedAt: new Date(r.revoked_at as string).toISOString() } : {}),
     onExpiry: r.on_expiry as OnExpiry,
+    ...(r.hold ? { hold: r.hold as LifecycleRow['hold'] } : {}),
+  });
+
+  const credentialFromRow = (r: Record<string, unknown>): CredentialRow => ({
+    assetId: r.asset_id as string,
+    status: r.status as CredentialRow['status'],
+    ...(r.container ? { container: r.container as string } : {}),
+    sniffedAt: new Date(r.sniffed_at as string).toISOString(),
+    ...(r.source_updated_at ? { sourceUpdatedAt: new Date(r.source_updated_at as string).toISOString() } : {}),
   });
 
   const injectableFromRow = (r: Record<string, unknown>): InjectableRecord => ({
@@ -572,11 +583,11 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
 
     async putLifecycle(row) {
       await pool.query(
-        `insert into catalog_lifecycle (asset_id, valid_from, valid_until, revoked_at, on_expiry)
-         values ($1, $2, $3, $4, $5)
+        `insert into catalog_lifecycle (asset_id, valid_from, valid_until, revoked_at, on_expiry, hold)
+         values ($1, $2, $3, $4, $5, $6::jsonb)
          on conflict (asset_id) do update set valid_from = excluded.valid_from, valid_until = excluded.valid_until,
-           revoked_at = excluded.revoked_at, on_expiry = excluded.on_expiry`,
-        [row.assetId, row.validFrom ?? null, row.validUntil ?? null, row.revokedAt ?? null, row.onExpiry],
+           revoked_at = excluded.revoked_at, on_expiry = excluded.on_expiry, hold = excluded.hold`,
+        [row.assetId, row.validFrom ?? null, row.validUntil ?? null, row.revokedAt ?? null, row.onExpiry, row.hold ? JSON.stringify(row.hold) : null],
       );
     },
     async getLifecycle(assetId) {
@@ -586,6 +597,62 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     async listLifecycle() {
       const { rows } = await pool.query('select * from catalog_lifecycle');
       return rows.map(lifecycleFromRow);
+    },
+    async deleteLifecycle(assetId) {
+      await pool.query('delete from catalog_lifecycle where asset_id = $1', [assetId]);
+    },
+    async putCredential(row) {
+      await pool.query(
+        `insert into catalog_credentials (asset_id, status, container, sniffed_at, source_updated_at)
+         values ($1, $2, $3, $4, $5)
+         on conflict (asset_id) do update set status = excluded.status, container = excluded.container,
+           sniffed_at = excluded.sniffed_at, source_updated_at = excluded.source_updated_at`,
+        [row.assetId, row.status, row.container ?? null, row.sniffedAt, row.sourceUpdatedAt ?? null],
+      );
+    },
+    async getCredential(assetId) {
+      const { rows } = await pool.query('select * from catalog_credentials where asset_id = $1', [assetId]);
+      return rows[0] ? credentialFromRow(rows[0]) : null;
+    },
+    async listCredentials() {
+      const { rows } = await pool.query('select * from catalog_credentials');
+      return rows.map(credentialFromRow);
+    },
+    async deleteCredential(assetId) {
+      await pool.query('delete from catalog_credentials where asset_id = $1', [assetId]);
+    },
+
+    async putInstanceAsset(rec) {
+      await pool.query(
+        `insert into instance_assets (id, record) values ($1, $2::jsonb)
+         on conflict (id) do update set record = excluded.record`,
+        [rec.id, JSON.stringify(rec)],
+      );
+    },
+    async getInstanceAsset(id) {
+      const { rows } = await pool.query('select record from instance_assets where id = $1', [id]);
+      return rows[0] ? (rows[0].record as InstanceAssetRecord) : null;
+    },
+    async listInstanceAssets() {
+      const { rows } = await pool.query('select record from instance_assets');
+      return rows.map((r) => r.record as InstanceAssetRecord);
+    },
+    async deleteInstanceAsset(id) {
+      await pool.query('delete from instance_assets where id = $1', [id]);
+    },
+    async putAlias(fromId, toId) {
+      await pool.query(
+        'insert into catalog_aliases (from_id, to_id) values ($1, $2) on conflict (from_id) do update set to_id = excluded.to_id',
+        [fromId, toId],
+      );
+    },
+    async getAlias(fromId) {
+      const { rows } = await pool.query('select to_id from catalog_aliases where from_id = $1', [fromId]);
+      return rows[0] ? (rows[0].to_id as string) : null;
+    },
+    async listAliases() {
+      const { rows } = await pool.query('select from_id, to_id from catalog_aliases');
+      return rows.map((r) => ({ fromId: r.from_id as string, toId: r.to_id as string }));
     },
 
     // catalog providers (migrations/0005_catalog_providers.sql). putProvider

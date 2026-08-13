@@ -206,6 +206,56 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.equal(rows.length, 2);
   assert.ok(rows.some((r) => r.assetId === 'acme/palette/core'));
 
+  // hold rides on the same row as jsonb, round-trips, and clears back to absent
+  await store.putLifecycle({ assetId: 'acme/palette/core', onExpiry: 'hide', hold: { by: 'user:u1', at: '2026-08-13T00:00:00.000Z', note: 'legal hold' } });
+  const held = await store.getLifecycle('acme/palette/core');
+  assert.deepEqual(held?.hold, { by: 'user:u1', at: '2026-08-13T00:00:00.000Z', note: 'legal hold' });
+  await store.putLifecycle({ assetId: 'acme/palette/core', onExpiry: 'hide' });
+  assert.equal((await store.getLifecycle('acme/palette/core'))?.hold, undefined, 'hold clears when omitted');
+
+  // catalog content-credential detections: put/get/list round-trip, re-scan updates in place
+  assert.equal(await store.getCredential('acme/logo/primary'), null);
+  await store.putCredential({ assetId: 'acme/logo/primary', status: 'embedded', container: 'png', sniffedAt: '2026-08-13T00:00:00.000Z', sourceUpdatedAt: '2026-08-01T00:00:00.000Z' });
+  const cr1 = await store.getCredential('acme/logo/primary');
+  assert.equal(cr1?.status, 'embedded');
+  assert.equal(cr1?.container, 'png');
+  assert.equal(cr1?.sourceUpdatedAt, '2026-08-01T00:00:00.000Z');
+  await store.putCredential({ assetId: 'acme/logo/primary', status: 'none', sniffedAt: '2026-08-14T00:00:00.000Z' });
+  const cr2 = await store.getCredential('acme/logo/primary');
+  assert.equal(cr2?.status, 'none');
+  assert.equal(cr2?.container, undefined, 'container drops when the re-scan finds nothing');
+  assert.equal((await store.listCredentials()).length, 1);
+
+  // delete (the exit's cutover MOVES rows off the ext id)
+  await store.deleteCredential('acme/logo/primary');
+  assert.equal(await store.getCredential('acme/logo/primary'), null);
+  await store.deleteLifecycle('acme/logo/primary');
+  await store.deleteLifecycle('acme/palette/core');
+  assert.equal((await store.listLifecycle()).length, 0, 'lifecycle rows deletable');
+
+  // instance assets: full record (entry + blobs + origin) round-trips as jsonb
+  assert.equal(await store.getInstanceAsset('inst/abc'), null);
+  await store.putInstanceAsset({
+    id: 'inst/abc', entry: { id: 'inst/abc', name: 'Materialized', formats: [{ format: 'png', url: '/catalog/inst/abc/png', size: 10, checksum: 'sha' }] },
+    blobs: { png: 'inst/abc/png' }, refMap: { att1: 'png' }, groups: ['design'],
+    origin: { provider: 'dam1', providerKind: 'mock', remoteId: 'a1', materializedAt: '2026-08-13T00:00:00.000Z' }, createdAt: '2026-08-13T00:00:00.000Z',
+  });
+  const ia = await store.getInstanceAsset('inst/abc');
+  assert.equal(ia?.entry.name, 'Materialized');
+  assert.equal(ia?.blobs.png, 'inst/abc/png');
+  assert.equal(ia?.origin?.remoteId, 'a1');
+  assert.deepEqual(ia?.groups, ['design']);
+  assert.equal((await store.listInstanceAssets()).length, 1);
+  await store.deleteInstanceAsset('inst/abc');
+  assert.equal(await store.getInstanceAsset('inst/abc'), null);
+
+  // catalog aliases: old id → new id round-trip
+  assert.equal(await store.getAlias('ext/dam1/a1'), null);
+  await store.putAlias('ext/dam1/a1', 'inst/abc');
+  await store.putAlias('ext/dam1/a1/att1', 'inst/abc/png');
+  assert.equal(await store.getAlias('ext/dam1/a1/att1'), 'inst/abc/png');
+  assert.equal((await store.listAliases()).length, 2);
+
   // catalog providers: config, credential, and state travel independently —
   // a config upsert must never clobber a stored credential or sync state.
   const pnow = new Date().toISOString();

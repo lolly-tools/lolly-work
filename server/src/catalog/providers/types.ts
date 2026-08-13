@@ -14,7 +14,7 @@
  */
 import type { AssetIndexEntry } from '../lifecycle.ts';
 
-export const PROVIDER_KINDS = ['brandfolder', 's3', 'git', 'dropbox', 'gdrive', 'o365', 'mock'] as const;
+export const PROVIDER_KINDS = ['brandfolder', 's3', 'git', 'dropbox', 'gdrive', 'o365', 'optimizely-cmp', 'mock'] as const;
 export type ProviderKind = (typeof PROVIDER_KINDS)[number];
 
 /** Prefix every federated asset id carries; also the blob route mount. */
@@ -42,6 +42,20 @@ export interface ProviderCapabilities {
   thumbnails: boolean;
   /** Blob URLs are signed + short-lived — never persist them; resolve per request. */
   expiringUrls: boolean;
+  /** Provider accepts lolly-generated exports pushed OUT to it (plans/27 §10 —
+   *  Optimizely CMP two-way). Off for every read-only source; the publish route
+   *  refuses a provider that does not declare it. */
+  publish?: boolean;
+}
+
+/** One lolly-rendered export being published out to a destination provider
+ *  (plans/27 §10). Only ever a signed lolly export — never a federated or pack
+ *  asset (the route verifies the C2PA export assertion before calling here). */
+export interface PublishInput {
+  bytes: Uint8Array;
+  name: string;
+  format: string;
+  contentType: string;
 }
 
 /** How provider-native metadata maps into catalog entries. */
@@ -52,6 +66,14 @@ export interface ProviderMapping {
   defaultType?: string;
   /** Fold provider sections/folders into entry tags (default true). */
   sectionTags?: boolean;
+  /**
+   * For DAMs that model availability as custom metadata rather than native
+   * fields (Image Relay terms, IntelligenceBank custom fields — plans/27 §9):
+   * the upstream field names a driver reads the availability window from.
+   * DAMs with native availability fields (Brandfolder, Acquia/Widen) ignore
+   * this and map their own fields directly.
+   */
+  availabilityFields?: { from?: string; until?: string };
 }
 
 /** Governance: which slice of the provider federates, and to whom (plans/17 §6). */
@@ -136,6 +158,14 @@ export interface ProviderAssetRef {
   tags: string[];
   approved?: boolean;
   updatedAt?: string;
+  /**
+   * Availability window imported from the upstream DAM (ISO — plans/27 §2).
+   * Folded onto the fragment entry and combined most-restrictive-wins with any
+   * local lifecycle row at both gate sites. Absent for providers with no such
+   * API — the manual `catalog.expire` arm is then the whole story.
+   */
+  availableFrom?: string;
+  availableUntil?: string;
   formats: ProviderFormatRef[];
   hasThumbnail?: boolean;
 }
@@ -152,5 +182,8 @@ export interface CatalogProvider {
   searchAssets?(query: string, limit: number): Promise<ProviderAssetRef[]>;
   /** `formatRef` is a remoteRef from this driver's own ProviderFormatRef (or 'thumb'). */
   resolveBlob(remoteId: string, formatRef: string): Promise<ResolvedBlob>;
+  /** Push a lolly-generated export INTO the destination (plans/27 §10). Only
+   *  present when `capabilities.publish` — the publish route gates on both. */
+  publishAsset?(input: PublishInput): Promise<{ remoteId: string; url?: string }>;
   healthCheck(): Promise<{ ok: boolean; detail?: string }>;
 }

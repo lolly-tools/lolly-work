@@ -9,9 +9,13 @@ import { createServer } from 'node:http';
 import { loadConfig, loadSecrets, parseAutoMigrate } from './config/instance.ts';
 import { createMemoryStore } from './store/memory.ts';
 import { createPostgresStore } from './store/postgres.ts';
+import { createMemoryBlobStore } from './blobs/memory.ts';
+import { createPostgresBlobStore } from './blobs/postgres.ts';
+import { createS3BlobStore } from './blobs/s3.ts';
 import { runMigrations, pendingMigrations } from './store/migrate.ts';
 import { buildApp } from './api/app.ts';
 import { createCollabGateway } from './collab/gateway.ts';
+import { createNearbyRegistry } from './collab/nearby.ts';
 import { auditHead } from './audit/head.ts';
 import { checkShellDist } from './lib/shell-dist.ts';
 import { readFileSync } from 'node:fs';
@@ -89,7 +93,25 @@ if (process.env.LW_SEED_CONFIG) {
 // admin console's `GET /api/v1/collab/rooms` (see app.ts's `AppDeps`).
 const collab = createCollabGateway({ config, store, secrets });
 
-const app = buildApp({ config, store, secrets, listCollabRooms: () => collab.snapshot() });
+// Instance-mediated "nearby" (plans/26 §8): an in-memory presence registry, wired
+// ONLY here in the long-lived process. The Vercel function never constructs it, so
+// the two `/api/v1/collab/nearby` routes answer 501 there — an in-memory registry
+// cannot span function instances (app.ts's `AppDeps.nearby`).
+const nearby = createNearbyRegistry();
+
+// BlobStore for instance-owned catalog bytes (plans/26 §2, plans/27 §5): the
+// configured driver — s3 (any S3-compatible store) when chosen, else the PG
+// default (zero moving parts), else memory when there is no database at all.
+const blobs = config.blobs.driver === 's3'
+  ? createS3BlobStore(
+      config.blobs.s3 ?? (() => { throw new Error('blobs.driver is "s3" but blobs.s3 config is missing'); })(),
+      process.env.LW_BLOBS_S3_CREDENTIAL,
+    )
+  : databaseUrl
+    ? await createPostgresBlobStore(databaseUrl)
+    : createMemoryBlobStore();
+
+const app = buildApp({ config, store, secrets, blobs, listCollabRooms: () => collab.snapshot(), nearby });
 
 // External anchoring of the audit chain (plan Rec 5): emit the head hash so any
 // log pipeline captures it off-box. On by default (boot + hourly); intervalMinutes

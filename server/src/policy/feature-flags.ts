@@ -63,6 +63,18 @@ export const GOVERNABLE_FLAGS: readonly GovernableFlag[] = [
     builtinDefault: true,
     info: 'The P2P invite/accept ceremony that lets two devices co-edit a tool session directly, no account or server (OSS plans/100 Track A). On by default for everyone since 2026-08-10; the shell still labels it beta. Nothing reaches the network until a user starts or accepts a collab. An instance that wants collaboration to go through the control plane only (Track B, gated by the collab.join/collab.edit org-config bits — see policy/org-config.ts) can force this default off and hide the toggle, which overrides any per-user choice.',
   },
+  {
+    id: 'nearby-discovery',
+    label: 'Nearby discovery',
+    // ON by default, matching the shell's own default (OSS shells/web/src/feature-flags.ts
+    // NEARBY_DISCOVERY_FLAG). Mirrors purely to keep "inherit" honest, and moves only
+    // when the shell moves. A fleet that must not have devices advertising themselves on
+    // a network (or being discoverable to each other) forces this off and hides the
+    // toggle. Only Tauri shells can actually discover — a browser build has no provider —
+    // so on a browser-only fleet this flag is inert, but governing it is still correct.
+    builtinDefault: true,
+    info: 'Lets nearby Lolly devices on the same network find each other (mDNS/DNS-SD), so an invite can be handed over by tapping a name instead of scanning a code (OSS plans/110). Native shells only; a browser cannot discover. A device is never discoverable until the user opts in for a set time, and the ceremony still confirms every pairing with matching plates. Force off + hide to keep devices off the local-network discovery lane fleet-wide.',
+  },
 ] as const;
 
 const FLAG_BY_ID = new Map(GOVERNABLE_FLAGS.map((f) => [f.id, f]));

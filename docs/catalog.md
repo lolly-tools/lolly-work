@@ -67,6 +67,51 @@ The console's Catalog view lists every asset the deploy serves with a thumbnail,
 revocation state; a revoked or hidden-on-expiry asset stays listed there — without its
 catalog metadata — so it can still be managed.
 
+### Holds
+
+A **hold** is the one governance verb that only ever *preserves* availability — a
+permissioned block on making an asset go away. It rides on the same lifecycle row and the
+same PUT, but is its own operation:
+
+```
+PUT /api/v1/catalog/lifecycle/<assetId>   { "hold": { "note": "legal review" } }   # catalog.hold
+PUT /api/v1/catalog/lifecycle/<assetId>   { "hold": null }                          # catalog.hold.release
+```
+
+While a hold is set, a revocation — or any edit that would make the asset unavailable *now*
+(a `validUntil` in the past, a `validFrom` in the future) — is refused `409 ASSET_HELD`, and
+the hold note rides the refusal. Release the hold first; that friction is the point.
+Non-removing edits (scheduling a *future* expiry, extending a window) still go through, and a
+hold never blocks *serving* — a held asset streams exactly as before. Setting/releasing needs
+`catalog.hold` (admin, grant-narrowable per resource; owner not required because a hold can
+only ever keep something available) and audits under `catalog.hold` / `catalog.hold.release`.
+
+A hold on a **federated** `ext/*` asset is accepted, but its bytes still live upstream, so the
+row reports `pinned: false` honestly: the hold gives feed- and action-level protection now,
+and byte durability arrives when materialization (the [exit path](#) — plans/27 §5) lands and
+a hold implies a pin. A held pack asset is inherently byte-durable, so it reads `pinned: true`.
+
+### Imported availability windows
+
+A federated asset can also carry an **upstream availability window** — the DAM's own
+scheduling/expiry, imported where the provider exposes it (Brandfolder's
+`availability_start`/`availability_end`; other kinds via a `mapping.availabilityFields`
+custom-field map). The window rides on the feed entry as `availableFrom`/`availableUntil`
+and is combined with the local lifecycle row **most-restrictive-wins**: the asset is
+`scheduled` if either start is still in the future and `expired` if either end has passed.
+So a local admin can *narrow* an upstream window (pull the end earlier, delay the start
+later) but never widen it past what the DAM allows — the DAM stays the source of truth for
+its own asset. One consequence: **upstream expiry always hides** (it stops the bytes too),
+because `onExpiry: 'warn'` only ever softens a *local* expiry, never upstream
+unavailability. Providers with no availability API set no window, and the manual
+`catalog.expire` arm is the whole story for them.
+
+`GET /api/v1/catalog/assets/<id>` reports the resolved `state` plus a `lifecycle` object
+that separates **where each constraint came from** — local `validFrom`/`validUntil`/
+`revokedAt` versus the imported `upstream.availableFrom`/`upstream.availableUntil` — so the
+console can label a hidden asset "unavailable upstream" distinctly from a locally-expired
+one.
+
 ## Catalog providers
 
 A provider is an admin-configured, **read-only** connector to a system that stays the source
@@ -76,7 +121,15 @@ references plus its own governance overlays — deleting a provider never touche
 content.
 
 Kinds: `brandfolder`, `s3` (hand-rolled SigV4), `git` (raw-HTTP manifest), `dropbox`,
-`gdrive`, `o365`/Graph, `mock`. No SDKs, publicly documented endpoints only.
+`gdrive`, `o365`/Graph, `optimizely-cmp` (CMP DAM v3, OAuth2), `mock`. No SDKs, publicly
+documented endpoints only.
+
+`optimizely-cmp` federates Optimizely CMP's web DAM **read-only** — a source that stays
+(the CMS owns those assets), never one that's exited. It maps CMP's native `expires_at` to
+an [availability window](#imported-availability-windows) and uses `is_public` (and
+not-`is_archived`) as the approved gate, so `requireApproved` federates only public, live
+assets; a folder name or a label can scope an `includeSections` slice. Endpoint and field
+names carry a live-verify note in the driver until confirmed against a real tenant.
 
 ```bash
 lw providers list
@@ -128,6 +181,72 @@ catalog version, so a refresh ripples through render-cache invalidation.
 
 `GET /api/v1/catalog/search` fans out live to providers that support server-side search,
 through the same exposure gates.
+
+### The exit — materialize a source into your own store
+
+Federation keeps the DAM as the source of truth. When you want to *leave* a DAM (contract
+end, off-boarding), **materialize** its assets into the instance's own store and cut the
+identity over — the same machinery also powers a hold's implied pin:
+
+```bash
+lw providers materialize acme-bf                    # whole provider (or --remote-id / --section)
+lw providers cutover acme-bf                         # identities ext/* → inst/*, provider disabled
+```
+
+- **Materialize** streams every format's bytes into the [BlobStore](#where-instance-bytes-live),
+  checksums them, sniffs each for an embedded [Content Credential](#imported-availability-windows),
+  and mints an **instance asset** (`inst/<id>`) that carries a permanent `origin`
+  (provider, remoteId, filename, materializedAt) so provenance stays honest long after the
+  DAM is gone. It is idempotent per asset and needs `catalog.provider.manage` (admin). While
+  the provider is still enabled its federated entry is suppressed in favour of the instance
+  copy — no doubles.
+- **Cutover** moves the identity to `inst/*`, migrates the lifecycle row (including any hold),
+  the credential detection and asset-specific grants, and writes **aliases** so every old
+  `/catalog/ext/…` URL — baked into already-rendered SVGs and live sessions — keeps
+  resolving. It disables a db-managed provider (owner-only, `catalog.provider.credential`);
+  deleting the provider afterwards deletes nothing, because the copies are instance-owned.
+- Materialized `inst/*` entries carry a per-format **checksum + size**, so migrated assets
+  gain the integrity-verification and offline-pin parity that federated `ext/*` entries
+  structurally cannot have while their bytes live upstream.
+
+A **hold** on a federated asset implies a pin: its bytes are materialized so they survive
+upstream deletion, the identity stays `ext/*`, and the blob route prefers the local copy.
+
+### Publishing lolly exports out
+
+The reverse motion, for a source you *keep* (Optimizely CMP): push **lolly-generated**
+exports into the destination DAM so lolly-made media is usable there and stays attributable
+on downstream sites.
+
+```bash
+lw providers publish web-cmp --in ./summit-badge.png --name "Summit Badge"
+```
+
+Deliberately narrow: the provider must declare the `publish` capability (`optimizely-cmp`
+with `options.publish: true`), the action is owner-grantable (`catalog.provider.publish`),
+and the bytes must carry lolly's **C2PA export assertion** — verified server-side, so a
+federated or pack asset can never be pushed out. Each publish is audited with the export's
+provenance chain. Exports arrive in the web DAM already carrying their signed Content
+Credential (see [c2pa](c2pa.md)).
+
+### Where instance bytes live
+
+Instance-owned catalog bytes (materialized assets, and later collab staging) live in a
+**BlobStore** chosen by `blobs.driver`:
+
+| Driver | When |
+|---|---|
+| `pg` (default) | zero moving parts — PG works everywhere the plane runs, including a single node |
+| `s3` | any S3-compatible store (AWS, MinIO, Ceph RGW) for media-sized estates and the air-gap story — a config flip, not an architecture change |
+
+```jsonc
+// instance.json
+"blobs": { "driver": "s3", "s3": { "bucket": "lolly-assets", "endpoint": "https://minio.internal:9000", "prefix": "inst" } }
+```
+
+The S3 credential is env-only: `LW_BLOBS_S3_CREDENTIAL="<accessKeyId>:<secretAccessKey>"`.
+S3 access is hand-rolled SigV4 (signed GET/PUT/DELETE) — no AWS SDK. `inst/*` bytes stream
+from `/catalog/inst/<id>/<format>` with an ETag, gated by lifecycle like any asset.
 
 ### Third-party terms
 

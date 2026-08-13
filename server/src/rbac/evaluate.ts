@@ -48,7 +48,7 @@ const ROLE_ACTIONS: Record<Role, string[]> = (() => {
   const approver = [...member, 'approval.act'];
   const admin = [
     ...new Set([...author, ...approver]),
-    'catalog.publish', 'catalog.expire',
+    'catalog.publish', 'catalog.expire', 'catalog.hold', 'catalog.scan',
     'catalog.provider.read', 'catalog.provider.manage',
     'catalog.injectable.manage',
     'policy.edit', 'grant.edit', 'link.revoke', 'link.create-guest',
@@ -57,7 +57,10 @@ const ROLE_ACTIONS: Record<Role, string[]> = (() => {
   ];
   // Credentials + the enable/disable kill switch stay owner-only: an admin can
   // shape a provider, but only an owner puts a key in or turns it on (plans/17 §6).
-  const owner = [...admin, 'instance.config', 'catalog.provider.credential'];
+  // `catalog.provider.publish` (pushing lolly exports OUT to a destination DAM,
+  // plans/27 §10) is owner-grantable too — an outbound write to a third party is
+  // an owner's call, though they can grant it per-provider.
+  const owner = [...admin, 'instance.config', 'catalog.provider.credential', 'catalog.provider.publish'];
   // Guests get NOTHING by default — their access is entirely link-scoped grants.
   return { viewer, member, author, approver, admin, owner, guest: [] };
 })();

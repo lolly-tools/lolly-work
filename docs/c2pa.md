@@ -112,3 +112,30 @@ extraVolumeMounts:
 - **Best-effort at runtime**: if signing itself throws mid-render, the unsigned
   bytes still ship (the render never 500s over a signing hiccup), and the failure
   is logged.
+
+## Detecting credentials on imported assets (not signing, not verifying)
+
+Everything above is about **signing** exports this deploy produces. A separate,
+much smaller motion runs on assets that come *in* from a federated DAM: a DAM
+asset's bytes may already carry a C2PA manifest that the DAM's own API never
+mentions (Brandfolder's v4, for one, surfaces nothing C2PA-shaped). The catalog
+can **detect** that.
+
+- `POST /api/v1/catalog/scan/<assetId>` (action `catalog.scan`, admin, audited)
+  fetches the asset's primary format once — through the provider driver for an
+  `ext/*` id, or off disk for a pack id — and sniffs whether the bytes embed a
+  C2PA manifest. It records `{ status: 'embedded' | 'none', container?, sniffedAt,
+  sourceUpdatedAt? }`; a feed entry then annotates `credential: 'embedded'` and the
+  inspect route (`GET /api/v1/catalog/assets/<id>`) returns the detection row.
+- It is a **detector, never a verifier**. It records only *whether* a manifest is
+  present and in which container — never a `valid`/`trusted` verdict, never a
+  parsed claim. Validation is the reader's to do against the bytes they received,
+  in the console's own verify view; the deploy does not mark its own homework.
+  This reuses the vendored engine's container handling (one C2PA implementation
+  across both repos), and the engine-pin check asserts those modules stay present.
+- On **export**, provenance ingredients upgrade `c2pa: null` → `{ kind: 'embedded' }`
+  for any consumed asset that has an embedded detection — so the export can
+  distinguish "the source said nothing" from "the source carries a credential".
+
+Detection (this section) and signing (above) are independent: detection reads what
+imported bytes already carry; signing is what this deploy stamps onto what it makes.

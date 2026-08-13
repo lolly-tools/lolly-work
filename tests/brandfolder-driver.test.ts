@@ -20,6 +20,8 @@ const ASSETS_PAGE = {
       thumbnail_url: 'https://thumbs.bfldr.com/as/255hvp?expiry=1785337200&sig=x',
       cdn_url: 'https://cdn.bfldr.com/FQEVVFCB/as/255hvp/program-logo-positive',
       updated_at: '2024-09-24T23:14:52.291Z', extension: 'png',
+      availability: 'available',
+      availability_start: '2024-01-01T00:00:00.000Z', availability_end: '2027-01-01T00:00:00.000Z',
     },
     relationships: {
       section: { data: { id: 'sec1', type: 'sections' } },
@@ -74,10 +76,25 @@ test('listAssets maps the recorded shape: section names, attachment formats, pag
   assert.equal(a?.approved, true);
   assert.equal(a?.hasThumbnail, true);
   assert.deepEqual(a?.formats, [{ format: 'png', remoteRef: 'njc8wh9647cjst8h55ff38', size: 16561, filename: 'x.png' }]);
+  // Upstream availability window is imported into the asset ref (plans/27 §2).
+  assert.equal(a?.availableFrom, '2024-01-01T00:00:00.000Z');
+  assert.equal(a?.availableUntil, '2027-01-01T00:00:00.000Z');
+  // The v4 availability fields are actually requested.
+  const firstCall = (fetchImpl as unknown as { calls: string[] }).calls[0] ?? '';
+  assert.ok(firstCall.includes('availability_start') && firstCall.includes('availability_end'), 'availability fields are requested');
 
   await bf.listAssets('2');
   const calls = (fetchImpl as unknown as { calls: string[] }).calls;
   assert.ok(calls[1]?.includes('page=2'), 'cursor drives the page param');
+});
+
+test('an asset with no availability attributes carries no window', async () => {
+  const bare = { data: [{ id: 'z', type: 'generic_files', attributes: { name: 'bare', extension: 'png' }, relationships: {} }], meta: {} };
+  const fetchImpl = fakeFetch([{ match: (u) => u.includes(`/brandfolders/${BF_ID}/assets`), body: bare }]);
+  const bf = createBrandfolderProvider('suse-bf', { brandfolderId: BF_ID }, 'key', fetchImpl);
+  const a = (await bf.listAssets()).assets[0];
+  assert.equal(a?.availableFrom, undefined);
+  assert.equal(a?.availableUntil, undefined);
 });
 
 test('searchAssets URL-encodes the query and bearer auth rides every call', async () => {

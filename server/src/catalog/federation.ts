@@ -12,9 +12,9 @@
  * compose time, per caller.
  */
 import { canonicalJson, openSecret, sha256Hex } from '../lib/crypto.ts';
-import { extAssetId, type CatalogProvider, type ProviderAssetRef, type ProviderFragment, type ProviderRecord } from './providers/types.ts';
+import { EXT_PREFIX, extAssetId, type CatalogProvider, type ProviderAssetRef, type ProviderFragment, type ProviderRecord } from './providers/types.ts';
 import { createProvider, type ProviderDeps } from './providers/registry.ts';
-import type { AssetIndex, AssetIndexEntry } from './lifecycle.ts';
+import { entryWindow, type AssetIndex, type AssetIndexEntry, type AvailabilityWindow } from './lifecycle.ts';
 import type { Store } from '../store/types.ts';
 
 /** HKDF domain-separation context for a provider's sealed credential. */
@@ -40,6 +40,8 @@ export function mapProviderAsset(rec: ProviderRecord, asset: ProviderAssetRef): 
     tags: [...new Set([`provider:${rec.id}`, ...sectionTags, ...asset.tags])],
     provider: rec.id,
     ...(asset.updatedAt ? { updatedAt: asset.updatedAt } : {}),
+    ...(asset.availableFrom ? { availableFrom: asset.availableFrom } : {}),
+    ...(asset.availableUntil ? { availableUntil: asset.availableUntil } : {}),
     ...(asset.hasThumbnail ? { thumbnail: `/catalog/${idPath}/thumb` } : {}),
     formats: asset.formats.map((f) => ({
       format: f.format,
@@ -108,6 +110,11 @@ export interface Federation {
   /** Combined fragment hash — folded into catalogVersion so provider refreshes
    *  invalidate renders like a pack change. */
   version(): Promise<string>;
+  /** Imported upstream availability window for a federated asset id, read off
+   *  its cached fragment entry — the ext/* blob gate combines it most-
+   *  restrictive-wins with the local lifecycle row (plans/27 §2). Undefined for
+   *  a pack id, an unknown id, or a provider with no availability API. */
+  availabilityWindow(assetId: string): Promise<AvailabilityWindow | undefined>;
   /** Drop a provider's cached fragment (disable/delete/credential change). */
   invalidate(providerId: string): void;
 }
@@ -200,6 +207,15 @@ export function createFederation(deps: FederationDeps): Federation {
       const frags = await fragments();
       if (!frags.length) return '';
       return sha256Hex(frags.map((f) => `${f.rec.id}:${f.fragment.hash}`).join('|')).slice(0, 16);
+    },
+    async availabilityWindow(assetId) {
+      if (!assetId.startsWith(EXT_PREFIX)) return undefined;
+      for (const { rec, fragment } of await fragments()) {
+        if (!assetId.startsWith(`${EXT_PREFIX}${rec.id}/`)) continue;
+        const entry = fragment.assets.find((a) => a.id === assetId);
+        return entry ? entryWindow(entry) : undefined;
+      }
+      return undefined;
     },
     invalidate(providerId) {
       cache.delete(providerId);

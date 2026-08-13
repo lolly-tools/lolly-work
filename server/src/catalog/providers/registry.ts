@@ -13,6 +13,7 @@ import { createGitProvider, type GitOptions } from './git.ts';
 import { createDropboxProvider, type DropboxOptions } from './dropbox.ts';
 import { createGdriveProvider, type GdriveOptions } from './gdrive.ts';
 import { createO365Provider, type O365Options } from './o365.ts';
+import { createOptimizelyCmpProvider, type OptimizelyCmpOptions } from './optimizely-cmp.ts';
 
 export interface ProviderDeps {
   fetchImpl?: typeof fetch;
@@ -34,6 +35,8 @@ export function createProvider(rec: ProviderRecord, secret: string | undefined, 
       return createGdriveProvider(rec.id, rec.options as unknown as GdriveOptions, secret, deps.fetchImpl);
     case 'o365':
       return createO365Provider(rec.id, rec.options as unknown as O365Options, secret, deps.fetchImpl);
+    case 'optimizely-cmp':
+      return createOptimizelyCmpProvider(rec.id, rec.options as unknown as OptimizelyCmpOptions, secret, deps.fetchImpl);
     default:
       throw new Error(`catalog provider kind not yet implemented: ${rec.kind}`);
   }

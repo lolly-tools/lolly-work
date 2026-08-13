@@ -77,6 +77,20 @@ export async function readJson(req: IncomingMessage, maxBytes = 512 * 1024): Pro
   }
 }
 
+/** Read a non-JSON request body into one Buffer, size-capped (plans/26 §2 —
+ *  the router's first raw reader). Used by the publish-out route, which streams
+ *  an export's bytes in. Buffered, not streamed to disk. */
+export async function readRaw(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of req) {
+    total += (chunk as Buffer).length;
+    if (total > maxBytes) throw Object.assign(new Error('payload too large'), { status: 413 });
+    chunks.push(chunk as Buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
 export function sendJson(res: ServerResponse, status: number, body: unknown, headers?: Record<string, string>): void {
   const data = JSON.stringify(body);
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...headers });

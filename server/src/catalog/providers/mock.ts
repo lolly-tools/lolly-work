@@ -11,6 +11,9 @@ export interface MockProviderOptions {
   failWith?: string;
   /** Require the resolved credential to equal this value (exercises seal/open). */
   expectSecret?: string;
+  /** Declare the publish-out capability (plans/27 §10) so the publish route can
+   *  be exercised without a live destination DAM. */
+  publish?: boolean;
 }
 
 export function createMockProvider(id: string, options: MockProviderOptions, secret?: string): CatalogProvider {
@@ -22,7 +25,10 @@ export function createMockProvider(id: string, options: MockProviderOptions, sec
   return {
     id,
     kind: 'mock',
-    capabilities: { search: true, thumbnails: true, expiringUrls: false },
+    capabilities: { search: true, thumbnails: true, expiringUrls: false, publish: options.publish === true },
+    ...(options.publish
+      ? { async publishAsset(input: { name: string; format: string; bytes: Uint8Array }) { return { remoteId: `cmp-${input.name}.${input.format}`, url: `https://mock.dam/${input.name}` }; } }
+      : {}),
     async listAssets() {
       check();
       return { assets };

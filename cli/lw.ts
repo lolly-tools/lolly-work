@@ -41,6 +41,9 @@ const { positionals, values } = parseArgs({
     options: { type: 'string' },
     mapping: { type: 'string' },
     exposure: { type: 'string' },
+    section: { type: 'string' },
+    'remote-id': { type: 'string' },
+    name: { type: 'string' },
     check: { type: 'boolean' },
     out: { type: 'string' },
     in: { type: 'string' },
@@ -284,6 +287,50 @@ switch (cmd) {
         out(h);
         console.log(h.ok ? 'ok' : `unhealthy: ${h.detail ?? 'unknown'}`);
         if (!h.ok) process.exit(2);
+        break;
+      }
+      // The exit (plans/27 §5): stream a provider's bytes into the instance's own
+      // store. Whole provider, or one --remote-id, or a --section. Idempotent.
+      case 'materialize': {
+        if (!id) fail('usage: lw providers materialize <id> [--remote-id <id> | --section <name>]');
+        const body: Record<string, string> = {};
+        if (values['remote-id']) body.remoteId = values['remote-id'];
+        if (values.section) body.section = values.section;
+        const r = await call(`/api/v1/catalog/providers/${id}/materialize`, { method: 'POST', body }) as {
+          materialized: number; skipped: number; credentialsFound: number;
+        };
+        out(r);
+        console.log(`materialized ${r.materialized} asset(s) from ${id} — ${r.credentialsFound} carry a credential, ${r.skipped} skipped`);
+        break;
+      }
+      // Cutover: identities ext/* → inst/*, rows + aliases migrated, provider
+      // disabled. Owner-gated. Deleting the provider afterwards deletes nothing.
+      case 'cutover': {
+        if (!id) fail('usage: lw providers cutover <id>');
+        const r = await call(`/api/v1/catalog/providers/${id}/cutover`, { method: 'POST' }) as { migrated: number };
+        out(r);
+        console.log(`cut ${id} over: ${r.migrated} asset(s) now instance-owned; provider disabled`);
+        break;
+      }
+      // Publish out (plans/27 §10): push a lolly-generated export to a destination
+      // (Optimizely CMP). Owner-grantable. The export must carry lolly's C2PA
+      // export assertion — federated/pack assets are refused server-side.
+      case 'publish': {
+        if (!id) fail('usage: lw providers publish <id> --in <export-file> [--name <name>]');
+        const file = values.in ?? fail('--in <export-file> required');
+        const bytes = readFileSync(file);
+        const format = (file.split('.').pop() ?? '').toLowerCase();
+        if (!format) fail('cannot infer format from the filename — give it an extension');
+        const name = values.name ?? (file.split('/').pop() ?? file).replace(/\.[^.]+$/, '');
+        const mime: Record<string, string> = { svg: 'image/svg+xml', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', pdf: 'application/pdf', webp: 'image/webp' };
+        const cookie = savedCookie();
+        const res = await fetch(`${base}/api/v1/catalog/providers/${id}/publish?name=${encodeURIComponent(name)}&format=${encodeURIComponent(format)}`, {
+          method: 'POST', headers: { ...(cookie ? { cookie } : {}), 'content-type': mime[format] ?? 'application/octet-stream', 'x-lolly-client': 'lw-cli engine/0' }, body: bytes,
+        });
+        const body = await res.json() as { ok?: boolean; remoteId?: string; url?: string; error?: { message: string } };
+        if (!res.ok) fail(`publish failed (${res.status}): ${body.error?.message ?? 'unknown'}`);
+        out(body);
+        console.log(`published ${name}.${format} to ${id} → ${body.remoteId}${body.url ? ` (${body.url})` : ''}`);
         break;
       }
       case 'rm': {

@@ -17,9 +17,14 @@ export interface BrandfolderOptions {
 const DEFAULT_BASE = 'https://brandfolder.com/api/v4';
 const ALLOWED_HOSTS = /(^|\.)(brandfolder\.com|bfldr\.com)$/;
 const PAGE_SIZE = 100;
-const ASSET_FIELDS = 'fields=cdn_url,thumbnail_url,extension,updated_at,approved';
+const ASSET_FIELDS = 'fields=cdn_url,thumbnail_url,extension,updated_at,approved,availability,availability_start,availability_end';
 // Attachment filename/size ride the default include payload (verified live);
 // original_filename maps into ProviderFormatRef.filename for provenance.
+// availability_start/availability_end are the v4 asset-availability window
+// (plans/27 §2) — mapped into the ProviderAssetRef availability window below.
+// One live confirmation against the SUSE tenant before ship (same discipline as
+// the filename note above): confirm the field names and capture what the bare
+// `availability` enum returns alongside the dates.
 
 interface JsonApiResource {
   id: string;
@@ -82,6 +87,8 @@ export function createBrandfolderProvider(
         tags: [],
         ...(typeof asset.attributes.approved === 'boolean' ? { approved: asset.attributes.approved } : {}),
         ...(asset.attributes.updated_at ? { updatedAt: asset.attributes.updated_at as string } : {}),
+        ...(typeof asset.attributes.availability_start === 'string' ? { availableFrom: asset.attributes.availability_start } : {}),
+        ...(typeof asset.attributes.availability_end === 'string' ? { availableUntil: asset.attributes.availability_end } : {}),
         formats,
         hasThumbnail: typeof asset.attributes.thumbnail_url === 'string',
       };

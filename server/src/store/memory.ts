@@ -14,6 +14,8 @@ import type { LinkRecord } from '../links/sign.ts';
 import type { StoredEvent } from '../telemetry/ingest.ts';
 import type { Message } from '../inbox/target.ts';
 import type { LifecycleRow } from '../catalog/lifecycle.ts';
+import type { CredentialRow } from '../catalog/credentials.ts';
+import type { InstanceAssetRecord } from '../catalog/instance-assets.ts';
 import type { ProviderRecord } from '../catalog/providers/types.ts';
 import {
   SESSION_REVISION_LIMIT, effectiveGroups,
@@ -41,6 +43,9 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const chains = new Map<string, Chain>();
   const approvals = new Map<string, Approval>();
   const lifecycle = new Map<string, LifecycleRow>();
+  const credentials = new Map<string, CredentialRow>();
+  const instanceAssets = new Map<string, InstanceAssetRecord>();
+  const aliases = new Map<string, string>();
   const providers = new Map<string, ProviderRecord>();
   const projects = new Map<string, ProjectRecord>();
   const sessions = new Map<string, SessionRecord>();
@@ -316,6 +321,44 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     },
     async listLifecycle() {
       return [...lifecycle.values()];
+    },
+    async deleteLifecycle(assetId) {
+      lifecycle.delete(assetId);
+    },
+
+    async putCredential(row) {
+      credentials.set(row.assetId, row);
+    },
+    async getCredential(assetId) {
+      return credentials.get(assetId) ?? null;
+    },
+    async listCredentials() {
+      return [...credentials.values()];
+    },
+    async deleteCredential(assetId) {
+      credentials.delete(assetId);
+    },
+
+    async putInstanceAsset(rec) {
+      instanceAssets.set(rec.id, rec);
+    },
+    async getInstanceAsset(id) {
+      return instanceAssets.get(id) ?? null;
+    },
+    async listInstanceAssets() {
+      return [...instanceAssets.values()];
+    },
+    async deleteInstanceAsset(id) {
+      instanceAssets.delete(id);
+    },
+    async putAlias(fromId, toId) {
+      aliases.set(fromId, toId);
+    },
+    async getAlias(fromId) {
+      return aliases.get(fromId) ?? null;
+    },
+    async listAliases() {
+      return [...aliases.entries()].map(([fromId, toId]) => ({ fromId, toId }));
     },
 
     async listProviders() {

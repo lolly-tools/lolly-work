@@ -21,6 +21,13 @@ const INGREDIENTS: ProvenanceIngredient[] = [
     title: 'primary', assetId: 'acme/logo/primary', relationship: 'componentOf',
     source: { kind: 'pack', label: 'Acme Hub' }, c2pa: null,
   },
+  {
+    // A federated asset whose bytes were detected to carry a credential the DAM
+    // API never named (plans/27 §4): c2pa upgrades null → { kind: 'embedded' }.
+    title: 'Detected Cred', assetId: 'ext/suse-bf/a2', relationship: 'componentOf',
+    source: { kind: 'provider', provider: 'suse-bf', providerKind: 'brandfolder', label: 'SUSE Resource Library', remoteId: 'a2' },
+    c2pa: { kind: 'embedded' },
+  },
 ];
 
 test('collectCatalogRefs: SVG hrefs + nested baked params, deduped, queries shed, traversal ignored', () => {
@@ -46,6 +53,7 @@ test('embedSvgProvenance: JSON island lands after the opening tag, CDATA-safe, p
   assert.equal(parsed.generator, 'lolly-work');
   assert.equal(parsed.ingredients[0].source.filename, 'SUSE Summit Tokyo_pos-green.svg');
   assert.equal(parsed.ingredients[0].c2pa, null, 'no upstream manifest is stated, not omitted');
+  assert.deepEqual(parsed.ingredients[2].c2pa, { kind: 'embedded' }, 'a detected embedded credential travels with the export');
   // A non-SVG string is returned untouched.
   assert.equal(embedSvgProvenance('not svg', doc), 'not svg');
 });

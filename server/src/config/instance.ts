@@ -67,6 +67,14 @@ export interface InstanceConfig {
     telemetry: 'off' | 'aggregate' | 'standard';
     telemetryAttribution: 'default' | 'opt-in';
     guestLinks: { enabled: boolean; maxTtlHours: number; defaultTtlHours: number };
+    /** Instance-mediated "nearby" for browser members (plans/26 §8, OSS plans/110 §5):
+     *  group online members by apparent network so the invite flow can surface likely-
+     *  nearby colleagues. A sorting hint, never an identity claim. Governs the
+     *  `collab.nearby` capability bit + the two `/api/v1/collab/nearby` routes; only
+     *  effective on the long-lived server (the registry is absent on Vercel). Default
+     *  on — it discloses nothing a member did not opt into. Force off to keep the whole
+     *  surface dark fleet-wide. */
+    nearby: { enabled: boolean };
     /** Member session lifetime (hours) — sets both the signed-token exp and the
      *  cookie Max-Age. Shorter is safer: it bounds how long an uncaught revocation
      *  (group/role change, offboarding) can ride before it self-expires. Account
@@ -114,6 +122,18 @@ export interface InstanceConfig {
     users: Array<{ email: string; name?: string; groups?: string[] }>;
   };
   catalogProviders: ConfigCatalogProvider[];
+  /**
+   * Where instance-owned catalog bytes live (plans/26 §2, plans/27 §5): the
+   * materialized-out-of-a-DAM assets and, later, collab staging. `pg` (default)
+   * keeps the zero-moving-parts single-node deploy — PG works everywhere the
+   * plane runs. `s3` points at any S3-compatible store (AWS, MinIO, Ceph RGW)
+   * for media-sized estates and the air-gap story; the credential is env-only
+   * (LW_BLOBS_S3_CREDENTIAL = "<accessKeyId>:<secretAccessKey>").
+   */
+  blobs: {
+    driver: 'pg' | 's3';
+    s3?: { bucket: string; region?: string; endpoint?: string; prefix?: string };
+  };
   rateLimit: RateLimitConfig;
 }
 
@@ -157,6 +177,7 @@ const DEFAULTS: InstanceConfig = {
     telemetry: 'standard',
     telemetryAttribution: 'opt-in',
     guestLinks: { enabled: true, maxTtlHours: 168, defaultTtlHours: 72 },
+    nearby: { enabled: true },
     sessionTtlHours: 12,
   },
   render: { allowHooksInFastPath: false, worker: { url: '', timeoutMs: 20000 }, c2pa: { certFile: '', claimGenerator: '' } },
@@ -169,6 +190,7 @@ const DEFAULTS: InstanceConfig = {
   },
   dev: { enabled: false, users: [] },
   catalogProviders: [],
+  blobs: { driver: 'pg' },
 };
 
 function merge<T extends Record<string, unknown>>(base: T, over: Partial<T> | undefined): T {
@@ -216,6 +238,8 @@ export function parseConfig(json: string): InstanceConfig {
     if (!PROVIDER_KINDS.includes(p.kind)) throw new Error(`unknown catalog provider kind: ${p.kind}`);
     if (!p.label) throw new Error(`catalog provider ${p.id} needs a label`);
   }
+  if (cfg.blobs.driver !== 'pg' && cfg.blobs.driver !== 's3') throw new Error(`unknown blobs.driver: ${cfg.blobs.driver} (pg | s3)`);
+  if (cfg.blobs.driver === 's3' && !cfg.blobs.s3?.bucket) throw new Error('blobs.driver "s3" requires blobs.s3.bucket');
   return cfg;
 }
 

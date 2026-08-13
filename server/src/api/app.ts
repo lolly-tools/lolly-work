@@ -16,7 +16,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { InstanceConfig, Secrets } from '../config/instance.ts';
 import type { ProjectRecord, SessionRecord, Store, UserRecord } from '../store/types.ts';
 import type { RoomSnapshot } from '../collab/rooms.ts';
-import { createRouter, readJson, sendError, sendJson, type RouteCtx } from './router.ts';
+import type { NearbyRegistry } from '../collab/nearby.ts';
+import { createRouter, readJson, readRaw, sendError, sendJson, type RouteCtx } from './router.ts';
 import { readShotCred } from './shot-provenance.ts';
 import { mintToken, verifyToken } from '../iam/tokens.ts';
 import {
@@ -33,10 +34,16 @@ import {
 } from '../collab/invites.ts';
 import { filterToolIndex, normalizeOverlay, toolVisibleTo } from '../policy/overlay.ts';
 import {
-  applyLifecycleToIndex, assetState, buildPathMap, type AssetIndex, type AssetIndexEntry, type LifecycleRow,
+  applyLifecycleToIndex, assetState, buildPathMap, combinedState, entryWindow, type AssetIndex, type AssetIndexEntry, type LifecycleRow,
 } from '../catalog/lifecycle.ts';
 import { callerSeesProvider, createFederation, credentialContext, mapProviderAsset, passesExposure } from '../catalog/federation.ts';
-import { extAssetId, PROVIDER_KINDS, type ProviderKind, type ProviderRecord } from '../catalog/providers/types.ts';
+import { applyCredentialsToIndex, detectCredential, type CredentialRow } from '../catalog/credentials.ts';
+import { composeInstanceAssets, instanceAssetVisible, materializedIdFor, INST_PREFIX } from '../catalog/instance-assets.ts';
+import { materializeProvider, cutoverProvider, pinAsset } from '../catalog/materialize.ts';
+import { verifyLollyExport, extractProvenance } from '../catalog/publish.ts';
+import { createMemoryBlobStore } from '../blobs/memory.ts';
+import type { BlobStore } from '../blobs/types.ts';
+import { EXT_PREFIX, extAssetId, PROVIDER_KINDS, type ProviderKind, type ProviderRecord } from '../catalog/providers/types.ts';
 import { createProvider } from '../catalog/providers/registry.ts';
 import { invalidateAccessTokens } from '../catalog/providers/oauth.ts';
 import { assembleOrgConfig } from '../policy/org-config.ts';
@@ -87,10 +94,20 @@ export interface AppDeps {
    *  `() => collab.snapshot()`; the Vercel path never wires the gateway at
    *  all, so this stays undefined there and the route just answers `[]`. */
   listCollabRooms?: () => RoomSnapshot[];
+  /** Instance-mediated "nearby" registry (plans/26 §8). Like `listCollabRooms`,
+   *  this is injected only by the long-lived server (main.ts) and left undefined on
+   *  Vercel, where an in-memory presence registry cannot work across function
+   *  instances — the routes answer 501 there rather than a misleading partial list. */
+  nearby?: NearbyRegistry;
+  /** Byte storage for instance-owned catalog assets (plans/26 §2, plans/27 §5).
+   *  main.ts builds the configured driver (pg default / s3); tests and the
+   *  Vercel path fall back to an in-memory store. */
+  blobs?: BlobStore;
 }
 
 export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
-  const { config, store, secrets, listCollabRooms } = deps;
+  const { config, store, secrets, listCollabRooms, nearby } = deps;
+  const blobs = deps.blobs ?? createMemoryBlobStore();
   const fetchImpl = deps.fetchImpl ?? fetch;
   const secure = config.instance.baseUrl.startsWith('https:');
   const sessionTtlSec = config.policy.sessionTtlHours * 3600;
@@ -1114,6 +1131,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const seen = new Set<string>();
     let fragments: Awaited<ReturnType<typeof federation.fragments>> | undefined;
     const pathMap = await loadAssetPathMap(config.instance.pack);
+    // A detection upgrades `c2pa: null` → `{ kind: 'embedded' }` for the
+    // consumed asset — the export can then distinguish "source said nothing"
+    // from "source carries a credential" (plans/27 §4). Detection, never a verdict.
+    const embeddedCredential = async (assetId: string): Promise<{ kind: 'embedded' } | null> =>
+      (await store.getCredential(assetId))?.status === 'embedded' ? { kind: 'embedded' } : null;
     for (const rel of refs) {
       if (rel.startsWith('ext/')) {
         const [, pid, rid, fmtRef] = rel.split('/');
@@ -1135,7 +1157,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
             label: rec?.label ?? pid, remoteId: rid,
             ...(fmt?.filename ? { filename: fmt.filename } : {}),
           },
-          c2pa: null,
+          c2pa: await embeddedCredential(assetId),
         });
       } else {
         const assetId = pathMap.get(rel);
@@ -1143,7 +1165,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         seen.add(assetId);
         out.push({
           title: assetId.split('/').pop() ?? assetId, assetId, relationship: 'componentOf',
-          source: { kind: 'pack', label: config.instance.name }, c2pa: null,
+          source: { kind: 'pack', label: config.instance.name }, c2pa: await embeddedCredential(assetId),
         });
       }
     }
@@ -1167,8 +1189,56 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (config.policy.defaultAccessMode === 'gated' && !user && p?.kind !== 'guest') {
       return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
     }
-    const rel = normalize(ctx.params['*'] ?? '').replace(/^(\.\.[/\\])+/, '');
+    let rel = normalize(ctx.params['*'] ?? '').replace(/^(\.\.[/\\])+/, '');
     if (rel.includes('..')) return sendError(res, 400, 'INVALID_INPUT', 'bad path');
+    // After the exit's cutover, an old ext/* blob URL (baked into already-rendered
+    // SVGs and live sessions) resolves through a persistent alias to the new
+    // inst/* path — nothing that referenced the federated identity breaks (plans/27 §5).
+    if (rel.startsWith('ext/')) {
+      const aliased = await store.getAlias(rel);
+      if (aliased) rel = aliased;
+    }
+    // Instance-owned blobs stream from the BlobStore: /catalog/inst/<id>/<format>.
+    if (rel.startsWith(INST_PREFIX)) {
+      const parts = rel.split('/');
+      if (parts.length !== 3) return sendError(res, 404, 'NOT_FOUND', 'bad instance asset path');
+      const [, sid, formatRef] = parts as [string, string, string];
+      const id = `${INST_PREFIX}${sid}`;
+      const rec = await store.getInstanceAsset(id);
+      if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such instance asset');
+      if (!instanceAssetVisible(rec, user?.groups ?? [])) return sendError(res, 403, 'FORBIDDEN', 'not visible to your groups');
+      // A pin's identity stays ext/* until cutover, so gate it EXACTLY like the
+      // ext blob route would — the local lifecycle row AND the upstream
+      // availability window — never a phantom inst-keyed row (plans/27 §3, §5).
+      // An exited or submit asset gates on its own inst row (no window).
+      const isPin = !rec.exited && !!rec.origin;
+      const govId = isPin ? extAssetId(rec.origin!.provider, rec.origin!.remoteId) : id;
+      const row = await store.getLifecycle(govId);
+      const window = isPin ? await federation.availabilityWindow(govId) : undefined;
+      const { state, upstreamExpired } = combinedState(row ?? undefined, window, Date.now());
+      const blocked = state === 'revoked' || state === 'scheduled' || (state === 'expired' && (upstreamExpired || row?.onExpiry !== 'warn'));
+      if (blocked) return sendError(res, 410, 'ASSET_EXPIRED', 'this asset is no longer available');
+      const blobId = rec.blobs[formatRef];
+      const stat = blobId ? await blobs.head(blobId) : null;
+      if (!stat) return sendError(res, 404, 'NOT_FOUND', 'no such format');
+      const etag = `"${stat.checksum}"`;
+      if (req.headers['if-none-match'] === etag) {
+        res.writeHead(304, { etag, 'cache-control': 'private, max-age=300' });
+        res.end();
+        return;
+      }
+      const blob = await blobs.get(blobId as string);
+      if (!blob) return sendError(res, 404, 'NOT_FOUND', 'no such format');
+      res.writeHead(200, {
+        'content-type': blob.stat.contentType,
+        'x-content-type-options': 'nosniff',
+        'cache-control': 'private, max-age=300',
+        etag,
+        'content-length': String(blob.stat.size),
+      });
+      Readable.fromWeb(blob.body as import('node:stream/web').ReadableStream<Uint8Array>).pipe(res);
+      return;
+    }
     // Federated blobs never touch the filesystem: /catalog/ext/<provider>/<remoteId>/<formatRef>
     // resolves through the provider driver per request (plans/17 §8).
     if (rel.startsWith('ext/')) {
@@ -1182,9 +1252,40 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       if (!callerSeesProvider(rec, user?.groups ?? [])) return sendError(res, 403, 'FORBIDDEN', 'not visible to your groups');
       const assetId = extAssetId(providerId, remoteId);
       const row = await store.getLifecycle(assetId);
-      const state = assetState(row ?? undefined, Date.now());
-      const blocked = state === 'revoked' || state === 'scheduled' || (state === 'expired' && row?.onExpiry !== 'warn');
+      // Combine the local row with any upstream availability window imported
+      // from the DAM (plans/27 §2), read off the in-process fragment beside the
+      // lifecycle row we already load. Upstream expiry blocks bytes even under
+      // onExpiry:'warn' — that only ever softens a purely-local expiry.
+      const window = await federation.availabilityWindow(assetId);
+      const { state, upstreamExpired } = combinedState(row ?? undefined, window, Date.now());
+      const blocked = state === 'revoked' || state === 'scheduled' || (state === 'expired' && (upstreamExpired || row?.onExpiry !== 'warn'));
       if (blocked) return sendError(res, 410, 'ASSET_EXPIRED', 'this asset is no longer available');
+      // hold-implies-pin (plans/27 §3, §5): when this asset's bytes have been
+      // materialized into the instance's own store, prefer the local copy — the
+      // federated identity stays, but the bytes survive upstream deletion.
+      const pinned = await store.getInstanceAsset(materializedIdFor(providerId, remoteId));
+      if (pinned) {
+        const fmtName = pinned.refMap?.[formatRef] ?? formatRef;
+        const localId = pinned.blobs[fmtName];
+        const localStat = localId ? await blobs.head(localId) : null;
+        if (localStat) {
+          const etag = `"${localStat.checksum}"`;
+          if (req.headers['if-none-match'] === etag) {
+            res.writeHead(304, { etag, 'cache-control': 'private, max-age=300' });
+            res.end();
+            return;
+          }
+          const local = await blobs.get(localId as string);
+          if (local) {
+            res.writeHead(200, {
+              'content-type': local.stat.contentType, 'x-content-type-options': 'nosniff',
+              'cache-control': 'private, max-age=300', etag, 'content-length': String(local.stat.size),
+            });
+            Readable.fromWeb(local.body as import('node:stream/web').ReadableStream<Uint8Array>).pipe(res);
+            return;
+          }
+        }
+      }
       try {
         const blob = await federation.instantiate(rec).resolveBlob(remoteId, formatRef);
         if (blob.kind === 'redirect') {
@@ -1227,9 +1328,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         await providersReady;
         // Federate before lifecycle so expire/revoke rows on ext/* ids gate
         // federated entries exactly like pack entries.
-        const composed = await federation.composeIndex(index, user?.groups ?? []);
-        const rows = await store.listLifecycle();
-        return sendJson(res, 200, applyLifecycleToIndex(composed, rows, Date.now()), { 'cache-control': 'private, max-age=60' });
+        const federated = await federation.composeIndex(index, user?.groups ?? []);
+        const [rows, creds, instAssets] = await Promise.all([store.listLifecycle(), store.listCredentials(), store.listInstanceAssets()]);
+        const composed = composeInstanceAssets(federated, instAssets, user?.groups ?? []);
+        const gated = applyLifecycleToIndex(composed, rows, Date.now());
+        return sendJson(res, 200, applyCredentialsToIndex(gated, creds), { 'cache-control': 'private, max-age=60' });
       } catch {
         /* not the expected shape — serve raw below */
       }
@@ -1252,6 +1355,21 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     res.end(bytes);
   });
 
+  // Whether an asset's bytes are durable locally. Pack + inst assets are already
+  // local; a federated ext/* asset is pinned only once its bytes have been
+  // materialized into the instance's own store (hold-implies-pin, plans/27 §3, §5).
+  const isPinned = async (assetId: string): Promise<boolean> => {
+    if (!assetId.startsWith(EXT_PREFIX)) return true;
+    const parts = assetId.split('/'); // ext/<provider>/<remoteId>
+    if (parts.length < 3) return false;
+    return Boolean(await store.getInstanceAsset(materializedIdFor(parts[1] as string, parts[2] as string)));
+  };
+  const lifecycleView = async (r: LifecycleRow, now: number): Promise<Record<string, unknown>> => ({
+    ...r,
+    state: assetState(r, now),
+    ...(r.hold ? { pinned: await isPinned(r.assetId) } : {}),
+  });
+
   // ── catalog inspect: full metadata for one asset (member-readable) ────────
   // Metadata only — never bytes; the console links to the existing gated
   // /catalog/ preview path for the thumbnail. Merges the pack index entry with
@@ -1268,24 +1386,97 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!id || id.includes('..') || !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(id)) {
       return sendError(res, 400, 'INVALID_INPUT', 'bad asset id');
     }
-    const entry = (await loadAssetIndexById(config.instance.pack)).get(id);
+    const instAsset = id.startsWith(INST_PREFIX) ? await store.getInstanceAsset(id) : null;
+    const entry = instAsset?.entry ?? (await loadAssetIndexById(config.instance.pack)).get(id);
     const row = await store.getLifecycle(id);
-    if (!entry && !row) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
-    const state = assetState(row ?? undefined, Date.now());
+    // For a federated id the effective state can be constrained by an upstream
+    // window as well as the local row; surface both so the console can show
+    // where each constraint came from (plans/27 §2). Pack ids have no window.
+    await providersReady;
+    const [window, credential] = await Promise.all([federation.availabilityWindow(id), store.getCredential(id)]);
+    if (!entry && !row && !window && !credential && !instAsset) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
+    const { state } = combinedState(row ?? undefined, window, Date.now());
     sendJson(res, 200, {
       id,
       ...(entry ?? {}),
+      ...(window ?? {}),
+      ...(instAsset?.origin ? { origin: instAsset.origin } : {}),
+      ...(credential?.status === 'embedded' ? { credential: 'embedded' } : {}),
       state,
-      lifecycle: row
+      lifecycle: row || window
         ? {
             state,
-            validFrom: row.validFrom ?? null,
-            validUntil: row.validUntil ?? null,
-            revokedAt: row.revokedAt ?? null,
-            onExpiry: row.onExpiry,
+            validFrom: row?.validFrom ?? null,
+            validUntil: row?.validUntil ?? null,
+            revokedAt: row?.revokedAt ?? null,
+            onExpiry: row?.onExpiry ?? 'hide',
+            ...(row?.hold ? { hold: row.hold, pinned: await isPinned(id) } : {}),
+            ...(window ? { upstream: { availableFrom: window.availableFrom ?? null, availableUntil: window.availableUntil ?? null } } : {}),
           }
         : null,
+      // Detection, never a verdict: {present, container, when} — validation is
+      // the reader's, in the console's verify view (plans/27 §4).
+      credentials: credential
+        ? { status: credential.status, ...(credential.container ? { container: credential.container } : {}), sniffedAt: credential.sniffedAt, ...(credential.sourceUpdatedAt ? { sourceUpdatedAt: credential.sourceUpdatedAt } : {}) }
+        : null,
     }, { 'cache-control': 'private, max-age=30' });
+  });
+
+  // On-demand content-credential scan (plans/27 §4): fetch the asset's primary
+  // format once and sniff whether its BYTES embed a C2PA manifest the DAM's API
+  // never surfaced. It costs an upstream fetch, so it is permissioned
+  // (catalog.scan) and audited; it records only {present, container} — detection,
+  // never a verdict. The id carries slashes, so it rides the trailing wildcard as
+  // `scan/<id>` (the router matches only a trailing '*', not an '<id>/scan' tail).
+  router.add('POST', '/api/v1/catalog/scan/*', async (req, res, ctx) => {
+    const user = await requireAction(req, res, 'catalog.scan');
+    if (!user) return;
+    const id = (ctx.params['*'] ?? '').trim();
+    if (!id || id.includes('..') || !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(id)) {
+      return sendError(res, 400, 'INVALID_INPUT', 'bad asset id');
+    }
+    await providersReady;
+    let bytes: Uint8Array;
+    let sourceUpdatedAt: string | undefined;
+    try {
+      if (id.startsWith(EXT_PREFIX)) {
+        const [, pid, rid] = id.split('/');
+        if (!pid || !rid) return sendError(res, 400, 'INVALID_INPUT', 'bad federated asset id');
+        const rec = await store.getProvider(pid);
+        if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such provider');
+        if (!rec.enabled) return sendError(res, 410, 'PROVIDER_DISABLED', 'this provider is disabled');
+        const frags = await federation.fragments();
+        const entry = frags.find((f) => f.rec.id === pid)?.fragment.assets.find((a) => a.id === id);
+        if (!entry) return sendError(res, 404, 'NOT_FOUND', 'asset is not federated');
+        const remoteRef = (entry.formats?.[0]?.url ?? '').split('/').pop();
+        if (!remoteRef) return sendError(res, 422, 'NO_FORMAT', 'asset has no fetchable format');
+        const blob = await federation.instantiate(rec).resolveBlob(rid, remoteRef);
+        if (blob.kind !== 'stream') return sendError(res, 422, 'SCAN_UNSUPPORTED', 'provider serves this format by redirect; cannot scan its bytes');
+        bytes = new Uint8Array(await new Response(blob.body).arrayBuffer());
+        if (typeof entry.updatedAt === 'string') sourceUpdatedAt = entry.updatedAt;
+      } else {
+        const entry = (await loadAssetIndexById(config.instance.pack)).get(id);
+        if (!entry) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
+        const url = entry.formats?.[0]?.url;
+        const relPath = url ? url.replace(/^\/+/, '').replace(/^catalog\//, '') : '';
+        if (!relPath || relPath.includes('..')) return sendError(res, 422, 'NO_FORMAT', 'asset has no fetchable format');
+        bytes = await readFile(join(config.instance.pack, 'catalog', relPath));
+        if (typeof entry.updatedAt === 'string') sourceUpdatedAt = entry.updatedAt;
+      }
+    } catch {
+      return sendError(res, 502, 'SCAN_FAILED', 'could not fetch the asset bytes to scan');
+    }
+    const detection = await detectCredential(bytes);
+    const credRow: CredentialRow = {
+      assetId: id,
+      status: detection.status,
+      ...(detection.container ? { container: detection.container } : {}),
+      sniffedAt: new Date().toISOString(),
+      ...(sourceUpdatedAt ? { sourceUpdatedAt } : {}),
+    };
+    await store.putCredential(credRow);
+    await audit(`user:${user.id}`, 'catalog.scan', `asset:${id}`, { status: detection.status, container: detection.container ?? null });
+    sendJson(res, 200, credRow);
   });
 
   // Store-derived dashboard stats the telemetry fold can't answer: catalog
@@ -1387,7 +1578,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!(await requireAction(req, res, 'catalog.expire'))) return;
     const now = Date.now();
     const rows = await store.listLifecycle();
-    sendJson(res, 200, { rows: rows.map((r) => ({ ...r, state: assetState(r, now) })) });
+    sendJson(res, 200, { rows: await Promise.all(rows.map((r) => lifecycleView(r, now))) });
   });
 
   // The wildcard is the assetId, which itself contains slashes (e.g.
@@ -1395,30 +1586,97 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // static routes use. Body merges onto any existing row; `revoke: true`
   // stamps revokedAt=now and is audited under its own action so "stop
   // sharing" reads distinctly from an ordinary expiry-date edit.
+  //
+  // A `hold` arm (`hold: {note?} | null`) rides the same PUT but is its own
+  // operation (plans/27 §3): it needs `catalog.hold` rather than
+  // `catalog.expire`, only ever touches the hold field (dates/revoke are left
+  // as they are), and audits as catalog.hold / catalog.hold.release. A hold, in
+  // turn, is deliberate friction: while it is set, revocation and any edit that
+  // would make the asset unavailable now are refused 409 ASSET_HELD — release
+  // the hold first.
   router.add('PUT', '/api/v1/catalog/lifecycle/*', async (req, res, ctx) => {
-    const user = await requireAction(req, res, 'catalog.expire');
-    if (!user) return;
     const assetId = ctx.params['*'] as string;
+    const body = (await readJson(req)) as
+      | { validFrom?: string; validUntil?: string; onExpiry?: string; revoke?: boolean; hold?: { note?: string } | null }
+      | null;
+    const isHoldOp = body ? Object.prototype.hasOwnProperty.call(body, 'hold') : false;
+    // Gate on the operation: holding/releasing is its own action.
+    const user = await requireAction(req, res, isHoldOp ? 'catalog.hold' : 'catalog.expire');
+    if (!user) return;
     if (!assetId) return sendError(res, 400, 'INVALID_INPUT', 'assetId required');
-    const body = (await readJson(req)) as { validFrom?: string; validUntil?: string; onExpiry?: string; revoke?: boolean } | null;
     if (body?.onExpiry && body.onExpiry !== 'hide' && body.onExpiry !== 'warn') {
       return sendError(res, 400, 'INVALID_INPUT', 'onExpiry must be hide or warn');
     }
+    if (isHoldOp && body?.hold !== null && (typeof body?.hold !== 'object' || Array.isArray(body?.hold))) {
+      return sendError(res, 400, 'INVALID_INPUT', 'hold must be an object or null');
+    }
     const existing = await store.getLifecycle(assetId);
-    const row: LifecycleRow = {
-      assetId,
-      onExpiry: (body?.onExpiry as LifecycleRow['onExpiry']) ?? existing?.onExpiry ?? 'hide',
-      ...(body?.validFrom !== undefined ? { validFrom: body.validFrom } : existing?.validFrom ? { validFrom: existing.validFrom } : {}),
-      ...(body?.validUntil !== undefined ? { validUntil: body.validUntil } : existing?.validUntil ? { validUntil: existing.validUntil } : {}),
-      ...(existing?.revokedAt ? { revokedAt: existing.revokedAt } : {}),
-    };
-    if (body?.revoke === true) row.revokedAt = new Date().toISOString();
+    const now = Date.now();
+
+    // Held-asset friction: a non-hold edit that would make the asset go away
+    // (revoke, or a date change that resolves to expired/scheduled now) is
+    // refused while a hold is set. Non-removing edits (extending a window,
+    // clearing an expiry) still go through, and a hold op is never blocked.
+    if (!isHoldOp && existing?.hold) {
+      const removes =
+        body?.revoke === true ||
+        (typeof body?.validUntil === 'string' && Date.parse(body.validUntil) <= now) ||
+        (typeof body?.validFrom === 'string' && Date.parse(body.validFrom) > now);
+      if (removes) {
+        return sendError(res, 409, 'ASSET_HELD',
+          existing.hold.note ? `this asset is on hold: ${existing.hold.note}` : 'this asset is on hold; release the hold before removing it');
+      }
+    }
+
+    let row: LifecycleRow;
+    let action: string;
+    if (isHoldOp) {
+      // Only the hold changes; every other field is preserved verbatim.
+      row = {
+        assetId,
+        onExpiry: existing?.onExpiry ?? 'hide',
+        ...(existing?.validFrom ? { validFrom: existing.validFrom } : {}),
+        ...(existing?.validUntil ? { validUntil: existing.validUntil } : {}),
+        ...(existing?.revokedAt ? { revokedAt: existing.revokedAt } : {}),
+        ...(body?.hold ? { hold: { by: `user:${user.id}`, at: new Date().toISOString(), ...(body.hold.note ? { note: body.hold.note } : {}) } } : {}),
+      };
+      action = body?.hold ? 'catalog.hold' : 'catalog.hold.release';
+    } else {
+      row = {
+        assetId,
+        onExpiry: (body?.onExpiry as LifecycleRow['onExpiry']) ?? existing?.onExpiry ?? 'hide',
+        ...(body?.validFrom !== undefined ? { validFrom: body.validFrom } : existing?.validFrom ? { validFrom: existing.validFrom } : {}),
+        ...(body?.validUntil !== undefined ? { validUntil: body.validUntil } : existing?.validUntil ? { validUntil: existing.validUntil } : {}),
+        ...(existing?.revokedAt ? { revokedAt: existing.revokedAt } : {}),
+        ...(existing?.hold ? { hold: existing.hold } : {}),
+      };
+      if (body?.revoke === true) row.revokedAt = new Date().toISOString();
+      action = body?.revoke === true ? 'catalog.revoke' : 'catalog.expire';
+    }
     await store.putLifecycle(row);
-    const action = body?.revoke === true ? 'catalog.revoke' : 'catalog.expire';
     await audit(`user:${user.id}`, action, `asset:${assetId}`, {
-      validFrom: row.validFrom ?? null, validUntil: row.validUntil ?? null, onExpiry: row.onExpiry, revoked: Boolean(row.revokedAt),
+      validFrom: row.validFrom ?? null, validUntil: row.validUntil ?? null, onExpiry: row.onExpiry,
+      revoked: Boolean(row.revokedAt), held: Boolean(row.hold), ...(row.hold?.note ? { note: row.hold.note } : {}),
     });
-    sendJson(res, 200, { ...row, state: assetState(row, Date.now()) });
+    // Hold implies pin (plans/27 §3): setting a hold on a federated asset
+    // materializes its bytes so they survive upstream deletion. Best-effort —
+    // the hold itself (feed + action protection) already succeeded; a pin
+    // failure (provider down/disabled) is logged, not fatal, and the row honestly
+    // reads pinned:false until a later materialize succeeds.
+    if (row.hold && assetId.startsWith(EXT_PREFIX)) {
+      const parts = assetId.split('/');
+      const pid = parts[1];
+      if (pid && parts[2] && !(await isPinned(assetId))) {
+        try {
+          await providersReady;
+          const prov = await store.getProvider(pid);
+          if (prov?.enabled) await pinAsset({ store, blobs, federation }, prov, parts[2] as string);
+        } catch (err) {
+          console.error(`hold-implies-pin failed for ${assetId}:`, (err as Error).message);
+        }
+      }
+    }
+    sendJson(res, 200, await lifecycleView(row, Date.now()));
   });
 
   // ── grants control plane (plans/03) ───────────────────────────────────────
@@ -1929,6 +2187,97 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
   });
 
+  // The exit (plans/27 §5): materialize a provider's bytes into the instance's
+  // own BlobStore. Admin governance (catalog.provider.manage); the provider stays
+  // enabled — this only mints instance-owned copies. Body: {remoteId?} for one
+  // asset, {section?} for a folder, else the whole provider.
+  router.add('POST', '/api/v1/catalog/providers/:id/materialize', async (req, res, ctx) => {
+    const user = await requireAction(req, res, 'catalog.provider.manage');
+    if (!user) return;
+    await providersReady;
+    const rec = await store.getProvider(ctx.params.id as string);
+    if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such provider');
+    const body = (await readJson(req)) as { remoteId?: string; section?: string } | null;
+    const filter = { ...(body?.remoteId ? { remoteId: body.remoteId } : {}), ...(body?.section ? { section: body.section } : {}) };
+    try {
+      const { results, skipped, errors } = await materializeProvider({ store, blobs, federation }, rec, filter);
+      const embedded = results.filter((r) => r.credential === 'embedded').length;
+      // Always audit what succeeded, even on a partial run — the copies persist
+      // (idempotent, a re-run resumes), so they must leave a trail.
+      await audit(`user:${user.id}`, 'catalog.provider.materialize', `provider:${rec.id}`, { count: results.length, skipped, credentialsFound: embedded, failed: errors.length });
+      sendJson(res, 200, { ok: errors.length === 0, materialized: results.length, skipped, credentialsFound: embedded, assets: results, ...(errors.length ? { errors } : {}) }, { 'cache-control': 'no-store' });
+    } catch (err) {
+      sendError(res, 502, 'MATERIALIZE_FAILED', (err as Error).message);
+    }
+  });
+
+  // Cutover: move identities ext/* → inst/*, migrate lifecycle/holds/credentials/
+  // grants, alias old URLs, then disable the provider. Owner-gated because it
+  // flips the kill switch (catalog.provider.credential, like enable/disable).
+  router.add('POST', '/api/v1/catalog/providers/:id/cutover', async (req, res, ctx) => {
+    const user = await requireAction(req, res, 'catalog.provider.credential');
+    if (!user) return;
+    await providersReady;
+    const rec = await store.getProvider(ctx.params.id as string);
+    if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such provider');
+    const { migrated } = await cutoverProvider({ store, blobs, federation }, rec);
+    // A db-managed provider is disabled here (its job is done). A config-managed
+    // one can only be turned off in instance.json, but that's fine: its ext
+    // entries are shadowed by the instance copies and old URLs alias — so it
+    // does no harm enabled, and the operator removes the config entry when ready.
+    if (rec.managedBy !== 'config') {
+      await store.putProvider({ ...rec, enabled: false, updatedAt: new Date().toISOString() });
+    }
+    federation.invalidate(rec.id);
+    const enabled = rec.managedBy === 'config' ? rec.enabled : false;
+    await audit(`user:${user.id}`, 'catalog.provider.cutover', `provider:${rec.id}`, { migrated, disabled: !enabled });
+    sendJson(res, 200, { ok: true, migrated, enabled, configManaged: rec.managedBy === 'config' });
+  });
+
+  // Publish out (plans/27 §10): push a lolly-generated export INTO a destination
+  // provider (Optimizely CMP). Owner-grantable (catalog.provider.publish), narrow
+  // by construction — the export must carry lolly's C2PA export assertion, so a
+  // federated or pack asset can never be pushed out. The bytes ride the raw body;
+  // name/format are query params. Audited per publish with the export's
+  // provenance chain, so lolly-made media stays attributable downstream.
+  router.add('POST', '/api/v1/catalog/providers/:id/publish', async (req, res, ctx) => {
+    const user = await requireAction(req, res, 'catalog.provider.publish');
+    if (!user) return;
+    await providersReady;
+    const rec = await store.getProvider(ctx.params.id as string);
+    if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such provider');
+    if (!rec.enabled) return sendError(res, 410, 'PROVIDER_DISABLED', 'this provider is disabled');
+    const provider = federation.instantiate(rec);
+    if (!provider.capabilities.publish || !provider.publishAsset) {
+      return sendError(res, 409, 'PUBLISH_UNSUPPORTED', 'this provider does not accept published exports');
+    }
+    const name = ctx.url.searchParams.get('name');
+    const format = ctx.url.searchParams.get('format');
+    if (!name || !format || !/^[a-z0-9]+$/i.test(format)) return sendError(res, 400, 'INVALID_INPUT', 'name and format query params required');
+    let bytes: Buffer;
+    try {
+      bytes = await readRaw(req, 64 * 1024 * 1024);
+    } catch {
+      return sendError(res, 413, 'PAYLOAD_TOO_LARGE', 'export exceeds the 64 MiB publish cap');
+    }
+    if (!bytes.length) return sendError(res, 400, 'INVALID_INPUT', 'empty export body');
+    const gate = await verifyLollyExport(bytes, format);
+    if (!gate.ok) return sendError(res, 422, 'NOT_LOLLY_EXPORT', gate.detail ?? 'only lolly exports may be published');
+    const provenance = extractProvenance(bytes, format);
+    try {
+      const contentType = req.headers['content-type'] ?? 'application/octet-stream';
+      // `bytes` is already a Buffer (a Uint8Array) — pass it through, don't re-copy.
+      const result = await provider.publishAsset({ bytes, name, format, contentType });
+      await audit(`user:${user.id}`, 'catalog.provider.publish', `provider:${rec.id}`, {
+        remoteId: result.remoteId, name, format, size: bytes.length,
+        provenance: provenance?.ingredients.map((i) => i.assetId) ?? [],
+      });
+      sendJson(res, 200, { ok: true, remoteId: result.remoteId, ...(result.url ? { url: result.url } : {}) }, { 'cache-control': 'no-store' });
+    } catch (err) {
+      sendError(res, 502, 'PUBLISH_FAILED', (err as Error).message);
+    }
+  });
+
   router.add('GET', '/api/v1/catalog/providers/:id/health', async (req, res, ctx) => {
     if (!(await requireAction(req, res, 'catalog.provider.read'))) return;
     await providersReady;
@@ -1959,8 +2308,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
     const lifecycleRows = await store.listLifecycle();
     const lifecycleById = new Map(lifecycleRows.map((r) => [r.assetId, r]));
-    const composed = applyLifecycleToIndex(
-      await federation.composeIndex(index, user.groups), lifecycleRows, Date.now(),
+    const withInstance = composeInstanceAssets(
+      await federation.composeIndex(index, user.groups), await store.listInstanceAssets(), user.groups,
+    );
+    const composed = applyCredentialsToIndex(
+      applyLifecycleToIndex(withInstance, lifecycleRows, Date.now()),
+      await store.listCredentials(),
     );
     const matches = (e: { id: string; name?: unknown; description?: unknown; tags?: unknown }): boolean =>
       [e.id, e.name, e.description, ...(Array.isArray(e.tags) ? e.tags : [])]
@@ -1989,8 +2342,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
           if (!passesExposure(rec, a)) continue;
           const entry = mapProviderAsset(rec, a);
           const row = lifecycleById.get(entry.id);
-          const state = assetState(row, Date.now());
-          if (state === 'revoked' || state === 'scheduled' || (state === 'expired' && row?.onExpiry !== 'warn')) continue;
+          const { state, upstreamExpired } = combinedState(row, entryWindow(entry), Date.now());
+          if (state === 'revoked' || state === 'scheduled' || (state === 'expired' && (upstreamExpired || row?.onExpiry !== 'warn'))) continue;
           if (!results.has(entry.id) && results.size < limit) results.set(entry.id, entry);
         }
       } catch {
@@ -2383,6 +2736,51 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       projectId: gate.session.projectId, toolId: gate.session.toolId, invitee: invitee.id, messageId: msg.id,
     });
     sendJson(res, 201, { messageId: msg.id, sessionId: gate.session.id, userId: invitee.id });
+  });
+
+  // ── instance-mediated "nearby" (plans/26 §8, OSS plans/110 §5) ────────────
+  // A browser cannot discover other devices on a network; the instance groups its
+  // online members by apparent address so the invite flow can surface "likely
+  // nearby" colleagues. A SORTING HINT, never an identity claim (CGNAT / VPN make
+  // it approximate — the copy says "likely nearby", never "on your network").
+  // Members only: both routes gate on `collab.join`, which members hold and guests
+  // (whose member session is absent → requireAction 401s) do not, so guests never
+  // appear and never read the list. The registry is in-memory and injected only by
+  // the long-lived server, so both routes answer 501 on Vercel — where a POST and a
+  // GET can hit different function instances — rather than a misleading partial list.
+  // No audit: this is presence, and presence is deliberately unaudited and unstored
+  // across the collab subsystem (the room's own presence map never reaches the store).
+  const nearbyReady = (res: ServerResponse): NearbyRegistry | null => {
+    if (!config.policy.nearby.enabled) {
+      sendError(res, 404, 'NOT_FOUND', 'nearby is off for this instance');
+      return null;
+    }
+    if (!nearby) {
+      sendError(res, 501, 'NOT_IMPLEMENTED', 'nearby needs the persistent server');
+      return null;
+    }
+    return nearby;
+  };
+
+  router.add('POST', '/api/v1/collab/nearby', async (req, res) => {
+    const user = await requireAction(req, res, 'collab.join');
+    if (!user) return;
+    const reg = nearbyReady(res);
+    if (!reg) return;
+    const body = (await readJson(req)) as { visible?: boolean } | null;
+    const ip = clientIp(req, config.rateLimit.trustedProxyHops);
+    if (body?.visible === true) reg.setVisible(user.id, displayName(user), ip);
+    else reg.clear(user.id);
+    sendJson(res, 200, { visible: body?.visible === true });
+  });
+
+  router.add('GET', '/api/v1/collab/nearby', async (req, res) => {
+    const user = await requireAction(req, res, 'collab.join');
+    if (!user) return;
+    const reg = nearbyReady(res);
+    if (!reg) return;
+    const ip = clientIp(req, config.rateLimit.trustedProxyHops);
+    sendJson(res, 200, { members: reg.list(user.id, ip) });
   });
 
   // ── render plane (the fourth HostV1 shell) ────────────────────────────────

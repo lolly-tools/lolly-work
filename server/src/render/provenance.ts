@@ -20,9 +20,15 @@ export interface ProvenanceIngredient {
   source:
     | { kind: 'pack'; label: string }
     | { kind: 'provider'; provider: string; providerKind: string; label: string; remoteId: string; filename?: string };
-  /** Upstream C2PA manifest reference when the source has one; null = the
-   *  source provided no provenance of its own (we attribute regardless). */
-  c2pa: { manifestUrl: string } | null;
+  /** Upstream C2PA provenance for this ingredient:
+   *   - `{ manifestUrl }` — the source's own manifest reference, when it has one;
+   *   - `{ kind: 'embedded' }` — the source's API named none, but a detector
+   *     found a C2PA manifest embedded in the asset's bytes (plans/27 §4:
+   *     detection, never a verdict — the export can distinguish "source said
+   *     nothing" from "source carries a credential");
+   *   - `null` — no provenance of its own (we attribute the ingredient regardless).
+   */
+  c2pa: { manifestUrl: string } | { kind: 'embedded' } | null;
 }
 
 export interface ProvenanceDoc {

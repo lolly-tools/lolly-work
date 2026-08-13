@@ -34,7 +34,9 @@ const MIME: Record<string, string> = {
   mp4: 'video/mp4', webm: 'video/webm', zip: 'application/zip',
 };
 
-const sha256hex = (s: string | Buffer): string => createHash('sha256').update(s).digest('hex');
+/** SigV4 payload/content hash — exported so the BlobStore S3 driver can sign
+ *  the body of a PUT (plans/27 §5). */
+export const sha256hex = (s: string | Buffer): string => createHash('sha256').update(s).digest('hex');
 const hmacBuf = (key: string | Buffer, data: string): Buffer => createHmac('sha256', key).update(data).digest();
 const EMPTY_HASH = sha256hex('');
 
@@ -45,11 +47,18 @@ const enc = (s: string, keepSlash = false): string =>
 
 export interface SignedRequest { url: string; headers: Record<string, string> }
 
-/** Sign a GET against the bucket. Exported for the driver tests. */
+/** Sign a request against the bucket. GET/HEAD by default (empty payload);
+ *  `method` + `payloadHash` grow it to signed PUT/DELETE for the BlobStore
+ *  driver (plans/27 §5) without an SDK. Exported for the driver tests. */
 export function signS3Request(
-  opts: { options: S3Options; accessKeyId: string; secretAccessKey: string; key?: string; query?: Record<string, string>; now?: Date },
+  opts: {
+    options: S3Options; accessKeyId: string; secretAccessKey: string; key?: string;
+    query?: Record<string, string>; now?: Date; method?: string; payloadHash?: string;
+  },
 ): SignedRequest {
   const region = opts.options.region ?? 'us-east-1';
+  const method = opts.method ?? 'GET';
+  const payloadHash = opts.payloadHash ?? EMPTY_HASH;
   const base = opts.options.endpoint
     ? `${opts.options.endpoint.replace(/\/+$/, '')}/${opts.options.bucket}`
     : `https://${opts.options.bucket}.s3.${region}.amazonaws.com`;
@@ -65,12 +74,12 @@ export function signS3Request(
   const scope = `${day}/${region}/s3/aws4_request`;
   const headers: Record<string, string> = {
     host: url.host,
-    'x-amz-content-sha256': EMPTY_HASH,
+    'x-amz-content-sha256': payloadHash,
     'x-amz-date': amzDate,
   };
   const signedHeaderNames = Object.keys(headers).sort();
   const canonicalHeaders = signedHeaderNames.map((h) => `${h}:${headers[h]}\n`).join('');
-  const canonicalRequest = ['GET', url.pathname, canonicalQuery, canonicalHeaders, signedHeaderNames.join(';'), EMPTY_HASH].join('\n');
+  const canonicalRequest = [method, url.pathname, canonicalQuery, canonicalHeaders, signedHeaderNames.join(';'), payloadHash].join('\n');
   const stringToSign = ['AWS4-HMAC-SHA256', amzDate, scope, sha256hex(canonicalRequest)].join('\n');
   const kDate = hmacBuf(`AWS4${opts.secretAccessKey}`, day);
   const kRegion = hmacBuf(kDate, region);
