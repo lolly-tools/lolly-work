@@ -16,6 +16,7 @@ The lolly side of providers (exposure, lifecycle, the exit, publish-out) lives i
 | `dropbox` | OAuth2 (BYOT) | [dropbox.md](dropbox.md) |
 | `gdrive` | OAuth2 (BYOT) | [gdrive.md](gdrive.md) |
 | `o365` | OAuth2 (BYOT) | [o365.md](o365.md) |
+| `imagerelay` | OAuth2 (BYOT); off-boarding source | [imagerelay.md](imagerelay.md) |
 
 `mock` is a test/demo driver and has no onboarding guide.
 

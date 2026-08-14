@@ -21,7 +21,7 @@ import { parseOAuthCredential } from '../server/src/catalog/providers/oauth.ts';
 
 const DOCS = join(dirname(fileURLToPath(import.meta.url)), '..', 'docs', 'providers');
 const KINDS = PROVIDER_KINDS.filter((k) => k !== 'mock');
-const OAUTH_KINDS = ['dropbox', 'gdrive', 'o365', 'optimizely-cmp'] as const;
+const OAUTH_KINDS = ['dropbox', 'gdrive', 'o365', 'optimizely-cmp', 'imagerelay'] as const;
 
 const REQUIRED_HEADINGS = ['## What you need', '## Credential shape', '## instance.json', '## Verify', '## Notes / limits'];
 
@@ -35,12 +35,14 @@ const OPTION_ALLOWLIST: Record<string, string[]> = {
   gdrive: ['folderId'],
   o365: ['driveId', 'tenant', 'itemPath'],
   'optimizely-cmp': ['baseUrl', 'tokenUrl', 'publish'],
+  imagerelay: ['baseUrl', 'tokenUrl', 'folderId', 'recursive'],
 };
 
 // Minimal construct-valid options per kind (git parses rawBase at construction).
 const MIN_OPTIONS: Record<string, Record<string, unknown>> = {
   brandfolder: { brandfolderId: 'x' }, s3: { bucket: 'b' }, git: { rawBase: 'https://raw.example/o/r/main' },
   dropbox: {}, gdrive: { folderId: 'f' }, o365: { driveId: 'd' }, 'optimizely-cmp': { publish: true },
+  imagerelay: {},
 };
 
 const guide = (kind: string): string => readFileSync(join(DOCS, `${kind}.md`), 'utf8');

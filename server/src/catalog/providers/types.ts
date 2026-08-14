@@ -14,7 +14,7 @@
  */
 import type { AssetIndexEntry } from '../lifecycle.ts';
 
-export const PROVIDER_KINDS = ['brandfolder', 's3', 'git', 'dropbox', 'gdrive', 'o365', 'optimizely-cmp', 'mock'] as const;
+export const PROVIDER_KINDS = ['brandfolder', 's3', 'git', 'dropbox', 'gdrive', 'o365', 'optimizely-cmp', 'imagerelay', 'mock'] as const;
 export type ProviderKind = (typeof PROVIDER_KINDS)[number];
 
 /** Prefix every federated asset id carries; also the blob route mount. */

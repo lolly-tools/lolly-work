@@ -14,6 +14,7 @@ import { createDropboxProvider, type DropboxOptions } from './dropbox.ts';
 import { createGdriveProvider, type GdriveOptions } from './gdrive.ts';
 import { createO365Provider, type O365Options } from './o365.ts';
 import { createOptimizelyCmpProvider, type OptimizelyCmpOptions } from './optimizely-cmp.ts';
+import { createImageRelayProvider, type ImageRelayOptions } from './imagerelay.ts';
 
 export interface ProviderDeps {
   fetchImpl?: typeof fetch;
@@ -37,6 +38,11 @@ export function createProvider(rec: ProviderRecord, secret: string | undefined, 
       return createO365Provider(rec.id, rec.options as unknown as O365Options, secret, deps.fetchImpl);
     case 'optimizely-cmp':
       return createOptimizelyCmpProvider(rec.id, rec.options as unknown as OptimizelyCmpOptions, secret, deps.fetchImpl);
+    case 'imagerelay':
+      // availabilityFields (plans/27 §2) lives on the mapping, not options —
+      // Image Relay has no native window, so the driver reads it from the named
+      // custom-metadata field.
+      return createImageRelayProvider(rec.id, rec.options as unknown as ImageRelayOptions, secret, deps.fetchImpl, rec.mapping?.availabilityFields);
     default:
       throw new Error(`catalog provider kind not yet implemented: ${rec.kind}`);
   }
