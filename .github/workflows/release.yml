@@ -20,8 +20,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Prefer a PAT (GHCR_PAT, scope write:packages) when the org caps the
+      # GITHUB_TOKEN's package scope to read (first-publish "permission_denied:
+      # read_package"). Falls back to GITHUB_TOKEN when the secret is absent.
       - name: Log in to GHCR
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+        run: echo "${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
       # Multi-arch (amd64 + arm64): the edge story is Rancher-managed k3s, and
       # edge nodes are frequently ARM — an amd64-only manifest is an instant
@@ -47,8 +50,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Prefer a PAT (GHCR_PAT, scope write:packages) when the org caps the
+      # GITHUB_TOKEN's package scope to read (first-publish "permission_denied:
+      # read_package"). Falls back to GITHUB_TOKEN when the secret is absent.
       - name: Log in to GHCR
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+        run: echo "${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
       # Multi-arch like the server (Playwright ships linux-arm64 Chromium).
       - uses: docker/setup-qemu-action@v3
