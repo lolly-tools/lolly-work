@@ -50,6 +50,7 @@ const ROLE_ACTIONS: Record<Role, string[]> = (() => {
     ...new Set([...author, ...approver]),
     'catalog.publish', 'catalog.expire', 'catalog.hold', 'catalog.scan',
     'catalog.provider.read', 'catalog.provider.manage',
+    'brand.switch',
     'catalog.injectable.manage',
     'policy.edit', 'grant.edit', 'link.revoke', 'link.create-guest',
     'message.send', 'telemetry.view', 'fleet.view', 'audit.export',

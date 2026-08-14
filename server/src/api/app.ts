@@ -41,6 +41,7 @@ import { applyCredentialsToIndex, detectCredential, type CredentialRow } from '.
 import { composeInstanceAssets, instanceAssetVisible, materializedIdFor, INST_PREFIX } from '../catalog/instance-assets.ts';
 import { materializeProvider, cutoverProvider, pinAsset } from '../catalog/materialize.ts';
 import { verifyLollyExport, extractProvenance } from '../catalog/publish.ts';
+import { listBrandProfiles, switchBrandProfile } from '../brand/profiles.ts';
 import { createMemoryBlobStore } from '../blobs/memory.ts';
 import type { BlobStore } from '../blobs/types.ts';
 import { EXT_PREFIX, extAssetId, PROVIDER_KINDS, type ProviderKind, type ProviderRecord } from '../catalog/providers/types.ts';
@@ -3079,6 +3080,47 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     } catch {
       sendError(res, 404, 'NOT_FOUND', 'no such font');
     }
+  });
+
+  // ── brand profiles (plans/29): a profile-aware pack carries multiple brands
+  // under <pack>/brands/<name>/, one active via the catalog symlink + the
+  // .lolly-profile marker. Reading which is active is member-visible (the
+  // console's Design system tab); switching is owner/admin, audited, and
+  // re-points the pack so the new brand themes the console, sign-in and tools.
+  router.add('GET', '/api/v1/brand/profiles', async (req, res) => {
+    const user = await memberOf(req);
+    const p = principalOf(req);
+    if (config.policy.defaultAccessMode === 'gated' && !user && p?.kind !== 'guest') {
+      return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
+    }
+    sendJson(res, 200, await listBrandProfiles(config.instance.pack), { 'cache-control': 'no-store' });
+  });
+
+  router.add('PUT', '/api/v1/brand/profile', async (req, res) => {
+    const user = await requireAction(req, res, 'brand.switch');
+    if (!user) return;
+    const body = (await readJson(req)) as { name?: string } | null;
+    const name = typeof body?.name === 'string' ? body.name : '';
+    if (!name) return sendError(res, 400, 'INVALID_INPUT', 'name required');
+    const before = await listBrandProfiles(config.instance.pack);
+    if (!before.available) return sendError(res, 409, 'NOT_PROFILE_AWARE', 'this deployment’s pack has no brand profiles');
+    if (!before.profiles.some((pr) => pr.name === name)) return sendError(res, 404, 'NOT_FOUND', `no such brand profile: ${name}`);
+    if (before.active === name) return sendJson(res, 200, { ok: true, unchanged: true, ...before });
+    try {
+      await switchBrandProfile(config.instance.pack, name);
+    } catch (err) {
+      return sendError(res, 409, 'PROFILE_SWITCH_FAILED', (err as Error).message);
+    }
+    // The pack pointer moved — drop every cache derived from it so the new brand
+    // serves immediately. brandChrome is memoized forever; the asset caches are
+    // mtime-gated, but a symlink swap can share an mtime, so clear them too.
+    brandChrome = undefined;
+    delete brandLogoFiles.light;
+    delete brandLogoFiles.dark;
+    assetByIdCache.delete(config.instance.pack);
+    assetPathMapCache.delete(config.instance.pack);
+    await audit(`user:${user.id}`, 'brand.profile.switch', `brand:${name}`, { profile: name, from: before.active ?? null });
+    sendJson(res, 200, { ok: true, ...(await listBrandProfiles(config.instance.pack)) });
   });
 
   // ── the Lolly web shell, served same-origin at / (plans/16: one origin, so

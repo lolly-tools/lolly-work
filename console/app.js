@@ -1378,6 +1378,38 @@ function tokenColorRows(map) {
 async function viewDesignSystem(main) {
   const unlocked = ['owner', 'admin'].includes(session?.user?.role);
   const brand = await loadBrandTokenMaps().catch(() => null);
+  // Brand profiles (plans/29): a profile-aware pack carries several brands, one
+  // active via the catalog symlink. Show which is active; owner/admin can switch
+  // the whole deploy — re-theming the console, sign-in and the tools at once.
+  const profiles = await api('/api/v1/brand/profiles').catch(() => null);
+  const profileCard = profiles?.available && profiles.profiles.length ? (() => {
+    const rows = profiles.profiles.map((p) => {
+      let action = null;
+      if (unlocked && !p.active) {
+        const btn = el('button', { class: 'btn' }, 'Switch to this brand');
+        btn.onclick = async () => {
+          btn.disabled = true;
+          try {
+            await api('/api/v1/brand/profile', { method: 'PUT', body: { name: p.name } });
+            toast(`Brand switched to ${p.name}`);
+            await applyPackTheme(); // re-theme the console chrome from the new pack
+            route();                // re-render — new active badge + new tokens
+          } catch (e) { toast(e.message); btn.disabled = false; }
+        };
+        action = btn;
+      }
+      return el('div', { class: 'ds-profile-row' },
+        el('span', { class: 'ds-profile-name' }, p.name),
+        p.active ? el('span', { class: 'badge' }, 'active') : null,
+        action);
+    });
+    return el('div', { class: 'card stack' },
+      el('h2', { class: 'flush' }, 'Brand profile'),
+      el('p', { class: 'sub' }, unlocked
+        ? 'This deployment carries multiple brand profiles. Switching re-themes the console, the sign-in screen and the tools — immediately, for everyone.'
+        : `This deployment’s brand is centrally managed. Active profile: ${profiles.active ?? '—'}.`),
+      ...rows);
+  })() : null;
   const lightRows = brand ? tokenColorRows(brand.maps.light) : [];
   // Dark section shows only tokens whose value actually differs from light —
   // shared base colours aren't repeated, so it reads as "what dark changes".
@@ -1416,6 +1448,7 @@ async function viewDesignSystem(main) {
     main.replaceChildren(
       el('h1', {}, 'Design system'),
       el('p', { class: 'sub' }, 'No brand design tokens are mounted on this deployment, so these are the console’s own chrome tokens. Mount a brand pack to see the deployment design system here.'),
+      ...(profileCard ? [profileCard] : []),
       el('div', { class: 'card' }, el('h2', {}, 'Chrome palette'),
         el('div', { class: 'ds-grid' }, ...chrome.map(([n, v]) => dsSwatch(n, v)))),
       typographyCard,
@@ -1461,6 +1494,7 @@ async function viewDesignSystem(main) {
     el('p', { class: 'sub' }, unlocked
       ? 'The active brand’s design tokens, read from the mounted pack — the same tokens the tools consume. Edit them in the Lolly brand editor below.'
       : 'The active brand’s design tokens, read from the mounted pack — the same tokens the tools consume. This deployment’s brand is centrally managed.'),
+    ...(profileCard ? [profileCard] : []),
     ...cards,
     editorCard);
 }

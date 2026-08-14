@@ -399,6 +399,12 @@ h2 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacin
 .ds-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
 .ds-group + .ds-group { margin-top: 16px; }
 .ds-group .detail-h { text-transform: none; }
+/* Brand-profile switcher (This Deploy → Design system, plans/29). */
+.ds-profile-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; }
+.ds-profile-row + .ds-profile-row { border-top: 1px solid var(--grid); }
+.ds-profile-name { font-weight: 600; }
+.ds-profile-row .btn { margin-left: auto; }
+.badge { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--on-accent); background: var(--accent); border-radius: 999px; padding: 2px 8px; }
 .ds-swatch { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .ds-chip { width: 34px; height: 34px; border-radius: var(--radius-sm); border: 1px solid var(--hairline); flex: none; }
 .ds-name { font-weight: 500; }
