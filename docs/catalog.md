@@ -122,7 +122,8 @@ content.
 
 Kinds: `brandfolder`, `s3` (hand-rolled SigV4), `git` (raw-HTTP manifest), `dropbox`,
 `gdrive`, `o365`/Graph, `optimizely-cmp` (CMP DAM v3, OAuth2), `imagerelay` (v2, OAuth2,
-off-boarding source), `mock`. No SDKs, publicly documented endpoints only.
+off-boarding source), `acquia-dam` (Widen v2, bearer, native availability), `mock`. No SDKs,
+publicly documented endpoints only.
 
 `imagerelay` has no native availability field — it imports expiry from a custom-metadata
 field named in `mapping.availabilityFields` (plans/27 §2), the generic path for any DAM that
@@ -262,7 +263,7 @@ project *includes an integration for* those services and is not affiliated with 
 ## Related
 
 - **Per-provider setup (admin/owner):** [providers/](providers/) — one guide per platform
-  (Brandfolder, S3/MinIO, Optimizely CMP, Image Relay, git, Dropbox, Google Drive, M365).
+  (Brandfolder, S3/MinIO, Optimizely CMP, Image Relay, Acquia/Widen, git, Dropbox, Google Drive, M365).
 - Restricting tools and inputs: [governance](governance.md)
 - Serving and sharing what the catalog holds: [sharing](sharing.md)
 - Where provenance for federated assets comes from: [sharing](sharing.md#provenance) and
