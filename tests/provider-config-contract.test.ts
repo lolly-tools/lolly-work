@@ -37,13 +37,14 @@ const OPTION_ALLOWLIST: Record<string, string[]> = {
   'optimizely-cmp': ['baseUrl', 'tokenUrl', 'publish'],
   imagerelay: ['baseUrl', 'tokenUrl', 'folderId', 'recursive'],
   'acquia-dam': ['baseUrl', 'query', 'approvedStatuses'],
+  intelligencebank: ['platformUrl', 'folderId', 'approvedStates'],
 };
 
 // Minimal construct-valid options per kind (git parses rawBase at construction).
 const MIN_OPTIONS: Record<string, Record<string, unknown>> = {
   brandfolder: { brandfolderId: 'x' }, s3: { bucket: 'b' }, git: { rawBase: 'https://raw.example/o/r/main' },
   dropbox: {}, gdrive: { folderId: 'f' }, o365: { driveId: 'd' }, 'optimizely-cmp': { publish: true },
-  imagerelay: {}, 'acquia-dam': {},
+  imagerelay: {}, 'acquia-dam': {}, intelligencebank: {},
 };
 
 const guide = (kind: string): string => readFileSync(join(DOCS, `${kind}.md`), 'utf8');

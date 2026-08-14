@@ -16,6 +16,7 @@ import { createO365Provider, type O365Options } from './o365.ts';
 import { createOptimizelyCmpProvider, type OptimizelyCmpOptions } from './optimizely-cmp.ts';
 import { createImageRelayProvider, type ImageRelayOptions } from './imagerelay.ts';
 import { createAcquiaDamProvider, type AcquiaDamOptions } from './acquia-dam.ts';
+import { createIntelligenceBankProvider, type IntelligenceBankOptions } from './intelligencebank.ts';
 
 export interface ProviderDeps {
   fetchImpl?: typeof fetch;
@@ -46,6 +47,8 @@ export function createProvider(rec: ProviderRecord, secret: string | undefined, 
       return createImageRelayProvider(rec.id, rec.options as unknown as ImageRelayOptions, secret, deps.fetchImpl, rec.mapping?.availabilityFields);
     case 'acquia-dam':
       return createAcquiaDamProvider(rec.id, rec.options as unknown as AcquiaDamOptions, secret, deps.fetchImpl);
+    case 'intelligencebank':
+      return createIntelligenceBankProvider(rec.id, rec.options as unknown as IntelligenceBankOptions, secret, deps.fetchImpl);
     default:
       throw new Error(`catalog provider kind not yet implemented: ${rec.kind}`);
   }

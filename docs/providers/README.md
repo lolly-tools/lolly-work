@@ -18,6 +18,7 @@ The lolly side of providers (exposure, lifecycle, the exit, publish-out) lives i
 | `o365` | OAuth2 (BYOT) | [o365.md](o365.md) |
 | `imagerelay` | OAuth2 (BYOT); off-boarding source | [imagerelay.md](imagerelay.md) |
 | `acquia-dam` | bearer token (Widen v2); native availability | [acquia-dam.md](acquia-dam.md) |
+| `intelligencebank` | login handshake (v3 Graph API); native governance | [intelligencebank.md](intelligencebank.md) |
 
 `mock` is a test/demo driver and has no onboarding guide.
 
