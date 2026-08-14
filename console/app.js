@@ -2251,6 +2251,10 @@ const PROVIDER_INTEGRATIONS = [
   { kind: 'dropbox', name: 'Dropbox', blurb: 'Mirror a Dropbox folder of approved assets.', options: '{"path": "/Brand"}' },
   { kind: 'o365', name: 'Microsoft 365 / SharePoint', blurb: 'Read a SharePoint library or OneDrive path.', options: '{"driveId": "…", "path": "/Brand"}' },
   { kind: 'brandfolder', name: 'Brandfolder', blurb: 'Connect a Brandfolder DAM as a read-only source.', options: '{"brandfolderId": "…"}' },
+  { kind: 'optimizely-cmp', name: 'Optimizely CMP', blurb: 'Optimizely CMP web DAM — federate read-only, and optionally publish lolly-made media back out.', options: '{"publish": true}' },
+  { kind: 'imagerelay', name: 'Image Relay', blurb: 'Image Relay DAM — read-only, with the exit path (materialize → cut over) for off-boarding.', options: '{"folderId": "…", "recursive": true}' },
+  { kind: 'acquia-dam', name: 'Acquia DAM / Widen', blurb: 'The Widen enterprise DAM — read-only, with native release/expiry dates and approval.', options: '{"query": "…", "approvedStatuses": ["active"]}' },
+  { kind: 'intelligencebank', name: 'IntelligenceBank', blurb: 'IntelligenceBank — federate the v3 Graph API read-only, with the exit path for off-boarding.', options: '{"platformUrl": "https://acme.intelligencebank.com", "approvedStates": ["Approved"]}' },
   { kind: 'mock', name: 'Mock (dev)', blurb: 'A synthetic in-memory source for local development.', options: '{}' },
 ];
 
