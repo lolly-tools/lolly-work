@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Lolly-Work-Proprietary
+// SPDX-License-Identifier: MPL-2.0
 /**
  * The ceilings on a room's own STATE (server/src/collab/rooms.ts).
  *

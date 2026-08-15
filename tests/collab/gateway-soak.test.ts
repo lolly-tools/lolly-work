@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Lolly-Work-Proprietary
+// SPDX-License-Identifier: MPL-2.0
 /**
  * LOAD SHAPES, not benchmarks (OSS plans/100 §10, plans/14 §6). Four properties a
  * room has to hold when more than one person is actually in it, each driven with

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// SPDX-License-Identifier: UNLICENSED
+// SPDX-License-Identifier: MPL-2.0
 /**
  * repin-engine — the re-pin cadence tool for the vendored OSS engine
  * (plans/current-state.md: "Engine pin drift" — the vendored engine drifts

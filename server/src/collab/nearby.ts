@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Lolly-Work-Proprietary
+// SPDX-License-Identifier: MPL-2.0
 /**
  * Nearby registry — the control-plane half of the browser "nearby" story
  * (OSS plans/110 §5, lolly-work plans/26 §8).

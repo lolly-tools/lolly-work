@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Lolly-Work-Proprietary
+// SPDX-License-Identifier: MPL-2.0
 /**
  * THE THIRD IMPLEMENTATION (OSS plans/100 §10 "three-way conformance", plans/99
  * §8). The shared `runConvergenceSuite` — shipped inside `@lolly-tools/core` so

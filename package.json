@@ -2,9 +2,9 @@
   "name": "lolly-work",
   "private": true,
   "version": "0.2.0",
-  "description": "Lolly control plane — identity, provisioning, governance, serving, telemetry. Proprietary. See plans/ for the design set.",
+  "description": "Lolly control plane — identity, provisioning, governance, serving, telemetry. MPL-2.0.",
   "type": "module",
-  "license": "UNLICENSED",
+  "license": "MPL-2.0",
   "engines": {
     "node": ">=24"
   },

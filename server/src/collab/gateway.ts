@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Lolly-Work-Proprietary
+// SPDX-License-Identifier: MPL-2.0
 /**
  * The collab WebSocket gateway — `/ws/collab/:sessionId` (OSS plans/100 §7
  * items 1/5/6/7, lolly-work plans/14 §6).

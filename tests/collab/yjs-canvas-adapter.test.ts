@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Lolly-Work-Proprietary
+// SPDX-License-Identifier: MPL-2.0
 /**
  * The Yjs adapter must satisfy the SAME §8 conformance suite the OSS `ReferenceCanvasDoc`
  * passes — imported from the pinned SDK so both repos run IDENTICAL bytes (plans/99 §8,

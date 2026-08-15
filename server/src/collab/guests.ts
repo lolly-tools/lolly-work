@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Lolly-Work-Proprietary
+// SPDX-License-Identifier: MPL-2.0
 /**
  * Guest seats in a live collab room — the "temporary external collaboration is
  * the same room, not a separate mechanism" half of plans/14 §6, over the guest

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: UNLICENSED
+// SPDX-License-Identifier: MPL-2.0
 /**
  * Build the lolly-work Vercel function via the Build Output API (.vercel/output).
  *

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Lolly-Work-Proprietary
+// SPDX-License-Identifier: MPL-2.0
 /**
  * Collab rooms — the live-session document authority (plans/14 §6, OSS
  * plans/100 §7). One room per session id; the room owns the converged document,

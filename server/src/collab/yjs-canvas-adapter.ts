@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Lolly-Work-Proprietary
+// SPDX-License-Identifier: MPL-2.0
 /**
  * Yjs-backed CanvasSyncAdapter — lolly-work's real implementation of the canvas-op
  * seam (OSS plans/99 + plans/100, lolly-work plans/14). The OSS shell emits/consumes the

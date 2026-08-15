@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Lolly-Work-Proprietary
+// SPDX-License-Identifier: MPL-2.0
 /**
  * Instance-mediated "nearby" (server/src/collab/nearby.ts + the two
  * /api/v1/collab/nearby routes, plans/26 §8):

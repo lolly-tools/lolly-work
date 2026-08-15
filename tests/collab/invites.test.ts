@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Lolly-Work-Proprietary
+// SPDX-License-Identifier: MPL-2.0
 /**
  * Live-collab invites over real HTTP (lolly-work plans/14 §6, OSS plans/100 §7
  * item 9): the eligible-principals autocomplete and the inbox delivery.

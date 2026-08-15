@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: UNLICENSED
+// SPDX-License-Identifier: MPL-2.0
 /**
  * The public demo landing page, served at `/` when a deployment has NO web shell
  * mounted (`instance.shellDir` unset) but the passwordless dev provider is on

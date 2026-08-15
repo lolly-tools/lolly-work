@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Lolly-Work-Proprietary
+// SPDX-License-Identifier: MPL-2.0
 /**
  * The collab governance bits (OSS plans/100 §7 item 7, `plans/14` §6 "Landed
  * 2026-08-09"): `private-collab` joining `GOVERNABLE_FLAGS` is covered in

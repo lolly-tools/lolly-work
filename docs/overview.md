@@ -19,7 +19,7 @@ product's own dog food.
 
 ## Two codebases, one deploy
 
-| | Lolly (open source, MPL-2.0) | This control plane (proprietary) |
+| | Lolly (open source, MPL-2.0) | This control plane (open source, MPL-2.0) |
 |---|---|---|
 | What | Engine, tool catalog, shells (web, desktop, mobile, CLI, TUI, extension) | Server, admin console, render worker |
 | Docs | `/info/` on any Lolly deployment | this set |

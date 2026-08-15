@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Lolly-Work-Proprietary
+// SPDX-License-Identifier: MPL-2.0
 /**
  * Room persistence — snapshot cadence, quiesce, and crash recovery for live
  * collab rooms (lolly-work plans/14 §6 "Persistence", OSS plans/100 §7 items 3

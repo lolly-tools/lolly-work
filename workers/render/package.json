@@ -4,7 +4,7 @@
   "version": "0.0.1",
   "description": "Isolated Chromium render worker for the lolly-work control plane — renders hooked/HTML-heavy tools the in-process jsdom fast path can't. Kept OUT of the zero-dependency control plane so Playwright never enters that supply chain.",
   "type": "module",
-  "license": "UNLICENSED",
+  "license": "MPL-2.0",
   "engines": { "node": ">=24" },
   "scripts": {
     "start": "node src/server.ts",

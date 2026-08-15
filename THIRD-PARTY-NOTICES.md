@@ -2,7 +2,7 @@
 
 This file lists the third-party components lolly-work distributes and
 reproduces their required copyright and permission notices. lolly-work itself
-is proprietary (`UNLICENSED`); the components below keep their own licenses.
+is licensed under **MPL-2.0**; the third-party components below keep their own licenses.
 The full machine-readable dependency graph, with per-component registry
 hashes, is `sbom.cdx.json` (`npm run sbom`).
 
@@ -19,11 +19,11 @@ packages) is neither distributed nor listed.
 
 ```text
 The Lolly engine and the tool-author core contract are vendored from the
-open-source lolly repository as a pinned, UNMODIFIED snapshot. lolly-work is a
-"Larger Work" in the sense of MPL-2.0 §1.7/§3.3: it combines the MPL-covered
-engine (kept in its own separate files under vendor/) with proprietary
-control-plane code. The Covered Software remains available under MPL-2.0 from
-the source repository above.
+open-source lolly repository as a pinned, UNMODIFIED snapshot. lolly-work is
+itself licensed under MPL-2.0, so the whole work — this vendored MPL-covered
+engine (kept in its own separate files under vendor/) and the surrounding
+control-plane code alike — is available under MPL-2.0. The Covered Software
+also remains available under MPL-2.0 from the source repository above.
 
 That the snapshot is consumed unmodified is enforced, not promised:
 scripts/verify-engine-pin.ts recomputes the vendored tree's content hashes
@@ -78,8 +78,8 @@ license id in `sbom.cdx.json`.
 
 ```text
 @resvg/resvg-js is licensed under the Mozilla Public License, Version 2.0.
-lolly-work consumes it unmodified as a separate package; per MPL-2.0 §3.3 the
-surrounding proprietary code is a Larger Work and is not itself covered. The
+lolly-work consumes it unmodified as a separate package; the surrounding
+lolly-work code is itself licensed under MPL-2.0. The
 full MPL-2.0 text ships with the package
 (node_modules/@resvg/resvg-js/LICENSE) and is available at
 https://mozilla.org/MPL/2.0/. Source: https://github.com/thx/resvg-js.

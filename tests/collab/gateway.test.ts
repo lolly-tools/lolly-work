@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Lolly-Work-Proprietary
+// SPDX-License-Identifier: MPL-2.0
 /**
  * The collab ws gateway over a REAL socket (plans/14 §6, OSS plans/100 §7): a
  * real `ws` client against a real `node:http` server wired exactly as main.ts

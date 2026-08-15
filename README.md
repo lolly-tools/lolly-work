@@ -1,8 +1,9 @@
 # lolly-work
 
 The Lolly **control plane** — identity and provisioning, governance, online services,
-telemetry analytics. Proprietary; designed to be hosted by an organisation (SUSE first),
-brand-agnostic so any deployment is just config + a pack mount.
+telemetry analytics. Open source under the **Mozilla Public License 2.0** ([MPL-2.0](LICENSE));
+designed to be hosted by an organisation (SUSE first), brand-agnostic so any deployment is
+just config + a pack mount.
 
 > **The compass:** OSS = individual freedom · OSS + control plane = organizational freedom.
 > Lolly renders on-device by design; everything hosted lives here (the public MCP server is
@@ -163,3 +164,12 @@ documented endpoints, and provider names appear descriptively only — this proj
 House rules carried from the OSS repo: zero-dep server style (the `services/ca`/`services/mcp`
 pattern), engine consumed pinned and unmodified when it arrives, no SUSE strings in code —
 the deployment name lives in `instance.json`.
+
+## License
+
+lolly-work is licensed under the **Mozilla Public License 2.0** — see [`LICENSE`](LICENSE).
+The vendored Lolly engine (`vendor/@lolly/engine`, `vendor/@lolly-tools/core`) is also
+MPL-2.0, consumed as a pinned, unmodified snapshot. Bundled third-party code keeps its own
+permissive licenses (MIT / BSD / Apache-2.0) and fonts are OFL-1.1; every required notice is
+reproduced in [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) with the machine-readable
+graph in `sbom.cdx.json`.

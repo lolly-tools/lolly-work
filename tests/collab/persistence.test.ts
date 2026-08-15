@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LicenseRef-Lolly-Work-Proprietary
+// SPDX-License-Identifier: MPL-2.0
 /**
  * Room persistence — snapshot cadence, quiesce → session revision, outbox-replay
  * dedup, and crash recovery (server/src/collab/persistence.ts + the lifecycle
