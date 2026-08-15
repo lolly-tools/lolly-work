@@ -9,6 +9,9 @@
 #                freshness (scripts/build-sbom.ts --check fails on drift).
 #   package    — the server container image must build (deploy/compose/
 #                Dockerfile); nothing is pushed here, release.yml does that.
+# After all four gates pass on a push to main (never on a PR), `deploy` ships the
+# committed state to Vercel production (aliases www.lolly.work). It no-ops with a
+# warning until the VERCEL_TOKEN repo secret is set.
 name: CI
 
 on:
@@ -123,3 +126,30 @@ jobs:
 
       - name: Build the server image (no push)
         run: docker build -f deploy/compose/Dockerfile .
+
+  # Deploy — only after every gate above passes, and only on a push to main (PRs
+  # never deploy). Remote build: Vercel runs the vercel.json buildCommand, exactly
+  # like a manual `vercel --prod`, so CI doesn't have to reproduce the native
+  # @resvg/jsdom bundle. VERCEL_ORG_ID/PROJECT_ID are public identifiers, not
+  # secrets; only VERCEL_TOKEN is a secret. Until that secret is set the step
+  # no-ops with a warning (never a red gate), so push-to-deploy is opt-in.
+  deploy:
+    name: deploy (vercel prod)
+    needs: [test, typecheck, audit, package]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      VERCEL_ORG_ID: team_6XAaRitEb6CnNoNPwI3pI6hb
+      VERCEL_PROJECT_ID: prj_35faMWKpIv5tWrDGSLwkzY7MFhIG
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy to Vercel production
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          if [ -z "$VERCEL_TOKEN" ]; then
+            echo "::warning::VERCEL_TOKEN secret not set — skipping auto-deploy. Add it in Settings → Secrets and variables → Actions to enable push-to-deploy."
+            exit 0
+          fi
+          npx --yes vercel@latest deploy --prod --yes --token="$VERCEL_TOKEN"
