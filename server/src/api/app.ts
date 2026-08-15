@@ -39,7 +39,7 @@ import {
 import { callerSeesProvider, createFederation, credentialContext, mapProviderAsset, passesExposure } from '../catalog/federation.ts';
 import { applyCredentialsToIndex, detectCredential, type CredentialRow } from '../catalog/credentials.ts';
 import { composeInstanceAssets, instanceAssetVisible, materializedIdFor, INST_PREFIX } from '../catalog/instance-assets.ts';
-import { materializeProvider, cutoverProvider, pinAsset } from '../catalog/materialize.ts';
+import { materializeProvider, materializeAsset, cutoverProvider, pinAsset } from '../catalog/materialize.ts';
 import { verifyLollyExport, extractProvenance } from '../catalog/publish.ts';
 import { listBrandProfiles, switchBrandProfile } from '../brand/profiles.ts';
 import { createMemoryBlobStore } from '../blobs/memory.ts';
@@ -2209,6 +2209,41 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       sendJson(res, 200, { ok: errors.length === 0, materialized: results.length, skipped, credentialsFound: embedded, assets: results, ...(errors.length ? { errors } : {}) }, { 'cache-control': 'no-store' });
     } catch (err) {
       sendError(res, 502, 'MATERIALIZE_FAILED', (err as Error).message);
+    }
+  });
+
+  // Search-and-import (plans/30 §3.1): snapshot ONE provider asset into inst/* — the
+  // curation gate for sources like Penpot whose media lives only in search, never in
+  // the auto-federated feed. Uses the driver's getAsset seam (single-asset fetch by
+  // remoteId) and falls back to a listAssets scan for providers that don't implement
+  // it. Admin-gated like materialize; the result is a pin — the owner-gated cutover
+  // still owns it fully later.
+  router.add('POST', '/api/v1/catalog/providers/:id/import', async (req, res, ctx) => {
+    const user = await requireAction(req, res, 'catalog.provider.manage');
+    if (!user) return;
+    await providersReady;
+    const rec = await store.getProvider(ctx.params.id as string);
+    if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such provider');
+    const body = (await readJson(req)) as { remoteId?: string } | null;
+    const remoteId = body?.remoteId;
+    if (typeof remoteId !== 'string' || !remoteId) return sendError(res, 400, 'INVALID_INPUT', 'remoteId required');
+    const deps = { store, blobs, federation };
+    try {
+      const provider = federation.instantiate(rec);
+      let result: Awaited<ReturnType<typeof materializeAsset>>;
+      if (provider.getAsset) {
+        const asset = await provider.getAsset(remoteId);
+        if (!asset) return sendError(res, 404, 'NOT_FOUND', 'no such asset on the provider');
+        result = await materializeAsset(deps, rec, asset);
+      } else {
+        const { results } = await materializeProvider(deps, rec, { remoteId });
+        if (!results.length) return sendError(res, 404, 'NOT_FOUND', 'asset not found in the provider feed');
+        result = results[0]!;
+      }
+      await audit(`user:${user.id}`, 'catalog.provider.import', `provider:${rec.id}`, { remoteId, inst: result.id, credential: result.credential });
+      sendJson(res, 200, { ok: true, imported: result }, { 'cache-control': 'no-store' });
+    } catch (err) {
+      sendError(res, 502, 'IMPORT_FAILED', (err as Error).message);
     }
   });
 

@@ -143,6 +143,16 @@ export async function pinAsset(deps: MaterializeDeps, rec: ProviderRecord, remot
   return results.length > 0;
 }
 
+/** Materialize ONE already-resolved asset ref (plans/30 §3.1 — search-and-import):
+ *  apply the exposure slice, then snapshot its bytes into inst/* exactly as
+ *  materializeProvider does per asset. Unlike materializeProvider it does NOT scan
+ *  listAssets — the caller supplies the ref (from getAsset or a search result), so a
+ *  search-only asset can be pinned. Idempotent via the deterministic inst id. */
+export async function materializeAsset(deps: MaterializeDeps, rec: ProviderRecord, asset: ProviderAssetRef): Promise<MaterializeResult> {
+  if (!passesExposure(rec, asset)) throw new Error(`asset ${asset.remoteId} is excluded by this provider's exposure slice`);
+  return materializeOne(deps, rec, asset);
+}
+
 /** Cut a provider over: migrate lifecycle (incl. hold), credential rows, and
  *  asset-specific grants keyed on each old ext id to the new inst id, and alias
  *  the old blob URLs so already-rendered SVGs keep resolving. The caller

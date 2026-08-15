@@ -833,6 +833,35 @@ async function loadBrandTokenMaps() {
   return { maps, name };
 }
 
+// Design tokens federated LIVE from connected sources (e.g. Penpot — plans/30 §5).
+// The pack's own tokens asset carries no `provider`; a federated one does, so this
+// is exactly the connected-source slice. Read-only inheritance into /design: parse
+// each source's DTCG (the same parser the pack uses) and preview its palette. Only
+// `ext/*` provider entries qualify — a materialized inst/* copy has `provider`
+// stripped, so it reads as pack-owned, not "still connected".
+async function loadSourceTokenSets() {
+  let index;
+  try {
+    const res = await fetch('/catalog/assets/index.json', { credentials: 'same-origin' });
+    if (!res.ok) return [];
+    index = await res.json();
+  } catch { return []; }
+  const assets = (Array.isArray(index?.assets) ? index.assets : []).filter((a) => a?.type === 'tokens' && a?.provider);
+  const out = [];
+  for (const asset of assets.slice(0, 12)) {
+    const fmtEntry = asset.formats?.find((f) => f.format === 'json') ?? asset.formats?.[0];
+    if (!fmtEntry?.url) continue;
+    try {
+      const url = fmtEntry.url.startsWith('/') ? fmtEntry.url : `/catalog/${fmtEntry.url}`;
+      const tRes = await fetch(url, { credentials: 'same-origin' });
+      if (!tRes.ok) continue;
+      const rows = tokenColorRows(buildThemeMaps(await tRes.json()).light);
+      out.push({ id: asset.id, name: asset.name || asset.id, provider: asset.provider, rows });
+    } catch { /* skip an unreadable / oversized set — best-effort, like the pack loader */ }
+  }
+  return out;
+}
+
 // Sign-in gate theming: the catalog is auth-gated, so before a session exists we
 // read brand chrome from the dedicated unauthenticated /api/brand endpoint
 // (tokens + a fonts base). Absent/404 → the gate stays neutral. This is what
@@ -1382,6 +1411,9 @@ async function viewDesignSystem(main) {
   // active via the catalog symlink. Show which is active; owner/admin can switch
   // the whole deploy — re-theming the console, sign-in and the tools at once.
   const profiles = await api('/api/v1/brand/profiles').catch(() => null);
+  // Token sets federated live from connected sources (Penpot). Surfaced read-only so
+  // /design inherits from the connected design system (plans/30 §5).
+  const sources = await loadSourceTokenSets().catch(() => []);
   const profileCard = profiles?.available && profiles.profiles.length ? (() => {
     const rows = profiles.profiles.map((p) => {
       let action = null;
@@ -1410,6 +1442,16 @@ async function viewDesignSystem(main) {
         : `This deployment’s brand is centrally managed. Active profile: ${profiles.active ?? '—'}.`),
       ...rows);
   })() : null;
+  const sourceCard = sources.length ? el('div', { class: 'card stack' },
+    el('h2', { class: 'flush' }, 'Design tokens from connected sources'),
+    el('p', { class: 'sub' }, 'Token sets federated live from your connected design sources (e.g. Penpot). They inherit into this design system read-only — the active brand still comes from the mounted pack. To pin a set as an instance-owned snapshot, use Search & import on the Sources tab.'),
+    ...sources.map((s) => el('div', { class: 'ds-group' },
+      el('div', { class: 'list-bar' },
+        el('div', { class: 'detail-h' }, s.name),
+        el('span', { class: 'muted mono' }, `${s.provider} · ${s.rows.length} colour token${s.rows.length === 1 ? '' : 's'}`)),
+      s.rows.length
+        ? el('div', { class: 'ds-grid' }, ...s.rows.slice(0, 24).map(tokenSwatch))
+        : el('p', { class: 'sub flush' }, 'No colour tokens in this set.'))) ) : null;
   const lightRows = brand ? tokenColorRows(brand.maps.light) : [];
   // Dark section shows only tokens whose value actually differs from light —
   // shared base colours aren't repeated, so it reads as "what dark changes".
@@ -1456,6 +1498,7 @@ async function viewDesignSystem(main) {
         el('div', { class: 'ds-shape' },
           ...['--radius-sm', '--radius', '--radius-lg', '--radius-pill'].map((r) =>
             el('div', { class: 'ds-shape-box', style: `border-radius:${dsVar(r)}` }, el('span', {}, dsVar(r)))))),
+      ...(sourceCard ? [sourceCard] : []),
       editorCard);
     return;
   }
@@ -1496,6 +1539,7 @@ async function viewDesignSystem(main) {
       : 'The active brand’s design tokens, read from the mounted pack — the same tokens the tools consume. This deployment’s brand is centrally managed.'),
     ...(profileCard ? [profileCard] : []),
     ...cards,
+    ...(sourceCard ? [sourceCard] : []),
     editorCard);
 }
 
@@ -2247,6 +2291,7 @@ function providerRow(p, panels) {
 const PROVIDER_INTEGRATIONS = [
   { kind: 'git', name: 'Git repository', blurb: 'Sync brand assets from any git host — Forgejo, Gitea, GitLab, Codeberg, GitHub — via a repository manifest.', options: '{"repo": "org/brand", "ref": "main"}' },
   { kind: 's3', name: 'S3-compatible storage', blurb: 'Federate a bucket from any S3-compatible object store — MinIO, Ceph, Garage, Mulga Spinifex S3, or a public cloud.', options: '{"bucket": "…", "prefix": "brand/", "endpoint": "https://s3.your-host.example", "region": "us-east-1"}' },
+  { kind: 'penpot', name: 'Penpot', blurb: 'Open, self-hostable design tool — federate your design tokens (DTCG) so /design and brand themes inherit from Penpot, and search-and-import boards as catalog media.', options: '{"baseUrl": "https://design.your-host.example", "teamId": "…"}', mapping: '{"typeMap": {"tokens": "tokens", "board": "image"}, "defaultType": "image"}' },
   { kind: 'gdrive', name: 'Google Drive', blurb: 'Pull a shared Drive folder into the catalog.', options: '{"folderId": "…"}' },
   { kind: 'dropbox', name: 'Dropbox', blurb: 'Mirror a Dropbox folder of approved assets.', options: '{"path": "/Brand"}' },
   { kind: 'o365', name: 'Microsoft 365 / SharePoint', blurb: 'Read a SharePoint library or OneDrive path.', options: '{"driveId": "…", "path": "/Brand"}' },
@@ -2298,6 +2343,10 @@ async function viewProviders(main) {
     const idInput = el('input', { placeholder: 'brand-dam (lowercase slug)' });
     const labelInput = el('input', { placeholder: integration.name });
     const optionsInput = el('textarea', { rows: 2, placeholder: integration.options });
+    // Mapping is how a source's native types land in the catalog (e.g. Penpot's
+    // tokens → the `tokens` type). Prefilled from the card when it ships a default.
+    const mappingInput = el('textarea', { rows: 2, placeholder: '{"defaultType": "image", "typeMap": {"Color": "palette"}}' });
+    if (integration.mapping) mappingInput.value = integration.mapping;
     const exposureInput = el('textarea', { rows: 2, placeholder: '{"groups": ["design"], "requireApproved": true}' });
     const secretInput = el('input', { type: 'password', autocomplete: 'off', placeholder: integration.kind === 'mock' ? 'not required for mock' : 'secret (used for the test, not stored)' });
     const addErr = errSpan();
@@ -2308,7 +2357,7 @@ async function viewProviders(main) {
     };
     const bodyOf = () => ({
       kind: integration.kind, label: labelInput.value || idInput.value,
-      options: parseJson(optionsInput, 'Options'), exposure: parseJson(exposureInput, 'Exposure'),
+      options: parseJson(optionsInput, 'Options'), mapping: parseJson(mappingInput, 'Mapping'), exposure: parseJson(exposureInput, 'Exposure'),
     });
     const testBtn = el('button', { onclick: async () => {
       addErr.textContent = '';
@@ -2343,6 +2392,8 @@ async function viewProviders(main) {
         field('Label', labelInput)),
       el('div', { class: 'formrow' },
         field('Options (JSON)', optionsInput),
+        field('Mapping (JSON)', mappingInput)),
+      el('div', { class: 'formrow' },
         field('Exposure (JSON)', exposureInput),
         field(integration.kind === 'mock' ? 'Secret (optional)' : 'Secret for test', secretInput)),
       el('p', {}, testBtn, ' ', createBtn),
@@ -2359,6 +2410,49 @@ async function viewProviders(main) {
         el('div', { class: 'connect-kind mono' }, intg.kind),
         el('p', { class: 'connect-blurb' }, intg.blurb)),
       el('button', { onclick: () => showConnect(intg) }, 'Connect'))));
+
+  // Search-and-import (plans/30 §3.1): live-search the enabled sources and import a
+  // single result into the catalog as an instance-owned snapshot. The curation gate —
+  // experimentation stays upstream (e.g. in Penpot), only picked assets land here.
+  const searchImportPanel = () => {
+    const qInput = el('input', { placeholder: 'Search connected sources — e.g. a Penpot board' });
+    const out = el('div', {});
+    const status = errSpan();
+    const run = async () => {
+      const q = qInput.value.trim();
+      if (!q) return;
+      status.textContent = '';
+      out.replaceChildren(el('p', { class: 'sub' }, 'Searching…'));
+      try {
+        const r = await api(`/api/v1/catalog/search?q=${encodeURIComponent(q)}&limit=30`);
+        const rows = (r.results ?? []).filter((a) => a.provider);
+        if (!rows.length) {
+          out.replaceChildren(el('p', { class: 'muted' }, 'No importable source results.'));
+        } else {
+          out.replaceChildren(el('ul', { class: 'stack flush' }, ...rows.map((a) => {
+            const remoteId = a.id.slice(`ext/${a.provider}/`.length);
+            const importBtn = el('button', { onclick: async () => {
+              importBtn.disabled = true; status.textContent = '';
+              try {
+                const res = await api(`/api/v1/catalog/providers/${a.provider}/import`, { method: 'POST', body: { remoteId } });
+                importBtn.replaceWith(el('span', { class: 'status live' }, `imported → ${res.imported.id}`));
+              } catch (e) { importBtn.disabled = false; status.textContent = e.message; }
+            } }, 'Import');
+            return el('li', { class: 'list-bar' },
+              el('span', {}, `${a.name} `, el('span', { class: 'muted mono' }, `${a.type} · ${a.provider}`)),
+              importBtn);
+          })));
+        }
+        if (r.providersUnavailable?.length) status.textContent = `Some sources didn’t respond: ${r.providersUnavailable.join(', ')}`;
+      } catch (e) { out.replaceChildren(); status.textContent = e.message; }
+    };
+    qInput.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') run(); });
+    return el('div', { class: 'card stack' },
+      el('h2', {}, 'Search & import'),
+      el('p', { class: 'sub' }, 'Live-search connected sources and import a result into the catalog as an instance-owned copy — keep experimentation upstream (e.g. in Penpot), land only curated assets here, with full rigor.'),
+      el('div', { class: 'formrow' }, field('Query', qInput), el('button', { onclick: run }, 'Search')),
+      out, status);
+  };
 
   const enabled = providers.filter((p) => p.enabled).length;
   const errored = providers.filter((p) => p.state?.lastError).length;
@@ -2381,6 +2475,7 @@ async function viewProviders(main) {
     el('div', { class: 'card stack' },
       el('h2', {}, 'Connect a source'),
       connectGrid),
+    searchImportPanel(),
     panelHost,
     el('div', { class: 'card stack' },
       el('h2', {}, 'Configured sources'),

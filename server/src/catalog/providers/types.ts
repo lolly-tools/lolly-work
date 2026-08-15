@@ -14,7 +14,7 @@
  */
 import type { AssetIndexEntry } from '../lifecycle.ts';
 
-export const PROVIDER_KINDS = ['brandfolder', 's3', 'git', 'dropbox', 'gdrive', 'o365', 'optimizely-cmp', 'imagerelay', 'acquia-dam', 'intelligencebank', 'mock'] as const;
+export const PROVIDER_KINDS = ['brandfolder', 's3', 'git', 'dropbox', 'gdrive', 'o365', 'optimizely-cmp', 'imagerelay', 'acquia-dam', 'intelligencebank', 'penpot', 'mock'] as const;
 export type ProviderKind = (typeof PROVIDER_KINDS)[number];
 
 /** Prefix every federated asset id carries; also the blob route mount. */
@@ -180,6 +180,11 @@ export interface CatalogProvider {
   readonly capabilities: ProviderCapabilities;
   listAssets(cursor?: string): Promise<{ assets: ProviderAssetRef[]; next?: string }>;
   searchAssets?(query: string, limit: number): Promise<ProviderAssetRef[]>;
+  /** Resolve ONE asset's ref by remoteId WITHOUT scanning listAssets — the seam the
+   *  /import route uses to snapshot a single search-only result (plans/30 §3.1). A
+   *  provider whose assets are all enumerable via listAssets can omit it (the route
+   *  falls back to a listAssets scan); returns null when the id is unknown. */
+  getAsset?(remoteId: string): Promise<ProviderAssetRef | null>;
   /** `formatRef` is a remoteRef from this driver's own ProviderFormatRef (or 'thumb'). */
   resolveBlob(remoteId: string, formatRef: string): Promise<ResolvedBlob>;
   /** Push a lolly-generated export INTO the destination (plans/27 §10). Only

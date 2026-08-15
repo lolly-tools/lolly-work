@@ -17,6 +17,7 @@ import { createOptimizelyCmpProvider, type OptimizelyCmpOptions } from './optimi
 import { createImageRelayProvider, type ImageRelayOptions } from './imagerelay.ts';
 import { createAcquiaDamProvider, type AcquiaDamOptions } from './acquia-dam.ts';
 import { createIntelligenceBankProvider, type IntelligenceBankOptions } from './intelligencebank.ts';
+import { createPenpotProvider, type PenpotOptions } from './penpot.ts';
 
 export interface ProviderDeps {
   fetchImpl?: typeof fetch;
@@ -49,6 +50,8 @@ export function createProvider(rec: ProviderRecord, secret: string | undefined, 
       return createAcquiaDamProvider(rec.id, rec.options as unknown as AcquiaDamOptions, secret, deps.fetchImpl);
     case 'intelligencebank':
       return createIntelligenceBankProvider(rec.id, rec.options as unknown as IntelligenceBankOptions, secret, deps.fetchImpl);
+    case 'penpot':
+      return createPenpotProvider(rec.id, rec.options as unknown as PenpotOptions, secret, deps.fetchImpl);
     default:
       throw new Error(`catalog provider kind not yet implemented: ${rec.kind}`);
   }
