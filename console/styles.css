@@ -1216,6 +1216,44 @@ td.url-cell { max-width: 240px; }
 .vchk.note .vchk-dot { background: var(--warn, #b26a00); }
 .vchk.bad .vchk-dot { background: var(--danger, #c0392b); }
 
+/* ── public docs shell ─────────────────────────────────────────────────────
+   Anonymous, session-less docs on the sandbox (app.js publicShell): drop the
+   admin grid to block flow and give a light, centred docs-site chrome. */
+.app.public { display: block; }
+.pub-head {
+  position: sticky; top: 0; z-index: 10;
+  background: color-mix(in oklab, var(--plane) 90%, transparent);
+  -webkit-backdrop-filter: saturate(1.2) blur(8px); backdrop-filter: saturate(1.2) blur(8px);
+  border-bottom: 1px solid var(--grid);
+}
+.pub-head__in {
+  max-width: 1100px; margin: 0 auto; padding: 11px 26px;
+  display: flex; align-items: center; gap: 16px;
+}
+.pub-brand { display: inline-flex; align-items: center; gap: 9px; text-decoration: none; color: var(--ink); font-weight: 700; }
+.pub-logo { display: block; width: 26px; height: 26px; }
+.pub-name { font-size: 15px; letter-spacing: 0.005em; }
+.pub-kicker { color: var(--muted); font-weight: 500; font-size: 14px; padding-left: 9px; border-left: 1px solid var(--grid); }
+.pub-nav { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+.pub-link { color: var(--ink-2); text-decoration: none; padding: 7px 10px; border-radius: var(--radius-sm); font-weight: 600; font-size: 13.5px; white-space: nowrap; }
+.pub-link:hover { background: color-mix(in oklab, var(--ink) 6%, transparent); color: var(--ink); }
+.pub-link.is-current { color: var(--accent); }
+.pub-signin { padding: 7px 14px; font-size: 13.5px; }
+.pub-icon-btn {
+  width: 34px; height: 34px; flex: none; display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--baseline); border-radius: 50%; color: var(--ink-2);
+  background: transparent; cursor: pointer; text-decoration: none;
+}
+.pub-icon-btn:hover { color: var(--ink); border-color: var(--accent); }
+.pub-icon-btn .nav-ico { width: 17px; height: 17px; }
+.app.public > main { max-width: 1100px; margin: 0 auto; }
+@media (max-width: 720px) {
+  .pub-head__in { padding: 10px 14px; gap: 10px; }
+  .pub-name, .pub-kicker { display: none; }
+  .pub-nav { gap: 4px; }
+  .pub-link { padding: 6px 8px; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }

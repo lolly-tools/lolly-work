@@ -4204,6 +4204,16 @@ const VIEWS = {
 
 let session = null;
 let instanceName = 'Lolly Work';
+// GET /api/auth/config, cached at boot (provider, providerName, publicDocs).
+let authConfig = null;
+// Anonymous public-docs mode: entered at boot on the public sandbox (dev.enabled,
+// advertised as authConfig.publicDocs) when a visitor with no session lands on a
+// public route. The admin rail needs a session, so publicShell() gives a light
+// docs-site chrome instead; every non-public route still drops to the sign-in gate.
+let publicMode = false;
+// The only views reachable without a session: the deployment docs and the
+// client-side C2PA verifier the docs link into ("Check it yourself").
+const PUBLIC_VIEWS = new Set(['docs', 'verify']);
 
 // Where the Lolly app lives. Same-origin ('') when the instance serves the
 // shell at / (instance.shellDir); an absolute origin when instance.appUrl is
@@ -4250,6 +4260,38 @@ function shell(current, content) {
   applyRailState(); // keep the toggle's aria + html attribute correct after each re-render
 }
 
+// Minimal chrome for the anonymous public docs on the sandbox (publicMode): the
+// admin rail needs a session, so instead a light top bar — the Lolly mark (its
+// C2PA-sealed icon.svg, the same one lolly.tools serves), a Docs link, source, a
+// sign-in button and the theme toggle — while the Docs view fills the page from
+// its own left-hand nav. Mirrors the public docs pattern on lolly.tools.
+function publicShell(current, content) {
+  $app.classList.add('public');
+  const icon = (paths) => {
+    const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    for (const [k, v] of Object.entries({ class: 'nav-ico', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.75', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true' })) s.setAttribute(k, v);
+    s.innerHTML = paths;
+    return s;
+  };
+  const themeBtn = el('button', { id: 'theme-toggle', class: 'pub-icon-btn', type: 'button', onclick: cycleTheme }, icon(''));
+  syncThemeButton(themeBtn);
+  $app.replaceChildren(
+    el('header', { class: 'pub-head' },
+      el('div', { class: 'pub-head__in' },
+        el('a', { class: 'pub-brand', href: '#/docs', 'aria-label': `${instanceName} documentation` },
+          el('img', { class: 'pub-logo', src: '/admin/icon.svg', alt: '', width: '26', height: '26', decoding: 'async' }),
+          el('span', { class: 'pub-name' }, instanceName),
+          el('span', { class: 'pub-kicker' }, 'Docs')),
+        el('nav', { class: 'pub-nav', 'aria-label': 'Documentation' },
+          el('a', { class: current === 'docs' ? 'pub-link is-current' : 'pub-link', href: '#/docs' }, 'Docs'),
+          el('a', { class: 'pub-link', href: 'https://github.com/lolly-tools/lolly-work', target: '_blank', rel: 'noopener' }, 'GitHub ↗'),
+          el('button', { class: 'primary pub-signin', type: 'button', onclick: signInGate }, 'Sign in'),
+          el('a', { class: 'pub-icon-btn', href: lollyHref('/'), 'aria-label': 'Home', title: 'Home' }, icon('<path d="M3 10.6 12 3l9 7.6"/><path d="M5.5 9.5V21h13V9.5"/>')),
+          themeBtn))),
+    content,
+  );
+}
+
 function gate(inner) {
   $app.replaceChildren(
     el('div', { class: 'gate' },
@@ -4265,6 +4307,36 @@ function gate(inner) {
         ...inner)));
 }
 
+// The current route id (the '#/<view>' segment, minus any '?query'), parsed the
+// same way route() does — used by boot() to decide whether a session-less visitor
+// landed on a public route.
+function currentRouteId() {
+  const raw = location.hash.replace(/^#\/?/, '');
+  const qi = raw.indexOf('?');
+  return (qi >= 0 ? raw.slice(0, qi) : raw) || 'overview';
+}
+
+// The sign-in gate — shown when there is no session and the route isn't public,
+// and reachable from the public docs header's "Sign in". Uses the cached auth
+// config (re-fetched if boot never got it). A .gate centres itself with flexbox,
+// so it renders correctly whether #app is the admin grid or the public block flow.
+async function signInGate() {
+  const cfg = authConfig ?? await api('/api/auth/config').catch(() => null);
+  const returnTo = encodeURIComponent('/admin');
+  gate([
+    el('p', { class: 'gate-lede' }, 'Sign in to manage your organisation’s tools, approvals, and catalog.'),
+    cfg?.provider === 'oidc'
+      ? el('a', { class: 'btn gate-go', href: `/api/auth/login?returnTo=${returnTo}` }, `Sign in with ${cfg?.providerName || 'SSO'}`)
+      : cfg?.provider === 'dev'
+        ? el('form', { class: 'gate-form', onsubmit: (e) => { e.preventDefault(); location.href = `/api/auth/dev?email=${encodeURIComponent(new FormData(e.target).get('email'))}&returnTo=${returnTo}`; } },
+            el('label', { for: 'gate-email' }, 'Work email'),
+            el('input', { id: 'gate-email', name: 'email', type: 'email', autocomplete: 'email', placeholder: 'you@example.com', autofocus: 'true' }),
+            el('button', { class: 'primary gate-go' }, 'Continue'),
+            el('p', { class: 'gate-hint' }, 'Development sign-in — no password required.'))
+        : el('p', { class: 'empty' }, 'No identity provider is configured on this deployment.'),
+  ]);
+}
+
 async function route() {
   // Hash is '#/<view>' with an optional '?query' (deep links: #/users?focus=<id>,
   // #/overview?day=<date>). Split the two; params reach the view as a 2nd arg.
@@ -4272,10 +4344,13 @@ async function route() {
   const qi = raw.indexOf('?');
   const id = (qi >= 0 ? raw.slice(0, qi) : raw) || 'overview';
   const params = new URLSearchParams(qi >= 0 ? raw.slice(qi + 1) : '');
+  // Public (anonymous) mode: only the public views are reachable; any other route
+  // drops to the sign-in gate — that's how a visitor crosses from docs into admin.
+  if (publicMode && !PUBLIC_VIEWS.has(id)) { await signInGate(); return; }
   const view = VIEWS[id] ?? VIEWS.overview;
   // id + tabindex make <main> the skip-link target and focus anchor.
   const main = el('main', { id: 'main', tabindex: '-1' });
-  shell(id, main);
+  (publicMode ? publicShell : shell)(id, main);
   // Loading state: shown synchronously, swapped when the view resolves (or is
   // replaced by the view's own empty/error state / the catch below).
   const loading = loadingCard(view.title);
@@ -4434,26 +4509,23 @@ async function boot() {
   // The instance's IdP display name (instance.json idp.displayName) — any OIDC
   // issuer works, open/sovereign providers first-class; unset → generic "SSO".
   try {
-    const authCfg = await api('/api/auth/config');
-    if (authCfg?.providerName) idpDisplayName = authCfg.providerName;
+    authConfig = await api('/api/auth/config');
+    if (authConfig?.providerName) idpDisplayName = authConfig.providerName;
   } catch { /* gate below re-fetches; views fall back to the generic name */ }
   try {
     session = await api('/api/auth/session');
   } catch {
-    const cfg = await api('/api/auth/config').catch(() => null);
-    const returnTo = encodeURIComponent('/admin');
-    gate([
-      el('p', { class: 'gate-lede' }, 'Sign in to manage your organisation’s tools, approvals, and catalog.'),
-      cfg?.provider === 'oidc'
-        ? el('a', { class: 'btn gate-go', href: `/api/auth/login?returnTo=${returnTo}` }, `Sign in with ${cfg?.providerName || 'SSO'}`)
-        : cfg?.provider === 'dev'
-          ? el('form', { class: 'gate-form', onsubmit: (e) => { e.preventDefault(); location.href = `/api/auth/dev?email=${encodeURIComponent(new FormData(e.target).get('email'))}&returnTo=${returnTo}`; } },
-              el('label', { for: 'gate-email' }, 'Work email'),
-              el('input', { id: 'gate-email', name: 'email', type: 'email', autocomplete: 'email', placeholder: 'you@example.com', autofocus: 'true' }),
-              el('button', { class: 'primary gate-go' }, 'Continue'),
-              el('p', { class: 'gate-hint' }, 'Development sign-in — no password required.'))
-          : el('p', { class: 'empty' }, 'No identity provider is configured on this deployment.'),
-    ]);
+    // Public sandbox: let an anonymous visitor read the docs without signing in,
+    // but only on a public route — every other path still gates, so admin
+    // sign-in stays reachable at /admin. The server mirrors this via publicDocs.
+    if (authConfig?.publicDocs && PUBLIC_VIEWS.has(currentRouteId())) {
+      publicMode = true;
+      document.getElementById('theme-toggle')?.remove(); // the public header owns the toggle
+      window.addEventListener('hashchange', route);
+      await route();
+      return;
+    }
+    await signInGate();
     return;
   }
   if (session.kind !== 'member') {
