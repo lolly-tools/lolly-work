@@ -7,7 +7,7 @@
  * separates where each constraint came from.
  *
  * Own file, own server + pack (the catalog-lifecycle pattern) with a
- * config-managed mock provider born enabled — no network, no CRUD dance.
+ * config-managed mock provider born enabled - no network, no CRUD dance.
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';

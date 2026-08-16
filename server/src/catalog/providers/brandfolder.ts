@@ -1,10 +1,10 @@
 /**
- * Brandfolder driver (plans/17 §12) — the reference provider. Public v4 API
+ * Brandfolder driver (plans/17 §12) - the reference provider. Public v4 API
  * only (https://brandfolder.com/api/v4, JSON:API shape), bearer-token auth.
  *
  * Brandfolder's storage/thumbnail URLs are SIGNED AND EXPIRING, so this driver
  * declares expiringUrls and resolveBlob re-fetches a fresh URL per request and
- * streams the bytes — no upstream URL is ever persisted or handed to clients.
+ * streams the bytes - no upstream URL is ever persisted or handed to clients.
  * Upstream fetches are pinned to Brandfolder-owned hosts (no open proxy).
  */
 import type { CatalogProvider, ProviderAssetRef, ProviderFormatRef, ResolvedBlob } from './types.ts';
@@ -21,7 +21,7 @@ const ASSET_FIELDS = 'fields=cdn_url,thumbnail_url,extension,updated_at,approved
 // Attachment filename/size ride the default include payload (verified live);
 // original_filename maps into ProviderFormatRef.filename for provenance.
 // availability_start/availability_end are the v4 asset-availability window
-// (plans/27 §2) — mapped into the ProviderAssetRef availability window below.
+// (plans/27 §2) - mapped into the ProviderAssetRef availability window below.
 // One live confirmation against the SUSE tenant before ship (same discipline as
 // the filename note above): confirm the field names and capture what the bare
 // `availability` enum returns alongside the dates.

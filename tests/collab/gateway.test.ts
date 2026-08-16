@@ -2,11 +2,11 @@
 /**
  * The collab ws gateway over a REAL socket (plans/14 §6, OSS plans/100 §7): a
  * real `ws` client against a real `node:http` server wired exactly as main.ts
- * wires it — router on request, gateway on upgrade.
+ * wires it - router on request, gateway on upgrade.
  *
  * The house http-test bootstrap (see tests/sessions.test.ts): own server, own
  * memory store, a temp pack, dev users in three groups. This file adds one thing
- * the other suites do not need — a real `tools/<id>/tool.json` in the pack, so
+ * the other suites do not need - a real `tools/<id>/tool.json` in the pack, so
  * the gateway's declared-input whitelist is exercised rather than skipped.
  */
 import { after, before, test } from 'node:test';
@@ -32,7 +32,7 @@ import {
 import { WRITER_CAP, WRITER_CAP_PER_USER, MAX_OPS_PER_MESSAGE, PRESENCE_FRAMES_PER_SEC } from '../../server/src/collab/rooms.ts';
 
 const TOOL_ID = 'deck';
-/** The tool's declared inputs — the gateway's own-property whitelist. The TYPE is
+/** The tool's declared inputs - the gateway's own-property whitelist. The TYPE is
  *  part of the contract too: it is what tells the gateway which lane an input
  *  lives in (a `blocks` input is a collection; everything else is a scalar param),
  *  so a manifest without types leaves the lane check with nothing to check. */
@@ -53,7 +53,7 @@ let base = '';
 let wsBase = '';
 let store: ReturnType<typeof createMemoryStore>;
 /** The parsed instance config, hoisted so a case can stand up a SECOND gateway
- *  over the same store — the seat-re-authorization case needs a short ping
+ *  over the same store - the seat-re-authorization case needs a short ping
  *  period, and 30 s of real time is not a test. */
 let gatewayConfig: ReturnType<typeof parseConfig>;
 let projectId = '';
@@ -87,7 +87,7 @@ before(async () => {
   }));
   store = createMemoryStore();
   // collab is built FIRST so its room snapshot can be injected into the HTTP
-  // app, exactly as main.ts wires it — see app.ts's `listCollabRooms`.
+  // app, exactly as main.ts wires it - see app.ts's `listCollabRooms`.
   collab = createCollabGateway({ config, store, secrets: { session: 'sc', link: 'lc' } });
   const app = buildApp({
     config, store, secrets: { session: 'sc', link: 'lc' }, listCollabRooms: () => collab.snapshot(),
@@ -142,7 +142,7 @@ class Client {
   readonly frames: Frame[] = [];
   closeCode: number | null = null;
   private readonly ws: WebSocket;
-  /** Settled once, in the constructor — a promise created later would wait on an
+  /** Settled once, in the constructor - a promise created later would wait on an
    *  `open` event that has already fired (two clients built back to back). */
   private readonly ready: Promise<void>;
   private waiters: Array<{ match: (f: Frame) => boolean; resolve: (f: Frame) => void }> = [];
@@ -225,7 +225,7 @@ class Client {
   }
 }
 
-/** Nothing of type `t` arrives within `ms` — the "peers never see it" assertion. */
+/** Nothing of type `t` arrives within `ms` - the "peers never see it" assertion. */
 async function silentFor(client: Client, t: string, ms = 250): Promise<void> {
   const before = client.frames.filter((f) => f.t === t).length;
   await new Promise((r) => setTimeout(r, ms));
@@ -255,7 +255,7 @@ async function seedFixtures(): Promise<void> {
       { id: 'row-a', heading: 'One', body: 'first' },
       { id: 'row-b', heading: 'Two', body: 'second' },
     ],
-    // Not expressible in canvas-op v1.1 — must be reported, never silently dropped.
+    // Not expressible in canvas-op v1.1 - must be reported, never silently dropped.
     logo: { assetId: 'suse/logo/primary', width: 120 },
   });
 }
@@ -274,7 +274,7 @@ test('a cookie-less upgrade is refused 401 before any handshake', async () => {
 });
 
 test('a member who cannot see the project is refused 403; an unknown session 404', async () => {
-  const outsider = await login('admin@test'); // admin sees all — use a private project instead
+  const outsider = await login('admin@test'); // admin sees all - use a private project instead
   const priv = await json(outsider, 'POST', '/api/v1/projects', { name: 'Private', visibility: 'private' });
   const privId = (await priv.json() as { id: string }).id;
   const privSession = await makeSession(outsider, privId, { title: 'secret' });
@@ -311,7 +311,7 @@ test('a session id that is not valid percent-encoding is refused, not thrown', (
   // `new URL` does NOT validate percent-escapes in a path, so every one of these
   // reaches `decodeURIComponent`, which throws URIError. handleUpgrade is called
   // synchronously from server.on('upgrade'), so a throw here would escape into
-  // node's HTTP parser as an uncaught exception and exit the process — an
+  // node's HTTP parser as an uncaught exception and exit the process - an
   // unauthenticated remote kill switch, reachable before any auth runs.
   for (const url of [`${COLLAB_WS_PREFIX}%`, `${COLLAB_WS_PREFIX}%zz`, `${COLLAB_WS_PREFIX}%e0%a4%a`, `${COLLAB_WS_PREFIX}a%`]) {
     assert.equal(collabSessionId(url), null, `${url} is refused`);
@@ -320,9 +320,9 @@ test('a session id that is not valid percent-encoding is refused, not thrown', (
 });
 
 test('a raw malformed-escape upgrade is answered, and the process survives it', async () => {
-  // The end-to-end shape of the case above, over a real socket: no cookie, no
+  // The end-to-end structure of the case above, over a real socket: no cookie, no
   // session, no membership. If the throw escaped, this connection would not merely
-  // fail — the server would be gone, and every later case in this file with it.
+  // fail - the server would be gone, and every later case in this file with it.
   const outcome = await new Promise<string>((resolve, reject) => {
     const ws = new WebSocket(`${wsBase}${COLLAB_WS_PREFIX}%`);
     ws.on('unexpected-response', (_req, res) => resolve(`http:${res.statusCode}`));
@@ -332,14 +332,14 @@ test('a raw malformed-escape upgrade is answered, and the process survives it', 
   });
   assert.notEqual(outcome, 'open', 'a malformed session id never completes a handshake');
 
-  // The server is still serving — the actual assertion.
+  // The server is still serving - the actual assertion.
   const res = await fetch(`${base}/api/v1/sessions/${sessionId}`, { headers: { cookie: aliceCookie } });
   assert.equal(res.status, 200, 'the control plane survived the malformed upgrade');
 });
 
 test('a cross-site upgrade is refused: a browser-stamped foreign Origin never reaches the cookie', async () => {
   // CORS does not apply to a ws handshake, and the browser attaches the session
-  // cookie regardless — so a page on evil.example opening this URL would have
+  // cookie regardless - so a page on evil.example opening this URL would have
   // received the whole docState plus every op and presence frame after it. The
   // only thing standing in the way was SameSite=Lax, a browser-behaviour
   // assumption rather than a check this server performs.
@@ -358,7 +358,7 @@ test('a cross-site upgrade is refused: a browser-stamped foreign Origin never re
 
   assert.equal(await withOrigin('https://evil.example'), 403, 'a foreign origin is refused');
   assert.equal(await withOrigin('http://localhost'), 101, 'the instance’s own baseUrl origin is fine');
-  // Non-browser clients send no Origin at all — every other case in this file
+  // Non-browser clients send no Origin at all - every other case in this file
   // proves that path still works, and a header the caller controls was never
   // the authorization anyway (the cookie is). What it buys is the one thing a
   // hostile PAGE cannot forge: where it came from.
@@ -373,7 +373,7 @@ test('a cross-site upgrade is refused: a browser-stamped foreign Origin never re
   // instance behind a reverse proxy or on a vanity domain must not lose collab
   // because `baseUrl` was written for link-building. TLS terminated in front of
   // us means the browser says https while we serve http, so scheme is ignored
-  // for this leg — the host is what a browser cannot forge.
+  // for this leg - the host is what a browser cannot forge.
   assert.equal(isAllowedOrigin('https://vanity.example', {}, false, 'vanity.example'), true);
   assert.equal(isAllowedOrigin('https://evil.example', {}, false, 'vanity.example'), false);
   assert.equal(isAllowedOrigin('https://vanity.example:8443', {}, false, 'vanity.example'), false, 'port is part of the host');
@@ -470,7 +470,7 @@ test('a locked input is dropped at the gateway: sender-only error, peers never s
     const relayed = await alice.next('ops');
     assert.equal((relayed.ops as CanvasOp[]).length, 1);
 
-    // and alice's connection is fine — a veto is not a disconnect
+    // and alice's connection is fine - a veto is not a disconnect
     alice.send({ t: 'ops', ops: [param('title', 'still writing', 'alice', 13)] });
     const ok = await bob.next('ops');
     assert.equal(((ok.ops as CanvasOp[])[0] as { key: string }).key, 'title');
@@ -537,7 +537,7 @@ test('a mid-room revocation lands on the next gesture, not the next reconnect', 
 test('a project-visibility revocation lands on the next gesture, not the next reconnect', async () => {
   // The grant half of this is covered above. THIS half is the one the gateway
   // used to check exactly once, at the handshake: `admit()` resolves the project
-  // and captures the row, and nothing re-read it — so a member removed from a
+  // and captures the row, and nothing re-read it - so a member removed from a
   // project's visibility group kept writing into it for the life of the socket,
   // and the writes landed as a real session revision on quiesce. The HTTP
   // surface answered 403 for the same person, on the same session, throughout.
@@ -548,7 +548,7 @@ test('a project-visibility revocation lands on the next gesture, not the next re
   const revocableId = (await created.json() as { id: string }).id;
   const seed = await makeSession(aliceCookie, revocableId, { title: 'seed' });
 
-  const bob = new Client(seed, bobCookie); // team-design — in, for now
+  const bob = new Client(seed, bobCookie); // team-design - in, for now
   try {
     assert.equal(((await bob.join()).you as { role: string }).role, 'writer');
     bob.send({ t: 'ops', ops: [param('title', 'while visible', 'b', 2)] });
@@ -599,7 +599,7 @@ test('a session tombstoned mid-room stops accepting ops on the next gesture', as
 
 test('collab.join is enforced at the socket: revoked mid-room it closes, and a fresh upgrade is 403', async () => {
   // `collab.join` is a real grantable action (rbac/evaluate.ts ROLE_ACTIONS) that
-  // the console offers and org-config advertises — and that the gateway did not
+  // the console offers and org-config advertises - and that the gateway did not
   // consult at all, so denying it left the principal joining as a WRITER with the
   // whole document. It is the one control an operator would reach for to switch
   // rooms off for a group.
@@ -616,7 +616,7 @@ test('collab.join is enforced at the socket: revoked mid-room it closes, and a f
     client.send({ t: 'ops', ops: [param('title', 'after the deny', 'r', 2)] });
     assert.equal(await client.closed(), CLOSE.UNAUTHORIZED, 'the open socket does not outlive the grant');
 
-    // …and a reconnect does not get back in either — refused before the handshake.
+    // …and a reconnect does not get back in either - refused before the handshake.
     const status = await new Promise<number>((resolve, reject) => {
       const ws = new WebSocket(`${wsBase}${COLLAB_WS_PREFIX}${seed}`, { headers: { cookie: roCookie } });
       ws.on('unexpected-response', (_req, res) => resolve(res.statusCode ?? 0));
@@ -630,7 +630,7 @@ test('collab.join is enforced at the socket: revoked mid-room it closes, and a f
     await store.deleteGrant({ ...deny });
   }
 
-  // Lifting the deny restores the seat — the gate is the grant, not a latch.
+  // Lifting the deny restores the seat - the gate is the grant, not a latch.
   const restored = new Client(seed, roCookie);
   assert.equal(((await restored.join()).you as { role: string }).role, 'writer');
   restored.close();
@@ -639,7 +639,7 @@ test('collab.join is enforced at the socket: revoked mid-room it closes, and a f
 
 test('an idle OBSERVER loses the room too — the seat is re-authorized on the heartbeat', async () => {
   // The other half of the same hole. `authorizeOps` lands a revocation on the
-  // next GESTURE — and an observer never makes one: they sit and receive the
+  // next GESTURE - and an observer never makes one: they sit and receive the
   // whole document, every op and every presence frame. A member removed from the
   // project's group would keep reading a live room until they chose to leave.
   // Its own gateway, so the ping period can be driven without a 30 s test.
@@ -712,7 +712,7 @@ test('an undeclared input and an unscoped box op are both refused', async () => 
 
 test('a governed scalar input cannot be re-scoped as a collection to escape its rule', async () => {
   // `governedInputId` resolves a box op to its `col`, so `col: '<inputId>'` names a
-  // governed input — but a `choice` rule compares op.VALUE, which a box op does not
+  // governed input - but a `choice` rule compares op.VALUE, which a box op does not
   // have, and `ReferenceCanvasDoc.ensure` materialises a collection for any `col`
   // string. Left unchecked, `{k:'add', col:'accent', row:{…}}` walks past the
   // allow-list AND turns a scalar input into an array of attacker-chosen objects on
@@ -727,11 +727,11 @@ test('a governed scalar input cannot be re-scoped as a collection to escape its 
   try {
     await alice.join();
 
-    // the param the rule was written for — refused, as it always was
+    // the param the rule was written for - refused, as it always was
     alice.send({ t: 'ops', ops: [param('accent', '#ff0000', 'alice', 2)] });
     assert.equal((await alice.next('error')).code, ERR.INPUT_NOT_ALLOWED);
 
-    // the same input reached through the collection lane — refused too
+    // the same input reached through the collection lane - refused too
     alice.send({
       t: 'ops',
       ops: [{ k: 'add', id: 'b1', col: 'accent', orderKey: 'a0', row: { value: '#ff0000', anything: 'attacker controlled' }, origin: { client: 'alice', clock: 3 } }],
@@ -855,7 +855,7 @@ test('presence is relayed unauthorized, identity-stamped, and never stored', asy
   await bob.join();
   await alice.next('peer-join');
 
-  // Focus on the input alice may NOT write. Presence must still relay — the
+  // Focus on the input alice may NOT write. Presence must still relay - the
   // lane is structurally unauthorized.
   alice.send({
     t: 'presence',
@@ -939,7 +939,7 @@ test(`writer ${WRITER_CAP + 1} is seated as an observer with a room-full notice`
 
 test(`one account may hold at most ${WRITER_CAP_PER_USER} writer seats in a room`, async () => {
   // WRITER_CAP is per ROOM. Without a per-user half, one account with several tabs
-  // (or a script) takes every seat and the room is view-only for everyone else —
+  // (or a script) takes every seat and the room is view-only for everyone else - 
   // a denial of service that needs no more than ordinary edit rights.
   const seed = await makeSession(aliceCookie, projectId, { title: 'seat hog' });
   const clients: Client[] = [];
@@ -996,7 +996,7 @@ test('the ops LANE is rate-capped, not just the per-message op count', async () 
 
 test(`one account may hold at most ${MAX_SOCKETS_PER_USER} sockets, and reconnect churn is capped`, async () => {
   // Each connect/disconnect cycle writes 2–3 hash-chained audit rows, and
-  // appendAudit takes an instance-global advisory lock — so an unthrottled
+  // appendAudit takes an instance-global advisory lock - so an unthrottled
   // reconnect loop from ONE authenticated member serialises audit writes for every
   // other operation on the instance, and floods the log.
   const seed = await makeSession(aliceCookie, projectId, { title: 'sockets' });
@@ -1017,7 +1017,7 @@ test(`one account may hold at most ${MAX_SOCKETS_PER_USER} sockets, and reconnec
     });
     assert.equal(status, 429, 'the ceiling is a refusal BEFORE the handshake, with a real status');
 
-    // Another account is unaffected — the cap is per user, not global capacity.
+    // Another account is unaffected - the cap is per user, not global capacity.
     const other = new Client(seed, bobCookie);
     held.push(other);
     await other.open();
@@ -1195,7 +1195,7 @@ test('originOf refuses an out-of-range or non-integer clock — a Lamport clock 
   // A Lamport clock is minted by `+1` per op (canvas-op-testkit); nothing
   // honest ever produces one near float precision limits. Before this,
   // `Number.isFinite` alone let `1e308` through, and `1e308 + 1 === 1e308` in
-  // float — so that op's clock became BOTH `Room.serverClock` and the replay
+  // float - so that op's clock became BOTH `Room.serverClock` and the replay
   // filter's high-water mark for whatever `origin.client` it named, FOREVER:
   // no later, honest clock from that client could ever beat it again, and the
   // register the op wrote could never be overwritten by anyone.
@@ -1222,7 +1222,7 @@ test('a poisoned-clock op is refused at the socket and never lands — a later, 
     await alice.next('peer-join');
 
     // The whole BATCH is refused (one malformed op invalidates its message),
-    // so the peer never sees it — a vetoed/malformed op never existed as far
+    // so the peer never sees it - a vetoed/malformed op never existed as far
     // as the room is concerned.
     alice.send({
       t: 'ops',
@@ -1232,7 +1232,7 @@ test('a poisoned-clock op is refused at the socket and never lands — a later, 
     await silentFor(admin, 'ops');
 
     // A legitimate, safely-integer clock claiming the SAME `origin.client` still
-    // lands and converges — proving the room's replay filter and `serverClock`
+    // lands and converges - proving the room's replay filter and `serverClock`
     // were never poisoned into refusing (or freezing) that client id.
     alice.send({ t: 'ops', ops: [param('title', 'fine', 'victim', 2)] });
     const relayed = await admin.next('ops');

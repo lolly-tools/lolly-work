@@ -9,22 +9,22 @@ and has no external assets, so a checkout runs as-is.
 npm run demo          # → http://localhost:8787   (PORT=8788 for another port)
 ```
 
-`npm run demo` builds its **own** config — it ignores `instance.json` — and seeds a whole
+`npm run demo` builds its **own** config - it ignores `instance.json` - and seeds a whole
 governed deploy: four personas, tool overlays, an approval chain, projects and sessions,
 catalog lifecycle rows, messages, telemetry, fleet entries, links and approvals. It serves
 the *built* Lolly web shell from the sibling OSS checkout (`../lolly`, or `LOLLY_OSS_DIR`)
 same-origin at `/`.
 
-Same-origin is the point: it is what activates the in-shell employee governance UX — the
+Same-origin is the point: it is what activates the in-shell employee governance UX - the
 sign-in gate, locked tool inputs, and the locked profile (identity fields IdP-managed,
 feature-flag toggles hidden). Sign-in links print at boot; no passwords.
 
-- Web shell: `/` — sign in as `marketer@suse.example` to see the locked profile.
-- Console: `/admin` — sign in as `admin@suse.example`.
+- Web shell: `/` - sign in as `marketer@suse.example` to see the locked profile.
+- Console: `/admin` - sign in as `admin@suse.example`.
 - Docs (this set): `/admin#/docs`.
 
 The demo never builds anything. If the OSS `shells/web/dist` predates the `org/` governance
-module, the demo falls back to `open` access mode and says so — run `npm run build:web` in
+module, the demo falls back to `open` access mode and says so - run `npm run build:web` in
 the OSS repo to get the governance UX. See `DEMO.md` for the full script.
 
 ## 2. A real (small) deploy
@@ -60,10 +60,10 @@ export DATABASE_URL=postgres://…     # migrations auto-apply at boot
 npm run migrate:status               # or: npm run migrate
 ```
 
-Without `DATABASE_URL` the in-memory store runs and everything resets on restart — correct
+Without `DATABASE_URL` the in-memory store runs and everything resets on restart - correct
 for evaluation, never for a real deploy. Both drivers pass one shared conformance suite.
 For multi-replica rollouts, turn boot DDL off (`LW_AUTO_MIGRATE=false`) and run migrations
-as a job — see [operations](operations.md).
+as a job - see [operations](operations.md).
 
 ## 4. Split development
 
@@ -75,7 +75,7 @@ npm start                     # control plane + console on :8787
 Set `instance.appUrl` to `http://localhost:5173` so the console's "Open Lolly" and its
 tool/session/project deep links point at your dev shell, and point `instance.pack` at a
 real pack so the Design-system tab shows actual brand tokens. Cross-origin means no shared
-session cookie, so the in-shell governance UX will not activate — use `npm run demo` for
+session cookie, so the in-shell governance UX will not activate - use `npm run demo` for
 that.
 
 ## 5. Secrets
@@ -87,7 +87,7 @@ LW_SESSION_SECRET=…      # member/guest/state tokens
 LW_LINK_SECRET=…         # link signatures
 ```
 
-In dev, both fall back to ephemeral randoms — sessions die on restart, which is correct.
+In dev, both fall back to ephemeral randoms - sessions die on restart, which is correct.
 Everything else is optional until the feature is used (`LW_IDP_CLIENT_SECRET`,
 `LW_CREDENTIAL_SECRET`, `LW_METRICS_TOKEN`, `LW_RENDER_WORKER_SECRET`,
 `LW_C2PA_SIGNING_KEY`). See [configuration](configuration.md).

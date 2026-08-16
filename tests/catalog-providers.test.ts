@@ -6,7 +6,7 @@
  * fan-out, and config-managed read-only records.
  *
  * Own file, own server + pack (the catalog-lifecycle pattern) with the mock
- * driver standing in for a real DAM — no network.
+ * driver standing in for a real DAM - no network.
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -134,7 +134,7 @@ test('(b) credential flow: bad key refused by health check (nothing stored), goo
   assert.equal(body.health.ok, true);
   assert.ok(!JSON.stringify(body).includes(MOCK_SECRET), 'response never carries the secret');
 
-  // No credential material in the wire shape — options are excluded from the
+  // No credential material in the wire shape - options are excluded from the
   // assertion because THIS test's mock stores its expected key there (a real
   // driver's options carry ids/urls, never secrets).
   const detail = await (await fetch(`${base}/api/v1/catalog/providers/dam1`, { headers: { cookie: owner } })).json() as Record<string, unknown>;

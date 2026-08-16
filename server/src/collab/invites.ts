@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-Lolly-Work-Proprietary
 /**
- * Live-collab invites — who may be invited, and the inbox message that invites
+ * Live-collab invites - who may be invited, and the inbox message that invites
  * them (OSS plans/100 §7 item 9, lolly-work plans/14 §6).
  *
  * TWO RULES LIVE HERE, both pure so the HTTP routes stay thin and the tests can
@@ -12,36 +12,36 @@
  *    the thing (there: an approver designated for that chain step; here: a
  *    member the ws gateway would admit to that session's room), never the wider
  *    directory. A member with no visibility of the project is not "an invite
- *    away" from the room — inviting them would mint a join that `admit()`
+ *    away" from the room - inviting them would mint a join that `admit()`
  *    refuses at the socket, which is precisely what plans/100 §7 item 9 forbids
  *    ("an invite can never mint a broken join"; widening access is a share-grant
  *    flow first).
  *
  *    The rule is therefore expressed as `mayJoinSession`, over the same shared
- *    predicates the gateway gates on — `isProjectMember` + `mayJoinCollab` — plus
+ *    predicates the gateway gates on - `isProjectMember` + `mayJoinCollab` - plus
  *    the per-USER half the gateway gets for free from `resolveMember` (a disabled
  *    account authenticates as nobody, so it can never join, so it must never be
  *    offered). There is no second copy of project visibility here.
  *
  *    **`isProjectMember`, deliberately, not `canSeeProject`.** The approver
- *    precedent's discipline is not "show whoever could reach it" — it is that the
+ *    precedent's discipline is not "show whoever could reach it" - it is that the
  *    revealed set is ADMIN-AUTHORED (a chain step's approver groups). Here the
  *    project is caller-authored, and `canSeeProject` is true for every admin and
  *    owner on every project, so eligibility over it hands any member a directory
  *    of the instance's privileged accounts: mint a project (private, or shared to
  *    a group nobody holds), create a session, open the autocomplete, and the only
- *    rows are the admins — ids and display names that `GET /api/v1/users` refuses
+ *    rows are the admins - ids and display names that `GET /api/v1/users` refuses
  *    a member outright. Membership-based eligibility keeps the set the caller's
  *    own team: an admin who is genuinely in the project's group is offered like
  *    anybody else; one who is merely an admin is not offered, and cannot be
- *    invited by guessing either — the POST validates the SAME predicate, so a
+ *    invited by guessing either - the POST validates the SAME predicate, so a
  *    201-vs-400 probe cannot answer the question the search refuses to.
  *
  *    Admins lose nothing by this: they can already open any room the gateway
  *    governs. What they stop being is a discovery surface.
  *
  * 2. **The invite is a message, not a new delivery mechanism.** It rides
- *    `store.putMessage` with `audience.users = [invitee]` — the same per-user
+ *    `store.putMessage` with `audience.users = [invitee]` - the same per-user
  *    targeting approvals already use for nominees (plans/10 §2). `inviteMessageId`
  *    is DERIVED from `(session, invitee)` rather than random, which is the whole
  *    of the idempotence story: `putMessage` is an upsert by id in both drivers,
@@ -69,7 +69,7 @@ export const INVITEE_LIMIT = 20;
 export const MAX_QUERY_CHARS = 64;
 
 /** What the autocomplete returns per person: an id to invite and a name to show.
- *  No email — matching the approver search's disclosure exactly. Being invitable
+ *  No email - matching the approver search's disclosure exactly. Being invitable
  *  is not a reason to hand a colleague's address to whoever typed two letters. */
 export interface Invitee {
   id: string;
@@ -80,7 +80,7 @@ export interface Invitee {
  * The per-user half of the ws gateway's room-join gate (`gateway.ts` `admit`),
  * for a session whose project has already been resolved.
  *
- * The session-level half — the session exists and is not tombstoned — is a
+ * The session-level half - the session exists and is not tombstoned - is a
  * property of the request, not of the candidate, so the route checks it once
  * rather than once per user.
  *
@@ -91,7 +91,7 @@ export interface Invitee {
  */
 export function mayJoinSession(user: UserRecord, project: ProjectRecord, grants: Grant[]): boolean {
   if (user.disabledAt) return false; // resolveMember refuses the cookie outright
-  // The admin/owner bypass is excluded ON PURPOSE — see rule 1 in this file's
+  // The admin/owner bypass is excluded ON PURPOSE - see rule 1 in this file's
   // header, and `isProjectMember`'s own note.
   if (!isProjectMember(user, project)) return false;
   return mayJoinCollab({ userId: user.id, groups: user.groups, role: user.role as Role }, grants);
@@ -102,7 +102,7 @@ export function mayJoinSession(user: UserRecord, project: ProjectRecord, grants:
  * word within it, so "eng" finds "Alice Eng" and "al" finds "Alice Eng".
  *
  * Deliberately NOT a substring search. A substring match over a name turns an
- * eligible-principals list into a directory probe — type "a" and enumerate; the
+ * eligible-principals list into a directory probe - type "a" and enumerate; the
  * prefix rule means a caller has to already know roughly who they are looking
  * for, which is what an invite box is for. An empty query matches everything:
  * the box opens with the (capped) list of people who could join.
@@ -124,13 +124,13 @@ export function normalizeQuery(raw: string | null | undefined): string {
  * The eligible principals for one session's room, filtered by `q`, capped, and
  * sorted by display name so the same query gives the same page.
  *
- * `truncated` reports that the cap bit — the client shows "keep typing" rather
+ * `truncated` reports that the cap bit - the client shows "keep typing" rather
  * than pretending it saw everyone.
  */
 export function eligibleInvitees(opts: {
   users: UserRecord[];
   project: ProjectRecord;
-  /** The instance's grants — `mayJoinSession` needs them for `collab.join`. */
+  /** The instance's grants - `mayJoinSession` needs them for `collab.join`. */
   grants: Grant[];
   /** Excluded from the results: you are already in the room you are inviting to. */
   callerId: string;
@@ -157,7 +157,7 @@ export function eligibleInvitees(opts: {
  * only that it is a pure function of the pair: `putMessage` upserts by id in
  * BOTH drivers (memory replaces the map entry, postgres `on conflict (id) do
  * update`), so a second invite to the same person for the same session refreshes
- * the pending one — one inbox row, with the latest inviter and label on it.
+ * the pending one - one inbox row, with the latest inviter and label on it.
  */
 export function inviteMessageId(sessionId: string, inviteeId: string): string {
   return `msg_collab_${sha256Hex(`${sessionId} ${inviteeId}`).slice(0, 24)}`;
@@ -170,7 +170,7 @@ export function inviteMessageId(sessionId: string, inviteeId: string): string {
 export const MAX_LABEL_CHARS = 120;
 export const MAX_TITLE_CHARS = 200;
 
-/** A session's human label for the invite copy, falling back to the tool id —
+/** A session's human label for the invite copy, falling back to the tool id - 
  *  the same `meta.label` the projects/sessions routes surface, bounded. */
 export function sessionLabel(session: SessionRecord): string {
   const label = session.meta?.['label'];
@@ -187,8 +187,8 @@ export function sessionLabel(session: SessionRecord): string {
  * by id (the Projects view resolves the session and rewrites the hash to
  * `#/tool/<toolId>?…`), so the SERVER must not pretend to know the deep link.
  * `cta.url` therefore reuses the one session-deep-link shape the product already
- * has — the console's `/t/<toolId>?session=<id>` (console/app.js `actSessionObj`)
- * — and `data.sessionId` is what a collab-aware shell actually joins on, exactly
+ * has - the console's `/t/<toolId>?session=<id>` (console/app.js `actSessionObj`)
+ * - and `data.sessionId` is what a collab-aware shell actually joins on, exactly
  * as plans/100 §7 item 9 asks. `toolId`/`toolVersion` ride along so the shell can
  * start loading the tool while the ws handshake completes (§7 item 11).
  */

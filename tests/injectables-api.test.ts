@@ -1,7 +1,7 @@
 /**
  * The injectables rail over real HTTP (plans/19): admin-or-owner publish/list/revoke,
- * a malformed payload refused at the door, and a published injectable appearing —
- * group-scoped — in the target caller's org-config while a publish moves the ETag.
+ * a malformed payload refused at the door, and a published injectable appearing - 
+ * group-scoped - in the target caller's org-config while a publish moves the ETag.
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -86,7 +86,7 @@ test('publish → group-scoped org-config projection + ETag bump; revoke removes
   assert.equal(dCfg.injectables[0]!.kind, 'chrome');
   assert.equal(dCfg.injectables[0]!.text, 'New brand kit is live');
 
-  // Marketer (not in 'design') does NOT see it — genuinely absent, not flagged.
+  // Marketer (not in 'design') does NOT see it - genuinely absent, not flagged.
   const mCfg = await (await fetch(`${base}/api/v1/org-config`, { headers: { cookie: marketer } })).json() as { injectables: unknown[] };
   assert.equal(mCfg.injectables.length, 0);
 

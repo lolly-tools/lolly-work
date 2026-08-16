@@ -1,5 +1,5 @@
 /**
- * Rate-card catalog awareness (plans/18) — the envelope sanity check and the
+ * Rate-card catalog awareness (plans/18) - the envelope sanity check and the
  * lifecycle derivation. Pure-function tests, matching catalog-lifecycle's
  * split: the HTTP/lifecycle enforcement itself is already covered there, and
  * these rows feed that same machinery.

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * Room persistence — snapshot cadence, quiesce, and crash recovery for live
+ * Room persistence - snapshot cadence, quiesce, and crash recovery for live
  * collab rooms (lolly-work plans/14 §6 "Persistence", OSS plans/100 §7 items 3
  * and 4).
  *
@@ -9,20 +9,20 @@
  * `session_revisions` table. Nothing here invents a parallel timeline: a quiesce
  * is a `putSession` rev bump plus one `appendSessionRevision`, byte-identical in
  * shape to what `PUT /api/v1/sessions/:id` writes. The only difference is the
- * revision's `actor`, which is `'collab'` rather than a user id — a room's
+ * revision's `actor`, which is `'collab'` rather than a user id - a room's
  * converged document has no single author, and claiming one would be a lie in
  * the audit trail. (`SessionRecord.updatedBy` is a different matter: it is a
- * FOREIGN KEY to `users(id)` in Postgres, so it keeps a real user — the room's
+ * FOREIGN KEY to `users(id)` in Postgres, so it keeps a real user - the room's
  * last accepted writer, else whoever the record already named.) A GUEST's
  * write-back is the one case where those two diverge: it lands on the revision as
- * `guest:<linkId>` and leaves `updated_by` alone — see `RoomWriter` below.
+ * `guest:<linkId>` and leaves `updated_by` alone - see `RoomWriter` below.
  *
  * WHAT IS SNAPSHOTTED IS THE SESSION'S INPUTS. plans/14 §6 reached for a
  * "periodic snapshot + update log", the y-leveldb algorithm plans/100 §7 item 3
  * pins the cadence from. The snapshot half is here; the LOG half is deliberately
  * absent, and this is the one place this module departs from the plan's letter:
- * an update log earns its keep when replaying deltas is cheaper than rewriting
- * the document, and a Lolly session document is a few KB of input model — the
+ * an update log pays off when replaying deltas is cheaper than rewriting
+ * the document, and a Lolly session document is a few KB of input model - the
  * exact case plans/14 §4 calls out ("inputs for even a huge deck are tens of
  * KB"). Writing the whole converged state every 20 batches is cheaper than
  * writing 20 op batches and then compacting them, and it removes compaction as a
@@ -36,7 +36,7 @@
  * THE SNAPSHOT ROW IS TRANSIENT, AND THAT IS THE RECOVERY SIGNAL. It exists only
  * while a room holds unpersisted edits; the quiesce that writes the revision
  * deletes it in the same pass. So a row that survives a process restart MEANS a
- * crash lost that room's quiesce — there is no separate "was it clean?" flag to
+ * crash lost that room's quiesce - there is no separate "was it clean?" flag to
  * get out of sync. `baseRev` guards the replay: recovery happens only while the
  * stored session is still at the rev the snapshot was taken against. A higher rev
  * means an ordinary PUT has since superseded the room, and replaying stale room
@@ -44,7 +44,7 @@
  *
  * NO PRESENCE REACHES THIS MODULE. rooms.ts keeps the whole presence path
  * (sanitize → remember → relay) to itself and hands this module only the
- * converged DOCUMENT, through the `RoomWriteback` seam below — a one-method
+ * converged DOCUMENT, through the `RoomWriteback` seam below - a one-method
  * interface that can express a document and nothing else. Presence has no route
  * to the store, by shape rather than by discipline (plans/100 §7 item 5).
  */
@@ -57,7 +57,7 @@ import type { SessionRecord, Store } from '../store/types.ts';
 // ── cadence + lifetime constants (plans/100 §7 item 3) ────────────────────────
 
 /** Snapshot after this many applied op BATCHES (one `ops` message = one batch).
- *  plans/100 §7 item 3's "every 20 revisions", read as gesture commits — the unit
+ *  plans/100 §7 item 3's "every 20 revisions", read as gesture commits - the unit
  *  a client actually produces. */
 export const SNAPSHOT_EVERY_BATCHES = 20;
 /** …or this many accumulated ops, whichever comes first. A drag gesture can put
@@ -68,8 +68,8 @@ export const SNAPSHOT_EVERY_OPS = 500;
  *  disposes it. The ORDINARY path does not wait for this: the last member's
  *  leave quiesces immediately, which is what keeps `rooms()` honest and the
  *  `collab.rollup` audit event contemporaneous with the room closing. This grace
- *  exists for rooms that never pass through a leave at all — a socket that dies
- *  between `acquire` and `join`, or a leave handler that threw — which would
+ *  exists for rooms that never pass through a leave at all - a socket that dies
+ *  between `acquire` and `join`, or a leave handler that threw - which would
  *  otherwise hold a document (and its unwritten edits) forever. */
 export const EMPTY_GRACE_MS = 30_000;
 /** The `SessionRevision.actor` a room's own writes carry. Not a user id: a
@@ -83,11 +83,11 @@ export const COLLAB_ACTOR = 'collab';
  *
  *   - `sessions.updated_by` REFERENCES `users(id)` (migrations/0004), so only a
  *     member id may ever go in it. A guest's write leaves whatever the record
- *     already named — which is the honest answer, not a fallback: the guest is
+ *     already named - which is the honest answer, not a fallback: the guest is
  *     not a user, and writing the INVITER there would claim an edit they did not
  *     make in the one column the console reads as "who last touched this".
  *   - `session_revisions.actor` is free text, so that is where a guest's write is
- *     attributed — as its own principal id (`guest:<linkId>`), the same string
+ *     attributed - as its own principal id (`guest:<linkId>`), the same string
  *     the audit log uses for `guest.admit` and for the room's join/leave events.
  */
 export type RoomWriter =
@@ -98,7 +98,7 @@ export type RoomWriter =
  * The `SessionRevision.actor` for one write-back. `'collab'` for a member-written
  * room (a converged document has no single author) and for a crash recovery with
  * no writer at all; the GUEST principal id when the last accepted writer was a
- * guest, because plans/02 §8 asks for a guest to be identifiable "everywhere —
+ * guest, because plans/02 §8 asks for a guest to be identifiable "everywhere - 
  * presence, revisions, audit", and a room whose only writer was a guest would
  * otherwise land in history indistinguishable from one its members wrote.
  */
@@ -118,7 +118,7 @@ function isSyntheticId(col: string, id: BoxId): boolean {
 /** One converged box row → the stored block object. The BoxId is the row's
  *  identity in the room, so it is stamped back as `id` (this is plans/14 work
  *  item 3, "stable block ids in the session format", falling out of collab for
- *  free) — but never when the id was synthesised, because that would invent data
+ *  free) - but never when the id was synthesised, because that would invent data
  *  the user never had, and a subsequent seed would then treat the invention as
  *  authoritative. */
 function rowToBlock(col: string, id: BoxId, row: BoxRow): Record<string, unknown> {
@@ -139,15 +139,15 @@ function paramToInput(value: ParamValue): unknown {
  *
  * `base` is the CURRENTLY STORED inputs and it is the floor, not a formality: the
  * document deliberately cannot express every input (a `file` input's bytes, a
- * nested object — rooms.ts reports those as `unsynced` in every join-ack), so
+ * nested object - rooms.ts reports those as `unsynced` in every join-ack), so
  * every key the document cannot hold must survive the write-back verbatim.
  *
- * `touched` narrows that further, and this is the load-bearing part. A room seeds
+ * `touched` narrows that further, and this is the essential part. A room seeds
  * its document from EVERY syncable input, so "what the document says" covers
  * inputs nobody in the room ever went near. Writing all of them back would let a
  * room that changed one headline silently revert an ordinary
  * `PUT /api/v1/sessions/:id` that landed on an unrelated input while it was open
- * — a clobber with no edit behind it, which is the worst kind. So the write-back
+ * - a clobber with no edit behind it, which is the worst kind. So the write-back
  * is scoped to the input ids the room ACCEPTED ops for (the same key set the
  * audit rollup reports), and the overlap with L0 resolves per input id: the room
  * wins what it edited, the PUT keeps everything else.
@@ -179,7 +179,7 @@ export interface RoomWriteback {
 
 /** What the room seeds itself from on first join. */
 export interface HydrateResult {
-  /** The inputs to seed the document with — the stored session's, or a recovered
+  /** The inputs to seed the document with - the stored session's, or a recovered
    *  snapshot's when a crash lost that room's quiesce. */
   inputs: Record<string, unknown>;
   /** The session rev those inputs correspond to (AFTER any recovery revision). */
@@ -190,7 +190,7 @@ export interface HydrateResult {
 
 export interface QuiesceResult {
   /** False when nothing changed, the session vanished, or it was tombstoned
-   *  mid-room — all cases where writing a revision would be noise or a
+   *  mid-room - all cases where writing a revision would be noise or a
    *  resurrection. */
   written: boolean;
   /** The rev written, or the untouched current rev when `written` is false. */
@@ -200,11 +200,11 @@ export interface QuiesceResult {
 export interface RoomPersistence {
   /** First-join hydration, including crash recovery. */
   hydrate(session: SessionRecord): Promise<HydrateResult>;
-  /** Cadence write — replaces this session's snapshot row. */
+  /** Cadence write - replaces this session's snapshot row. */
   snapshot(sessionId: string, doc: RoomWriteback, ops: number): Promise<void>;
   /** Final write: the room lands as a normal session revision, and its snapshot
    *  row (the crash-recovery signal) is cleared. `actor` is the room's last
-   *  accepted writer — see `RoomWriter` for why it is not simply a string. */
+   *  accepted writer - see `RoomWriter` for why it is not simply a string. */
   quiesce(
     sessionId: string,
     doc: RoomWriteback,
@@ -239,7 +239,7 @@ export function createRoomPersistence(deps: RoomPersistenceDeps): RoomPersistenc
    * /api/v1/sessions/:id` writes, with `actor: 'collab'` and `updatedBy` kept a
    * real user (it is a FK in Postgres).
    *
-   * IT IS A CAS, AND IT RE-DERIVES ON A LOSS — which is what makes the merge
+   * IT IS A CAS, AND IT RE-DERIVES ON A LOSS - which is what makes the merge
    * documented on `docToInputs` ("the room wins what it edited, the PUT keeps
    * everything else") true rather than merely intended. `derive` is called with the
    * base that was ACTUALLY read this attempt, so a PUT that lands mid-write-back is
@@ -248,8 +248,8 @@ export function createRoomPersistence(deps: RoomPersistenceDeps): RoomPersistenc
    * instead: discard the PUT's inputs AND its `meta` wholesale, leave
    * `session_revisions` recording the user's revision while `sessions.inputs` holds
    * the room's (the revision PK is `(session_id, rev)`, so the room's row is the one
-   * `on conflict do nothing` drops) — a silent divergence in an audited control
-   * plane — and, when the racing request was a DELETE, write `deleted_at` back as
+   * `on conflict do nothing` drops) - a silent divergence in an audited control
+   * plane - and, when the racing request was a DELETE, write `deleted_at` back as
    * NULL and resurrect a tombstoned session. `casSession` cannot do any of those.
    */
   const commit = async (
@@ -271,11 +271,11 @@ export function createRoomPersistence(deps: RoomPersistenceDeps): RoomPersistenc
         inputs,
         rev,
         // A guest is not a `users(id)` row, so it can only ever be attributed on
-        // the revision below — see `RoomWriter`.
+        // the revision below - see `RoomWriter`.
         updatedBy: writer?.kind === 'member' ? writer.userId : session.updatedBy,
         updatedAt: now,
       };
-      if (!(await store.casSession(next, session.rev))) continue; // somebody moved it — re-read and re-merge
+      if (!(await store.casSession(next, session.rev))) continue; // somebody moved it - re-read and re-merge
       await store.appendSessionRevision({
         sessionId, rev, inputs, meta: session.meta, actor: roomRevisionActor(writer), at: now,
       });
@@ -288,7 +288,7 @@ export function createRoomPersistence(deps: RoomPersistenceDeps): RoomPersistenc
     async hydrate(passed) {
       // Re-read rather than trusting the caller's copy. The gateway's record was
       // read at UPGRADE time, and a room re-opened straight after its predecessor
-      // quiesced is handed the pre-quiesce record by construction — seeding from
+      // quiesced is handed the pre-quiesce record by construction - seeding from
       // either would silently undo work that is already a revision.
       const session = (await store.getSession(passed.id)) ?? passed;
       const snap = await store.getCollabSnapshot(session.id);
@@ -312,7 +312,7 @@ export function createRoomPersistence(deps: RoomPersistenceDeps): RoomPersistenc
       await store.deleteCollabSnapshot(session.id);
       if (!out.ok) {
         // Lost the race the `baseRev` check was guarding: something moved the
-        // session between the two reads. Same verdict as a stale row — seed from
+        // session between the two reads. Same verdict as a stale row - seed from
         // whatever is stored NOW, never from a base we know has moved.
         const fresh = (await store.getSession(session.id)) ?? session;
         return { inputs: fresh.inputs, rev: fresh.rev, recovered: false };
@@ -333,7 +333,7 @@ export function createRoomPersistence(deps: RoomPersistenceDeps): RoomPersistenc
         return;
       }
       const inputs = doc.toInputs(session.inputs);
-      // Nothing to recover — including the ops-that-cancelled-out case, where the
+      // Nothing to recover - including the ops-that-cancelled-out case, where the
       // room is busy but has converged back onto what is already stored.
       if (ops <= 0 || isDeepStrictEqual(inputs, session.inputs)) {
         await store.deleteCollabSnapshot(sessionId);

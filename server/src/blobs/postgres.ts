@@ -1,8 +1,8 @@
 /**
- * Postgres BlobStore driver — the zero-moving-parts default (plans/26 §2,
+ * Postgres BlobStore driver - the zero-moving-parts default (plans/26 §2,
  * plans/27 §5). One row per blob in `instance_blobs` (migration 0015): the
  * content as `bytea`, plus size/checksum/content_type. `pg` is imported lazily,
- * exactly like the record store, and this holds its OWN small pool — the blob
+ * exactly like the record store, and this holds its OWN small pool - the blob
  * seam lives beside `Store`, not inside it, so the two never share a driver.
  * A blob is buffered whole (admin-triggered materialization, one at a time),
  * which keeps the driver trivial and correct; the S3 driver is the path for

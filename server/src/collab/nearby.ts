@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * Nearby registry — the control-plane half of the browser "nearby" story
+ * Nearby registry - the control-plane half of the browser "nearby" story
  * (OSS plans/110 §5, lolly-work plans/26 §8).
  *
  * A browser PWA cannot discover other devices on a network (no mDNS/multicast/raw
- * sockets — that is the Tauri shells' native advantage, OSS plans/110 §3). What an
+ * sockets - that is the Tauri shells' native advantage, OSS plans/110 §3). What an
  * INSTANCE can do for its browser members is far weaker but still useful: group the
  * members who are online right now by the network they appear to be on, so the
  * ceremony's invite flow can surface "people in your org, likely nearby" first.
@@ -20,8 +20,8 @@
  * presence map dies with the room, and `rooms.ts` cannot even reach the store). This
  * registry keeps that invariant: it is a plain Map with a TTL, it holds nothing an
  * audit would want, and it is constructed only in the long-lived server process
- * (main.ts, beside the ws gateway). On Vercel there is no long-lived process — a POST
- * and a GET can land on different function instances — so the registry is simply
+ * (main.ts, beside the ws gateway). On Vercel there is no long-lived process - a POST
+ * and a GET can land on different function instances - so the registry is simply
  * absent there and the routes answer 501 rather than lying with a half-populated list.
  *
  * ── Opt-in ──────────────────────────────────────────────────────────────────────
@@ -36,7 +36,7 @@
 export interface NearbyMemberView {
   userId: string;
   name: string;
-  /** Same apparent public address as the caller — a hint, see the header. */
+  /** Same apparent public address as the caller - a hint, see the header. */
   near: boolean;
 }
 
@@ -47,7 +47,7 @@ export interface NearbyRegistry {
   clear(userId: string): void;
   /** Visible members other than the caller, nearest first then by name. */
   list(callerUserId: string, callerIp: string): NearbyMemberView[];
-  /** Live entry count (post-sweep) — for tests and any future metric. */
+  /** Live entry count (post-sweep) - for tests and any future metric. */
   size(): number;
 }
 

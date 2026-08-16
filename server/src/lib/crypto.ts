@@ -1,5 +1,5 @@
 /**
- * Shared crypto helpers — node:crypto only, no dependencies.
+ * Shared crypto helpers - node:crypto only, no dependencies.
  * HMAC values and tokens use base64url throughout (cookie/URL-safe).
  */
 import { createHmac, createHash, randomBytes, timingSafeEqual, scryptSync, hkdfSync, createCipheriv, createDecipheriv } from 'node:crypto';
@@ -16,7 +16,7 @@ export function hmac(data: string, secret: string): string {
   return createHmac('sha256', secret).update(data).digest('base64url');
 }
 
-/** Constant-time compare of two base64url MACs (length leak is fine — MACs are fixed-size). */
+/** Constant-time compare of two base64url MACs (length leak is fine - MACs are fixed-size). */
 export function macEquals(a: string, b: string): boolean {
   const ab = b64uDecode(a);
   const bb = b64uDecode(b);
@@ -32,7 +32,7 @@ export function randomId(bytes = 16): string {
   return randomBytes(bytes).toString('base64url');
 }
 
-/** Password hashing for link passwords — scrypt with a per-password salt. */
+/** Password hashing for link passwords - scrypt with a per-password salt. */
 export function hashPassword(pw: string): string {
   const salt = randomBytes(16);
   const key = scryptSync(pw.normalize('NFKC'), salt, 32);
@@ -55,7 +55,7 @@ const GCM_TAG_LEN = 16;
 /**
  * At-rest sealing for stored secrets (catalog provider credentials, plans/17 §5).
  * AES-256-GCM under a key HKDF-derived from the master secret and a caller
- * `context` string — domain separation, so a ciphertext sealed for one record
+ * `context` string - domain separation, so a ciphertext sealed for one record
  * cannot be replayed into another. Layout: iv(12) || tag(16) || ciphertext.
  */
 export function sealSecret(plain: string, masterSecret: string, context: string): Buffer {
@@ -77,13 +77,13 @@ export function openSecret(sealed: Uint8Array, masterSecret: string, context: st
 }
 
 /** Display-safe identifier for a stored secret: sha256 prefix + last four
- *  characters (card-number style) — what APIs and audit entries show instead
+ *  characters (card-number style) - what APIs and audit entries show instead
  *  of the value. */
 export function secretFingerprint(secret: string): string {
   return `${sha256Hex(secret).slice(0, 8)}…${secret.slice(-4)}`;
 }
 
-/** JSON.stringify with recursively sorted object keys — stable input for hashing. */
+/** JSON.stringify with recursively sorted object keys - stable input for hashing. */
 export function canonicalJson(value: unknown): string {
   return JSON.stringify(sortKeys(value));
 }

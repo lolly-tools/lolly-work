@@ -1,5 +1,5 @@
 /**
- * What THIS deployment can render server-side — the single source of truth
+ * What THIS deployment can render server-side - the single source of truth
  * consumed by BOTH the render request gate (pipeline.ts) and the org_config
  * advertisement (policy/org-config.ts), so what shells are offered and what
  * the render route accepts can never drift apart (plans/23 §3.A).
@@ -19,14 +19,14 @@ export type RenderFormat = (typeof RENDER_TIER)[number];
 export const WORKER_RASTER_FORMATS = ['jpg', 'pdf'] as const;
 
 export interface RenderCapabilities {
-  /** Server-renderable formats. Deployment-scoped — the same for every caller. */
+  /** Server-renderable formats. Deployment-scoped - the same for every caller. */
   formats: string[];
   /** A Chromium worker is attached ⇒ hooked/HTML tools render server-side
    *  (absent ⇒ they 501, and shells should not offer them for server export). */
   hookedTools: boolean;
 }
 
-/** `workerConfigured` means url AND secret present — the same condition app.ts
+/** `workerConfigured` means url AND secret present - the same condition app.ts
  *  uses to activate the worker. A worker widens the format set (plans/22 §6.3)
  *  as well as unlocking hooked tools; because the render gate and the org_config
  *  advertisement both call this, the widening reaches shells (and moves the

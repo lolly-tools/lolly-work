@@ -2,17 +2,17 @@
  * Telemetry ingest (plans/09).
  *
  * Three invariants enforced HERE, at the door, not in the query layer:
- *   1. No input values, ever — each event type has a closed attr allowlist;
+ *   1. No input values, ever - each event type has a closed attr allowlist;
  *      anything else is dropped before storage.
  *   2. Attribution policy is applied at ingest: below `standard` (or without
  *      the user's consent when attribution is opt-in) the user id is
  *      stripped, so unconsented events are aggregate from the first byte.
- *   3. Identity attributes are never telemetry — unconditionally, in any mode
+ *   3. Identity attributes are never telemetry - unconditionally, in any mode
  *      (plans/09 §2a). The public product promises "a person's disability or
  *      language is never telemetry", and employment does not suspend that:
  *      workplace telemetry covers work artifacts, not who a person is. The
  *      one event that brushes against it is `profile.update`, whose `fields`
- *      attr names the changed profile fields — a changed `a11y` or `lang`
+ *      attr names the changed profile fields - a changed `a11y` or `lang`
  *      field IS the sensitive signal even with the value absent. So the
  *      field names pass a closed reportable allowlist (fail-closed: any
  *      field this file doesn't know is dropped, so a future sensitive
@@ -49,7 +49,7 @@ export const EVENT_ATTRS: Record<string, readonly string[]> = {
   'profile.update': ['fields'],
   'collab.join': ['toolId'],
   // Seat-utility session durations (plans/09). `seconds` is a numeric LABEL, not
-  // content — sanitizeEvent already string-coerces + length-caps it, and no
+  // content - sanitizeEvent already string-coerces + length-caps it, and no
   // free-text attr exists here, so the no-values invariant holds. CLI sessions
   // are intentionally NOT captured (short/instant by design).
   'session.tool': ['toolId', 'seconds'],
@@ -57,7 +57,7 @@ export const EVENT_ATTRS: Record<string, readonly string[]> = {
 };
 
 /**
- * Profile field names that may appear in `profile.update`'s `fields` attr —
+ * Profile field names that may appear in `profile.update`'s `fields` attr - 
  * contact-card facts an org directory legitimately cares about being kept
  * current. Everything else on the OSS `Profile` type (a11y preferences, `lang`,
  * favourites, feature flags, per-user catalog overlays, consent flags, …) is a
@@ -74,13 +74,13 @@ export interface IngestPolicy {
   attribution: 'default' | 'opt-in';
 }
 
-/** Attrs are labels, not content — reject anything long enough to be a value. */
+/** Attrs are labels, not content - reject anything long enough to be a value. */
 const MAX_ATTR_LEN = 200;
 
 /**
  * Validate + sanitize one event. Returns null for unknown events or when
  * telemetry is off. Attrs are coerced to strings and filtered to the
- * allowlist — a value that survives is a label, never content.
+ * allowlist - a value that survives is a label, never content.
  */
 export function sanitizeEvent(
   raw: RawEvent,
@@ -99,7 +99,7 @@ export function sanitizeEvent(
     if (raw.event === 'profile.update' && key === 'fields' && s !== null) {
       // Invariant 3: only reportable field NAMES survive; an update that only
       // touched preference/identity fields ingests with no `fields` attr at
-      // all (the event itself still counts — "a profile was maintained").
+      // all (the event itself still counts - "a profile was maintained").
       const kept = s.split(',').map((f) => f.trim()).filter((f) => REPORTABLE_PROFILE_FIELDS.has(f));
       s = kept.length ? kept.join(',') : null;
     }
@@ -128,9 +128,9 @@ export interface TelemetrySummary {
   days: Array<{ date: string; events: number; exports: number; users: number }>;
   topTools: Array<{ toolId: string; count: number }>;
   formats: Array<{ format: string; count: number }>;
-  /** Most-used catalog assets (catalog.asset-use) — item popularity. */
+  /** Most-used catalog assets (catalog.asset-use) - item popularity. */
   topAssets: Array<{ assetId: string; count: number }>;
-  /** Exports broken down by where they went (render.export destination) — the
+  /** Exports broken down by where they went (render.export destination) - the
    *  download vs server-render split, shown in full on this internal instance. */
   destinations: Array<{ destination: string; count: number }>;
   /** Seat utility from session.tool / session.shell durations. CLI sessions are
@@ -147,7 +147,7 @@ function seconds(v: string | undefined): number | null {
   return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
-/** Dashboard summary — pure fold over stored events (plans/09 §4). */
+/** Dashboard summary - pure fold over stored events (plans/09 §4). */
 export function summarize(events: StoredEvent[], dayCount = 14, today = new Date()): TelemetrySummary {
   const dayIndex = new Map<string, { date: string; events: number; exports: number; users: number }>();
   // Distinct attributed users active per day ("visited the app at all"); folded

@@ -1,8 +1,8 @@
 /**
- * Optimizely CMP (Content Marketing Platform) DAM driver (plans/27 §9, §10) —
+ * Optimizely CMP (Content Marketing Platform) DAM driver (plans/27 §9, §10) - 
  * the web DAM SUSE keeps and federates read-only, NOT a source it exits. Public
  * CMP DAM API v3 (api.cmp.optimizely.com; legacy tenants: api.welcomesoftware.com),
- * OAuth2 with a refreshable token (oauth.ts — the operator's own registered CMP
+ * OAuth2 with a refreshable token (oauth.ts - the operator's own registered CMP
  * app, BYOT). This driver proves two of §9's generalizations concretely:
  *   - native availability → Wave 1: `expires_at` maps straight to
  *     `availableUntil` (CMP models expiry but no release date);
@@ -13,7 +13,7 @@
  * exposure slice can scope by folder OR label (plans/27 §10 "folder/label slices").
  *
  * Download URLs are signed + short-lived, so this declares expiringUrls and
- * resolveBlob re-fetches a fresh URL per request and streams the bytes — no
+ * resolveBlob re-fetches a fresh URL per request and streams the bytes - no
  * upstream URL is ever persisted. Upstream fetches are host-pinned.
  *
  * LIVE-VERIFY before ship (the doc site is a JS app; the house rule from
@@ -32,13 +32,13 @@ export interface OptimizelyCmpOptions {
   /** OAuth token endpoint. Defaults to the base host's /o/oauth2/v1/token. */
   tokenUrl?: string;
   /** Opt in to the publish-out arm (plans/27 §10): this provider may receive
-   *  lolly-generated exports. Off by default — a source is read-only unless the
+   *  lolly-generated exports. Off by default - a source is read-only unless the
    *  operator explicitly turns publishing on. */
   publish?: boolean;
 }
 
 const DEFAULT_BASE = 'https://api.cmp.optimizely.com';
-// Download URLs resolve to a CMP/Welcome CDN — pin to the DAM's own hosts so
+// Download URLs resolve to a CMP/Welcome CDN - pin to the DAM's own hosts so
 // /catalog/ext/* never becomes an open proxy. LIVE-VERIFY the CDN host.
 const ALLOWED_HOSTS = /(^|\.)(cmp\.optimizely\.com|optimizely\.com|welcomesoftware\.com|welcomecdn\.com)$/;
 const PAGE_SIZE = 100;
@@ -163,7 +163,7 @@ export function createOptimizelyCmpProvider(
     // documented ingestion flow: get an upload URL, PUT the bytes, then create
     // the asset referencing the upload and set its title. LIVE-VERIFY the exact
     // request/response shapes against a real tenant (upload_url field name, the
-    // create body's upload reference, the fields endpoint) — modelled here.
+    // create body's upload reference, the fields endpoint) - modelled here.
     async publishAsset(input: PublishInput): Promise<{ remoteId: string; url?: string }> {
       const up = await api<{ upload_url: string; id?: string }>('/v3/upload-url');
       if (!ALLOWED_HOSTS.test(new URL(up.upload_url).hostname)) throw new Error('optimizely-cmp upload url outside allowed hosts');

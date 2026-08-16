@@ -5,7 +5,7 @@
  *
  * The property under test throughout is that **the invite surface never widens
  * access**. A directory member with no visibility of the session's project is
- * invisible to the search AND refused by the POST — the two must agree, because
+ * invisible to the search AND refused by the POST - the two must agree, because
  * a client is free to skip the search and post an id it guessed. Everything
  * else here (prefix, cap, self-exclusion, duplicate collapse, the grant gate) is
  * a consequence of that one rule plus the approver-search disclosure precedent.
@@ -49,7 +49,7 @@ before(async () => {
       users: [
         { email: 'admin@test', name: 'Ada Admin', groups: ['admin'] },
         // An admin who is ALSO in the project's group. The membership rule is
-        // "the bypass is not a signal", not "hide admins" — she is offered.
+        // "the bypass is not a signal", not "hide admins" - she is offered.
         { email: 'owen@test', name: 'Owen Ops', groups: ['admin', 'team-eng'] },
         // In the project's group, but their group is denied `collab.join`: the
         // gateway would refuse the socket, so the invite box must not offer them.
@@ -106,7 +106,7 @@ let cookies: Record<string, string> = {};
 
 test('setup: everyone signs in once, alice owns a team session, ollie is denied session.edit', async () => {
   for (const u of ['admin', 'owen', 'cody', 'alice', 'bob', 'bella', 'ollie', 'carol']) cookies[u] = await login(`${u}@test`);
-  // Dev users only exist in the store once they authenticate — materialise the
+  // Dev users only exist in the store once they authenticate - materialise the
   // padding so the directory is genuinely bigger than one page of results.
   for (const p of PADDING) await login(p.email);
 
@@ -127,7 +127,7 @@ test('setup: everyone signs in once, alice owns a team session, ollie is denied 
 
   // The observer seat: collab.edit IS session.edit (rbac/evaluate.ts
   // mayEditCollab), so denying that one grant is what makes a member an
-  // observer — there is no separate collab.edit table to get out of step with.
+  // observer - there is no separate collab.edit table to get out of step with.
   const deny = await call(cookies['admin'] as string, 'POST', '/api/v1/grants', {
     principal: 'group:readonly', action: 'session.edit', resource: '*', effect: 'deny',
   });
@@ -160,14 +160,14 @@ test('eligibility: only principals who could join appear — never the directory
   const names = rows.map((r) => r.name);
   assert.ok(!names.includes('Alice Eng'), 'self excluded — you are already in the room');
   assert.ok(!names.includes('Carol Design'), 'a directory member with no project access is invisible');
-  // No emails, ever — the approver-search disclosure, one surface over.
+  // No emails, ever - the approver-search disclosure, one surface over.
   assert.deepEqual([...new Set(rows.flatMap((r) => Object.keys(r)))].sort(), ['id', 'name']);
 
   const teamOnly = await invitees(cookies['alice'] as string, `?sessionId=${sessionId}&q=B`);
   assert.deepEqual(teamOnly.invitees.map((r) => r.name), ['Bella Eng', 'Bob Eng']);
 
   // Admins see every project (rbac/project-access.ts `canSeeProject`), so an
-  // admin genuinely CAN join this room — and is still not offered, because
+  // admin genuinely CAN join this room - and is still not offered, because
   // eligibility here is MEMBERSHIP (`isProjectMember`), not the role bypass.
   // Ada is not in team-eng. Offering her would make the autocomplete an
   // admin-identification oracle over any project its caller can mint (the case
@@ -180,7 +180,7 @@ test('eligibility: only principals who could join appear — never the directory
   const owen = await invitees(cookies['alice'] as string, `?sessionId=${sessionId}&q=Owen`);
   assert.deepEqual(owen.invitees.map((r) => r.name), ['Owen Ops']);
 
-  // An observer may look up who else could watch — read access is the gate here.
+  // An observer may look up who else could watch - read access is the gate here.
   const asObserver = await invitees(cookies['ollie'] as string, `?sessionId=${sessionId}&q=bob`);
   assert.deepEqual(asObserver.invitees.map((r) => r.name), ['Bob Eng']);
 });
@@ -189,7 +189,7 @@ test('a member cannot mint a project to enumerate the instance’s admins', asyn
   // The oracle this closes: eligibility over `canSeeProject` is true for every
   // admin and owner on EVERY project, so a plain member could create one, create
   // a session in it, and read back a list whose only rows are the instance's
-  // privileged accounts — ids and display names that GET /api/v1/users refuses
+  // privileged accounts - ids and display names that GET /api/v1/users refuses
   // them outright. The eligibility set was attacker-chosen; the approver-search
   // precedent this surface cites has an admin-authored one.
   const alice = cookies['alice'] as string;
@@ -251,7 +251,7 @@ test('q is a PREFIX (on the name or any word in it), not a substring probe', asy
   const byWord = await invitees(alice, `?sessionId=${sessionId}&q=eng`);
   assert.deepEqual(byWord.invitees.map((r) => r.name), ['Bella Eng', 'Bob Eng'], 'matches the surname word');
 
-  // 'ell' is inside "Bella" but starts no word — a substring search would find
+  // 'ell' is inside "Bella" but starts no word - a substring search would find
   // her, and typing three letters would walk the directory.
   assert.deepEqual((await invitees(alice, `?sessionId=${sessionId}&q=ell`)).invitees, []);
   assert.deepEqual((await invitees(alice, `?sessionId=${sessionId}&q=zzz-nobody`)).invitees, []);
@@ -326,7 +326,7 @@ test('an ineligible invitee is refused with one indistinguishable code, and gets
 
 test('inviting needs the WRITE right: an observer with collab.join is refused 403', async () => {
   const ollie = cookies['ollie'] as string;
-  // He can search — read access is that route's gate (asserted above too).
+  // He can search - read access is that route's gate (asserted above too).
   assert.equal((await call(ollie, 'GET', `/api/v1/collab/invitees?sessionId=${sessionId}`)).status, 200);
 
   const res = await call(ollie, 'POST', '/api/v1/collab/invites', { sessionId, userId: await userId('bella@test') });
@@ -370,7 +370,7 @@ test('a disabled account is neither offered nor invitable — it authenticates a
 
 test('audit: one collab.invite per delivered invite, keys only — never a label or an input value', async () => {
   const events = (await store.listAudit()).filter((e) => e.action === 'collab.invite');
-  // One per ACCEPTED invite — the three 201s above, including the duplicate,
+  // One per ACCEPTED invite - the three 201s above, including the duplicate,
   // which collapses one inbox row but is still a distinct act to record.
   // Every refusal (403, INVITEE_NOT_ELIGIBLE) audits nothing.
   assert.equal(events.length, 3);
@@ -388,7 +388,7 @@ test('audit: one collab.invite per delivered invite, keys only — never a label
 // is pinned to the three that precede it.
 test('a re-invite after the invitee dismissed the first one is delivered again', async () => {
   // The invite id is derived from (session, invitee) so a duplicate refreshes
-  // one row — but acks are permanent per (messageId, userId) and delivery
+  // one row - but acks are permanent per (messageId, userId) and delivery
   // filters acked ids unconditionally, so "dismissed once" would otherwise mean
   // "never invitable to this session again": 201, an audit row, and an inbox
   // that stays empty forever. The idempotence promise is ONE LIVE invite per

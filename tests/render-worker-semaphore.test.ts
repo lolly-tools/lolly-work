@@ -1,6 +1,6 @@
 /**
  * The render worker's hand-rolled counting semaphore (plans/22 §5, plans/23
- * §3.C) — the only concurrency guard between one Chromium and unbounded
+ * §3.C) - the only concurrency guard between one Chromium and unbounded
  * `browser.newContext()` calls. Pure, no HTTP, no browser: exercises limit
  * enforcement, FIFO release order, and the no-leak-on-throw guarantee that
  * `run()` exists to provide.
@@ -38,14 +38,14 @@ test('acquire() serves queued waiters in FIFO order as permits free up', async (
 
   // Each acquire() call below synchronously joins the wait line (the semaphore
   // is at capacity the instant it's called), so pushing order == FIFO order,
-  // deterministically — no sleeps needed to pin this down.
+  // deterministically - no sleeps needed to pin this down.
   const order: number[] = [];
   const p1 = sem.acquire().then((release) => { order.push(1); return release; });
   const p2 = sem.acquire().then((release) => { order.push(2); return release; });
   const p3 = sem.acquire().then((release) => { order.push(3); return release; });
   assert.equal(sem.waiting, 3, 'all three callers are queued, none jumped ahead');
 
-  first(); // free the held permit — the longest-waiting caller (1) should get it next
+  first(); // free the held permit - the longest-waiting caller (1) should get it next
   const release1 = await p1;
   assert.deepEqual(order, [1]);
 

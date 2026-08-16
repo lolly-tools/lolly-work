@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: MPL-2.0
 /**
- * verify-engine-pin — the MPL "consumed unmodified" compliance check
+ * verify-engine-pin - the MPL "consumed unmodified" compliance check
  * (plans/11-commercial-build.md §3.4). The engine + core are vendored under
  * `vendor/` as a pinned snapshot; this recomputes their content hashes and
  * fails if the vendored source drifts from engine-pin.json. Runs as `pretest`
@@ -79,8 +79,8 @@ for (const [name, expect] of Object.entries(pin.schemas)) {
 // plans/27 §11: server/src/catalog/credentials.ts is a thin wrapper over the
 // engine's C2PA container handling rather than a second implementation. Assert
 // the exact modules + exports it depends on are present in the pinned engine, so
-// a re-vendor that dropped or renamed them fails HERE — with a pointer to the
-// wrapper — instead of at runtime when the first scan loads the engine.
+// a re-vendor that dropped or renamed them fails HERE - with a pointer to the
+// wrapper - instead of at runtime when the first scan loads the engine.
 const REQUIRED_ENGINE_EXPORTS: Array<{ file: string; symbols: string[]; usedBy: string }> = [
   { file: join('src', 'c2pa-extract.ts'), symbols: ['extractC2paStore', 'sniffFormat'], usedBy: 'server/src/catalog/credentials.ts' },
 ];

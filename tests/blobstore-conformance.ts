@@ -1,5 +1,5 @@
 /**
- * Shared BlobStore conformance — run by the memory driver here and (when
+ * Shared BlobStore conformance - run by the memory driver here and (when
  * LW_TEST_DATABASE_URL is set) by the PG driver in tests/store-postgres.test.ts,
  * so both prove identical semantics: checksum on write, idempotent overwrite,
  * stream round-trip, null on unknown, idempotent delete.
@@ -43,5 +43,5 @@ export async function blobStoreConformance(store: BlobStore): Promise<void> {
 
   await store.delete('b1');
   assert.equal(await store.get('b1'), null, 'deleted blob is gone');
-  await store.delete('b1'); // idempotent — no throw
+  await store.delete('b1'); // idempotent - no throw
 }

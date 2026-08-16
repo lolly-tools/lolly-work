@@ -1,5 +1,5 @@
 /**
- * The Chromium render-worker CLIENT protocol (plans/07/11) — HMAC signing, the
+ * The Chromium render-worker CLIENT protocol (plans/07/11) - HMAC signing, the
  * request shape, and error-status mapping. No engine, no browser: a mock fetch
  * stands in for the worker.
  */

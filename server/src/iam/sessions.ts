@@ -3,8 +3,8 @@
  * SameSite=Lax; Secure whenever the instance base is https.
  *
  * Two principals, two cookies, two token domains:
- *   lw_session — a signed-in member (from OIDC or the dev provider)
- *   lw_guest   — a guest admitted by a guest-edit link (plans/02 §8)
+ *   lw_session - a signed-in member (from OIDC or the dev provider)
+ *   lw_guest - a guest admitted by a guest-edit link (plans/02 §8)
  */
 import { mintToken, verifyToken } from './tokens.ts';
 
@@ -23,7 +23,7 @@ export interface SessionUser {
   name: string;
   groups: string[];
   role: string;
-  /** The user's sessionEpoch at mint — checked against the stored epoch on
+  /** The user's sessionEpoch at mint - checked against the stored epoch on
    *  every authenticated request (pre-expiry revocation). Optional for
    *  back-compat: tokens minted before this field existed carry no epoch and
    *  are read as 0, matching the column default, so pre-upgrade sessions stay
@@ -36,7 +36,7 @@ export interface GuestSession {
   toolId: string;
   sessionRef?: string;
   inviter: string;
-  /** Display name the guest chose — rendered as "<name> (guest of <inviter>)". */
+  /** Display name the guest chose - rendered as "<name> (guest of <inviter>)". */
   name: string;
 }
 
@@ -45,14 +45,14 @@ export type Principal =
   | { kind: 'guest'; guest: GuestSession };
 
 /**
- * A guest principal's canonical id string — the AUDIT actor for everything a
+ * A guest principal's canonical id string - the AUDIT actor for everything a
  * guest does (`GET /l/:id`'s `guest.admit`, the collab room's
  * `collab.join`/`collab.leave`, a room's quiesce revision), and the shape
  * `activity/feed.ts`'s `parseActor` already renders as "a guest".
  *
  * The LINK id, not the guest's chosen name: a guest is pseudonymous (plans/02
  * §8) and its display name is client-supplied, so the only accountable identity
- * it has is the link that admitted it — which is also the thing an operator
+ * it has is the link that admitted it - which is also the thing an operator
  * revokes. One function, so a guest's audit row, its room seat and its revision
  * cannot end up naming the same principal three ways.
  */

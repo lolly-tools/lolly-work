@@ -25,7 +25,7 @@ const OAUTH_KINDS = ['dropbox', 'gdrive', 'o365', 'optimizely-cmp', 'imagerelay'
 
 const REQUIRED_HEADINGS = ['## What you need', '## Credential shape', '## instance.json', '## Verify', '## Notes / limits'];
 
-// Kept in sync with each driver's *Options interface — a guide documenting an
+// Kept in sync with each driver's *Options interface - a guide documenting an
 // option the driver doesn't have (or vice versa) fails here.
 const OPTION_ALLOWLIST: Record<string, string[]> = {
   brandfolder: ['brandfolderId', 'baseUrl'],
@@ -51,7 +51,7 @@ const MIN_OPTIONS: Record<string, Record<string, unknown>> = {
 const guide = (kind: string): string => readFileSync(join(DOCS, `${kind}.md`), 'utf8');
 
 /** The provider-entry example: the first ```json block AFTER the "## instance.json"
- *  heading (so an earlier ```json — e.g. s3's IAM policy — is never picked). */
+ *  heading (so an earlier ```json - e.g. s3's IAM policy - is never picked). */
 function exampleEntry(md: string): Record<string, unknown> {
   const at = md.indexOf('## instance.json');
   assert.ok(at >= 0, 'guide has an instance.json section');
@@ -85,7 +85,7 @@ test("each guide's instance.json example parses and its options match the driver
 });
 
 test('the documented OAuth credential shape is exactly what the code accepts', () => {
-  // Valid: clientId + refreshToken (clientSecret optional) — the shape every OAuth guide shows.
+  // Valid: clientId + refreshToken (clientSecret optional) - the shape every OAuth guide shows.
   const cred = parseOAuthCredential(JSON.stringify({ clientId: 'c', clientSecret: 's', refreshToken: 'r' }));
   assert.equal(cred.clientId, 'c');
   assert.equal(cred.refreshToken, 'r');

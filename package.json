@@ -19,7 +19,9 @@
     "sbom": "node scripts/build-sbom.ts",
     "pretest": "node scripts/verify-engine-pin.ts",
     "test": "node --test \"tests/**/*.test.ts\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check:docs-vernacular": "node scripts/check-docs-vernacular.ts",
+    "check:code-comments": "node scripts/check-code-comment-vernacular.ts"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

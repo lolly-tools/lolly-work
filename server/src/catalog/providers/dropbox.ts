@@ -1,10 +1,10 @@
 /**
- * Dropbox driver (plans/17 §11 phase 4) — public v2 API, refresh-token OAuth
+ * Dropbox driver (plans/17 §11 phase 4) - public v2 API, refresh-token OAuth
  * (oauth.ts). Read-only: list_folder (+continue), search_v2, files/download.
- * Downloads stream through /catalog/ext/* — Dropbox links are short-lived, so
+ * Downloads stream through /catalog/ext/* - Dropbox links are short-lived, so
  * expiringUrls semantics apply and nothing upstream is persisted.
  *
- * remoteId is Dropbox's own file id ("id:…" — slash-free, rename-stable),
+ * remoteId is Dropbox's own file id ("id:…" - slash-free, rename-stable),
  * so a moved/renamed file keeps its lolly identity and lifecycle rows.
  */
 import { getAccessToken, parseOAuthCredential } from './oauth.ts';

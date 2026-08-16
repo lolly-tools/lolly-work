@@ -1,6 +1,6 @@
 /**
  * Preview-as-group over real HTTP (plans/03): the governance-verification tool.
- * The load-bearing property is HONESTY — a preview of group X must equal the
+ * The essential property is HONESTY - a preview of group X must equal the
  * org-config a real member of X receives, because both run through the same
  * assembler. Also: policy.edit gate (delegable to a brand group), role
  * escalation via the same roleFromGroups sign-in uses, per-group tool/input

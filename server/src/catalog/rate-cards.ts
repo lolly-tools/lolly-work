@@ -1,5 +1,5 @@
 /**
- * Rate-card awareness in the catalog rail (plans/18) — the control plane's
+ * Rate-card awareness in the catalog rail (plans/18) - the control plane's
  * side of the OSS cost feature (lolly engine 1.95's `rate-card.ts` + the
  * shell's cost panel).
  *
@@ -7,7 +7,7 @@
  *   - The SHELL's pinned engine is the only parser and the only arithmetic.
  *     This module never prices anything, never copies the OSS JSON schema
  *     (two parsers drift; the authoritative one travels with the client), and
- *     never renders a monetary figure — the never-invent-money invariant is
+ *     never renders a monetary figure - the never-invent-money invariant is
  *     the client's, and the server cannot get ahead of it.
  *   - The CONTROL PLANE distributes bytes and states facts about them: an
  *     envelope sanity check at ingest (so an admin uploading the wrong file
@@ -21,17 +21,17 @@
  * (`usedExpiredRates`); silently removing the asset would instead read as
  * "the org has no rates", which is a different and false statement.
  *
- * Pure functions only — no fs, no store, no fetch — matching lifecycle.ts.
+ * Pure functions only - no fs, no store, no fetch - matching lifecycle.ts.
  */
 
 import type { LifecycleRow } from './lifecycle.ts';
 
 /** What the envelope check could establish about an alleged rate card. All of
  *  it is the FILE's own claim (reported speech), verified only as far as
- *  "shaped like a card" — never "the rates are right". */
+ *  "shaped like a card" - never "the rates are right". */
 export interface RatecardEnvelope {
   ok: true;
-  /** ISO 4217 code the card declares. A card without one prices nothing —
+  /** ISO 4217 code the card declares. A card without one prices nothing - 
    *  there is no default currency anywhere in the system. */
   currency: string;
   /** The issuer name the file claims, if any. Unverified. */
@@ -42,7 +42,7 @@ export interface RatecardEnvelope {
   /** The card marks itself confidential (trade rates). The shell's money
    *  policy makes such a card reveal-only, never link-carried. */
   confidential: boolean;
-  /** Declared line count — enough for an admin listing, not for pricing. */
+  /** Declared line count - enough for an admin listing, not for pricing. */
   lineCount: number;
 }
 
@@ -55,8 +55,8 @@ export type RatecardEnvelopeFailure = {
  * Envelope sanity check for an uploaded/ingested rate card. Establishes only
  * that the bytes are a JSON object shaped like a card (a `lines` array and a
  * declared currency) and lifts the claims an admin listing or lifecycle
- * derivation needs. Anything deeper — per-line kinds, break modes, the
- * example-card refusal — is the pinned engine's job at point of use.
+ * derivation needs. Anything deeper - per-line kinds, break modes, the
+ * example-card refusal - is the pinned engine's job at point of use.
  */
 export function ratecardEnvelope(text: string): RatecardEnvelope | RatecardEnvelopeFailure {
   let doc: unknown;
@@ -90,7 +90,7 @@ export function ratecardEnvelope(text: string): RatecardEnvelope | RatecardEnvel
 
 /**
  * Derive the lifecycle row a rate card's own validity window implies, or null
- * when the card claims no window (nothing to govern — it simply stays live).
+ * when the card claims no window (nothing to govern - it simply stays live).
  * A malformed date is treated as no claim rather than a permanent 'scheduled'
  * or instant 'expired' surprise: lifecycle must never be stricter than what
  * the file actually said.
@@ -107,7 +107,7 @@ export function ratecardLifecycleRow(assetId: string, env: RatecardEnvelope): Li
     assetId,
     ...(validFrom !== undefined ? { validFrom } : {}),
     ...(validUntil !== undefined ? { validUntil } : {}),
-    // 'warn', never 'hide': an expired card must stay in the feed AS expired —
+    // 'warn', never 'hide': an expired card must stay in the feed AS expired - 
     // the shell degrades money to counts and offers the explicit opt-in;
     // removal would falsely read as "no rates exist".
     onExpiry: 'warn',

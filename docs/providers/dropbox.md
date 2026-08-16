@@ -1,6 +1,6 @@
 # Dropbox (kind: `dropbox`)
 
-Federate a Dropbox folder as a **read-only** catalog source. OAuth2 (BYOT) — see the
+Federate a Dropbox folder as a **read-only** catalog source. OAuth2 (BYOT) - see the
 [shared OAuth onboarding](README.md#oauth-kinds-dropbox-gdrive-o365) for the app-registration
 and consent flow common to all OAuth kinds.
 
@@ -13,13 +13,13 @@ and consent flow common to all OAuth kinds.
 
 ## Credential shape
 
-The OAuth JSON blob — captured, not typed:
+The OAuth JSON blob - captured, not typed:
 
 ```json
 { "clientId": "…", "clientSecret": "…", "refreshToken": "…" }
 ```
 
-Dropbox supports public (PKCE) apps too — then `clientSecret` is omitted.
+Dropbox supports public (PKCE) apps too - then `clientSecret` is omitted.
 
 ```bash
 lw providers auth acme-dropbox
@@ -37,7 +37,7 @@ lw providers auth acme-dropbox
 }
 ```
 
-- `options.path` — the folder to federate (default the app-folder root).
+- `options.path` - the folder to federate (default the app-folder root).
 
 ## Verify
 
@@ -46,11 +46,11 @@ lw providers auth acme-dropbox     # one-time consent (loopback PKCE)
 lw providers health acme-dropbox
 ```
 
-A token-refresh failure means the grant was revoked — re-run `lw providers auth`.
+A token-refresh failure means the grant was revoked - re-run `lw providers auth`.
 
 ## Notes / limits
 
-- Temporary download links are short-lived (`expiringUrls`) — fetched per request, streamed,
+- Temporary download links are short-lived (`expiringUrls`) - fetched per request, streamed,
   host-pinned; nothing persisted.
 - Supports the **exit** (materialize → cutover). Does **not** accept published exports.
 

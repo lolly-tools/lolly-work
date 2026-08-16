@@ -80,7 +80,7 @@ test('users list is paginated: total + page + pageSize, per-user idp/local split
   assert.deepEqual(staff.localGroups, []);
   // Opt-out invisibility (plans/09 §2a): consent is never on the admin wire,
   // and a ?telemetry= filter is not a recognised parameter (silently ignored,
-  // never narrowing — an admin cannot enumerate who opted out).
+  // never narrowing - an admin cannot enumerate who opted out).
   for (const u of body.users) assert.ok(!('telemetryConsent' in u), 'consent leaked onto the users wire');
   const filtered = await (await fetch(`${base}/api/v1/users?telemetry=out&pageSize=200`, { headers: { cookie: owner } })).json() as { total: number };
   assert.equal(filtered.total, 3);
@@ -247,7 +247,7 @@ test('revoke-sessions ends a live session pre-expiry; owner guard; fresh login r
   assert.equal(revoked.status, 200);
   assert.equal((await fetch(`${base}/api/v1/org-config`, { headers: { cookie: staffCookie } })).status, 401);
 
-  // signing in again mints a token at the new epoch — access restored
+  // signing in again mints a token at the new epoch - access restored
   const fresh = await login('staff@test');
   assert.equal((await fetch(`${base}/api/v1/org-config`, { headers: { cookie: fresh } })).status, 200);
 
@@ -258,7 +258,7 @@ test('revoke-sessions ends a live session pre-expiry; owner guard; fresh login r
 test('a pre-epoch token (no epoch field) stays valid until an actual bump', async () => {
   const owner = await login('owner@test');
   const ownerId = (await usersByEmail(owner)).get('owner@test')!.id;
-  // Back-compat: tokens minted before the epoch existed carry none — a missing
+  // Back-compat: tokens minted before the epoch existed carry none - a missing
   // epoch reads as 0, matching the column default, so it verifies fine…
   const legacy = mintSessionCookie(
     { sub: 'dev:owner@test', email: 'owner@test', name: 'Olive Owner', groups: ['owner'], role: 'owner' },

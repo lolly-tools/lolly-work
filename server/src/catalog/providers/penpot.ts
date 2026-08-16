@@ -1,11 +1,11 @@
 /**
- * Penpot driver (plans/30) — an OPEN, self-hostable design tool as a design-system
+ * Penpot driver (plans/30) - an OPEN, self-hostable design tool as a design-system
  * SOURCE, not a DAM.
  *
  * TWO asset classes, deliberately handled differently (plans/30 §0, §3.1):
  *  - TOKENS auto-federate. `listAssets` emits one `type:'tokens'` asset per file
  *    (DTCG JSON), so the console /design view and brand-profile themes inherit from
- *    Penpot — the console already parses DTCG, `$themes` included.
+ *    Penpot - the console already parses DTCG, `$themes` included.
  *  - MEDIA is search-and-import, NEVER auto-federated. `listAssets` never returns a
  *    board; boards surface only through `searchAssets` (the "Browse Penpot" panel),
  *    and a curator imports the ones worth keeping via the /import route, which snapshots
@@ -15,19 +15,19 @@
  * Penpot exposes an RPC API: POST {baseUrl}/api/rpc/command/<cmd>, authed with a
  * personal access token as `Authorization: Token <token>` (a self-hosted instance
  * needs the `access-tokens` flag in PENPOT_FLAGS). Board rendering goes through the
- * exporter path (POST {exporterUrl|baseUrl}/api/export). No OAuth, no SDK — a single
+ * exporter path (POST {exporterUrl|baseUrl}/api/export). No OAuth, no SDK - a single
  * sealed token. Self-hosted means there is no fixed vendor host: every call is pinned
  * to the operator-configured origin.
  *
  * Token TYPING: the driver stamps `nativeType:'tokens'` (tokens) and `'board'` (media);
- * the record's `mapping.typeMap` turns those into catalog `tokens` / `image` — the
+ * the record's `mapping.typeMap` turns those into catalog `tokens` / `image` - the
  * console card ships `{ typeMap: { tokens:'tokens', board:'image' }, defaultType:'image' }`.
  *
  * LIVE-VERIFY before ship (house rule, plans/30 §10): confirm the RPC command names
  * (get-teams / get-projects / get-project-files / get-file / get-profile), the RPC
  * param casing, the get-file token + page/board structure (marked below), and the
  * /api/export request/response shape, against a real self-hosted instance. Fixture-
- * tested with injected fetch — no live instance is touched by building or testing.
+ * tested with injected fetch - no live instance is touched by building or testing.
  */
 import type { CatalogProvider, ProviderAssetRef, ProviderFormatRef, ResolvedBlob } from './types.ts';
 
@@ -48,10 +48,10 @@ export interface PenpotOptions {
   exporterUrl?: string;
 }
 
-/** Files scanned per sync/search — a runaway instance can't wedge a request cycle. */
+/** Files scanned per sync/search - a runaway instance can't wedge a request cycle. */
 const FILE_CAP = 200;
 const UUID_RE = /^[A-Za-z0-9-]+$/;
-/** Every Penpot page carries a synthetic root frame (the nil UUID) — not a board. */
+/** Every Penpot page carries a synthetic root frame (the nil UUID) - not a board. */
 const ROOT_FRAME_ID = '00000000-0000-0000-0000-000000000000';
 
 interface PenpotTeam { id: string; name?: string }
@@ -122,7 +122,7 @@ export function tokensLibToDtcg(lib: PenpotTokensLib | undefined): string {
   return JSON.stringify(out, null, 2);
 }
 
-/** Composite media id: `<fileId>_<pageId>_<objectId>` (all UUIDs — hex + dashes, no
+/** Composite media id: `<fileId>_<pageId>_<objectId>` (all UUIDs - hex + dashes, no
  *  underscores, so the separator is unambiguous). Tokens keep a plain file id. */
 function boardId(fileId: string, pageId: string, objectId: string): string {
   return `${fileId}_${pageId}_${objectId}`;
@@ -147,7 +147,7 @@ export function createPenpotProvider(
   const rpc = async <T>(command: string, params: Record<string, unknown> = {}): Promise<T> => {
     if (!secret) throw new Error('penpot provider has no credential');
     if (!base) throw new Error('penpot provider needs options.baseUrl');
-    // Every call goes to the operator-configured instance origin — no other host.
+    // Every call goes to the operator-configured instance origin - no other host.
     const res = await fetchImpl(`${base}/api/rpc/command/${command}`, {
       method: 'POST',
       headers: { authorization: `Token ${secret}`, 'content-type': 'application/json', accept: 'application/json' },
@@ -201,7 +201,7 @@ export function createPenpotProvider(
     };
   };
 
-  /** Top-level boards (frames) in a file — the designer's export-worthy units. */
+  /** Top-level boards (frames) in a file - the designer's export-worthy units. */
   const boardsOf = (file: PenpotFile): ProviderAssetRef[] => {
     const pages = file.data?.pagesIndex ?? {};
     const out: ProviderAssetRef[] = [];

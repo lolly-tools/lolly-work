@@ -1,6 +1,6 @@
 # API surface
 
-Every route the console and the CLI use — they share one API, so the two surfaces stay in
+Every route the console and the CLI use - they share one API, so the two surfaces stay in
 parity by construction. Errors are `{ error: { code, message } }` with an honest HTTP status.
 
 "Action" is the RBAC action the caller must hold ([permissions](permissions.md)); *member*
@@ -114,14 +114,14 @@ Message targeting is groups × shell selectors × engine-version range.
 
 **Session writes are compare-and-set, never last-writer-wins.** `PUT` requires the `rev`
 you read; a stale `rev` answers `409 CONFLICT` with the **full current server session** in
-`current`, so the client keeps its own edit locally and rebases — nothing is silently
+`current`, so the client keeps its own edit locally and rebases - nothing is silently
 overwritten. `bulk` applies per-session CAS over a matched snapshot: a session someone
 edited between preview and apply is **skipped, not stomped**, and reported as
 `skipped: [{ sessionId, rev }]` in the response (re-run to retry). Every refused write is
-audited as `session.conflict` (ids and revs only — never input values) and folded into
+audited as `session.conflict` (ids and revs only - never input values) and folded into
 `GET /api/v1/stats/overview`'s `sessions.conflicts30d`.
 
-`invitees` is an autocomplete over **eligible principals only** — the people a
+`invitees` is an autocomplete over **eligible principals only** - the people a
 live room would already admit for that session, never the directory. Eligibility
 is project **membership** (the project's owner, or a member of one of its
 visibility groups) plus `collab.join`: the admin/owner "sees every project"
@@ -129,8 +129,8 @@ bypass deliberately does *not* make someone invitable, or any member could mint
 a project and read back a list of the instance's admins. An admin who is in the
 project's group is offered like anyone else. Prefix match on display name,
 capped, self excluded, no email addresses. `invites` validates the **same**
-predicate server-side — so a 201-vs-400 answer can never reveal what the search
-hides — and delivers through the inbox (`kind: "collab"`, targeted at the one
+predicate server-side - so a 201-vs-400 answer can never reveal what the search
+hides - and delivers through the inbox (`kind: "collab"`, targeted at the one
 invitee, `data.sessionId` for the client's deep link). Re-inviting the same
 person to the same session refreshes the pending message instead of adding a
 second, and re-raises it if they had already dismissed it.
@@ -143,12 +143,12 @@ second, and re-raises it if they had already dismissed it.
 | `POST /api/v1/telemetry/consent` | member |
 | `GET /api/v1/telemetry/summary` | `telemetry.view` |
 | `GET /api/v1/stats/overview` | `telemetry.view` |
-| `GET /api/v1/stats/series?days=N` | `telemetry.view` — day-bucketed audit-action counts (counts only), the console's per-view activity headers; `days` clamps 7–90 |
+| `GET /api/v1/stats/series?days=N` | `telemetry.view` - day-bucketed audit-action counts (counts only), the console's per-view activity headers; `days` clamps 7–90 |
 | `GET /api/v1/activity` | `audit.export` |
 | `GET /api/v1/audit`, `GET /api/v1/audit/head` | `audit.export` |
 | `GET /api/v1/fleet` | `fleet.view` |
 | `GET /api/v1/system/migrations` | `instance.config` (**owner**) |
-| `GET /api/v1/docs`, `GET /api/v1/docs/:slug` | member — this documentation set |
+| `GET /api/v1/docs`, `GET /api/v1/docs/:slug` | member - this documentation set |
 
 ## Static
 
@@ -167,12 +167,12 @@ second, and re-raises it if they had already dismissed it.
 | `GUEST_LINKS_DISABLED` | 403 | guest links are off on this deployment |
 | `BAD_SIGNATURE` | 403 | link signature invalid |
 | `CONFIG_MANAGED` | 409 | the target is owned by `instance.json` |
-| `CONFLICT` | 409 | stale session `rev` — the body's `current` is the server session to rebase on |
+| `CONFLICT` | 409 | stale session `rev` - the body's `current` is the server session to rebase on |
 | `LINK_EXPIRED` / `LINK_REVOKED` | 410 | self-explanatory |
 | `INPUT_LOCKED` | 422 | a locked input was supplied by the caller |
 | `UNSUPPORTED_FORMAT` | 400 | a format this deployment cannot produce (org_config's `render.formats` names what it can) |
 | `FORMAT_NOT_ALLOWED` | 403 | the format exists here but this tool's overlay policy excludes it |
-| `RENDER_BUSY` | 503 | the render worker is at capacity — retry after `Retry-After` seconds |
+| `RENDER_BUSY` | 503 | the render worker is at capacity - retry after `Retry-After` seconds |
 | `HOOKED_TOOL_NEEDS_CHROMIUM` | 501 | hooked tool, no worker configured (org_config's `render.hookedTools` is `false`) |
 
 ## Client identification

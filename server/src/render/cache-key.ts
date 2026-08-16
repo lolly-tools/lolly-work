@@ -1,11 +1,11 @@
 /**
  * Render cache key (plans/07 §4): toolId + toolVersion + engineVersion +
  * catalogVersion + policyVersion + sorted-normalized query. Policy edits and
- * pack publishes invalidate exactly the affected keys — the brand-refresh
+ * pack publishes invalidate exactly the affected keys - the brand-refresh
  * ripple depends on this composition.
  *
- * The render pipeline itself (fourth HostV1 shell — jsdom fast path, with
- * Chromium workers as a later addition — see pipeline.ts) consumes this key
+ * The render pipeline itself (fourth HostV1 shell - jsdom fast path, with
+ * Chromium workers as a later addition - see pipeline.ts) consumes this key
  * contract; it was fixed first because links sign over it.
  */
 import { sha256Hex } from '../lib/crypto.ts';

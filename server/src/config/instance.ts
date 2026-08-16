@@ -4,12 +4,12 @@
  * zero-dependency and air-gap-trivial.)
  *
  * Secrets are NEVER in the config file:
- *   LW_SESSION_SECRET  — sessions/guests/state tokens (required in prod)
- *   LW_LINK_SECRET     — link signatures (required in prod)
- *   LW_IDP_CLIENT_SECRET — OIDC client secret (when the IdP requires one)
- *   LW_CREDENTIAL_SECRET — master key sealing stored provider credentials
+ *   LW_SESSION_SECRET - sessions/guests/state tokens (required in prod)
+ *   LW_LINK_SECRET - link signatures (required in prod)
+ *   LW_IDP_CLIENT_SECRET - OIDC client secret (when the IdP requires one)
+ *   LW_CREDENTIAL_SECRET - master key sealing stored provider credentials
  *                          (required in prod only once a credential is stored)
- *   <credentialRef>      — config-managed catalog providers name their own env
+ *   <credentialRef> - config-managed catalog providers name their own env
  *                          var per entry; resolved at boot, never persisted
  */
 import { readFileSync } from 'node:fs';
@@ -17,7 +17,7 @@ import { randomId } from '../lib/crypto.ts';
 import { PROVIDER_KINDS, type ProviderExposure, type ProviderKind, type ProviderMapping, type ProviderSyncConfig } from '../catalog/providers/types.ts';
 import type { ClaimMap } from '../iam/oidc.ts';
 
-/** A deploy-time (GitOps/air-gap) provider entry — upserted at boot with
+/** A deploy-time (GitOps/air-gap) provider entry - upserted at boot with
  *  managedBy:'config' and read-only in the control-plane API (plans/17 §4).
  *  Credentials come from the env var named by credentialRef, per the
  *  secrets-never-in-config rule. */
@@ -39,7 +39,7 @@ export interface InstanceConfig {
     baseUrl: string;
     pack: string;
     /** Optional path to a built Lolly web shell (shells/web/dist). When set, the
-     *  instance serves the shell at `/` so the whole product is ONE origin —
+     *  instance serves the shell at `/` so the whole product is ONE origin - 
      *  session cookies work and the shell's org/ seam activates. Absent → the
      *  console (/admin) and API are served, but not the shell. Boot check: under
      *  a non-open defaultAccessMode the server refuses to start when this dist
@@ -47,7 +47,7 @@ export interface InstanceConfig {
      *  LW_ALLOW_STALE_SHELL=1 downgrades the refusal to a loud warning. */
     shellDir?: string;
     /** Optional URL of the Lolly app when it is NOT served same-origin via
-     *  shellDir — e.g. a Vite dev server (http://localhost:5173) or a split
+     *  shellDir - e.g. a Vite dev server (http://localhost:5173) or a split
      *  deploy. The console routes its "Open Lolly" and tool/session/project
      *  deep links through this. Absent → links stay same-origin (`/`). */
     appUrl?: string;
@@ -57,7 +57,7 @@ export interface InstanceConfig {
     clientId: string;
     groupsClaim: string;
     claimMap: ClaimMap;
-    /** Human name for the sign-in button and "managed by …" copy — e.g.
+    /** Human name for the sign-in button and "managed by …" copy - e.g.
      *  "Keycloak", "SUSE ID", "ZITADEL". Any OIDC issuer works (open and
      *  sovereign providers first-class); absent → the console says "SSO". */
     displayName: string;
@@ -72,10 +72,10 @@ export interface InstanceConfig {
      *  nearby colleagues. A sorting hint, never an identity claim. Governs the
      *  `collab.nearby` capability bit + the two `/api/v1/collab/nearby` routes; only
      *  effective on the long-lived server (the registry is absent on Vercel). Default
-     *  on — it discloses nothing a member did not opt into. Force off to keep the whole
+     *  on - it discloses nothing a member did not opt into. Force off to keep the whole
      *  surface dark fleet-wide. */
     nearby: { enabled: boolean };
-    /** Member session lifetime (hours) — sets both the signed-token exp and the
+    /** Member session lifetime (hours) - sets both the signed-token exp and the
      *  cookie Max-Age. Shorter is safer: it bounds how long an uncaught revocation
      *  (group/role change, offboarding) can ride before it self-expires. Account
      *  disable is instant regardless (per-request check in memberOf). */
@@ -125,7 +125,7 @@ export interface InstanceConfig {
   /**
    * Where instance-owned catalog bytes live (plans/26 §2, plans/27 §5): the
    * materialized-out-of-a-DAM assets and, later, collab staging. `pg` (default)
-   * keeps the zero-moving-parts single-node deploy — PG works everywhere the
+   * keeps the zero-moving-parts single-node deploy - PG works everywhere the
    * plane runs. `s3` points at any S3-compatible store (AWS, MinIO, Ceph RGW)
    * for media-sized estates and the air-gap story; the credential is env-only
    * (LW_BLOBS_S3_CREDENTIAL = "<accessKeyId>:<secretAccessKey>").
@@ -153,7 +153,7 @@ export interface Secrets {
   session: string;
   link: string;
   idpClientSecret?: string;
-  /** Master key for sealed provider credentials — absent until the operator sets it. */
+  /** Master key for sealed provider credentials - absent until the operator sets it. */
   credential?: string;
   /** Bearer token for /metrics. Absent ⇒ metrics are loopback-only (never public). */
   metricsToken?: string;
@@ -252,7 +252,7 @@ export function loadConfig(path = process.env.LW_CONFIG ?? './instance.json'): I
  *  config file remains air-gap-trivial.
  *   - unset ⇒ TRUE: keep the one-command single-node deploy (today's behaviour).
  *   - false/0/off/no/"" ⇒ FALSE: the server runs no DDL and refuses to start on
- *     a pending schema — the invariant that makes multi-replica HA rollouts safe.
+ *     a pending schema - the invariant that makes multi-replica HA rollouts safe.
  *  Note: set-but-EMPTY (LW_AUTO_MIGRATE=) resolves to false, distinct from unset. */
 export function parseAutoMigrate(env: NodeJS.ProcessEnv = process.env): boolean {
   const v = env.LW_AUTO_MIGRATE;

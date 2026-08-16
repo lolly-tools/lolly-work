@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * GUEST principals in a live collab room (plans/14 §6, plans/02 §8) — "temporary
+ * GUEST principals in a live collab room (plans/14 §6, plans/02 §8) - "temporary
  * external collaboration is the same room, not a separate mechanism."
  *
  * The whole point of the feature is that almost nothing is special about a
  * guest: one roster, one set of caps, one presence relay, one veto, one audit
  * shape, one write-back. So this file is mostly checks that a guest is treated
- * exactly like a member — and a small, sharp set of checks on the four places it
+ * exactly like a member - and a small, sharp set of checks on the four places it
  * cannot be:
  *
  *   1. WHERE it may be. A guest-edit link binds to one session and that is the
@@ -14,7 +14,7 @@
  *      403 an unauthorized member gets, before the session is read, so the
  *      404/403/410 spread the member path preserves is not an existence oracle
  *      for a guest.
- *   2. WHETHER it may write — the link's KIND, never a role table. A guest holds
+ *   2. WHETHER it may write - the link's KIND, never a role table. A guest holds
  *      no role row (`ROLE_ACTIONS.guest` is `[]`) and no grants, so the module
  *      that decides this imports nothing from `../rbac` and the test below
  *      asserts that structurally rather than trusting a reviewer to notice.
@@ -87,7 +87,7 @@ let daveId = '';
 /** The guest-edit link bound to `sessionId`, and a cookie minted from it. */
 let linkId = '';
 let guestCookie = '';
-/** "Ada Admin" — the inviter's display name, as the roster must render it. */
+/** "Ada Admin" - the inviter's display name, as the roster must render it. */
 const INVITER_NAME = 'Ada Admin';
 
 before(async () => {
@@ -105,7 +105,7 @@ before(async () => {
         { email: 'admin@test', name: 'Ada Admin', groups: ['admin'] },
         { email: 'alice@test', name: 'Alice Eng', groups: ['team-eng'] },
         // A plain member, in no project's visibility group, who nonetheless
-        // holds an explicit `link.create-guest` grant below — the fix-pass
+        // holds an explicit `link.create-guest` grant below - the fix-pass
         // regression for "the mint route never checked the minter could see
         // the target session at all".
         { email: 'bob@test', name: 'Bob Sales', groups: ['team-sales'] },
@@ -147,7 +147,7 @@ before(async () => {
   daveId = users.find((u) => u.email === 'dave@test')!.id;
   // bob, carol and dave all mint guest-edit links in the tests below despite
   // none carrying the `admin` group that grants `link.create-guest` by
-  // default — an explicit per-user grant, matching plans/02 §8's "minting is
+  // default - an explicit per-user grant, matching plans/02 §8's "minting is
   // governed per group", not "admin only".
   for (const id of [bobId, carolId, daveId]) {
     await store.putGrant({ principal: `user:${id}`, action: 'link.create-guest', resource: '*', effect: 'allow' });
@@ -195,7 +195,7 @@ async function makeSession(cookie: string, project: string, inputs: Record<strin
   return (await res.json() as { id: string }).id;
 }
 
-/** Mint a real guest-edit link over a session — `link.create-guest` is admin-only,
+/** Mint a real guest-edit link over a session - `link.create-guest` is admin-only,
  *  so the INVITER is the admin while the session's own author is alice. That
  *  separation is what makes the attribution assertions mean anything: a guest's
  *  write must name neither. */
@@ -310,7 +310,7 @@ class Client {
   }
 }
 
-/** The HTTP status of a REFUSED upgrade — the gateway answers a plain response on
+/** The HTTP status of a REFUSED upgrade - the gateway answers a plain response on
  *  the raw socket, so a refusal has a real status. 101 means it completed. */
 function upgradeStatus(session: string, cookie: string, host: string = wsBase): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -332,7 +332,7 @@ function upgradeStatus(session: string, cookie: string, host: string = wsBase): 
 const param = (key: string, value: unknown, client: string, clock: number): CanvasOp =>
   ({ k: 'param', key, value, origin: { client, clock } }) as CanvasOp;
 
-/** Poll until `check` passes — quiesce and the leave audit ride a promise chain
+/** Poll until `check` passes - quiesce and the leave audit ride a promise chain
  *  the socket close does not await, so a fixed sleep is a flake waiting to
  *  happen. */
 async function until(check: () => Promise<boolean> | boolean, ms = 3000): Promise<void> {
@@ -344,7 +344,7 @@ async function until(check: () => Promise<boolean> | boolean, ms = 3000): Promis
   }
 }
 
-/** A second gateway (its own http server) over the SAME store — the house shape
+/** A second gateway (its own http server) over the SAME store - the house shape
  *  for a case that needs a different config or a short keepalive. */
 async function standUp(over: Record<string, unknown>, pingIntervalMs?: number): Promise<{
   wsBase: string; close: () => void;
@@ -462,7 +462,7 @@ test('there is no view-only guest tier today — guestLinkRole is the one place 
   // Documented rather than tested-for-behaviour because the tier does not exist:
   // `GET /l/:id` mints a guest cookie for `guest-edit` and for nothing else
   // (share/embed/download render bytes and mint no principal at all). This asserts
-  // the shape a read-only tier would slot into — one arm here, and the gateway
+  // the shape a read-only tier would slot into - one arm here, and the gateway
   // needs no change because it already asks this function.
   const kinds: LinkKind[] = ['share', 'embed', 'download', 'guest-edit'];
   for (const kind of kinds) {
@@ -522,7 +522,7 @@ test('guestDisplayName: the fallback still says who vouched', () => {
   assert.equal(guestDisplayName(undefined, 'Andy Fitz'), `${GUEST_FALLBACK_NAME} (guest of Andy Fitz)`);
   assert.equal(guestDisplayName('   ', 'Andy Fitz'), `${GUEST_FALLBACK_NAME} (guest of Andy Fitz)`);
   // A name is relayed to every peer, and `sanitizePresence` stamps the SERVER's
-  // name over whatever the client claimed — so the one field a peer cannot forge
+  // name over whatever the client claimed - so the one field a peer cannot forge
   // must not be the one that can smuggle a terminal escape.
   assert.equal(guestDisplayName(`Sa\u001b[2Jm`, 'Andy'), 'Sa[2Jm (guest of Andy)');
   assert.equal(
@@ -550,7 +550,7 @@ test('a peer sees the guest as "<name> (guest of <inviter>)" — in the roster, 
     assert.equal(member.userId, guestActor(link.id));
     assert.equal(member.role, 'writer');
 
-    // The joiner's own roster names the member it arrived beside, unchanged —
+    // The joiner's own roster names the member it arrived beside, unchanged - 
     // guests do not get a different roster shape.
     const roster = ack.roster as Array<{ name: string }>;
     assert.equal(roster.length, 1);
@@ -613,7 +613,7 @@ test("an edit-link guest's ops converge with a member's, both ways", async () =>
 
 test('the input-lock veto still applies to a guest, under the synthetic `guests` group', async () => {
   // plans/02 §8: "a guest can be given the narrowest input surface of anyone."
-  // The overlay rule names no guest — it names the group every guest carries, and
+  // The overlay rule names no guest - it names the group every guest carries, and
   // the SAME rule leaves the member beside them untouched.
   await store.putOverlay({
     toolId: TOOL_ID,
@@ -686,7 +686,7 @@ test('an IDLE guest observer loses the room too — the seat re-check rides the 
 
 test('room caps count guests: one link holds WRITER_CAP_PER_USER seats and no more', async () => {
   // A guest's principal is its LINK, so everyone who was forwarded one invite
-  // shares one per-principal writer budget — an invite is not a way around the
+  // shares one per-principal writer budget - an invite is not a way around the
   // ceiling that stops one account filling a room.
   const seed = await makeSession(aliceCookie, projectId, { title: 'capped' });
   const link = await mintGuestLink(seed);
@@ -760,7 +760,7 @@ test('collab.join/leave for a guest carry the guest principal, the link and the 
 test("a guest's write-back names the guest on the revision, and leaves updated_by a real user", async () => {
   // The session's author is alice; the link's inviter is the admin. So a
   // revision that named either would be naming somebody who did not make the
-  // edit — the inviter's identity most of all, which is the one this must never
+  // edit - the inviter's identity most of all, which is the one this must never
   // borrow (plans/02 §8: guests are audited AS guests, against their inviter,
   // not as their inviter).
   const seed = await makeSession(aliceCookie, projectId, { title: 'before the guest' });
@@ -807,7 +807,7 @@ test("a member's write-back is unchanged by any of this — still 'collab', stil
 
 test('POST /api/v1/links refuses to mint a guest-edit link on a session the minter cannot see', async () => {
   // bob holds `link.create-guest` (granted in `before()`) but is in no group
-  // the fixture's shared project is visible to, and is not its owner — so
+  // the fixture's shared project is visible to, and is not its owner - so
   // before this fix, holding the grant alone was enough to mint a writer seat
   // on ANY session id in the instance, bypassing `canSeeProject` entirely.
   const res = await json(bobCookie, 'POST', '/api/v1/links', {
@@ -815,13 +815,13 @@ test('POST /api/v1/links refuses to mint a guest-edit link on a session the mint
   });
   assert.equal(res.status, 403, 'bob cannot see the project this session lives in');
 
-  // Sanity: bob genuinely cannot read the session directly either — the mint
+  // Sanity: bob genuinely cannot read the session directly either - the mint
   // route now enforces the SAME gate `GET /api/v1/sessions/:id` does, so a
   // mint can never reach further than a plain read of the same session would.
   const direct = await json(bobCookie, 'GET', `/api/v1/sessions/${sessionId}`);
   assert.equal(direct.status, 403);
 
-  // A session id that does not exist at all gets the ordinary 404 — not a
+  // A session id that does not exist at all gets the ordinary 404 - not a
   // different code that would make session ids enumerable via minting.
   const missing = await json(bobCookie, 'POST', '/api/v1/links', {
     kind: 'guest-edit', target: { toolId: TOOL_ID, sessionId: 'ses_does_not_exist' },
@@ -829,13 +829,13 @@ test('POST /api/v1/links refuses to mint a guest-edit link on a session the mint
   assert.equal(missing.status, 404);
 
   // Carol (team-eng, genuinely a project member) mints on the SAME session and
-  // succeeds — the fix is a visibility check, not a blanket refusal.
+  // succeeds - the fix is a visibility check, not a blanket refusal.
   const ok = await json(carolCookie, 'POST', '/api/v1/links', {
     kind: 'guest-edit', target: { toolId: TOOL_ID, sessionId }, projectId,
   });
   assert.equal(ok.status, 201, 'a minter who can actually see the session is unaffected');
   const { id } = await ok.json() as { id: string };
-  await json(adminCookie, 'POST', `/api/v1/links/${id}/revoke`); // tidy up — this session is reused above
+  await json(adminCookie, 'POST', `/api/v1/links/${id}/revoke`); // tidy up - this session is reused above
 });
 
 test('a guest is refused once its INVITER is disabled — on the next gesture, and via the idle keepalive', async () => {
@@ -883,7 +883,7 @@ test('a guest is refused once its INVITER is disabled — on the next gesture, a
   }
 
   // And carol's own session is now dead too (an ordinary consequence of
-  // disabling an account, not new behaviour) — minting itself refuses her.
+  // disabling an account, not new behaviour) - minting itself refuses her.
   const mintAfter = await json(carolCookie, 'POST', '/api/v1/links', {
     kind: 'guest-edit', target: { toolId: TOOL_ID, sessionId: seed },
   });
@@ -904,7 +904,7 @@ test("a guest is refused once its inviter loses `link.create-guest` — the SAME
   try {
     await guest.join();
 
-    // Revoke ONLY the grant — dave's account stays enabled throughout, so this
+    // Revoke ONLY the grant - dave's account stays enabled throughout, so this
     // is genuinely testing plans/02 §8's SECOND revocation lever ("the inviter
     // losing `link.create-guest`"), not the account-disabled lever the test
     // above covers.
@@ -926,7 +926,7 @@ test('a guest is locked out of an input governed for OTHER groups, while a membe
   // The shape an operator actually writes: a lock scoped to the tool's real
   // editing population (never to `guests`, which did not exist when most
   // overlays were authored). plans/02 §8 promised a guest could be given "the
-  // narrowest input surface of anyone" — before this fix, that population's
+  // narrowest input surface of anyone" - before this fix, that population's
   // OWN lock left the field wide open for the one principal outside every
   // named group.
   await store.putOverlay({
@@ -950,7 +950,7 @@ test('a guest is locked out of an input governed for OTHER groups, while a membe
     assert.deepEqual(err.inputs, ['accent']);
 
     // alice (team-eng) is ALSO outside ['team-marketing','team-sales'], and her
-    // write is UNCHANGED — this fix is guest-specific, never a new default for
+    // write is UNCHANGED - this fix is guest-specific, never a new default for
     // members, who keep the pre-existing "no matching rule ⇒ editable" fallback.
     alice.send({ t: 'ops', ops: [param('accent', '#00ff00', 'a7', 1)] });
     const toGuest = await guest.next('ops');

@@ -111,13 +111,13 @@ test('permission scoping from the diff + config-managed collision', async () => 
   const okDoc = { kind: 'lolly-work/config', version: 1, grants: [], overlays: [{ toolId: 'poster', visibility: { groups: ['brand'] } }], chains: [], providers: [], featureFlags: [] };
   assert.equal((await apply(brand, okDoc)).status, 200); // overlays need only policy.edit
 
-  // A provider change needs catalog.provider.manage — brand lacks it.
+  // A provider change needs catalog.provider.manage - brand lacks it.
   const provDoc = { kind: 'lolly-work/config', version: 1, grants: [], overlays: [], chains: [], providers: [{ id: 'newsrc', kind: 'mock', label: 'New', options: {}, mapping: {}, exposure: {}, sync: {} }], featureFlags: [] };
   const provRes = await apply(brand, provDoc);
   assert.equal(provRes.status, 403);
   assert.ok((await provRes.json() as { error: { message: string } }).error.message.includes('catalog.provider.manage'));
 
-  // A grant change needs grant.edit — brand lacks it.
+  // A grant change needs grant.edit - brand lacks it.
   const grantDoc = { kind: 'lolly-work/config', version: 1, grants: [{ principal: 'group:x', action: 'link.create', resource: '*', effect: 'allow' }], overlays: [], chains: [], providers: [], featureFlags: [] };
   const grantRes = await apply(brand, grantDoc);
   assert.equal(grantRes.status, 403);

@@ -1,5 +1,5 @@
 /**
- * Storage interface — the seam that keeps deploy targets honest (plans/01):
+ * Storage interface - the seam that keeps deploy targets honest (plans/01):
  * memory (dev/tests) now, Postgres next; the Vercel trial and the Helm chart
  * must run the same code against different drivers. Everything async so the
  * Postgres driver slots in without touching callers.
@@ -31,7 +31,7 @@ export interface UserRecord {
   /** Console-editable groups; login-DURABLE (never touched by OIDC re-sync). */
   localGroups: string[];
   /** Effective membership = unique(idpGroups ∪ localGroups); everything
-   *  downstream reads this. Derived — never set directly. */
+   *  downstream reads this. Derived - never set directly. */
   groups: string[];
   role: string;
   telemetryConsent?: boolean;
@@ -44,7 +44,7 @@ export interface UserRecord {
   lastSeenAt: string;
 }
 
-/** A local group definition (the registry). IdP groups are NOT registered —
+/** A local group definition (the registry). IdP groups are NOT registered - 
  *  they're discovered from users' idpGroups. */
 export interface LocalGroupRecord {
   name: string;
@@ -57,7 +57,7 @@ export interface LocalGroupRecord {
  *  effective union + role. So callers never construct the split themselves. */
 export type UserUpsert = Omit<UserRecord, 'id' | 'createdAt' | 'lastSeenAt' | 'idpGroups' | 'localGroups' | 'sessionEpoch'>;
 
-/** Effective membership: idp first, then any local groups not already present —
+/** Effective membership: idp first, then any local groups not already present - 
  *  deduped, stable order. Empty strings dropped. */
 export function effectiveGroups(idpGroups: string[], localGroups: string[]): string[] {
   const out: string[] = [];
@@ -91,7 +91,7 @@ export interface FleetRow {
   lastSeenAt: string;
 }
 
-/** A team/personal project — a folder over sessions (plans/08 §2). Visibility is
+/** A team/personal project - a folder over sessions (plans/08 §2). Visibility is
  *  'private' (owner-only) or a set of groups that may see it; membership is the
  *  RBAC layer, not per-project ACLs. */
 export interface ProjectRecord {
@@ -120,7 +120,7 @@ export interface SessionRecord {
   deletedAt?: string;
 }
 
-/** One committed edit to a session — a bounded, restorable history entry. */
+/** One committed edit to a session - a bounded, restorable history entry. */
 export interface SessionRevision {
   sessionId: string;
   rev: number;
@@ -141,13 +141,13 @@ export const SESSION_REVISION_LIMIT = 20;
  * `SessionRecord.inputs` are the same information in two shapes, so a snapshot is
  * "what this session would be if the room quiesced right now". One row per
  * session, replaced (never appended to), and deleted by the quiesce that writes
- * the real revision — so a row that outlives a process restart is precisely the
+ * the real revision - so a row that outlives a process restart is precisely the
  * signal "a crash lost this room's quiesce".
  */
 export interface CollabSnapshot {
   sessionId: string;
   /** The room's converged document, merged over the stored inputs the document
-   *  cannot express (a `file` input, a nested object — rooms.ts `unsynced`). */
+   *  cannot express (a `file` input, a nested object - rooms.ts `unsynced`). */
   inputs: Record<string, unknown>;
   /** The `SessionRecord.rev` this snapshot was taken against. Recovery replays it
    *  only while the stored session is still at that rev; a higher rev means an
@@ -210,7 +210,7 @@ export interface Store {
   listFlagGovernance(): Promise<Map<string, FlagGovernance>>;
   putFlagGovernance(rec: FlagGovernance): Promise<void>;
 
-  // injectables — the governed rail that injects tools / flags / typed resources /
+  // injectables - the governed rail that injects tools / flags / typed resources /
   // declarative chrome into the shell (plans/19). Keyed by id; put is an upsert,
   // delete is a hard purge (routes soft-revoke via put with state:'revoked').
   listInjectables(): Promise<InjectableRecord[]>;
@@ -218,7 +218,7 @@ export interface Store {
   putInjectable(rec: InjectableRecord): Promise<void>;
   deleteInjectable(id: string): Promise<void>;
 
-  // schema readiness — migration files not yet applied. Read-only (issues no
+  // schema readiness - migration files not yet applied. Read-only (issues no
   // DDL). Memory is always current ([]); postgres compares migrations/*.sql to
   // the schema_migrations table.
   pendingMigrations(): Promise<string[]>;
@@ -251,7 +251,7 @@ export interface Store {
    * re-inviting refreshes one inbox row instead of stacking a second. Delivery
    * filters acked ids unconditionally (inbox/target.ts `targetedMessages`), so
    * with acks append-only the first dismissal would make that pair permanently
-   * un-notifiable — a 201 that silently reaches nobody. Deliberately NOT folded
+   * un-notifiable - a 201 that silently reaches nobody. Deliberately NOT folded
    * into `putMessage`: an admin fixing a typo in an announcement must not
    * re-raise it for everyone who already dismissed it.
    */
@@ -323,7 +323,7 @@ export interface Store {
    *
    * This is the write a concurrent editor needs and `putSession` cannot be. A
    * read-modify-write over `putSession` has an await between the read and the
-   * write, so two writers both read rev 5 and both write rev 6 — the second
+   * write, so two writers both read rev 5 and both write rev 6 - the second
    * silently discarding the first, and `session_revisions` (whose PK is
    * `(session_id, rev)`) keeping only one of the two, so history and
    * `sessions.inputs` end up disagreeing. The tombstone exclusion is part of the

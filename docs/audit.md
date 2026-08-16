@@ -4,9 +4,9 @@ A tamper-evident, append-only record of every governed action on this deploy: si
 grant and policy edits, approvals, group and lockout changes, link mints and revocations,
 provider changes, catalog changes, config applies.
 
-![The audit chain — an append-only, hash-linked record of every governed action](shots/audit-chain.svg)
+![The audit chain - an append-only, hash-linked record of every governed action](shots/audit-chain.svg)
 
-Entries are never edited or deleted — only added.
+Entries are never edited or deleted - only added.
 
 ## How the chain works
 
@@ -28,7 +28,7 @@ lw audit head        # prints seq · hash · count · intact
 The console's **Audit** view shows the same chain with its verification state, and the
 `lw_audit_chain_intact` Prometheus gauge (1/0) is the thing to alert on.
 
-Payloads must already be privacy-safe when they are written — digests and field names, never
+Payloads must already be privacy-safe when they are written - digests and field names, never
 raw input values. The chain module does not inspect them; the call sites are responsible, and
 policy edits record before/after *shapes*.
 
@@ -48,18 +48,18 @@ hourly:
 [lolly-work] audit head seq=… hash=… count=… intact=…
 ```
 
-Anything that keeps stdout — journald, `kubectl logs` shipped to Loki, CloudWatch, a plain
-file — is therefore an external anchor with no setup. The timer is unref'd, so it never
+Anything that keeps stdout - journald, `kubectl logs` shipped to Loki, CloudWatch, a plain
+file - is therefore an external anchor with no setup. The timer is unref'd, so it never
 holds the process open. The defaults are
 
 ```json
 "audit": { "headLog": { "onBoot": true, "intervalMinutes": 60 } }
 ```
 
-and `{ "onBoot": false, "intervalMinutes": 0 }` turns it off — do that only if you anchor
+and `{ "onBoot": false, "intervalMinutes": 0 }` turns it off - do that only if you anchor
 some other way, because an unanchored chain is exactly the gap this exists to close.
 
-For a stronger anchor than log retention — one you can hand an auditor — snapshot the head
+For a stronger anchor than log retention - one you can hand an auditor - snapshot the head
 somewhere append-only on your own cadence (a cron committing it, a ticket per release):
 
 ```bash

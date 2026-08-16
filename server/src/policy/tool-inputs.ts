@@ -1,12 +1,12 @@
 /**
- * Declared-input reader — the org-config assembler needs each policied tool's
+ * Declared-input reader - the org-config assembler needs each policied tool's
  * input ids (to annotate locked ones and name hidden ones for the shell's
- * sidebar). Reads `<pack>/tools/<id>/tool.json` directly (ids only — no
+ * sidebar). Reads `<pack>/tools/<id>/tool.json` directly (ids only - no
  * validation, no engine load), mtime-cached.
  *
  * Note on "hidden means the caller never learns it exists": the pack feed
  * serves tool.json whole today, so input ids are not secret to a connected
- * client — naming hidden ids here loses nothing while letting the shell
+ * client - naming hidden ids here loses nothing while letting the shell
  * suppress the controls. True per-caller manifest filtering is a marked
  * follow-up (plans/03 §3); render-time 422 enforcement is already hard.
  */
@@ -15,8 +15,8 @@ import { join } from 'node:path';
 
 /** One declared input, as far as anything outside the engine needs it: its id and
  *  its declared `InputType`. The TYPE is what tells a collab room which LANE an
- *  input lives in — a `blocks` input is a collection, everything else is a scalar
- *  param — so it must travel with the id. Absent when the manifest omits it. */
+ *  input lives in - a `blocks` input is a collection, everything else is a scalar
+ *  param - so it must travel with the id. Absent when the manifest omits it. */
 export interface DeclaredInput {
   id: string;
   type?: string;

@@ -8,15 +8,15 @@
  * whitelist and the lane check are live rather than skipped):
  *
  *   1. TEN WRITERS CONVERGE. Ten sockets interleave randomized op batches whose
- *      CONTENT is a SEEDED PRNG (`mulberry32`, no wall clock) — deterministic
+ *      CONTENT is a SEEDED PRNG (`mulberry32`, no wall clock) - deterministic
  *      per socket, so which ops each one sends and in what order it sends its
  *      own batches never varies between runs. The actual WIRE INTERLEAVING
- *      across the ten sockets is not seeded — it is whatever order ten real
- *      `ws` clients happen to arrive at the server through node's event loop —
+ *      across the ten sockets is not seeded - it is whatever order ten real
+ *      `ws` clients happen to arrive at the server through node's event loop - 
  *      so a convergence bug that depends on THAT ordering (the class of bug this
  *      test exists to catch) will not reproduce from the seed alone; only a bug
  *      that depends on op content reliably will. Each client folds what it sent
- *      and what it received into its own `ReferenceCanvasDoc` — the same
+ *      and what it received into its own `ReferenceCanvasDoc` - the same
  *      document the shell keeps. Every client's final state must be
  *      byte-identical to every other's AND to a late joiner's `join-ack.docState`,
  *      which is the only copy that came from the server.
@@ -24,7 +24,7 @@
  *      IT; the other nine keep their sockets, keep writing, and still converge.
  *      A cap that took the room down with the abuser would be worse than no cap.
  *   3. CHURN. 200 join/leave cycles leave no ghost: the roster empties, and the
- *      room's own per-member maps come back to baseline (`Room.internals()` —
+ *      room's own per-member maps come back to baseline (`Room.internals()` - 
  *      counts only). The replay filter deliberately does NOT empty (it is keyed by
  *      a peer-chosen client id and bounded by eviction, `noteClock`), so the
  *      assertion on it is the BOUND, and it is asserted by exceeding it.
@@ -75,7 +75,7 @@ const SCALARS = ['title', 'headline', 'accent'] as const;
  *  ten writer seats can only be reached by distinct users. */
 const WRITERS = Array.from({ length: WRITER_CAP }, (_, i) => `soak${i}@test`);
 /** Churn accounts. 200 cycles over 12 accounts is 17 upgrades each, comfortably
- *  under CONNECTS_PER_USER_PER_MIN (30) — the cap is per user for exactly this
+ *  under CONNECTS_PER_USER_PER_MIN (30) - the cap is per user for exactly this
  *  reason, so the test has to respect it rather than route around it. */
 const CHURNERS = Array.from({ length: 12 }, (_, i) => `churn${i}@test`);
 
@@ -176,7 +176,7 @@ interface Frame { t: string; [k: string]: unknown }
 
 class Client {
   readonly frames: Frame[] = [];
-  /** Ops DELIVERED to this socket (peers' only — the gateway never echoes). */
+  /** Ops DELIVERED to this socket (peers' only - the gateway never echoes). */
   opsReceived = 0;
   presenceReceived = 0;
   closeCode: number | null = null;
@@ -256,7 +256,7 @@ class Client {
     });
   }
 
-  /** Resolve once `predicate` holds — re-checked on every inbound frame. */
+  /** Resolve once `predicate` holds - re-checked on every inbound frame. */
   until(predicate: () => boolean, what: string, timeoutMs = 8000): Promise<void> {
     if (predicate()) return Promise.resolve();
     return new Promise((resolve, reject) => {
@@ -295,7 +295,7 @@ class Client {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-/** Poll a server-side condition. Used only for state the gateway does not push —
+/** Poll a server-side condition. Used only for state the gateway does not push - 
  *  a seat is released by a close handler queued behind that connection's pending
  *  work, so there is no frame to wait on. */
 async function pollUntil(predicate: () => boolean, what: string, tries = 200, everyMs = 25): Promise<void> {
@@ -364,7 +364,7 @@ function docStateOf(ack: Frame): CanvasDocState {
 // ── deterministic op generation (seeded; no wall clock) ───────────────────────
 
 /**
- * One client's batches. Each batch is ONE gesture, so it carries ONE origin —
+ * One client's batches. Each batch is ONE gesture, so it carries ONE origin - 
  * which is both what the shell emits (`onLocalChange` mints one per gesture) and
  * what the room's replay filter is written against (the whole batch is judged
  * against the PRE-batch high-water mark).
@@ -433,7 +433,7 @@ test('ten writers interleaving randomized batches converge — with each other a
     }
 
     // Barrier: every client has been delivered every op it did not send itself.
-    // That is stronger than a sleep — an op reaching a peer PROVES the room
+    // That is stronger than a sleep - an op reaching a peer PROVES the room
     // applied it, so this also proves nothing was silently dropped.
     await Promise.all(clients.map((c, i) => c.until(
       () => c.opsReceived >= total - perClient[i]!,
@@ -490,7 +490,7 @@ test('a sustained flood disconnects the flooder alone — the other nine stay up
     const survivors = clients.slice(1);
 
     // One socket, one message per op, far past OPS_MESSAGES_PER_SEC. Every op is
-    // individually LEGAL — the abuse is the rate, which is the whole point of a
+    // individually LEGAL - the abuse is the rate, which is the whole point of a
     // cap that is separate from the per-message op count.
     for (let i = 0; i < OPS_MESSAGES_PER_SEC + 20; i++) {
       flooder.send({ t: 'ops', ops: [{ k: 'param', key: 'title', value: `flood ${i}`, origin: { client: 'dev-0', clock: i + 1 } }] });
@@ -569,7 +569,7 @@ test(`${CHURN_CYCLES} join/leave cycles leave no ghost in the roster`, async () 
     assert.equal(collab.rooms(), 1, 'and no second room was minted along the way');
 
     // A fresh joiner is the honest read of the roster: it is built from the room's
-    // member map, and it carries each peer's last presence — so a leaked seat or a
+    // member map, and it carries each peer's last presence - so a leaked seat or a
     // leaked presence frame would both show up right here.
     const fresh = new Client(seed, cookieFor('late@test'));
     const ack = await fresh.join();
@@ -585,8 +585,8 @@ test(`${CHURN_CYCLES} join/leave cycles leave no ghost in the roster`, async () 
 });
 
 test('a room’s own maps come back to baseline, and the replay filter stays bounded', async () => {
-  // The map sizes are not reachable over a socket — `RoomSnapshot` is the admin
-  // shape and deliberately carries counters, not internals — so this half drives
+  // The map sizes are not reachable over a socket - `RoomSnapshot` is the admin
+  // shape and deliberately carries counters, not internals - so this half drives
   // a Room directly (rooms.test.ts's shape) and reads `Room.internals()`, which
   // returns numbers and nothing else.
   const now = new Date().toISOString();
@@ -611,7 +611,7 @@ test('a room’s own maps come back to baseline, and the replay filter stays bou
     const m = seat(`m${i}`);
     room.join(m);
     room.relayPresence(m, { cursor: { x: 0.5, y: 0.5 }, selection: [`row-${i}`] });
-    // A distinct peer-chosen client id per cycle — the worst case for the replay
+    // A distinct peer-chosen client id per cycle - the worst case for the replay
     // filter, which is keyed by exactly that.
     room.applyOps(m, [{ k: 'param', key: 'title', value: `v${i}`, origin: { client: `churn-${i}`, clock: 1 } }]);
     room.leave(m.id);
@@ -626,7 +626,7 @@ test('a room’s own maps come back to baseline, and the replay filter stays bou
 
   // The filter does NOT empty on leave, by design (`noteClock`: a replay must be
   // recognisable across a reconnect, so the entry outlives the socket). What
-  // bounds it is eviction — so the assertion is the CEILING, tested by exceeding
+  // bounds it is eviction - so the assertion is the CEILING, tested by exceeding
   // it rather than by trusting the constant.
   for (let i = CHURN_CYCLES; i < MAX_TRACKED_CLIENTS + 200; i++) {
     room.applyOps(anchor, [{ k: 'param', key: 'title', value: 'v', origin: { client: `churn-${i}`, clock: 1 } }]);
@@ -639,7 +639,7 @@ test('a room’s own maps come back to baseline, and the replay filter stays bou
   assert.deepEqual(
     { members: room.internals().members, joinedAt: room.internals().joinedAt, presence: room.internals().presence },
     { members: 0, joinedAt: 0, presence: 0 },
-    // Precisely these THREE maps, not "all member state" — `seenUsers` and
+    // Precisely these THREE maps, not "all member state" - `seenUsers` and
     // `opsByUser` (the audit-rollup accounting) are never cleared on leave, by
     // design, and `RoomInternals` does not expose them; see its doc comment.
     'an empty room holds no seated-member, join-time or presence state left over',
@@ -677,7 +677,7 @@ test('a presence storm inside the cap is relayed, costs the store nothing, and d
 
   // Not one byte of it reached the store: presence has no route there (rooms.ts
   // owns the whole path and imports no store), and it must not have tripped the
-  // snapshot cadence either — that is driven by op BATCHES, and there were none.
+  // snapshot cadence either - that is driven by op BATCHES, and there were none.
   const audit = await store.listAudit();
   assert.equal(audit.length, before.audit, 'no audit row — presence is never an event');
   assert.equal((await store.listSessionRevisions(seed)).length, before.revisions, 'no revision');

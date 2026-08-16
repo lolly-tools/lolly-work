@@ -52,7 +52,7 @@ hash. `--dry-run` changes nothing; `--prune` also deletes store-only entries. Se
 lw providers list
 lw providers add <id> --kind <kind> --label "…" \
     [--options '{…}'] [--mapping '{…}'] [--exposure '{…}']
-lw providers credential <id>      # prompts, hidden — never argv, never shell history
+lw providers credential <id>      # prompts, hidden - never argv, never shell history
 lw providers auth <id>            # OAuth kinds: PKCE consent via a loopback redirect
 lw providers enable|disable <id>  # owner-only
 lw providers sync|health <id>
@@ -91,4 +91,4 @@ skip it and use your own chain. See [c2pa](c2pa.md).
 | `--json` | machine-readable output |
 
 Exit codes: `1` on any API error or usage mistake, `2` specifically for a broken audit chain
-or a pending schema — so both are usable as monitoring checks.
+or a pending schema - so both are usable as monitoring checks.

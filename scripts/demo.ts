@@ -1,5 +1,5 @@
 /**
- * scripts/demo.ts — a one-command, richly-seeded local demo of the lolly-work
+ * scripts/demo.ts - a one-command, richly-seeded local demo of the lolly-work
  * control plane.
  *
  *     npm run demo            # → open the printed URL
@@ -9,7 +9,7 @@
  * memory store across EVERY governance feature (overlays, grants, approval
  * chains, projects + sessions, catalog lifecycle, messages), boots the real
  * app handler on node:http, then fires a burst of HTTP self-calls (telemetry,
- * fleet, approvals) signed in as the right persona — so the console dashboards,
+ * fleet, approvals) signed in as the right persona - so the console dashboards,
  * the governed catalog, the render plane, and the employee governance UX all
  * have something real to show.
  *
@@ -20,7 +20,7 @@
  * dist is stale, boots in `open` access mode so the shipped shell still loads
  * the catalog + renders. A fresh dist boots `gated`, demoing the sign-in gate.
  * Rebuilding the shell (`npm run build:web` in the OSS repo) is the owner's to
- * run — this script never builds anything.
+ * run - this script never builds anything.
  */
 import { createServer } from 'node:http';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
@@ -45,7 +45,7 @@ import { fileURLToPath } from 'node:url';
 
 // ── demo constants (real ids from the mounted pack) ──────────────────────────
 // The demo mounts the sibling OSS repo as its pack + shell. Resolve its location
-// portably so the demo runs on any machine (the easy-deploy north star), in
+// portably so the demo runs on any machine (the easy-deploy goal), in
 // priority order: LOLLY_OSS_DIR env → a sibling `lolly` checkout next to this
 // repo → the original hard-coded dev path. First one that exists on disk wins.
 function resolveOssDir(): string {
@@ -58,7 +58,7 @@ function resolveOssDir(): string {
   for (const c of candidates) {
     if (existsSync(join(c, 'shells', 'web'))) return resolve(c);
   }
-  // Nothing found — return the first declared candidate so the boot error names
+  // Nothing found - return the first declared candidate so the boot error names
   // a concrete path the operator can fix (or set LOLLY_OSS_DIR).
   return resolve(candidates[0] ?? '/Users/andy/Build/lolly');
 }
@@ -66,13 +66,13 @@ function resolveOssDir(): string {
 export const PACK = resolveOssDir();
 export const SHELL_DIR = join(PACK, 'shells', 'web', 'dist');
 
-/** Real logo asset id in the SUSE-profile catalog — the value a locked logo
+/** Real logo asset id in the SUSE-profile catalog - the value a locked logo
  *  input bakes to. */
 const BRAND_LOGO_ASSET = 'suse/logo/hor-pos-green';
-/** SUSE green — the value the locked qr-code module colour bakes to. */
+/** SUSE green - the value the locked qr-code module colour bakes to. */
 const BRAND_GREEN = '#30ba78';
 
-/** Dev personas — the four sign-in identities the demo hands out. Groups drive
+/** Dev personas - the four sign-in identities the demo hands out. Groups drive
  *  role (roleFromGroups) and every policy/eligibility decision. */
 export const PERSONAS: Array<{
   email: string;
@@ -89,7 +89,7 @@ export const PERSONAS: Array<{
 
 // ── seed shapes ──────────────────────────────────────────────────────────────
 
-/** RBAC grants — the deny rules that turn ordinary members into
+/** RBAC grants - the deny rules that turn ordinary members into
  *  request-approval / no-delete members (plans/03). */
 export function demoGrants(): Grant[] {
   return [
@@ -134,14 +134,14 @@ export function demoOverlays(): ToolOverlay[] {
       },
       enforce: { escalation: 'brand-review', watermark: 'until-approved' },
     },
-    // countdown-timer is hook-less, so the render plane can produce it in-process —
+    // countdown-timer is hook-less, so the render plane can produce it in-process - 
     // watermark:'always' makes the preview watermark visible on its server render.
     {
       toolId: 'countdown-timer',
       version: 1,
       enforce: { watermark: 'always' },
     },
-    // deck-builder is hidden from anyone outside brand/marketing/admin — demoing
+    // deck-builder is hidden from anyone outside brand/marketing/admin - demoing
     // per-caller catalog filtering (a contractor never learns it exists).
     {
       toolId: 'deck-builder',
@@ -153,7 +153,7 @@ export function demoOverlays(): ToolOverlay[] {
 
 /** The brand-review approval chain: brand sign-off, then legal sign-off. Two
  *  steps so an approval can be pending at step 0 (brand's inbox) OR step 1
- *  (admin/legal's inbox) — both inboxes populate. */
+ *  (admin/legal's inbox) - both inboxes populate. */
 export function demoChains(): Chain[] {
   return [
     {
@@ -175,13 +175,13 @@ export function demoLifecycle(now = Date.now()): LifecycleRow[] {
   const iso = (ms: number) => new Date(now + ms).toISOString();
   const DAY = 86_400_000;
   return [
-    // Upcoming expiry — still live, console shows the date + warn policy.
+    // Upcoming expiry - still live, console shows the date + warn policy.
     { assetId: 'suse/logo/hor-pos-green', validUntil: iso(2 * DAY), onExpiry: 'warn' },
-    // Expired but warned — kept in the feed (flagged expired) and blob still 200s.
+    // Expired but warned - kept in the feed (flagged expired) and blob still 200s.
     { assetId: 'suse/logo/hor-neg-green', validUntil: iso(-2 * DAY), onExpiry: 'warn' },
-    // Expired + hide — dropped from the feed and the blob 410s.
+    // Expired + hide - dropped from the feed and the blob 410s.
     { assetId: 'suse/logo/vert-pos-black', validUntil: iso(-2 * DAY), onExpiry: 'hide' },
-    // Scheduled (not yet valid) — dropped from the feed and the blob 410s.
+    // Scheduled (not yet valid) - dropped from the feed and the blob 410s.
     { assetId: 'suse/lottie/pulse-rings', validFrom: iso(7 * DAY), onExpiry: 'hide' },
   ];
 }
@@ -215,7 +215,7 @@ export interface SeedResult {
   users: Record<string, UserRecord>; // by email
   projectIds: { summit: string; drafts: string };
   sessionIds: string[];
-  /** Seeded sessions keyed by their generated id — lets demoRooms() anchor a mock
+  /** Seeded sessions keyed by their generated id - lets demoRooms() anchor a mock
    *  live room to a REAL session (so the console's Rooms panel resolves its label
    *  and tool) without depending on seed order. */
   sessions: Array<{ id: string; toolId: string; label: string; projectId: string }>;
@@ -225,10 +225,10 @@ export interface SeedResult {
  * Seed everything that does NOT need a running server: users (so their ids
  * exist for projects/sessions/approvals), overlays, chains, projects +
  * sessions, catalog lifecycle, and messages. (Grants are seeded into the store
- * at construction — see bootStore — because the Store has no putGrant.)
+ * at construction - see bootStore - because the Store has no putGrant.)
  */
 export async function seedStore(store: Store, now = Date.now()): Promise<SeedResult> {
-  // 1. Users — pre-created so their ids anchor ownership. Dev sign-in later
+  // 1. Users - pre-created so their ids anchor ownership. Dev sign-in later
   //    upserts the SAME sub (`dev:<email>`) and keeps the id.
   const users: Record<string, UserRecord> = {};
   for (const p of PERSONAS) {
@@ -255,7 +255,7 @@ export async function seedStore(store: Store, now = Date.now()): Promise<SeedRes
   await store.putFlagGovernance({ id: 'strip-upload-metadata', default: 'on', updatedAt: flagAt });
   await store.putFlagGovernance({ id: 'jelly-effects', default: 'on', visibility: 'hide', updatedAt: flagAt });
 
-  // Injectables (plans/19) — the rail that pushes capability into the governed
+  // Injectables (plans/19) - the rail that pushes capability into the governed
   // shell. Seed one of each kind so the console panel demonstrates the taxonomy.
   const injAt = new Date().toISOString();
   const inj = (id: string, kind: string, title: string, groups: string[], payload: Record<string, unknown>) =>
@@ -263,7 +263,7 @@ export async function seedStore(store: Store, now = Date.now()): Promise<SeedRes
   await inj('maintenance-note', 'chrome', 'Maintenance banner', ['*'], { slot: 'banner', tone: 'warn', text: 'Planned maintenance this Sunday 02:00–03:00 UTC.', link: { label: 'Status', href: '/status' } });
   await inj('brand-rates', 'resource', 'Printer rate card', ['design', 'marketing'], { resourceType: 'ratecard', assetId: 'acme/rates-2026' });
   await inj('qr-tool', 'tool', 'QR code tool', ['*'], { toolId: 'qr-code', source: 'catalog' });
-  // A url-source tool: the same tool preconfigured via a Lolly tool URL — the shell
+  // A url-source tool: the same tool preconfigured via a Lolly tool URL - the shell
   // opens it with those inputs already applied (#/tool/<id>?<query>).
   await inj('welcome-qr', 'tool', 'SUSE welcome QR', ['*'], { toolId: 'org-welcome', source: 'url', ref: 'https://demo.lolly.example/#/tool/org-welcome?url=https%3A%2F%2Fsuse.com' });
   await inj('seasonal-jelly', 'flag', 'Seasonal jelly effects', ['*'], { flagId: 'jelly-effects', default: 'on', visibility: 'show' });
@@ -332,7 +332,7 @@ export async function seedStore(store: Store, now = Date.now()): Promise<SeedRes
   // 4. Catalog lifecycle.
   for (const row of demoLifecycle(now)) await store.putLifecycle(row);
 
-  // 4b. A federated catalog provider (plans/17) — the mock driver stands in
+  // 4b. A federated catalog provider (plans/17) - the mock driver stands in
   // for a live DAM, so the console's Providers view and the ext/* federation
   // path demo without network or credentials. Enabled at seed so its assets
   // appear in the feed immediately; the kill switch works from the console.
@@ -367,23 +367,23 @@ export async function seedStore(store: Store, now = Date.now()): Promise<SeedRes
 
 // ── activity seeding (no server needed) ──────────────────────────────────────
 // seedStore above lays down CONFIG-shaped state (overlays, chains, projects, …).
-// But the dashboards a signed-in visitor first lands on — the usage charts, the
-// attributed activity timeline, the fleet, the approvals inbox, shared links —
+// But the dashboards a signed-in visitor first lands on - the usage charts, the
+// attributed activity timeline, the fleet, the approvals inbox, shared links - 
 // are fed by RUNTIME activity. The local `npm run demo` produces that by firing
 // real HTTP self-calls once its server is up (seedViaHttp). Serverless (the
 // Vercel function) has no server to call during a cold-start boot, so the SAME
 // activity is written DIRECTLY to the store here by seedActivity(). Both paths
 // range over the shared vocabulary below, so the two demos stay in step.
 
-/** Tools/formats the seeded usage telemetry ranges over — shared with seedViaHttp
+/** Tools/formats the seeded usage telemetry ranges over - shared with seedViaHttp
  *  so the leaderboards read the same names whichever path seeded them. */
 const ACTIVITY_TOOLS = ['deck-builder', 'qr-code', 'event-name-badge', 'd3', 'chart-creator', 'street-map', 'countdown-timer', 'mesh-gradient'];
 const ACTIVITY_FORMATS = ['png', 'pdf', 'svg', 'pptx', 'webm'];
-/** Catalog assets the usage telemetry attributes to (the Top assets panel) —
+/** Catalog assets the usage telemetry attributes to (the Top assets panel) - 
  *  real ids from the SUSE profile catalog + the demo DAM seeded above. */
 const ACTIVITY_ASSETS = ['suse/logo/hor-pos-green', 'suse/logo/hor-neg-green', 'summit-keynote-bg', 'partner-badge', 'suse/tokens/brand'];
 /** A believable mixed fleet: web/tauri/cli across a couple of engine versions
- *  and platforms (one lagging tauri on the old 1.52 engine — the upgrade nudge). */
+ *  and platforms (one lagging tauri on the old 1.52 engine - the upgrade nudge). */
 const FLEET_CLIENT_HEADERS = [
   'web engine/1.61.0',
   'web/2.4.0 engine/1.61.0 platform/macos',
@@ -394,8 +394,8 @@ const FLEET_CLIENT_HEADERS = [
 ];
 
 /** A tiny deterministic PRNG (mulberry32). The seeded activity must be STABLE
- *  across cold starts — every serverless instance should show the same shaped
- *  dashboards — and reproducible in tests; Math.random would make both flaky. */
+ *  across cold starts - every serverless instance should show the same shaped
+ *  dashboards - and reproducible in tests; Math.random would make both flaky. */
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
@@ -428,7 +428,7 @@ export function demoTelemetryEvents(seeded: SeedResult, now = Date.now()): Store
     for (let i = 0; i < n; i++) {
       const toolId = pick(ACTIVITY_TOOLS, 1.6);
       const at = new Date(date.getTime() - i * 137_000).toISOString(); // minus: never future-dated
-      const who = attribution(); // one actor per burst — a person's related actions share attribution
+      const who = attribution(); // one actor per burst - a person's related actions share attribution
       events.push({ event: 'tool.open', at, attrs: { toolId }, ...who });
       if (rnd() < 0.55) {
         events.push({ event: 'render.export', at, attrs: { toolId, format: pick(ACTIVITY_FORMATS, 1.4), destination: rnd() < 0.72 ? 'download' : 'server-render' }, ...who });
@@ -446,13 +446,13 @@ export function demoTelemetryEvents(seeded: SeedResult, now = Date.now()): Store
 }
 
 /**
- * Sixty days of back-dated audit history — what makes every console view's
+ * Sixty days of back-dated audit history - what makes every console view's
  * activity header (plans/23 §3.D-adjacent, the per-view 30-day charts) tell a
  * story instead of flatlining: the charts fold audit actions by day, and until
  * this seed the demo's audit log began at first visit. Sixty days, not thirty,
  * so the "vs prior 30 days" delta tiles have a prior window to compare against;
  * a gentle growth ramp keeps those deltas pointing up. Weekday rhythm mirrors
- * demoTelemetryEvents. Counts and ids only — a seeded audit row never carries
+ * demoTelemetryEvents. Counts and ids only - a seeded audit row never carries
  * input values, exactly like the real emitters.
  */
 export function demoAuditHistory(seeded: SeedResult, now = Date.now()): Array<{
@@ -491,7 +491,7 @@ export function demoAuditHistory(seeded: SeedResult, now = Date.now()): Array<{
       events.push({ at: at(), actor: actor(), action: 'session.update', subject: `session:${s.id}`, payload: { rev: 2 + Math.floor(rnd() * 30), projectId: s.projectId, toolId: s.toolId } });
     }
     if (rnd() < 0.5) events.push({ at: at(), actor: actor(), action: 'session.create', subject: `session:${session().id}` });
-    // Conflicts skew recent — the collab-gate instrument trending is the story.
+    // Conflicts skew recent - the collab-gate instrument trending is the story.
     if (rnd() < (d < 14 ? 0.45 : 0.15)) {
       const s = session();
       events.push({ at: at(), actor: actor(), action: 'session.conflict', subject: `session:${s.id}`, payload: { rev: 3 + Math.floor(rnd() * 20), sentRev: 2, toolId: s.toolId } });
@@ -521,7 +521,7 @@ export function demoFleetClients(): Array<{ info: ClientInfo; count: number }> {
 
 /** Four shared links spanning every kind, one of them revoked (index 3). The
  *  guest-edit link carries a real scrypt password hash ('summit'), so it is
- *  genuinely gated — not merely flagged protected in the console. */
+ *  genuinely gated - not merely flagged protected in the console. */
 export function demoLinks(adminId: string, now = Date.now()): { records: LinkRecord[]; revokeIndex: number } {
   const expSec = (hours: number) => Math.floor(now / 1000) + hours * 3600;
   const createdAt = new Date(now).toISOString();
@@ -540,7 +540,7 @@ export function demoLinks(adminId: string, now = Date.now()): { records: LinkRec
 /**
  * Four approvals spanning every inbox state, built with the REAL approval engine
  * (createApproval/applyAction) so their stepIndex/state are exactly what the
- * routes would have produced. Marketer submits; brand/admin act — never the
+ * routes would have produced. Marketer submits; brand/admin act - never the
  * submitter (separation of duties). Mirrors seedViaHttp's four.
  */
 export function demoApprovals(seeded: SeedResult, now = Date.now()): Approval[] {
@@ -564,14 +564,14 @@ export function demoApprovals(seeded: SeedResult, now = Date.now()): Approval[] 
   // C: rejected at Brand sign-off, with a comment.
   let c = raise('Sponsor logo lockup', 'event-name-badge/sponsor', 4);
   c = applyAction(c, brandActor, 'reject', 'Logo clear space is too tight — please redo.', iso(-4 * DAY + 7_200_000));
-  // D: pending at Legal sign-off (admin's inbox) — brand cleared step 0.
+  // D: pending at Legal sign-off (admin's inbox) - brand cleared step 0.
   let d = raise('Registration deck — legal review', 'deck-builder/registration', 1);
   d = applyAction(d, brandActor, 'approve', undefined, iso(-1 * DAY + 3_600_000));
   return [a, b, c, d];
 }
 
 /**
- * Seed all RUNTIME activity directly into the store — the serverless equivalent
+ * Seed all RUNTIME activity directly into the store - the serverless equivalent
  * of seedViaHttp, minus the server. Marks the two attributed personas consented
  * (the instance runs opt-in attribution) so their usage attributes, writes the
  * usage telemetry, records the fleet, mints the shared links (revoking one), and
@@ -603,7 +603,7 @@ export async function seedActivity(
   for (const approval of approvals) await store.putApproval(approval);
 
   // Sixty days of audit history, appended oldest-first so the hash chain is
-  // ordinary — this is what puts a curve on every console view's activity
+  // ordinary - this is what puts a curve on every console view's activity
   // header instead of a first-visit flatline.
   const auditRows = demoAuditHistory(seeded, now);
   for (const row of auditRows) await store.appendAudit(row);
@@ -615,7 +615,7 @@ export async function seedActivity(
 // The console's Rooms panel reads the collab gateway's OWN registry via the
 // `listCollabRooms` callback injected into buildApp (server/src/api/app.ts). A
 // live room is in-memory in the ws gateway process, and the serverless deploy
-// never runs that gateway (plans/14 §6 "Vercel WS spike") — so the callback is
+// never runs that gateway (plans/14 §6 "Vercel WS spike") - so the callback is
 // absent and the panel is empty. demoRooms() fabricates a plausible registry so
 // a signed-in visitor sees live collaboration too: bootstrap injects
 // `listCollabRooms: () => demoRooms(seeded)`, computing timestamps fresh each
@@ -651,7 +651,7 @@ const ROOM_SPECS: Array<{ sessionLabel: string; startedMinAgo: number; opsApplie
   },
 ];
 
-/** A synthetic live-room registry for the console Rooms panel — the serverless
+/** A synthetic live-room registry for the console Rooms panel - the serverless
  *  stand-in for the ws gateway's `RoomRegistry.list()`. Timestamps are computed
  *  from `now` on every call, so the rooms never age out of "live". A spec whose
  *  session isn't in the seed is skipped (never a dangling room). */
@@ -845,7 +845,7 @@ export async function seedViaHttp(base: string): Promise<{ telemetryEvents: numb
   let links = 4;
 
   // Approvals spanning every state. Marketer raises; brand-team/admin act
-  // (never the submitter — separation of duties).
+  // (never the submitter - separation of duties).
   const submit = (title: string, subjectRef: string, nominees: string[] = []) =>
     jpost(base, '/api/v1/approvals', { subjectType: 'asset', subjectRef, title, chainId: 'brand-review', nominees }, marketer)
       .then((r) => r.json() as Promise<{ id: string }>);
@@ -861,7 +861,7 @@ export async function seedViaHttp(base: string): Promise<{ telemetryEvents: numb
   // C: rejected with a comment at Brand sign-off.
   const c = await submit('Sponsor logo lockup', 'event-name-badge/sponsor');
   await act(c.id, brand, 'reject', 'Logo clear space is too tight — please redo.');
-  // D: pending at Legal sign-off (admin's inbox) — brand cleared step 0.
+  // D: pending at Legal sign-off (admin's inbox) - brand cleared step 0.
   const dApr = await submit('Registration deck — legal review', 'deck-builder/registration');
   await act(dApr.id, brand, 'approve');
   const approvals = 4;
@@ -883,7 +883,7 @@ async function main(): Promise<void> {
   const secrets = loadSecrets();
   const store = createMemoryStore({ grants: demoGrants() });
   const seeded = await seedStore(store);
-  // Sixty days of audit history, direct to the store — the serverless path gets
+  // Sixty days of audit history, direct to the store - the serverless path gets
   // this via seedActivity(); the local demo seeds runtime activity over HTTP
   // (seedViaHttp) which can only ever write "today", so the per-view activity
   // headers would flatline without it. Same generator, same curves, both demos.

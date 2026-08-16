@@ -28,7 +28,7 @@
  * License resolution: the lockfile's per-package `license` field when present,
  * else the installed package's own node_modules/<name>/package.json (covers the
  * packages npm didn't copy the field through for). Unresolvable licenses are
- * warned about, never fatal — a gap should be visible, not block the build.
+ * warned about, never fatal - a gap should be visible, not block the build.
  */
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
@@ -36,7 +36,7 @@ import { createHash } from 'node:crypto';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// ─── CycloneDX component shapes (partial — only the fields this tool emits) ───
+// ─── CycloneDX component shapes (partial - only the fields this tool emits) ───
 interface Hash {
   alg: string;
   content: string;
@@ -94,7 +94,7 @@ function licensesFromString(license: unknown): LicenseChoice[] | undefined {
   if (!license || typeof license !== 'string') return undefined;
   const looksLikeExpression = /\bOR\b|\bAND\b|\bWITH\b|[()]/.test(license);
   if (looksLikeExpression) return [{ expression: license }];
-  // npm's proprietary marker is not an SPDX id — record it as a plain name.
+  // npm's proprietary marker is not an SPDX id - record it as a plain name.
   if (license === 'UNLICENSED') return [{ license: { name: license } }];
   // SPDX ids are a constrained charset; fall back to `name` for anything odd.
   const isIdLike = /^[A-Za-z0-9.+-]+$/.test(license);
@@ -113,7 +113,7 @@ for (const [path, entry] of Object.entries(lock.packages ?? {}) as [string, any]
   if (!path.includes('node_modules/')) continue; // root + vendor package dirs
   if (entry.link) continue;                      // vendor/ symlink, covered by THIRD-PARTY-NOTICES.md
   if (!entry.version) continue;                  // nothing installable to describe
-  if (entry.dev) continue;                       // dev tooling — deliberately not in the BOM (see header)
+  if (entry.dev) continue;                       // dev tooling - deliberately not in the BOM (see header)
 
   const name = path.slice(path.lastIndexOf('node_modules/') + 'node_modules/'.length);
   const purl = purlFor(name, entry.version);

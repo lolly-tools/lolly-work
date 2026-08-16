@@ -1,28 +1,28 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * Yjs-backed CanvasSyncAdapter — lolly-work's real implementation of the canvas-op
+ * Yjs-backed CanvasSyncAdapter - lolly-work's real implementation of the canvas-op
  * seam (OSS plans/99 + plans/100, lolly-work plans/14). The OSS shell emits/consumes the
  * ops; THIS is the control-plane transport+storage that drives a live room. It satisfies
  * the SHARED conformance suite shipped in `@lolly-tools/core/canvas-op-testkit`
- * (`runConvergenceSuite`) — the same bytes the OSS `ReferenceCanvasDoc` passes — so the
+ * (`runConvergenceSuite`) - the same bytes the OSS `ReferenceCanvasDoc` passes - so the
  * two implementations cannot drift on op semantics (plans/99 §8).
  *
- * Contract level: canvas-op **v1.1** (plans/100 §3) — every box op may carry a `col`,
+ * Contract level: canvas-op **v1.1** (plans/100 §3) - every box op may carry a `col`,
  * the blocks-input collection it targets; absent `col` = the default canvas collection.
  *
  * Design (faithful to `ReferenceCanvasDoc`, with a `Y.Doc` as the store):
- *   - `boxes: Y.Map<BoxId, Y.Map<field, Reg>>` — plans/99 §3's "Y.Map per box". This is
+ *   - `boxes: Y.Map<BoxId, Y.Map<field, Reg>>` - plans/99 §3's "Y.Map per box". This is
  *     the DEFAULT canvas collection and it keeps its v1.0 root name and layout, so a doc
  *     written by the v1.0 adapter loads here unchanged and an op with no `col` still
  *     lands byte-identically where it always did.
- *   - `collections: Y.Map<"<col>\0<BoxId>", Y.Map<field, Reg>>` (v1.1) — every blocks
+ *   - `collections: Y.Map<"<col>\0<BoxId>", Y.Map<field, Reg>>` (v1.1) - every blocks
  *     collection's boxes in ONE root map under a composite key, not a nested store per
  *     collection. Semantically identical to `boxes` (same registers, same
  *     `__alive`/`__order`, same order model, the same BoxId in two collections is two
- *     unrelated boxes — plans/100 §3); `state()` groups by the key prefix. FLAT ON
- *     PURPOSE, and this is the load-bearing part: a nested `Y.Map` held as the VALUE of
+ *     unrelated boxes - plans/100 §3); `state()` groups by the key prefix. FLAT ON
+ *     PURPOSE, and this is the essential part: a nested `Y.Map` held as the VALUE of
  *     a key is resolved by Yjs's per-key LWW on MERGE, so two docs that concurrently
- *     materialize the same `col` keep one store and DELETE THE LOSER'S WHOLE SUBTREE —
+ *     materialize the same `col` keep one store and DELETE THE LOSER'S WHOLE SUBTREE - 
  *     every row a peer wrote before the first sync, regardless of app clock. Flat keys
  *     make two peers adding different rows touch different keys of a root type, which
  *     merges structurally; a collection's worst-case cross-doc loss is then exactly the
@@ -30,29 +30,29 @@
  *     it, never on a read: a v1.0 op log leaves the root empty and `state()` then emits
  *     no `collections` key at all.
  *   - Each field is an app-level LWW REGISTER `{ value, origin }` resolved by the op's
- *     `(clock, client)` — NOT Yjs's native per-key LWW. Membership is an `__alive`
+ *     `(clock, client)` - NOT Yjs's native per-key LWW. Membership is an `__alive`
  *     register; paint order an `__order` fractional-index register (plans/99 §3). They
  *     share the box's Y.Map with ordinary fields, so a field NAME that collides with one
- *     is escaped (`fieldKey`) — otherwise a `field` op could set `__alive` and delete a
+ *     is escaped (`fieldKey`) - otherwise a `field` op could set `__alive` and delete a
  *     box no `remove` op authorized, while the reference (separate slots) kept it as an
  *     ordinary field. Storing app-registers keeps `apply()` order-independent for a
  *     single doc, which is what the conformance suite replays. **Production caveat
  *     (plans/14 follow-up):** true cross-doc concurrency (two rooms syncing) resolves
- *     each Y.Map key by YJS's clock, which can discard the higher-app-clock register —
+ *     each Y.Map key by YJS's clock, which can discard the higher-app-clock register - 
  *     so before enabling multi-replica sync, either make the register comparison run on
  *     the Yjs merge, or move order to a real `Y.Array<BoxId>` and accept the §8
  *     within-model order divergence. Two docs that concurrently CREATE the same BoxId
  *     (in the canvas or in one collection) likewise keep one box map and lose the
  *     other's registers. What bounds that blast radius to one box is the structural rule
- *     above — every box hangs off a ROOT map at its own key — so a fix for the register
+ *     above - every box hangs off a ROOT map at its own key - so a fix for the register
  *     comparison must not reintroduce a nested per-collection store. v1.1 changes the
  *     caveat's SCOPE (it now applies per collection) but not its size. Single-node rooms
  *     (plans/14 §6 "one node serves the org") are unaffected.
- *   - Awareness/presence is ephemeral — Yjs's awareness channel in the gateway, never the
+ *   - Awareness/presence is ephemeral - Yjs's awareness channel in the gateway, never the
  *     doc (plans/99 §5); here it is simply never written to `Y.Doc`.
  *
  * The op SHAPE + the reused `damageToOps`/`opsToDamage` come from the pinned
- * `@lolly-tools/core` (engine-pin.json) — we never re-declare them.
+ * `@lolly-tools/core` (engine-pin.json) - we never re-declare them.
  */
 import * as Y from 'yjs';
 import {
@@ -89,7 +89,7 @@ type BoxMap = Y.Map<Reg<Scalar>>;
 type BoxView = Map<BoxId, BoxMap>;
 
 /** Higher clock wins; on a tie the higher `client` id wins. Strict, so re-applying an
- *  identical op is a no-op (idempotent) — mirrors core's private `beats`. */
+ *  identical op is a no-op (idempotent) - mirrors core's private `beats`. */
 function beats(a: OpOrigin, b: OpOrigin): boolean {
   return a.clock !== b.clock ? a.clock > b.clock : a.client > b.client;
 }
@@ -100,7 +100,7 @@ const SEP = '\u0000';
 
 /** The flat `collections` key for one box: `<encoded col>\0<BoxId>`. The collection id
  *  is percent-encoded (which escapes NUL as `%00`), so the separator can only be the one
- *  we wrote and the BoxId is the untouched remainder — the split is unambiguous for ANY
+ *  we wrote and the BoxId is the untouched remainder - the split is unambiguous for ANY
  *  pair of strings, including a BoxId containing a NUL. */
 function colKey(col: string, id: BoxId): string {
   return `${encodeURIComponent(col)}${SEP}${id}`;
@@ -123,7 +123,7 @@ function colOf(key: string): string | null {
 /** Field name → Y.Map key. `__alive`/`__order` live in the same map as ordinary fields,
  *  so a field literally NAMED one of them would be the register: a `field` op would
  *  delete the box (or blank paint order) with no `remove` op ever authorized, and the
- *  reference — which keeps alive/order in their own slots — would keep it as a plain
+ *  reference - which keeps alive/order in their own slots - would keep it as a plain
  *  field. Any `__`-prefixed name takes one extra `_`, so the two reserved keys are the
  *  only two-underscore keys that can exist and the mapping stays a bijection. */
 function fieldKey(name: string): string {
@@ -140,7 +140,7 @@ export class YjsCanvasAdapter implements CanvasSyncAdapter {
   /** The default canvas collection (v1.0 root name + layout, unchanged). */
   private readonly boxes: Y.Map<BoxMap>;
   /** v1.1: EVERY blocks collection's boxes, flat, under `colKey(col, id)`. One root
-   *  type rather than a nested store per collection — see the header's FLAT ON PURPOSE. */
+   *  type rather than a nested store per collection - see the header's FLAT ON PURPOSE. */
   private readonly collections: Y.Map<BoxMap>;
   private readonly params: Y.Map<Reg<ParamValue>>;
   private readonly clientId: string;
@@ -197,7 +197,7 @@ export class YjsCanvasAdapter implements CanvasSyncAdapter {
         this.putRes(this.boxMap(op.id, op.col), ORDER, op.orderKey, op.origin);
         break;
       case 'param': {
-        // The params lane is collection-BLIND by contract (plans/100 §3) — ParamOp
+        // The params lane is collection-BLIND by contract (plans/100 §3) - ParamOp
         // carries no `col` and there is nothing to scope.
         const cur = this.params.get(op.key);
         if (!cur || beats(op.origin, cur.origin)) this.params.set(op.key, { value: op.value, origin: op.origin });
@@ -214,7 +214,7 @@ export class YjsCanvasAdapter implements CanvasSyncAdapter {
   }
 
   presence(a: Awareness): void {
-    // Ephemeral — never written to the doc (plans/99 §5). The gateway broadcasts this
+    // Ephemeral - never written to the doc (plans/99 §5). The gateway broadcasts this
     // over Yjs awareness; here it is inspection-only.
     this.lastPresence = a;
   }
@@ -232,7 +232,7 @@ export class YjsCanvasAdapter implements CanvasSyncAdapter {
       params,
     };
     // v1.1: collection ids sorted (the testkit's canonical form), each snapshotted the
-    // same canonical way — and the key stays ABSENT when no collection-scoped op has
+    // same canonical way - and the key stays ABSENT when no collection-scoped op has
     // ever applied, so a v1.0 op log yields a v1.0-shaped state.
     const colIds = this.colIds();
     if (colIds.length > 0) {
@@ -246,10 +246,10 @@ export class YjsCanvasAdapter implements CanvasSyncAdapter {
     return state;
   }
 
-  // — internals —
+  // - internals - 
 
   /** The box an op targets, created on first write. WRITE path: a collection is
-   *  materialized by its first box landing under the collection's key prefix — there is
+   *  materialized by its first box landing under the collection's key prefix - there is
    *  no separate store to create, which is exactly what keeps a concurrent creation of
    *  the SAME collection in two docs a structural merge (header, FLAT ON PURPOSE). */
   private boxMap(id: BoxId, col?: string): BoxMap {
@@ -269,18 +269,18 @@ export class YjsCanvasAdapter implements CanvasSyncAdapter {
     if (!cur || beats(origin, cur.origin)) m.set(key, { value, origin });
   }
 
-  /** A FIELD write — escaped, so no field name can land on a reserved register. */
+  /** A FIELD write - escaped, so no field name can land on a reserved register. */
   private putReg(m: BoxMap, field: string, value: Scalar, origin: OpOrigin): void {
     this.putKey(m, fieldKey(field), value, origin);
   }
 
-  /** A RESERVED register write (`__alive`/`__order`) — same rule, no escaping, because
+  /** A RESERVED register write (`__alive`/`__order`) - same rule, no escaping, because
    *  these two keys ARE the escape target rather than a field. */
   private putRes(m: BoxMap, key: typeof ALIVE | typeof ORDER, value: Scalar, origin: OpOrigin): void {
     this.putKey(m, key, value, origin);
   }
 
-  /** One collection's boxes as an ordinary (BoxId → box) map. Pure READ — grouping the
+  /** One collection's boxes as an ordinary (BoxId → box) map. Pure READ - grouping the
    *  flat root by key prefix materializes nothing, so an untouched collection simply
    *  yields an empty view and `state()` stays v1.0-shaped. */
   private view(col?: string): BoxView {
@@ -296,7 +296,7 @@ export class YjsCanvasAdapter implements CanvasSyncAdapter {
     return view;
   }
 
-  /** Every materialized collection id, sorted — a collection exists exactly when at
+  /** Every materialized collection id, sorted - a collection exists exactly when at
    *  least one box key carries its prefix. */
   private colIds(): string[] {
     const ids = new Set<string>();
@@ -316,7 +316,7 @@ export class YjsCanvasAdapter implements CanvasSyncAdapter {
     return ids;
   }
 
-  /** Alive boxes, stable-sorted by (orderKey, BoxId) — the reference's order model,
+  /** Alive boxes, stable-sorted by (orderKey, BoxId) - the reference's order model,
    *  applied per collection. */
   private order(view: BoxView): BoxId[] {
     return this.aliveIds(view).sort((a, b) => {
@@ -330,7 +330,7 @@ export class YjsCanvasAdapter implements CanvasSyncAdapter {
     const m = view.get(id);
     const row: BoxRow = {};
     if (m) {
-      // Sorted keys so the row serialization is canonical — field insertion order
+      // Sorted keys so the row serialization is canonical - field insertion order
       // depends on apply order, which must not leak into state(). Sorted on the FIELD
       // NAME, not the storage key, so an escaped `__`-prefixed name sorts where the
       // reference puts it.

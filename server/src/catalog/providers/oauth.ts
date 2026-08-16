@@ -4,20 +4,20 @@
  *
  * The sealed credential for an OAuth kind is one JSON blob:
  *   {"clientId": "…", "clientSecret": "…", "refreshToken": "…"}
- * — the operator's OWN registered app (BYOT, §13: no shared client ids ship in
+ * - the operator's OWN registered app (BYOT, §13: no shared client ids ship in
  * this repo), captured once via `lw providers auth <id>` and stored through
  * the same write-only credential endpoint as any API key.
  *
  * Access tokens never touch the store: they live in a process-level cache
  * keyed by provider id + a hash of the refresh token, because provider
- * instances are created per request — without this cache every blob fetch
+ * instances are created per request - without this cache every blob fetch
  * would burn a refresh-token exchange.
  */
 import { sha256Hex } from '../../lib/crypto.ts';
 
 export interface OAuthCredential {
   clientId: string;
-  /** Absent for public (PKCE) clients — Dropbox and Microsoft allow them. */
+  /** Absent for public (PKCE) clients - Dropbox and Microsoft allow them. */
   clientSecret?: string;
   refreshToken: string;
 }

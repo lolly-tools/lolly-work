@@ -1,5 +1,5 @@
 /**
- * The audit-chain HEAD — a small, shared summary of where the hash-chained log
+ * The audit-chain HEAD - a small, shared summary of where the hash-chained log
  * currently ends (plan Rec 5). In-place hash-chaining is tamper-evident but not
  * truncation-proof against someone who holds the DB; publishing the head hash
  * somewhere external (a signed commit, a ticket, a monitoring sink) turns

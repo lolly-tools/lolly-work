@@ -1,9 +1,9 @@
 /**
- * Approvals — the pure state machine (plans/05 §1–2, plans/03 §5).
+ * Approvals - the pure state machine (plans/05 §1–2, plans/03 §5).
  *
  * One engine, three-plus subject types (asset / tool-change / config /
  * guest-link). A chain is an ordered list of steps; each step names an eligible
- * team (by group) and a completion rule. No BPM, no DAGs — chains, not graphs.
+ * team (by group) and a completion rule. No BPM, no DAGs - chains, not graphs.
  *
  * This module knows NOTHING about storage, HTTP, or users beyond the two facts
  * an act needs: the actor's id (for separation of duties) and their groups (for
@@ -14,12 +14,12 @@
  *  - Separation of duties: the submitter can NEVER satisfy a step. Checked
  *    before eligibility so the submitter always gets the specific reason.
  *  - Eligibility: an actor's groups must intersect the current step's
- *    approvers.groups. Nomination is routing + notification, not exclusivity —
+ *    approvers.groups. Nomination is routing + notification, not exclusivity - 
  *    any eligible team member may act; nominees just get pinged.
  *  - No path skips a step: a step completes per its rule, then stepIndex
  *    advances; only past the last step is the whole approval `approved`.
  *  - A reject at any step is terminal (`rejected`). onReject
- *    'return-to-submitter' means the submitter opens a NEW approval — there is
+ *    'return-to-submitter' means the submitter opens a NEW approval - there is
  *    no resume in v1.
  */
 
@@ -59,7 +59,7 @@ export interface Approval {
   subjectRef: string;
   title: string;
   chainId: string;
-  /** Snapshot of the chain taken at submit — the approval is judged by the rules it was raised under. */
+  /** Snapshot of the chain taken at submit - the approval is judged by the rules it was raised under. */
   chain: Chain;
   state: ApprovalState;
   /** Index of the step under review; equals chain.steps.length once approved. */
@@ -105,7 +105,7 @@ export function isEligible(step: ChainStep, groups: string[]): boolean {
   return step.approvers.groups.some((g) => groups.includes(g));
 }
 
-/** True when this approval is open at a step these groups may act on — the inbox predicate. */
+/** True when this approval is open at a step these groups may act on - the inbox predicate. */
 export function eligibleForCurrentStep(approval: Approval, groups: string[]): boolean {
   if (approval.state !== 'in_review' && approval.state !== 'submitted') return false;
   const step = currentStep(approval);
@@ -204,7 +204,7 @@ export function applyAction(
   const actions = [...approval.actions, entry];
 
   if (action === 'reject') {
-    // onReject 'return-to-submitter': v1 has no resume — the submitter raises a new approval.
+    // onReject 'return-to-submitter': v1 has no resume - the submitter raises a new approval.
     return { ...approval, state: 'rejected', actions };
   }
 
@@ -223,11 +223,11 @@ export function applyAction(
       actions,
     };
   }
-  // Recorded, step not yet cleared — remains under review at the same step.
+  // Recorded, step not yet cleared - remains under review at the same step.
   return { ...approval, state: 'in_review', actions };
 }
 
-/** Withdraw — submitter only, only while not terminal. */
+/** Withdraw - submitter only, only while not terminal. */
 export function withdraw(approval: Approval, actorId: string, _now: string): Approval {
   if (actorId !== approval.createdBy) fail('NOT_ELIGIBLE', 'only the submitter can withdraw this request');
   if (isTerminal(approval.state)) fail('TERMINAL', `this approval is already ${approval.state}`);

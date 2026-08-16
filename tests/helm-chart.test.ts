@@ -1,15 +1,15 @@
 /**
- * Offline validation of the Helm chart — the "build it blind" leg (plans/22 §6.5:
+ * Offline validation of the Helm chart - the "build it blind" leg (plans/22 §6.5:
  * the RKE2 cluster arrives after the code does, so every render-time property we
  * can check without a cluster is pinned here). Follows the store-postgres pattern:
- * skipped, not failed, where the tool is absent — helm needs no cluster to
+ * skipped, not failed, where the tool is absent - helm needs no cluster to
  * `template`, so any dev laptop or CI runner with helm installed re-validates the
  * chart on every run.
  *
  * What a `helm template` CAN prove: the templates render, the YAML is well-formed,
  * and the topology invariants hold (worker off by default; HPA owns scale when on;
- * readiness is the /readyz saturation gate while liveness stays load-independent —
- * plans/23 §3.C). What it can NOT prove: admission, RBAC, ingress behaviour — that
+ * readiness is the /readyz saturation gate while liveness stays load-independent - 
+ * plans/23 §3.C). What it can NOT prove: admission, RBAC, ingress behaviour - that
  * is day-one-on-cluster work, runbook'd in deploy/helm/DAY-ONE-RKE2.md.
  */
 import { test } from 'node:test';
@@ -33,7 +33,7 @@ function render(args: string[]): { out: string; err: string; ok: boolean } {
   return { out: r.stdout ?? '', err: r.stderr ?? '', ok: r.status === 0 };
 }
 
-/** The rendered docs, split on document boundaries (no YAML dep — structural
+/** The rendered docs, split on document boundaries (no YAML dep - structural
  *  checks below are regex-on-text, which is enough for presence/absence). */
 const docsOf = (out: string): string[] => out.split(/\n---/);
 const workerDeployment = (out: string): string | undefined =>

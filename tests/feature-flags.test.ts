@@ -54,7 +54,7 @@ test('resolve: hidden marks the flag hidden while the default still applies', ()
 });
 
 // private-collab (OSS plans/100 §7 item 7 / §6.3): the shell's Track-A P2P collab
-// flag is ON by default there as of 2026-08-10 (it shipped opt-in) — the control
+// flag is ON by default there as of 2026-08-10 (it shipped opt-in) - the control
 // plane's builtinDefault MUST match, or an instance that chose "inherit" would be
 // told the wrong thing. An instance that wants collaboration to go through Track B
 // only can still force this off and hidden, which is the lever that matters more now
@@ -68,11 +68,11 @@ test('private-collab is governable, ON by default (builtinDefault true), and rou
   const dormant = resolveFeatureFlags(new Map());
   assert.deepEqual(dormant['private-collab'], { default: true, hidden: false });
 
-  // forced OFF — the direction that now differs from the built-in
+  // forced OFF - the direction that now differs from the built-in
   const forcedOff = resolveFeatureFlags(govMap({ id: 'private-collab', default: 'off', updatedAt: now() }));
   assert.equal(forcedOff['private-collab']!.default, false);
 
-  // forced hidden with an explicit off default — a fleet that must not have direct
+  // forced hidden with an explicit off default - a fleet that must not have direct
   // device-to-device egress, and no per-user toggle to undo it
   const hidden = resolveFeatureFlags(govMap({ id: 'private-collab', default: 'off', visibility: 'hide', updatedAt: now() }));
   assert.deepEqual(hidden['private-collab'], { default: false, hidden: true });

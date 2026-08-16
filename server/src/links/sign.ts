@@ -2,7 +2,7 @@
  * Signed, expiring, revocable links (plans/07 §5).
  *
  * The URL carries `/l/{id}?s={sig}` where the signature covers id + kind +
- * expiry + a digest of the resolved target — so neither the target nor the
+ * expiry + a digest of the resolved target - so neither the target nor the
  * expiry can be tampered with in the URL bar. Revocation and passwords live
  * on the stored record; expiry is enforced from the signature alone (a link
  * outlives a lost database row only until its own expiry).
@@ -14,7 +14,7 @@ export type LinkKind = 'share' | 'embed' | 'download' | 'guest-edit';
 export interface LinkTarget {
   toolId?: string;
   sessionId?: string;
-  /** Render params baked at mint time — URL-bar tampering impossible. */
+  /** Render params baked at mint time - URL-bar tampering impossible. */
   params?: Record<string, unknown>;
   format?: string;
 }
@@ -33,7 +33,7 @@ export interface LinkRecord {
 }
 
 /**
- * The RBAC resource selectors a link's target satisfies — the resource half of
+ * The RBAC resource selectors a link's target satisfies - the resource half of
  * every `link.create` / `link.create-guest` decision.
  *
  * It lives here, next to the target it is derived from, because TWO surfaces
@@ -45,7 +45,7 @@ export interface LinkRecord {
  *     kills all its live guest sessions immediately").
  *
  * A gateway that asked with `['*']` alone would silently disagree with a
- * tool-scoped grant — an inviter allowed only `tool:event-badge` would look
+ * tool-scoped grant - an inviter allowed only `tool:event-badge` would look
  * un-granted on every gesture and their guests would be evicted immediately.
  * One function, so the two cannot drift.
  */

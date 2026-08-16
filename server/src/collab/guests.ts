@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * Guest seats in a live collab room — the "temporary external collaboration is
+ * Guest seats in a live collab room - the "temporary external collaboration is
  * the same room, not a separate mechanism" half of plans/14 §6, over the guest
  * principals plans/02 §8 defines.
  *
  * A guest holds NO role row and NO grants. `rbac/evaluate.ts`'s `ROLE_ACTIONS`
  * gives the `guest` role the empty list on purpose ("their access is entirely
  * link-scoped"), so running a guest through `evaluate()` could only ever answer
- * from a wildcard grant somebody wrote for members — an accident, never an
+ * from a wildcard grant somebody wrote for members - an accident, never an
  * intention. This module therefore imports nothing from `../rbac`, and
  * `tests/collab/guests.test.ts` asserts that structurally, exactly as
  * `rooms.ts`'s presence path is kept out of the policy engine by its import
@@ -15,25 +15,25 @@
  *
  * WHAT AUTHORIZES A GUEST IS ITS LINK, and nothing else:
  *
- *   - WHERE it may be — `LinkRecord.target.sessionId`, the one session a
+ *   - WHERE it may be - `LinkRecord.target.sessionId`, the one session a
  *     guest-edit link binds to. That single field is the whole of a guest's
  *     reach; every other session id is refused with the same close/refusal an
  *     unauthorized member gets.
- *   - WHETHER it may write — `LinkKind`. `guest-edit` is a writer seat. There is
+ *   - WHETHER it may write - `LinkKind`. `guest-edit` is a writer seat. There is
  *     no view-only guest tier today: `GET /l/:id` mints a guest cookie for
  *     `guest-edit` and for nothing else (share/embed/download render bytes and
  *     mint no principal at all), so `guestLinkRole` returning `null` for those
  *     kinds is a defensive floor rather than a live branch. When a read-only
  *     tier does arrive it is one arm added HERE, and the gateway's
- *     writer/observer split needs no change — it already asks this function.
- *   - HOW LONG — the link's own `exp` and `revokedAt`. That is what makes
+ *     writer/observer split needs no change - it already asks this function.
+ *   - HOW LONG - the link's own `exp` and `revokedAt`. That is what makes
  *     plans/02 §8's "revoking the link kills all its live guest sessions
  *     immediately" true of a socket that is already open: the gateway re-reads
  *     the link per gesture and per keepalive, so a revocation lands on the next
  *     gesture exactly as a grant revocation does for a member.
  *
  * The guest COOKIE is a bearer, not the authority. It is HMAC-signed by this
- * instance (`iam/sessions.ts`), so its claims cannot be edited — but it is a
+ * instance (`iam/sessions.ts`), so its claims cannot be edited - but it is a
  * SNAPSHOT of the link at mint time, and a link can be revoked, expire, or (in
  * principle) be re-put under the same id afterwards. The stored `LinkRecord` is
  * therefore the authority for every decision, and the cookie's own copy of the
@@ -55,12 +55,12 @@ import type { MemberRole } from './rooms.ts';
  * reason the overlay veto is NOT skipped for guests: `resolveInputAccess` takes
  * a group list, so an `inputAccess` rule scoped to `guests` locks, hides or
  * choice-restricts an input for every guest in every room without naming one.
- * It is not an RBAC group — nothing grants on it — so it can never widen what a
+ * It is not an RBAC group - nothing grants on it - so it can never widen what a
  * guest may do, only narrow it.
  */
 export const GUEST_GROUP = 'guests';
 
-/** Shown when a guest never chose a name — plans/02 §8's pseudonymous v1, and
+/** Shown when a guest never chose a name - plans/02 §8's pseudonymous v1, and
  *  the same default `GET /l/:id` stamps when the `name` param is absent. */
 export const GUEST_FALLBACK_NAME = 'Guest';
 
@@ -72,7 +72,7 @@ export const MAX_GUEST_NAME_CHARS = 60;
 
 /** C0/C1 controls, stripped from anything that becomes a display name. The
  *  presence relay sanitizes what a CLIENT sends (`rooms.ts` `sanitizePresence`)
- *  but stamps the SERVER's name over it verbatim — so the server's name has to
+ *  but stamps the SERVER's name over it verbatim - so the server's name has to
  *  arrive clean, or the one field a peer cannot forge becomes the one field that
  *  can smuggle a terminal escape. */
 const CONTROLS = /[\u0000-\u001f\u007f-\u009f]/g;
@@ -95,10 +95,10 @@ const PARENS = /[()]/g;
 export interface GuestSeat {
   guest: GuestSession;
   link: LinkRecord;
-  /** The session this guest is bound to — read off the LINK, never off the
+  /** The session this guest is bound to - read off the LINK, never off the
    *  cookie's copy (which is only checked to agree). */
   sessionId: string;
-  /** `guest:<linkId>` — the audit actor, the connection-ceiling key, and the
+  /** `guest:<linkId>` - the audit actor, the connection-ceiling key, and the
    *  room seat's `userId`. */
   principalId: string;
   /** Derived from the link's KIND. Never from a role table. */
@@ -106,7 +106,7 @@ export interface GuestSeat {
 }
 
 /**
- * Writer or observer, from the link alone — or `null` when this kind of link
+ * Writer or observer, from the link alone - or `null` when this kind of link
  * admits no guest at all (see the module header: only `guest-edit` mints a guest
  * principal today, so `null` is the defensive floor for a cookie whose link has
  * since become something else).
@@ -116,7 +116,7 @@ export function guestLinkRole(link: LinkRecord): MemberRole | null {
 }
 
 /**
- * "May this guest be in THIS room, right now?" — the pure decision, over rows the
+ * "May this guest be in THIS room, right now?" - the pure decision, over rows the
  * caller has already read. The guest-side dual of the gateway's `seatAllows`,
  * and the one expression of the rule for all three places that must agree: the
  * upgrade, the per-gesture re-check, and the per-keepalive seat re-check.
@@ -137,26 +137,26 @@ export function guestSeatOf(
   const role = guestLinkRole(link);
   if (!role) return null;
   // The binding. A guest-edit link may name only a tool (a blank-canvas invite);
-  // such a link binds to no session, so its guest can join no room — there is
+  // such a link binds to no session, so its guest can join no room - there is
   // nothing for its work to save into (plans/02 §8's "destination project/session
   // so the guest's work saves server-side").
   const bound = link.target.sessionId;
   if (!bound || bound !== sessionId) return null;
   // …and the cookie must agree with it. Both were minted from the same record, so
-  // a disagreement is not a stale claim to tolerate — it is two records that have
+  // a disagreement is not a stale claim to tolerate - it is two records that have
   // diverged, and a write authorized by the wrong one lands in the wrong session.
   if ((guest.sessionRef ?? bound) !== bound) return null;
   return { guest, link, sessionId: bound, principalId: guestActor(link.id), role };
 }
 
 /**
- * `"Sam (guest of Andy)"` — the name the roster, the peer-join broadcast and
+ * `"Sam (guest of Andy)"` - the name the roster, the peer-join broadcast and
  * every relayed presence frame carry for a guest (plans/02 §8, plans/14 §6).
  *
  * Server-side in full: the OSS shell renders whatever name the server sends, so
  * there is no client half to keep in step and no way for a peer to appear as a
  * colleague. A guest that never chose a name is `"Guest (guest of Andy)"` rather
- * than something apologetic — it still says exactly who vouched for them, which
+ * than something apologetic - it still says exactly who vouched for them, which
  * is the part that matters.
  */
 export function guestDisplayName(chosen: string | undefined, inviterName: string): string {
@@ -172,7 +172,7 @@ function clean(raw: string | undefined): string {
 }
 
 /**
- * The inviter's live UserRecord — and, by returning null, the check that they
+ * The inviter's live UserRecord - and, by returning null, the check that they
  * are still a live member at all.
  *
  * Accountability rides on the inviter (plans/02 §8), so a guest must not outlive
@@ -180,10 +180,10 @@ function clean(raw: string | undefined): string {
  * deleted admits nobody, and the room refuses the upgrade rather than rendering
  * "(guest of <an id nobody can resolve>)".
  *
- * A scan, because there is no by-id user getter on the Store — `api/app.ts`
+ * A scan, because there is no by-id user getter on the Store - `api/app.ts`
  * resolves a user id the same way in half a dozen routes. Corrected 2026-08-09:
- * this is no longer run ONLY at admit. `guests.ts`'s own promise — "a gesture
- * must re-check the LINK" — was true of the link's own liveness (revoked,
+ * this is no longer run ONLY at admit. `guests.ts`'s own promise - "a gesture
+ * must re-check the LINK" - was true of the link's own liveness (revoked,
  * expired) but silently dropped the inviter half of plans/02 §8's revocation
  * story: the caller (`gateway.ts`) now re-runs this on the per-gesture and
  * per-keepalive paths too, exactly where a member's own liveness is re-read,
@@ -200,7 +200,7 @@ export async function resolveInviter(
   return inviter;
 }
 
-/** `displayName(await resolveInviter(...))` — kept as its own name because most
+/** `displayName(await resolveInviter(...))` - kept as its own name because most
  *  callers only want the rendered name, never the record. */
 export async function resolveInviterName(
   store: Pick<Store, 'listUsers'>,

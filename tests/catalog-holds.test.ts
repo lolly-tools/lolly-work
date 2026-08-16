@@ -96,7 +96,7 @@ test('(b) while held: revoke and expiry-into-the-past 409 ASSET_HELD (note echoe
 
   assert.equal((await putLifecycle(admin, 'acme/logo/primary', { validUntil: PAST })).status, 409, 'expiry into the past is a removal');
 
-  // Scheduling a future expiry does not remove the asset now — allowed while held.
+  // Scheduling a future expiry does not remove the asset now - allowed while held.
   const extend = await putLifecycle(admin, 'acme/logo/primary', { validUntil: FUTURE });
   assert.equal(extend.status, 200);
   const extBody = await extend.json() as { validUntil?: string; hold?: unknown };

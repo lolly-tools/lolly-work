@@ -1,6 +1,6 @@
 /**
  * The demo seed helper (scripts/demo.ts) must populate a store across EVERY
- * governance feature the console draws — this asserts the store-level shape the
+ * governance feature the console draws - this asserts the store-level shape the
  * HTTP burst then builds on. It never boots a server (the HTTP burst is covered
  * live in the demo's own verify step).
  */
@@ -19,12 +19,12 @@ test('seedStore populates the store across every governance feature', async () =
   const store = createMemoryStore({ grants: demoGrants() });
   const seeded = await seedStore(store);
 
-  // Users — one per persona, ids captured for ownership.
+  // Users - one per persona, ids captured for ownership.
   const users = await store.listUsers();
   assert.equal(users.length, PERSONAS.length);
   assert.ok(Object.values(seeded.users).every((u) => u.id));
 
-  // Overlays — all four real tools, with the qr-code lock actually enforcing.
+  // Overlays - all four real tools, with the qr-code lock actually enforcing.
   const overlays = await store.listOverlays();
   assert.equal(overlays.size, 4);
   for (const id of ['qr-code', 'event-name-badge', 'countdown-timer', 'deck-builder']) assert.ok(overlays.has(id));
@@ -35,7 +35,7 @@ test('seedStore populates the store across every governance feature', async () =
   assert.equal(overlays.get('event-name-badge')?.enforce?.escalation, 'brand-review');
   assert.equal(overlays.get('countdown-timer')?.enforce?.watermark, 'always');
 
-  // Chain — brand-review, two steps.
+  // Chain - brand-review, two steps.
   const chains = await store.listChains();
   assert.equal(chains.length, 1);
   assert.equal(chains[0]?.id, 'brand-review');
@@ -52,7 +52,7 @@ test('seedStore populates the store across every governance feature', async () =
   // At least two event-name-badge sessions in one project → multi-edit is demoable.
   assert.ok(sessions.filter((s) => s.toolId === 'event-name-badge').length >= 2);
 
-  // Catalog lifecycle — a hide, a warn, and a scheduled row all present.
+  // Catalog lifecycle - a hide, a warn, and a scheduled row all present.
   const lifecycle = await store.listLifecycle();
   assert.equal(lifecycle.length, 4);
   assert.ok(lifecycle.some((r) => r.onExpiry === 'hide' && r.validUntil));
@@ -70,7 +70,7 @@ test('seedActivity populates the runtime dashboards a signed-in visitor lands on
   const now = Date.parse('2026-08-10T12:00:00Z');
   const res = await seedActivity(store, seeded, now);
 
-  // Telemetry — events present, a mix of attributed + aggregate, and the
+  // Telemetry - events present, a mix of attributed + aggregate, and the
   // dashboard fold lights up every panel the console renders.
   const events = await store.listEvents();
   assert.equal(events.length, res.telemetryEvents);
@@ -90,19 +90,19 @@ test('seedActivity populates the runtime dashboards a signed-in visitor lands on
   const marketer = await store.getUser(seeded.users['marketer@suse.example']!.id);
   assert.equal(marketer?.telemetryConsent, true);
 
-  // Fleet — every client bucket recorded, with real counts, incl. a tauri shell.
+  // Fleet - every client bucket recorded, with real counts, incl. a tauri shell.
   const fleet = await store.fleetSummary();
   assert.equal(fleet.length, res.fleetClients);
   assert.ok(fleet.every((r) => r.count >= 1));
   assert.ok(fleet.some((r) => r.info.shell === 'tauri'));
 
-  // Links — four kinds, exactly one revoked, one genuinely password-gated.
+  // Links - four kinds, exactly one revoked, one genuinely password-gated.
   const links = await store.listAllLinks();
   assert.equal(links.length, res.links);
   assert.equal(links.filter((l) => l.revokedAt).length, 1);
   assert.ok(links.some((l) => l.kind === 'guest-edit' && l.pwHash));
 
-  // Approvals — the real engine yields every inbox state the console filters by.
+  // Approvals - the real engine yields every inbox state the console filters by.
   const approvals = await store.listApprovals();
   assert.equal(approvals.length, res.approvals);
   assert.ok(approvals.some((a) => a.state === 'approved'), 'a fully-approved run');
@@ -143,7 +143,7 @@ test('demoRooms fabricates live rooms anchored to real seeded sessions', async (
   assert.ok(rooms.some((r) => r.members.some((m) => m.role === 'observer' && m.name.startsWith('Guest'))), 'a guest observer');
 
   // now-relative: the same seed at a later clock reads as freshly live again
-  // (rooms never age out) — startedAt tracks the clock, not a frozen boot time.
+  // (rooms never age out) - startedAt tracks the clock, not a frozen boot time.
   const later = demoRooms(seeded, now + 3_600_000);
   assert.equal(later[0]!.startedAt - rooms[0]!.startedAt, 3_600_000);
 });

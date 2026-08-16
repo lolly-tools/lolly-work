@@ -1,6 +1,6 @@
 /**
  * Publish-out over real HTTP (plans/27 §10): push a lolly-generated export to a
- * destination provider. The route is narrow by construction — owner-grantable
+ * destination provider. The route is narrow by construction - owner-grantable
  * (catalog.provider.publish), the provider must declare the publish capability,
  * and the bytes must carry lolly's C2PA export assertion, so a federated or pack
  * asset can never be published out. The export's provenance chain is audited.

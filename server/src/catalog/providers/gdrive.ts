@@ -1,13 +1,13 @@
 /**
- * Google Drive driver (plans/17 §11 phase 4) — Drive v3, refresh-token OAuth
+ * Google Drive driver (plans/17 §11 phase 4) - Drive v3, refresh-token OAuth
  * (oauth.ts; scope drive.readonly). Read-only: files.list scoped to a folder,
  * name-contains search, alt=media streaming downloads (expiringUrls semantics
- * — Google download URLs are auth-bound, nothing upstream persists).
+ * - Google download URLs are auth-bound, nothing upstream persists).
  *
- * v1 federates ONE folder (options.folderId), non-recursive — Drive has no
+ * v1 federates ONE folder (options.folderId), non-recursive - Drive has no
  * cheap recursive listing, and a flat curated folder is the honest first cut.
  * remoteId is the Drive file id (slash-free, rename-stable). Native Google
- * Docs/Sheets need an export conversion — out of scope, filtered out.
+ * Docs/Sheets need an export conversion - out of scope, filtered out.
  */
 import { getAccessToken, parseOAuthCredential } from './oauth.ts';
 import { extOf, stripExt, type CatalogProvider, type ProviderAssetRef, type ResolvedBlob } from './types.ts';
@@ -48,7 +48,7 @@ export function createGdriveProvider(
 
   const toAsset = (f: DriveFile): ProviderAssetRef | null => {
     if (f.mimeType === 'application/vnd.google-apps.folder') return null;
-    if (f.mimeType.startsWith('application/vnd.google-apps.')) return null; // native Docs need export conversion — not v1
+    if (f.mimeType.startsWith('application/vnd.google-apps.')) return null; // native Docs need export conversion - not v1
     const ext = f.fileExtension?.toLowerCase() ?? extOf(f.name);
     return {
       remoteId: f.id,

@@ -4,7 +4,7 @@ The control plane is Lolly's fourth shell: it can render a tool server-side to b
 can wrap that render in a signed, expiring, revocable URL. Everything here enforces policy
 *before* rendering.
 
-![Signed, expiring, revocable links — share, embed and download, revoked instantly](shots/share-links.svg)
+![Signed, expiring, revocable links - share, embed and download, revoked instantly](shots/share-links.svg)
 
 ## Server renders
 
@@ -29,7 +29,7 @@ optionally watermark → optionally embed provenance / sign → cache.
 - **Hooked tools:** a tool shipping `hooks.js` does not run in the in-process jsdom fast path
   unless `render.allowHooksInFastPath` is on. With a Chromium worker configured it dispatches
   there; without one it is refused with `501 HOOKED_TOOL_NEEDS_CHROMIUM`. Policy stays in the
-  control plane either way — the worker returns SVG, and watermarking, provenance and
+  control plane either way - the worker returns SVG, and watermarking, provenance and
   rasterisation happen here.
 - The engine, jsdom and resvg are imported lazily, so a deploy that never renders never
   loads them.
@@ -51,7 +51,7 @@ GET  /api/v1/links[?all=1]
 | `guest-edit` | admits a guest session scoped to the tool/session | `link.create-guest` |
 
 `target` needs a `toolId` or a `sessionId`. The signature covers the link id, kind, expiry
-and a digest of the resolved target — so neither the target nor the expiry can be edited in
+and a digest of the resolved target - so neither the target nor the expiry can be edited in
 the URL bar, and the minted parameters are what gets rendered (the caller's query on `/l/:id`
 is ignored, apart from the password gate). Optional passwords are scrypt-hashed.
 
@@ -75,7 +75,7 @@ into the SVG root before any rasterisation, so both `svg` and `png` carry it. Al
 brick rows use `#0002` and `#fff2` so it reads on light and dark artwork alike.
 
 `always` and `never` are fully wired. `until-approved` is the intended pairing with an
-approval chain, but the per-render linkage to approval state is not built yet — see
+approval chain, but the per-render linkage to approval state is not built yet - see
 [approvals](approvals.md) and [status](status.md).
 
 ## Provenance
@@ -89,7 +89,7 @@ list, C2PA-shaped, embedded with zero dependencies:
 
 Both survive ordinary copying and are readable with `exiftool`/`pngcheck`-class tooling. Each
 ingredient's `c2pa` field is the upstream manifest **if the source supplied one**, and
-explicitly `null` when it did not (Brandfolder ships none) — so "«filename» from «provider»
+explicitly `null` when it did not (Brandfolder ships none) - so "«filename» from «provider»
 was used" still travels with the export, honestly labelled.
 
 With a signing identity configured, exports carry a real, signed C2PA Content Credential

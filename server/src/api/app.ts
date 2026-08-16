@@ -1,9 +1,9 @@
 /**
- * The lolly-work HTTP app — auth, org-config, telemetry, inbox, links,
+ * The lolly-work HTTP app - auth, org-config, telemetry, inbox, links,
  * catalog serving, fleet. Plain (req, res) handler (see router.ts) so it
  * runs under node:http, a container, or a Vercel function unchanged.
  *
- * Render routes are stubbed 501 until the fourth-shell render plane lands —
+ * Render routes are stubbed 501 until the fourth-shell render plane lands - 
  * the cache-key/link contracts they'll honour are already fixed
  * (render/cache-key.ts, links/sign.ts).
  */
@@ -88,7 +88,7 @@ export interface AppDeps {
   metrics?: Metrics;
   /** Live collab-room snapshot for the admin console's Rooms panel
    *  (`GET /api/v1/collab/rooms`, OSS plans/100 §7, lolly-work plans/14 §6).
-   *  A plain function, not a `CollabGateway` import — this module is also
+   *  A plain function, not a `CollabGateway` import - this module is also
    *  bundled into a Vercel function, and `collab/gateway.ts` pulls in `ws`
    *  (see its own header on why that import stays out of this graph). main.ts
    *  builds the collab gateway BEFORE this app so it can inject
@@ -98,7 +98,7 @@ export interface AppDeps {
   /** Instance-mediated "nearby" registry (plans/26 §8). Like `listCollabRooms`,
    *  this is injected only by the long-lived server (main.ts) and left undefined on
    *  Vercel, where an in-memory presence registry cannot work across function
-   *  instances — the routes answer 501 there rather than a misleading partial list. */
+   *  instances - the routes answer 501 there rather than a misleading partial list. */
   nearby?: NearbyRegistry;
   /** Byte storage for instance-owned catalog assets (plans/26 §2, plans/27 §5).
    *  main.ts builds the configured driver (pg default / s3); tests and the
@@ -120,7 +120,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   const renderWorker = config.render.worker.url && secrets.renderWorker
     ? { url: config.render.worker.url, secret: secrets.renderWorker, timeoutMs: config.render.worker.timeoutMs }
     : undefined;
-  // Advertised to shells via org_config (plans/23 §3.A) — computed HERE, beside
+  // Advertised to shells via org_config (plans/23 §3.A) - computed HERE, beside
   // the worker resolution, so the advertisement can only ever reflect the same
   // condition that activates the worker.
   const renderCaps = renderCapabilities(!!renderWorker);
@@ -146,7 +146,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     readPrincipal(req.headers.cookie, secrets.session);
 
   // Shared with the collab ws gateway (server/src/iam/member.ts), which must
-  // authenticate an `upgrade` request with byte-identical semantics — including
+  // authenticate an `upgrade` request with byte-identical semantics - including
   // the disabled-account and pre-epoch-token refusals.
   const memberOf = (req: IncomingMessage): Promise<UserRecord | null> =>
     resolveMember(store, req.headers.cookie, secrets.session);
@@ -228,7 +228,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       provider: config.idp.issuer ? 'oidc' : config.dev.enabled ? 'dev' : null,
       providerName: config.idp.displayName || null,
       loginPath: config.idp.issuer ? '/api/auth/login' : config.dev.enabled ? '/api/auth/dev' : null,
-      // The public sandbox (dev.enabled) serves the deployment docs to anyone —
+      // The public sandbox (dev.enabled) serves the deployment docs to anyone - 
       // the console reads this so an anonymous visitor can land straight on the
       // Docs view (see console/app.js publicMode) instead of the sign-in gate.
       // Mirrors the server-side `docsReadable` gate below, so the two never drift.
@@ -299,7 +299,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     res.end();
   });
 
-  // Dev provider — secret-free local sign-in, gated hard on config.dev.enabled.
+  // Dev provider - secret-free local sign-in, gated hard on config.dev.enabled.
   router.add('GET', '/api/auth/dev', async (_req, res, ctx) => {
     if (!config.dev.enabled) return sendError(res, 404, 'NOT_FOUND', 'dev provider disabled');
     const email = ctx.url.searchParams.get('email') ?? config.dev.users[0]?.email;
@@ -341,7 +341,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
 
   // ── org-config: the one polled document ───────────────────────────────────
   // Assembled once, here, for BOTH the caller's own poll and the admin
-  // preview-as-group tool — so a preview can never drift from what a member
+  // preview-as-group tool - so a preview can never drift from what a member
   // actually receives (the projection is the same function, same store reads).
   const buildOrgConfigFor = async (subject: UserRecord) => {
     const overlays = await store.listOverlays();
@@ -360,7 +360,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   router.add('GET', '/api/v1/org-config', async (req, res) => {
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
-    metrics.orgConfigPoll(); // the fleet heartbeat — counts 200 and 304
+    metrics.orgConfigPoll(); // the fleet heartbeat - counts 200 and 304
     let payload;
     try {
       payload = await buildOrgConfigFor(user);
@@ -378,11 +378,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   });
 
   // Preview-as-group (plans/03): what would a member in these groups receive?
-  // A read-only projection — no session minted, nothing stored — gated on
+  // A read-only projection - no session minted, nothing stored - gated on
   // policy.edit so the brand/admin team authoring governance can verify it.
   // Role is derived by the SAME roleFromGroups sign-in uses, so previewing
   // `groups=admin` honestly shows admin escalation. The synthetic id can't
-  // collide with a real user id, so only group:/`*` grants apply — never some
+  // collide with a real user id, so only group:/`*` grants apply - never some
   // specific person's user: grants (correct for a group projection).
   router.add('GET', '/api/v1/org-config/preview', async (req, res, ctx) => {
     if (!(await requireAction(req, res, 'policy.edit'))) return;
@@ -404,7 +404,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       lastSeenAt: now,
     };
     const orgConfig = await buildOrgConfigFor(subject);
-    // Governed tools this group would NOT see — omitted from the member
+    // Governed tools this group would NOT see - omitted from the member
     // projection (absent = hidden) but exactly what an admin needs to verify.
     // Grant-aware, matching assembleOrgConfig: a group-level allow surfaces a
     // tool outside the visibility clause; a matching deny hides it outright.
@@ -483,7 +483,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const grants = await store.listGrants();
     // The SAME selectors the gateway's per-gesture re-check asks with
     // (`mayCreateGuestLinks`, `links/sign.ts`'s own doc on why this is one
-    // function) — a tool-scoped grant must authorize the identical resource
+    // function) - a tool-scoped grant must authorize the identical resource
     // shape at mint time and on every later gesture, or the two silently disagree.
     const selectors = linkResourceSelectors(body.target);
     if (!evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, action, selectors, grants)) {
@@ -493,12 +493,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       return sendError(res, 403, 'GUEST_LINKS_DISABLED', 'guest links are disabled on this deployment');
     }
     // A link's target.sessionId is a destination the MINTER must already be
-    // able to reach — plans/02 §8's "destination project/session so the
+    // able to reach - plans/02 §8's "destination project/session so the
     // guest's work saves server-side" presumes the inviter picked one of
     // their OWN sessions, not any id in the instance. Without this, holding
     // `link.create-guest` (a per-group grant, not "trust every project") is
     // enough to mint a writer seat on a session whose project the minter
-    // cannot themselves see — bypassing `canSeeProject`, `collab.join` and
+    // cannot themselves see - bypassing `canSeeProject`, `collab.join` and
     // `session.edit` in one HTTP call. Checked with the exact gate
     // `GET /api/v1/sessions/:id` uses, so a mint can never reach further than
     // a plain read of the same session would.
@@ -570,7 +570,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       res.end(JSON.stringify({ kind: 'guest-edit', toolId: link.target.toolId, sessionRef: link.target.sessionId ?? null, guest: name }));
       return;
     }
-    // share / embed / download — render the BAKED stored target to bytes. The
+    // share / embed / download - render the BAKED stored target to bytes. The
     // signature IS the authorization (no session needed), so params are trusted
     // exactly as minted and the caller's query is ignored (bar the password gate
     // above). Public-cacheable: the URL fully determines the asset.
@@ -629,7 +629,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     sendJson(res, 200, { clients: await store.fleetSummary() });
   });
 
-  // Schema readiness — pending migrations on the live store. Owner-gated
+  // Schema readiness - pending migrations on the live store. Owner-gated
   // (instance.config) since it's an infra/operations signal for `lw migrate
   // --check` and monitoring. Memory store always reports current.
   router.add('GET', '/api/v1/system/migrations', async (req, res) => {
@@ -643,13 +643,13 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     sendJson(res, 200, summarize(await store.listEvents()));
   });
 
-  // Live collab rooms — the admin console's Rooms panel (OSS plans/100 §7,
+  // Live collab rooms - the admin console's Rooms panel (OSS plans/100 §7,
   // lolly-work plans/14 §6). Gated the same as `/api/v1/stats/overview` below:
   // `telemetry.view` is this instance's "console dashboard read" tier, reused
-  // there for non-telemetry stats for the same reason — this is another
+  // there for non-telemetry stats for the same reason - this is another
   // Overview-style read, not a distinct capability worth its own grant.
   // `listCollabRooms` is the room registry's OWN copy (rooms.ts
-  // `RoomRegistry.list`/`Room.snapshotForAdmin`) — counters, roles and display
+  // `RoomRegistry.list`/`Room.snapshotForAdmin`) - counters, roles and display
   // names, never a presence payload or an input value. The session label is
   // the one thing the room registry cannot answer (it holds no session meta),
   // so it is looked up fresh per room here, the same "re-read, don't cache"
@@ -688,7 +688,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     sendJson(res, 200, { chain, total: events.length, events: events.slice(-limit) });
   });
 
-  // The chain head alone (seq + hash + intact flag) — small enough to record
+  // The chain head alone (seq + hash + intact flag) - small enough to record
   // externally on a schedule, so DB-level truncation becomes detectable.
   router.add('GET', '/api/v1/audit/head', async (req, res) => {
     if (!(await requireAction(req, res, 'audit.export'))) return;
@@ -712,12 +712,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     });
   });
 
-  // Wire shape for one user — the People-view row. Splits effective `groups`
+  // Wire shape for one user - the People-view row. Splits effective `groups`
   // into its idp/local sources so the console can render the (read-only) mirror
   // distinctly from the editable local set.
   // Telemetry consent is deliberately ABSENT here (plans/09 §2a): opting out
   // must not be conspicuous, so a person's consent state is visible to that
-  // person alone (org-config `telemetry.consented`) — never a directory
+  // person alone (org-config `telemetry.consented`) - never a directory
   // column, a filter, or anything an admin can enumerate.
   const userWire = (u: UserRecord) => ({
     id: u.id, email: u.email, name: displayName(u),
@@ -754,7 +754,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     sendJson(res, 200, { users: rows.map(userWire), total, page, pageSize });
   });
 
-  // One user by id — backs the activity feed's "focus this person" deep link
+  // One user by id - backs the activity feed's "focus this person" deep link
   // (#/users?focus=<id>) so a row can open straight into a user's detail.
   router.add('GET', '/api/v1/users/:id', async (req, res, ctx) => {
     const user = await memberOf(req);
@@ -862,7 +862,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
 
   // Pre-expiry revocation ("sign out everywhere"): bump the user's session
   // epoch so every token minted before now is refused on its next request.
-  // Same guard as disable — an owner's sessions are owner-only to revoke.
+  // Same guard as disable - an owner's sessions are owner-only to revoke.
   router.add('POST', '/api/v1/users/:id/revoke-sessions', async (req, res, ctx) => {
     const actor = await requireAction(req, res, 'grant.edit');
     if (!actor) return;
@@ -939,7 +939,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     sendJson(res, 200, chain);
   });
 
-  // Nominatable approvers for a chain step — what the shell's "Request approval"
+  // Nominatable approvers for a chain step - what the shell's "Request approval"
   // dialog searches. Member-accessible: it reveals ONLY people already designated
   // as approvers for that step (id + display name), never the wider directory, so
   // a requester can nominate without `catalog`/admin visibility into everyone.
@@ -1015,7 +1015,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
     if (wantInbox || both) {
       for (const a of await store.listApprovals({ eligibleGroups: user.groups })) {
-        if (a.createdBy === user.id) continue; // separation of duties — never review your own
+        if (a.createdBy === user.id) continue; // separation of duties - never review your own
         out.set(a.id, serializeApproval(a, user.id, 'inbox', actors));
       }
     }
@@ -1078,7 +1078,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // Blob → assetId, mirroring render/pipeline.ts's mtime-checked catalog
   // version cache: assets/index.json is read + parsed once per pack per
   // change, not on every blob request. Lifecycle rows themselves are NOT
-  // cached here — they live in the store and are fetched fresh per request.
+  // cached here - they live in the store and are fetched fresh per request.
   const assetPathMapCache = new Map<string, { mtimeMs: number; map: Map<string, string> }>();
   const loadAssetPathMap = async (pack: string): Promise<Map<string, string>> => {
     const file = join(pack, 'catalog', 'assets', 'index.json');
@@ -1138,7 +1138,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     let fragments: Awaited<ReturnType<typeof federation.fragments>> | undefined;
     const pathMap = await loadAssetPathMap(config.instance.pack);
     // A detection upgrades `c2pa: null` → `{ kind: 'embedded' }` for the
-    // consumed asset — the export can then distinguish "source said nothing"
+    // consumed asset - the export can then distinguish "source said nothing"
     // from "source carries a credential" (plans/27 §4). Detection, never a verdict.
     const embeddedCredential = async (assetId: string): Promise<{ kind: 'embedded' } | null> =>
       (await store.getCredential(assetId))?.status === 'embedded' ? { kind: 'embedded' } : null;
@@ -1178,7 +1178,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     return out;
   };
 
-  /** Compact header summary — full doc is embedded in the bytes themselves. */
+  /** Compact header summary - full doc is embedded in the bytes themselves. */
   const provenanceHeader = (doc: ProvenanceDoc | undefined): Record<string, string> =>
     doc
       ? { 'x-lolly-provenance': JSON.stringify(doc.ingredients.map((i) => ({
@@ -1199,7 +1199,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (rel.includes('..')) return sendError(res, 400, 'INVALID_INPUT', 'bad path');
     // After the exit's cutover, an old ext/* blob URL (baked into already-rendered
     // SVGs and live sessions) resolves through a persistent alias to the new
-    // inst/* path — nothing that referenced the federated identity breaks (plans/27 §5).
+    // inst/* path - nothing that referenced the federated identity breaks (plans/27 §5).
     if (rel.startsWith('ext/')) {
       const aliased = await store.getAlias(rel);
       if (aliased) rel = aliased;
@@ -1214,8 +1214,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such instance asset');
       if (!instanceAssetVisible(rec, user?.groups ?? [])) return sendError(res, 403, 'FORBIDDEN', 'not visible to your groups');
       // A pin's identity stays ext/* until cutover, so gate it EXACTLY like the
-      // ext blob route would — the local lifecycle row AND the upstream
-      // availability window — never a phantom inst-keyed row (plans/27 §3, §5).
+      // ext blob route would - the local lifecycle row AND the upstream
+      // availability window - never a phantom inst-keyed row (plans/27 §3, §5).
       // An exited or submit asset gates on its own inst row (no window).
       const isPin = !rec.exited && !!rec.origin;
       const govId = isPin ? extAssetId(rec.origin!.provider, rec.origin!.remoteId) : id;
@@ -1261,13 +1261,13 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       // Combine the local row with any upstream availability window imported
       // from the DAM (plans/27 §2), read off the in-process fragment beside the
       // lifecycle row we already load. Upstream expiry blocks bytes even under
-      // onExpiry:'warn' — that only ever softens a purely-local expiry.
+      // onExpiry:'warn' - that only ever softens a purely-local expiry.
       const window = await federation.availabilityWindow(assetId);
       const { state, upstreamExpired } = combinedState(row ?? undefined, window, Date.now());
       const blocked = state === 'revoked' || state === 'scheduled' || (state === 'expired' && (upstreamExpired || row?.onExpiry !== 'warn'));
       if (blocked) return sendError(res, 410, 'ASSET_EXPIRED', 'this asset is no longer available');
       // hold-implies-pin (plans/27 §3, §5): when this asset's bytes have been
-      // materialized into the instance's own store, prefer the local copy — the
+      // materialized into the instance's own store, prefer the local copy - the
       // federated identity stays, but the bytes survive upstream deletion.
       const pinned = await store.getInstanceAsset(materializedIdFor(providerId, remoteId));
       if (pinned) {
@@ -1345,7 +1345,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     } else {
       // Any other catalog file: if it's a format entry owned by an asset
       // whose lifecycle blocks it (revoked, scheduled, or expired-and-hidden),
-      // the blob dies too — a guessed/cached URL doesn't bypass the feed.
+      // the blob dies too - a guessed/cached URL doesn't bypass the feed.
       const assetId = (await loadAssetPathMap(config.instance.pack)).get(rel);
       if (assetId) {
         const row = await store.getLifecycle(assetId);
@@ -1377,7 +1377,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   });
 
   // ── catalog inspect: full metadata for one asset (member-readable) ────────
-  // Metadata only — never bytes; the console links to the existing gated
+  // Metadata only - never bytes; the console links to the existing gated
   // /catalog/ preview path for the thumbnail. Merges the pack index entry with
   // the asset's lifecycle row + resolved state. 404 when the id is in neither.
   // The id carries slashes (e.g. 'suse/tokens/brand'), so it rides the trailing
@@ -1420,7 +1420,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
             ...(window ? { upstream: { availableFrom: window.availableFrom ?? null, availableUntil: window.availableUntil ?? null } } : {}),
           }
         : null,
-      // Detection, never a verdict: {present, container, when} — validation is
+      // Detection, never a verdict: {present, container, when} - validation is
       // the reader's, in the console's verify view (plans/27 §4).
       credentials: credential
         ? { status: credential.status, ...(credential.container ? { container: credential.container } : {}), sniffedAt: credential.sniffedAt, ...(credential.sourceUpdatedAt ? { sourceUpdatedAt: credential.sourceUpdatedAt } : {}) }
@@ -1431,7 +1431,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // On-demand content-credential scan (plans/27 §4): fetch the asset's primary
   // format once and sniff whether its BYTES embed a C2PA manifest the DAM's API
   // never surfaced. It costs an upstream fetch, so it is permissioned
-  // (catalog.scan) and audited; it records only {present, container} — detection,
+  // (catalog.scan) and audited; it records only {present, container} - detection,
   // never a verdict. The id carries slashes, so it rides the trailing wildcard as
   // `scan/<id>` (the router matches only a trailing '*', not an '<id>/scan' tail).
   router.add('POST', '/api/v1/catalog/scan/*', async (req, res, ctx) => {
@@ -1488,7 +1488,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // Store-derived dashboard stats the telemetry fold can't answer: catalog
   // inventory (count + lifecycle state breakdown) and project size (sessions
   // per project). Popularity/usage counts (top assets, export destinations)
-  // ride the telemetry summary instead — see summarize().
+  // ride the telemetry summary instead - see summarize().
   router.add('GET', '/api/v1/stats/overview', async (req, res) => {
     if (!(await requireAction(req, res, 'telemetry.view'))) return;
     const now = Date.now();
@@ -1510,7 +1510,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       .sort((a, b) => b.items - a.items)
       .slice(0, 8);
     // Sync-conflict pressure (plans/23 §3.D): refused CAS writes + bulk skips,
-    // folded from the audit log — the demand instrument behind plans/14 §9's
+    // folded from the audit log - the demand instrument behind plans/14 §9's
     // collab gate ("fighting over the conflict nudge is the signal").
     const conflictCutoff = now - 30 * 86400_000;
     let conflicts30d = 0;
@@ -1528,7 +1528,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
 
   // Day-bucketed audit-action counts feeding the console's per-view activity
   // headers: every topic view charts its own slice of this one payload. Counts
-  // only — no actors, subjects, or values — so it sits at the same disclosure
+  // only - no actors, subjects, or values - so it sits at the same disclosure
   // tier as /stats/overview (`telemetry.view`), and one fetch serves every
   // view (the console memoizes it). Zero-filled so a quiet day is a real 0 on
   // the chart, not a gap.
@@ -1588,7 +1588,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   });
 
   // The wildcard is the assetId, which itself contains slashes (e.g.
-  // 'suse/tokens/brand') — same trailing-wildcard support the catalog/admin
+  // 'suse/tokens/brand') - same trailing-wildcard support the catalog/admin
   // static routes use. Body merges onto any existing row; `revoke: true`
   // stamps revokedAt=now and is audited under its own action so "stop
   // sharing" reads distinctly from an ordinary expiry-date edit.
@@ -1598,7 +1598,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // `catalog.expire`, only ever touches the hold field (dates/revoke are left
   // as they are), and audits as catalog.hold / catalog.hold.release. A hold, in
   // turn, is deliberate friction: while it is set, revocation and any edit that
-  // would make the asset unavailable now are refused 409 ASSET_HELD — release
+  // would make the asset unavailable now are refused 409 ASSET_HELD - release
   // the hold first.
   router.add('PUT', '/api/v1/catalog/lifecycle/*', async (req, res, ctx) => {
     const assetId = ctx.params['*'] as string;
@@ -1665,7 +1665,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       revoked: Boolean(row.revokedAt), held: Boolean(row.hold), ...(row.hold?.note ? { note: row.hold.note } : {}),
     });
     // Hold implies pin (plans/27 §3): setting a hold on a federated asset
-    // materializes its bytes so they survive upstream deletion. Best-effort —
+    // materializes its bytes so they survive upstream deletion. Best-effort - 
     // the hold itself (feed + action protection) already succeeded; a pin
     // failure (provider down/disabled) is logged, not fatal, and the row honestly
     // reads pinned:false until a later materialize succeeds.
@@ -1688,7 +1688,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // ── grants control plane (plans/03) ───────────────────────────────────────
   // The fine-grained RBAC layer under everything else. `grant.edit` is admin,
   // with one escalation guard: grants touching an owner-only action can be
-  // created or deleted ONLY by an owner — otherwise an admin could mint
+  // created or deleted ONLY by an owner - otherwise an admin could mint
   // themselves instance.config or the provider credential powers.
   const readGrantBody = (raw: unknown): Grant | { error: string } => {
     const b = raw as Partial<Grant> | null;
@@ -1730,7 +1730,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // so a brand team can govern tool inputs without holding the admin role.
 
   /** Declared inputs with enough manifest shape to drive the editor (id +
-   *  type/label/options verbatim). Direct read — this is the ADMIN surface,
+   *  type/label/options verbatim). Direct read - this is the ADMIN surface,
    *  never filtered by the caller's own overlay access. */
   const readToolManifestInputs = async (toolId: string): Promise<Array<Record<string, unknown>> | null> => {
     if (!/^[a-z0-9-]+$/i.test(toolId)) return null;
@@ -1751,7 +1751,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
   };
 
-  // Every tool in the pack (unfiltered — governing a tool you've hidden from
+  // Every tool in the pack (unfiltered - governing a tool you've hidden from
   // yourself must stay possible), joined with its overlay + declared inputs.
   router.add('GET', '/api/v1/policy/tools', async (req, res) => {
     if (!(await requireAction(req, res, 'policy.edit'))) return;
@@ -1797,7 +1797,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     await store.putOverlay(overlay);
     // Policy moved: cached renders of this tool are stale (the cache key folds
     // policyVersion, but a value set BACK to a previously-rendered one would
-    // hit old bytes — same reasoning as the bulk-edit bust).
+    // hit old bytes - same reasoning as the bulk-edit bust).
     invalidateRenderByTool(toolId);
     await audit(`user:${user.id}`, 'policy.overlay.edit', `tool:${toolId}`, {
       version: overlay.version,
@@ -1820,7 +1820,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // …and set one flag's governance. Body: {default?: 'on'|'off'|null,
   // visibility?: 'show'|'hide'}. A no-opinion record clears the row (inherit +
   // shown). Governance folds into org-config's policyVersion, so a save busts
-  // connected shells' ETag on their next poll — the surprise lights up on flip.
+  // connected shells' ETag on their next poll - the surprise lights up on flip.
   router.add('PUT', '/api/v1/policy/flags/:flagId', async (req, res, ctx) => {
     const user = await requireAction(req, res, 'policy.edit');
     if (!user) return;
@@ -1839,7 +1839,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     sendJson(res, 200, { flags: flagGovernanceCatalog(await store.listFlagGovernance()) });
   });
 
-  // ── injectables (plans/19) — the governed rail that injects tools / flags /
+  // ── injectables (plans/19) - the governed rail that injects tools / flags /
   // typed resources / declarative chrome into the shell. Publish states facts and
   // distributes DATA; the shell interprets. All three routes gate on one capability
   // (catalog.injectable.manage, admin-or-owner); publish vs. replace vs. revoke are
@@ -1938,7 +1938,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   });
 
   // ── catalog providers control plane (plans/17 §10) ────────────────────────
-  // Wire shape: never the ciphertext, never the fragment body — config, a
+  // Wire shape: never the ciphertext, never the fragment body - config, a
   // credential fingerprint, and slim runtime state.
   const providerWire = (rec: ProviderRecord) => ({
     id: rec.id, kind: rec.kind, label: rec.label, managedBy: rec.managedBy, enabled: rec.enabled,
@@ -2095,7 +2095,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   });
 
   // Write-only credential path (plans/17 §5): seal → verify health → swap.
-  // The plaintext is never stored, logged, audited, or returned — the response
+  // The plaintext is never stored, logged, audited, or returned - the response
   // carries only the fingerprint and the health result.
   router.add('PUT', '/api/v1/catalog/providers/:id/credential', async (req, res, ctx) => {
     const user = await requireAction(req, res, 'catalog.provider.credential');
@@ -2138,7 +2138,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const rec = await dbManagedProvider(res, ctx.params.id as string);
     if (!rec) return;
     await store.putProviderCredential(rec.id, null);
-    // A credential-less provider can't serve — force the kill switch off too.
+    // A credential-less provider can't serve - force the kill switch off too.
     if (rec.enabled) await store.putProvider({ ...rec, enabled: false, updatedAt: new Date().toISOString() });
     federation.invalidate(rec.id);
     invalidateAccessTokens(rec.id);
@@ -2195,7 +2195,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
 
   // The exit (plans/27 §5): materialize a provider's bytes into the instance's
   // own BlobStore. Admin governance (catalog.provider.manage); the provider stays
-  // enabled — this only mints instance-owned copies. Body: {remoteId?} for one
+  // enabled - this only mints instance-owned copies. Body: {remoteId?} for one
   // asset, {section?} for a folder, else the whole provider.
   router.add('POST', '/api/v1/catalog/providers/:id/materialize', async (req, res, ctx) => {
     const user = await requireAction(req, res, 'catalog.provider.manage');
@@ -2208,7 +2208,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     try {
       const { results, skipped, errors } = await materializeProvider({ store, blobs, federation }, rec, filter);
       const embedded = results.filter((r) => r.credential === 'embedded').length;
-      // Always audit what succeeded, even on a partial run — the copies persist
+      // Always audit what succeeded, even on a partial run - the copies persist
       // (idempotent, a re-run resumes), so they must leave a trail.
       await audit(`user:${user.id}`, 'catalog.provider.materialize', `provider:${rec.id}`, { count: results.length, skipped, credentialsFound: embedded, failed: errors.length });
       sendJson(res, 200, { ok: errors.length === 0, materialized: results.length, skipped, credentialsFound: embedded, assets: results, ...(errors.length ? { errors } : {}) }, { 'cache-control': 'no-store' });
@@ -2217,11 +2217,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
   });
 
-  // Search-and-import (plans/30 §3.1): snapshot ONE provider asset into inst/* — the
+  // Search-and-import (plans/30 §3.1): snapshot ONE provider asset into inst/* - the
   // curation gate for sources like Penpot whose media lives only in search, never in
   // the auto-federated feed. Uses the driver's getAsset seam (single-asset fetch by
   // remoteId) and falls back to a listAssets scan for providers that don't implement
-  // it. Admin-gated like materialize; the result is a pin — the owner-gated cutover
+  // it. Admin-gated like materialize; the result is a pin - the owner-gated cutover
   // still owns it fully later.
   router.add('POST', '/api/v1/catalog/providers/:id/import', async (req, res, ctx) => {
     const user = await requireAction(req, res, 'catalog.provider.manage');
@@ -2264,7 +2264,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const { migrated } = await cutoverProvider({ store, blobs, federation }, rec);
     // A db-managed provider is disabled here (its job is done). A config-managed
     // one can only be turned off in instance.json, but that's fine: its ext
-    // entries are shadowed by the instance copies and old URLs alias — so it
+    // entries are shadowed by the instance copies and old URLs alias - so it
     // does no harm enabled, and the operator removes the config entry when ready.
     if (rec.managedBy !== 'config') {
       await store.putProvider({ ...rec, enabled: false, updatedAt: new Date().toISOString() });
@@ -2277,7 +2277,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
 
   // Publish out (plans/27 §10): push a lolly-generated export INTO a destination
   // provider (Optimizely CMP). Owner-grantable (catalog.provider.publish), narrow
-  // by construction — the export must carry lolly's C2PA export assertion, so a
+  // by construction - the export must carry lolly's C2PA export assertion, so a
   // federated or pack asset can never be pushed out. The bytes ride the raw body;
   // name/format are query params. Audited per publish with the export's
   // provenance chain, so lolly-made media stays attributable downstream.
@@ -2307,7 +2307,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const provenance = extractProvenance(bytes, format);
     try {
       const contentType = req.headers['content-type'] ?? 'application/octet-stream';
-      // `bytes` is already a Buffer (a Uint8Array) — pass it through, don't re-copy.
+      // `bytes` is already a Buffer (a Uint8Array) - pass it through, don't re-copy.
       const result = await provider.publishAsset({ bytes, name, format, contentType });
       await audit(`user:${user.id}`, 'catalog.provider.publish', `provider:${rec.id}`, {
         remoteId: result.remoteId, name, format, size: bytes.length,
@@ -2397,10 +2397,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   });
 
   // ── projects + sessions (plans/08: shared workspaces) ─────────────────────
-  // Member-only throughout (guests never reach these — memberOf yields null →
+  // Member-only throughout (guests never reach these - memberOf yields null →
   // 401). A project is a folder over sessions; visibility gates WHICH projects a
   // caller sees, RBAC grants gate WHAT they may do.
-  // `canSeeProject` now lives in ../rbac/project-access.ts — the collab ws
+  // `canSeeProject` now lives in ../rbac/project-access.ts - the collab ws
   // gateway gates a room join on the same function this route gates a read on.
 
   const normalizeVisibility = (v: unknown): ProjectRecord['visibility'] => {
@@ -2438,7 +2438,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     ...(s.deletedAt ? { deletedAt: s.deletedAt } : {}),
   });
 
-  // GET /projects — projects visible to the caller (own + team by group; admins all).
+  // GET /projects - projects visible to the caller (own + team by group; admins all).
   router.add('GET', '/api/v1/projects', async (req, res) => {
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
@@ -2488,7 +2488,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     sendJson(res, 200, projectRow(next, await store.listSessions(next.id)));
   });
 
-  // GET a project's sessions — list without inputs (cheap); requires visibility.
+  // GET a project's sessions - list without inputs (cheap); requires visibility.
   router.add('GET', '/api/v1/projects/:id/sessions', async (req, res, ctx) => {
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
@@ -2540,7 +2540,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     sendJson(res, 200, sessionFull(session));
   });
 
-  // PUT a session — optimistic CAS on rev. A stale rev ⇒ 409 with the current
+  // PUT a session - optimistic CAS on rev. A stale rev ⇒ 409 with the current
   // server session so the client keeps its loser as a local revision (plans §3).
   router.add('PUT', '/api/v1/sessions/:id', async (req, res, ctx) => {
     const user = await requireAction(req, res, 'session.edit');
@@ -2555,7 +2555,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (body.rev !== session.rev) {
       // Conflicts are counted, not just refused (plans/23 §3.D): their volume on
       // shared projects is the demand instrument for plans/14 §9's collab gate.
-      // Ids and revs only — an audit event never carries input values.
+      // Ids and revs only - an audit event never carries input values.
       await audit(`user:${user.id}`, 'session.conflict', `session:${session.id}`, { rev: session.rev, sentRev: body.rev, toolId: session.toolId });
       return sendJson(res, 409, { error: { code: 'CONFLICT', message: `session is at rev ${session.rev}, you sent ${body.rev}` }, current: sessionFull(session) });
     }
@@ -2563,11 +2563,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const inputs = body.inputs !== undefined ? asObject(body.inputs) : session.inputs;
     const meta = body.meta !== undefined ? asObject(body.meta) : session.meta;
     const next: SessionRecord = { ...session, inputs, meta, rev: session.rev + 1, updatedBy: user.id, updatedAt: now };
-    // The rev check above is a courtesy (cheap, and its 409 carries `current`) —
+    // The rev check above is a courtesy (cheap, and its 409 carries `current`) - 
     // the WRITE must still be a CAS: `readJson` was awaited between check and
     // here, so two writers can both pass the check at the same rev and the
     // second `putSession` would silently discard the first while
-    // `session_revisions` (PK `(session_id, rev)`) kept only one of them — the
+    // `session_revisions` (PK `(session_id, rev)`) kept only one of them - the
     // exact hazard `Store.casSession`'s contract names (plans/23 §3.B).
     if (!(await store.casSession(next, body.rev))) {
       const fresh = await store.getSession(next.id);
@@ -2581,7 +2581,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     sendJson(res, 200, sessionFull(next));
   });
 
-  // DELETE a session — tombstone (never hard-delete) so a stale client can't
+  // DELETE a session - tombstone (never hard-delete) so a stale client can't
   // resurrect it. Idempotent: deleting an already-tombstoned session is a no-op 200.
   router.add('DELETE', '/api/v1/sessions/:id', async (req, res, ctx) => {
     const user = await requireAction(req, res, 'session.delete');
@@ -2607,14 +2607,14 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     sendJson(res, 200, { revisions: await store.listSessionRevisions(session.id) });
   });
 
-  // POST /sessions/bulk — multi-edit: merge `set` by EXACT input id into every
+  // POST /sessions/bulk - multi-edit: merge `set` by EXACT input id into every
   // matched session (the client /pro batch rule). Needs BOTH session.edit and
   // project.manage. dryRun previews a per-field diff; apply writes each session
   // via per-session CAS (`matched` is a snapshot, so a session someone edited
-  // in between is exactly the one a sweep must not stomp — plans/23 §3.B),
+  // in between is exactly the one a sweep must not stomp - plans/23 §3.B),
   // reporting losers in `skipped` rather than retrying; appends a revision per
   // applied session, busts affected render keys, and audits ONE event (keys
-  // only — never input VALUES).
+  // only - never input VALUES).
   router.add('POST', '/api/v1/sessions/bulk', async (req, res) => {
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
@@ -2682,7 +2682,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // that skips the search cannot invite anyone the search would have hidden.
 
   /** The session read gate both routes open with, in the gateway `admit`'s own
-   *  order — so a caller sees the same status for the same session whether they
+   *  order - so a caller sees the same status for the same session whether they
    *  ask over HTTP or open a socket. Takes an ALREADY-RESOLVED member, so the
    *  POST can authenticate before it reads a body. Returns null having answered. */
   const collabSessionFor = async (
@@ -2709,7 +2709,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     return { session, project };
   };
 
-  // Invite autocomplete. Read-access only — an OBSERVER may look up who else
+  // Invite autocomplete. Read-access only - an OBSERVER may look up who else
   // could watch, which is the same disclosure they already get from the room's
   // presence roster on join. Never the directory: only principals eligible for
   // THIS session's project, prefix-matched, capped, self excluded, no emails
@@ -2727,7 +2727,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     sendJson(res, 200, { sessionId: gate.session.id, q, limit: INVITEE_LIMIT, invitees, truncated });
   });
 
-  // Invite someone into the room. Requires the WRITE right — `mayEditCollab`,
+  // Invite someone into the room. Requires the WRITE right - `mayEditCollab`,
   // the one function the gateway's writer/observer split and the org-config
   // `can['collab.edit']` bit also call, so an observer cannot recruit writers
   // into a room they may only watch, and the three surfaces cannot drift.
@@ -2745,7 +2745,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const invitee = (await store.listUsers()).find((u) => u.id === body.userId);
     // One code for "no such user", "cannot see this project", "not a member of
     // it" and "that's you": an ineligible id must not be a probe that tells you
-    // which it was — the autocomplete is the only sanctioned way to learn who
+    // which it was - the autocomplete is the only sanctioned way to learn who
     // exists, and it and this route resolve the SAME `mayJoinSession`, so a
     // 201-vs-400 difference can never answer a question the search hides.
     if (!invitee || invitee.id === user.id || !mayJoinSession(invitee, gate.project, grants)) {
@@ -2770,7 +2770,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // "dismissed once" into "never invitable to this session again": the POST
     // answers 201, the audit records an invite, and the invitee's inbox stays
     // empty forever. The invariant is "one live invite per (session, person)",
-    // not "one ever" — a colleague asking to be re-invited after clearing their
+    // not "one ever" - a colleague asking to be re-invited after clearing their
     // inbox is the ordinary case, not an abuse of the idempotence.
     await store.clearAck(msg.id, invitee.id);
     await audit(`user:${user.id}`, 'collab.invite', `session:${gate.session.id}`, {
@@ -2783,12 +2783,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // A browser cannot discover other devices on a network; the instance groups its
   // online members by apparent address so the invite flow can surface "likely
   // nearby" colleagues. A SORTING HINT, never an identity claim (CGNAT / VPN make
-  // it approximate — the copy says "likely nearby", never "on your network").
+  // it approximate - the copy says "likely nearby", never "on your network").
   // Members only: both routes gate on `collab.join`, which members hold and guests
   // (whose member session is absent → requireAction 401s) do not, so guests never
   // appear and never read the list. The registry is in-memory and injected only by
-  // the long-lived server, so both routes answer 501 on Vercel — where a POST and a
-  // GET can hit different function instances — rather than a misleading partial list.
+  // the long-lived server, so both routes answer 501 on Vercel - where a POST and a
+  // GET can hit different function instances - rather than a misleading partial list.
   // No audit: this is presence, and presence is deliberately unaudited and unstored
   // across the collab subsystem (the room's own presence map never reaches the store).
   const nearbyReady = (res: ServerResponse): NearbyRegistry | null => {
@@ -2825,7 +2825,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   });
 
   // ── render plane (the fourth HostV1 shell) ────────────────────────────────
-  // GET /render/<toolId>.<format> — server-side render of a tool via the real
+  // GET /render/<toolId>.<format> - server-side render of a tool via the real
   // engine. `spec` is the toolId + format joined by the LAST dot (toolId has no
   // slashes in v1). Auth: a gated instance requires a member (or a guest on their
   // OWN tool); a member additionally needs the `export.server` action. The query
@@ -2898,7 +2898,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   });
 
   // ── admin console (static shell; every API call it makes is auth-enforced) ─
-  // Bundle-aware data-dir base — see api/_lib/bootstrap.ts's FN_ROOT note. When the
+  // Bundle-aware data-dir base - see api/_lib/bootstrap.ts's FN_ROOT note. When the
   // function is esbuild-bundled for Vercel, import.meta.url is the bundle; the
   // banner sets __LW_FN_ROOT and console/ + docs/ are copied in beside it.
   const fnRoot = (globalThis as { __LW_FN_ROOT?: string }).__LW_FN_ROOT;
@@ -2922,12 +2922,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // ── deployment docs (docs/), rendered by the console's Docs view. Whoever
   // operates a deploy should not need the repo to read its documentation.
   // docs/docs.json is the manifest: it decides which files exist as pages, so an
-  // unlisted markdown file is not reachable here — that IS the allowlist (slugs
+  // unlisted markdown file is not reachable here - that IS the allowlist (slugs
   // are additionally shape-checked, and the join is never caller-controlled).
   //
-  // Readership: on a governed (IdP-backed) deploy these are member-only — every
+  // Readership: on a governed (IdP-backed) deploy these are member-only - every
   // page is operator prose, and the ONE polled document a shell reads is already
-  // member-visible. On the PUBLIC sandbox (dev.enabled — lolly.work) the same
+  // member-visible. On the PUBLIC sandbox (dev.enabled - lolly.work) the same
   // pages are open to anyone: they are the identical public-repo content in every
   // deploy, and the landing page (lib/demo-landing.ts) links straight to them so
   // a visitor can read the docs without a passwordless sign-in dance. `docsReadable`
@@ -2950,7 +2950,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       const sections = (raw.sections ?? []).map((s) => ({
         id: String(s.id ?? ''),
         title: String(s.title ?? ''),
-        // A NAV_ICONS id the console renders beside the group header — id-shaped
+        // A NAV_ICONS id the console renders beside the group header - id-shaped
         // only; the console ignores ids it doesn't know, so this can never
         // inject markup.
         ...(typeof (s as { icon?: unknown }).icon === 'string' && /^[a-z-]+$/.test((s as { icon: string }).icon)
@@ -3005,14 +3005,14 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   //   :file       → the signed bytes verbatim, so "download the signed file" and
   //                 the reader's own #/verify both act on the genuine file;
   //   :file/cred  → the descriptive claims the credential line states (signer,
-  //                 date, kind, geometry) — decoded server-side because the
+  //                 date, kind, geometry) - decoded server-side because the
   //                 air-gap console cannot decode C2PA itself. Descriptive only:
   //                 the pass/fail verdict is the reader's to reach in #/verify.
   // The shape check IS the allowlist against traversal (no slashes, no '..'); the
   // SVGs load only via <img>, which never executes embedded script.
   const SHOT_RE = /^[a-z0-9][a-z0-9.-]*\.(svg|png)$/i;
   const shotsDir = join(docsDir, 'shots');
-  // Plain illustrative images for the docs (docs/img/ — vendored third-party
+  // Plain illustrative images for the docs (docs/img/ - vendored third-party
   // marks like the Rancher/k3s/Helm logos). Same gate and shape as shots, but
   // a separate directory on purpose: everything under shots/ must carry a C2PA
   // credential (tests/docs-shots.test.ts), and a trademark is not ours to sign.
@@ -3056,10 +3056,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     sendJson(res, 200, cred, { 'cache-control': 'no-cache' });
   });
 
-  // ── brand chrome, UNAUTHENTICATED — so the sign-in screen inherits the
+  // ── brand chrome, UNAUTHENTICATED - so the sign-in screen inherits the
   // instance's brand (colours + fonts) before a session exists. Deliberately
   // narrow: it returns ONLY the pack's design tokens and serves ONLY its font
-  // files — non-sensitive brand chrome (the same colours/typefaces on a public
+  // files - non-sensitive brand chrome (the same colours/typefaces on a public
   // site), never the governed catalog. Absent pack/tokens → 404, gate stays
   // neutral. Memoised (the pack is immutable for a process).
   // A theme-paired brand logo is chrome too: resolved from the SAME immutable
@@ -3161,7 +3161,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     } catch (err) {
       return sendError(res, 409, 'PROFILE_SWITCH_FAILED', (err as Error).message);
     }
-    // The pack pointer moved — drop every cache derived from it so the new brand
+    // The pack pointer moved - drop every cache derived from it so the new brand
     // serves immediately. brandChrome is memoized forever; the asset caches are
     // mtime-gated, but a symlink swap can share an mtime, so clear them too.
     brandChrome = undefined;
@@ -3220,7 +3220,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
 
   // Dev-only CORS: lets a Vite dev-server shell (npm run dev:web on another port)
   // talk to this instance with credentials. Gated hard on dev.enabled and to
-  // localhost origins — never a production surface. Same-origin serving (above)
+  // localhost origins - never a production surface. Same-origin serving (above)
   // is the primary path and needs none of this.
   const devCors = (req: IncomingMessage, res: ServerResponse): boolean => {
     if (!config.dev.enabled) return false;
@@ -3275,7 +3275,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
  *  return its catalog-relative URL. Prefers the on-theme variant (on-light for
  *  light, on-dark for dark) and, within that, the brand-colour face for light and
  *  the white mono face for dark; degrades gracefully to any 'logo' vector. Chrome
- *  only — the caller serves it through the narrow /api/brand/logo passthrough. */
+ *  only - the caller serves it through the narrow /api/brand/logo passthrough. */
 function pickBrandLogoUrl(
   assets: Array<{ type?: string; tags?: string[]; formats?: Array<{ format?: string; url?: string }> }>,
   theme: 'light' | 'dark',
@@ -3331,7 +3331,7 @@ function serializeApproval(
     stepCount: a.chain.steps.length,
     stepName: step?.name ?? null,
     stepRule: step?.rule ?? null,
-    // Full ordered step list — the console derives every node's name/group/rule
+    // Full ordered step list - the console derives every node's name/group/rule
     // from here (stepName goes null at the approved terminal, so it can't).
     steps: a.chain.steps.map((s) => ({ name: s.name, rule: s.rule, groups: s.approvers.groups })),
     nominees: a.nominees,

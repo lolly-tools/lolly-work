@@ -1,9 +1,9 @@
 /**
- * Provider registry — kind → driver factory (plans/17 §3). The only place that
+ * Provider registry - kind → driver factory (plans/17 §3). The only place that
  * knows which kinds exist; federation, blob serving, and the control plane all
  * instantiate through here. `secret` is the resolved plaintext credential
  * (opened from the sealed store value, or read from a config entry's
- * credentialRef env var) — it lives in process memory only.
+ * credentialRef env var) - it lives in process memory only.
  */
 import type { CatalogProvider, ProviderRecord } from './types.ts';
 import { createMockProvider, type MockProviderOptions } from './mock.ts';
@@ -42,7 +42,7 @@ export function createProvider(rec: ProviderRecord, secret: string | undefined, 
     case 'optimizely-cmp':
       return createOptimizelyCmpProvider(rec.id, rec.options as unknown as OptimizelyCmpOptions, secret, deps.fetchImpl);
     case 'imagerelay':
-      // availabilityFields (plans/27 §2) lives on the mapping, not options —
+      // availabilityFields (plans/27 §2) lives on the mapping, not options - 
       // Image Relay has no native window, so the driver reads it from the named
       // custom-metadata field.
       return createImageRelayProvider(rec.id, rec.options as unknown as ImageRelayOptions, secret, deps.fetchImpl, rec.mapping?.availabilityFields);

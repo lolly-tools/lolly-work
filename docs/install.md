@@ -1,6 +1,6 @@
 # Installing
 
-Getting from nothing to a **running web UI + CLI** — on a workstation (SLES / openSUSE
+Getting from nothing to a **running web UI + CLI** - on a workstation (SLES / openSUSE
 Leap / macOS), a single VM, or Kubernetes. Pick the row that matches you:
 
 | I want to… | Go to | Time |
@@ -10,15 +10,15 @@ Leap / macOS), a single VM, or Kubernetes. Pick the row that matches you:
 | Evaluate on a cluster | [5. Kubernetes](#5-kubernetes-helm--the-sovereign-path) (eval install) | 5 min |
 | Run a real single-host deploy | [3. Bare metal](#3-bare-metal-systemd) · [4. Container](#4-container-compose) | 15 min |
 | Run it in production | [5. Kubernetes (Helm)](#5-kubernetes-helm--the-sovereign-path) | 30 min |
-| Drive it from a terminal | [6. The CLI](#6-the-cli) | — |
+| Drive it from a terminal | [6. The CLI](#6-the-cli) | - |
 
-The server is **zero-build** — it runs TypeScript directly on Node, no compile step, no
+The server is **zero-build** - it runs TypeScript directly on Node, no compile step, no
 external assets. The only prerequisite for the local paths is Node; the container and
 Kubernetes paths need only Docker or a cluster.
 
 ## 0. Hosted demo (zero install)
 
-A public, passwordless sandbox runs at **<https://lolly.work>** — one-click sign-in as any
+A public, passwordless sandbox runs at **<https://lolly.work>** - one-click sign-in as any
 persona (admin / brand-lead / marketer / contractor), the governed admin console at
 `/admin`, and live tool renders over a plain GET (`/render/qr-code.svg?url=…`). State is
 in-memory and resets on redeploy; it holds nothing real. It is the fastest way to see what
@@ -26,13 +26,13 @@ a deployment *is* before installing one.
 
 > The demo is hosted on Vercel today purely for convenience; it is **not** the deployment
 > model and will move to a **European sovereign cloud** (likely Evroc). For a real
-> deployment — especially a sovereign one — you self-host: see §5 and
+> deployment - especially a sovereign one - you self-host: see §5 and
 > [deployment](deployment.md).
 
 ## Prerequisites (local paths)
 
 **Node 24+** is the only prerequisite. The server runs `.ts` sources directly via Node's
-native type-stripping, so there is no build step — but that needs a modern Node.
+native type-stripping, so there is no build step - but that needs a modern Node.
 
 | | macOS | SLES / openSUSE Leap |
 |---|---|---|
@@ -41,7 +41,7 @@ native type-stripping, so there is no build step — but that needs a modern Nod
 | **Node 24** | `brew install node` | `sudo zypper install nodejs24 npm24` |
 
 If your distro doesn't package Node 24 yet (Leap 15.6 / SLES 15 ship older lines), use
-[**nvm**](https://github.com/nvm-sh/nvm) — the most reliable path on any box:
+[**nvm**](https://github.com/nvm-sh/nvm) - the most reliable path on any box:
 
 ```bash
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
@@ -60,16 +60,16 @@ npm install
 npm run demo            # → http://localhost:8787   (PORT=8788 for another port)
 ```
 
-`npm run demo` seeds a whole governed deployment in memory — four personas, tool overlays,
-an approval chain, projects, sixty days of activity history behind every console chart —
+`npm run demo` seeds a whole governed deployment in memory - four personas, tool overlays,
+an approval chain, projects, sixty days of activity history behind every console chart - 
 and prints one passwordless sign-in link per persona at boot. Open the printed URL:
 
-- **Web shell** at `/` — sign in as `marketer@suse.example` to see governed, locked inputs.
-- **Admin console** at `/admin` — sign in as `admin@suse.example`.
+- **Web shell** at `/` - sign in as `marketer@suse.example` to see governed, locked inputs.
+- **Admin console** at `/admin` - sign in as `admin@suse.example`.
 - **This documentation** at `/admin#/docs`.
 
 The in-shell governance UX needs the Lolly web shell built once in a sibling OSS checkout
-(`../lolly`; `npm run build:web`) — the demo detects this and says so at boot; the console
+(`../lolly`; `npm run build:web`) - the demo detects this and says so at boot; the console
 and render plane work regardless. The deeper walkthrough: [quickstart](quickstart.md).
 
 ## 2. A real (small) config
@@ -79,9 +79,9 @@ cp instance.example.json instance.json    # dev provider on, gated access
 node server/src/main.ts                   # or: npm start  → http://localhost:8787
 ```
 
-The three settings that make it yours — `instance.pack` (your brand pack / catalog),
+The three settings that make it yours - `instance.pack` (your brand pack / catalog),
 `instance.shellDir` (a built `shells/web/dist`, served at `/`), and `idp.issuer`+`clientId`
-(real SSO, replacing the dev provider) — are the [quickstart](quickstart.md), with the
+(real SSO, replacing the dev provider) - are the [quickstart](quickstart.md), with the
 full key reference in [configuration](configuration.md). Persistence is one env var:
 
 ```bash
@@ -151,26 +151,26 @@ docker compose up --build                        # → :8787, Postgres 17 alongs
 `deploy/compose/docker-compose.yml` bind-mounts the pack and a built `shells/web/dist`, and
 auto-applies migrations at boot. Details: [deployment](deployment.md).
 
-## 5. Kubernetes (Helm) — the sovereign path
+## 5. Kubernetes (Helm) - the sovereign path
 
 ![Rancher](img/rancher-icon.svg) ![k3s](img/k3s-icon-color.svg) ![Helm](img/helm-icon-color.svg)
 
-The production path — HA, on **RKE2 or k3s** (both Rancher-managed, both verified) or any
+The production path - HA, on **RKE2 or k3s** (both Rancher-managed, both verified) or any
 conformant cluster.
 
-> **Most sovereign / recommended — your choice of paid or free:**
+> **Most sovereign / recommended - your choice of paid or free:**
 > - **SUSE Linux Enterprise Server + SUSE Rancher Prime** (paid, supported), or
-> - **openSUSE Leap + Rancher Community** (free — Leap is built from the same SLES sources).
+> - **openSUSE Leap + Rancher Community** (free - Leap is built from the same SLES sources).
 >
 > Both share the same supply chain: SUSE builds SLES/Leap and its BCI base images
 > **reproducibly**, with dependencies **frozen in time alongside the build** in SUSE's
-> governed datacentre in **Prague** — an auditable, rebuildable, EU-jurisdiction chain.
+> governed datacentre in **Prague** - an auditable, rebuildable, EU-jurisdiction chain.
 > With lolly-work's vendored engine (`engine-pin.json`, hash-verified, no external fetch),
 > the control plane **and** the Chromium render worker run as ordinary pods on your own
-> cluster — air-gappable, no US hyperscaler, no `gcloud`, no Vercel. This is the safest
+> cluster - air-gappable, no US hyperscaler, no `gcloud`, no Vercel. This is the safest
 > deployment.
 
-**Evaluate first, in one command** — no Postgres, no IdP, no pack mount:
+**Evaluate first, in one command** - no Postgres, no IdP, no pack mount:
 
 ```bash
 helm install lolly deploy/helm -f deploy/helm/values-eval.yaml
@@ -194,7 +194,7 @@ helm install lolly-work deploy/helm \
 Migrations run as a pre-install/upgrade Job; the pack and shell mount as volumes; a
 `ServiceMonitor`, `NetworkPolicy`, ingress and an optional Chromium render-worker tier ship
 in the chart. **Multi-arch images (amd64 + arm64) publish to
-`ghcr.io/lolly-tools/lolly-work-server` and `…-render-worker` on every release** — the
+`ghcr.io/lolly-tools/lolly-work-server` and `…-render-worker` on every release** - the
 chart's empty `image.tag` pulls the matching version. The packages are private today: add
 an `imagePullSecret`, or mirror into your own registry (the better air-gap posture anyway).
 Full guide + values reference: [deployment](deployment.md).
@@ -219,7 +219,7 @@ Full command reference: [cli](cli.md).
 
 ## What next
 
-- **Configuration** — every key: [configuration](configuration.md)
-- **Identity / SSO** — wiring your OIDC issuer: [identity](identity.md)
-- **Deployment shapes** — the full matrix, RKE2/k3s, air-gap: [deployment](deployment.md)
-- **Operations** — migrations, scaling, backups: [operations](operations.md)
+- **Configuration** - every key: [configuration](configuration.md)
+- **Identity / SSO** - wiring your OIDC issuer: [identity](identity.md)
+- **Deployment shapes** - the full matrix, RKE2/k3s, air-gap: [deployment](deployment.md)
+- **Operations** - migrations, scaling, backups: [operations](operations.md)

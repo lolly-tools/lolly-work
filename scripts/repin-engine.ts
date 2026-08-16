@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: MPL-2.0
 /**
- * repin-engine — the re-pin cadence tool for the vendored OSS engine
- * (plans/current-state.md: "Engine pin drift" — the vendored engine drifts
+ * repin-engine - the re-pin cadence tool for the vendored OSS engine
+ * (plans/current-state.md: "Engine pin drift" - the vendored engine drifts
  * behind OSS HEAD with no automated re-pin).
  *
  * Default (no flags) is a cheap REPORT: how far engine-pin.json has drifted
- * from the sibling OSS checkout — commits behind HEAD and pinned engine/core
+ * from the sibling OSS checkout - commits behind HEAD and pinned engine/core
  * versions vs the OSS tree. Safe for CI and humans; touches nothing.
  *
  *   node scripts/repin-engine.ts            # report drift, exit 0
@@ -14,7 +14,7 @@
  *
  * --apply re-vendors the same way the pin was originally produced (the OSS
  * repo's scripts/pack-engine.ts is the publish half; engine-pin.json is its
- * manifest.json verbatim — see verify-engine-pin.ts):
+ * manifest.json verbatim - see verify-engine-pin.ts):
  *
  *   1. back up vendor/ + engine-pin.json + package-lock.json to a temp dir
  *   2. run `node scripts/pack-engine.ts` in the OSS repo → dist/engine-pack/
@@ -41,7 +41,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 // ── OSS repo discovery ───────────────────────────────────────────────────────
 // The Hybrid model: `vendor/lolly` is a committed git submodule tracking lolly
 // main, and the pin is packed from THAT (reproducible, in-tree, and it captures
-// the committed engine — never a sibling checkout's uncommitted WIP). Updating
+// the committed engine - never a sibling checkout's uncommitted WIP). Updating
 // the engine is a submodule pointer bump (`git submodule update --remote
 // vendor/lolly`) followed by `--apply`. LOLLY_OSS_DIR still overrides for CI /
 // one-off packs; the sibling + hard-coded paths remain as dev fallbacks. First
@@ -110,7 +110,7 @@ function measureDrift(ossDir: string): Drift {
   try {
     commitsBehind = Number(git(ossDir, 'rev-list', '--count', `${pin.generatedFrom}..HEAD`));
   } catch {
-    // Pinned commit unknown to the checkout (shallow clone / different remote) —
+    // Pinned commit unknown to the checkout (shallow clone / different remote) - 
     // report version drift only.
     commitsBehind = -1;
   }
@@ -167,7 +167,7 @@ function run(cmd: string, args: string[], cwd: string): void {
 }
 
 /** Replace `destDir` with the extracted content of an npm-pack tarball
- *  (strip the top-level `package/` directory — exactly what pack-engine.ts
+ *  (strip the top-level `package/` directory - exactly what pack-engine.ts
  *  hashes, so vendor/ matches the pin byte-for-byte). */
 function extractTarball(tgz: string, destDir: string): void {
   rmSync(destDir, { recursive: true, force: true });

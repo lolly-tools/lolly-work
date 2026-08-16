@@ -2,9 +2,9 @@
 
 The posture is deliberate and defensible to a works council: **labels, never content; and
 no name on an event unless the person agreed to it.** Both invariants are enforced at the
-door, at ingest — not in the query layer, where a mistake would already have stored the data.
+door, at ingest - not in the query layer, where a mistake would already have stored the data.
 
-![The activity feed — a linear, human-readable record where every noun links back](shots/activity-timeline.svg)
+![The activity feed - a linear, human-readable record where every noun links back](shots/activity-timeline.svg)
 
 ## The two invariants
 
@@ -12,7 +12,7 @@ door, at ingest — not in the query layer, where a mistake would already have s
    anything else is dropped before storage. Surviving values are coerced to strings and
    length-capped at 200 characters, so an attribute is a label and cannot smuggle content.
 2. **Attribution policy applies at ingest.** Below `standard`, or at `standard` when
-   `telemetryAttribution: 'opt-in'` and the user has not consented, the user id is stripped —
+   `telemetryAttribution: 'opt-in'` and the user has not consented, the user id is stripped - 
    unconsented events are aggregate from the first byte.
 
 ## Levels
@@ -75,14 +75,14 @@ id, so the feed can name the actor). Nothing new is collected to build it. It of
 for category and actor.
 
 **Fleet** answers "which Lolly versions are talking to this deploy" from the
-`X-Lolly-Client` header — shell, shell version, engine version, platform, request counts and
+`X-Lolly-Client` header - shell, shell version, engine version, platform, request counts and
 last-seen. That is where publish checks and upgrade nudges start; message targeting can then
 select an audience by groups × shell × engine-version range (see [api](api.md)).
 
 ## Disclosure
 
 What the deploy discloses to members is a policy choice, and the console states its own
-posture in the UI rather than hiding it — an internal deploy shows utilisation in full.
+posture in the UI rather than hiding it - an internal deploy shows utilisation in full.
 Per-item download and transform attribution needs the shells to emit those events; today
 transforms and crops count as tool activity, and the console says so on the page instead of
 implying data it does not have.

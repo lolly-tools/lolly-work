@@ -3,8 +3,8 @@
  * that shape-checks the declarative payload and states its facts, and a `project`
  * that turns it into the descriptor the shell consumes over org-config.
  *
- * Every handler refuses anything it cannot vouch for the SHAPE of, at publish time,
- * so an admin hears "that is not a well-formed X" at upload — never a member from a
+ * Every handler refuses anything it cannot vouch for the STRUCTURE of, at publish time,
+ * so an admin hears "that is not a well-formed X" at upload - never a member from a
  * broken shell. None interprets the payload's meaning: that is the shell's job, and
  * keeping it there is what lets the open core stay honest (data, not code).
  */
@@ -17,7 +17,7 @@ const SLUG = /^[a-z0-9][a-z0-9-]*$/;
 // A catalog asset id is a namespaced path (e.g. "acme/rates-2026", "suse/logo/primary"):
 // slashes allowed, but no traversal and no scheme.
 const ASSET_ID = /^[a-z0-9][a-z0-9/_.-]*$/i;
-/** No angle brackets anywhere — a descriptor field is plain text, never markup. */
+/** No angle brackets anywhere - a descriptor field is plain text, never markup. */
 const hasMarkup = (s: string): boolean => /[<>]/.test(s);
 /** The only URL shapes a descriptor may carry to the shell: relative, hash, or
  *  http(s). Refuses javascript:/data:/vbscript: and every other active scheme. */
@@ -36,7 +36,7 @@ const flag: KindHandler = {
     const flagId = str(get(payload, 'flagId'));
     if (!flagId) return { ok: false, reason: 'flagId is required' };
     // The control plane can only govern flags the shell declares (plans/18 parity
-    // with feature-flag governance) — an unknown id would be a silent no-op.
+    // with feature-flag governance) - an unknown id would be a silent no-op.
     if (!isGovernableFlag(flagId)) return { ok: false, reason: `unknown feature flag "${flagId}"` };
     const def = str(get(payload, 'default'));
     if (def !== 'on' && def !== 'off') return { ok: false, reason: 'default must be "on" or "off"' };
@@ -81,7 +81,7 @@ const resource: KindHandler = {
 // ── tool ────────────────────────────────────────────────────────────────────
 // Make a tool available to the fleet. Governance of pack tools works today; adding
 // a NEW tool per-item from org-config needs the shell seam (an index-merge in
-// catalog/sync.ts, plans/19 §4) — until then the CP serves it in its own catalog.
+// catalog/sync.ts, plans/19 §4) - until then the CP serves it in its own catalog.
 const tool: KindHandler = {
   kind: 'tool',
   label: 'Tool',
@@ -95,7 +95,7 @@ const tool: KindHandler = {
     if (source === 'url') {
       const ref = str(get(payload, 'ref'));
       if (!ref) return { ok: false, reason: 'ref (the tool URL) is required when source is "url"' };
-      // Same guard as chrome.link.href — a tool ref must be a real fetchable URL,
+      // Same guard as chrome.link.href - a tool ref must be a real fetchable URL,
       // never a javascript:/data: scheme the shell might treat as active.
       if (!safeHref(ref)) return { ok: false, reason: 'ref must be a relative path or http(s) URL' };
     }
@@ -108,7 +108,7 @@ const tool: KindHandler = {
 };
 
 // ── chrome ──────────────────────────────────────────────────────────────────
-// Declarative UI chrome — a banner/nav-item/panel described by DATA, rendered by
+// Declarative UI chrome - a banner/nav-item/panel described by DATA, rendered by
 // shell-owned code (the org/banner.ts precedent). NEEDS an OSS seam to generalize
 // that renderer (plans/19 §4). Text is plain text: a payload carrying markup is
 // refused, because a descriptor must never smuggle code into the shell realm.
@@ -139,7 +139,7 @@ const chrome: KindHandler = {
   },
   project(rec) {
     const { slot, tone, text, link } = rec.payload;
-    // Reconstruct link from ONLY the two validated fields — never pass the raw
+    // Reconstruct link from ONLY the two validated fields - never pass the raw
     // object through, so an extra key (onclick, target, …) can never reach the shell.
     const safeLink = link && typeof link === 'object'
       ? { link: { label: str(get(link, 'label')), href: str(get(link, 'href')) } }

@@ -1,10 +1,10 @@
 # Optimizely CMP (kind: `optimizely-cmp`)
 
-Federate Optimizely CMP's web DAM **read-only** — a source you *keep* (the CMS owns those
+Federate Optimizely CMP's web DAM **read-only** - a source you *keep* (the CMS owns those
 assets), never one you exit. Optionally, publish lolly-generated exports back **out** to it
 so lolly-made media is usable on the website and stays attributable downstream.
 
-> The exact CMP endpoint/field names carry a live-verify note in the driver — confirm them
+> The exact CMP endpoint/field names carry a live-verify note in the driver - confirm them
 > against your tenant with `lw providers preview` before relying on them in production.
 
 ## What you need from Optimizely CMP
@@ -12,7 +12,7 @@ so lolly-made media is usable on the website and stays attributable downstream.
 - **An OAuth2 app** registered in your CMP instance (one app per instance), with a
   **refreshable** token. Grant it read access to the DAM; grant *upload/create* only if you
   intend to publish out.
-- BYOT: the app's **client id + client secret** are yours — nothing ships in this repo. The
+- BYOT: the app's **client id + client secret** are yours - nothing ships in this repo. The
   refresh token is captured once through `lw providers auth`.
 
 ## Credential shape
@@ -39,7 +39,7 @@ lw providers auth acme-cmp     # prompts for client id/secret, runs the consent 
 }
 ```
 
-- `options.publish: true` opts this provider into the **publish-out** arm (off by default —
+- `options.publish: true` opts this provider into the **publish-out** arm (off by default - 
   a source is read-only unless you turn it on). `options.baseUrl`/`tokenUrl` override the
   defaults (legacy tenants: `api.welcomesoftware.com`).
 - `exposure.requireApproved: true` uses CMP's `is_public` (and not-`is_archived`) as the
@@ -62,7 +62,7 @@ With `publish: true` and an owner grant of `catalog.provider.publish`:
 lw providers publish acme-cmp --in ./summit-badge.png --name "Summit Badge"
 ```
 
-Only **lolly-generated** exports may be pushed — the server verifies the bytes carry lolly's
+Only **lolly-generated** exports may be pushed - the server verifies the bytes carry lolly's
 C2PA export assertion, so a federated or pack asset can never be published out. Requires an
 instance C2PA signer ([c2pa.md](../c2pa.md)); each publish is audited with the export's
 provenance chain.
@@ -71,7 +71,7 @@ provenance chain.
 
 - Download URLs are signed + short-lived (`expiringUrls`); fetches are host-pinned to
   CMP/Welcome hosts.
-- **Federate-in only for the exit** — Optimizely stays; do not run `cutover` against it.
+- **Federate-in only for the exit** - Optimizely stays; do not run `cutover` against it.
 - The only kind that accepts published exports.
 
 See also: [catalog](../catalog.md) · [permissions](../permissions.md) · [c2pa](../c2pa.md).

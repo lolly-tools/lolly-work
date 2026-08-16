@@ -110,7 +110,7 @@ test('resolveBlob refuses an unknown format, a bad file id, and a bad board id',
 });
 
 // A file whose pages carry a real board (a frame), the synthetic root frame, and a
-// non-frame — only the real board should surface.
+// non-frame - only the real board should surface.
 const FILE_BOARDS = {
   id: 'f-aaa', name: 'Foundations',
   data: {

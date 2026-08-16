@@ -1,6 +1,6 @@
 # What this deploy is
 
-This is the **Lolly control plane** — the hosted half of Lolly. It holds identity,
+This is the **Lolly control plane** - the hosted half of Lolly. It holds identity,
 provisioning, governance, serving, telemetry and audit for one organization's deploy, and
 it serves the Lolly web shell, the governed catalog and the admin console from a single
 origin.
@@ -9,12 +9,12 @@ The compass, unchanged since the first plan: **open source = individual freedom;
 source + a control plane = organizational freedom.** Lolly renders on-device by design.
 Every *hosted* service lives here.
 
-![The admin console overview — 14-day activity, what needs attention, top tools and fleet](shots/overview-dashboard.svg)
+![The admin console overview - 14-day activity, what needs attention, top tools and fleet](shots/overview-dashboard.svg)
 
 Every screenshot in these docs is itself a Lolly artifact: the console rendered to a real
 **vector SVG** and signed with a C2PA Content Credential by this deployment's own signing
 identity. Hover the imprint in a shot's corner to read what its file claims, then **Check
-it yourself** — the console verifies the exact bytes on your machine. The docs eat the
+it yourself** - the console verifies the exact bytes on your machine. The docs eat the
 product's own dog food.
 
 ## Two codebases, one deploy
@@ -27,7 +27,7 @@ product's own dog food.
 
 The open-source side is consumed **pinned and unmodified** (`vendor/@lolly/engine`,
 `vendor/@lolly-tools/core`, pin recorded in `engine-pin.json`). Nothing here forks it. The
-touchpoints the shells need are additive and dormant by default — a shell with no control
+touchpoints the shells need are additive and dormant by default - a shell with no control
 plane configured behaves exactly as it does standalone.
 
 ## What this deploy actually serves
@@ -57,11 +57,11 @@ a quiet poll is a `304`.
   INPUT_LOCKED`, not a hidden field.
 - **Sessions are stateless, signed, domain-separated tokens.** A session token cannot be
   replayed as a guest token, a link signature or an OAuth state. Account disable is instant;
-  a session itself lives until `policy.sessionTtlHours` expires — see
+  a session itself lives until `policy.sessionTtlHours` expires - see
   [audit](audit.md) and [status](status.md) for the open revocation gap.
 - **Telemetry never carries input values**, and below `standard` (or without consent when
   attribution is opt-in) it never carries a user id.
-- **The audit log is hash-chained**, so edits and truncation are detectable — provided you
+- **The audit log is hash-chained**, so edits and truncation are detectable - provided you
   anchor the head somewhere outside this deploy.
 
 ## Where to go next

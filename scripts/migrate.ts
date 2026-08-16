@@ -1,5 +1,5 @@
 /**
- * Explicit migration runner — the infra path for HA deploys where the server
+ * Explicit migration runner - the infra path for HA deploys where the server
  * runs with LW_AUTO_MIGRATE=false and refuses to start on a pending schema.
  *
  *   npm run migrate           apply pending migrations

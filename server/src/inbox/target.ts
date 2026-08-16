@@ -16,7 +16,7 @@ export interface Audience {
 export interface Message {
   id: string;
   /** `announcement`/`upgrade`/`policy` are composed in the console; the rest are
-   *  system-generated on the same pipe — `approval`/`expiry` from plans/05/06,
+   *  system-generated on the same pipe - `approval`/`expiry` from plans/05/06,
    *  `collab` from a live-room invite (plans/14 §6, OSS plans/100 §7 item 9). */
   kind: 'announcement' | 'upgrade' | 'policy' | 'approval' | 'expiry' | 'collab';
   severity: 'info' | 'action' | 'blocking';
@@ -26,7 +26,7 @@ export interface Message {
   cta?: { label: string; url: string };
   /**
    * Machine-readable payload for a system-generated message, so a client can act
-   * on it rather than parse the copy — e.g. a collab invite's `sessionId`, from
+   * on it rather than parse the copy - e.g. a collab invite's `sessionId`, from
    * which the shell builds its own deep link (the server has no shell route to
    * bake in). String values only: this is a routing hint, never a document.
    */

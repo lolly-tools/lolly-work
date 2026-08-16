@@ -1,6 +1,6 @@
 /**
  * Policy-as-code pure logic (plan Rec 2): canonical hashing, build/strip,
- * validation, diff, and required-permission derivation — no HTTP, driven against
+ * validation, diff, and required-permission derivation - no HTTP, driven against
  * a memory store. The HTTP contract is in config-export-apply.test.ts.
  */
 import { test } from 'node:test';

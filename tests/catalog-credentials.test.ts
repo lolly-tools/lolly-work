@@ -1,6 +1,6 @@
 /**
  * Content-credential DETECTION (plans/27 §4), unit level. `detectCredential` is
- * a thin wrapper over the vendored engine's `extractC2paStore` — so the fixtures
+ * a thin wrapper over the vendored engine's `extractC2paStore` - so the fixtures
  * come from the engine too: mint a signing identity, embed a real C2PA manifest
  * into PNG bytes, and assert detection reports {embedded, png}; plain bytes and
  * garbage report {none} and never throw. `applyCredentialsToIndex` annotates the
@@ -40,7 +40,7 @@ test('detectCredential finds an embedded manifest and names its container; never
   const hit = await detectCredential(signed);
   assert.equal(hit.status, 'embedded');
   assert.equal(hit.container, 'png', 'container is the sniffed format, not a verdict');
-  // The wrapper reports presence only — no valid/trusted/claim fields leak through.
+  // The wrapper reports presence only - no valid/trusted/claim fields leak through.
   assert.deepEqual(Object.keys(hit).sort(), ['container', 'status']);
 
   assert.deepEqual(await detectCredential(plain), { status: 'none' }, 'a plain PNG carries nothing');

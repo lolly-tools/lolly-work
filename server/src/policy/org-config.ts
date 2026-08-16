@@ -1,5 +1,5 @@
 /**
- * The org-config payload — the ONE polled document a connected shell applies
+ * The org-config payload - the ONE polled document a connected shell applies
  * (plans/01 §6). Everything a client needs to know about who it is and what
  * policy applies, pre-filtered for the caller's groups; ETag'd via
  * policyVersion so quiet polls are 304s.
@@ -16,14 +16,14 @@ import type { UserRecord } from '../store/types.ts';
 
 /** Actions whose yes/no the shell needs to render honest controls (e.g. the
  *  export button becoming "Save / Request approval"). Evaluated server-side;
- *  the server remains the boundary — these bits are UI truth, not security.
+ *  the server remains the boundary - these bits are UI truth, not security.
  *
  *  `collab.join`/`collab.edit` (OSS plans/100 §7 item 7) are what makes the
  *  shell's collab affordances honest instead of trial-and-error: `collab.join`
- *  mirrors `session.view` (rbac/evaluate.ts ROLE_ACTIONS — a room's read gate
+ *  mirrors `session.view` (rbac/evaluate.ts ROLE_ACTIONS - a room's read gate
  *  is project visibility, same as any other session read); `collab.edit` is
  *  computed below via `mayEditCollab`, NOT the generic per-action evaluate()
- *  every other entry here uses — it is `session.edit` itself, by construction,
+ *  every other entry here uses - it is `session.edit` itself, by construction,
  *  so it can never disagree with the gateway's writer decision (see
  *  `mayEditCollab`'s own doc comment and `server/src/collab/gateway.ts`). */
 const CLIENT_ACTIONS = [
@@ -55,16 +55,16 @@ export interface OrgConfigPayload {
     inputs?: Array<{ id: string; access?: ResolvedAccess }>;
     hidden?: string[];
     /** The approval chain bound to this tool's outputs (overlay enforce.escalation),
-     *  when one applies — the shell offers "Request approval" and submits against it. */
+     *  when one applies - the shell offers "Request approval" and submits against it. */
     approvalChain?: string;
     /** Server-export formats policy allows for THIS tool (overlay enforce.formats
-     *  ∩ what the deployment can produce — plans/23 §3.A). Absent ⇒ no per-tool
+     *  ∩ what the deployment can produce - plans/23 §3.A). Absent ⇒ no per-tool
      *  restriction; everything in `render.formats` is offered. */
     formats?: string[];
   }>;
   /** Permission bits for this caller (CLIENT_ACTIONS), for honest UI. */
   can: Record<string, boolean>;
-  /** What this deployment can render server-side (plans/23 §3.A) — shells gray
+  /** What this deployment can render server-side (plans/23 §3.A) - shells gray
    *  out or hide exports not offered here instead of discovering the limit by
    *  501/400. Deployment-scoped, same for every caller; the render route stays
    *  the boundary. Folded into policyVersion so enabling a worker moves the
@@ -72,10 +72,10 @@ export interface OrgConfigPayload {
   render: RenderCapabilities;
   /** Control-plane governance for the shell's per-user feature flags, by flag id:
    *  the resolved default (applied when the user hasn't set the flag) and whether
-   *  the toggle is hidden. Instance-wide — the same for every caller. Flag-kind
+   *  the toggle is hidden. Instance-wide - the same for every caller. Flag-kind
    *  injectables (plans/19) merge in here, so the shell needs no new path for them. */
   featureFlags: Record<string, ResolvedFlag>;
-  /** The injectables visible to THIS caller (plans/19) — declarative descriptors
+  /** The injectables visible to THIS caller (plans/19) - declarative descriptors
    *  the shell consumes: tools, typed catalog resources, and UI chrome (flag-kind
    *  ones ride `featureFlags` above). Group-scoped; genuinely-hidden ones absent. */
   injectables: Array<Record<string, unknown>>;
@@ -137,7 +137,7 @@ export function assembleOrgConfig(opts: {
   flagGovernance?: Map<string, FlagGovernance>;
   /** The published injectables (plans/19), projected per-caller below. */
   injectables?: Map<string, InjectableRecord>;
-  /** What the deployment can render (renderCapabilities(workerConfigured) —
+  /** What the deployment can render (renderCapabilities(workerConfigured) - 
    *  app.ts computes it beside its worker resolution). Absent ⇒ the light
    *  default (no worker), which is truthful for unit fixtures; the one
    *  production caller always passes the resolved value. */
@@ -156,7 +156,7 @@ export function assembleOrgConfig(opts: {
     // Visibility is overlay OR an explicit per-user/group tool.use ALLOW grant
     // (so a grant surfaces a tool outside the caller's groups); a matching DENY
     // wins over both (and over the role default, hence grantDecision not
-    // evaluate). Genuinely-hidden tools stay ABSENT — the caller never learns.
+    // evaluate). Genuinely-hidden tools stay ABSENT - the caller never learns.
     const decision = grantDecision(principal, 'tool.use', [`tool:${toolId}`, '*'], grants);
     if (decision === 'deny') continue;
     if (!(toolVisibleTo(overlay, user.groups) || decision === 'allow')) continue;
@@ -164,7 +164,7 @@ export function assembleOrgConfig(opts: {
     const entry: OrgConfigPayload['tools'][string] = {};
     if (declared) {
       const filtered = filterInputs(declared, overlay, user.groups);
-      // Only ship annotations — plain editable inputs need no policy row.
+      // Only ship annotations - plain editable inputs need no policy row.
       const annotated = filtered.filter((i) => i.access);
       if (annotated.length) entry.inputs = annotated;
       const hidden = declared
@@ -175,7 +175,7 @@ export function assembleOrgConfig(opts: {
     if (overlay.enforce?.escalation) entry.approvalChain = overlay.enforce.escalation;
     // Intersected with the deployment's formats for honesty: an overlay may name
     // a format this deploy lacks, and offering it would put the 400 back in the
-    // user's path. An empty intersection ships as [] — "no server export for
+    // user's path. An empty intersection ships as [] - "no server export for
     // this tool" is itself the honest answer. 'jpeg' folds to 'jpg', matching
     // the render gate's normalisation.
     if (overlay.enforce?.formats) {
@@ -197,7 +197,7 @@ export function assembleOrgConfig(opts: {
   // collab.nearby is a DERIVED bit, not an RBAC action: the instance offers the
   // "likely nearby" grouping (plans/26 §8) only when policy enables it AND the
   // caller could join a collab at all. Never its own action string, so it cannot
-  // drift from collab.join — the same discipline the collab.edit note above keeps.
+  // drift from collab.join - the same discipline the collab.edit note above keeps.
   // `?? true` mirrors the loaded-config default (parseConfig deep-merges nearby in);
   // hand-built test configs that omit `policy.nearby` get the enabled default.
   can['collab.nearby'] = (config.policy.nearby?.enabled ?? true) && can['collab.join'] === true;
@@ -215,7 +215,7 @@ export function assembleOrgConfig(opts: {
     can,
     render,
     // Flag-kind injectables merge into the flag map, but only where the dedicated
-    // feature-flag governance has NO explicit opinion — so the two rails never
+    // feature-flag governance has NO explicit opinion - so the two rails never
     // fight and the more-specific governance always wins (plans/19 §3).
     featureFlags: (() => {
       const base = resolveFeatureFlags(flagGovernance);

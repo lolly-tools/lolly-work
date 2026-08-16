@@ -22,15 +22,15 @@ test('attrs are a closed allowlist — nothing that could carry input values sur
 });
 
 test('identity floor: profile.update field names pass the reportable allowlist, fail-closed', () => {
-  // "A person's disability or language is never telemetry" — even as a field
+  // "A person's disability or language is never telemetry" - even as a field
   // NAME (plans/09 §2a). Contact-card fields survive; preference/identity
-  // fields (and anything unknown — fail-closed) are stripped at the door.
+  // fields (and anything unknown - fail-closed) are stripped at the door.
   const ev = (fields: string) =>
     sanitizeEvent({ event: 'profile.update', attrs: { fields } }, STANDARD_OPTIN, { id: 'u1', telemetryConsent: true });
   assert.equal(ev('firstname, title')!.attrs.fields, 'firstname,title');
   assert.equal(ev('a11y, lang, firstname')!.attrs.fields, 'firstname');
   // An update touching ONLY sensitive fields still counts as an event, but
-  // carries no fields attr at all — "a profile was maintained", nothing more.
+  // carries no fields attr at all - "a profile was maintained", nothing more.
   const sensitiveOnly = ev('a11y,lang,favourites,featureFlags,useDetails');
   assert.ok(sensitiveOnly);
   assert.equal(sensitiveOnly!.attrs.fields, undefined);

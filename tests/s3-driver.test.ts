@@ -2,7 +2,7 @@
  * S3 driver: hand-rolled SigV4 request shape, ListObjectsV2 XML mapping
  * (keys → slash-free remoteIds, prefix folders → sections, filenames for
  * provenance), pagination, blob streaming, and the credential format guard.
- * Injected fetch — no network, no AWS.
+ * Injected fetch - no network, no AWS.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -40,7 +40,7 @@ test('signS3Request: virtual-hosted URL, sorted canonical query, SigV4 authoriza
   assert.match(signed.headers['x-amz-date'] ?? '', /^20260722T100000Z$/);
   assert.match(signed.headers.authorization ?? '',
     /^AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE\/20260722\/eu-central-1\/s3\/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=[0-9a-f]{64}$/);
-  // Deterministic for a fixed instant — the signature is reproducible.
+  // Deterministic for a fixed instant - the signature is reproducible.
   const again = signS3Request({
     options: { bucket: 'brand-assets', region: 'eu-central-1' },
     accessKeyId: 'AKIAEXAMPLE', secretAccessKey: 'secretkey',

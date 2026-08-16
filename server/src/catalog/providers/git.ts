@@ -1,11 +1,11 @@
 /**
- * Git repo driver (plans/17 §11 phase 2) — a third-party repo as a catalog
+ * Git repo driver (plans/17 §11 phase 2) - a third-party repo as a catalog
  * source, over the forge's raw-file HTTP endpoint (GitHub raw, GitLab
  * /raw/, Gitea) rather than a clone: zero-dep, works air-gapped against an
  * internal forge, and never needs a writable cache dir.
  *
  * The repo declares what it exports in a manifest (default lolly-catalog.json
- * at the raw base). Only manifest-listed paths are ever fetched — the manifest
+ * at the raw base). Only manifest-listed paths are ever fetched - the manifest
  * is the contract, and resolveBlob refuses paths outside it, so a poisoned
  * remoteId can't turn this into a repo-wide file reader.
  *
@@ -94,7 +94,7 @@ export function createGitProvider(
     async resolveBlob(remoteId, formatRef): Promise<ResolvedBlob> {
       if (formatRef !== 'file') throw new Error('git assets have a single file format');
       const path = remoteIdToPath(remoteId);
-      // The manifest is the allowlist — an id for an unlisted path is refused.
+      // The manifest is the allowlist - an id for an unlisted path is refused.
       const listed = (await loadManifest()).some((a) => a.path === path);
       if (!listed) throw new Error('path not in the repo manifest');
       const res = await raw(path);

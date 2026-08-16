@@ -23,7 +23,7 @@ interface Harness { server: Server; base: string; store: ReturnType<typeof creat
 let pack = '';
 const harnesses: Harness[] = [];
 
-/** A minimal, valid, hook-less card manifest — text `title` + color `bg`, svg+png. */
+/** A minimal, valid, hook-less card manifest - text `title` + color `bg`, svg+png. */
 function cardManifest(id: string): object {
   return {
     id, name: id, version: '1.0.0', engineVersion: '^1.0.0', status: 'official',
@@ -106,7 +106,7 @@ before(async () => {
   await writeCard('locked-card');
   await writeCard('wm-card');
   await writeCard('fmt-card');
-  // A hooked tool — its presence of hooks.js is what the fast path refuses.
+  // A hooked tool - its presence of hooks.js is what the fast path refuses.
   const hookyDir = join(pack, 'tools', 'hooky');
   await mkdir(hookyDir, { recursive: true });
   await writeFile(join(hookyDir, 'tool.json'), JSON.stringify({
@@ -241,7 +241,7 @@ test('(f) watermark: enforce.watermark "always" injects the PREVIEW pattern; a c
 
 // ── (f) Chromium worker dispatch (plans/07/11) ────────────────────────────────
 // A hooked tool renders via an isolated worker when one is configured. We stand
-// up a MOCK worker that verifies the HMAC and returns a canned SVG — proving the
+// up a MOCK worker that verifies the HMAC and returns a canned SVG - proving the
 // control plane signs correctly, dispatches hooked tools, and post-processes the
 // worker's SVG (here: passes it through for .svg) exactly like an in-process one.
 test('(f) hooked tool dispatches to a configured Chromium worker; HMAC-signed', async () => {
@@ -383,7 +383,7 @@ test('(j) enforce.formats: a policy-excluded format is 403 FORMAT_NOT_ALLOWED; a
   assert.equal(png.status, 403);
   assert.equal((await png.json() as { error: { code: string } }).error.code, 'FORMAT_NOT_ALLOWED');
 
-  // pdf is in the overlay's list but NOT a deployment capability — the capability
+  // pdf is in the overlay's list but NOT a deployment capability - the capability
   // 400 comes first, so policy can never appear to promise what the deploy lacks.
   const pdf = await fetch(`${main.base}/render/fmt-card.pdf?title=Absent`, { headers: { cookie } });
   assert.equal(pdf.status, 400);
@@ -419,8 +419,8 @@ test('(k) org_config advertises render capability truthfully, intersects per-too
 });
 
 test('(l) a saturated worker propagates: 503 RENDER_BUSY reaches the client with Retry-After intact', async () => {
-  // The worker's capacity answer (plans/23 §3.C) must survive BOTH wraps —
-  // WorkerError → RenderError → HTTP — code and back-off included, so a client
+  // The worker's capacity answer (plans/23 §3.C) must survive BOTH wraps - 
+  // WorkerError → RenderError → HTTP - code and back-off included, so a client
   // can distinguish "come back in 2s" from a worker fault.
   const busy = createServer((_req, res) => {
     res.writeHead(503, { 'content-type': 'application/json', 'retry-after': '2' });
@@ -478,7 +478,7 @@ test('(m) a worker widens the format tier: jpg + pdf render via /rasterise, jpeg
   assert.equal(jpg.headers.get('content-type'), 'image/jpeg');
   assert.deepEqual([...new Uint8Array(await jpg.arrayBuffer()).slice(0, 3)], [0xff, 0xd8, 0xff], 'JPEG magic from the worker');
 
-  // 'jpeg' is the same format — normalised before the gate AND the cache key,
+  // 'jpeg' is the same format - normalised before the gate AND the cache key,
   // so this is a cache hit of the .jpg render, not a second worker call.
   const jpeg = await fetch(`${srv.base}/render/test-card.jpeg?title=W`, { headers: { cookie } });
   assert.equal(jpeg.status, 200);
@@ -491,7 +491,7 @@ test('(m) a worker widens the format tier: jpg + pdf render via /rasterise, jpeg
 
   assert.deepEqual(served, ['jpg', 'pdf'], 'one raster per format — the jpeg alias reused the jpg cache entry');
 
-  // The same request against the workerless main harness stays an honest 400 —
+  // The same request against the workerless main harness stays an honest 400 - 
   // the widened tier exists only where a worker does (and org_config says so).
   const refused = await fetch(`${main.base}/render/test-card.jpg?title=W`, { headers: { cookie: await login(main.base, 'admin@test') } });
   assert.equal(refused.status, 400);

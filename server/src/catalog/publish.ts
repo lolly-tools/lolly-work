@@ -1,11 +1,11 @@
 /**
- * Publish-out gate (plans/27 §10) — the guard that keeps the outbound arm
+ * Publish-out gate (plans/27 §10) - the guard that keeps the outbound arm
  * narrow: ONLY lolly-rendered exports may be pushed to a destination DAM, never
  * a federated or pack asset. The distinguishing property is the C2PA export
  * assertion the render plane signs into every export (docs/c2pa.md): a federated
  * asset may carry *a* credential, but not lolly's export assertion. So the gate
  * VERIFIES (not merely detects) that the bytes carry it, via the engine's
- * verifier — this is an authorization decision about our own content, not a
+ * verifier - this is an authorization decision about our own content, not a
  * display verdict, so verifying here is legitimate.
  */
 import { readPngProvenance, type ProvenanceDoc } from '../render/provenance.ts';
@@ -17,7 +17,7 @@ async function loadEngine(): Promise<{ verifyC2pa: (bytes: Uint8Array, format: s
 
 export interface PublishGate { ok: boolean; detail?: string }
 
-/** Verify the export carries lolly's C2PA export assertion. Fails closed — a
+/** Verify the export carries lolly's C2PA export assertion. Fails closed - a
  *  provider/engine hiccup refuses the publish rather than leaking. */
 export async function verifyLollyExport(bytes: Uint8Array, format: string): Promise<PublishGate> {
   try {

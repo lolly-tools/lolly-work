@@ -2,7 +2,7 @@
  * Upstream availability windows (plans/27 §2), unit level: `combinedState`
  * joins a local lifecycle row with an imported DAM window most-restrictive-wins,
  * `entryWindow` reads it back off a feed entry, and `applyLifecycleToIndex`
- * folds it — including the rule that upstream expiry hides even under
+ * folds it - including the rule that upstream expiry hides even under
  * onExpiry:'warn', while a purely-local expiry still warns.
  */
 import { test } from 'node:test';

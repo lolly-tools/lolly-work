@@ -95,11 +95,11 @@ async function listen(server: Server): Promise<string> {
 
 before(async () => {
   const store = createMemoryStore();
-  // Enabled + a registry injected — the ordinary long-lived-server shape.
+  // Enabled + a registry injected - the ordinary long-lived-server shape.
   const mainApp = buildApp({ config: makeConfig({ policy: { defaultAccessMode: 'open' } }), store, secrets: SECRETS, nearby: createNearbyRegistry() });
-  // Enabled but NO registry injected — the Vercel shape (must 501).
+  // Enabled but NO registry injected - the Vercel shape (must 501).
   const noRegApp = buildApp({ config: makeConfig({ policy: { defaultAccessMode: 'open' } }), store, secrets: SECRETS });
-  // Policy-disabled (must 404) — registry present but off.
+  // Policy-disabled (must 404) - registry present but off.
   const disabledApp = buildApp({ config: makeConfig({ policy: { defaultAccessMode: 'open', nearby: { enabled: false } } }), store, secrets: SECRETS, nearby: createNearbyRegistry() });
 
   mainSrv = createServer((req, res) => void mainApp(req, res));

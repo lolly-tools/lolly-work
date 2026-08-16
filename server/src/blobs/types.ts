@@ -1,13 +1,13 @@
 /**
- * BlobStore — a deliberately small byte-storage seam BESIDE `Store` (plans/26 §2:
+ * BlobStore - a deliberately small byte-storage seam BESIDE `Store` (plans/26 §2:
  * records and blobs have different drivers and different lifetimes). Records live
- * in the SQL store; opaque byte content — instance-owned catalog assets
- * materialized out of a DAM (plans/27 §5), and later plans/26's collab staging —
+ * in the SQL store; opaque byte content - instance-owned catalog assets
+ * materialized out of a DAM (plans/27 §5), and later plans/26's collab staging - 
  * lives here, addressed by a caller-chosen `blobId`.
  *
- * Drivers: `memory` (tests), `postgres` (the zero-moving-parts default — PG works
- * everywhere the plane runs, the easy-deploy north star), and `s3` (any
- * S3-compatible store: AWS, MinIO, Ceph RGW — the media-sized-estate + air-gap
+ * Drivers: `memory` (tests), `postgres` (the zero-moving-parts default - PG works
+ * everywhere the plane runs, the easy-deploy goal), and `s3` (any
+ * S3-compatible store: AWS, MinIO, Ceph RGW - the media-sized-estate + air-gap
  * story, a config flip, not an architecture change). The write path buffers the
  * blob to compute a sha256 checksum + size: materialization is admin-triggered,
  * one asset at a time, so a full buffer is acceptable (plans/26 makes the same
@@ -16,7 +16,7 @@
 export interface BlobStat {
   blobId: string;
   size: number;
-  /** sha256 hex of the stored content — stamped onto served inst/* format
+  /** sha256 hex of the stored content - stamped onto served inst/* format
    *  entries so the OSS shell can verify integrity + price offline pins. */
   checksum: string;
   contentType: string;
@@ -24,12 +24,12 @@ export interface BlobStat {
 
 export interface BlobStore {
   /** Store `body` under `blobId` (caller-chosen, unique), computing checksum +
-   *  size. Idempotent overwrite — re-materializing the same asset is safe. */
+   *  size. Idempotent overwrite - re-materializing the same asset is safe. */
   put(blobId: string, body: BlobBody, contentType: string): Promise<BlobStat>;
   head(blobId: string): Promise<BlobStat | null>;
   /** Stream bytes out with their stat, or null when the blob is unknown. */
   get(blobId: string): Promise<{ body: ReadableStream<Uint8Array>; stat: BlobStat } | null>;
-  /** Idempotent — deleting an unknown blob is a no-op. */
+  /** Idempotent - deleting an unknown blob is a no-op. */
   delete(blobId: string): Promise<void>;
 }
 

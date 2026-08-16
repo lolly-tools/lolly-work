@@ -1,5 +1,5 @@
 /**
- * In-memory Store — dev, tests, and the evaluation container's default.
+ * In-memory Store - dev, tests, and the evaluation container's default.
  * Postgres driver lands beside this (migrations/0001_init.sql is the schema).
  */
 import { randomId } from '../lib/crypto.ts';
@@ -23,7 +23,7 @@ import {
   type SessionRevision, type Store, type UserRecord,
 } from './types.ts';
 
-// Grants have no exposed id — they're identified by their full tuple.
+// Grants have no exposed id - they're identified by their full tuple.
 const sameGrant = (a: Grant, b: Grant): boolean =>
   a.principal === b.principal && a.action === b.action && a.resource === b.resource && a.effect === b.effect;
 
@@ -192,7 +192,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       return new Map(flagGovernance);
     },
     async putFlagGovernance(rec) {
-      // A record with no opinion (no default, not hidden) clears the row — so
+      // A record with no opinion (no default, not hidden) clears the row - so
       // "reset to inherit + show" leaves no residue and the version is stable.
       if (rec.default === undefined && rec.visibility === undefined) flagGovernance.delete(rec.id);
       else flagGovernance.set(rec.id, rec);
@@ -210,7 +210,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       injectables.delete(id);
     },
     async pendingMigrations() {
-      return []; // no schema — the memory store is definitionally always current
+      return []; // no schema - the memory store is definitionally always current
     },
 
     async putLink(link) {
@@ -441,7 +441,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     },
 
     // live collab rooms (plans/14 §6). Replace-in-place, exactly one row per
-    // session — there is no update log here or in Postgres. `inputs` is cloned so
+    // session - there is no update log here or in Postgres. `inputs` is cloned so
     // this driver round-trips like jsonb does: a caller that later mutates the
     // object it handed us must not reach back into the store.
     async putCollabSnapshot(snap) {

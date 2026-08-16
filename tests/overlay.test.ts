@@ -36,8 +36,8 @@ test('first matching rule wins per group', () => {
 });
 
 test('an inherited Object.prototype name is not a rule table entry', () => {
-  // `inputId` arrives from untrusted input — a collab op's key, a render param
-  // name — and `inputAccess` is a plain object parsed from jsonb. A bare member
+  // `inputId` arrives from untrusted input - a collab op's key, a render param
+  // name - and `inputAccess` is a plain object parsed from jsonb. A bare member
   // access resolves inherited names: `inputAccess['toString']` is a truthy
   // FUNCTION, which then throws `rules is not iterable` in the rule loop. A
   // three-entry deny-list of __proto__/constructor/prototype does not cover these.

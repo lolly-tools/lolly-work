@@ -1,5 +1,5 @@
 /**
- * Behavioural conformance suite every Store driver must pass — run against
+ * Behavioural conformance suite every Store driver must pass - run against
  * memory always (store-memory.test.ts) and against Postgres when
  * LW_TEST_DATABASE_URL is set (store-postgres.test.ts). One suite, two
  * drivers: the seam stays honest.
@@ -21,7 +21,7 @@ export async function runStoreConformance(store: Store): Promise<void> {
 
   // …and by internal id, the shape every stored reference to a user uses
   // (LinkRecord.createdBy, a grant's `user:<id>` principal). Same row, same
-  // fields — a driver that answered one of the two getters differently would
+  // fields - a driver that answered one of the two getters differently would
   // let the collab gateway's per-gesture inviter check disagree with the console.
   assert.deepEqual(await store.getUser(u1.id), await store.getUserBySub('s1'));
   assert.equal(await store.getUser('usr_nope'), null);
@@ -55,8 +55,8 @@ export async function runStoreConformance(store: Store): Promise<void> {
   // grants: tuple-identified, put idempotent, delete exact-match only
   const g1 = { principal: 'group:mkt', action: 'export.download', resource: '*', effect: 'deny' as const };
   await store.putGrant(g1);
-  await store.putGrant(g1); // idempotent — one row
-  await store.putGrant({ ...g1, effect: 'allow' as const }); // different tuple — second row
+  await store.putGrant(g1); // idempotent - one row
+  await store.putGrant({ ...g1, effect: 'allow' as const }); // different tuple - second row
   assert.equal((await store.listGrants()).filter((g) => g.principal === 'group:mkt').length, 2);
   await store.deleteGrant(g1);
   const remaining = (await store.listGrants()).filter((g) => g.principal === 'group:mkt');
@@ -106,7 +106,7 @@ export async function runStoreConformance(store: Store): Promise<void> {
   await store.ackMessage('m1', u1.id); // idempotent
   assert.deepEqual([...(await store.acksFor(u1.id))], ['m1']);
   assert.equal((await store.ackCounts()).get('m1'), 1);
-  // `data` round-trips, and putMessage upserts BY ID — the whole of the collab
+  // `data` round-trips, and putMessage upserts BY ID - the whole of the collab
   // invite's idempotence (server/src/collab/invites.ts `inviteMessageId`): a
   // second invite for the same (session, invitee) must refresh one row, not add
   // a second. Absent on a message that never had one (no `data: undefined` key).
@@ -133,14 +133,14 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.deepEqual(invites[0]?.data, { kind: 'collab-invite', sessionId: 'ses_1', toolId: 'poster' });
   // A re-put replaces the WHOLE record in both drivers. `cta` and `dismissible`
   // are asserted because they were the columns a partial `on conflict` SET list
-  // silently kept stale — an invite's cta.url is built from `instance.appUrl`,
+  // silently kept stale - an invite's cta.url is built from `instance.appUrl`,
   // so a driver that skipped it would serve a link to the instance's old host.
   assert.equal(invites[0]?.cta?.url, 'https://new.example/t/poster?session=ses_1', 'cta is replaced, not kept');
   assert.equal(invites[0]?.dismissible, false, 'dismissible is replaced, not kept');
 
   // clearAck: the dual of ackMessage, and the reason a DERIVED message id stays
   // re-deliverable. Dismiss the invite, re-put it (a second invite to the same
-  // person for the same session), clear the ack — and it is pending again.
+  // person for the same session), clear the ack - and it is pending again.
   // Without this the pair is permanently un-notifiable and the POST's 201 is a lie.
   await store.ackMessage('msg_collab_x', u1.id);
   assert.ok((await store.acksFor(u1.id)).has('msg_collab_x'));
@@ -256,7 +256,7 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.equal(await store.getAlias('ext/dam1/a1/att1'), 'inst/abc/png');
   assert.equal((await store.listAliases()).length, 2);
 
-  // catalog providers: config, credential, and state travel independently —
+  // catalog providers: config, credential, and state travel independently - 
   // a config upsert must never clobber a stored credential or sync state.
   const pnow = new Date().toISOString();
   assert.equal(await store.getProvider('bf'), null);
@@ -370,7 +370,7 @@ export async function runStoreConformance(store: Store): Promise<void> {
 
   // collab room snapshots (plans/14 §6): at most one per session, put REPLACES
   // (there is no update log), delete is idempotent, and `inputs` round-trips
-  // structurally — nested blocks rows included, since that is the whole payload.
+  // structurally - nested blocks rows included, since that is the whole payload.
   assert.equal(await store.getCollabSnapshot('ses_b'), null, 'no room, no row');
   await store.putCollabSnapshot({
     sessionId: 'ses_b', baseRev: 1, ops: 12, updatedAt: now,
@@ -473,7 +473,7 @@ export async function runStoreConformance(store: Store): Promise<void> {
   for (const [firstname, lastname, email] of seedRows) {
     await store.upsertUserBySub({ sub: `pg:${email}`, email, firstname, lastname, groups: [PG], role: 'member' });
   }
-  // name sort asc: Vera, Wade, Xavier, Yara, Zoe — paginate 2 at a time
+  // name sort asc: Vera, Wade, Xavier, Yara, Zoe - paginate 2 at a time
   const page1 = await store.listUsersPage({ group: PG, sort: 'name', dir: 'asc', limit: 2, offset: 0 });
   assert.equal(page1.total, 5, 'total is the full match count, not the page');
   assert.equal(page1.rows.length, 2);
@@ -496,7 +496,7 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.equal(disRows.total, 1);
   assert.equal(disRows.rows[0]?.firstname, 'Wade');
   // consent is stored (it drives ingest attribution) but is deliberately NOT a
-  // list filter — opting out must not be enumerable (plans/09 §2a)
+  // list filter - opting out must not be enumerable (plans/09 §2a)
   await store.setTelemetryConsent((await store.getUserBySub('pg:xn@pg'))!.id, true);
   assert.equal((await store.getUserBySub('pg:xn@pg'))?.telemetryConsent, true);
   // prefix (jump-to-letter): first letter of the name key; '#' = non a–z

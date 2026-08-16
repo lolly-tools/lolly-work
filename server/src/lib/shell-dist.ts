@@ -12,7 +12,7 @@ import { join } from 'node:path';
 export interface ShellDistCheck {
   /** The dist exists (index.html present under shellDir). */
   present: boolean;
-  /** Some built assets/*.js carries the org-config marker — the governance UX shipped. */
+  /** Some built assets/*.js carries the org-config marker - the governance UX shipped. */
   hasOrgConfig: boolean;
 }
 

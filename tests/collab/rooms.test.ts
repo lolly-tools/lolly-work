@@ -6,7 +6,7 @@
  * or against a real store (persistence.test.ts). These cases are neither: they
  * are about what one room may accumulate in memory, which no wire-level test can
  * reach without sending millions of frames. So the Room is driven directly, with
- * no persistence attached — the shape its own doc comment allows for ("it stays
+ * no persistence attached - the shape its own doc comment allows for ("it stays
  * optional so a room can be exercised as pure in-memory state").
  *
  * WHY THESE EXIST. MAX_ROW_FIELDS and MAX_SCALAR_CHARS bound ONE row; nothing
@@ -91,7 +91,7 @@ test(`a room admits at most ${MAX_COLLECTIONS_PER_ROOM} collections and ${MAX_BO
   assert.equal(room.admits(add('col0', 'b-too-many', 'c', clock++)), false, 'a NEW box past the ceiling is refused');
   assert.equal(room.admits(add('col0', 'b1', 'c', clock++)), true, 'an existing box is still writable');
 
-  // Every box op mints a box, not just `add` — the contract's `ensure` does it for
+  // Every box op mints a box, not just `add` - the contract's `ensure` does it for
   // geom/field/order/remove too, so all of them are counted.
   const geom: CanvasOp = { k: 'geom', col: 'col0', id: 'fresh', fields: { x: 1 }, origin: { client: 'c', clock: clock++ } };
   assert.equal(room.admits(geom), false, 'a geom op naming an unseen id is a box mint, and is capped like one');
@@ -108,7 +108,7 @@ test('the replay filter is bounded, and forgets the oldest client rather than gr
 
   // The first client's high-water mark, then enough distinct client ids to push it
   // out. `origin.client` is peer-chosen and unbounded in cardinality, so without a
-  // ceiling this map grows for the life of the room — 200 fresh ids per message,
+  // ceiling this map grows for the life of the room - 200 fresh ids per message,
   // forever.
   room.applyOps(seat, [param('k', 'client-0', 5)]);
   for (let i = 1; i <= MAX_TRACKED_CLIENTS; i++) room.applyOps(seat, [param('k', `client-${i}`, 5)]);
@@ -120,7 +120,7 @@ test('the replay filter is bounded, and forgets the oldest client rather than gr
     peer.sent.filter((f) => f.t === 'ops').length, before,
     'a replay from a client still in the window is dropped, as it always was',
   );
-  // The oldest was evicted, so its replay is treated as fresh — the documented cost
+  // The oldest was evicted, so its replay is treated as fresh - the documented cost
   // of the bound: one re-broadcast, against a map that otherwise never stops growing.
   room.applyOps(seat, [param('k', 'client-0', 5)]);
   assert.equal(
@@ -165,7 +165,7 @@ test('a room’s admin snapshot is a copy — names, roles, join times, counters
   assert.equal(snap.memberCount, 2);
   assert.equal(snap.writerCount, 1);
   assert.equal(snap.observerCount, 1);
-  // Seeding the document does not count as an applied op — only what a member
+  // Seeding the document does not count as an applied op - only what a member
   // actually sent does.
   assert.equal(snap.opsApplied, 1);
   assert.equal(typeof snap.startedAt, 'number');

@@ -1,5 +1,5 @@
 /**
- * Catalog content lifecycle — expiry, scheduling, and revocation (plans/06 §3).
+ * Catalog content lifecycle - expiry, scheduling, and revocation (plans/06 §3).
  *
  * Pure functions only: no fs, no store. `assetState` resolves a lifecycle row
  * (or its absence) to one of four states at a given instant; `applyLifecycleToIndex`
@@ -14,7 +14,7 @@ export type OnExpiry = 'hide' | 'warn';
 /**
  * A permissioned block on making an asset go away (plans/27 §3). A held asset
  * refuses revocation, expiry-into-the-past/scheduling-into-the-future, and
- * (once plans/26 lands) blob deletion until the hold is released — the one
+ * (once plans/26 lands) blob deletion until the hold is released - the one
  * governance verb that only ever *preserves* availability. Setting it never
  * changes the resolved state; it only gates mutations.
  */
@@ -26,9 +26,9 @@ export interface LifecycleHold {
 
 export interface LifecycleRow {
   assetId: string;
-  validFrom?: string; // ISO — not live before this instant
-  validUntil?: string; // ISO — expired at/after this instant
-  revokedAt?: string; // ISO — revoked forever, regardless of validFrom/validUntil
+  validFrom?: string; // ISO - not live before this instant
+  validUntil?: string; // ISO - expired at/after this instant
+  revokedAt?: string; // ISO - revoked forever, regardless of validFrom/validUntil
   onExpiry: OnExpiry;
   hold?: LifecycleHold;
 }
@@ -50,7 +50,7 @@ export function assetState(row: LifecycleRow | undefined, now: number): AssetSta
 }
 
 /**
- * An availability window imported from an upstream DAM (plans/27 §2) — the
+ * An availability window imported from an upstream DAM (plans/27 §2) - the
  * provider's own expiry/scheduling, folded onto the fragment entry by
  * `mapProviderAsset`. Absent for providers with no such API (the manual
  * lifecycle arm is then the whole story).
@@ -65,7 +65,7 @@ export interface CombinedState {
   /**
    * True only when the asset is 'expired' *because of the upstream window*
    * (`availableUntil` at/before now). Upstream-driven expiry ignores a local
-   * `onExpiry: 'warn'` — the DAM is the source of truth for its own asset's
+   * `onExpiry: 'warn'` - the DAM is the source of truth for its own asset's
    * availability, so an unavailable-upstream asset is hidden, not merely
    * nagged. A purely-local expiry (`validUntil`) leaves this false and may warn.
    */
@@ -75,7 +75,7 @@ export interface CombinedState {
 /**
  * Resolve the effective state from a local lifecycle row and an optional
  * upstream availability window (plans/27 §2). Most-restrictive-wins: 'scheduled'
- * if EITHER start is still in the future, 'expired' if EITHER end has passed —
+ * if EITHER start is still in the future, 'expired' if EITHER end has passed - 
  * so a local admin can narrow an upstream window (pull the end earlier, delay
  * the start later) but never widen it past what the DAM allows. Revoked always
  * wins. With `window` undefined this reduces exactly to `assetState`.
@@ -96,8 +96,8 @@ export function combinedState(
 
 /**
  * Read the upstream availability window off a feed entry (the `availableFrom` /
- * `availableUntil` keys `mapProviderAsset` stamps). Returns undefined — without
- * allocating — for the common pack entry that carries neither, so the fold's
+ * `availableUntil` keys `mapProviderAsset` stamps). Returns undefined - without
+ * allocating - for the common pack entry that carries neither, so the fold's
  * fast path stays cheap.
  */
 export function entryWindow(entry: AssetIndexEntry): AvailabilityWindow | undefined {
@@ -135,7 +135,7 @@ export interface AssetIndex {
  * client can show the nag without a second fetch. Upstream-driven expiry always
  * hides (the DAM is the source of truth for its own asset's availability), so
  * `onExpiry: 'warn'` never rescues it. An index with no lifecycle rows and no
- * entry carrying an upstream window — the common pack case — is returned
+ * entry carrying an upstream window - the common pack case - is returned
  * untouched (same reference; no copy made).
  */
 export function applyLifecycleToIndex(index: AssetIndex, rows: LifecycleRow[], now: number): AssetIndex {
@@ -158,7 +158,7 @@ export function applyLifecycleToIndex(index: AssetIndex, rows: LifecycleRow[], n
 
 /**
  * Invert an index's format entries into a path → assetId map, where the path
- * is relative to the pack's catalog/ root — the same shape as the `rel` the
+ * is relative to the pack's catalog/ root - the same shape as the `rel` the
  * /catalog/* route already computes from the request URL. Tolerant of a
  * leading '/' and/or 'catalog/' prefix on the stored url (both forms appear
  * across packs); a format entry with no url is skipped.

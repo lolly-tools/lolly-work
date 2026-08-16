@@ -1,32 +1,32 @@
 /**
  * Export provenance (plans/17): every server render that consumed catalog
- * assets carries a machine-readable ingredients list — C2PA-shaped so a real
+ * assets carries a machine-readable ingredients list - C2PA-shaped so a real
  * C2PA signer can lift it into a signed manifest later, and honest today:
  * each ingredient's `c2pa` field is the upstream manifest IF the source
- * supplied one, and explicitly null when it didn't (Brandfolder ships none) —
+ * supplied one, and explicitly null when it didn't (Brandfolder ships none) - 
  * "«filename» from «provider» was used" still travels with the export.
  *
  * Zero-dep embedding: SVG gets a <metadata> JSON island; PNG gets an iTXt
- * chunk (keyword "lolly:provenance") spliced after IHDR — both survive normal
+ * chunk (keyword "lolly:provenance") spliced after IHDR - both survive normal
  * copying and are readable by exiftool/`pngcheck`-class tooling.
  */
 
 export interface ProvenanceIngredient {
   /** Human name of the asset ("Summit Logo"). */
   title: string;
-  /** Catalog id — pack ('suse/logos/primary') or federated ('ext/dam1/a1'). */
+  /** Catalog id - pack ('suse/logos/primary') or federated ('ext/dam1/a1'). */
   assetId: string;
   relationship: 'componentOf';
   source:
     | { kind: 'pack'; label: string }
     | { kind: 'provider'; provider: string; providerKind: string; label: string; remoteId: string; filename?: string };
   /** Upstream C2PA provenance for this ingredient:
-   *   - `{ manifestUrl }` — the source's own manifest reference, when it has one;
-   *   - `{ kind: 'embedded' }` — the source's API named none, but a detector
+   *   - `{ manifestUrl }` - the source's own manifest reference, when it has one;
+   *   - `{ kind: 'embedded' }` - the source's API named none, but a detector
    *     found a C2PA manifest embedded in the asset's bytes (plans/27 §4:
-   *     detection, never a verdict — the export can distinguish "source said
+   *     detection, never a verdict - the export can distinguish "source said
    *     nothing" from "source carries a credential");
-   *   - `null` — no provenance of its own (we attribute the ingredient regardless).
+   *   - `null` - no provenance of its own (we attribute the ingredient regardless).
    */
   c2pa: { manifestUrl: string } | { kind: 'embedded' } | null;
 }

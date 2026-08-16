@@ -1,8 +1,8 @@
 # Image Relay (kind: `imagerelay`)
 
 Federate an Image Relay DAM **read-only**. In this deployment Image Relay's role is
-**off-boarding** — federate → materialize → cutover into your own store (plans/27 §10) —
-not long-term residence. OAuth2 (BYOT) — see the
+**off-boarding** - federate → materialize → cutover into your own store (plans/27 §10) - 
+not long-term residence. OAuth2 (BYOT) - see the
 [shared OAuth onboarding](README.md#oauth-kinds-dropbox-gdrive-o365).
 
 ## What you need from Image Relay
@@ -13,11 +13,11 @@ not long-term residence. OAuth2 (BYOT) — see the
 - Optionally, **a folder id** to scope federation to one folder (with `recursive` for its
   descendants).
 - If you model asset expiry in Image Relay, note **which custom-metadata field** holds the
-  date — Image Relay has no native availability field, so you map it (below).
+  date - Image Relay has no native availability field, so you map it (below).
 
 ## Credential shape
 
-The OAuth JSON blob — captured, not typed:
+The OAuth JSON blob - captured, not typed:
 
 ```json
 { "clientId": "…", "clientSecret": "…", "refreshToken": "…" }
@@ -58,7 +58,7 @@ lw providers health acme-imagerelay
 
 - **Off-boarding is the point**: federate → `materialize` → `cutover`
   ([the exit](../catalog.md#the-exit--materialize-a-source-into-your-own-store)).
-- Download links are signed + short-lived (`expiringUrls`) — fetched per request, streamed,
+- Download links are signed + short-lived (`expiringUrls`) - fetched per request, streamed,
   host-pinned to `imagerelay.com`. The driver sends a mandatory `User-Agent` and self-caps at
   **5 requests/second** (Image Relay etiquette).
 - A file Image Relay reports as **deleted** is dropped from federation (a positive signal, not

@@ -1,16 +1,16 @@
 /**
- * S3 driver (plans/17 §11 phase 2) — any S3-compatible store (AWS, MinIO,
+ * S3 driver (plans/17 §11 phase 2) - any S3-compatible store (AWS, MinIO,
  * Ceph RGW), which is also the air-gap story. Zero-dep: SigV4 is hand-rolled
- * on node:crypto (GET/HEAD only — no payloads to sign beyond the empty hash),
+ * on node:crypto (GET/HEAD only - no payloads to sign beyond the empty hash),
  * and ListObjectsV2's XML is parsed with a narrow, shape-pinned scan rather
  * than an XML dependency.
  *
  * The credential is one secret string: "<accessKeyId>:<secretAccessKey>".
  * Object keys contain slashes, but ext/* blob paths are single-segment per
- * part — so remoteId is the base64url of the key, decoded on resolve.
+ * part - so remoteId is the base64url of the key, decoded on resolve.
  *
  * Objects are private; every fetch is freshly signed (expiringUrls semantics),
- * streamed through /catalog/ext/* — presigned URLs are never minted into the
+ * streamed through /catalog/ext/* - presigned URLs are never minted into the
  * feed. Prefix "folders" map to sections for exposure scoping + tags.
  */
 import { createHash, createHmac } from 'node:crypto';
@@ -34,7 +34,7 @@ const MIME: Record<string, string> = {
   mp4: 'video/mp4', webm: 'video/webm', zip: 'application/zip',
 };
 
-/** SigV4 payload/content hash — exported so the BlobStore S3 driver can sign
+/** SigV4 payload/content hash - exported so the BlobStore S3 driver can sign
  *  the body of a PUT (plans/27 §5). */
 export const sha256hex = (s: string | Buffer): string => createHash('sha256').update(s).digest('hex');
 const hmacBuf = (key: string | Buffer, data: string): Buffer => createHmac('sha256', key).update(data).digest();

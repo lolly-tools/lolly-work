@@ -4,7 +4,7 @@
  * Each event's hash covers the previous event's hash + the canonical JSON of
  * the event body, so truncation or in-place tampering breaks the chain at a
  * detectable seq. Payloads must already be privacy-safe (digests, field
- * names — never raw input values); this module doesn't inspect them.
+ * names - never raw input values); this module doesn't inspect them.
  */
 import { canonicalJson, sha256Hex } from '../lib/crypto.ts';
 

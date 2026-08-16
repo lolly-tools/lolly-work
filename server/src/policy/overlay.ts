@@ -1,5 +1,5 @@
 /**
- * Tool policy overlays — per-(input × group) access levels, tool visibility,
+ * Tool policy overlays - per-(input × group) access levels, tool visibility,
  * and the enforcement block (plans/03 §4, parent commercial-build §4.C).
  *
  * Overlays are server-owned data, never a fork of tool.json. Everything here
@@ -79,8 +79,8 @@ export function resolveInputAccess(
 }
 
 /**
- * Whether ANY rule exists for this input — its own list, or the `'*'` input
- * default — regardless of whether a caller's groups match one. Pure and
+ * Whether ANY rule exists for this input - its own list, or the `'*'` input
+ * default - regardless of whether a caller's groups match one. Pure and
  * group-blind on purpose: it answers "did an operator visibly try to govern
  * this field", not "does it apply to you".
  *
@@ -88,11 +88,11 @@ export function resolveInputAccess(
  * `resolveInputAccess`'s member-side fallback (EDITABLE-if-nothing-matches):
  * a live collab guest carries only the synthetic `guests` group
  * (`server/src/collab/guests.ts`), so a rule an operator wrote for a tool's
- * real editing groups never matches one — and falling open on a field the
+ * real editing groups never matches one - and falling open on a field the
  * operator was demonstrably trying to lock down is the opposite of "the
  * narrowest input surface of anyone" (plans/02 §8). A genuinely ungoverned
  * input (no rules at all) still reports false, so it stays editable for
- * everyone, guest included — this only tightens the GOVERNED case.
+ * everyone, guest included - this only tightens the GOVERNED case.
  */
 export function inputIsGoverned(overlay: ToolOverlay | undefined, inputId: string): boolean {
   if (!overlay?.inputAccess) return false;
@@ -130,7 +130,7 @@ export interface ParamViolation {
 
 /**
  * Render-time enforcement: which supplied params does this caller's group
- * set forbid? (Hidden params are reported as violations too — a caller that
+ * set forbid? (Hidden params are reported as violations too - a caller that
  * names an input it cannot see is probing, and 'hidden' must behave at least
  * as strictly as 'locked'.)
  */
@@ -170,11 +170,11 @@ const WATERMARKS = ['until-approved', 'always', 'never'] as const;
  * Validate + normalize an overlay edit from the control plane (console/CLI)
  * into a storable ToolOverlay, bumping the version past `currentVersion` so
  * policyVersion (and with it org-config ETags and render cache keys) moves.
- * Returns null when the shape is invalid — the route answers 400, nothing is
+ * Returns null when the shape is invalid - the route answers 400, nothing is
  * half-written. Groups are trimmed, deduped, and never empty ('*' = everyone);
  * a 'choice' rule needs a non-empty allow list; only 'locked' rules carry a
  * baked value. An overlay that governs nothing (no rules, no visibility, no
- * enforce, no defaults) is returned with empty sections — storing it is a
+ * enforce, no defaults) is returned with empty sections - storing it is a
  * legitimate "reset to ungoverned".
  */
 export function normalizeOverlay(toolId: string, raw: unknown, currentVersion = 0): ToolOverlay | null {

@@ -4,11 +4,11 @@
  * credential line the console draws under each shot STATES what the file says
  * rather than what the deployment would like to claim. Mirrors the OSS docs'
  * shot-provenance.ts + shot-anatomy.ts, but here the console is a runtime
- * (air-gap, no-build) renderer with no way to decode C2PA itself — so the server
+ * (air-gap, no-build) renderer with no way to decode C2PA itself - so the server
  * decodes and hands over the handful of descriptive facts worth one line.
  *
  * It reports only DESCRIPTIVE claims (who signed, when, what it is, how much
- * geometry) — never a pass/fail verdict. Verification is the reader's to do,
+ * geometry) - never a pass/fail verdict. Verification is the reader's to do,
  * against the bytes they received, in the console's own #/verify view: the
  * deployment does not mark its own homework. A file whose credential will not
  * decode returns null and gets no line, rather than a line that says less than it
@@ -32,7 +32,7 @@ export interface ShotCred {
   dimensions: string | null;
   /** Set when the credential declares AI-generated or AI-composited content. */
   ai: 'generated' | 'composite' | null;
-  /** What the file is made of — the "134 paths, 484 KB" claim, checkable against the bytes. */
+  /** What the file is made of - the "134 paths, 484 KB" claim, checkable against the bytes. */
   anatomy: { kind: 'vector' | 'raster'; paths: number; groups: number; elements: number; bytes: number };
 }
 
@@ -68,7 +68,7 @@ function anatomy(bytes: Uint8Array, file: string): ShotCred['anatomy'] {
 }
 
 /** The credential summary for one shot file, or null if it cannot be read. Never
- *  throws — a credential must not be the thing that breaks the docs view. */
+ *  throws - a credential must not be the thing that breaks the docs view. */
 export async function readShotCred(path: string, file: string): Promise<ShotCred | null> {
   let key: string;
   try {
@@ -88,7 +88,7 @@ async function decode(path: string, file: string): Promise<ShotCred | null> {
   try {
     const bytes = new Uint8Array(await readFile(path));
     const engine = await loadEngine();
-    // A full decode, but we surface only the descriptive claims below — the
+    // A full decode, but we surface only the descriptive claims below - the
     // verdict (valid/trusted) is the reader's to reach in #/verify.
     const report = await engine.verifyC2pa(bytes, { trustAnchors: [] });
     if (!report || report.state === 'none') return null;
@@ -113,7 +113,7 @@ async function decode(path: string, file: string): Promise<ShotCred | null> {
       ai,
       anatomy: anatomy(bytes, file),
     };
-    // Nothing worth a line — no signer, no date, no generator.
+    // Nothing worth a line - no signer, no date, no generator.
     if (!cred.signer && !cred.day && !cred.generator) return null;
     return cred;
   } catch {

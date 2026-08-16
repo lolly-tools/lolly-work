@@ -8,12 +8,12 @@
  * across every container the engine covers): it records only WHETHER a manifest
  * is present and in which container, then discards the store bytes.
  *
- * It is a DETECTOR, never a verifier — and never a second C2PA implementation
+ * It is a DETECTOR, never a verifier - and never a second C2PA implementation
  * (plans/27 §11). It never parses claims and never says "valid" or "trusted":
  * validation belongs to verifiers (the engine's verify/verdict modules, which
  * stay client-side), and signing to `render/c2pa-signer.ts`. One C2PA
  * implementation across both repos, engine-owned and OSS-tested. Absence of a
- * finding is never proof of absence — a container the engine can't parse is
+ * finding is never proof of absence - a container the engine can't parse is
  * reported as 'none', honestly, not as "we checked and it's clean".
  */
 import type { AssetIndex } from './lifecycle.ts';
@@ -26,14 +26,14 @@ export interface CredentialDetection {
   container?: string;
 }
 
-/** Persisted overlay row — one per scanned asset. */
+/** Persisted overlay row - one per scanned asset. */
 export interface CredentialRow {
   assetId: string;
   status: CredentialStatus;
   container?: string;
   /** When the sniff ran (ISO). */
   sniffedAt: string;
-  /** Upstream `updatedAt` at scan time — lets a re-scan know the source changed. */
+  /** Upstream `updatedAt` at scan time - lets a re-scan know the source changed. */
   sourceUpdatedAt?: string;
 }
 
@@ -49,7 +49,7 @@ async function loadEngine(): Promise<{
 }
 
 /**
- * Sniff whether `bytes` embed a C2PA manifest. Detection only — never throws;
+ * Sniff whether `bytes` embed a C2PA manifest. Detection only - never throws;
  * a container the engine cannot parse (or an engine that fails to load) yields
  * 'none' rather than an error, and the store bytes are dropped either way.
  */

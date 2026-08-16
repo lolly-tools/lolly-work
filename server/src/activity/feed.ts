@@ -1,13 +1,13 @@
 /**
- * Activity feed — a humane, merged timeline over two existing records:
+ * Activity feed - a humane, merged timeline over two existing records:
  *   - the audit log (authoritative "who did what": links, sessions, projects,
  *     grants, providers, approvals, groups, lockouts, …), and
- *   - attributed usage telemetry (downloads/exports, tool opens, asset use) —
+ *   - attributed usage telemetry (downloads/exports, tool opens, asset use) - 
  *     only events that carry a userId, so the feed can name the actor.
  *
  * Pure: takes the two event lists + an id→name map and returns a filtered,
  * paginated page plus facets (categories, actors) for the console's filter bar.
- * The console owns the phrasing, deep links, and thumbnails — this only
+ * The console owns the phrasing, deep links, and thumbnails - this only
  * normalises, merges, filters, and sorts.
  */
 import type { AuditEvent } from '../audit/chain.ts';
@@ -20,7 +20,7 @@ export interface ActivityActor {
   kind: ActorKind;
 }
 export interface ActivityItem {
-  id: string; // 'a<seq>' for audit, 't<index>' for telemetry — stable within a snapshot
+  id: string; // 'a<seq>' for audit, 't<index>' for telemetry - stable within a snapshot
   source: 'audit' | 'telemetry';
   at: string;
   action: string;
@@ -33,7 +33,7 @@ export interface ActivityQuery {
   category?: string | null;
   actor?: string | null; // actor id
   group?: string | null; // only items whose actor is a member of this group
-  day?: string | null; // YYYY-MM-DD — only this calendar day (clicking a date filters to it)
+  day?: string | null; // YYYY-MM-DD - only this calendar day (clicking a date filters to it)
   q?: string | null;
   before?: string | null; // ISO cursor, exclusive
   limit?: number;
@@ -51,10 +51,10 @@ export interface ActivityPage {
 
 // Usage events worth showing as attributed activity. Audit already records
 // link.create / session.* / etc., so those telemetry twins are NOT re-listed
-// here — only signals audit does not carry (a successful download is the key one).
+// here - only signals audit does not carry (a successful download is the key one).
 const TELEMETRY_ACTIONS = new Set(['render.export', 'tool.open', 'catalog.asset-use']);
 
-/** Coarse bucket for the filter bar — the action's head, with a few folds. */
+/** Coarse bucket for the filter bar - the action's head, with a few folds. */
 export function categoryOf(action: string): string {
   const head = action.split('.')[0] ?? action;
   if (head === 'render' || head === 'tool') return 'render';
@@ -146,7 +146,7 @@ export function buildActivity(
     if (x.actor.kind === 'user' && x.actor.id) actorName.set(x.actor.id, x.actor.name);
   }
   // Names for every user referenced on THIS page (actor, user: subject, user:
-  // grant principal) — keeps the payload small while making the feed readable.
+  // grant principal) - keeps the payload small while making the feed readable.
   const names: Record<string, string> = {};
   const addName = (uid: string | null | undefined): void => {
     if (uid && nameById.has(uid)) names[uid] = nameById.get(uid)!;

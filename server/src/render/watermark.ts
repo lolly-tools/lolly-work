@@ -11,7 +11,7 @@
  *
  * TODO(plans/05): the `until-approved` enforcement state needs the approval
  * store to decide per-render whether the mark stays; that linkage is deliberately
- * NOT built here — this compositor only knows "watermark now" vs "don't".
+ * NOT built here - this compositor only knows "watermark now" vs "don't".
  */
 
 const PATTERN_ID = 'lw-preview-watermark';
@@ -39,8 +39,8 @@ export function applyPreviewWatermark(svg: string): string {
   const tileW = 220;
   const tileH = 160;
   // SUSE leads the stack (the brand pair everywhere, 2026-08-11): it resolves
-  // wherever the face is installed — the worker image's font bake (plans/22
-  // §6.2 audit R2, queued) will make that every sovereign render — and the
+  // wherever the face is installed - the worker image's font bake (plans/22
+  // §6.2 audit R2, queued) will make that every sovereign render - and the
   // sans fallbacks keep the mark legible where it is not.
   const defs =
     `<defs>` +

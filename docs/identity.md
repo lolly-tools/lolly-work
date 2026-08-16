@@ -1,9 +1,9 @@
 # Identity and sessions
 
-Two principals, two cookies, two token domains. Everything is a signed, stateless token —
+Two principals, two cookies, two token domains. Everything is a signed, stateless token - 
 there is no session table.
 
-![The People directory — every signed-in member with role, groups and instant lockout](shots/people-directory.svg)
+![The People directory - every signed-in member with role, groups and instant lockout](shots/people-directory.svg)
 
 | Principal | Cookie | Comes from | Lives |
 |---|---|---|---|
@@ -17,7 +17,7 @@ link signature or an OAuth state.
 
 ## OIDC SSO
 
-Provider-agnostic by construction — nothing in the code knows your IdP. Set:
+Provider-agnostic by construction - nothing in the code knows your IdP. Set:
 
 ```json
 "idp": {
@@ -45,7 +45,7 @@ Routes: `GET /api/auth/config` (what the sign-in screen needs), `GET /api/auth/l
 ## The dev provider
 
 `dev.enabled: true` plus a `dev.users` list enables `GET /api/auth/dev?email=…`: a
-passwordless local sign-in for development, demos and tests. It bypasses OIDC entirely —
+passwordless local sign-in for development, demos and tests. It bypasses OIDC entirely - 
 keep it off in production. The Helm values ship it disabled.
 
 ## Groups → role
@@ -61,7 +61,7 @@ PUT      /api/v1/users/:id/local-groups
 
 The effective group set is the union (IdP ∪ local), and role is derived from it: the
 highest of `owner`, `admin`, `approver`, `author` present, otherwise `member`. A local
-group named after a role escalates exactly like an IdP one — which is deliberate, and why
+group named after a role escalates exactly like an IdP one - which is deliberate, and why
 group editing is an admin action and audited.
 
 Group membership is also how governance targets people: overlay visibility, approval-chain
@@ -74,7 +74,7 @@ See [permissions](permissions.md).
 POST /api/v1/users/:id/disabled     # { disabled: true }
 ```
 
-Disable is **instant** — it is re-checked on every request. The signed session token,
+Disable is **instant** - it is re-checked on every request. The signed session token,
 however, remains valid until it expires: there is no server-side session revocation list
 today. Two consequences worth stating plainly:
 
@@ -88,7 +88,7 @@ This is the one identity gap an auditor will raise; it is tracked in [status](st
 A guest-edit link admits someone with no account: `GET /l/:id?s=…` mints an `lw_guest`
 cookie scoped to that link's tool (and session, if the link names one), for whatever
 remains of the link's lifetime. Guests carry the `guest` role, which grants **nothing** by
-default — their access is entirely link-scoped. Links can carry a password (scrypt-hashed),
+default - their access is entirely link-scoped. Links can carry a password (scrypt-hashed),
 and `policy.guestLinks.maxTtlHours` caps the lifetime regardless of what the minting UI
 asks for. `guestLinks.enabled: false` refuses minting outright.
 
@@ -97,7 +97,7 @@ what a guest can be granted.
 
 ## What a shell sees
 
-Once signed in, a connected shell polls one document — `GET /api/v1/org-config` — carrying
+Once signed in, a connected shell polls one document - `GET /api/v1/org-config` - carrying
 identity, role, permissions, tool and input governance, managed profile fields and feature
 flags, pre-filtered for that caller's groups and ETag'd on a policy version. Profile fields
 sourced from the IdP come back `mode: locked, source: idp`, which is what renders the

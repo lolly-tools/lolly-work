@@ -1,7 +1,7 @@
 /**
  * End-to-end over real HTTP: dev-provider login, org-config (locked profile
  * fields, ETag), catalog filtering, the guest-link lifecycle, telemetry
- * attribution, and fleet — the golden paths of plans/02/03/04/06/07/09/10.
+ * attribution, and fleet - the golden paths of plans/02/03/04/06/07/09/10.
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -26,7 +26,7 @@ const OVERLAY: ToolOverlay = {
   visibility: { groups: ['brand-team'] },
 };
 
-// Visible to everyone; policies its inputs — feeds the org-config annotation tests.
+// Visible to everyone; policies its inputs - feeds the org-config annotation tests.
 const QR_OVERLAY: ToolOverlay = {
   toolId: 'qr-code',
   version: 1,
@@ -232,7 +232,7 @@ test('admin endpoints: grant-gated summary/audit/messages/users', async () => {
   const admin = await login('admin@test');
   const marketer = await login('marketer@test');
 
-  // summary: telemetry.view — admin yes, member no
+  // summary: telemetry.view - admin yes, member no
   assert.equal((await fetch(`${base}/api/v1/telemetry/summary`, { headers: { cookie: marketer } })).status, 403);
   const summary = await (await fetch(`${base}/api/v1/telemetry/summary`, { headers: { cookie: admin } })).json() as {
     totals: { events: number }; days: unknown[];
@@ -257,7 +257,7 @@ test('admin endpoints: grant-gated summary/audit/messages/users', async () => {
   assert.equal(head.hash, audit.events[audit.events.length - 1]!.hash);
   assert.ok(head.seq >= 5 && typeof head.at === 'string');
 
-  // system readiness: pending migrations — owner-gated (instance.config)
+  // system readiness: pending migrations - owner-gated (instance.config)
   assert.equal((await fetch(`${base}/api/v1/system/migrations`)).status, 401); // no session
   assert.equal((await fetch(`${base}/api/v1/system/migrations`, { headers: { cookie: admin } })).status, 403); // admin ≠ owner
   const owner = await login('owner@test');
@@ -382,7 +382,7 @@ test('approvals: submit → SoD block → approve, with both notifications', asy
   const created = await submit.json() as { id: string; state: string };
   assert.equal(created.state, 'in_review');
 
-  // the submitter cannot act on their own approval — separation of duties
+  // the submitter cannot act on their own approval - separation of duties
   const own = await fetch(`${base}/api/v1/approvals/${created.id}/act`, {
     method: 'POST', headers: { cookie: marketer, 'content-type': 'application/json' }, body: JSON.stringify({ action: 'approve' }),
   });

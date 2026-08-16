@@ -10,7 +10,7 @@
  * narrow local shims over loosening tsconfig.
  *
  * Runtime correctness of these shapes is verified by tests/render.test.ts, which
- * renders through the REAL engine — so a shim that drifts from the contract is
+ * renders through the REAL engine - so a shim that drifts from the contract is
  * caught as a test failure, not a silent type lie.
  *
  * The specifiers are `string`-typed on purpose: a non-literal specifier stops tsc
@@ -19,7 +19,7 @@
  *
  * The engine + core are VENDORED under `vendor/` (a pinned, checksum-verified
  * snapshot from the OSS repo's `scripts/pack-engine.ts`) and consumed via
- * `file:vendor/…` dir deps — npm symlinks them, so the realpath sits outside
+ * `file:vendor/…` dir deps - npm symlinks them, so the realpath sits outside
  * node_modules and Node's TS type-stripping runs. This makes the control plane
  * self-contained (no sibling repo → CI/Vercel/air-gap all work) and enforces
  * the MPL "consumed unmodified" line: `scripts/verify-engine-pin.ts` (pretest +
@@ -80,7 +80,7 @@ export interface ExportOpts {
   [k: string]: unknown;
 }
 
-/** The host object this shell builds — the members of HostV1 it actually fulfils. */
+/** The host object this shell builds - the members of HostV1 it actually fulfils. */
 export interface WorkHost {
   version: '1';
   shell: string;

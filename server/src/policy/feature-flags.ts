@@ -1,5 +1,5 @@
 /**
- * Feature-flag governance — the control plane's opinion on the per-user shell
+ * Feature-flag governance - the control plane's opinion on the per-user shell
  * flags (`profile.featureFlags` in the OSS shell, see its `feature-flags.ts`).
  *
  * Two knobs per flag, both instance-wide policy (not per-group):
@@ -8,10 +8,10 @@
  *   - `visibility`  whether the user sees a toggle at all. `hide` removes the
  *                control from the profile view; the resolved default still
  *                applies. This is what lets a seasonal surprise (Pride, Apr 1)
- *                ship dark — set default `off` + `hide` now, flip to `on` on the
+ *                ship dark - set default `off` + `hide` now, flip to `on` on the
  *                day and it lights up without ever having shown a switch.
  *
- * The control plane can only govern flags it knows about — GOVERNABLE_FLAGS
+ * The control plane can only govern flags it knows about - GOVERNABLE_FLAGS
  * mirrors the shell's standalone toggles by id; the built-in defaults must match
  * the shell so "inherit" is honest. Category/Pro flags stay purely local.
  */
@@ -59,7 +59,7 @@ export const GOVERNABLE_FLAGS: readonly GovernableFlag[] = [
     // shells/web/src/feature-flags.ts). It shipped opt-in; the shell's `beta` pill
     // stays, because that pill describes the ceremony's maturity rather than the
     // switch's position. This value exists to make "inherit" honest, so it moves
-    // when the shell moves — never on its own.
+    // when the shell moves - never on its own.
     builtinDefault: true,
     info: 'The P2P invite/accept ceremony that lets two devices co-edit a tool session directly, no account or server (OSS plans/100 Track A). On by default for everyone since 2026-08-10; the shell still labels it beta. Nothing reaches the network until a user starts or accepts a collab. An instance that wants collaboration to go through the control plane only (Track B, gated by the collab.join/collab.edit org-config bits — see policy/org-config.ts) can force this default off and hide the toggle, which overrides any per-user choice.',
   },
@@ -70,7 +70,7 @@ export const GOVERNABLE_FLAGS: readonly GovernableFlag[] = [
     // NEARBY_DISCOVERY_FLAG). Mirrors purely to keep "inherit" honest, and moves only
     // when the shell moves. A fleet that must not have devices advertising themselves on
     // a network (or being discoverable to each other) forces this off and hides the
-    // toggle. Only Tauri shells can actually discover — a browser build has no provider —
+    // toggle. Only Tauri shells can actually discover - a browser build has no provider - 
     // so on a browser-only fleet this flag is inert, but governing it is still correct.
     builtinDefault: true,
     info: 'Lets nearby Lolly devices on the same network find each other (mDNS/DNS-SD), so an invite can be handed over by tapping a name instead of scanning a code (OSS plans/110). Native shells only; a browser cannot discover. A device is never discoverable until the user opts in for a set time, and the ceremony still confirms every pairing with matching plates. Force off + hide to keep devices off the local-network discovery lane fleet-wide.',
@@ -148,7 +148,7 @@ export function normalizeFlagGovernance(
   }
   if (b.visibility !== undefined && b.visibility !== null) {
     if (b.visibility !== 'show' && b.visibility !== 'hide') return null;
-    // 'show' is the absence of an opinion — store it only when it differs, so a
+    // 'show' is the absence of an opinion - store it only when it differs, so a
     // reset-to-defaults record collapses to {} and the version stays stable.
     if (b.visibility === 'hide') rec.visibility = 'hide';
   }

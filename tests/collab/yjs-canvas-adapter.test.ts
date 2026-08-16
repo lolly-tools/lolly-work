@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
  * The Yjs adapter must satisfy the SAME §8 conformance suite the OSS `ReferenceCanvasDoc`
- * passes — imported from the pinned SDK so both repos run IDENTICAL bytes (plans/99 §8,
+ * passes - imported from the pinned SDK so both repos run IDENTICAL bytes (plans/99 §8,
  * plans/14 §11). If this ever fails, either the adapter or the contract drifted.
  *
  * v1.1 landed 2026-08-09: the adapter now implements `col`-scoped collection ops (every
  * collection's boxes in one flat root, keyed `<col>\0<BoxId>`, mirroring
  * `ReferenceCanvasDoc`'s per-collection registers and order), so the three collection
  * cases the vendored suite added pass and this test is no longer skipped. It was skipped
- * 2026-08-10 for exactly that gap — the drift the suite exists to surface — and the skip
+ * 2026-08-10 for exactly that gap - the drift the suite exists to surface - and the skip
  * is gone because the gap is. The adapter is still the deferred multi-replica follow-up
- * (plans/14 §8; rooms serve on the vendored `ReferenceCanvasDoc` — see
+ * (plans/14 §8; rooms serve on the vendored `ReferenceCanvasDoc` - see
  * tests/collab/room-conformance.test.ts), and the cross-doc register caveat documented in
  * the adapter header still stands, per collection. Tracked in plans/14 §10.
  *
@@ -18,7 +18,7 @@
  * caveat the header makes a gate out of ("before enabling multi-replica sync…") is only
  * meaningful if its SIZE is pinned by a test: an adapter can pass every single-doc
  * conformance case and still lose a peer's whole collection on the first sync. These are
- * lolly-work's own legs, not the shared suite — a cross-doc merge is a property of the
+ * lolly-work's own legs, not the shared suite - a cross-doc merge is a property of the
  * Yjs storage model, so `ReferenceCanvasDoc` has no counterpart to run them against.
  */
 import { test } from 'node:test';
@@ -35,7 +35,7 @@ test('Yjs adapter satisfies the canvas-op §8 shared conformance suite', () => {
 
 // ── cross-doc merge (the multi-replica caveat, pinned by size) ──────────────────
 
-/** A two-way Yjs sync — each doc sends the other exactly what it is missing. */
+/** A two-way Yjs sync - each doc sends the other exactly what it is missing. */
 function sync(a: Y.Doc, b: Y.Doc): void {
   const fromA = Y.encodeStateAsUpdate(a, Y.encodeStateVector(b));
   const fromB = Y.encodeStateAsUpdate(b, Y.encodeStateVector(a));
@@ -50,7 +50,7 @@ const addOp = (id: BoxId, orderKey: string, client: string, clock: number, col?:
 
 test('two docs that first touch the SAME collection concurrently keep both peers\' rows', () => {
   // The regression this pins: with a nested `Y.Map` per collection, Yjs resolved the
-  // CREATION of the collection itself by per-key LWW on the value — the losing doc's
+  // CREATION of the collection itself by per-key LWW on the value - the losing doc's
   // whole subtree was deleted, so a peer that had written five rows before the first
   // sync converged on none of them, at any app clock. A flat key space makes the two
   // peers' writes different keys of a root type, which merges structurally.
@@ -71,8 +71,8 @@ test('two docs that first touch the SAME collection concurrently keep both peers
 
 test('a collection\'s cross-doc loss is one box — exactly the canvas\'s, never the collection', () => {
   // The caveat that REMAINS (adapter header): two docs that concurrently create the same
-  // BoxId keep one box map and lose the other's registers. This asserts its size — one
-  // box, siblings untouched — in a collection and on the canvas, so a later fix to the
+  // BoxId keep one box map and lose the other's registers. This asserts its size - one
+  // box, siblings untouched - in a collection and on the canvas, so a later fix to the
   // register comparison cannot quietly widen it back out.
   const docA = new Y.Doc();
   const docB = new Y.Doc();
@@ -112,7 +112,7 @@ test('a field named __alive/__order is an ordinary field, not the membership reg
   // The two registers share the box's Y.Map with fields, so an unescaped field name
   // would BE the register: `{k:'field', field:'__alive', value:false}` would delete a
   // box with no `remove` op ever authorized (box field names are not whitelisted on the
-  // gateway's accept path — `governedInputId` resolves a box op to `op.col` only), and
+  // gateway's accept path - `governedInputId` resolves a box op to `op.col` only), and
   // the reference, which keeps alive/order in their own slots, would keep it as a field.
   // Same op log, both implementations, byte-identical state.
   const ops: CanvasOp[] = [

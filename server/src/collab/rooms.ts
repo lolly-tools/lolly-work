@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * Collab rooms — the live-session document authority (plans/14 §6, OSS
+ * Collab rooms - the live-session document authority (plans/14 §6, OSS
  * plans/100 §7). One room per session id; the room owns the converged document,
  * the roster, the presence relay, and the per-room edit counters the audit
  * rollup reads on close. The gateway (gateway.ts) owns sockets, auth, and
  * policy; this module owns state.
  *
- * DOCUMENT AUTHORITY — `ReferenceCanvasDoc`, from the pinned contract.
+ * DOCUMENT AUTHORITY - `ReferenceCanvasDoc`, from the pinned contract.
  * plans/14 §6 targets single-node rooms ("one node serves the org"), and for a
  * single doc the reference CRDT and the Yjs adapter are conformance-equivalent:
  * both resolve every register by the op's `(clock, client)` Lamport origin, and
@@ -18,13 +18,13 @@
  *
  * STRUCTURAL RULE (OSS plans/100 §7 item 5, plans/99 §5). This module imports
  * NOTHING from `../policy` or `../rbac`, and the ENTIRE presence path lives
- * inside it. Presence therefore cannot be policy-checked — not by convention or
+ * inside it. Presence therefore cannot be policy-checked - not by convention or
  * by a reviewer remembering, but because the code that relays it has no way to
  * reach the policy engine. tests/collab/gateway.test.ts asserts the absence of
  * those imports, so re-introducing one is a test failure. Presence likewise
  * never reaches the store: the only copy is the in-memory `presence` map, which
  * dies with the room (it exists so a joiner gets the current set, plans/100 §4.7).
- * This module STILL has no store import after persistence landed — the room is
+ * This module STILL has no store import after persistence landed - the room is
  * handed a `RoomPersistence` instance and hands it back only `toInputs()`, a
  * seam that can express a document and nothing else.
  *
@@ -64,7 +64,7 @@ import type { QuiesceResult, RoomPersistence, RoomWriteback, RoomWriter } from '
 // ── caps + limits (OSS plans/100 §7 item 5, §11.21) ───────────────────────────
 
 /** Writers per room; the next eligible joiner becomes an observer and is told
- *  why ("room full, view only" — plans/100 §7 item 5). */
+ *  why ("room full, view only" - plans/100 §7 item 5). */
 export const WRITER_CAP = 10;
 /** Writer seats ONE user may hold in one room. WRITER_CAP is per room, so without
  *  this a single account with several tabs (or a script) could take every seat and
@@ -78,7 +78,7 @@ export const MAX_OPS_PER_MESSAGE = 200;
 export const MAX_SCALAR_CHARS = 32_768;
 /** Most fields one box row may carry. */
 export const MAX_ROW_FIELDS = 200;
-/** Cursor-chat ceiling — the contract's own limit (plans/100 §3). */
+/** Cursor-chat ceiling - the contract's own limit (plans/100 §3). */
 export const MAX_CHAT_CHARS = 64;
 
 // ── ceilings on the DOCUMENT, not the frame ──────────────────────────────────
@@ -86,8 +86,8 @@ export const MAX_CHAT_CHARS = 64;
 // MAX_ROW_FIELDS and MAX_SCALAR_CHARS bound ONE row; nothing bounded the number of
 // rows, collections or params, and `ReferenceCanvasDoc.ensure` mints a box for any
 // (col, id) pair it has not seen. So an authorized writer could grow a room's
-// document — and the whole-document jsonb the snapshot cadence serialises every 20
-// batches — without limit. These are the ceilings that make a room's memory and its
+// document - and the whole-document jsonb the snapshot cadence serialises every 20
+// batches - without limit. These are the ceilings that make a room's memory and its
 // snapshot row a bounded quantity. Every one is far above a real tool session (a
 // large deck is tens of rows), so tripping one means something is wrong, not busy.
 
@@ -103,14 +103,14 @@ export const MAX_BOXES_PER_COLLECTION = 2_000;
  *  ceiling of its own. */
 export const MAX_TRACKED_CLIENTS = 512;
 
-/** Keys that must never index a plain object, refused at the boundary — the
+/** Keys that must never index a plain object, refused at the boundary - the
  *  enum/prototype-key discipline (plans/100 §11.21).
  *
  *  This is a NARROWING, not the defence. A deny-list can only name the keys
  *  somebody thought of, and `Object.prototype` has more of them than three:
  *  `toString`, `valueOf` and `hasOwnProperty` are inherited members too, and each
  *  would have turned `overlay.inputAccess[inputId]` into a truthy, non-iterable
- *  function. The lookup itself is what had to be fixed, and was — `resolveInputAccess`
+ *  function. The lookup itself is what had to be fixed, and was - `resolveInputAccess`
  *  reads its table through an own-property check (policy/overlay.ts). */
 const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
@@ -122,7 +122,7 @@ export function isSafeKey(key: string): boolean {
 //
 // Frame types live here rather than in gateway.ts because the room is what emits
 // most of them. `error` carries a code string; the codes themselves are the
-// gateway's (it is the only side that can produce them) — a union of strings is
+// gateway's (it is the only side that can produce them) - a union of strings is
 // data, not a policy import.
 
 export type MemberRole = 'writer' | 'observer';
@@ -136,12 +136,12 @@ export interface RosterEntry {
   name: string;
   role: MemberRole;
   opVersion: string;
-  /** Their last presence frame, when they have sent one. Ephemeral — see the
+  /** Their last presence frame, when they have sent one. Ephemeral - see the
    *  structural rule above. */
   presence?: Presence;
 }
 
-/** The document as JSON — `CanvasDocState` uses Maps, which JSON cannot carry. */
+/** The document as JSON - `CanvasDocState` uses Maps, which JSON cannot carry. */
 export interface WireDocState {
   order: BoxId[];
   boxes: Record<BoxId, BoxRow>;
@@ -159,7 +159,7 @@ export type ServerFrame =
       you: RosterEntry;
       notice?: JoinNotice;
       /** Input ids in the stored session that v1.1 cannot sync (see
-       *  `seedOpsFromInputs`) — declared so a client shows them read-only
+       *  `seedOpsFromInputs`) - declared so a client shows them read-only
        *  instead of silently diverging. */
       unsynced?: string[];
     }
@@ -179,13 +179,13 @@ export interface RoomMember {
    *  it would mis-route (`isOpSendableTo`). */
   readonly opVersion: string;
   /** Set when this seat is a GUEST admitted by a guest-edit link (plans/02 §8,
-   *  plans/14 §6) rather than a signed-in member, and carrying the link id —
+   *  plans/14 §6) rather than a signed-in member, and carrying the link id - 
    *  which IS a guest's principal id (`iam/sessions.ts` `guestActor`).
    *
    *  The room needs it for exactly one thing: attribution on the write-back. A
    *  guest is not a row in `users`, and `sessions.updated_by` is a foreign key to
    *  one, so the ABSENCE of this field is what keeps a guest's edit out of that
-   *  column — and its presence is what puts an honest `guest:<linkId>` on the
+   *  column - and its presence is what puts an honest `guest:<linkId>` on the
    *  revision instead of letting the room fall back to something that reads as a
    *  member (see persistence.ts `RoomWriter`). Nothing else here branches on it:
    *  a guest is seated, counted, capped, relayed and broadcast exactly like a
@@ -196,7 +196,7 @@ export interface RoomMember {
 }
 
 /** One seated member, as exposed to admin introspection: display name, role,
- *  and when they joined. No `userId`, no `opVersion`, no `send` — the admin
+ *  and when they joined. No `userId`, no `opVersion`, no `send` - the admin
  *  console's Rooms panel (OSS plans/100 §7, plans/14 §6) needs "who's in here
  *  and can they write", not an identity to correlate against, and never the
  *  live closure that could be used to push a frame from outside the room. */
@@ -206,7 +206,7 @@ export interface RoomMemberSnapshot {
   joinedAt: number;
 }
 
-/** A room's live state, COPIED out for admin introspection — counters, roles
+/** A room's live state, COPIED out for admin introspection - counters, roles
  *  and display names, never a presence payload or an input value
  *  (keys-never-values, plans/100 §7 item 5 / §11.21). `Room.snapshotForAdmin`
  *  builds one of these; `RoomRegistry.list` is the whole registry's worth. */
@@ -223,7 +223,7 @@ export interface RoomSnapshot {
 
 /**
  * The SIZE of the maps a room grows PER CONNECTION/PER GESTURE as members and
- * clients come and go — numbers only, never a key, an id, a name or a value. A
+ * clients come and go - numbers only, never a key, an id, a name or a value. A
  * room lives for hours and every one of these is fed by something a peer
  * controls (a connection, a presence frame, a peer-chosen `origin.client`), so
  * "does it come back down when everyone leaves" is a property worth asserting
@@ -231,13 +231,13 @@ export interface RoomSnapshot {
  *
  * NOT every map: `seenUsers`/`opsByUser` (below `highestClock` in the class)
  * are deliberately absent. They feed `rollup()`'s audit accounting at room
- * close ("distinct users", "ops per user") and are never evicted — eviction
+ * close ("distinct users", "ops per user") and are never evicted - eviction
  * there would silently under-report the audit trail, the opposite trade
  * `noteClock`'s eviction makes for a map that is correctness-neutral. They are
  * bounded by distinct PRINCIPALS seen in one room's life (real users, or for a
  * guest room, link ids) rather than by an explicit ceiling, so they are not
  * "unbounded" in the sense `trackedClients` guards against, but they also do
- * not "come back to baseline" the way the fields below do — a churn assertion
+ * not "come back to baseline" the way the fields below do - a churn assertion
  * over this type proves only what it names.
  *
  * Introspection for tests (tests/collab/gateway-soak.test.ts's churn case), not
@@ -247,9 +247,9 @@ export interface RoomSnapshot {
 export interface RoomInternals {
   /** Seated members. */
   members: number;
-  /** Join timestamps held — must track `members` exactly. */
+  /** Join timestamps held - must track `members` exactly. */
   joinedAt: number;
-  /** Last-presence frames held — one per member that has sent one. */
+  /** Last-presence frames held - one per member that has sent one. */
   presence: number;
   /** Clients in the replay filter. Bounded by MAX_TRACKED_CLIENTS, and by
    *  eviction rather than by leave: see `noteClock`. */
@@ -260,7 +260,7 @@ export interface RoomInternals {
   collections: number;
 }
 
-/** What the audit rollup reports when a room closes (plans/14 §6 — counters,
+/** What the audit rollup reports when a room closes (plans/14 §6 - counters,
  *  never keystrokes; input KEYS, never values). */
 export interface RoomRollup {
   sessionId: string;
@@ -289,7 +289,7 @@ export const SEED_ORIGIN: OpOrigin = { client: 'lw:seed', clock: 0 };
 
 export interface SeedResult {
   ops: CanvasOp[];
-  /** Input ids left OUT of the document — see the mapping note below. */
+  /** Input ids left OUT of the document - see the mapping note below. */
   unsynced: string[];
 }
 
@@ -312,13 +312,13 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
  *   scalar value (string | finite number | boolean | null)
  *       → one `ParamOp`, `key` = the input id. Per-input LWW, the `params` lane.
  *
- *   array of objects (a `blocks` input — slides, rows, boxes …)
+ *   array of objects (a `blocks` input - slides, rows, boxes …)
  *       → one COLLECTION scoped by `col` = the input id, one `AddOp` per row,
  *         minted through the contract's own `damageToOps` so the fractional
  *         order keys come from the same generator clients use (no second copy
  *         of `keyAfter` to drift). A row's BoxId is its stored `id` when that is
  *         a safe non-empty string, else the deterministic `"<inputId>#<index>"`
- *         — deterministic so re-seeding the same stored bytes yields the same
+ * - deterministic so re-seeding the same stored bytes yields the same
  *         ids. Stable ULIDs at row creation are the shell's job (plans/100 §3
  *         "hard prerequisite"); this fallback only keeps legacy rows joinable.
  *         Row fields are the row's own SCALAR properties; a nested object or
@@ -377,7 +377,7 @@ function blockRows(inputId: string, value: unknown): Map<BoxId, BoxRow> | null {
       && isSafeKey(stored) && !rows.has(stored)
       ? stored
       : fallback;
-    if (rows.has(id)) return; // duplicate synthetic id — cannot happen, but never overwrite
+    if (rows.has(id)) return; // duplicate synthetic id - cannot happen, but never overwrite
     const row: BoxRow = {};
     let fields = 0;
     for (const [key, v] of Object.entries(raw)) {
@@ -391,7 +391,7 @@ function blockRows(inputId: string, value: unknown): Map<BoxId, BoxRow> | null {
   return rows;
 }
 
-// ── presence sanitation (NO policy — see the structural rule) ─────────────────
+// ── presence sanitation (NO policy - see the structural rule) ─────────────────
 
 function clampString(v: unknown, max: number): string | undefined {
   if (typeof v !== 'string') return undefined;
@@ -418,7 +418,7 @@ function idList(v: unknown, max: number): BoxId[] {
 /**
  * Rebuild an untrusted presence frame as a known-shaped `Presence`, stamping the
  * SERVER's identity over whatever the client claimed. A relayed frame is shown to
- * other people, so `userId`/`name` are the authenticated ones or nothing — a peer
+ * other people, so `userId`/`name` are the authenticated ones or nothing - a peer
  * must not be able to appear as a colleague. Everything else is clamped, never
  * rejected: a dropped cursor frame is invisible, a refused one is a stutter.
  *
@@ -467,7 +467,7 @@ export class Room implements RoomWriteback {
   readonly sessionId: string;
   readonly projectId: string;
   readonly toolId: string;
-  /** Input ids the seed could not express — surfaced in every join-ack. */
+  /** Input ids the seed could not express - surfaced in every join-ack. */
   readonly unsynced: string[];
   readonly openedAt = Date.now();
   /** The session rev this room's document was seeded from. Carried into the
@@ -479,7 +479,7 @@ export class Room implements RoomWriteback {
 
   private readonly doc: ReferenceCanvasDoc;
   private readonly members = new Map<string, RoomMember>();
-  /** When each currently-seated member joined — `snapshotForAdmin`'s only use.
+  /** When each currently-seated member joined - `snapshotForAdmin`'s only use.
    *  Cleared on leave, same as `presenceOf`: an admin snapshot is about who is
    *  in the room NOW, not a join-history log this module has no business
    *  keeping. */
@@ -492,10 +492,10 @@ export class Room implements RoomWriteback {
   private opTotal = 0;
   private serverClock = 0;
 
-  /** Highest Lamport clock accepted per client — the outbox-replay filter
+  /** Highest Lamport clock accepted per client - the outbox-replay filter
    *  (plans/100 §7 item 10). Bounded: see `noteClock`. */
   private readonly highestClock = new Map<string, number>();
-  /** Param keys the document holds, and the box ids per collection — the counters
+  /** Param keys the document holds, and the box ids per collection - the counters
    *  `admits` reads. They shadow what the document already stores rather than
    *  reaching into it, because the pinned contract exposes its state only as a
    *  freshly-built snapshot and admission is a per-op question. */
@@ -505,19 +505,19 @@ export class Room implements RoomWriteback {
    *  `SessionRecord.updatedBy` on quiesce, because that column is a FK to a real
    *  user and 'collab' is not one; a GUEST cannot be (it is not a user row) and is
    *  attributed on the revision instead. persistence.ts `RoomWriter` owns that
-   *  split — the room only has to remember which kind of writer it saw. */
+   *  split - the room only has to remember which kind of writer it saw. */
   private lastWriter: RoomWriter | null = null;
 
   private readonly persistence: RoomPersistence | undefined;
   private batchesSinceSnapshot = 0;
   private opsSinceSnapshot = 0;
-  /** Snapshot writes, serialized — two overlapping writes could land out of
+  /** Snapshot writes, serialized - two overlapping writes could land out of
    *  order and leave the older document as the recovery row. Quiesce awaits this
    *  chain so a late snapshot cannot rewrite the row quiesce just deleted. */
   private writes: Promise<void> = Promise.resolve();
   private closed = false;
 
-  /** Construct through `Room.open` / `RoomRegistry.acquire` — seeding is async
+  /** Construct through `Room.open` / `RoomRegistry.acquire` - seeding is async
    *  (it may have to recover and commit a crash-lost quiesce first). */
   private constructor(session: SessionRecord, persistence: RoomPersistence | undefined, hydrated: {
     inputs: Record<string, unknown>; rev: number; recovered: boolean;
@@ -551,7 +551,7 @@ export class Room implements RoomWriteback {
 
   /**
    * A room with NO persistence, seeded synchronously from the session's stored
-   * inputs — `open` minus the hydrate step it only has when there is a store to
+   * inputs - `open` minus the hydrate step it only has when there is a store to
    * hydrate from (the branch this replaces was already synchronous in all but
    * type). Behaviour is identical; `open` still returns a promise, and is still
    * the only way to get a persisted room.
@@ -575,7 +575,7 @@ export class Room implements RoomWriteback {
     return n;
   }
 
-  /** Writer seats this user already holds — the per-user half of WRITER_CAP. */
+  /** Writer seats this user already holds - the per-user half of WRITER_CAP. */
   writerCountFor(userId: string): number {
     let n = 0;
     for (const m of this.members.values()) if (m.role === 'writer' && m.userId === userId) n++;
@@ -624,7 +624,7 @@ export class Room implements RoomWriteback {
   /**
    * Record a client's Lamport high-water mark, evicting the oldest entry when the
    * map is full. Eviction rather than refusal, deliberately: this map is a REPLAY
-   * filter, not correctness — the CRDT converges under a replay either way — so the
+   * filter, not correctness - the CRDT converges under a replay either way - so the
    * cost of forgetting a client is one re-broadcast, while an unbounded map keyed
    * by a peer-chosen string is a leak for the whole life of the room.
    */
@@ -637,7 +637,7 @@ export class Room implements RoomWriteback {
   }
 
   /** Seat a member and tell the peers. Returns the join-ack payload minus the
-   *  bits only the gateway knows (notice). Roster EXCLUDES the joiner — a new
+   *  bits only the gateway knows (notice). Roster EXCLUDES the joiner - a new
    *  arrival that sees itself in the roster renders an orphan ghost of itself
    *  (plans/100 §4.7). */
   join(member: RoomMember): {
@@ -674,12 +674,12 @@ export class Room implements RoomWriteback {
   /**
    * Apply already-authorized ops to the document, then fan them out to every
    * OTHER member. Ops arrive here only after the gateway's policy veto, so this
-   * method never decides anything — it applies and relays.
+   * method never decides anything - it applies and relays.
    *
    * REPLAY DEDUP first (plans/100 §7 item 10). A client that lost the connection
    * replays its IDB outbox on rejoin, so the room must be able to see the same op
-   * twice. The document already converges under a replay — the reference CRDT's
-   * LWW comparison is strict, so re-applying an op is a no-op — but the COUNTERS
+   * twice. The document already converges under a replay - the reference CRDT's
+   * LWW comparison is strict, so re-applying an op is a no-op - but the COUNTERS
    * and the BROADCAST are not idempotent on their own: a replay would inflate the
    * audit rollup and re-deliver ops peers already applied. Dedup is per client by
    * highest accepted Lamport clock, and the whole batch is filtered against the
@@ -713,7 +713,7 @@ export class Room implements RoomWriteback {
   /**
    * THE DOCUMENT DOOR: apply ONE already-authorized op to this room's document
    * and record what it did to the room's counters. Lifted verbatim out of
-   * `applyOps`'s loop — that method is now exactly "the replay filter, then this
+   * `applyOps`'s loop - that method is now exactly "the replay filter, then this
    * per op, then the fan-out and the snapshot cadence", and nothing else in the
    * server calls this directly.
    *
@@ -742,7 +742,7 @@ export class Room implements RoomWriteback {
   /**
    * THE PRESENCE PATH, in full. Sanitize (shape only), remember for the next
    * joiner, relay to peers. It touches no policy, no grant, no overlay, and no
-   * store — and it cannot, because this module imports none of them. Observers
+   * store - and it cannot, because this module imports none of them. Observers
    * relay presence exactly like writers: the lane is structurally unauthorized
    * (plans/100 §7 item 5).
    */
@@ -753,7 +753,7 @@ export class Room implements RoomWriteback {
   }
 
   /** The converged document as JSON. Every joiner gets the WHOLE thing in its
-   *  join-ack — plans/100 §7 item 4 chose Figma's blunt full-refetch over a
+   *  join-ack - plans/100 §7 item 4 chose Figma's blunt full-refetch over a
    *  clock-diff, because an input-model document is KBs and "all of the
    *  complexity is in updates to already connected documents". */
   snapshot(): WireDocState {
@@ -762,14 +762,14 @@ export class Room implements RoomWriteback {
 
   /** The `RoomWriteback` seam: the converged document expressed as session
    *  inputs, over the inputs currently stored. Scoped to the input ids this room
-   *  actually accepted ops for — the same key set the audit rollup reports — so a
+   *  actually accepted ops for - the same key set the audit rollup reports - so a
    *  room never writes back an input nobody in it touched (see persistence.ts
    *  `docToInputs` for why that matters). */
   toInputs(base: Record<string, unknown>): Record<string, unknown> {
     return docToInputs(this.doc.state(), base, this.touchedKeys);
   }
 
-  /** Ops accepted over the room's lifetime — the cadence and "is there anything
+  /** Ops accepted over the room's lifetime - the cadence and "is there anything
    *  to recover" counter. */
   get acceptedOps(): number {
     return this.opTotal;
@@ -784,7 +784,7 @@ export class Room implements RoomWriteback {
     this.closed = true;
     const persistence = this.persistence;
     if (!persistence) return null;
-    // Let any in-flight snapshot land first — otherwise it could rewrite the
+    // Let any in-flight snapshot land first - otherwise it could rewrite the
     // recovery row that quiesce is about to delete, and the next join would
     // "recover" work that is already a revision.
     await this.writes;
@@ -795,7 +795,7 @@ export class Room implements RoomWriteback {
 
   /** Resolve once every snapshot write enqueued so far has settled. The cadence
    *  is deliberately fire-and-forget, so this is how a caller observes it without
-   *  forcing a quiesce. Never rejects — a failed snapshot is logged, not thrown. */
+   *  forcing a quiesce. Never rejects - a failed snapshot is logged, not thrown. */
   async flush(): Promise<void> {
     await this.writes;
   }
@@ -834,13 +834,13 @@ export class Room implements RoomWriteback {
 
   /**
    * A COPY of this room's live state for admin introspection (OSS plans/100
-   * §7, plans/14 §6) — the console's Rooms panel. Built from `roster()`, which
+   * §7, plans/14 §6) - the console's Rooms panel. Built from `roster()`, which
    * already excludes nothing here matters about (no presence field is read),
    * so this is a projection, not a second traversal of room internals.
    *
    * Never returns a `RoomMember` (it carries the live `send` closure), never a
    * `userId` (a name and a role are what "is someone stuck in here" needs),
-   * and never touches `presenceOf` or the document — counters, roles and
+   * and never touches `presenceOf` or the document - counters, roles and
    * display names only (keys-never-values, §11.21).
    */
   snapshotForAdmin(): RoomSnapshot {
@@ -862,7 +862,7 @@ export class Room implements RoomWriteback {
     };
   }
 
-  /** The sizes of this room's own maps — see `RoomInternals`. A fresh object of
+  /** The sizes of this room's own maps - see `RoomInternals`. A fresh object of
    *  plain numbers; nothing here can be held onto or written through. */
   internals(): RoomInternals {
     return {
@@ -925,7 +925,7 @@ function toWire(state: CanvasDocState): WireDocState {
 
 /**
  * One room instance per session id. Rooms are created on the first join and
- * disposed when the last member leaves — at which point the document QUIESCES
+ * disposed when the last member leaves - at which point the document QUIESCES
  * into a session revision (plans/14 §6), so a dropped room's work is in history
  * and the next join re-seeds from the stored session.
  *
@@ -938,10 +938,10 @@ function toWire(state: CanvasDocState): WireDocState {
  */
 export class RoomRegistry {
   private readonly rooms = new Map<string, Room>();
-  /** In-flight `open` per session — two simultaneous first joins must not build
+  /** In-flight `open` per session - two simultaneous first joins must not build
    *  two documents for one session. */
   private readonly opening = new Map<string, Promise<Room>>();
-  /** In-flight disposal per session — the barrier described above. */
+  /** In-flight disposal per session - the barrier described above. */
   private readonly closing = new Map<string, Promise<void>>();
   /** When each currently-empty room became empty (the sweeper's clock). */
   private readonly emptySince = new Map<string, number>();
@@ -988,7 +988,7 @@ export class RoomRegistry {
   }
 
   /**
-   * Quiesce and drop EVERY room, occupied or not — orderly shutdown. Returns the
+   * Quiesce and drop EVERY room, occupied or not - orderly shutdown. Returns the
    * rooms it disposed so the caller can audit their rollups.
    */
   async drain(): Promise<Room[]> {
@@ -1001,11 +1001,11 @@ export class RoomRegistry {
 
   /**
    * Dispose rooms that have been empty for the grace period. The ordinary
-   * last-leave path does NOT wait for this — it disposes immediately, so
+   * last-leave path does NOT wait for this - it disposes immediately, so
    * `size()` and the `collab.rollup` audit stay contemporaneous with the room
    * closing. This catches rooms that never pass through a leave at all: a socket
    * that dies during `acquire`, or a leave handler that threw. Without it such a
-   * room would hold its document — and its unwritten edits — forever.
+   * room would hold its document - and its unwritten edits - forever.
    */
   async sweep(now: number = Date.now()): Promise<Room[]> {
     const disposed: Room[] = [];
@@ -1029,7 +1029,7 @@ export class RoomRegistry {
     return this.rooms.size;
   }
 
-  /** A live snapshot of every room this registry holds — the admin console's
+  /** A live snapshot of every room this registry holds - the admin console's
    *  Rooms panel (OSS plans/100 §7, plans/14 §6). Each entry is a COPY
    *  (`Room.snapshotForAdmin`); nothing here exposes a room, a member, or the
    *  registry's own maps. */

@@ -1,5 +1,5 @@
 /**
- * Minimal method+path router — the services/ca / services/mcp house pattern:
+ * Minimal method+path router - the services/ca / services/mcp house pattern:
  * a plain (req, res) handler with no framework, which runs identically under
  * node:http, a container, and a Vercel function wrapper.
  */
@@ -14,7 +14,7 @@ export interface RouteCtx {
 
 interface Route {
   method: string;
-  path: string; // the registered pattern, e.g. '/api/v1/users/:id' — used as a low-cardinality metric label
+  path: string; // the registered pattern, e.g. '/api/v1/users/:id' - used as a low-cardinality metric label
   segments: string[]; // ':name' = param, '*' = trailing wildcard (rest in params['*'])
   handler: Handler;
 }
@@ -22,7 +22,7 @@ interface Route {
 export function createRouter(): {
   add: (method: string, path: string, handler: Handler) => void;
   /** Returns the matched route PATTERN (e.g. '/api/v1/users/:id'), or null when
-   *  nothing matched — a bounded label for the HTTP request metric. */
+   *  nothing matched - a bounded label for the HTTP request metric. */
   dispatch: (req: IncomingMessage, res: ServerResponse) => Promise<string | null>;
 } {
   const routes: Route[] = [];
@@ -77,7 +77,7 @@ export async function readJson(req: IncomingMessage, maxBytes = 512 * 1024): Pro
   }
 }
 
-/** Read a non-JSON request body into one Buffer, size-capped (plans/26 §2 —
+/** Read a non-JSON request body into one Buffer, size-capped (plans/26 §2 - 
  *  the router's first raw reader). Used by the publish-out route, which streams
  *  an export's bytes in. Buffered, not streamed to disk. */
 export async function readRaw(req: IncomingMessage, maxBytes: number): Promise<Buffer> {

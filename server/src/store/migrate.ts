@@ -1,5 +1,5 @@
 /**
- * Migration runner — applies migrations/*.sql in filename order, tracked in a
+ * Migration runner - applies migrations/*.sql in filename order, tracked in a
  * schema_migrations table, each file in its own transaction. Boring by design.
  */
 import { readdir, readFile } from 'node:fs/promises';
@@ -9,7 +9,7 @@ interface Queryable {
   query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
 }
 
-// Advisory-lock key for the migration critical section — distinct from
+// Advisory-lock key for the migration critical section - distinct from
 // postgres.ts's AUDIT_LOCK_KEY (0x1011_0001) so the two never collide.
 const MIGRATE_LOCK_KEY = 0x1011_0002;
 
@@ -18,18 +18,18 @@ export async function readMigrationFiles(dir = './migrations'): Promise<string[]
   return (await readdir(dir)).filter((f) => f.endsWith('.sql')).sort();
 }
 
-/** Migration files not yet recorded in schema_migrations — READ-ONLY: it issues
+/** Migration files not yet recorded in schema_migrations - READ-ONLY: it issues
  *  no DDL, so it is safe to call against a pending schema (and the boot guard
  *  relies on that). An absent schema_migrations table ⇒ every migration pending. */
 export async function pendingAgainst(q: Queryable, dir = './migrations'): Promise<string[]> {
   const files = await readMigrationFiles(dir);
   const { rows } = await q.query("select to_regclass('public.schema_migrations') as t");
-  if (!rows[0]?.t) return files; // table absent — nothing applied yet, no DDL issued
+  if (!rows[0]?.t) return files; // table absent - nothing applied yet, no DDL issued
   const done = new Set((await q.query('select name from schema_migrations')).rows.map((r) => r.name as string));
   return files.filter((f) => !done.has(f));
 }
 
-/** Read-only pending-migration check over its own short-lived connection — the
+/** Read-only pending-migration check over its own short-lived connection - the
  *  boot guard (LW_AUTO_MIGRATE=false) and `lw migrate --check` use this. */
 export async function pendingMigrations(databaseUrl: string, dir = './migrations'): Promise<string[]> {
   const { default: pg } = await import('pg');

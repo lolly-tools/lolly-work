@@ -1,5 +1,5 @@
 /**
- * Mock provider driver — tests and `npm run demo` only. Assets, faults, and
+ * Mock provider driver - tests and `npm run demo` only. Assets, faults, and
  * search all come from `options`, so a test can stand up any federation
  * scenario (including outage → last-good fallback) without network.
  */

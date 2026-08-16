@@ -1,5 +1,5 @@
 /**
- * The fourth HostV1 shell — a minimal, headless capability bridge for
+ * The fourth HostV1 shell - a minimal, headless capability bridge for
  * server-side rendering (plans/07). It is a FRESH, deliberately small
  * implementation (not a dependency on shells/cli): the render plane only needs
  * hook-less tools to SVG, so it implements exactly the required HostV1 members
@@ -8,7 +8,7 @@
  * Two facts shape it:
  *   1. jsdom mutates shared globals (window/document/Element), so every render is
  *      serialized through a module-level promise chain and the globals are
- *      installed for the render's duration and restored after — exactly what the
+ *      installed for the render's duration and restored after - exactly what the
  *      public MCP service does. Worker-thread isolation is a later optimisation.
  *   2. The profile is built server-side from the authenticated user (never from
  *      caller params), so `bindToProfile` inputs resolve to the real identity.
@@ -59,7 +59,7 @@ function matchesFilter(meta: CatalogAsset, filter: AssetQuery): boolean {
 
 /**
  * Build the headless assets API. Reads the pack's catalog asset index once (an
- * absent/unreadable index is fine — the render plane's v1 tools are asset-free);
+ * absent/unreadable index is fine - the render plane's v1 tools are asset-free);
  * `get` returns referenced files as data: URLs (jsdom has no createObjectURL),
  * `pick` throws (no picker chrome server-side).
  */
@@ -120,7 +120,7 @@ async function buildHost(dom: RenderDom, pack: string, profile: Profile): Promis
     // The render plane is the "work" shell. (HostV1.shell's union predates it.)
     shell: 'work',
     log(level, msg, ctx): void {
-      // Never stdout — a serverless/container log stream, like the MCP service.
+      // Never stdout - a serverless/container log stream, like the MCP service.
       process.stderr.write(`[render:${level}] ${msg}${ctx ? ' ' + safeJson(ctx) : ''}\n`);
     },
     profile: {

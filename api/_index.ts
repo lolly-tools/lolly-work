@@ -1,8 +1,8 @@
 /**
- * Vercel Function entry — the ONE catch-all that fronts the entire
+ * Vercel Function entry - the ONE catch-all that fronts the entire
  * lolly-work HTTP surface (plans/01-architecture.md §4, "Vercel trial
- * (interim, decided 2026-07-21)"). Every path this instance serves —
- * /healthz, /admin, /admin/*, /l/*, /api/auth/*, /api/v1/*, /catalog/* —
+ * (interim, decided 2026-07-21)"). Every path this instance serves - 
+ * /healthz, /admin, /admin/*, /l/*, /api/auth/*, /api/v1/*, /catalog/* - 
  * is funnelled here by ../vercel.json's catch-all `routes` rule. See that
  * file's header comment for why a plain rewrite alone isn't enough (it
  * would leave req.url reading this file's own destination path, "/api/index",
@@ -10,7 +10,7 @@
  * `request.path` transform fixes that before this function ever runs.
  *
  * Signature is the plain Node.js (req, res) handler Vercel's Node.js runtime
- * supports natively for /api functions — no fetch/Request/Response
+ * supports natively for /api functions - no fetch/Request/Response
  * translation, no @vercel/node dependency needed. It's the exact shape
  * buildApp() already returns (server/src/api/app.ts), so this file is a
  * thin call-through plus the defensive path check below.
@@ -24,14 +24,14 @@ function headerValue(req: IncomingMessage, name: string): string | undefined {
 }
 
 /**
- * Defensive fallback only — ../vercel.json's `request.path` transform is
+ * Defensive fallback only - ../vercel.json's `request.path` transform is
  * the PRIMARY mechanism restoring the caller's original path into req.url
  * (current, documented Vercel behaviour: Project Configuration → routes →
  * transforms → `request.path`, "This is the URL path your Function reads
  * from req.url"). If that transform somehow didn't fire (a future Vercel
  * change, a `vercel dev` quirk, someone editing vercel.json without reading
  * its comment), req.url would still read this function's own mount path,
- * "/api/index" — every request would 404 against the app's router instead
+ * "/api/index" - every request would 404 against the app's router instead
  * of reaching its real route. Recover from whichever header the platform
  * might expose the original path under; none of these are guaranteed by
  * current public docs (only the vercel.json transform is), so this checks

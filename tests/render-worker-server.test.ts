@@ -2,7 +2,7 @@
  * The render worker's HTTP surface under backpressure (plans/22 §5, plans/23
  * §3.C): the semaphore wired around the context-open→close span of BOTH
  * /render and /rasterise, the 503 RENDER_BUSY + Retry-After response at
- * capacity, and the /readyz flip — all without launching a real Chromium.
+ * capacity, and the /readyz flip - all without launching a real Chromium.
  * The browser getter is injectable for exactly this reason (see server.ts
  * __setBrowserGetterForTests); the HMAC signing helper is the one
  * tests/render-worker.test.ts already established (worker-client's signBody).
@@ -23,7 +23,7 @@ let server: Server;
 let setBrowserGetter: (fn: (() => Promise<any>) | null) => void;
 
 before(async () => {
-  // Env must be set BEFORE the module is imported — server.ts reads these at
+  // Env must be set BEFORE the module is imported - server.ts reads these at
   // module load and process.exit(1)s if the required ones are missing, and
   // LW_RENDER_MAX_CONCURRENT=1 is what makes a second overlapping request
   // deterministically hit the busy path below (no timing races to get there).
@@ -58,8 +58,8 @@ function rasterJob(): string {
 }
 
 /** A stub Chromium for /render: `onContextOpen` fires the instant
- *  newContext() is called — i.e. the instant the caller holds the semaphore
- *  permit and has entered the ctx-open→close span — so a test can await it
+ *  newContext() is called - i.e. the instant the caller holds the semaphore
+ *  permit and has entered the ctx-open→close span - so a test can await it
  *  instead of sleeping to know "the first request is now in flight". The
  *  download only resolves once `hold` settles, so the test also controls
  *  exactly when that span ends. */
@@ -91,7 +91,7 @@ function stubRenderBrowser(onContextOpen: () => void, hold: Promise<void>) {
 }
 
 /** Same idea for /rasterise, whose Chromium surface is setContent/$/screenshot
- *  rather than goto/waitForEvent — the pause point moves to setContent. */
+ *  rather than goto/waitForEvent - the pause point moves to setContent. */
 function stubRasterBrowser(onContextOpen: () => void, hold: Promise<void>) {
   return {
     async newContext() {
@@ -145,7 +145,7 @@ test('GET /readyz flips 200 → 503 → 200 across a saturating request, and nee
   const contextOpen = new Promise<void>((resolve) => { contextOpened = resolve; });
   setBrowserGetter(async () => stubRenderBrowser(contextOpened, hold));
 
-  // No x-lw-render-sig header anywhere in this test — /readyz must not require one.
+  // No x-lw-render-sig header anywhere in this test - /readyz must not require one.
   const readyBefore = await fetch(`${base}/readyz`);
   assert.equal(readyBefore.status, 200);
   assert.deepEqual(await readyBefore.json(), { ok: true });

@@ -1,9 +1,9 @@
 /**
- * IntelligenceBank driver (plans/27 §9) — the governance-rich enterprise DAM.
+ * IntelligenceBank driver (plans/27 §9) - the governance-rich enterprise DAM.
  * Targets the CURRENT v3 Graph API ONLY (decision of record): no work against the
  * deprecated v2 resource endpoints. The one v2-named call that remains is the
  * login handshake, because IntelligenceBank defines it as the auth mechanism FOR
- * v3 (documented, no planned termination) — it is used for auth only.
+ * v3 (documented, no planned termination) - it is used for auth only.
  *
  * Auth is a login-exchange: the documented login call (against the tenant's
  * `platformUrl`, with a single sealed credential) returns a session plus a
@@ -20,7 +20,7 @@
  * LIVE-VERIFY before ship (house rule, plans/27 §9; the doc site is a JS app):
  * confirm the login endpoint + response, the resource field names marked below,
  * the download href, and the CDN host against a real tenant. Fixture-tested with
- * injected fetch — neither building nor testing touches a live tenant.
+ * injected fetch - neither building nor testing touches a live tenant.
  */
 import { sha256Hex } from '../../lib/crypto.ts';
 import { extOf, stripExt, type CatalogProvider, type ProviderAssetRef, type ProviderFormatRef, type ResolvedBlob } from './types.ts';
@@ -41,7 +41,7 @@ const SESSION_TTL_MS = 30 * 60_000; // re-login every 30 min unless the login st
 interface IbSession { sid: string; apiV3url: string; clientid?: string; expiresAt: number }
 const sessionCache = new Map<string, IbSession>();
 
-// Login response (LIVE-VERIFY field names) — the exchange that yields the v3 base URL.
+// Login response (LIVE-VERIFY field names) - the exchange that yields the v3 base URL.
 interface IbLoginDoc { sid?: string; session?: string; apiV3url?: string; clientid?: string; expires_in?: number }
 // Resource shape (LIVE-VERIFY field names).
 interface IbResource {
@@ -74,7 +74,7 @@ export function createIntelligenceBankProvider(
 
   const hostOk = (url: string): boolean => ALLOWED_HOSTS.test(new URL(url).hostname);
 
-  // The login handshake — cached per (provider, credential) like the OAuth token
+  // The login handshake - cached per (provider, credential) like the OAuth token
   // cache, because driver instances are created per request.
   const session = async (): Promise<IbSession> => {
     if (!secret) throw new Error('intelligencebank provider has no credential');

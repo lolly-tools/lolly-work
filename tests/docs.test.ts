@@ -3,7 +3,7 @@
  * GET /api/v1/docs/:slug (markdown). Manifest-allowlisted, with the open-source
  * /info/ link present exactly when a Lolly deployment is reachable from this
  * deploy (appUrl set, or a served shellDir). Readable without a session on the
- * public sandbox (dev.enabled — the landing links straight here); member-only on
+ * public sandbox (dev.enabled - the landing links straight here); member-only on
  * a governed deploy.
  */
 import { after, before, test } from 'node:test';
@@ -43,7 +43,7 @@ async function boot(instance: Record<string, unknown> = {}): Promise<string> {
   return `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
 }
 
-/** Sign in against a given app — memberOf resolves the user in THAT app's store,
+/** Sign in against a given app - memberOf resolves the user in THAT app's store,
  *  so a cookie is not portable between the boots above. */
 async function login(b: string): Promise<string> {
   const res = await fetch(`${b}/api/auth/dev?email=member@test`, { redirect: 'manual' });

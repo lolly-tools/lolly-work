@@ -3,12 +3,12 @@
  * OSS docs' docs-shots-vector.test.ts:
  *
  *  1. Every committed shot is a VECTOR SVG. A raster PNG is allowed ONLY if it is
- *     in RASTER_ALLOWLIST with a written reason — and the test fails BOTH ways: an
+ *     in RASTER_ALLOWLIST with a written reason - and the test fails BOTH ways: an
  *     unlisted .png, and a listed slug that is no longer raster. That second
  *     direction is the point: a workaround must not silently become permanent.
  *  2. Every `![](shots/…)` reference in the docs resolves to a committed file, and
  *     every committed shot carries a VALID C2PA credential recording a screen
- *     capture — so a shot can never quietly ship unsigned or claim the wrong origin.
+ *     capture - so a shot can never quietly ship unsigned or claim the wrong origin.
  *
  * Shots are produced by scripts/capture-console.ts. This test reads only what is
  * committed under docs/shots/, so it needs no browser and runs in the normal suite.

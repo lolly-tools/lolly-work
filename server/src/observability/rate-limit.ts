@@ -55,7 +55,7 @@ export function createRateLimiter(cfg: RateLimitConfig, now: () => number = Date
 
 /** Which unauthenticated surface (if any) a request belongs to. Everything else
  *  returns null and is never throttled. The dev provider (/api/auth/dev) is a
- *  local-only convenience gated behind dev.enabled — deliberately NOT throttled;
+ *  local-only convenience gated behind dev.enabled - deliberately NOT throttled;
  *  only the real OIDC login/callback are. */
 export function rateLimitSurface(method: string, pathname: string): Surface | null {
   if (pathname === '/api/auth/login' || pathname === '/api/auth/callback') return 'auth';
@@ -68,7 +68,7 @@ const norm = (ip: string): string => ip.replace(/^::ffff:/, '');
 
 /** Conservative client IP. Default (hops=0) trusts only the socket peer. Only when
  *  the operator declares N trusted proxy hops do we read X-Forwarded-For, taking
- *  the entry N places from the right — so a spoofed XFF can't evade the limiter. */
+ *  the entry N places from the right - so a spoofed XFF can't evade the limiter. */
 export function clientIp(req: IncomingMessage, trustedProxyHops: number): string {
   const socket = req.socket.remoteAddress ?? 'unknown';
   if (!trustedProxyHops || trustedProxyHops < 1) return norm(socket);

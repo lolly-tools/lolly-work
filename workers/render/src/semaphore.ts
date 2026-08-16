@@ -1,5 +1,5 @@
 /**
- * Hand-rolled counting semaphore (plans/22 §5, plans/23 §3.C) — the render
+ * Hand-rolled counting semaphore (plans/22 §5, plans/23 §3.C) - the render
  * worker's only concurrency guard around the Chromium context-open→close span.
  * Zero dependencies, on purpose: this worker stays free of anything beyond
  * node:http + node:crypto + playwright-core (see server.ts header), and a
@@ -8,7 +8,7 @@
  * Two properties the caller depends on:
  *   - FIFO fairness: whoever has been waiting longest gets the next permit
  *     that frees up, so one hot caller can't starve another under load.
- *   - A release always happens, even when the task throws/rejects — a
+ *   - A release always happens, even when the task throws/rejects - a
  *     concurrency guard that leaks permits on failure gets worse, not better,
  *     under exactly the load it exists to survive. `run()` is the way to get
  *     this for free (try/finally); `acquire()`'s caller must finally-release
@@ -16,7 +16,7 @@
  *
  * Deliberately NOT a queue with unbounded wait: `tryAcquire` exists so the
  * server can answer 503 immediately at capacity instead of queueing requests
- * inside the process — an in-worker queue would hide saturation from the HPA
+ * inside the process - an in-worker queue would hide saturation from the HPA
  * (plans/23 §3.C's whole point). `acquire`/`run` (which DO wait) are here for
  * completeness and for tests; the HTTP routes use `tryAcquire`.
  */
@@ -31,11 +31,11 @@ export interface Semaphore {
   /** Callers currently queued in acquire() waiting for a permit (FIFO order). */
   readonly waiting: number;
   /** Take a permit if one is free right now; otherwise return null without
-   *  waiting — no internal queue. The caller decides what "busy" means. */
+   *  waiting - no internal queue. The caller decides what "busy" means. */
   tryAcquire(): (() => void) | null;
   /** Take a permit, joining the FIFO wait line if none is free yet. Resolves
    *  with a release function. Calling the release function more than once is
-   *  a no-op (idempotent) — it must never hand out a second permit. */
+   *  a no-op (idempotent) - it must never hand out a second permit. */
   acquire(): Promise<() => void>;
   /** Run `fn` under a permit (waiting if needed) and release it whether `fn`
    *  resolves or throws/rejects. The no-leak-on-failure guarantee lives here. */
@@ -47,7 +47,7 @@ export function createSemaphore(limit: number): Semaphore {
     throw new RangeError(`semaphore limit must be a positive integer, got ${limit}`);
   }
   let inUse = 0;
-  // FIFO queue of resolvers waiting for a permit — push to join the back,
+  // FIFO queue of resolvers waiting for a permit - push to join the back,
   // shift to serve the front (the caller that has been waiting longest).
   const waiters: Array<(release: () => void) => void> = [];
 
@@ -63,7 +63,7 @@ export function createSemaphore(limit: number): Semaphore {
       if (next) {
         // Hand the permit directly to the next waiter (inUse stays the same)
         // rather than decrementing then letting a fresh tryAcquire() race for
-        // it — that would break FIFO order under concurrent acquirers.
+        // it - that would break FIFO order under concurrent acquirers.
         next(makeRelease());
       } else {
         inUse--;

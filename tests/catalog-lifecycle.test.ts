@@ -45,7 +45,7 @@ before(async () => {
   await mkdir(join(pack, 'catalog', 'assets', 'acme', 'palette'), { recursive: true });
   await writeFile(join(pack, 'catalog', 'assets', 'index.json'), JSON.stringify(RAW_INDEX, null, 2));
   await writeFile(join(pack, 'catalog', 'assets', 'acme', 'logo', 'primary.svg'), '<svg><!-- primary logo --></svg>');
-  // acme/palette/core deliberately has no blob file on disk — only its feed
+  // acme/palette/core deliberately has no blob file on disk - only its feed
   // presence and its lifecycle rows (scheduled) are exercised below.
 
   const config = parseConfig(JSON.stringify({

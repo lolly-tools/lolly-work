@@ -1,7 +1,7 @@
 /**
  * assembleOrgConfig must consult per-user/group tool.use grants when deciding
  * tool visibility (plans/03): an allow grant surfaces a tool the caller's
- * groups couldn't otherwise see; a deny grant hides one they could — while
+ * groups couldn't otherwise see; a deny grant hides one they could - while
  * genuinely-hidden tools (no grant) stay ABSENT (the caller never learns).
  */
 import { test } from 'node:test';

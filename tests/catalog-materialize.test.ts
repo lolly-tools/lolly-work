@@ -1,12 +1,12 @@
 /**
  * The exit over real HTTP (plans/27 §5): materialize a federated asset into the
  * instance's own BlobStore, serve it from /catalog/inst/*, suppress the doubled
- * ext entry while the provider is still enabled, then cut over — identity moves
+ * ext entry while the provider is still enabled, then cut over - identity moves
  * to inst/*, old ext URLs keep resolving through aliases, and the provider is
  * disabled. RBAC: materialize is admin, cutover is owner.
  *
  * Config-managed mock provider (born enabled), memory BlobStore (buildApp's
- * default) — no network, no S3.
+ * default) - no network, no S3.
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -50,7 +50,7 @@ before(async () => {
   const addr = server.address();
   base = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
 
-  // A db-managed mock provider (so cutover can disable it — the full exit path).
+  // A db-managed mock provider (so cutover can disable it - the full exit path).
   const admin = await login('admin@test');
   const owner = await login('owner@test');
   await fetch(`${base}/api/v1/catalog/providers`, {
@@ -148,7 +148,7 @@ test('(d) cutover is owner-gated: it migrates identity, aliases old ext URLs, an
   assert.equal(cut.migrated, 1);
   assert.equal(cut.enabled, false, 'a db-managed provider is disabled by cutover');
 
-  // Old ext/* blob URL — baked into already-rendered content — still resolves,
+  // Old ext/* blob URL - baked into already-rendered content - still resolves,
   // now through the alias to the instance blob.
   const designer = await login('designer@test');
   const aliased = await fetch(`${base}/catalog/ext/dam4/a1/att1`, { headers: { cookie: designer } });

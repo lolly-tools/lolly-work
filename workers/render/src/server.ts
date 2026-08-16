@@ -1,5 +1,5 @@
 /**
- * Chromium render worker (plans/07/11) — the isolated browser tier the control
+ * Chromium render worker (plans/07/11) - the isolated browser tier the control
  * plane dispatches hooked / HTML-heavy tools to. It runs the LEAST-TRUSTED
  * content (tool hooks.js), so it is a separate, hardened deployment with no
  * database, no secrets beyond the shared HMAC key, and a locked-down browser
@@ -12,15 +12,15 @@
  *                  → 503 { error: { code: 'RENDER_BUSY', … } } + Retry-After
  *                    when LW_RENDER_MAX_CONCURRENT contexts are already open
  *   POST /rasterise  same envelope/backpressure; body: { svg, format, width?, ts }
- *   GET  /healthz  → 200 { ok } — liveness, independent of load
+ *   GET  /healthz  → 200 { ok } - liveness, independent of load
  *   GET  /readyz   → 200 { ok:true } below capacity, 503 { ok:false } at
- *                    capacity — readiness, so k8s pulls a saturated pod from
+ *                    capacity - readiness, so k8s pulls a saturated pod from
  *                    the Service instead of routing new work to it (plans/22
  *                    §5). Unauthenticated by design (no HMAC on a probe path).
  *
  * Rendering mirrors the proven MCP Tier-B path: drive a headless Chromium against
  * a real Lolly web shell's export URL and capture the SVG the app's own export
- * downloads — so hooks run in a real browser exactly as a user's Download would.
+ * downloads - so hooks run in a real browser exactly as a user's Download would.
  * The browser is launched once and reused (a lazy singleton).
  *
  * Zero framework: node:http + node:crypto + playwright-core.
@@ -42,10 +42,10 @@ if (!SECRET) { console.error('[render-worker] LW_RENDER_WORKER_SECRET is require
 if (!WEB_BASE) { console.error('[render-worker] LOLLY_WEB_BASE is required (a served Lolly web shell)'); process.exit(1); }
 
 // Caps concurrent Chromium contexts (plans/22 §5, plans/23 §3.C): one browser,
-// unboundedly many `browser.newContext()`s per request was the exposure — a
+// unboundedly many `browser.newContext()`s per request was the exposure - a
 // 400-asset batch fanned out 400 contexts. Guards the context-open→close span
 // of both /render and /rasterise below. At capacity the HTTP layer answers 503
-// immediately (see `busy()`) rather than queueing — an in-worker queue would
+// immediately (see `busy()`) rather than queueing - an in-worker queue would
 // hide saturation from the HPA, so the plane owns retry policy instead.
 const sem = createSemaphore(MAX_CONCURRENT);
 
@@ -84,7 +84,7 @@ async function getBrowser(): Promise<Browser> {
 
 function exportUrl(toolId: string, query: string, overrides: Record<string, unknown>): string {
   const params = new URLSearchParams(query); // parses the shared param contract (incl. packed z=)
-  // Policy-baked locked values win — appended after, so they override the query.
+  // Policy-baked locked values win - appended after, so they override the query.
   for (const [k, v] of Object.entries(overrides ?? {})) {
     params.set(k, typeof v === 'string' ? v : JSON.stringify(v));
   }
@@ -116,7 +116,7 @@ async function renderSvg(job: { toolId: string; query: string; overrides: Record
 }
 
 // Rasterise a FINISHED svg (already watermarked + provenance-islanded by the plane)
-// to `format` bytes via Chromium — the single-rasteriser path replacing in-process
+// to `format` bytes via Chromium - the single-rasteriser path replacing in-process
 // resvg (plans/22). The plane keeps provenance + C2PA; the worker only turns pixels.
 // NOTE: written to the worker-client contract but must be verified against a real
 // Chromium before the plane removes its resvg fallback (see plans/22 phase 4).
@@ -124,16 +124,16 @@ const RASTER_MAX_EDGE = 10_000;
 /**
  * Chromium's page.pdf stamps wall-clock CreationDate/ModDate into the document
  * info, so two renders of the SAME svg differ whenever the clock ticks a second
- * between them — measured in the 2026-08-11 fidelity audit (plans/22 §6.2), and
+ * between them - measured in the 2026-08-11 fidelity audit (plans/22 §6.2), and
  * a direct break of "same inputs, same pixels" (cache re-fills would churn
  * ETags, and re-signed C2PA bytes would differ for no visual reason). Pin both
- * dates to the epoch by SAME-LENGTH byte splice — xref offsets stay valid
+ * dates to the epoch by SAME-LENGTH byte splice - xref offsets stay valid
  * because nothing moves. A date whose length doesn't match is left alone
  * (defensive: a future Chromium format change must not corrupt the file).
  * Exported for its unit test.
  */
 export function pinPdfDates(pdf: Buffer): Buffer {
-  const out = Buffer.from(pdf); // copy — never mutate the caller's view
+  const out = Buffer.from(pdf); // copy - never mutate the caller's view
   const re = /\/(CreationDate|ModDate) \(D:([^)]*)\)/g;
   const text = out.toString('latin1');
   for (const m of text.matchAll(re)) {
@@ -182,7 +182,7 @@ const sendJson = (res: import('node:http').ServerResponse, status: number, body:
 const fail = (res: import('node:http').ServerResponse, status: number, code: string, message: string): void =>
   sendJson(res, status, { error: { code, message } });
 // Capacity refusal: immediate, no queueing (see `sem` above). Retry-After is a
-// plain, deliberately-static hint (plans/23 §3.C) — the plane decides its own
+// plain, deliberately-static hint (plans/23 §3.C) - the plane decides its own
 // retry policy; this just says "not now, don't hammer it".
 const busy = (res: import('node:http').ServerResponse): void => {
   res.writeHead(503, { 'content-type': 'application/json; charset=utf-8', 'retry-after': '2' });
@@ -196,7 +196,7 @@ export const server = createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/healthz') return sendJson(res, 200, { ok: true });
     // Readiness tracks LOAD, not liveness: k8s should pull a saturated pod out
     // of the Service (plans/22 §5) so it stops receiving NEW requests while it
-    // drains, without killing it. Deliberately unauthenticated (no HMAC) — a
+    // drains, without killing it. Deliberately unauthenticated (no HMAC) - a
     // probe endpoint that required signing the request wouldn't be a usable
     // probe endpoint.
     if (req.method === 'GET' && req.url === '/readyz') return sendJson(res, sem.atCapacity ? 503 : 200, { ok: !sem.atCapacity });
@@ -225,13 +225,13 @@ export const server = createServer((req, res) => {
       return fail(res, 401, 'STALE', 'request timestamp outside the accepted window');
     }
 
-    // /rasterise — a finished SVG → format bytes (the single-rasteriser path).
+    // /rasterise - a finished SVG → format bytes (the single-rasteriser path).
     if (path === '/rasterise') {
       if (typeof job.svg !== 'string' || !/<svg[\s>]/i.test(job.svg) || typeof job.format !== 'string') {
         return fail(res, 400, 'BAD_REQUEST', 'expected { svg, format, width? }');
       }
       const width = typeof job.width === 'number' ? job.width : undefined;
-      // No permit free ⇒ fail fast (503), don't wait in line — see `sem` above.
+      // No permit free ⇒ fail fast (503), don't wait in line - see `sem` above.
       const release = sem.tryAcquire();
       if (!release) return busy(res);
       try {
@@ -240,11 +240,11 @@ export const server = createServer((req, res) => {
       } catch (e) {
         return fail(res, 502, 'RASTER_FAILED', `Chromium raster failed: ${(e as Error).message}`);
       } finally {
-        release(); // always, including on the catch above — a failed raster must not leak capacity
+        release(); // always, including on the catch above - a failed raster must not leak capacity
       }
     }
 
-    // /render — a toolId → SVG via the shell export (hooked/HTML tools).
+    // /render - a toolId → SVG via the shell export (hooked/HTML tools).
     if (typeof job.toolId !== 'string' || typeof job.query !== 'string' || job.format !== 'svg') {
       return fail(res, 400, 'BAD_REQUEST', 'expected { toolId, query, format:"svg", overrides }');
     }
@@ -258,7 +258,7 @@ export const server = createServer((req, res) => {
     } catch (e) {
       return fail(res, 502, 'RENDER_FAILED', `Chromium render failed: ${(e as Error).message}`);
     } finally {
-      release(); // always, including on the catch above — a failed render must not leak capacity
+      release(); // always, including on the catch above - a failed render must not leak capacity
     }
   })().catch((e) => {
     if (!res.headersSent) fail(res, 500, 'INTERNAL', (e as Error).message);

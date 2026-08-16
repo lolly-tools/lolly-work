@@ -1,7 +1,7 @@
 /**
  * Tool policy control plane over real HTTP (plans/03 §4): the admin/brand
  * governance surface. Listing joins pack tools + declared inputs + overlays
- * (unfiltered — you can govern a tool you've hidden from yourself); PUT
+ * (unfiltered - you can govern a tool you've hidden from yourself); PUT
  * validates via normalizeOverlay, bumps the version, audits before/after, and
  * the result bites immediately in the member-facing feed and render policy.
  * `policy.edit` reaches a brand group through a grant, not the admin role.
@@ -38,7 +38,7 @@ before(async () => {
     tools: [{ id: 'event-badge', name: 'Event Badge' }, { id: 'poster', name: 'Poster' }],
   }));
   await writeFile(join(pack, 'tools', 'event-badge', 'tool.json'), JSON.stringify(TOOL_JSON));
-  // 'poster' has no tool.json — inputs must come back null, not crash.
+  // 'poster' has no tool.json - inputs must come back null, not crash.
 
   const config = parseConfig(JSON.stringify({
     instance: { name: 'Policy Hub', baseUrl: 'http://localhost', pack },
@@ -177,7 +177,7 @@ test('(e) reset to ungoverned: an empty body stores an overlay with no rules —
   assert.equal(saved.inputAccess, undefined);
   assert.equal(saved.visibility, undefined);
 
-  // org-config ships policy rows only where policy exists — an ungoverned tool
+  // org-config ships policy rows only where policy exists - an ungoverned tool
   // has NO inputs entry at all, which IS the fully-open state.
   const marketer = await login('marketer@test');
   const org = await (await fetch(`${base}/api/v1/org-config`, { headers: { cookie: marketer } })).json() as {

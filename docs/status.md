@@ -3,7 +3,7 @@
 Where this deploy actually stands. Written to be safe to hand to an auditor or a CIO: the
 gaps are named, not smoothed over. Verified against the repository on **2026-07-30**.
 
-![The client fleet — which shell and engine versions are talking to this deployment](shots/client-fleet.svg)
+![The client fleet - which shell and engine versions are talking to this deployment](shots/client-fleet.svg)
 
 ## Health
 
@@ -21,7 +21,7 @@ gaps are named, not smoothed over. Verified against the repository on **2026-07-
 - RBAC evaluator (roles + deny-wins grants) with the owner-only escalation guard; the grants
   editor in console, CLI and API.
 - Tool overlays (editable/choice/locked/hidden, hidden = absent), the enforce block, feature-
-  flag governance, profile locking — plus `org-config` and preview-as-group, computed through
+  flag governance, profile locking - plus `org-config` and preview-as-group, computed through
   the same assembler the live client polls.
 - Policy-as-code: canonical export, dry-run diff, apply, prune, boot seeding.
 - Render plane v1: real engine, jsdom fast path, svg + png (resvg), policy enforced pre-render,
@@ -34,7 +34,7 @@ gaps are named, not smoothed over. Verified against the repository on **2026-07-
 - Telemetry ingest (closed allowlist, attribution at the door), rollups, activity feed, fleet
   registry, hash-chained audit log with an anchorable head.
 - Postgres store + migrations runner behind one conformance-tested seam.
-- Admin console (`/admin`) and `lw` CLI over the same API — including this documentation set
+- Admin console (`/admin`) and `lw` CLI over the same API - including this documentation set
   at `/admin#/docs`.
 - Packaging: a working container build (`deploy/compose/Dockerfile`), Compose, and a Helm
   chart with NetworkPolicy/ServiceMonitor/non-root defaults, a migrate Job, pack and shell
@@ -50,7 +50,7 @@ revocation or short-TTL-plus-refresh. Mitigation today: lower `sessionTtlHours`.
 
 ### 2. Audit-head anchoring is manual
 The mechanism is built (`/api/v1/audit/head`, `lw audit head`, optional boot/interval
-logging). Nothing schedules it, and Postgres carries no append-only constraint — so head
+logging). Nothing schedules it, and Postgres carries no append-only constraint - so head
 publishing *is* the truncation defence and needs to become routine. See [audit](audit.md).
 
 ### 3. No published container image
@@ -61,7 +61,7 @@ build and push. `image.repository`/`tag` must be set deliberately.
 Serving the web shell needs a built dist on a volume you populate; brand-pack delivery is
 likewise bring-your-own (`pack.type` defaults to `none`). The stale-dist boot guard means a
 wrong path now fails loudly instead of quietly un-governing employees, which is the
-improvement — not a substitute for a delivery pipeline.
+improvement - not a substitute for a delivery pipeline.
 
 ### 5. Engine pin drift
 The vendored engine is pinned and pin-verified, but it lags OSS HEAD and re-pinning is manual.
@@ -69,7 +69,7 @@ An automated re-pin cadence is wanted before that gap turns into a bridge-contra
 
 ### 6. Postgres leg depends on CI
 The Postgres driver only runs under `LW_TEST_DATABASE_URL`. CI now provides one, so this is
-covered on `main` — but a local `npm test` still exercises only the memory driver.
+covered on `main` - but a local `npm test` still exercises only the memory driver.
 
 ### 7. `until-approved` watermarking
 `always` and `never` are wired; the per-render linkage between approval state and watermarking
@@ -97,7 +97,7 @@ The plan sequences phases so each is independently useful:
 | 1 (MVP) | SSO + catalog + render/links + fleet + audit core | done |
 | 2 | roles/grants, overlays, profile governance, org-config, message bridge | done; org-scoped MCP endpoint outstanding |
 | 3 | approvals, watermarking, lifecycle, C2PA assertions | largely done (see gap 7) |
-| 4 | shared workspaces, collab presence, telemetry dashboards | projects/sessions and dashboards done; server collab substrate **landed single-node** (ws gateway + rooms + persistence + guest join, `server/src/collab/`) — client presence UI is OSS-side and open |
+| 4 | shared workspaces, collab presence, telemetry dashboards | projects/sessions and dashboards done; server collab substrate **landed single-node** (ws gateway + rooms + persistence + guest join, `server/src/collab/`) - client presence UI is OSS-side and open |
 | 5 | SAML/SCIM, SIEM streaming, live co-editing, air-gap hardening | live co-editing: server machinery landed (above) but **rollout stays adoption-gated** (the conflict counter on the console Overview is the gate's instrument); SAML/SCIM + SIEM not started |
 
 The community gate is worth restating, because it is the test of the brand-agnostic claim:
@@ -105,7 +105,7 @@ The community gate is worth restating, because it is the test of the brand-agnos
 
 ## Next three things worth doing
 
-1. **Publish the container image** from CI and pin it in the chart — the last packaging step
+1. **Publish the container image** from CI and pin it in the chart - the last packaging step
    between "builds" and "installable".
 2. **Make audit-head anchoring routine** (a scheduled commit or sink) so the truncation
    defence is real and not merely available.

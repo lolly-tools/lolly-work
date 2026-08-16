@@ -1,6 +1,6 @@
 /**
  * Export provenance (plans/17): catalog refs collected from rendered SVG +
- * baked params, the SVG metadata island, and the PNG iTXt chunk round-trip —
+ * baked params, the SVG metadata island, and the PNG iTXt chunk round-trip - 
  * the "«filename» from «provider» was used" trail that ships inside exports,
  * with `c2pa: null` stating the upstream supplied no manifest of its own.
  */
@@ -68,7 +68,7 @@ function tinyPng(): Uint8Array {
     out.writeUInt32BE(data.length, 0);
     out.write(type, 4, 'latin1');
     data.copy(out, 8);
-    return out; // CRC left zero — the chunk walker doesn't verify, real decoders would
+    return out; // CRC left zero - the chunk walker doesn't verify, real decoders would
   };
   return Buffer.concat([sig, chunk('IHDR', ihdrData), chunk('IEND', Buffer.alloc(0))]);
 }

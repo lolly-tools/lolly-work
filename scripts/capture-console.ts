@@ -2,19 +2,19 @@
 // SPDX-License-Identifier: MPL-2.0
 // This script drives a real browser (Playwright) and runs code inside the page
 // (page.evaluate/addInitScript use DOM globals). Like the Chromium render worker
-// (workers/render), it is deliberately EXCLUDED from the root Node tsconfig —
+// (workers/render), it is deliberately EXCLUDED from the root Node tsconfig - 
 // a Node-only, DOM-free program can't type in-page code, and a program-wide DOM
 // lib would mistype the server. Playwright itself is resolved at RUNTIME from the
 // sibling OSS repo (lolly-work ships no bundler/browser dependency).
 /**
- * capture-console — render every admin-console documentation screenshot as a
+ * capture-console - render every admin-console documentation screenshot as a
  * signed VECTOR SVG, the way the OSS /info shots are made.
  *
  * Pipeline, per shot:
  *   1. boot a richly-seeded demo deployment (scripts/demo.ts, in-memory) so the
  *      console has real governance data to show;
  *   2. drive a headless browser to each `/admin#/…` screen, signed in as admin;
- *   3. inject the capture-time walker bundle (scripts/lib/walker-bundle.js — the
+ *   3. inject the capture-time walker bundle (scripts/lib/walker-bundle.js - the
  *      web shell's renderSvgFromHtml, built by scripts/build-walker-bundle.ts)
  *      and call window.__lollyWalkerShot(cropSelector) → a real SVG document of
  *      the live DOM (geometry, not pixels);
@@ -22,12 +22,12 @@
  *      identity, embedding a `tools.lolly.export` assertion that records the
  *      capture recipe and a `c2pa.created` action with digitalSourceType
  *      screenCapture (honest: a screenshot never touched a camera sensor);
- *   5. write docs/shots/<slug>.svg — the file the docs serve, credential the
+ *   5. write docs/shots/<slug>.svg - the file the docs serve, credential the
  *      reader can decode, and verify locally in the console's own #/verify view.
  *
  * The signing identity: by default the harness MINTS a self-contained demo
  * identity (root+leaf, the same generateCaRoot/issueLeafCert path as `lw c2pa
- * init`) so shots are genuinely signed with zero PKI — they read "valid,
+ * init`) so shots are genuinely signed with zero PKI - they read "valid,
  * self-signed" in a verifier, which is the honest state and a good teaching
  * example. A real deployment sets LW_C2PA_SIGNING_KEY + a certFile to sign the
  * corpus with its own trusted identity (then its own console verifies them as
@@ -35,7 +35,7 @@
  *
  * Prerequisites for CAPTURE (not for the docs at runtime): Playwright + a
  * Chromium, resolved from the sibling OSS repo (which installs them). The runtime
- * console needs none of this — it only ever loads the finished .svg files.
+ * console needs none of this - it only ever loads the finished .svg files.
  *
  *     node scripts/capture-console.ts                 # capture all shots
  *     node scripts/capture-console.ts overview audit  # just these slugs
@@ -52,9 +52,9 @@ import { fileURLToPath } from 'node:url';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 // Every shot embeds the console's two typefaces as data: URIs (SUSE + SUSE
-// Mono — the only faces lolly-work uses, decided 2026-08-11). Without this the
+// Mono - the only faces lolly-work uses, decided 2026-08-11). Without this the
 // SVGs merely NAME the families and every viewer without them installed falls
-// back to their browser default — the "broken fonts in the charts" a reader
+// back to their browser default - the "broken fonts in the charts" a reader
 // reported against the served corpus. ~155 KB per shot, and the shot renders
 // identically everywhere, which is the point of a signed corpus.
 const EMBED_FACES = [
@@ -64,7 +64,7 @@ const EMBED_FACES = [
 let fontCss: string | null = null;
 /**
  * Make a walker shot self-contained: the fonts above as data: URIs. That is
- * ALL that remains host-side — the walker itself now bakes each nested-svg
+ * ALL that remains host-side - the walker itself now bakes each nested-svg
  * descendant's computed presentation (fills, var() strokes, text style) as
  * inline style (lolly plans/101, walker `export-nested-svg.test.ts`), which
  * retired this script's earlier :root-var re-declaration and SUSE text pin.
@@ -89,7 +89,7 @@ const THEMES = ['light', 'dark'] as const;
 // ── the shot recipes ──────────────────────────────────────────────────────────
 // Each captures one console screen. cropSelector is the element the walker frames
 // (and, at read time, the credential attaches to). `page` is the docs/*.md file
-// the shot illustrates — used later when wiring ![]() links; recorded here so the
+// the shot illustrates - used later when wiring ![]() links; recorded here so the
 // recipe list is the single source of truth for "what illustrates what".
 interface Recipe {
   slug: string;
@@ -153,7 +153,7 @@ function rootDims(svg: string): { w: number; h: number } {
   return { w: Math.round(Number(vb?.[1]) || 1440), h: Math.round(Number(vb?.[2]) || 900) };
 }
 
-/** Reject if `p` doesn't settle within `ms` — bounds Playwright evaluate() calls,
+/** Reject if `p` doesn't settle within `ms` - bounds Playwright evaluate() calls,
  *  which otherwise hang forever on a stuck page. */
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([
@@ -309,7 +309,7 @@ async function main(): Promise<void> {
         await withTimeout(page.evaluate(() => (document as unknown as { fonts: { ready: Promise<unknown> } }).fonts.ready), 8_000, 'fonts.ready');
         // Views fetch their data async, so the crop element starts near-empty and
         // grows. Wait until it has real content AND has stopped growing for two
-        // consecutive samples — the generic equivalent of the OSS settleForCapture
+        // consecutive samples - the generic equivalent of the OSS settleForCapture
         // (which stamps data-shots-settled once the DOM stops expanding).
         await page.waitForFunction((sel) => {
           const el = document.querySelector(sel);
@@ -325,7 +325,7 @@ async function main(): Promise<void> {
         await page.waitForTimeout(300); // a beat for any post-font reflow
 
         // Capture prep: a collapsed <details> (the "View as table" panels) hides
-        // its body via the UA closed-state, which the walker doesn't honor — it
+        // its body via the UA closed-state, which the walker doesn't honor - it
         // would draw the table on top of the chart. Hide the body explicitly so the
         // walker skips it and the shot matches what a reader actually sees.
         await page.evaluate(() => {

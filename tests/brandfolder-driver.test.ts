@@ -1,6 +1,6 @@
 /**
  * Brandfolder driver against recorded v4 API shapes (captured from a live
- * brandfolder, 2026-07 — ids real, values trimmed). Injected fetch, no
+ * brandfolder, 2026-07 - ids real, values trimmed). Injected fetch, no
  * network: mapping (sections → sections, attachments → formats), pagination,
  * search encoding, per-request signed-URL resolution, and the upstream host
  * allowlist that keeps /catalog/ext/* from becoming an open proxy.

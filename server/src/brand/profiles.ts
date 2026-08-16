@@ -1,5 +1,5 @@
 /**
- * Brand profiles (plans/29) — the deploy's mounted pack can carry multiple brand
+ * Brand profiles (plans/29) - the deploy's mounted pack can carry multiple brand
  * profiles under `<pack>/brands/<name>/`, one of which is active. The active
  * profile is named in `<pack>/.lolly-profile` and served through the
  * `<pack>/catalog` SYMLINK → `brands/<name>/catalog`; switching re-points that
@@ -7,13 +7,13 @@
  *
  * Pure fs helpers here; the HTTP routes (app.ts) own auth, audit, and the cache
  * invalidation a switch requires. A pack with no `brands/` dir simply reports
- * `available: false` — the single-brand deploy is unchanged.
+ * `available: false` - the single-brand deploy is unchanged.
  */
 import { readdir, readFile, writeFile, lstat, stat, unlink, symlink, readlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
 const PROFILE_MARKER = '.lolly-profile';
-/** A profile name is a single path segment — no traversal, matches the brands/ dirs. */
+/** A profile name is a single path segment - no traversal, matches the brands/ dirs. */
 const NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
 
 export interface BrandProfile {

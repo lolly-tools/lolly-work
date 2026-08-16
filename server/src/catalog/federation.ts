@@ -1,5 +1,5 @@
 /**
- * Catalog federation (plans/17 §7) — folds enabled providers' assets into the
+ * Catalog federation (plans/17 §7) - folds enabled providers' assets into the
  * served feed. Request-driven like everything else: each provider has an
  * in-process fragment cache with a TTL; an expired fragment is served as-is
  * while a background refresh runs (stale-while-revalidate), and the last
@@ -7,8 +7,8 @@
  * outage still serves something ("stale", never a 500).
  *
  * Exposure governance (plans/17 §6) is applied in two places: slice filters
- * (requireApproved / includeSections / excludeTags) at fragment-build time —
- * excluded assets never enter the feed or the store — and group visibility at
+ * (requireApproved / includeSections / excludeTags) at fragment-build time - 
+ * excluded assets never enter the feed or the store - and group visibility at
  * compose time, per caller.
  */
 import { canonicalJson, openSecret, sha256Hex } from '../lib/crypto.ts';
@@ -23,7 +23,7 @@ export function credentialContext(providerId: string): string {
 }
 
 const DEFAULT_TTL_SECONDS = 300;
-/** Hard page cap per sync — a runaway upstream can't wedge a request cycle.
+/** Hard page cap per sync - a runaway upstream can't wedge a request cycle.
  *  100/page (driver-side) × 50 pages = 5k assets; log-worthy when hit. */
 const MAX_PAGES = 50;
 
@@ -52,7 +52,7 @@ export function mapProviderAsset(rec: ProviderRecord, asset: ProviderAssetRef): 
   };
 }
 
-/** Slice filters — the provider-side subset an admin chose to federate.
+/** Slice filters - the provider-side subset an admin chose to federate.
  *  Exported because live search results must pass the same gate as synced
  *  fragments (plans/17 §9). */
 export function passesExposure(rec: ProviderRecord, asset: ProviderAssetRef): boolean {
@@ -63,7 +63,7 @@ export function passesExposure(rec: ProviderRecord, asset: ProviderAssetRef): bo
   return true;
 }
 
-/** Group visibility — whether this caller sees the provider's assets at all. */
+/** Group visibility - whether this caller sees the provider's assets at all. */
 export function callerSeesProvider(rec: ProviderRecord, callerGroups: string[]): boolean {
   const groups = rec.exposure.groups;
   if (!groups || groups === '*') return true;
@@ -86,7 +86,7 @@ export async function buildFragment(rec: ProviderRecord, provider: CatalogProvid
 
 export interface FederationDeps extends ProviderDeps {
   store: Store;
-  /** Master key for sealed credentials (secrets.credential) — absent is fine
+  /** Master key for sealed credentials (secrets.credential) - absent is fine
    *  until a db-managed provider actually stores one. */
   credentialSecret?: string;
   /** Config-managed providers' credentials, resolved from env at boot. */
@@ -102,16 +102,16 @@ export interface Federation {
   /** Eager refresh: build + persist + cache a provider's fragment. Throws on
    *  driver failure (after recording lastError). */
   sync(rec: ProviderRecord): Promise<ProviderFragment>;
-  /** Enabled providers' fragments for feed composition — cached, refreshed in
+  /** Enabled providers' fragments for feed composition - cached, refreshed in
    *  the background past TTL, last-good on failure. Never throws. */
   fragments(): Promise<Array<{ rec: ProviderRecord; fragment: ProviderFragment; stale: boolean }>>;
   /** Append caller-visible federated entries onto a served index. */
   composeIndex(index: AssetIndex, callerGroups: string[]): Promise<AssetIndex>;
-  /** Combined fragment hash — folded into catalogVersion so provider refreshes
+  /** Combined fragment hash - folded into catalogVersion so provider refreshes
    *  invalidate renders like a pack change. */
   version(): Promise<string>;
   /** Imported upstream availability window for a federated asset id, read off
-   *  its cached fragment entry — the ext/* blob gate combines it most-
+   *  its cached fragment entry - the ext/* blob gate combines it most-
    *  restrictive-wins with the local lifecycle row (plans/27 §2). Undefined for
    *  a pack id, an unknown id, or a provider with no availability API. */
   availabilityWindow(assetId: string): Promise<AvailabilityWindow | undefined>;

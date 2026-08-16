@@ -1,15 +1,15 @@
 /**
- * Catalog providers — federated third-party asset sources (plans/17).
+ * Catalog providers - federated third-party asset sources (plans/17).
  *
  * A provider is an admin-configured, READ-ONLY connector to an external
  * system (Brandfolder, S3, git, Dropbox, …) that stays the source of truth.
  * Its assets federate into the served assets/index.json feed namespaced
  * `ext/<providerId>/<remoteId>`, so lifecycle rows, grants, and render cache
  * invalidation work on them unchanged. Lolly stores only references plus its
- * own governance overlays — deleting a provider never touches remote content.
+ * own governance overlays - deleting a provider never touches remote content.
  *
  * Types only in this module; drivers live beside it, one file per kind, all
- * behind `CatalogProvider` with an injectable fetch (no SDKs — plans/17 §13
+ * behind `CatalogProvider` with an injectable fetch (no SDKs - plans/17 §13
  * also requires publicly documented endpoints only).
  */
 import type { AssetIndexEntry } from '../lifecycle.ts';
@@ -30,7 +30,7 @@ export function extOf(name: string, fallback = 'bin'): string {
   return name.includes('.') ? (name.split('.').pop() as string).toLowerCase() : fallback;
 }
 
-/** Drop a trailing "<dot><ext>" from a filename — the display name a driver stamps
+/** Drop a trailing "<dot><ext>" from a filename - the display name a driver stamps
  *  onto ProviderAssetRef.name when the upstream has no separate title field. */
 export function stripExt(name: string): string {
   return name.replace(/\.[^.]+$/, '');
@@ -40,16 +40,16 @@ export interface ProviderCapabilities {
   /** Provider supports server-side search (live fan-out from /api/v1/catalog/search). */
   search: boolean;
   thumbnails: boolean;
-  /** Blob URLs are signed + short-lived — never persist them; resolve per request. */
+  /** Blob URLs are signed + short-lived - never persist them; resolve per request. */
   expiringUrls: boolean;
-  /** Provider accepts lolly-generated exports pushed OUT to it (plans/27 §10 —
+  /** Provider accepts lolly-generated exports pushed OUT to it (plans/27 §10 - 
    *  Optimizely CMP two-way). Off for every read-only source; the publish route
    *  refuses a provider that does not declare it. */
   publish?: boolean;
 }
 
 /** One lolly-rendered export being published out to a destination provider
- *  (plans/27 §10). Only ever a signed lolly export — never a federated or pack
+ *  (plans/27 §10). Only ever a signed lolly export - never a federated or pack
  *  asset (the route verifies the C2PA export assertion before calling here). */
 export interface PublishInput {
   bytes: Uint8Array;
@@ -68,7 +68,7 @@ export interface ProviderMapping {
   sectionTags?: boolean;
   /**
    * For DAMs that model availability as custom metadata rather than native
-   * fields (Image Relay terms, IntelligenceBank custom fields — plans/27 §9):
+   * fields (Image Relay terms, IntelligenceBank custom fields - plans/27 §9):
    * the upstream field names a driver reads the availability window from.
    * DAMs with native availability fields (Brandfolder, Acquia/Widen) ignore
    * this and map their own fields directly.
@@ -94,7 +94,7 @@ export interface ProviderSyncConfig {
   ttlSeconds?: number;
 }
 
-/** One provider's mapped slice of the feed — cached in-process and persisted
+/** One provider's mapped slice of the feed - cached in-process and persisted
  *  as last-good fallback so a cold boot or outage still serves something. */
 export interface ProviderFragment {
   assets: AssetIndexEntry[];
@@ -103,7 +103,7 @@ export interface ProviderFragment {
   hash: string;
 }
 
-/** Runtime state — written by sync, never by admins. */
+/** Runtime state - written by sync, never by admins. */
 export interface ProviderState {
   lastSyncAt?: string;
   lastError?: string;
@@ -117,13 +117,13 @@ export interface ProviderRecord {
   label: string;
   /** 'config' rows come from instance.json at boot and are read-only in the API. */
   managedBy: 'db' | 'config';
-  /** Kill switch — false on creation; enabling is a separately-audited action. */
+  /** Kill switch - false on creation; enabling is a separately-audited action. */
   enabled: boolean;
   options: Record<string, unknown>;
   mapping: ProviderMapping;
   exposure: ProviderExposure;
   sync: ProviderSyncConfig;
-  /** Sealed credential (lib/crypto sealSecret) — never serialized to any API. */
+  /** Sealed credential (lib/crypto sealSecret) - never serialized to any API. */
   credentialCiphertext?: Uint8Array;
   /** Display-safe: sha256 prefix + last-4. The only credential shape APIs return. */
   credentialFingerprint?: string;
@@ -138,10 +138,10 @@ export interface ProviderRecord {
 
 export interface ProviderFormatRef {
   format: string;
-  /** Opaque driver-internal ref resolved by resolveBlob — NEVER a caller-supplied URL. */
+  /** Opaque driver-internal ref resolved by resolveBlob - NEVER a caller-supplied URL. */
   remoteRef: string;
   size?: number;
-  /** Upstream original filename — carried into export provenance (plans/17):
+  /** Upstream original filename - carried into export provenance (plans/17):
    *  even when the source has no C2PA manifest, "«filename» from «provider»"
    *  travels with anything a tool makes from this asset. */
   filename?: string;
@@ -159,10 +159,10 @@ export interface ProviderAssetRef {
   approved?: boolean;
   updatedAt?: string;
   /**
-   * Availability window imported from the upstream DAM (ISO — plans/27 §2).
+   * Availability window imported from the upstream DAM (ISO - plans/27 §2).
    * Folded onto the fragment entry and combined most-restrictive-wins with any
    * local lifecycle row at both gate sites. Absent for providers with no such
-   * API — the manual `catalog.expire` arm is then the whole story.
+   * API - the manual `catalog.expire` arm is then the whole story.
    */
   availableFrom?: string;
   availableUntil?: string;
@@ -180,7 +180,7 @@ export interface CatalogProvider {
   readonly capabilities: ProviderCapabilities;
   listAssets(cursor?: string): Promise<{ assets: ProviderAssetRef[]; next?: string }>;
   searchAssets?(query: string, limit: number): Promise<ProviderAssetRef[]>;
-  /** Resolve ONE asset's ref by remoteId WITHOUT scanning listAssets — the seam the
+  /** Resolve ONE asset's ref by remoteId WITHOUT scanning listAssets - the seam the
    *  /import route uses to snapshot a single search-only result (plans/30 §3.1). A
    *  provider whose assets are all enumerable via listAssets can omit it (the route
    *  falls back to a listAssets scan); returns null when the id is unknown. */
@@ -188,7 +188,7 @@ export interface CatalogProvider {
   /** `formatRef` is a remoteRef from this driver's own ProviderFormatRef (or 'thumb'). */
   resolveBlob(remoteId: string, formatRef: string): Promise<ResolvedBlob>;
   /** Push a lolly-generated export INTO the destination (plans/27 §10). Only
-   *  present when `capabilities.publish` — the publish route gates on both. */
+   *  present when `capabilities.publish` - the publish route gates on both. */
   publishAsset?(input: PublishInput): Promise<{ remoteId: string; url?: string }>;
   healthCheck(): Promise<{ ok: boolean; detail?: string }>;
 }

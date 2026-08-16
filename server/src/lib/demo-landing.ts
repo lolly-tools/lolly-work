@@ -3,19 +3,19 @@
  * The public demo landing page, served at `/` when a deployment has NO web shell
  * mounted (`instance.shellDir` unset) but the passwordless dev provider is on
  * (`dev.enabled`). That combination is exactly the hosted testing sandbox
- * (deploy/vercel — lolly.work): there is no 1.9 GB governed web shell to serve,
+ * (deploy/vercel - lolly.work): there is no 1.9 GB governed web shell to serve,
  * so `/` is instead a one-click way into the governed admin console + the live
  * render endpoint.
  *
- * Its chrome is near self-contained (inline CSS; the SUSE mark inlined below) —
+ * Its chrome is near self-contained (inline CSS; the SUSE mark inlined below) - 
  * the only fetched asset is the Lolly icon, served same-origin from
  * /admin/icon.svg with its C2PA seal intact, so the page stays CDN-free and
- * CSP-clean. It renders only the personas actually configured in `dev.users` —
+ * CSP-clean. It renders only the personas actually configured in `dev.users` - 
  * so what you can click is exactly what the instance will accept at `/api/auth/dev`.
  *
  * SECURITY: this page exposes passwordless sign-in on a public origin. It only
  * ever appears when `dev.enabled` is true, which a real IdP-backed deployment
- * never sets. The banner says so plainly — it is a sandbox, not a product page.
+ * never sets. The banner says so plainly - it is a sandbox, not a product page.
  */
 import type { InstanceConfig } from '../config/instance.ts';
 
@@ -24,7 +24,7 @@ const REPO_URL = 'https://github.com/lolly-tools/lolly-work';
 const SUSE_URL = 'https://www.suse.com';
 
 // The "Founded by SUSE" mark, identical to the one on lolly.tools/info. Inlined
-// (not <img src>) to keep this page self-contained — no static-serving path, no
+// (not <img src>) to keep this page self-contained - no static-serving path, no
 // external fetch, CSP-clean. The pill carries its own pine background so it reads
 // on any surface. Same asset is vendored at console/founded-by.svg for the docs
 // header, which is not under this page's self-contained constraint.
@@ -38,7 +38,7 @@ function esc(s: string): string {
 }
 
 /** A friendly role label from a persona's groups (mirrors roleFromGroups' intent
- *  without importing it — this is presentation only). */
+ *  without importing it - this is presentation only). */
 function roleLabel(groups: string[]): string {
   if (groups.includes('admin')) return 'Admin';
   if (groups.includes('approver')) return 'Approver';

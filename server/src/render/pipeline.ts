@@ -1,5 +1,5 @@
 /**
- * The render pipeline — the fourth HostV1 shell's core (plans/07).
+ * The render pipeline - the fourth HostV1 shell's core (plans/07).
  *
  * renderTool(): tool id + format + URL-mode query → bytes. It loads the tool via
  * the real engine, enforces policy (overlays) BEFORE rendering, renders the
@@ -9,8 +9,8 @@
  * publish invalidates exactly the affected renders.
  *
  * The engine, jsdom, and resvg are HEAVY and imported LAZILY (dynamic import)
- * inside the functions that need them, so importing this module — which app.ts
- * does at boot — pulls in only zero-dep code (cache-key, overlay, org-config,
+ * inside the functions that need them, so importing this module - which app.ts
+ * does at boot - pulls in only zero-dep code (cache-key, overlay, org-config,
  * watermark, host). A boot that never renders stays instant.
  */
 import { readFile, stat } from 'node:fs/promises';
@@ -33,15 +33,15 @@ import {
 } from './provenance.ts';
 
 // The format ceiling lives in capabilities.ts (shared with org-config's
-// advertisement — plans/23 §3.A); re-exported so render callers keep one import.
+// advertisement - plans/23 §3.A); re-exported so render callers keep one import.
 export { RENDER_TIER, WORKER_RASTER_FORMATS, renderCapabilities, type RenderFormat, type RenderCapabilities } from './capabilities.ts';
 import { renderCapabilities } from './capabilities.ts';
 
 /** Longest raster edge the resvg path will produce (an unbounded content-sized
- *  SVG must never dictate the allocation — mirrors the MCP service's cap). */
+ *  SVG must never dictate the allocation - mirrors the MCP service's cap). */
 const MAX_RASTER_EDGE_PX = 10_000;
 
-/** Upper bound on the resvg scale factor itself — guards against a degenerate
+/** Upper bound on the resvg scale factor itself - guards against a degenerate
  *  targetWidthPx producing an absurd scale before the aspect-ratio check below. */
 const MAX_SCALE = 1e9;
 
@@ -55,7 +55,7 @@ export class RenderError extends Error {
   readonly code: string;
   readonly status: number;
   readonly violations?: ParamViolation[];
-  /** Seconds the caller should back off — set when a saturated worker answered
+  /** Seconds the caller should back off - set when a saturated worker answered
    *  503 RENDER_BUSY (plans/23 §3.C); app.ts surfaces it as `Retry-After`. */
   retryAfter?: number;
   constructor(code: string, status: number, message: string, violations?: ParamViolation[]) {
@@ -68,7 +68,7 @@ export class RenderError extends Error {
 }
 
 /** A saturated worker (503 RENDER_BUSY + Retry-After) is a retryable capacity
- *  answer, not a worker fault — keep its code and back-off so app.ts can pass
+ *  answer, not a worker fault - keep its code and back-off so app.ts can pass
  *  both to the client (plans/23 §3.C). Anything else stays the generic wrap. */
 function renderErrorFromWorker(e: WorkerError): RenderError {
   const err = new RenderError(e.code ?? 'RENDER_WORKER_FAILED', e.status, e.message);
@@ -98,7 +98,7 @@ export interface RenderRequest {
   query: string;
   /** The caller's group set for policy resolution (never trusted for identity). */
   principal: { groups: string[] } | null;
-  /** Server-built profile for `bindToProfile` resolution — from the auth'd user, never params. */
+  /** Server-built profile for `bindToProfile` resolution - from the auth'd user, never params. */
   profile: Profile;
   /** All tool overlays (the policy version hashes the full set; the tool's own is derived). */
   overlays: Map<string, ToolOverlay>;
@@ -116,7 +116,7 @@ export interface RenderOutput {
 
 export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<RenderOutput> {
   // 'jpeg' is the same format as 'jpg' everywhere downstream (the worker
-  // normalises too) — fold it before the gate so both spellings behave alike.
+  // normalises too) - fold it before the gate so both spellings behave alike.
   const format = req.format.toLowerCase() === 'jpeg' ? 'jpg' : req.format.toLowerCase();
   // Capability gate: the SAME function that fills org_config's render block
   // (plans/23 §3.A), so what shells are offered and what this gate accepts can
@@ -156,10 +156,10 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
 
   // Policy BEFORE render. A caller that supplies a locked/hidden/not-allowed
   // param is refused (422); then the overlay's locked values are baked over the
-  // caller's — so a locked input renders its policy value regardless of input.
+  // caller's - so a locked input renders its policy value regardless of input.
   const overlay = req.overlays.get(req.toolId);
   const groups = req.principal?.groups ?? [];
-  // Per-tool format policy (overlay enforce.formats — plans/23 §3.A): a format
+  // Per-tool format policy (overlay enforce.formats - plans/23 §3.A): a format
   // the deployment CAN produce may still be disallowed for this tool. A policy
   // 403, deliberately distinct from the capability 400 at the top: absent (400)
   // vs forbidden-for-this-tool (403), so shells and operators can tell which.
@@ -265,10 +265,10 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
     out = { bytes: new TextEncoder().encode(svgStr), mime: 'image/svg+xml' };
   } else {
     // Rasterise the finished (watermarked + provenance-islanded) SVG. The Chromium
-    // worker is the single rasteriser when configured — one engine so what the shell
+    // worker is the single rasteriser when configured - one engine so what the shell
     // shows is what exports; in-process resvg is the fallback for a worker-less deploy
     // (the hosted demo today). Provenance + C2PA stay plane-side either way. Once a
-    // worker is always present, resvg (and its native binary) is removed — see
+    // worker is always present, resvg (and its native binary) is removed - see
     // plans/22.
     let raster: { bytes: Uint8Array; mime: string };
     if (deps.worker && !LEGACY_RESVG) {
@@ -290,7 +290,7 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
   if (provenance) out.provenance = provenance;
 
   // Real C2PA signing (plans/17 §16): with an instance signer configured, sign
-  // the finished bytes — including the provenance island above — so the export
+  // the finished bytes - including the provenance island above - so the export
   // carries a verifiable, tamper-evident Content Credential. Best-effort: a
   // signing failure must never fail an otherwise-good render (the unsigned bytes
   // still ship), matching how provenance degrades. Cache the signed bytes.
@@ -399,10 +399,10 @@ function cachePut(key: string, entry: CacheEntry, toolId: string): void {
  * Evict every cached render of `toolId`, returning the count dropped. The
  * reachable invalidation entry point plans/08 §6b asks a bulk session edit to
  * call: because the render cache key already folds in the tool's inputs, a
- * changed input structurally misses its old entry — but a bulk edit that sets a
+ * changed input structurally misses its old entry - but a bulk edit that sets a
  * value BACK to a previously-rendered one would otherwise hit stale bytes, so
  * this by-tool bust closes the gap. It over-busts (drops the tool's other cached
- * renders too), which is safe — renders are deterministic and simply recompute —
+ * renders too), which is safe - renders are deterministic and simply recompute - 
  * and cheap for a rare admin op.
  */
 export function invalidateRenderByTool(toolId: string): number {

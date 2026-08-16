@@ -1,5 +1,5 @@
 /**
- * BlobStore — the memory driver against the shared conformance suite. The PG
+ * BlobStore - the memory driver against the shared conformance suite. The PG
  * driver runs the same suite in the postgres test when a database is present.
  */
 import { test } from 'node:test';

@@ -1,7 +1,7 @@
 /**
  * The instance C2PA signing identity (plans/17 §16). When an org configures a
  * signing certificate + key, server-side exports carry a REAL, cryptographically
- * signed C2PA Content Credential instead of the unsigned provenance island —
+ * signed C2PA Content Credential instead of the unsigned provenance island - 
  * verifiable and tamper-evident. Absent ⇒ exports keep today's unsigned
  * provenance (nothing breaks; signing is purely additive).
  *

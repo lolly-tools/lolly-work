@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * Room persistence — snapshot cadence, quiesce → session revision, outbox-replay
+ * Room persistence - snapshot cadence, quiesce → session revision, outbox-replay
  * dedup, and crash recovery (server/src/collab/persistence.ts + the lifecycle
  * half in rooms.ts; lolly-work plans/14 §6, OSS plans/100 §7 items 3, 4, 10).
  *
  * DRIVER-PARAMETERISED, like tests/store-conformance.ts: every case runs against
  * the memory store always, and against Postgres when LW_TEST_DATABASE_URL is set.
- * Persistence is the one collab surface where the driver can genuinely disagree —
+ * Persistence is the one collab surface where the driver can genuinely disagree - 
  * jsonb round-trips a blocks array, `sessions.updated_by` is a FOREIGN KEY to
  * users(id) (which is why a room's revision `actor` is 'collab' but its
  * `updatedBy` must stay a real user), and the snapshot row is an `on conflict`
@@ -48,7 +48,7 @@ function seatOf(id: string, userId: string): RoomMember & { sent: ServerFrame[] 
 
 /** A guest seat, as the gateway actually constructs one (`gateway.ts`'s
  *  `admitGuest`): `userId` is the guest's principal id (never a real user),
- *  and `guestLinkId` is set — which is the ONE thing that makes `Room.applyOps`
+ *  and `guestLinkId` is set - which is the ONE thing that makes `Room.applyOps`
  *  attribute the write to the guest rather than to a member (persistence.ts
  *  `RoomWriter` / `roomRevisionActor`). */
 function guestSeatOf(id: string, linkId: string): RoomMember & { sent: ServerFrame[] } {
@@ -141,7 +141,7 @@ async function runCollabPersistence(t: TestContext, store: Store): Promise<void>
     const alice = seatOf('m1', userId);
     room.join(alice);
 
-    // ONE batch — far under the batch threshold — but a drag gesture's worth of
+    // ONE batch - far under the batch threshold - but a drag gesture's worth of
     // ops, which is exactly the case the batch counter alone would let sit
     // unpersisted.
     const burst = Array.from({ length: SNAPSHOT_EVERY_OPS }, (_, i) => param('title', `v${i}`, 'a', i + 1));
@@ -163,7 +163,7 @@ async function runCollabPersistence(t: TestContext, store: Store): Promise<void>
     room.join(alice);
     room.join(bob);
 
-    // ONE gesture — `damageToOps` mints a single origin for all of a gesture's
+    // ONE gesture - `damageToOps` mints a single origin for all of a gesture's
     // ops, so both of these carry clock 7. A dedup that recorded as it went would
     // let the first op cancel the second.
     const gesture: CanvasOp[] = [
@@ -178,8 +178,8 @@ async function runCollabPersistence(t: TestContext, store: Store): Promise<void>
     assert.equal(room.acceptedOps, 2, 'a replay adds nothing to the counters');
     assert.equal(opsFrames(bob).length, 1, '…and peers never hear it twice');
 
-    // A PARTIAL replay — the outbox holds one acked gesture and one that never
-    // landed — keeps only what is genuinely new.
+    // A PARTIAL replay - the outbox holds one acked gesture and one that never
+    // landed - keeps only what is genuinely new.
     room.applyOps(alice, [...gesture, param('title', 'after', 'ca', 8)]);
     assert.equal(room.acceptedOps, 3);
     assert.equal(opsFrames(bob).length, 2);
@@ -243,10 +243,10 @@ async function runCollabPersistence(t: TestContext, store: Store): Promise<void>
     async () => {
       // The guest wave's own coverage of this (tests/collab/guests.test.ts) drives
       // the full HTTP/WS gateway against the memory store only, so it can assert
-      // the SHAPE of the write-back but not that the write path is actually safe
+      // the STRUCTURE of the write-back but not that the write path is actually safe
       // against the Postgres schema: `session_revisions.actor` is free text
       // (migrations/0004_sessions.sql), so any string lands there, but
-      // `sessions.updated_by` is `references users(id)` — a guest id written there
+      // `sessions.updated_by` is `references users(id)` - a guest id written there
       // would be a foreign-key violation, not a logic bug a memory store could ever
       // surface. This leg proves the write path never attempts it, on the driver
       // where attempting it would actually fail.
@@ -336,7 +336,7 @@ async function runCollabPersistence(t: TestContext, store: Store): Promise<void>
     await room.flush();
     assert.ok(await store.getCollabSnapshot(session.id), 'the room had persisted a snapshot');
 
-    // …and here the process dies. No quiesce, no dispose — the surviving snapshot
+    // …and here the process dies. No quiesce, no dispose - the surviving snapshot
     // row IS the signal, so a brand-new registry is a restart.
     const restarted = registryFor();
     const recovered = await restarted.acquire(await reload(store, session.id));
@@ -351,7 +351,7 @@ async function runCollabPersistence(t: TestContext, store: Store): Promise<void>
     assert.equal(await store.getCollabSnapshot(session.id), null, 'recovery consumes the row');
 
     // The recovered ROOM is seeded from the snapshot, not from the pre-crash
-    // session — a joiner sees the work the crash swallowed.
+    // session - a joiner sees the work the crash swallowed.
     const doc = recovered.snapshot();
     assert.equal(doc.params['title'], `v${SNAPSHOT_EVERY_BATCHES}`);
     assert.equal(
@@ -372,7 +372,7 @@ async function runCollabPersistence(t: TestContext, store: Store): Promise<void>
       sessionId: session.id, inputs: { title: 'room state from before the crash' },
       baseRev: session.rev, ops: 9, updatedAt: new Date().toISOString(),
     });
-    // An ordinary PUT lands while nobody is in the room — L0 moved on.
+    // An ordinary PUT lands while nobody is in the room - L0 moved on.
     await store.putSession({ ...session, inputs: { title: 'v2' }, rev: session.rev + 1, updatedAt: new Date().toISOString() });
 
     const room = await registryFor().acquire(await reload(store, session.id));
@@ -392,7 +392,7 @@ async function runCollabPersistence(t: TestContext, store: Store): Promise<void>
     room.leave(alice.id);
 
     // Dispose (quiesce + drop) WITHOUT awaiting, then immediately re-acquire with
-    // the stale pre-quiesce record — the shape the gateway has by construction,
+    // the stale pre-quiesce record - the shape the gateway has by construction,
     // since it read the session at upgrade time.
     const disposing = registry.releaseIfEmpty(room);
     const next = await registry.acquire(session);
@@ -431,7 +431,7 @@ async function runCollabPersistence(t: TestContext, store: Store): Promise<void>
     const registry = registryFor();
     const room = await registry.acquire(session);
     const alice = seatOf('m1', userId);
-    room.join(alice); // still seated — this is a shutdown, not a leave
+    room.join(alice); // still seated - this is a shutdown, not a leave
     room.applyOps(alice, [param('title', 'shutdown-safe', 'ca', 2)]);
 
     const drained = await registry.drain();
@@ -486,11 +486,11 @@ async function runCollabPersistence(t: TestContext, store: Store): Promise<void>
   await t.test('a PUT landing INSIDE the write-back is merged rather than clobbered', async () => {
     // The merge documented on `docToInputs` ("the room wins what it edited, the PUT
     // keeps everything else") only holds if the PUT lands before the write-back
-    // reads its base. This case makes it land AFTER — the interval an un-CAS'd
+    // reads its base. This case makes it land AFTER - the interval an un-CAS'd
     // read-modify-write cannot survive: it would write the room's inputs over a
     // base it read at the old rev, discarding the PUT's inputs AND its meta, and
     // its own `session_revisions` row would then be dropped by the
-    // `(session_id, rev)` conflict — leaving history recording the user's revision
+    // `(session_id, rev)` conflict - leaving history recording the user's revision
     // while `sessions.inputs` holds the room's.
     const { session, userId } = await seed(store, 'cas-put', { title: 'before', accent: '#000000' });
     let armed = false;
@@ -538,7 +538,7 @@ async function runCollabPersistence(t: TestContext, store: Store): Promise<void>
   await t.test('a DELETE landing INSIDE the write-back is never undone by it', async () => {
     // The same interval, with a tombstone instead of a PUT. A read-modify-write
     // carries `deletedAt: undefined` from the record it read before the DELETE, and
-    // writing that back sets `deleted_at` to NULL — resurrecting a session the
+    // writing that back sets `deleted_at` to NULL - resurrecting a session the
     // DELETE route exists to make unresurrectable.
     const { session, userId } = await seed(store, 'cas-delete', { title: 'before' });
     let armed = false;

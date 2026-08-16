@@ -1,7 +1,7 @@
 /**
  * The injectable-resource rail (plans/19). One governed registry through which the
- * control plane injects capability into the OSS deploy it governs — tools, feature
- * flags, typed catalog resources, and declarative UI chrome — all as DATA the shell
+ * control plane injects capability into the OSS deploy it governs - tools, feature
+ * flags, typed catalog resources, and declarative UI chrome - all as DATA the shell
  * renders, never code it runs.
  *
  * The invariant, inherited from rate cards (plans/18): the control plane distributes
@@ -10,7 +10,7 @@
  * descriptor; a kind handler's `envelope()` sanity-checks its shape and extracts the
  * facts worth showing an admin (never interpreting it), and `project()` turns it into
  * the descriptor the shell consumes over org-config. No kind ever carries executable
- * code — that is the line that keeps the open core honest.
+ * code - that is the line that keeps the open core honest.
  */
 
 /** The kinds the rail can carry. Each maps to a distinct shell consumption path
@@ -22,7 +22,7 @@ export type InjectableState = 'live' | 'revoked';
 
 /** One published injectable. Persisted verbatim; projected per-caller into org-config. */
 export interface InjectableRecord {
-  /** Stable slug id — a permanent contract, like a tool/asset id. */
+  /** Stable slug id - a permanent contract, like a tool/asset id. */
   id: string;
   kind: InjectableKind;
   /** Human label for the console + the shell descriptor. */
@@ -48,7 +48,7 @@ export type Envelope =
   | { ok: false; reason: string };
 
 /** The per-kind contract. Handlers hold NO state and NEVER interpret the payload
- *  beyond a shape check — interpretation is the shell's job. */
+ *  beyond a shape check - interpretation is the shell's job. */
 export interface KindHandler {
   kind: InjectableKind;
   /** Console-facing label + one-line summary of what this kind injects. */

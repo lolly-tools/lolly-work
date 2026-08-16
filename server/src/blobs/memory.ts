@@ -1,5 +1,5 @@
 /**
- * In-memory BlobStore driver — tests and `npm run demo`. Holds each blob's
+ * In-memory BlobStore driver - tests and `npm run demo`. Holds each blob's
  * bytes in a Map; mirrors the PG driver's semantics (idempotent put, checksum
  * on write, null on unknown) so the conformance suite runs both.
  */

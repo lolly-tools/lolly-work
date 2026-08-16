@@ -1,8 +1,8 @@
 /**
- * Postgres Store driver — binds the Store seam to migrations/0001_init.sql.
+ * Postgres Store driver - binds the Store seam to migrations/0001_init.sql.
  *
  * `pg` is imported lazily so the server (and the whole test suite) still runs
- * with zero runtime deps when DATABASE_URL is unset — the memory driver stays
+ * with zero runtime deps when DATABASE_URL is unset - the memory driver stays
  * the default. Audit appends serialize on a pg advisory lock so the hash
  * chain never forks under concurrent writers.
  */
@@ -28,17 +28,17 @@ import {
   type SessionRecord, type SessionRevision, type Store, type UserRecord,
 } from './types.ts';
 
-// Minimal structural type for pg.Pool — keeps `pg` out of the type graph
+// Minimal structural type for pg.Pool - keeps `pg` out of the type graph
 // so typecheck works without the dep resolved.
 interface PgPool {
-  /** `rowCount` is how a conditional UPDATE reports whether it matched — the CAS
+  /** `rowCount` is how a conditional UPDATE reports whether it matched - the CAS
    *  in `casSession` has no other way to tell "wrote" from "the row moved". */
   query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[]; rowCount: number | null }>;
   connect(): Promise<PgClient>;
   end(): Promise<void>;
 }
 interface PgClient {
-  /** `rowCount` is how a conditional UPDATE reports whether it matched — the CAS
+  /** `rowCount` is how a conditional UPDATE reports whether it matched - the CAS
    *  in `casSession` has no other way to tell "wrote" from "the row moved". */
   query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[]; rowCount: number | null }>;
   release(): void;
@@ -46,7 +46,7 @@ interface PgClient {
 
 const AUDIT_LOCK_KEY = 0x1011_0001;
 
-// Appends a `column = $n` clause + its bound value — shared by the two
+// Appends a `column = $n` clause + its bound value - shared by the two
 // filtered list queries below so the param-numbering logic lives in one place.
 const addClause = (clauses: string[], values: unknown[], column: string, value: unknown): void => {
   values.push(value);
@@ -73,7 +73,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       role: r.role as string,
       ...(r.telemetry_consent !== null && r.telemetry_consent !== undefined ? { telemetryConsent: r.telemetry_consent as boolean } : {}),
       ...(r.disabled_at ? { disabledAt: new Date(r.disabled_at as string).toISOString() } : {}),
-      // A row predating the epoch column reads as 0 — matches the migration default.
+      // A row predating the epoch column reads as 0 - matches the migration default.
       sessionEpoch: Number(r.session_epoch ?? 0),
       createdAt: new Date(r.created_at as string).toISOString(),
       lastSeenAt: new Date(r.last_seen_at as string).toISOString(),
@@ -220,7 +220,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       // name = first + last + email, concatenated once for both filter and sort.
       const nameExpr = `lower(coalesce(firstname, '') || ' ' || coalesce(lastname, '') || ' ' || email)`;
       if (opts.q?.trim()) clauses.push(`${nameExpr} like ${bind('%' + opts.q.trim().toLowerCase() + '%')}`);
-      // Jump-to-letter — matched against the trimmed name key (a user without a
+      // Jump-to-letter - matched against the trimmed name key (a user without a
       // firstname would otherwise lead with the concatenation's space).
       if (opts.prefix === '#') clauses.push(`ltrim(${nameExpr}) !~ '^[a-z]'`);
       else if (opts.prefix) clauses.push(`ltrim(${nameExpr}) like ${bind(opts.prefix + '%')}`);
@@ -357,7 +357,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       return rows[0] ? injectableFromRow(rows[0]) : null;
     },
     async putInjectable(rec) {
-      // created_at is written only on insert — on conflict preserves the original,
+      // created_at is written only on insert - on conflict preserves the original,
       // matching putProvider; updated_at + version move with each replace.
       await pool.query(
         `insert into injectables (id, kind, title, payload, groups, state, version, created_by, created_at, updated_at, revoked_at)
@@ -791,7 +791,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     },
 
     // live collab rooms (migrations/0010_collab.sql). One row per session,
-    // REPLACED on each cadence hit — no update log, so nothing to compact.
+    // REPLACED on each cadence hit - no update log, so nothing to compact.
     async putCollabSnapshot(snap) {
       await pool.query(
         `insert into collab_room_snapshots (session_id, inputs, base_rev, ops, updated_at)

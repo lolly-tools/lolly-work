@@ -1,11 +1,11 @@
-# Documentation — Lolly control plane
+# Documentation - Lolly control plane
 
 Operator and administrator documentation for a **deploy** of the Lolly control plane. These
 pages describe what is *built*.
 
 **Read them in the console:** every page here is served at `/admin#/docs` on a running
 deploy, so whoever is operating it does not need the repository. `docs.json` is the source of
-truth for that surface — a page added here without an entry there gets no console page.
+truth for that surface - a page added here without an entry there gets no console page.
 
 The open-source half of Lolly (engine, catalog, shells) documents itself at **`/info/`** on
 any Lolly deployment. The console links there when this deploy serves or points at one.
@@ -17,7 +17,7 @@ any Lolly deployment. The console links there when this deploy serves or points 
 | [overview](overview.md) | The control plane in one page: what it serves, the two-repo shape, the trust model |
 | [install](install.md) | Nothing → running UI + CLI: hosted demo, 2-minute local run, systemd, Compose, Helm on RKE2/k3s |
 | [quickstart](quickstart.md) | Demo mode, a real small deploy, split development, seeding governance |
-| [deployment](deployment.md) | Helm/Rancher, Compose, Vercel, air-gap — what each path carries |
+| [deployment](deployment.md) | Helm/Rancher, Compose, Vercel, air-gap - what each path carries |
 
 ## Configure
 
@@ -55,7 +55,7 @@ any Lolly deployment. The console links there when this deploy serves or points 
 
 ## Conventions
 
-- **"This deploy" / "deployment"** is the unit of installation — one organization's control
+- **"This deploy" / "deployment"** is the unit of installation - one organization's control
   plane, its config, its pack, its governance.
 - Code paths are cited where they are the authority; where a doc and the code disagree, the
   code wins and the doc is a bug.

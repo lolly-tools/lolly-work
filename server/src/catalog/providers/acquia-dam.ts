@@ -1,5 +1,5 @@
 /**
- * Acquia DAM / Widen driver (plans/27 §9) — the governance-rich enterprise DAM.
+ * Acquia DAM / Widen driver (plans/27 §9) - the governance-rich enterprise DAM.
  * Public Widen v2 API (api.widencollective.com/v2), bearer-token auth. In this
  * repo its role is the same as any legacy DAM: read-only federation, and the
  * exit (federate → materialize → cutover).
@@ -7,7 +7,7 @@
  * Unlike Image Relay, Widen has NATIVE availability + approval: `release_date`
  * and `expiration_date` map straight to the availability window (plans/27 §2),
  * and an asset `status` maps onto ProviderAssetRef.approved (the approval-is-not-
- * a-boolean generalization, §9 — a configured approved-status set). Categories
+ * a-boolean generalization, §9 - a configured approved-status set). Categories
  * fold into sections for exposure scoping.
  *
  * LIVE-VERIFY before ship (house rule, plans/27 §9): confirm the endpoint paths,

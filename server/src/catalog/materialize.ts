@@ -1,10 +1,10 @@
 /**
- * The exit (plans/27 §5) — materialize a federated asset into the instance's
+ * The exit (plans/27 §5) - materialize a federated asset into the instance's
  * own BlobStore, and cut its identity over from ext/* to inst/*. Two consumers,
  * one machinery: *pin* keeps the ext identity (bytes go local so they survive
- * upstream deletion — hold-implies-pin), *exit* moves the identity to inst/* and
+ * upstream deletion - hold-implies-pin), *exit* moves the identity to inst/* and
  * migrates every row/alias keyed on the old id. Deleting the provider afterwards
- * still deletes nothing — materialized copies are instance-owned.
+ * still deletes nothing - materialized copies are instance-owned.
  *
  * Idempotent per (provider, remoteId): the inst id is deterministic and blobs
  * overwrite, so a re-run resumes rather than duplicates.
@@ -33,7 +33,7 @@ export interface MaterializeResult {
 }
 
 /** Descriptive entry fields that carry onto a materialized copy; the federated-
- *  identity fields (provider, thumbnail, upstream window) are dropped — the
+ *  identity fields (provider, thumbnail, upstream window) are dropped - the
  *  bytes are local now and the local lifecycle governs. */
 function descriptiveBase(entry: AssetIndexEntry): Omit<AssetIndexEntry, 'id' | 'formats'> {
   const { id: _id, formats: _f, provider: _p, thumbnail: _t, availableFrom: _af, availableUntil: _au, ...base } = entry as Record<string, unknown>;
@@ -58,7 +58,7 @@ async function materializeOne(deps: MaterializeDeps, rec: ProviderRecord, asset:
   for (const f of asset.formats) {
     // Blobs, the served URL segment, and the refMap all key off the format name;
     // two formats sharing a name (e.g. a hi- and lo-res PNG) would collide, so
-    // the second gets a suffixed key — no blob is ever overwritten.
+    // the second gets a suffixed key - no blob is ever overwritten.
     let key = f.format;
     for (let n = 2; usedKeys.has(key); n++) key = `${f.format}-${n}`;
     usedKeys.add(key);
@@ -100,7 +100,7 @@ async function materializeOne(deps: MaterializeDeps, rec: ProviderRecord, asset:
   return { id: instId, extId, formats: formatStats.length, bytes: totalBytes, credential };
 }
 
-/** Materialize a provider's assets — all of them, or one `remoteId`, or a
+/** Materialize a provider's assets - all of them, or one `remoteId`, or a
  *  `section`. Iterates `listAssets` directly (not the MAX_PAGES-capped fragment),
  *  applying the same exposure slice federation does. */
 export async function materializeProvider(
@@ -123,7 +123,7 @@ export async function materializeProvider(
       if (filter.section && !a.sections.includes(filter.section)) continue;
       if (!passesExposure(rec, a)) { skipped++; continue; }
       // One asset's failure (a redirect-served format, an upstream hiccup) must
-      // not abort the batch or lose the audit for what already succeeded — it is
+      // not abort the batch or lose the audit for what already succeeded - it is
       // idempotent, so a re-run resumes. Collect the error and keep going.
       try {
         results.push(await materializeOne(deps, rec, a));
@@ -143,10 +143,10 @@ export async function pinAsset(deps: MaterializeDeps, rec: ProviderRecord, remot
   return results.length > 0;
 }
 
-/** Materialize ONE already-resolved asset ref (plans/30 §3.1 — search-and-import):
+/** Materialize ONE already-resolved asset ref (plans/30 §3.1 - search-and-import):
  *  apply the exposure slice, then snapshot its bytes into inst/* exactly as
  *  materializeProvider does per asset. Unlike materializeProvider it does NOT scan
- *  listAssets — the caller supplies the ref (from getAsset or a search result), so a
+ *  listAssets - the caller supplies the ref (from getAsset or a search result), so a
  *  search-only asset can be pinned. Idempotent via the deterministic inst id. */
 export async function materializeAsset(deps: MaterializeDeps, rec: ProviderRecord, asset: ProviderAssetRef): Promise<MaterializeResult> {
   if (!passesExposure(rec, asset)) throw new Error(`asset ${asset.remoteId} is excluded by this provider's exposure slice`);
@@ -167,7 +167,7 @@ export async function cutoverProvider(deps: MaterializeDeps, rec: ProviderRecord
 
     // Commit the identity change: from here the inst entry substitutes for the
     // ext one in the feed and carries its own lifecycle row (plans/27 §5). The
-    // rows MOVE to the inst id — copy then delete the source — so a stale ext-
+    // rows MOVE to the inst id - copy then delete the source - so a stale ext-
     // keyed row can't linger and shadow the retired identity.
     if (!inst.exited) await deps.store.putInstanceAsset({ ...inst, exited: true });
     const lc = await deps.store.getLifecycle(extId);

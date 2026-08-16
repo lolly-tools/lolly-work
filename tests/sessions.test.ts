@@ -235,7 +235,7 @@ test('multi-edit: dryRun diffs then apply mutates exactly the set fields, bumps 
 
 // ── write-path CAS integrity (plans/23 §3.B) ───────────────────────────────────
 // These three drive the races deterministically by briefly patching the shared
-// memory store — a latch or a stale snapshot, never a sleep — because the whole
+// memory store - a latch or a stale snapshot, never a sleep - because the whole
 // point is the await-gap BETWEEN a handler's read and its write.
 
 test('two truly concurrent PUTs at the same rev: exactly one 200, one 409, one revision — history and inputs agree', async () => {
@@ -246,7 +246,7 @@ test('two truly concurrent PUTs at the same rev: exactly one 200, one 409, one r
   })).json() as { id: string; rev: number };
 
   // Latch getSession so NEITHER handler reaches its casSession until BOTH have
-  // read rev 1 — the scheduler can no longer save the second writer by letting
+  // read rev 1 - the scheduler can no longer save the second writer by letting
   // the first finish early, which is what makes the race deterministic. Only
   // the first two reads are latched: the loser re-reads after its CAS refusal
   // (that is the fix under test) and must pass straight through.
@@ -293,12 +293,12 @@ test('bulk racing a single PUT: the PUT survives and bulk reports the session as
   })).json() as { id: string; rev: number };
 
   // Interleave deterministically: bulk's matched list is a snapshot, so land a
-  // full PUT AFTER bulk has read it but BEFORE bulk writes — inside the
+  // full PUT AFTER bulk has read it but BEFORE bulk writes - inside the
   // listSessionsFiltered call itself.
   const real = store.listSessionsFiltered.bind(store);
   store.listSessionsFiltered = async (filter: Parameters<typeof real>[0]) => {
     const snapshot = await real(filter);
-    store.listSessionsFiltered = real; // once — the PUT below must see the real store
+    store.listSessionsFiltered = real; // once - the PUT below must see the real store
     const put = await json(alice, 'PUT', `/api/v1/sessions/${created.id}`, { rev: 1, inputs: { title: 'Edited meanwhile', date: '2026-01-01' }, meta: { label: 'bulk race' } });
     assert.equal(put.status, 200);
     return snapshot;
@@ -326,7 +326,7 @@ test('a PUT that loses its race to a DELETE gets 410, and the tombstone is never
 
   // The handler's first read sees the session alive (a stale pre-DELETE
   // snapshot); the CAS then refuses (the stored row is tombstoned) and the
-  // re-read must answer 410 — not 409, and never a resurrected row.
+  // re-read must answer 410 - not 409, and never a resurrected row.
   const live = await store.getSession(created.id);
   assert.ok(live);
   assert.equal((await json(alice, 'DELETE', `/api/v1/sessions/${created.id}`)).status, 200);
@@ -371,7 +371,7 @@ test('conflicts are instrumented: session.conflict audited values-free, and stat
 });
 
 test('stats/series: zero-filled day buckets of audit-action counts — clamped span, counts only, dashboard-tier', async () => {
-  // Members without telemetry.view get 403 — the console header hides itself.
+  // Members without telemetry.view get 403 - the console header hides itself.
   const alice = await login('alice@test');
   assert.equal((await json(alice, 'GET', '/api/v1/stats/series')).status, 403);
 
@@ -404,12 +404,12 @@ test('disabled member: an existing session is refused within one request', async
   assert.equal((await json(alice, 'GET', '/api/v1/projects')).status, 200);
   const aliceId = (await store.listUsers()).find((u) => u.email === 'alice@test')!.id;
   await store.setUserDisabled(aliceId, new Date().toISOString());
-  // Same still-unexpired cookie — the disable takes effect immediately (memberOf gate).
+  // Same still-unexpired cookie - the disable takes effect immediately (memberOf gate).
   assert.equal((await json(alice, 'GET', '/api/v1/projects')).status, 401);
   const sess = await fetch(`${base}/api/auth/session`, { headers: { cookie: alice } });
   assert.equal(sess.status, 401);
   // Disable also bumped the session epoch, so re-enabling does NOT revive the
-  // old cookie (it was revoked, not merely gated) — a fresh login works.
+  // old cookie (it was revoked, not merely gated) - a fresh login works.
   await store.setUserDisabled(aliceId, null);
   assert.equal((await json(alice, 'GET', '/api/v1/projects')).status, 401);
   const fresh = await login('alice@test');

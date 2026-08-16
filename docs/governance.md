@@ -1,12 +1,12 @@
 # Policy and governance
 
 Governance is *data*, held server-side, edited live, and exportable as one document. It is
-never a fork of the pack's `tool.json` — the open-source tool definition stays untouched and
+never a fork of the pack's `tool.json` - the open-source tool definition stays untouched and
 the control plane overlays its opinion on top.
 
-![Tool policy — lock a preset, restrict choices, or hide an input entirely, per group](shots/tool-policy.svg)
+![Tool policy - lock a preset, restrict choices, or hide an input entirely, per group](shots/tool-policy.svg)
 
-![Preview-as-group — the exact role, permissions and governance a member set would receive](shots/preview-as-group.svg)
+![Preview-as-group - the exact role, permissions and governance a member set would receive](shots/preview-as-group.svg)
 
 Everything on this page is live-editable in the console (**This Deploy → Tools / Feature
 flags**, **Grants**) and reaches connected shells on their next poll.
@@ -25,7 +25,7 @@ the affected renders.
 ```
 
 A tool with a `visibility` block is **absent** from the catalog feed for anyone outside
-those groups — not greyed out, not hidden client-side. `*` means everyone.
+those groups - not greyed out, not hidden client-side. `*` means everyone.
 
 ### Per-input access
 
@@ -36,7 +36,7 @@ group-match wins, and no match means `editable`.
 |---|---|
 | `editable` | normal input |
 | `choice` | restricted to `allow: [...]` |
-| `locked` | replaced by `value` — the user never supplies it |
+| `locked` | replaced by `value` - the user never supplies it |
 | `hidden` | removed from the schema entirely |
 
 ```json
@@ -83,7 +83,7 @@ knobs per flag:
 | Knob | Values | Meaning |
 |---|---|---|
 | `default` | `on` \| `off` \| unset | what a user who hasn't chosen gets; unset inherits the shell's built-in default |
-| `visibility` | `show` \| `hide` | whether the user sees the toggle at all — hiding removes the control while the default still applies |
+| `visibility` | `show` \| `hide` | whether the user sees the toggle at all - hiding removes the control while the default still applies |
 
 Governable today (ids are the shell's own):
 
@@ -111,7 +111,7 @@ logically-equal states hash identically:
 
 ```bash
 lw export --out governance.json                # GET /api/v1/config/export
-lw apply governance.json --dry-run             # POST /api/v1/config/apply?dryRun=1 — shows the diff
+lw apply governance.json --dry-run             # POST /api/v1/config/apply?dryRun=1 - shows the diff
 lw apply governance.json                       # apply
 lw apply governance.json --prune               # also delete store-only entries
 ```
@@ -123,7 +123,7 @@ document hash. Two guards:
   (`instance.config` / `catalog.provider.credential`) requires the **owner** role
   (`403 OWNER_ONLY_ACTION`).
 - Entries that a config-managed catalog provider owns are conflicts, not overwrites
-  (`409 CONFIG_MANAGED`) — edit `instance.json` and redeploy instead.
+  (`409 CONFIG_MANAGED`) - edit `instance.json` and redeploy instead.
 
 ### Seeding at boot
 
@@ -132,7 +132,7 @@ LW_SEED_CONFIG=./governance.json npm start
 ```
 
 Idempotent, so it is safe to leave set. It is *trusted* (filesystem access), so it bypasses
-the owner-only HTTP guard and may seed owner-only grants — it still never enables a provider
+the owner-only HTTP guard and may seed owner-only grants - it still never enables a provider
 or stores a credential, because neither is in the document. This is what makes a fresh deploy
 come up already governed, and governance reviewable and promotable staging → prod from git.
 

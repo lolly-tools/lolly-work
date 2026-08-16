@@ -1,6 +1,6 @@
 /**
  * Search-and-import (plans/30 §3.1): the /import route snapshots ONE provider asset
- * into an instance-owned inst/* copy — the curation gate. Over real HTTP with a
+ * into an instance-owned inst/* copy - the curation gate. Over real HTTP with a
  * db-managed mock provider (no getAsset → the listAssets-scan fallback), plus a unit
  * test of the `materializeAsset` seam that the getAsset path uses (a search-only ref
  * straight into the snapshot machinery). Memory store + memory BlobStore, no network.

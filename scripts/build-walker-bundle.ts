@@ -1,28 +1,28 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: MPL-2.0
 /**
- * build-walker-bundle — produce the capture-time DOM→SVG walker bundle.
+ * build-walker-bundle - produce the capture-time DOM→SVG walker bundle.
  *
  * The control-plane docs render every admin-console screenshot as a real VECTOR
- * SVG (geometry that zooms/diffs/re-renders), not a raster — the same property
+ * SVG (geometry that zooms/diffs/re-renders), not a raster - the same property
  * the OSS /info shots carry. The walker that turns a live DOM subtree into SVG
  * is the web shell's `renderSvgFromHtml` (shells/web/src/bridge/export.ts). It
  * MUST run inside a real browser (it reads getComputedStyle / getBoundingClientRect
- * for every node — jsdom returns zeros), so we bundle it into a single injectable
+ * for every node - jsdom returns zeros), so we bundle it into a single injectable
  * IIFE that the capture harness (scripts/capture-console.ts) drops into each
  * console page via Playwright `addScriptTag`, then calls `window.__lollyWalkerShot`.
  *
- * IMPORTANT — this is a CAPTURE-TIME tool, never shipped to the console. The
+ * IMPORTANT - this is a CAPTURE-TIME tool, never shipped to the console. The
  * runtime `/admin` console stays air-gap-clean and no-build; this ~500 KB bundle
  * only ever lives in a headless browser during a shot capture. That is what lets
  * lolly-work have vector screenshots without grafting 6k LOC of web-shell walker
  * into the console itself.
  *
- * The walker source lives in the OSS monorepo (NOT vendored here — vendor/ carries
+ * The walker source lives in the OSS monorepo (NOT vendored here - vendor/ carries
  * only engine/, and the walker is shell code). So this build needs the sibling
  * OSS repo present, with its node_modules (esbuild + harfbuzzjs). The produced
  * artifact scripts/lib/walker-bundle.js IS committed, so `capture-console.ts`
- * runs without the OSS repo — only rebuilding the bundle needs it.
+ * runs without the OSS repo - only rebuilding the bundle needs it.
  *
  *     node scripts/build-walker-bundle.ts
  *     LOLLY_OSS_DIR=/path/to/lolly node scripts/build-walker-bundle.ts

@@ -3,7 +3,7 @@
  * org-config for a caller, and fold the whole set into the policy version so a
  * publish busts every connected shell's org-config ETag on its next poll.
  *
- * Projection is per-caller and group-filtered — a caller sees only injectables
+ * Projection is per-caller and group-filtered - a caller sees only injectables
  * whose groups intersect theirs (or that target `*`), and only ones that are `live`.
  * Genuinely-scoped injectables are ABSENT from a non-member's payload, never merely
  * flagged, exactly as tool visibility works (plans/03).
@@ -27,7 +27,7 @@ export interface PublishFields {
 /**
  * Validate a publish request body end to end: id shape, known kind, groups, and the
  * kind's own envelope over the payload. Returns the clean fields, or the first
- * human-readable reason it refused — surfaced verbatim to the admin.
+ * human-readable reason it refused - surfaced verbatim to the admin.
  */
 export function validatePublish(body: unknown): { ok: true; fields: PublishFields } | { ok: false; reason: string } {
   const id = str((body as Record<string, unknown>)?.id);
@@ -36,7 +36,7 @@ export function validatePublish(body: unknown): { ok: true; fields: PublishField
   if (!kind || !INJECTABLE_KINDS.includes(kind)) return { ok: false, reason: `kind must be one of ${INJECTABLE_KINDS.join(', ')}` };
   const title = str((body as Record<string, unknown>)?.title);
   if (!title) return { ok: false, reason: 'title is required' };
-  // title ships in every kind's descriptor, so it is plain text like the rest — a
+  // title ships in every kind's descriptor, so it is plain text like the rest - a
   // markup guard here covers the one field no kind envelope sees (data, not code).
   if (/[<>]/.test(title)) return { ok: false, reason: 'title must be plain text — markup is not allowed' };
   const rawGroups = (body as Record<string, unknown>)?.groups;
@@ -49,7 +49,7 @@ export function validatePublish(body: unknown): { ok: true; fields: PublishField
   return { ok: true, fields: { id, kind, title, payload: payload as Record<string, unknown>, groups } };
 }
 
-/** The display facts a kind extracts from a live record — for the console listing. */
+/** The display facts a kind extracts from a live record - for the console listing. */
 export function factsFor(rec: InjectableRecord): Record<string, string> {
   const env = KIND_HANDLERS[rec.kind].envelope(rec.payload);
   return env.ok ? env.facts : {};
@@ -65,7 +65,7 @@ export function visibleTo(rec: InjectableRecord, groups: string[]): boolean {
 
 /**
  * Project the live, caller-visible injectables into org-config descriptors. Each is
- * the kind's declarative descriptor — never the raw record, never code.
+ * the kind's declarative descriptor - never the raw record, never code.
  *
  * Flag-kind injectables are OMITTED here: they ride the org-config `featureFlags`
  * map instead (the one kind consumable by today's shell with no new path), so a
@@ -83,7 +83,7 @@ export function projectInjectables(recs: Iterable<InjectableRecord>, groups: str
 
 /**
  * The flag-kind injectables as feature-flag governance, so the assembler can merge
- * them into the existing org-config `featureFlags` map — the one kind consumable by
+ * them into the existing org-config `featureFlags` map - the one kind consumable by
  * today's shell with no OSS change. Keyed by flagId; a caller's group scope applies.
  */
 export function flagInjectableGovernance(
@@ -104,7 +104,7 @@ export function flagInjectableGovernance(
 /**
  * A canonical, group-independent projection of the live set for the policy-version
  * hash: any authored change (publish, replace, revoke, re-scope) moves the digest,
- * so connected shells re-fetch. Revoked entries drop out — a revoke is a change.
+ * so connected shells re-fetch. Revoked entries drop out - a revoke is a change.
  */
 export function injectablesForVersion(recs: Iterable<InjectableRecord>): Array<Record<string, unknown>> {
   return [...recs]
@@ -113,7 +113,7 @@ export function injectablesForVersion(recs: Iterable<InjectableRecord>): Array<R
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
-/** Short digest of the live set — handy for tests and cache keys. */
+/** Short digest of the live set - handy for tests and cache keys. */
 export function injectablesDigest(recs: Iterable<InjectableRecord>): string {
   return sha256Hex(canonicalJson(injectablesForVersion(recs))).slice(0, 16);
 }

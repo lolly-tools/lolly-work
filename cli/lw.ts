@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * lw — the lolly-work admin CLI. A thin wrapper over the same API the console
+ * lw - the lolly-work admin CLI. A thin wrapper over the same API the console
  * uses, so the two surfaces grow in parity by construction (plans: console
  * first, CLI follows).
  *
@@ -11,7 +11,7 @@
  *
  * Auth: dev-provider login stores the session cookie at
  * ~/.config/lolly-work/session (0600). Against an OIDC instance, sign in in a
- * browser and `lw login --cookie 'lw_session=…'` — a device-code flow is the
+ * browser and `lw login --cookie 'lw_session=…'` - a device-code flow is the
  * planned replacement.
  */
 import { parseArgs } from 'node:util';
@@ -128,7 +128,7 @@ async function promptVisible(prompt: string): Promise<string> {
   return answer.trim();
 }
 
-/** Prompt without echoing — for credentials (never argv, never shell history). */
+/** Prompt without echoing - for credentials (never argv, never shell history). */
 async function promptHidden(prompt: string): Promise<string> {
   const { createInterface } = await import('node:readline');
   process.stderr.write(prompt);
@@ -219,7 +219,7 @@ switch (cmd) {
     break;
   }
 
-  // Catalog providers (plans/17 §10). Credentials are prompted, NEVER argv —
+  // Catalog providers (plans/17 §10). Credentials are prompted, NEVER argv - 
   // argv leaks into shell history and process listings.
   case 'providers': {
     const id = positionals[2];
@@ -314,7 +314,7 @@ switch (cmd) {
       }
       // Publish out (plans/27 §10): push a lolly-generated export to a destination
       // (Optimizely CMP). Owner-grantable. The export must carry lolly's C2PA
-      // export assertion — federated/pack assets are refused server-side.
+      // export assertion - federated/pack assets are refused server-side.
       case 'publish': {
         if (!id) fail('usage: lw providers publish <id> --in <export-file> [--name <name>]');
         const file = values.in ?? fail('--in <export-file> required');
@@ -342,7 +342,7 @@ switch (cmd) {
       // One-time OAuth consent for dropbox/gdrive/o365 (plans/17 §11 phase 4):
       // loopback redirect + PKCE, then the refresh token goes through the same
       // write-only credential endpoint as any API key. BYOT: the operator's
-      // own registered app — client ids are prompted, never shipped.
+      // own registered app - client ids are prompted, never shipped.
       case 'auth': {
         if (!id) fail('usage: lw providers auth <id>');
         const rec = await call(`/api/v1/catalog/providers/${id}`) as { kind: string; options: Record<string, unknown> };
@@ -539,7 +539,7 @@ switch (cmd) {
     const certPath = `${dir}/c2pa-signing-cert.pem`;
     const keyPath = `${dir}/c2pa-signing-key.pem`;
     const rootPath = `${dir}/c2pa-root-cert.pem`;
-    // Chain: leaf first, then root — exactly what buildSigner expects.
+    // Chain: leaf first, then root - exactly what buildSigner expects.
     writeFileSync(certPath, derToPem(leafCert, 'CERTIFICATE') + derToPem(root.certDer, 'CERTIFICATE'));
     writeFileSync(keyPath, derToPem(leafKey, 'PRIVATE KEY'), { mode: 0o600 });
     writeFileSync(rootPath, derToPem(root.certDer, 'CERTIFICATE'));

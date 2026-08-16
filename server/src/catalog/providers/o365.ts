@@ -1,13 +1,13 @@
 /**
- * O365 / SharePoint driver (plans/17 §11 phase 4) — Microsoft Graph v1.0,
+ * O365 / SharePoint driver (plans/17 §11 phase 4) - Microsoft Graph v1.0,
  * refresh-token OAuth (oauth.ts; Files.Read.All + offline_access). Read-only
  * against one drive (a SharePoint document library or OneDrive), optionally
  * scoped to a folder path. Graph's @microsoft.graph.downloadUrl is
- * pre-authenticated and SHORT-LIVED — expiringUrls semantics, so /content is
+ * pre-authenticated and SHORT-LIVED - expiringUrls semantics, so /content is
  * fetched per request and streamed; nothing upstream persists.
  *
  * remoteId is the Graph item id (slash-free, rename-stable). Pagination
- * cursors are Graph @odata.nextLink URLs — host-pinned before reuse so a
+ * cursors are Graph @odata.nextLink URLs - host-pinned before reuse so a
  * poisoned cursor can't point the driver elsewhere.
  */
 import { getAccessToken, parseOAuthCredential } from './oauth.ts';

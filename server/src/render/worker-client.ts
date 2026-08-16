@@ -1,6 +1,6 @@
 /**
  * Client for the Chromium render worker (plans/07/11). Hooked / HTML-heavy tools
- * can't run in the in-process jsdom fast path — this dispatches them to an
+ * can't run in the in-process jsdom fast path - this dispatches them to an
  * ISOLATED browser worker (a separate, hardened deployment that renders the
  * least-trusted content, blast-separated from the control plane).
  *
@@ -15,7 +15,7 @@ export interface WorkerConfig { url: string; secret: string; timeoutMs: number }
 
 export interface WorkerJob {
   toolId: string;
-  /** The original (possibly packed) URL-mode query — the shared param contract. */
+  /** The original (possibly packed) URL-mode query - the shared param contract. */
   query: string;
   /** Policy-baked locked values, applied OVER the query by the worker so a locked
    *  input renders its policy value regardless of what the caller supplied. */
@@ -27,7 +27,7 @@ export interface WorkerJob {
 
 /** Rasterise-an-SVG job: the plane hands the worker a FINISHED svg (already
  *  watermarked + provenance-islanded) and asks for pixel/vector-print bytes in
- *  `format`. Rasterisation is the ONLY thing that moves to the worker — provenance
+ *  `format`. Rasterisation is the ONLY thing that moves to the worker - provenance
  *  (needs the plane's federation resolver) and C2PA signing (needs the org signer)
  *  stay plane-side, so the DB/secret-less, blast-separated worker never touches
  *  them. This is the single-rasteriser path that replaces in-process resvg. */
@@ -45,13 +45,13 @@ export interface RasterResult { bytes: Uint8Array; mime: string }
 export class WorkerError extends Error {
   readonly status: number;
   /** Set when the failure maps to a specific plane-recognized code rather than
-   *  a generic worker failure — today, only capacity backpressure (503
+   *  a generic worker failure - today, only capacity backpressure (503
    *  RENDER_BUSY, plans/23 §3.C). Undefined for the generic 4xx/5xx paths,
    *  which keep the existing behavior of that call site. */
   readonly code?: string;
   /** Seconds the caller should wait before retrying, echoed straight through
    *  from the worker's Retry-After header (503 RENDER_BUSY only). No retry
-   *  loop lives here — renders are idempotent-by-cache-key, so retrying, if
+   *  loop lives here - renders are idempotent-by-cache-key, so retrying, if
    *  at all, is the caller's call, not this client's. */
   readonly retryAfter?: number;
   constructor(message: string, status = 502, opts: { code?: string; retryAfter?: number } = {}) {
@@ -121,7 +121,7 @@ export async function renderViaWorker(
       const body = await res.json() as { error?: { message?: string } };
       if (body.error?.message) detail = body.error.message;
     } catch { /* non-JSON error body */ }
-    // The worker answers capacity saturation with 503 + Retry-After — surface
+    // The worker answers capacity saturation with 503 + Retry-After - surface
     // it as its own code/status rather than folding it into the generic 502
     // below, so callers can tell "busy, try again" apart from a real failure.
     if (res.status === 503) {
@@ -143,7 +143,7 @@ export async function renderViaWorker(
 }
 
 /**
- * Rasterise a finished SVG to `format` bytes via the worker's Chromium — the
+ * Rasterise a finished SVG to `format` bytes via the worker's Chromium - the
  * single-rasteriser replacement for in-process resvg. Same HMAC scheme as
  * renderViaWorker; POSTs to `/rasterise`. The worker returns base64 bytes + mime.
  * `now`/`fetchImpl` injectable for tests. Throws WorkerError on any failure.

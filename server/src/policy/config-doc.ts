@@ -1,9 +1,9 @@
 /**
- * Policy-as-code (plan Rec 2) — the canonical governance document.
+ * Policy-as-code (plan Rec 2) - the canonical governance document.
  *
  * Makes an instance's governance reproducible from git and seedable in one
  * command: grants, tool overlays, approval chains, DB-managed catalog-provider
- * CONFIG + EXPOSURE, and feature-flag governance — serialized deterministically
+ * CONFIG + EXPOSURE, and feature-flag governance - serialized deterministically
  * so logically-equal states hash identically. Credentials, provider runtime
  * state, and the enable kill-switch are NEVER in the document.
  *
@@ -32,7 +32,7 @@ export interface OverlayExport {
 }
 /** Feature-flag governance minus `updatedAt`; no-opinion fields omitted. */
 export interface FlagExport { id: string; default?: FlagDefault; visibility?: FlagVisibility }
-/** A DB-managed provider's config + exposure only — never credential/state/enabled/timestamps. */
+/** A DB-managed provider's config + exposure only - never credential/state/enabled/timestamps. */
 export interface ProviderExport {
   id: string;
   kind: ProviderKind;
@@ -56,7 +56,7 @@ export interface ConfigDocument {
 // ── canonical serialization ───────────────────────────────────────────────────
 
 /** Deep key-sort so logically-equal documents serialize identically (arrays keep
- *  order — callers sort arrays deterministically before hashing). */
+ *  order - callers sort arrays deterministically before hashing). */
 export function canonicalize(v: unknown): unknown {
   if (Array.isArray(v)) return v.map(canonicalize);
   if (v && typeof v === 'object') {
@@ -235,7 +235,7 @@ export function requiredActions(diff: ConfigDiff): { actions: string[]; ownerOnl
   const a = new Set<string>();
   let ownerOnly = false;
   if (changed(diff.grants).length) a.add('grant.edit');
-  // Only a NEW or PRUNED owner-only grant escalates the requirement — re-applying
+  // Only a NEW or PRUNED owner-only grant escalates the requirement - re-applying
   // a doc that already contains such a grant (unchanged) is not owner-gated.
   for (const g of [...diff.grants.create, ...diff.grants.delete]) if (ownerOnlyAction(g.action)) ownerOnly = true;
   if (changed(diff.overlays).length || changed(diff.chains).length || changed(diff.featureFlags).length) a.add('policy.edit');
@@ -290,7 +290,7 @@ export async function commitConfigApply(store: Store, diff: ConfigDiff, actorId:
     }
     for (const p of diff.providers.delete) {
       const cur = existing.get(p.id);
-      // Prune only a disabled db provider — never silently delete a live one.
+      // Prune only a disabled db provider - never silently delete a live one.
       if (cur && cur.managedBy === 'db' && !cur.enabled) await store.deleteProvider(p.id);
     }
   }

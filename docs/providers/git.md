@@ -33,7 +33,7 @@ lw providers credential acme-git     # prompts; omit entirely for a public repo
 }
 ```
 
-- `options.rawBase` (required) — the raw-content base; every asset path resolves under it and
+- `options.rawBase` (required) - the raw-content base; every asset path resolves under it and
   is **host-pinned** to that host (a manifest can't point the driver off-host).
 - `options.manifestPath` (default `lolly-catalog.json`); `options.authHeader` for non-Bearer
   schemes.

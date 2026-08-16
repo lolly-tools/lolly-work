@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: MPL-2.0
 /**
- * build-verify-bundle — the client-side C2PA verifier the console's #/verify view
+ * build-verify-bundle - the client-side C2PA verifier the console's #/verify view
  * runs, so a reader checks a shot's credential ON THEIR OWN MACHINE, against the
  * exact bytes they received. The deployment never marks its own homework: the
  * credential line STATES claims (decoded server-side); verification is a separate,
  * independent act in the reader's browser.
  *
  * The verifier is the VENDORED engine's C2PA verify stack (verifyC2pa +
- * resolveVerdict + trust anchors). It is pure TypeScript — WebCrypto only, no
- * WASM, no network, no node: APIs (see vendor/@lolly/engine/src/bytes.ts) — so it
+ * resolveVerdict + trust anchors). It is pure TypeScript - WebCrypto only, no
+ * WASM, no network, no node: APIs (see vendor/@lolly/engine/src/bytes.ts) - so it
  * bundles into a small IIFE that runs in the browser as-is. Served from the
  * deployment at /admin/verify.js and loaded ON DEMAND by the verify view, so the
  * console's main path stays no-build and nothing external is ever fetched

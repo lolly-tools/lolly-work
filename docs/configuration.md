@@ -1,10 +1,10 @@
 # Configuration reference
 
 One JSON file (`instance.json`, or `LW_CONFIG` / `LW_CONFIG_JSON`) plus environment
-secrets. Unset keys take the defaults below — `instance.example.json` is a working starting
+secrets. Unset keys take the defaults below - `instance.example.json` is a working starting
 point, and `server/src/config/instance.ts` is the authority.
 
-![Feature-flag governance — default state and toggle visibility, per user](shots/feature-flags.svg)
+![Feature-flag governance - default state and toggle visibility, per user](shots/feature-flags.svg)
 
 **Secrets are never in the config file.** Config is safe to keep in git; secrets come from
 the environment.
@@ -14,7 +14,7 @@ the environment.
 | Key | Default | What it does |
 |---|---|---|
 | `name` | `Lolly Work` | the deploy's display name (console rail, sign-in card, `/healthz`) |
-| `baseUrl` | `http://localhost:8787` | the URL this deploy answers on. Drives OIDC redirect URIs and the `Secure` cookie flag — **must** match reality |
+| `baseUrl` | `http://localhost:8787` | the URL this deploy answers on. Drives OIDC redirect URIs and the `Secure` cookie flag - **must** match reality |
 | `pack` | `./packs/example` | the brand pack mount: catalog, tools, design tokens, fonts, logos |
 | `shellDir` | *unset* | path to a built Lolly `shells/web/dist`. Set ⇒ the shell is served at `/` on one origin (session cookies work, the shell's `org/` governance seam activates) |
 | `appUrl` | *unset* | where the Lolly app lives when it is *not* same-origin (a Vite dev server, a split deploy). The console routes "Open Lolly" and deep links through it |
@@ -32,7 +32,7 @@ governance module **stops boot**. `LW_ALLOW_STALE_SHELL=1` downgrades it to a wa
 | `groupsClaim` | `groups` | the claim carrying group membership |
 | `claimMap` | `given_name` / `family_name` / `email` / `title` | which claims fill firstname, lastname, email, title |
 
-Gated access needs `idp.issuer` — or `dev.enabled` for local work. The server refuses to
+Gated access needs `idp.issuer` - or `dev.enabled` for local work. The server refuses to
 start otherwise. See [identity](identity.md).
 
 ## `policy`
@@ -48,24 +48,24 @@ start otherwise. See [identity](identity.md).
 | `sessionTtlHours` | `12` | member session lifetime (token `exp` and cookie `Max-Age`); must be > 0 and ≤ 720 |
 
 Shorter `sessionTtlHours` is safer: it bounds how long an uncaught revocation (group change,
-offboarding) can ride. Account *disable* is instant regardless — it is checked per request.
+offboarding) can ride. Account *disable* is instant regardless - it is checked per request.
 
 ## `render`
 
 | Key | Default | What it does |
 |---|---|---|
 | `allowHooksInFastPath` | `false` | whether the in-process jsdom path may run a tool's `hooks.js`. Default refuses hooked tools with `501 HOOKED_TOOL_NEEDS_CHROMIUM` instead of running untrusted code in-realm. Turn on only for a pack you curate end to end |
-| `worker.url` | `""` | the Chromium render worker. Set (with `LW_RENDER_WORKER_SECRET`) ⇒ hooked/HTML-heavy tools dispatch there instead of `501`. **This pair is the render-topology switch** — the deployment's capability set is advertised to shells via org_config's `render` block either way ([deployment](deployment.md)) |
+| `worker.url` | `""` | the Chromium render worker. Set (with `LW_RENDER_WORKER_SECRET`) ⇒ hooked/HTML-heavy tools dispatch there instead of `501`. **This pair is the render-topology switch** - the deployment's capability set is advertised to shells via org_config's `render` block either way ([deployment](deployment.md)) |
 | `worker.timeoutMs` | `20000` | per-job timeout |
 
 The worker itself takes `LW_RENDER_MAX_CONCURRENT` (default `4`, Helm
 `renderWorker.maxConcurrent`): its per-pod render/rasterise cap. At capacity it answers
-`503 RENDER_BUSY` + `Retry-After` immediately — no internal queueing, so saturation stays
-visible to the HPA — and drops out of readiness (`/readyz`) until a slot frees.
+`503 RENDER_BUSY` + `Retry-After` immediately - no internal queueing, so saturation stays
+visible to the HPA - and drops out of readiness (`/readyz`) until a slot frees.
 | `c2pa.certFile` | `""` | signing-cert chain PEM (leaf first), public |
 | `c2pa.claimGenerator` | `""` | producer label in the signed manifest |
 
-Worker HMAC key and C2PA private key are secrets — see below and [c2pa](c2pa.md).
+Worker HMAC key and C2PA private key are secrets - see below and [c2pa](c2pa.md).
 
 ## `audit`
 
@@ -75,7 +75,7 @@ Worker HMAC key and C2PA private key are secrets — see below and [c2pa](c2pa.m
 | `headLog.intervalMinutes` | `60` | print it periodically (0 = off). The timer is unref'd, so it never holds the process open |
 
 Anchoring the head off-box is the truncation defence, and the defaults do it for you: any
-log pipeline that keeps stdout is an external anchor — see [audit](audit.md).
+log pipeline that keeps stdout is an external anchor - see [audit](audit.md).
 
 ## `dev`
 
@@ -128,19 +128,19 @@ sessions die on restart. In production (`NODE_ENV=production`) their absence thr
 | Var | Default | What |
 |---|---|---|
 | `LW_CONFIG` | `./instance.json` | config file path |
-| `LW_CONFIG_JSON` | — | whole config as a string (Vercel path) |
-| `DATABASE_URL` | — | Postgres. Unset ⇒ in-memory store (evaluation only) |
+| `LW_CONFIG_JSON` | - | whole config as a string (Vercel path) |
+| `DATABASE_URL` | - | Postgres. Unset ⇒ in-memory store (evaluation only) |
 | `LW_AUTO_MIGRATE` | `true` when unset | boot-time DDL. `false`/`0`/`off`/`no`/empty ⇒ no DDL and refuse to start on a pending schema (the HA invariant) |
-| `LW_SEED_CONFIG` | — | path to a governance document applied at boot; trusted and idempotent ([governance](governance.md)) |
-| `LW_ALLOW_STALE_SHELL` | — | `1` downgrades the stale-shell boot refusal to a warning |
+| `LW_SEED_CONFIG` | - | path to a governance document applied at boot; trusted and idempotent ([governance](governance.md)) |
+| `LW_ALLOW_STALE_SHELL` | - | `1` downgrades the stale-shell boot refusal to a warning |
 | `PORT` | `8787` | listen port |
-| `NODE_ENV` | — | `production` makes secret checks fail-closed |
-| `LW_TEST_DATABASE_URL` | — | enables the Postgres conformance leg in `npm test` |
+| `NODE_ENV` | - | `production` makes secret checks fail-closed |
+| `LW_TEST_DATABASE_URL` | - | enables the Postgres conformance leg in `npm test` |
 | `LOLLY_OSS_DIR` | `../lolly` | where `npm run demo` finds the built OSS web shell |
 
 ## Changing configuration
 
 Config is read at boot: edit and restart (Helm: update the ConfigMap and roll). Anything
-you want to change *without* a restart belongs in governance — grants, overlays, chains,
-feature flags, provider exposure — which is live-editable in the console and exportable as
+you want to change *without* a restart belongs in governance - grants, overlays, chains,
+feature flags, provider exposure - which is live-editable in the console and exportable as
 code. See [governance](governance.md).

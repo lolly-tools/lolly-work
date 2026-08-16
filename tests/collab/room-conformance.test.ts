@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
  * THE THIRD IMPLEMENTATION (OSS plans/100 §10 "three-way conformance", plans/99
- * §8). The shared `runConvergenceSuite` — shipped inside `@lolly-tools/core` so
- * both repos run the SAME BYTES — driven against the gateway's live room.
+ * §8). The shared `runConvergenceSuite` - shipped inside `@lolly-tools/core` so
+ * both repos run the SAME BYTES - driven against the gateway's live room.
  *
  * The three implementations the plan names are the OSS `ReferenceCanvasDoc`, the
  * Track A provider, and lolly-work's room; a fourth (the Yjs adapter, the
@@ -10,27 +10,27 @@
  * the suite: it is imported, and a divergence in the room shows up as the same
  * failure message the OSS run would print.
  *
- * WHAT THE ADAPTER BELOW IS, PRECISELY. `Room.ingestOp` — the document DOOR — is
+ * WHAT THE ADAPTER BELOW IS, PRECISELY. `Room.ingestOp` - the document DOOR - is
  * genuinely shared: it is the one server-side caller of `ingestOp` (`applyOps`
  * calls it per op, rooms.ts), so nothing was forked to build this leg, and
  * `state()` is the room's real join-ack document, ROUND-TRIPPED THROUGH JSON so
  * the leg covers the wire encoding (`WireDocState`) as well as the CRDT. But the
- * adapter's `apply()` is NOT the gateway's real acceptance path — it is this
+ * adapter's `apply()` is NOT the gateway's real acceptance path - it is this
  * file's own hand-rolled re-implementation of a SUBSET of `vetoOps`, in a
  * different order, over a `Room` seeded with no manifest at all. It calls, in
  * order:
  *
- *   1. `Room.admits` — the room-state ceiling, which is the LAST veto in the
- *      real gateway (gateway.ts `vetoOps` calls it after the overlay — this
+ *   1. `Room.admits` - the room-state ceiling, which is the LAST veto in the
+ *      real gateway (gateway.ts `vetoOps` calls it after the overlay - this
  *      adapter calls it FIRST);
  *   2. `resolveInputAccess` (policy/overlay.ts, the real function) with an
- *      overlay that locks nothing and a writer principal's groups — the overlay
+ *      overlay that locks nothing and a writer principal's groups - the overlay
  *      veto, asserted to pass rather than assumed;
- *   3. `Room.ingestOp` — the document door `applyOps` feeds one op at a time.
+ *   3. `Room.ingestOp` - the document door `applyOps` feeds one op at a time.
  *
  * Absent, and therefore NOT covered by this leg at all: `parseOp` (the wire
  * parser and its hardening), the `declared`/`types` input whitelist, and the
- * `WRONG_LANE` lane check — three of the four things `vetoOps` actually does
+ * `WRONG_LANE` lane check - three of the four things `vetoOps` actually does
  * before it ever reaches `resolveInputAccess`. This suite proves the DOCUMENT
  * converges under the door both paths share; it does not exercise the real
  * acceptance path end to end.
@@ -40,7 +40,7 @@
  *
  *   (a) THE REPLAY FILTER IS NOT IN FRONT. `applyOps` drops an op whose
  *       `origin.clock` does not beat the highest already accepted for that
- *       `origin.client` — a transport-level dedup that is order-SENSITIVE by
+ *       `origin.client` - a transport-level dedup that is order-SENSITIVE by
  *       construction, while the property under test is that the DOCUMENT is
  *       order-INDEPENDENT (the suite applies one op log in many interleavings).
  *       Running the suite through the filter would assert something the filter
@@ -49,7 +49,7 @@
  *       filter, so the document authority under test is the real one.
  *   (b) THE CANVAS COLLECTION IS UNGOVERNABLE, so the gateway refuses it. Most of
  *       the suite's ops carry no `col` (they are v1.0 canvas-box ops), and
- *       `governedInputId` returns null for those — a real socket answers
+ *       `governedInputId` returns null for those - a real socket answers
  *       `COLLECTION_REQUIRED`, because a box op that names no input is a write no
  *       overlay can be about. That refusal is a GATEWAY policy, not a document
  *       property, and the room's document must still converge on the ops it does
@@ -79,7 +79,7 @@ import { resolveInputAccess } from '../../server/src/policy/overlay.ts';
 import { Room, type RoomMember, type ServerFrame, type WireDocState } from '../../server/src/collab/rooms.ts';
 import type { SessionRecord } from '../../server/src/store/types.ts';
 
-/** The groups a writer principal carries. Any list works — the point is that the
+/** The groups a writer principal carries. Any list works - the point is that the
  *  overlay consulted below is a real one that happens to lock nothing. */
 const WRITER_GROUPS = ['team-eng'];
 
@@ -133,7 +133,7 @@ class RoomAdapter implements CanvasSyncAdapter {
   private readonly clientId: string;
   private clock = 0;
   /** Ops this adapter has pushed through the room, split by whether the gateway's
-   *  own `governedInputId` could name an input for them — the (b) divergence,
+   *  own `governedInputId` could name an input for them - the (b) divergence,
    *  counted so the file can assert the split is what it claims. */
   governed = 0;
   ungoverned = 0;
@@ -146,9 +146,9 @@ class RoomAdapter implements CanvasSyncAdapter {
   }
 
   apply(op: CanvasOp): void {
-    // 1. the room-state ceiling — called FIRST here; it is the LAST veto in the
+    // 1. the room-state ceiling - called FIRST here; it is the LAST veto in the
     //    real `vetoOps` (this adapter does not reproduce the ordering, only the
-    //    two checks it happens to call — see the file header).
+    //    two checks it happens to call - see the file header).
     assert.ok(this.room.admits(op), 'the room admitted the op (no ceiling reached)');
     // 2. the overlay veto, real code, with an overlay that locks nothing.
     const input = governedInputId(op);
@@ -188,7 +188,7 @@ class RoomAdapter implements CanvasSyncAdapter {
     return fromWire(JSON.parse(JSON.stringify(this.room.snapshot())) as WireDocState);
   }
 
-  /** Rows of one collection in PAINT ORDER — what `damageToOps` diffs against. */
+  /** Rows of one collection in PAINT ORDER - what `damageToOps` diffs against. */
   private currentRows(col?: string): Map<BoxId, BoxRow> {
     const state = this.state();
     const src = col === undefined
@@ -253,7 +253,7 @@ test('the two gates the suite cannot cross, stated', () => {
   // (b) an unscoped canvas op names no input, so no overlay can govern it and the
   // gateway refuses it outright (ERR.COLLECTION_REQUIRED). The suite's canvas
   // half is made of exactly these, which is why this leg drives the document door
-  // rather than a socket — and why the collection half below is the part that
+  // rather than a socket - and why the collection half below is the part that
   // does cross the overlay veto.
   const canvas: CanvasOp = {
     k: 'add', id: 'b1', row: { x: 0 }, orderKey: '001', origin: { client: 'a', clock: 1 },
@@ -271,7 +271,7 @@ test('the two gates the suite cannot cross, stated', () => {
   assert.equal(adapter.governed, 1, 'the scoped op was resolved and cleared the overlay');
 
   // (a) the replay filter, in front of the door the suite uses, is order-
-  // sensitive on purpose — the same log applied out of order loses ops. Two
+  // sensitive on purpose - the same log applied out of order loses ops. Two
   // rooms, same ops, two orders: through `applyOps` they disagree, through the
   // document door they do not.
   const inOrder = Room.create(sessionOf());

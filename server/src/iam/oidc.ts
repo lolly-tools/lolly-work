@@ -1,8 +1,8 @@
 /**
- * Generic OIDC — discovery, Auth Code + PKCE (S256), id_token verified
+ * Generic OIDC - discovery, Auth Code + PKCE (S256), id_token verified
  * against the provider JWKS (RS256 via WebCrypto). Provider-agnostic by
  * design: SUSE ID (id.suse.com, Keycloak) is the primary target but nothing
- * here knows that — instance config supplies issuer/clientId/claim map.
+ * here knows that - instance config supplies issuer/clientId/claim map.
  *
  * The id_token signature is verified BEFORE any claim is believed; claims
  * feed the org user record (plans/02 §3), so an unverified decode is never

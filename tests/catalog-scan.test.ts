@@ -1,10 +1,10 @@
 /**
  * Content-credential scan over real HTTP (plans/27 §4): the on-demand
  * `POST /catalog/scan/<id>` route (admin-gated `catalog.scan`, audited) fetches
- * an asset's primary format once — off disk for a pack id, through the driver
- * for an ext/* id — sniffs whether the bytes embed a C2PA manifest, and records
+ * an asset's primary format once - off disk for a pack id, through the driver
+ * for an ext/* id - sniffs whether the bytes embed a C2PA manifest, and records
  * a detection row. The feed then annotates `credential: 'embedded'` and the
- * inspect route returns the detection. Detection only — never a verdict.
+ * inspect route returns the detection. Detection only - never a verdict.
  *
  * The embedded fixture is minted through the engine (the one C2PA implementation
  * both repos share), so no external tooling is involved.
@@ -127,14 +127,14 @@ test('(d) inspect returns the detection row (never a verdict)', async () => {
   assert.equal(doc.credential, 'embedded');
   assert.equal(doc.credentials?.status, 'embedded');
   assert.equal(doc.credentials?.container, 'png');
-  // detection, not verification — no valid/trusted field is present
+  // detection, not verification - no valid/trusted field is present
   assert.ok(!Object.keys(doc.credentials ?? {}).some((k) => /valid|trust|verdict/i.test(k)));
 });
 
 test('(e) an ext/* asset is scanned through the driver, capturing the upstream updatedAt', async () => {
   const admin = await login('admin@test');
   const row = await (await scan(admin, 'ext/damc/e1')).json() as { status: string; sourceUpdatedAt?: string };
-  // the mock streams non-C2PA bytes, so detection is honestly none — the point
+  // the mock streams non-C2PA bytes, so detection is honestly none - the point
   // is that the driver-fetch path runs and records the source's updatedAt
   assert.equal(row.status, 'none');
   assert.equal(row.sourceUpdatedAt, '2026-06-01T00:00:00.000Z');

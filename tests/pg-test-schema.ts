@@ -2,7 +2,7 @@
  * Gated-Postgres bootstrap, shared by every suite that needs a real database.
  *
  * `node --test` runs test FILES IN PARALLEL, and each pg suite starts by dropping
- * and recreating `public` — so the moment there is more than one of them, they
+ * and recreating `public` - so the moment there is more than one of them, they
  * tear each other's schema down mid-test. A pg advisory lock makes the whole
  * drop → migrate → run → teardown sequence mutually exclusive, across files and
  * across processes (two developers pointed at the same disposable database).

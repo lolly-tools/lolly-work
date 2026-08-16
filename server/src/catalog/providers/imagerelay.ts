@@ -1,14 +1,14 @@
 /**
- * Image Relay driver (plans/27 §9, §10) — a legacy DAM whose job in this repo is
+ * Image Relay driver (plans/27 §9, §10) - a legacy DAM whose job in this repo is
  * federate → materialize → cutover (the exit), not long-term residence. Public
- * v2 API (api.imagerelay.com/api/v2), OAuth2 bearer (oauth.ts — the operator's
+ * v2 API (api.imagerelay.com/api/v2), OAuth2 bearer (oauth.ts - the operator's
  * own registered app, PKCE via `lw providers auth`).
  *
  * Image Relay has NO native availability fields; a file's expiry (if modelled)
  * rides a custom-metadata field. So availability comes from the generic
  * `mapping.availabilityFields` (plans/27 §2): the driver reads the named custom
  * field off each record into the ProviderAssetRef window. `deleted`/`deletion_date`
- * are reported positively — a deleted file is dropped from federation rather than
+ * are reported positively - a deleted file is dropped from federation rather than
  * inferred-missing. Driver etiquette the API requires: a mandatory `User-Agent`
  * and a 5 req/s cap, both enforced here.
  *
@@ -61,7 +61,7 @@ interface IrFile {
   deletion_date?: string | null;
   folder?: { id?: string | number; name?: string } | null;
   download_url?: string;
-  /** Custom metadata ("terms" etc.) — availability rides here, if configured. */
+  /** Custom metadata ("terms" etc.) - availability rides here, if configured. */
   custom_fields?: Record<string, string>;
 }
 interface IrListDoc {
@@ -104,7 +104,7 @@ export function createImageRelayProvider(
   };
 
   const toAsset = (file: IrFile): ProviderAssetRef | null => {
-    if (file.deleted) return null; // report deletions positively — drop, don't infer
+    if (file.deleted) return null; // report deletions positively - drop, don't infer
     const fileName = file.filename ?? file.name ?? String(file.id);
     const format = file.extension ?? file.file_type ?? extOf(fileName);
     const formats: ProviderFormatRef[] = [{

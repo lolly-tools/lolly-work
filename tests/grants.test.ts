@@ -72,7 +72,7 @@ test('(a) member refused; admin creates a deny that bites RBAC immediately (org-
 
   const { grants } = await (await fetch(`${base}/api/v1/grants`, { headers: { cookie: admin } })).json() as { grants: unknown[] };
   assert.equal(grants.length, 1);
-  // Re-POST is idempotent — still one row.
+  // Re-POST is idempotent - still one row.
   await fetch(`${base}/api/v1/grants`, { method: 'POST', headers: jsonHeaders(admin), body: JSON.stringify(DENY_DOWNLOAD) });
   const again = await (await fetch(`${base}/api/v1/grants`, { headers: { cookie: admin } })).json() as { grants: unknown[] };
   assert.equal(again.grants.length, 1);

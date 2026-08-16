@@ -1,6 +1,6 @@
 # Google Drive (kind: `gdrive`)
 
-Federate a Google Drive folder as a **read-only** catalog source. OAuth2 (BYOT) — see the
+Federate a Google Drive folder as a **read-only** catalog source. OAuth2 (BYOT) - see the
 [shared OAuth onboarding](README.md#oauth-kinds-dropbox-gdrive-o365) for the app-registration
 and consent flow.
 
@@ -9,12 +9,12 @@ and consent flow.
 - **A Google Cloud OAuth client** you register (APIs & Services → Credentials), with the
   **`https://www.googleapis.com/auth/drive.readonly`** scope and offline access (refresh
   token). Enable the Drive API on the project.
-- **The folder id** — the trailing segment of the folder's Drive URL.
+- **The folder id** - the trailing segment of the folder's Drive URL.
 - BYOT: the client id/secret are yours; the refresh token is captured by `lw providers auth`.
 
 ## Credential shape
 
-The OAuth JSON blob — captured, not typed:
+The OAuth JSON blob - captured, not typed:
 
 ```json
 { "clientId": "…", "clientSecret": "…", "refreshToken": "…" }
@@ -36,7 +36,7 @@ lw providers auth acme-gdrive
 }
 ```
 
-- `options.folderId` (required) — the federated folder's id from its Drive URL.
+- `options.folderId` (required) - the federated folder's id from its Drive URL.
 
 ## Verify
 
@@ -47,7 +47,7 @@ lw providers health acme-gdrive
 
 ## Notes / limits
 
-- Download URLs are short-lived (`expiringUrls`) — fetched per request, streamed,
+- Download URLs are short-lived (`expiringUrls`) - fetched per request, streamed,
   host-pinned. Supports server-side search.
 - Supports the **exit** (materialize → cutover). Does **not** accept published exports.
 

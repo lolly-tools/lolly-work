@@ -5,12 +5,12 @@
  * `tests/feature-flags.test.ts`. This file covers the other two asks:
  *
  *   1. `collab.join`/`collab.edit` in org-config's `can[]`, per role, and how
- *      each interacts with fine-grained grants — `collab.join` is a REAL
+ *      each interacts with fine-grained grants - `collab.join` is a REAL
  *      action in the RBAC role table (rides with `session.view`); `collab.edit`
- *      deliberately is not — it is `mayEditCollab()`, i.e. `session.edit`
+ *      deliberately is not - it is `mayEditCollab()`, i.e. `session.edit`
  *      itself under another name (`server/src/rbac/evaluate.ts`).
  *   2. That the gateway's writer/observer decision and the advertised
- *      `can['collab.edit']` bit cannot drift apart — a structural check that
+ *      `can['collab.edit']` bit cannot drift apart - a structural check that
  *      the gateway routes through the shared helper rather than re-deriving
  *      the answer, plus an end-to-end check over a real socket + a real
  *      `GET /api/v1/org-config` for every reachable role.
@@ -99,7 +99,7 @@ test('a session.edit ALLOW grant lifts a viewer to collab.edit, exactly as it wo
 
 test('a grant on the LITERAL action "collab.edit" has NO effect — it is not a real action', () => {
   // If this ever started passing the OTHER way, collab.edit would be reading
-  // its own grants again — the exact drift `mayEditCollab` exists to prevent
+  // its own grants again - the exact drift `mayEditCollab` exists to prevent
   // (an admin could deny collab.edit and forget session.edit, or vice versa).
   const denyCollabEdit: Grant = { principal: 'user:u-member', action: 'collab.edit', resource: '*', effect: 'deny' };
   assert.equal(canOf('member', [denyCollabEdit])['collab.edit'], true, 'still true — session.edit was never touched');
@@ -125,7 +125,7 @@ test('the gateway imports mayEditCollab and never re-derives the writer decision
   assert.ok(importLine, 'gateway.ts imports from rbac/evaluate.ts');
   assert.ok(importLine!.includes('mayEditCollab'), 'imports the shared helper');
   // A bare `evaluate` identifier in that import's named list (not as part of
-  // `mayEditCollab`) would mean the file can call evaluate(…) directly again —
+  // `mayEditCollab`) would mean the file can call evaluate(…) directly again - 
   // exactly the duplication mayEditCollab exists to prevent.
   const named = importLine!.match(/\{([^}]*)\}/)?.[1] ?? '';
   const idents = named.split(',').map((s) => s.replace(/^type\s+/, '').trim());
@@ -140,7 +140,7 @@ test('the gateway imports mayEditCollab and never re-derives the writer decision
 const TOOL_ID = 'notes';
 /** A shared group every dev user below carries, purely for project visibility
  *  (the RBAC role itself still comes from the role-named group, or its
- *  absence for a plain member — `roleFromGroups`). */
+ *  absence for a plain member - `roleFromGroups`). */
 const READ_GROUP = 'perm-read';
 const ROLE_GROUPS: Array<{ role: Exclude<Role, 'viewer' | 'guest'>; groups: string[] }> = [
   { role: 'member', groups: [READ_GROUP] },
@@ -156,7 +156,7 @@ let base = '';
 let wsBase = '';
 let sessionId = '';
 /** Module-scoped so a test can write a grant directly, the way the gateway
- *  suite does — the console's grants API is exercised elsewhere; what matters
+ *  suite does - the console's grants API is exercised elsewhere; what matters
  *  here is the decision, not the route that recorded it. */
 let store: ReturnType<typeof createMemoryStore>;
 const cookies = new Map<string, string>();
@@ -179,7 +179,7 @@ before(async () => {
         ...ROLE_GROUPS.map((r) => ({ email: `${r.role}@test`, name: r.role, groups: r.groups })),
         { email: 'restricted@test', name: 'Restricted Member', groups: [READ_GROUP] },
         // An ordinary member of the project whose GROUP is denied collab.join
-        // below — the "rooms are switched off for contractors" operator move.
+        // below - the "rooms are switched off for contractors" operator move.
         { email: 'nojoin@test', name: 'No Join', groups: [READ_GROUP, 'contractors'] },
       ],
     },
@@ -214,7 +214,7 @@ before(async () => {
   const adminCookie = cookies.get('admin@test')!;
 
   // A project every principal above can see: admin/owner bypass via role, and
-  // everyone else — member/author/approver/restricted — shares READ_GROUP.
+  // everyone else - member/author/approver/restricted - shares READ_GROUP.
   const projectRes = await fetch(`${base}/api/v1/projects`, {
     method: 'POST',
     headers: { cookie: adminCookie, 'content-type': 'application/json' },
@@ -231,7 +231,7 @@ before(async () => {
   assert.equal(sessionRes.status, 201);
   sessionId = (await sessionRes.json() as { id: string }).id;
 
-  // restricted@test is a member with session.edit explicitly denied — the
+  // restricted@test is a member with session.edit explicitly denied - the
   // "eligible reader, no edit right" shape (plans/14 §6).
   const restricted = (await store.listUsers()).find((u) => u.email === 'restricted@test');
   assert.ok(restricted);
@@ -249,7 +249,7 @@ async function orgConfigCan(cookie: string): Promise<Record<string, boolean>> {
   return (await res.json() as { can: Record<string, boolean> }).can;
 }
 
-/** The HTTP status of a REFUSED upgrade — the gateway answers a plain response
+/** The HTTP status of a REFUSED upgrade - the gateway answers a plain response
  *  on the raw socket, so a refusal has a real status instead of a mystery
  *  disconnect. Resolves 101 when the handshake actually completes. */
 function upgradeStatus(cookie: string): Promise<number> {
@@ -290,7 +290,7 @@ for (const { role } of ROLE_GROUPS) {
   test(`role ${role}: real gateway writer seat agrees with real org-config can['collab.edit']`, async () => {
     const cookie = cookies.get(`${role}@test`)!;
     const [can, wireRole] = await Promise.all([orgConfigCan(cookie), joinAndGetRole(cookie)]);
-    // Captured before any assert.equal narrows wireRole's literal type — the
+    // Captured before any assert.equal narrows wireRole's literal type - the
     // agreement check below compares this boolean, not the raw string, so it
     // stays meaningful regardless of which branch a future role table takes.
     const isWriter = wireRole === 'writer';
@@ -303,7 +303,7 @@ for (const { role } of ROLE_GROUPS) {
 test('a collab.join deny: the advertised bit and the real socket agree — both refuse', async () => {
   // The drift this file exists to prevent, on the OTHER collab bit. `collab.join`
   // is a real action with real grants, the console offers it, and org-config
-  // answers `false` for a denied principal — while the gateway consulted it
+  // answers `false` for a denied principal - while the gateway consulted it
   // nowhere and admitted them anyway, as a writer, with the whole document. An
   // advertised capability the server does not enforce is worse than no bit at
   // all: an operator reads "rooms are off for contractors" off a screen that is

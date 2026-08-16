@@ -1,5 +1,5 @@
 /**
- * RBAC — small fixed role set + fine-grained grants (plans/03).
+ * RBAC - small fixed role set + fine-grained grants (plans/03).
  *
  * Evaluation is a pure function: deny wins → allow wins → role default.
  * Resources are passed as the set of selector strings the resource satisfies
@@ -31,10 +31,10 @@ export type Role = (typeof ROLES)[number];
 const ROLE_ACTIONS: Record<Role, string[]> = (() => {
   // `collab.join` rides with `session.view`, not a level up: a live room's
   // presence lane is structurally unauthorized (plans/100 §7 item 5) and a
-  // room's read gate is project visibility, not an edit right — so anyone who
+  // room's read gate is project visibility, not an edit right - so anyone who
   // can see a session can watch its collab, matching the observers-are-
   // presence-visible rule (plans/14 §6). `collab.edit` is NOT listed here at
-  // all — see `mayEditCollab` below for why.
+  // all - see `mayEditCollab` below for why.
   const viewer = ['catalog.read', 'session.view', 'collab.join'];
   const member = [
     ...viewer,
@@ -59,10 +59,10 @@ const ROLE_ACTIONS: Record<Role, string[]> = (() => {
   // Credentials + the enable/disable kill switch stay owner-only: an admin can
   // shape a provider, but only an owner puts a key in or turns it on (plans/17 §6).
   // `catalog.provider.publish` (pushing lolly exports OUT to a destination DAM,
-  // plans/27 §10) is owner-grantable too — an outbound write to a third party is
+  // plans/27 §10) is owner-grantable too - an outbound write to a third party is
   // an owner's call, though they can grant it per-provider.
   const owner = [...admin, 'instance.config', 'catalog.provider.credential', 'catalog.provider.publish'];
-  // Guests get NOTHING by default — their access is entirely link-scoped grants.
+  // Guests get NOTHING by default - their access is entirely link-scoped grants.
   return { viewer, member, author, approver, admin, owner, guest: [] };
 })();
 
@@ -131,11 +131,11 @@ export function evaluate(
 }
 
 /**
- * Whether `ctx` may WRITE in a live collab room — deliberately `session.edit`
+ * Whether `ctx` may WRITE in a live collab room - deliberately `session.edit`
  * itself, not a parallel `collab.edit` action with its own role/grant
  * bindings (plans/14 §6, OSS plans/100 §7 item 7). A writer seat in a room
  * IS edit access to the session it holds; giving it a second action name
- * would let a `session.edit` grant and a `collab.edit` grant drift apart —
+ * would let a `session.edit` grant and a `collab.edit` grant drift apart - 
  * an admin could deny one and forget the other, and the room would then
  * disagree with the org-config bit that told the shell it could join
  * writable.
@@ -148,7 +148,7 @@ export function evaluate(
  *     (`server/src/policy/org-config.ts`) that lets the shell show an
  *     honest "Start a collab" affordance before a socket ever opens.
  * Neither may re-derive the answer with its own `evaluate(…, 'session.edit', …)`
- * call — routing both through here is what makes the two structurally unable
+ * call - routing both through here is what makes the two structurally unable
  * to disagree, rather than merely unlikely to.
  */
 export function mayEditCollab(ctx: PrincipalCtx, grants: Grant[]): boolean {
@@ -156,7 +156,7 @@ export function mayEditCollab(ctx: PrincipalCtx, grants: Grant[]): boolean {
 }
 
 /**
- * Whether `ctx` may be in a live collab room at all — `collab.join`, which
+ * Whether `ctx` may be in a live collab room at all - `collab.join`, which
  * UNLIKE `collab.edit` is a real action with its own row in the role table and
  * its own grants (see `ROLE_ACTIONS` above, and `tests/collab/permissions.test.ts`
  * 'unlike collab.edit, collab.join DOES read its own grants').
@@ -167,7 +167,7 @@ export function mayEditCollab(ctx: PrincipalCtx, grants: Grant[]): boolean {
  * import list structurally). The expression is byte-identical to the one
  * `policy/org-config.ts`'s generic `CLIENT_ACTIONS` loop produces for this
  * action, so the advertised `can['collab.join']` bit and the socket that
- * actually opens cannot disagree — the bit is not decoration.
+ * actually opens cannot disagree - the bit is not decoration.
  *
  * Enforced in THREE places, all of which must agree: the upgrade
  * (`collab/gateway.ts` `admit`), every subsequent gesture (`authorizeOps`, so a
@@ -180,14 +180,14 @@ export function mayJoinCollab(ctx: PrincipalCtx, grants: Grant[]): boolean {
 }
 
 /**
- * Whether `ctx` may hand a guest-edit link to somebody outside the org —
+ * Whether `ctx` may hand a guest-edit link to somebody outside the org - 
  * `link.create-guest`, over the selectors the link's own target satisfies
  * (`links/sign.ts` `linkResourceSelectors`).
  *
  * A named helper for the same reason `mayEditCollab` and `mayJoinCollab` are:
  * the ws gateway must not import bare `evaluate` (`tests/collab/permissions.test.ts`
  * asserts its import list structurally), and this decision now has TWO enforcement
- * points that must agree — the mint (`POST /api/v1/links`) and the gateway's
+ * points that must agree - the mint (`POST /api/v1/links`) and the gateway's
  * per-gesture re-check of the inviter's standing (plans/02 §8's second revocation
  * lever: "the inviter losing `link.create-guest` kills all its live guest sessions
  * immediately"). Revoking the action from a group therefore stops future minting
@@ -205,7 +205,7 @@ export function mayCreateGuestLinks(ctx: PrincipalCtx, selectors: string[], gran
 /**
  * Escalation guard for the grants editor: an action only the owner role holds
  * by default (instance.config, catalog.provider.credential, …) may have its
- * grants created or deleted ONLY by an owner — otherwise an admin with
+ * grants created or deleted ONLY by an owner - otherwise an admin with
  * grant.edit could mint themselves owner powers.
  */
 export function ownerOnlyAction(action: string): boolean {

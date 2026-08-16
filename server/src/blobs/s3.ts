@@ -1,15 +1,15 @@
 /**
- * S3 BlobStore driver (plans/27 §5) — instance-owned catalog bytes on any
+ * S3 BlobStore driver (plans/27 §5) - instance-owned catalog bytes on any
  * S3-compatible store (AWS, MinIO, Ceph RGW): the media-sized-estate and air-gap
  * story, a `blobs.driver: 's3'` config flip rather than an architecture change.
  * Zero-dep, reusing the hand-rolled SigV4 core from the S3 catalog *provider*
- * (`providers/s3.ts`) grown to signed PUT/DELETE — no AWS SDK.
+ * (`providers/s3.ts`) grown to signed PUT/DELETE - no AWS SDK.
  *
  * A blob's key is `<prefix>/<blobId>`; objects are private and every request is
  * freshly signed. `size`/`checksum`/`content_type` cannot ride on the object
  * itself without a metadata round-trip, so `put` returns them from the buffered
  * body it just hashed, and `head`/`get` recompute from the object (HEAD gives
- * size; the checksum is re-derived on read — instance assets already persist the
+ * size; the checksum is re-derived on read - instance assets already persist the
  * checksum on their format entry, so a serve does not depend on it).
  */
 import { readBlobBody, type BlobStat, type BlobStore } from './types.ts';

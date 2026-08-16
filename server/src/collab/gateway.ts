@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * The collab WebSocket gateway — `/ws/collab/:sessionId` (OSS plans/100 §7
+ * The collab WebSocket gateway - `/ws/collab/:sessionId` (OSS plans/100 §7
  * items 1/5/6/7, lolly-work plans/14 §6).
  *
  * This is the half of live collaboration that only a control plane can offer:
@@ -12,62 +12,62 @@
  * `server.on('upgrade')` in main.ts beside the router and path-matches like a
  * route (plans/100 §7 item 1). It deliberately does NOT live inside `buildApp`:
  * app.ts is also bundled into a Vercel function, and that platform's WebSocket
- * story is unverified (plans/100 §11.31) — keeping the gateway out of that
+ * story is unverified (plans/100 §11.31) - keeping the gateway out of that
  * import graph means the trial host is unaffected either way.
  *
  * AUTH HAPPENS BEFORE THE HANDSHAKE. `readPrincipal` runs on the upgrade
  * request's cookies (the HMAC cookie works verbatim on an upgrade), and a
- * refusal is a plain HTTP response written to the raw socket — no WebSocket is
+ * refusal is a plain HTTP response written to the raw socket - no WebSocket is
  * ever created for an unauthenticated caller.
  *
  * THE FOUR GATES, in the order `GET /api/v1/sessions/:id` applies them:
- *   1. a live member (`resolveMember` — the route's own `memberOf` logic)
- *   2. the session exists, its project is VISIBLE (`canSeeProject` — the route's
+ *   1. a live member (`resolveMember` - the route's own `memberOf` logic)
+ *   2. the session exists, its project is VISIBLE (`canSeeProject` - the route's
  *      own helper, now shared), and it is not tombstoned
- *   3. `mayJoinCollab(…)` (rbac/evaluate.ts, = `evaluate(…, 'collab.join')`) —
+ *   3. `mayJoinCollab(…)` (rbac/evaluate.ts, = `evaluate(…, 'collab.join')`) - 
  *      the room-entry action itself. A real action with its own grants, so an
  *      operator who denies `collab.join` to a group turns rooms OFF for them
  *      here, at the socket, not merely in the advertised `can[]` bit
  *   4. `mayEditCollab(…)` (rbac/evaluate.ts, = `evaluate(…, 'session.edit')`)
- *      decides writer vs OBSERVER — an eligible reader always gets in, just
+ *      decides writer vs OBSERVER - an eligible reader always gets in, just
  *      read-only (plans/14 §6). The SAME function backs the org-config
  *      `can['collab.edit']` bit, so a room's writer seat and the shell's
  *      advertised edit affordance can never disagree (OSS plans/100 §7 item 7)
  *
- * ALL FOUR ARE RE-RUN PER GESTURE, not just at the handshake — see
+ * ALL FOUR ARE RE-RUN PER GESTURE, not just at the handshake - see
  * `authorizeOps`. A room lives for hours; every gate that only ran once would be
  * a gate that stops existing the moment a socket is open.
  *
  * GUESTS ARE THE SAME ROOM, NOT A SECOND MECHANISM (plans/14 §6, plans/02 §8).
  * A guest principal (`readPrincipal`'s guest branch) reaches all of the above
  * through `admitGuest`, which asks the same four questions of the only authority
- * a guest has — its guest-edit LINK:
+ * a guest has - its guest-edit LINK:
  *
  *   1. instead of "a live member": the link is live (exists, not revoked, not
  *      expired), guest links are enabled on this instance, and the inviter is
  *      still a live member who STILL HOLDS `link.create-guest` over this
- *      link's own target (accountability rides on them, plans/02 §8 — both
+ *      link's own target (accountability rides on them, plans/02 §8 - both
  *      halves of that sentence, re-checked on the same per-gesture and
  *      per-keepalive cadence everything else here is, via
  *      `guestInviterStanding`; corrected 2026-08-09, see its own doc comment)
  *   2. instead of project visibility: THE LINK BINDS TO THIS SESSION. A
  *      guest-edit link names one `target.sessionId`, and that is the whole of a
- *      guest's reach. Any other id is refused 403 — the same refusal an
+ *      guest's reach. Any other id is refused 403 - the same refusal an
  *      unauthorized member gets, and issued BEFORE the session is read, so a
  *      guest cannot use the 404/403/410 spread as an existence oracle for
  *      sessions it was never invited to
  *   3. `collab.join` is not evaluated, because a guest is in no role table
- *      (`ROLE_ACTIONS.guest` is `[]`) — the link IS the grant
+ *      (`ROLE_ACTIONS.guest` is `[]`) - the link IS the grant
  *   4. writer vs observer comes from the link's KIND (`guests.ts`
  *      `guestLinkRole`), never from RBAC
  *
  * Everything AFTER the handshake is deliberately identical: one roster, one set
  * of room caps, one presence relay, one veto, one audit shape, one write-back.
- * What differs is only how the seat was authorized — see `SeatIdentity`. THE
+ * What differs is only how the seat was authorized - see `SeatIdentity`. THE
  * VETO ITSELF is not quite byte-identical, and deliberately so (corrected
  * 2026-08-09): a guest carries only the synthetic `guests` group, so it is the
  * operator's real lever, but ALSO means an `inputAccess` rule scoped to a
- * tool's real editing groups never matches one — `vetoOps` therefore refuses a
+ * tool's real editing groups never matches one - `vetoOps` therefore refuses a
  * guest outright on any input that is GOVERNED at all (some rule exists) but
  * matched by none of them, rather than falling through to the member-side
  * EDITABLE default (`inputIsGoverned`, `OpsAuthz.isGuest`). A member's own
@@ -82,7 +82,7 @@
  * references DOM globals this project's tsconfig excludes on purpose (the house
  * rule stated in server/src/render/contract.ts). `parseOp` below is the same
  * shape check as the bundled canvas-op schema, plus the caps and key discipline
- * a schema does not express (plans/100 §11.21) — and it REBUILDS each op from
+ * a schema does not express (plans/100 §11.21) - and it REBUILDS each op from
  * known fields, so nothing unexpected rides into the document or out to peers.
  */
 import type { IncomingMessage } from 'node:http';
@@ -138,8 +138,8 @@ export const OPS_PER_SEC = 200;
 /** `ops` MESSAGES per socket per second. Capped independently of the op count
  *  because the cost of a message is not its ops: every one runs `authorizeOps`,
  *  which is five UNCACHED store reads (`getUserBySub`, `listGrants`,
- *  `listOverlays`, `getSession`, `getProject` — issued as one parallel batch).
- *  The re-read is deliberate — a revocation must not wait for a room to close —
+ *  `listOverlays`, `getSession`, `getProject` - issued as one parallel batch).
+ *  The re-read is deliberate - a revocation must not wait for a room to close - 
  *  so the message rate is what has to be bounded instead. 40/s is a gesture
  *  commit every 25 ms, well above what a human hand produces. */
 export const OPS_MESSAGES_PER_SEC = 40;
@@ -154,13 +154,13 @@ export const MAX_SOCKETS = 512;
 export const MAX_SOCKETS_PER_USER = 8;
 /** Upgrades one user may complete per minute. Each connect/disconnect cycle
  *  writes 2–3 hash-chained audit rows, and `appendAudit` takes an instance-global
- *  advisory lock — so an unthrottled reconnect loop from one authenticated member
+ *  advisory lock - so an unthrottled reconnect loop from one authenticated member
  *  serialises audit writes for the entire instance. */
 export const CONNECTS_PER_USER_PER_MIN = 30;
-/** How often each socket is pinged — and, on the same tick, how often a SEATED
+/** How often each socket is pinged - and, on the same tick, how often a SEATED
  *  connection is re-authorized (`seatValid`). A half-open TCP connection is
  *  invisible to `close`, and a member who never leaves keeps a WRITER_CAP seat
- *  forever AND stops the room ever emptying — so its document never quiesces and
+ *  forever AND stops the room ever emptying - so its document never quiesces and
  *  its edits never become a revision. The seat re-check rides this timer because
  *  a revocation must reach a connection that never sends anything, and an
  *  observer never does. Overridable per gateway (`CollabGatewayDeps`) for tests. */
@@ -174,7 +174,7 @@ export const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
 /** Application close codes (4000–4999 is the private range). A client can tell
  *  "you were disconnected for flooding" from "the server is shutting down". */
 export const CLOSE = {
-  /** The caller stopped being a live member while the socket was open —
+  /** The caller stopped being a live member while the socket was open - 
    *  disabled, session-epoch bumped, or the cookie expired. */
   UNAUTHORIZED: 4001,
   /** No `join` frame within JOIN_TIMEOUT_MS. */
@@ -191,7 +191,7 @@ export const CLOSE = {
   GOING_AWAY: 4010,
 } as const;
 
-/** Typed error frames — sender-only, never broadcast. */
+/** Typed error frames - sender-only, never broadcast. */
 export const ERR = {
   NOT_JOINED: 'NOT_JOINED',
   OBSERVER_READ_ONLY: 'OBSERVER_READ_ONLY',
@@ -201,7 +201,7 @@ export const ERR = {
   INPUT_LOCKED: 'INPUT_LOCKED',
   INPUT_HIDDEN: 'INPUT_HIDDEN',
   INPUT_NOT_ALLOWED: 'INPUT_NOT_ALLOWED',
-  /** The op addressed a declared input through the wrong lane — a `param` on a
+  /** The op addressed a declared input through the wrong lane - a `param` on a
    *  `blocks` input, or a collection-scoped box op on a scalar one. */
   WRONG_LANE: 'WRONG_LANE',
   /** The room's document is at one of its own ceilings (rooms.ts `admits`). */
@@ -220,18 +220,18 @@ export interface CollabGatewayDeps {
 }
 
 export interface CollabGateway {
-  /** Returns false when the path is not ours — the caller destroys the socket.
+  /** Returns false when the path is not ours - the caller destroys the socket.
    *  True means the gateway has taken ownership (auth continues async). */
   handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): boolean;
   /** Live room count (tests + a future gauge). */
   rooms(): number;
-  /** A live snapshot of every room — the admin console's Rooms panel (OSS
+  /** A live snapshot of every room - the admin console's Rooms panel (OSS
    *  plans/100 §7, plans/14 §6). Wired into `buildApp`'s `listCollabRooms` by
    *  main.ts; never imported by app.ts itself, so the Vercel bundle stays free
-   *  of `ws` (see this file's own header). Copies only — see
+   *  of `ws` (see this file's own header). Copies only - see
    *  `RoomRegistry.list`. */
   snapshot(): RoomSnapshot[];
-  /** Quiesce every live room into a session revision and audit its rollup —
+  /** Quiesce every live room into a session revision and audit its rollup - 
    *  orderly shutdown (plans/14 §6). `close()` starts this best-effort; a host
    *  that wants the writes to LAND awaits this before exiting. */
   drain(): Promise<void>;
@@ -242,13 +242,13 @@ export interface CollabGateway {
 /**
  * `/ws/collab/<id>` → `<id>`; anything else → null.
  *
- * EVERY step is inside the try, and that is load-bearing rather than tidy.
+ * EVERY step is inside the try, and that is essential rather than tidy.
  * `handleUpgrade` is called SYNCHRONOUSLY from the `server.on('upgrade')`
- * listener (main.ts), so a throw here does not fail one request — it escapes
+ * listener (main.ts), so a throw here does not fail one request - it escapes
  * through `Server.emit` into node's HTTP parser as an uncaught exception and
  * takes the whole control plane down. WHATWG `new URL` does not validate
  * percent-escapes in a path, so `/ws/collab/%` parses cleanly and only
- * `decodeURIComponent` rejects it (`URIError: URI malformed`) — which is why
+ * `decodeURIComponent` rejects it (`URIError: URI malformed`) - which is why
  * that call, not just the URL parse, has to be guarded. No cookie, no session
  * and no membership are needed to reach this line.
  */
@@ -270,14 +270,14 @@ export function collabSessionId(rawUrl: string | undefined): string | null {
  * page on evil.example may open `ws://your-instance/ws/collab/<id>` and the
  * browser attaches the session cookie, because a ws handshake is not a fetch and
  * CORS never applies to it. Until this check the ONLY barrier was `SameSite=Lax`
- * on the session cookie (iam/sessions.ts) — a browser-behaviour assumption, in a
+ * on the session cookie (iam/sessions.ts) - a browser-behaviour assumption, in a
  * file that is otherwise explicit about every ceiling it holds, guarding the full
  * `docState` plus every subsequent op and presence frame.
  *
  * The rule, deliberately narrow:
  *   - NO `Origin` header → allowed. Non-browser clients (the CLI, the Tauri
  *     shells, `ws` in this repo's own tests) send none, and a header a caller
- *     controls is not an authorization signal anyway — the cookie is. What the
+ *     controls is not an authorization signal anyway - the cookie is. What the
  *     header IS good for is the one case it cannot be forged in: a real browser
  *     stamps it, so a hostile PAGE cannot hide where it came from.
  *   - an `Origin` whose HOST is the host this request was made to (the `Host`
@@ -285,7 +285,7 @@ export function collabSessionId(rawUrl: string | undefined): string | null {
  *     the request rather than the config on purpose: an instance behind a
  *     reverse proxy, on a vanity domain, or reached by IP must not lose collab
  *     because `baseUrl` was written for link-building. A browser cannot forge
- *     `Host` — it is the server it actually connected to — so "Origin host ==
+ *     `Host` - it is the server it actually connected to - so "Origin host ==
  *     Host" is exactly the classic CSWSH check. Scheme is ignored for this leg:
  *     TLS is routinely terminated in front of us, so the browser says https
  *     while we serve http.
@@ -344,13 +344,13 @@ function originOf(v: unknown): OpOrigin | null {
   const client = o['client'];
   const clock = o['clock'];
   if (typeof client !== 'string' || client.length === 0 || client.length > 128) return null;
-  // A Lamport clock is a small, steadily-incrementing per-client counter — never
+  // A Lamport clock is a small, steadily-incrementing per-client counter - never
   // anywhere near float precision limits in honest use (canvas-op-testkit mints
   // it by `+1` per op). `Number.isFinite` alone let an out-of-range value like
   // `1e308` through, and that op's clock becomes BOTH `Room.serverClock` and
   // this client's replay high-water mark forever: floats saturate
   // (`1e308 + 1 === 1e308`), so no later, honest clock from that `origin.client`
-  // can ever beat it again — every future op from whoever the attacker named is
+  // can ever beat it again - every future op from whoever the attacker named is
   // dropped by the replay filter, silently, for the room's whole life, and the
   // register that op wrote is permanently un-overwritable. `isSafeInteger`
   // closes it at the parsing boundary, before the value ever reaches
@@ -370,7 +370,7 @@ function colOf(o: Record<string, unknown>): string | null | undefined {
 function paramValueOf(v: unknown): { ok: true; value: ParamValue } | { ok: false } {
   const scalar = scalarOf(v);
   if (scalar.ok) return { ok: true, value: scalar.value };
-  // A binding descriptor `{bind: {provider, query?, version?}}` — the data plane
+  // A binding descriptor `{bind: {provider, query?, version?}}` - the data plane
   // syncs WHICH dataset, never the resolved datum (plans/99 §6).
   if (typeof v !== 'object' || v === null || Array.isArray(v)) return { ok: false };
   const bind = (v as Record<string, unknown>)['bind'];
@@ -408,7 +408,7 @@ export function parseOp(raw: unknown): CanvasOp | null {
       if (typeof key !== 'string' || !isSafeKey(key)) return null;
       const value = paramValueOf(o['value']);
       if (!value.ok) return null;
-      // The params lane is collection-blind (canvas-op-v1) — a `col` on a param
+      // The params lane is collection-blind (canvas-op-v1) - a `col` on a param
       // op is not a v1.1 op at all.
       if (col !== undefined) return null;
       return { k: 'param', key, value: value.value, origin };
@@ -473,13 +473,13 @@ export function parseOp(raw: unknown): CanvasOp | null {
 }
 
 /**
- * The input id an op is GOVERNED BY — the only thing an overlay can resolve.
+ * The input id an op is GOVERNED BY - the only thing an overlay can resolve.
  *
  *   `param`  → its `key`, which IS the input id (plans/100 §3).
  *   box ops  → their `col`, the blocks-input id the collection belongs to.
  *
  * A box op with no `col` targets the contract's default canvas collection, which
- * names no input — so a governed room REFUSES it rather than applying an
+ * names no input - so a governed room REFUSES it rather than applying an
  * ungovernable write. That is why `seedOpsFromInputs` seeds every blocks input
  * as a NAMED collection: there is nothing for an unscoped op to be about.
  */
@@ -494,7 +494,7 @@ interface Rejection {
   input: string;
 }
 
-/** A fixed-size ring of hit timestamps — exact "N per second", no fixed-window
+/** A fixed-size ring of hit timestamps - exact "N per second", no fixed-window
  *  double-rate straddle. */
 class RateWindow {
   private readonly stamps: number[];
@@ -549,17 +549,17 @@ class CountWindow {
 }
 
 /**
- * "May this principal be in this room at all?" — gates 1–3 of `admit()`
+ * "May this principal be in this room at all?" - gates 1–3 of `admit()`
  * (`resolveMember` having already answered gate 1 by returning a user or null),
  * as a pure decision over rows the caller has already read.
  *
- * Pure, and the ONE expression of that decision for both re-checks — the
+ * Pure, and the ONE expression of that decision for both re-checks - the
  * per-gesture one in `authorizeOps` and the per-heartbeat one in `seatValid`.
  * `admit()` runs the same three checks in longhand rather than calling this,
  * because it is the only caller that must tell them apart: an upgrade answers
  * 404 / 403 / 410 the way `GET /api/v1/sessions/:id` does, and collapsing that
  * to one boolean would collapse the statuses with it. Once the socket exists
- * there is nothing to distinguish — every one of them closes it.
+ * there is nothing to distinguish - every one of them closes it.
  *
  * Excludes the writer/observer split, which is gate 4: a different question,
  * with a different answer per batch.
@@ -576,7 +576,7 @@ function seatAllows(
 }
 
 /**
- * WHO a socket is, once the handshake has decided — the one shape everything
+ * WHO a socket is, once the handshake has decided - the one shape everything
  * after it reads. A member and a guest differ in how they were AUTHORIZED, never
  * in what a seat IS, so the room, the ceilings, the audit trail and the roster
  * take this and branch on nothing.
@@ -587,24 +587,24 @@ type SeatIdentity =
 
 interface SeatCommon {
   /** The AUDIT actor: `user:<id>` for a member, `guest:<linkId>` for a guest
-   *  (`iam/sessions.ts` `guestActor` — the same string `GET /l/:id` already
+   *  (`iam/sessions.ts` `guestActor` - the same string `GET /l/:id` already
    *  writes for `guest.admit`, so a guest reads as ONE principal across the log
    *  rather than as a link on one line and a room seat on the next). */
   actor: string;
   /** The per-principal ceiling key (MAX_SOCKETS_PER_USER,
-   *  CONNECTS_PER_USER_PER_MIN) AND the room seat's `userId` — which is what
+   *  CONNECTS_PER_USER_PER_MIN) AND the room seat's `userId` - which is what
    *  makes WRITER_CAP / WRITER_CAP_PER_USER count a guest exactly like a member,
    *  with no cap arithmetic anywhere in this file knowing guests exist.
    *
    *  A guest's is its LINK, not the human holding it, and that is deliberate: a
    *  guest is pseudonymous, so the only identity worth budgeting is the invite.
    *  Everyone who arrives through one link therefore shares one WRITER_CAP_PER_USER
-   *  allowance — a link forwarded around a group cannot fill a room the inviter's
+   *  allowance - a link forwarded around a group cannot fill a room the inviter's
    *  colleagues are trying to work in. */
   principalId: string;
   /** What the roster, the peer-join broadcast and every relayed presence frame
    *  show. For a guest: `"<name> (guest of <inviter>)"` (plans/02 §8), built
-   *  server-side in `guests.ts` — the shell renders whatever name it is sent. */
+   *  server-side in `guests.ts` - the shell renders whatever name it is sent. */
   name: string;
 }
 
@@ -621,7 +621,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
   const audit = (actor: string, action: string, subject: string, payload: Record<string, unknown>) =>
     store.appendAudit({ at: new Date().toISOString(), actor, action, subject, payload });
 
-  /** The one disposal path — quiesce + drop the room, then audit its rollup. A
+  /** The one disposal path - quiesce + drop the room, then audit its rollup. A
    *  room nobody ever joined (a socket that died mid-`acquire`, swept later) has
    *  nothing to report, so it gets no event; every room a member sat in does. */
   const disposeIfEmpty = async (room: Room): Promise<void> => {
@@ -647,10 +647,10 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
    *  whether they may still write, the tool's overlay, and its declared input ids
    *  acting as an own-property whitelist (plans/100 §11.21). When the tool is not
    *  in this instance's pack the id list is unavailable and the whitelist is
-   *  skipped — the overlay veto still applies. */
+   *  skipped - the overlay veto still applies. */
   interface OpsAuthz {
     /** The groups the overlay veto resolves against. A member's effective
-     *  membership; for a guest, the synthetic `[GUEST_GROUP]` of plans/02 §8 —
+     *  membership; for a guest, the synthetic `[GUEST_GROUP]` of plans/02 §8 - 
      *  which is the operator's real lever over what a guest may touch, and the
      *  reason the veto is not skipped for guests. */
     groups: string[];
@@ -658,16 +658,16 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
     overlay: ToolOverlay | undefined;
     /** Corrected 2026-08-09: a guest carries ONLY the synthetic `guests` group
      *  (never a tool's real editing groups), so an `inputAccess` rule an operator
-     *  wrote for the population that actually edits a tool — 'team-eng',
-     *  'admin', whatever — never matches a guest and `resolveInputAccess` falls
+     *  wrote for the population that actually edits a tool - 'team-eng',
+     *  'admin', whatever - never matches a guest and `resolveInputAccess` falls
      *  through to its member-side default, EDITABLE. That inverts plans/02 §8's
      *  "narrowest input surface of anyone": a guest ends up STRICTLY WIDER than
      *  a member the rule was written to restrict. `vetoOps` reads this to apply
-     *  a stricter fallback for a guest specifically — see `inputIsGoverned`. */
+     *  a stricter fallback for a guest specifically - see `inputIsGoverned`. */
     isGuest: boolean;
     /** Declared input ids, or null when the manifest could not be read at all.
      *  An EMPTY set is a real answer ("this tool declares no inputs"), not a
-     *  missing one — collapsing the two would make the whitelist fail OPEN for a
+     *  missing one - collapsing the two would make the whitelist fail OPEN for a
      *  tool that legitimately declares nothing. */
     declared: Set<string> | null;
     /** input id → declared `InputType`, for the lane check. An id absent from
@@ -680,7 +680,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
    * revocation must not wait for it. An HTTP route re-authorizes every request,
    * and a socket that authorized itself once at 09:00 would otherwise let a
    * since-disabled account, a since-removed group member, or a since-locked input
-   * keep writing all day — the exact opposite of the one promise rooms make
+   * keep writing all day - the exact opposite of the one promise rooms make
    * ("live collab is the one place input locking stops being cooperative",
    * plans/14 §6). The cost is a handful of small reads per GESTURE COMMIT, not
    * per op; `readToolInputs` keeps its own mtime cache, so the manifest side is
@@ -691,14 +691,14 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
    * for its own sake: `admit`'s `Admitted` record captures the session and
    * project rows as they were at the handshake, so re-reading only the identity
    * half would leave the two revocations an operator is most likely to reach for
-   * — removing someone from the project's visibility group, and deleting the
-   * session — enforced exactly once, at 09:00, on a socket that then writes into
+   * - removing someone from the project's visibility group, and deleting the
+   * session - enforced exactly once, at 09:00, on a socket that then writes into
    * the room all day AND commits it as a session revision on quiesce. The
    * project is re-fetched by the session's OWN `projectId` (a session never
-   * moves between projects — no route writes that field), so the read stays one
+   * moves between projects - no route writes that field), so the read stays one
    * parallel batch rather than a chain.
    *
-   * Returns null when the caller may no longer be in this room AT ALL — a dead
+   * Returns null when the caller may no longer be in this room AT ALL - a dead
    * account, a revoked `collab.join`, a project they can no longer see, a
    * tombstoned session. The socket closes rather than degrading to observer,
    * matching the 401/403/410 an HTTP route would answer. Losing only the WRITE
@@ -741,12 +741,12 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
   };
 
   /**
-   * The guest half of the per-gesture re-authorization — the SAME discipline
+   * The guest half of the per-gesture re-authorization - the SAME discipline
    * (nothing cached, every gate re-read), over the gates a guest actually has.
    *
    * `store.listGrants()` and `store.getProject()` are absent by intent, not by
    * economy. A guest holds no grants and no role row, and its visibility is the
-   * link rather than the project's group — so reading either would mean asking a
+   * link rather than the project's group - so reading either would mean asking a
    * question whose only possible answer comes from a rule somebody wrote for
    * members. What IS re-read is the link: that is plans/02 §8's promise that
    * "revoking the link kills all its live guest sessions immediately" made true
@@ -768,7 +768,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
     ]);
     const seat = liveGuestSeat(ctx.cookie, link, linkId, sessionId);
     if (!seat || !session || session.deletedAt) return null;
-    // The inviter's own standing — plans/02 §8's second revocation lever, re-run
+    // The inviter's own standing - plans/02 §8's second revocation lever, re-run
     // here exactly as the link's own liveness is (see `guestInviterStanding`).
     if ((await guestInviterStanding(seat.link)) === null) return null;
     return {
@@ -781,7 +781,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
   };
 
   /**
-   * "Is this still the guest that was admitted, and may it still be here?" — the
+   * "Is this still the guest that was admitted, and may it still be here?" - the
    * pure decision, over rows the caller has already read. The guest-side dual of
    * `seatAllows`, and the ONE expression of it for both re-checks.
    *
@@ -803,28 +803,28 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
   };
 
   /**
-   * "Is the inviter still someone who could mint THIS link today?" — the
+   * "Is the inviter still someone who could mint THIS link today?" - the
    * second half of plans/02 §8's revocation promise: "revoking the link (or
    * the inviter losing `link.create-guest`) kills all its live guest sessions
    * immediately." Corrected 2026-08-09: the FIRST clause (the link itself) was
    * always re-checked per gesture and per keepalive (`liveGuestSeat`); this
-   * one — the inviter's own standing — was checked ONLY at admit, so disabling
+   * one - the inviter's own standing - was checked ONLY at admit, so disabling
    * an inviter (the standard offboarding lever) or revoking their
    * `link.create-guest` grant left every already-open guest socket writing
    * (and reading) for up to the link's own TTL. Both halves now ride the same
    * three call sites `liveGuestSeat` does.
    *
    * Two checks, both against the LINK's own authority, never the guest's:
-   *   1. the inviter is a live member at all (`resolveInviter` — disabled or
+   *   1. the inviter is a live member at all (`resolveInviter` - disabled or
    *      deleted admits nobody, same as `admitGuest` always required);
    *   2. the inviter still holds `link.create-guest` over the selectors this
-   *      link's OWN target satisfies (`linkResourceSelectors` — the identical
+   *      link's OWN target satisfies (`linkResourceSelectors` - the identical
    *      selectors `POST /api/v1/links` authorized the mint against, via the
    *      shared `mayCreateGuestLinks`, so a tool-scoped grant cannot silently
    *      disagree between the mint and the re-check).
    *
    * Returns the inviter's display name on success (so a caller need not
-   * re-derive it) or null on either failure — one more O(users) scan plus one
+   * re-derive it) or null on either failure - one more O(users) scan plus one
    * grants read, on the same per-gesture/per-keepalive cadence a member's own
    * standing is re-read on, not a new store surface.
    */
@@ -837,13 +837,13 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
   };
 
   /**
-   * "May this connection still be in this room at all?" — gates 1–3 of `admit`,
+   * "May this connection still be in this room at all?" - gates 1–3 of `admit`,
    * without gate 4 (writer vs observer, which is a per-batch decision) and
    * without the overlay/manifest reads that only a WRITE needs.
    *
    * Driven by the heartbeat, so a seat that never sends anything is still
    * re-authorized. Deliberately the same four store reads `admit` made, in the
-   * same order, resolved through the same shared functions — a second reading of
+   * same order, resolved through the same shared functions - a second reading of
    * "may this person be here" is exactly the drift this file keeps refusing to
    * introduce. A guest observer is re-checked on the same tick and for the same
    * reason: a revoked link must reach the seat that never sends anything.
@@ -856,7 +856,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
       if (!session || session.deletedAt) return false;
       const seat = liveGuestSeat(ctx.cookie, link, linkId, sessionId);
       if (!seat) return false;
-      // An idle guest observer has no gesture to lose the seat on — the inviter
+      // An idle guest observer has no gesture to lose the seat on - the inviter
       // check has to ride the same keepalive the link's own liveness does.
       return (await guestInviterStanding(seat.link)) !== null;
     }
@@ -871,7 +871,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
   };
 
   /**
-   * The veto. Every op — not just `field`/`param` — is resolved to its governed
+   * The veto. Every op - not just `field`/`param` - is resolved to its governed
    * input id and checked; a locked `blocks` input whose ADD/REMOVE ops sailed
    * through would be locked in name only.
    *
@@ -881,7 +881,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
    * straight past the rules written for it: `choice` only ever compared `op.value`
    * on a `param`, and `ReferenceCanvasDoc.ensure` materialises a collection for any
    * `col` string. `docToInputs` would then write the attacker's rows into that
-   * input on quiesce — silently converting a scalar input into an array of
+   * input on quiesce - silently converting a scalar input into an array of
    * attacker-chosen objects. So a `blocks` input is the ONLY thing a box op may
    * scope to, and a `param` may only address an input that is not one.
    */
@@ -916,8 +916,8 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
       // member-side fallback when the input is visibly GOVERNED (some rule
       // exists for it, just not one naming `guests` or `*`): plans/02 §8 sold
       // guests as capable of "the narrowest input surface of anyone", and an
-      // operator's ordinary authoring pattern — scoping a lock to the groups
-      // who actually edit the tool — must not silently open that same field to
+      // operator's ordinary authoring pattern - scoping a lock to the groups
+      // who actually edit the tool - must not silently open that same field to
       // the one principal outside every group on the instance. An input with
       // NO rules at all is unaffected: a genuinely ungoverned field stays
       // editable for a guest exactly as it does for anyone else.
@@ -1001,7 +1001,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
       return refuse(socket, 403, 'FORBIDDEN_ORIGIN');
     }
 
-    // 1. authenticate the UPGRADE itself — no socket exists for an anonymous
+    // 1. authenticate the UPGRADE itself - no socket exists for an anonymous
     //    caller. The principal is read first so the GUEST branch can take over
     //    before any member-shaped gate runs; `readPrincipal` prefers a member
     //    cookie when both are present, exactly as every HTTP route does, so a
@@ -1014,7 +1014,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
     if (!user) return refuse(socket, 401, 'UNAUTHORIZED');
 
     // 1b. the connection ceilings, applied BEFORE the store reads the read gate
-    //     needs — a reconnect loop must not be able to buy three queries a cycle,
+    //     needs - a reconnect loop must not be able to buy three queries a cycle,
     //     nor two audit rows behind the instance-global audit lock.
     if (sockets.size >= MAX_SOCKETS) return refuse(socket, 503, 'BUSY');
     if ((socketsPerUser.get(user.id) ?? 0) >= MAX_SOCKETS_PER_USER) {
@@ -1034,17 +1034,17 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
     const principal = { userId: user.id, groups: user.groups, role: user.role as Role };
     const grants = await store.listGrants();
 
-    // 3. the ROOM gate — `collab.join` itself. It is a real RBAC action with its
+    // 3. the ROOM gate - `collab.join` itself. It is a real RBAC action with its
     //    own grants (rbac/evaluate.ts), it is offered in the console's grants
     //    editor, and org-config advertises it to the shell; a gateway that never
     //    consulted it would make the one control an operator reaches for to
-    //    switch rooms off for a group purely cosmetic — the denied principal
+    //    switch rooms off for a group purely cosmetic - the denied principal
     //    would still be admitted, as a WRITER, holding the whole document.
     //    Refused 403 like any other visibility refusal, so a client cannot tell
     //    "not for you" from "not for anyone".
     if (!mayJoinCollab(principal, grants)) return refuse(socket, 403, 'FORBIDDEN');
 
-    // 4. the write gate — the same `mayEditCollab` the PUT route's session.edit
+    // 4. the write gate - the same `mayEditCollab` the PUT route's session.edit
     //    check and org-config's can['collab.edit'] both call (evaluate.ts). No
     //    grant is not a refusal: the member joins as an observer (plans/14 §6).
     const mayEdit = mayEditCollab(principal, grants);
@@ -1058,7 +1058,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
         kind: 'member',
         actor: `user:${user.id}`,
         principalId: user.id,
-        // `displayName`, not a second copy of the join — the same function the
+        // `displayName`, not a second copy of the join - the same function the
         // directory, the approver nominations and the collab invite copy all
         // render, so a colleague's roster entry and their invite cannot read
         // differently (iam/member.ts).
@@ -1071,13 +1071,13 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
   };
 
   /**
-   * A GUEST's upgrade (plans/14 §6, plans/02 §8) — the same four gates over the
+   * A GUEST's upgrade (plans/14 §6, plans/02 §8) - the same four gates over the
    * only authority a guest has, its guest-edit link. See this file's header for
    * the mapping; the ORDER is what matters here:
    *
    *   `guestSeatOf` FIRST, before the session is read, because it is the binding
    *   check. A guest asking for any session other than the one its link names is
-   *   refused 403 — the identical refusal an unauthorized member gets — and the
+   *   refused 403 - the identical refusal an unauthorized member gets - and the
    *   refusal happens without the store ever being asked whether that session
    *   exists, so the 404/403/410 spread the member path deliberately preserves
    *   cannot be used by a guest as an existence oracle for other people's work.
@@ -1093,7 +1093,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
     const seat = config.policy.guestLinks.enabled && link ? guestSeatOf(link, guest, sessionId) : null;
     if (!seat) return refuse(socket, 403, 'FORBIDDEN');
 
-    // The connection ceilings, keyed on the LINK — same placement as the member
+    // The connection ceilings, keyed on the LINK - same placement as the member
     // path (after auth, before the reads the gate needs).
     if (sockets.size >= MAX_SOCKETS) return refuse(socket, 503, 'BUSY');
     if ((socketsPerUser.get(seat.principalId) ?? 0) >= MAX_SOCKETS_PER_USER) {
@@ -1104,12 +1104,12 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
     }
 
     // The inviter must still be a live member AND still hold `link.create-guest`
-    // over this link's own target — accountability rides on them (plans/02 §8),
+    // over this link's own target - accountability rides on them (plans/02 §8),
     // so a guest cannot outlive the account that vouched for it, and there is no
     // "(guest of <an id nobody can resolve>)" to render. Read off the LINK
     // (`createdBy`), not the cookie's copy of it, for the same reason the bound
     // session is: the stored record is the authority. Behind the ceilings
-    // deliberately — it is the one O(users) read on this path (the Store has no
+    // deliberately - it is the one O(users) read on this path (the Store has no
     // by-id user getter; `api/app.ts` scans the same way), so a reconnect loop
     // must not be able to buy it. The SAME check (`guestInviterStanding`) runs
     // again on every gesture and every keepalive, so this is not a one-time gate.
@@ -1138,7 +1138,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
   };
 
   /** What the handshake resolved. `session` is a SNAPSHOT of the moment of
-   *  admission, kept for the ids and the seed document only — never re-read as
+   *  admission, kept for the ids and the seed document only - never re-read as
    *  policy. Anything that could be revoked is re-resolved from the store per
    *  gesture in `authorizeOps`; treating these rows as still true is precisely
    *  the bug that let a removed group member keep writing. `identity` is the ONE
@@ -1151,7 +1151,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
   }
 
   /** The guest half of a collab audit payload: the LINK that admitted them and
-   *  the member accountable for it — plans/02 §8's "every guest action is audited
+   *  the member accountable for it - plans/02 §8's "every guest action is audited
    *  with inviter + linkId". Ids only, exactly like the rest of the collab audit
    *  surface: never the guest's chosen name, never an input value. Empty for a
    *  member, so the member row's shape is byte-identical to what it always was. */
@@ -1175,7 +1175,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
 
     const send = (frame: ServerFrame): void => {
       if (ws.readyState !== WebSocket.OPEN) return;
-      // A peer that stopped READING is not visible to `close` — the frames simply
+      // A peer that stopped READING is not visible to `close` - the frames simply
       // pile up in this process. Drop the socket rather than the room's memory.
       if (ws.bufferedAmount > MAX_BUFFERED_BYTES) {
         ws.terminate();
@@ -1185,8 +1185,8 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
     };
 
     // KEEPALIVE. Without it a half-open connection leaves a RoomMember seated
-    // forever: it holds a WRITER_CAP seat, keeps `room.size` above zero — so the
-    // sweeper skips the room and its document never quiesces — and receives every
+    // forever: it holds a WRITER_CAP seat, keeps `room.size` above zero - so the
+    // sweeper skips the room and its document never quiesces - and receives every
     // broadcast into a buffer nobody drains. `ws` performs no keepalive of its own.
     let pongMisses = 0;
     ws.on('pong', () => {
@@ -1208,10 +1208,10 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
       // writer's next gesture, but an OBSERVER has no next gesture: they sit and
       // receive the whole document, every op and every presence frame. Without
       // this, "a revocation lands on the next gesture" would be silent about the
-      // one seat that never makes one — a member removed from the project's
+      // one seat that never makes one - a member removed from the project's
       // group, or denied `collab.join`, would keep reading a live room until they
       // chose to leave. An idle writer is the same shape. Cheaper than
-      // `authorizeOps` (no overlay, no manifest — this decides membership of the
+      // `authorizeOps` (no overlay, no manifest - this decides membership of the
       // room, not what may be written), and it rides a timer that already exists.
       if (member) {
         void seatValid(ctx)
@@ -1226,7 +1226,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
       send({ t: 'error', code, message, ...(inputs && inputs.length ? { inputs } : {}) });
 
     /** Append to this connection's serialized chain. Returns false when the
-     *  backlog is already at MAX_QUEUED_MESSAGES — `ws` keeps reading regardless of
+     *  backlog is already at MAX_QUEUED_MESSAGES - `ws` keeps reading regardless of
      *  how slowly handlers drain, so without this bound a client could enqueue
      *  arbitrarily many pending handlers and grow the heap without limit. */
     const enqueue = (fn: () => Promise<void>): boolean => {
@@ -1274,7 +1274,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
         // WRITER_CAP is per ROOM, so without the per-user half one account with
         // several tabs open could occupy every seat and make the room view-only
         // for its actual collaborators. Both refusals carry the same notice: from
-        // the joiner's side the situation is identical — the room is full. Guests
+        // the joiner's side the situation is identical - the room is full. Guests
         // are counted by both, on their link (see `SeatIdentity.principalId`):
         // "temporary external collaboration is the same room" has to mean the
         // same ceilings, or an invite would be a way around them.
@@ -1368,7 +1368,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
       if (!presenceRate.hit(Date.now())) {
         return void ws.close(CLOSE.PRESENCE_RATE, `at most ${PRESENCE_FRAMES_PER_SEC} presence frames/s`);
       }
-      // Straight to the room. No policy, no store, no await — see the module
+      // Straight to the room. No policy, no store, no await - see the module
       // header and rooms.ts's structural rule.
       live.relayPresence(me, raw['frame']);
     };
@@ -1417,7 +1417,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
         default:
           // Answered, not closed: a client on a newer build that sends a frame
           // type this gateway predates must not be disconnected by a rolling
-          // upgrade (plans/100 §11.19 — version skew is routine, not exotic).
+          // upgrade (plans/100 §11.19 - version skew is routine, not exotic).
           fail(ERR.UNKNOWN_FRAME, `unknown frame type '${String(msg['t'])}'`);
       }
     });
@@ -1442,7 +1442,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
       // to a room the rollup has already counted and closed.
       queue = queue
         .then(async () => {
-          // Presence dies with the socket — the gateway evicts the peer and the
+          // Presence dies with the socket - the gateway evicts the peer and the
           // room broadcasts the leave (plans/100 §7 item 4: awareness TTL is the
           // client's business, eviction is ours).
           live.leave(me.id);
@@ -1455,7 +1455,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
             ...guestAudit(ctx.identity),
           });
           // `releaseIfEmpty` re-checks occupancy at call time, so a join that
-          // landed while we awaited keeps its room — and its rollup then covers
+          // landed while we awaited keeps its room - and its rollup then covers
           // the whole life of the room rather than a torn half of it. Disposal
           // now also QUIESCES: the room's document lands as a normal session
           // revision before the rollup says the room closed (plans/14 §6).
@@ -1473,8 +1473,8 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
     closing = true;
     for (const ws of sockets) ws.close(CLOSE.GOING_AWAY, 'server closing');
     sockets.clear();
-    // Every room still standing after the sockets went — including any whose
-    // close handler has not run yet — quiesces here, so no shutdown loses a
+    // Every room still standing after the sockets went - including any whose
+    // close handler has not run yet - quiesces here, so no shutdown loses a
     // document. Double disposal is safe: the registry re-checks identity, and a
     // quiesced room's snapshot row is already gone.
     for (const room of await registry.drain()) {
@@ -1488,7 +1488,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
       // The WHOLE body is guarded, not just the async half. main.ts calls this
       // synchronously from `server.on('upgrade')`, so anything that throws here
       // escapes into node's HTTP parser as an uncaught exception and exits the
-      // process — an unauthenticated remote kill switch. `collabSessionId` is
+      // process - an unauthenticated remote kill switch. `collabSessionId` is
       // already total; this is the belt that keeps a future edit from undoing it.
       let sessionId: string | null;
       try {

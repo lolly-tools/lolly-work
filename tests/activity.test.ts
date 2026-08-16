@@ -1,5 +1,5 @@
 /**
- * Activity feed — the merged audit + attributed-telemetry timeline that backs
+ * Activity feed - the merged audit + attributed-telemetry timeline that backs
  * the Overview's activity section (plans/09/11). Pure fold; tested directly.
  */
 import { test } from 'node:test';
