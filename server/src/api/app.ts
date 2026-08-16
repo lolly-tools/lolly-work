@@ -228,6 +228,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       provider: config.idp.issuer ? 'oidc' : config.dev.enabled ? 'dev' : null,
       providerName: config.idp.displayName || null,
       loginPath: config.idp.issuer ? '/api/auth/login' : config.dev.enabled ? '/api/auth/dev' : null,
+      // The public sandbox (dev.enabled) serves the deployment docs to anyone —
+      // the console reads this so an anonymous visitor can land straight on the
+      // Docs view (see console/app.js publicMode) instead of the sign-in gate.
+      // Mirrors the server-side `docsReadable` gate below, so the two never drift.
+      publicDocs: config.dev.enabled,
     });
   });
 
@@ -2914,14 +2919,20 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   router.add('GET', '/admin', (_req, res) => void serveConsole(res, 'index.html'));
   router.add('GET', '/admin/*', (_req, res, ctx) => void serveConsole(res, ctx.params['*'] || 'index.html'));
 
-  // ── deployment docs (docs/), served to signed-in members and rendered by the
-  // console's Docs view. Whoever operates a deploy should not need the repo to
-  // read its documentation. docs/docs.json is the manifest: it decides which
-  // files exist as pages, so an unlisted markdown file is not reachable here —
-  // that IS the allowlist (slugs are additionally shape-checked, and the join is
-  // never caller-controlled). Members, not admins: every page is operator prose,
-  // and the ONE polled document a shell reads is already member-visible. Guests
-  // get nothing (memberOf is member-only).
+  // ── deployment docs (docs/), rendered by the console's Docs view. Whoever
+  // operates a deploy should not need the repo to read its documentation.
+  // docs/docs.json is the manifest: it decides which files exist as pages, so an
+  // unlisted markdown file is not reachable here — that IS the allowlist (slugs
+  // are additionally shape-checked, and the join is never caller-controlled).
+  //
+  // Readership: on a governed (IdP-backed) deploy these are member-only — every
+  // page is operator prose, and the ONE polled document a shell reads is already
+  // member-visible. On the PUBLIC sandbox (dev.enabled — lolly.work) the same
+  // pages are open to anyone: they are the identical public-repo content in every
+  // deploy, and the landing page (lib/demo-landing.ts) links straight to them so
+  // a visitor can read the docs without a passwordless sign-in dance. `docsReadable`
+  // is that one rule, shared by the five docs read routes below; it mirrors the
+  // `publicDocs` flag advertised at GET /api/auth/config so the console agrees.
   const docsDir = dataDir('docs/');
   const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
   interface DocsManifest {
@@ -2956,8 +2967,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const m = await loadDocsManifest();
     return new Set((m?.sections ?? []).flatMap((s) => (s.docs ?? []).map((d) => d.slug as string)));
   };
+  // True when this request may read the docs: always on the public sandbox
+  // (dev.enabled), otherwise only for a signed-in member. See the section header.
+  const docsReadable = async (req: IncomingMessage): Promise<boolean> =>
+    config.dev.enabled || Boolean(await memberOf(req));
   router.add('GET', '/api/v1/docs', async (req, res) => {
-    if (!(await memberOf(req))) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+    if (!(await docsReadable(req))) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const m = await loadDocsManifest();
     if (!m) return sendError(res, 404, 'NO_DOCS', 'this deployment ships no docs directory');
     // `appUrl` (split deploy) or a served shellDir means a Lolly deployment is
@@ -2972,7 +2987,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }, { 'cache-control': 'no-cache' });
   });
   router.add('GET', '/api/v1/docs/:slug', async (req, res, ctx) => {
-    if (!(await memberOf(req))) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+    if (!(await docsReadable(req))) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const slug = ctx.params.slug ?? '';
     if (!SLUG_RE.test(slug) || !(await docSlugs()).has(slug)) return sendError(res, 404, 'NOT_FOUND', 'no such doc');
     try {
@@ -3003,7 +3018,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // credential (tests/docs-shots.test.ts), and a trademark is not ours to sign.
   const imgDir = join(docsDir, 'img');
   router.add('GET', '/api/v1/docs/img/:file', async (req, res, ctx) => {
-    if (!(await memberOf(req))) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+    if (!(await docsReadable(req))) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const file = ctx.params.file ?? '';
     if (!SHOT_RE.test(file)) return sendError(res, 404, 'NOT_FOUND', 'no such image');
     try {
@@ -3018,7 +3033,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
   });
   router.add('GET', '/api/v1/docs/shots/:file', async (req, res, ctx) => {
-    if (!(await memberOf(req))) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+    if (!(await docsReadable(req))) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const file = ctx.params.file ?? '';
     if (!SHOT_RE.test(file)) return sendError(res, 404, 'NOT_FOUND', 'no such shot');
     try {
@@ -3033,7 +3048,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
   });
   router.add('GET', '/api/v1/docs/shots/:file/cred', async (req, res, ctx) => {
-    if (!(await memberOf(req))) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+    if (!(await docsReadable(req))) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const file = ctx.params.file ?? '';
     if (!SHOT_RE.test(file)) return sendError(res, 404, 'NOT_FOUND', 'no such shot');
     const cred = await readShotCred(join(shotsDir, file), file);

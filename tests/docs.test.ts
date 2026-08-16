@@ -1,8 +1,10 @@
 /**
  * The deployment docs surface: GET /api/v1/docs (manifest index) and
- * GET /api/v1/docs/:slug (markdown). Members only, manifest-allowlisted, with
- * the open-source /info/ link present exactly when a Lolly deployment is
- * reachable from this deploy (appUrl set, or a served shellDir).
+ * GET /api/v1/docs/:slug (markdown). Manifest-allowlisted, with the open-source
+ * /info/ link present exactly when a Lolly deployment is reachable from this
+ * deploy (appUrl set, or a served shellDir). Readable without a session on the
+ * public sandbox (dev.enabled — the landing links straight here); member-only on
+ * a governed deploy.
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -59,8 +61,12 @@ before(async () => {
 
 after(() => { for (const s of servers) s.close(); });
 
-test('the index lists sections of slug-shaped docs and needs a session', async () => {
-  assert.equal((await fetch(`${base}/api/v1/docs`)).status, 401);
+test('the index lists sections of slug-shaped docs, public on the sandbox', async () => {
+  // dev.enabled ⇒ the docs are readable without a session, and the deploy
+  // advertises that so the console can open the Docs view for anonymous visitors.
+  assert.equal((await fetch(`${base}/api/v1/docs`)).status, 200);
+  const cfg = await (await fetch(`${base}/api/auth/config`)).json() as { publicDocs?: boolean };
+  assert.equal(cfg.publicDocs, true);
   const res = await fetch(`${base}/api/v1/docs`, { headers: { cookie } });
   assert.equal(res.status, 200);
   const body = await res.json() as DocsIndex;
@@ -88,12 +94,37 @@ test('every listed doc actually resolves to markdown', async () => {
   }
 });
 
-test('an unlisted or traversing slug is a 404, and reading needs a session', async () => {
-  assert.equal((await fetch(`${base}/api/v1/docs/overview`)).status, 401);
+test('a listed slug is public on the sandbox; unlisted or traversing slugs 404', async () => {
+  assert.equal((await fetch(`${base}/api/v1/docs/overview`)).status, 200);
   for (const slug of ['no-such-doc', 'README', '..%2Finstance', '%2Fetc%2Fpasswd']) {
     const res = await fetch(`${base}/api/v1/docs/${slug}`, { headers: { cookie } });
     assert.equal(res.status, 404, `${slug} is not served`);
   }
+});
+
+test('a governed (non-dev) deploy keeps the docs member-only', async () => {
+  const pack = await mkdtemp(join(tmpdir(), 'lw-pack-'));
+  await mkdir(join(pack, 'catalog', 'tools'), { recursive: true });
+  await writeFile(join(pack, 'catalog', 'tools', 'index.json'), JSON.stringify({ version: 1, tools: [] }));
+  const config = parseConfig(JSON.stringify({
+    instance: { name: 'Gov Hub', baseUrl: 'http://localhost', pack },
+    idp: { issuer: 'https://idp.invalid', clientId: '', groupsClaim: 'groups', claimMap: { email: 'email' } },
+    policy: { defaultAccessMode: 'gated' },
+    rateLimit: { enabled: false },
+    dev: { enabled: false, users: [] },
+  }));
+  const app = buildApp({ config, store: createMemoryStore(), secrets: { session: 's3', link: 'l3' } });
+  const server = createServer((req, res) => void app(req, res));
+  servers.push(server);
+  await new Promise<void>((r) => server.listen(0, () => r()));
+  const addr = server.address();
+  const gov = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
+  // No dev sandbox ⇒ both docs routes require a session, and publicDocs is false
+  // so the console never opens the Docs view to an anonymous visitor.
+  assert.equal((await fetch(`${gov}/api/v1/docs`)).status, 401);
+  assert.equal((await fetch(`${gov}/api/v1/docs/overview`)).status, 401);
+  const cfg = await (await fetch(`${gov}/api/auth/config`)).json() as { publicDocs?: boolean };
+  assert.equal(cfg.publicDocs, false);
 });
 
 test('the open-source /info/ link tracks whether a Lolly deployment is reachable', async () => {
