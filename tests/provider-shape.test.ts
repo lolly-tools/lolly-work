@@ -1,8 +1,11 @@
 /**
- * `--shape`, the live-verify multiplier (plans/33 §3), over the four DAM drivers
- * that carry live-verify debt. Injected fetch, no network and no tenant: what a
- * driver reports back is key names and value TYPES, the three-way diff against
- * the constants it reads, and the layout an operator reads on tenant day.
+ * `--shape`, the live-verify multiplier (plans/33 §3), over every driver that
+ * carries live-verify debt: the four DAMs, and `webdav`, whose debt is the same
+ * shape for a different reason - its property names and URL templates come from
+ * RFC 4918 and Nextcloud's documentation rather than from a tenant. Injected
+ * fetch, no network and no server: what a driver reports back is key names and
+ * value TYPES, the three-way diff against the constants it reads, and the layout
+ * an operator reads on tenant day.
  *
  * The pinned invariant, and the reason this file exists: NO FIXTURE VALUE MAY
  * APPEAR IN ANY REPORT OUTPUT. Every fixture below sets its string values to a
@@ -17,6 +20,7 @@ import { createCantoProvider } from '../server/src/catalog/providers/canto.ts';
 import { createImageRelayProvider } from '../server/src/catalog/providers/imagerelay.ts';
 import { createIntelligenceBankProvider } from '../server/src/catalog/providers/intelligencebank.ts';
 import { createAcquiaDamProvider } from '../server/src/catalog/providers/acquia-dam.ts';
+import { createWebdavProvider } from '../server/src/catalog/providers/webdav.ts';
 import { describeValue, noShapeLine, renderShapeReport, type ProviderShapeReport } from '../server/src/catalog/providers/shape.ts';
 
 const CRED = (rt: string) => JSON.stringify({ clientId: 'cid', clientSecret: 'sec', refreshToken: rt });
@@ -91,6 +95,48 @@ const intelligencebank = () => createIntelligenceBankProvider('sh-ib', { platfor
   fakeFetch([{ match: (u, m) => m === 'POST' && u.includes('/authenticate'), body: IB_LOGIN }, { match: (u) => u.includes('/v3/resources'), body: IB_PAGE }]));
 const acquia = () => createAcquiaDamProvider('sh-wd', {}, V('tok'),
   fakeFetch([{ match: (u) => u.includes('/assets?'), body: WIDEN_PAGE }]));
+
+/**
+ * A WebDAV server, as a 207 multistatus. It has two leak surfaces the JSON
+ * drivers above do not, and both are prefixed here so a regression is caught:
+ * the HREFS, because a file path is content and the report deliberately carries
+ * none, and the Nextcloud LOGIN NAME, which is half the Basic credential and so
+ * is printed as the `<username>` template rather than the value. The custom
+ * property's KEY name is left unprefixed on purpose: an upstream-authored key
+ * is the one thing that legitimately travels, which the caveat test asserts.
+ */
+const DAV_LISTING = `<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns" xmlns:x="http://example.org/ns">
+  <d:response>
+    <d:href>/remote.php/dav/files/${V('login')}/</d:href>
+    <d:propstat>
+      <d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+  <d:response>
+    <d:href>/remote.php/dav/files/${V('login')}/${V('unreleased-campaign')}.png</d:href>
+    <d:propstat>
+      <d:prop>
+        <d:resourcetype/>
+        <d:getcontentlength>${V('2048')}</d:getcontentlength>
+        <d:getlastmodified>${V('Mon, 01 Jun 2026 09:30:00 GMT')}</d:getlastmodified>
+        <d:getcontenttype>${V('image/png')}</d:getcontenttype>
+        <oc:tags><oc:tag>${V('embargoed')}</oc:tag></oc:tags>
+        <x:expiry-date>${V('2027-01-01')}</x:expiry-date>
+      </d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+</d:multistatus>`;
+
+/** WebDAV answers XML, not JSON, so it gets its own one-route fetch. */
+const davFetch = (xml: string): typeof fetch => (async () =>
+  new Response(xml, { status: 207, headers: { 'content-type': 'application/xml; charset=utf-8' } })) as typeof fetch;
+
+const webdav = () => createWebdavProvider('sh-dav',
+  { baseUrl: 'https://cloud.example', flavor: 'nextcloud', minGapMs: 0 },
+  `${V('login')}:${V('app-password')}`, davFetch(DAV_LISTING));
 
 // --- the layout (§3) -------------------------------------------------------
 
@@ -234,7 +280,7 @@ test('canto makes no detail call, so it implements only the list arm', async () 
 // --- the safety invariant (§3) --------------------------------------------
 
 test('REDACTION: no fixture value reaches the report, in any driver, rendered or as JSON', async () => {
-  for (const make of [canto, imagerelay, intelligencebank, acquia]) {
+  for (const make of [canto, imagerelay, intelligencebank, acquia, webdav]) {
     const r = await make().sampleShape?.() as ProviderShapeReport;
     const rendered = text(r);
     const json = JSON.stringify(r);
@@ -243,6 +289,22 @@ test('REDACTION: no fixture value reaches the report, in any driver, rendered or
     // The report is not empty of substance: it named keys and types.
     assert.ok(r.record.length > 3 && r.mapped.length > 3, `${r.kind} reported nothing useful`);
   }
+});
+
+test('webdav: the two things only this kind could leak - the hrefs and the login name - stay out', async () => {
+  const r = await webdav().sampleShape?.() as ProviderShapeReport;
+  const out = text(r);
+  // The endpoint is the one line built from configuration rather than from the
+  // response, and the login name it would otherwise carry is half the Basic
+  // credential, so it prints the template the report's own caveat promises.
+  assert.equal(r.endpoint, 'PROPFIND /remote.php/dav/files/<username>/ (Depth: 1)');
+  assert.doesNotMatch(out, /login/, 'the Nextcloud login name is never printed, not even as a key');
+  assert.doesNotMatch(out, /remote\.php\/dav\/files\/LEAK/, 'no href reaches the report: a file path is content');
+  // It still says something useful: the property names, and the diff.
+  assert.deepEqual(r.record.map((f) => f.key).sort(),
+    ['expiry-date', 'getcontentlength', 'getcontenttype', 'getlastmodified', 'resourcetype', 'tags']);
+  assert.deepEqual(r.absent, [], 'every property this driver asks for came back');
+  assert.deepEqual(r.unmapped, ['expiry-date'], 'the custom property is reported as one this driver ignores');
 });
 
 test('the caveat is honest: upstream-authored KEY names do travel, and the report says so', async () => {

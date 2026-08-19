@@ -46,13 +46,14 @@ how to verify. All of them are served in the console too.
 | Doc | What it covers |
 |---|---|
 | [provider guides](providers/README.md) | The shared skeleton, OAuth onboarding, which drivers are fixture-verified only |
+| [webdav](providers/webdav.md) | Any RFC 4918 server, Nextcloud first: the open, self-hostable source |
 | [s3](providers/s3.md) · [git](providers/git.md) | A private bucket (AWS / MinIO / Ceph), and a manifest under version control |
 | [brandfolder](providers/brandfolder.md) · [optimizely-cmp](providers/optimizely-cmp.md) | Brandfolder read-only; Optimizely CMP in, and optionally exports back out |
 | [imagerelay](providers/imagerelay.md) · [canto](providers/canto.md) | The two halves of the Canto/Image Relay fork |
 | [acquia-dam](providers/acquia-dam.md) · [intelligencebank](providers/intelligencebank.md) | The governance-rich enterprise DAMs |
 | [penpot](providers/penpot.md) | An open, self-hostable design-system source |
 | [dropbox](providers/dropbox.md) · [gdrive](providers/gdrive.md) · [o365](providers/o365.md) | The three kinds with a registered PKCE consent flow |
-| live-verify runbooks | [canto](providers/canto-live-verify.md) · [imagerelay](providers/imagerelay-live-verify.md) · [intelligencebank](providers/intelligencebank-live-verify.md) · [acquia-dam](providers/acquia-dam-live-verify.md) |
+| live-verify runbooks | [webdav](providers/webdav-live-verify.md) · [canto](providers/canto-live-verify.md) · [imagerelay](providers/imagerelay-live-verify.md) · [intelligencebank](providers/intelligencebank-live-verify.md) · [acquia-dam](providers/acquia-dam-live-verify.md) |
 
 Connecting your first one end to end, with commands:
 [install §9](install.md#9-connect-a-source).

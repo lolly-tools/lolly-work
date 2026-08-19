@@ -122,7 +122,8 @@ lifecycle rows, grants and render-cache invalidation work on them unchanged. Lol
 references plus its own governance overlays - deleting a provider never touches remote
 content.
 
-Kinds: `brandfolder`, `s3` (hand-rolled SigV4), `git` (raw-HTTP manifest), `dropbox`,
+Kinds, the open and self-hostable ones first: `webdav` (RFC 4918 - Nextcloud, ownCloud, Apache
+`mod_dav`), `brandfolder`, `s3` (hand-rolled SigV4), `git` (raw-HTTP manifest), `dropbox`,
 `gdrive`, `o365`/Graph, `penpot` (design-system source), `optimizely-cmp` (CMP DAM v3, OAuth2),
 `imagerelay` (v2, OAuth2, off-boarding source), `canto` (REST v1, OAuth2, off-boarding source),
 `acquia-dam` (Widen v2, bearer, native availability), `intelligencebank` (v3 Graph API, login
@@ -274,7 +275,8 @@ project *includes an integration for* those services and is not affiliated with 
 ## Related
 
 - **Per-provider setup (admin/owner):** [the provider guides](providers/README.md) - one per
-  platform ([Brandfolder](providers/brandfolder.md), [S3/MinIO](providers/s3.md),
+  platform ([WebDAV/Nextcloud](providers/webdav.md), [Brandfolder](providers/brandfolder.md),
+  [S3/MinIO](providers/s3.md),
   [Optimizely CMP](providers/optimizely-cmp.md), [Image Relay](providers/imagerelay.md),
   [Canto](providers/canto.md), [Acquia/Widen](providers/acquia-dam.md),
   [IntelligenceBank](providers/intelligencebank.md), [Penpot](providers/penpot.md),

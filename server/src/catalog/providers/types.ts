@@ -17,7 +17,7 @@ import type { ProviderShapeReport } from './shape.ts';
 
 export type { ProviderShapeReport };
 
-export const PROVIDER_KINDS = ['brandfolder', 's3', 'git', 'dropbox', 'gdrive', 'o365', 'optimizely-cmp', 'imagerelay', 'canto', 'acquia-dam', 'intelligencebank', 'penpot', 'mock'] as const;
+export const PROVIDER_KINDS = ['webdav', 'brandfolder', 's3', 'git', 'dropbox', 'gdrive', 'o365', 'optimizely-cmp', 'imagerelay', 'canto', 'acquia-dam', 'intelligencebank', 'penpot', 'mock'] as const;
 export type ProviderKind = (typeof PROVIDER_KINDS)[number];
 
 /** Prefix every federated asset id carries; also the blob route mount. */

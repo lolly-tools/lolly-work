@@ -8,8 +8,12 @@ The lolly side of providers (exposure, lifecycle, the exit, publish-out) lives i
 [catalog.md](../catalog.md); who may do what is in [permissions.md](../permissions.md);
 leaving one of these platforms is [offboarding.md](../offboarding.md).
 
+Open and sovereign sources lead the table: a server you run yourself is the first thing to reach
+for, and the vendor platforms below it are mostly sources you are federating in order to leave.
+
 | Kind | Auth | Guide |
 |---|---|---|
+| `webdav` | `user:app password` (Basic) or bearer; Nextcloud, ownCloud, mod_dav | [webdav.md](webdav.md) |
 | `brandfolder` | bearer API key | [brandfolder.md](brandfolder.md) |
 | `s3` | `key:secret` (SigV4) | [s3.md](s3.md) |
 | `optimizely-cmp` | OAuth2 (federate-in **and** publish-out) | [optimizely-cmp.md](optimizely-cmp.md) |
@@ -27,23 +31,26 @@ leaving one of these platforms is [offboarding.md](../offboarding.md).
 
 ## The live-verify runbooks
 
-Four DAM drivers ship **fixture-verified**: their endpoint paths and field names come from
-public vendor documentation and have not been confirmed against a real tenant, because this
-repo signs no vendor EULA to obtain one. Each carries a `LIVE-VERIFY` checklist in its source
-header and a runbook beside its guide that discharges it in one ordered pass -
-`lw providers preview --shape` for the tenant's record structure, an assumption table mapping
-each guess to the constant that holds it, and a blob fetch to prove the bytes are the original
-rather than a rendition:
+Five drivers ship **fixture-verified**: their endpoint paths and field names come from public
+documentation and have not been confirmed against a real server, because this repo signs no
+vendor EULA to obtain a tenant and runs no reference installation. Each carries a `LIVE-VERIFY`
+checklist in its source header and a runbook beside its guide that discharges it in one ordered
+pass - `lw providers preview --shape` for the record structure the server returns, an assumption
+table mapping each guess to the constant that holds it, and a blob fetch to prove the bytes are
+the original rather than a rendition:
 
 | Kind | Runbook |
 |---|---|
+| `webdav` | [webdav-live-verify.md](webdav-live-verify.md) |
 | `canto` | [canto-live-verify.md](canto-live-verify.md) |
 | `imagerelay` | [imagerelay-live-verify.md](imagerelay-live-verify.md) |
 | `intelligencebank` | [intelligencebank-live-verify.md](intelligencebank-live-verify.md) |
 | `acquia-dam` | [acquia-dam-live-verify.md](acquia-dam-live-verify.md) |
 
-They are written for the platform team running the pass on a customer's tenant, so they name
-file paths and constants. A runbook is the checklist for that day, not a record of one.
+The four DAM runbooks are written for the platform team running the pass on a customer's tenant;
+the `webdav` one is written for whoever administers the server, since with this kind that is
+usually the same organization. All of them name file paths and constants. A runbook is the
+checklist for that day, not a record of one.
 
 Universal rules across every kind: credentials are **write-only** (sealed at rest, only a
 fingerprint is ever returned), providers are **read-only** federation (deleting one never

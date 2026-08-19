@@ -102,6 +102,12 @@
           "summary": "The shared skeleton every guide follows, the OAuth onboarding, and which drivers are fixture-verified only."
         },
         {
+          "slug": "provider-webdav",
+          "path": "providers/webdav.md",
+          "title": "WebDAV / Nextcloud",
+          "summary": "The open, self-hostable source: any RFC 4918 server federated read-only, with Nextcloud as the documented flavor."
+        },
+        {
           "slug": "provider-s3",
           "path": "providers/s3.md",
           "title": "S3 / S3-compatible",
@@ -172,6 +178,12 @@
           "path": "providers/o365.md",
           "title": "Microsoft 365 / SharePoint",
           "summary": "A SharePoint library or OneDrive federated read-only through Microsoft Graph."
+        },
+        {
+          "slug": "provider-webdav-live-verify",
+          "path": "providers/webdav-live-verify.md",
+          "title": "WebDAV live-verify runbook",
+          "summary": "The server-day checklist for the WebDAV driver's unconfirmed URL templates and property names."
         },
         {
           "slug": "provider-canto-live-verify",
