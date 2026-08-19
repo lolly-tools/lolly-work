@@ -83,9 +83,13 @@ guess turns out wrong: [canto](providers/canto-live-verify.md),
 | `intelligencebank` | v3 Graph API only. Login handshake, single sealed credential | Native window (`publish_date` → available from, `expiry_date` or `review_date` → available until); workflow state → approved via `options.approvedStates` (absent leaves approval unfiltered); folder and category → sections | Yes. The resource `download_url` re-fetched per request, host-pinned to the `intelligencebank.com` family (a custom-domain tenant needs its host added) | **Exit target.** Governance-rich, so an exit keeps most of what the DAM knew. Live confirmation of the login response and field names open |
 | `optimizely-cmp` | CMP DAM API v3, OAuth2 (BYOT); the only kind with a publish-out arm, opt-in per provider (`options.publish`) | `expires_at` → available until (CMP models expiry, no release date); `is_public` and not `is_archived` → approved; folder and labels → sections | The signed `download_url` streams per request, so the machinery would run | **Not an exit target.** The CMS owns these assets: read-only federate-in plus publish-out of lolly-generated exports. Do not run `cutover` against it |
 
-The non-DAM kinds (`s3`, `git`, `dropbox`, `gdrive`, `o365`, `penpot`) are storage and design
-sources, not brand libraries held under someone else's contract. They have no off-boarding
-story and are absent here deliberately.
+The non-DAM kinds (`webdav`, `s3`, `git`, `dropbox`, `gdrive`, `o365`, `penpot`) are storage and
+design sources, not brand libraries held under someone else's contract. They have no
+off-boarding story and are absent from the table deliberately. `webdav` is worth naming twice:
+a Nextcloud or an Apache `mod_dav` mount is a server the organization runs itself, so there is
+no vendor to leave, and it is far more often **where an exit lands** than where one starts.
+Materialize works against it like any other source, and its driver is fixture-verified with its
+own server-day pass in [providers/webdav-live-verify.md](providers/webdav-live-verify.md).
 
 ## Running an exit
 

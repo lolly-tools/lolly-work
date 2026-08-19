@@ -19,6 +19,7 @@ import { createCantoProvider, type CantoOptions } from './canto.ts';
 import { createAcquiaDamProvider, type AcquiaDamOptions } from './acquia-dam.ts';
 import { createIntelligenceBankProvider, type IntelligenceBankOptions } from './intelligencebank.ts';
 import { createPenpotProvider, type PenpotOptions } from './penpot.ts';
+import { createWebdavProvider, type WebdavOptions } from './webdav.ts';
 
 export interface ProviderDeps {
   fetchImpl?: typeof fetch;
@@ -26,6 +27,11 @@ export interface ProviderDeps {
 
 export function createProvider(rec: ProviderRecord, secret: string | undefined, deps: ProviderDeps = {}): CatalogProvider {
   switch (rec.kind) {
+    case 'webdav':
+      // Same availability arm as the DAMs below, for the opposite reason: plain
+      // WebDAV models no window at all, so one only exists when the server
+      // exposes a custom property and the mapping names it (plans/27 §2).
+      return createWebdavProvider(rec.id, rec.options as unknown as WebdavOptions, secret, deps.fetchImpl, rec.mapping?.availabilityFields);
     case 'mock':
       return createMockProvider(rec.id, rec.options as MockProviderOptions, secret);
     case 'brandfolder':

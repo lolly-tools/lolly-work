@@ -34,9 +34,13 @@ const OAUTH_KINDS = ['dropbox', 'gdrive', 'o365', 'optimizely-cmp', 'imagerelay'
 // The DAM kinds carry a second documentation axis (plans/32 §6): besides the
 // connector guide every kind gets, each of these needs an off-boarding story -
 // which driver to exit through, what governance survives the move, and whether
-// leaving is on offer at all. The storage/design sources (s3, git, dropbox,
-// gdrive, o365, penpot) deliberately have no second axis: nothing federates out
-// of them that the org does not already hold, so there is no exit to document.
+// leaving is on offer at all. The storage/design sources (s3, git, webdav,
+// dropbox, gdrive, o365, penpot) deliberately have no second axis: nothing
+// federates out of them that the org does not already hold, so there is no exit
+// to document. `webdav` sits with those: it is a protocol against a server the
+// org runs itself (a Nextcloud, an Apache mod_dav mount), so there is no vendor
+// contract to leave - it is far more often where an exit LANDS than where one
+// starts.
 const DAM_KINDS = ['brandfolder', 'imagerelay', 'canto', 'acquia-dam', 'intelligencebank', 'optimizely-cmp'] as const;
 
 const REQUIRED_HEADINGS = ['## What you need', '## Credential shape', '## instance.json', '## Verify', '## Notes / limits'];
@@ -45,6 +49,7 @@ const REQUIRED_HEADINGS = ['## What you need', '## Credential shape', '## instan
 // option the driver doesn't have (or vice versa) fails here.
 const OPTION_ALLOWLIST: Record<string, string[]> = {
   brandfolder: ['brandfolderId', 'baseUrl'],
+  webdav: ['baseUrl', 'flavor', 'username', 'root', 'recursive', 'minGapMs'],
   s3: ['bucket', 'region', 'endpoint', 'prefix'],
   git: ['rawBase', 'manifestPath', 'authHeader'],
   dropbox: ['path'],
@@ -61,6 +66,7 @@ const OPTION_ALLOWLIST: Record<string, string[]> = {
 // Minimal construct-valid options per kind (git parses rawBase at construction).
 const MIN_OPTIONS: Record<string, Record<string, unknown>> = {
   brandfolder: { brandfolderId: 'x' }, s3: { bucket: 'b' }, git: { rawBase: 'https://raw.example/o/r/main' },
+  webdav: { baseUrl: 'https://cloud.example' },
   dropbox: {}, gdrive: { folderId: 'f' }, o365: { driveId: 'd' }, 'optimizely-cmp': { publish: true },
   imagerelay: {}, canto: { tenant: 'acme' }, 'acquia-dam': {}, intelligencebank: {}, penpot: { baseUrl: 'https://design.example' },
 };
