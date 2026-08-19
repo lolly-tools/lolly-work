@@ -84,6 +84,64 @@ never trust `X-Forwarded-For`, and getting this wrong either rate-limits the who
 one client or lets a header spoof the limiter. Authenticated console and API paths are not
 throttled.
 
+## Pre-store scan hook for submissions
+
+**There is no scan hook by default, and no bundled antivirus. State that plainly rather than
+assuming otherwise:** an unconfigured deploy stores whatever a member with `catalog.submit`
+sends, exactly as it stores whatever a federated source hands back. This project ships the
+hook, never a scanner - no engine, no signature database, no updates. Scanning is yours, and
+so is keeping it current.
+
+Wire one in `instance.json` under `submit.scanHook`. It is **instance config, not org
+policy**: it never appears in the policy-as-code document, in `org-config`, or in anything a
+shell can read.
+
+```json
+{
+  "submit": {
+    "scanHook": {
+      "kind": "exec",
+      "target": "/usr/bin/clamdscan",
+      "args": ["--no-summary", "-"],
+      "timeoutMs": 10000,
+      "onError": "reject"
+    }
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `kind` | `exec` (bytes on stdin, exit code is the verdict) or `http` (bytes POSTed, status is the verdict) |
+| `target` | the executable path, or the gateway URL |
+| `args` | extra argv for `exec`; the bytes always ride stdin |
+| `timeoutMs` | wall-clock budget for one scan, default `10000` |
+| `onError` | what an unanswered scan means: `reject` (default) or `allow` |
+
+The hook runs **before anything is stored**, which is the whole reason it exists: a veto
+means the bytes were never written to the BlobStore and no record was created. `exec` reads
+exit `0` as clean and anything else as a veto, with whatever the command printed carried
+back as the reason (the `clamdscan -` pattern). `http` reads any 2xx as clean and any other
+status as a veto, with the response body as the reason; the request carries
+`x-lolly-submit-sha256` so a gateway can cache its own verdicts.
+
+`onError` covers the third case, which is neither clean nor infected: the scanner did not
+answer at all - a timeout, a refused connection, a missing binary. The default is `reject`,
+so an unreachable scanner refuses submissions rather than quietly turning the gate off. Set
+`allow` only if you would rather take the bytes than block contributions during an outage.
+
+Both transports ship because both deployment shapes are real here: `exec` keeps a single-node
+install to one config block and no new service, while `http` is the only path that works
+where there is no local process to spawn or where the scanner is an ICAP gateway your security
+team already runs.
+
+The verdict is audited either way, under `catalog.submit`: a refusal carries the code and the
+scanner's reason, and there is nothing else for it to hang off, since no asset was created. An
+accepted submission records what the hook did as `scan` - `clean` when it answered and passed
+the bytes, `unavailable` when it could not answer and `allow` let the bytes through anyway,
+and `absent` when no hook is configured at all. An outage you chose to ride out never reads as
+a clean scan, so "which files went in unscanned last Tuesday" stays an answerable question.
+
 ## Monitoring
 
 ```

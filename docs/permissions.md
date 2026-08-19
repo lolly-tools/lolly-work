@@ -83,6 +83,33 @@ Deny wins, so the contractor can work in the tool and cannot take the file out. 
 selectors let the same pair cover a whole class of tools (`tool:tag/external-facing`)
 rather than enumerating ids.
 
+### Putting assets in: `catalog.submit`
+
+`catalog.submit` is the action behind [catalog submit](catalog.md#submitting-an-asset), the one
+route by which a member's bytes enter the catalog. The `author` role carries it, and like any
+action it is grantable per group or per user, so "the design team may contribute, everyone else
+reads" is one row:
+
+```bash
+lw grants add group:design catalog.submit '*' --effect allow
+```
+
+It is deliberately the whole of the submitter's authority. **There is no separate action for
+deciding a submission**: when `policy.submit.chain` names a chain, the decision is an ordinary
+approval, gated by `approval.act` and by the chain's own step eligibility, and the review queue
+is only an ergonomic door onto it. Whoever may act on the step may also correct a pending
+submission's declared metadata before publishing it - name, type, tags and description, never
+the bytes and never the exposure the submitter chose.
+
+Three audit actions record the round trip: `catalog.submit` (on the way in, whether it was
+stored or refused), and `catalog.approve-submission` / `catalog.return-submission` on the way
+out. A metadata correction is audited as `catalog.edit-submission` with its before and after.
+Those are audit vocabulary, not grantable actions - nothing evaluates them.
+
+Also `catalog.read`, which the `viewer` role already carries, gates the queue itself. The rows
+are the real gate: a caller sees their own submissions plus the ones open on a step their
+groups may act on, and nothing else.
+
 ### Explicit allow vs role default
 
 Some decisions must distinguish "an explicit grant allows this" from "the caller's role

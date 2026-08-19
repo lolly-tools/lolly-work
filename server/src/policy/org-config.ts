@@ -31,6 +31,10 @@ const CLIENT_ACTIONS = [
   'link.create', 'link.create-guest',
   'session.create', 'session.share',
   'collab.join', 'collab.edit',
+  // plans/31 §3: the shell's "Submit to this instance" affordance on a user's
+  // own uploads is dormant by ABSENCE - a public build sees no org-config at
+  // all, so the bit is simply never there and the action never renders.
+  'catalog.submit',
 ] as const;
 
 export interface ProfileFieldPolicy {

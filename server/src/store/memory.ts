@@ -20,7 +20,7 @@ import type { ProviderRecord } from '../catalog/providers/types.ts';
 import {
   SESSION_REVISION_LIMIT, effectiveGroups,
   type CollabSnapshot, type FleetRow, type LocalGroupRecord, type ProjectRecord, type SessionRecord,
-  type SessionRevision, type Store, type UserRecord,
+  type SessionRevision, type Store, type SubmitQuotaRow, type UserRecord,
 } from './types.ts';
 
 // Grants have no exposed id - they're identified by their full tuple.
@@ -46,6 +46,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const credentials = new Map<string, CredentialRow>();
   const instanceAssets = new Map<string, InstanceAssetRecord>();
   const aliases = new Map<string, string>();
+  const submitQuota = new Map<string, SubmitQuotaRow>();
   const providers = new Map<string, ProviderRecord>();
   const projects = new Map<string, ProjectRecord>();
   const sessions = new Map<string, SessionRecord>();
@@ -359,6 +360,24 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     },
     async listAliases() {
       return [...aliases.entries()].map(([fromId, toId]) => ({ fromId, toId }));
+    },
+
+    async addSubmitQuota(scope, bytes, count) {
+      const prev = submitQuota.get(scope);
+      const row = {
+        scope,
+        bytes: (prev?.bytes ?? 0) + bytes,
+        count: (prev?.count ?? 0) + count,
+        updatedAt: new Date().toISOString(),
+      };
+      submitQuota.set(scope, row);
+      return row;
+    },
+    async getSubmitQuota(scope) {
+      return submitQuota.get(scope) ?? null;
+    },
+    async listSubmitQuota() {
+      return [...submitQuota.values()];
     },
 
     async listProviders() {

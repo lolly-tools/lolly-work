@@ -43,6 +43,8 @@ const OPTIONS = {
     section: { type: 'string' },
     'remote-id': { type: 'string' },
     name: { type: 'string' },
+    tags: { type: 'string' },
+    type: { type: 'string' },
     check: { type: 'boolean' },
     out: { type: 'string' },
     in: { type: 'string' },
@@ -225,10 +227,19 @@ switch (cmd) {
       break;
     }
     const { links } = await call(`/api/v1/links${values.all ? '?all=1' : ''}`) as {
-      links: Array<{ id: string; kind: string; status: string; expiresAt: string; target: { toolId?: string; sessionId?: string } }>;
+      links: Array<{ id: string; kind: string; status: string; expiresAt: string; target: { toolId?: string; sessionId?: string; assetId?: string } }>;
     };
     out(links);
-    if (!values.json) for (const l of links) console.log(`${l.status.padEnd(8)} ${l.kind.padEnd(11)} ${(l.target.toolId ?? l.target.sessionId ?? '—').padEnd(24)} exp ${l.expiresAt}  ${l.id}`);
+    // A link's target may be a catalog asset rather than a tool render
+    // (plans/31 section 2, 1b). Naming it keeps the list auditable: "what does
+    // this bearer URL reach" is the whole question this command answers, and an
+    // asset link that printed as a dash could not be answered at all.
+    if (!values.json) {
+      for (const l of links) {
+        const target = l.target.toolId ?? l.target.sessionId ?? l.target.assetId ?? '—';
+        console.log(`${l.status.padEnd(8)} ${l.kind.padEnd(11)} ${target.padEnd(24)} exp ${l.expiresAt}  ${l.id}`);
+      }
+    }
     break;
   }
 
@@ -560,6 +571,92 @@ switch (cmd) {
     break;
   }
 
+  // Catalog submit (plans/31 §3): put a local file INTO the instance catalog,
+  // and review what is waiting. The bytes ride the raw body exactly as
+  // `providers publish` sends an export out; the declared metadata rides query
+  // params. With no submit chain configured the asset is live on return.
+  case 'catalog': {
+    switch (sub) {
+      case 'submit': {
+        const file = positionals[2] ?? values.in ?? fail('usage: lw catalog submit <file> [--name "…"] [--tags a,b] [--groups a,b]');
+        const bytes = readFileSync(file);
+        const leaf = file.split('/').pop() ?? file;
+        const q = new URLSearchParams({ name: values.name ?? leaf.replace(/\.[^.]+$/, '') });
+        if (values.groups) q.set('groups', values.groups);
+        if (values.tags) q.set('tags', values.tags);
+        if (values.type) q.set('type', values.type);
+        if (values.label) q.set('description', values.label);
+        const cookie = savedCookie();
+        const res = await fetch(`${base}/api/v1/catalog/submit?${q}`, {
+          method: 'POST',
+          headers: { ...(cookie ? { cookie } : {}), 'content-type': 'application/octet-stream', 'x-lolly-client': 'lw-cli engine/0' },
+          body: new Uint8Array(bytes),
+        });
+        const body = await res.json() as {
+          assetId?: string; state?: string; duplicate?: boolean; scan?: string; credential?: string; error?: { message: string };
+        };
+        if (!res.ok) fail(`submit failed (${res.status}): ${body.error?.message ?? 'unknown'}`);
+        out(body);
+        if (!values.json) {
+          console.log(body.duplicate
+            ? `already in the catalog as ${body.assetId} (identical bytes; nothing stored)`
+            : `submitted ${leaf} → ${body.assetId} [${body.state}] scan ${body.scan} · credential ${body.credential}`);
+          if (body.state === 'submitted') console.log('waiting on the submit chain - approve it with `lw catalog approve <id>`');
+        }
+        break;
+      }
+      case 'queue': {
+        // Pending only by default, because that is the list someone can act on;
+        // --all adds what has already been published or returned.
+        const { submissions } = await call(`/api/v1/catalog/submissions${values.all ? '' : '?state=submitted'}`) as {
+          submissions: Array<{ id: string; name: string; byName: string; at: string; size: number; relation: string; state: string }>;
+        };
+        out(submissions);
+        if (!values.json) {
+          for (const s of submissions) {
+            console.log(`${s.state.padEnd(9)} ${s.relation.padEnd(6)} ${s.id.padEnd(20)} ${String(s.size).padStart(9)} B  ${s.name}  (${s.byName}, ${s.at})`);
+          }
+          if (!submissions.length) console.log(values.all ? '(no submissions)' : '(nothing waiting on review)');
+        }
+        break;
+      }
+      // Correct a pending submission's declared metadata before it is published
+      // (plans/31 §3). Descriptive fields only: the bytes and the exposure the
+      // submitter chose are not editable, and every change is audited.
+      case 'edit': {
+        const id = positionals[2] ?? fail('usage: lw catalog edit <assetId> [--name "…"] [--tags a,b] [--type icon] [--label "description"]');
+        const patch: Record<string, unknown> = {
+          ...(values.name ? { name: values.name } : {}),
+          ...(values.type ? { type: values.type } : {}),
+          ...(values.tags !== undefined ? { tags: values.tags.split(',').map((t) => t.trim()).filter(Boolean) } : {}),
+          ...(values.label !== undefined ? { description: values.label } : {}),
+        };
+        if (!Object.keys(patch).length) fail('nothing to change: pass --name, --tags, --type or --label');
+        const r = await call(`/api/v1/catalog/submissions/${id.replace(/^inst\//, '')}`, { method: 'PATCH', body: patch }) as {
+          submission: { id: string; name: string; type: string; tags: string[] };
+        };
+        out(r.submission);
+        if (!values.json) console.log(`${r.submission.id} is now "${r.submission.name}" [${r.submission.type}] ${r.submission.tags.join(', ')}`);
+        break;
+      }
+      case 'approve':
+      case 'return': {
+        const id = positionals[2] ?? fail(`usage: lw catalog ${sub} <assetId> [--body "comment"]`);
+        const short = id.replace(/^inst\//, '');
+        const r = await call(`/api/v1/catalog/submissions/${short}/act`, {
+          method: 'POST',
+          body: { action: sub === 'approve' ? 'approve' : 'reject', ...(values.body ? { comment: values.body } : {}) },
+        }) as { assetId: string; state: string };
+        out(r);
+        if (!values.json) console.log(`${r.assetId} is now ${r.state}`);
+        break;
+      }
+      default:
+        fail('usage: lw catalog submit <file> | queue [--all] | edit <id> | approve <id> | return <id> --body "why"');
+    }
+    break;
+  }
+
   // Grants (plans/03): lw grants list · lw grants add|rm <principal> <action> [<resource>] --effect deny|allow
   case 'grants': {
     if (sub === 'add' || sub === 'rm') {
@@ -757,6 +854,9 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   providers preview --kind <kind> --shape [--remote-id <id>]   instead of the sample: the tenant's record structure, key names and types only
   providers credential <id> (prompts) · auth <id> (OAuth consent) · enable|disable|sync|health|rm <id>
   providers drift <id>       materialized copies whose upstream updatedAt has moved on
+  catalog submit <file> [--name "…"] [--tags a,b] [--groups a,b]   put a file into this instance's catalog
+  catalog queue [--all] · catalog edit <assetId> [--name --tags --type --label]   the review queue, and a fix before publishing
+  catalog approve|return <assetId> [--body "comment"]   decide one submission
   grants [list] · grants add|rm <principal> <action> [<resource>] --effect deny|allow
   preview --groups a,b   what a member in those groups would receive
   msg send --title "…" [--body --kind --severity --groups a,b --shells tauri --max-engine 1.52.99]

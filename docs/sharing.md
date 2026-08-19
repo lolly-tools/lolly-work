@@ -50,13 +50,42 @@ GET  /api/v1/links[?all=1]
 | `download` | same, with `Content-Disposition: attachment` | `link.create` |
 | `guest-edit` | admits a guest session scoped to the tool/session | `link.create-guest` |
 
-`target` needs a `toolId` or a `sessionId`. The signature covers the link id, kind, expiry
+`target` needs a `toolId`, a `sessionId`, or an `assetId`. The signature covers the link id, kind, expiry
 and a digest of the resolved target - so neither the target nor the expiry can be edited in
 the URL bar, and the minted parameters are what gets rendered (the caller's query on `/l/:id`
 is ignored, apart from the password gate). Optional passwords are scrypt-hashed.
 
 Failure modes are distinct and honest: `403 BAD_SIGNATURE`, `410 LINK_EXPIRED`,
 `410 LINK_REVOKED`, `401 PASSWORD_REQUIRED`.
+
+### Linking a catalog asset
+
+`share`, `embed` and `download` also take a catalog asset as their target - an instance
+asset (`inst/…`), a federated one (`ext/<provider>/<remoteId>`) or a pack asset id - with an
+optional `format` naming which of the asset's formats to serve (the first, otherwise):
+
+```
+POST /api/v1/links   { "kind": "download", "target": { "assetId": "inst/hero", "format": "png" } }
+```
+
+Two checks, at two different times, and both matter:
+
+- **Exposure, at mint.** The minter must be able to see the asset - instance-asset groups,
+  provider group visibility and the provider's exposure slice, exactly as the catalog routes
+  apply them. You cannot mint a link to bytes you could not fetch yourself (`403`).
+- **Lifecycle, on every visit.** The link resolver asks the same gate the feed and the blob
+  routes ask, so an expired, not-yet-published or revoked asset stops serving on a link that
+  is still live (`410 ASSET_EXPIRED`). A hold is not a refusal: it only ever preserves
+  availability, so a held asset keeps serving.
+
+`download` sets `Content-Disposition: attachment`; `share` and `embed` serve inline. Either
+way the bytes carry the same private, no-CDN cache headers as `/catalog/*` plus a
+content-security policy that sandboxes them and allows no script - a member-submitted SVG is
+markup, and a link is the one asset surface an unauthenticated bearer reaches, so nothing
+served here can run as the person who opens it. An old
+federated id keeps resolving after [an exit](offboarding.md) through its alias. TTL, passwords,
+revocation, audit and `link.visit` telemetry are unchanged - an asset link is an ordinary link
+that happens to point at an asset, and the console's Links view lists it as one.
 
 **Expiry is enforced from the signature alone**, so a link outlives a lost database row only
 until its own expiry. **Revocation is immediate** and kills live guest sessions with it. A

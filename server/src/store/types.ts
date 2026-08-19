@@ -158,6 +158,19 @@ export interface CollabSnapshot {
   updatedAt: string;
 }
 
+/**
+ * One per-group catalog-submit quota counter (plans/31 section 3). `scope` is a
+ * group name, or '*' for a submitter who belongs to no group at all. A
+ * submission is charged to every group its submitter is in, so extra
+ * memberships can only ever tighten a member's budget.
+ */
+export interface SubmitQuotaRow {
+  scope: string;
+  bytes: number;
+  count: number;
+  updatedAt: string;
+}
+
 export interface Store {
   // users
   upsertUserBySub(user: UserUpsert): Promise<UserRecord>;
@@ -295,6 +308,24 @@ export interface Store {
   putAlias(fromId: string, toId: string): Promise<void>;
   getAlias(fromId: string): Promise<string | null>;
   listAliases(): Promise<Array<{ fromId: string; toId: string }>>;
+
+  // catalog submit quota (plans/31 section 3, migrations/0017). Counters are
+  // cumulative for everything that was KEPT - a returned submission still spent
+  // the bytes it was stored with - and the only negative delta is a charge
+  // being released because the submission it was made for was refused.
+  /**
+   * Add to a scope's counters and return the row AFTER the add, creating it when
+   * absent. ONE statement on purpose: two concurrent submissions must not both
+   * read the same pre-value and lose one of the two charges, which is exactly
+   * how a quota gets walked past. The returned row is also what ENFORCES the
+   * cap: submit charges first and reads the post-add value, so a separate
+   * earlier read can never be the thing a concurrent submission slips past.
+   * Negative deltas are legal for exactly one caller - releasing a charge whose
+   * submission was then refused.
+   */
+  addSubmitQuota(scope: string, bytes: number, count: number): Promise<SubmitQuotaRow>;
+  getSubmitQuota(scope: string): Promise<SubmitQuotaRow | null>;
+  listSubmitQuota(): Promise<SubmitQuotaRow[]>;
 
   // catalog providers (plans/17). Config, credential, and state move through
   // separate methods so the write-only credential path and the sync path can

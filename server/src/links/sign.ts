@@ -14,8 +14,20 @@ export type LinkKind = 'share' | 'embed' | 'download' | 'guest-edit';
 export interface LinkTarget {
   toolId?: string;
   sessionId?: string;
+  /**
+   * A catalog asset a `share` / `embed` / `download` link points at instead of
+   * a tool render (plans/31 §2 1b): `inst/<id>`, `ext/<provider>/<remoteId>`,
+   * or a pack asset id. The id is opaque to the signature, which covers the
+   * whole target digest, so an asset link needs no schema of its own - but it
+   * is NOT a bearer capability over the catalog: exposure is checked when the
+   * link is minted (the minter must see the asset) and lifecycle is re-checked
+   * on every resolve, so an expired or revoked asset stops serving on a link
+   * that is still live.
+   */
+  assetId?: string;
   /** Render params baked at mint time - URL-bar tampering impossible. */
   params?: Record<string, unknown>;
+  /** Render format for a tool target; the format ref for an asset target. */
   format?: string;
 }
 

@@ -25,7 +25,7 @@ import type { ProviderFragment, ProviderKind, ProviderRecord } from '../catalog/
 import {
   SESSION_REVISION_LIMIT, effectiveGroups,
   type CollabSnapshot, type FleetRow, type ListUsersPageOpts, type LocalGroupRecord, type ProjectRecord,
-  type SessionRecord, type SessionRevision, type Store, type UserRecord,
+  type SessionRecord, type SessionRevision, type Store, type SubmitQuotaRow, type UserRecord,
 } from './types.ts';
 
 // Minimal structural type for pg.Pool - keeps `pg` out of the type graph
@@ -112,6 +112,16 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     ...(r.container ? { container: r.container as string } : {}),
     sniffedAt: new Date(r.sniffed_at as string).toISOString(),
     ...(r.source_updated_at ? { sourceUpdatedAt: new Date(r.source_updated_at as string).toISOString() } : {}),
+  });
+
+  // `bytes` is a bigint column, which pg hands back as a string to keep large
+  // values exact; Number() is right here because a byte counter never leaves
+  // the safe-integer range without an estate no BlobStore driver could hold.
+  const submitQuotaFromRow = (r: Record<string, unknown>): SubmitQuotaRow => ({
+    scope: r.scope as string,
+    bytes: Number(r.bytes),
+    count: Number(r.count),
+    updatedAt: new Date(r.updated_at as string).toISOString(),
   });
 
   const injectableFromRow = (r: Record<string, unknown>): InjectableRecord => ({
@@ -653,6 +663,28 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     async listAliases() {
       const { rows } = await pool.query('select from_id, to_id from catalog_aliases');
       return rows.map((r) => ({ fromId: r.from_id as string, toId: r.to_id as string }));
+    },
+
+    // Submit quota (migrations/0017). The add is a single upsert-increment so
+    // concurrent submissions serialize on the row rather than on a read the
+    // application did earlier.
+    async addSubmitQuota(scope, bytes, count) {
+      const { rows } = await pool.query(
+        `insert into catalog_submit_quota (scope, bytes, count, updated_at) values ($1, $2, $3, now())
+         on conflict (scope) do update set bytes = catalog_submit_quota.bytes + excluded.bytes,
+           count = catalog_submit_quota.count + excluded.count, updated_at = now()
+         returning scope, bytes, count, updated_at`,
+        [scope, bytes, count],
+      );
+      return submitQuotaFromRow(rows[0] as Record<string, unknown>);
+    },
+    async getSubmitQuota(scope) {
+      const { rows } = await pool.query('select scope, bytes, count, updated_at from catalog_submit_quota where scope = $1', [scope]);
+      return rows[0] ? submitQuotaFromRow(rows[0]) : null;
+    },
+    async listSubmitQuota() {
+      const { rows } = await pool.query('select scope, bytes, count, updated_at from catalog_submit_quota');
+      return rows.map(submitQuotaFromRow);
     },
 
     // catalog providers (migrations/0005_catalog_providers.sql). putProvider

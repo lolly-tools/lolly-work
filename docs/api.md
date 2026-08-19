@@ -42,6 +42,23 @@ means any signed-in member; *public* means no session needed.
 | `PUT /api/v1/catalog/lifecycle/*` | `catalog.expire` | set/merge a row; `revoke: true` revokes |
 | `GET /api/brand`, `/api/brand/logo/:variant`, `/api/brand/font/:file` | public | brand chrome only (tokens, wordmark, woff2) so the sign-in screen is on-brand |
 
+## Catalog submit
+
+| Route | Action | Notes |
+|---|---|---|
+| `POST /api/v1/catalog/submit?name=…` | `catalog.submit` | raw bytes in the body; `201` for a new asset, `200` with `duplicate: true` for identical bytes |
+| `GET /api/v1/catalog/submissions` | `catalog.read` | the caller's own submissions plus the ones open on a step their groups may act on |
+| `GET /api/v1/catalog/submissions/:id/bytes` | `catalog.read` | preview before publication - submitter and reviewer only |
+| `PATCH /api/v1/catalog/submissions/:id` | `catalog.read` | correct a pending submission's `name`/`type`/`tags`/`description`; `409` once it has settled |
+| `POST /api/v1/catalog/submissions/:id/act` | member (the approvals engine gates it) | `approve` publishes, `reject` returns with the comment |
+
+Refusals: `413 PAYLOAD_TOO_LARGE` over `policy.submit.maxBytes`, `409 QUOTA_EXCEEDED`,
+`422 SCAN_REJECTED` when the pre-store hook vetoes, `502 SCAN_UNAVAILABLE` when it cannot
+answer and `onError` is `reject`, `503 SUBMIT_CHAIN_MISSING` when `policy.submit.chain` names
+a chain the instance does not have. The preview route answers `410 ASSET_EXPIRED` once the
+published asset's lifecycle stops it, like every other surface that hands out bytes. See
+[catalog](catalog.md#submitting-an-asset).
+
 ## Catalog providers
 
 | Route | Action |

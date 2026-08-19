@@ -32,6 +32,37 @@ export interface InstanceAssetOrigin {
   materializedAt: string;
 }
 
+/**
+ * Where a SUBMITTED instance asset stands (plans/31 section 3). Absent on a
+ * materialized (exit) asset, which never went through the submit pipeline.
+ *  - `submitted` - stored, gated by an approval chain, invisible in the feed.
+ *  - `live` - servable; this is the immediate state when no chain is configured.
+ *  - `returned` - rejected with a comment; the bytes stay, the feed does not.
+ */
+export type SubmissionState = 'submitted' | 'live' | 'returned';
+
+export interface AssetSubmission {
+  state: SubmissionState;
+  /** 'user:<id>' who submitted it. */
+  by: string;
+  /** ISO instant the bytes were stored. */
+  at: string;
+  /** sha256 hex of the submitted bytes - the duplicate short-circuit key. */
+  checksum: string;
+  size: number;
+  /** Sniffed container type and pixel dimensions, when the bytes declare them. */
+  contentType?: string;
+  width?: number;
+  height?: number;
+  /** The approval opened for this submission, when policy names a submit chain. */
+  approvalId?: string;
+  /** 'user:<id>' who approved or returned it, and when. */
+  decidedBy?: string;
+  decidedAt?: string;
+  /** The reviewer's comment, carried onto a return so the submitter reads why. */
+  comment?: string;
+}
+
 export interface InstanceAssetRecord {
   /** 'inst/<opaque>' - single-segment id so the blob path is inst/<id>/<format>. */
   id: string;
@@ -56,7 +87,18 @@ export interface InstanceAssetRecord {
    * its inst entry into the feed and carries its own migrated lifecycle row.
    */
   exited?: boolean;
+  /** Set only on an asset that arrived through the submit pipeline (plans/31
+   *  section 3). Its absence means "not a submission", never "a pending one". */
+  submission?: AssetSubmission;
   createdAt: string;
+}
+
+/** Whether an instance asset may be served at all: a submission is servable
+ *  only once it is live, and everything that never went through submit
+ *  (materialized copies, exits) always is. The feed and the blob routes ask
+ *  this, so a pending or returned submission can never leak through either. */
+export function submissionServable(rec: InstanceAssetRecord): boolean {
+  return !rec.submission || rec.submission.state === 'live';
 }
 
 /** Whether this caller sees an instance asset at all (mirrors provider group
@@ -74,8 +116,9 @@ export function instanceAssetVisible(rec: InstanceAssetRecord, callerGroups: str
  *  appears twice (plans/27 §5). A merely *pinned* asset (materialized but not
  *  yet exited) does NOT touch the feed: its identity - and the lifecycle row
  *  that gates it - stays ext/*, so the federated entry is served as-is (bytes
- *  come from the local pin via the ext blob route). Lifecycle + credentials fold
- *  over the combined set. */
+ *  come from the local pin via the ext blob route). A submission that is not
+ *  yet live composes into nothing at all (plans/31 section 3). Lifecycle +
+ *  credentials fold over the combined set. */
 export function composeInstanceAssets(index: AssetIndex, records: InstanceAssetRecord[], callerGroups: string[]): AssetIndex {
   const exited = records.filter((r) => r.exited);
   if (!exited.length && records.every((r) => r.origin)) return index; // only pins/no exits → feed unchanged
@@ -83,7 +126,9 @@ export function composeInstanceAssets(index: AssetIndex, records: InstanceAssetR
   const kept = (index.assets ?? []).filter((e) => !shadowed.has(e.id));
   // Exited assets substitute their entry; instance assets with no origin (a
   // plans/26 catalog submit) are ordinary feed members and always compose in.
-  const composable = records.filter((r) => (r.exited || !r.origin) && instanceAssetVisible(r, callerGroups)).map((r) => r.entry);
+  const composable = records
+    .filter((r) => (r.exited || !r.origin) && submissionServable(r) && instanceAssetVisible(r, callerGroups))
+    .map((r) => r.entry);
   if (!shadowed.size && !composable.length) return index;
   return { ...index, assets: [...kept, ...composable] };
 }
