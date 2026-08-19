@@ -180,7 +180,7 @@ test('eligibility: only principals who could join appear — never the directory
   const owen = await invitees(cookies['alice'] as string, `?sessionId=${sessionId}&q=Owen`);
   assert.deepEqual(owen.invitees.map((r) => r.name), ['Owen Ops']);
 
-  // An observer may look up who else could watch - read access is the gate here.
+  // An observer may look up who else could watch - read access is what gates this.
   const asObserver = await invitees(cookies['ollie'] as string, `?sessionId=${sessionId}&q=bob`);
   assert.deepEqual(asObserver.invitees.map((r) => r.name), ['Bob Eng']);
 });

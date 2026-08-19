@@ -152,6 +152,14 @@ export const BANNED_PHRASES: { what: string; re: RegExp }[] = [
   { what: '"where it gets interesting"', re: /\bwhere it gets interesting\b/i },
   { what: '"brings me/us back to"', re: /\bbrings? (?:me|us) back to\b/i },
   { what: '"underscores/underscoring the" (figurative)', re: /\bunderscor(?:es|ing) (?:the|how|that|a|an)\b/i },
+  // "The (x) is (y) here." - the copula-flourish tic (owner-banned 2026-08-16):
+  // a clause that redefines its subject and then hedges with a trailing "here".
+  // Deterministic discriminators, calibrated in the lolly parent repo: a
+  // determiner after "is" excludes legitimate participles ("is computed here");
+  // punctuation right after "here" excludes locatives that flow on ("is a no-op
+  // here (nothing buffered"); the lookbehinds require a subject word (so real
+  // questions like "Is the extension here?" pass) and exclude there/here pairs.
+  { what: '"the (x) is (y) here." copula flourish', re: /(?<=[\w'’] )(?<!there )is (?:not )?(?:the|a|an) [\w'’-]+(?: [\w'’-]+){0,2} here[.,!?:;]/i },
 ];
 
 /**
