@@ -5,8 +5,11 @@
  * The sealed credential for an OAuth kind is one JSON blob:
  *   {"clientId": "…", "clientSecret": "…", "refreshToken": "…"}
  * - the operator's OWN registered app (BYOT, §13: no shared client ids ship in
- * this repo), captured once via `lw providers auth <id>` and stored through
- * the same write-only credential endpoint as any API key.
+ * this repo), captured once and stored through the same write-only credential
+ * endpoint as any API key. `lw providers auth <id>` runs a loopback consent for
+ * the kinds with a registered flow; every other OAuth kind pastes the blob in
+ * with `lw providers credential <id>`, because inventing an authorize endpoint
+ * we have not confirmed against a real tenant is not something this repo does.
  *
  * Access tokens never touch the store: they live in a process-level cache
  * keyed by provider id + a hash of the refresh token, because provider
@@ -26,7 +29,7 @@ export function parseOAuthCredential(secret: string | undefined): OAuthCredentia
   if (!secret) throw new Error('oauth provider has no credential');
   let parsed: unknown;
   try { parsed = JSON.parse(secret); } catch {
-    throw new Error('oauth credential must be JSON: {"clientId","clientSecret?","refreshToken"} — use `lw providers auth`');
+    throw new Error('oauth credential must be JSON: {"clientId","clientSecret?","refreshToken"} - capture it with `lw providers credential <id>`, or `lw providers auth <id>` for the kinds with a registered consent flow');
   }
   const c = parsed as Partial<OAuthCredential>;
   if (typeof c.clientId !== 'string' || !c.clientId || typeof c.refreshToken !== 'string' || !c.refreshToken) {
@@ -67,7 +70,7 @@ export async function getAccessToken(opts: {
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: body.toString(),
   });
-  if (!res.ok) throw new Error(`oauth token refresh failed (${res.status}) — re-run \`lw providers auth\` if the grant was revoked`);
+  if (!res.ok) throw new Error(`oauth token refresh failed (${res.status}) - if the grant was revoked, re-capture the credential with \`lw providers credential <id>\` (or \`lw providers auth <id>\` for the kinds with a registered consent flow)`);
   const data = (await res.json()) as { access_token?: string; expires_in?: number };
   if (!data.access_token) throw new Error('oauth token response carried no access_token');
   tokenCache.set(cacheKey, {

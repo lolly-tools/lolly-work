@@ -91,33 +91,34 @@ operational, not functional:
 
 ### Evaluation in one command (no Postgres, no IdP, no pack mount)
 
-```bash
-helm install lolly deploy/helm -f deploy/helm/values-eval.yaml
-```
+**The command lives in [install §7a](install.md#7a-evaluate-on-a-cluster)**, with the
+verification ladder and the persona addresses beside it. This page describes what that
+install *is*; it deliberately keeps no second copy of the command, because the two copies
+drifted the moment they both existed.
 
-gives a complete governed demo: in-memory store (a restart is a factory reset - a
-feature for demos), passwordless dev personas through the real sign-in gate, the demo
-pack served from inside the image, renders working, console at `/admin`. Every choice in
-`values-eval.yaml` is commented with what it trades and how to graduate to production.
-Until the images are public, add `imagePullSecrets` (GHCR is private today) - or
-side-load: `docker save` + `k3d image import` / `ctr images import` on the node.
+What you get: in-memory store (a restart is a factory reset - a feature for demos),
+passwordless dev personas through the real sign-in gate (including an `owner`, so the
+owner-only actions are reachable), the demo pack served from inside the image, renders
+working, console at `/admin`. Every choice in `values-eval.yaml` is commented with what it
+trades, including `config.instance.baseUrl`, which must match the URL a browser actually
+uses or the session cookie's `Secure` flag will be wrong.
+
+Graduate the same install in place by adding a database with `helm upgrade` (the single pod
+then applies DDL at boot; going multi-replica means also setting `migrate.enabled=true` so
+the hook Job owns the schema) - again, [install §7a](install.md#7a-evaluate-on-a-cluster).
+
+GHCR is private today, so add `imagePullSecrets`, build and push your own image (see the
+production notes below), or side-load: `docker save` + `k3d image import` /
+`ctr images import` on the node.
 
 ## Kubernetes (Helm) - the production path
 
 `deploy/helm/values.yaml` is the one file you edit; it is heavily commented and is the
 authority if it disagrees with this page.
 
-```bash
-# recommended: bring your own secret
-kubectl create secret generic lolly-work-secrets \
-  --from-literal=DATABASE_URL=postgres://… \
-  --from-literal=LW_SESSION_SECRET=… \
-  --from-literal=LW_LINK_SECRET=…
-
-helm install lolly-work deploy/helm \
-  --set existingSecret=lolly-work-secrets \
-  --set-file config=instance.json
-```
+**The install commands live in [install §7b](install.md#7b-production)** - secret creation,
+`helm install` with the image override, and the verification. One copy, there. This page is
+the values reference and the list of things to know before you run it.
 
 What the chart gives you: 2 replicas by default, non-root/read-only-rootfs/dropped-caps
 pod defaults, `/healthz` liveness+readiness, an Ingress template, an optional
@@ -126,8 +127,12 @@ Chromium render-worker tier, and a migrate Job that owns the schema.
 
 Things to know before you install:
 
-- **There is no published image yet.** Build from `deploy/compose/Dockerfile` and push to a
-  registry your cluster can pull, then set `image.repository`/`image.tag`.
+- **The published images are private.** Multi-arch images publish to
+  `ghcr.io/lolly-tools/lolly-work-server` and `...-render-worker` on every `v*` release, but
+  the packages are private today, so a stock install gets `ImagePullBackOff`. Add an
+  `imagePullSecrets` entry for GHCR, or build your own and point the chart at it (the better
+  air-gap posture): `docker build -f deploy/compose/Dockerfile -t <registry>/lolly-work-server:0.2.0 .`,
+  push, then `--set image.repository=<registry>/lolly-work-server --set image.tag=0.2.0`.
 - **`instance.baseUrl` must match the URL the deploy answers on.** It drives OIDC redirect
   URIs and the `Secure` cookie flag.
 - **Secrets are never auto-generated.** Every replica must sign and verify with the *same*
@@ -137,8 +142,9 @@ Things to know before you install:
   DDL. The pre-install/pre-upgrade Job applies migrations and must succeed before new pods
   roll; the Deployment refuses to start on a pending schema, so a skipped migration fails
   loudly instead of serving a half-migrated database.
-- **`pack.type` defaults to `none`** - the console and API work, but catalog serving is
-  degraded until you mount a pack and point `config.instance.pack` at it. Simplest
+- **`pack.type` defaults to `none`** - `config.instance.pack` points at `/app/packs/demo`,
+  the small demo pack baked into the server image, so an unmounted install still serves a
+  catalog. Mount your own pack and point `config.instance.pack` at it. Simplest
   delivery: bake the pack into an image (`COPY packs/ /pack/` on a busybox base), set
   `pack.image` to its ref and `pack.type: emptyDir` - an initContainer copies it into the
   pack volume before the server starts. The same `pack.image` also works with
@@ -178,15 +184,21 @@ self-hosted), no Redis/queue/cache tier, no external SaaS in the serving path.
 
 ## Single VM (Compose)
 
-```bash
-cd deploy/compose
-printf 'LW_SESSION_SECRET=%s\nLW_LINK_SECRET=%s\n' "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" > .env
-docker compose up --build     # → :8787, Postgres 17 alongside
-```
+**The commands live in [install §5](install.md#5-container-compose)**, including the `.env`
+recipe (three variables, not two - `PG_PASSWORD` has a default nobody chose) and the TLS /
+`baseUrl` / `trustedProxyHops` work this shape still needs. One copy, there.
 
-`instance.json` and `packs/` are bind-mounted read-only; `LW_AUTO_MIGRATE` stays at its
+Two constraints that shape those commands. The compose file uses the fail-if-unset form for
+both `LW_` secrets, so `up` aborts without `.env`; and Docker creates a *directory* at a
+missing bind source, so a missing repo-root `instance.json` makes the server read a
+directory as its config. The mounted `instance.json` is the one you authored at
+[install §2](install.md#2-your-first-real-instance), not a fresh copy of the example.
+
+`instance.json` and `packs/` are bind-mounted read-only from the repo root;
+`LW_AUTO_MIGRATE` stays at its
 default (`true`), so this single-node path applies pending migrations at boot with no
-separate step.
+separate step. The server waits on the database's `pg_isready` healthcheck before it boots,
+because its migration step connects once with no retry.
 
 The shell is not mounted by default (console + API only). A commented-out mount in
 `docker-compose.yml` shows how: bind a built `shells/web/dist` and point

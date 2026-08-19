@@ -1,7 +1,7 @@
 # Google Drive (kind: `gdrive`)
 
 Federate a Google Drive folder as a **read-only** catalog source. OAuth2 (BYOT) - see the
-[shared OAuth onboarding](README.md#oauth-kinds-dropbox-gdrive-o365) for the app-registration
+[shared OAuth onboarding](README.md#kinds-with-a-registered-consent-flow-dropbox-gdrive-o365) for the app-registration
 and consent flow.
 
 ## What you need from Google
@@ -51,4 +51,4 @@ lw providers health acme-gdrive
   host-pinned. Supports server-side search.
 - Supports the **exit** (materialize → cutover). Does **not** accept published exports.
 
-See also: [OAuth onboarding](README.md#oauth-kinds-dropbox-gdrive-o365) · [catalog](../catalog.md) · [permissions](../permissions.md).
+See also: [OAuth onboarding](README.md#kinds-with-a-registered-consent-flow-dropbox-gdrive-o365) · [catalog](../catalog.md) · [permissions](../permissions.md).

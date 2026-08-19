@@ -2365,11 +2365,26 @@ async function viewProviders(main) {
       testBtn.disabled = true;
       try {
         const r = await api('/api/v1/catalog/providers/preview', { method: 'POST', body: { ...bodyOf(), secret: secretInput.value || undefined } });
-        testResult.replaceChildren(r.health.ok
+        // A tenant that answers the health check but fails the listing is a
+        // FAILURE here, not "connection ok with an empty sample": sampleError
+        // carries the driver's own live-verify message, and dropping it is the
+        // one thing this dry run exists to prevent. skipped/notes ride along
+        // for the same reason - a source that maps 0 of 100 must say so.
+        const fail = !r.health.ok || r.sampleError;
+        const detail = r.health.ok ? r.sampleError : (r.health.detail ?? '');
+        const notes = [
+          ...(r.excludedByExposure ? [`${r.excludedByExposure} asset(s) excluded by the exposure slice`] : []),
+          ...(r.skipped ? [`${r.skipped} record(s) skipped - the driver could not map them`] : []),
+          ...(r.notes ?? []),
+        ];
+        testResult.replaceChildren(fail
           ? el('div', {},
+              el('p', {}, el('span', { class: 'status revoked' }, 'failed'), ` ${detail ?? ''}`),
+              ...notes.map((n) => el('p', { class: 'muted' }, n)))
+          : el('div', {},
               el('p', {}, el('span', { class: 'status live' }, 'connection ok'), ` — sample of ${r.sample.length} mapped asset${r.sample.length === 1 ? '' : 's'}:`),
-              el('ul', {}, ...r.sample.map((s) => el('li', {}, `${s.name} `, el('span', { class: 'muted' }, `(${s.type}${s.tags?.length ? ` · ${s.tags.join(', ')}` : ''})`)))))
-          : el('p', {}, el('span', { class: 'status revoked' }, 'failed'), ` ${r.health.detail ?? ''}`));
+              el('ul', {}, ...r.sample.map((s) => el('li', {}, `${s.name} `, el('span', { class: 'muted' }, `(${s.type}${s.tags?.length ? ` · ${s.tags.join(', ')}` : ''})`)))),
+              ...notes.map((n) => el('p', { class: 'muted' }, n))));
       } catch (e) { addErr.textContent = e.message; }
       testBtn.disabled = false;
     } }, 'Test connection');
@@ -3768,14 +3783,34 @@ async function apiText(path) {
   return res.text();
 }
 
+// Cross-doc link resolution. A manifest entry may live in a subdirectory of
+// docs/ (the per-provider guides are in docs/providers/), so a link is resolved
+// as a FILE PATH against the directory of the page being rendered, then looked
+// up in the manifest. That is the same answer a file browser gives, so one link
+// text ('../catalog.md', 'canto.md') works both here and in the repo.
+let docPathToSlug = new Map();
+let docCurrentDir = '';
+
+function resolveDocPath(dir, href) {
+  const out = [];
+  for (const p of (dir ? dir.split('/') : []).concat(href.split('/'))) {
+    if (!p || p === '.') continue;
+    if (p === '..') { out.pop(); continue; }
+    out.push(p);
+  }
+  return out.join('/');
+}
+
 // A markdown link → a DOM node. Cross-doc links ('catalog.md', 'audit.md#anchor')
-// become console routes; http(s) opens in a new tab; anything else stays text
-// rather than becoming a dead link.
+// become console routes; http(s) opens in a new tab; anything else, including a
+// .md this deployment does not publish, stays text rather than becoming a dead
+// link.
 function mdLink(label, href) {
   const kids = mdInline(label);
   if (/^https?:\/\//i.test(href)) return el('a', { href, target: '_blank', rel: 'noopener' }, ...kids);
-  const rel = /^([a-z0-9][a-z0-9-]*)\.md(#.*)?$/.exec(href);
-  if (rel) return el('a', { href: `#/docs?doc=${rel[1]}` }, ...kids);
+  const rel = /^([^#\s]+\.md)(#.*)?$/.exec(href);
+  const slug = rel ? docPathToSlug.get(resolveDocPath(docCurrentDir, rel[1])) : undefined;
+  if (slug) return el('a', { href: `#/docs?doc=${slug}` }, ...kids);
   return el('span', {}, ...kids);
 }
 
@@ -3986,6 +4021,9 @@ async function viewDocs(main, params) {
   }
   const want = params?.get?.('doc');
   const current = flat.find((d) => d.slug === want) ?? flat[0];
+  // Rebuilt per view so a manifest change lands without a reload.
+  docPathToSlug = new Map(flat.map((d) => [d.path ?? `${d.slug}.md`, d.slug]));
+  docCurrentDir = (current.path ?? '').includes('/') ? current.path.replace(/\/[^/]*$/, '') : '';
 
   // Left rail: the manifest's own grouping, plus the open-source docs when a
   // Lolly deployment is reachable from here (served shell or instance.appUrl).

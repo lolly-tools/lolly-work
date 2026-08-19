@@ -1,7 +1,7 @@
 # Dropbox (kind: `dropbox`)
 
 Federate a Dropbox folder as a **read-only** catalog source. OAuth2 (BYOT) - see the
-[shared OAuth onboarding](README.md#oauth-kinds-dropbox-gdrive-o365) for the app-registration
+[shared OAuth onboarding](README.md#kinds-with-a-registered-consent-flow-dropbox-gdrive-o365) for the app-registration
 and consent flow common to all OAuth kinds.
 
 ## What you need from Dropbox
@@ -54,4 +54,4 @@ A token-refresh failure means the grant was revoked - re-run `lw providers auth`
   host-pinned; nothing persisted.
 - Supports the **exit** (materialize → cutover). Does **not** accept published exports.
 
-See also: [OAuth onboarding](README.md#oauth-kinds-dropbox-gdrive-o365) · [catalog](../catalog.md) · [permissions](../permissions.md).
+See also: [OAuth onboarding](README.md#kinds-with-a-registered-consent-flow-dropbox-gdrive-o365) · [catalog](../catalog.md) · [permissions](../permissions.md).

@@ -12,20 +12,26 @@ so lolly-made media is usable on the website and stays attributable downstream.
 - **An OAuth2 app** registered in your CMP instance (one app per instance), with a
   **refreshable** token. Grant it read access to the DAM; grant *upload/create* only if you
   intend to publish out.
-- BYOT: the app's **client id + client secret** are yours - nothing ships in this repo. The
-  refresh token is captured once through `lw providers auth`.
+- BYOT: the app's **client id + client secret** are yours - nothing ships in this repo - and so
+  is the refresh token your instance's OAuth grant issues against them.
 
 ## Credential shape
 
-The OAuth JSON blob, captured by the auth flow (not typed by hand):
+One sealed OAuth JSON blob:
 
 ```json
 { "clientId": "…", "clientSecret": "…", "refreshToken": "…" }
 ```
 
 ```bash
-lw providers auth acme-cmp     # prompts for client id/secret, runs the consent flow
+lw providers credential acme-cmp     # prompts for the blob; never argv, never shell history
 ```
+
+Capture the refresh token by running **CMP's own documented OAuth2 authorization-code flow**
+once by hand against the app you registered, then paste the three fields into
+`lw providers credential`. No consent flow is registered for this kind, so `lw providers auth`
+refuses it: see the
+[shared OAuth onboarding](README.md#kinds-whose-consent-flow-is-not-registered-canto-imagerelay-optimizely-cmp).
 
 ## instance.json / `lw providers add`
 
@@ -50,9 +56,14 @@ lw providers auth acme-cmp     # prompts for client id/secret, runs the consent 
 ## Verify
 
 ```bash
-lw providers preview --kind optimizely-cmp --options '{}'
+lw providers preview --kind optimizely-cmp --options '{}'   # dry run, nothing stored
+lw providers credential acme-cmp
 lw providers health acme-cmp
 ```
+
+`oauth token refresh failed (401)` means the client id/secret or the refresh token in the blob
+is wrong, or the grant was revoked - re-capture the credential. `optimizely-cmp api 401` means
+the token exchange worked but the instance rejected the access token.
 
 ## Publishing lolly exports out
 
@@ -71,7 +82,17 @@ provenance chain.
 
 - Download URLs are signed + short-lived (`expiringUrls`); fetches are host-pinned to
   CMP/Welcome hosts.
-- **Federate-in only for the exit** - Optimizely stays; do not run `cutover` against it.
 - The only kind that accepts published exports.
 
-See also: [catalog](../catalog.md) · [permissions](../permissions.md) · [c2pa](../c2pa.md).
+## Off-boarding
+
+**Not an exit target.** The CMS owns these assets, so the motion here is federate-in plus
+publish-out, not a drain. Do not run `cutover` against this provider: federated CMP assets
+keep their `ext/*` identity, and Optimizely stays the source of truth for them.
+
+The traffic runs the other way instead - lolly-generated exports publish **out** to CMP
+(above), reaching the website carrying their Content Credential.
+
+Every other DAM kind here is an exit target: [off-boarding](../offboarding.md).
+
+See also: [OAuth onboarding](README.md#kinds-whose-consent-flow-is-not-registered-canto-imagerelay-optimizely-cmp) · [catalog](../catalog.md) · [permissions](../permissions.md) · [c2pa](../c2pa.md).

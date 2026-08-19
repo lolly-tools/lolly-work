@@ -66,7 +66,7 @@ a quiet poll is a `304`.
 
 ## Where to go next
 
-- Getting it running: [quickstart](quickstart.md), then [deployment](deployment.md).
+- Getting it running: [install](install.md), then [deployment](deployment.md).
 - Turning the knobs: [configuration](configuration.md), [identity](identity.md).
 - Deciding who can do what: [permissions](permissions.md), [governance](governance.md).
 - Keeping it alive: [operations](operations.md), [audit](audit.md).

@@ -1,9 +1,9 @@
 # IntelligenceBank (kind: `intelligencebank`)
 
-Federate an IntelligenceBank DAM **read-only**, with the exit motion (federate → materialize
-→ cutover). Targets the current **v3 Graph API** only. IntelligenceBank is governance-rich - 
-native expiry/review dates and workflow states - so it brings availability and approval
-without custom-field mapping.
+Federate an IntelligenceBank DAM **read-only**. Targets the current **v3 Graph API** only.
+IntelligenceBank is governance-rich - native expiry/review dates and workflow states - so it
+brings availability and approval without custom-field mapping. It is also an exit target
+([Off-boarding](#off-boarding)).
 
 ## What you need from IntelligenceBank
 
@@ -37,8 +37,8 @@ lw providers credential acme-ib     # prompts; never argv, never shell history
 
 - `options.platformUrl` (required) - your tenant URL (the login endpoint). The v3 API base is
   discovered at login, not configured.
-- `options.approvedStates` - the workflow states that map to **approved** (§9 approval is a
-  workflow state, not a boolean); omit it and approval is unfiltered.
+- `options.approvedStates` - the workflow states that map to **approved**; omit it and every
+  asset federates as approved.
 - `options.folderId` scopes federation to one folder.
 - Native **expiry/review dates** import as an
   [availability window](../catalog.md#imported-availability-windows) - no
@@ -51,9 +51,12 @@ lw providers preview --kind intelligencebank --options '{"platformUrl":"https://
 lw providers health acme-ib
 ```
 
-`login <status>` errors mean the platform URL or API key is wrong. The exact v3 field/endpoint
-names are confirmed against your live tenant on first sync (the driver carries live-verify
-notes until then).
+`login <status>` errors mean the platform URL or API key is wrong.
+
+With a real tenant in hand, run the
+[IntelligenceBank live-verify runbook](intelligencebank-live-verify.md): the ordered pass that
+confirms the login response, every guessed field name and the download href, and which
+constant to edit when one is wrong.
 
 ## Notes / limits
 
@@ -63,7 +66,17 @@ notes until then).
 - The discovered per-tenant `apiV3url` and all downloads are host-pinned to the
   `intelligencebank.com` family (no open proxy); a custom-domain tenant needs that host added
   at ship time.
-- Supports the **exit** (materialize → cutover) - the off-boarding path.
 - Does **not** accept published exports.
+
+## Off-boarding
+
+**An exit target**, and the governance-richest of them: an exit keeps most of what the DAM
+knew.
+
+Kind-specific: `publish_date` and `expiry_date`/`review_date` become
+[availability windows](../catalog.md#imported-availability-windows), and the tenant's workflow
+states map onto approval through `approvedStates`.
+
+Motion, cadence and the per-DAM readiness table: [off-boarding](../offboarding.md).
 
 See also: [catalog](../catalog.md) · [permissions](../permissions.md).

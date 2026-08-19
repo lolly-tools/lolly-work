@@ -9,8 +9,8 @@ truth; lolly stores references plus its own governance overlays.
   admin-level key sees the whole Brandfolder). It is a bearer token - treat it as a secret.
 - **The Brandfolder id.** The `…/brandfolders/<id>` segment in the admin URL, or from the
   v4 API. This is the `brandfolderId` option.
-- No app registration and no scopes to configure - Brandfolder's key is all-or-nothing, so
-  scope what federates with lolly-side **exposure** (below), not the key.
+- No app registration and no scopes to configure - scope what federates with lolly-side
+  **exposure** (below), not the key.
 
 ## Credential shape
 
@@ -52,8 +52,16 @@ wrong or lacks access; an empty sample under `requireApproved` means nothing is 
 - Storage/thumbnail URLs are signed + short-lived - the driver re-fetches per request and
   streams; no upstream URL is ever persisted, and fetches are pinned to `brandfolder.com` /
   `bfldr.com` hosts (no open proxy).
-- Supports the **exit** (materialize → cutover, [catalog.md](../catalog.md#the-exit--materialize-a-source-into-your-own-store))
- - the priority off-boarding path for SUSE.
 - Does **not** accept published exports (publish-out is Optimizely CMP only).
+
+## Off-boarding
+
+**A primary exit target** - one of the two off-boarding paths of record.
+
+Kind-specific: Brandfolder's `availability_start`/`availability_end` and its `approved` flag
+import natively, so the governance travels with the assets and no `mapping.availabilityFields`
+wiring is needed.
+
+Motion, cadence and the per-DAM readiness table: [off-boarding](../offboarding.md).
 
 See also: [catalog](../catalog.md) · [permissions](../permissions.md).

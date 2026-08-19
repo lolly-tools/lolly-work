@@ -86,10 +86,12 @@ hold never blocks *serving* - a held asset streams exactly as before. Setting/re
 `catalog.hold` (admin, grant-narrowable per resource; owner not required because a hold can
 only ever keep something available) and audits under `catalog.hold` / `catalog.hold.release`.
 
-A hold on a **federated** `ext/*` asset is accepted, but its bytes still live upstream, so the
-row reports `pinned: false` honestly: the hold gives feed- and action-level protection now,
-and byte durability arrives when materialization (the [exit path](#) - plans/27 §5) lands and
-a hold implies a pin. A held pack asset is inherently byte-durable, so it reads `pinned: true`.
+A hold on a **federated** `ext/*` asset implies a pin: its bytes are materialized into the
+instance's own store (the [exit path](#the-exit---materialize-a-source-into-your-own-store))
+while the identity stays `ext/*`, and the row reports `pinned: true`. The pin is best-effort:
+if the provider is disabled or the fetch fails, the hold still applies and the row reads
+`pinned: false` until a later materialize succeeds. A held pack asset is inherently
+byte-durable.
 
 ### Imported availability windows
 
@@ -121,21 +123,22 @@ references plus its own governance overlays - deleting a provider never touches 
 content.
 
 Kinds: `brandfolder`, `s3` (hand-rolled SigV4), `git` (raw-HTTP manifest), `dropbox`,
-`gdrive`, `o365`/Graph, `optimizely-cmp` (CMP DAM v3, OAuth2), `imagerelay` (v2, OAuth2,
-off-boarding source), `acquia-dam` (Widen v2, bearer, native availability), `intelligencebank`
-(v3 Graph API, login handshake), `mock`. No SDKs, publicly documented endpoints only.
+`gdrive`, `o365`/Graph, `penpot` (design-system source), `optimizely-cmp` (CMP DAM v3, OAuth2),
+`imagerelay` (v2, OAuth2, off-boarding source), `canto` (REST v1, OAuth2, off-boarding source),
+`acquia-dam` (Widen v2, bearer, native availability), `intelligencebank` (v3 Graph API, login
+handshake), `mock`. No SDKs, publicly documented endpoints only.
 
-`imagerelay` has no native availability field - it imports expiry from a custom-metadata
-field named in `mapping.availabilityFields` (plans/27 §2), the generic path for any DAM that
-models expiry as custom metadata. Its role is the exit (federate → materialize → cutover),
-and it reports `deleted` files positively (dropped, not inferred-missing).
+A DAM with no native availability field (`imagerelay`, `canto`) imports expiry from a
+custom-metadata field named in `mapping.availabilityFields` - the generic path for any DAM
+that models expiry as custom metadata. Which of the two an Image Relay customer exits through
+depends on where Canto's migration has put the tenant: the fork matrix is in
+[off-boarding](offboarding.md).
 
 `optimizely-cmp` federates Optimizely CMP's web DAM **read-only** - a source that stays
 (the CMS owns those assets), never one that's exited. It maps CMP's native `expires_at` to
 an [availability window](#imported-availability-windows) and uses `is_public` (and
-not-`is_archived`) as the approved gate, so `requireApproved` federates only public, live
-assets; a folder name or a label can scope an `includeSections` slice. Endpoint and field
-names carry a live-verify note in the driver until confirmed against a real tenant.
+not-`is_archived`) as the approved gate; a folder name or a label can scope an
+`includeSections` slice. It is also the only kind that accepts published exports.
 
 ```bash
 lw providers list
@@ -143,11 +146,17 @@ lw providers add acme-bf --kind brandfolder --label "Acme Brandfolder" \
   --options '{"brandfolderId":"…"}' \
   --exposure '{"groups":["marketing"],"requireApproved":true,"tier":"reference"}'
 lw providers credential acme-bf     # prompts; never argv, never shell history
-lw providers auth acme-bf           # OAuth kinds: PKCE loopback consent flow
 lw providers sync acme-bf
 lw providers health acme-bf
 lw providers enable acme-bf         # owner-only
 ```
+
+`lw providers credential` is the credential step for **every** kind, Brandfolder's bearer key
+included. `lw providers auth <id>` replaces that prompt with a PKCE loopback consent flow, and
+only for the kinds that have one registered (`dropbox`, `gdrive`, `o365`) - the other OAuth
+kinds capture the same sealed blob through `credential` until their authorize endpoint is
+confirmed against a real tenant. One guide per kind, each with the `--options` that kind
+needs and where its credential comes from: [the provider guides](providers/README.md).
 
 Console equivalent: **This Deploy → Providers**.
 
@@ -200,23 +209,25 @@ lw providers cutover acme-bf                         # identities ext/* → inst
 ```
 
 - **Materialize** streams every format's bytes into the [BlobStore](#where-instance-bytes-live),
-  checksums them, sniffs each for an embedded [Content Credential](#imported-availability-windows),
-  and mints an **instance asset** (`inst/<id>`) that carries a permanent `origin`
-  (provider, remoteId, filename, materializedAt) so provenance stays honest long after the
-  DAM is gone. It is idempotent per asset and needs `catalog.provider.manage` (admin). While
-  the provider is still enabled its federated entry is suppressed in favour of the instance
-  copy - no doubles.
-- **Cutover** moves the identity to `inst/*`, migrates the lifecycle row (including any hold),
+  checksums them, sniffs each for an embedded [Content Credential](c2pa.md), and mints an
+  **instance asset** (`inst/<id>`) that carries a permanent `origin` (provider, providerKind,
+  remoteId, filename, `sourceUpdatedAt`, `materializedAt`) so provenance stays honest after the DAM
+  is gone. It is idempotent per asset and needs `catalog.provider.manage` (admin). The pinned
+  asset keeps its `ext/*` identity and its federated entry; only the bytes change hands, served
+  from the local copy.
+- **Cutover** moves the identity to `inst/*` - the instance entry now substitutes for the
+  federated one, so nothing appears twice - migrates the lifecycle row (including any hold),
   the credential detection and asset-specific grants, and writes **aliases** so every old
   `/catalog/ext/…` URL - baked into already-rendered SVGs and live sessions - keeps
-  resolving. It disables a db-managed provider (owner-only, `catalog.provider.credential`);
-  deleting the provider afterwards deletes nothing, because the copies are instance-owned.
+  resolving. It disables a db-managed provider (owner-only, `catalog.provider.credential`); a
+  config-managed one is turned off by removing it from `instance.json`. Deleting the provider
+  afterwards deletes nothing, because the copies are instance-owned.
 - Materialized `inst/*` entries carry a per-format **checksum + size**, so migrated assets
   gain the integrity-verification and offline-pin parity that federated `ext/*` entries
   structurally cannot have while their bytes live upstream.
 
-A **hold** on a federated asset implies a pin: its bytes are materialized so they survive
-upstream deletion, the identity stays `ext/*`, and the blob route prefers the local copy.
+`lw providers drift <id>` reports which copies the upstream has changed since - the cadence
+check during a staged exit. The whole motion, per vendor, is [off-boarding](offboarding.md).
 
 ### Publishing lolly exports out
 
@@ -262,8 +273,15 @@ project *includes an integration for* those services and is not affiliated with 
 
 ## Related
 
-- **Per-provider setup (admin/owner):** [providers/](providers/) - one guide per platform
-  (Brandfolder, S3/MinIO, Optimizely CMP, Image Relay, Acquia/Widen, IntelligenceBank, git, Dropbox, Google Drive, M365).
+- **Per-provider setup (admin/owner):** [the provider guides](providers/README.md) - one per
+  platform ([Brandfolder](providers/brandfolder.md), [S3/MinIO](providers/s3.md),
+  [Optimizely CMP](providers/optimizely-cmp.md), [Image Relay](providers/imagerelay.md),
+  [Canto](providers/canto.md), [Acquia/Widen](providers/acquia-dam.md),
+  [IntelligenceBank](providers/intelligencebank.md), [Penpot](providers/penpot.md),
+  [git](providers/git.md), [Dropbox](providers/dropbox.md), [Google Drive](providers/gdrive.md),
+  [M365](providers/o365.md)).
+- **Connecting your first one, end to end:** [install §9](install.md#9-connect-a-source).
+- **Leaving a DAM:** [off-boarding](offboarding.md).
 - Restricting tools and inputs: [governance](governance.md)
 - Serving and sharing what the catalog holds: [sharing](sharing.md)
 - Where provenance for federated assets comes from: [sharing](sharing.md#provenance) and

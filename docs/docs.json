@@ -21,12 +21,7 @@
         {
           "slug": "install",
           "title": "Installing",
-          "summary": "Nothing → running UI + CLI: hosted demo, 2-minute local run, systemd, Compose, Helm on RKE2/k3s — pick your row."
-        },
-        {
-          "slug": "quickstart",
-          "title": "Quickstart",
-          "summary": "From clone to a governed deploy — demo mode, split development, one-origin."
+          "summary": "Nothing → a running, configured, governed instance: local demo, first config, sign-in, Postgres, secrets, Compose, systemd, Helm."
         },
         {
           "slug": "deployment",
@@ -73,6 +68,11 @@
           "summary": "Brand packs, catalog providers, exposure slices, expiry and stop-sharing."
         },
         {
+          "slug": "offboarding",
+          "title": "Off-boarding a DAM",
+          "summary": "Leaving a DAM: pin early, the Canto/Image Relay fork, and per-vendor exit readiness."
+        },
+        {
           "slug": "approvals",
           "title": "Approvals",
           "summary": "Chains, separation of duties, and what an approval can gate."
@@ -86,6 +86,116 @@
           "slug": "c2pa",
           "title": "Signing exports (C2PA)",
           "summary": "Give this deploy a signing identity so exports carry a verifiable credential."
+        }
+      ]
+    },
+    {
+      "id": "sources",
+      "icon": "providers",
+      "note": "Per-platform onboarding, written for the owner of the source platform. These files live in docs/providers/, so each entry carries the `path` that finds it; the slug stays flat so links and routes keep working.",
+      "title": "Connect a source",
+      "docs": [
+        {
+          "slug": "provider-guides",
+          "path": "providers/README.md",
+          "title": "Provider guides",
+          "summary": "The shared skeleton every guide follows, the OAuth onboarding, and which drivers are fixture-verified only."
+        },
+        {
+          "slug": "provider-s3",
+          "path": "providers/s3.md",
+          "title": "S3 / S3-compatible",
+          "summary": "AWS S3, MinIO, Ceph RGW: a private bucket federated read-only, zero-dependency SigV4."
+        },
+        {
+          "slug": "provider-git",
+          "path": "providers/git.md",
+          "title": "Git raw manifest",
+          "summary": "The GitOps-native source: a catalog manifest under version control, served over raw HTTP."
+        },
+        {
+          "slug": "provider-brandfolder",
+          "path": "providers/brandfolder.md",
+          "title": "Brandfolder",
+          "summary": "Federate a Brandfolder read-only; Brandfolder stays the source of truth."
+        },
+        {
+          "slug": "provider-optimizely-cmp",
+          "path": "providers/optimizely-cmp.md",
+          "title": "Optimizely CMP",
+          "summary": "The web DAM you keep, not one you exit: federate in, and optionally publish exports back out."
+        },
+        {
+          "slug": "provider-imagerelay",
+          "path": "providers/imagerelay.md",
+          "title": "Image Relay",
+          "summary": "Read-only federation, plus the off-boarding path now that Canto owns the platform."
+        },
+        {
+          "slug": "provider-canto",
+          "path": "providers/canto.md",
+          "title": "Canto",
+          "summary": "Native Canto tenants and migrated Image Relay tenants, and how to tell which driver you exit through."
+        },
+        {
+          "slug": "provider-acquia-dam",
+          "path": "providers/acquia-dam.md",
+          "title": "Acquia DAM / Widen",
+          "summary": "Governance-rich enterprise DAM: native availability and approval, no custom-field mapping."
+        },
+        {
+          "slug": "provider-intelligencebank",
+          "path": "providers/intelligencebank.md",
+          "title": "IntelligenceBank",
+          "summary": "The v3 Graph API only; native expiry, review dates and workflow states map straight across."
+        },
+        {
+          "slug": "provider-penpot",
+          "path": "providers/penpot.md",
+          "title": "Penpot",
+          "summary": "An open, self-hostable design-system source: token feed plus curated component export."
+        },
+        {
+          "slug": "provider-dropbox",
+          "path": "providers/dropbox.md",
+          "title": "Dropbox",
+          "summary": "A Dropbox folder federated read-only over the registered PKCE consent flow."
+        },
+        {
+          "slug": "provider-gdrive",
+          "path": "providers/gdrive.md",
+          "title": "Google Drive",
+          "summary": "A Drive folder federated read-only over the registered PKCE consent flow."
+        },
+        {
+          "slug": "provider-o365",
+          "path": "providers/o365.md",
+          "title": "Microsoft 365 / SharePoint",
+          "summary": "A SharePoint library or OneDrive federated read-only through Microsoft Graph."
+        },
+        {
+          "slug": "provider-canto-live-verify",
+          "path": "providers/canto-live-verify.md",
+          "title": "Canto live-verify runbook",
+          "summary": "The tenant-day checklist that turns the fixture-verified Canto driver into a confirmed one."
+        },
+        {
+          "slug": "provider-imagerelay-live-verify",
+          "path": "providers/imagerelay-live-verify.md",
+          "title": "Image Relay live-verify runbook",
+          "summary": "The tenant-day checklist for the Image Relay driver's unconfirmed endpoints and fields."
+        },
+        {
+          "slug": "provider-intelligencebank-live-verify",
+          "path": "providers/intelligencebank-live-verify.md",
+          "title": "IntelligenceBank live-verify runbook",
+          "summary": "The tenant-day checklist for the IntelligenceBank v3 driver's unconfirmed endpoints and fields."
+        },
+        {
+          "slug": "provider-acquia-dam-live-verify",
+          "path": "providers/acquia-dam-live-verify.md",
+          "title": "Acquia DAM live-verify runbook",
+          "summary": "The tenant-day checklist for the Widen v2 driver's unconfirmed endpoints and fields."
         }
       ]
     },

@@ -13,8 +13,11 @@
  * also requires publicly documented endpoints only).
  */
 import type { AssetIndexEntry } from '../lifecycle.ts';
+import type { ProviderShapeReport } from './shape.ts';
 
-export const PROVIDER_KINDS = ['brandfolder', 's3', 'git', 'dropbox', 'gdrive', 'o365', 'optimizely-cmp', 'imagerelay', 'acquia-dam', 'intelligencebank', 'penpot', 'mock'] as const;
+export type { ProviderShapeReport };
+
+export const PROVIDER_KINDS = ['brandfolder', 's3', 'git', 'dropbox', 'gdrive', 'o365', 'optimizely-cmp', 'imagerelay', 'canto', 'acquia-dam', 'intelligencebank', 'penpot', 'mock'] as const;
 export type ProviderKind = (typeof PROVIDER_KINDS)[number];
 
 /** Prefix every federated asset id carries; also the blob route mount. */
@@ -101,6 +104,12 @@ export interface ProviderFragment {
   syncedAt: string;
   /** Content hash, folded into catalogVersion so refreshes ripple render invalidation. */
   hash: string;
+  /** Records the driver could not map, summed over the walk (plans/33 §5).
+   *  Absent when nothing was skipped; never silent when something was. */
+  skipped?: number;
+  /** Driver diagnostics from the walk: a guessed key that never matched, each
+   *  naming the constant to edit and its runbook page. */
+  notes?: string[];
 }
 
 /** Runtime state - written by sync, never by admins. */
@@ -174,11 +183,40 @@ export type ResolvedBlob =
   | { kind: 'redirect'; url: string; expiresAt?: string }
   | { kind: 'stream'; body: ReadableStream<Uint8Array>; contentType: string; size?: number };
 
+/**
+ * One page of a provider's listing. `skipped` and `notes` are the visibility
+ * plans/33 §5 asks for: a federation that quietly maps 0 of 100 records is the
+ * most expensive way to lose an afternoon, so a record the mapper could not
+ * turn into an asset is counted, and a mapping that never matched says so in
+ * words the operator can act on. Both are optional - a driver with nothing to
+ * report omits them and the count reads as zero.
+ */
+export interface ProviderPage {
+  assets: ProviderAssetRef[];
+  next?: string;
+  /** Records on this page the mapper could not turn into assets. */
+  skipped?: number;
+  /** Operator-facing diagnostics that are not fatal (a guessed key that never
+   *  matched). Each names the constant to edit and its runbook page. */
+  notes?: string[];
+}
+
 export interface CatalogProvider {
   readonly id: string;
   readonly kind: ProviderKind;
   readonly capabilities: ProviderCapabilities;
-  listAssets(cursor?: string): Promise<{ assets: ProviderAssetRef[]; next?: string }>;
+  listAssets(cursor?: string): Promise<ProviderPage>;
+  /** Live-verify aid (plans/33 §3): the STRUCTURE of one upstream page - key
+   *  names and value types, never values - plus the keys this driver reads and
+   *  the diff between the two. Optional: a driver whose field names are
+   *  confirmed carries no live-verify debt and need not implement it. */
+  sampleShape?(): Promise<ProviderShapeReport>;
+  /** The same aid for the OTHER call: the per-asset DETAIL response
+   *  `resolveBlob` makes, whose wrapper and download-link keys a list page
+   *  cannot answer - and those are the guesses that decide whether the exit
+   *  works at all. Optional: a driver whose bytes need no detail call (canto
+   *  builds its binary path from the list record) implements only the list arm. */
+  detailShape?(remoteId: string): Promise<ProviderShapeReport>;
   searchAssets?(query: string, limit: number): Promise<ProviderAssetRef[]>;
   /** Resolve ONE asset's ref by remoteId WITHOUT scanning listAssets - the seam the
    *  /import route uses to snapshot a single search-only result (plans/30 §3.1). A

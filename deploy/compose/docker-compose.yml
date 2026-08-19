@@ -13,8 +13,21 @@ services:
       LW_SESSION_SECRET: ${LW_SESSION_SECRET:?set in .env}
       LW_LINK_SECRET: ${LW_LINK_SECRET:?set in .env}
       LW_IDP_CLIENT_SECRET: ${LW_IDP_CLIENT_SECRET:-}
+      # PG_PASSWORD is read here AND by the db service below, so the two can
+      # never disagree. It falls back to the literal `lolly` so a tyre-kick is
+      # still one command, but set it in .env for anything real: the fallback is
+      # a password nobody chose. Postgres bakes the password into the data
+      # directory at first boot, so changing it later needs either
+      # `docker compose down -v` (destroys data) or an `alter role` in the db.
       DATABASE_URL: postgres://lolly:${PG_PASSWORD:-lolly}@db:5432/lollywork
     volumes:
+      # REPO ROOT, not this directory. Docker creates a DIRECTORY at a missing
+      # bind source and the server then reads a directory as its config (EISDIR
+      # at boot), so the file must exist before `docker compose up`. It is the
+      # instance.json you authored (docs/install.md §2); only if you have none,
+      # `cp instance.example.json instance.json` from the repo root. Copying the
+      # example OVER your own file silently reverts baseUrl, pack, idp.issuer and
+      # dev.enabled to the demo values.
       - ../../instance.json:/app/instance.json:ro
       - ../../packs:/app/packs:ro
       # Web shell (serve Lolly at `/`): mount a built shells/web/dist and point
@@ -24,8 +37,18 @@ services:
       # governance module. Escape hatch (loud warning instead of refusal): add
       # LW_ALLOW_STALE_SHELL: "1" under environment above.
       # - ../../shells/web/dist:/app/shell:ro
+    # Boot order, not just start order. main.ts awaits runMigrations() at the top
+    # level and store/migrate.ts calls client.connect() with no retry, so a
+    # connect against a Postgres that is still running initdb rejects out of a
+    # top-level await and the process exits. Plain `depends_on` waits only for
+    # the container to START, which on a first `up` is several seconds before
+    # Postgres accepts connections. Two belts:
+    #   service_healthy - hold the server until pg_isready passes;
+    #   restart         - and recover anyway if the database goes away later.
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+    restart: unless-stopped
 
   db:
     image: postgres:17-alpine
@@ -33,6 +56,16 @@ services:
       POSTGRES_USER: lolly
       POSTGRES_PASSWORD: ${PG_PASSWORD:-lolly}
       POSTGRES_DB: lollywork
+    # -U/-d match POSTGRES_USER/POSTGRES_DB: during initdb the entrypoint runs a
+    # temporary server on a unix socket only, and a bare pg_isready would report
+    # ready before the real one is listening on TCP.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lolly -d lollywork"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
     volumes:
       - pgdata:/var/lib/postgresql/data
 

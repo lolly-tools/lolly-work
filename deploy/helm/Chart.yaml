@@ -8,7 +8,7 @@ description: >-
 type: application
 
 # Chart version — bump on any change to templates/values (SemVer for the chart).
-version: 0.1.0
+version: 0.2.0
 
 # The lolly-work server version this chart is designed against. Used as the
 # default image tag when image.tag is left empty. Keep in sync with the app's

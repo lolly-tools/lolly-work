@@ -11,30 +11,34 @@ just config + a pack mount.
 
 ## Getting started
 
-A running web UI + CLI, dead easy - pick your path in **[INSTALL.md](INSTALL.md)**:
+A running web UI + CLI, dead easy. The one install guide is
+**[`docs/install.md`](docs/install.md)** (served in the console too, at `/admin#/docs`):
 
 - **See it now, install nothing** - the hosted sandbox at <https://lolly.work> (passwordless
   personas, governed console, live GET renders).
 - **Evaluate locally** - `npm install && npm run demo` (Node 24+) → a fully-seeded governed
   deployment at <http://localhost:8787>.
-- **Deploy for real** - self-hosted: single host ([systemd](INSTALL.md#3-bare-metal-systemd) /
-  [Compose](INSTALL.md#4-container-compose)) or [Kubernetes/Helm](INSTALL.md#5-kubernetes-helm).
+- **Deploy for real** - self-hosted: single host
+  ([Compose](docs/install.md#5-container-compose) /
+  [systemd](docs/install.md#6-bare-metal-systemd)) or
+  [Kubernetes/Helm](docs/install.md#7-kubernetes-helm).
   **The safest, most sovereign path is the SUSE stack** - **SLES + SUSE Rancher Prime** (paid) or
   **openSUSE Leap + Rancher Community** (free): SUSE's reproducible builds + governed EU (Prague)
   supply chain, air-gappable, no US hyperscaler (`docs/deployment.md` → *Sovereignty*).
 
 The hosted demo runs on Vercel today for convenience only (moving to a European sovereign cloud);
 it is never the deployment model. Prerequisites and per-OS steps (SLES / openSUSE Leap / macOS)
-are in [INSTALL.md](INSTALL.md); the full operator set is in `docs/` (below).
+are in [`docs/install.md`](docs/install.md); the full operator set is in `docs/` (below).
 
 ## Documentation
 
 Two sets, different jobs:
 
-- **`docs/`** - operator and administrator documentation for a *deploy*: quickstart,
+- **`docs/`** - operator and administrator documentation for a *deploy*: install,
   deployment shapes, the full config reference, identity, roles/grants, governance,
   catalog, approvals, rendering/sharing, telemetry, audit, operations runbook, API and
-  CLI references, and an honest status page. Start at [`docs/README.md`](docs/README.md).
+  CLI references, a per-platform onboarding guide for every catalog provider kind
+  (`docs/providers/`), and an honest status page. Start at [`docs/README.md`](docs/README.md).
   **Every page is served in the console at `/admin#/docs`**, so whoever runs a deploy
   doesn't need this repository - `docs/docs.json` is the manifest that surface reads.
 
@@ -61,19 +65,25 @@ server/src/     the app - zero-dependency Node (node:http, node:crypto, native T
   api/          router + the HTTP app
 migrations/     Postgres schema v0
 deploy/compose/ single-VM shape (Dockerfile + docker-compose)
-packs/          deployment pack mount (data, never committed)
+packs/          deployment pack mount (your pack is data, never committed; packs/demo ships)
 ```
 
 ## Run it
 
 ```bash
-cp instance.example.json instance.json   # dev provider enabled, gated mode
-node server/src/main.ts                  # → http://localhost:8787
+npm install                              # once per checkout
+cp instance.example.json instance.json   # dev provider enabled, gated mode, packs/demo
+npm start                                # → http://localhost:8787
 
-# sign in (dev provider), then poke around:
-curl -i 'http://localhost:8787/api/auth/dev?email=dev@example.test'   # → session cookie
+# sign in at http://localhost:8787/admin, or mint a cookie for scripting:
+curl -i 'http://localhost:8787/api/auth/dev?email=owner@example.test'   # → session cookie
 curl -s http://localhost:8787/healthz
 ```
+
+The example config ships an `owner` and an `admin` persona: role is derived from group
+membership, so only a user whose groups contain `owner` can reach `instance.config` or
+store a catalog-provider credential. Full walkthrough and verification steps:
+[`docs/install.md`](docs/install.md).
 
 ```bash
 npm test             # node:test over tests/ (Postgres conformance runs when LW_TEST_DATABASE_URL is set)
@@ -87,7 +97,7 @@ repo's `docs/`, rendered in-console). Light/dark, no build step, no external ass
 **Admin CLI** (same API as the console, parity by construction):
 
 ```bash
-npm run cli -- login --email dev@example.test
+npm run cli -- login --email owner@example.test   # or `npm link` once, then plain `lw`
 npm run cli -- summary          # or: whoami · fleet · audit verify
 npm run cli -- links --all
 npm run cli -- msg send --title "Update by Aug 15" --severity action --shells tauri --max-engine 1.52.99

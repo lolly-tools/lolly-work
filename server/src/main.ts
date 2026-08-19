@@ -18,11 +18,25 @@ import { createCollabGateway } from './collab/gateway.ts';
 import { createNearbyRegistry } from './collab/nearby.ts';
 import { auditHead } from './audit/head.ts';
 import { checkShellDist } from './lib/shell-dist.ts';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { validateConfigDocument, buildConfigDocument, diffConfigDocument, commitConfigApply, canonicalHash, diffSummary } from './policy/config-doc.ts';
 
 const config = loadConfig();
 const secrets = loadSecrets();
+
+// The pack is read lazily per request, so a wrong path used to boot cleanly and
+// then serve an empty catalog with no signal anywhere. Say it once at boot.
+if (!existsSync(resolve(config.instance.pack))) {
+  console.warn(`[lolly-work] WARNING — no pack at ${resolve(config.instance.pack)} (instance.pack = "${config.instance.pack}"). The catalog will be empty until this path exists; packs/demo ships in this repo.`);
+}
+
+// The dev provider is a passwordless bypass of OIDC. An instance that has a real
+// issuer AND leaves it on is almost always a half-finished cutover, and nothing
+// else in the system would ever mention it.
+if (config.dev.enabled && config.idp.issuer) {
+  console.warn(`[lolly-work] WARNING — dev.enabled is true while idp.issuer is set (${config.idp.issuer}). /api/auth/dev is a passwordless admin bypass and is still live. Set "dev": { "enabled": false } before exposing this instance.`);
+}
 
 // Governance UX must not silently vanish: under a non-open access mode, a shell
 // dist that is missing or predates the org/ governance module would serve

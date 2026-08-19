@@ -164,7 +164,9 @@ export interface Secrets {
 }
 
 const DEFAULTS: InstanceConfig = {
-  instance: { name: 'Lolly Work', baseUrl: 'http://localhost:8787', pack: './packs/example' },
+  // The default pack is the small demo pack committed at packs/demo, so an
+  // unconfigured instance serves a real catalog instead of an empty one.
+  instance: { name: 'Lolly Work', baseUrl: 'http://localhost:8787', pack: './packs/demo' },
   idp: {
     issuer: '',
     clientId: '',
@@ -244,7 +246,19 @@ export function parseConfig(json: string): InstanceConfig {
 }
 
 export function loadConfig(path = process.env.LW_CONFIG ?? './instance.json'): InstanceConfig {
-  return parseConfig(readFileSync(path, 'utf8'));
+  let text: string;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch (err) {
+    // The most common first-run failure is running the server before copying
+    // the example config. Say what to do instead of surfacing a raw ENOENT.
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'EISDIR') {
+      throw new Error(`no config at ${path} — copy the example first: cp instance.example.json instance.json (or point LW_CONFIG at your file)`);
+    }
+    throw err;
+  }
+  return parseConfig(text);
 }
 
 /** Whether the server auto-applies migrations at boot. Env-only (not an

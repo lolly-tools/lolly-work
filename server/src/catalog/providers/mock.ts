@@ -9,6 +9,9 @@ export interface MockProviderOptions {
   assets?: ProviderAssetRef[];
   /** When set, listAssets/searchAssets/healthCheck all fail with this message. */
   failWith?: string;
+  /** Remote ids whose blob refuses to stream - the per-asset materialize
+   *  failure (one bad asset in an otherwise good walk) without a network. */
+  failBlobFor?: string[];
   /** Require the resolved credential to equal this value (exercises seal/open). */
   expectSecret?: string;
   /** Declare the publish-out capability (plans/27 §10) so the publish route can
@@ -40,6 +43,7 @@ export function createMockProvider(id: string, options: MockProviderOptions, sec
     },
     async resolveBlob(remoteId, formatRef) {
       check();
+      if (options.failBlobFor?.includes(remoteId)) throw new Error(`mock blob refused for ${remoteId}`);
       const asset = assets.find((a) => a.remoteId === remoteId);
       const fmt = asset?.formats.find((f) => f.remoteRef === formatRef);
       if (!asset || (!fmt && formatRef !== 'thumb')) throw new Error(`unknown blob ${remoteId}/${formatRef}`);
