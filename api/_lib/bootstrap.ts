@@ -66,7 +66,7 @@ const FALLBACK_CONFIG_JSON = JSON.stringify({
   instance: {
     name: 'Lolly Work (unconfigured trial)',
     baseUrl: process.env.LW_BASE_URL ?? 'https://lolly.work',
-    pack: './packs/example',
+    pack: './packs/demo',
   },
   idp: {
     issuer: 'https://unconfigured.invalid/set-LW_CONFIG_JSON',

@@ -28,7 +28,7 @@ COPY migrations ./migrations
 # Job invokes it (HA path, LW_AUTO_MIGRATE=false).
 COPY scripts ./scripts
 # Mount point for the instance's tool pack (instance.json `pack`, default
-# ./packs/example). compose/Helm bind it read-only; empty here by design —
+# ./packs/demo). compose/Helm bind it read-only; empty here by design —
 # EXCEPT the demo pack (252 KB), always aboard so an evaluation install with no
 # pack mounted can point `instance.pack` at /app/packs/demo and boot straight
 # into real tools instead of a degraded empty catalog (deploy/helm/

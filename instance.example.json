@@ -2,7 +2,7 @@
   "instance": {
     "name": "SUSE Content Automation",
     "baseUrl": "http://localhost:8787",
-    "pack": "./packs/example"
+    "pack": "./packs/demo"
   },
   "idp": {
     "issuer": "",
@@ -20,12 +20,18 @@
     "defaultAccessMode": "gated",
     "telemetry": "standard",
     "telemetryAttribution": "opt-in",
-    "guestLinks": { "enabled": true, "maxTtlHours": 168, "defaultTtlHours": 72 }
+    "guestLinks": { "enabled": true, "maxTtlHours": 168, "defaultTtlHours": 72 },
+    "nearby": { "enabled": true },
+    "sessionTtlHours": 12
   },
-  "render": { "allowHooksInFastPath": false },
+  "render": { "allowHooksInFastPath": true },
+  "rateLimit": { "enabled": true, "trustedProxyHops": 0 },
   "dev": {
     "enabled": true,
-    "users": [{ "email": "dev@example.test", "name": "Dev Admin", "groups": ["admin"] }]
+    "users": [
+      { "email": "owner@example.test", "name": "Dev Owner", "groups": ["owner"] },
+      { "email": "dev@example.test", "name": "Dev Admin", "groups": ["admin"] }
+    ]
   },
   "catalogProviders": [
     {

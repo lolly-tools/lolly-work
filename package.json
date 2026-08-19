@@ -5,6 +5,9 @@
   "description": "Lolly control plane — identity, provisioning, governance, serving, telemetry. MPL-2.0.",
   "type": "module",
   "license": "MPL-2.0",
+  "bin": {
+    "lw": "cli/lw.ts"
+  },
   "engines": {
     "node": ">=24"
   },

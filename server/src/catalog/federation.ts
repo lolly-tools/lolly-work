@@ -72,16 +72,29 @@ export function callerSeesProvider(rec: ProviderRecord, callerGroups: string[]):
 
 export async function buildFragment(rec: ProviderRecord, provider: CatalogProvider, now: () => number): Promise<ProviderFragment> {
   const assets: AssetIndexEntry[] = [];
+  // What the driver could not map, and what it wants the operator to know
+  // (plans/33 §5): a sync that quietly federates none of a full page is the
+  // failure most likely to cost an afternoon, so both travel with the fragment.
+  let skipped = 0;
+  const notes: string[] = [];
   let cursor: string | undefined;
   for (let page = 0; page < MAX_PAGES; page++) {
     const batch = await provider.listAssets(cursor);
     for (const a of batch.assets) {
       if (passesExposure(rec, a)) assets.push(mapProviderAsset(rec, a));
     }
+    skipped += batch.skipped ?? 0;
+    for (const n of batch.notes ?? []) if (!notes.includes(n)) notes.push(n);
     if (!batch.next) break;
     cursor = batch.next;
   }
-  return { assets, syncedAt: new Date(now()).toISOString(), hash: sha256Hex(canonicalJson(assets)).slice(0, 16) };
+  return {
+    assets,
+    syncedAt: new Date(now()).toISOString(),
+    hash: sha256Hex(canonicalJson(assets)).slice(0, 16),
+    ...(skipped ? { skipped } : {}),
+    ...(notes.length ? { notes } : {}),
+  };
 }
 
 export interface FederationDeps extends ProviderDeps {

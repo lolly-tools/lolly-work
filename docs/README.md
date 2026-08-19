@@ -15,8 +15,7 @@ any Lolly deployment. The console links there when this deploy serves or points 
 | Doc | What it covers |
 |---|---|
 | [overview](overview.md) | The control plane in one page: what it serves, the two-repo shape, the trust model |
-| [install](install.md) | Nothing → running UI + CLI: hosted demo, 2-minute local run, systemd, Compose, Helm on RKE2/k3s |
-| [quickstart](quickstart.md) | Demo mode, a real small deploy, split development, seeding governance |
+| [install](install.md) | The whole first deploy: local demo, first config, sign-in and the first owner, Postgres, secrets, Compose / systemd / Helm |
 | [deployment](deployment.md) | Helm/Rancher, Compose, Vercel, air-gap - what each path carries |
 
 ## Configure
@@ -33,9 +32,30 @@ any Lolly deployment. The console links there when this deploy serves or points 
 | [permissions](permissions.md) | Seven roles, every action, deny-wins grants, the owner guard |
 | [governance](governance.md) | Tool overlays, input locking, profile policy, feature flags, policy-as-code |
 | [catalog](catalog.md) | Brand packs, providers, exposure slices, expiry and stop-sharing |
+| [offboarding](offboarding.md) | Leaving a DAM: pin early, the Canto/Image Relay fork, exit readiness per vendor |
 | [approvals](approvals.md) | Chains, rules, separation of duties |
 | [sharing](sharing.md) | Server renders, signed links, watermarks, provenance |
 | [c2pa](c2pa.md) | Giving this deploy a signing identity for verifiable exports |
+
+## Connect a source
+
+One guide per catalog provider kind, written for the owner of the source platform: what you
+need from the platform, the `--options` that kind takes, where its credential comes from, and
+how to verify. All of them are served in the console too.
+
+| Doc | What it covers |
+|---|---|
+| [provider guides](providers/README.md) | The shared skeleton, OAuth onboarding, which drivers are fixture-verified only |
+| [s3](providers/s3.md) · [git](providers/git.md) | A private bucket (AWS / MinIO / Ceph), and a manifest under version control |
+| [brandfolder](providers/brandfolder.md) · [optimizely-cmp](providers/optimizely-cmp.md) | Brandfolder read-only; Optimizely CMP in, and optionally exports back out |
+| [imagerelay](providers/imagerelay.md) · [canto](providers/canto.md) | The two halves of the Canto/Image Relay fork |
+| [acquia-dam](providers/acquia-dam.md) · [intelligencebank](providers/intelligencebank.md) | The governance-rich enterprise DAMs |
+| [penpot](providers/penpot.md) | An open, self-hostable design-system source |
+| [dropbox](providers/dropbox.md) · [gdrive](providers/gdrive.md) · [o365](providers/o365.md) | The three kinds with a registered PKCE consent flow |
+| live-verify runbooks | [canto](providers/canto-live-verify.md) · [imagerelay](providers/imagerelay-live-verify.md) · [intelligencebank](providers/intelligencebank-live-verify.md) · [acquia-dam](providers/acquia-dam-live-verify.md) |
+
+Connecting your first one end to end, with commands:
+[install §9](install.md#9-connect-a-source).
 
 ## Operate
 

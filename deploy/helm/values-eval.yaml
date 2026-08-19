@@ -1,7 +1,10 @@
 # ══════════════════════════════════════════════════════════════════════════════
 # EVALUATION values — the one-file tyre-kick. NOT for production, loudly.
 #
-#   helm install lolly deploy/helm -f deploy/helm/values-eval.yaml
+#   helm install lolly-work deploy/helm -f deploy/helm/values-eval.yaml
+#
+# (release name lolly-work on purpose: Helm prefixes objects with it, so the
+# Service lands on lolly-work and docs/install.md's verify commands just work)
 #
 # gives a complete governed demo on any conformant cluster (verified on k3s and
 # designed for RKE2 — both Rancher-managed) with ZERO prerequisites: no
@@ -24,7 +27,14 @@
 replicaCount: 1
 
 # No database block at all ⇒ the server runs its in-memory store (values.yaml
-# "evaluation only" path). Add DATABASE_URL to graduate this install in place.
+# "evaluation only" path). Graduate this install in place with:
+#
+#   helm upgrade lolly-work deploy/helm -f deploy/helm/values-eval.yaml \
+#     --set database.url='postgres://user:pass@host:5432/lollywork'
+#
+# With migrate.enabled still false the single pod applies DDL at boot, which is
+# correct at replicaCount 1. Going multi-replica means also setting
+# migrate.enabled=true so the hook Job owns the schema instead.
 
 secrets:
   # Eval-grade, deliberately unremarkable. Rotate into existingSecret for
@@ -40,7 +50,17 @@ migrate:
 
 config:
   instance:
-    name: "Lolly Work — evaluation"
+    name: "Lolly Work - evaluation"
+    # MUST match the URL a browser actually reaches this install on, because the
+    # server derives the session cookie's Secure flag from this string
+    # (server/src/api/app.ts: baseUrl.startsWith('https:')). A Secure cookie sent
+    # over plain HTTP is silently dropped by every browser, so a mismatched
+    # https: value here makes sign-in loop back to the gate forever while curl
+    # still works. The eval on-ramp is `kubectl port-forward svc/lolly-work
+    # 8787:80`, so localhost:8787 is the default. Over the ingress instead:
+    #   --set config.instance.baseUrl=http://<node-or-lb-ip>
+    # (the eval ingress below terminates no TLS, hence http: on purpose).
+    baseUrl: "http://localhost:8787"
     # The demo pack rides inside the server image (Dockerfile: COPY packs/demo)
     # precisely so this file needs no pack.image/PVC choreography.
     pack: "/app/packs/demo"
@@ -56,6 +76,12 @@ config:
   dev:
     enabled: true   # passwordless personas — the reason this file is eval-only
     users:
+      # Role is derived from groups and there is no bootstrap owner, so an eval
+      # without a member of the literal group `owner` can never reach
+      # instance.config, catalog.provider.credential or catalog.provider.publish
+      # (server/src/rbac/evaluate.ts roleFromGroups). That is the whole last leg
+      # of the install guide, so the eval ships an owner.
+      - { email: owner@eval.example,     name: Ola Owner,     groups: [owner] }
       - { email: admin@eval.example,     name: Ada Admin,     groups: [admin] }
       - { email: brand@eval.example,     name: Bram Brand,    groups: [brand-team] }
       - { email: marketer@eval.example,  name: Mia Marketer,  groups: [marketing] }

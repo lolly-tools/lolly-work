@@ -9,10 +9,15 @@ Database:   {{ if .Values.database.existingSecret }}DATABASE_URL from secret "{{
 
 Migrations ran as a pre-install/pre-upgrade hook Job. Check it with:
   kubectl logs -n {{ .Release.Namespace }} job/{{ include "lolly-work.fullname" . }}-migrate
+{{- else if or .Values.database.url .Values.database.existingSecret .Values.existingSecret }}
+
+WARNING: migrate.enabled=false with a database configured. The pods fall back to
+applying DDL at boot, which races across replicas. Set migrate.enabled=true (the
+Job owns the schema) for anything with more than one replica.
 {{- else }}
 
-WARNING: migrate.enabled=false. With LW_AUTO_MIGRATE=false the pods will refuse
-to start on a pending schema. Apply migrations yourself before they roll.
+No migrate Job and no database: the in-memory store has no schema. State resets
+on every pod restart — evaluation only.
 {{- end }}
 
 Reach the app:

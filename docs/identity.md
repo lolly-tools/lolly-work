@@ -78,7 +78,9 @@ Disable is **instant** - it is re-checked on every request. The signed session t
 however, remains valid until it expires: there is no server-side session revocation list
 today. Two consequences worth stating plainly:
 
-- A group or role change takes effect on the next token mint, not immediately.
+- A group or role change is **immediate for API authorization**: `requireAction` resolves
+  the live user record on every request and ignores the role baked into the cookie. What
+  waits for the next token mint is only the role the shell's own token *claims*.
 - Lowering `policy.sessionTtlHours` shortens the window in which a stale session can ride.
 
 This is the one identity gap an auditor will raise; it is tracked in [status](status.md).

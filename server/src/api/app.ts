@@ -8,7 +8,7 @@
  * (render/cache-key.ts, links/sign.ts).
  */
 import { readFile, stat } from 'node:fs/promises';
-import { join, normalize } from 'node:path';
+import { join, normalize, resolve as resolvePath, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -36,7 +36,8 @@ import { filterToolIndex, normalizeOverlay, toolVisibleTo } from '../policy/over
 import {
   applyLifecycleToIndex, assetState, buildPathMap, combinedState, entryWindow, type AssetIndex, type AssetIndexEntry, type LifecycleRow,
 } from '../catalog/lifecycle.ts';
-import { callerSeesProvider, createFederation, credentialContext, mapProviderAsset, passesExposure } from '../catalog/federation.ts';
+import { buildFragment, callerSeesProvider, createFederation, credentialContext, mapProviderAsset, passesExposure } from '../catalog/federation.ts';
+import { providerDrift } from '../catalog/drift.ts';
 import { applyCredentialsToIndex, detectCredential, type CredentialRow } from '../catalog/credentials.ts';
 import { composeInstanceAssets, instanceAssetVisible, materializedIdFor, INST_PREFIX } from '../catalog/instance-assets.ts';
 import { materializeProvider, materializeAsset, cutoverProvider, pinAsset } from '../catalog/materialize.ts';
@@ -46,6 +47,7 @@ import { createMemoryBlobStore } from '../blobs/memory.ts';
 import type { BlobStore } from '../blobs/types.ts';
 import { EXT_PREFIX, extAssetId, PROVIDER_KINDS, type ProviderKind, type ProviderRecord } from '../catalog/providers/types.ts';
 import { createProvider } from '../catalog/providers/registry.ts';
+import { noDetailShapeLine, noShapeLine, renderShapeReport, type ProviderShapeReport } from '../catalog/providers/shape.ts';
 import { invalidateAccessTokens } from '../catalog/providers/oauth.ts';
 import { assembleOrgConfig } from '../policy/org-config.ts';
 import { renderCapabilities } from '../render/capabilities.ts';
@@ -2037,15 +2039,83 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       createdAt: now, updatedAt: now, state: { assetCount: 0 },
     };
     await audit(`user:${user.id}`, 'catalog.provider.preview', `provider-kind:${cfg.kind}`);
+    // --shape (plans/33 §3): the live-verify multiplier. Structure only - key
+    // names and value types, never a value - so it answers "what is this field
+    // actually called upstream" in one call. Rendered here rather than in the
+    // CLI so every surface prints the same text.
+    //
+    // Shape mode is exclusive: no sample is listed and none is returned, so the
+    // whole response is sendable to a driver author by construction. The two
+    // modes answer different questions - without it, what would federate; with
+    // it, what the tenant's records look like.
+    const wantShape = body?.shape === true;
+    // With a remoteId, the report on the OTHER call as well: the per-asset
+    // detail response the byte path reads, whose wrapper and download-link keys
+    // no list page can answer - and those decide whether the exit works.
+    const detailId = typeof body?.remoteId === 'string' && body.remoteId ? body.remoteId : undefined;
     try {
       const provider = createProvider(rec, secret, deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {});
       const health = await provider.healthCheck();
+      let shape: ProviderShapeReport | null = null;
+      let shapeText: string[] | undefined;
+      let detailShape: ProviderShapeReport | null = null;
+      let detailShapeText: string[] | undefined;
+      if (wantShape && health.ok) {
+        if (provider.sampleShape) {
+          try {
+            shape = await provider.sampleShape();
+            shapeText = renderShapeReport(shape);
+          } catch (err) {
+            shapeText = [`shape report failed: ${(err as Error).message}`];
+          }
+        } else {
+          shapeText = [noShapeLine(cfg.kind)];
+        }
+        if (detailId) {
+          if (provider.detailShape) {
+            try {
+              detailShape = await provider.detailShape(detailId);
+              detailShapeText = renderShapeReport(detailShape);
+            } catch (err) {
+              detailShapeText = [`detail shape report failed: ${(err as Error).message}`];
+            }
+          } else {
+            detailShapeText = [provider.sampleShape ? noDetailShapeLine(cfg.kind) : noShapeLine(cfg.kind)];
+          }
+        }
+      }
+      if (wantShape) {
+        return sendJson(res, 200, {
+          health, shape, ...(shapeText ? { shapeText } : {}),
+          ...(detailId ? { detailShape, ...(detailShapeText ? { detailShapeText } : {}) } : {}),
+        }, { 'cache-control': 'no-store' });
+      }
       if (!health.ok) return sendJson(res, 200, { health, sample: [] });
-      const page = await provider.listAssets();
-      const sample = page.assets.slice(0, 10).map((a) => mapProviderAsset(rec, a));
-      return sendJson(res, 200, { health, sample, sampleTotal: page.assets.length }, { 'cache-control': 'no-store' });
+      try {
+        const page = await provider.listAssets();
+        // The sample passes the SAME exposure gate a real sync applies
+        // (buildFragment): a dry run that showed assets federation would refuse
+        // is worse than no dry run, because the operator enables on the
+        // strength of it. What the slice removed is counted, so an empty sample
+        // names its own cause instead of reading as an empty tenant.
+        const kept = page.assets.filter((a) => passesExposure(rec, a));
+        const excludedByExposure = page.assets.length - kept.length;
+        const sample = kept.slice(0, 10).map((a) => mapProviderAsset(rec, a));
+        return sendJson(res, 200, {
+          health, sample, sampleTotal: kept.length,
+          ...(excludedByExposure ? { excludedByExposure } : {}),
+          ...(page.skipped ? { skipped: page.skipped } : {}),
+          ...(page.notes?.length ? { notes: page.notes } : {}),
+        }, { 'cache-control': 'no-store' });
+      } catch (err) {
+        // A listing that breaks on a live-verify guess is a failure, not an
+        // empty tenant: the message names the constant, and `--shape` reports
+        // the structure that answers it.
+        return sendJson(res, 200, { health, sample: [], sampleError: (err as Error).message }, { 'cache-control': 'no-store' });
+      }
     } catch (err) {
-      return sendJson(res, 200, { health: { ok: false, detail: (err as Error).message }, sample: [] }, { 'cache-control': 'no-store' });
+      const health = { ok: false, detail: (err as Error).message };
+      return sendJson(res, 200, wantShape ? { health, shape: null } : { health, sample: [] }, { 'cache-control': 'no-store' });
     }
   });
 
@@ -2187,7 +2257,13 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     await audit(`user:${user.id}`, 'catalog.provider.sync', `provider:${rec.id}`);
     try {
       const fragment = await federation.sync(rec);
-      sendJson(res, 200, { ok: true, assetCount: fragment.assets.length, syncedAt: fragment.syncedAt, hash: fragment.hash });
+      // skipped/notes ride the result rather than the log (plans/33 §5): a sync
+      // that mapped none of what it read must say so where the operator looks.
+      sendJson(res, 200, {
+        ok: true, assetCount: fragment.assets.length, syncedAt: fragment.syncedAt, hash: fragment.hash,
+        ...(fragment.skipped ? { skipped: fragment.skipped } : {}),
+        ...(fragment.notes?.length ? { notes: fragment.notes } : {}),
+      });
     } catch (err) {
       sendError(res, 502, 'PROVIDER_UNAVAILABLE', `sync failed: ${(err as Error).message}`);
     }
@@ -2273,6 +2349,27 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const enabled = rec.managedBy === 'config' ? rec.enabled : false;
     await audit(`user:${user.id}`, 'catalog.provider.cutover', `provider:${rec.id}`, { migrated, disabled: !enabled });
     sendJson(res, 200, { ok: true, migrated, enabled, configManaged: rec.managedBy === 'config' });
+  });
+
+  // The drift report (plans/33 §2b): which materialized copies have fallen
+  // behind their source - the cadence check during a staged exit. Read-only and
+  // gated like the other provider reads: it stores nothing, materializes
+  // nothing, and names the remedy rather than running it. The comparison needs
+  // TODAY's upstream state, so it builds a fragment live instead of reading the
+  // cached one (which can be a TTL stale, and is absent entirely for a provider
+  // that cutover already disabled).
+  router.add('GET', '/api/v1/catalog/providers/:id/drift', async (req, res, ctx) => {
+    if (!(await requireAction(req, res, 'catalog.provider.read'))) return;
+    await providersReady;
+    const rec = await store.getProvider(ctx.params.id as string);
+    if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such provider');
+    try {
+      const fragment = await buildFragment(rec, federation.instantiate(rec), Date.now);
+      const report = providerDrift(rec.id, fragment.assets, await store.listInstanceAssets());
+      sendJson(res, 200, report, { 'cache-control': 'no-store' });
+    } catch (err) {
+      sendError(res, 502, 'PROVIDER_UNAVAILABLE', `drift check failed: ${(err as Error).message}`);
+    }
   });
 
   // Publish out (plans/27 §10): push a lolly-generated export INTO a destination
@@ -2935,10 +3032,20 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // `publicDocs` flag advertised at GET /api/auth/config so the console agrees.
   const docsDir = dataDir('docs/');
   const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
+  // A manifest entry may name a file in ONE subdirectory of docs/ (the
+  // per-provider guides live in docs/providers/). The slug stays flat and
+  // slug-shaped, so the route, the console's nav and its relative-link
+  // resolution all keep working on a single identifier; `path` is only how the
+  // slug finds its bytes. Shape-checked here, and the read below additionally
+  // proves the resolved file is still inside docs/.
+  // The optional directory segment is lowercase and dot-free, so it can never be
+  // '..'; the filename starts alphanumeric (docs/providers/README.md), so it
+  // cannot be '..md' either.
+  const DOC_PATH_RE = /^(?:[a-z0-9][a-z0-9-]*\/)?[A-Za-z0-9][A-Za-z0-9._-]*\.md$/;
   interface DocsManifest {
     title?: string;
     oss?: { label?: string; path?: string; note?: string };
-    sections?: Array<{ id?: string; title?: string; docs?: Array<{ slug?: string; title?: string; summary?: string }> }>;
+    sections?: Array<{ id?: string; title?: string; docs?: Array<{ slug?: string; title?: string; summary?: string; path?: string }> }>;
   }
   let docsManifest: DocsManifest | null | undefined;
   const loadDocsManifest = async (): Promise<DocsManifest | null> => {
@@ -2955,7 +3062,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         // inject markup.
         ...(typeof (s as { icon?: unknown }).icon === 'string' && /^[a-z-]+$/.test((s as { icon: string }).icon)
           ? { icon: (s as { icon: string }).icon } : {}),
-        docs: (s.docs ?? []).filter((d) => typeof d.slug === 'string' && SLUG_RE.test(d.slug)),
+        docs: (s.docs ?? [])
+          .filter((d) => typeof d.slug === 'string' && SLUG_RE.test(d.slug))
+          // A malformed `path` drops the entry rather than silently falling back
+          // to `<slug>.md`, which would serve the wrong page under a right name.
+          .filter((d) => d.path === undefined || (typeof d.path === 'string' && DOC_PATH_RE.test(d.path))),
       })).filter((s) => s.docs.length);
       docsManifest = { ...raw, sections };
     } catch {
@@ -2963,9 +3074,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
     return docsManifest;
   };
-  const docSlugs = async (): Promise<Set<string>> => {
+  /** slug -> file path relative to docs/. The manifest IS the allowlist. */
+  const docSlugs = async (): Promise<Map<string, string>> => {
     const m = await loadDocsManifest();
-    return new Set((m?.sections ?? []).flatMap((s) => (s.docs ?? []).map((d) => d.slug as string)));
+    return new Map((m?.sections ?? []).flatMap((s) =>
+      (s.docs ?? []).map((d) => [d.slug as string, d.path ?? `${d.slug as string}.md`] as const)));
   };
   // True when this request may read the docs: always on the public sandbox
   // (dev.enabled), otherwise only for a signed-in member. See the section header.
@@ -2989,9 +3102,14 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   router.add('GET', '/api/v1/docs/:slug', async (req, res, ctx) => {
     if (!(await docsReadable(req))) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const slug = ctx.params.slug ?? '';
-    if (!SLUG_RE.test(slug) || !(await docSlugs()).has(slug)) return sendError(res, 404, 'NOT_FOUND', 'no such doc');
+    const rel = SLUG_RE.test(slug) ? (await docSlugs()).get(slug) : undefined;
+    if (!rel) return sendError(res, 404, 'NOT_FOUND', 'no such doc');
+    // Belt to the manifest's braces: the resolved file must still sit inside
+    // docs/, so a hand-edited manifest cannot read outside the docs tree.
+    const abs = resolvePath(docsDir, rel);
+    if (!abs.startsWith(resolvePath(docsDir) + sep)) return sendError(res, 404, 'NOT_FOUND', 'no such doc');
     try {
-      const text = await readFile(join(docsDir, `${slug}.md`), 'utf8');
+      const text = await readFile(abs, 'utf8');
       res.writeHead(200, { 'content-type': 'text/markdown; charset=utf-8', 'cache-control': 'no-cache' });
       res.end(text);
     } catch {

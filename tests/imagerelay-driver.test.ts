@@ -17,7 +17,8 @@ const FILE_A = {
   updated_at: '2026-06-01T00:00:00.000Z', keywords: ['event', '2026'], tags: ['approved'],
   folder: { id: 9, name: 'Campaigns' }, custom_fields: { 'Expiry Date': '2027-01-01T00:00:00.000Z' },
 };
-const FILE_DEL = { id: 56, name: 'Retired.png', deleted: true, deletion_date: '2026-05-01T00:00:00.000Z' };
+// DELETED_KEYS reads `deleted` and nothing else, so the fixture carries nothing else.
+const FILE_DEL = { id: 56, name: 'Retired.png', deleted: true };
 const LIST = { files: [FILE_A, FILE_DEL], meta: { next_page: null } };
 const FILE_DL = { file: { ...FILE_A, download_url: 'https://assets.imagerelay.com/f/55/download?sig=x' } };
 
@@ -82,6 +83,15 @@ test('a download URL outside imagerelay.com is refused (no open proxy)', async (
   const fetchImpl = fakeFetch([tokenRoute, { match: (u) => u.includes('/files/55'), body: evil }]);
   const ir = createImageRelayProvider('ir4', {}, CRED('rt-evil'), fetchImpl);
   await assert.rejects(() => ir.resolveBlob('55', 'download'), /outside allowed hosts/);
+});
+
+test('a baseUrl/tokenUrl override off imagerelay.com is refused before anything is sent', async () => {
+  const fetchImpl = fakeFetch([tokenRoute, { match: () => true, body: LIST }]);
+  const ir = createImageRelayProvider('ir4b', { baseUrl: 'https://imagerelay.com.evil.example/api/v2' }, CRED('rt-base'), fetchImpl);
+  await assert.rejects(() => ir.listAssets(), /outside allowed hosts/);
+  const tok = createImageRelayProvider('ir4c', { tokenUrl: 'https://evil.example/oauth/token' }, CRED('rt-tok'), fetchImpl);
+  await assert.rejects(() => tok.listAssets(), /outside allowed hosts/);
+  assert.equal((fetchImpl as unknown as { calls: Call[] }).calls.length, 0, 'neither the credential nor the access token left the process');
 });
 
 test('healthCheck: ok on 200; a missing credential fails closed', async () => {

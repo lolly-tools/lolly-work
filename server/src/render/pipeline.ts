@@ -207,7 +207,7 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
       throw new RenderError('HOOKED_TOOL_NEEDS_CHROMIUM', 501,
         `Tool "${req.toolId}" ships hooks; the in-process render path runs hook-less tools only ` +
         `(set render.allowHooksInFastPath for a curated pack, or configure render.worker.url + ` +
-        `LW_RENDER_WORKER_SECRET for the Chromium worker — plans/07/11)`);
+        `LW_RENDER_WORKER_SECRET for the Chromium worker - see docs/configuration.md)`);
     }
     try {
       svgStr = await renderViaWorker(deps.worker, {

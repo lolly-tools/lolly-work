@@ -124,9 +124,11 @@ spec:
             - name: LW_CONFIG
               value: /app/instance.json
             # HA path: the migrate Job owns the schema, so no replica applies DDL
-            # and each refuses to start on a pending schema.
+            # and each refuses to start on a pending schema. With the Job turned
+            # off, nothing else would ever apply DDL, so the single-node default
+            # (auto-migrate at boot) has to come back or the pods never start.
             - name: LW_AUTO_MIGRATE
-              value: "false"
+              value: {{ .Values.migrate.enabled | ternary "false" "true" | quote }}
             {{- include "lolly-work.secretEnv" . | nindent 12 }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}

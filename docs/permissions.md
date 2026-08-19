@@ -17,11 +17,11 @@ anything up: a resource arrives as the set of selectors it satisfies (e.g.
 
 | Role | Comes from | Carries |
 |---|---|---|
-| `viewer` | assigned | `catalog.read`, `session.view` |
+| `viewer` | assigned | `catalog.read`, `session.view`, `collab.join` |
 | `member` | the default for any signed-in user | viewer + `tool.use`, `session.create/edit/delete/share`, `project.create`, `export.download`, `export.request`, `link.create` |
 | `author` | group `author` | member + `catalog.submit` |
 | `approver` | group `approver` | member + `approval.act` |
-| `admin` | group `admin` | author ∪ approver + `catalog.publish`, `catalog.expire`, `catalog.hold`, `catalog.scan`, `catalog.provider.read`, `catalog.provider.manage`, `policy.edit`, `grant.edit`, `link.revoke`, `link.create-guest`, `message.send`, `telemetry.view`, `fleet.view`, `audit.export`, `project.manage`, `project.archive`, `approval.assign`, `export.server` |
+| `admin` | group `admin` | author ∪ approver + `catalog.publish`, `catalog.expire`, `catalog.hold`, `catalog.scan`, `catalog.provider.read`, `catalog.provider.manage`, `brand.switch`, `catalog.injectable.manage`, `policy.edit`, `grant.edit`, `link.revoke`, `link.create-guest`, `message.send`, `telemetry.view`, `fleet.view`, `audit.export`, `project.manage`, `project.archive`, `approval.assign`, `export.server` |
 | `owner` | group `owner` | admin + `instance.config`, `catalog.provider.credential`, `catalog.provider.publish` |
 | `guest` | a guest-edit link | **nothing** - access is entirely link-scoped grants |
 
@@ -61,9 +61,14 @@ Every mutation is audited.
 ### The escalation guard
 
 A grant that creates or removes `instance.config` or `catalog.provider.credential` requires
-the **owner** role, even though grant editing itself is an admin action. Without it, an
-admin could mint themselves owner powers. Attempting it returns
-`403 OWNER_ONLY_ACTION`.
+the **owner** role, even though grant editing itself is an admin action. Attempting it
+returns `403 OWNER_ONLY_ACTION`.
+
+The guard stops an admin minting an owner-only *grant*. It does not stop an admin becoming
+an owner: role is derived from group membership, group editing is an admin action, and a
+local group named `owner` escalates exactly like an IdP one. That is deliberate (it is the
+break-glass when an IdP has no `owner` group) and audited, but it means the boundary
+between admin and owner is a governance convention, not a wall.
 
 ### "Edit but not export"
 

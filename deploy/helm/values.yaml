@@ -48,10 +48,13 @@ replicaCount: 2
 terminationGracePeriodSeconds: 60
 
 image:
-  # REQUIRED: there is no published image yet. Build it from the repo's
-  # deploy/compose/Dockerfile and push to a registry your cluster can pull:
-  #   docker build -f deploy/compose/Dockerfile -t <registry>/lolly-work:0.0.1 .
-  #   docker push <registry>/lolly-work:0.0.1
+  # Multi-arch images publish to GHCR on every `v*` release, but the packages are
+  # PRIVATE today — so a stock install ImagePullBackOffs unless you either add an
+  # imagePullSecrets entry below, or build and push your own (also the better
+  # air-gap posture):
+  #   docker build -f deploy/compose/Dockerfile -t <registry>/lolly-work-server:0.2.0 .
+  #   docker push <registry>/lolly-work-server:0.2.0
+  #   helm install … --set image.repository=<registry>/lolly-work-server --set image.tag=0.2.0
   #
   # The migrate Job runs `npm run migrate` (node scripts/migrate.ts); the stock
   # deploy/compose/Dockerfile ships scripts/, migrations/, package.json and the
@@ -86,7 +89,9 @@ config:
   instance:
     name: "Lolly Work"
     baseUrl: "https://lolly.example.com"
-    pack: "./packs/example"
+    # The demo pack rides inside the server image, so an unmounted install still
+    # serves a catalog. Repoint this at your own pack under pack.mountPath.
+    pack: "/app/packs/demo"
   idp:
     issuer: ""
     clientId: ""
@@ -282,10 +287,10 @@ migrate:
 
 # ── Pack (brand catalog assets) ─────────────────────────────────────────────
 # The instance serves its catalog from a "pack" on disk (config.instance.pack,
-# default ./packs/example → /app/packs/example in the image). Default here is
-# `none`: no pack volume is mounted, mirroring the Vercel LW_PACK gap — the
-# console and API work but catalog serving is degraded until a real pack is
-# present. To serve a catalog, mount one and point config.instance.pack at it —
+# defaulted above to /app/packs/demo — the small demo pack baked into the server
+# image). Default here is `none`: no pack volume is mounted, so an install works
+# out of the box on the demo pack and serves YOUR catalog once you mount one and
+# point config.instance.pack at it —
 # either a volume you populate (pvc/existingClaim/hostPath) or, simplest, an
 # OCI image via `image` + type=emptyDir below.
 pack:
@@ -301,10 +306,10 @@ pack:
   # pack into an image" pattern. Build an image whose filesystem carries the
   # pack under /pack (any base with sh + cp works):
   #   FROM busybox:stable
-  #   COPY packs/ /pack/          # → /pack/example/… in the image
+  #   COPY packs/ /pack/          # → /pack/acme/… in the image
   # and set `image` to its pushed ref. When set, an initContainer runs THAT
   # image and copies /pack/. into the pack volume before the server starts, so
-  # config.instance.pack (e.g. ./packs/example) resolves under mountPath. Pair
+  # config.instance.pack (e.g. /app/packs/acme) resolves under mountPath. Pair
   # with type=emptyDir (each pod copies its own; simplest) or with
   # pvc/existingClaim if you want the copy to persist across restarts.
   # type=none with `image` set FAILS at render — there is no volume to copy into.

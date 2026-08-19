@@ -22,9 +22,8 @@ import { join } from 'node:path';
 const CONFIG_DIR = join(homedir(), '.config', 'lolly-work');
 const SESSION_FILE = join(CONFIG_DIR, 'session');
 
-const { positionals, values } = parseArgs({
-  allowPositionals: true,
-  options: {
+const OPTIONS = {
+    help: { type: 'boolean', short: 'h' },
     base: { type: 'string' },
     email: { type: 'string' },
     cookie: { type: 'string' },
@@ -49,11 +48,25 @@ const { positionals, values } = parseArgs({
     in: { type: 'string' },
     org: { type: 'string' },
     days: { type: 'string' },
+    shape: { type: 'boolean' },
     'dry-run': { type: 'boolean' },
     prune: { type: 'boolean' },
     json: { type: 'boolean' },
-  },
-});
+} as const;
+
+// parseArgs throws on an unknown flag; catch it so a typo prints one line
+// rather than an unhandled TypeError and a Node stack trace.
+function parseCli(): ReturnType<typeof parseArgs<{ options: typeof OPTIONS; allowPositionals: true }>> {
+  try {
+    return parseArgs({ allowPositionals: true, options: OPTIONS });
+  } catch (err) {
+    console.error(`lw: ${(err as Error).message}`);
+    console.error('lw: run `lw` with no arguments for the command list.');
+    process.exit(1);
+  }
+}
+
+const { positionals, values } = parseCli();
 
 const base = (values.base ?? process.env.LW_BASE ?? 'http://localhost:8787').replace(/\/+$/, '');
 
@@ -63,15 +76,22 @@ function savedCookie(): string | null {
 
 async function call(path: string, opts: { method?: string; body?: unknown } = {}): Promise<unknown> {
   const cookie = savedCookie();
-  const res = await fetch(`${base}${path}`, {
-    method: opts.method ?? 'GET',
-    headers: {
-      ...(cookie ? { cookie } : {}),
-      ...(opts.body !== undefined ? { 'content-type': 'application/json' } : {}),
-      'x-lolly-client': 'lw-cli engine/0',
-    },
-    ...(opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${base}${path}`, {
+      method: opts.method ?? 'GET',
+      headers: {
+        ...(cookie ? { cookie } : {}),
+        ...(opts.body !== undefined ? { 'content-type': 'application/json' } : {}),
+        'x-lolly-client': 'lw-cli engine/0',
+      },
+      ...(opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
+    });
+  } catch {
+    // A stack trace out of node:net tells a first-time operator nothing. The
+    // answer is always the same: the instance is elsewhere, or is not up.
+    fail(`cannot reach ${base} — start the instance, or point at it with --base <url> (or LW_BASE)`);
+  }
   const data = await res.json().catch(() => null);
   if (!res.ok) {
     const err = (data as { error?: { code?: string; message?: string } })?.error;
@@ -88,6 +108,14 @@ function fail(msg: string): never {
 function out(value: unknown): void {
   if (values.json) console.log(JSON.stringify(value, null, 2));
 }
+
+/** The kinds `lw providers auth` can drive end to end. Every other OAuth kind
+ *  here (canto, imagerelay, optimizely-cmp) is live-verify-pending: its
+ *  authorize/token endpoints are taken from vendor documentation and have not
+ *  been confirmed against a real tenant, and this CLI will not guess a consent
+ *  URL. Those kinds capture the sealed blob through `lw providers credential`
+ *  instead. Keep this list in step with oauthFlowFor below. */
+const OAUTH_FLOW_KINDS = ['dropbox', 'gdrive', 'o365'];
 
 /** Consent endpoints per OAuth provider kind. Scopes are read-only; the
  *  offline/refresh grant is what the stored credential is. */
@@ -261,6 +289,119 @@ switch (cmd) {
         console.log(`created ${id} (disabled — set a credential, then enable)`);
         break;
       }
+      // Dry run against a tenant (plans/33 §2) - the safe first contact: an
+      // ephemeral record is health-checked server-side, then thrown away.
+      // Nothing is stored, nothing is enabled. Takes a --kind, not an id: no
+      // provider record has to exist yet.
+      //
+      // Two modes. Plain: health plus a mapped sample of this tenant's assets.
+      // --shape: health plus the structure of its records - key names and value
+      // types, never a value and never a sample, so the output is sendable.
+      case 'preview': {
+        const kind = values.kind ?? fail('usage: lw providers preview --kind <kind> [--options {json}] [--mapping {json}] [--exposure {json}] [--shape [--remote-id <id>]] [--json]');
+        const options = parseJsonFlag('options');
+        const mapping = parseJsonFlag('mapping');
+        const exposure = parseJsonFlag('exposure');
+        // Hidden like `credential` - a preview secret is a real tenant secret.
+        // Empty is a legitimate answer for a source that needs none (a public
+        // git or s3 bucket), so it is not an error.
+        const secret = await promptHidden(`credential for the ${kind} preview (empty if this kind needs none): `);
+        const r = await call('/api/v1/catalog/providers/preview', { method: 'POST', body: {
+          kind,
+          ...(secret ? { secret } : {}),
+          ...(options ? { options } : {}),
+          ...(mapping ? { mapping } : {}),
+          ...(exposure ? { exposure } : {}),
+          ...(values.shape ? { shape: true } : {}),
+          // Only meaningful with --shape: it selects the detail report, and
+          // nothing else in a preview is per-asset.
+          ...(values.shape && values['remote-id'] ? { remoteId: values['remote-id'] } : {}),
+        } }) as {
+          health: { ok: boolean; detail?: string };
+          sample?: Array<{ id: string; name?: string; type?: string; tags?: string[]; formats?: Array<{ format: string }> }>;
+          sampleTotal?: number;
+          excludedByExposure?: number;
+          skipped?: number;
+          notes?: string[];
+          sampleError?: string;
+          shapeText?: string[];
+          detailShapeText?: string[];
+        };
+        out(r);
+        if (values.json) break;
+        console.log(r.health.ok ? `health ok - ${kind}` : `health FAILED: ${r.health.detail ?? 'unknown'}`);
+        if (values.shape) {
+          // Structure only, so the whole output redirects to a file an operator
+          // can send: the list call first, then the per-asset detail call when
+          // one was asked for.
+          for (const line of r.shapeText ?? []) console.log(line);
+          for (const line of r.detailShapeText ?? []) console.log(line);
+          if (!r.health.ok) process.exit(2);
+          break;
+        }
+        if (r.sampleError) console.log(`listing FAILED: ${r.sampleError}`);
+        if (r.health.ok) {
+          // Truncate to the column, then pad past it - a value that fills its
+          // column exactly must not run into the next one.
+          const cell = (s: string, w: number): string => (s.length > w ? `${s.slice(0, w - 1)}…` : s).padEnd(w + 2);
+          const rows = (r.sample ?? []).map((a) => ({
+            id: a.id ?? '', name: a.name ?? '', type: a.type ?? '',
+            tags: (a.tags ?? []).join(' '),
+            formats: (a.formats ?? []).map((f) => f.format).join(' '),
+          }));
+          console.log(`mapped sample: ${rows.length}${r.sampleTotal !== undefined ? ` of ${r.sampleTotal} on the first page` : ''}`
+            + (r.excludedByExposure ? `, ${r.excludedByExposure} EXCLUDED by the exposure slice` : '')
+            + (r.skipped ? `, ${r.skipped} record(s) SKIPPED (the driver could not map them)` : ''));
+          for (const note of r.notes ?? []) console.log(`  note: ${note}`);
+          if (rows.length) {
+            console.log(`  ${cell('id', 32)}${cell('name', 26)}${cell('type', 8)}${cell('tags', 32)}formats`);
+            for (const row of rows) {
+              console.log(`  ${cell(row.id, 32)}${cell(row.name, 26)}${cell(row.type, 8)}${cell(row.tags, 32)}${row.formats}`);
+            }
+            // Sections are not a separate column because they are not a separate
+            // field: unless mapping.sectionTags is false they federate INTO tags.
+            console.log('  (sections federate as tags unless mapping.sectionTags is false; nothing above was stored)');
+          } else if (r.excludedByExposure) {
+            console.log(`  the exposure slice excluded every asset on this page (${r.excludedByExposure}) — widen exposure.requireApproved / includeSections / excludeTags, or this provider would federate nothing`);
+          } else {
+            console.log('  no assets came back — check the options scope (the exposure slice excluded none of them)');
+          }
+        }
+        if (!r.health.ok) process.exit(2);
+        break;
+      }
+      // Drift (plans/33 §2b) - the cadence check during a staged exit: which
+      // materialized copies has upstream changed since we took them?
+      case 'drift': {
+        if (!id) fail('usage: lw providers drift <id>');
+        const r = await call(`/api/v1/catalog/providers/${id}/drift`) as {
+          materialized: number; compared: number;
+          drifted: Array<{ id: string; remoteId: string; sourceUpdatedAt: string | null; materializedAt: string; upstreamUpdatedAt: string }>;
+          unstamped?: number; unparsable?: number; unparsableShapes?: string[];
+          timezoneless?: number; timezonelessShapes?: string[]; missingUpstream?: number;
+          neverMaterialized: string[];
+        };
+        out(r);
+        if (values.json) break;
+        console.log(`${id}: ${r.drifted.length} drifted of ${r.compared} compared (${r.materialized} materialized asset(s) in all)`);
+        for (const d of r.drifted) {
+          const from = d.sourceUpdatedAt ?? `${d.materializedAt} (materializedAt - upstream carried no stamp then)`;
+          console.log(`  ${d.remoteId.padEnd(28)} was ${from}  now ${d.upstreamUpdatedAt}  ${d.id}`);
+        }
+        // Everything the comparison could NOT answer is printed, never folded
+        // into `compared` (plans/33 §5): a copy left uncompared is "cannot
+        // tell", and reading it as "unchanged" is how a broken stamp guess
+        // passes for a clean bill of health.
+        if (r.unstamped) console.log(`not compared: ${r.unstamped} copy(ies) whose upstream record carries no change stamp the driver can read - check this kind's UPDATED_AT_KEYS against its live-verify runbook.`);
+        if (r.unparsable) console.log(`not compared: ${r.unparsable} copy(ies) whose change stamp would not parse as a date (shape ${(r.unparsableShapes ?? []).join(', ')}) - drift detection is inoperative for those until the driver reads that format.`);
+        if (r.missingUpstream) console.log(`not compared: ${r.missingUpstream} copy(ies) whose remote id is no longer in the listing at all.`);
+        if (r.timezoneless) console.log(`read with care: ${r.timezoneless} comparison(s) used a stamp that names no timezone (shape ${(r.timezonelessShapes ?? []).join(', ')}) - it was read in THIS server's timezone, so those answers can be off by its UTC offset.`);
+        if (r.neverMaterialized.length) {
+          console.log(`never materialized (${r.neverMaterialized.length}): ${r.neverMaterialized.join(', ')}`);
+        }
+        console.log(`remedy: lw providers materialize ${id} --remote-id <remoteId> - idempotent per (provider, remoteId), so a re-run resumes rather than duplicates.`);
+        break;
+      }
       case 'credential': {
         if (!id) fail('usage: lw providers credential <id>   (prompts for the secret)');
         const secret = await promptHidden(`secret for ${id}: `);
@@ -274,11 +415,13 @@ switch (cmd) {
       case 'disable':
       case 'sync': {
         if (!id) fail(`usage: lw providers ${sub} <id>`);
-        const r = await call(`/api/v1/catalog/providers/${id}/${sub}`, { method: 'POST' });
+        const r = await call(`/api/v1/catalog/providers/${id}/${sub}`, { method: 'POST' }) as { assetCount: number; skipped?: number; notes?: string[] };
         out(r);
-        console.log(sub === 'sync'
-          ? `synced ${id}: ${(r as { assetCount: number }).assetCount} assets`
-          : `${id} ${sub}d`);
+        if (sub !== 'sync') { console.log(`${id} ${sub}d`); break; }
+        // skipped and notes are printed, never swallowed (plans/33 §5).
+        console.log(`synced ${id}: ${r.assetCount} assets`
+          + (r.skipped ? `, ${r.skipped} record(s) SKIPPED (the driver could not map them)` : ''));
+        for (const note of r.notes ?? []) console.log(`  note: ${note}`);
         break;
       }
       case 'health': {
@@ -298,9 +441,17 @@ switch (cmd) {
         if (values.section) body.section = values.section;
         const r = await call(`/api/v1/catalog/providers/${id}/materialize`, { method: 'POST', body }) as {
           materialized: number; skipped: number; credentialsFound: number;
+          errors?: Array<{ remoteId: string; error: string }>;
         };
         out(r);
         console.log(`materialized ${r.materialized} asset(s) from ${id} — ${r.credentialsFound} carry a credential, ${r.skipped} skipped`);
+        // Per-asset failures are printed, never left to --json (plans/33 §5):
+        // this is the blob test every live-verify runbook turns on, and each
+        // message already names the assumption, the constant and the runbook.
+        if (r.errors?.length) {
+          console.log(`${r.errors.length} asset(s) FAILED:`);
+          for (const e of r.errors) console.log(`  ${e.remoteId}: ${e.error}`);
+        }
         break;
       }
       // Cutover: identities ext/* → inst/*, rows + aliases migrated, provider
@@ -347,7 +498,12 @@ switch (cmd) {
         if (!id) fail('usage: lw providers auth <id>');
         const rec = await call(`/api/v1/catalog/providers/${id}`) as { kind: string; options: Record<string, unknown> };
         const flow = oauthFlowFor(rec.kind, rec.options);
-        if (!flow) fail(`provider kind ${rec.kind} does not use OAuth — use \`lw providers credential ${id}\``);
+        if (!flow) {
+          fail(`no loopback consent flow is registered for kind ${rec.kind} (registered: ${OAUTH_FLOW_KINDS.join(', ')}).
+    Capture the sealed credential directly instead:  lw providers credential ${id}
+    A consent flow for ${rec.kind} needs its authorize and token endpoints confirmed
+    against a real tenant first - this CLI will not guess a consent URL.`);
+        }
         console.log(`Register a ${rec.kind} app of your own first (loopback redirect URIs must be allowed).`);
         const clientId = await promptVisible('client id: ');
         if (!clientId) fail('client id required');
@@ -399,7 +555,7 @@ switch (cmd) {
         break;
       }
       default:
-        fail('usage: lw providers [list|add|credential|auth|enable|disable|sync|health|rm]');
+        fail('usage: lw providers [list|preview|add|credential|auth|enable|disable|sync|health|drift|materialize|cutover|publish|rm]');
     }
     break;
   }
@@ -579,8 +735,14 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
     break;
   }
 
-  default:
-    console.log(`lw — lolly-work admin CLI (base: ${base})
+  default: {
+    // No command (or -h) is a request for the list, exit 0. An unknown command
+    // is an error and must exit non-zero, or a scripted deploy reads it as
+    // success.
+    const unknown = cmd !== undefined && !values.help;
+    const write = unknown ? console.error : console.log;
+    if (unknown) write(`lw: unknown command "${cmd}"`);
+    write(`lw — lolly-work admin CLI (base: ${base})
 
   login --email <dev-user>   sign in via the dev provider
   login --cookie 'lw_session=…'   store a browser session
@@ -591,10 +753,16 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   apply <file> [--dry-run] [--prune]   apply a governance document (dry-run shows the diff; prune removes store-only entries)
   links [--all] · links revoke <id>
   providers [list] · providers add <id> --kind … --label "…" [--options/--mapping/--exposure {json}]
+  providers preview --kind <kind> [--options/--mapping/--exposure {json}]   dry run: health + a mapped sample of this tenant, nothing stored
+  providers preview --kind <kind> --shape [--remote-id <id>]   instead of the sample: the tenant's record structure, key names and types only
   providers credential <id> (prompts) · auth <id> (OAuth consent) · enable|disable|sync|health|rm <id>
+  providers drift <id>       materialized copies whose upstream updatedAt has moved on
   grants [list] · grants add|rm <principal> <action> [<resource>] --effect deny|allow
   preview --groups a,b   what a member in those groups would receive
   msg send --title "…" [--body --kind --severity --groups a,b --shells tauri --max-engine 1.52.99]
 
   --base <url> or LW_BASE — instance to talk to · --json for machine output`);
+    if (unknown) process.exit(1);
+    break;
+  }
 }

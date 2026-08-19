@@ -46,9 +46,10 @@ means any signed-in member; *public* means no session needed.
 
 | Route | Action |
 |---|---|
-| `GET /api/v1/catalog/providers`, `GET …/:id`, `GET …/:id/health` | `catalog.provider.read` |
-| `POST /api/v1/catalog/providers`, `PUT …/:id`, `DELETE …/:id`, `POST …/preview`, `POST …/:id/sync` | `catalog.provider.manage` |
-| `PUT/DELETE …/:id/credential`, `POST …/:id/enable`, `POST …/:id/disable` | `catalog.provider.credential` (**owner**) |
+| `GET /api/v1/catalog/providers`, `GET …/:id`, `GET …/:id/health`, `GET …/:id/drift` | `catalog.provider.read` |
+| `POST /api/v1/catalog/providers`, `PUT …/:id`, `DELETE …/:id`, `POST …/preview`, `POST …/:id/sync`, `POST …/:id/materialize` | `catalog.provider.manage` |
+| `PUT/DELETE …/:id/credential`, `POST …/:id/enable`, `POST …/:id/disable`, `POST …/:id/cutover` | `catalog.provider.credential` (**owner**) |
+| `POST …/:id/publish` | `catalog.provider.publish` (**owner**) |
 
 Config-managed providers reject mutations with `409 CONFIG_MANAGED`.
 

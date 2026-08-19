@@ -3,7 +3,8 @@
  * injected fetch: the shared refresh-token exchange + process-level access
  * token cache (one refresh serves many calls; rotation invalidates), then
  * Dropbox / Google Drive / O365-Graph mapping, streaming, and the host/id
- * guards that keep resolveBlob un-forgeable.
+ * guards that keep resolveBlob un-forgeable. Canto joins on the same seam
+ * (plans/32 §3): its regional token endpoint derives from the tenant domain.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -11,6 +12,7 @@ import { getAccessToken, invalidateAccessTokens, parseOAuthCredential } from '..
 import { createDropboxProvider } from '../server/src/catalog/providers/dropbox.ts';
 import { createGdriveProvider } from '../server/src/catalog/providers/gdrive.ts';
 import { createO365Provider } from '../server/src/catalog/providers/o365.ts';
+import { createCantoProvider } from '../server/src/catalog/providers/canto.ts';
 
 const CRED = JSON.stringify({ clientId: 'app-1', clientSecret: 'cs', refreshToken: 'rt-abc' });
 
@@ -129,6 +131,30 @@ test('o365: children mapping with parent-path sections, nextLink cursor host-pin
   // A poisoned cursor pointing off-Graph is refused before any fetch.
   await assert.rejects(() => gr.listAssets('https://evil.example/steal'), /outside graph.microsoft.com/);
   await assert.rejects(() => gr.resolveBlob('bad/../id', 'content'), /bad graph item id/);
+});
+
+test('canto: the token endpoint follows the regional domain, and the sealed credential is the shared shape', async () => {
+  const { impl, calls } = oauthFetch([{ match: (u) => u.includes('/api/v1/image?'), body: { results: [] } }]);
+  const de = createCantoProvider('canto-de', { tenant: 'acme', domain: 'de', minGapMs: 0 }, CRED, impl);
+  await de.listAssets();
+  assert.equal(calls[0]?.url, 'https://oauth.canto.de/oauth/api/oauth2/token', 'regional OAuth server, not the tenant host');
+  assert.ok(String(calls[0]?.init?.body ?? '').includes('grant_type=refresh_token'));
+  assert.equal((calls[1]?.init?.headers as Record<string, string>).authorization, 'Bearer at-1');
+
+  // tokenUrl overrides the derivation for a tenant Canto support points elsewhere.
+  const { impl: impl2, calls: calls2 } = oauthFetch([{ match: (u) => u.includes('/api/v1/image?'), body: { results: [] } }]);
+  const pinned = createCantoProvider('canto-pin', { tenant: 'acme', tokenUrl: 'https://oauth.canto.global/oauth/api/oauth2/token', minGapMs: 0 }, CRED, impl2);
+  await pinned.listAssets();
+  assert.equal(calls2[0]?.url, 'https://oauth.canto.global/oauth/api/oauth2/token');
+
+  // BYOT: no credential means no token exchange and an unhealthy provider, never
+  // an anonymous call to the tenant.
+  const { impl: impl3, calls: calls3 } = oauthFetch([]);
+  const keyless = createCantoProvider('canto-keyless', { tenant: 'acme', minGapMs: 0 }, undefined, impl3);
+  const h = await keyless.healthCheck();
+  assert.equal(h.ok, false);
+  assert.match(h.detail ?? '', /no credential/);
+  assert.equal(calls3.length, 0);
 });
 
 test('a revoked grant surfaces as an unhealthy provider, not a crash', async () => {

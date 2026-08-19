@@ -47,13 +47,13 @@ import { fileURLToPath } from 'node:url';
 // The demo mounts the sibling OSS repo as its pack + shell. Resolve its location
 // portably so the demo runs on any machine (the easy-deploy goal), in
 // priority order: LOLLY_OSS_DIR env → a sibling `lolly` checkout next to this
-// repo → the original hard-coded dev path. First one that exists on disk wins.
+// repo. First one that exists on disk wins; no machine-specific path is baked
+// in, so what a newcomer sees here is what everyone sees.
 function resolveOssDir(): string {
   const here = dirname(fileURLToPath(import.meta.url)); // .../lolly-work/scripts
   const candidates = [
     process.env.LOLLY_OSS_DIR,
     resolve(here, '..', '..', 'lolly'), // sibling checkout: ../../lolly
-    '/Users/andy/Build/lolly',          // original dev default
   ].filter((p): p is string => typeof p === 'string' && p.length > 0);
   for (const c of candidates) {
     if (existsSync(join(c, 'shells', 'web'))) return resolve(c);
@@ -910,10 +910,14 @@ ${line}
   Access mode: ${accessMode.toUpperCase()}
   Shell dist:  ${dist.present ? SHELL_DIR : '(none — console + API only)'}
     ${dist.reason}
-    ${dist.fresh
-      ? 'FRESH → gated: the shell shows the sign-in gate + governance UX.'
-      : 'STALE → open: the shipped shell loads catalog + renders; rebuild the'}
-    ${dist.fresh ? '' : 'shell (npm run build:web in ../lolly) to demo the employee governance UX.'}
+    ${!dist.present
+      ? 'NO SHELL → console + API only. Clone the OSS repo beside this one'
+      : dist.fresh
+        ? 'FRESH → gated: the shell shows the sign-in gate + governance UX.'
+        : 'STALE → open: the shipped shell loads catalog + renders; rebuild the'}
+    ${!dist.present
+      ? '(git clone https://github.com/lolly-tools/lolly.git ../lolly; npm install && npm run build:web) to get the web shell at /.'
+      : dist.fresh ? '' : 'shell (npm run build:web in ../lolly) to demo the employee governance UX.'}
 
   Sign in (dev provider — click a link, no password):
     admin       ${devUrl('admin@suse.example', '/admin')}

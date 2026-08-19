@@ -1,7 +1,7 @@
 # Status and roadmap
 
 Where this deploy actually stands. Written to be safe to hand to an auditor or a CIO: the
-gaps are named, not smoothed over. Verified against the repository on **2026-07-30**.
+gaps are named, not smoothed over. Verified against the repository on **2026-08-18**.
 
 ![The client fleet - which shell and engine versions are talking to this deployment](shots/client-fleet.svg)
 
@@ -9,9 +9,9 @@ gaps are named, not smoothed over. Verified against the repository on **2026-07-
 
 | | Control plane (this repo) | Lolly OSS |
 |---|---|---|
-| Tests | 219 (218 pass, 1 env-gated skip, ~3 s) | 5,220 (5,189 pass, 31 conditional skips, ~51 s) |
+| Tests | 587 (584 pass, 3 conditional skips, ~8 s) | 5,220 (5,189 pass, 31 conditional skips, ~51 s) |
 | CI | 4 blocking gates: test (with a real Postgres service), typecheck, audit (npm audit + SBOM freshness), package (image build) | 7 blocking gates incl. SBOM drift + license checks |
-| Runtime deps | 5 (2 vendored); `npm audit`: 0 findings | 1 npm (+ Rust for desktop shells) |
+| Runtime deps | 7 (2 vendored); `npm audit`: 0 findings | 1 npm (+ Rust for desktop shells) |
 | Compliance artefacts | `SECURITY.md`, CycloneDX `sbom.cdx.json` (CI-checked for drift) | SBOM (CI-gated), SECURITY.md with threat model, third-party notices |
 
 ## What is built and tested
@@ -29,8 +29,9 @@ gaps are named, not smoothed over. Verified against the repository on **2026-07-
   signing** when an identity is configured.
 - Links: mint/verify/expire/revoke, passwords, guest admission with TTL caps.
 - Approvals engine (any/quorum/all, nomination, separation of duties) with per-user inbox.
-- Catalog: pack serving with per-caller filtering, lifecycle (schedule/expire/revoke), seven
-  provider kinds with sealed credentials, exposure governance and live search fan-out.
+- Catalog: pack serving with per-caller filtering, lifecycle (schedule/expire/revoke), thirteen
+  provider kinds with sealed credentials, exposure governance and live search fan-out, plus the
+  exit (materialize, drift, cutover) and publish-out to Optimizely CMP.
 - Telemetry ingest (closed allowlist, attribution at the door), rollups, activity feed, fleet
   registry, hash-chained audit log with an anchorable head.
 - Postgres store + migrations runner behind one conformance-tested seam.
