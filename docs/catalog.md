@@ -40,6 +40,101 @@ A pack is immutable for a process: publish a new pack and restart (or roll) to p
 On top of that, overlay `visibility` removes individual tools from the feed for groups that
 should not see them ([governance](governance.md)).
 
+## Submitting an asset
+
+The pack is immutable and providers are read-only, so for a long time the only way bytes
+entered a deploy's catalog was a server-side pull from a source system. Submit is the other
+direction: a member puts a file in.
+
+```
+POST /api/v1/catalog/submit?name=Campaign%20Hero&tags=campaign,hero&groups=design
+                                                             # catalog.submit (author role)
+```
+
+The bytes ride the raw request body; the declared metadata rides query params (`name`,
+`description`, `tags`, `type`, `groups`). The response names the new `inst/<id>` asset, its
+checksum, and the state it landed in.
+
+**Open to authors is the default.** Anyone holding `catalog.submit` submits, and the asset is
+live the moment it is stored. An org that wants review names an approval chain in
+`policy.submit.chain`; then a submission waits in state `submitted`, invisible in the feed,
+unservable at `/catalog/*` and not linkable, until an approver publishes it. Defaults set
+direction; limits are something an org chooses.
+
+Once chosen, the limit holds: if `policy.submit.chain` names a chain this instance does not
+have - a rename, a deletion, a first boot in the wrong order - submissions are refused with
+`503 SUBMIT_CHAIN_MISSING` naming the chain to fix. Review that a typo turns off would be
+worse than an outage, because nothing would say it had stopped happening.
+
+What happens to the bytes, in order:
+
+| Step | What it does |
+|---|---|
+| Size cap | `policy.submit.maxBytes`, 64 MiB by default, the same cap publish-out uses |
+| Quota | per-group counters (`policy.submit.quota`), both 0 (unlimited) by default |
+| sha256 | an exact duplicate returns the asset that already holds those bytes, `200` with `duplicate: true` - reported, never an error. Only an asset the submitter can already see and fetch counts: a checksum hit on something invisible to them, or on one still under review or returned, stores a second copy instead, so the short-circuit can neither confirm a file they have no access to nor drop their contribution behind one |
+| Scan hook | the operator's pre-store veto, if one is wired ([operations](operations.md#pre-store-scan-hook-for-submissions)) |
+| Store | `BlobStore.put`, then an instance-asset record carrying the submitter, the declared metadata, and the sniffed type and pixel dimensions |
+| Credentials | a C2PA **detection** pass, recorded and badged. Unlike publish-out no lolly export assertion is required: a submission is an arbitrary org file, and detection never refuses one |
+| Decision | an approval with subject `asset` when a chain is configured, otherwise `live` immediately, with a lifecycle row minted so the expire/hold/revoke controls work from the first moment |
+
+The type and dimensions come from the **bytes**, never from what the client claimed: a file
+that says `image/png` and is not one is stored as what it is.
+
+Exposure can be narrowed at submit with `groups`, and only ever to groups the submitter is
+in - nobody publishes into a group they are not a member of. With no `groups`, the asset is
+visible to every member, like a pack asset.
+
+A quota scope is a group name, and a submission is charged to **every** group its submitter
+belongs to, so extra memberships only ever tighten a member's budget rather than buying more
+of it. The charge is made before the bytes are stored and is what enforces the cap - a check
+read earlier is a window that concurrent submissions all pass through - and a submission that
+is then refused gives its charge back. Counters are otherwise cumulative and are not credited
+back when a submission is returned: the bytes were still stored.
+
+Submitted bytes are served with a content-security policy that sandboxes them and allows no
+script. An SVG is markup rather than a picture, and the console shares this origin, so a file
+a member uploaded is never allowed to run as whoever opens it - through `/catalog/*`, through
+a share link, or in the review preview.
+
+### Reviewing what was submitted
+
+```
+GET   /api/v1/catalog/submissions[?state=submitted|live|returned]     # catalog.read
+GET   /api/v1/catalog/submissions/<id>/bytes                          # preview, pre-publication
+PATCH /api/v1/catalog/submissions/<id>         { "name": "…", "tags": ["…"], "type": "…", "description": "…" }
+POST  /api/v1/catalog/submissions/<id>/act     { "action": "approve" | "reject", "comment": "…" }
+```
+
+The queue answers with the caller's own submissions plus the ones open on a step their groups
+may act on - the same two-sided rule the approvals inbox uses. Deciding delegates to the
+approvals engine, so separation of duties and step eligibility are enforced in exactly one
+place; the same decision made from the Approvals view settles the asset identically. Approve
+publishes it, reject returns it with the comment, and the submitter is told either way through
+the inbox. Audit records `catalog.submit`, `catalog.approve-submission` and
+`catalog.return-submission`; a refused submission is audited too, because nothing was stored
+to hang the event off otherwise.
+
+**A reviewer can fix the metadata rather than return the asset over it.** `PATCH` corrects a
+pending submission's declared `name`, `type`, `tags` and `description`; the submitter can
+correct their own while it waits. It touches nothing else - not the bytes, not the exposure the
+submitter chose - and it refuses once the submission has settled, because a published asset is
+an ordinary catalog asset from then on. Every field that moves is audited with its before and
+after, under `catalog.edit-submission`.
+
+The console's Catalog view shows the queue above the served assets. Reviewing one opens a panel
+below the table with the preview, the metadata as an editable form, and the decision with its
+comment - the same place the served-asset inspect panel opens. Approving saves an unsaved
+correction first, so a fixed name is never lost on the way to publishing it. From a terminal:
+
+```bash
+lw catalog submit ./hero.png --name "Campaign Hero" --tags campaign,hero --groups design
+lw catalog queue                                  # --all to include settled ones
+lw catalog edit    inst/ab12cd34 --name "Campaign Hero 2026" --tags campaign,hero
+lw catalog approve inst/ab12cd34
+lw catalog return  inst/ab12cd34 --body "wrong logo lockup"
+```
+
 ## Content lifecycle
 
 Every asset can carry a lifecycle row - the "stop sharing" primitive, as one action:

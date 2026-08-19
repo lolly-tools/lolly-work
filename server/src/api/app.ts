@@ -34,12 +34,17 @@ import {
 } from '../collab/invites.ts';
 import { filterToolIndex, normalizeOverlay, toolVisibleTo } from '../policy/overlay.ts';
 import {
-  applyLifecycleToIndex, assetState, buildPathMap, combinedState, entryWindow, type AssetIndex, type AssetIndexEntry, type LifecycleRow,
+  applyLifecycleToIndex, assetState, buildPathMap, combinedState, entryWindow,
+  type AssetFormatEntry, type AssetIndex, type AssetIndexEntry, type AssetState, type LifecycleRow,
 } from '../catalog/lifecycle.ts';
 import { buildFragment, callerSeesProvider, createFederation, credentialContext, mapProviderAsset, passesExposure } from '../catalog/federation.ts';
 import { providerDrift } from '../catalog/drift.ts';
 import { applyCredentialsToIndex, detectCredential, type CredentialRow } from '../catalog/credentials.ts';
-import { composeInstanceAssets, instanceAssetVisible, materializedIdFor, INST_PREFIX } from '../catalog/instance-assets.ts';
+import {
+  composeInstanceAssets, instanceAssetVisible, materializedIdFor, submissionServable, INST_PREFIX,
+  type AssetSubmission, type InstanceAssetRecord,
+} from '../catalog/instance-assets.ts';
+import { listSubmissions, settleSubmission, submitAsset } from '../catalog/submit.ts';
 import { materializeProvider, materializeAsset, cutoverProvider, pinAsset } from '../catalog/materialize.ts';
 import { verifyLollyExport, extractProvenance } from '../catalog/publish.ts';
 import { listBrandProfiles, switchBrandProfile } from '../brand/profiles.ts';
@@ -73,7 +78,8 @@ import { createMetrics, statusClass, metricsGate, type Metrics, type GaugeLine }
 import { createRateLimiter, clientIp, rateLimitSurface } from '../observability/rate-limit.ts';
 import { buildActivity } from '../activity/feed.ts';
 import {
-  applyAction, createApproval, currentStep, isEligible, isTerminal, normalizeChain, stepOf, validateNominees, withdraw,
+  applyAction, createApproval, currentStep, eligibleForCurrentStep, isEligible, isTerminal, normalizeChain,
+  stepOf, validateNominees, withdraw,
   type Approval, type SubjectType,
 } from '../approvals/engine.ts';
 
@@ -478,8 +484,14 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     } | null;
     const kind = body?.kind;
     if (!kind || !LINK_KINDS.includes(kind)) return sendError(res, 400, 'INVALID_INPUT', 'kind must be share|embed|download|guest-edit');
-    if (!body?.target || (!body.target.toolId && !body.target.sessionId)) {
-      return sendError(res, 400, 'INVALID_INPUT', 'target.toolId or target.sessionId required');
+    if (!body?.target || (!body.target.toolId && !body.target.sessionId && !body.target.assetId)) {
+      return sendError(res, 400, 'INVALID_INPUT', 'target.toolId, target.sessionId or target.assetId required');
+    }
+    // An asset target has no tool to open, so it cannot admit a guest seat
+    // (plans/31 §2 1b names share/embed/download only). Refuse rather than
+    // mint a guest link whose target the collab gateway could never resolve.
+    if (kind === 'guest-edit' && body.target.assetId) {
+      return sendError(res, 400, 'INVALID_INPUT', 'guest-edit links target a tool, not a catalog asset');
     }
     const action = kind === 'guest-edit' ? 'link.create-guest' : 'link.create';
     const grants = await store.listGrants();
@@ -512,6 +524,20 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         return sendError(res, 403, 'FORBIDDEN', 'you cannot see this session');
       }
     }
+    // Exposure is checked HERE, once, at mint (plans/31 §2 1b): a link is a
+    // bearer credential for the bytes the minter could already fetch, never a
+    // way to reach past their own group visibility. Lifecycle is deliberately
+    // NOT checked here - it is re-read on every resolve, so a link minted today
+    // stops serving the moment the asset expires or is revoked.
+    if (body.target.assetId) {
+      const assetId = body.target.assetId.trim();
+      if (!assetId || assetId.includes('..') || !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(assetId)) {
+        return sendError(res, 400, 'INVALID_INPUT', 'bad asset id');
+      }
+      if (!(await callerSeesAsset(user, assetId))) {
+        return sendError(res, 403, 'FORBIDDEN', 'you cannot see this asset');
+      }
+    }
     const maxTtl = kind === 'guest-edit' ? config.policy.guestLinks.maxTtlHours : 24 * 365;
     const defTtl = kind === 'guest-edit' ? config.policy.guestLinks.defaultTtlHours : DEFAULT_TTL_SEC[kind] / 3600;
     const ttlHours = Math.min(body.ttlHours ?? defTtl, maxTtl);
@@ -526,7 +552,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       ...(body.projectId ? { projectId: body.projectId } : {}),
     };
     await store.putLink(link);
-    await audit(`user:${user.id}`, 'link.create', `link:${link.id}`, { kind, toolId: body.target.toolId ?? null });
+    await audit(`user:${user.id}`, 'link.create', `link:${link.id}`, {
+      kind, toolId: body.target.toolId ?? null, assetId: body.target.assetId ?? null,
+    });
     sendJson(res, 201, { id: link.id, kind, url: `${config.instance.baseUrl}${linkPath(link, secrets.link)}`, expiresAt: new Date(link.exp * 1000).toISOString() });
   });
 
@@ -572,6 +600,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       res.end(JSON.stringify({ kind: 'guest-edit', toolId: link.target.toolId, sessionRef: link.target.sessionId ?? null, guest: name }));
       return;
     }
+    // A catalog asset target streams the asset's own bytes instead of a render
+    // (plans/31 §2 1b). Lifecycle is re-resolved in there, on the same gate the
+    // feed and the /catalog/* blob routes ask.
+    if (link.target.assetId) return serveLinkedAsset(req, res, link);
     // share / embed / download - render the BAKED stored target to bytes. The
     // signature IS the authorization (no session needed), so params are trusted
     // exactly as minted and the caller's query is ignored (bar the password gate
@@ -1044,7 +1076,14 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     await store.putApproval(next);
     await audit(`user:${user.id}`, body.action === 'approve' ? 'approval.approve' : 'approval.reject',
       `approval:${next.id}`, { state: next.state, step: approval.stepIndex });
-    if (isTerminal(next.state)) {
+    // A catalog submission's approval carries the asset with it: approved means
+    // live, rejected means returned (plans/31 §3). Settled HERE as well as in
+    // the catalog review queue, so an approver who works from the approvals
+    // inbox does not leave the asset stuck behind a closed approval. It sends
+    // the submitter its own, more specific message, so the generic one below is
+    // skipped rather than doubled up.
+    const wasSubmission = isTerminal(next.state) ? await settleAssetSubmission(next, user.id) : false;
+    if (isTerminal(next.state) && !wasSubmission) {
       await store.putMessage({
         id: `msg_${randomId(8)}`,
         kind: 'approval', severity: next.state === 'approved' ? 'info' : 'action',
@@ -1074,6 +1113,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
     await store.putApproval(next);
     await audit(`user:${user.id}`, 'approval.withdraw', `approval:${next.id}`, { state: next.state });
+    // Withdrawing the review of a catalog submission returns the asset too:
+    // leaving it `submitted` behind a closed approval would strand it.
+    await settleAssetSubmission(next, user.id);
     sendJson(res, 200, serializeApproval(next, user.id, undefined, await actorsMap()));
   });
 
@@ -1190,6 +1232,51 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         }))) }
       : {};
 
+  /**
+   * The ONE lifecycle gate on catalog bytes. Every surface that hands an
+   * asset's bytes to a caller asks this and nothing else: the three /catalog/*
+   * branches below (inst, federated, pack) and the signed-link resolver's asset
+   * target (plans/31 §2 1b). Revoked and scheduled always block; expired blocks
+   * unless the local row asked only to warn - and an UPSTREAM expiry ignores
+   * that softening, because the DAM is the source of truth for its own asset's
+   * availability (plans/27 §2).
+   *
+   * `govId` is the id that GOVERNS the bytes, which is not always the id in the
+   * URL: a pinned asset's bytes are local while its identity - and its
+   * lifecycle row - stay ext/* (plans/27 §5). `useWindow` is off for ids that
+   * can have no upstream window (pack, exited inst) so the fold stays cheap.
+   *
+   * A hold is deliberately not a block: it only ever *preserves* availability
+   * (lifecycle.ts, plans/27 §3), so a held asset keeps serving here.
+   */
+  const catalogBytesGate = async (govId: string, useWindow: boolean): Promise<{ state: AssetState; blocked: boolean }> => {
+    const row = await store.getLifecycle(govId);
+    const window = useWindow ? await federation.availabilityWindow(govId) : undefined;
+    const { state, upstreamExpired } = combinedState(row ?? undefined, window, Date.now());
+    const blocked = state === 'revoked' || state === 'scheduled' || (state === 'expired' && (upstreamExpired || row?.onExpiry !== 'warn'));
+    return { state, blocked };
+  };
+
+  /**
+   * The posture stored bytes are handed to a browser under. Since plans/31 §3 a
+   * member holding `catalog.submit` can put arbitrary bytes into this instance's
+   * store, and some bytes are DOCUMENTS: an SVG is markup, it can carry
+   * `<script>`, and the sniffer types it honestly as image/svg+xml because
+   * lying about what we stored would be worse. The console lives on this same
+   * origin, so a navigation to such a file - by a share link, say - would
+   * otherwise run the submitter's script as whoever opened it.
+   *
+   * `sandbox` drops the document into an opaque origin (no session cookie, no
+   * same-origin fetch) and `default-src 'none'` leaves it no script at all,
+   * while inline style and data: images keep a legitimate icon rendering the
+   * way its author drew it. Both are inert for bytes loaded as an <img>, which
+   * is how the shells consume them, so this costs the normal path nothing.
+   */
+  const INERT_BYTES: Record<string, string> = {
+    'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; sandbox",
+    'x-content-type-options': 'nosniff',
+  };
+
   // ── catalog serving (pack mount, per-caller filtered, lifecycle-enforced) ──
   router.add('GET', '/catalog/*', async (req, res, ctx) => {
     const user = await memberOf(req);
@@ -1215,17 +1302,21 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       const rec = await store.getInstanceAsset(id);
       if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such instance asset');
       if (!instanceAssetVisible(rec, user?.groups ?? [])) return sendError(res, 403, 'FORBIDDEN', 'not visible to your groups');
+      // A submission under review (or returned) has no public bytes: the feed
+      // does not carry it and this route does not serve it. Reviewers preview
+      // it through /api/v1/catalog/submissions/:id/bytes instead (plans/31 §3).
+      if (!submissionServable(rec)) {
+        return sendError(res, 403, 'SUBMISSION_PENDING', 'this submission is not published');
+      }
       // A pin's identity stays ext/* until cutover, so gate it EXACTLY like the
       // ext blob route would - the local lifecycle row AND the upstream
       // availability window - never a phantom inst-keyed row (plans/27 §3, §5).
       // An exited or submit asset gates on its own inst row (no window).
       const isPin = !rec.exited && !!rec.origin;
       const govId = isPin ? extAssetId(rec.origin!.provider, rec.origin!.remoteId) : id;
-      const row = await store.getLifecycle(govId);
-      const window = isPin ? await federation.availabilityWindow(govId) : undefined;
-      const { state, upstreamExpired } = combinedState(row ?? undefined, window, Date.now());
-      const blocked = state === 'revoked' || state === 'scheduled' || (state === 'expired' && (upstreamExpired || row?.onExpiry !== 'warn'));
-      if (blocked) return sendError(res, 410, 'ASSET_EXPIRED', 'this asset is no longer available');
+      if ((await catalogBytesGate(govId, isPin)).blocked) {
+        return sendError(res, 410, 'ASSET_EXPIRED', 'this asset is no longer available');
+      }
       const blobId = rec.blobs[formatRef];
       const stat = blobId ? await blobs.head(blobId) : null;
       if (!stat) return sendError(res, 404, 'NOT_FOUND', 'no such format');
@@ -1239,7 +1330,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       if (!blob) return sendError(res, 404, 'NOT_FOUND', 'no such format');
       res.writeHead(200, {
         'content-type': blob.stat.contentType,
-        'x-content-type-options': 'nosniff',
+        ...INERT_BYTES,
         'cache-control': 'private, max-age=300',
         etag,
         'content-length': String(blob.stat.size),
@@ -1259,15 +1350,13 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       if (!rec.enabled) return sendError(res, 410, 'PROVIDER_DISABLED', 'this provider is disabled');
       if (!callerSeesProvider(rec, user?.groups ?? [])) return sendError(res, 403, 'FORBIDDEN', 'not visible to your groups');
       const assetId = extAssetId(providerId, remoteId);
-      const row = await store.getLifecycle(assetId);
-      // Combine the local row with any upstream availability window imported
+      // The local row combined with any upstream availability window imported
       // from the DAM (plans/27 §2), read off the in-process fragment beside the
-      // lifecycle row we already load. Upstream expiry blocks bytes even under
-      // onExpiry:'warn' - that only ever softens a purely-local expiry.
-      const window = await federation.availabilityWindow(assetId);
-      const { state, upstreamExpired } = combinedState(row ?? undefined, window, Date.now());
-      const blocked = state === 'revoked' || state === 'scheduled' || (state === 'expired' && (upstreamExpired || row?.onExpiry !== 'warn'));
-      if (blocked) return sendError(res, 410, 'ASSET_EXPIRED', 'this asset is no longer available');
+      // lifecycle row. Upstream expiry blocks bytes even under onExpiry:'warn' -
+      // that only ever softens a purely-local expiry.
+      if ((await catalogBytesGate(assetId, true)).blocked) {
+        return sendError(res, 410, 'ASSET_EXPIRED', 'this asset is no longer available');
+      }
       // hold-implies-pin (plans/27 §3, §5): when this asset's bytes have been
       // materialized into the instance's own store, prefer the local copy - the
       // federated identity stays, but the bytes survive upstream deletion.
@@ -1286,7 +1375,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
           const local = await blobs.get(localId as string);
           if (local) {
             res.writeHead(200, {
-              'content-type': local.stat.contentType, 'x-content-type-options': 'nosniff',
+              'content-type': local.stat.contentType, ...INERT_BYTES,
               'cache-control': 'private, max-age=300', etag, 'content-length': String(local.stat.size),
             });
             Readable.fromWeb(local.body as import('node:stream/web').ReadableStream<Uint8Array>).pipe(res);
@@ -1303,7 +1392,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         }
         res.writeHead(200, {
           'content-type': blob.contentType,
-          'x-content-type-options': 'nosniff',
+          ...INERT_BYTES,
           'cache-control': 'private, max-age=300',
           ...(blob.size !== undefined ? { 'content-length': String(blob.size) } : {}),
         });
@@ -1350,9 +1439,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       // the blob dies too - a guessed/cached URL doesn't bypass the feed.
       const assetId = (await loadAssetPathMap(config.instance.pack)).get(rel);
       if (assetId) {
-        const row = await store.getLifecycle(assetId);
-        const state = assetState(row ?? undefined, Date.now());
-        const blocked = state === 'revoked' || state === 'scheduled' || (state === 'expired' && row?.onExpiry !== 'warn');
+        const { state, blocked } = await catalogBytesGate(assetId, false);
         if (blocked) {
           const message = state === 'revoked' ? 'this asset has been revoked' : state === 'scheduled' ? 'this asset is not yet published' : 'this asset has expired';
           return sendError(res, 410, 'ASSET_EXPIRED', message);
@@ -1362,6 +1449,173 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     res.writeHead(200, { 'content-type': contentType(rel), 'cache-control': 'private, max-age=300' });
     res.end(bytes);
   });
+
+  // ── signed links onto catalog assets (plans/31 §2 1b) ────────────────────
+  // A share/embed/download link may target a catalog asset id instead of a tool
+  // render. Two halves, deliberately split: EXPOSURE is settled once at mint
+  // (`callerSeesAsset`), and LIFECYCLE is re-resolved on every visit through the
+  // one gate the feed and the blob routes already ask (`catalogBytesGate`), so a
+  // link that is still live serves nothing once its asset expires or is revoked.
+
+  /** After the exit's cutover an ext/* id aliases to its inst/* successor, so a
+   *  link minted before the exit keeps resolving - the same alias table the
+   *  /catalog/* route follows for blob paths (plans/27 §5). */
+  const resolveAssetAlias = async (assetId: string): Promise<string> =>
+    assetId.startsWith(EXT_PREFIX) ? (await store.getAlias(assetId)) ?? assetId : assetId;
+
+  /** The federated feed entry for an ext/* id, or undefined when the provider's
+   *  exposure slice does not federate it. */
+  const federatedEntry = async (providerId: string, assetId: string): Promise<AssetIndexEntry | undefined> => {
+    const frags = await federation.fragments();
+    return frags.find((f) => f.rec.id === providerId)?.fragment.assets.find((a) => a.id === assetId);
+  };
+
+  /**
+   * Whether this member can see an asset at all - the mint-time half of an asset
+   * link. It asks exactly what the serving surfaces ask (instance-asset groups,
+   * provider group visibility plus the exposure slice, pack membership), so a
+   * link can only ever hand on access its minter already had. Lifecycle is not
+   * consulted here on purpose: a scheduled asset is a legitimate thing to mint a
+   * link for, and an expired one is refused at resolve rather than at mint.
+   */
+  const callerSeesAsset = async (user: UserRecord, rawId: string): Promise<boolean> => {
+    const assetId = await resolveAssetAlias(rawId);
+    if (assetId.startsWith(INST_PREFIX)) {
+      const rec = await store.getInstanceAsset(assetId);
+      // A submission that is not live yet is not linkable: it is not in the
+      // feed and its bytes do not serve, so a link to it could only ever 403.
+      return Boolean(rec && submissionServable(rec) && instanceAssetVisible(rec, user.groups));
+    }
+    if (assetId.startsWith(EXT_PREFIX)) {
+      const [, providerId] = assetId.split('/');
+      if (!providerId) return false;
+      await providersReady;
+      const rec = await store.getProvider(providerId);
+      if (!rec || !rec.enabled || !callerSeesProvider(rec, user.groups)) return false;
+      return Boolean(await federatedEntry(providerId, assetId));
+    }
+    return (await loadAssetIndexById(config.instance.pack)).has(assetId);
+  };
+
+  /** A filename safe to put in a Content-Disposition header: the minter chose
+   *  the target, so nothing from it reaches the header unsanitized. */
+  const safeFilename = (raw: string): string =>
+    raw.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^[._]+/, '').slice(0, 120) || 'asset';
+
+  /** Response headers for linked asset bytes: private, inert, sniff-proof, and
+   *  never CDN-cacheable (plans/26 §6) - the same posture as /catalog/*, and
+   *  the same INERT_BYTES, which matter most here because this is the one
+   *  surface an UNAUTHENTICATED bearer reaches. `download` is the only kind
+   *  that attaches; `share` and `embed` serve inline. */
+  const linkedAssetHeaders = (
+    link: LinkRecord, mime: string, filename: string, extra: Record<string, string> = {},
+  ): Record<string, string> => ({
+    'content-type': mime,
+    ...INERT_BYTES,
+    'cache-control': 'private, max-age=300',
+    ...(link.kind === 'download' ? { 'content-disposition': `attachment; filename="${safeFilename(filename)}"` } : {}),
+    ...extra,
+  });
+
+  const serveLinkedAsset = async (req: IncomingMessage, res: ServerResponse, link: LinkRecord): Promise<void> => {
+    const assetId = await resolveAssetAlias((link.target.assetId ?? '').trim());
+    const wanted = link.target.format;
+    const gone = (): void => sendError(res, 410, 'ASSET_EXPIRED', 'this asset is no longer available');
+    const streamBlob = async (blobId: string, filename: string): Promise<void> => {
+      const stat = await blobs.head(blobId);
+      if (!stat) return sendError(res, 404, 'NOT_FOUND', 'no such format');
+      const etag = `"${stat.checksum}"`;
+      if (req.headers['if-none-match'] === etag) {
+        res.writeHead(304, { etag, 'cache-control': 'private, max-age=300' });
+        res.end();
+        return;
+      }
+      const blob = await blobs.get(blobId);
+      if (!blob) return sendError(res, 404, 'NOT_FOUND', 'no such format');
+      res.writeHead(200, linkedAssetHeaders(link, blob.stat.contentType, filename, {
+        etag, 'content-length': String(blob.stat.size),
+      }));
+      Readable.fromWeb(blob.body as import('node:stream/web').ReadableStream<Uint8Array>).pipe(res);
+    };
+
+    // Instance-owned bytes: straight out of the BlobStore, gated on whichever id
+    // governs them (a pin is still governed by its ext/* row).
+    if (assetId.startsWith(INST_PREFIX)) {
+      const rec = await store.getInstanceAsset(assetId);
+      if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such instance asset');
+      // A submission returned after the link was minted stops serving on it,
+      // for the same reason a revoked asset does (plans/31 §3).
+      if (!submissionServable(rec)) return gone();
+      const isPin = !rec.exited && !!rec.origin;
+      const govId = isPin ? extAssetId(rec.origin!.provider, rec.origin!.remoteId) : assetId;
+      if ((await catalogBytesGate(govId, isPin)).blocked) return gone();
+      const fmt = wanted ?? (rec.entry.formats?.[0]?.format as string | undefined) ?? Object.keys(rec.blobs)[0];
+      const blobId = fmt ? rec.blobs[fmt] : undefined;
+      if (!blobId) return sendError(res, 404, 'NOT_FOUND', 'no such format');
+      const name = typeof rec.entry.name === 'string' ? rec.entry.name : assetId.split('/').pop() ?? assetId;
+      return streamBlob(blobId, `${name}.${fmt}`);
+    }
+
+    // Federated bytes: pin-prefers-local, then the driver - identical to the
+    // ext blob route, so a link survives upstream deletion exactly as a member's
+    // own fetch does.
+    if (assetId.startsWith(EXT_PREFIX)) {
+      const [, providerId, remoteId] = assetId.split('/');
+      if (!providerId || !remoteId) return sendError(res, 404, 'NOT_FOUND', 'bad federated asset id');
+      await providersReady;
+      const rec = await store.getProvider(providerId);
+      if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such provider');
+      if (!rec.enabled) return sendError(res, 410, 'PROVIDER_DISABLED', 'this provider is disabled');
+      if ((await catalogBytesGate(assetId, true)).blocked) return gone();
+      const entry = await federatedEntry(providerId, assetId);
+      const formats = (entry?.formats ?? []) as AssetFormatEntry[];
+      const chosen = wanted ? formats.find((f) => f.format === wanted || f.url?.endsWith(`/${wanted}`)) : formats[0];
+      const remoteRef = (chosen?.url ?? '').split('/').pop();
+      if (!remoteRef) return sendError(res, 404, 'NOT_FOUND', 'no such format');
+      const filename = typeof chosen?.filename === 'string'
+        ? chosen.filename
+        : `${typeof entry?.name === 'string' ? entry.name : remoteId}.${chosen?.format ?? remoteRef}`;
+      const pinned = await store.getInstanceAsset(materializedIdFor(providerId, remoteId));
+      const localId = pinned ? pinned.blobs[pinned.refMap?.[remoteRef] ?? remoteRef] : undefined;
+      if (localId && await blobs.head(localId)) return streamBlob(localId, filename);
+      try {
+        const blob = await federation.instantiate(rec).resolveBlob(remoteId, remoteRef);
+        // A redirect hands the bearer the provider's own URL, exactly as the
+        // member-facing blob route does - the driver, not us, decides whether a
+        // format can be streamed.
+        if (blob.kind === 'redirect') {
+          res.writeHead(302, { location: blob.url, 'cache-control': 'private, no-store' });
+          res.end();
+          return;
+        }
+        res.writeHead(200, linkedAssetHeaders(link, blob.contentType, filename,
+          blob.size !== undefined ? { 'content-length': String(blob.size) } : {}));
+        Readable.fromWeb(blob.body as import('node:stream/web').ReadableStream<Uint8Array>).pipe(res);
+      } catch {
+        return sendError(res, 502, 'PROVIDER_UNAVAILABLE', 'the upstream provider did not return this asset');
+      }
+      return;
+    }
+
+    // A pack asset: the file the index points at, read off the pack mount.
+    const entry = (await loadAssetIndexById(config.instance.pack)).get(assetId);
+    if (!entry) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
+    if ((await catalogBytesGate(assetId, false)).blocked) return gone();
+    const formats = entry.formats ?? [];
+    const chosen = wanted ? formats.find((f) => f.format === wanted) : formats[0];
+    const relPath = (chosen?.url ?? '').replace(/^\/+/, '').replace(/^catalog\//, '');
+    if (!relPath || relPath.includes('..')) return sendError(res, 404, 'NOT_FOUND', 'no such format');
+    let bytes: Buffer;
+    try {
+      bytes = await readFile(join(config.instance.pack, 'catalog', relPath));
+    } catch {
+      return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
+    }
+    res.writeHead(200, linkedAssetHeaders(link, contentType(relPath), relPath.split('/').pop() ?? assetId, {
+      'content-length': String(bytes.length),
+    }));
+    res.end(bytes);
+  };
 
   // Whether an asset's bytes are durable locally. Pack + inst assets are already
   // local; a federated ext/* asset is pinned only once its bytes have been
@@ -1685,6 +1939,313 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       }
     }
     sendJson(res, 200, await lifecycleView(row, Date.now()));
+  });
+
+  // ── catalog submit (plans/31 §3) ─────────────────────────────────────────
+  // The inbound-bytes route for members: `catalog.submit` finally has something
+  // behind it, so an org can ADD to its catalog rather than only govern what a
+  // DAM already holds. Bytes ride the raw body and the declared metadata rides
+  // query params, exactly like publish-out one surface over.
+
+  const submitDeps = () => ({
+    store, blobs, policy: config.policy.submit,
+    ...(config.submit.scanHook ? { scanHook: config.submit.scanHook } : {}),
+    ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+  });
+
+  /** The console/CLI view of one submission: the record's own descriptive entry
+   *  plus the submission block, with the submitter resolved to a display name. */
+  const submissionView = (rec: InstanceAssetRecord, actors: Map<string, ActorInfo>): Record<string, unknown> => {
+    const s = rec.submission as AssetSubmission;
+    const who = actors.get(s.by.replace(/^user:/, ''));
+    return {
+      id: rec.id,
+      name: rec.entry.name ?? rec.id,
+      type: rec.entry.type ?? 'image',
+      ...(rec.entry.description ? { description: rec.entry.description } : {}),
+      tags: rec.entry.tags ?? [],
+      formats: (rec.entry.formats ?? []).map((f) => f.format),
+      groups: rec.groups ?? '*',
+      state: s.state,
+      by: s.by,
+      byName: who?.name ?? s.by,
+      at: s.at,
+      size: s.size,
+      checksum: s.checksum,
+      ...(s.contentType ? { contentType: s.contentType } : {}),
+      ...(s.width && s.height ? { width: s.width, height: s.height } : {}),
+      ...(s.approvalId ? { approvalId: s.approvalId } : {}),
+      ...(s.decidedBy ? { decidedBy: s.decidedBy } : {}),
+      ...(s.decidedAt ? { decidedAt: s.decidedAt } : {}),
+      ...(s.comment ? { comment: s.comment } : {}),
+      preview: `/api/v1/catalog/submissions/${rec.id.slice(INST_PREFIX.length)}/bytes`,
+    };
+  };
+
+  /**
+   * What this caller is to one submission: `mine` when they submitted it,
+   * `inbox` when the approval's current step lets their groups act, and null
+   * when it is neither. The queue rows, the pre-publication preview and the
+   * metadata edit all ask this one question, so the three surfaces cannot
+   * disagree about who is looking at a pending asset.
+   */
+  const submissionRelation = async (
+    rec: InstanceAssetRecord, user: { id: string; groups: string[] },
+  ): Promise<'mine' | 'inbox' | null> => {
+    const s = rec.submission as AssetSubmission;
+    if (s.by === `user:${user.id}`) return 'mine';
+    if (!s.approvalId) return null;
+    const approval = await store.getApproval(s.approvalId);
+    return approval && eligibleForCurrentStep(approval, user.groups) ? 'inbox' : null;
+  };
+
+  /**
+   * Settle one terminal approval against the submission it gates, then audit
+   * and tell the submitter. Called from BOTH decision paths - the catalog
+   * review queue and the plain approvals inbox - so an asset can never be left
+   * in `submitted` behind a closed approval.
+   */
+  const settleAssetSubmission = async (approval: Approval, actorId: string): Promise<boolean> => {
+    const settled = await settleSubmission(store, approval, new Date().toISOString());
+    if (!settled) return false;
+    const action = settled.state === 'live' ? 'catalog.approve-submission' : 'catalog.return-submission';
+    await audit(`user:${actorId}`, action, `catalog:${settled.record.id}`, {
+      approvalId: approval.id, ...(settled.comment ? { comment: settled.comment } : {}),
+    });
+    const submitterId = (settled.record.submission?.by ?? '').replace(/^user:/, '');
+    if (!submitterId) return true;
+    await store.putMessage({
+      id: `msg_${randomId(8)}`,
+      kind: 'approval', severity: settled.state === 'live' ? 'info' : 'action',
+      audience: { users: [submitterId] },
+      title: settled.state === 'live'
+        ? `Published: ${settled.record.entry.name ?? settled.record.id}`
+        : `Returned: ${settled.record.entry.name ?? settled.record.id}`,
+      body: settled.state === 'live'
+        ? 'Your catalog submission was approved and is live.'
+        : `Your catalog submission was returned${settled.comment ? `: “${settled.comment}”` : '.'}`,
+      cta: { label: 'View', url: '/admin#/catalog' },
+      data: { assetId: settled.record.id, state: settled.state },
+      dismissible: true,
+    });
+    return true;
+  };
+
+  router.add('POST', '/api/v1/catalog/submit', async (req, res, ctx) => {
+    const user = await requireAction(req, res, 'catalog.submit');
+    if (!user) return;
+    const name = (ctx.url.searchParams.get('name') ?? '').trim();
+    if (!name) return sendError(res, 400, 'INVALID_INPUT', 'name query param required');
+    const maxBytes = config.policy.submit.maxBytes;
+    let bytes: Buffer;
+    try {
+      bytes = await readRaw(req, maxBytes);
+    } catch {
+      return sendError(res, 413, 'PAYLOAD_TOO_LARGE', `submission exceeds the ${maxBytes} byte cap (policy.submit.maxBytes)`);
+    }
+    if (!bytes.length) return sendError(res, 400, 'INVALID_INPUT', 'empty submission body');
+    const list = (key: string): string[] =>
+      (ctx.url.searchParams.get(key) ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+    // Exposure can only ever be narrowed to groups the submitter is in: nobody
+    // publishes into a group they are not a member of.
+    const declaredGroups = list('groups');
+    const outsider = declaredGroups.filter((g) => !user.groups.includes(g));
+    if (outsider.length) return sendError(res, 403, 'FORBIDDEN', `you are not in ${outsider.join(', ')}, so you cannot submit into it`);
+    const type = (ctx.url.searchParams.get('type') ?? '').trim();
+    if (type && !/^[a-z0-9-]{1,32}$/i.test(type)) return sendError(res, 400, 'INVALID_INPUT', 'type must be a short slug');
+
+    const outcome = await submitAsset(submitDeps(), {
+      bytes,
+      name: name.slice(0, 200),
+      ...(ctx.url.searchParams.get('description') ? { description: (ctx.url.searchParams.get('description') as string).slice(0, 500) } : {}),
+      tags: list('tags').slice(0, 32),
+      ...(type ? { type } : {}),
+      ...(declaredGroups.length ? { groups: declaredGroups } : {}),
+      ...(req.headers['content-type'] ? { contentType: req.headers['content-type'] } : {}),
+      submitter: { id: user.id, groups: user.groups },
+    });
+
+    if (!outcome.ok) {
+      // The verdict is audited either way: a refusal is exactly the event an
+      // operator needs to see, and nothing was stored to hang it off otherwise.
+      await audit(`user:${user.id}`, 'catalog.submit', `catalog:rejected`, {
+        outcome: outcome.code, detail: outcome.detail, name, size: bytes.length,
+      });
+      // A misconfigured review chain is the instance's fault, not the
+      // submitter's, so it reads as unavailable rather than as a bad request.
+      const status = outcome.code === 'QUOTA_EXCEEDED' ? 409
+        : outcome.code === 'SCAN_REJECTED' ? 422
+          : outcome.code === 'SUBMIT_CHAIN_MISSING' ? 503 : 502;
+      return sendError(res, status, outcome.code, outcome.detail);
+    }
+
+    const state = outcome.record.submission?.state ?? 'live';
+    await audit(`user:${user.id}`, 'catalog.submit', `catalog:${outcome.record.id}`, {
+      outcome: outcome.duplicate ? 'duplicate' : state,
+      checksum: outcome.checksum, size: bytes.length, scan: outcome.scan,
+      credential: outcome.credential, ...(outcome.approval ? { approvalId: outcome.approval.id } : {}),
+    });
+    sendJson(res, outcome.duplicate ? 200 : 201, {
+      ok: true,
+      assetId: outcome.record.id,
+      duplicate: outcome.duplicate,
+      state,
+      checksum: outcome.checksum,
+      size: bytes.length,
+      scan: outcome.scan,
+      credential: outcome.credential,
+      formats: (outcome.record.entry.formats ?? []).map((f) => f.format),
+      ...(outcome.approval ? { approvalId: outcome.approval.id } : {}),
+    }, { 'cache-control': 'no-store' });
+  });
+
+  // The review queue. `catalog.read` gates it, and the ROWS are the gate: a
+  // caller sees their own submissions plus the ones open on a step their groups
+  // may act on, the same two-sided rule the approvals list uses.
+  router.add('GET', '/api/v1/catalog/submissions', async (req, res, ctx) => {
+    const user = await requireAction(req, res, 'catalog.read');
+    if (!user) return;
+    const wanted = ctx.url.searchParams.get('state');
+    const state = wanted === 'submitted' || wanted === 'live' || wanted === 'returned' ? wanted : undefined;
+    const actors = await actorsMap();
+    const rows: Array<Record<string, unknown>> = [];
+    for (const rec of listSubmissions(await store.listInstanceAssets(), state)) {
+      const relation = await submissionRelation(rec, user);
+      if (relation) rows.push({ ...submissionView(rec, actors), relation });
+    }
+    sendJson(res, 200, { submissions: rows }, { 'cache-control': 'no-store' });
+  });
+
+  // Preview bytes for a submission still under review. The public blob route
+  // refuses a non-live submission on purpose, so the reviewer's preview needs
+  // its own door - open to the submitter and to whoever may act on the step.
+  router.add('GET', '/api/v1/catalog/submissions/:id/bytes', async (req, res, ctx) => {
+    const user = await requireAction(req, res, 'catalog.read');
+    if (!user) return;
+    const rec = await store.getInstanceAsset(`${INST_PREFIX}${ctx.params.id as string}`);
+    if (!rec?.submission) return sendError(res, 404, 'NOT_FOUND', 'no such submission');
+    // Only the submitter and whoever may act on the step see a PENDING
+    // submission's bytes. Once it is live the ordinary exposure rule takes
+    // over, so this route keeps working for an already-published asset.
+    if (!(await submissionRelation(rec, user)) && !(submissionServable(rec) && instanceAssetVisible(rec, user.groups))) {
+      return sendError(res, 403, 'FORBIDDEN', 'not yours to review');
+    }
+    // Once it is published this row is an ordinary catalog asset, so it answers
+    // to the ordinary lifecycle gate: a revoked, expired or scheduled asset
+    // stops serving HERE too, or a takedown would leave the bytes one URL away
+    // for its submitter and for every member who can see it. Only a submission
+    // still awaiting its decision skips the gate, and only because it has no
+    // lifecycle row yet - it gets one when it goes live.
+    if (submissionServable(rec) && (await catalogBytesGate(rec.id, false)).blocked) {
+      return sendError(res, 410, 'ASSET_EXPIRED', 'this asset is no longer available');
+    }
+    const blobId = Object.values(rec.blobs)[0];
+    const blob = blobId ? await blobs.get(blobId) : null;
+    if (!blob) return sendError(res, 404, 'NOT_FOUND', 'no stored bytes');
+    res.writeHead(200, {
+      'content-type': blob.stat.contentType,
+      ...INERT_BYTES,
+      'cache-control': 'private, no-store',
+      'content-length': String(blob.stat.size),
+    });
+    Readable.fromWeb(blob.body as import('node:stream/web').ReadableStream<Uint8Array>).pipe(res);
+  });
+
+  // Metadata edit BEFORE approval (plans/31 section 3), the middle affordance
+  // of the review queue. A reviewer who would otherwise return a submission
+  // over a mistyped name can correct it and publish instead, and a submitter
+  // can fix their own while it waits. Two limits keep it from quietly becoming
+  // a second asset editor: it touches DESCRIPTIVE metadata only - never the
+  // bytes, never exposure, which stays where the submitter set it - and it
+  // refuses once the submission has settled, because after that the row is an
+  // ordinary catalog asset and belongs to the asset editor plans/31 section 4
+  // builds. Every field that moves is audited with its before and after.
+  router.add('PATCH', '/api/v1/catalog/submissions/:id', async (req, res, ctx) => {
+    const user = await requireAction(req, res, 'catalog.read');
+    if (!user) return;
+    const rec = await store.getInstanceAsset(`${INST_PREFIX}${ctx.params.id as string}`);
+    if (!rec?.submission) return sendError(res, 404, 'NOT_FOUND', 'no such submission');
+    if (rec.submission.state !== 'submitted') {
+      return sendError(res, 409, 'ALREADY_SETTLED', `this submission is already ${rec.submission.state}`);
+    }
+    const relation = await submissionRelation(rec, user);
+    if (!relation) return sendError(res, 403, 'FORBIDDEN', 'not yours to edit');
+    const body = (await readJson(req)) as { name?: unknown; description?: unknown; tags?: unknown; type?: unknown } | null;
+    if (!body || typeof body !== 'object') return sendError(res, 400, 'INVALID_INPUT', 'body required');
+    const entry = { ...rec.entry };
+    const before: Record<string, unknown> = {};
+    const after: Record<string, unknown> = {};
+    if (body.name !== undefined) {
+      const name = typeof body.name === 'string' ? body.name.trim() : '';
+      if (!name) return sendError(res, 400, 'INVALID_INPUT', 'name cannot be emptied');
+      before.name = entry.name;
+      entry.name = name.slice(0, 200);
+      after.name = entry.name;
+    }
+    if (body.type !== undefined) {
+      const type = typeof body.type === 'string' ? body.type.trim() : '';
+      if (!/^[a-z0-9-]{1,32}$/i.test(type)) return sendError(res, 400, 'INVALID_INPUT', 'type must be a short slug');
+      before.type = entry.type;
+      entry.type = type;
+      after.type = type;
+    }
+    if (body.description !== undefined) {
+      if (typeof body.description !== 'string') return sendError(res, 400, 'INVALID_INPUT', 'description must be a string');
+      const description = body.description.trim().slice(0, 500);
+      before.description = entry.description ?? '';
+      if (description) entry.description = description;
+      else delete entry.description;
+      after.description = description;
+    }
+    if (body.tags !== undefined) {
+      const raw = Array.isArray(body.tags) ? body.tags : typeof body.tags === 'string' ? body.tags.split(',') : null;
+      if (!raw) return sendError(res, 400, 'INVALID_INPUT', 'tags must be a list or a comma-separated string');
+      before.tags = entry.tags ?? [];
+      entry.tags = [...new Set(raw.map((t) => String(t).trim()).filter(Boolean))].slice(0, 32);
+      after.tags = entry.tags;
+    }
+    if (!Object.keys(after).length) return sendError(res, 400, 'INVALID_INPUT', 'nothing to change');
+    const next: InstanceAssetRecord = { ...rec, entry };
+    await store.putInstanceAsset(next);
+    await audit(`user:${user.id}`, 'catalog.edit-submission', `catalog:${rec.id}`, { before, after, relation });
+    sendJson(res, 200, {
+      ok: true, submission: { ...submissionView(next, await actorsMap()), relation },
+    }, { 'cache-control': 'no-store' });
+  });
+
+  // Approve or return one submission. Delegates to the approvals engine, so
+  // separation of duties and step eligibility are decided in exactly one place;
+  // this route only exists so the catalog review queue does not have to send
+  // its reviewers to a different screen.
+  router.add('POST', '/api/v1/catalog/submissions/:id/act', async (req, res, ctx) => {
+    const user = await memberOf(req);
+    if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+    const rec = await store.getInstanceAsset(`${INST_PREFIX}${ctx.params.id as string}`);
+    if (!rec?.submission) return sendError(res, 404, 'NOT_FOUND', 'no such submission');
+    if (rec.submission.state !== 'submitted') return sendError(res, 409, 'ALREADY_SETTLED', `this submission is already ${rec.submission.state}`);
+    const approvalId = rec.submission.approvalId;
+    if (!approvalId) return sendError(res, 409, 'NO_CHAIN', 'this submission is not under review');
+    const approval = await store.getApproval(approvalId);
+    if (!approval) return sendError(res, 404, 'NOT_FOUND', 'the approval for this submission is gone');
+    const body = (await readJson(req)) as { action?: string; comment?: string } | null;
+    if (body?.action !== 'approve' && body?.action !== 'reject') return sendError(res, 400, 'INVALID_INPUT', 'action must be approve or reject');
+    const comment = typeof body.comment === 'string' && body.comment.trim() ? body.comment.slice(0, 2000) : undefined;
+    let next: Approval;
+    try {
+      next = applyAction(approval, { id: user.id, groups: user.groups }, body.action, comment, new Date().toISOString());
+    } catch (err) {
+      const code = (err as { code?: string }).code ?? 'INVALID_INPUT';
+      return sendError(res, approvalStatus(code), code, (err as Error).message);
+    }
+    await store.putApproval(next);
+    await audit(`user:${user.id}`, body.action === 'approve' ? 'approval.approve' : 'approval.reject',
+      `approval:${next.id}`, { state: next.state, step: approval.stepIndex });
+    if (isTerminal(next.state)) await settleAssetSubmission(next, user.id);
+    const settled = await store.getInstanceAsset(rec.id);
+    sendJson(res, 200, {
+      ok: true, assetId: rec.id, state: settled?.submission?.state ?? rec.submission.state,
+      approval: serializeApproval(next, user.id, undefined, await actorsMap()),
+    }, { 'cache-control': 'no-store' });
   });
 
   // ── grants control plane (plans/03) ───────────────────────────────────────

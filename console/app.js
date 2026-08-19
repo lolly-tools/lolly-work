@@ -1836,7 +1836,7 @@ function linkRow(l) {
   const copy = copyButton(() => l.url, 'Copy');
   return el('tr', {},
     el('td', {}, el('span', { class: 'chip' }, l.kind)),
-    el('td', {}, l.target.toolId ?? l.target.sessionId ?? '—', l.protected ? ' 🔒' : ''),
+    el('td', {}, l.target.toolId ?? l.target.assetId ?? l.target.sessionId ?? '—', l.protected ? ' 🔒' : ''),
     el('td', { class: 'mono url-cell', title: l.url }, l.url),
     el('td', {}, el('span', { class: `status ${l.status}` }, l.status)),
     whenCell(l.expiresAt),
@@ -1939,6 +1939,198 @@ function lifecycleControls(entry) {
   return { node: el('div', { class: 'lc-actions' }, dateInput, setBtn, revokeBtn), err };
 }
 
+/**
+ * The review panel for one pending submission (plans/31 section 3): the preview
+ * a reviewer decides on, the declared metadata as an editable form, and the
+ * decision itself with its comment. It sits below the queue table exactly as
+ * the asset inspect panel sits below the served-assets table, so the two
+ * catalog surfaces read the same way.
+ *
+ * Approve saves a dirty form FIRST, then decides. A reviewer who fixes a
+ * mistyped name and hits Approve means both, and losing the fix on the way to
+ * publishing it would be the worst of the three possible behaviours; the edit
+ * stays its own audited call either way.
+ */
+function renderSubmissionReview(s, host, opener) {
+  const short = String(s.id).replace(/^inst\//, '');
+  const err = errSpan();
+  const mine = s.relation === 'mine';
+  // Only a submission still waiting can be edited or decided. A settled one is
+  // shown as the record it now is: the server refuses both, and offering a
+  // control that always fails would be worse than not offering it.
+  const pending = s.state === 'submitted';
+
+  const nameInput = el('input', { type: 'text', value: s.name ?? '' });
+  const typeInput = el('input', { type: 'text', value: s.type ?? '' });
+  const tagsInput = el('input', { type: 'text', value: (s.tags ?? []).join(', ') });
+  const descInput = el('input', { type: 'text', value: s.description ?? '' });
+  const comment = el('input', { type: 'text', placeholder: 'Why (required to return)', 'aria-label': `Comment on ${s.name}` });
+  const buttons = [];
+  const busy = (on) => { for (const b of buttons) b.disabled = on; };
+
+  const edited = () => {
+    const body = {};
+    if (nameInput.value.trim() !== (s.name ?? '')) body.name = nameInput.value.trim();
+    if (typeInput.value.trim() !== (s.type ?? '')) body.type = typeInput.value.trim();
+    if (descInput.value.trim() !== (s.description ?? '')) body.description = descInput.value.trim();
+    const tags = tagsInput.value.split(',').map((t) => t.trim()).filter(Boolean);
+    if (tags.join(',') !== (s.tags ?? []).join(',')) body.tags = tags;
+    return body;
+  };
+  const saveEdits = async () => {
+    const body = edited();
+    if (!Object.keys(body).length) return false;
+    await api(`/api/v1/catalog/submissions/${short}`, { method: 'PATCH', body });
+    return true;
+  };
+
+  const saveBtn = el('button', { onclick: async () => {
+    err.textContent = '';
+    busy(true);
+    try {
+      if (!(await saveEdits())) { err.textContent = 'Nothing changed yet.'; busy(false); return; }
+      toast(`Updated ${nameInput.value.trim()}`);
+      route();
+    } catch (e) { err.textContent = e.message; busy(false); }
+  } }, 'Save metadata');
+  buttons.push(saveBtn);
+
+  const act = async (action, disarm) => {
+    if (action === 'reject' && !comment.value.trim()) { err.textContent = 'Say why before returning it.'; disarm?.(); return; }
+    err.textContent = '';
+    busy(true);
+    try {
+      if (action === 'approve') await saveEdits();
+      await api(`/api/v1/catalog/submissions/${short}/act`, { method: 'POST', body: { action, comment: comment.value.trim() || undefined } });
+      toast(action === 'approve' ? `Published ${nameInput.value.trim()}` : `Returned ${nameInput.value.trim()}`);
+      route();
+    } catch (e) { err.textContent = e.message; busy(false); disarm?.(); }
+  };
+  const approve = el('button', { class: 'primary', onclick: () => act('approve') }, 'Approve');
+  const rtn = armConfirmButton({ class: 'danger' }, 'Return', 'Really return?', (disarm) => act('reject', disarm));
+  buttons.push(approve, rtn);
+
+  const dims = s.width && s.height ? `${s.width} × ${s.height}` : null;
+  const cell = (label, value) => value == null ? null
+    : el('div', { class: 'idy' }, el('div', { class: 'idy-l' }, label), el('div', { class: 'idy-v' }, value));
+  const heading = el('h2', { class: 'flush', tabindex: '-1' }, s.name ?? s.id);
+  requestAnimationFrame(() => heading.focus()); // move focus into the opened panel
+
+  return el('div', { class: 'card stack' },
+    el('div', { class: 'list-bar' },
+      heading,
+      el('button', { onclick: () => { host.replaceChildren(); opener?.focus?.(); } }, 'Close')),
+    el('div', { class: 'cat-detail' },
+      catalogThumb(s, 120, null),
+      el('div', { class: 'cat-detail-meta' },
+        el('div', { class: 'idy-grid' },
+          cell('Id', el('span', { class: 'mono' }, s.id)),
+          cell('Submitted by', s.byName),
+          cell('Submitted', when(s.at)),
+          cell('File', [s.contentType, dims, fmtBytes(s.size)].filter(Boolean).join(' · ')),
+          cell('Exposure', s.groups === '*' || !s.groups?.length ? 'every member' : s.groups.join(', ')),
+          cell('Checksum', el('span', { class: 'mono trunc', title: s.checksum }, String(s.checksum ?? '').slice(0, 16)))))),
+    el('div', { class: 'stack' },
+      el('h3', { class: 'detail-h' }, 'Declared metadata'),
+      pending
+        ? el('div', { class: 'stack' },
+            el('p', { class: 'sub', style: 'margin:0 0 8px' },
+              'Correct it before it is published - name, type, tags and description only. The bytes and the exposure the submitter chose are not editable here, and every change is audited with its before and after.'),
+            el('div', { class: 'formrow' }, field('Name', nameInput), field('Type', typeInput)),
+            el('div', { class: 'formrow' }, field('Tags (comma-separated)', tagsInput), field('Description', descInput)),
+            el('p', {}, saveBtn))
+        : el('div', { class: 'stack' },
+            el('p', { class: 'sub', style: 'margin:0 0 8px' },
+              `${s.type ?? 'asset'}${s.description ? ` - ${s.description}` : ''}`),
+            (s.tags ?? []).length
+              ? el('div', { class: 'chips' }, ...s.tags.map((t) => el('span', { class: 'chip' }, t)))
+              : el('span', { class: 'muted' }, 'no tags'))),
+    el('div', { class: 'stack' },
+      el('h3', { class: 'detail-h' }, 'Decision'),
+      !pending
+        ? el('p', { class: 'sub', style: 'margin:0' },
+            `${s.state === 'live' ? 'Published' : 'Returned'}${s.decidedAt ? ` ${when(s.decidedAt)}` : ''}${s.decidedBy ? ` by ${s.decidedBy.replace(/^user:/, '')}` : ''}${s.comment ? `: “${s.comment}”` : '.'}`)
+        : mine
+          ? el('p', { class: 'sub', style: 'margin:0' }, 'This is your own submission, so someone on the review chain decides it. You can still correct its metadata while it waits.')
+          : el('div', { class: 'stack' },
+              el('p', { class: 'sub', style: 'margin:0 0 8px' },
+                'Approving publishes the asset and mints its lifecycle row, so the expire and revoke controls work from that moment. Returning it sends your comment back to the submitter and the bytes never reach the feed.'),
+              el('div', { class: 'formrow' }, field('Comment', comment)),
+              el('div', { class: 'lc-actions' }, approve, rtn))),
+    err);
+}
+
+/**
+ * The submit review queue (plans/31 section 3). Rows are whatever the server
+ * decides this caller may see: their own submissions plus the ones open on a
+ * step their groups may act on. Returns null when there is nothing pending, or
+ * when the route is not reachable for this caller, so the card simply does not
+ * appear rather than showing an error nobody can act on.
+ *
+ * Approve/return go through the approvals engine server-side, so separation of
+ * duties and step eligibility hold here exactly as they do in the Approvals
+ * view - this is the ergonomic door, never a second rule set.
+ */
+async function submissionQueue() {
+  const load = async (state) => {
+    try {
+      return (await api(`/api/v1/catalog/submissions${state ? `?state=${state}` : ''}`)).submissions ?? [];
+    } catch { return null; }
+  };
+  const pending = await load('submitted');
+  if (!pending?.length) return null;
+
+  const panelHost = el('div', { class: 'stack' });
+  const open = (s, opener) => {
+    panelHost.replaceChildren(renderSubmissionReview(s, panelHost, opener));
+    scrollIntoViewMotionSafe(panelHost);
+  };
+
+  const rowFor = (s) => {
+    const dims = s.width && s.height ? `${s.width} × ${s.height}` : null;
+    const waiting = s.state === 'submitted';
+    const openBtn = el('button', { ...(waiting && s.relation === 'inbox' ? { class: 'primary' } : {}), onclick: () => open(s, openBtn) },
+      waiting && s.relation === 'inbox' ? 'Review' : 'View');
+    return el('tr', {},
+      el('td', {}, catalogThumb(s, 40, () => open(s, openBtn))),
+      el('td', {}, s.name, el('div', { class: 'muted mono' }, s.id)),
+      el('td', {}, s.byName, el('div', { class: 'muted' }, s.relation === 'mine' ? 'your submission' : 'on your step')),
+      whenCell(s.at),
+      el('td', { class: 'muted' }, [s.contentType, dims, fmtBytes(s.size)].filter(Boolean).join(' · ')),
+      el('td', {}, el('span', { class: `status ${s.state === 'live' ? 'live' : s.state === 'returned' ? 'revoked' : 'review'}` }, s.state)),
+      el('td', {}, openBtn));
+  };
+
+  const table = (rows) => rows.length
+    ? dataTable(
+        [{ label: '', w: '52px', sort: false }, 'Asset', 'Submitted by', { label: 'Submitted', sort: 'date' },
+          { label: 'File', sort: false }, 'State', { label: '', w: '1%', sort: false }],
+        rows.map(rowFor), { csvName: 'submissions' })
+    : el('p', { class: 'empty' }, 'Nothing in this state.');
+
+  // Waiting-on-review is the list someone can act on, so it is what the card
+  // opens with; the other states are here so a returned asset's comment and a
+  // published one's provenance stay reachable without a trip to the audit log.
+  const body = el('div', {}, table(pending));
+  const stateSel = el('select', { 'aria-label': 'Which submissions to list' },
+    el('option', { value: 'submitted' }, 'Waiting on review'),
+    el('option', { value: 'returned' }, 'Returned'),
+    el('option', { value: 'live' }, 'Published'),
+    el('option', { value: '' }, 'All'));
+  stateSel.onchange = async () => {
+    stateSel.disabled = true;
+    panelHost.replaceChildren();
+    body.replaceChildren(table((await load(stateSel.value)) ?? []));
+    stateSel.disabled = false;
+  };
+
+  return el('div', { class: 'card stack' },
+    el('div', { class: 'list-bar' }, el('h2', { class: 'flush' }, `Submitted (${pending.length})`), stateSel),
+    el('p', { class: 'sub' }, 'Assets members have submitted to this catalog. Nothing waiting on review is in the feed, servable or linkable yet. Review one to preview its bytes, correct its metadata and publish or return it.'),
+    body,
+    panelHost);
+}
+
 function catalogRow(entry, onInspect) {
   const { node, err } = lifecycleControls(entry);
   const tagText = entry.tags.length ? entry.tags.join(', ') : '—';
@@ -2035,9 +2227,10 @@ function renderCatalogDetail(detail, entry, host, opener) {
 // admin management surface), so revoked/expired-and-hidden assets that the
 // feed itself no longer serves still show up here with their state.
 async function viewCatalog(main) {
-  const [index, lifecycle] = await Promise.all([
+  const [index, lifecycle, queue] = await Promise.all([
     api('/catalog/assets/index.json'),
     api('/api/v1/catalog/lifecycle'),
+    submissionQueue(),
   ]);
   const byId = new Map((index.assets ?? []).map((a) => [a.id, a]));
   const rowsById = new Map(lifecycle.rows.map((r) => [r.assetId, r]));
@@ -2058,6 +2251,7 @@ async function viewCatalog(main) {
     el('h1', {}, 'Catalog'),
     el('p', { class: 'sub' }, 'Every asset this deployment serves, with a thumbnail, its expiry and revocation state. Inspect an asset for its full metadata and a larger preview. Revoking or hiding-on-expiry drops an asset from the feed immediately; it stays listed here — without its catalog metadata — so it can still be managed.'),
     ...(hdr ? [hdr] : []),
+    ...(queue ? [queue] : []),
     el('div', { class: 'card' },
       el('h2', {}, 'Served assets'),
       entries.length

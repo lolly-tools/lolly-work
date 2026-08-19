@@ -249,6 +249,46 @@ export async function runStoreConformance(store: Store): Promise<void> {
   await store.deleteInstanceAsset('inst/abc');
   assert.equal(await store.getInstanceAsset('inst/abc'), null);
 
+  // A submitted instance asset (plans/31 §3): the submission block round-trips
+  // whole, and the generated submission_state/submitted_by columns the postgres
+  // driver adds in 0017 must not change what comes back out.
+  await store.putInstanceAsset({
+    id: 'inst/sub1',
+    entry: { id: 'inst/sub1', name: 'Campaign Hero', formats: [{ format: 'png', url: '/catalog/inst/sub1/png', size: 12, checksum: 'shaX' }] },
+    blobs: { png: 'inst/sub1/png' },
+    submission: {
+      state: 'submitted', by: 'user:usr_1', at: '2026-08-19T00:00:00.000Z',
+      checksum: 'shaX', size: 12, contentType: 'image/png', width: 4, height: 3, approvalId: 'apr_1',
+    },
+    createdAt: '2026-08-19T00:00:00.000Z',
+  });
+  const sub = await store.getInstanceAsset('inst/sub1');
+  assert.equal(sub?.submission?.state, 'submitted');
+  assert.equal(sub?.submission?.by, 'user:usr_1');
+  assert.equal(sub?.submission?.approvalId, 'apr_1');
+  assert.equal(sub?.submission?.width, 4);
+  await store.putInstanceAsset({ ...sub!, submission: { ...sub!.submission!, state: 'live' } });
+  assert.equal((await store.getInstanceAsset('inst/sub1'))?.submission?.state, 'live');
+  await store.deleteInstanceAsset('inst/sub1');
+
+  // Submit quota: cumulative, created on first add, addressed by scope, and the
+  // add returns the row AFTER the increment (the caller charges, then reads).
+  assert.equal(await store.getSubmitQuota('design'), null);
+  const q1 = await store.addSubmitQuota('design', 100, 1);
+  assert.equal(q1.bytes, 100);
+  assert.equal(q1.count, 1);
+  const q2 = await store.addSubmitQuota('design', 250, 1);
+  assert.equal(q2.bytes, 350);
+  assert.equal(q2.count, 2);
+  await store.addSubmitQuota('sales', 7, 1);
+  assert.equal((await store.getSubmitQuota('design'))?.bytes, 350);
+  assert.equal((await store.listSubmitQuota()).length, 2);
+  // Charging first is what enforces the cap, so a refused submission has to be
+  // able to give its charge back: a negative delta releases it, and only that.
+  const released = await store.addSubmitQuota('design', -250, -1);
+  assert.equal(released.bytes, 100);
+  assert.equal(released.count, 1);
+
   // catalog aliases: old id → new id round-trip
   assert.equal(await store.getAlias('ext/dam1/a1'), null);
   await store.putAlias('ext/dam1/a1', 'inst/abc');

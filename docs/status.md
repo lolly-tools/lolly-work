@@ -32,6 +32,9 @@ gaps are named, not smoothed over. Verified against the repository on **2026-08-
 - Catalog: pack serving with per-caller filtering, lifecycle (schedule/expire/revoke), thirteen
   provider kinds with sealed credentials, exposure governance and live search fan-out, plus the
   exit (materialize, drift, cutover) and publish-out to Optimizely CMP.
+- Catalog submit: members with `catalog.submit` add assets from a browser or the CLI, with a
+  size cap, per-group quotas, checksum dedupe, an operator-pluggable pre-store scan hook, C2PA
+  detection, and optional review through an approval chain.
 - Telemetry ingest (closed allowlist, attribution at the door), rollups, activity feed, fleet
   registry, hash-chained audit log with an anchorable head.
 - Postgres store + migrations runner behind one conformance-tested seam.

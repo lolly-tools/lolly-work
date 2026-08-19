@@ -153,6 +153,36 @@ names the format for a driver fix without carrying an upstream value. A source s
 one therefore reports as "cannot tell" or as a timezone caveat, never as a clean bill of
 health, which is the failure mode these lines exist to catch.
 
+## Catalog submit
+
+Put a local file into this instance's catalog, and work the review queue
+([catalog](catalog.md#submitting-an-asset)):
+
+```bash
+lw catalog submit ./hero.png --name "Campaign Hero" [--tags campaign,hero] [--type icon] \
+                             [--groups design] [--label "Q4 hero"]
+lw catalog queue [--all]
+lw catalog edit    inst/ab12cd34 --name "Campaign Hero 2026" --tags campaign,hero
+lw catalog approve inst/ab12cd34
+lw catalog return  inst/ab12cd34 --body "wrong logo lockup"
+```
+
+`submit` needs the `catalog.submit` action (the author role carries it). With no
+`policy.submit.chain` configured the asset is live on return; with one, it prints the state as
+`submitted` and waits for `approve` or `return`. Identical bytes are reported as a duplicate
+and nothing is stored a second time:
+
+```
+already in the catalog as inst/ab12cd34 (identical bytes; nothing stored)
+```
+
+`queue` lists what is waiting, tagged `mine` or `inbox` depending on whether it is your own
+submission or one your groups may act on; `--all` includes what has already been published or
+returned. `edit` corrects a pending submission's declared metadata before it goes out - name,
+type, tags and description, never the bytes or the exposure - and is audited with its before
+and after. `approve` and `return` go through the approvals engine, so you cannot decide your
+own submission.
+
 ## Messaging
 
 ```bash

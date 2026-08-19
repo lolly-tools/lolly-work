@@ -49,6 +49,15 @@ start otherwise. See [identity](identity.md).
 | `guestLinks.defaultTtlHours` | `72` | the default offered when minting |
 | `nearby.enabled` | `true` | instance-mediated "nearby" presence: the `collab.nearby` capability bit and both `/api/v1/collab/nearby` routes. `false` keeps the whole surface dark fleet-wide |
 | `sessionTtlHours` | `12` | member session lifetime (token `exp` and cookie `Max-Age`); must be > 0 and ≤ 720 |
+| `submit.maxBytes` | `67108864` | per-file cap on a catalog submission (64 MiB, matching publish-out). Over it: `413 PAYLOAD_TOO_LARGE` |
+| `submit.chain` | *unset* | approval chain id gating submissions. Unset means no review: a submitted asset is live the moment it is stored. Set to a chain that does not exist, submissions are refused (`503 SUBMIT_CHAIN_MISSING`) rather than published unreviewed |
+| `submit.quota.bytes` | `0` | cumulative byte ceiling per group; `0` is unlimited |
+| `submit.quota.count` | `0` | cumulative submission-count ceiling per group; `0` is unlimited |
+
+Submit is **open to authors** by default: anyone holding `catalog.submit` submits and the
+asset goes live immediately. Name a `submit.chain` when the org wants review. Quota scopes are
+group names, and a submission is charged to every group its submitter belongs to, so extra
+memberships only tighten a member's budget. See [catalog](catalog.md#submitting-an-asset).
 
 Shorter `sessionTtlHours` is safer: it bounds how long an uncaught revocation (group change,
 offboarding) can ride. Account *disable* is instant regardless - it is checked per request.
@@ -126,6 +135,24 @@ With no database at all, `pg` falls back to a memory blob store (evaluation only
 credential is a secret, `LW_BLOBS_S3_CREDENTIAL`, formatted `<accessKeyId>:<secretAccessKey>`.
 This is the exit route for media-sized estates and the air-gap story: see
 [off-boarding](offboarding.md).
+
+## `submit`
+
+The instance-side half of catalog submit: a single optional pre-store scan hook. Everything an
+*org* tunes about submit lives under `policy.submit` above; this block is operator-only and
+never reaches the policy-as-code document or any shell.
+
+| Key | Default | What it does |
+|---|---|---|
+| `scanHook` | *unset* | no hook, and no bundled antivirus - an unconfigured deploy stores what it is sent |
+| `scanHook.kind` | - | `exec` (bytes on stdin, exit code is the verdict) or `http` (bytes POSTed, status is the verdict) |
+| `scanHook.target` | - | executable path for `exec`; an `http(s)` URL for `http` |
+| `scanHook.args` | `[]` | extra argv for `exec` |
+| `scanHook.timeoutMs` | `10000` | wall-clock budget for one scan |
+| `scanHook.onError` | `reject` | what an *unanswered* scan means; `allow` opts out of failing closed |
+
+Wiring ClamAV or an ICAP gateway is written up in
+[operations](operations.md#pre-store-scan-hook-for-submissions).
 
 ## `catalogProviders`
 

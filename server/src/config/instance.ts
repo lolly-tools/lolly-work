@@ -33,6 +33,45 @@ export interface ConfigCatalogProvider {
   sync?: ProviderSyncConfig;
 }
 
+/** Org policy for catalog submit (plans/31 section 3). */
+export interface SubmitPolicy {
+  /** Per-file cap on submitted bytes. Default 64 MiB, matching publish-out. */
+  maxBytes: number;
+  /** Approval chain id gating submissions. Absent or empty ⇒ no review: a
+   *  submitted asset is live the moment it is stored. */
+  chain?: string;
+  /** Per-group ceilings, counted cumulatively across every submission a group's
+   *  members make. 0 (the default for both) means unlimited: an unconfigured
+   *  instance counts without ever refusing. */
+  quota: { bytes: number; count: number };
+}
+
+/**
+ * The operator-pluggable PRE-STORE scan hook (plans/31 section 3 step 3,
+ * open question 3). Instance config, never org policy: it is not in the
+ * policy-as-code document and not in org-config, so no shell and no policy
+ * export ever sees it.
+ *
+ * lolly-work ships the hook, never a scanner. `http` POSTs the bytes to a
+ * gateway and reads the status; `exec` pipes them to a local command's stdin
+ * and reads the exit code (the clamdscan pattern). Absent by default, and its
+ * absence is the documented stance in docs/operations.md, not a silent no-op.
+ */
+export interface SubmitScanHook {
+  kind: 'http' | 'exec';
+  /** URL for `http`; the executable path for `exec`. */
+  target: string;
+  /** Extra argv for `exec` (ignored by `http`); the bytes always ride stdin. */
+  args?: string[];
+  /** Wall-clock budget for one scan. Default 10000 ms. */
+  timeoutMs: number;
+  /** What a hook that fails to ANSWER means (a timeout, a refused connection, a
+   *  missing binary) - distinct from a hook that answers "reject". Defaults to
+   *  `reject`: an unreachable scanner refuses the submission rather than
+   *  quietly turning the whole gate off. */
+  onError: 'reject' | 'allow';
+}
+
 export interface InstanceConfig {
   instance: {
     name: string;
@@ -80,6 +119,11 @@ export interface InstanceConfig {
      *  (group/role change, offboarding) can ride before it self-expires. Account
      *  disable is instant regardless (per-request check in memberOf). */
     sessionTtlHours: number;
+    /** Catalog submit (plans/31 section 3) - the ORG policy half, so it belongs
+     *  beside the other things an org tunes. Open to authors by default: anyone
+     *  holding `catalog.submit` submits and the asset goes live immediately.
+     *  Naming a `chain` buys review; defaults set direction, orgs buy limits. */
+    submit: SubmitPolicy;
   };
   render: {
     /**
@@ -134,6 +178,9 @@ export interface InstanceConfig {
     driver: 'pg' | 's3';
     s3?: { bucket: string; region?: string; endpoint?: string; prefix?: string };
   };
+  /** Instance-side catalog submit configuration. Only the scan hook lives here;
+   *  everything an ORG tunes about submit lives under `policy.submit`. */
+  submit: { scanHook?: SubmitScanHook };
   rateLimit: RateLimitConfig;
 }
 
@@ -181,6 +228,7 @@ const DEFAULTS: InstanceConfig = {
     guestLinks: { enabled: true, maxTtlHours: 168, defaultTtlHours: 72 },
     nearby: { enabled: true },
     sessionTtlHours: 12,
+    submit: { maxBytes: 64 * 1024 * 1024, quota: { bytes: 0, count: 0 } },
   },
   render: { allowHooksInFastPath: false, worker: { url: '', timeoutMs: 20000 }, c2pa: { certFile: '', claimGenerator: '' } },
   audit: { headLog: { onBoot: true, intervalMinutes: 60 } },
@@ -193,6 +241,7 @@ const DEFAULTS: InstanceConfig = {
   dev: { enabled: false, users: [] },
   catalogProviders: [],
   blobs: { driver: 'pg' },
+  submit: {},
 };
 
 function merge<T extends Record<string, unknown>>(base: T, over: Partial<T> | undefined): T {
@@ -242,6 +291,20 @@ export function parseConfig(json: string): InstanceConfig {
   }
   if (cfg.blobs.driver !== 'pg' && cfg.blobs.driver !== 's3') throw new Error(`unknown blobs.driver: ${cfg.blobs.driver} (pg | s3)`);
   if (cfg.blobs.driver === 's3' && !cfg.blobs.s3?.bucket) throw new Error('blobs.driver "s3" requires blobs.s3.bucket');
+  const sub = cfg.policy.submit;
+  if (!Number.isFinite(sub.maxBytes) || sub.maxBytes <= 0) throw new Error(`invalid policy.submit.maxBytes: ${sub.maxBytes}`);
+  for (const k of ['bytes', 'count'] as const) {
+    if (!Number.isFinite(sub.quota[k]) || sub.quota[k] < 0) throw new Error(`policy.submit.quota.${k} must be >= 0 (0 = unlimited)`);
+  }
+  const hook = cfg.submit.scanHook;
+  if (hook) {
+    if (hook.kind !== 'http' && hook.kind !== 'exec') throw new Error(`unknown submit.scanHook.kind: ${hook.kind} (http | exec)`);
+    if (!hook.target) throw new Error('submit.scanHook needs a target (a URL for http, an executable path for exec)');
+    if (hook.kind === 'http' && !/^https?:\/\//.test(hook.target)) throw new Error('submit.scanHook.target must be an http(s) URL when kind is "http"');
+    hook.timeoutMs = Number.isFinite(hook.timeoutMs) && hook.timeoutMs > 0 ? hook.timeoutMs : 10000;
+    if (hook.onError !== 'allow') hook.onError = 'reject'; // fail closed unless the operator says otherwise
+    if (hook.args !== undefined && !Array.isArray(hook.args)) throw new Error('submit.scanHook.args must be an array of strings');
+  }
   return cfg;
 }
 
