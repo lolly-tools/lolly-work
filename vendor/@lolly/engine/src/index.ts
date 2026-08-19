@@ -2,7 +2,7 @@
 /**
  * Engine public surface.
  *
- * Host shells (web/Tauri/CLI) import from here. Tools NEVER import from here —
+ * Host shells (web/Tauri/CLI) import from here. Tools NEVER import from here - 
  * tools talk to the host through the capability bridge passed to their hooks.
  */
 
@@ -100,10 +100,10 @@ export {
   GRADIENT_KINDS, DEFAULT_GRADIENT_SPACE, MAX_GRADIENT_STOPS,
 } from './gradient-spec.ts';
 export type { GradientSpec, GradientKind, GradientSpecStop } from './gradient-spec.ts';
-// Deep pixel buffers (plans/61-deeprichpixels.md §5.1) — the Float32Array
+// Deep pixel buffers (plans/61-deeprichpixels.md section 5.1) - the Float32Array
 // linear-light working frame whose space travels with the data, plus every
 // converter between it and the byte world. Exported alongside hdr.ts because
-// hdrViewTransform/pqEncodeFrame consume and return DeepFrames — a caller of
+// hdrViewTransform/pqEncodeFrame consume and return DeepFrames - a caller of
 // those needs createDeepFrame/fromU8Srgb/convertSpace from the same surface.
 export {
   PIXEL_SPACES, createDeepFrame, srgbToLinear, linearToSrgb,
@@ -117,10 +117,10 @@ export type { HdrBoostOptions, PqImage } from './hdr.ts';
 export {
   computePrintGeometry, cmykToRgbApprox, PRINT_MARK_DEFAULTS,
 } from './print-marks.ts';
-// Preflight — pre-export findings over a plain job description. Sits beside
+// Preflight - pre-export findings over a plain job description. Sits beside
 // print-marks: the engine owns the RULES, each shell collects the FACTS from its
 // own platform. Counts and assertions only; there is no cost/currency concept
-// anywhere in it (plans/65-preflight-and-cost.md §8).
+// anywhere in it (plans/65-preflight-and-cost.md section 8).
 export {
   preflight,
   PRINT_MARK_FORMATS, SEPARATING_FORMATS, SPOT_PLATE_FORMATS,
@@ -133,11 +133,11 @@ export type {
   Finding, FindingId, Severity, Count, Bound, QuantityKind, QuantityUnit,
   Fact, UnknownReason, Evidence,
 } from './preflight.ts';
-// Rate card — the printer's own card, stored and validated (never a source of
+// Rate card - the printer's own card, stored and validated (never a source of
 // prices). parseRateCard is the pure reader; computeCost is the Phase 4 arithmetic
 // (integer minor units, no currency formatting) that multiplies the card's rates by
 // preflight's counts and emits a scalar total ONLY on full coverage (rule 2).
-// plans/65-preflight-and-cost.md §8.
+// plans/65-preflight-and-cost.md section 8.
 export { parseRateCard, isRateCardError, EXAMPLE_RATECARD_DIGEST, computeCost } from './rate-card.ts';
 export type {
   RateCard, RateCardLine, RateCardError, DisabledReason,
@@ -146,21 +146,57 @@ export type {
 } from './rate-card.ts';
 export { parseSvgPath, parseSvgPathArgs, svgArcToBeziers } from './svg-path.ts';
 export { extractSvgColors } from './svg-colors.ts';
+// Lift layers (1.119, plans/104 section 7): an SVG's own layers enumerated into one
+// standalone document each, so a flat drawing becomes a stack of boxes with real
+// depth. DOM-free, so the CLI lifts the same way the editor does.
+// 1.121 (plans/104 P3.2) adds the two pieces that make a lift a STACK rather than
+// a partition: a layer holding nearly all the ink is descended into and
+// re-clustered (the hero problem), and a derived document is cropped to its own
+// ink where that is provably safe - so a 16 px icon's depth shadow costs a 16 px
+// gaussian instead of a full-frame one.
+export {
+  enumerateSvgLayers, svgRootViewBox,
+  SVG_LAYERS_MAX, SVG_LAYERS_MAX_CHARS, SVG_LAYERS_MAX_TAGS, SVG_LAYERS_MAX_CANDIDATES,
+  SVG_LAYERS_MAX_DEPTH, SVG_LAYERS_MAX_DESCENT, SVG_LAYERS_MAX_REFS,
+  SVG_LAYERS_HEAVY_BYTES,
+  SVG_LAYERS_HERO_SHARE, SVG_LAYERS_HERO_ROUNDS, SVG_LAYERS_HERO_MIN_INK,
+  SVG_LAYERS_HERO_BUDGET, SVG_LAYERS_HERO_GAP_SCALES, SVG_LAYERS_PEER_AREA_RATIO,
+} from './svg-layers.ts';
+export type { SvgLayer, SvgLayerBox, SvgLayersResult, SvgLayerOptions } from './svg-layers.ts';
 export { renderZzfxm, zzfxG, zzfxM, zzfxR, zzfxV } from './zzfxm.ts';
 export type {
   ZzfxSong, ZzfxInstrument, ZzfxChannel, ZzfxPattern, RenderedPcm,
 } from './zzfxm.ts';
-// Audio analysis (host.audio, v1.71) — decoded PCM in, a per-frame reactivity
+// Audio analysis (host.audio, v1.71) - decoded PCM in, a per-frame reactivity
 // track out. The shell owns the decoder and attaches this; the maths lives here so
 // the web shell and the CLI read identical numbers off the same clip.
 export { analysePcm, fftInPlace } from './audio-analyse.ts';
 export type { AudioAnalysis, AudioAnalyseOpts, AudioFrames } from './audio-analyse.ts';
-// Captions (host.speech, v1.96) — spoken-word timings in, subtitle cues out. The
+// Captions (host.speech, v1.96) - spoken-word timings in, subtitle cues out. The
 // grouping and VTT/SRT timestamp maths live here so the browser and a headless
 // export break caption lines at the same words.
 export { groupWordsToCues, cuesToVtt, cuesToSrt, cueAt } from './captions.ts';
 export type { CaptionCue, GroupWordsOpts } from './captions.ts';
-// Speech synthesis text machinery (host.speech, v1.98) — the pure half of Kokoro
+// Text AI-likelihood signals (plans/125) - a string in, a tiered SIGNAL (never a
+// verdict) out: byte-level artifact tells on digital text, chatbot-boilerplate
+// phrase evidence, English-gated writing-style heuristics, per-finding heat
+// temperatures + a rolling-window heat map, and a hedged style guess (only a
+// leaked fingerprint names a model with confidence). Pure + model-free, so the
+// verify view, the catalog, the CLI, and the OCR path read identical numbers.
+// LEXICON_VERSION keys persisted analyses to the tell lists that produced them.
+export { analyzeTextSignals, LEXICON_VERSION } from './text-signals.ts';
+export type {
+  TextSignalSource, TextSignalBand, TextSignalTier, TextSignalSpan,
+  TextSignalFinding, TextStyleGuess, TextSignalReport, AnalyzeTextSignalsOpts,
+  TextSignalDocKind, TextHeatCell, TextHeatmap,
+} from './text-signals.ts';
+// Humanize (plans/125) - the DETERMINISTIC, on-device clean-up of the mechanical AI
+// artifacts the analysis flags (invisible chars, leaked model tokens, curly-quote/em-dash
+// noise). No model, so no genAI stamp; the semantic tells stay HIGHLIGHTED for a person to
+// reword. The honest inverse of a detection-evading "humanizer".
+export { humanizeText } from './humanize.ts';
+export type { HumanizeChange, HumanizeResult } from './humanize.ts';
+// Speech synthesis text machinery (host.speech, v1.98) - the pure half of Kokoro
 // TTS: normalize/split/chunk maths, token-span bookkeeping, durations→word
 // timings and clip concatenation. The shell's worker and Node scripts inject the
 // model/phonemizer around it, so every surface speaks the same words the same way.
@@ -183,17 +219,17 @@ export { composeSong, PRESETS, SCALES, mulberry32, patternSeconds } from './zzfx
 // The seed → spec draw behind `zzfxm:<seed>`. Engine-side so every shell composes
 // the SAME song from one id; the draw order is a frozen contract (see the fn).
 export { generatedSongSpec } from './zzfx-compose.ts';
-// The `zzfxm:<seed>[:<style>]` asset-id scheme — a song NAMED rather than stored.
+// The `zzfxm:<seed>[:<style>]` asset-id scheme - a song NAMED rather than stored.
 // Sits beside tool-url.ts's scheme for the same reason: every shell that resolves
 // an asset id has to recognise it, and they must not each invent the rule.
 export { ZZFXM_SCHEME, ZZFXM_ARCHETYPES, isZzfxmRef, parseZzfxmRef, formatZzfxmRef } from './zzfxm-ref.ts';
 export type { ZzfxmRef, ZzfxmArchetype } from './zzfxm-ref.ts';
 export type { SongSpec, Archetype, PresetName, ScaleName } from './zzfx-compose.ts';
-// Versioned design systems (plans/97 §6a) — here for the same reason as the two
+// Versioned design systems (plans/97 section 6a) - here for the same reason as the two
 // id schemes above: the head/version asset-id scheme, the discovery-exclusion
 // predicate and the resolution ladder must resolve IDENTICALLY in the web bridge,
 // the MCP server and the CLI, so there is one implementation, not three.
-// `sha256Hex` belongs to this surface too but is NOT re-listed here — the module
+// `sha256Hex` belongs to this surface too but is NOT re-listed here - the module
 // re-exports catalog-integrity.ts's, already exported at the top of this barrel.
 export {
   DESIGN_VERSION_LATEST, readVersionIndex, withVersionIndex, stripVersionIndex,
@@ -204,7 +240,7 @@ export {
 export type { PinnedAsset, VersionEntry, VersionIndex } from './design-version.ts';
 export {
   parseCssLength, cornerRadii, uniformRadius, insetCorners, roundedRectPath, parseBoxShadow, parseTextShadow, gaussianShadowBands, gaussianShadowRings,
-  parseCssMatrix, multiplyMat, matAboutPivot, isAxisAlignedMat, matToSvg, IDENTITY_2D,
+  parseCssMatrix, isNonAffineTransform, multiplyMat, matAboutPivot, isAxisAlignedMat, matToSvg, IDENTITY_2D,
 } from './css-box.ts';
 export type { Mat2D } from './css-box.ts';
 export {
@@ -213,7 +249,7 @@ export {
 } from './css-paint.ts';
 export type { ClipShape, GradientStop, RadialGradient, ConicGradient, DropShadow } from './css-paint.ts';
 
-// Vector geometry kernel (engine/src/geom/) — exact cubic Bezier operations, the
+// Vector geometry kernel (engine/src/geom/) - exact cubic Bezier operations, the
 // substrate for boolean ops, path offsetting and stroke outlining. Nothing here
 // flattens, samples or rasterises; see geom/bezier.ts for why that matters.
 export {
@@ -227,7 +263,7 @@ export {
   intersectSegments, intersectLineCubic, intersectCubics, cubicRoots01,
 } from './geom/intersect.ts';
 // The path model the operators work on, plus lossless conversion to and from the
-// `SubPath[]` that svg-path.ts parses — so a boolean's result re-enters any existing sink
+// `SubPath[]` that svg-path.ts parses - so a boolean's result re-enters any existing sink
 // (the PDF, EMF, EPS and DXF emitters) with no new code path.
 export {
   type Contour, type GeomPath, JOIN_EPS,
@@ -255,20 +291,20 @@ export { type CapStyle, type StrokeOptions, strokeToPath } from './geom/stroke.t
 // is separate from offsetting: an exact offset can be SAMPLED for position and derivative
 // analytically but has no Bezier form, and fitting the real curve rather than an
 // approximation of it is what removes an error term. `simplifyCubics` must never be
-// applied to boolean output by default — see its own warning.
+// applied to boolean output by default - see its own warning.
 export {
   type ParamCurveFit, type FitOptions,
   quadratureMoments, cubicAsSource, fitError, fitCubicMoment, fitToCubics, simplifyCubics,
 } from './geom/fit.ts';
 // The authored-spline seam: geometry runs on cubics, but what the USER edits stays in
 // its own form (pen-tool nodes with continuity, Catmull-Rom, B-spline, one day Spiro).
-// Lowering is one-directional and deliberate — see geom/spline.ts.
+// Lowering is one-directional and deliberate - see geom/spline.ts.
 export {
   type Continuity, type Node as SplineNode, type SplineKind, type AuthoredPath,
   type HyperbezierSolution,
   toCubics, enforceContinuity, solveHyperbezier, hyperbezierCubics,
 } from './geom/spline.ts';
-// The wire form of an authored path — one delimiter-safe field value, so a pen shape
+// The wire form of an authored path - one delimiter-safe field value, so a pen shape
 // can live in a `blocks` sub-field and a share link. Shell code (the pen-tool overlay)
 // imports these; tool code reaches the SAME implementation through
 // host.geom.encodeAuthored / decodeAuthored, so there is only ever one codec.
@@ -281,23 +317,23 @@ export {
 } from './geom/authored-url.ts';
 // The tool-facing face of all of the above (`host.geom`, v1.64): SVG path data in, SVG
 // path data out, bounded parsing for untrusted `d` strings, and failures RETURNED as
-// codes rather than thrown — because a throw out of a hook is logged and discarded,
+// codes rather than thrown - because a throw out of a hook is logged and discarded,
 // which would make a pen tool go quiet instead of telling the user anything.
 export { makeGeomApi } from './geom-api.ts';
-// Connector / line / arrow geometry (plan 90 R1) — one source for the editor preview, the
+// Connector / line / arrow geometry (plan 90 R1) - one source for the editor preview, the
 // committed/export render, and the CLI. The host bridge primitive exposes buildConnectorSvg.
 export {
   edgeAnchor, edgeBorderPt, edgeWaypoints, edgeNested, connectorRoute,
   roundedEdgePath, smoothEdgePath, edgeArrowHead, edgeHeadInset,
   isEdgePoint, parseEdgePoint, formatEdgePoint, edgeEndRect, buildConnectorSvg,
-  // plan 96 P1 — heads on the unified path primitive, and the host.connectors factory.
+  // plan 96 P1 - heads on the unified path primitive, and the host.connectors factory.
   pathHeadSvg, pathHeadInset, pathHeadSize, makeConnectorsApi,
-  // plan 96 P3/P5 — a BOUND path is routed by its own spline kind, and ONE routed-line
+  // plan 96 P3/P5 - a BOUND path is routed by its own spline kind, and ONE routed-line
   // renderer serves both that and the legacy edge model.
   pathRouteStyle, isConnectorRouteStyle, CONNECTOR_ROUTE_STYLES, routedLineSvg,
 } from './connectors.ts';
 export type { EdgeRect, EdgeAnchor, ConnectorRoute, ConnectorRenderOpts, ConnectorDecor, PathHeadOpts } from './connectors.ts';
-// Dash fitting (plan 96) — manual `stroke-dasharray` entry (numbers only, the injection
+// Dash fitting (plan 96) - manual `stroke-dasharray` entry (numbers only, the injection
 // boundary) and Illustrator-style corner-fit dashes, as an array for a live preview or as
 // absolute segments for the committed/export render. Reached by tools via
 // host.connectors.dashFit.
@@ -312,7 +348,8 @@ export type {
   PptxSlide, PptxShape, PptxRect, PptxText, PptxPic, PptxRun, PptxPara, PptxFill, PptxMedia, PptxBuildOpts,
   PptxTable, PptxTableCell, PptxLine, PptxTheme, PptxPath,
 } from './pptx.ts';
-export { svgToCustGeomPaths } from './svg-custgeom.ts';
+export { svgToCustGeomPaths, svgToNativePptx } from './svg-custgeom.ts';
+export type { SvgNativePptx } from './svg-custgeom.ts';
 export { rebrandPptxParts } from './pptx-patch.ts';
 export type { RebrandPlan, RebrandTheme, RebrandReport, PartMap } from './pptx-patch.ts';
 export { isPptx, readPptx, pptxMediaImages } from './pptx-read.ts';
@@ -423,7 +460,7 @@ export {
 export type { Oklch, BrandDeriveOptions } from './brand-derive.ts';
 export { gamutSolid, projectGamutSolid, projectSolidPoint, projectSolidPoints, solidPointOklch, labSolidUnit, gamutSolidToSvg, shadedSolidFill } from './gamut-solid.ts';
 // A brand colour's faces: one canonical value plus per-space/per-profile
-// overrides. The generalisation of PrintLock — the export walkers consult it, so
+// overrides. The generalisation of PrintLock - the export walkers consult it, so
 // it is engine-side rather than living in the brand editor.
 export { readFaces, writeFace, colorFaces, faceDrift, canonicalValue } from './color-faces.ts';
 export type { ColorFace, StoredFace, FaceTarget, FaceOrigin } from './color-faces.ts';
@@ -446,7 +483,7 @@ export type { BuiltinGamutName, GamutLimit, GamutSource, RenderingIntent } from 
 // itself (memoised) rather than fixed at one constant that clips Rec.2020 and
 // leaves a dead band on sRGB.
 export { peakChroma, chromaAxisMax, chromaTickStep } from './gamut-axis.ts';
-// Which RING out of the active gamut a colour sits in — one membership question
+// Which RING out of the active gamut a colour sits in - one membership question
 // per candidate, never an index into an ordering (Display-P3 is not inside
 // Rec.2020). The picker and the Colour Lab sliders share this classifier.
 export { gamutTier, gamutTierProbe, BEYOND_TIER, GAMUT_TIER_LADDER } from './gamut-tier.ts';
@@ -461,23 +498,27 @@ export type { IccProfile } from './icc.ts';
 // ICC profiles APPLIED to DeepFrame pixels (the digiKam act): device ↔ PCS per
 // scanline, tetrahedral device-link lattices for pure-LUT profiles, and the
 // ICC v4 clause-8 rendering-intent fallback. Sits beside the reader it drives;
-// like the reader it never throws — null on malformed/unusable input.
+// like the reader it never throws - null on malformed/unusable input.
 export { ICC_DEVICE_SPACE, iccFrameRefusal, iccResolvedIntent, applyIccToFrame, convertViaIcc } from './icc-pixels.ts';
 export type { IccDirection } from './icc-pixels.ts';
 export { SCHEME_KINDS, generateSchemeAccents, rotateHue, generateAnalogous, rotateRampHue } from './brand-schemes.ts';
 export type { SchemeKind, AccentCandidate, AnalogousParams } from './brand-schemes.ts';
 export {
   deltaEOk, apcaContrast, rampOklab, classBreaks, distinctColors, makeColorApi,
-  // APCA's band interpretation, alongside WCAG 2's AA/AAA — carried together
+  // APCA's band interpretation, alongside WCAG 2's AA/AAA - carried together
   // because conformance is still measured against the ratio while APCA is the one
   // that models polarity.
   apcaUse, apcaVerdict, APCA_BANDS, APCA_SRGB_ONLY,
   // Inverse APCA: solve the OKLCH lightness that hits a target Lc on a given
-  // background — the generative half of the forward apcaContrast eval.
+  // background - the generative half of the forward apcaContrast eval.
   solveLightnessForApca,
 } from './color-tools.ts';
 export type { RampOptions, DistinctColorsOptions, ApcaUse, ApcaVerdict, ApcaSolveResult, ApcaSolveOptions } from './color-tools.ts';
-// Palette exchange — a flat swatch list serialised as DTCG tokens JSON, CSS
+// Chroma / colour-range keying - remove a flat background by perceptual (OKLab)
+// distance, model-free. The pure math behind the video-matte colour-key method.
+export { chromaKeyAlpha } from './chroma-key.ts';
+export type { ChromaKeyOptions } from './chroma-key.ts';
+// Palette exchange - a flat swatch list serialised as DTCG tokens JSON, CSS
 // custom properties / classes, SCSS variables, a GIMP .gpl, or a binary Adobe
 // .ase. Pure + DOM-free; attached to host.color (paletteExport/paletteExportBytes)
 // and reused by the web shell's Swatches download, so both paths are byte-identical.
@@ -528,21 +569,26 @@ export type { ZipTier, ZipEntryInput, AesZipKeys } from './zip-crypto.ts';
 
 // Keyframe tracks + the depth camera (1.114, plans/104): the `kf` wire grammar,
 // per-channel sparse evaluation, the ease adapter, and the affine projection
-// (fold, guard, DOF) every consumer of the feature shares.
+// (fold, guard, DOF) every consumer of the feature shares. 1.118 added the `w`/`h`
+// channels (absolute px, replace-for-segment) - see engine/CHANGELOG.md.
 export {
   KF_CHANNELS, KF_CAMERA_CHANNELS, KF_CLAMPS, KF_Z_FIELD_CLAMP, KF_QUANTA, KF_BEZIER_QUANTUM,
   KF_MAX_KEYS, KF_MAX_CHARS, KF_MAX_TIME_MS, KF_MAX_BLUR, KF_CHARSET_RE,
   KF_EASE_TOKENS, KF_EASE_PRESETS, KF_HOLD_EASE, KF_DEFAULT_EASE, KF_LINEAR_EASE, KF_HOLD_CSS,
   KF_GUARD_U, KF_GUARD_BAND, KF_EFF_MAX, DOF_K, DEFAULT_CAMERA, DEFAULT_PERSPECTIVE,
   isKfChannel, isKfSafe, cubicBezierAt, normaliseKfEase, kfEasePoints, kfEaseAt,
-  kfEaseCss, kfEaseName, kfEaseToken,
+  kfEaseCss, kfEaseName, kfEaseToken, subdivideKfEase,
   parseKf, serialiseKf, evaluateKf, kfChannelsUsed,
-  projectDepth, projectLayer, dofBlur, resolveCamera,
+  projectDepth, depthForEff, projectLayer, dofBlur, resolveCamera,
+  // 1.121 (plans/104 P2) - the tilt tier. `projectLayer` grows a `m` homography when
+  // (and only when) the camera authors an angle; `cameraTilted` is the exact-zero gate
+  // that keeps every screen-parallel document on the path it always took.
+  cameraTilted, kfMatrix3dCss, projectSurfacePoint,
 } from './keyframes.ts';
 export type {
-  KfChannel, KfCameraChannel, KfPose, KfEasePresetToken, KfEasePreset,
+  KfChannel, KfCameraChannel, KfPose, KfEasePresetToken, KfEasePreset, KfEaseSubdivision,
   KfKey, KfKeyInput, KfTrack, KfParseOptions,
-  KfCameraPose, KfCameraView, KfCameraClip, KfDepth, KfLayerPose, KfProjection,
+  KfCameraPose, KfCameraView, KfCameraClip, KfDepth, KfLayerPose, KfProjection, KfMatrix3,
 } from './keyframes.ts';
 
 // Per-minor contract changelog: engine/CHANGELOG.md (one entry per ENGINE_VERSION

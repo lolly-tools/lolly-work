@@ -41,7 +41,7 @@
     "designVersion": {
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9-]*$",
-      "description": "Optional design-system version this tool renders against (plans/97 §6a): a published version's slug, or 'latest' for the edit head. Author-controlled stability - a pinned tool keeps rendering against its version whatever gets republished. Unlike engineVersion this is NOT enforced at load: a pin naming a version this device does not have falls through to the active version, then to the head, so a tool always draws. Overridden per render by ?designv=. On a device that never published a version it has no effect at all."
+      "description": "Optional design-system version this tool renders against (plans/97 section 6a): a published version's slug, or 'latest' for the edit head. Author-controlled stability - a pinned tool keeps rendering against its version whatever gets republished. Unlike engineVersion this is NOT enforced at load: a pin naming a version this device does not have falls through to the active version, then to the head, so a tool always draws. Overridden per render by ?designv=. On a device that never published a version it has no effect at all."
     },
     "status": {
       "type": "string",
@@ -124,6 +124,11 @@
           "type": "boolean",
           "default": true,
           "description": "Set false for utility/interactive tools that have no export. Hides download, copy, format, and dimension controls. Shows Save only when the tool has inputs. Hides the sidebar entirely when there are no inputs."
+        },
+        "sidebar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Set false to declare inputs that are NOT presented as a left-panel sidebar: the inputs live only in the synced input model (URL params, collaboration, saved sessions, CLI/URL mode) and the tool's own template owns their editing UI. A full-bleed tool that still exports (render.export:true) keeps its export pill and canvas — the input aside is simply suppressed, exactly as for a no-input full-bleed tool. Use this for an interactive editor whose controls belong on the canvas (e.g. Run Web Code's code panes) rather than in a sidebar. Distinct from render.layout:'canvas' (which is for a single file drop-zone and forces export off) and from the chromeless 'editor'/'document' layouts (which keep a fixed render canvas)."
         },
         "layout": {
           "type": "string",
@@ -400,6 +405,7 @@
         },
         "label": { "type": "string" },
         "help": { "type": "string" },
+        "notice": { "type": "string", "description": "Always-visible fine print rendered above the control (unlike help, which sits behind an info button). For what the user should read before typing — e.g. the consent disclosure on an input whose value triggers a network lookup." },
         "type": {
           "type": "string",
           "enum": ["text", "longtext", "number", "boolean", "color", "select", "asset", "date", "time", "datetime-local", "url", "blocks", "vector", "file", "table"]
@@ -517,9 +523,9 @@
             "properties": {
               "display": {
                 "type": "string",
-                "enum": ["select", "icon-toggle"],
+                "enum": ["select", "icon-toggle", "segmented"],
                 "default": "select",
-                "description": "'icon-toggle' renders the select as ONE compact button that cycles its options, showing the current option's `icon` instead of a dropdown. Intended for 2-state modifiers (with attachTo); a longer option list still cycles, but a dropdown reads better past ~3."
+                "description": "'icon-toggle' renders the select as ONE compact button that cycles its options, showing the current option's `icon` instead of a dropdown. Intended for 2-state modifiers (with attachTo); a longer option list still cycles, but a dropdown reads better past ~3. 'segmented' renders the options as a row of side-by-side tabs (a radiogroup) instead of a dropdown — for a small, mutually-exclusive mode switch (2–4 options) like Hue/Saturation/Luminance; past ~4 a dropdown reads better."
               },
               "options": {
                 "type": "array",
@@ -600,6 +606,11 @@
                 "type": "boolean",
                 "default": false,
                 "description": "Show a text label above each sub-field (the layout typed/addMenu blocks always use). Turn on for untyped blocks whose controls aren't self-evident, or that carry several optional fields."
+              },
+              "rowActions": {
+                "type": "boolean",
+                "default": false,
+                "description": "Add copy / paste / clear buttons to each block's header (next to collapse + remove): copy a row's values, paste them onto another row to make the two match, or clear a row to its field defaults. Useful when rows are many-field states people want to duplicate (e.g. flythrough poses)."
               },
               "fields": {
                 "type": "array",
@@ -835,7 +846,7 @@
                   "import": {
                     "type": "object",
                     "additionalProperties": false,
-                    "description": "Opt into design-file IMPORT on this canvas: the editor's Lolly menu gains an 'Import a design' entry that maps an imported file's frames/shapes onto boxes of THIS array, using the tool's own font-select values and addKinds seed colours so the result is indistinguishable from natively-authored boxes. Absent (Layout Studio's historical state) = no import control at all.",
+                    "description": "Opt into design-file IMPORT on this canvas: the editor's Lolly menu gains an 'Import a design' entry that maps an imported file's frames/shapes onto boxes of THIS array, using the tool's own font-select values and addKinds seed colours so the result is indistinguishable from natively-authored boxes. Absent (Design's historical state) = no import control at all.",
                     "properties": {
                       "formats": {
                         "type": "array",

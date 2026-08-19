@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * WMF (Windows Metafile, 16-bit) emitter — pure, DOM-free, platform-agnostic.
+ * WMF (Windows Metafile, 16-bit) emitter - pure, DOM-free, platform-agnostic.
  *
  * The old-world sibling of emf.ts: same normalized vector IR in, a classic
  * Windows 3.x metafile out. This writes the PLACEABLE variant (the 22-byte Aldus
@@ -8,7 +8,7 @@
  * scale) followed by the standard METAHEADER and a stream of 16-bit records.
  *
  * Where emf.ts owns 32-bit GDI paths, this owns the 16-bit record dialect. It is
- * the format authority — it imports only units.ts (+ shared IR types from emf.ts)
+ * the format authority - it imports only units.ts (+ shared IR types from emf.ts)
  * and touches no Handlebars, ajv, or DOM, so it is fully node:test-able.
  *
  * Scope (v1): solid-fill / solid-stroke paths, device RGB only. WMF has NO bezier
@@ -16,14 +16,14 @@
  * polyline (the DXF strategy) and each subpath becomes a Polygon (filled+outlined,
  * auto-closed) or a Polyline (outline only). Gradients/images/alpha are resolved
  * to solids by the IR producer before they reach here; raster `image` prims are
- * dropped (WMF's DIB blits are out of scope for a first cut — see the note by the
+ * dropped (WMF's DIB blits are out of scope for a first cut - see the note by the
  * prim loop). Text is expected to be outlined to paths upstream, so this writes NO
  * text or font records; outlining text to WMF Polygons is a follow-up.
  *
  * All multi-byte fields are little-endian. Every record is WORD-aligned by
  * construction (the metafile unit is the 16-bit WORD).
  *
- * opts = { width, height, unit, dpi } — the PHYSICAL output size, carried by the
+ * opts = { width, height, unit, dpi } - the PHYSICAL output size, carried by the
  * placeable header's bounding rect + `inch` scale. Absent ⇒ the px canvas at the
  * CSS 96-DPI convention. `attribution` is honoured as documented on VectorEmitOpts
  * but is effectively a no-op here: WMF has no comment/generator record, so there is
@@ -39,7 +39,7 @@ import type {
 } from './emf.ts';
 import type { PathSegment } from './svg-path.ts';
 
-// ─── WMF record function codes (RecordType enumeration, MS-WMF §2.1.1.1) ───────
+// ─── WMF record function codes (RecordType enumeration, MS-WMF section 2.1.1.1) ───────
 const META_EOF                = 0x0000;
 const META_SETPOLYFILLMODE    = 0x0106;
 const META_SETWINDOWORG       = 0x020b;
@@ -75,7 +75,7 @@ const clampI16 = (v: number): number => {
   const r = Math.round(v);
   return r < INT16_MIN ? INT16_MIN : r > INT16_MAX ? INT16_MAX : r;
 };
-// Polygon/Polyline count is a signed 16-bit — cap points defensively (hostile IR
+// Polygon/Polyline count is a signed 16-bit - cap points defensively (hostile IR
 // with millions of segments in one subpath must not emit an invalid record).
 const MAX_POLY_POINTS = INT16_MAX;
 
@@ -89,7 +89,7 @@ const colorWords = ({ r, g, b }: Rgb): [number, number] => [
 
 /**
  * Build one WMF record: [RecordSize u32 (in WORDs)][Function u16][params…].
- * `params` are 16-bit words (signed or unsigned — masked to 16 bits on write, so
+ * `params` are 16-bit words (signed or unsigned - masked to 16 bits on write, so
  * negative coordinates and 0xNNNN colour halves both serialise correctly).
  */
 function rec(func: number, params: number[]): Uint8Array {
@@ -107,7 +107,7 @@ function rec(func: number, params: number[]): Uint8Array {
 }
 
 // ─── Records ───────────────────────────────────────────────────────────────────
-// SetWindowOrg/Ext store the Y field before X (MS-WMF §2.3.5.30 / §2.3.5.29).
+// SetWindowOrg/Ext store the Y field before X (MS-WMF section 2.3.5.30 / section 2.3.5.29).
 const recSetWindowOrg = (x: number, y: number): Uint8Array =>
   rec(META_SETWINDOWORG, [clampI16(y), clampI16(x)]);
 const recSetWindowExt = (w: number, h: number): Uint8Array =>
@@ -175,13 +175,13 @@ function subpathVertices(segments: PathSegment[], tol: number): Pt[] {
 // ─── Path prim → records ────────────────────────────────────────────────────────
 // WMF has an IMPLICIT object table: a Create* record drops its object into the
 // lowest free slot. We create brush (→ slot 0) then pen (→ slot 1), select both,
-// draw, then delete both — so the table is empty between prims and the indices
+// draw, then delete both, so the table is empty between prims and the indices
 // stay predictable (brush 0, pen 1). Max concurrent objects is therefore 2.
 const OBJ_BRUSH = 0;
 const OBJ_PEN   = 1;
 // Stock-object handles for META_SELECTOBJECT: bit 15 (0x8000) flags a GDI stock
 // object, the low bits its id (NULL_BRUSH = 5, NULL_PEN = 8). Selecting these
-// DESELECTS our slot-0 brush / slot-1 pen before we delete them — GDI's DeleteObject
+// DESELECTS our slot-0 brush / slot-1 pen before we delete them. GDI's DeleteObject
 // is a no-op on a still-selected object, so without this each prim leaks a pen + a
 // brush handle during PlayMetaFile and a complex file (thousands of prims) exhausts
 // the process GDI handle limit and renders incompletely. The EMF sibling does the
@@ -283,7 +283,7 @@ function writeMetaHeader(totalWords: number, maxRecordWords: number, nObjects: n
 /**
  * Serialize an IR to placeable-WMF bytes.
  * @param ir   { width, height, prims }
- * @param opts { width, height, unit, dpi } — physical output size
+ * @param opts { width, height, unit, dpi } - physical output size
  */
 export function emitWmf(ir: VectorIr, opts: VectorEmitOpts = {}): Uint8Array {
   const h = headerMath(ir, opts);
@@ -291,7 +291,7 @@ export function emitWmf(ir: VectorIr, opts: VectorEmitOpts = {}): Uint8Array {
 
   const body: Uint8Array[] = [];
   // Map device-px straight onto logical units (default MM_TEXT: y grows down, as
-  // SVG/device px do — no flip). The placeable rect + `inch` carry physical scale.
+  // SVG/device px do; no flip). The placeable rect + `inch` carry physical scale.
   body.push(recSetWindowOrg(0, 0));
   body.push(recSetWindowExt(h.Wpx, h.Hpx));
 
@@ -301,6 +301,12 @@ export function emitWmf(ir: VectorIr, opts: VectorEmitOpts = {}): Uint8Array {
     // `image` (raster escape-hatch) prims are dropped: WMF's DIB blits are out of
     // scope for this first cut. The IR producer already vectorises everything it
     // can, so this only loses the last-resort rasterised node.
+    // `text` prims (EMF's live-text mode, engine 1.128) must never reach this
+    // emitter - WMF callers walk with the outline default, and silently dropping
+    // a run would break the "never a partially-textless file" guarantee.
+    else if (prim?.type === 'text') {
+      throw new Error(`WMF cannot carry live text (run "${prim.text.slice(0, 24)}") - build the IR with textMode 'outline'`);
+    }
   }
   body.push(recEof());
 
