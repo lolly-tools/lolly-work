@@ -5,17 +5,17 @@
 // predictor BEFORE DEFLATE, so an inflated stream is not yet the raw samples:
 // every row is prefixed with a 1-byte filter tag (0 None, 1 Sub, 2 Up,
 // 3 Average, 4 Paeth) and the bytes are differences against reconstructed
-// neighbours. This reverses that step — the last thing standing between an
+// neighbours. This reverses that step. It is the last thing standing between an
 // inflated jsPDF `addImage(png,'PNG')` embed (which writes /Predictor 15) and
 // the actual pixels the /verify Lolly-Imprint scan needs to read.
 //
 // Pure + DOM-free (engine contract): no DOM, no deps, defensive on every input.
-// Spec: PNG (RFC 2083 §6) / PDF 32000-1 §7.4.4.4 (LZW/Flate predictors).
+// Spec: PNG (RFC 2083 section 6) / PDF 32000-1 section 7.4.4.4 (LZW/Flate predictors).
 
 /**
  * Reverse PNG row filters over an already-inflated scanline buffer.
  *
- * Input layout: `height` rows, each `1 + width * bytesPerPixel` bytes — a filter
+ * Input layout: `height` rows, each `1 + width * bytesPerPixel` bytes: a filter
  * tag then that row's filtered samples. Only 8-bit-per-component images are
  * covered (rowBytes = width * bytesPerPixel); sub-byte depths are the caller's
  * responsibility to reject. Returns the reconstructed `height * width *
@@ -28,7 +28,7 @@
  * @param width          samples-group count per row (image pixel width).
  * @param height         row count (image pixel height).
  * @param bytesPerPixel  bytes per pixel used for the Sub/Average/Paeth left
- *                       offset — ceil(components * bitsPerComponent / 8); for the
+ *                       offset: ceil(components * bitsPerComponent / 8); for the
  *                       8-bit path this is simply the component count (1/3/4).
  */
 export function unfilterPng(
@@ -75,7 +75,7 @@ export function unfilterPng(
   return out;
 }
 
-// PNG Paeth predictor (RFC 2083 §6.6): pick the neighbour (left/above/above-left)
+// PNG Paeth predictor (RFC 2083 section 6.6): pick the neighbour (left/above/above-left)
 // closest to the initial estimate p = a + b - c, ties resolving a → b → c.
 function paethPredictor(a: number, b: number, c: number): number {
   const p = a + b - c;
