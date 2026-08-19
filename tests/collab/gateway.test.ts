@@ -1119,7 +1119,7 @@ test('one collab.join + one collab.leave per member, and one keys-only rollup on
 // ── admin console: GET /api/v1/collab/rooms (OSS plans/100 §7, plans/14 §6) ───
 
 test('GET /api/v1/collab/rooms: no live rooms → an admin sees an empty list', async () => {
-  // The previous test's own last assertion is the precondition here: it just
+  // The previous test's own last assertion is this test's precondition: it just
   // proved `collab.rooms() === 0`, so this file's tests run serially and
   // nothing is left over to make the "empty" case flaky.
   assert.equal(collab.rooms(), 0, 'precondition: nothing left over from the prior test');
