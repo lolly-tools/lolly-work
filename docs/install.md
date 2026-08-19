@@ -200,6 +200,10 @@ passwordless bypass until you say so. Before any instance is reachable by anyone
 3. Both secrets set, and `NODE_ENV=production` so their absence is fatal (§4).
 4. Behind a reverse proxy or ingress, `rateLimit.trustedProxyHops: 1`, or per-IP limits
    only ever see the proxy.
+5. A database password you chose. The Compose file falls back to the literal `lolly` so a
+   tyre-kick stays one command, so any instance that started that way is still using it.
+   Set `PG_PASSWORD` in `.env` ([§5](#5-container-compose)); after first boot the `pgdata`
+   volume keeps the old one, so changing it also needs `alter role`.
 
 ## 3. Persistence
 
