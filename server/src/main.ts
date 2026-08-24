@@ -18,6 +18,7 @@ import { createCollabGateway } from './collab/gateway.ts';
 import { createNearbyRegistry } from './collab/nearby.ts';
 import { createDeviceAuthRegistry } from './iam/device-auth.ts';
 import { createSiemForwarder } from './observability/siem.ts';
+import { runRetention } from './audit/retention.ts';
 import { auditHead } from './audit/head.ts';
 import { checkShellDist } from './lib/shell-dist.ts';
 import { existsSync, readFileSync } from 'node:fs';
@@ -139,6 +140,21 @@ const logAuditHead = async () => {
 if (config.audit.headLog.onBoot) await logAuditHead();
 if (config.audit.headLog.intervalMinutes > 0) {
   setInterval(() => void logAuditHead(), config.audit.headLog.intervalMinutes * 60_000).unref();
+}
+
+// Retention (plans/35 wave 3): boot + daily, only when a policy is stated.
+// The same runRetention the POST /api/v1/retention/run route calls, so a
+// serverless deploy crons the route with a service token and gets identical
+// behaviour.
+if (config.policy.retention.telemetryDays > 0 || config.policy.retention.auditDays > 0) {
+  const runIt = async (): Promise<void> => {
+    const r = await runRetention({ config, store });
+    if (r.telemetryTrimmed || r.auditTrimmed) {
+      console.log(`[lolly-work] retention: trimmed ${r.telemetryTrimmed} telemetry, ${r.auditTrimmed} audit`);
+    }
+  };
+  await runIt();
+  setInterval(() => void runIt().catch((e: Error) => console.error(`[lolly-work] retention failed: ${e.message}`)), 24 * 60 * 60 * 1000).unref();
 }
 
 // SIEM forwarding (plans/35 wave 2): audit events pushed to the org's receiver

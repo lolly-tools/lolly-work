@@ -220,6 +220,22 @@ Gauges worth alerting on:
 The Helm chart's ServiceMonitor needs `metricsToken`, because `/metrics` is loopback-only
 without one.
 
+## Retention and erasure
+
+`policy.retention` bounds the two tables that grow with use - see
+[configuration](configuration.md#policy) for the keys and their invariants (anchored audit
+trims, delivery before deletion, `0` keeps everything). The long-lived server applies the
+stated policy at boot and daily; on serverless, cron `lw retention run` (a service token
+works) - the route and the interval run the same code.
+
+**Erasure** (`lw users erase <id>`, owner) answers the data-subject request the disable
+switch cannot: it deletes the person's user row - the id-to-identity mapping - and
+de-attributes their stored telemetry. Two things it deliberately does not do: the audit
+chain keeps its opaque `user:<id>` actors (rewriting history would break the chain and the
+point of having one - with the mapping gone, the id no longer names a person), and it
+refuses while the person owns unarchived projects, because erasure must never silently
+destroy shared work. Archive their projects first; disable already cut the access.
+
 ## SIEM forwarding
 
 `siem.url` streams the audit log to your Splunk/Sentinel/collector as signed JSON batches -

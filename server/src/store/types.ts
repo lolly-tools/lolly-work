@@ -9,7 +9,7 @@ import type { ToolOverlay } from '../policy/overlay.ts';
 import type { FlagGovernance } from '../policy/feature-flags.ts';
 import type { InjectableRecord } from '../injectables/types.ts';
 import type { LinkRecord } from '../links/sign.ts';
-import type { AuditEvent, AuditEventBody } from '../audit/chain.ts';
+import type { AuditAnchor, AuditEvent, AuditEventBody } from '../audit/chain.ts';
 import type { StoredEvent } from '../telemetry/ingest.ts';
 import type { Message } from '../inbox/target.ts';
 import type { ClientInfo } from '../fleet/client-header.ts';
@@ -329,6 +329,19 @@ export interface Store {
   /** The SIEM delivery cursor: the highest seq confirmed received (0 = none). */
   getSiemCursor(): Promise<number>;
   setSiemCursor(seq: number): Promise<void>;
+  /** Retention (plans/35 wave 3). The anchor is written BEFORE a trim deletes
+   *  its rows, so verification survives an interruption between the two. */
+  getAuditAnchor(): Promise<AuditAnchor | null>;
+  setAuditAnchor(anchor: AuditAnchor): Promise<void>;
+  /** Delete audit rows with seq <= uptoSeq; returns how many went. */
+  trimAudit(uptoSeq: number): Promise<number>;
+  /** Delete telemetry events older than beforeIso; returns how many went. */
+  trimTelemetry(beforeIso: string): Promise<number>;
+  /** Erasure (plans/35 wave 3): drop the id->identity mapping from stored
+   *  telemetry - events stay, attribution goes. Returns how many were scrubbed. */
+  scrubTelemetryUser(userId: string): Promise<number>;
+  /** Erasure: delete the user row itself. False when the id is unknown. */
+  deleteUser(id: string): Promise<boolean>;
 
   // telemetry
   putEvents(events: StoredEvent[]): Promise<void>;

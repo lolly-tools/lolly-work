@@ -148,6 +148,10 @@ export interface InstanceConfig {
      *  offers a pre-composed upgrade NUDGE through the ordinary message path.
      *  Nothing is blocked, locked out, or force-upgraded - the covenant again. */
     fleet: { minEngine?: string };
+    /** Retention (plans/35 wave 3). 0 = keep forever, the default - an org
+     *  states its policy, the product never assumes one. Audit trims keep the
+     *  chain verifiable (the anchor) and never pass the SIEM cursor. */
+    retention: { telemetryDays: number; auditDays: number };
   };
   render: {
     /**
@@ -276,6 +280,7 @@ const DEFAULTS: InstanceConfig = {
     submit: { maxBytes: 64 * 1024 * 1024, quota: { bytes: 0, count: 0 } },
     catalog: { versionKeep: 0 },
     fleet: {},
+    retention: { telemetryDays: 0, auditDays: 0 },
   },
   render: { allowHooksInFastPath: false, worker: { url: '', timeoutMs: 20000 }, c2pa: { certFile: '', claimGenerator: '' } },
   audit: { headLog: { onBoot: true, intervalMinutes: 60 } },
@@ -323,6 +328,10 @@ export function parseConfig(json: string): InstanceConfig {
   const floor = cfg.policy.fleet.minEngine;
   if (floor !== undefined && !/^\d+(\.\d+){0,3}$/.test(floor)) {
     throw new Error(`invalid policy.fleet.minEngine: ${floor} (dotted version, e.g. "1.140.0")`);
+  }
+  for (const k of ['telemetryDays', 'auditDays'] as const) {
+    const v = cfg.policy.retention[k];
+    if (!Number.isInteger(v) || v < 0) throw new Error(`invalid policy.retention.${k}: ${v} (days, 0 = keep forever)`);
   }
   const smtp = cfg.notify.smtp;
   if (smtp) {

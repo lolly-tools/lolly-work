@@ -7,7 +7,7 @@
  * chain never forks under concurrent writers.
  */
 import { randomId } from '../lib/crypto.ts';
-import { nextEvent, type AuditEvent, type AuditEventBody } from '../audit/chain.ts';
+import { nextEvent, type AuditAnchor, type AuditEvent, type AuditEventBody } from '../audit/chain.ts';
 import { clientBucket, type ClientInfo } from '../fleet/client-header.ts';
 import { eligibleForCurrentStep, type Approval, type Chain } from '../approvals/engine.ts';
 import { roleFromGroups, type Grant } from '../rbac/evaluate.ts';
@@ -560,6 +560,33 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
          on conflict (id) do update set seq = $1, updated_at = now()`,
         [seq],
       );
+    },
+    async getAuditAnchor() {
+      const { rows } = await pool.query('select seq, hash from audit_anchor where id = 1');
+      return rows[0] ? { seq: Number(rows[0].seq), hash: rows[0].hash as string } : null;
+    },
+    async setAuditAnchor(anchor) {
+      await pool.query(
+        `insert into audit_anchor (id, seq, hash) values (1, $1, $2)
+         on conflict (id) do update set seq = $1, hash = $2, updated_at = now()`,
+        [anchor.seq, anchor.hash],
+      );
+    },
+    async trimAudit(uptoSeq) {
+      const { rowCount } = await pool.query('delete from audit_log where seq <= $1', [uptoSeq]);
+      return rowCount ?? 0;
+    },
+    async trimTelemetry(beforeIso) {
+      const { rowCount } = await pool.query('delete from telemetry_events where at < $1', [beforeIso]);
+      return rowCount ?? 0;
+    },
+    async scrubTelemetryUser(userId) {
+      const { rowCount } = await pool.query('update telemetry_events set user_id = null where user_id = $1', [userId]);
+      return rowCount ?? 0;
+    },
+    async deleteUser(id) {
+      const { rowCount } = await pool.query('delete from users where id = $1', [id]);
+      return (rowCount ?? 0) > 0;
     },
     async listAudit() {
       const { rows } = await pool.query('select * from audit_log order by seq asc');

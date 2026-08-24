@@ -129,13 +129,13 @@ test('the forwarder refuses to exist unsigned', async () => {
 
 // ── the migration ────────────────────────────────────────────────────────────
 
-test('migration 0024 follows 0023, is the ceiling, and is one row by construction', async () => {
+test('migration 0024 follows 0023 and is one row by construction', async () => {
   const dir = new URL('../migrations/', import.meta.url).pathname;
   const files = (await readdir(dir)).filter((f) => f.endsWith('.sql')).sort();
   const at = files.indexOf('0024_siem_cursor.sql');
   assert.ok(at > 0, '0024 is on disk');
   assert.equal(files[at - 1], '0023_api_tokens.sql', '0024 follows 0023 with nothing between');
-  assert.equal(files.at(-1), '0024_siem_cursor.sql', 'the SIEM cursor holds the migration ceiling');
+  // The ceiling assertion moved with the ceiling: tests/retention.test.ts owns it now (0025, plans/35 wave 3).
   const sql = await readFile(join(dir, '0024_siem_cursor.sql'), 'utf8');
   assert.match(sql, /create table siem_cursor/);
   assert.match(sql, /check \(id = 1\)/);

@@ -3,7 +3,7 @@
  * Postgres driver lands beside this (migrations/0001_init.sql is the schema).
  */
 import { randomId } from '../lib/crypto.ts';
-import { nextEvent, type AuditEvent, type AuditEventBody } from '../audit/chain.ts';
+import { nextEvent, type AuditAnchor, type AuditEvent, type AuditEventBody } from '../audit/chain.ts';
 import { clientBucket, type ClientInfo } from '../fleet/client-header.ts';
 import { eligibleForCurrentStep, type Approval, type Chain } from '../approvals/engine.ts';
 import { roleFromGroups, type Grant } from '../rbac/evaluate.ts';
@@ -36,6 +36,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const scimTokens = new Map<string, ScimTokenRecord>(); // SCIM provisioning bearers, by id
   const apiTokens = new Map<string, ApiTokenRecord>(); // service tokens (plans/35), by id
   let siemCursor = 0; // highest audit seq confirmed delivered to the SIEM receiver
+  let auditAnchor: AuditAnchor | null = null; // retention trim boundary (plans/35 wave 3)
   const grants: Grant[] = [...(seed?.grants ?? [])];
   const overlays = new Map<string, ToolOverlay>((seed?.overlays ?? []).map((o) => [o.toolId, o]));
   const flagGovernance = new Map<string, FlagGovernance>((seed?.flagGovernance ?? []).map((g) => [g.id, g]));
@@ -303,6 +304,47 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     },
     async setSiemCursor(seq) {
       siemCursor = seq;
+    },
+    async getAuditAnchor() {
+      return auditAnchor ? { ...auditAnchor } : null;
+    },
+    async setAuditAnchor(anchor) {
+      auditAnchor = { ...anchor };
+    },
+    async trimAudit(uptoSeq) {
+      const before = audit.length;
+      for (let i = audit.length - 1; i >= 0; i--) {
+        if ((audit[i] as AuditEvent).seq <= uptoSeq) audit.splice(i, 1);
+      }
+      return before - audit.length;
+    },
+    async trimTelemetry(beforeIso) {
+      const before = events.length;
+      for (let i = events.length - 1; i >= 0; i--) {
+        if ((events[i] as StoredEvent).at < beforeIso) events.splice(i, 1);
+      }
+      return before - events.length;
+    },
+    async scrubTelemetryUser(userId) {
+      let n = 0;
+      for (let i = 0; i < events.length; i++) {
+        const e = events[i] as StoredEvent;
+        if (e.userId === userId) {
+          const { userId: _drop, ...rest } = e;
+          events[i] = rest;
+          n++;
+        }
+      }
+      return n;
+    },
+    async deleteUser(id) {
+      for (const [sub, u] of users) {
+        if (u.id === id) {
+          users.delete(sub);
+          return true;
+        }
+      }
+      return false;
     },
 
     async putEvents(batch) {

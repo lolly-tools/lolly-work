@@ -33,6 +33,7 @@ import { PACK_BLOB_ID, PACK_META_BLOB_ID, PACK_MAX_BYTES, inspectInstancePack, t
 import { readBlobBody } from '../blobs/types.ts';
 import { createNotifier } from '../notify/notify.ts';
 import { SERVICE_TOKEN_PREFIX, TOKEN_ROLES, hashServiceSecret, mintServiceSecret, serviceAccountFor } from '../iam/service-tokens.ts';
+import { runRetention } from '../audit/retention.ts';
 import { bearerFromHeader, hashScimSecret, mintScimSecret } from '../scim/tokens.ts';
 import {
   applyMemberOps, groupToScim, parseGroupPatch, parseScimFilter, parseUserCreate, parseUserPatch,
@@ -199,7 +200,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   const auditIntact = async (): Promise<boolean> => {
     const now = Date.now();
     if (auditGauge && now - auditGauge.at < 10_000) return auditGauge.intact;
-    const intact = verifyChain(await store.listAudit()).ok;
+    const intact = verifyChain(await store.listAudit(), await store.getAuditAnchor()).ok;
     auditGauge = { at: now, intact };
     return intact;
   };
@@ -1185,7 +1186,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   router.add('GET', '/api/v1/audit', async (req, res, ctx) => {
     if (!(await requireAction(req, res, 'audit.export'))) return;
     const events = await store.listAudit();
-    const chain = verifyChain(events);
+    const chain = verifyChain(events, await store.getAuditAnchor());
     const limit = Math.min(Number(ctx.url.searchParams.get('limit') ?? 200), 1000);
     sendJson(res, 200, { chain, total: events.length, events: events.slice(-limit) });
   });
@@ -1195,6 +1196,42 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   router.add('GET', '/api/v1/audit/head', async (req, res) => {
     if (!(await requireAction(req, res, 'audit.export'))) return;
     sendJson(res, 200, await auditHead(store));
+  });
+
+  // ── retention + erasure (plans/35 wave 3) ─────────────────────────────────
+  // The run is a route rather than a CLI-to-database path so a serverless
+  // deploy can cron it with a service token - the same reasoning as SIEM's
+  // poll-with-a-token fallback. On the long-lived server main.ts also runs it
+  // daily; the route stays idempotent either way.
+  router.add('POST', '/api/v1/retention/run', async (req, res) => {
+    const actor = await requireAction(req, res, 'instance.config');
+    if (!actor) return;
+    const result = await runRetention({ config, store });
+    if (result.telemetryTrimmed || result.auditTrimmed) {
+      await audit(`user:${actor.id}`, 'retention.run', 'instance', { ...result });
+    }
+    sendJson(res, 200, result);
+  });
+
+  router.add('DELETE', '/api/v1/users/:id', async (req, res, ctx) => {
+    const actor = await requireAction(req, res, 'instance.config');
+    if (!actor) return;
+    const target = await store.getUser(ctx.params.id!);
+    if (!target) return sendError(res, 404, 'NOT_FOUND', 'no such user');
+    if (target.id === actor.id) return sendError(res, 409, 'ERASE_SELF', 'erase is for the departed - another owner erases you');
+    // Erasure meets tamper evidence the classic way: the audit chain keeps
+    // its opaque `user:<id>` actors (rewriting them would break the chain and
+    // the point of having one), and erasure deletes the id-to-identity
+    // MAPPING - the user row - plus the attribution on stored telemetry.
+    const owned = (await store.listProjects()).filter((p) => p.ownerId === target.id && !p.archivedAt);
+    if (owned.length) {
+      return sendError(res, 409, 'ERASE_HAS_PROJECTS',
+        `archive their ${owned.length} project(s) first - erasure never silently destroys shared work`);
+    }
+    const scrubbed = await store.scrubTelemetryUser(target.id);
+    await store.deleteUser(target.id);
+    await audit(`user:${actor.id}`, 'user.erase', `user:${target.id}`, { scrubbed });
+    sendJson(res, 200, { ok: true, scrubbed });
   });
 
   router.add('GET', '/api/v1/links', async (req, res, ctx) => {

@@ -199,6 +199,35 @@ export async function runStoreConformance(store: Store): Promise<void> {
   await store.setSiemCursor(lastSeq);
   assert.equal(await store.getSiemCursor(), lastSeq);
 
+  // retention primitives (plans/35 wave 3): anchor before delete, tail survives
+  const auditRows = await store.listAudit();
+  const firstRow = auditRows[0] as { seq: number; hash: string };
+  const headRow = auditRows[auditRows.length - 1] as { seq: number };
+  assert.equal(await store.getAuditAnchor(), null, 'never-trimmed reads as no anchor');
+  await store.setAuditAnchor({ seq: firstRow.seq, hash: firstRow.hash });
+  assert.deepEqual(await store.getAuditAnchor(), { seq: firstRow.seq, hash: firstRow.hash });
+  assert.equal(await store.trimAudit(firstRow.seq), 1);
+  const remainingAudit = await store.listAudit();
+  assert.equal(remainingAudit[0]?.seq, firstRow.seq + 1, 'rows at or under the anchor are gone');
+  assert.deepEqual(verifyChain(remainingAudit, await store.getAuditAnchor()), { ok: true }, 'the anchored chain verifies');
+  const appended = await store.appendAudit({ at: new Date().toISOString(), actor: 'user:u1', action: 'a.after-trim', subject: 's' });
+  assert.equal(appended.seq, headRow.seq + 1, 'appends continue from the surviving tail');
+
+  // telemetry trim, attribution scrub, user deletion (plans/35 wave 3)
+  await store.putEvents([
+    { event: 'app.boot', at: '2020-01-01T00:00:00.000Z', attrs: {} },
+    { event: 'tool.open', at: new Date().toISOString(), attrs: {}, userId: u1.id },
+  ]);
+  assert.equal(await store.trimTelemetry('2021-01-01T00:00:00.000Z'), 1, 'only the dated-out event goes');
+  // Two attributed events by now: the telemetry section's render.export and
+  // the tool.open just stored.
+  assert.equal(await store.scrubTelemetryUser(u1.id), 2);
+  assert.equal((await store.listEvents()).some((e) => e.userId === u1.id), false, 'attribution is gone, the event stays');
+  const disposable = await store.upsertUserBySub({ sub: 's-erase', email: 'erase@x', groups: [], role: 'member' });
+  assert.equal(await store.deleteUser(disposable.id), true);
+  assert.equal(await store.getUser(disposable.id), null);
+  assert.equal(await store.deleteUser(disposable.id), false, 'a deleted user deletes once');
+
   // approvals: chain round-trip + approval round-trip with created_by / state / eligibleGroups filters
   const brandChain: Chain = {
     id: 'brand-review', name: 'Brand review',

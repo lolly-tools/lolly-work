@@ -35,10 +35,19 @@ export function nextEvent(tail: AuditEvent | null, body: AuditEventBody): AuditE
   return { ...body, seq, prevHash, hash: hashEvent(prevHash, seq, body) };
 }
 
-/** Walk the chain; report the first seq whose linkage or hash fails. */
-export function verifyChain(events: AuditEvent[]): { ok: boolean; badSeq?: number } {
-  let prevHash = GENESIS_HASH;
-  let prevSeq = 0;
+/** The retention trim's high-water mark (plans/35 wave 3): the last trimmed
+ *  row's seq + hash, recorded BEFORE its rows are deleted so verification can
+ *  start from it instead of genesis. Absent = never trimmed. */
+export interface AuditAnchor { seq: number; hash: string }
+
+/** Walk the chain; report the first seq whose linkage or hash fails. With an
+ *  anchor, verification starts from it - rows at or below the anchor (still
+ *  present after a trim interrupted between anchor-write and delete) are
+ *  skipped rather than double-checked, so a half-finished trim is safe. */
+export function verifyChain(events: AuditEvent[], anchor?: AuditAnchor | null): { ok: boolean; badSeq?: number } {
+  let prevHash = anchor?.hash ?? GENESIS_HASH;
+  let prevSeq = anchor?.seq ?? 0;
+  if (anchor) events = events.filter((e) => e.seq > anchor.seq);
   for (const evt of events) {
     const { seq, prevHash: claimedPrev, hash, ...body } = evt;
     if (seq !== prevSeq + 1 || claimedPrev !== prevHash || hashEvent(prevHash, seq, body) !== hash) {

@@ -24,12 +24,14 @@ export interface AuditHead {
 }
 
 export async function auditHead(store: Store): Promise<AuditHead> {
-  const events = await store.listAudit();
-  const chain = verifyChain(events);
+  const [events, anchor] = await Promise.all([store.listAudit(), store.getAuditAnchor()]);
+  // Anchor-aware (plans/35 wave 3): after a retention trim, verification and
+  // the empty-log head both stand on the recorded boundary, not on genesis.
+  const chain = verifyChain(events, anchor);
   const tail = events[events.length - 1];
   return {
-    seq: tail?.seq ?? 0,
-    hash: tail?.hash ?? GENESIS_HASH,
+    seq: tail?.seq ?? anchor?.seq ?? 0,
+    hash: tail?.hash ?? anchor?.hash ?? GENESIS_HASH,
     at: tail?.at ?? null,
     count: events.length,
     chainIntact: chain.ok,

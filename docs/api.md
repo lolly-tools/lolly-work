@@ -124,6 +124,8 @@ Config-managed providers reject mutations with `409 CONFIG_MANAGED`.
 | Route | Action |
 |---|---|
 | `GET /api/v1/users`, `GET /api/v1/users/:id` | member (filtered by role) |
+| `DELETE /api/v1/users/:id` | `instance.config` (**owner**) - erasure: deletes the row + de-attributes telemetry; `409` while they own unarchived projects |
+| `POST /api/v1/retention/run` | `instance.config` (**owner**) - apply the stated retention policy now |
 | `GET/POST /api/v1/groups`, `DELETE /api/v1/groups/:name` | `grant.edit` |
 | `PUT /api/v1/users/:id/local-groups` | `grant.edit` |
 | `POST /api/v1/users/:id/disabled` | `grant.edit` |
