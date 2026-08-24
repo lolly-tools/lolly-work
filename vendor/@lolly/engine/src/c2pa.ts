@@ -266,7 +266,22 @@ function cborEncodeInto(value: unknown, out: Uint8Array[]): void {
   if (value === true) { out.push(Uint8Array.of(0xf5)); return; }
   if (value === false) { out.push(Uint8Array.of(0xf4)); return; }
   if (typeof value === 'number') {
-    if (!Number.isSafeInteger(value)) throw new Error('cbor: only safe integers are supported, got ' + value);
+    if (!Number.isSafeInteger(value)) {
+      // Non-integer (or unsafe-range) numbers encode as an IEEE 754 float64
+      // (major 7, additional 27). Without this, any fractional manifest value
+      // - the TTS speed 0.8/1.2 was the live case - threw here, and BOTH
+      // credential paths (in-file embed and record-side fallback) silently
+      // saved synthetic audio with no Content Credential at all: an EU AI Act
+      // Article 50 disclosure gap. NaN/Infinity stay refused: nothing in a
+      // manifest legitimately carries them, and a quiet 0xf97e00 would only
+      // mask an upstream bug.
+      if (!Number.isFinite(value)) throw new Error('cbor: non-finite numbers are not supported, got ' + value);
+      const f = new Uint8Array(9);
+      f[0] = 0xfb;
+      new DataView(f.buffer).setFloat64(1, value);
+      out.push(f);
+      return;
+    }
     out.push(value >= 0 ? cborHead(0, value) : cborHead(1, -1 - value));
     return;
   }
@@ -435,7 +450,8 @@ const INGREDIENT_MIME: Record<string, string> = {
   mp4: 'video/mp4', webm: 'video/webm', mkv: 'video/x-matroska',
   // Audio: a record-side credential (e.g. a TTS wav, whose container cannot
   // embed) still names its format honestly when carried as an ingredient.
-  wav: 'audio/wav', mp3: 'audio/mpeg',
+  wav: 'audio/wav', mp3: 'audio/mpeg', ogg: 'audio/ogg',
+  avif: 'image/avif',
 };
 
 // Joins a list of human-readable fragments as "a, b and c" (Oxford-comma-free,
@@ -444,6 +460,45 @@ function joinList(items: string[]): string {
   if (items.length <= 1) return items[0] ?? '';
   if (items.length === 2) return `${items[0]} and ${items[1]}`;
   return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
+
+/** One placed ingredient the user (or its own file metadata) declared as
+ *  AI-made: 'full' = wholly generated, 'partial' = AI-assisted/composite. */
+export interface AiIngredientDeclaration { name: string; kind: 'full' | 'partial' }
+
+/**
+ * Collect the AI-origin declarations riding the placed assets of a runtime
+ * input model (`runtime.getModel()` after asset resolution): every top-level
+ * asset input and every asset sub-field of a `blocks` grid whose resolved ref
+ * carries `meta.aiGenerated` - the flag the declare-AI-origins control, a
+ * C2PA credential, or a bare IPTC DigitalSourceType declaration set on the
+ * record. The dual of the runtime's aiUpscale walk, shared here so the web,
+ * CLI and TUI export paths read the same census. Deduped by name+kind; a
+ * value with no meta contributes nothing.
+ */
+export function collectAiIngredientDeclarations(model: ReadonlyArray<{ type: string; value?: unknown; fields?: ReadonlyArray<{ id: string; type?: string }> }>): AiIngredientDeclaration[] {
+  const out: AiIngredientDeclaration[] = [];
+  const seen = new Set<string>();
+  const read = (v: unknown): void => {
+    const ref = v as { id?: unknown; meta?: { name?: unknown; aiGenerated?: unknown } } | null | undefined;
+    const kind = ref?.meta?.aiGenerated;
+    if (kind !== 'full' && kind !== 'partial') return;
+    const name = String(ref?.meta?.name ?? ref?.id ?? 'an ingredient');
+    const key = `${name}|${kind}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ name, kind });
+  };
+  for (const input of model) {
+    if (input.type === 'asset') read(input.value);
+    else if (input.type === 'blocks' && Array.isArray(input.value)) {
+      const assetFields = (input.fields ?? []).filter(f => f.type === 'asset').map(f => f.id);
+      for (const item of input.value) {
+        if (item && typeof item === 'object') for (const fid of assetFields) read((item as Record<string, unknown>)[fid]);
+      }
+    }
+  }
+  return out;
 }
 
 /**
@@ -493,6 +548,10 @@ export function exportActionSteps(format: string, flags: {
   /** The render's essence is an on-device AI-upscaled asset - created →
    *  compositeWithTrainedAlgorithmicMedia, plus an edit step naming the model. */
   aiUpscale?: { model: string; version: string };
+  /** Placed ingredients the user declared AI-made (collectAiIngredientDeclarations):
+   *  created → compositeWithTrainedAlgorithmicMedia, plus a c2pa.placed step naming
+   *  each. Pair with an `aiDisclosure` on the manifest (section 18.28.3). */
+  aiIngredients?: AiIngredientDeclaration[];
 } = {}): C2paActionInput[] {
   if (flags.delivered) return [{ action: 'c2pa.published' }];
   const f = String(format || '').toLowerCase();
@@ -509,9 +568,15 @@ export function exportActionSteps(format: string, flags: {
   // if the source was itself a capture. The capture/screen origin, when present, still
   // rides the ingredient chain; here the composite mark leads.
   const upscaled = flags.aiUpscale;
+  // AI-declared ingredients make the whole render a composite of authored and
+  // trained-algorithmic media - the fuller claim, so like aiUpscale it wins the
+  // source-type label over a capture origin; the origin still rides the chain.
+  const aiPlaced = flags.aiIngredients?.length ? flags.aiIngredients : undefined;
   const created: C2paActionInput = upscaled
     ? { action: 'c2pa.created', digitalSourceType: COMPOSITE_SOURCE_TYPE, description: 'Composited from a real image enhanced by a trained algorithm' }
-    : screened
+    : aiPlaced
+      ? { action: 'c2pa.created', digitalSourceType: COMPOSITE_SOURCE_TYPE, description: 'Composited with ingredient media declared as AI-made' }
+      : screened
       ? { action: 'c2pa.created', digitalSourceType: SCREEN_SOURCE_TYPE, description: captureDescription(cap!) }
       : captured
         ? { action: 'c2pa.created', digitalSourceType: CAPTURE_SOURCE_TYPE, description: captureDescription(cap!) }
@@ -525,11 +590,14 @@ export function exportActionSteps(format: string, flags: {
   if (flags.audio) steps.push({ action: 'c2pa.edited', description: 'Added an audio track' });
   // Text over an opened asset is a genuine edit (the caller has already gated this
   // on an ingredient); its short teaser labels the step, the full copy is digested.
-  if (flags.textAdded) steps.push({ action: 'c2pa.edited', description: flags.textSample ? `Added text — “${flags.textSample}”` : 'Added text' });
+  if (flags.textAdded) steps.push({ action: 'c2pa.edited', description: flags.textSample ? `Added text - “${flags.textSample}”` : 'Added text' });
   // The model that enlarged the image, named - so an inspected asset discloses not
   // just THAT it was AI-upscaled but with what. Kept as its own step after the other
   // edits, before the render/encode close.
   if (upscaled) steps.push({ action: 'c2pa.edited', description: `AI-upscaled with ${upscaled.model} ${upscaled.version}` });
+  // Each AI-declared ingredient named with its declared grade, so the record
+  // says not just THAT AI media was placed but which piece and how fully.
+  if (aiPlaced) steps.push({ action: 'c2pa.placed', description: `Placed AI-declared ingredient${aiPlaced.length === 1 ? '' : 's'}: ${joinList(aiPlaced.map(i => `${i.name} (${i.kind === 'full' ? 'AI-generated' : 'AI-assisted'})`))}` });
   if (RASTER_OUTPUTS.has(f)) steps.push({ action: 'c2pa.converted', description: `Rendered to ${f.toUpperCase()}` });
   else if (VIDEO_OUTPUTS.has(f)) steps.push({ action: 'c2pa.converted', description: `Encoded to ${f.toUpperCase()}` });
   else if (f === 'pdf' || f === 'pdf-cmyk') steps.push({ action: 'c2pa.converted', description: 'Rendered to PDF' });
@@ -711,7 +779,7 @@ function aiDisclosureMap(d: C2paAiDisclosureInput): Record<string, unknown> {
   // section 6.2.2) - never an invented value in the c2pa namespace.
   if (!(AI_MODEL_TYPES as readonly string[]).includes(modelType)
     && (modelType.startsWith('c2pa.') || !NAMESPACED_LABEL_RE.test(modelType))) {
-    throw new Error(`c2pa: aiDisclosure.modelType '${modelType}' is neither a Table 12 model type (section 18.28.2) nor an entity-specific namespaced label (section 6.2.2, e.g. 'com.litware.types.abc') — omit the field to get the generic ${AI_MODEL_TYPE_GENERIC}`);
+    throw new Error(`c2pa: aiDisclosure.modelType '${modelType}' is neither a Table 12 model type (section 18.28.2) nor an entity-specific namespaced label (section 6.2.2, e.g. 'com.litware.types.abc') - omit the field to get the generic ${AI_MODEL_TYPE_GENERIC}`);
   }
   if (d.oversight != null && !(HUMAN_OVERSIGHT_LEVELS as readonly string[]).includes(String(d.oversight))) {
     throw new Error(`c2pa: aiDisclosure.oversight must be one of ${HUMAN_OVERSIGHT_LEVELS.join(' / ')} (section 18.28.4), got '${String(d.oversight)}'`);

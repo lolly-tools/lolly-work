@@ -373,7 +373,7 @@ export interface HostV1 {
    *
    * Distinct from `host.images`: that is the CONVERT path (encoded bytes in,
    * encoded bytes out, no pixel access) for the upload/export pipeline. This is
-   * for tools that composite, sample or mutate pixels themselves (bitmap-studio,
+   * for tools that composite, sample or mutate pixels themselves (darkroom,
    * the filter-* family, the logo/lockup composers, redact) - so `decode`
    * returns a drawable `ImageBitmap` (valid on a main-thread `<canvas>` AND a
    * Worker `OffscreenCanvas`, unlike an `<img>`) and `encode` takes raw RGBA.
@@ -2500,6 +2500,12 @@ export interface Profile {
    *  stacks a second copy. Set from Profile like the a11y prefs (never
    *  localStorage). */
   saveRenders?: boolean;
+  /** Export home (plans/138 Tier A1): a connected provider KIND ('dropbox',
+   *  's3', …) the user pinned as "my exports live here". When set, every finished
+   *  export ALSO auto-sends to it over the same send-target driver a manual send
+   *  uses. Unset = no home (the default). Names a kind only; the connection itself
+   *  is device-local, so on a device that lacks it the home is simply inert. */
+  exportHome?: string;
 }
 
 // ─── Assets ─────────────────────────────────────────────────────────────────
@@ -2852,6 +2858,19 @@ export interface ExportOpts {
    * last render already on the canvas instead of re-running the capture.
    */
   thumbnail?: boolean;
+
+  /**
+   * Cancellation for a long export. A shell's export pipeline SHOULD poll it at
+   * its natural yield points - between frames, rows, pages - and reject with a
+   * DOMException named 'AbortError' as soon as it is aborted, so the work stops
+   * instead of finishing unwatched. A path with no yield point (a single
+   * synchronous encode, a real-time recorder handing back one blob) MAY ignore
+   * it, and then the only contract the caller gets is that the RESULT is
+   * discarded: it must not treat an abort as a failure, and must not deliver the
+   * bytes. Optional/additive (v1.141) - unset by default, so a shell that
+   * ignores it behaves exactly as before.
+   */
+  signal?: AbortSignal;
 
   /**
    * Optional audio bed for the video formats (webm/mp4) - like the de-facto

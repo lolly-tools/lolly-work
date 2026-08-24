@@ -37,6 +37,9 @@ export type { CssBlendMode, RasterLayer, LayeredRasterDoc, InflateFn } from './r
 export { buildInputModel, summarizeInputs, normalizeTableValue, DEFAULT_FILE_MAX_BYTES } from './inputs.ts';
 export type { TableValue } from './inputs.ts';
 export { parseUrlState, serializeUrlState, serializeHdr, encodeTableCompact, decodeTableCompact, RESERVED, HDR_DEFAULTS } from './url-mode.ts';
+// The `s=` state address + the still-export frame filter both shells apply (plan 112).
+export { parseFrameAddress, selectFramePage, frameFilterApplies, FRAME_FILTER_SKIP_FORMATS } from './frame-address.ts';
+export type { FrameAddress, FrameSelection } from './frame-address.ts';
 export { looksLikeTable, parseTableText, toTsv, toMarkdown, toHtmlTable } from './table-text.ts';
 export type { HdrSettings, DepthSetting } from './url-mode.ts';
 export { LANGS, LANG_META, isLang, normalizeLang, flagEmoji, sortedLangs } from './lang.ts';
@@ -54,7 +57,7 @@ export { toCSV, parseDelimited, detectDelimiter, parseBatchCsv, batchCsvTemplate
 export type { BatchRow, BatchTemplateTool } from './batch.ts';
 export { buildExportMeta } from './metadata.ts';
 export { extractFileMetadata, readMpfIndex, appendedIsExpected, META_GROUP_ORDER, META_GROUP_LABEL } from './file-metadata.ts';
-export type { FileMetadata, MetaField, MetaGroup, JpegMpfIndex } from './file-metadata.ts';
+export type { FileMetadata, MetaField, MetaGroup, JpegMpfIndex, MediaProducer } from './file-metadata.ts';
 export { stripMetadata, isStrippableFormat, hasResidualMetadata } from './strip-metadata.ts';
 export type { StripFormat } from './strip-metadata.ts';
 export {
@@ -184,11 +187,16 @@ export type { CaptionCue, GroupWordsOpts } from './captions.ts';
 // leaked fingerprint names a model with confidence). Pure + model-free, so the
 // verify view, the catalog, the CLI, and the OCR path read identical numbers.
 // LEXICON_VERSION keys persisted analyses to the tell lists that produced them.
-export { analyzeTextSignals, LEXICON_VERSION } from './text-signals.ts';
+export { analyzeTextSignals, applyModelEstimate, LEXICON_VERSION } from './text-signals.ts';
+// Document facts (plans/126 UX wave) - the neutral census behind the panels'
+// interrogation surface: hidden characters by name, script shares, link
+// hosts, structure and line-ending forensics. Counts, never verdicts.
+export { textFacts, invisibleCharName, hiddenCharSeverity } from './text-facts.ts';
+export type { TextFacts, HiddenCharCount, ScriptShare, LinkHost } from './text-facts.ts';
 export type {
   TextSignalSource, TextSignalBand, TextSignalTier, TextSignalSpan,
   TextSignalFinding, TextStyleGuess, TextSignalReport, AnalyzeTextSignalsOpts,
-  TextSignalDocKind, TextHeatCell, TextHeatmap,
+  TextSignalDocKind, TextHeatCell, TextHeatmap, AiModelEstimate,
 } from './text-signals.ts';
 // Humanize (plans/125) - the DETERMINISTIC, on-device clean-up of the mechanical AI
 // artifacts the analysis flags (invisible chars, leaked model tokens, curly-quote/em-dash
@@ -196,6 +204,28 @@ export type {
 // reword. The honest inverse of a detection-evading "humanizer".
 export { humanizeText } from './humanize.ts';
 export type { HumanizeChange, HumanizeResult } from './humanize.ts';
+// Reword (plans/127) - the SEMANTIC half humanize defers, pure side only: the
+// deterministic suggestion table, the sentence spans worth offering a model,
+// the shared prompt, and the GATE that decides which model candidates a shell
+// may ever offer (no longer, facts/names intact, analyser-calmer, no artifact).
+// The model itself is shell-side; accepting its output stamps aiGenerated.
+export {
+  suggestRewrites, applySuggestion, rewordableSpans, buildRewordMessages,
+  normalizeRewordReply, rewordGate, rewordCandidates, REWORD_SYSTEM_PROMPT,
+} from './reword.ts';
+export type {
+  RewordSuggestion, RewordSpan, RewordMessage, RewordVerdict, RewordCandidate,
+} from './reword.ts';
+// Statistical text watermark (Kirchenbauer et al., arXiv:2301.10226) - the
+// green-list scheme Lolly's reword generation embeds and /verify detects: the
+// keyed hash + logit bias for an embedder, the unique-bigram z-test (whole text
+// and windowed) for a detector. The key is public - a match is a provenance
+// disclosure, not a cryptographic guarantee.
+export {
+  mix32, isGreenToken, addGreenBias, greenListZ, binomialTailP, scoreTokenWatermark,
+  REWORD_WATERMARK,
+} from './text-watermark.ts';
+export type { WatermarkScheme, TextWatermarkScore } from './text-watermark.ts';
 // Speech synthesis text machinery (host.speech, v1.98) - the pure half of Kokoro
 // TTS: normalize/split/chunk maths, token-span bookkeeping, durations→word
 // timings and clip concatenation. The shell's worker and Node scripts inject the
@@ -346,18 +376,30 @@ export { emitWmf } from './wmf.ts';
 export { buildPptxParts, EMU_PER_INCH, EMU_PER_PX } from './pptx.ts';
 export type {
   PptxSlide, PptxShape, PptxRect, PptxText, PptxPic, PptxRun, PptxPara, PptxFill, PptxMedia, PptxBuildOpts,
-  PptxTable, PptxTableCell, PptxLine, PptxTheme, PptxPath,
+  PptxTable, PptxTableCell, PptxLine, PptxTheme, PptxPath, PptxLayout, PptxPlaceholder, PptxPhType,
 } from './pptx.ts';
 export { svgToCustGeomPaths, svgToNativePptx } from './svg-custgeom.ts';
 export type { SvgNativePptx } from './svg-custgeom.ts';
 export { rebrandPptxParts } from './pptx-patch.ts';
 export type { RebrandPlan, RebrandTheme, RebrandReport, PartMap } from './pptx-patch.ts';
-export { isPptx, readPptx, pptxMediaImages } from './pptx-read.ts';
+// readingOrder is aliased: design-map.ts already owns the bare name here.
+export { isPptx, readPptx, pptxMediaImages, readingOrder as pptxReadingOrder } from './pptx-read.ts';
 export type {
   PptxParts, XmlParser, PptxDeckRead, PptxReadSlide, PptxReadNode, PptxReadTheme,
   PptxReadColor, PptxReadRun, PptxReadPara, PptxTextNode, PptxShapeNode, PptxPicNode,
   PptxTableNode, PptxUnknownNode, PptxMediaImage,
+  // The read-side placeholder record; aliased because the WRITER's layout
+  // placeholder (pptx.ts) already owns the bare name on this surface.
+  PptxPlaceholder as PptxReadPlaceholder,
 } from './pptx-read.ts';
+export { deckToMarkdown } from './deck-md.ts';
+export type { DeckMarkdown, DeckMediaRef } from './deck-md.ts';
+export type { DocBlock, DocInline, DocListItem, DocTableCell, DocMedia } from './doc-model.ts';
+export { mdFromBlocks, htmlFromBlocks } from './doc-md.ts';
+// XmlParser is NOT re-exported from docx-read: pptx-read already owns the name
+// on this surface and the shapes are identical.
+export { isDocx, readDocx } from './docx-read.ts';
+export type { DocxParts, DocxReadResult } from './docx-read.ts';
 export {
   buildPdfXXmp, formatPdfDate, makeDocumentId, pdfxOutputIntentSpec,
   pdfxProfileEligibility, PDFX_VERSION,
@@ -365,8 +407,8 @@ export {
 export type {
   PdfXOutputIntentOptions, PdfXOutputIntentSpec, PdfXProfileFacts, PdfXXmpOptions,
 } from './pdfx.ts';
-export { buildC2paManifest, embedC2paInPdf, embedC2pa, attachC2paStore, exportActionSteps, C2PA_FORMATS, LOLLY_EXPORT_ASSERTION, DIGITAL_SOURCE_TYPE, CAPTURE_SOURCE_TYPE, SCREEN_SOURCE_TYPE, GENERATED_SOURCE_TYPE, COMPOSITE_SOURCE_TYPE } from './c2pa.ts';
-export type { C2paActionInput } from './c2pa.ts';
+export { buildC2paManifest, embedC2paInPdf, embedC2pa, attachC2paStore, exportActionSteps, collectAiIngredientDeclarations, C2PA_FORMATS, LOLLY_EXPORT_ASSERTION, DIGITAL_SOURCE_TYPE, CAPTURE_SOURCE_TYPE, SCREEN_SOURCE_TYPE, GENERATED_SOURCE_TYPE, COMPOSITE_SOURCE_TYPE } from './c2pa.ts';
+export type { C2paActionInput, AiIngredientDeclaration } from './c2pa.ts';
 export { verifyC2pa, verifyC2paPdf, extractC2paFromPdf, prepareC2paIngredient, prepareC2paIngredientFromStore, collectIngredients, extractC2paStore, parseCertificate, signedBy } from './c2pa-verify.ts';
 export type { C2paIngredientData, C2paReport, C2paCheck, C2paSignerIdentity, ParsedCertificate } from './c2pa-verify.ts';
 export type { Signer as C2paSigner } from './c2pa.ts';
@@ -420,7 +462,7 @@ export type { EpubReadDoc, EpubReadChapter } from './epub-read.ts';
 export { writeOdt } from './odt.ts';
 export type { OdtDoc, OdtBlock } from './odt.ts';
 export { writeDocx } from './docx.ts';
-export type { DocxDoc, DocxBlock } from './docx.ts';
+export type { DocxDoc, DocxBlock, DocxMedia } from './docx.ts';
 export {
   decomposeMatrix, boxGeomFromBBox, mapWeight, mapFontFamily, mapAlign,
   safeColor, nodeToBox, finalizeBoxes, parsePenpotContent, collectPenpotFontUsage, penpotShapeToNode, penpotGradientToSpec,
@@ -518,6 +560,22 @@ export type { RampOptions, DistinctColorsOptions, ApcaUse, ApcaVerdict, ApcaSolv
 // distance, model-free. The pure math behind the video-matte colour-key method.
 export { chromaKeyAlpha } from './chroma-key.ts';
 export type { ChromaKeyOptions } from './chroma-key.ts';
+// Telea 2004 fast-marching inpainting - the classical content-aware fill behind
+// Retouch (plans/124 WP-E). Ported, not depended on: stock opencv.js omits
+// cv.inpaint. Windows itself to the mask bounding box and returns a new frame.
+export { inpaintTelea } from './inpaint.ts';
+export type { InpaintFrame, InpaintOpts } from './inpaint.ts';
+// Colour grading - the .cube/.3dl readers, the tetrahedral sampler, the RGBA
+// frame apply and the film grain + vignette pass, promoted out of the darkroom
+// tool so a shell can grade a whole VIDEO with the maths that graded the still
+// (plans/130). The tool keeps its own copy because tools never import the
+// engine; tests/grade-drift.test.ts pins the two together.
+export {
+  CUBE_MAX_N, TDL_MAX_N, GRAIN_REF_LONG_EDGE,
+  parseCubeLut, parse3dlLut, parseLutText,
+  sampleLut, applyLutFrame, applyGrainVignette, grainCellPx, gradeMulberry32,
+} from './grade.ts';
+export type { GradeLut, GrainVignetteParams } from './grade.ts';
 // Palette exchange - a flat swatch list serialised as DTCG tokens JSON, CSS
 // custom properties / classes, SCSS variables, a GIMP .gpl, or a binary Adobe
 // .ase. Pure + DOM-free; attached to host.color (paletteExport/paletteExportBytes)

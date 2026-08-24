@@ -30,6 +30,7 @@
  * word lists, no logic. `\b` word boundaries and `gi`/`giu` flags where a span is wanted.
  * Bump LEXICON_VERSION (bottom of this file) on ANY list change - persisted analyses
  * key off it. Refresh sources: Wikipedia "Signs of AI writing" (actively maintained),
+ * Matthias Eckermann's claudism-pass skill (github.com/mge1512/skill-claudism-pass),
  * the humanizer pattern catalogue, and the system-prompt-leak collections.
  *
  * Reference: https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing
@@ -131,8 +132,9 @@ export const CLAUDE_TELLS: Tell[] = [
   { re: /\b(?:the whole (?:game|ballgame)|the entire point)\b/gi, label: 'totalising "the whole game"' },
   { re: /\bseen this movie before\b/gi, label: '"seen this movie before"' },
   { re: /\bwhere it gets (?:interesting|tricky|hard|fun)\b/gi, label: '"where it gets interesting"' },
-  // From the claudism-pass scanner (claudisms.ai, CC0): reflective pose,
-  // manufactured emphasis, placement metaphors, false intimacy, announcing.
+  // From Matthias Eckermann's claudism-pass scanner
+  // (github.com/mge1512/skill-claudism-pass, CC0; claudisms.ai banlist): reflective
+  // pose, manufactured emphasis, placement metaphors, false intimacy, announcing.
   { re: /\bsit with (?:that|this|it)\b/gi, label: 'reflective "sit with it"' },
   { re: /\b(?:struck me most|stuck with me)\b/gi, label: 'manufactured "struck me most"' },
   { re: /\bhold(?:s|ing)? the tension\b/gi, label: '"hold the tension"' },
@@ -144,6 +146,15 @@ export const CLAUDE_TELLS: Tell[] = [
   { re: /\bkey takeaways?\b/gi, label: '"key takeaways"' },
   // The copula flourish: "the X is Y here." - a subject redefined and hedged with "here".
   { re: /(?<=[\w'’] )(?<!there )is (?:not )?(?:the|a|an) [\w'’-]+(?: [\w'’-]+){0,2} here[.,!?:;]/gi, label: 'the "…is Y here." flourish' },
+  // Abstract-register nouns Andy flagged (2026-08-21): bookkeeping and machine
+  // words applied to ideas. Weak on their own - the frames are scoped so each
+  // word's literal senses (accounting, physics, data layout) stay out, and
+  // density weighting keeps any single hit quiet.
+  { re: /\bledgers? of\b|\ba (?:running|living|quiet|small|single) ledger\b|\bkeeps? a ledger\b/gi, label: 'abstract "ledger"' },
+  { re: /\bmachinery of\b|\bthe [\w-]+ machinery\b/gi, label: 'abstract "machinery"' },
+  { re: /(?<!\b(?:quantum|fluid|orbital|classical|statistical|celestial|auto) )\bmechanics of\b/gi, label: 'abstract "mechanics of"' },
+  { re: /\bsurviv(?:e|es|ed|ing) (?:contact with|scrutiny|translation|the (?:cut|edit|rewrite|transition|retelling|journey))\b|\bwhat survives\b/gi, label: 'figurative "survives"' },
+  { re: /\bstructure of the (?:argument|essay|answer|response|conversation|thinking|reasoning|claim|story|prose|piece|writing|work|problem)\b/gi, label: 'abstract "structure of the argument"' },
 ];
 
 // ── 3a. Generic AI vocabulary (Wikipedia + frequency studies) ─────────────────
@@ -211,8 +222,9 @@ export const AI_PHRASES: Tell[] = [
 
 // ── 6. US/British spelling variant pairs (the consistency tell) ───────────────
 // A human writes in ONE spelling tradition; a model (or a document stitched from
-// model output) flips mid-text. From the claudism-pass scanner's variant-pairs
-// idea. Each entry is [US form, British form, label]; the analyzer flags a MIX
+// model output) flips mid-text. From the variant-pairs idea in Matthias
+// Eckermann's claudism-pass scanner (github.com/mge1512/skill-claudism-pass).
+// Each entry is [US form, British form, label]; the analyzer flags a MIX
 // of two or more pairs, never a single word. The licence pair is deliberately
 // absent (UK English legitimately uses licence-the-noun and license-the-verb).
 export const SPELLING_VARIANTS: Array<{ us: RegExp; uk: RegExp; label: string }> = [
@@ -344,4 +356,4 @@ export const FAMILY_TELLS: FamilyTells[] = [
  * analysis (e.g. a catalog asset's stored AI-signal note) key it by this, so a
  * stored verdict from an older lexicon is recomputed rather than trusted.
  */
-export const LEXICON_VERSION = 4;
+export const LEXICON_VERSION = 5;
