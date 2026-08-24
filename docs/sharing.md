@@ -91,7 +91,7 @@ that happens to point at an asset, and the console's Links view lists it as one.
 ### Linking a collection
 
 `share` and `download` also take a [collection](catalog.md#collections) as their target - the
-same signed-target machinery one level up:
+same signed-target mechanism one level up:
 
 ```
 POST /api/v1/links   { "kind": "share", "target": { "collectionId": "launch-kit" } }

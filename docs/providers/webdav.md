@@ -190,7 +190,7 @@ constant to edit when one is wrong.
   can be pinned into this instance's own [BlobStore](../catalog.md#where-instance-bytes-live) and
   checksummed like any other source. This is a storage source you run yourself rather than a DAM
   held under someone else's contract, so it carries no vendor off-boarding story - it is far more
-  often the place an exit lands than the place one starts. See
+  often the destination of an exit than the start of one. See
   [off-boarding](../offboarding.md#exit-readiness-by-kind).
 - Does **not** accept published exports.
 

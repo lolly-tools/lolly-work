@@ -58,7 +58,7 @@ credential, and the prompt goes to stderr. Read the three groups in this order:
 
 1. **EXPECTED BY THIS DRIVER, ABSENT** - the wrong guesses, and the answer this page exists for.
    Each entry reads `key|alternatives (CONSTANT_NAME)`, so it names the constant to widen.
-   `(none)` means every guess landed.
+   `(none)` means every guess matched.
 2. **IN THE RESPONSE, NOT MAPPED** - what your collective sent that the driver ignores. The fix for
    an absent guess is usually sitting here: ABSENT `expiration_date (AVAILABLE_UNTIL_KEYS)` beside
    NOT MAPPED `expiry` is one constant edit.
@@ -84,7 +84,7 @@ row and that header disagree, the header is right and this table is stale.
 | 5 | The asset array rides `items` | The `record:` line names the key that held it, or says no record array was found and lists `items (LIST_ENVELOPE_KEYS)` under ABSENT with the real key in NOT MAPPED | `LIST_ENVELOPE_KEYS` |
 | 6 | The envelope carries `total_count` | `envelope: total_count: number` confirms it. Nothing breaks if it is absent: this driver pages by "was the page full", never by the total | `TOTAL_COUNT_KEYS` |
 | 7 | The asset id is `id`, then `external_id` | ABSENT `id\|external_id (RECORD_ID_KEYS)`. An asset with no readable id throws rather than federating silently | `RECORD_ID_KEYS` |
-| 8 | The filename is `filename` | ABSENT `filename (FILENAME_KEYS)`, with the real name in NOT MAPPED. Survivable: the id becomes the name | `FILENAME_KEYS` |
+| 8 | The filename is `filename` | ABSENT `filename (FILENAME_KEYS)`, with the real name in NOT MAPPED. Recoverable: the id becomes the name | `FILENAME_KEYS` |
 | 9 | Approval rides `status` | ABSENT `status (STATUS_KEYS)`. An absent status is treated as approved, so a wrong key here fails open - catch it by reading the report, not by symptom | `STATUS_KEYS` |
 | 10 | The approved statuses are `["active"]` | Not in the report - these are values. Step 1 and `sync` print the note instead: `acquia-dam treated all N asset(s) on this page as not approved (live-verify: the asset status VALUES …)` | `options.approvedStatuses` on the provider entry, not a constant |
 | 11 | Availability starts at `release_date` | ABSENT `release_date (AVAILABLE_FROM_KEYS)`, with the real name in NOT MAPPED | `AVAILABLE_FROM_KEYS` |
@@ -131,7 +131,7 @@ embed it reads. Download the same asset from the Widen UI as the original and ch
 A matching checksum strikes row 18. A different one means the embed named `original` is a
 conversion of it - compare sizes, pixel dimensions, colour profile and EXIF/ICC metadata, report it
 as row 18 rather than a materialize bug (materialize checksums whatever it is given, so a
-conversion lands silently as the wrong bytes), and say whether `_links.download.href` did better;
+conversion arrives silently as the wrong bytes), and say whether `_links.download.href` did better;
 the fallback order is one line to swap. Repeat per file type you plan to exit (photo, PDF, video,
 InDesign package): Widen's conversion behaviour differs by type. A failure on the blob route
 surfaces as `502 PROVIDER_UNAVAILABLE`; the diagnosis is in the materialize output, not there.

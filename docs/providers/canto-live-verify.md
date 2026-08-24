@@ -66,7 +66,7 @@ canto  GET /api/v1/image?limit=100&start=0
 
 - **EXPECTED BY THIS DRIVER, ABSENT** is the answer. Each entry reads
   `key|alternatives (CONSTANT_NAME)`, so it names the constant to widen; `(none)` means every
-  guess landed.
+  guess matched.
 - **IN THE RESPONSE, NOT MAPPED** holds the replacement: an ABSENT `id (RECORD_ID_KEYS)` beside
   a NOT MAPPED `assetId` is one constant edit.
 - Record keys are unioned across the page, and the folding pairs (`tag`+`keyword`,

@@ -153,14 +153,14 @@ with the number of assets.
 The arithmetic is worth doing before it surprises you. A brand team replacing 200 hero images
 four times a year at 8 MiB apiece adds roughly 6 GiB a year, on top of whatever the originals
 weigh. Where the bytes live decides what that costs: with `blobs.driver: "pg"` the history
-lands in your database and in every database backup, which is the number that usually matters
-first; with `"s3"` it lands in object storage, where it is cheap but is still yours to
+is stored in your database and in every database backup, which is the number that usually matters
+first; with `"s3"` it goes to object storage, where it is cheap but is still yours to
 lifecycle. See [configuration](configuration.md#blobs).
 
 Two ways to bound it, and they compose:
 
 - **Retention.** Set `policy.catalog.versionKeep` to the number of versions you want per asset,
-  head included. Trimming happens when a new version lands - oldest-first, deleting the trimmed
+  head included. Trimming happens when a new version arrives - oldest-first, deleting the trimmed
   versions' bytes. The served version is never trimmed even if a rollback made an old one
   current, and an asset [on hold](catalog.md#holds) is never trimmed at all, so a legal hold
   does not quietly lose the history it was set to preserve. Lowering the number does not
@@ -266,10 +266,12 @@ Two realities shape the setup:
 - **`X-Lolly-Client` is the only signal a connected client sends.** Shell
   kind, shell version, engine version, platform - on requests the person's
   own use already makes. There is no heartbeat and no phone-home; a device
-  that stops using the instance simply stops appearing. A shell may add an
-  `install/<id>` token to that tag: while its person is signed in, the
-  install appears by name in the console's Fleet view (rename and forget
-  there are bookkeeping on the row - the device is never touched).
+  that stops using the instance simply stops appearing. The OSS shells add
+  an `install/<id>` token to that tag while - and only while - their person
+  is signed in, so the install appears by name in the console's Fleet view
+  (rename and forget there are bookkeeping on the row - the device is never
+  touched). Leaving the instance deletes the client-side id, so a device
+  that re-enrolls returns as a new install.
 
 ### Enrollment, and leaving
 
@@ -277,13 +279,14 @@ Connecting is a nomination: the individual chooses governance, and the
 instance never reaches out to a device. While signed in, org policy applies
 and work saved here is the organization's - projects, sessions, submissions
 and audit live server-side continuously, which is the whole of the
-"surrender". Leaving is unilateral on both sides: the person clears the
-instance from their client (org brand, tools, and cached catalog go with it;
-personal work is untouched), and the organization ends enrollment by
-disabling the user (every live session dies on its next request). Neither
-side can reach into the other afterwards: no remote wipe, no export block,
-no exit toll - and equally, a departed device keeps no org catalog. Exports
-made while enrolled keep their Content Credentials; history is history.
+"surrender". Leaving is unilateral on both sides: the person leaves from
+their client (the OSS shells' Profile → Lolly instance → Leave removes the
+org brand, tools, cached catalog and install id in one act; personal work is
+untouched), and the organization ends enrollment by disabling the user
+(every live session dies on its next request). Neither side can reach into
+the other afterwards: no remote wipe, no export block, no exit toll - and
+equally, a departed device keeps no org catalog. Exports made while enrolled
+keep their Content Credentials; history is history.
 
 ## Checks and artefacts
 

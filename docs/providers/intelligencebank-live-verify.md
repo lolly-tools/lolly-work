@@ -59,7 +59,7 @@ credential, and the prompt goes to stderr. Read the three groups in this order:
 
 1. **EXPECTED BY THIS DRIVER, ABSENT** - the wrong guesses, and the answer this page exists for.
    Each entry reads `key|alternatives (CONSTANT_NAME)`, so it names the constant to widen.
-   `(none)` means every guess landed.
+   `(none)` means every guess matched.
 2. **IN THE RESPONSE, NOT MAPPED** - what your tenant sent that the driver ignores. The fix for an
    absent guess is usually sitting here: ABSENT `expiry_date|review_date (AVAILABLE_UNTIL_KEYS)`
    beside NOT MAPPED `expiration` is one constant edit.
@@ -86,7 +86,7 @@ constant. If a row and that header disagree, the header is right and this table 
 | 7 | The next-page cursor is `meta.next_page` | `envelope: meta: { next_page: … }` shows both levels. ABSENT `meta (META_KEYS)` means the envelope names it something else; a `meta` with a differently named cursor inside stops paging after page 1, silently | `META_KEYS` / `NEXT_PAGE_KEYS` |
 | 8 | The resource id is `resourceid`, then `id` | ABSENT `resourceid\|id (RECORD_ID_KEYS)`. A resource with no readable id throws rather than federating silently | `RECORD_ID_KEYS` |
 | 9 | The filename is `filename` and the title is `name` | ABSENT `filename\|name (FILENAME_KEYS / DISPLAY_NAME_KEYS)`, with the real names in NOT MAPPED | `FILENAME_KEYS` / `DISPLAY_NAME_KEYS` |
-| 10 | The format is `extension` | ABSENT `extension (FORMAT_KEYS)`. Survivable: the driver falls back to the filename extension | `FORMAT_KEYS` |
+| 10 | The format is `extension` | ABSENT `extension (FORMAT_KEYS)`. Recoverable: the driver falls back to the filename extension | `FORMAT_KEYS` |
 | 11 | The byte size is `size` | ABSENT `size (SIZE_KEYS)`. Whether the number is bytes is a value question - compare it against the UI in step 3 | `SIZE_KEYS` |
 | 12 | The change stamp is `updated`, then `updated_date` | ABSENT `updated\|updated_date (UPDATED_AT_KEYS)`. `lw providers drift` compares this field, so a wrong guess reads as "nothing ever changes upstream" | `UPDATED_AT_KEYS` |
 | 13 | Approval is a workflow state under `workflow_state`, then `status` | ABSENT `workflow_state\|status (WORKFLOW_STATE_KEYS)` | `WORKFLOW_STATE_KEYS` |
@@ -131,7 +131,7 @@ file /tmp/ib-lolly.bin
 Download the same resource from the IntelligenceBank UI as the original and checksum that too.
 A matching checksum strikes row 20. A different one means the link is a rendition or a preview -
 compare sizes, pixel dimensions and EXIF/ICC metadata, and report it as row 20 rather than a
-materialize bug (materialize checksums whatever it is given, so a rendition lands silently as the
+materialize bug (materialize checksums whatever it is given, so a rendition arrives silently as the
 wrong bytes). Repeat per file type you plan to exit: a governance-rich DAM often serves office and
 design files through a different link than images. A failure on the blob route surfaces as
 `502 PROVIDER_UNAVAILABLE`; the diagnosis is in the materialize output, not there.

@@ -3,7 +3,7 @@
 Leaving a DAM is a provider-level motion, not a per-asset rescue: **federate → pin →
 materialize → cutover**. This page is the playbook for every DAM kind this deploy can
 federate, plus the per-vendor readiness table. Per-platform setup is one guide per kind, in
-[the provider guides](providers/README.md); the machinery is documented in
+[the provider guides](providers/README.md); the mechanism is documented in
 [catalog.md](catalog.md#the-exit---materialize-a-source-into-your-own-store).
 
 ## What the exit is
@@ -81,13 +81,13 @@ guess turns out wrong: [canto](providers/canto-live-verify.md),
 | `canto` | REST v1, OAuth2 (BYOT, App ID + Secret issued by Canto to the tenant owner) | Availability from `mapping.availabilityFields` read off the record's custom-field bag; approval states → approved via `options.approvedStates` (default `["approved"]`); albums and folders → sections | Expected yes: `api_binary` streams the original per scheme, host-pinned to the canto family. Whether it returns the true original rather than a rendition is on the driver's `LIVE-VERIFY` checklist | **Exit target.** Nothing in this driver has been confirmed against a Canto tenant yet, so run the runbook before committing a schedule |
 | `acquia-dam` | Widen v2 API, bearer token | Native window (`release_date` → available from, `expiration_date` → available until); asset `status` → approved via `options.approvedStatuses` (default `["active"]`); categories → sections | Yes. The `embeds.original` URL (or the download link) re-fetched per request, host-pinned to `widencollective.com` / `widencdn.net` | **Exit target**, and the least mapping work of the set - governance arrives native, so no custom-field wiring. Live confirmation of the field names open |
 | `intelligencebank` | v3 Graph API only. Login handshake, single sealed credential | Native window (`publish_date` → available from, `expiry_date` or `review_date` → available until); workflow state → approved via `options.approvedStates` (absent leaves approval unfiltered); folder and category → sections | Yes. The resource `download_url` re-fetched per request, host-pinned to the `intelligencebank.com` family (a custom-domain tenant needs its host added) | **Exit target.** Governance-rich, so an exit keeps most of what the DAM knew. Live confirmation of the login response and field names open |
-| `optimizely-cmp` | CMP DAM API v3, OAuth2 (BYOT); the only kind with a publish-out arm, opt-in per provider (`options.publish`) | `expires_at` → available until (CMP models expiry, no release date); `is_public` and not `is_archived` → approved; folder and labels → sections | The signed `download_url` streams per request, so the machinery would run | **Not an exit target.** The CMS owns these assets: read-only federate-in plus publish-out of lolly-generated exports. Do not run `cutover` against it |
+| `optimizely-cmp` | CMP DAM API v3, OAuth2 (BYOT); the only kind with a publish-out arm, opt-in per provider (`options.publish`) | `expires_at` → available until (CMP models expiry, no release date); `is_public` and not `is_archived` → approved; folder and labels → sections | The signed `download_url` streams per request, so the exit path would run | **Not an exit target.** The CMS owns these assets: read-only federate-in plus publish-out of lolly-generated exports. Do not run `cutover` against it |
 
 The non-DAM kinds (`webdav`, `s3`, `git`, `dropbox`, `gdrive`, `o365`, `penpot`) are storage and
 design sources, not brand libraries held under someone else's contract. They have no
-off-boarding story and are absent from the table deliberately. `webdav` is worth naming twice:
+off-boarding story and are absent from the table deliberately. `webdav` appears twice deliberately:
 a Nextcloud or an Apache `mod_dav` mount is a server the organization runs itself, so there is
-no vendor to leave, and it is far more often **where an exit lands** than where one starts.
+no vendor to leave, and it is far more often **the destination of an exit** than the start of one.
 Materialize works against it like any other source, and its driver is fixture-verified with its
 own server-day pass in [providers/webdav-live-verify.md](providers/webdav-live-verify.md).
 
@@ -122,7 +122,7 @@ instance-owned now.
 
 ## Related
 
-- The machinery, in detail: [catalog](catalog.md#the-exit---materialize-a-source-into-your-own-store)
+- The mechanism, in detail: [catalog](catalog.md#the-exit---materialize-a-source-into-your-own-store)
 - Per-platform setup, one guide per kind: [the provider guides](providers/README.md)
 - Who may materialize, cut over and delete: [permissions](permissions.md)
 - Where instance bytes live and how to point them at S3/MinIO:

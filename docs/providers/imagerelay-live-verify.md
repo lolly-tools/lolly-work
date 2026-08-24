@@ -80,12 +80,12 @@ imagerelay  GET /api/v2/files/55
 
 - **EXPECTED BY THIS DRIVER, ABSENT** is the answer. Each entry reads
   `key|alternatives (CONSTANT_NAME)`, so it names the constant to widen; `(none)` means every
-  guess landed.
+  guess matched.
 - **IN THE RESPONSE, NOT MAPPED** holds the replacement: an ABSENT `updated_at
   (UPDATED_AT_KEYS)` beside a NOT MAPPED `modified_at` is one constant edit.
 - Record keys are unioned across the page, and tags fold (`keywords`+`tags`) rather than falling
   back, so read the `record:` block to see which half this tenant sends. On the detail report
-  that line is the wrapper answer: a tenant wrapping under a name this driver does not try reads
+  that row answers the wrapper question: a tenant wrapping under a name this driver does not try reads
   as not wrapped, with the wrapper key in NOT MAPPED and the link ABSENT.
 
 ## The assumption table
@@ -106,7 +106,7 @@ constant. If a row and that header disagree, the header is right and this table 
 | 7 | The next-page cursor is `meta.next_page` | `envelope: meta: { next_page: … }` shows both the wrapper and the key. ABSENT `meta (META_KEYS)` means the envelope names it something else; a `meta` with a differently named cursor inside stops paging after page 1, silently | `META_KEYS` / `NEXT_PAGE_KEYS` |
 | 8 | The file id is `id` (string or number, both accepted) | ABSENT `id (RECORD_ID_KEYS)`. A file with no readable id does not federate silently: it throws, naming this constant | `RECORD_ID_KEYS` |
 | 9 | The filename is `filename` and the title is `name` | ABSENT `filename\|name (FILENAME_KEYS / DISPLAY_NAME_KEYS)`, with the real names in NOT MAPPED | `FILENAME_KEYS` / `DISPLAY_NAME_KEYS` |
-| 10 | The format rides `extension`, then `file_type` | ABSENT `extension\|file_type (FORMAT_KEYS)`. Absent is survivable: the driver falls back to the filename extension | `FORMAT_KEYS` |
+| 10 | The format rides `extension`, then `file_type` | ABSENT `extension\|file_type (FORMAT_KEYS)`. Absent is recoverable: the driver falls back to the filename extension | `FORMAT_KEYS` |
 | 11 | The byte size is `size` | ABSENT `size (SIZE_KEYS)`. Whether the number is bytes is not in the report: compare it against what Image Relay shows for the file in step 3 | `SIZE_KEYS` |
 | 12 | The change stamp is `updated_at` | ABSENT `updated_at (UPDATED_AT_KEYS)`. `lw providers drift` compares this field, so a wrong guess reads as "nothing ever changes upstream" | `UPDATED_AT_KEYS` |
 | 13 | Tags fold `keywords` and `tags` | These fold rather than fall back, so ABSENT `keywords\|tags (TAG_KEYS)` appears only when neither is there | `TAG_KEYS` |

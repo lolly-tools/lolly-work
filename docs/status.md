@@ -1,6 +1,6 @@
 # Status and roadmap
 
-Where this deploy actually stands. Written to be safe to hand to an auditor or a CIO: the
+The honest state of this deploy. Written to be safe to hand to an auditor or a CIO: the
 gaps are named, not smoothed over. Verified against the repository on **2026-08-18**.
 
 ![The client fleet - which shell and engine versions are talking to this deployment](shots/client-fleet.svg)
@@ -116,8 +116,8 @@ The plan sequences phases so each is independently useful:
 | 1 (MVP) | SSO + catalog + render/links + fleet + audit core | done |
 | 2 | roles/grants, overlays, profile governance, org-config, message bridge | done; org-scoped MCP endpoint outstanding |
 | 3 | approvals, watermarking, lifecycle, C2PA assertions | largely done (see gap 7) |
-| 4 | shared workspaces, collab presence, telemetry dashboards | projects/sessions and dashboards done; server collab substrate **landed single-node** (ws gateway + rooms + persistence + guest join, `server/src/collab/`) - client presence UI is OSS-side and open |
-| 5 | SAML/SCIM, SIEM streaming, live co-editing, air-gap hardening | **SCIM done** (`/scim/v2`: Users create/patch/`active=false`, Group membership, per-IdP bearer tokens - plans/31 §8); SAML deliberately deferred to Keycloak's SAML→OIDC bridge; live co-editing server machinery landed but **rollout stays adoption-gated** (the conflict counter on the console Overview is the gate's instrument); SIEM streaming not started |
+| 4 | shared workspaces, collab presence, telemetry dashboards | projects/sessions and dashboards done; server collab substrate **done single-node** (ws gateway + rooms + persistence + guest join, `server/src/collab/`) - client presence UI is OSS-side and open |
+| 5 | SAML/SCIM, SIEM streaming, live co-editing, air-gap hardening | **SCIM done** (`/scim/v2`: Users create/patch/`active=false`, Group membership, per-IdP bearer tokens - plans/31 §8); SAML deliberately deferred to Keycloak's SAML→OIDC bridge; live co-editing server side done but **rollout stays adoption-gated** (the conflict counter on the console Overview is the gate's instrument); SIEM streaming not started |
 
 The community gate is worth restating, because it is the test of the brand-agnostic claim:
 **someone who is not us stands a deploy up from the Helm chart.**

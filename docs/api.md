@@ -252,8 +252,9 @@ second, and re-raises it if they had already dismissed it.
 ## Client identification
 
 Shells send `X-Lolly-Client` (shell, shell version, engine, platform). It feeds the fleet
-histogram and message targeting; it is never trusted for authorization. A shell may add an
-`install/<id>` token: on a request that carries a live member session - and only then - it
-registers the install in the fleet registry. Anonymous and guest traffic with the same
-token feeds the histogram and nothing else, and there is no heartbeat: an install is seen
-exactly when its person uses the instance.
+histogram and message targeting; it is never trusted for authorization. The OSS shells add
+an `install/<id>` token while - and only while - their person is signed in: on a request
+that carries a live member session, it registers the install in the fleet registry.
+Anonymous and guest traffic with the same token feeds the histogram and nothing else, and
+there is no heartbeat: an install is seen exactly when its person uses the instance, and
+leaving the instance client-side deletes the id.

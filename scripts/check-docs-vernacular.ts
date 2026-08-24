@@ -93,9 +93,14 @@ export const BANNED_PHRASES: { what: string; re: RegExp }[] = [
   { what: 'prose "smoke test"', re: /smoke[ -]test/i },
   { what: '"it deserves"', re: /\bit deserves\b/i },
   { what: 'abstract "shape of"', re: /\bshape of\b/i },
-  { what: '"where X fits" framing', re: /\bwhere \S+ fits\b/i },
+  { what: '"where X sits/fits/stands" framing', re: /\bwhere (?:\S+ ){1,3}?(?:sits|fits|stands)\b/i },
+  { what: '"in (X) terms" framing', re: /\bin \S+ terms\b/i },
   { what: 'abstract "landscape"', re: /\b(existing|wider|current|competitive|creative-tools) landscape\b/i },
   { what: '"a testament to"', re: /\ba testament to\b/i },
+  // Figurative "lands/landed" (a change "lands", a file "lands on" a stack) -
+  // house style rejects it outside the literal senses (property, distant
+  // places), which the lookbehind carves out (Andy, 2026-08-21).
+  { what: 'figurative "lands/landed"', re: /(?<!\b(?:distant|foreign|native|far-off|their|his|her|ancestral)\s)\b(?:lands|landed)\b/i },
   { what: '"tapestry"', re: /tapestry/i },
   { what: '"delve"', re: /\bdelve/i },
   { what: '"treasure trove"', re: /treasure trove/i },
@@ -106,7 +111,12 @@ export const BANNED_PHRASES: { what: string; re: RegExp }[] = [
   { what: 'the bar metaphor ("bar is high", "raises the bar")', re: /\b(?:bar is (?:high|low|higher|lower)|rais\w+ the bar)\b/i },
   { what: '"transcribe" family as prose (say quote/copy; the speech feature and API names carry ALLOW entries)', re: /\btranscri\w*/i },
   { what: '"worth knowing"', re: /\bworth knowing\b/i },
+  { what: '"worth naming"', re: /\bworth naming\b/i },
   { what: '"what X is worth" framing', re: /\bwhat\s+\S[^.?!\n]{0,60}?\bis worth\b/i },
+  // DOCS-ONLY: carried in CODE_EXEMPT (check-code-comment-vernacular.ts) because
+  // "survivable" is genuine fault-tolerance vocabulary in the collab/parse code
+  // ("this failure is survivable"), but a prose tic in the docs.
+  { what: '"survivable" (prose)', re: /\bsurvivab\w*/i },
   // --- claudisms.ai import (2026-08-16, curated) ------------------------
   // Source: https://claudisms.ai/. Only entries with NO legitimate use in
   // THESE technical docs are hard-banned. Judgment-call words that double as
@@ -150,16 +160,52 @@ export const BANNED_PHRASES: { what: string; re: RegExp }[] = [
   // expires with a card"), which is a legitimate noun use in status-quo.md.
   { what: '"leverage" as a verb', re: /\bleverag(?:e|es|ing|ed) (?:the|its|our|your|their|a|an)\b/i },
   { what: '"where it gets interesting"', re: /\bwhere it gets interesting\b/i },
-  { what: '"brings me/us back to"', re: /\bbrings? (?:me|us) back to\b/i },
-  { what: '"underscores/underscoring the" (figurative)', re: /\bunderscor(?:es|ing) (?:the|how|that|a|an)\b/i },
+  // Abstract-register nouns (Andy, 2026-08-21): bookkeeping and machine words
+  // applied to ideas. The first two have no literal home in these docs, so
+  // they ban outright; the third carves out the physics senses, and the last
+  // two ban only the figurative frames - "state survives a reload" and "data
+  // structure" are genuine technical vocabulary and stay legal.
+  { what: 'abstract "ledger"', re: /\bledgers?\b/i },
+  { what: 'abstract "machinery"', re: /\bmachiner(?:y|ies)\b/i },
+  { what: 'abstract "mechanics of"', re: /(?<!\b(?:quantum|fluid|orbital|classical|statistical|celestial|auto)\s)\bmechanics of\b/i },
+  { what: 'figurative "survives"', re: /\bsurviv(?:e|es|ed|ing) (?:contact with|scrutiny|translation|the (?:cut|edit|rewrite|transition|retelling|journey))\b|\bwhat survives\b/i },
+  { what: 'abstract "structure of the argument"', re: /\bstructure of the (?:argument|essay|answer|response|conversation|thinking|reasoning|claim|story|prose|piece|writing|work|problem)\b/i },
   // "The (x) is (y) here." - the copula-flourish tic (owner-banned 2026-08-16):
   // a clause that redefines its subject and then hedges with a trailing "here".
-  // Deterministic discriminators, calibrated in the lolly parent repo: a
-  // determiner after "is" excludes legitimate participles ("is computed here");
-  // punctuation right after "here" excludes locatives that flow on ("is a no-op
-  // here (nothing buffered"); the lookbehinds require a subject word (so real
-  // questions like "Is the extension here?" pass) and exclude there/here pairs.
+  // Deterministic discriminators, calibrated against the whole owned corpus:
+  // a determiner after "is" excludes the pervasive legitimate participles
+  // ("is computed here", "is duplicated here"); requiring punctuation right
+  // after "here" excludes locatives that flow on ("is a no-op here (nothing
+  // buffered", "is a branch here plus an opener", "here too"); the lookbehinds
+  // require a subject word before "is" (a declarative, so real questions like
+  // "Is the extension here?" pass) and exclude existential and there/here pairs
+  // ("there is a session here", "a rename there is a rename here").
   { what: '"the (x) is (y) here." copula flourish', re: /(?<=[\w'’] )(?<!there )is (?:not )?(?:the|a|an) [\w'’-]+(?: [\w'’-]+){0,2} here[.,!?:;]/i },
+  { what: '"brings me/us back to"', re: /\bbrings? (?:me|us) back to\b/i },
+  { what: '"underscores/underscoring the" (figurative)', re: /\bunderscor(?:es|ing) (?:the|how|that|a|an)\b/i },
+  // --- owner additions 2026-08-17 ---------------------------------------
+  // All four are DOCS-only (CODE_EXEMPT in the code-comment gate): each has a
+  // real domain use in code - the gamut "honesty note" cross-reference, a PKI
+  // "trust anchor" / CSS "object-position anchors it", a layout "the table
+  // fits", and C2PA "structurally valid/invalid". In PROSE they are tics.
+  { what: '"honesty note(s)" as a heading/aside', re: /\bhonesty notes?\b/i },
+  // "anchors it" as a prose verb - say what actually holds what (a signature
+  // chains to a root, an identity vouches for a key).
+  { what: '"anchors it" (prose verb)', re: /\banchors? it\b/i },
+  // "the X fits" - the "it all comes together" flourish; sibling of the
+  // fits-framing ban above.
+  { what: '"the X fits" framing', re: /\bthe \S+ fits\b/i },
+  // "structurally X" - the adverb-hedge. Delete the adverb and keep the
+  // adjective ("locked", not "structurally locked"); if the adverb carries
+  // meaning, name the actual structure.
+  { what: '"structurally X" adverb-hedge', re: /\bstructurally\b/i },
+  // Self-referential annotation tics: comments/prose that narrate their own text
+  // ("this line is the guard", "the boundary is the contract", "the API is
+  // structural") instead of just stating the fact. Say what the code does, not
+  // what the sentence/line "is".
+  { what: 'self-referential "(that/the/this line is X)"', re: /\b(?:that|the|this) line is\b/i },
+  { what: '"the boundary is X" self-reference', re: /\bthe boundary is\b/i },
+  { what: '"the X is structural" adjective-hedge', re: /\bis structural\b/i },
 ];
 
 /**

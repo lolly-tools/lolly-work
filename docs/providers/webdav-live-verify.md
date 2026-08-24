@@ -66,7 +66,7 @@ lw providers preview --kind webdav --shape \
 The file holds one report for a `PROPFIND` with `Depth: 1` on the files root. That call is the
 report's **own**, and it asks with `<d:propname/>`: property names, no values at all. It has to be
 its own, because a `PROPFIND` that names properties gets back only what it named (RFC 4918 §9.1),
-so a report built from the sync's request could only ever say that a guess landed or did not, and
+so a report built from the sync's request could only ever say that a guess matched or did not, and
 never what the server calls the property instead. So: no values, no file content, no hrefs (a path
 is content this report has no business carrying), and for the Nextcloud flavor the endpoint line
 prints `/remote.php/dav/files/<username>/` rather than the real login, because that login is half
@@ -74,12 +74,12 @@ the Basic credential. The prompt goes to stderr. Read the three groups in this o
 
 1. **EXPECTED BY THIS DRIVER, ABSENT** - the wrong guesses, and the answer this page exists for.
    Each entry reads `key|alternatives (CONSTANT_NAME)`, so it names the constant to widen.
-   `(none)` means every guess landed.
+   `(none)` means every guess matched.
 2. **IN THE RESPONSE, NOT MAPPED** - every other property your server carries on these resources.
    This is where a custom property carrying a date will show up, and it is the fix for an absent
    guess: ABSENT `getcontentlength (PROP_SIZE_KEYS)` beside NOT MAPPED `contentlength` is one
    constant edit.
-3. **MAPPED BY THIS DRIVER** - confirmed. `oc:tags` proves itself here, or lands in ABSENT (row 5).
+3. **MAPPED BY THIS DRIVER** - confirmed. `oc:tags` proves itself here, or falls into ABSENT (row 5).
 
 If your server refuses `<d:propname/>` the report still comes back, from the mapping request
 instead, and says so in a note - NOT MAPPED is then empty by construction, and the note carries the
@@ -100,7 +100,7 @@ right and this table is stale.
 | 2 | The generic files root is `<baseUrl>/<root>` and nothing else | Same: the first line is the path. A generic server mounting DAV somewhere else needs that whole path as `options.baseUrl` | `options.baseUrl` / `options.root` on the entry - the generic arm builds no template of its own |
 | 3 | `PROPFIND` with `Depth: 1`, the body from `propfindBody()`, and a trailing slash on a collection URL, are what the server wants | Step 1 is the answer: a `405` is the method, a `400` is the body, a `301`/`302` is usually the slash. This driver passes `redirect: 'manual'` and treats a `3xx` as a failure naming the host it was being sent to, so a redirect is a failure, not a detour | `propfind` and `urlFor`; the body is `propfindBody`, the refusal is in `request` |
 | 4 | Sizes ride `getcontentlength`, stamps `getlastmodified`, content types `getcontenttype`, and a directory is a `resourcetype` carrying a `collection` child | ABSENT `getcontentlength (PROP_SIZE_KEYS)` and friends, with the real names in NOT MAPPED. A file with no size and no stamp on any resource also prints a sync note naming both constants | `PROP_SIZE_KEYS` / `PROP_MODIFIED_KEYS` / `PROP_CONTENT_TYPE_KEYS` / `PROP_RESOURCETYPE_KEYS` / `COLLECTION_ELEMENT` |
-| 5 | Nextcloud returns `oc:tags` on a plain `PROPFIND`, with its values as child elements | ABSENT `tags (PROP_TAGS_KEYS)` means the server did not return it, which is survivable: tags are optional and nothing else depends on them. Values riding as text rather than children shows as one comma-joined string in the record block | `PROP_TAGS_KEYS`, and the `childTexts` read in `toAsset`. `oc:fileid` is deliberately not requested - it cannot address bytes, so a rename federates as a new asset either way |
+| 5 | Nextcloud returns `oc:tags` on a plain `PROPFIND`, with its values as child elements | ABSENT `tags (PROP_TAGS_KEYS)` means the server did not return it, which is recoverable: tags are optional and nothing else depends on them. Values riding as text rather than children shows as one comma-joined string in the record block | `PROP_TAGS_KEYS`, and the `childTexts` read in `toAsset`. `oc:fileid` is deliberately not requested - it cannot address bytes, so a rename federates as a new asset either way |
 | 6 | The multistatus layout: `multistatus` > `response` > `href` plus one `propstat` per status, readable properties under the `200` one | The two hard failures name themselves - `PROPFIND answered without a multistatus root element` and `the multistatus body carried no response element`. A wrong `propstat` or `status` name reads instead as every property absent at once | `MULTISTATUS_ELEMENT` / `RESPONSE_ELEMENT` / `HREF_ELEMENT` / `PROPSTAT_ELEMENT` / `PROP_ELEMENT` / `STATUS_ELEMENT` |
 | 7 | Hrefs come back either absolute-path or as a full URL, percent-encoded the way `decodeURIComponent` reads | The failure is loud: `none of the N resource(s) PROPFIND returned sit under the files root this driver built`, naming the root it built. A single file whose href will not read is counted in `skipped` on the sync instead. This is why step 1 wants a filename with a space or a non-ASCII character in it | `hrefPath` and `relFromRoot`. An href naming another host is refused outright (`webdav href points at <host>, not the configured host <host>`), which is the host pin and is not a bug to fix |
 | 8 | About 4 requests a second is polite | Not in the report - WebDAV publishes no rate limit at all, so this is caution rather than a documented ceiling. A small self-hosted box may want less | `DEFAULT_GAP_MS`, or `options.minGapMs` per entry, which is the one to reach for |

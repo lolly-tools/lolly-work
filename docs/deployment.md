@@ -225,7 +225,7 @@ won't type-strip the engine under `node_modules`. Config arrives as one JSON str
 in-memory store (ephemeral). On the public demo (no `DATABASE_URL`, `dev.enabled`), that
 in-memory store is **fully seeded on every cold start** - governance fixture, plus 14 days of
 usage telemetry, a mixed fleet, shared links, approvals across every state, and a synthetic
-live-room registry - so a signed-in visitor lands on populated dashboards, not empty states
+live-room registry - so a signed-in visitor arrives at populated dashboards, not empty states
 (`scripts/demo.ts` `seedStore`/`seedActivity`/`demoRooms`; details in `deploy/vercel/README.md` §5).
 
 Auth, org-config, RBAC, overlays, links, telemetry, inbox, audit, fleet, console, CLI **and

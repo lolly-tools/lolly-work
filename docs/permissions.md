@@ -213,7 +213,7 @@ Four levers, then - three that act on the guest, one that acts on the inviter:
 | Lever | Effect |
 |---|---|
 | An `inputAccess` rule ([governance](governance.md#per-input-access)) | Locks, hides or choice-restricts one input for every guest, in every room, without naming anyone. See the fallback below - it reaches a guest whether or not the rule names one. |
-| Revoking the link (`POST /api/v1/links/:id/revoke`) | Kills that guest's write access on its very next gesture - the room re-reads the link per gesture and per keepalive, the same cadence a member's grant revocation lands on. |
+| Revoking the link (`POST /api/v1/links/:id/revoke`) | Kills that guest's write access on its very next gesture - the room re-reads the link per gesture and per keepalive, the same cadence a member's grant revocation takes effect on. |
 | `guestLinks.enabled: false` ([configuration](configuration.md)) | The instance-wide kill switch. Stops new links from minting *and* evicts every guest already connected - re-checked live, not only at mint time. |
 | Taking `link.create-guest` off the **inviter** - a deny grant, a role change, removing them from the group that carried it, or disabling the account | Evicts every guest **that inviter** admitted, on the guest's next op or keepalive. The one lever that covers links nobody can enumerate; it leaves guests invited by anyone else alone. |
 

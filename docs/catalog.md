@@ -53,7 +53,7 @@ POST /api/v1/catalog/submit?name=Campaign%20Hero&tags=campaign,hero&groups=desig
 
 The bytes ride the raw request body; the declared metadata rides query params (`name`,
 `description`, `tags`, `type`, `groups`). The response names the new `inst/<id>` asset, its
-checksum, and the state it landed in.
+checksum, and the state it arrived in.
 
 **Open to authors is the default.** Anyone holding `catalog.submit` submits, and the asset is
 live the moment it is stored. An org that wants review names an approval chain in
@@ -293,12 +293,12 @@ POST /api/v1/links   { "kind": "share", "target": { "collectionId": "launch-kit"
 - **`embed`** is refused. A collection is a list, not a byte stream, so there is nothing for an
   `<img>` to point at.
 
-TTL, passwords, revocation and audit are the ordinary link machinery. Lifecycle is re-resolved
+TTL, passwords, revocation and audit are the ordinary link rules. Lifecycle is re-resolved
 **per member on every visit**, so an expired or revoked asset leaves both the page and the
 archive at once, on a link that is otherwise still perfectly live; the page says how many were
 left out and never which.
 
-The boundary is deliberate and complete: the page shows **that collection only**. No search, no
+That limit is deliberate and complete: the page shows **that collection only**. No search, no
 browsing past the set, no self-registration, no route into the rest of the catalog. Asking the
 link for an asset the collection does not name is refused even though the signature is valid.
 That is what keeps it a list somebody sent you rather than a brand portal.
@@ -566,7 +566,7 @@ through the same exposure gates.
 
 Federation keeps the DAM as the source of truth. When you want to *leave* a DAM (contract
 end, off-boarding), **materialize** its assets into the instance's own store and cut the
-identity over - the same machinery also powers a hold's implied pin:
+identity over - the same mechanism also powers a hold's implied pin:
 
 ```bash
 lw providers materialize acme-bf                    # whole provider (or --remote-id / --section)
@@ -589,7 +589,7 @@ lw providers cutover acme-bf                         # identities ext/* → inst
   afterwards deletes nothing, because the copies are instance-owned.
 - Materialized `inst/*` entries carry a per-format **checksum + size**, so migrated assets
   gain the integrity-verification and offline-pin parity that federated `ext/*` entries
-  structurally cannot have while their bytes live upstream.
+  cannot have while their bytes live upstream.
 
 `lw providers drift <id>` reports which copies the upstream has changed since - the cadence
 check during a staged exit. The whole motion, per vendor, is [off-boarding](offboarding.md).

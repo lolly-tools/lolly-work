@@ -61,7 +61,7 @@ server/src/     the app - zero-dependency Node (node:http, node:crypto, native T
   inbox/        message bridge audience targeting
   fleet/        X-Lolly-Client parsing + version registry
   store/        storage seam: memory driver now, Postgres next (migrations/ has the schema)
-  render/       cache-key contract (render pipeline itself lands next)
+  render/       cache-key contract (render pipeline itself ships next)
   api/          router + the HTTP app
 migrations/     Postgres schema v0
 deploy/compose/ single-VM shape (Dockerfile + docker-compose)

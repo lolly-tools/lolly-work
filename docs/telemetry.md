@@ -52,7 +52,7 @@ An unknown event id is dropped, not stored-and-ignored. CLI sessions are intenti
 captured (they are short or instantaneous by design).
 
 `seconds` is a numeric label used for seat-utility rollups. There is no free-text attribute
-anywhere in the vocabulary, which is what makes the no-values invariant hold structurally
+anywhere in the vocabulary, which is what makes the no-values invariant hold by construction
 rather than by review.
 
 Ingest: `POST /api/v1/telemetry`. Rate-limited per IP
