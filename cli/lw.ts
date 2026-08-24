@@ -300,6 +300,41 @@ switch (cmd) {
     break;
   }
 
+  case 'instance': {
+    // The connect surface (plans/34 wave 2): read the public manifest, or host
+    // the `.lolly` pack the OSS builder cut for this deployment (owner).
+    if (sub === 'pack') {
+      const file = positionals[2] ?? fail('usage: lw instance pack <file.lolly>');
+      const bytes = readFileSync(file);
+      const cookie = savedCookie();
+      const res = await fetch(`${base}/api/v1/instance-pack`, {
+        method: 'PUT',
+        headers: { ...(cookie ? { cookie } : {}), 'content-type': 'application/octet-stream', 'x-lolly-client': 'lw-cli engine/0' },
+        body: bytes,
+      });
+      const data = await res.json().catch(() => null) as {
+        pack?: { signed: boolean; version?: string; size: number }; error?: { code?: string; message?: string };
+      } | null;
+      if (!res.ok) fail(`${res.status} ${data?.error?.code ?? ''} ${data?.error?.message ?? ''}`.trim());
+      const p = data?.pack;
+      console.log(`hosted ${p?.signed ? 'signed' : 'UNSIGNED (dev only)'} pack${p?.version ? ` v${p.version}` : ''} (${p?.size} bytes) at ${base}/connect/pack.lolly`);
+      break;
+    }
+    if (sub === 'pack-rm') {
+      await call('/api/v1/instance-pack', { method: 'DELETE' });
+      console.log('instance pack removed');
+      break;
+    }
+    const m = await call('/api/v1/instance') as {
+      name: string; accessMode: string; provider: string | null; engineVersion: string | null; connect?: { packUrl: string };
+    };
+    out(m);
+    if (!values.json) {
+      console.log(`${m.name} · ${m.accessMode} · idp ${m.provider ?? 'none'} · engine ${m.engineVersion ?? '?'}${m.connect ? ` · pack ${m.connect.packUrl}` : ''}`);
+    }
+    break;
+  }
+
   case 'links': {
     if (sub === 'revoke') {
       const id = positionals[2] ?? fail('usage: lw links revoke <id>');
@@ -1117,9 +1152,13 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
     if (unknown) write(`lw: unknown command "${cmd}"`);
     write(`lw — lolly-work admin CLI (base: ${base})
 
+  login                      device-code sign-in: confirm the short code in a signed-in browser
   login --email <dev-user>   sign in via the dev provider
   login --cookie 'lw_session=…'   store a browser session
-  whoami · summary · fleet · audit verify|head
+  whoami · summary · fleet · fleet installs · audit verify|head
+  instance                   the public instance manifest (what a fresh app reads)
+  instance pack <file.lolly> host the signed instance pack cut by the OSS builder (owner)
+  instance pack-rm           stop hosting the pack
   migrate [--check]          apply pending migrations (needs local DATABASE_URL; --check = status, exit 1 if pending)
   c2pa init [--org N] [--out dir]   mint a C2PA signing identity (root+leaf) for real signed exports
   export [--out file]        dump governance (grants, overlays, chains, providers, flags) as canonical JSON

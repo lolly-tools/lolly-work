@@ -1757,9 +1757,10 @@ function vcmp(a, b) {
 }
 
 async function viewFleet(main) {
-  const [{ clients, engineVersion, minEngine }, { installs }, { pending }] = await Promise.all([
+  const [{ clients, engineVersion, minEngine }, { installs }, { pending }, { pack }] = await Promise.all([
     api('/api/v1/fleet'), api('/api/v1/fleet/installs'),
     api('/api/v1/auth/device/pending').catch(() => ({ pending: [] })),
+    api('/api/v1/instance-pack').catch(() => ({ pack: null })),
   ]);
   const belowFloor = (engine) => Boolean(minEngine && engine && vcmp(engine, minEngine) < 0);
   const totalReq = clients.reduce((a, c) => a + c.count, 0);
@@ -1785,6 +1786,7 @@ async function viewFleet(main) {
       tile('Requests seen', fmt(totalReq)),
       tile('Last seen', clients.length ? when(lastSeen) : '—'),
     ),
+    connectCard(),
     ...nudgeCard(),
     ...deviceCodesCard(),
     el('div', { class: 'card' },
@@ -1840,6 +1842,52 @@ async function viewFleet(main) {
       el('td', {}, i.userName ?? '—'),
       whenCell(i.lastSeenAt),
       el('td', {}, el('div', { class: 'lc-actions' }, forgetBtn), err));
+  }
+
+  // Connect apps (plans/34 wave 2): the three routes into this instance in
+  // friction order, and the hosted `.lolly` pack. The pack is CUT by the OSS
+  // builder (the tool that owns the signed format) and only HOSTED here —
+  // upload verifies it points at this deployment before anything is stored.
+  function connectCard() {
+    const origin = location.origin;
+    const err = errSpan();
+    const manifestRow = el('div', { class: 'lc-actions' },
+      el('span', { class: 'mono muted' }, `${origin}/api/v1/instance`),
+      copyButton(() => `${origin}/api/v1/instance`, 'Copy'));
+    const fileInput = el('input', { type: 'file', accept: '.lolly', 'aria-label': 'Instance pack file' });
+    const uploadBtn = el('button', { onclick: async () => {
+      const file = fileInput.files?.[0];
+      if (!file) { err.textContent = 'Pick a .lolly file first.'; return; }
+      err.textContent = '';
+      uploadBtn.disabled = true;
+      try {
+        const res = await fetch('/api/v1/instance-pack', { method: 'PUT', body: file });
+        if (!res.ok) throw new Error((await res.json().catch(() => null))?.error?.message ?? `upload refused (${res.status})`);
+        toast('Instance pack hosted');
+        route();
+      } catch (e) { err.textContent = e.message; uploadBtn.disabled = false; }
+    } }, pack ? 'Replace pack' : 'Host pack');
+    const removeBtn = pack ? armConfirmButton({ class: 'danger' }, 'Remove', 'Really remove?', async (disarm) => {
+      removeBtn.disabled = true;
+      try { await api('/api/v1/instance-pack', { method: 'DELETE' }); toast('Pack removed'); route(); }
+      catch (e) { err.textContent = e.message; removeBtn.disabled = false; disarm(); }
+    }) : null;
+    return el('div', { class: 'card stack' },
+      el('h2', {}, 'Connect apps'),
+      el('p', { class: 'muted', style: 'margin-top:-4px' },
+        'A Lolly app connects by importing the signed instance pack (zero typing), or by entering this deployment’s URL on the first-run instance sheet. The manifest below is what a fresh app reads first.'),
+      manifestRow,
+      pack
+        ? el('p', {},
+            el('span', { class: 'chip' }, pack.signed ? 'signed' : 'UNSIGNED (dev only)'),
+            ' ', pack.name ?? 'pack', pack.version ? ` v${pack.version}` : '', ` · ${fmt(Math.round(pack.size / 1024))} KB · `,
+            el('a', { href: '/connect/pack.lolly' }, 'download'), ' · ',
+            el('span', { class: 'mono muted' }, `${origin}/connect/pack.lolly`), ' ',
+            copyButton(() => `${origin}/connect/pack.lolly`, 'Copy'))
+        : el('p', { class: 'muted' },
+            'No pack hosted yet. Cut one with the OSS builder (node scripts/build-instance-pack.ts --brand <name> --keyfile …) with this deployment as its instance base, then host it here (owner).'),
+      el('div', { class: 'lc-actions' }, fileInput, uploadBtn, removeBtn),
+      err);
   }
 
   // Pending device sign-in codes (plans/34 wave 4) — the refuse-a-surprise

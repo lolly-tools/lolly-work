@@ -69,6 +69,9 @@ export function rateLimitSurface(method: string, pathname: string): Surface | nu
   if (pathname === '/api/v1/auth/device' || pathname === '/api/v1/auth/device/token') return 'auth';
   if (method === 'POST' && pathname === '/api/v1/telemetry') return 'telemetry';
   if (pathname === '/l' || pathname.startsWith('/l/')) return 'link';
+  // The instance-pack download (plans/34 wave 2) is public on an open instance,
+  // so it rides the link bucket like the other bearer-ish byte surface.
+  if (pathname === '/connect/pack.lolly') return 'link';
   return null;
 }
 

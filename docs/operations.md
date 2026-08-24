@@ -239,9 +239,17 @@ order:
 
 1. **A signed `.lolly` instance pack.** The zero-typing path: importing the
    pack sets the client's instance base after the signature verdict and
-   installs the brand alongside. Packs are produced by the OSS repo's
-   `build-instance-pack.ts` today; a key-pinned build refuses an unsigned or
-   wrongly-signed pack.
+   installs the brand alongside. The pack is cut by the OSS repo's
+   `build-instance-pack.ts` (the tool that owns the signed format, with its
+   own size and licence guards) with this deployment as its instance base -
+   then hosted HERE: `lw instance pack <file.lolly>` (owner), or the Connect
+   card on the console's Fleet view. The instance serves it at
+   `/connect/pack.lolly` (public on an `open` instance, member-gated
+   otherwise), advertises it in the manifest's `connect.packUrl`, and refuses
+   at upload any pack whose instance base is not this deployment - hosting a
+   pack that enrolls devices somewhere else is the one mistake an operator
+   must not be able to make silently. A key-pinned build refuses an unsigned
+   or wrongly-signed pack on import.
 2. **The first-run instance sheet** (desktop and mobile shells): the person
    types this deployment's URL; the shell probes `GET /api/v1/instance` and
    `GET /api/auth/config` and takes it from there.

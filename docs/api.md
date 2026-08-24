@@ -13,19 +13,26 @@ means any signed-in member; *public* means no session needed.
 | `GET /healthz` | public | `{ ok, name, accessMode, appUrl? }` |
 | `GET /metrics` | token | Prometheus; loopback-only unless `LW_METRICS_TOKEN` is set |
 
-## Instance manifest
+## Instance manifest and the connect surface
 
 | Route | Action | Notes |
 |---|---|---|
 | `GET /api/v1/instance` | public | the card a fresh shell reads before sign-in |
+| `GET /connect/pack.lolly` | open: public · else member | the hosted signed instance pack; `404` when none is hosted |
+| `GET /api/v1/instance-pack` | `fleet.view` | the hosted pack's metadata (name, version, signed, checksum), or null |
+| `PUT /api/v1/instance-pack` | `instance.config` (**owner**) | host a pack cut by the OSS builder; refused unless its instance base is this deployment |
+| `DELETE /api/v1/instance-pack` | `instance.config` (**owner**) | stop hosting |
 
 The manifest is what a downloaded app learns about this deployment before
 anyone signs in: `{ name, accessMode, provider, providerName, loginPath,
-engineVersion, capabilities }`. `engineVersion` is the vendored engine pin this
-deploy serves tools against; `capabilities` names the surfaces the server
-ships (`catalog`, `collab`, `submit`, `scim`). It carries no secrets and no
-user data, and shares the auth rate-limit bucket. See "Connecting apps to this
-instance" in [operations](operations.md) for the connect story it belongs to.
+engineVersion, capabilities, connect? }`. `engineVersion` is the vendored
+engine pin this deploy serves tools against; `capabilities` names the surfaces
+the server ships (`catalog`, `collab`, `submit`, `scim`); `connect.packUrl`
+appears exactly while a pack is hosted. It carries no secrets and no user
+data, and shares the auth rate-limit bucket. The pack itself is never built
+here - the OSS repo's `build-instance-pack.ts` owns the signed format, and
+this instance is where the finished pack publishes to. See "Connecting apps to
+this instance" in [operations](operations.md) for the connect story.
 
 ## Auth
 

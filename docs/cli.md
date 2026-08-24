@@ -33,11 +33,24 @@ lw whoami
 lw summary            # telemetry rollups
 lw fleet              # which shells/engines are connected (and this deploy's engine pin)
 lw fleet installs     # registered installs - devices that spoke install/<id> while signed in
+lw instance           # the public instance manifest - what a fresh app reads first
 lw links [--all]
 lw audit verify       # exits 2 if the chain is broken
 lw audit head         # seq · hash · count · intact  (exits 2 if broken)
 lw preview --groups marketing,contractors   # what such a member receives
 ```
+
+## Hosting the instance pack
+
+```bash
+lw instance pack dist-packs/acme.lolly   # host the signed pack (owner) - served at /connect/pack.lolly
+lw instance pack-rm                      # stop hosting it
+```
+
+The pack is cut in the OSS repo (`node scripts/build-instance-pack.ts --brand <name>
+--keyfile …`) with this deployment as its instance base; the upload refuses a pack that
+points anywhere else. An unsigned pack is hosted but labelled dev-only - a key-pinned
+app build will refuse it.
 
 ## Governance
 

@@ -29,6 +29,8 @@ import { buildAuthorizeUrl, discover, exchangeCode, mapClaims, pkcePair, verifyI
 import { displayName, resolveMember } from '../iam/member.ts';
 import { normalizeUserCode, type DeviceAuthRegistry } from '../iam/device-auth.ts';
 import { activateDoneHtml, activateFormHtml, activateSignedOutHtml } from '../iam/activate-page.ts';
+import { PACK_BLOB_ID, PACK_META_BLOB_ID, PACK_MAX_BYTES, inspectInstancePack, type InstancePackMeta } from '../catalog/instance-pack.ts';
+import { readBlobBody } from '../blobs/types.ts';
 import { bearerFromHeader, hashScimSecret, mintScimSecret } from '../scim/tokens.ts';
 import {
   applyMemberOps, groupToScim, parseGroupPatch, parseScimFilter, parseUserCreate, parseUserPatch,
@@ -326,7 +328,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // unauthenticated - and deliberately narrow: no secrets, no user data, no
   // policy beyond the access mode that /api/auth/config already states. Rate
   // limited with the auth bucket (see observability/rate-limit.ts).
-  router.add('GET', '/api/v1/instance', (_req, res) => {
+  router.add('GET', '/api/v1/instance', async (_req, res) => {
+    const packHosted = await blobs.head(PACK_BLOB_ID);
     sendJson(res, 200, {
       name: config.instance.name,
       accessMode: config.policy.defaultAccessMode,
@@ -340,6 +343,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       // Statically true today; stated so an older deploy (whose manifest lacks
       // a key) and a newer one read differently to the same probe.
       capabilities: { catalog: true, collab: true, submit: true, scim: true },
+      // Present only while a pack is hosted (plans/34 wave 2). The URL itself
+      // may still ask for a session on a gated instance.
+      ...(packHosted ? { connect: { packUrl: `${config.instance.baseUrl}/connect/pack.lolly` } } : {}),
     });
   });
 
@@ -969,6 +975,84 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     await store.forgetInstall(ctx.params.id!);
     await audit(`user:${actor.id}`, 'fleet.install.forget', `install:${ctx.params.id}`);
     sendJson(res, 200, { ok: true });
+  });
+
+  // ── instance-pack hosting (plans/34 wave 2) ───────────────────────────────
+  // The control plane SERVES the signed `.lolly` pack; it never builds one -
+  // the format belongs to the OSS builder (see catalog/instance-pack.ts). The
+  // upload gate holds one line: a hosted pack must point at THIS deployment.
+  const readPackMeta = async (): Promise<InstancePackMeta | null> => {
+    const meta = await blobs.get(PACK_META_BLOB_ID);
+    if (!meta) return null;
+    try {
+      return JSON.parse((await readBlobBody(meta.body)).toString('utf8')) as InstancePackMeta;
+    } catch {
+      return null;
+    }
+  };
+
+  router.add('GET', '/api/v1/instance-pack', async (req, res) => {
+    if (!(await requireAction(req, res, 'fleet.view'))) return;
+    sendJson(res, 200, { pack: await readPackMeta() });
+  });
+
+  router.add('PUT', '/api/v1/instance-pack', async (req, res) => {
+    const actor = await requireAction(req, res, 'instance.config');
+    if (!actor) return;
+    let bytes: Buffer;
+    try {
+      bytes = await readRaw(req, PACK_MAX_BYTES);
+    } catch {
+      return sendError(res, 413, 'PAYLOAD_TOO_LARGE', `a pack is at most ${PACK_MAX_BYTES} bytes (the OSS builder's own budget)`);
+    }
+    let inspected;
+    try {
+      inspected = inspectInstancePack(bytes, config.instance.baseUrl);
+    } catch (e) {
+      return sendError(res, 400, 'INVALID_PACK', (e as Error).message);
+    }
+    const stat = await blobs.put(PACK_BLOB_ID, bytes, 'application/octet-stream');
+    const meta: InstancePackMeta = {
+      ...inspected,
+      size: stat.size,
+      checksum: stat.checksum,
+      uploadedAt: new Date().toISOString(),
+      uploadedBy: actor.id,
+    };
+    await blobs.put(PACK_META_BLOB_ID, Buffer.from(JSON.stringify(meta)), 'application/json');
+    await audit(`user:${actor.id}`, 'instance.pack.update', 'instance', {
+      signed: inspected.signed, size: stat.size, ...(inspected.version ? { version: inspected.version } : {}),
+    });
+    sendJson(res, 200, { pack: meta });
+  });
+
+  router.add('DELETE', '/api/v1/instance-pack', async (req, res) => {
+    const actor = await requireAction(req, res, 'instance.config');
+    if (!actor) return;
+    await blobs.delete(PACK_BLOB_ID);
+    await blobs.delete(PACK_META_BLOB_ID);
+    await audit(`user:${actor.id}`, 'instance.pack.remove', 'instance');
+    sendJson(res, 200, { ok: true });
+  });
+
+  router.add('GET', '/connect/pack.lolly', async (req, res) => {
+    // Gating follows defaultAccessMode (plans/34 §7b, resolved): an open
+    // instance serves the pack publicly; anything else asks for a member
+    // session. The pack holds no secrets, but it does hold the brand.
+    if (config.policy.defaultAccessMode !== 'open') {
+      const me = await resolveMember(store, req.headers.cookie, secrets.session);
+      if (!me) return sendError(res, 401, 'UNAUTHORIZED', 'sign in to download the instance pack');
+    }
+    const blob = await blobs.get(PACK_BLOB_ID);
+    if (!blob) return sendError(res, 404, 'NOT_FOUND', 'no instance pack is hosted here');
+    res.writeHead(200, {
+      'content-type': 'application/octet-stream',
+      'content-disposition': `attachment; filename="${config.instance.name.replace(/[^A-Za-z0-9._ -]/g, '') || 'instance'}.lolly"`,
+      'content-length': String(blob.stat.size),
+      'cache-control': 'private, no-store',
+      'x-content-type-options': 'nosniff',
+    });
+    Readable.fromWeb(blob.body as import('node:stream/web').ReadableStream<Uint8Array>).pipe(res);
   });
 
   // Schema readiness - pending migrations on the live store. Owner-gated
@@ -5216,7 +5300,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // so every API/console/catalog/render/link route wins; only unmatched GETs
   // reach the SPA fallback. Absent shellDir → these routes aren't added at all.
   const shellDir = config.instance.shellDir;
-  const RESERVED_PREFIX = /^(api|catalog|render|l|admin|scim|healthz|activate)(\/|$)/;
+  const RESERVED_PREFIX = /^(api|catalog|render|l|admin|scim|healthz|activate|connect)(\/|$)/;
   if (shellDir) {
     const serveShell = async (res: ServerResponse, rel: string): Promise<void> => {
       const clean = normalize(rel.replace(/^\/+/, '')).replace(/^(\.\.[/\\])+/, '');
