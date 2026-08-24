@@ -237,6 +237,24 @@ switch (cmd) {
   }
 
   case 'fleet': {
+    if (sub === 'installs') {
+      // The registry, not the histogram (plans/34 wave 3): devices that spoke
+      // `install/<id>` while signed in. Read-only here - rename and forget are
+      // console bookkeeping.
+      const { installs } = await call('/api/v1/fleet/installs') as {
+        installs: Array<{ installId: string; name?: string; userName?: string; lastSeenAt: string;
+          info: { shell: string; shellVersion?: string; engine?: string; platform?: string } }>;
+      };
+      out(installs);
+      if (!values.json) for (const i of installs) {
+        const tag = [
+          i.info.shell + (i.info.shellVersion ? `/${i.info.shellVersion}` : ''),
+          i.info.engine ? `engine/${i.info.engine}` : '', i.info.platform ?? '',
+        ].filter(Boolean).join(' ');
+        console.log(`${i.installId}  ${i.name ?? '-'}  ${tag}  ${i.userName ?? '-'}  (last ${i.lastSeenAt})`);
+      }
+      break;
+    }
     const { clients, engineVersion } = await call('/api/v1/fleet') as {
       clients: Array<{ bucket: string; count: number; lastSeenAt: string }>; engineVersion: string | null;
     };

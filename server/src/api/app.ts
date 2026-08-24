@@ -806,6 +806,46 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     sendJson(res, 200, { clients: await store.fleetSummary(), engineVersion: pinnedEngineVersion() });
   });
 
+  // ── fleet install registry (plans/34 wave 3) ──────────────────────────────
+  // Rows exist only because an install spoke `install/<id>` on an authenticated
+  // request (see the request wrapper). Everything here is bookkeeping under the
+  // enrollment covenant: rename and forget touch the row, never the device.
+  router.add('GET', '/api/v1/fleet/installs', async (req, res) => {
+    if (!(await requireAction(req, res, 'fleet.view'))) return;
+    const [installs, users] = await Promise.all([store.listInstalls(), store.listUsers()]);
+    const nameOf = new Map(users.map((u) => [u.id, displayName(u)]));
+    sendJson(res, 200, {
+      installs: installs.map((i) => ({
+        ...i,
+        ...(i.userIdLastSeen && nameOf.has(i.userIdLastSeen) ? { userName: nameOf.get(i.userIdLastSeen) } : {}),
+      })),
+    });
+  });
+
+  router.add('PATCH', '/api/v1/fleet/installs/:id', async (req, res, ctx) => {
+    const actor = await requireAction(req, res, 'fleet.manage');
+    if (!actor) return;
+    const body = (await readJson(req)) as { name?: unknown } | null;
+    if (body?.name !== null && typeof body?.name !== 'string') {
+      return sendError(res, 400, 'INVALID_INPUT', 'name must be a string, or null to clear it');
+    }
+    const trimmed = typeof body.name === 'string' ? body.name.trim().slice(0, 80) : '';
+    const updated = await store.renameInstall(ctx.params.id!, trimmed || null);
+    if (!updated) return sendError(res, 404, 'NOT_FOUND', 'no such install');
+    await audit(`user:${actor.id}`, 'fleet.install.rename', `install:${ctx.params.id}`);
+    sendJson(res, 200, updated);
+  });
+
+  router.add('DELETE', '/api/v1/fleet/installs/:id', async (req, res, ctx) => {
+    const actor = await requireAction(req, res, 'fleet.manage');
+    if (!actor) return;
+    // A row delete and an audit line - the covenant's whole vocabulary. The
+    // next signed-in request from the device re-registers it, by design.
+    await store.forgetInstall(ctx.params.id!);
+    await audit(`user:${actor.id}`, 'fleet.install.forget', `install:${ctx.params.id}`);
+    sendJson(res, 200, { ok: true });
+  });
+
   // Schema readiness - pending migrations on the live store. Owner-gated
   // (instance.config) since it's an infra/operations signal for `lw migrate
   // --check` and monitoring. Memory store always reports current.
@@ -5118,6 +5158,17 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // Fleet: every tagged request feeds the version histogram (plans/10 §1).
     const client = parseClientHeader(req.headers['x-lolly-client'] as string | undefined);
     if (client) void store.recordClient(client);
+    // Install identity (plans/34 wave 3): a shell may add `install/<id>` to its
+    // tag. The registry row is written ONLY when the request carries a live
+    // member session - anonymous and guest traffic can never mint one - and it
+    // rides requests the person's own use already makes: there is no heartbeat
+    // and no phone-home anywhere. Fire-and-forget like the histogram.
+    const installId = client?.extra?.install;
+    if (client && installId && installId.length <= 64) {
+      void resolveMember(store, req.headers.cookie, secrets.session)
+        .then((u) => (u ? store.upsertInstall(installId, client, u.id) : undefined))
+        .catch(() => {});
+    }
     let routeClass = 'unmatched';
     res.on('finish', () => metrics.httpRequest(routeClass, statusClass(res.statusCode)));
     // Rate-limit the unauthenticated surface only (auth, telemetry ingest, /l/:id);

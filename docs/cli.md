@@ -27,7 +27,8 @@ flow against OIDC is the planned replacement for the paste.
 ```bash
 lw whoami
 lw summary            # telemetry rollups
-lw fleet              # which shells/engines are connected
+lw fleet              # which shells/engines are connected (and this deploy's engine pin)
+lw fleet installs     # registered installs - devices that spoke install/<id> while signed in
 lw links [--all]
 lw audit verify       # exits 2 if the chain is broken
 lw audit head         # seq · hash · count · intact  (exits 2 if broken)

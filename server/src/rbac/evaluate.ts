@@ -66,7 +66,10 @@ const ROLE_ACTIONS: Record<Role, string[]> = (() => {
     'brand.switch',
     'catalog.injectable.manage',
     'policy.edit', 'grant.edit', 'link.revoke', 'link.create-guest',
-    'message.send', 'telemetry.view', 'fleet.view', 'audit.export',
+    // `fleet.manage` is rename/forget on install registry rows (plans/34 wave
+    // 3) - bookkeeping under the enrollment covenant, never a remote action,
+    // which is why admin tier suffices and no owner gate applies.
+    'message.send', 'telemetry.view', 'fleet.view', 'fleet.manage', 'audit.export',
     'project.manage', 'project.archive', 'approval.assign', 'export.server',
   ];
   // Credentials + the enable/disable kill switch stay owner-only: an admin can

@@ -110,6 +110,24 @@ export interface FleetRow {
   lastSeenAt: string;
 }
 
+/** One registered install - a device that spoke `install/<id>` on an
+ *  AUTHENTICATED request (plans/34 wave 3). The row is bookkeeping under the
+ *  enrollment covenant: it rides traffic the person already makes (no
+ *  heartbeat), it is never authorization, and forgetting it is a row delete -
+ *  there is no remote action. The next signed-in request from the same device
+ *  re-registers it, which is correct, not a bug. */
+export interface InstallRow {
+  installId: string;
+  info: ClientInfo;
+  /** Operator-set display name; absent until someone names it in the console. */
+  name?: string;
+  /** The member last seen using this install - a pointer for the fleet table,
+   *  never a login binding. */
+  userIdLastSeen?: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+}
+
 /** A team/personal project - a folder over sessions (plans/08 §2). Visibility is
  *  'private' (owner-only) or a set of groups that may see it; membership is the
  *  RBAC layer, not per-project ACLs. */
@@ -307,6 +325,18 @@ export interface Store {
   // fleet
   recordClient(info: ClientInfo): Promise<void>;
   fleetSummary(): Promise<FleetRow[]>;
+  /** Upsert from an authenticated, install-tagged request: create on first
+   *  sight, else refresh info / user / lastSeen. `name` survives the refresh -
+   *  the operator set it, the device did not. NEVER called pre-auth (the app
+   *  layer resolves the member first; anonymous and guest traffic only ever
+   *  feeds the histogram). */
+  upsertInstall(installId: string, info: ClientInfo, userId: string): Promise<void>;
+  listInstalls(): Promise<InstallRow[]>;
+  /** Operator bookkeeping; null clears the name. Returns the updated row, or
+   *  null when the id is unknown. */
+  renameInstall(installId: string, name: string | null): Promise<InstallRow | null>;
+  /** A row delete, nothing more - no remote action exists. Idempotent. */
+  forgetInstall(installId: string): Promise<void>;
 
   // approvals
   putChain(chain: Chain): Promise<void>;

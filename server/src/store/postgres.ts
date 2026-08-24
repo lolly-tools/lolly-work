@@ -27,9 +27,21 @@ import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderFragment, ProviderKind, ProviderRecord } from '../catalog/providers/types.ts';
 import {
   SESSION_REVISION_LIMIT, effectiveGroups,
-  type CollabSnapshot, type FleetRow, type ListUsersPageOpts, type LocalGroupRecord, type ProjectRecord,
+  type CollabSnapshot, type FleetRow, type InstallRow, type ListUsersPageOpts, type LocalGroupRecord, type ProjectRecord,
   type ScimTokenRecord, type SessionRecord, type SessionRevision, type Store, type SubmitQuotaRow, type UserRecord,
 } from './types.ts';
+
+/** One fleet_installs row → record (plans/34 wave 3). */
+function installRow(r: Record<string, unknown>): InstallRow {
+  return {
+    installId: r.install_id as string,
+    info: r.info as InstallRow['info'],
+    ...(r.name ? { name: r.name as string } : {}),
+    ...(r.user_id_last_seen ? { userIdLastSeen: r.user_id_last_seen as string } : {}),
+    firstSeenAt: new Date(r.first_seen_at as string).toISOString(),
+    lastSeenAt: new Date(r.last_seen_at as string).toISOString(),
+  };
+}
 
 /** One scim_tokens row → record. `token_hash` never leaves the DB in cleartext;
  *  the opaque secret it hashes was returned once at mint and is unrecoverable. */
@@ -584,6 +596,29 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         count: Number(r.count),
         lastSeenAt: new Date(r.last_seen_at as string).toISOString(),
       })) as FleetRow[];
+    },
+    // The install registry (plans/34 wave 3). `name` deliberately survives the
+    // device's own refresh - the operator set it, the device did not.
+    async upsertInstall(installId, info, userId) {
+      await pool.query(
+        `insert into fleet_installs (install_id, info, user_id_last_seen) values ($1, $2::jsonb, $3)
+         on conflict (install_id) do update set info = $2::jsonb, user_id_last_seen = $3, last_seen_at = now()`,
+        [installId, JSON.stringify(info), userId],
+      );
+    },
+    async listInstalls() {
+      const { rows } = await pool.query('select * from fleet_installs order by last_seen_at desc');
+      return rows.map((r) => installRow(r));
+    },
+    async renameInstall(installId, name) {
+      const { rows } = await pool.query(
+        'update fleet_installs set name = $2 where install_id = $1 returning *',
+        [installId, name],
+      );
+      return rows[0] ? installRow(rows[0]) : null;
+    },
+    async forgetInstall(installId) {
+      await pool.query('delete from fleet_installs where install_id = $1', [installId]);
     },
 
     // Chains + approvals ride as jsonb docs; scalar columns are lifted out only

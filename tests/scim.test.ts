@@ -148,13 +148,14 @@ test('bearerFromHeader is case-insensitive on the scheme and trims, and a minted
 
 // ── the migration ────────────────────────────────────────────────────────────
 
-test('migration 0021 follows 0020, is the ceiling, and declares the token store with no foreign key', async () => {
+test('migration 0021 follows 0020 and declares the token store with no foreign key', async () => {
   const dir = new URL('../migrations/', import.meta.url).pathname;
   const files = (await readdir(dir)).filter((f) => f.endsWith('.sql')).sort();
   const at = files.indexOf('0021_scim.sql');
   assert.ok(at > 0, '0021 is on disk');
   assert.equal(files[at - 1], '0020_catalog_asset_versions.sql', '0021 follows 0020 with nothing between');
-  assert.equal(files.at(-1), '0021_scim.sql', 'wave 7 (SCIM) now holds the migration ceiling');
+  // The ceiling assertion moved with the ceiling: tests/fleet-installs.test.ts
+  // owns it now (0022, plans/34 wave 3).
   const sql = await readFile(join(dir, '0021_scim.sql'), 'utf8');
   assert.match(sql, /create table scim_tokens/);
   assert.match(sql, /token_hash\s+text not null unique/);

@@ -159,6 +159,24 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.equal(fleet.find((r) => r.info.shell === 'web')?.count, 2);
   assert.equal(fleet.find((r) => r.info.shell === 'tauri')?.count, 1);
 
+  // fleet installs (plans/34 wave 3): upsert refreshes info/user/lastSeen but
+  // an operator-set name survives - the operator set it, the device did not.
+  await store.upsertInstall('ins_1', { shell: 'tauri', engine: '1.60.0', platform: 'macos' }, u1.id);
+  const first = (await store.listInstalls()).find((i) => i.installId === 'ins_1');
+  assert.equal(first?.userIdLastSeen, u1.id);
+  assert.equal(first?.name, undefined);
+  assert.equal((await store.renameInstall('ins_1', 'Studio laptop'))?.name, 'Studio laptop');
+  await store.upsertInstall('ins_1', { shell: 'tauri', engine: '1.61.0', platform: 'macos' }, u1.id);
+  const refreshed = (await store.listInstalls()).find((i) => i.installId === 'ins_1');
+  assert.equal(refreshed?.info.engine, '1.61.0', 'the refresh carries the new versions');
+  assert.equal(refreshed?.name, 'Studio laptop', 'the operator-set name survives the refresh');
+  assert.equal(refreshed?.firstSeenAt, first?.firstSeenAt, 'firstSeenAt is the first sight, not the last');
+  assert.equal((await store.renameInstall('ins_1', null))?.name, undefined, 'null clears the name');
+  assert.equal(await store.renameInstall('ins_nope', 'x'), null, 'renaming an unknown install reports it');
+  await store.forgetInstall('ins_1');
+  assert.equal((await store.listInstalls()).some((i) => i.installId === 'ins_1'), false, 'forget is a row delete');
+  await store.forgetInstall('ins_1'); // idempotent
+
   // approvals: chain round-trip + approval round-trip with created_by / state / eligibleGroups filters
   const brandChain: Chain = {
     id: 'brand-review', name: 'Brand review',

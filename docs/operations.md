@@ -258,7 +258,10 @@ Two realities shape the setup:
 - **`X-Lolly-Client` is the only signal a connected client sends.** Shell
   kind, shell version, engine version, platform - on requests the person's
   own use already makes. There is no heartbeat and no phone-home; a device
-  that stops using the instance simply stops appearing.
+  that stops using the instance simply stops appearing. A shell may add an
+  `install/<id>` token to that tag: while its person is signed in, the
+  install appears by name in the console's Fleet view (rename and forget
+  there are bookkeeping on the row - the device is never touched).
 
 ### Enrollment, and leaving
 

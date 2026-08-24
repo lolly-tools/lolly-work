@@ -1746,7 +1746,9 @@ async function viewFeatureFlags(main) {
 }
 
 async function viewFleet(main) {
-  const { clients, engineVersion } = await api('/api/v1/fleet');
+  const [{ clients, engineVersion }, { installs }] = await Promise.all([
+    api('/api/v1/fleet'), api('/api/v1/fleet/installs'),
+  ]);
   const totalReq = clients.reduce((a, c) => a + c.count, 0);
   const shells = new Set(clients.map((c) => c.info.shell)).size;
   const engines = new Set(clients.map((c) => c.info.engine).filter(Boolean)).size;
@@ -1782,7 +1784,47 @@ async function viewFleet(main) {
           el('td', {}, c.info.platform ?? '—'),
           numCell(c.count),
           whenCell(c.lastSeenAt))), { sortable: true, filter: true })),
+    // The install registry (plans/34 wave 3): devices that spoke `install/<id>`
+    // while signed in. Everything here is bookkeeping under the enrollment
+    // covenant — rename and forget touch the row, never the device, and a
+    // forgotten install re-registers on its next signed-in use.
+    el('div', { class: 'card stack' },
+      el('h2', {}, 'Installs'),
+      el('p', { class: 'muted', style: 'margin-top:-4px' },
+        'Devices registered while signed in — no heartbeat, rows refresh only when the person uses the instance. Forgetting is bookkeeping; the next signed-in use re-registers.'),
+      dataTable(
+        ['Name', 'Shell', 'Engine', 'Platform', 'Last used by', { label: 'Last seen', sort: 'date' }, ''],
+        installs.map((i) => installRow(i)), { sortable: true, filter: true })),
   );
+
+  function installRow(i) {
+    const err = errSpan();
+    const nameInput = el('input', { value: i.name ?? '', placeholder: 'unnamed', 'aria-label': `Name for install ${i.installId}` });
+    const saveBtn = el('button', { onclick: async () => {
+      err.textContent = '';
+      saveBtn.disabled = true;
+      try {
+        await api(`/api/v1/fleet/installs/${encodeURIComponent(i.installId)}`, { method: 'PATCH', body: { name: nameInput.value.trim() || null } });
+        toast('Install named');
+        route();
+      } catch (e) { err.textContent = e.message; saveBtn.disabled = false; }
+    } }, 'Save');
+    const forgetBtn = armConfirmButton({ class: 'danger' }, 'Forget', 'Really forget?', async (disarm) => {
+      forgetBtn.disabled = true;
+      try { await api(`/api/v1/fleet/installs/${encodeURIComponent(i.installId)}`, { method: 'DELETE' }); toast(`Forgot ${i.installId}`); route(); }
+      catch (e) { err.textContent = e.message; forgetBtn.disabled = false; disarm(); }
+    });
+    return el('tr', {},
+      el('td', {}, el('div', { class: 'lc-actions' }, nameInput, saveBtn), el('div', { class: 'muted mono' }, i.installId)),
+      el('td', {}, el('span', { class: 'chip-side' },
+        el('span', { class: 'chip' }, i.info.shell),
+        i.info.shellVersion ? el('span', { class: 'sec' }, `v${i.info.shellVersion}`) : null)),
+      el('td', {}, i.info.engine ?? '—'),
+      el('td', {}, i.info.platform ?? '—'),
+      el('td', {}, i.userName ?? '—'),
+      whenCell(i.lastSeenAt),
+      el('td', {}, el('div', { class: 'lc-actions' }, forgetBtn), err));
+  }
 }
 
 // A room's member as name + role, the same chip-side pattern the Fleet table

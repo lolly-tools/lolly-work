@@ -206,6 +206,9 @@ second, and re-raises it if they had already dismissed it.
 | `GET /api/v1/activity` | `audit.export` |
 | `GET /api/v1/audit`, `GET /api/v1/audit/head` | `audit.export` |
 | `GET /api/v1/fleet` | `fleet.view` - the version histogram, plus `engineVersion` (this deploy's vendored pin) |
+| `GET /api/v1/fleet/installs` | `fleet.view` - registered installs, newest activity first |
+| `PATCH /api/v1/fleet/installs/:id` | `fleet.manage` - set or clear the operator name |
+| `DELETE /api/v1/fleet/installs/:id` | `fleet.manage` - forget the row (bookkeeping; the device is untouched) |
 | `GET /api/v1/system/migrations` | `instance.config` (**owner**) |
 | `GET /api/v1/docs`, `GET /api/v1/docs/:slug` | member - this documentation set |
 
@@ -237,4 +240,8 @@ second, and re-raises it if they had already dismissed it.
 ## Client identification
 
 Shells send `X-Lolly-Client` (shell, shell version, engine, platform). It feeds the fleet
-registry and message targeting; it is never trusted for authorization.
+histogram and message targeting; it is never trusted for authorization. A shell may add an
+`install/<id>` token: on a request that carries a live member session - and only then - it
+registers the install in the fleet registry. Anonymous and guest traffic with the same
+token feeds the histogram and nothing else, and there is no heartbeat: an install is seen
+exactly when its person uses the instance.

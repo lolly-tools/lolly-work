@@ -21,7 +21,7 @@ anything up: a resource arrives as the set of selectors it satisfies (e.g.
 | `member` | the default for any signed-in user | viewer + `tool.use`, `session.create/edit/delete/share`, `project.create`, `export.download`, `export.request`, `link.create` |
 | `author` | group `author` | member + `catalog.submit` |
 | `approver` | group `approver` | member + `approval.act` |
-| `admin` | group `admin` | author ∪ approver + `catalog.publish`, `catalog.expire`, `catalog.hold`, `catalog.scan`, `catalog.edit`, `catalog.collection.manage`, `catalog.provider.read`, `catalog.provider.manage`, `brand.switch`, `catalog.injectable.manage`, `policy.edit`, `grant.edit`, `link.revoke`, `link.create-guest`, `message.send`, `telemetry.view`, `fleet.view`, `audit.export`, `project.manage`, `project.archive`, `approval.assign`, `export.server` |
+| `admin` | group `admin` | author ∪ approver + `catalog.publish`, `catalog.expire`, `catalog.hold`, `catalog.scan`, `catalog.edit`, `catalog.collection.manage`, `catalog.provider.read`, `catalog.provider.manage`, `brand.switch`, `catalog.injectable.manage`, `policy.edit`, `grant.edit`, `link.revoke`, `link.create-guest`, `message.send`, `telemetry.view`, `fleet.view`, `fleet.manage`, `audit.export`, `project.manage`, `project.archive`, `approval.assign`, `export.server` |
 | `owner` | group `owner` | admin + `instance.config`, `catalog.provider.credential`, `catalog.provider.publish`, `scim.manage` |
 | `guest` | a guest-edit link | **nothing** - access is entirely link-scoped grants |
 
