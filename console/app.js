@@ -1746,7 +1746,7 @@ async function viewFeatureFlags(main) {
 }
 
 async function viewFleet(main) {
-  const { clients } = await api('/api/v1/fleet');
+  const { clients, engineVersion } = await api('/api/v1/fleet');
   const totalReq = clients.reduce((a, c) => a + c.count, 0);
   const shells = new Set(clients.map((c) => c.info.shell)).size;
   const engines = new Set(clients.map((c) => c.info.engine).filter(Boolean)).size;
@@ -1763,6 +1763,9 @@ async function viewFleet(main) {
       tile('Clients', fmt(clients.length)),
       tile('Distinct shells', fmt(shells)),
       tile('Engine versions', fmt(engines)),
+      // What THIS deploy serves (the vendored pin) — the fixed point the field
+      // histogram drifts against, visible without leaving the page.
+      tile('This deploy serves', engineVersion || '—'),
       tile('Requests seen', fmt(totalReq)),
       tile('Last seen', clients.length ? when(lastSeen) : '—'),
     ),
@@ -2870,6 +2873,7 @@ function providerRow(p, panels) {
 const PROVIDER_INTEGRATIONS = [
   { kind: 'git', name: 'Git repository', blurb: 'Sync brand assets from any git host — Forgejo, Gitea, GitLab, Codeberg, GitHub — via a repository manifest.', options: '{"repo": "org/brand", "ref": "main"}' },
   { kind: 's3', name: 'S3-compatible storage', blurb: 'Federate a bucket from any S3-compatible object store — MinIO, Ceph, Garage, Mulga Spinifex S3, or a public cloud.', options: '{"bucket": "…", "prefix": "brand/", "endpoint": "https://s3.your-host.example", "region": "us-east-1"}' },
+  { kind: 'webdav', name: 'WebDAV storage', blurb: 'Any WebDAV server the org runs — Nextcloud, ownCloud, Apache mod_dav — federated read-only over the open protocol.', options: '{"baseUrl": "https://cloud.your-host.example", "flavor": "nextcloud", "root": "Brand"}' },
   { kind: 'penpot', name: 'Penpot', blurb: 'Open, self-hostable design tool — federate your design tokens (DTCG) so /design and brand themes inherit from Penpot, and search-and-import boards as catalog media.', options: '{"baseUrl": "https://design.your-host.example", "teamId": "…"}', mapping: '{"typeMap": {"tokens": "tokens", "board": "image"}, "defaultType": "image"}' },
   { kind: 'gdrive', name: 'Google Drive', blurb: 'Pull a shared Drive folder into the catalog.', options: '{"folderId": "…"}' },
   { kind: 'dropbox', name: 'Dropbox', blurb: 'Mirror a Dropbox folder of approved assets.', options: '{"path": "/Brand"}' },
@@ -2877,6 +2881,7 @@ const PROVIDER_INTEGRATIONS = [
   { kind: 'brandfolder', name: 'Brandfolder', blurb: 'Connect a Brandfolder DAM as a read-only source.', options: '{"brandfolderId": "…"}' },
   { kind: 'optimizely-cmp', name: 'Optimizely CMP', blurb: 'Optimizely CMP web DAM — federate read-only, and optionally publish lolly-made media back out.', options: '{"publish": true}' },
   { kind: 'imagerelay', name: 'Image Relay', blurb: 'Image Relay DAM — read-only, with the exit path (materialize → cut over) for off-boarding.', options: '{"folderId": "…", "recursive": true}' },
+  { kind: 'canto', name: 'Canto', blurb: 'Canto DAM — read-only, with the exit path (materialize → cut over) for off-boarding.', options: '{"tenant": "acme", "approvedStates": ["approved"]}' },
   { kind: 'acquia-dam', name: 'Acquia DAM / Widen', blurb: 'The Widen enterprise DAM — read-only, with native release/expiry dates and approval.', options: '{"query": "…", "approvedStatuses": ["active"]}' },
   { kind: 'intelligencebank', name: 'IntelligenceBank', blurb: 'IntelligenceBank — federate the v3 Graph API read-only, with the exit path for off-boarding.', options: '{"platformUrl": "https://acme.intelligencebank.com", "approvedStates": ["Approved"]}' },
   { kind: 'mock', name: 'Mock (dev)', blurb: 'A synthetic in-memory source for local development.', options: '{}' },

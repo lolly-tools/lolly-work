@@ -29,7 +29,6 @@ const DRIVERS = join(REPO, 'server', 'src', 'catalog', 'providers');
 const PLAYBOOK = join(DOCS_ROOT, 'offboarding.md');
 const CLI_SRC = readFileSync(join(REPO, 'cli', 'lw.ts'), 'utf8');
 const KINDS = PROVIDER_KINDS.filter((k) => k !== 'mock');
-const OAUTH_KINDS = ['dropbox', 'gdrive', 'o365', 'optimizely-cmp', 'imagerelay', 'canto'] as const;
 
 // The DAM kinds carry a second documentation axis (plans/32 §6): besides the
 // connector guide every kind gets, each of these needs an off-boarding story -
@@ -70,6 +69,15 @@ const MIN_OPTIONS: Record<string, Record<string, unknown>> = {
   dropbox: {}, gdrive: { folderId: 'f' }, o365: { driveId: 'd' }, 'optimizely-cmp': { publish: true },
   imagerelay: {}, canto: { tenant: 'acme' }, 'acquia-dam': {}, intelligencebank: {}, penpot: { baseUrl: 'https://design.example' },
 };
+
+/** The driver's own capability declaration, constructed the way the registry does. */
+const driverCaps = (kind: string) =>
+  createProvider({ id: 't', kind, options: MIN_OPTIONS[kind] ?? {} } as unknown as ProviderRecord, undefined).capabilities;
+
+// The kinds whose sealed credential is an OAuth blob - DERIVED from the drivers
+// (plans/34 task 2), not kept as a parallel list. `oauthFlowFor` in the CLI stays
+// the separate, smaller fact of which kinds the CLI can drive a consent flow for.
+const OAUTH_KINDS: string[] = KINDS.filter((k) => driverCaps(k).authKind === 'oauth');
 
 const guide = (kind: string): string => readFileSync(join(DOCS, `${kind}.md`), 'utf8');
 
@@ -244,6 +252,36 @@ test('publish-out is claimed only where the driver supports it', () => {
     // Only the kind that can publish documents a "Publishing" section.
     assert.equal(guide(kind).includes('## Publishing'), canPublish, `${kind}.md publish section matches capability`);
   }
+});
+
+test('every driver declares its authKind, and CLI consent flows stay within the oauth kinds', () => {
+  // The OAuth-vs-credential split is a driver fact (plans/34 task 2). Every
+  // shipped kind states which credential story it has; mock alone says 'none'.
+  for (const kind of KINDS) {
+    const auth = driverCaps(kind).authKind;
+    assert.ok(auth === 'oauth' || auth === 'credential', `${kind} declares authKind oauth|credential, got ${String(auth)}`);
+  }
+  assert.equal(driverCaps('mock').authKind, 'none', 'mock is the one credential-free kind');
+  assert.ok(OAUTH_KINDS.length >= 3, 'the oauth set derives non-trivially from the drivers');
+  // The CLI can only drive a consent flow for a kind whose driver says the
+  // credential IS an OAuth blob - a flow registered against a bearer-key kind
+  // would capture the wrong shape.
+  for (const k of oauthFlowKinds(CLI_SRC)) {
+    assert.ok(OAUTH_KINDS.includes(k), `cli/lw.ts oauthFlowFor registers "${k}", whose driver does not declare authKind 'oauth'`);
+  }
+});
+
+test('the console offers a connect card for every provider kind', () => {
+  // PROVIDER_INTEGRATIONS was the one surface outside the lockstep contract:
+  // webdav and canto shipped as kinds while the console offered no card
+  // (plans/34 task 1). The card list now mirrors PROVIDER_KINDS exactly.
+  const consoleSrc = readFileSync(join(REPO, 'console', 'app.js'), 'utf8');
+  const at = consoleSrc.indexOf('const PROVIDER_INTEGRATIONS = [');
+  assert.ok(at > 0, 'console/app.js declares PROVIDER_INTEGRATIONS');
+  const end = consoleSrc.indexOf('\n];', at);
+  assert.ok(end > at, 'the PROVIDER_INTEGRATIONS array closes');
+  const cards = [...consoleSrc.slice(at, end).matchAll(/\{ kind: '([a-z0-9-]+)'/g)].map((m) => m[1]!);
+  assert.deepEqual([...cards].sort(), [...PROVIDER_KINDS].sort(), 'PROVIDER_INTEGRATIONS covers every provider kind exactly once');
 });
 
 test('every DAM kind is documented on both axes - guide and off-boarding', () => {

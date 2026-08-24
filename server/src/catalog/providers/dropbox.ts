@@ -70,7 +70,7 @@ export function createDropboxProvider(
   return {
     id,
     kind: 'dropbox',
-    capabilities: { search: true, thumbnails: false, expiringUrls: true },
+    capabilities: { authKind: 'oauth', search: true, thumbnails: false, expiringUrls: true },
 
     async listAssets(cursor) {
       const doc = cursor

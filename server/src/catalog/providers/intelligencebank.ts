@@ -244,7 +244,7 @@ export function createIntelligenceBankProvider(
   return {
     id,
     kind: 'intelligencebank',
-    capabilities: { search: true, thumbnails: false, expiringUrls: true },
+    capabilities: { authKind: 'credential', search: true, thumbnails: false, expiringUrls: true },
 
     async listAssets(cursor) {
       const page = cursor ? Number(cursor) : 1;

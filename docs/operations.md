@@ -230,6 +230,50 @@ because a stale shell would serve employees without the session gate and locked-
 while the deploy looks governed. `LW_ALLOW_STALE_SHELL=1` downgrades it to a loud warning - 
 use it knowingly, briefly.
 
+## Connecting apps to this instance
+
+A Lolly client arrives as a neutral download - the app-store shell, a desktop
+build, or the public PWA - and everything organizational reaches it by
+pointing that client at this deployment. Three routes exist, in friction
+order:
+
+1. **A signed `.lolly` instance pack.** The zero-typing path: importing the
+   pack sets the client's instance base after the signature verdict and
+   installs the brand alongside. Packs are produced by the OSS repo's
+   `build-instance-pack.ts` today; a key-pinned build refuses an unsigned or
+   wrongly-signed pack.
+2. **The first-run instance sheet** (desktop and mobile shells): the person
+   types this deployment's URL; the shell probes `GET /api/v1/instance` and
+   `GET /api/auth/config` and takes it from there.
+3. **Profile → Lolly instance → Change**, on an already-running shell.
+
+Two realities shape the setup:
+
+- **Native shells need no CORS from this server.** The desktop and mobile
+  shells route instance traffic through their own HTTP client, so a
+  cross-origin instance works out of the box. A **browser** pointed at a
+  remote instance is a different story - the OSS shell refuses instance
+  switching in browsers, so browser users are served same-origin (the shell
+  at `/`, this API beside it), and no CORS opening is needed or offered.
+- **`X-Lolly-Client` is the only signal a connected client sends.** Shell
+  kind, shell version, engine version, platform - on requests the person's
+  own use already makes. There is no heartbeat and no phone-home; a device
+  that stops using the instance simply stops appearing.
+
+### Enrollment, and leaving
+
+Connecting is a nomination: the individual chooses governance, and the
+instance never reaches out to a device. While signed in, org policy applies
+and work saved here is the organization's - projects, sessions, submissions
+and audit live server-side continuously, which is the whole of the
+"surrender". Leaving is unilateral on both sides: the person clears the
+instance from their client (org brand, tools, and cached catalog go with it;
+personal work is untouched), and the organization ends enrollment by
+disabling the user (every live session dies on its next request). Neither
+side can reach into the other afterwards: no remote wipe, no export block,
+no exit toll - and equally, a departed device keeps no org catalog. Exports
+made while enrolled keep their Content Credentials; history is history.
+
 ## Checks and artefacts
 
 ```bash

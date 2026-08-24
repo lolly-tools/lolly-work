@@ -264,7 +264,7 @@ test('healthCheck: ok on 200; a missing credential fails closed', async () => {
 
 test('capabilities: search and expiring URLs, no thumbnails, and never publish', () => {
   const canto = createCantoProvider('c16', TENANT, CRED('rt-caps'), fakeFetch([]));
-  assert.deepEqual(canto.capabilities, { search: true, thumbnails: false, expiringUrls: true });
+  assert.deepEqual(canto.capabilities, { authKind: 'oauth', search: true, thumbnails: false, expiringUrls: true });
   assert.equal(canto.capabilities.publish, undefined, 'Canto is a source being exited, never a publish destination');
   assert.equal(canto.publishAsset, undefined);
 });

@@ -86,7 +86,7 @@ export function createO365Provider(
   return {
     id,
     kind: 'o365',
-    capabilities: { search: true, thumbnails: false, expiringUrls: true },
+    capabilities: { authKind: 'oauth', search: true, thumbnails: false, expiringUrls: true },
 
     async listAssets(cursor) {
       // Cursor IS the @odata.nextLink; api() host-pins it before use.

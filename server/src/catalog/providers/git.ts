@@ -85,7 +85,7 @@ export function createGitProvider(
   return {
     id,
     kind: 'git',
-    capabilities: { search: false, thumbnails: false, expiringUrls: false },
+    capabilities: { authKind: 'credential', search: false, thumbnails: false, expiringUrls: false },
 
     async listAssets() {
       return { assets: (await loadManifest()).map(toAsset) };

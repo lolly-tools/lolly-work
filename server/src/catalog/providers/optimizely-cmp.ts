@@ -126,7 +126,7 @@ export function createOptimizelyCmpProvider(
   return {
     id,
     kind: 'optimizely-cmp',
-    capabilities: { search: true, thumbnails: false, expiringUrls: true, publish: options.publish === true },
+    capabilities: { authKind: 'oauth', search: true, thumbnails: false, expiringUrls: true, publish: options.publish === true },
 
     async listAssets(cursor) {
       const offset = cursor ? Number(cursor) : 0;

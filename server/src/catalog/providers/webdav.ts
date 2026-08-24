@@ -731,7 +731,7 @@ export function createWebdavProvider(
     kind: 'webdav',
     // No search (see the header), no thumbnails, and the bytes stream through
     // this driver rather than through a signed URL, so nothing expires.
-    capabilities: { search: false, thumbnails: false, expiringUrls: false },
+    capabilities: { authKind: 'credential', search: false, thumbnails: false, expiringUrls: false },
 
     async listAssets(cursor): Promise<ProviderPage> {
       const state = cursor ? decodeCursor(cursor) : { visited: 0, pending: [''] };

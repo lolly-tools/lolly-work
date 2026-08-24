@@ -56,6 +56,7 @@ test('surface classifier: dev provider is NOT throttled; real auth + telemetry +
   assert.equal(rateLimitSurface('GET', '/api/auth/login'), 'auth');
   assert.equal(rateLimitSurface('GET', '/api/auth/callback'), 'auth');
   assert.equal(rateLimitSurface('GET', '/api/auth/dev'), null); // local-only convenience
+  assert.equal(rateLimitSurface('GET', '/api/v1/instance'), 'auth'); // unauthenticated manifest shares the auth bucket
   assert.equal(rateLimitSurface('POST', '/api/v1/telemetry'), 'telemetry');
   assert.equal(rateLimitSurface('GET', '/api/v1/telemetry'), null); // only POST ingest
   assert.equal(rateLimitSurface('GET', '/l/abc'), 'link');

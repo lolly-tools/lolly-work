@@ -153,7 +153,7 @@ export function createS3Provider(
   return {
     id,
     kind: 's3',
-    capabilities: { search: false, thumbnails: false, expiringUrls: true },
+    capabilities: { authKind: 'credential', search: false, thumbnails: false, expiringUrls: true },
 
     async listAssets(cursor) {
       const query: Record<string, string> = { 'list-type': '2', 'max-keys': String(LIST_PAGE) };

@@ -237,9 +237,16 @@ switch (cmd) {
   }
 
   case 'fleet': {
-    const { clients } = await call('/api/v1/fleet') as { clients: Array<{ bucket: string; count: number; lastSeenAt: string }> };
+    const { clients, engineVersion } = await call('/api/v1/fleet') as {
+      clients: Array<{ bucket: string; count: number; lastSeenAt: string }>; engineVersion: string | null;
+    };
     out(clients);
-    if (!values.json) for (const c of clients) console.log(`${String(c.count).padStart(6)}  ${c.bucket}  (last ${c.lastSeenAt})`);
+    if (!values.json) {
+      // The deploy's own vendored pin first, so the histogram under it reads as
+      // drift-from-here rather than a bare version list.
+      if (engineVersion) console.log(`this deploy serves engine ${engineVersion}`);
+      for (const c of clients) console.log(`${String(c.count).padStart(6)}  ${c.bucket}  (last ${c.lastSeenAt})`);
+    }
     break;
   }
 

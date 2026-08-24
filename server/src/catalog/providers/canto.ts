@@ -304,7 +304,7 @@ export function createCantoProvider(
   return {
     id,
     kind: 'canto',
-    capabilities: { search: true, thumbnails: false, expiringUrls: true },
+    capabilities: { authKind: 'oauth', search: true, thumbnails: false, expiringUrls: true },
 
     async listAssets(cursor) {
       const parsed = cursor ? /^(\d+):(\d+)$/.exec(cursor) : null;

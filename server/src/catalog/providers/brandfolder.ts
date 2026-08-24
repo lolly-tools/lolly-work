@@ -98,7 +98,7 @@ export function createBrandfolderProvider(
   return {
     id,
     kind: 'brandfolder',
-    capabilities: { search: true, thumbnails: true, expiringUrls: true },
+    capabilities: { authKind: 'credential', search: true, thumbnails: true, expiringUrls: true },
 
     async listAssets(cursor) {
       const page = cursor ? Number(cursor) : 1;

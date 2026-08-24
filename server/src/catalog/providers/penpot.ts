@@ -239,7 +239,7 @@ export function createPenpotProvider(
     id,
     kind: 'penpot',
     // Tokens auto-federate (listAssets); boards are search-and-import only.
-    capabilities: { search: true, thumbnails: true, expiringUrls: false },
+    capabilities: { authKind: 'credential', search: true, thumbnails: true, expiringUrls: false },
 
     // Auto-federated feed: TOKENS ONLY. Boards never enter here (plans/30 §3.1).
     async listAssets() {

@@ -13,6 +13,20 @@ means any signed-in member; *public* means no session needed.
 | `GET /healthz` | public | `{ ok, name, accessMode, appUrl? }` |
 | `GET /metrics` | token | Prometheus; loopback-only unless `LW_METRICS_TOKEN` is set |
 
+## Instance manifest
+
+| Route | Action | Notes |
+|---|---|---|
+| `GET /api/v1/instance` | public | the card a fresh shell reads before sign-in |
+
+The manifest is what a downloaded app learns about this deployment before
+anyone signs in: `{ name, accessMode, provider, providerName, loginPath,
+engineVersion, capabilities }`. `engineVersion` is the vendored engine pin this
+deploy serves tools against; `capabilities` names the surfaces the server
+ships (`catalog`, `collab`, `submit`, `scim`). It carries no secrets and no
+user data, and shares the auth rate-limit bucket. See "Connecting apps to this
+instance" in [operations](operations.md) for the connect story it belongs to.
+
 ## Auth
 
 | Route | Action | Notes |
@@ -191,7 +205,7 @@ second, and re-raises it if they had already dismissed it.
 | `GET /api/v1/stats/series?days=N` | `telemetry.view` - day-bucketed audit-action counts (counts only), the console's per-view activity headers; `days` clamps 7–90 |
 | `GET /api/v1/activity` | `audit.export` |
 | `GET /api/v1/audit`, `GET /api/v1/audit/head` | `audit.export` |
-| `GET /api/v1/fleet` | `fleet.view` |
+| `GET /api/v1/fleet` | `fleet.view` - the version histogram, plus `engineVersion` (this deploy's vendored pin) |
 | `GET /api/v1/system/migrations` | `instance.config` (**owner**) |
 | `GET /api/v1/docs`, `GET /api/v1/docs/:slug` | member - this documentation set |
 

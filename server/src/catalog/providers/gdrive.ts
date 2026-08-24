@@ -71,7 +71,7 @@ export function createGdriveProvider(
   return {
     id,
     kind: 'gdrive',
-    capabilities: { search: true, thumbnails: false, expiringUrls: true },
+    capabilities: { authKind: 'oauth', search: true, thumbnails: false, expiringUrls: true },
 
     async listAssets(cursor) {
       const doc = await api<{ files: DriveFile[]; nextPageToken?: string }>(listQuery('', cursor));

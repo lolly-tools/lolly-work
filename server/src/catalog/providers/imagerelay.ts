@@ -253,7 +253,7 @@ export function createImageRelayProvider(
   return {
     id,
     kind: 'imagerelay',
-    capabilities: { search: true, thumbnails: false, expiringUrls: true },
+    capabilities: { authKind: 'oauth', search: true, thumbnails: false, expiringUrls: true },
 
     async listAssets(cursor) {
       const page = cursor ? Number(cursor) : 1;

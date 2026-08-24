@@ -7,6 +7,7 @@
  * the cache-key/link contracts they'll honour are already fixed
  * (render/cache-key.ts, links/sign.ts).
  */
+import { readFileSync } from 'node:fs';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { join, normalize, resolve as resolvePath, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -107,6 +108,27 @@ import {
 const STATE_COOKIE = 'lw_state';
 const LINK_KINDS: LinkKind[] = ['share', 'embed', 'download', 'guest-edit'];
 const SUBJECT_TYPES: SubjectType[] = ['asset', 'tool-change', 'config', 'guest-link'];
+
+/** The vendored engine version, read off engine-pin.json (the manifest the
+ *  re-pin cadence maintains). Read once and cached; null when the file is not
+ *  beside the process (a bundle that did not copy it) rather than failing a
+ *  health-adjacent route. Serves the instance manifest and the fleet drift
+ *  line (plans/34 waves 1a + 1d). */
+let cachedPinnedEngine: string | null | undefined;
+function pinnedEngineVersion(): string | null {
+  if (cachedPinnedEngine !== undefined) return cachedPinnedEngine;
+  try {
+    const fnRoot = (globalThis as { __LW_FN_ROOT?: string }).__LW_FN_ROOT;
+    const path = fnRoot
+      ? fileURLToPath(new URL('engine-pin.json', fnRoot))
+      : fileURLToPath(new URL('../../../engine-pin.json', import.meta.url));
+    const pin = JSON.parse(readFileSync(path, 'utf8')) as { engine?: { version?: string } };
+    cachedPinnedEngine = pin.engine?.version ?? null;
+  } catch {
+    cachedPinnedEngine = null;
+  }
+  return cachedPinnedEngine;
+}
 
 export interface AppDeps {
   config: InstanceConfig;
@@ -287,6 +309,30 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       // Docs view (see console/app.js publicMode) instead of the sign-in gate.
       // Mirrors the server-side `docsReadable` gate below, so the two never drift.
       publicDocs: config.dev.enabled,
+    });
+  });
+
+  // ── instance manifest (plans/34 wave 1a) ──────────────────────────────────
+  // The card a fresh app-store shell reads before anyone signs in: what this
+  // deployment is, how sign-in works, and what surfaces it serves. A downloaded
+  // client owns nothing org-shaped until it connects, so this is deliberately
+  // unauthenticated - and deliberately narrow: no secrets, no user data, no
+  // policy beyond the access mode that /api/auth/config already states. Rate
+  // limited with the auth bucket (see observability/rate-limit.ts).
+  router.add('GET', '/api/v1/instance', (_req, res) => {
+    sendJson(res, 200, {
+      name: config.instance.name,
+      accessMode: config.policy.defaultAccessMode,
+      provider: config.idp.issuer ? 'oidc' : config.dev.enabled ? 'dev' : null,
+      providerName: config.idp.displayName || null,
+      loginPath: config.idp.issuer ? '/api/auth/login' : config.dev.enabled ? '/api/auth/dev' : null,
+      // The vendored contract version this deploy serves tools against - what a
+      // client compares its own engine to, and the fixed point fleet drift is
+      // measured from.
+      engineVersion: pinnedEngineVersion(),
+      // Statically true today; stated so an older deploy (whose manifest lacks
+      // a key) and a newer one read differently to the same probe.
+      capabilities: { catalog: true, collab: true, submit: true, scim: true },
     });
   });
 
@@ -755,7 +801,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
 
   router.add('GET', '/api/v1/fleet', async (req, res) => {
     if (!(await requireAction(req, res, 'fleet.view'))) return;
-    sendJson(res, 200, { clients: await store.fleetSummary() });
+    // engineVersion is what THIS deploy serves (the vendored pin) - beside the
+    // field histogram it makes drift readable in one place (plans/34 wave 1d).
+    sendJson(res, 200, { clients: await store.fleetSummary(), engineVersion: pinnedEngineVersion() });
   });
 
   // Schema readiness - pending migrations on the live store. Owner-gated

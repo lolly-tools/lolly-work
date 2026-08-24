@@ -40,6 +40,14 @@ export function stripExt(name: string): string {
 }
 
 export interface ProviderCapabilities {
+  /** What the credential slot means for this kind - declared HERE so the CLI,
+   *  console, and docs derive it instead of each keeping a list (plans/34 §2):
+   *  'oauth' = the sealed blob is an OAuth credential (clientId + refreshToken);
+   *  'credential' = a bearer/basic/API-key secret in the kind's own shape;
+   *  'none' = the driver never reads a credential (mock). Whether the CLI can
+   *  DRIVE a consent flow for an 'oauth' kind stays a CLI fact (oauthFlowFor) -
+   *  the contract test asserts that set is a subset of the 'oauth' kinds. */
+  authKind: 'oauth' | 'credential' | 'none';
   /** Provider supports server-side search (live fan-out from /api/v1/catalog/search). */
   search: boolean;
   thumbnails: boolean;

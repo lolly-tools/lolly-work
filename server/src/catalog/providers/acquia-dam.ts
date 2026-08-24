@@ -209,7 +209,7 @@ export function createAcquiaDamProvider(
   return {
     id,
     kind: 'acquia-dam',
-    capabilities: { search: true, thumbnails: false, expiringUrls: true },
+    capabilities: { authKind: 'credential', search: true, thumbnails: false, expiringUrls: true },
 
     async listAssets(cursor) {
       const offset = cursor ? Number(cursor) : 0;

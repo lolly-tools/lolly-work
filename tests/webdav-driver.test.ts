@@ -667,7 +667,7 @@ test('a server that refuses propname still gets a report, and is told NOT MAPPED
 
 test('capabilities: no search, no thumbnails, no expiring URLs, and never publish', () => {
   const dav = createWebdavProvider('w29', GENERIC, CRED, fakeFetch([]));
-  assert.deepEqual(dav.capabilities, { search: false, thumbnails: false, expiringUrls: false });
+  assert.deepEqual(dav.capabilities, { authKind: 'credential', search: false, thumbnails: false, expiringUrls: false });
   assert.equal(dav.capabilities.publish, undefined, 'a federated source, never a publish destination');
   assert.equal(dav.publishAsset, undefined);
   assert.equal(dav.searchAssets, undefined);
