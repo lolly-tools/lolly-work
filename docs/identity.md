@@ -48,6 +48,19 @@ Routes: `GET /api/auth/config` (what the sign-in screen needs), `GET /api/auth/l
 passwordless local sign-in for development, demos and tests. It bypasses OIDC entirely - 
 keep it off in production. The Helm values ship it disabled.
 
+## Device-code sign-in
+
+A device that cannot run the browser flow - the CLI, a native shell against a gated
+instance - signs in by code (plans/34): it asks `POST /api/v1/auth/device` for a short
+code, the person opens `/activate` in any browser where they are already signed in and
+confirms it, and the device's next poll collects an ordinary session cookie minted for
+that person. The approving browser session is the whole authority - the flow never
+touches IdP credentials, works identically over OIDC and the dev provider, and the
+mint re-checks disable/revocation so an account closed mid-flow gets nothing. Codes
+live ten minutes, are single-use, and pending ones are listable (and deniable, never
+approvable) in the console's Fleet view. Needs the long-lived server; a serverless
+deploy answers `501`.
+
 ## Groups → role
 
 Groups arrive from the IdP claim named by `groupsClaim`. The console can add **local

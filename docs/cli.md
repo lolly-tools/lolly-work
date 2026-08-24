@@ -15,12 +15,16 @@ npm run cli -- --json audit head            # machine output
 ## Signing in
 
 ```bash
+lw login                                    # device code: confirm it in a signed-in browser
 lw login --email admin@example.test         # dev provider (dev.enabled only)
-lw login --cookie 'lw_session=…'            # paste a browser session (OIDC deploys)
+lw login --cookie 'lw_session=…'            # paste a browser session (works everywhere)
 ```
 
-The session cookie is stored at `~/.config/lolly-work/session` (mode 0600). A device-code
-flow against OIDC is the planned replacement for the paste.
+Plain `lw login` runs the device-code flow (plans/34): it prints a short code and the
+instance's `/activate` URL; open that in any browser where you are already signed in,
+type the code, approve - and the CLI collects an ordinary session on its next poll. The
+flow needs the long-lived server (on a serverless deploy it answers 501 - use the paste).
+The session cookie is stored at `~/.config/lolly-work/session` (mode 0600).
 
 ## Reading
 

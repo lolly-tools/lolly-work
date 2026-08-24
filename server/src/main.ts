@@ -16,6 +16,7 @@ import { runMigrations, pendingMigrations } from './store/migrate.ts';
 import { buildApp } from './api/app.ts';
 import { createCollabGateway } from './collab/gateway.ts';
 import { createNearbyRegistry } from './collab/nearby.ts';
+import { createDeviceAuthRegistry } from './iam/device-auth.ts';
 import { auditHead } from './audit/head.ts';
 import { checkShellDist } from './lib/shell-dist.ts';
 import { existsSync, readFileSync } from 'node:fs';
@@ -125,7 +126,7 @@ const blobs = config.blobs.driver === 's3'
     ? await createPostgresBlobStore(databaseUrl)
     : createMemoryBlobStore();
 
-const app = buildApp({ config, store, secrets, blobs, listCollabRooms: () => collab.snapshot(), nearby });
+const app = buildApp({ config, store, secrets, blobs, listCollabRooms: () => collab.snapshot(), nearby, deviceAuth: createDeviceAuthRegistry() });
 
 // External anchoring of the audit chain (plan Rec 5): emit the head hash so any
 // log pipeline captures it off-box. On by default (boot + hourly); intervalMinutes

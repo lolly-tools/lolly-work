@@ -27,6 +27,8 @@ import {
 } from '../iam/sessions.ts';
 import { buildAuthorizeUrl, discover, exchangeCode, mapClaims, pkcePair, verifyIdToken } from '../iam/oidc.ts';
 import { displayName, resolveMember } from '../iam/member.ts';
+import { normalizeUserCode, type DeviceAuthRegistry } from '../iam/device-auth.ts';
+import { activateDoneHtml, activateFormHtml, activateSignedOutHtml } from '../iam/activate-page.ts';
 import { bearerFromHeader, hashScimSecret, mintScimSecret } from '../scim/tokens.ts';
 import {
   applyMemberOps, groupToScim, parseGroupPatch, parseScimFilter, parseUserCreate, parseUserPatch,
@@ -155,10 +157,15 @@ export interface AppDeps {
    *  main.ts builds the configured driver (pg default / s3); tests and the
    *  Vercel path fall back to an in-memory store. */
   blobs?: BlobStore;
+  /** Device-code sign-in (plans/34 wave 4). Like `nearby`: an in-memory
+   *  registry injected only by the long-lived server - pending codes cannot
+   *  span function instances, so the Vercel path leaves this undefined and the
+   *  device routes answer 501 rather than a flow that intermittently works. */
+  deviceAuth?: DeviceAuthRegistry;
 }
 
 export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
-  const { config, store, secrets, listCollabRooms, nearby } = deps;
+  const { config, store, secrets, listCollabRooms, nearby, deviceAuth } = deps;
   const blobs = deps.blobs ?? createMemoryBlobStore();
   const fetchImpl = deps.fetchImpl ?? fetch;
   const secure = config.instance.baseUrl.startsWith('https:');
@@ -437,6 +444,118 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   router.add('POST', '/api/auth/logout', (_req, res) => {
     res.writeHead(204, { 'set-cookie': [clearCookie(SESSION_COOKIE, secure), clearCookie(GUEST_COOKIE, secure)] });
     res.end();
+  });
+
+  // ── device-code sign-in (plans/34 wave 4) ─────────────────────────────────
+  // RFC 8628's shape with this instance's session as the artifact: a device
+  // asks for a code pair, a person already signed in in a browser confirms the
+  // short code at /activate, and the device's next poll collects an ordinary
+  // session cookie minted for that person. The approving browser session is
+  // the whole authority - the flow never touches IdP credentials. Both device
+  // routes share the auth rate-limit bucket (poll interval = its refill rate).
+  const activateHeaders = {
+    'content-type': 'text/html; charset=utf-8',
+    'cache-control': 'private, no-store',
+    'x-content-type-options': 'nosniff',
+    'referrer-policy': 'no-referrer',
+    // Script-free page, same posture as the bearer collection page - except
+    // form-action 'self', so the confirm form can submit.
+    'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
+  };
+  const loginPathFor = (returnTo: string): string | null =>
+    config.idp.issuer ? `/api/auth/login?returnTo=${encodeURIComponent(returnTo)}`
+      : config.dev.enabled ? `/api/auth/dev?returnTo=${encodeURIComponent(returnTo)}` : null;
+
+  router.add('POST', '/api/v1/auth/device', async (req, res) => {
+    if (!deviceAuth) return sendError(res, 501, 'DEVICE_FLOW_UNAVAILABLE', 'device sign-in needs the long-lived server');
+    const started = deviceAuth.request(req.headers['x-lolly-client'] as string | undefined);
+    if (!started) return sendError(res, 429, 'TOO_MANY_REQUESTS', 'too many pending device codes - try again shortly');
+    await audit(`device:${started.userCode}`, 'auth.device.requested', 'session');
+    sendJson(res, 200, {
+      deviceCode: started.deviceCode,
+      userCode: started.userCode,
+      verificationUri: `${config.instance.baseUrl}/activate`,
+      interval: started.interval,
+      expiresIn: started.expiresIn,
+    });
+  });
+
+  router.add('POST', '/api/v1/auth/device/token', async (req, res) => {
+    if (!deviceAuth) return sendError(res, 501, 'DEVICE_FLOW_UNAVAILABLE', 'device sign-in needs the long-lived server');
+    const body = (await readJson(req)) as { deviceCode?: unknown } | null;
+    if (typeof body?.deviceCode !== 'string') return sendError(res, 400, 'INVALID_INPUT', 'deviceCode required');
+    const claim = deviceAuth.claim(body.deviceCode);
+    if (claim.status !== 'approved') return sendJson(res, 200, { status: claim.status });
+    // The approval is minutes old at most, but a disable or session-revoke in
+    // between must still win - re-read the person before minting anything.
+    const user = await store.getUserBySub(claim.user.sub);
+    if (!user || user.disabledAt || user.sessionEpoch > (claim.user.epoch ?? 0)) {
+      return sendJson(res, 200, { status: 'denied' });
+    }
+    await audit(`user:${user.id}`, 'auth.login', 'session', { provider: 'device' });
+    const setCookie = mintSessionCookie(claim.user, secrets.session, secure, sessionTtlSec);
+    res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': setCookie });
+    res.end(JSON.stringify({ status: 'approved', cookie: setCookie.split(';')[0] }));
+  });
+
+  // The console's refuse-a-surprise surface: pending codes are listable and
+  // deniable by an admin, but NEVER approvable there - approval binds the
+  // approver's own identity, so it lives only on /activate with the code typed.
+  router.add('GET', '/api/v1/auth/device/pending', async (req, res) => {
+    if (!(await requireAction(req, res, 'fleet.view'))) return;
+    sendJson(res, 200, { pending: deviceAuth ? deviceAuth.pending() : [] });
+  });
+
+  router.add('POST', '/api/v1/auth/device/deny', async (req, res) => {
+    const actor = await requireAction(req, res, 'fleet.manage');
+    if (!actor) return;
+    if (!deviceAuth) return sendError(res, 501, 'DEVICE_FLOW_UNAVAILABLE', 'device sign-in needs the long-lived server');
+    const body = (await readJson(req)) as { userCode?: unknown } | null;
+    if (typeof body?.userCode !== 'string') return sendError(res, 400, 'INVALID_INPUT', 'userCode required');
+    if (!deviceAuth.deny(body.userCode)) return sendError(res, 404, 'NOT_FOUND', 'no such pending code');
+    await audit(`user:${actor.id}`, 'auth.device.deny', 'session', { code: normalizeUserCode(body.userCode) });
+    sendJson(res, 200, { ok: true });
+  });
+
+  router.add('GET', '/activate', async (req, res, ctx) => {
+    const html = await (async () => {
+      if (!deviceAuth) return activateDoneHtml(config.instance.name, 'unknown');
+      const me = await resolveMember(store, req.headers.cookie, secrets.session);
+      if (!me) return activateSignedOutHtml(config.instance.name, loginPathFor('/activate') ?? '/');
+      const code = ctx.url.searchParams.get('code') ?? '';
+      const pend = code ? deviceAuth.describe(code) : null;
+      return activateFormHtml(config.instance.name, {
+        ...(code ? { code: normalizeUserCode(code) } : {}),
+        ...(pend?.clientTag ? { clientTag: pend.clientTag } : {}),
+        ...(pend ? { requestedAt: pend.createdAt } : {}),
+      });
+    })();
+    res.writeHead(200, activateHeaders);
+    res.end(html);
+  });
+
+  router.add('POST', '/activate', async (req, res) => {
+    const render = (html: string): void => { res.writeHead(200, activateHeaders); res.end(html); };
+    if (!deviceAuth) return render(activateDoneHtml(config.instance.name, 'unknown'));
+    const me = await resolveMember(store, req.headers.cookie, secrets.session);
+    if (!me) return render(activateSignedOutHtml(config.instance.name, loginPathFor('/activate') ?? '/'));
+    const form = new URLSearchParams(await readRaw(req, 4096).then((b) => b.toString('utf8')).catch(() => ''));
+    const code = form.get('code') ?? '';
+    const decision = form.get('decision');
+    if (!code || (decision !== 'approve' && decision !== 'deny')) {
+      return render(activateFormHtml(config.instance.name, { error: 'Enter the code the device shows.' }));
+    }
+    if (decision === 'deny') {
+      const ok = deviceAuth.deny(code);
+      if (ok) await audit(`user:${me.id}`, 'auth.device.deny', 'session', { code: normalizeUserCode(code) });
+      return render(activateDoneHtml(config.instance.name, ok ? 'denied' : 'unknown'));
+    }
+    const approved = deviceAuth.approve(code, {
+      sub: me.sub, email: me.email, groups: me.groups, role: me.role,
+      name: displayName(me), epoch: me.sessionEpoch,
+    });
+    if (approved) await audit(`user:${me.id}`, 'auth.device.approve', 'session', { code: normalizeUserCode(code) });
+    render(activateDoneHtml(config.instance.name, approved ? 'approved' : 'unknown'));
   });
 
   // ── org-config: the one polled document ───────────────────────────────────
@@ -5097,7 +5216,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // so every API/console/catalog/render/link route wins; only unmatched GETs
   // reach the SPA fallback. Absent shellDir → these routes aren't added at all.
   const shellDir = config.instance.shellDir;
-  const RESERVED_PREFIX = /^(api|catalog|render|l|admin|scim|healthz)(\/|$)/;
+  const RESERVED_PREFIX = /^(api|catalog|render|l|admin|scim|healthz|activate)(\/|$)/;
   if (shellDir) {
     const serveShell = async (res: ServerResponse, rel: string): Promise<void> => {
       const clean = normalize(rel.replace(/^\/+/, '')).replace(/^(\.\.[/\\])+/, '');

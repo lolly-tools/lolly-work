@@ -200,14 +200,46 @@ switch (cmd) {
       console.log('session cookie saved.');
       break;
     }
-    const email = values.email ?? fail('--email required for dev login (or --cookie for a browser session)');
-    const res = await fetch(`${base}/api/auth/dev?email=${encodeURIComponent(email)}`, { redirect: 'manual' });
-    if (res.status !== 302) fail(`dev login refused (${res.status}) — is dev.enabled on, and the email in dev.users?`);
-    const cookie = res.headers.getSetCookie().find((c) => c.startsWith('lw_session='))?.split(';')[0];
-    if (!cookie) fail('no session cookie in response');
-    mkdirSync(CONFIG_DIR, { recursive: true });
-    writeFileSync(SESSION_FILE, cookie as string, { mode: 0o600 });
-    console.log(`signed in as ${email} against ${base}`);
+    if (values.email) {
+      const res = await fetch(`${base}/api/auth/dev?email=${encodeURIComponent(values.email)}`, { redirect: 'manual' });
+      if (res.status !== 302) fail(`dev login refused (${res.status}) — is dev.enabled on, and the email in dev.users?`);
+      const cookie = res.headers.getSetCookie().find((c) => c.startsWith('lw_session='))?.split(';')[0];
+      if (!cookie) fail('no session cookie in response');
+      mkdirSync(CONFIG_DIR, { recursive: true });
+      writeFileSync(SESSION_FILE, cookie as string, { mode: 0o600 });
+      console.log(`signed in as ${values.email} against ${base}`);
+      break;
+    }
+    // The device flow (plans/34 wave 4) is the default: no cookie pasting, no
+    // dev provider - sign in in any browser and confirm the short code there.
+    const start = await fetch(`${base}/api/v1/auth/device`, { method: 'POST', headers: { 'x-lolly-client': 'lw-cli engine/0' } });
+    if (start.status === 501) fail('device sign-in needs the long-lived server — use --email (dev provider) or --cookie');
+    if (!start.ok) fail(`device sign-in refused (${start.status})`);
+    const d = await start.json() as { deviceCode: string; userCode: string; verificationUri: string; interval: number; expiresIn: number };
+    console.log(`Open ${d.verificationUri} in a signed-in browser and enter: ${d.userCode}`);
+    console.log(`(waiting — the code lives ${Math.round(d.expiresIn / 60)} minutes; ctrl-c to give up)`);
+    let done = false;
+    const deadline = Date.now() + d.expiresIn * 1000;
+    while (!done && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, d.interval * 1000));
+      const poll = await fetch(`${base}/api/v1/auth/device/token`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-lolly-client': 'lw-cli engine/0' },
+        body: JSON.stringify({ deviceCode: d.deviceCode }),
+      });
+      if (poll.status === 429) continue; // over the bucket - the next tick refills it
+      const t = await poll.json() as { status: string; cookie?: string };
+      if (t.status === 'pending') continue;
+      if (t.status === 'approved' && t.cookie) {
+        mkdirSync(CONFIG_DIR, { recursive: true });
+        writeFileSync(SESSION_FILE, t.cookie, { mode: 0o600 });
+        console.log(`signed in against ${base}`);
+        done = true;
+        break;
+      }
+      fail(t.status === 'denied' ? 'sign-in denied from the browser side' : 'code expired — run lw login again');
+    }
+    if (!done) fail('code expired — run lw login again');
     break;
   }
 

@@ -63,6 +63,10 @@ export function rateLimitSurface(method: string, pathname: string): Surface | nu
   // first-run shell probes it before anyone signs in - so it shares the auth
   // bucket rather than being free to hammer.
   if (pathname === '/api/v1/instance') return 'auth';
+  // Device sign-in (plans/34 wave 4): request + poll are unauthenticated, so
+  // they ride the auth bucket. Its refill (0.2/s by default) is exactly the
+  // advertised 5s poll interval - a polite client never sees 429.
+  if (pathname === '/api/v1/auth/device' || pathname === '/api/v1/auth/device/token') return 'auth';
   if (method === 'POST' && pathname === '/api/v1/telemetry') return 'telemetry';
   if (pathname === '/l' || pathname.startsWith('/l/')) return 'link';
   return null;

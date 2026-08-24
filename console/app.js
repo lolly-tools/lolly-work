@@ -1757,8 +1757,9 @@ function vcmp(a, b) {
 }
 
 async function viewFleet(main) {
-  const [{ clients, engineVersion, minEngine }, { installs }] = await Promise.all([
+  const [{ clients, engineVersion, minEngine }, { installs }, { pending }] = await Promise.all([
     api('/api/v1/fleet'), api('/api/v1/fleet/installs'),
+    api('/api/v1/auth/device/pending').catch(() => ({ pending: [] })),
   ]);
   const belowFloor = (engine) => Boolean(minEngine && engine && vcmp(engine, minEngine) < 0);
   const totalReq = clients.reduce((a, c) => a + c.count, 0);
@@ -1785,6 +1786,7 @@ async function viewFleet(main) {
       tile('Last seen', clients.length ? when(lastSeen) : '—'),
     ),
     ...nudgeCard(),
+    ...deviceCodesCard(),
     el('div', { class: 'card' },
       hbarChart(fleetChartRows(clients), { colorOf: shellColorOf, empty: 'No shells have connected yet.' })),
     el('div', { class: 'card stack' },
@@ -1838,6 +1840,33 @@ async function viewFleet(main) {
       el('td', {}, i.userName ?? '—'),
       whenCell(i.lastSeenAt),
       el('td', {}, el('div', { class: 'lc-actions' }, forgetBtn), err));
+  }
+
+  // Pending device sign-in codes (plans/34 wave 4) — the refuse-a-surprise
+  // surface. An admin can DENY a code they don't recognise; approval is
+  // deliberately absent here, because approving binds the approver's own
+  // identity and lives only on /activate with the code typed by its person.
+  function deviceCodesCard() {
+    if (!pending.length) return [];
+    const row = (p) => {
+      const err = errSpan();
+      const denyBtn = armConfirmButton({ class: 'danger' }, 'Deny', 'Really deny?', async (disarm) => {
+        denyBtn.disabled = true;
+        try { await api('/api/v1/auth/device/deny', { method: 'POST', body: { userCode: p.userCode } }); toast(`Denied ${p.userCode}`); route(); }
+        catch (e) { err.textContent = e.message; denyBtn.disabled = false; disarm(); }
+      });
+      return el('tr', {},
+        el('td', {}, el('span', { class: 'mono' }, p.userCode)),
+        el('td', {}, el('span', { class: 'muted mono' }, p.clientTag ?? '—')),
+        whenCell(p.createdAt),
+        el('td', {}, el('div', { class: 'lc-actions' }, denyBtn), err));
+    };
+    return [el('div', { class: 'card stack' },
+      el('h2', {}, 'Pending device sign-ins'),
+      el('p', { class: 'muted', style: 'margin-top:-4px' },
+        'Codes waiting for a person to confirm at /activate. Deny anything you don’t recognise — approval only ever happens on the activate page, typed by the person it signs in.'),
+      dataTable(['Code', 'Client', { label: 'Requested', sort: 'date' }, ''], pending.map(row), {})),
+    ];
   }
 
   // The version-floor nudge (plans/34 wave 5): a statement plus an offer, never
