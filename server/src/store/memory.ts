@@ -22,7 +22,7 @@ import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderRecord } from '../catalog/providers/types.ts';
 import {
   SESSION_REVISION_LIMIT, effectiveGroups,
-  type ApiTokenRecord, type CollabSnapshot, type FleetRow, type InstallRow, type LocalGroupRecord, type ProjectRecord, type ScimTokenRecord,
+  type ApiTokenRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type LocalGroupRecord, type ProjectRecord, type ScimTokenRecord,
   type SessionRecord, type SessionRevision, type Store, type SubmitQuotaRow, type UserRecord,
 } from './types.ts';
 
@@ -37,6 +37,11 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const apiTokens = new Map<string, ApiTokenRecord>(); // service tokens (plans/35), by id
   let siemCursor = 0; // highest audit seq confirmed delivered to the SIEM receiver
   let auditAnchor: AuditAnchor | null = null; // retention trim boundary (plans/35 wave 3)
+  const deviceCodes = new Map<string, DeviceCodeRecord>(); // device sign-in codes, by deviceCode
+  const pruneDeviceCodes = (): void => {
+    const now = new Date().toISOString();
+    for (const [k, r] of deviceCodes) if (r.expiresAt <= now) deviceCodes.delete(k);
+  };
   const grants: Grant[] = [...(seed?.grants ?? [])];
   const overlays = new Map<string, ToolOverlay>((seed?.overlays ?? []).map((o) => [o.toolId, o]));
   const flagGovernance = new Map<string, FlagGovernance>((seed?.flagGovernance ?? []).map((g) => [g.id, g]));
@@ -345,6 +350,44 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
         }
       }
       return false;
+    },
+
+    async putDeviceCode(rec) {
+      pruneDeviceCodes();
+      deviceCodes.set(rec.deviceCode, { ...rec });
+    },
+    async getPendingDeviceCode(userCode) {
+      pruneDeviceCodes();
+      for (const r of deviceCodes.values()) {
+        if (r.userCode === userCode && r.status === 'pending') return { ...r };
+      }
+      return null;
+    },
+    async settleDeviceCode(userCode, status, userPayload) {
+      pruneDeviceCodes();
+      for (const r of deviceCodes.values()) {
+        if (r.userCode === userCode && r.status === 'pending') {
+          deviceCodes.set(r.deviceCode, { ...r, status, ...(userPayload ? { userPayload } : {}) });
+          return true;
+        }
+      }
+      return false;
+    },
+    async claimDeviceCode(deviceCode) {
+      pruneDeviceCodes();
+      const r = deviceCodes.get(deviceCode);
+      if (!r) return { status: 'expired' };
+      if (r.status === 'pending') return { status: 'pending' };
+      deviceCodes.delete(deviceCode); // settled rows are single-read
+      if (r.status === 'approved' && r.userPayload) return { status: 'approved', userPayload: r.userPayload };
+      return { status: 'denied' };
+    },
+    async listPendingDeviceCodes() {
+      pruneDeviceCodes();
+      return [...deviceCodes.values()]
+        .filter((r) => r.status === 'pending')
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+        .map((r) => ({ ...r }));
     },
 
     async putEvents(batch) {

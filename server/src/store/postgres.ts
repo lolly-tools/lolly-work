@@ -27,7 +27,7 @@ import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderFragment, ProviderKind, ProviderRecord } from '../catalog/providers/types.ts';
 import {
   SESSION_REVISION_LIMIT, effectiveGroups,
-  type ApiTokenRecord, type CollabSnapshot, type FleetRow, type InstallRow, type ListUsersPageOpts, type LocalGroupRecord, type ProjectRecord,
+  type ApiTokenRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type ListUsersPageOpts, type LocalGroupRecord, type ProjectRecord,
   type ScimTokenRecord, type SessionRecord, type SessionRevision, type Store, type SubmitQuotaRow, type UserRecord,
 } from './types.ts';
 
@@ -42,6 +42,19 @@ function apiTokenFromRow(r: Record<string, unknown>): ApiTokenRecord {
     createdAt: new Date(r.created_at as string).toISOString(),
     ...(r.last_used_at ? { lastUsedAt: new Date(r.last_used_at as string).toISOString() } : {}),
     ...(r.revoked_at ? { revokedAt: new Date(r.revoked_at as string).toISOString() } : {}),
+  };
+}
+
+/** One device_codes row → record (plans/35 wave 5). */
+function deviceCodeFromRow(r: Record<string, unknown>): DeviceCodeRecord {
+  return {
+    deviceCode: r.device_code as string,
+    userCode: r.user_code as string,
+    ...(r.client_tag ? { clientTag: r.client_tag as string } : {}),
+    status: r.status as DeviceCodeRecord['status'],
+    ...(r.user_payload ? { userPayload: r.user_payload as Record<string, unknown> } : {}),
+    createdAt: new Date(r.created_at as string).toISOString(),
+    expiresAt: new Date(r.expires_at as string).toISOString(),
   };
 }
 
@@ -587,6 +600,51 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     async deleteUser(id) {
       const { rowCount } = await pool.query('delete from users where id = $1', [id]);
       return (rowCount ?? 0) > 0;
+    },
+
+    // Device sign-in codes (plans/35 wave 5). Prune rides the writes; the
+    // claim's single-read is DELETE ... RETURNING, atomic across replicas.
+    async putDeviceCode(rec) {
+      await pool.query('delete from device_codes where expires_at <= now()');
+      await pool.query(
+        `insert into device_codes (device_code, user_code, client_tag, status, user_payload, created_at, expires_at)
+         values ($1, $2, $3, $4, $5::jsonb, $6, $7)`,
+        [rec.deviceCode, rec.userCode, rec.clientTag ?? null, rec.status, rec.userPayload ? JSON.stringify(rec.userPayload) : null, rec.createdAt, rec.expiresAt],
+      );
+    },
+    async getPendingDeviceCode(userCode) {
+      const { rows } = await pool.query(
+        "select * from device_codes where user_code = $1 and status = 'pending' and expires_at > now()", [userCode],
+      );
+      return rows[0] ? deviceCodeFromRow(rows[0]) : null;
+    },
+    async settleDeviceCode(userCode, status, userPayload) {
+      const { rowCount } = await pool.query(
+        `update device_codes set status = $2, user_payload = coalesce($3::jsonb, user_payload)
+         where user_code = $1 and status = 'pending' and expires_at > now()`,
+        [userCode, status, userPayload ? JSON.stringify(userPayload) : null],
+      );
+      return (rowCount ?? 0) > 0;
+    },
+    async claimDeviceCode(deviceCode) {
+      const { rows: pending } = await pool.query(
+        "select status from device_codes where device_code = $1 and expires_at > now()", [deviceCode],
+      );
+      if (!pending[0]) return { status: 'expired' };
+      if (pending[0].status === 'pending') return { status: 'pending' };
+      const { rows } = await pool.query(
+        "delete from device_codes where device_code = $1 and status <> 'pending' returning status, user_payload", [deviceCode],
+      );
+      const r = rows[0];
+      if (!r) return { status: 'expired' }; // a concurrent claim won the single read
+      if (r.status === 'approved' && r.user_payload) return { status: 'approved', userPayload: r.user_payload as Record<string, unknown> };
+      return { status: 'denied' };
+    },
+    async listPendingDeviceCodes() {
+      const { rows } = await pool.query(
+        "select * from device_codes where status = 'pending' and expires_at > now() order by created_at asc",
+      );
+      return rows.map(deviceCodeFromRow);
     },
     async listAudit() {
       const { rows } = await pool.query('select * from audit_log order by seq asc');

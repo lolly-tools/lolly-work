@@ -5,7 +5,8 @@
  *   - approval lives ONLY on /activate (the console API can deny, never approve);
  *   - an approved claim is single-read, and a replay reads as expired;
  *   - a disable between approval and claim wins - the mint re-checks;
- *   - absent the injected registry (the serverless path), the routes answer 501.
+ *   - codes are store rows (plans/35 wave 5): any replica answers the poll, and
+ *     serverless deploys have the flow too.
  */
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,14 +19,14 @@ import { parseConfig } from '../server/src/config/instance.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
 import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import { buildApp } from '../server/src/api/app.ts';
-import { createDeviceAuthRegistry, normalizeUserCode, DEVICE_CODE_TTL_SEC } from '../server/src/iam/device-auth.ts';
+import { createDeviceAuth, normalizeUserCode, DEVICE_CODE_TTL_SEC } from '../server/src/iam/device-auth.ts';
 
 const servers: Server[] = [];
 after(() => { for (const s of servers) s.close(); });
 
 interface Booted { base: string; store: ReturnType<typeof createMemoryStore> }
 
-async function boot(withRegistry = true): Promise<Booted> {
+async function boot(): Promise<Booted> {
   const pack = await mkdtemp(join(tmpdir(), 'lw-device-'));
   await mkdir(join(pack, 'catalog', 'assets'), { recursive: true });
   await writeFile(join(pack, 'catalog', 'assets', 'index.json'), JSON.stringify({ version: 1, assets: [] }));
@@ -38,10 +39,7 @@ async function boot(withRegistry = true): Promise<Booted> {
     ] },
   }));
   const store = createMemoryStore();
-  const app = buildApp({
-    config, store, blobs: createMemoryBlobStore(), secrets: { session: 'sD', link: 'lD' },
-    ...(withRegistry ? { deviceAuth: createDeviceAuthRegistry() } : {}),
-  });
+  const app = buildApp({ config, store, blobs: createMemoryBlobStore(), secrets: { session: 'sD', link: 'lD' } });
   const server = createServer((req, res) => void app(req, res));
   servers.push(server);
   await new Promise<void>((r) => server.listen(0, () => r()));
@@ -78,37 +76,39 @@ const activate = (base: string, cookie: string, code: string, decision: 'approve
 
 // ── the registry ─────────────────────────────────────────────────────────────
 
-test('registry: codes expire on the clock, approval is single-read, typing is forgiven', () => {
-  let t = 1_000_000;
-  const reg = createDeviceAuthRegistry(() => t);
-  const started = reg.request('tauri engine/1.146.0');
+test('registry: codes expire on the clock, approval is single-read, typing is forgiven', async () => {
+  const codeStore = createMemoryStore();
+  const reg = createDeviceAuth(codeStore);
+  const started = await reg.request('tauri engine/1.146.0');
   assert.ok(started);
   assert.match(started.userCode, /^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/, 'confusable-free, hyphenated');
-  assert.equal(reg.pending().length, 1);
-  assert.equal(reg.pending()[0]?.clientTag, 'tauri engine/1.146.0');
+  assert.equal((await reg.pending()).length, 1);
+  assert.equal((await reg.pending())[0]?.clientTag, 'tauri engine/1.146.0');
 
   // A person types the code however they type it.
   const sloppy = ` ${started.userCode.toLowerCase().replace('-', ' ')} `;
   assert.equal(normalizeUserCode(sloppy), started.userCode);
-  assert.ok(reg.describe(sloppy), 'describe forgives the typing');
+  assert.ok(await reg.describe(sloppy), 'describe forgives the typing');
 
   const user = { sub: 's', email: 'e@x', name: 'E', groups: [], role: 'member' };
-  assert.equal(reg.approve(sloppy, user), true);
-  assert.equal(reg.approve(started.userCode, user), false, 'already settled');
-  const claim = reg.claim(started.deviceCode);
+  assert.equal(await reg.approve(sloppy, user), true);
+  assert.equal(await reg.approve(started.userCode, user), false, 'already settled');
+  const claim = await reg.claim(started.deviceCode);
   assert.equal(claim.status, 'approved');
-  assert.equal(reg.claim(started.deviceCode).status, 'expired', 'single-read: a replay gets nothing');
+  assert.equal((await reg.claim(started.deviceCode)).status, 'expired', 'single-read: a replay gets nothing');
 
-  const second = reg.request();
+  // A registry stamping with an already-past clock mints a code that is born
+  // expired - the store's own expiry (real time) is what enforces the TTL.
+  const backdated = createDeviceAuth(codeStore, () => Date.now() - (DEVICE_CODE_TTL_SEC + 1) * 1000);
+  const second = await backdated.request();
   assert.ok(second);
-  t += (DEVICE_CODE_TTL_SEC + 1) * 1000;
-  assert.equal(reg.claim(second.deviceCode).status, 'expired', 'the clock wins');
-  assert.equal(reg.pending().length, 0, 'expired codes leave the pending list');
+  assert.equal((await reg.claim(second.deviceCode)).status, 'expired', 'the clock wins');
+  assert.equal((await reg.pending()).length, 0, 'expired codes leave the pending list');
 
-  const third = reg.request();
+  const third = await reg.request();
   assert.ok(third);
-  assert.equal(reg.deny(third.userCode), true);
-  assert.equal(reg.claim(third.deviceCode).status, 'denied');
+  assert.equal(await reg.deny(third.userCode), true);
+  assert.equal((await reg.claim(third.deviceCode)).status, 'denied');
 });
 
 // ── the flow over HTTP ───────────────────────────────────────────────────────
@@ -182,13 +182,19 @@ test('a disable between approval and claim wins - the mint re-checks the person'
   void admin;
 });
 
-test('absent the injected registry (serverless), the device routes answer 501', async () => {
-  const { base } = await boot(false);
-  assert.equal((await fetch(`${base}/api/v1/auth/device`, { method: 'POST' })).status, 501);
-  assert.equal((await fetch(`${base}/api/v1/auth/device/token`, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ deviceCode: 'x' }),
-  })).status, 501);
-  const cookie = await login(base, 'admin@test');
-  const pend = await (await fetch(`${base}/api/v1/auth/device/pending`, { headers: { cookie } })).json() as { pending: unknown[] };
-  assert.deepEqual(pend.pending, [], 'the console list is empty, not an error');
+// ── the migration ────────────────────────────────────────────────────────────
+
+test('migration 0026 follows 0025, is the ceiling, and the claim is single-read in schema', async () => {
+  const { readdir: rd, readFile: rf } = await import('node:fs/promises');
+  const dir = new URL('../migrations/', import.meta.url).pathname;
+  const files = (await rd(dir)).filter((f) => f.endsWith('.sql')).sort();
+  const at = files.indexOf('0026_device_codes.sql');
+  assert.ok(at > 0, '0026 is on disk');
+  assert.equal(files[at - 1], '0025_audit_anchor.sql', '0026 follows 0025 with nothing between');
+  assert.equal(files.at(-1), '0026_device_codes.sql', 'device codes hold the migration ceiling');
+  const sql = await rf(join(dir, '0026_device_codes.sql'), 'utf8');
+  assert.match(sql, /create table device_codes/);
+  assert.match(sql, /user_code\s+text not null unique/);
+  const driver = await rf(new URL('../server/src/store/postgres.ts', import.meta.url).pathname, 'utf8');
+  assert.match(driver, /delete from device_codes where device_code = \$1 and status <> 'pending' returning/);
 });

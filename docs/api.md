@@ -44,7 +44,7 @@ this instance" in [operations](operations.md) for the connect story.
 | `GET /api/auth/dev?email=…` | public | dev provider only; `404` when `dev.enabled` is false |
 | `GET /api/auth/session` | member/guest | the current principal |
 | `POST /api/auth/logout` | any | clears both cookies |
-| `POST /api/v1/auth/device` | public | start device sign-in: `{deviceCode, userCode, verificationUri, interval, expiresIn}`; `501` on serverless |
+| `POST /api/v1/auth/device` | public | start device sign-in: `{deviceCode, userCode, verificationUri, interval, expiresIn}` |
 | `POST /api/v1/auth/device/token` | public | the device's poll: `{status}` of `pending`/`denied`/`expired`, or `approved` + the session cookie (single read) |
 | `GET /activate` | member (page) | where a person types and confirms a device code - approval binds the approver's identity, so it lives here and nowhere else |
 | `GET /api/v1/auth/device/pending` | `fleet.view` | pending codes, oldest first |

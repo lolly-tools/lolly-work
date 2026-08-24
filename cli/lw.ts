@@ -219,7 +219,6 @@ switch (cmd) {
     // The device flow (plans/34 wave 4) is the default: no cookie pasting, no
     // dev provider - sign in in any browser and confirm the short code there.
     const start = await fetch(`${base}/api/v1/auth/device`, { method: 'POST', headers: { 'x-lolly-client': 'lw-cli engine/0' } });
-    if (start.status === 501) fail('device sign-in needs the long-lived server — use --email (dev provider) or --cookie');
     if (!start.ok) fail(`device sign-in refused (${start.status})`);
     const d = await start.json() as { deviceCode: string; userCode: string; verificationUri: string; interval: number; expiresIn: number };
     console.log(`Open ${d.verificationUri} in a signed-in browser and enter: ${d.userCode}`);

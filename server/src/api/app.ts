@@ -27,7 +27,7 @@ import {
 } from '../iam/sessions.ts';
 import { buildAuthorizeUrl, discover, exchangeCode, mapClaims, pkcePair, verifyIdToken } from '../iam/oidc.ts';
 import { displayName, resolveMember } from '../iam/member.ts';
-import { normalizeUserCode, type DeviceAuthRegistry } from '../iam/device-auth.ts';
+import { createDeviceAuth, normalizeUserCode } from '../iam/device-auth.ts';
 import { activateDoneHtml, activateFormHtml, activateSignedOutHtml } from '../iam/activate-page.ts';
 import { PACK_BLOB_ID, PACK_META_BLOB_ID, PACK_MAX_BYTES, inspectInstancePack, type InstancePackMeta } from '../catalog/instance-pack.ts';
 import { readBlobBody } from '../blobs/types.ts';
@@ -162,15 +162,10 @@ export interface AppDeps {
    *  main.ts builds the configured driver (pg default / s3); tests and the
    *  Vercel path fall back to an in-memory store. */
   blobs?: BlobStore;
-  /** Device-code sign-in (plans/34 wave 4). Like `nearby`: an in-memory
-   *  registry injected only by the long-lived server - pending codes cannot
-   *  span function instances, so the Vercel path leaves this undefined and the
-   *  device routes answer 501 rather than a flow that intermittently works. */
-  deviceAuth?: DeviceAuthRegistry;
 }
 
 export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
-  const { config, store, secrets, listCollabRooms, nearby, deviceAuth } = deps;
+  const { config, store, secrets, listCollabRooms, nearby } = deps;
   const blobs = deps.blobs ?? createMemoryBlobStore();
   const fetchImpl = deps.fetchImpl ?? fetch;
   const secure = config.instance.baseUrl.startsWith('https:');
@@ -231,6 +226,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   if (config.notify.smtp?.user && !secrets.smtpPassword) {
     throw new Error('notify.smtp names a user but LW_SMTP_PASSWORD is not set');
   }
+  // Device-code sign-in, store-backed (plans/35 wave 5): rows instead of the
+  // former in-memory registry, so any replica answers the poll and serverless
+  // has the flow too - the 501 path is gone.
+  const deviceAuth = createDeviceAuth(store);
+
   const notifier = createNotifier({
     config, secrets, fetchImpl,
     onResult: (channel, ok) => metrics.notify(channel, ok ? 'sent' : 'failed'),
@@ -502,8 +502,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       : config.dev.enabled ? `/api/auth/dev?returnTo=${encodeURIComponent(returnTo)}` : null;
 
   router.add('POST', '/api/v1/auth/device', async (req, res) => {
-    if (!deviceAuth) return sendError(res, 501, 'DEVICE_FLOW_UNAVAILABLE', 'device sign-in needs the long-lived server');
-    const started = deviceAuth.request(req.headers['x-lolly-client'] as string | undefined);
+    const started = await deviceAuth.request(req.headers['x-lolly-client'] as string | undefined);
     if (!started) return sendError(res, 429, 'TOO_MANY_REQUESTS', 'too many pending device codes - try again shortly');
     await audit(`device:${started.userCode}`, 'auth.device.requested', 'session');
     sendJson(res, 200, {
@@ -516,10 +515,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   });
 
   router.add('POST', '/api/v1/auth/device/token', async (req, res) => {
-    if (!deviceAuth) return sendError(res, 501, 'DEVICE_FLOW_UNAVAILABLE', 'device sign-in needs the long-lived server');
     const body = (await readJson(req)) as { deviceCode?: unknown } | null;
     if (typeof body?.deviceCode !== 'string') return sendError(res, 400, 'INVALID_INPUT', 'deviceCode required');
-    const claim = deviceAuth.claim(body.deviceCode);
+    const claim = await deviceAuth.claim(body.deviceCode);
     if (claim.status !== 'approved') return sendJson(res, 200, { status: claim.status });
     // The approval is minutes old at most, but a disable or session-revoke in
     // between must still win - re-read the person before minting anything.
@@ -538,27 +536,25 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // approver's own identity, so it lives only on /activate with the code typed.
   router.add('GET', '/api/v1/auth/device/pending', async (req, res) => {
     if (!(await requireAction(req, res, 'fleet.view'))) return;
-    sendJson(res, 200, { pending: deviceAuth ? deviceAuth.pending() : [] });
+    sendJson(res, 200, { pending: await deviceAuth.pending() });
   });
 
   router.add('POST', '/api/v1/auth/device/deny', async (req, res) => {
     const actor = await requireAction(req, res, 'fleet.manage');
     if (!actor) return;
-    if (!deviceAuth) return sendError(res, 501, 'DEVICE_FLOW_UNAVAILABLE', 'device sign-in needs the long-lived server');
     const body = (await readJson(req)) as { userCode?: unknown } | null;
     if (typeof body?.userCode !== 'string') return sendError(res, 400, 'INVALID_INPUT', 'userCode required');
-    if (!deviceAuth.deny(body.userCode)) return sendError(res, 404, 'NOT_FOUND', 'no such pending code');
+    if (!(await deviceAuth.deny(body.userCode))) return sendError(res, 404, 'NOT_FOUND', 'no such pending code');
     await audit(`user:${actor.id}`, 'auth.device.deny', 'session', { code: normalizeUserCode(body.userCode) });
     sendJson(res, 200, { ok: true });
   });
 
   router.add('GET', '/activate', async (req, res, ctx) => {
     const html = await (async () => {
-      if (!deviceAuth) return activateDoneHtml(config.instance.name, 'unknown');
       const me = await resolveMember(store, req.headers.cookie, sessionVerify);
       if (!me) return activateSignedOutHtml(config.instance.name, loginPathFor('/activate') ?? '/');
       const code = ctx.url.searchParams.get('code') ?? '';
-      const pend = code ? deviceAuth.describe(code) : null;
+      const pend = code ? await deviceAuth.describe(code) : null;
       return activateFormHtml(config.instance.name, {
         ...(code ? { code: normalizeUserCode(code) } : {}),
         ...(pend?.clientTag ? { clientTag: pend.clientTag } : {}),
@@ -571,7 +567,6 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
 
   router.add('POST', '/activate', async (req, res) => {
     const render = (html: string): void => { res.writeHead(200, activateHeaders); res.end(html); };
-    if (!deviceAuth) return render(activateDoneHtml(config.instance.name, 'unknown'));
     const me = await resolveMember(store, req.headers.cookie, sessionVerify);
     if (!me) return render(activateSignedOutHtml(config.instance.name, loginPathFor('/activate') ?? '/'));
     const form = new URLSearchParams(await readRaw(req, 4096).then((b) => b.toString('utf8')).catch(() => ''));
@@ -581,11 +576,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       return render(activateFormHtml(config.instance.name, { error: 'Enter the code the device shows.' }));
     }
     if (decision === 'deny') {
-      const ok = deviceAuth.deny(code);
+      const ok = await deviceAuth.deny(code);
       if (ok) await audit(`user:${me.id}`, 'auth.device.deny', 'session', { code: normalizeUserCode(code) });
       return render(activateDoneHtml(config.instance.name, ok ? 'denied' : 'unknown'));
     }
-    const approved = deviceAuth.approve(code, {
+    const approved = await deviceAuth.approve(code, {
       sub: me.sub, email: me.email, groups: me.groups, role: me.role,
       name: displayName(me), epoch: me.sessionEpoch,
     });

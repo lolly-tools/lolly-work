@@ -148,6 +148,23 @@ export interface InstallRow {
   lastSeenAt: string;
 }
 
+/** One device sign-in code pair (plans/35 wave 5). `userPayload` is the
+ *  approving person's session shape - written at approve, consumed once at
+ *  claim. Rows die at expiry; drivers prune opportunistically. */
+export interface DeviceCodeRecord {
+  deviceCode: string;
+  userCode: string;
+  clientTag?: string;
+  status: 'pending' | 'approved' | 'denied';
+  userPayload?: Record<string, unknown>;
+  createdAt: string;
+  expiresAt: string;
+}
+
+export type DeviceClaimResult =
+  | { status: 'pending' | 'denied' | 'expired' }
+  | { status: 'approved'; userPayload: Record<string, unknown> };
+
 /** A team/personal project - a folder over sessions (plans/08 §2). Visibility is
  *  'private' (owner-only) or a set of groups that may see it; membership is the
  *  RBAC layer, not per-project ACLs. */
@@ -342,6 +359,20 @@ export interface Store {
   scrubTelemetryUser(userId: string): Promise<number>;
   /** Erasure: delete the user row itself. False when the id is unknown. */
   deleteUser(id: string): Promise<boolean>;
+
+  // Device sign-in codes (plans/35 wave 5) - store-backed so any replica can
+  // answer the poll and serverless gains the flow. iam/device-auth.ts owns
+  // the semantics; these are its persistence.
+  putDeviceCode(rec: DeviceCodeRecord): Promise<void>;
+  /** The live PENDING row behind a user code (unexpired), or null. */
+  getPendingDeviceCode(userCode: string): Promise<DeviceCodeRecord | null>;
+  /** Move a pending, unexpired code to approved/denied. False when there is
+   *  no such pending code to settle. */
+  settleDeviceCode(userCode: string, status: 'approved' | 'denied', userPayload?: Record<string, unknown>): Promise<boolean>;
+  /** The device's poll. Atomic single-read: a settled row is deleted as it is
+   *  returned, so a replayed deviceCode reads as expired. */
+  claimDeviceCode(deviceCode: string): Promise<DeviceClaimResult>;
+  listPendingDeviceCodes(): Promise<DeviceCodeRecord[]>;
 
   // telemetry
   putEvents(events: StoredEvent[]): Promise<void>;

@@ -23,7 +23,7 @@ lw login --cookie 'lw_session=…'            # paste a browser session (works e
 Plain `lw login` runs the device-code flow (plans/34): it prints a short code and the
 instance's `/activate` URL; open that in any browser where you are already signed in,
 type the code, approve - and the CLI collects an ordinary session on its next poll. The
-flow needs the long-lived server (on a serverless deploy it answers 501 - use the paste).
+flow works on every deploy shape - codes are database rows, so any replica answers the poll.
 The session cookie is stored at `~/.config/lolly-work/session` (mode 0600).
 
 ## Reading

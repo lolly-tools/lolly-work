@@ -58,8 +58,9 @@ that person. The approving browser session is the whole authority - the flow nev
 touches IdP credentials, works identically over OIDC and the dev provider, and the
 mint re-checks disable/revocation so an account closed mid-flow gets nothing. Codes
 live ten minutes, are single-use, and pending ones are listable (and deniable, never
-approvable) in the console's Fleet view. Needs the long-lived server; a serverless
-deploy answers `501`.
+approvable) in the console's Fleet view. Codes are database rows (plans/35), so any
+replica answers the poll - HA needs no sticky sessions, and serverless deploys have
+the flow too.
 
 ## Groups → role
 

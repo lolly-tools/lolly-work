@@ -1,7 +1,8 @@
 /**
- * Device-code sign-in (plans/34 wave 4) - the named replacement for pasting a
- * browser cookie into `lw login`, and the sign-in path a native shell uses
- * against a gated instance without embedding a webview.
+ * Device-code sign-in (plans/34 wave 4; store-backed in plans/35 wave 5) -
+ * the named replacement for pasting a browser cookie into `lw login`, and the
+ * sign-in path a native shell uses against a gated instance without embedding
+ * a webview.
  *
  * The shape is RFC 8628's, with this instance's session as the artifact: a
  * device asks for a code pair, a person who is ALREADY signed in in a browser
@@ -12,20 +13,23 @@
  * binding YOUR identity to a device is a personal act, so the person types the
  * code; the console only ever refuses (deny), never approves on your behalf.
  *
- * In-memory by the same reasoning as collab/nearby.ts: pending codes cannot
- * span function instances, so main.ts injects a registry on the long-lived
- * server and the Vercel path leaves it undefined - the routes answer 501 there
- * rather than a flow that works only when the load balancer feels like it.
+ * Codes are STORE rows (device_codes, migration 0026), so any replica answers
+ * the poll, HA needs no sticky sessions, and serverless deploys have the flow
+ * too - the original in-memory registry (the nearby precedent) was
+ * single-replica and answered 501 elsewhere. The single-read claim - an
+ * approved code hands out its session exactly once - is the store's atomic
+ * delete-returning; a replayed deviceCode reads as expired.
  */
 import { randomBytes } from 'node:crypto';
 import type { SessionUser } from './sessions.ts';
+import type { Store } from '../store/types.ts';
 
 /** No I/L/O/0/1 - the code is read off one screen and typed into another. */
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 const CODE_LEN = 8;
 export const DEVICE_CODE_TTL_SEC = 600;
 export const DEVICE_POLL_INTERVAL_SEC = 5;
-/** Pending-request ceiling - a memory bound, far above any honest use. */
+/** Pending-request ceiling - a memory/table bound, far above any honest use. */
 const MAX_PENDING = 100;
 
 export interface DeviceAuthPending {
@@ -40,29 +44,19 @@ export type DeviceClaim =
   | { status: 'pending' | 'denied' | 'expired' }
   | { status: 'approved'; user: SessionUser };
 
-export interface DeviceAuthRegistry {
+export interface DeviceAuth {
   /** Start a flow. Null when the pending ceiling is hit (the route answers 429). */
-  request(clientTag?: string): { deviceCode: string; userCode: string; expiresIn: number; interval: number } | null;
+  request(clientTag?: string): Promise<{ deviceCode: string; userCode: string; expiresIn: number; interval: number } | null>;
   /** The pending request behind a user code - what /activate renders. */
-  describe(userCode: string): DeviceAuthPending | null;
+  describe(userCode: string): Promise<DeviceAuthPending | null>;
   /** Bind the approving person's session identity to the pending code. */
-  approve(userCode: string, user: SessionUser): boolean;
-  deny(userCode: string): boolean;
-  /** The device's poll. 'approved' is returned exactly once - the code is
+  approve(userCode: string, user: SessionUser): Promise<boolean>;
+  deny(userCode: string): Promise<boolean>;
+  /** The device's poll. 'approved' is returned exactly once - the row is
    *  consumed with it, so a replayed deviceCode reads as expired. */
-  claim(deviceCode: string): DeviceClaim;
+  claim(deviceCode: string): Promise<DeviceClaim>;
   /** Pending requests, oldest first - the console's refuse-a-surprise list. */
-  pending(): DeviceAuthPending[];
-}
-
-interface Row {
-  deviceCode: string;
-  userCode: string;
-  clientTag?: string;
-  createdAt: number;
-  expiresAt: number;
-  status: 'pending' | 'denied' | 'approved';
-  user?: SessionUser;
+  pending(): Promise<DeviceAuthPending[]>;
 }
 
 function code(): string {
@@ -78,69 +72,41 @@ export function normalizeUserCode(raw: string): string {
   return flat.length === CODE_LEN ? `${flat.slice(0, 4)}-${flat.slice(4)}` : raw.trim().toUpperCase();
 }
 
-export function createDeviceAuthRegistry(now: () => number = Date.now): DeviceAuthRegistry {
-  const byDevice = new Map<string, Row>();
-  const byUser = new Map<string, Row>();
-
-  const drop = (row: Row): void => {
-    byDevice.delete(row.deviceCode);
-    byUser.delete(row.userCode);
-  };
-  const prune = (): void => {
-    const t = now();
-    for (const row of byDevice.values()) if (row.expiresAt <= t) drop(row);
-  };
-  const live = (row: Row | undefined): Row | null => (row && row.expiresAt > now() ? row : null);
+export function createDeviceAuth(store: Store, now: () => number = Date.now): DeviceAuth {
+  const toPending = (r: { userCode: string; clientTag?: string; createdAt: string }): DeviceAuthPending =>
+    ({ userCode: r.userCode, ...(r.clientTag ? { clientTag: r.clientTag } : {}), createdAt: r.createdAt });
 
   return {
-    request(clientTag) {
-      prune();
-      if (byDevice.size >= MAX_PENDING) return null;
-      const row: Row = {
+    async request(clientTag) {
+      if ((await store.listPendingDeviceCodes()).length >= MAX_PENDING) return null;
+      const rec = {
         deviceCode: randomBytes(24).toString('base64url'),
         userCode: code(),
         ...(clientTag ? { clientTag: clientTag.slice(0, 120) } : {}),
-        createdAt: now(),
-        expiresAt: now() + DEVICE_CODE_TTL_SEC * 1000,
-        status: 'pending',
+        status: 'pending' as const,
+        createdAt: new Date(now()).toISOString(),
+        expiresAt: new Date(now() + DEVICE_CODE_TTL_SEC * 1000).toISOString(),
       };
-      byDevice.set(row.deviceCode, row);
-      byUser.set(row.userCode, row);
-      return { deviceCode: row.deviceCode, userCode: row.userCode, expiresIn: DEVICE_CODE_TTL_SEC, interval: DEVICE_POLL_INTERVAL_SEC };
+      await store.putDeviceCode(rec);
+      return { deviceCode: rec.deviceCode, userCode: rec.userCode, expiresIn: DEVICE_CODE_TTL_SEC, interval: DEVICE_POLL_INTERVAL_SEC };
     },
-    describe(userCode) {
-      const row = live(byUser.get(normalizeUserCode(userCode)));
-      if (!row || row.status !== 'pending') return null;
-      return { userCode: row.userCode, ...(row.clientTag ? { clientTag: row.clientTag } : {}), createdAt: new Date(row.createdAt).toISOString() };
+    async describe(userCode) {
+      const rec = await store.getPendingDeviceCode(normalizeUserCode(userCode));
+      return rec ? toPending(rec) : null;
     },
-    approve(userCode, user) {
-      const row = live(byUser.get(normalizeUserCode(userCode)));
-      if (!row || row.status !== 'pending') return false;
-      row.status = 'approved';
-      row.user = user;
-      return true;
+    async approve(userCode, user) {
+      return store.settleDeviceCode(normalizeUserCode(userCode), 'approved', user as unknown as Record<string, unknown>);
     },
-    deny(userCode) {
-      const row = live(byUser.get(normalizeUserCode(userCode)));
-      if (!row || row.status !== 'pending') return false;
-      row.status = 'denied';
-      return true;
+    async deny(userCode) {
+      return store.settleDeviceCode(normalizeUserCode(userCode), 'denied');
     },
-    claim(deviceCode) {
-      prune();
-      const row = live(byDevice.get(deviceCode));
-      if (!row) return { status: 'expired' };
-      if (row.status === 'pending') return { status: 'pending' };
-      drop(row); // denied and approved are both single-read
-      if (row.status === 'denied' || !row.user) return { status: 'denied' };
-      return { status: 'approved', user: row.user };
+    async claim(deviceCode) {
+      const r = await store.claimDeviceCode(deviceCode);
+      if (r.status === 'approved') return { status: 'approved', user: r.userPayload as unknown as SessionUser };
+      return { status: r.status };
     },
-    pending() {
-      prune();
-      return [...byDevice.values()]
-        .filter((r) => r.status === 'pending')
-        .sort((a, b) => a.createdAt - b.createdAt)
-        .map((r) => ({ userCode: r.userCode, ...(r.clientTag ? { clientTag: r.clientTag } : {}), createdAt: new Date(r.createdAt).toISOString() }));
+    async pending() {
+      return (await store.listPendingDeviceCodes()).map(toPending);
     },
   };
 }

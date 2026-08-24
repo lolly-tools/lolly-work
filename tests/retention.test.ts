@@ -152,13 +152,13 @@ test('erasure deletes the mapping, scrubs attribution, and refuses to destroy sh
 
 // ── the migration ────────────────────────────────────────────────────────────
 
-test('migration 0025 follows 0024, is the ceiling, and is one row by construction', async () => {
+test('migration 0025 follows 0024 and is one row by construction', async () => {
   const dir = new URL('../migrations/', import.meta.url).pathname;
   const files = (await readdir(dir)).filter((f) => f.endsWith('.sql')).sort();
   const at = files.indexOf('0025_audit_anchor.sql');
   assert.ok(at > 0, '0025 is on disk');
   assert.equal(files[at - 1], '0024_siem_cursor.sql', '0025 follows 0024 with nothing between');
-  assert.equal(files.at(-1), '0025_audit_anchor.sql', 'the audit anchor holds the migration ceiling');
+  // The ceiling assertion moved with the ceiling: tests/device-auth.test.ts owns it now (0026, plans/35 wave 5).
   const sql = await readFile(join(dir, '0025_audit_anchor.sql'), 'utf8');
   assert.match(sql, /create table audit_anchor/);
   assert.match(sql, /check \(id = 1\)/);
