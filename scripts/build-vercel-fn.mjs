@@ -15,7 +15,7 @@
  * Vercel invokes it as the project's buildCommand (vercel.json).
  */
 import { build } from 'esbuild';
-import { mkdirSync, rmSync, cpSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdirSync, rmSync, cpSync, writeFileSync, readFileSync, readdirSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -112,30 +112,29 @@ console.log('▶ copy native @resvg/resvg-js');
 cpSync(join(ROOT, 'node_modules', '@resvg'), join(NM, '@resvg'), { recursive: true, dereference: true });
 
 // 4. Data dirs the handler reads at runtime, as siblings of index.mjs (FN_ROOT base).
-// dereference: the demo pack's catalog is a brand-profile SYMLINK
-// (packs/demo/catalog -> brands/suse/catalog); the function bundle gets real
-// files, which serves identically and never depends on the platform preserving
-// links. Profile SWITCHING is impossible on a read-only deploy either way -
-// the marker still names the active profile, so listing stays honest.
 for (const d of ['migrations', 'console', 'docs', join('packs', 'demo')]) {
   console.log('▶ copy data', d);
-  cpSync(join(ROOT, d), join(FUNC, d), { recursive: true, dereference: true });
+  cpSync(join(ROOT, d), join(FUNC, d), { recursive: true });
 }
 
-// Remote builds receive the SOURCE from an upload that may drop symlinks
-// entirely (observed on Vercel: the profile symlink arrived as nothing), so a
-// dereferencing copy of an absent link still leaves no catalog. Self-heal:
-// resolve the active profile into a real directory from the marker, falling
-// back to the sole brands/ entry when the marker itself was dropped.
+// The demo pack's catalog is a brand-profile SYMLINK (packs/demo/catalog ->
+// brands/suse/catalog). Never trust a copy to carry it: cpSync's dereference
+// rewrote the relative link into an ABSOLUTE one pointing at the build
+// sandbox - alive at build time, dead at runtime, and every /catalog, brand
+// and render surface 404'd. Materialize instead: drop whatever the copy
+// produced and copy the ACTIVE profile's catalog in as real files, always.
+// A read-only deploy cannot switch profiles anyway; the marker keeps the
+// profile listing honest.
 const demoPack = join(FUNC, 'packs', 'demo');
-if (!existsSync(join(demoPack, 'catalog')) && existsSync(join(demoPack, 'brands'))) {
+if (existsSync(join(demoPack, 'brands'))) {
+  rmSync(join(demoPack, 'catalog'), { recursive: true, force: true });
   let active;
   try {
     active = readFileSync(join(demoPack, '.lolly-profile'), 'utf8').trim();
   } catch {
     active = readdirSync(join(demoPack, 'brands'))[0];
   }
-  console.log('▶ resolving brand-profile symlink to a real dir:', active);
+  console.log('▶ materialize brand-profile catalog:', active);
   cpSync(join(demoPack, 'brands', active, 'catalog'), join(demoPack, 'catalog'), { recursive: true });
 }
 
