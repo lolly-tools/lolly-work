@@ -122,6 +122,23 @@ for (const d of ['migrations', 'console', 'docs', join('packs', 'demo')]) {
   cpSync(join(ROOT, d), join(FUNC, d), { recursive: true, dereference: true });
 }
 
+// Remote builds receive the SOURCE from an upload that may drop symlinks
+// entirely (observed on Vercel: the profile symlink arrived as nothing), so a
+// dereferencing copy of an absent link still leaves no catalog. Self-heal:
+// resolve the active profile into a real directory from the marker, falling
+// back to the sole brands/ entry when the marker itself was dropped.
+const demoPack = join(FUNC, 'packs', 'demo');
+if (!existsSync(join(demoPack, 'catalog')) && existsSync(join(demoPack, 'brands'))) {
+  let active;
+  try {
+    active = readFileSync(join(demoPack, '.lolly-profile'), 'utf8').trim();
+  } catch {
+    active = readdirSync(join(demoPack, 'brands'))[0];
+  }
+  console.log('▶ resolving brand-profile symlink to a real dir:', active);
+  cpSync(join(demoPack, 'brands', active, 'catalog'), join(demoPack, 'catalog'), { recursive: true });
+}
+
 // 5. Function + platform config (Build Output API v3).
 writeFileSync(join(FUNC, '.vc-config.json'), JSON.stringify({
   runtime: 'nodejs22.x',
