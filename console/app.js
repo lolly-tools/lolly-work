@@ -1223,6 +1223,7 @@ async function viewOverview(main) {
 
   // ── catalog & content (inventory from the store, popularity from telemetry) ─
   const topAssets = summary.topAssets ?? [];
+  const topDownloads = summary.topDownloads ?? [];
   const destinations = summary.destinations ?? [];
   const cat = stats?.catalog ?? { total: 0, byState: { live: 0, scheduled: 0, expired: 0, revoked: 0 } };
   const proj = stats?.projects ?? { total: 0, active: 0, top: [] };
@@ -1249,6 +1250,10 @@ async function viewOverview(main) {
           topAssets.length
             ? hbarChart(topAssets.map((a) => ({ label: a.assetId, value: a.count })))
             : el('p', { class: 'empty' }, 'No catalog-asset use recorded yet.')),
+        el('div', { class: 'card' }, el('h2', {}, 'Most-downloaded catalog items'),
+          topDownloads.length
+            ? hbarChart(topDownloads.map((a) => ({ label: a.assetId, value: a.count })), { color: SERIES[2] })
+            : el('p', { class: 'empty' }, 'No catalog downloads recorded yet — shells emit this when a catalog asset is saved as a file.')),
         el('div', { class: 'card' }, el('h2', {}, 'Projects by item count'),
           (proj.top ?? []).length
             ? hbarChart(proj.top.map((p) => ({ label: p.archived ? `${p.name} (archived)` : p.name, value: p.items })), { color: SERIES[2] })
@@ -1836,7 +1841,7 @@ function linkRow(l) {
   const copy = copyButton(() => l.url, 'Copy');
   return el('tr', {},
     el('td', {}, el('span', { class: 'chip' }, l.kind)),
-    el('td', {}, l.target.toolId ?? l.target.assetId ?? l.target.sessionId ?? '—', l.protected ? ' 🔒' : ''),
+    el('td', {}, l.target.toolId ?? l.target.assetId ?? (l.target.collectionId ? `collection: ${l.target.collectionId}` : null) ?? l.target.sessionId ?? '—', l.protected ? ' 🔒' : ''),
     el('td', { class: 'mono url-cell', title: l.url }, l.url),
     el('td', {}, el('span', { class: `status ${l.status}` }, l.status)),
     whenCell(l.expiresAt),
@@ -1940,6 +1945,57 @@ function lifecycleControls(entry) {
 }
 
 /**
+ * Controls for the org's own metadata fields (plans/31 section 4), built from
+ * the DEFINITIONS the instance published: text, select, date and url each get
+ * the control that kind deserves, and a required field is marked.
+ *
+ * One editor, two homes: the served-asset inspect panel and the submit review
+ * queue. Its read() returns only what MOVED, because the server merges a sparse
+ * patch onto the stored values - so re-sending an untouched field could only
+ * ever be a way for two open panels to overwrite each other.
+ */
+function orgFieldEditor(defs, values) {
+  const current = (id) => String(values?.[id] ?? '');
+  const inputs = new Map();
+  const rows = (defs ?? []).map((def) => {
+    let control;
+    if (def.kind === 'select') {
+      control = el('select', {},
+        el('option', { value: '' }, def.required ? 'Choose one' : '(none)'),
+        ...(def.options ?? []).map((o) => el('option', { value: o }, o)));
+      control.value = current(def.id);
+    } else {
+      control = el('input', {
+        type: def.kind === 'date' ? 'date' : def.kind === 'url' ? 'url' : 'text',
+        value: current(def.id),
+        ...(def.kind === 'url' ? { placeholder: 'https://…' } : {}),
+      });
+    }
+    inputs.set(def.id, control);
+    return field(def.required ? `${def.label} (required)` : def.label, control);
+  });
+  return {
+    node: rows.length ? el('div', { class: 'formrow' }, ...rows) : null,
+    read() {
+      const patch = {};
+      for (const [id, control] of inputs) {
+        const next = control.value.trim();
+        if (next !== current(id)) patch[id] = next;
+      }
+      return patch;
+    },
+  };
+}
+
+/** The org's own metadata as read-only chips, for a caller who may look but not
+ *  edit. Absent definitions render nothing at all. */
+function orgFieldRows(defs, values) {
+  const set = (defs ?? []).filter((d) => values?.[d.id]);
+  if (!set.length) return el('span', { class: 'muted' }, 'none');
+  return el('div', { class: 'chips' }, ...set.map((d) => el('span', { class: 'chip' }, `${d.label}: ${values[d.id]}`)));
+}
+
+/**
  * The review panel for one pending submission (plans/31 section 3): the preview
  * a reviewer decides on, the declared metadata as an editable form, and the
  * decision itself with its comment. It sits below the queue table exactly as
@@ -1951,7 +2007,7 @@ function lifecycleControls(entry) {
  * publishing it would be the worst of the three possible behaviours; the edit
  * stays its own audited call either way.
  */
-function renderSubmissionReview(s, host, opener) {
+function renderSubmissionReview(s, host, opener, fieldDefs) {
   const short = String(s.id).replace(/^inst\//, '');
   const err = errSpan();
   const mine = s.relation === 'mine';
@@ -1968,6 +2024,11 @@ function renderSubmissionReview(s, host, opener) {
   const buttons = [];
   const busy = (on) => { for (const b of buttons) b.disabled = on; };
 
+  // The org's own fields ride the SAME editor the served-asset panel uses and
+  // the same overlay, so a reviewer files the asset under the org's taxonomy
+  // before publishing it rather than in a second pass afterwards.
+  const org = orgFieldEditor(fieldDefs, s.fields);
+
   const edited = () => {
     const body = {};
     if (nameInput.value.trim() !== (s.name ?? '')) body.name = nameInput.value.trim();
@@ -1975,6 +2036,8 @@ function renderSubmissionReview(s, host, opener) {
     if (descInput.value.trim() !== (s.description ?? '')) body.description = descInput.value.trim();
     const tags = tagsInput.value.split(',').map((t) => t.trim()).filter(Boolean);
     if (tags.join(',') !== (s.tags ?? []).join(',')) body.tags = tags;
+    const fields = org.read();
+    if (Object.keys(fields).length) body.fields = fields;
     return body;
   };
   const saveEdits = async () => {
@@ -2038,13 +2101,16 @@ function renderSubmissionReview(s, host, opener) {
               'Correct it before it is published - name, type, tags and description only. The bytes and the exposure the submitter chose are not editable here, and every change is audited with its before and after.'),
             el('div', { class: 'formrow' }, field('Name', nameInput), field('Type', typeInput)),
             el('div', { class: 'formrow' }, field('Tags (comma-separated)', tagsInput), field('Description', descInput)),
+            org.node ? el('h3', { class: 'detail-h' }, 'Org fields') : null,
+            org.node,
             el('p', {}, saveBtn))
         : el('div', { class: 'stack' },
             el('p', { class: 'sub', style: 'margin:0 0 8px' },
               `${s.type ?? 'asset'}${s.description ? ` - ${s.description}` : ''}`),
             (s.tags ?? []).length
               ? el('div', { class: 'chips' }, ...s.tags.map((t) => el('span', { class: 'chip' }, t)))
-              : el('span', { class: 'muted' }, 'no tags'))),
+              : el('span', { class: 'muted' }, 'no tags'),
+            (fieldDefs ?? []).length ? orgFieldRows(fieldDefs, s.fields) : null)),
     el('div', { class: 'stack' },
       el('h3', { class: 'detail-h' }, 'Decision'),
       !pending
@@ -2079,10 +2145,13 @@ async function submissionQueue() {
   };
   const pending = await load('submitted');
   if (!pending?.length) return null;
+  // The org's field DEFINITIONS, fetched once for the whole queue: an instance
+  // that defines none gets the panel it had before.
+  const fieldDefs = await api('/api/v1/catalog/fields').then((r) => r.fields ?? []).catch(() => []);
 
   const panelHost = el('div', { class: 'stack' });
   const open = (s, opener) => {
-    panelHost.replaceChildren(renderSubmissionReview(s, panelHost, opener));
+    panelHost.replaceChildren(renderSubmissionReview(s, panelHost, opener, fieldDefs));
     scrollIntoViewMotionSafe(panelHost);
   };
 
@@ -2165,10 +2234,140 @@ async function openCatalogInspect(entry, host) {
       el('p', { class: 'muted mono', style: 'margin-top:8px;font-size:12px' }, e.message || '')));
     return;
   }
-  host.replaceChildren(renderCatalogDetail(detail, entry, host, opener));
+  // Byte history (plans/31 section 6), for instance-owned assets only - a pack
+  // file and a federated asset are versioned where they live. A failure here
+  // never costs the panel: the rest of the detail still renders.
+  let history = null;
+  if (String(detail.id ?? entry.id).startsWith('inst/')) {
+    try { history = await api(`/api/v1/catalog/assets/${entry.id}/versions`); } catch { history = null; }
+  }
+  host.replaceChildren(renderCatalogDetail(detail, entry, host, opener, history));
 }
 
-function renderCatalogDetail(detail, entry, host, opener) {
+/**
+ * The version history of one instance asset (plans/31 section 6): what it has
+ * served, what it serves now, and the two moves that change it.
+ *
+ * Rollback points the head at a version that already exists - nothing is copied
+ * and nothing is deleted, so it is itself reversible - and deleting a version
+ * is refused for the head (roll back first) and for a held asset (a hold only
+ * ever preserves availability). Read-only for a caller without catalog.edit,
+ * because the history is worth seeing even where it cannot be moved.
+ */
+function catalogVersionsPanel(detail, entry, host, history) {
+  if (!history || !Array.isArray(history.versions) || history.versions.length < 1) return null;
+  const id = detail.id ?? entry.id;
+  const err = errSpan();
+  const act = async (label, fn) => {
+    err.textContent = '';
+    try {
+      await fn();
+      toast(label);
+      openCatalogInspect(entry, host);
+    } catch (e) { err.textContent = e.message; }
+  };
+
+  const rows = history.versions.map((v) => {
+    const controls = [];
+    if (detail.canEdit && !v.head) {
+      controls.push(el('button', { onclick: () => act(`${id} now serves version ${v.version}`,
+        () => api(`/api/v1/catalog/assets/${id}/head`, { method: 'PUT', body: { version: v.version } })) }, 'Serve this'));
+      controls.push(el('button', { onclick: () => act(`Deleted version ${v.version}`,
+        () => api(`/api/v1/catalog/assets/${id}/versions/${v.version}`, { method: 'DELETE' })) }, 'Delete'));
+    }
+    return el('tr', {},
+      el('td', { class: 'mono' }, `v${v.version}`, v.head ? el('span', { class: 'chip', style: 'margin-left:6px' }, 'serving') : null),
+      whenCell(v.at),
+      el('td', { class: 'muted mono' }, String(v.by ?? '').replace(/^user:/, '')),
+      el('td', {}, fmtBytes(v.size) || '—'),
+      el('td', {}, v.note ?? el('span', { class: 'muted' }, '—')),
+      el('td', {}, ...controls));
+  });
+
+  return el('div', { class: 'stack' },
+    el('h3', { class: 'detail-h' }, 'Versions'),
+    el('p', { class: 'sub', style: 'margin:0 0 8px' },
+      `The id and its URL never change; the bytes behind them do. ${history.keep
+        ? `This deployment keeps ${history.keep} versions per asset.`
+        : 'This deployment keeps every version.'} A hold refuses deletion, and the served version is never deletable.`),
+    el('table', { class: 'tbl' },
+      el('thead', {}, el('tr', {},
+        el('th', {}, 'Version'), el('th', {}, 'When'), el('th', {}, 'By'),
+        el('th', {}, 'Size'), el('th', {}, 'Note'), el('th', {}, ''))),
+      el('tbody', {}, ...rows)),
+    err);
+}
+
+/**
+ * The metadata editor in the inspect panel (plans/31 section 4). Two halves,
+ * one Save, and the halves have different reach on purpose: the org's own
+ * fields apply to ANY asset (pack, federated or instance-owned), while name,
+ * description and tags are offered only for an `inst/*` asset, because a
+ * federated asset keeps its upstream name and a pack asset is a file on disk.
+ *
+ * Renders read-only for a caller without `catalog.edit`, and renders nothing at
+ * all when there is neither a definition to fill in nor an editable record -
+ * an instance that has defined no fields sees the panel it had before.
+ */
+function catalogMetaEditor(detail, entry, host) {
+  const id = detail.id ?? entry.id;
+  const defs = detail.fieldDefs ?? [];
+  const own = String(id).startsWith('inst/');
+  const values = detail.fields ?? {};
+  if (!defs.length && !own) return null;
+  if (!detail.canEdit) {
+    return defs.length
+      ? el('div', { class: 'stack' }, el('h3', { class: 'detail-h' }, 'Org fields'), orgFieldRows(defs, values))
+      : null;
+  }
+
+  const err = errSpan();
+  const org = orgFieldEditor(defs, values);
+  const nameInput = el('input', { type: 'text', value: detail.name ?? '' });
+  const descInput = el('input', { type: 'text', value: detail.description ?? '' });
+  const tagsInput = el('input', { type: 'text', value: (Array.isArray(detail.tags) ? detail.tags : []).join(', ') });
+  // Supersession (plans/31 section 6) is offered for ANY asset, because it
+  // names a successor id rather than editing a record this deployment owns.
+  const replacedInput = el('input', { type: 'text', value: detail.replacedBy ?? '', placeholder: 'inst/… (leave empty for none)' });
+
+  const saveBtn = el('button', { onclick: async () => {
+    err.textContent = '';
+    saveBtn.disabled = true;
+    const body = {};
+    if (own) {
+      if (nameInput.value.trim() !== (detail.name ?? '')) body.name = nameInput.value.trim();
+      if (descInput.value.trim() !== (detail.description ?? '')) body.description = descInput.value.trim();
+      const tags = tagsInput.value.split(',').map((t) => t.trim()).filter(Boolean);
+      if (tags.join(',') !== (Array.isArray(detail.tags) ? detail.tags : []).join(',')) body.tags = tags;
+    }
+    const fields = org.read();
+    if (Object.keys(fields).length) body.fields = fields;
+    if (replacedInput.value.trim() !== (detail.replacedBy ?? '')) body.replacedBy = replacedInput.value.trim() || null;
+    if (!Object.keys(body).length) { err.textContent = 'Nothing changed yet.'; saveBtn.disabled = false; return; }
+    try {
+      await api(`/api/v1/catalog/assets/${id}/meta`, { method: 'PUT', body });
+      toast(`Updated ${detail.name ?? id}`);
+      openCatalogInspect(entry, host); // re-read, so the panel shows what was stored
+    } catch (e) { err.textContent = e.message; saveBtn.disabled = false; }
+  } }, 'Save metadata');
+
+  return el('div', { class: 'stack' },
+    el('h3', { class: 'detail-h' }, own ? 'Metadata' : 'Org fields'),
+    el('p', { class: 'sub', style: 'margin:0 0 8px' },
+      own
+        ? 'This deployment owns these bytes, so its name, description and tags are editable here alongside the org fields. Every change is audited with its before and after.'
+        : 'The org fields apply to any asset. The name and tags come from the source and stay there - this deployment does not own that record.'),
+    own ? el('div', { class: 'formrow' }, field('Name', nameInput), field('Tags (comma-separated)', tagsInput)) : null,
+    own ? el('div', { class: 'formrow' }, field('Description', descInput)) : null,
+    org.node,
+    el('div', { class: 'formrow' }, field('Replaced by (asset id)', replacedInput)),
+    el('p', { class: 'sub', style: 'margin:0' },
+      'Naming a replacement retires this asset in favour of that one for anything that reads the catalog. It is advice, not a takedown - the asset keeps serving until its lifecycle says otherwise.'),
+    el('p', {}, saveBtn),
+    err);
+}
+
+function renderCatalogDetail(detail, entry, host, opener, history) {
   const state = detail.state ?? entry.state;
   const lc = detail.lifecycle;
   const tags = Array.isArray(detail.tags) ? detail.tags : (entry.tags ?? []);
@@ -2189,6 +2388,8 @@ function renderCatalogDetail(detail, entry, host, opener) {
     : null;
 
   const { node: lcNode, err: lcErr } = lifecycleControls(entry);
+  const metaSection = catalogMetaEditor(detail, entry, host);
+  const versionsSection = catalogVersionsPanel(detail, entry, host, history);
 
   const heading = el('h2', { class: 'flush', tabindex: '-1' }, detail.name ?? detail.id ?? entry.id);
   requestAnimationFrame(() => heading.focus()); // move focus into the opened panel
@@ -2212,7 +2413,12 @@ function renderCatalogDetail(detail, entry, host, opener) {
     el('div', { class: 'stack' },
       el('h3', { class: 'detail-h' }, 'Tags'),
       tags.length ? el('div', { class: 'chips' }, ...tags.map((t) => el('span', { class: 'chip' }, t))) : el('span', { class: 'muted' }, 'none')),
+    metaSection,
+    detail.replacedBy
+      ? el('p', { class: 'sub flush' }, 'Replaced by ', el('span', { class: 'mono' }, detail.replacedBy))
+      : null,
     fmtList ? el('div', { class: 'stack' }, el('h3', { class: 'detail-h' }, 'Formats'), fmtList) : null,
+    versionsSection,
     el('div', { class: 'stack' },
       el('h3', { class: 'detail-h' }, 'Lifecycle'),
       el('p', { class: 'sub', style: 'margin:0 0 8px' },
@@ -2226,12 +2432,190 @@ function renderCatalogDetail(detail, entry, host, opener) {
 // view — merged with the lifecycle rows list (unfiltered by design: it's the
 // admin management surface), so revoked/expired-and-hidden assets that the
 // feed itself no longer serves still show up here with their state.
+/**
+ * Collections (plans/31 section 5): named, ORDERED, group-visible sets of
+ * catalog assets, and the links that hand one to somebody outside the org.
+ *
+ * Returns null when this caller does not hold catalog.collection.manage, so the
+ * card simply does not appear rather than showing an error nobody can act on -
+ * the same shape the submit review queue uses.
+ *
+ * The editor is deliberately a list with up/down/remove rather than a
+ * drag-and-drop canvas: the order IS the collection (a lookbook is a sequence),
+ * and a control that works with a keyboard and a screen reader is worth more
+ * here than one that looks like a design tool.
+ */
+async function collectionsCard(assetIndex) {
+  let collections;
+  try {
+    collections = (await api('/api/v1/catalog/collections')).collections ?? [];
+  } catch { return null; }
+
+  const known = (assetIndex.assets ?? []).map((a) => ({ id: a.id, name: a.name ?? a.id }));
+  const nameOf = new Map(known.map((a) => [a.id, a.name]));
+  const panelHost = el('div', { class: 'stack' });
+
+  const groupsText = (c) => (!c.groups || c.groups === '*' ? 'everyone' : c.groups.join(', '));
+
+  const rowFor = (c) => {
+    const editBtn = el('button', { onclick: () => open(c, editBtn) }, 'Edit');
+    return el('tr', {},
+      el('td', {}, c.name, el('div', { class: 'muted mono' }, c.id)),
+      numCell(c.members.length),
+      el('td', {}, groupsText(c)),
+      el('td', { class: 'muted mono' }, (c.curator ?? '').replace(/^user:/, '')),
+      whenCell(c.updatedAt),
+      el('td', {}, editBtn));
+  };
+
+  const open = (c, opener) => {
+    panelHost.replaceChildren(renderCollectionEditor(c, known, nameOf, panelHost, opener));
+    scrollIntoViewMotionSafe(panelHost);
+  };
+
+  const newBtn = el('button', { class: 'primary', onclick: () => open(null, newBtn) }, 'New collection');
+
+  return el('div', { class: 'card stack' },
+    el('div', { class: 'list-bar' }, el('h2', { class: 'flush' }, `Collections (${collections.length})`), newBtn),
+    el('p', { class: 'sub' },
+      'Named, ordered sets of assets, visible to the groups you name. A collection link gives someone outside the org a page listing that set and a download-all, and nothing else: no search, no browsing past the set, no sign-up. Every asset is re-checked against its lifecycle each time the link is opened.'),
+    collections.length
+      ? dataTable(
+          ['Collection', { label: 'Assets', num: true }, 'Visible to', 'Curator', { label: 'Updated', sort: 'date' }, { label: '', w: '1%', sort: false }],
+          collections.map(rowFor), { csvName: 'collections' })
+      : el('p', { class: 'empty' }, 'No collections yet. Assemble one to share a set of assets as a single link.'),
+    panelHost);
+}
+
+/** The editor for one collection, or a blank one when `existing` is null. */
+function renderCollectionEditor(existing, known, nameOf, host, opener) {
+  const err = errSpan();
+  const creating = !existing;
+  const idInput = el('input', { value: existing?.id ?? '', placeholder: 'launch-kit', ...(creating ? {} : { disabled: 'disabled' }) });
+  const nameInput = el('input', { value: existing?.name ?? '', placeholder: 'Launch kit' });
+  const descInput = el('input', { value: existing?.description ?? '', placeholder: 'What this set is for' });
+  const groupsInput = el('input', {
+    value: !existing?.groups || existing.groups === '*' ? '' : existing.groups.join(', '),
+    placeholder: 'everyone (or: design, sales)',
+  });
+
+  // Working model: the ordered member ids. Mutated in place by the row controls.
+  const members = [...(existing?.members ?? [])];
+  const membersHost = el('div', { class: 'stack' });
+  const picker = el('select', { 'aria-label': 'Asset to add' },
+    el('option', { value: '' }, 'Add an asset…'),
+    ...known.map((a) => el('option', { value: a.id }, `${a.name} (${a.id})`)));
+
+  const renderMembers = () => {
+    membersHost.replaceChildren(
+      ...members.map((id, i) => el('div', { class: 'formrow' },
+        el('div', {},
+          el('label', {}, `${i + 1}.`),
+          el('div', {}, nameOf.get(id) ?? id, el('div', { class: 'muted mono' }, id))),
+        el('div', {}, el('label', {}, ' '),
+          el('div', { class: 'lc-actions' },
+            el('button', { disabled: i === 0 ? 'disabled' : null, title: 'Move up',
+              onclick: () => { members.splice(i - 1, 0, members.splice(i, 1)[0]); renderMembers(); } }, '↑'),
+            el('button', { disabled: i === members.length - 1 ? 'disabled' : null, title: 'Move down',
+              onclick: () => { members.splice(i + 1, 0, members.splice(i, 1)[0]); renderMembers(); } }, '↓'),
+            el('button', { onclick: () => { members.splice(i, 1); renderMembers(); } }, 'Remove')))))
+      ,
+      members.length ? null : el('p', { class: 'empty' }, 'No assets in this set yet.'));
+  };
+  renderMembers();
+  picker.onchange = () => {
+    const id = picker.value;
+    picker.value = '';
+    if (!id || members.includes(id)) return; // a repeat keeps its first position
+    members.push(id);
+    renderMembers();
+  };
+
+  const linkHost = el('div', { class: 'stack' });
+  const shareBtn = el('button', { onclick: async () => {
+    err.textContent = '';
+    shareBtn.disabled = true;
+    try {
+      const link = await api('/api/v1/links', { method: 'POST', body: { kind: 'share', target: { collectionId: existing.id } } });
+      linkHost.replaceChildren(
+        el('p', { class: 'sub', style: 'margin:0 0 6px' }, `Anyone with this link sees this collection until ${when(link.expiresAt)}.`),
+        el('div', { class: 'lc-actions' },
+          el('span', { class: 'mono url-cell', title: link.url }, link.url),
+          copyButton(() => link.url, 'Copy')));
+    } catch (e) { err.textContent = e.message; }
+    shareBtn.disabled = false;
+  } }, 'Create a share link');
+  const zipBtn = el('button', { onclick: async () => {
+    err.textContent = '';
+    zipBtn.disabled = true;
+    try {
+      const link = await api('/api/v1/links', { method: 'POST', body: { kind: 'download', target: { collectionId: existing.id } } });
+      linkHost.replaceChildren(
+        el('p', { class: 'sub', style: 'margin:0 0 6px' }, `This link downloads the whole set as a zip, until ${when(link.expiresAt)}.`),
+        el('div', { class: 'lc-actions' },
+          el('span', { class: 'mono url-cell', title: link.url }, link.url),
+          copyButton(() => link.url, 'Copy')));
+    } catch (e) { err.textContent = e.message; }
+    zipBtn.disabled = false;
+  } }, 'Create a download-all link');
+
+  const saveBtn = el('button', { class: 'primary', onclick: async () => {
+    err.textContent = '';
+    const id = (idInput.value || '').trim();
+    if (!id) { err.textContent = 'An id is required — lowercase letters, digits and dashes.'; return; }
+    saveBtn.disabled = true;
+    const groups = groupsInput.value.split(',').map((g) => g.trim()).filter(Boolean);
+    try {
+      await api(`/api/v1/catalog/collections/${encodeURIComponent(id)}`, { method: 'PUT', body: {
+        name: nameInput.value.trim(),
+        description: descInput.value.trim(),
+        members,
+        groups: groups.length ? groups : '*',
+      } });
+      toast(creating ? `Created ${id}` : `Saved ${id}`);
+      route();
+    } catch (e) { err.textContent = e.message; saveBtn.disabled = false; }
+  } }, creating ? 'Create collection' : 'Save collection');
+
+  const deleteBtn = creating ? null : armConfirmButton({ class: 'danger' }, 'Delete', 'Really delete?', async (disarm) => {
+    err.textContent = '';
+    try {
+      await api(`/api/v1/catalog/collections/${encodeURIComponent(existing.id)}`, { method: 'DELETE' });
+      toast(`Deleted ${existing.id}`);
+      route();
+    } catch (e) { err.textContent = e.message; disarm(); }
+  });
+
+  const heading = el('h2', { class: 'flush', tabindex: '-1' }, creating ? 'New collection' : existing.name);
+  requestAnimationFrame(() => heading.focus());
+  return el('div', { class: 'card stack' },
+    el('div', { class: 'list-bar' }, heading,
+      el('button', { onclick: () => { host.replaceChildren(); opener?.focus?.(); } }, 'Close')),
+    el('div', { class: 'formrow' }, field('Id', idInput), field('Name', nameInput)),
+    el('div', { class: 'formrow' }, field('Description', descInput), field('Visible to (groups)', groupsInput)),
+    el('div', { class: 'stack' },
+      el('h3', { class: 'detail-h' }, 'Assets, in the order they are shown'),
+      el('p', { class: 'sub', style: 'margin:0 0 8px' },
+        'You can only add assets you can see yourself — a collection link hands its members to a bearer, so it can never reach further than its curator could.'),
+      el('p', {}, picker),
+      membersHost),
+    creating
+      ? null
+      : el('div', { class: 'stack' },
+          el('h3', { class: 'detail-h' }, 'Share it'),
+          el('div', { class: 'lc-actions' }, shareBtn, zipBtn),
+          linkHost),
+    el('p', {}, el('div', { class: 'lc-actions' }, saveBtn, deleteBtn)),
+    err);
+}
+
 async function viewCatalog(main) {
   const [index, lifecycle, queue] = await Promise.all([
     api('/catalog/assets/index.json'),
     api('/api/v1/catalog/lifecycle'),
     submissionQueue(),
   ]);
+  const collections = await collectionsCard(index);
   const byId = new Map((index.assets ?? []).map((a) => [a.id, a]));
   const rowsById = new Map(lifecycle.rows.map((r) => [r.assetId, r]));
   const ids = new Set([...byId.keys(), ...rowsById.keys()]);
@@ -2252,6 +2636,7 @@ async function viewCatalog(main) {
     el('p', { class: 'sub' }, 'Every asset this deployment serves, with a thumbnail, its expiry and revocation state. Inspect an asset for its full metadata and a larger preview. Revoking or hiding-on-expiry drops an asset from the feed immediately; it stays listed here — without its catalog metadata — so it can still be managed.'),
     ...(hdr ? [hdr] : []),
     ...(queue ? [queue] : []),
+    ...(collections ? [collections] : []),
     el('div', { class: 'card' },
       el('h2', {}, 'Served assets'),
       entries.length

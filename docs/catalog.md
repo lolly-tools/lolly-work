@@ -102,7 +102,7 @@ a share link, or in the review preview.
 ```
 GET   /api/v1/catalog/submissions[?state=submitted|live|returned]     # catalog.read
 GET   /api/v1/catalog/submissions/<id>/bytes                          # preview, pre-publication
-PATCH /api/v1/catalog/submissions/<id>         { "name": "…", "tags": ["…"], "type": "…", "description": "…" }
+PATCH /api/v1/catalog/submissions/<id>         { "name": "…", "tags": ["…"], "type": "…", "description": "…", "fields": {…}, "extractedText": "…" }
 POST  /api/v1/catalog/submissions/<id>/act     { "action": "approve" | "reject", "comment": "…" }
 ```
 
@@ -116,8 +116,11 @@ the inbox. Audit records `catalog.submit`, `catalog.approve-submission` and
 to hang the event off otherwise.
 
 **A reviewer can fix the metadata rather than return the asset over it.** `PATCH` corrects a
-pending submission's declared `name`, `type`, `tags` and `description`; the submitter can
-correct their own while it waits. It touches nothing else - not the bytes, not the exposure the
+pending submission's declared `name`, `type`, `tags` and `description`, fills in the
+org's own [custom fields](#org-defined-metadata) (`"fields": { "region": "EMEA" }`) on the same
+overlay a published asset uses, and takes the submitter's on-device [`extractedText`](#org-defined-metadata)
+so the words on the file are searchable the moment it publishes; the values are already there
+when it reaches the feed. The submitter can do all of this to their own while it waits. It touches nothing else - not the bytes, not the exposure the
 submitter chose - and it refuses once the submission has settled, because a published asset is
 an ordinary catalog asset from then on. Every field that moves is audited with its before and
 after, under `catalog.edit-submission`.
@@ -134,6 +137,272 @@ lw catalog edit    inst/ab12cd34 --name "Campaign Hero 2026" --tags campaign,her
 lw catalog approve inst/ab12cd34
 lw catalog return  inst/ab12cd34 --body "wrong logo lockup"
 ```
+
+## Org-defined metadata
+
+Tags are a flat list, and for a long time they were the only taxonomy an org had. Custom
+fields are the other half: an org names the fields it files assets under, and fills them in on
+any asset this deploy serves.
+
+The two halves have different owners on purpose.
+
+**Definitions are policy.** They live in the [governance
+document](governance.md#policy-as-code) beside grants, overlays, chains and flags, so
+`lw export` and `lw apply` carry them, the boot seed brings a fresh deploy up with the org's
+taxonomy already in place, and a change is reviewable in git:
+
+```json
+"catalogFields": [
+  { "id": "region",   "label": "Region",   "kind": "select", "options": ["EMEA", "AMER"], "required": true },
+  { "id": "campaign", "label": "Campaign", "kind": "text" },
+  { "id": "shot-on",  "label": "Shot on",  "kind": "date" },
+  { "id": "brief",    "label": "Brief",    "kind": "url" }
+]
+```
+
+| Attribute | Meaning |
+|---|---|
+| `id` | a slug, and the key the value is stored and served under |
+| `label` | what the editor and the details view show |
+| `kind` | `text`, `select`, `date` (YYYY-MM-DD) or `url` (http/https) |
+| `options` | the values a `select` allows - required for `select`, refused on every other kind |
+| `required` | a save that leaves it empty is refused |
+
+`required` gates the **editor**, never the feed: an asset that predates a definition keeps
+serving exactly as it did, and the first edit is where it has to be filled in.
+
+The same three routes the console uses are available directly, and a definition can also be
+edited one at a time (`policy.edit`, the same gate the rest of governance uses):
+
+```
+GET    /api/v1/catalog/fields                 # catalog.read - the definitions, plus a canEdit bit
+PUT    /api/v1/catalog/fields/<id>            # policy.edit
+DELETE /api/v1/catalog/fields/<id>            # policy.edit
+```
+
+**Values are a local overlay keyed by asset id**, which is what makes them work the same for
+all three kinds of asset this deploy serves: an instance-owned `inst/*` asset, a federated
+`ext/*` asset whose record belongs to an upstream DAM, and a pack asset that is a file on
+disk. None of those three could have grown a column; all three have an id.
+
+```
+PUT /api/v1/catalog/assets/<id>/meta          # catalog.edit
+{ "fields": { "region": "EMEA", "campaign": "Autumn Launch" },
+  "name": "Campaign Hero 2026", "tags": ["campaign"], "description": "Q4 hero" }
+```
+
+`fields` is a **sparse merge**: a field you do not send keeps its stored value, and one you
+send empty (or `null`) is cleared. `name`, `description` and `tags` apply to an `inst/*` asset
+only and write through to the record the submit pipeline already keeps them on - a federated
+asset keeps the name its source gives it, because this deploy does not own that record and a
+quietly shadowed title would make the two disagree with nothing to say which was authored
+here. Every change is audited as `catalog.edit` with its before and after.
+
+Values ride the feed as one additive `fields` bag on the entry that carries them:
+
+```json
+{ "id": "suse/tokens/brand", "name": "Brand tokens",
+  "fields": { "campaign": "Autumn Launch", "region": "EMEA" } }
+```
+
+Additive is the point: the OSS asset schema is untouched, a shell that knows nothing about the
+bag ignores it, one that renders unknown keys shows the values as ordinary rows, and no shell
+version is ever required in lockstep. `GET /api/v1/catalog/search` matches the values too, so
+an asset is findable by what an org filed it under.
+
+**Find it by the words on it.** An asset's overlay can also carry `extractedText` - the OCR
+text of the asset, produced **on the device** that submits or curates it (the same reader the
+shell already ships). The server never runs a model: the client posts the text and it is
+whitespace-collapsed, capped, and folded into the `GET /api/v1/catalog/search` haystack beside
+the fields. So "find the slide by a phrase printed on it" works, while the OCR text stays
+**off** the served feed - it is a search index, not weight every catalog card has to carry.
+Like the fields, it works for `inst/*`, `ext/*` and pack ids alike, because the overlay is
+keyed by asset id.
+
+Two doors post it, the same two that post the fields: a curator uses the live-asset editor
+(`PUT .../meta`, `catalog.edit`), and a **submitter** attaches their own reading of their own
+file to a pending submission through the [review queue](#reviewing-what-was-submitted)'s PATCH
+before it is published - no curation right needed for the words on a file you contributed.
+
+Retiring a definition (`DELETE`, or a `--prune` apply that drops it) removes the **definition**
+and takes its values off every served surface at once. The stored values survive: re-adding
+the definition brings them back, which a cascading delete could never do.
+
+The console's Catalog view puts the editor in the inspect panel, and the [submit review
+queue](#reviewing-what-was-submitted) uses the same one - a reviewer files a submission under
+the org's taxonomy before publishing it, so the values are already there the moment the asset
+reaches the feed.
+
+## Collections
+
+A **collection** is a named, ordered set of catalog assets with its own group visibility - the
+lookbook, the launch kit, the set you hand an agency. Managing them is
+`catalog.collection.manage` (admin by default,
+[grantable](permissions.md#curating-a-shareable-set-catalogcollectionmanage)); reading them
+needs nothing extra.
+
+```bash
+curl -X PUT https://lolly.example/api/v1/catalog/collections/launch-kit \
+  -H 'content-type: application/json' -b lw_session=... -d '{
+    "name": "Launch kit",
+    "description": "Everything for the spring launch.",
+    "members": ["inst/hero", "ext/brandfolder/a1", "suse/logos/mark"],
+    "groups": ["design", "sales"]
+  }'
+```
+
+Three things follow from members being **ids**, not rows:
+
+- one set mixes instance-owned (`inst/*`), federated (`ext/*`) and pack assets freely;
+- **order is yours** and is kept exactly - a lookbook is a sequence, and a repeat keeps its
+  first position rather than moving;
+- nothing dereferences a member until it is served, so an asset that is later expired,
+  revoked or deleted simply stops appearing. There is no repair step, and deleting a
+  collection deletes the list and nothing else.
+
+A `PUT` refuses any member the curator cannot see, and minting a link to the set refuses any
+member the *minter* cannot see. Together those two keep a link from laundering exposure - see
+[permissions](permissions.md#curating-a-shareable-set-catalogcollectionmanage).
+
+The per-caller feed carries them as one additive `collections` key beside `assets`:
+
+```json
+{ "assets": [ ... ],
+  "collections": [
+    { "id": "launch-kit", "name": "Launch kit", "members": ["inst/hero", "suse/logos/mark"] }
+  ] }
+```
+
+Two gates, kept separate: the **collection** is admitted by its own groups, and its **members**
+are narrowed to the assets that caller is already being served. A collection whose members
+have all expired still lists, empty - "why is this empty" is answerable and "where did my
+collection go" is not. A deployment with no collections serves a byte-identical index.
+
+### Collection links
+
+A [signed link](sharing.md) can target a collection instead of a single asset:
+
+```
+POST /api/v1/links   { "kind": "share", "target": { "collectionId": "launch-kit" } }
+```
+
+- **`share`** serves a minimal listing page: the instance's own brand chrome (the same
+  unauthenticated logo, fonts and colours the sign-in screen inherits), the collection's assets
+  with previews, a per-asset download, and one **Download all** button.
+- **`download`** serves the zip directly.
+- **`embed`** is refused. A collection is a list, not a byte stream, so there is nothing for an
+  `<img>` to point at.
+
+TTL, passwords, revocation and audit are the ordinary link machinery. Lifecycle is re-resolved
+**per member on every visit**, so an expired or revoked asset leaves both the page and the
+archive at once, on a link that is otherwise still perfectly live; the page says how many were
+left out and never which.
+
+The boundary is deliberate and complete: the page shows **that collection only**. No search, no
+browsing past the set, no self-registration, no route into the rest of the catalog. Asking the
+link for an asset the collection does not name is refused even though the signature is valid.
+That is what keeps it a list somebody sent you rather than a brand portal.
+
+The zip is built in-process from Node's own `zlib` - no archiver dependency, no temporary
+files. Members stream out one at a time (each is buffered only long enough to compute its CRC
+and length), entries are named for the asset and de-duplicated, and DEFLATE is kept only where
+it actually wins, so a set of already-compressed photographs is stored rather than pointlessly
+recompressed. Very large sets are refused before a byte is sent rather than truncated
+silently - download those assets individually.
+
+## Versions
+
+New bytes for an asset that is **already in the catalog** do not make a second asset. They
+become the next **version** of the one you have, and the id keeps meaning what it meant:
+
+```bash
+curl -X POST 'https://lolly.example/api/v1/catalog/submit?assetId=inst/hero&note=reshot%20in%20studio' \
+  -H 'content-type: image/png' -b lw_session=... --data-binary @hero-2027.png
+# → { "assetId": "inst/hero", "version": 2, "checksum": "…" }
+```
+
+It is the same pipeline a first submission runs - size cap, quota, sniff, the operator's
+pre-store scan hook, content-credential detection - with a different ending. What changes:
+
+- the served URL does **not**. `/catalog/inst/hero/png` is the id's address, not a version's,
+  so every link, collection, session and already-rendered reference keeps resolving;
+- the feed's **checksum and size** move, which is exactly what tells a shell holding an old
+  copy to fetch again;
+- **prior versions are kept**, and stay reachable at `?v=N` for a session that pinned specific
+  bytes:
+
+```
+GET /catalog/inst/hero/png?v=1
+```
+
+That fetch answers to every gate the head answers to - your groups, submission state, expiry,
+revocation. Version history is not a way around lifecycle.
+
+A version snapshots the asset's **whole format set**, not one file of it, and a head move
+replaces that set. Uploading a PNG to an asset that served PNG and SVG leaves it serving the
+PNG alone - and rolling back restores both, because the prior version kept the pair. Nothing is
+lost either way; what changes is what the id advertises today. A [pinned](#the-exit---materialize-a-source-into-your-own-store)
+copy of a federated asset refuses versioning outright (`409 ASSET_IS_PINNED`): its identity is
+still the provider's until the exit's cutover.
+
+Replacing a published asset's bytes needs `catalog.edit`, the **curation** right, not the
+`catalog.submit` contribution right that adds a new asset: an approver already decided this
+asset belongs in the catalog, so `policy.submit.chain` gates contributions and not versions.
+Exposure, name, tags and description keep their own door (`PUT …/meta`) and are refused here
+rather than silently ignored.
+
+### Rollback
+
+```bash
+lw catalog versions inst/hero          # the history, newest first, * marks what serves
+lw catalog rollback inst/hero 1        # point the head at version 1
+```
+
+A rollback points the head at a version that already exists. Nothing is copied and nothing is
+deleted, so it is itself reversible, and the version that *was* head stays in the history.
+Because the bytes behind a stable id changed, cached renders that could have consumed the asset
+are invalidated - the render cache key folds in a fingerprint of the instance's own assets, so
+a head move ripples the same way a pack publish does.
+
+### Deleting a version, and retention
+
+```bash
+lw catalog version-rm inst/hero 2
+```
+
+Two refusals: the **served** version is never deletable (roll back first, then delete), and a
+**held** asset refuses entirely with `409 ASSET_HELD` - a [hold](#holds) only ever preserves
+availability. Version numbers are never reused after a delete, because somebody may still hold
+a `?v=N` URL and handing them different bytes under the same number would be worse than a 404.
+
+Retention is policy, and the default keeps everything:
+
+```json
+{ "policy": { "catalog": { "versionKeep": 0 } } }
+```
+
+`0` keeps every version. A positive number keeps that many per asset, head included, trimming
+oldest-first and deleting the trimmed versions' bytes. The head is never trimmed even when a
+rollback has made an old version current, and a held asset is never trimmed at all. See
+[operations](operations.md#blob-growth-and-version-retention) for sizing.
+
+### Supersession
+
+A version says *these bytes changed*. A supersession says *stop using this asset, use that one*:
+
+```bash
+lw catalog supersede inst/hero-2026 inst/hero-2027    # or: lw catalog supersede inst/… --rm
+```
+
+It writes `replacedBy` onto the asset, which rides the served feed additively (the key is
+already in the open-source asset schema, so a shell that does not read it yet simply ignores
+it). Any asset takes one - pack, federated or instance-owned - because it names a successor id
+rather than editing a record this deployment owns. The successor has to be an asset you can
+see, and an asset cannot replace itself.
+
+Supersession is advice to consumers, never a takedown: the asset keeps serving until its
+lifecycle says otherwise, and the two compose - retire in favour of the new one, then expire
+the old one on a date the org agrees.
 
 ## Content lifecycle
 

@@ -7,14 +7,14 @@
  * the cache-key/link contracts they'll honour are already fixed
  * (render/cache-key.ts, links/sign.ts).
  */
-import { readFile, stat } from 'node:fs/promises';
+import { readdir, readFile, stat } from 'node:fs/promises';
 import { join, normalize, resolve as resolvePath, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import type { InstanceConfig, Secrets } from '../config/instance.ts';
-import type { ProjectRecord, SessionRecord, Store, UserRecord } from '../store/types.ts';
+import type { ProjectRecord, ScimTokenRecord, SessionRecord, Store, UserRecord } from '../store/types.ts';
 import type { RoomSnapshot } from '../collab/rooms.ts';
 import type { NearbyRegistry } from '../collab/nearby.ts';
 import { createRouter, readJson, readRaw, sendError, sendJson, type RouteCtx } from './router.ts';
@@ -26,6 +26,11 @@ import {
 } from '../iam/sessions.ts';
 import { buildAuthorizeUrl, discover, exchangeCode, mapClaims, pkcePair, verifyIdToken } from '../iam/oidc.ts';
 import { displayName, resolveMember } from '../iam/member.ts';
+import { bearerFromHeader, hashScimSecret, mintScimSecret } from '../scim/tokens.ts';
+import {
+  applyMemberOps, groupToScim, parseGroupPatch, parseScimFilter, parseUserCreate, parseUserPatch,
+  scimErrorBody, scimList, userToScim,
+} from '../scim/resources.ts';
 import { evaluate, grantDecision, denialCode, mayEditCollab, ownerOnlyAction, roleFromGroups, type Grant, type Role, ROLES } from '../rbac/evaluate.ts';
 import { canSeeProject } from '../rbac/project-access.ts';
 import {
@@ -41,10 +46,24 @@ import { buildFragment, callerSeesProvider, createFederation, credentialContext,
 import { providerDrift } from '../catalog/drift.ts';
 import { applyCredentialsToIndex, detectCredential, type CredentialRow } from '../catalog/credentials.ts';
 import {
-  composeInstanceAssets, instanceAssetVisible, materializedIdFor, submissionServable, INST_PREFIX,
+  composeInstanceAssets, instanceAssetsFingerprint, instanceAssetVisible, materializedIdFor,
+  submissionServable, INST_PREFIX,
   type AssetSubmission, type InstanceAssetRecord,
 } from '../catalog/instance-assets.ts';
+import {
+  applyVersionToRecord, backfillVersionOne, headVersionOf, orphanBlobIds, parseReplacedBy,
+  versionsToTrim, versionView, type AssetVersionRecord,
+} from '../catalog/versions.ts';
 import { listSubmissions, settleSubmission, submitAsset } from '../catalog/submit.ts';
+import {
+  applyDescriptivePatch, applyFieldPatch, composeAssetMeta, descriptiveTouched, extractedHaystack,
+  fieldHaystack, normalizeCatalogField, normalizeExtractedText, parseDescriptivePatch, servedFields,
+  type AssetMetaRecord, type DescriptiveKey,
+} from '../catalog/asset-meta.ts';
+import {
+  collectionVisible, composeCollections, normalizeCollection, sortCollections,
+  type CollectionRecord,
+} from '../catalog/collections.ts';
 import { materializeProvider, materializeAsset, cutoverProvider, pinAsset } from '../catalog/materialize.ts';
 import { verifyLollyExport, extractProvenance } from '../catalog/publish.ts';
 import { listBrandProfiles, switchBrandProfile } from '../brand/profiles.ts';
@@ -63,11 +82,13 @@ import { INJECTABLE_KINDS, type InjectableRecord } from '../injectables/types.ts
 import { buildConfigDocument, validateConfigDocument, diffConfigDocument, requiredActions, commitConfigApply, canonicalHash, diffSummary } from '../policy/config-doc.ts';
 import { readToolInputs } from '../policy/tool-inputs.ts';
 import { checkLink, linkPath, linkResourceSelectors, DEFAULT_TTL_SEC, type LinkKind, type LinkRecord } from '../links/sign.ts';
+import { accentFromTokens, collectionPageHtml, isPreviewableFormat, type CollectionPageItem } from '../links/collection-page.ts';
+import { safeEntryName, ZipBuilder } from '../links/zip.ts';
 import { renderTool, RenderError, invalidateRenderByTool } from '../render/pipeline.ts';
 import { resolveC2paSigner } from '../render/c2pa-signer.ts';
 import type { ProvenanceDoc, ProvenanceIngredient } from '../render/provenance.ts';
 import type { Profile } from '../render/contract.ts';
-import { hashPassword, randomId, sealSecret, secretFingerprint, verifyPassword } from '../lib/crypto.ts';
+import { hashPassword, randomId, sealSecret, secretFingerprint, sha256Hex, verifyPassword } from '../lib/crypto.ts';
 import { demoLandingHtml } from '../lib/demo-landing.ts';
 import { sanitizeEvent, summarize, type RawEvent } from '../telemetry/ingest.ts';
 import { targetedMessages, type Message } from '../inbox/target.ts';
@@ -161,6 +182,31 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
 
   const audit = (actor: string, action: string, subject: string, payload?: Record<string, unknown>) =>
     store.appendAudit({ at: new Date().toISOString(), actor, action, subject, ...(payload ? { payload } : {}) });
+
+  /**
+   * The instance-owned half of the render cache key's `catalogVersion`
+   * (plans/31 §6). A pack change is seen through the index file's mtime;
+   * instance assets are store rows whose BYTES move under a stable id when a
+   * version lands or a rollback points the head at an older one, and a render
+   * that consumed one would otherwise keep serving from a cache key that never
+   * changed.
+   *
+   * Memoized because renders are frequent and the fingerprint costs a store
+   * scan; invalidated by `bustInstanceCatalog` at every write that can move an
+   * instance asset's bytes. The value is CONTENT-derived, so a second plane
+   * node that recomputes it lands on the same string rather than on a counter
+   * of its own.
+   */
+  let instanceCatalogVersionMemo: string | null = null;
+  const instanceCatalogVersion = async (): Promise<string> => {
+    if (instanceCatalogVersionMemo === null) {
+      instanceCatalogVersionMemo = sha256Hex(instanceAssetsFingerprint(await store.listInstanceAssets())).slice(0, 16);
+    }
+    return instanceCatalogVersionMemo;
+  };
+  const bustInstanceCatalog = (): void => {
+    instanceCatalogVersionMemo = null;
+  };
 
   // ── catalog providers: federation + config-managed boot upsert (plans/17) ──
   // Config-managed entries name their credential env var; the value lives in
@@ -484,14 +530,25 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     } | null;
     const kind = body?.kind;
     if (!kind || !LINK_KINDS.includes(kind)) return sendError(res, 400, 'INVALID_INPUT', 'kind must be share|embed|download|guest-edit');
-    if (!body?.target || (!body.target.toolId && !body.target.sessionId && !body.target.assetId)) {
-      return sendError(res, 400, 'INVALID_INPUT', 'target.toolId, target.sessionId or target.assetId required');
+    if (!body?.target || (!body.target.toolId && !body.target.sessionId && !body.target.assetId && !body.target.collectionId)) {
+      return sendError(res, 400, 'INVALID_INPUT', 'target.toolId, target.sessionId, target.assetId or target.collectionId required');
     }
     // An asset target has no tool to open, so it cannot admit a guest seat
     // (plans/31 §2 1b names share/embed/download only). Refuse rather than
     // mint a guest link whose target the collab gateway could never resolve.
-    if (kind === 'guest-edit' && body.target.assetId) {
+    if (kind === 'guest-edit' && (body.target.assetId || body.target.collectionId)) {
       return sendError(res, 400, 'INVALID_INPUT', 'guest-edit links target a tool, not a catalog asset');
+    }
+    // A collection is a LIST, so it has no single byte stream an `<img src>`
+    // could point at. `share` serves its listing page and `download` serves the
+    // zip; `embed` would have to invent a third meaning, and the one it would
+    // invent - this org's curated set in an iframe on any site - is the brand
+    // portal plans/25 refuses. Refused at mint, where it is legible.
+    if (kind === 'embed' && body.target.collectionId) {
+      return sendError(res, 400, 'INVALID_INPUT', 'a collection link is share (its listing page) or download (its zip), never embed');
+    }
+    if (body.target.collectionId && body.target.assetId) {
+      return sendError(res, 400, 'INVALID_INPUT', 'a link targets one collection or one asset, not both');
     }
     const action = kind === 'guest-edit' ? 'link.create-guest' : 'link.create';
     const grants = await store.listGrants();
@@ -538,6 +595,40 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         return sendError(res, 403, 'FORBIDDEN', 'you cannot see this asset');
       }
     }
+    // A collection target is the same rule one level up (plans/31 §5), and it
+    // takes BOTH halves: the minter must be able to see the collection, and
+    // every member it names.
+    //
+    // The curation-time check on `PUT /catalog/collections/:id` is not enough on
+    // its own, because it binds the CURATOR. `link.create` is a plain member
+    // default while `catalog.collection.manage` is admin, so a widely visible
+    // collection (`groups: '*'`) curated by someone who can see every member is
+    // otherwise a laundry: a member who is individually denied `inst/hero`
+    // mints a link on the set and the bearer surface hands them the bytes, the
+    // feed's narrowing (`composeCollections`) having no say once a link exists.
+    // Asked per member here, where the caller still has an identity, so the
+    // invariant a link rests on - it can only hand on access its minter already
+    // had - holds for the minter and not merely for the curator.
+    //
+    // Refused as a COUNT rather than a list of ids: the minter did not choose
+    // this membership (the curator did), so naming the assets they are denied
+    // would itself be a reach past their exposure. The curator's own PUT does
+    // name them, because there the person supplied the ids.
+    if (body.target.collectionId) {
+      const collection = await store.getCollection(String(body.target.collectionId).trim());
+      if (!collection || !collectionVisible(collection, user.groups)) {
+        return sendError(res, 403, 'FORBIDDEN', 'you cannot see this collection');
+      }
+      let unseen = 0;
+      for (const memberId of collection.members) {
+        if (!(await callerSeesAsset(user, memberId))) unseen++;
+      }
+      if (unseen) {
+        return sendError(res, 403, 'MEMBER_NOT_VISIBLE',
+          `this collection holds ${unseen} asset${unseen === 1 ? '' : 's'} you cannot see - ask its curator to share it`);
+      }
+      body.target = { ...body.target, collectionId: collection.id };
+    }
     const maxTtl = kind === 'guest-edit' ? config.policy.guestLinks.maxTtlHours : 24 * 365;
     const defTtl = kind === 'guest-edit' ? config.policy.guestLinks.defaultTtlHours : DEFAULT_TTL_SEC[kind] / 3600;
     const ttlHours = Math.min(body.ttlHours ?? defTtl, maxTtl);
@@ -554,6 +645,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     await store.putLink(link);
     await audit(`user:${user.id}`, 'link.create', `link:${link.id}`, {
       kind, toolId: body.target.toolId ?? null, assetId: body.target.assetId ?? null,
+      collectionId: body.target.collectionId ?? null,
     });
     sendJson(res, 201, { id: link.id, kind, url: `${config.instance.baseUrl}${linkPath(link, secrets.link)}`, expiresAt: new Date(link.exp * 1000).toISOString() });
   });
@@ -600,6 +692,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       res.end(JSON.stringify({ kind: 'guest-edit', toolId: link.target.toolId, sessionRef: link.target.sessionId ?? null, guest: name }));
       return;
     }
+    // A collection target is a LIST of assets (plans/31 §5) - its own listing
+    // page, one member's bytes, or the zip-all, all through this one signature.
+    if (link.target.collectionId) return serveLinkedCollection(req, res, link, ctx.url);
     // A catalog asset target streams the asset's own bytes instead of a render
     // (plans/31 §2 1b). Lifecycle is re-resolved in there, on the same gate the
     // feed and the /catalog/* blob routes ask.
@@ -617,7 +712,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       q.set(k, typeof v === 'object' ? JSON.stringify(v) : String(v));
     }
     try {
-      const result = await renderTool({ config, resolveProvenance, worker: renderWorker, signer: await getC2paSigner() }, {
+      const result = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer: await getC2paSigner() }, {
         toolId, format: fmt, query: q.toString(),
         principal: null, profile: {}, overlays: await store.listOverlays(),
       });
@@ -1277,6 +1372,45 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     'x-content-type-options': 'nosniff',
   };
 
+  // ── asset versions (plans/31 §6) ──────────────────────────────────────────
+
+  /**
+   * One asset's version history, oldest first. An asset that has never been
+   * versioned answers with a SYNTHESIZED version 1 built from the record
+   * itself, so every surface can speak in version numbers from the first day
+   * without migration 0020 having to backfill a row for every asset that
+   * predates it. The row is written for real the moment a second version
+   * arrives (submit.ts), which is the only point at which it starts to matter.
+   */
+  const assetVersionRows = async (rec: InstanceAssetRecord): Promise<AssetVersionRecord[]> => {
+    const rows = await store.listAssetVersions(rec.id);
+    return rows.length ? rows : [backfillVersionOne(rec)];
+  };
+
+  /**
+   * Apply `policy.catalog.versionKeep` to one asset, returning how many
+   * versions it dropped. Two things are never trimmed: the HEAD (a rollback
+   * deliberately makes an old version current, and retention must not delete
+   * the bytes the asset is serving) and anything on a HELD asset, because in
+   * this codebase a hold only ever preserves availability - the same reason it
+   * refuses revocation and an explicit version delete.
+   */
+  const trimVersionHistory = async (rec: InstanceAssetRecord): Promise<number> => {
+    const keep = config.policy.catalog.versionKeep;
+    if (keep <= 0) return 0;
+    if ((await store.getLifecycle(rec.id))?.hold) return 0;
+    const rows = await store.listAssetVersions(rec.id);
+    const drop = versionsToTrim(rows, headVersionOf(rec), keep);
+    if (!drop.length) return 0;
+    const dropped = new Set(drop.map((r) => r.version));
+    const surviving = rows.filter((r) => !dropped.has(r.version));
+    for (const row of drop) await store.deleteAssetVersion(rec.id, row.version);
+    // Blobs go only after the rows that named them, and only when no surviving
+    // version still points at the same bytes.
+    for (const blobId of orphanBlobIds(drop, surviving)) await blobs.delete(blobId);
+    return drop.length;
+  };
+
   // ── catalog serving (pack mount, per-caller filtered, lifecycle-enforced) ──
   router.add('GET', '/catalog/*', async (req, res, ctx) => {
     const user = await memberOf(req);
@@ -1317,7 +1451,22 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       if ((await catalogBytesGate(govId, isPin)).blocked) {
         return sendError(res, 410, 'ASSET_EXPIRED', 'this asset is no longer available');
       }
-      const blobId = rec.blobs[formatRef];
+      // `?v=N` serves a PRIOR version's bytes (plans/31 §6), through every gate
+      // the head goes through - exposure, submission state, lifecycle - because
+      // an old version of a revoked asset is still that asset. It exists for
+      // the session that pinned a specific render: the id keeps resolving to
+      // the head for everyone else, and a pinned copy does not have to break
+      // for a brand refresh to land.
+      let blobId = rec.blobs[formatRef];
+      const wantedVersion = ctx.url.searchParams.get('v');
+      if (wantedVersion !== null) {
+        const n = Number(wantedVersion);
+        if (!Number.isInteger(n) || n < 1) return sendError(res, 400, 'INVALID_INPUT', 'v must be a version number');
+        const row = (await assetVersionRows(rec)).find((r) => r.version === n);
+        const fmt = row?.formats.find((f) => f.format === formatRef);
+        if (!fmt) return sendError(res, 404, 'NOT_FOUND', `no version ${n} of this asset in ${formatRef}`);
+        blobId = fmt.blobId;
+      }
       const stat = blobId ? await blobs.head(blobId) : null;
       if (!stat) return sendError(res, 404, 'NOT_FOUND', 'no such format');
       const etag = `"${stat.checksum}"`;
@@ -1426,10 +1575,28 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         // Federate before lifecycle so expire/revoke rows on ext/* ids gate
         // federated entries exactly like pack entries.
         const federated = await federation.composeIndex(index, user?.groups ?? []);
-        const [rows, creds, instAssets] = await Promise.all([store.listLifecycle(), store.listCredentials(), store.listInstanceAssets()]);
-        const composed = composeInstanceAssets(federated, instAssets, user?.groups ?? []);
+        const [rows, creds, instAssets, metas, fieldDefs] = await Promise.all([
+          store.listLifecycle(), store.listCredentials(), store.listInstanceAssets(),
+          store.listAssetMeta(), store.listCatalogFields(),
+        ]);
+        // Org-defined values ride the feed as an additive `fields` bag on the
+        // entries that carry any (plans/31 section 4). It folds over pack,
+        // federated and instance entries alike, because the overlay is keyed by
+        // catalog id rather than by which of the three produced the entry.
+        const composed = composeAssetMeta(
+          composeInstanceAssets(federated, instAssets, user?.groups ?? []), metas, fieldDefs,
+        );
         const gated = applyLifecycleToIndex(composed, rows, Date.now());
-        return sendJson(res, 200, applyCredentialsToIndex(gated, creds), { 'cache-control': 'private, max-age=60' });
+        // Collections ride the SAME feed as an additive `collections` key
+        // (plans/31 §5), folded last so a member that lifecycle just dropped is
+        // already absent from the ids it can reference. A deployment with no
+        // collections serves a byte-identical index, which is what lets the OSS
+        // catalog view light up its Collections section later with no server
+        // change and a public build render unchanged.
+        const withCollections = composeCollections(
+          applyCredentialsToIndex(gated, creds), await store.listCollections(), user?.groups ?? [],
+        );
+        return sendJson(res, 200, withCollections, { 'cache-control': 'private, max-age=60' });
       } catch {
         /* not the expected shape — serve raw below */
       }
@@ -1505,55 +1672,64 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   /** Response headers for linked asset bytes: private, inert, sniff-proof, and
    *  never CDN-cacheable (plans/26 §6) - the same posture as /catalog/*, and
    *  the same INERT_BYTES, which matter most here because this is the one
-   *  surface an UNAUTHENTICATED bearer reaches. `download` is the only kind
-   *  that attaches; `share` and `embed` serve inline. */
+   *  surface an UNAUTHENTICATED bearer reaches. `attach` is the download
+   *  decision: a `download` link attaches, `share` and `embed` serve inline,
+   *  and a collection page's per-item button attaches on its own say-so. */
   const linkedAssetHeaders = (
-    link: LinkRecord, mime: string, filename: string, extra: Record<string, string> = {},
+    attach: boolean, mime: string, filename: string, extra: Record<string, string> = {},
   ): Record<string, string> => ({
     'content-type': mime,
     ...INERT_BYTES,
     'cache-control': 'private, max-age=300',
-    ...(link.kind === 'download' ? { 'content-disposition': `attachment; filename="${safeFilename(filename)}"` } : {}),
+    ...(attach ? { 'content-disposition': `attachment; filename="${safeFilename(filename)}"` } : {}),
     ...extra,
   });
 
-  const serveLinkedAsset = async (req: IncomingMessage, res: ServerResponse, link: LinkRecord): Promise<void> => {
-    const assetId = await resolveAssetAlias((link.target.assetId ?? '').trim());
-    const wanted = link.target.format;
-    const gone = (): void => sendError(res, 410, 'ASSET_EXPIRED', 'this asset is no longer available');
-    const streamBlob = async (blobId: string, filename: string): Promise<void> => {
-      const stat = await blobs.head(blobId);
-      if (!stat) return sendError(res, 404, 'NOT_FOUND', 'no such format');
-      const etag = `"${stat.checksum}"`;
-      if (req.headers['if-none-match'] === etag) {
-        res.writeHead(304, { etag, 'cache-control': 'private, max-age=300' });
-        res.end();
-        return;
-      }
-      const blob = await blobs.get(blobId);
-      if (!blob) return sendError(res, 404, 'NOT_FOUND', 'no such format');
-      res.writeHead(200, linkedAssetHeaders(link, blob.stat.contentType, filename, {
-        etag, 'content-length': String(blob.stat.size),
-      }));
-      Readable.fromWeb(blob.body as import('node:stream/web').ReadableStream<Uint8Array>).pipe(res);
-    };
+  /**
+   * Where one linked asset's bytes come from, and whether they may be served at
+   * all - decided ONCE, in one function, for every bearer-facing surface.
+   *
+   * This is the shared gate plans/31 §5 asks a collection to reuse rather than
+   * re-implement. A single asset link, a collection page's preview, a per-item
+   * download and a member of the zip all resolve through here, so the lifecycle
+   * question ("is this asset still available?") is asked in exactly one place
+   * and its answer cannot differ between the page a bearer reads and the
+   * archive they download. Exposure is NOT asked here: that was settled at mint
+   * (`callerSeesAsset` / the collection's own groups), which is what makes a
+   * link a bearer credential rather than a session.
+   *
+   * A `refused` result carries the response the caller should send for a single
+   * asset; a collection counts it as withheld and moves on.
+   */
+  type LinkedSource =
+    | { kind: 'blob'; blobId: string; filename: string; format: string }
+    | { kind: 'remote'; provider: ProviderRecord; remoteId: string; remoteRef: string; filename: string; format: string; size?: number }
+    | { kind: 'file'; absPath: string; filename: string; format: string; size?: number }
+    | { kind: 'refused'; status: number; code: string; message: string };
+
+  const refuse = (status: number, code: string, message: string): LinkedSource =>
+    ({ kind: 'refused', status, code, message });
+  const goneSource = (): LinkedSource => refuse(410, 'ASSET_EXPIRED', 'this asset is no longer available');
+
+  const resolveLinkedSource = async (rawId: string, wanted?: string): Promise<LinkedSource> => {
+    const assetId = await resolveAssetAlias(rawId.trim());
 
     // Instance-owned bytes: straight out of the BlobStore, gated on whichever id
     // governs them (a pin is still governed by its ext/* row).
     if (assetId.startsWith(INST_PREFIX)) {
       const rec = await store.getInstanceAsset(assetId);
-      if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such instance asset');
+      if (!rec) return refuse(404, 'NOT_FOUND', 'no such instance asset');
       // A submission returned after the link was minted stops serving on it,
       // for the same reason a revoked asset does (plans/31 §3).
-      if (!submissionServable(rec)) return gone();
+      if (!submissionServable(rec)) return goneSource();
       const isPin = !rec.exited && !!rec.origin;
       const govId = isPin ? extAssetId(rec.origin!.provider, rec.origin!.remoteId) : assetId;
-      if ((await catalogBytesGate(govId, isPin)).blocked) return gone();
+      if ((await catalogBytesGate(govId, isPin)).blocked) return goneSource();
       const fmt = wanted ?? (rec.entry.formats?.[0]?.format as string | undefined) ?? Object.keys(rec.blobs)[0];
       const blobId = fmt ? rec.blobs[fmt] : undefined;
-      if (!blobId) return sendError(res, 404, 'NOT_FOUND', 'no such format');
+      if (!blobId || !fmt) return refuse(404, 'NOT_FOUND', 'no such format');
       const name = typeof rec.entry.name === 'string' ? rec.entry.name : assetId.split('/').pop() ?? assetId;
-      return streamBlob(blobId, `${name}.${fmt}`);
+      return { kind: 'blob', blobId, filename: `${name}.${fmt}`, format: fmt };
     }
 
     // Federated bytes: pin-prefers-local, then the driver - identical to the
@@ -1561,60 +1737,294 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // own fetch does.
     if (assetId.startsWith(EXT_PREFIX)) {
       const [, providerId, remoteId] = assetId.split('/');
-      if (!providerId || !remoteId) return sendError(res, 404, 'NOT_FOUND', 'bad federated asset id');
+      if (!providerId || !remoteId) return refuse(404, 'NOT_FOUND', 'bad federated asset id');
       await providersReady;
       const rec = await store.getProvider(providerId);
-      if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such provider');
-      if (!rec.enabled) return sendError(res, 410, 'PROVIDER_DISABLED', 'this provider is disabled');
-      if ((await catalogBytesGate(assetId, true)).blocked) return gone();
+      if (!rec) return refuse(404, 'NOT_FOUND', 'no such provider');
+      if (!rec.enabled) return refuse(410, 'PROVIDER_DISABLED', 'this provider is disabled');
+      if ((await catalogBytesGate(assetId, true)).blocked) return goneSource();
       const entry = await federatedEntry(providerId, assetId);
       const formats = (entry?.formats ?? []) as AssetFormatEntry[];
       const chosen = wanted ? formats.find((f) => f.format === wanted || f.url?.endsWith(`/${wanted}`)) : formats[0];
       const remoteRef = (chosen?.url ?? '').split('/').pop();
-      if (!remoteRef) return sendError(res, 404, 'NOT_FOUND', 'no such format');
+      if (!remoteRef) return refuse(404, 'NOT_FOUND', 'no such format');
+      const format = String(chosen?.format ?? remoteRef);
       const filename = typeof chosen?.filename === 'string'
         ? chosen.filename
-        : `${typeof entry?.name === 'string' ? entry.name : remoteId}.${chosen?.format ?? remoteRef}`;
+        : `${typeof entry?.name === 'string' ? entry.name : remoteId}.${format}`;
+      const size = typeof chosen?.size === 'number' ? chosen.size : undefined;
       const pinned = await store.getInstanceAsset(materializedIdFor(providerId, remoteId));
       const localId = pinned ? pinned.blobs[pinned.refMap?.[remoteRef] ?? remoteRef] : undefined;
-      if (localId && await blobs.head(localId)) return streamBlob(localId, filename);
-      try {
-        const blob = await federation.instantiate(rec).resolveBlob(remoteId, remoteRef);
-        // A redirect hands the bearer the provider's own URL, exactly as the
-        // member-facing blob route does - the driver, not us, decides whether a
-        // format can be streamed.
-        if (blob.kind === 'redirect') {
-          res.writeHead(302, { location: blob.url, 'cache-control': 'private, no-store' });
-          res.end();
-          return;
-        }
-        res.writeHead(200, linkedAssetHeaders(link, blob.contentType, filename,
-          blob.size !== undefined ? { 'content-length': String(blob.size) } : {}));
-        Readable.fromWeb(blob.body as import('node:stream/web').ReadableStream<Uint8Array>).pipe(res);
-      } catch {
-        return sendError(res, 502, 'PROVIDER_UNAVAILABLE', 'the upstream provider did not return this asset');
-      }
-      return;
+      if (localId && await blobs.head(localId)) return { kind: 'blob', blobId: localId, filename, format };
+      return { kind: 'remote', provider: rec, remoteId, remoteRef, filename, format, ...(size !== undefined ? { size } : {}) };
     }
 
     // A pack asset: the file the index points at, read off the pack mount.
     const entry = (await loadAssetIndexById(config.instance.pack)).get(assetId);
-    if (!entry) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
-    if ((await catalogBytesGate(assetId, false)).blocked) return gone();
+    if (!entry) return refuse(404, 'NOT_FOUND', 'no such asset');
+    if ((await catalogBytesGate(assetId, false)).blocked) return goneSource();
     const formats = entry.formats ?? [];
     const chosen = wanted ? formats.find((f) => f.format === wanted) : formats[0];
     const relPath = (chosen?.url ?? '').replace(/^\/+/, '').replace(/^catalog\//, '');
-    if (!relPath || relPath.includes('..')) return sendError(res, 404, 'NOT_FOUND', 'no such format');
-    let bytes: Buffer;
-    try {
-      bytes = await readFile(join(config.instance.pack, 'catalog', relPath));
-    } catch {
-      return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
+    if (!relPath || relPath.includes('..')) return refuse(404, 'NOT_FOUND', 'no such format');
+    return {
+      kind: 'file',
+      absPath: join(config.instance.pack, 'catalog', relPath),
+      filename: relPath.split('/').pop() ?? assetId,
+      format: String(chosen?.format ?? relPath.split('.').pop() ?? ''),
+      ...(typeof chosen?.size === 'number' ? { size: chosen.size } : {}),
+    };
+  };
+
+  /** Read a resolved source into one Buffer, for the surfaces that cannot
+   *  stream (the zip needs each member's CRC and length before its header goes
+   *  out). `null` means the bytes could not be had - a driver that answers a
+   *  redirect instead of a stream is the one real case, and the archive leaves
+   *  that member out rather than the server chasing an upstream URL to
+   *  manufacture bytes it was told to redirect for. */
+  const readLinkedSource = async (source: LinkedSource): Promise<Buffer | null> => {
+    if (source.kind === 'blob') {
+      const blob = await blobs.get(source.blobId);
+      if (!blob) return null;
+      return Buffer.from(await new Response(blob.body as unknown as ReadableStream<Uint8Array>).arrayBuffer());
     }
-    res.writeHead(200, linkedAssetHeaders(link, contentType(relPath), relPath.split('/').pop() ?? assetId, {
-      'content-length': String(bytes.length),
-    }));
-    res.end(bytes);
+    if (source.kind === 'file') {
+      try {
+        return await readFile(source.absPath);
+      } catch {
+        return null;
+      }
+    }
+    if (source.kind === 'remote') {
+      try {
+        const blob = await federation.instantiate(source.provider).resolveBlob(source.remoteId, source.remoteRef);
+        if (blob.kind === 'redirect') return null;
+        return Buffer.from(await new Response(blob.body as unknown as ReadableStream<Uint8Array>).arrayBuffer());
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  };
+
+  /** Stream a resolved source to a bearer. One writer for every bearer-facing
+   *  byte route, so the inert headers, the ETag and the attach decision cannot
+   *  drift between a single asset link and a collection's per-item download. */
+  const streamLinkedSource = async (
+    req: IncomingMessage, res: ServerResponse, source: LinkedSource, attach: boolean,
+  ): Promise<void> => {
+    if (source.kind === 'refused') return sendError(res, source.status, source.code, source.message);
+    if (source.kind === 'blob') {
+      const stat = await blobs.head(source.blobId);
+      if (!stat) return sendError(res, 404, 'NOT_FOUND', 'no such format');
+      const etag = `"${stat.checksum}"`;
+      if (req.headers['if-none-match'] === etag) {
+        res.writeHead(304, { etag, 'cache-control': 'private, max-age=300' });
+        res.end();
+        return;
+      }
+      const blob = await blobs.get(source.blobId);
+      if (!blob) return sendError(res, 404, 'NOT_FOUND', 'no such format');
+      res.writeHead(200, linkedAssetHeaders(attach, blob.stat.contentType, source.filename, {
+        etag, 'content-length': String(blob.stat.size),
+      }));
+      Readable.fromWeb(blob.body as import('node:stream/web').ReadableStream<Uint8Array>).pipe(res);
+      return;
+    }
+    if (source.kind === 'file') {
+      let bytes: Buffer;
+      try {
+        bytes = await readFile(source.absPath);
+      } catch {
+        return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
+      }
+      res.writeHead(200, linkedAssetHeaders(attach, contentType(source.absPath), source.filename, {
+        'content-length': String(bytes.length),
+      }));
+      res.end(bytes);
+      return;
+    }
+    try {
+      const blob = await federation.instantiate(source.provider).resolveBlob(source.remoteId, source.remoteRef);
+      // A redirect hands the bearer the provider's own URL, exactly as the
+      // member-facing blob route does - the driver, not us, decides whether a
+      // format can be streamed.
+      if (blob.kind === 'redirect') {
+        res.writeHead(302, { location: blob.url, 'cache-control': 'private, no-store' });
+        res.end();
+        return;
+      }
+      res.writeHead(200, linkedAssetHeaders(attach, blob.contentType, source.filename,
+        blob.size !== undefined ? { 'content-length': String(blob.size) } : {}));
+      Readable.fromWeb(blob.body as import('node:stream/web').ReadableStream<Uint8Array>).pipe(res);
+    } catch {
+      sendError(res, 502, 'PROVIDER_UNAVAILABLE', 'the upstream provider did not return this asset');
+    }
+  };
+
+  const serveLinkedAsset = async (req: IncomingMessage, res: ServerResponse, link: LinkRecord): Promise<void> => {
+    const source = await resolveLinkedSource(link.target.assetId ?? '', link.target.format);
+    await streamLinkedSource(req, res, source, link.kind === 'download');
+  };
+
+  // ── collection links: a listing page and a zip (plans/31 §5) ──────────────
+  // The boundary, restated where it is enforced rather than only where it is
+  // described: everything below addresses `rec.members` and nothing else. There
+  // is no search, no paging past the set, no self-registration, and no route
+  // out of this collection into the rest of the catalog. A bearer holding this
+  // signature reaches exactly the assets the curator listed, each one re-gated
+  // on lifecycle at the moment it is served.
+
+  /** How much a single zip-all may weigh. Classic ZIP (no ZIP64) tops out at
+   *  4 GiB; this sits well under it, and a curated set that genuinely exceeds
+   *  2 GiB is a bulk export, which is a different conversation from a link you
+   *  send someone. Refused BEFORE any byte of the archive is written, so a
+   *  bearer never receives a silently short zip. */
+  const COLLECTION_ZIP_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+
+  type ServableSource = Exclude<LinkedSource, { kind: 'refused' }>;
+  interface ResolvedMember { assetId: string; source: ServableSource; size?: number }
+
+  /** Resolve every member of a collection through the shared gate, once, and
+   *  keep what is servable. `withheld` is the count of members lifecycle (or a
+   *  vanished record) refused - reported to the bearer as a number and never as
+   *  a list, because naming an asset they may not have would be a reach past
+   *  the set. */
+  const resolveCollectionMembers = async (
+    rec: CollectionRecord,
+  ): Promise<{ members: ResolvedMember[]; withheld: number }> => {
+    const members: ResolvedMember[] = [];
+    let withheld = 0;
+    for (const assetId of rec.members) {
+      const source = await resolveLinkedSource(assetId);
+      if (source.kind === 'refused') {
+        withheld++;
+        continue;
+      }
+      let size = source.kind === 'blob' ? (await blobs.head(source.blobId))?.size : source.size;
+      if (size === undefined && source.kind === 'file') {
+        size = await stat(source.absPath).then((s) => s.size).catch(() => undefined);
+      }
+      members.push({ assetId, source, ...(size !== undefined ? { size } : {}) });
+    }
+    return { members, withheld };
+  };
+
+  /** Human byte size for the listing page - the console's own rounding, in one
+   *  line, because the page ships no script and no shared bundle. */
+  const sizeText = (bytes: number | undefined): string | undefined => {
+    if (bytes === undefined || !Number.isFinite(bytes)) return undefined;
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let n = bytes;
+    let i = 0;
+    while (n >= 1024 && i < units.length - 1) {
+      n /= 1024;
+      i++;
+    }
+    return `${i === 0 ? n : n.toFixed(n < 10 ? 1 : 0)} ${units[i]}`;
+  };
+
+  /** The pack's brand chrome for the bearer page: the same unauthenticated
+   *  logo/font/token sources the sign-in gate inherits, resolved server-side so
+   *  the page needs no script and makes no request off this origin. */
+  const bearerBrand = async (): Promise<Parameters<typeof collectionPageHtml>[0]['brand']> => {
+    const chrome = await loadBrandChrome();
+    const accent = chrome ? accentFromTokens(chrome.tokens) : undefined;
+    const font = await brandFontFile();
+    return {
+      ...(chrome?.logos.light ? { logoLight: chrome.logos.light } : {}),
+      ...(chrome?.logos.dark ? { logoDark: chrome.logos.dark } : {}),
+      ...(accent ? { accent } : {}),
+      ...(font ? { fontFamily: font.family, fontUrl: `/api/brand/font/${font.file}` } : {}),
+    };
+  };
+
+  const serveLinkedCollection = async (
+    req: IncomingMessage, res: ServerResponse, link: LinkRecord, url: URL,
+  ): Promise<void> => {
+    const rec = await store.getCollection(link.target.collectionId ?? '');
+    if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such collection');
+
+    // One member's bytes, addressed from the page. The membership check is the
+    // boundary: an id the collection does not name is a 404 here even though
+    // the signature is perfectly valid, so the link can never be walked into a
+    // general-purpose asset fetcher.
+    const wantAsset = url.searchParams.get('asset');
+    if (wantAsset !== null) {
+      if (!rec.members.includes(wantAsset)) {
+        return sendError(res, 404, 'NOT_IN_COLLECTION', 'this link reaches this collection only');
+      }
+      const source = await resolveLinkedSource(wantAsset);
+      return streamLinkedSource(req, res, source, url.searchParams.get('dl') === '1' || link.kind === 'download');
+    }
+
+    const { members, withheld } = await resolveCollectionMembers(rec);
+
+    // A `download` link IS the zip; a `share` link offers it from its page.
+    if (link.kind === 'download' || url.searchParams.get('zip') === '1') {
+      const known = members.reduce((sum, m) => sum + (m.size ?? 0), 0);
+      if (known > COLLECTION_ZIP_MAX_BYTES) {
+        return sendError(res, 413, 'COLLECTION_TOO_LARGE',
+          'this collection is too large to zip; download the assets individually');
+      }
+      const zip = new ZipBuilder();
+      const used = new Set<string>();
+      res.writeHead(200, {
+        'content-type': 'application/zip',
+        'content-disposition': `attachment; filename="${safeFilename(rec.name)}.zip"`,
+        'cache-control': 'private, no-store',
+        'x-content-type-options': 'nosniff',
+      });
+      for (const member of members) {
+        const bytes = await readLinkedSource(member.source);
+        if (!bytes) continue;
+        res.write(zip.add(safeEntryName(member.source.filename, used), bytes));
+      }
+      res.end(zip.end());
+      await audit(guestActor(link.id), 'catalog.collection.download', `collection:${rec.id}`, {
+        linkId: link.id, entries: zip.count, withheld,
+      });
+      return;
+    }
+
+    const items: CollectionPageItem[] = members.map((m) => {
+      const source = m.source;
+      const base = `/l/${link.id}?s=${encodeURIComponent(url.searchParams.get('s') ?? '')}`;
+      const pw = url.searchParams.get('pw');
+      const carry = pw === null ? '' : `&pw=${encodeURIComponent(pw)}`;
+      const asset = `&asset=${encodeURIComponent(m.assetId)}`;
+      return {
+        assetId: m.assetId,
+        name: source.filename,
+        format: source.format,
+        ...(sizeText(m.size) ? { sizeText: sizeText(m.size) as string } : {}),
+        ...(isPreviewableFormat(source.format) ? { previewHref: `${base}${carry}${asset}` } : {}),
+        downloadHref: `${base}${carry}${asset}&dl=1`,
+      };
+    });
+    const s = encodeURIComponent(url.searchParams.get('s') ?? '');
+    const pw = url.searchParams.get('pw');
+    const html = collectionPageHtml({
+      instanceName: config.instance.name,
+      name: rec.name,
+      ...(rec.description ? { description: rec.description } : {}),
+      items,
+      withheld,
+      zipHref: `/l/${link.id}?s=${s}${pw === null ? '' : `&pw=${encodeURIComponent(pw)}`}&zip=1`,
+      expiresAt: new Date(link.exp * 1000).toISOString().slice(0, 10),
+      brand: await bearerBrand(),
+    });
+    res.writeHead(200, {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'private, no-store',
+      'x-content-type-options': 'nosniff',
+      'referrer-policy': 'no-referrer',
+      // The page is our own markup and ships no script. Locking it down to
+      // same-origin images and inline style is what keeps a bearer surface from
+      // becoming a place anything else can be loaded from.
+      'content-security-policy': "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; font-src 'self'; form-action 'none'; frame-ancestors 'none'",
+    });
+    res.end(html);
   };
 
   // Whether an asset's bytes are durable locally. Pack + inst assets are already
@@ -1644,23 +2054,65 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (config.policy.defaultAccessMode === 'gated' && !user && p?.kind !== 'guest') {
       return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
     }
-    const id = (ctx.params['*'] ?? '').trim();
+    // `<id>/versions` is the history of one asset's bytes (plans/31 §6). It
+    // rides the same wildcard as inspect, the way `<id>/meta` rides the PUT.
+    const raw = (ctx.params['*'] ?? '').trim();
+    const wantsVersions = raw.endsWith('/versions');
+    const id = wantsVersions ? raw.slice(0, -'/versions'.length) : raw;
     if (!id || id.includes('..') || !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(id)) {
       return sendError(res, 400, 'INVALID_INPUT', 'bad asset id');
     }
     const instAsset = id.startsWith(INST_PREFIX) ? await store.getInstanceAsset(id) : null;
+    if (wantsVersions) {
+      // Versions belong to instance-owned bytes: a pack file and a federated
+      // asset are versioned where they live, and claiming otherwise here would
+      // invent a history this instance does not have.
+      if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+      if (!instAsset) return sendError(res, 404, 'NOT_FOUND', 'no such instance asset');
+      if (!(await callerSeesAsset(user, id))) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
+      const head = headVersionOf(instAsset);
+      const rows = await assetVersionRows(instAsset);
+      return sendJson(res, 200, {
+        id, head,
+        keep: config.policy.catalog.versionKeep,
+        versions: [...rows].sort((a, b) => b.version - a.version).map((r) => versionView(r, head)),
+      }, { 'cache-control': 'private, no-store' });
+    }
     const entry = instAsset?.entry ?? (await loadAssetIndexById(config.instance.pack)).get(id);
     const row = await store.getLifecycle(id);
     // For a federated id the effective state can be constrained by an upstream
     // window as well as the local row; surface both so the console can show
     // where each constraint came from (plans/27 §2). Pack ids have no window.
     await providersReady;
-    const [window, credential] = await Promise.all([federation.availabilityWindow(id), store.getCredential(id)]);
-    if (!entry && !row && !window && !credential && !instAsset) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
+    const [window, credential, meta, fieldDefs] = await Promise.all([
+      federation.availabilityWindow(id), store.getCredential(id), store.getAssetMeta(id), store.listCatalogFields(),
+    ]);
+    // An overlay counts as existence too (plans/31 section 4): once an org has
+    // filed an asset under its own taxonomy, this instance holds something to
+    // say about that id even when the record itself lives upstream.
+    if (!entry && !row && !window && !credential && !instAsset && !meta) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
     const { state } = combinedState(row ?? undefined, window, Date.now());
+    const fields = servedFields(fieldDefs, meta);
     sendJson(res, 200, {
       id,
       ...(entry ?? {}),
+      // The org's own metadata, the same bag the feed carries, plus the
+      // definitions so the console can label and validate a row without a
+      // second call. Absent definitions mean an org that has not defined any.
+      ...(Object.keys(fields).length ? { fields } : {}),
+      ...(fieldDefs.length ? { fieldDefs } : {}),
+      ...(meta ? { fieldsUpdatedBy: meta.updatedBy, fieldsUpdatedAt: meta.updatedAt } : {}),
+      // ID-level supersession and the served version (plans/31 §6), so the
+      // console can show "replaced by X" and "version N" without a second call.
+      ...(meta?.replacedBy ? { replacedBy: meta.replacedBy } : {}),
+      ...(instAsset ? { version: headVersionOf(instAsset) } : {}),
+      // Whether THIS caller may edit any of it, so the console offers an editor
+      // only where the PUT would actually be allowed rather than teaching
+      // people that Save means 403. Descriptive fields are instance-owned
+      // assets only, which the id already says.
+      canEdit: user
+        ? evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'catalog.edit', ['*'], await store.listGrants())
+        : false,
       ...(window ?? {}),
       ...(instAsset?.origin ? { origin: instAsset.origin } : {}),
       ...(credential?.status === 'embedded' ? { credential: 'embedded' } : {}),
@@ -1682,6 +2134,352 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         ? { status: credential.status, ...(credential.container ? { container: credential.container } : {}), sniffedAt: credential.sniffedAt, ...(credential.sourceUpdatedAt ? { sourceUpdatedAt: credential.sourceUpdatedAt } : {}) }
         : null,
     }, { 'cache-control': 'private, max-age=30' });
+  });
+
+  // ── org-defined metadata (plans/31 §4) ────────────────────────────────────
+  // Flat tags were the only taxonomy an org had, and the OSS asset schema is
+  // closed, so the taxonomy lands beside it rather than inside it: DEFINITIONS
+  // are policy (the policy-as-code document carries them), VALUES are a local
+  // overlay keyed by catalog asset id - which is what lets `inst/*`, `ext/*`
+  // and pack ids all take them, since only the first of those three owns a
+  // record this instance could have added a column to.
+
+  // The definitions, readable by any member: the editor needs them to render a
+  // control, and a client that renders `fields` needs them to label a row.
+  router.add('GET', '/api/v1/catalog/fields', async (req, res) => {
+    const user = await requireAction(req, res, 'catalog.read');
+    if (!user) return;
+    const grants = await store.listGrants();
+    const canEdit = evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'catalog.edit', ['*'], grants);
+    sendJson(res, 200, { fields: await store.listCatalogFields(), canEdit }, { 'cache-control': 'private, no-store' });
+  });
+
+  // Defining the taxonomy is `policy.edit`, the same gate as chains and flag
+  // governance and for the same reason: it is governance, not content. The
+  // route and the policy document share ONE normalizer, so a definition the
+  // document accepts is exactly a definition this accepts.
+  router.add('PUT', '/api/v1/catalog/fields/:id', async (req, res, ctx) => {
+    const user = await requireAction(req, res, 'policy.edit');
+    if (!user) return;
+    const def = normalizeCatalogField(ctx.params.id as string, await readJson(req));
+    if (!def) {
+      return sendError(res, 400, 'INVALID_INPUT',
+        'a field needs a slug id, a label, and kind text|select|date|url; a select needs options and nothing else may carry them');
+    }
+    const before = (await store.listCatalogFields()).find((f) => f.id === def.id) ?? null;
+    await store.putCatalogField(def);
+    await audit(`user:${user.id}`, 'catalog.field.edit', `catalog-field:${def.id}`, { before, after: def });
+    sendJson(res, 200, def);
+  });
+
+  // Retiring a definition removes the DEFINITION only. Values filed under it
+  // survive in the overlay, hidden from every served surface until the
+  // definition comes back: a taxonomy change must not destroy the data filed
+  // under it, and an org that renames a field by mistake has to be able to undo
+  // it. The policy document's prune takes the same path.
+  router.add('DELETE', '/api/v1/catalog/fields/:id', async (req, res, ctx) => {
+    const user = await requireAction(req, res, 'policy.edit');
+    if (!user) return;
+    const id = ctx.params.id as string;
+    const before = (await store.listCatalogFields()).find((f) => f.id === id);
+    if (!before) return sendError(res, 404, 'NOT_FOUND', 'no such field');
+    await store.deleteCatalogField(id);
+    await audit(`user:${user.id}`, 'catalog.field.delete', `catalog-field:${id}`, { before });
+    sendJson(res, 200, { ok: true, id });
+  });
+
+  /**
+   * Edit one asset's metadata: `PUT /api/v1/catalog/assets/<id>/meta`.
+   *
+   * The id carries slashes ('suse/tokens/brand'), so it rides the trailing
+   * wildcard with '/meta' as its last segment, the same shape the inspect and
+   * lifecycle routes use.
+   *
+   * Two halves with different reach, and the asymmetry is the design:
+   *   - `fields` (the org's own taxonomy) applies to ANY asset this caller can
+   *     see, because the overlay is keyed by id and needs nothing from the
+   *     record;
+   *   - `name` / `description` / `tags` apply to `inst/*` only, and write
+   *     through to the instance-asset record where the submit pipeline already
+   *     keeps them. A federated asset keeps the upstream name: this instance
+   *     does not own that record, and quietly shadowing a DAM's own title would
+   *     make the two disagree with no way to tell which was authored here.
+   *   - `replacedBy` (plans/31 §6) applies to any asset too, for the same
+   *     reason `fields` does: it names a SUCCESSOR id, and a pack or federated
+   *     asset can be retired in favour of a newer one just as an instance asset
+   *     can.
+   *
+   * Exposure is `callerSeesAsset` - the same question link minting asks - so
+   * nobody edits an asset they cannot see, and a submission still under review
+   * is not editable here at all (it is not visible yet; its own PATCH is the
+   * door, plans/31 section 3). Every change is audited with before and after.
+   */
+  router.add('PUT', '/api/v1/catalog/assets/*', async (req, res, ctx) => {
+    const user = await requireAction(req, res, 'catalog.edit');
+    if (!user) return;
+    const rest = (ctx.params['*'] ?? '').trim();
+    const isHeadOp = rest.endsWith('/head');
+    if (!rest.endsWith('/meta') && !isHeadOp) return sendError(res, 404, 'NOT_FOUND', 'no such route');
+    const id = rest.slice(0, -(isHeadOp ? '/head' : '/meta').length);
+    if (!id || id.includes('..') || !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(id)) {
+      return sendError(res, 400, 'INVALID_INPUT', 'bad asset id');
+    }
+    await providersReady;
+    // ROLLBACK (plans/31 §6): point the head at a version that already exists.
+    // Nothing is copied and nothing is deleted - the version that was head
+    // stays in the history, so a rollback is itself reversible. It is a
+    // curation act on bytes that are already in the catalog, which is why it
+    // rides `catalog.edit` beside the metadata editor rather than the
+    // contribution right.
+    if (isHeadOp) {
+      if (!(await callerSeesAsset(user, id))) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
+      const rec = id.startsWith(INST_PREFIX) ? await store.getInstanceAsset(id) : null;
+      if (!rec) return sendError(res, 400, 'INVALID_INPUT', 'only an instance-owned asset has versions');
+      const body = (await readJson(req)) as { version?: unknown } | null;
+      const wanted = Number((body ?? {}).version);
+      if (!Number.isInteger(wanted) || wanted < 1) return sendError(res, 400, 'INVALID_INPUT', 'version must be a version number');
+      const rows = await assetVersionRows(rec);
+      const row = rows.find((r) => r.version === wanted);
+      if (!row) return sendError(res, 404, 'NOT_FOUND', `no version ${wanted} of this asset`);
+      const from = headVersionOf(rec);
+      if (from === wanted) {
+        return sendJson(res, 200, { ok: true, id, version: wanted, changed: false }, { 'cache-control': 'no-store' });
+      }
+      await store.putInstanceAsset(applyVersionToRecord(rec, row));
+      // The bytes behind a stable id just changed, so every cached render that
+      // could have consumed them has to miss (plans/31 §6).
+      bustInstanceCatalog();
+      await audit(`user:${user.id}`, 'catalog.rollback', `catalog:${id}`, { before: { version: from }, after: { version: wanted } });
+      return sendJson(res, 200, { ok: true, id, version: wanted, changed: true, previous: from }, { 'cache-control': 'no-store' });
+    }
+    if (!(await callerSeesAsset(user, id))) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
+
+    const body = (await readJson(req)) as Record<string, unknown> | null;
+    if (!body || typeof body !== 'object') return sendError(res, 400, 'INVALID_INPUT', 'body required');
+
+    const before: Record<string, unknown> = {};
+    const after: Record<string, unknown> = {};
+    const defs = await store.listCatalogFields();
+
+    // BOTH halves are parsed and validated before EITHER is written: an edit
+    // that touches the name and a bad field value must refuse whole, or a
+    // refusal would still have moved half of what it refused.
+
+    // The descriptive half, bound for the instance-asset record.
+    const instAsset = id.startsWith(INST_PREFIX) ? await store.getInstanceAsset(id) : null;
+    const wantsDescriptive = (['name', 'description', 'tags'] as const).some((k) => body[k] !== undefined);
+    if (wantsDescriptive && !instAsset) {
+      return sendError(res, 400, 'INVALID_INPUT',
+        'only an instance-owned asset carries an editable name, description and tags; a federated or pack asset takes org-defined fields only');
+    }
+    const allowed: DescriptiveKey[] = ['name', 'description', 'tags'];
+    const parsed = instAsset && wantsDescriptive ? parseDescriptivePatch(body, instAsset.entry, allowed) : null;
+    if (parsed && 'error' in parsed) return sendError(res, 400, 'INVALID_INPUT', parsed.error);
+
+    // The org-defined half, bound for the overlay.
+    const stored = await store.getAssetMeta(id);
+    let meta: AssetMetaRecord | null = stored;
+    if (body.fields !== undefined) {
+      if (!body.fields || typeof body.fields !== 'object' || Array.isArray(body.fields)) {
+        return sendError(res, 400, 'INVALID_INPUT', 'fields must be an object of fieldId to value');
+      }
+      const applied = applyFieldPatch(defs, stored?.fields ?? {}, body.fields as Record<string, unknown>);
+      if ('errors' in applied) return sendError(res, 400, 'INVALID_FIELDS', applied.errors.join('; '));
+      meta = {
+        assetId: id, fields: applied.values,
+        ...(stored?.replacedBy ? { replacedBy: stored.replacedBy } : {}),
+        ...(stored?.extractedText ? { extractedText: stored.extractedText } : {}),
+        updatedBy: `user:${user.id}`, updatedAt: new Date().toISOString(),
+      };
+      before.fields = servedFields(defs, stored);
+      after.fields = servedFields(defs, meta);
+    }
+
+    // Supersession (plans/31 §6): retire this asset in favour of another id.
+    // The successor must be one this caller can SEE, for the reason a
+    // collection may only hold visible members - a pointer at an id they were
+    // never shown is a way to have the catalog name it for them. A cleared
+    // value ('' or null) removes the pointer; the asset itself is untouched
+    // either way, because supersession is advice to consumers and never a
+    // takedown (that is what lifecycle is for, and the two compose).
+    if (body.replacedBy !== undefined) {
+      const parsedReplacement = parseReplacedBy(body.replacedBy, id);
+      if ('error' in parsedReplacement) return sendError(res, 400, 'INVALID_INPUT', parsedReplacement.error);
+      const successor = parsedReplacement.value;
+      if (successor && !(await callerSeesAsset(user, successor))) {
+        return sendError(res, 400, 'INVALID_INPUT', `you cannot see ${successor} - an asset can only be replaced by one you can see`);
+      }
+      const base = meta ?? stored;
+      before.replacedBy = stored?.replacedBy ?? null;
+      after.replacedBy = successor;
+      meta = {
+        assetId: id,
+        fields: base?.fields ?? {},
+        ...(successor ? { replacedBy: successor } : {}),
+        ...(base?.extractedText ? { extractedText: base.extractedText } : {}),
+        updatedBy: `user:${user.id}`,
+        updatedAt: new Date().toISOString(),
+      };
+    }
+
+    // On-device OCR text (plans/31 §7): the submitting or curating client posts
+    // the words on the asset so search can find it by them; the server never
+    // runs a model. It rides the same overlay as fields and supersession, so a
+    // pack or federated asset (which owns no record here) gets it too. The audit
+    // records the LENGTH that moved, never the text - the words are search
+    // input, not something the audit trail needs to carry. A cleared value ('',
+    // null, or whitespace that collapses to nothing) removes it.
+    if (body.extractedText !== undefined) {
+      const text = normalizeExtractedText(body.extractedText);
+      const base = meta ?? stored;
+      before.extractedText = stored?.extractedText?.length ?? 0;
+      after.extractedText = text?.length ?? 0;
+      meta = {
+        assetId: id,
+        fields: base?.fields ?? {},
+        ...(base?.replacedBy ? { replacedBy: base.replacedBy } : {}),
+        ...(text ? { extractedText: text } : {}),
+        updatedBy: `user:${user.id}`,
+        updatedAt: new Date().toISOString(),
+      };
+    }
+    if (parsed && !('error' in parsed) && descriptiveTouched(parsed)) {
+      Object.assign(before, parsed.before);
+      Object.assign(after, parsed.after);
+    }
+    if (!Object.keys(after).length) return sendError(res, 400, 'INVALID_INPUT', 'nothing to change');
+
+    let name = instAsset?.entry.name;
+    if (instAsset && parsed && !('error' in parsed) && descriptiveTouched(parsed)) {
+      const entry = applyDescriptivePatch(instAsset.entry, parsed);
+      await store.putInstanceAsset({ ...instAsset, entry });
+      name = entry.name;
+    }
+    if (meta && meta !== stored) await store.putAssetMeta(meta);
+    await audit(`user:${user.id}`, 'catalog.edit', `catalog:${id}`, { before, after });
+    sendJson(res, 200, {
+      ok: true,
+      id,
+      ...(instAsset ? { name } : {}),
+      fields: servedFields(defs, meta),
+      ...(meta?.replacedBy ? { replacedBy: meta.replacedBy } : {}),
+      // The char count, never the text: the client learns what it stored
+      // without the response echoing back a page of OCR it just sent.
+      ...(meta?.extractedText ? { extractedTextChars: meta.extractedText.length } : {}),
+    }, { 'cache-control': 'no-store' });
+  });
+
+  /**
+   * Delete one stored version: `DELETE /api/v1/catalog/assets/<id>/versions/<n>`.
+   *
+   * Two refusals do the work. The HEAD cannot be deleted - those are the bytes
+   * the asset is serving, and rolling back first is the honest way to retire
+   * them - and a HELD asset refuses entirely with `409 ASSET_HELD`, the same
+   * answer a hold gives revocation, because a hold in this codebase only ever
+   * preserves availability (plans/27 §3, plans/31 §6). Version numbers are
+   * never reused afterwards.
+   */
+  router.add('DELETE', '/api/v1/catalog/assets/*', async (req, res, ctx) => {
+    const user = await requireAction(req, res, 'catalog.edit');
+    if (!user) return;
+    const match = /^(.+)\/versions\/(\d+)$/.exec((ctx.params['*'] ?? '').trim());
+    if (!match) return sendError(res, 404, 'NOT_FOUND', 'no such route');
+    const [, id, num] = match as unknown as [string, string, string];
+    if (id.includes('..') || !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(id)) {
+      return sendError(res, 400, 'INVALID_INPUT', 'bad asset id');
+    }
+    await providersReady;
+    if (!(await callerSeesAsset(user, id))) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
+    const rec = id.startsWith(INST_PREFIX) ? await store.getInstanceAsset(id) : null;
+    if (!rec) return sendError(res, 400, 'INVALID_INPUT', 'only an instance-owned asset has versions');
+    const version = Number(num);
+    if (version === headVersionOf(rec)) {
+      return sendError(res, 409, 'VERSION_IS_HEAD', 'this is the version the asset serves; roll back to another one first');
+    }
+    const hold = (await store.getLifecycle(id))?.hold;
+    if (hold) {
+      return sendError(res, 409, 'ASSET_HELD',
+        hold.note ? `this asset is on hold: ${hold.note}` : 'this asset is on hold; release the hold before deleting any of its versions');
+    }
+    const rows = await store.listAssetVersions(id);
+    const row = rows.find((r) => r.version === version);
+    if (!row) return sendError(res, 404, 'NOT_FOUND', `no version ${version} of this asset`);
+    await store.deleteAssetVersion(id, version);
+    for (const blobId of orphanBlobIds([row], rows.filter((r) => r.version !== version))) await blobs.delete(blobId);
+    await audit(`user:${user.id}`, 'catalog.version.delete', `catalog:${id}`, { version, at: row.at, by: row.by });
+    sendJson(res, 200, { ok: true, id, version }, { 'cache-control': 'no-store' });
+  });
+
+  // ── collections (plans/31 §5) ─────────────────────────────────────────────
+  // A named, ORDERED set of catalog assets with group visibility. Two surfaces,
+  // deliberately different: THIS one is the curator's, gated on
+  // `catalog.collection.manage` and showing the set as curated; the per-caller
+  // FEED (`/catalog/assets/index.json`) is every member's, showing the
+  // collections their groups admit with members narrowed to what they are
+  // already being served. Neither is derived from the other.
+
+  router.add('GET', '/api/v1/catalog/collections', async (req, res) => {
+    const user = await requireAction(req, res, 'catalog.collection.manage');
+    if (!user) return;
+    sendJson(res, 200, { collections: sortCollections(await store.listCollections()) }, { 'cache-control': 'private, no-store' });
+  });
+
+  router.add('GET', '/api/v1/catalog/collections/:id', async (req, res, ctx) => {
+    const user = await requireAction(req, res, 'catalog.collection.manage');
+    if (!user) return;
+    const rec = await store.getCollection(ctx.params.id as string);
+    if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such collection');
+    sendJson(res, 200, rec, { 'cache-control': 'private, no-store' });
+  });
+
+  /**
+   * Create or update a collection.
+   *
+   * Everything rests on the membership check, which is why this route asks
+   * `callerSeesAsset` for EVERY member: a collection LINK is
+   * minted on the collection's own visibility alone, and its bearer then
+   * receives every member. Without this check a curator whose
+   * `catalog.collection.manage` grant is narrowed to one group could name
+   * assets they cannot themselves see, mint a link, and read bytes their groups
+   * were never exposed to - exposure laundered through a list. Asked at
+   * curation time rather than at mint because that is where a person can be
+   * told which id was refused.
+   */
+  router.add('PUT', '/api/v1/catalog/collections/:id', async (req, res, ctx) => {
+    const user = await requireAction(req, res, 'catalog.collection.manage');
+    if (!user) return;
+    const id = ctx.params.id as string;
+    const prior = await store.getCollection(id);
+    const parsed = normalizeCollection(id, await readJson(req), {
+      curator: `user:${user.id}`, now: new Date().toISOString(), prior,
+    });
+    if ('error' in parsed) return sendError(res, 400, 'INVALID_INPUT', parsed.error);
+    await providersReady;
+    const unseen: string[] = [];
+    for (const memberId of parsed.members) {
+      if (!(await callerSeesAsset(user, memberId))) unseen.push(memberId);
+    }
+    if (unseen.length) {
+      return sendError(res, 403, 'MEMBER_NOT_VISIBLE',
+        `you cannot see ${unseen.slice(0, 5).join(', ')} - a collection may only hold assets its curator can see`);
+    }
+    await store.putCollection(parsed);
+    await audit(`user:${user.id}`, 'catalog.collection.edit', `collection:${id}`, { before: prior, after: parsed });
+    sendJson(res, prior ? 200 : 201, parsed, { 'cache-control': 'no-store' });
+  });
+
+  // Deleting a collection deletes the LIST and nothing else: its members were
+  // ordinary catalog assets that it never owned, and any live link to it simply
+  // stops resolving (the resolver 404s on a collection that is gone).
+  router.add('DELETE', '/api/v1/catalog/collections/:id', async (req, res, ctx) => {
+    const user = await requireAction(req, res, 'catalog.collection.manage');
+    if (!user) return;
+    const id = ctx.params.id as string;
+    const before = await store.getCollection(id);
+    if (!before) return sendError(res, 404, 'NOT_FOUND', 'no such collection');
+    await store.deleteCollection(id);
+    await audit(`user:${user.id}`, 'catalog.collection.delete', `collection:${id}`, { before });
+    sendJson(res, 200, { ok: true, id });
   });
 
   // On-demand content-credential scan (plans/27 §4): fetch the asset's primary
@@ -1955,7 +2753,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
 
   /** The console/CLI view of one submission: the record's own descriptive entry
    *  plus the submission block, with the submitter resolved to a display name. */
-  const submissionView = (rec: InstanceAssetRecord, actors: Map<string, ActorInfo>): Record<string, unknown> => {
+  const submissionView = (
+    rec: InstanceAssetRecord, actors: Map<string, ActorInfo>, fields: Record<string, string> = {},
+  ): Record<string, unknown> => {
     const s = rec.submission as AssetSubmission;
     const who = actors.get(s.by.replace(/^user:/, ''));
     return {
@@ -1978,6 +2778,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       ...(s.decidedBy ? { decidedBy: s.decidedBy } : {}),
       ...(s.decidedAt ? { decidedAt: s.decidedAt } : {}),
       ...(s.comment ? { comment: s.comment } : {}),
+      // The org's own metadata (plans/31 section 4), so the review queue shows
+      // and edits the same taxonomy the published asset will carry.
+      ...(Object.keys(fields).length ? { fields } : {}),
       preview: `/api/v1/catalog/submissions/${rec.id.slice(INST_PREFIX.length)}/bytes`,
     };
   };
@@ -2032,10 +2835,42 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   };
 
   router.add('POST', '/api/v1/catalog/submit', async (req, res, ctx) => {
-    const user = await requireAction(req, res, 'catalog.submit');
+    // `?assetId=inst/<id>` makes this a NEW VERSION of an asset that is already
+    // in the catalog (plans/31 §6) rather than a new asset. Same route, same
+    // pipeline, different gate: contributing an asset is `catalog.submit`, and
+    // replacing the bytes of a published one is `catalog.edit`, the curation
+    // right that already governs editing what a served asset says. That split
+    // is also why a submit chain does not gate a version: an approver already
+    // decided this asset belongs here.
+    const targetId = (ctx.url.searchParams.get('assetId') ?? '').trim();
+    const user = await requireAction(req, res, targetId ? 'catalog.edit' : 'catalog.submit');
     if (!user) return;
+    let target: InstanceAssetRecord | null = null;
+    if (targetId) {
+      if (!targetId.startsWith(INST_PREFIX)) {
+        return sendError(res, 400, 'INVALID_INPUT', 'only an instance-owned asset takes new versions; a federated or pack asset is versioned where it lives');
+      }
+      target = await store.getInstanceAsset(targetId);
+      if (!target || !(await callerSeesAsset(user, targetId))) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
+      // A PIN is a local copy of a federated asset whose IDENTITY is still the
+      // provider's (plans/27 §5): the feed serves the ext/* entry and the ext
+      // blob route maps its formats through `refMap`. Versioning one would fork
+      // it from the upstream record it still claims to be, so it is refused
+      // until the exit's cutover makes the identity this instance's own.
+      if (target.origin && !target.exited) {
+        return sendError(res, 409, 'ASSET_IS_PINNED',
+          `these bytes are a local copy of ${target.origin.provider}'s asset and still carry its identity; cut the provider over before versioning them here`);
+      }
+      // Descriptive metadata and exposure have their own doors, and quietly
+      // ignoring them here would let a caller believe they had moved.
+      for (const key of ['groups', 'type', 'description', 'tags'] as const) {
+        if (ctx.url.searchParams.get(key) !== null) {
+          return sendError(res, 400, 'INVALID_INPUT', `${key} is not part of a new version - edit it with PUT /api/v1/catalog/assets/${targetId}/meta`);
+        }
+      }
+    }
     const name = (ctx.url.searchParams.get('name') ?? '').trim();
-    if (!name) return sendError(res, 400, 'INVALID_INPUT', 'name query param required');
+    if (!name && !target) return sendError(res, 400, 'INVALID_INPUT', 'name query param required');
     const maxBytes = config.policy.submit.maxBytes;
     let bytes: Buffer;
     try {
@@ -2056,7 +2891,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
 
     const outcome = await submitAsset(submitDeps(), {
       bytes,
-      name: name.slice(0, 200),
+      ...(target ? { target } : {}),
+      ...(ctx.url.searchParams.get('note') ? { note: (ctx.url.searchParams.get('note') as string).slice(0, 500) } : {}),
+      name: (name || String(target?.entry.name ?? targetId)).slice(0, 200),
       ...(ctx.url.searchParams.get('description') ? { description: (ctx.url.searchParams.get('description') as string).slice(0, 500) } : {}),
       tags: list('tags').slice(0, 32),
       ...(type ? { type } : {}),
@@ -2079,11 +2916,21 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       return sendError(res, status, outcome.code, outcome.detail);
     }
 
+    // Whatever the ending, the bytes an instance asset serves have changed, so
+    // the render cache key's instance half has to move with them (plans/31 §6).
+    if (!outcome.duplicate) bustInstanceCatalog();
+    // Retention runs AFTER the version landed, never before: a trim that made
+    // room first would delete history for a submission that then failed.
+    const trimmed = target && !outcome.duplicate ? await trimVersionHistory(outcome.record) : 0;
+
     const state = outcome.record.submission?.state ?? 'live';
-    await audit(`user:${user.id}`, 'catalog.submit', `catalog:${outcome.record.id}`, {
+    await audit(`user:${user.id}`, target ? 'catalog.version' : 'catalog.submit', `catalog:${outcome.record.id}`, {
       outcome: outcome.duplicate ? 'duplicate' : state,
       checksum: outcome.checksum, size: bytes.length, scan: outcome.scan,
-      credential: outcome.credential, ...(outcome.approval ? { approvalId: outcome.approval.id } : {}),
+      credential: outcome.credential,
+      ...(outcome.version ? { version: outcome.version } : {}),
+      ...(trimmed ? { trimmed } : {}),
+      ...(outcome.approval ? { approvalId: outcome.approval.id } : {}),
     });
     sendJson(res, outcome.duplicate ? 200 : 201, {
       ok: true,
@@ -2095,6 +2942,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       scan: outcome.scan,
       credential: outcome.credential,
       formats: (outcome.record.entry.formats ?? []).map((f) => f.format),
+      ...(outcome.version ? { version: outcome.version } : {}),
+      ...(trimmed ? { trimmed } : {}),
       ...(outcome.approval ? { approvalId: outcome.approval.id } : {}),
     }, { 'cache-control': 'no-store' });
   });
@@ -2108,10 +2957,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const wanted = ctx.url.searchParams.get('state');
     const state = wanted === 'submitted' || wanted === 'live' || wanted === 'returned' ? wanted : undefined;
     const actors = await actorsMap();
+    const [defs, metas] = await Promise.all([store.listCatalogFields(), store.listAssetMeta()]);
+    const metaById = new Map(metas.map((m) => [m.assetId, m]));
     const rows: Array<Record<string, unknown>> = [];
     for (const rec of listSubmissions(await store.listInstanceAssets(), state)) {
       const relation = await submissionRelation(rec, user);
-      if (relation) rows.push({ ...submissionView(rec, actors), relation });
+      if (relation) rows.push({ ...submissionView(rec, actors, servedFields(defs, metaById.get(rec.id))), relation });
     }
     sendJson(res, 200, { submissions: rows }, { 'cache-control': 'no-store' });
   });
@@ -2170,46 +3021,66 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
     const relation = await submissionRelation(rec, user);
     if (!relation) return sendError(res, 403, 'FORBIDDEN', 'not yours to edit');
-    const body = (await readJson(req)) as { name?: unknown; description?: unknown; tags?: unknown; type?: unknown } | null;
+    const body = (await readJson(req)) as Record<string, unknown> | null;
     if (!body || typeof body !== 'object') return sendError(res, 400, 'INVALID_INPUT', 'body required');
-    const entry = { ...rec.entry };
-    const before: Record<string, unknown> = {};
-    const after: Record<string, unknown> = {};
-    if (body.name !== undefined) {
-      const name = typeof body.name === 'string' ? body.name.trim() : '';
-      if (!name) return sendError(res, 400, 'INVALID_INPUT', 'name cannot be emptied');
-      before.name = entry.name;
-      entry.name = name.slice(0, 200);
-      after.name = entry.name;
+    // The descriptive rules live in ONE place (catalog/asset-meta.ts) because
+    // two surfaces edit exactly these four fields - here, before publication,
+    // and the asset editor afterwards (plans/31 section 4). They differ in when
+    // they apply and in which keys they allow, never in what a name may be.
+    const parsed = parseDescriptivePatch(body, rec.entry, ['name', 'type', 'description', 'tags']);
+    if ('error' in parsed) return sendError(res, 400, 'INVALID_INPUT', parsed.error);
+    const before: Record<string, unknown> = { ...parsed.before };
+    const after: Record<string, unknown> = { ...parsed.after };
+
+    // Org-defined fields ride the same overlay a published asset uses, so a
+    // reviewer fills the taxonomy in BEFORE publishing and the values are
+    // already there the moment the asset reaches the feed - no second edit on
+    // the other side of the decision, and no second store to reconcile.
+    let meta = await store.getAssetMeta(rec.id);
+    if (body.fields !== undefined) {
+      if (!body.fields || typeof body.fields !== 'object' || Array.isArray(body.fields)) {
+        return sendError(res, 400, 'INVALID_INPUT', 'fields must be an object of fieldId to value');
+      }
+      const defs = await store.listCatalogFields();
+      const applied = applyFieldPatch(defs, meta?.fields ?? {}, body.fields as Record<string, unknown>);
+      if ('errors' in applied) return sendError(res, 400, 'INVALID_FIELDS', applied.errors.join('; '));
+      before.fields = servedFields(defs, meta);
+      meta = {
+        assetId: rec.id, fields: applied.values,
+        ...(meta?.extractedText ? { extractedText: meta.extractedText } : {}),
+        updatedBy: `user:${user.id}`, updatedAt: new Date().toISOString(),
+      };
+      after.fields = servedFields(defs, meta);
     }
-    if (body.type !== undefined) {
-      const type = typeof body.type === 'string' ? body.type.trim() : '';
-      if (!/^[a-z0-9-]{1,32}$/i.test(type)) return sendError(res, 400, 'INVALID_INPUT', 'type must be a short slug');
-      before.type = entry.type;
-      entry.type = type;
-      after.type = type;
-    }
-    if (body.description !== undefined) {
-      if (typeof body.description !== 'string') return sendError(res, 400, 'INVALID_INPUT', 'description must be a string');
-      const description = body.description.trim().slice(0, 500);
-      before.description = entry.description ?? '';
-      if (description) entry.description = description;
-      else delete entry.description;
-      after.description = description;
-    }
-    if (body.tags !== undefined) {
-      const raw = Array.isArray(body.tags) ? body.tags : typeof body.tags === 'string' ? body.tags.split(',') : null;
-      if (!raw) return sendError(res, 400, 'INVALID_INPUT', 'tags must be a list or a comma-separated string');
-      before.tags = entry.tags ?? [];
-      entry.tags = [...new Set(raw.map((t) => String(t).trim()).filter(Boolean))].slice(0, 32);
-      after.tags = entry.tags;
+
+    // The submitting client attaches the on-device OCR text here, before
+    // publication (plans/31 §7): it is the submitter's own reading of their own
+    // file, so it rides the review queue's door rather than needing the
+    // curation right the live asset editor asks for. Same overlay, whitespace
+    // collapsed and capped, folded into search and kept off the feed - and the
+    // fields it shares the row with survive an OCR-only edit.
+    if (body.extractedText !== undefined) {
+      const text = normalizeExtractedText(body.extractedText);
+      before.extractedText = meta?.extractedText?.length ?? 0;
+      after.extractedText = text?.length ?? 0;
+      meta = {
+        assetId: rec.id,
+        fields: meta?.fields ?? {},
+        ...(text ? { extractedText: text } : {}),
+        updatedBy: `user:${user.id}`, updatedAt: new Date().toISOString(),
+      };
     }
     if (!Object.keys(after).length) return sendError(res, 400, 'INVALID_INPUT', 'nothing to change');
-    const next: InstanceAssetRecord = { ...rec, entry };
+    const next: InstanceAssetRecord = { ...rec, entry: applyDescriptivePatch(rec.entry, parsed) };
     await store.putInstanceAsset(next);
+    if ((after.fields !== undefined || after.extractedText !== undefined) && meta) await store.putAssetMeta(meta);
     await audit(`user:${user.id}`, 'catalog.edit-submission', `catalog:${rec.id}`, { before, after, relation });
     sendJson(res, 200, {
-      ok: true, submission: { ...submissionView(next, await actorsMap()), relation },
+      ok: true,
+      submission: {
+        ...submissionView(next, await actorsMap(), servedFields(await store.listCatalogFields(), meta)),
+        relation,
+      },
     }, { 'cache-control': 'no-store' });
   });
 
@@ -2844,6 +3715,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const filter = { ...(body?.remoteId ? { remoteId: body.remoteId } : {}), ...(body?.section ? { section: body.section } : {}) };
     try {
       const { results, skipped, errors } = await materializeProvider({ store, blobs, federation }, rec, filter);
+      // New instance-owned bytes exist, so the render cache key's instance half
+      // moves with them (plans/31 §6) - the same ripple a new version causes.
+      if (results.length) bustInstanceCatalog();
       const embedded = results.filter((r) => r.credential === 'embedded').length;
       // Always audit what succeeded, even on a partial run - the copies persist
       // (idempotent, a re-run resumes), so they must leave a trail.
@@ -2882,6 +3756,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         if (!results.length) return sendError(res, 404, 'NOT_FOUND', 'asset not found in the provider feed');
         result = results[0]!;
       }
+      bustInstanceCatalog(); // one more instance-owned asset (plans/31 §6)
       await audit(`user:${user.id}`, 'catalog.provider.import', `provider:${rec.id}`, { remoteId, inst: result.id, credential: result.credential });
       sendJson(res, 200, { ok: true, imported: result }, { 'cache-control': 'no-store' });
     } catch (err) {
@@ -2899,6 +3774,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const rec = await store.getProvider(ctx.params.id as string);
     if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such provider');
     const { migrated } = await cutoverProvider({ store, blobs, federation }, rec);
+    if (migrated) bustInstanceCatalog(); // identities moved into inst/* (plans/31 §6)
     // A db-managed provider is disabled here (its job is done). A config-managed
     // one can only be turned off in instance.json, but that's fine: its ext
     // entries are shadowed by the instance copies and old URLs alias - so it
@@ -3007,15 +3883,29 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
     const lifecycleRows = await store.listLifecycle();
     const lifecycleById = new Map(lifecycleRows.map((r) => [r.assetId, r]));
-    const withInstance = composeInstanceAssets(
-      await federation.composeIndex(index, user.groups), await store.listInstanceAssets(), user.groups,
+    // The overlay is loaded once and kept: `composeAssetMeta` folds its fields
+    // and supersession onto the feed entries, and the haystack below folds its
+    // OCR text (which is kept OFF the feed) in beside them (plans/31 §7).
+    const metas = await store.listAssetMeta();
+    const metaById = new Map(metas.map((m) => [m.assetId, m]));
+    const withInstance = composeAssetMeta(
+      composeInstanceAssets(
+        await federation.composeIndex(index, user.groups), await store.listInstanceAssets(), user.groups,
+      ),
+      metas, await store.listCatalogFields(),
     );
     const composed = applyCredentialsToIndex(
       applyLifecycleToIndex(withInstance, lifecycleRows, Date.now()),
       await store.listCredentials(),
     );
-    const matches = (e: { id: string; name?: unknown; description?: unknown; tags?: unknown }): boolean =>
-      [e.id, e.name, e.description, ...(Array.isArray(e.tags) ? e.tags : [])]
+    // The haystack folds the org's own field values (plans/31 section 4) and
+    // the asset's on-device OCR text (section 7) alongside id, name, description
+    // and tags: a value an org files an asset under, or a word printed on the
+    // asset itself, is a value they will look it up by. The OCR text comes off
+    // the overlay by id rather than off the entry, because it is deliberately
+    // not carried on the feed.
+    const matches = (e: { id: string; name?: unknown; description?: unknown; tags?: unknown; fields?: unknown }): boolean =>
+      [e.id, e.name, e.description, ...(Array.isArray(e.tags) ? e.tags : []), ...fieldHaystack(e), ...extractedHaystack(metaById.get(e.id))]
         .some((v) => typeof v === 'string' && v.toLowerCase().includes(q));
     const results = new Map<string, unknown>();
     for (const e of composed.assets ?? []) {
@@ -3524,7 +4414,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const overlays = await store.listOverlays();
     const query = ctx.url.search.replace(/^\?/, '');
     try {
-      const result = await renderTool({ config, resolveProvenance, worker: renderWorker, signer: await getC2paSigner() }, {
+      const result = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer: await getC2paSigner() }, {
         toolId, format, query,
         principal: user ? { groups: user.groups } : { groups: [] },
         profile: renderProfileOf(user),
@@ -3781,6 +4671,32 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
     return brandChrome;
   };
+  /**
+   * The pack's own webfont, for a page the server renders itself (the
+   * collection bearer page, plans/31 §5) rather than for the shell.
+   *
+   * The shell reads `/api/brand` and picks a family from the tokens; a
+   * server-rendered page has no such machinery and no script, so it needs one
+   * concrete `@font-face`. Variable faces are preferred - one file covers every
+   * weight, which is the whole point of shipping one - and a pack with no
+   * webfonts simply gets the system stack. Memoised: the pack is immutable for
+   * a process.
+   */
+  let brandFont: { family: string; file: string } | null | undefined;
+  const brandFontFile = async (): Promise<typeof brandFont> => {
+    if (brandFont !== undefined) return brandFont;
+    try {
+      const names = (await readdir(join(config.instance.pack, 'catalog', 'fonts', 'webfonts')))
+        .filter((n) => n.toLowerCase().endsWith('.woff2') && !/mono/i.test(n))
+        .sort();
+      const file = names.find((n) => /variable/i.test(n)) ?? names[0];
+      brandFont = file ? { family: (file.split(/[-.]/)[0] as string) || 'Brand', file } : null;
+    } catch {
+      brandFont = null;
+    }
+    return brandFont;
+  };
+
   router.add('GET', '/api/brand', async (_req, res) => {
     const c = await loadBrandChrome();
     if (!c) return sendError(res, 404, 'NO_BRAND', 'this pack ships no design tokens');
@@ -3852,12 +4768,242 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     sendJson(res, 200, { ok: true, ...(await listBrandProfiles(config.instance.pack)) });
   });
 
+  // ── SCIM provisioning (plans/31 §8) ───────────────────────────────────────
+  // Two surfaces. The ADMIN half (/api/v1/scim/tokens) mints and revokes the
+  // bearer an IdP holds - owner-only, cookie-authed like the rest of the console
+  // API. The PROTOCOL half (/scim/v2/*) is what the IdP calls, authed by that
+  // bearer and speaking SCIM 2.0. The users it manages are the SAME rows OIDC
+  // upserts (sub is the externalId, so provisioning and sign-in resolve to one
+  // row), and Group membership is the SAME localGroups the console edits - SCIM
+  // is another writer of the one identity model, never a second one.
+  const SCIM_PAGE_MAX = 200;
+  const scimBase = config.instance.baseUrl.replace(/\/+$/, '');
+  const scimJson = (res: ServerResponse, status: number, body: unknown, headers?: Record<string, string>): void => {
+    res.writeHead(status, { 'content-type': 'application/scim+json; charset=utf-8', 'cache-control': 'no-store', ...headers });
+    res.end(JSON.stringify(body));
+  };
+  const scimErr = (res: ServerResponse, status: number, detail: string, scimType?: string): void => {
+    scimJson(res, status, scimErrorBody(status, detail, scimType), status === 401 ? { 'www-authenticate': 'Bearer' } : undefined);
+  };
+  /** Resolve the SCIM bearer to the connector it authorizes, or answer 401. */
+  const scimAuth = async (req: IncomingMessage, res: ServerResponse): Promise<{ idp: string; tokenId: string } | null> => {
+    const secret = bearerFromHeader(req.headers.authorization as string | undefined);
+    if (!secret) { scimErr(res, 401, 'a Bearer provisioning token is required'); return null; }
+    const rec = await store.findScimTokenByHash(hashScimSecret(secret));
+    if (!rec || rec.revokedAt) { scimErr(res, 401, 'invalid or revoked provisioning token'); return null; }
+    void store.touchScimToken(rec.id, new Date().toISOString());
+    return { idp: rec.idp, tokenId: rec.id };
+  };
+
+  // Admin: mint / list / revoke provisioning tokens (owner-only).
+  router.add('POST', '/api/v1/scim/tokens', async (req, res) => {
+    const user = await requireAction(req, res, 'scim.manage');
+    if (!user) return;
+    const body = (await readJson(req)) as { idp?: unknown } | null;
+    const idp = typeof body?.idp === 'string' ? body.idp.trim().slice(0, 80) : '';
+    if (!idp) return sendError(res, 400, 'INVALID_INPUT', 'idp (a label for the IdP connector) is required');
+    const { secret, tokenHash } = mintScimSecret();
+    const rec: ScimTokenRecord = {
+      id: `sct_${randomId(8)}`, idp, tokenHash, createdBy: `user:${user.id}`, createdAt: new Date().toISOString(),
+    };
+    await store.putScimToken(rec);
+    await audit(`user:${user.id}`, 'scim.token.create', `scim:${rec.id}`, { idp });
+    // The secret is returned ONCE, here, and never again: it is not recoverable
+    // from the stored hash.
+    sendJson(res, 201, { id: rec.id, idp, token: secret, createdAt: rec.createdAt }, { 'cache-control': 'no-store' });
+  });
+  router.add('GET', '/api/v1/scim/tokens', async (req, res) => {
+    const user = await requireAction(req, res, 'scim.manage');
+    if (!user) return;
+    // Metadata only - never the hash, never the secret.
+    const tokens = (await store.listScimTokens()).map((t) => ({
+      id: t.id, idp: t.idp, createdBy: t.createdBy, createdAt: t.createdAt,
+      ...(t.lastUsedAt ? { lastUsedAt: t.lastUsedAt } : {}),
+      ...(t.revokedAt ? { revokedAt: t.revokedAt } : {}),
+    }));
+    sendJson(res, 200, { tokens }, { 'cache-control': 'no-store' });
+  });
+  router.add('DELETE', '/api/v1/scim/tokens/*', async (req, res, ctx) => {
+    const user = await requireAction(req, res, 'scim.manage');
+    if (!user) return;
+    const id = (ctx.params['*'] ?? '').trim();
+    if (!(await store.revokeScimToken(id, new Date().toISOString()))) {
+      return sendError(res, 404, 'NOT_FOUND', 'no such live token');
+    }
+    await audit(`user:${user.id}`, 'scim.token.revoke', `scim:${id}`);
+    sendJson(res, 200, { ok: true, id }, { 'cache-control': 'no-store' });
+  });
+
+  // Protocol: ServiceProviderConfig - the capability discovery many IdPs probe.
+  router.add('GET', '/scim/v2/ServiceProviderConfig', async (req, res) => {
+    if (!(await scimAuth(req, res))) return;
+    scimJson(res, 200, {
+      schemas: ['urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig'],
+      patch: { supported: true },
+      bulk: { supported: false, maxOperations: 0, maxPayloadSize: 0 },
+      filter: { supported: true, maxResults: SCIM_PAGE_MAX },
+      changePassword: { supported: false },
+      sort: { supported: false },
+      etag: { supported: false },
+      authenticationSchemes: [{
+        type: 'oauthbearertoken', name: 'OAuth Bearer Token',
+        description: 'A provisioning token minted by an instance owner.',
+      }],
+      meta: { resourceType: 'ServiceProviderConfig', location: `${scimBase}/scim/v2/ServiceProviderConfig` },
+    });
+  });
+
+  // Users --------------------------------------------------------------------
+  router.add('GET', '/scim/v2/Users', async (req, res, ctx) => {
+    if (!(await scimAuth(req, res))) return;
+    const filter = parseScimFilter(ctx.url.searchParams.get('filter'));
+    const all = await store.listUsers();
+    const rows = filter
+      ? all.filter((u) => (filter.attr === 'userName' ? u.email : u.sub) === filter.value)
+      : all;
+    // Bounded page: the IdP reconciles against this, it does not mirror it.
+    scimJson(res, 200, scimList(rows.slice(0, SCIM_PAGE_MAX).map((u) => userToScim(u, scimBase)), rows.length));
+  });
+  router.add('POST', '/scim/v2/Users', async (req, res) => {
+    if (!(await scimAuth(req, res))) return;
+    const parsed = parseUserCreate(await readJson(req));
+    if ('error' in parsed) return scimErr(res, 400, parsed.error, 'invalidValue');
+    if (await store.getUserBySub(parsed.sub)) {
+      return scimErr(res, 409, `a user with this ${parsed.sub === parsed.email ? 'userName' : 'externalId'} already exists`, 'uniqueness');
+    }
+    const created = await store.upsertUserBySub({
+      sub: parsed.sub, email: parsed.email,
+      ...(parsed.firstname ? { firstname: parsed.firstname } : {}),
+      ...(parsed.lastname ? { lastname: parsed.lastname } : {}),
+      groups: [], role: 'member',
+    });
+    // active:false at creation is a provisioned-but-suspended account: disable it
+    // at once (which also sets the epoch, so no session ever mints for it live).
+    const final = parsed.active ? created : (await store.setUserDisabled(created.id, new Date().toISOString())) ?? created;
+    await audit('scim', 'scim.user.create', `user:${created.id}`, { sub: parsed.sub, active: parsed.active });
+    scimJson(res, 201, userToScim(final, scimBase), { location: `${scimBase}/scim/v2/Users/${encodeURIComponent(created.id)}` });
+  });
+  router.add('GET', '/scim/v2/Users/:id', async (req, res, ctx) => {
+    if (!(await scimAuth(req, res))) return;
+    const u = await store.getUser(ctx.params.id as string);
+    if (!u) return scimErr(res, 404, 'no such user');
+    scimJson(res, 200, userToScim(u, scimBase));
+  });
+  router.add('PATCH', '/scim/v2/Users/:id', async (req, res, ctx) => {
+    if (!(await scimAuth(req, res))) return;
+    const u = await store.getUser(ctx.params.id as string);
+    if (!u) return scimErr(res, 404, 'no such user');
+    const patch = parseUserPatch(await readJson(req));
+    if ('error' in patch) return scimErr(res, 400, patch.error, 'invalidValue');
+    let next = u;
+    // Attribute changes ride the same upsert OIDC login uses, passing the
+    // EXISTING idpGroups so membership is untouched (that is Groups' job) and
+    // omitting disabledAt so it is preserved (that is `active`'s job, below).
+    if (patch.firstname !== undefined || patch.lastname !== undefined || patch.email !== undefined) {
+      const firstname = patch.firstname ?? u.firstname;
+      const lastname = patch.lastname ?? u.lastname;
+      next = await store.upsertUserBySub({
+        sub: u.sub, email: patch.email ?? u.email,
+        ...(firstname !== undefined ? { firstname } : {}),
+        ...(lastname !== undefined ? { lastname } : {}),
+        ...(u.title ? { title: u.title } : {}),
+        groups: u.idpGroups, role: u.role,
+      });
+    }
+    if (patch.active !== undefined) {
+      next = (await store.setUserDisabled(u.id, patch.active ? null : new Date().toISOString())) ?? next;
+      await audit('scim', patch.active ? 'scim.user.enable' : 'scim.user.disable', `user:${u.id}`);
+    }
+    scimJson(res, 200, userToScim(next, scimBase));
+  });
+  router.add('DELETE', '/scim/v2/Users/:id', async (req, res, ctx) => {
+    if (!(await scimAuth(req, res))) return;
+    const u = await store.getUser(ctx.params.id as string);
+    if (!u) return scimErr(res, 404, 'no such user');
+    // A SCIM delete is a DEPROVISION, not a hard erase: the row and its audit
+    // trail stay, disabled with the epoch bumped, so off-boarding never rewrites
+    // history. The same soft-delete enterprise IdPs expect.
+    await store.setUserDisabled(u.id, new Date().toISOString());
+    await audit('scim', 'scim.user.disable', `user:${u.id}`, { via: 'delete' });
+    res.writeHead(204); res.end();
+  });
+
+  // Groups -------------------------------------------------------------------
+  // A SCIM Group IS a local group; membership is stored per-USER (localGroups),
+  // so the members of G are the users carrying G, and a membership PATCH becomes
+  // a set of per-user localGroups edits. idpGroups (the OIDC-authoritative set,
+  // re-synced on login) are never touched here - localGroups are the durable,
+  // admin-and-SCIM-managed lane the model already draws.
+  const groupMembers = (users: UserRecord[], name: string): UserRecord[] =>
+    users.filter((u) => u.localGroups.includes(name));
+  const memberViews = (users: UserRecord[]): Array<{ id: string; display: string }> =>
+    users.map((u) => ({ id: u.id, display: displayName(u) }));
+  router.add('GET', '/scim/v2/Groups', async (req, res) => {
+    if (!(await scimAuth(req, res))) return;
+    const [defs, users] = await Promise.all([store.listLocalGroups(), store.listUsers()]);
+    scimJson(res, 200, scimList(defs.map((g) => groupToScim(g.name, memberViews(groupMembers(users, g.name)), scimBase))));
+  });
+  router.add('POST', '/scim/v2/Groups', async (req, res) => {
+    if (!(await scimAuth(req, res))) return;
+    const body = (await readJson(req)) as { displayName?: unknown; members?: unknown } | null;
+    const name = typeof body?.displayName === 'string' ? body.displayName.trim() : '';
+    if (!name) return scimErr(res, 400, 'displayName is required', 'invalidValue');
+    if ((await store.listLocalGroups()).some((g) => g.name === name)) {
+      return scimErr(res, 409, 'a group with this displayName already exists', 'uniqueness');
+    }
+    await store.putLocalGroup({ name, createdAt: new Date().toISOString() });
+    const memberIds = Array.isArray(body?.members)
+      ? body.members.map((m) => (m && typeof m === 'object' ? String((m as { value?: unknown }).value ?? '') : '')).filter(Boolean)
+      : [];
+    for (const id of memberIds) {
+      const u = await store.getUser(id);
+      if (u && !u.localGroups.includes(name)) await store.setLocalGroups(u.id, [...u.localGroups, name]);
+    }
+    await audit('scim', 'scim.group.create', `group:${name}`, { members: memberIds.length });
+    scimJson(res, 201, groupToScim(name, memberViews(groupMembers(await store.listUsers(), name)), scimBase),
+      { location: `${scimBase}/scim/v2/Groups/${encodeURIComponent(name)}` });
+  });
+  router.add('GET', '/scim/v2/Groups/:name', async (req, res, ctx) => {
+    if (!(await scimAuth(req, res))) return;
+    const name = decodeURIComponent(ctx.params.name as string);
+    if (!(await store.listLocalGroups()).some((g) => g.name === name)) return scimErr(res, 404, 'no such group');
+    scimJson(res, 200, groupToScim(name, memberViews(groupMembers(await store.listUsers(), name)), scimBase));
+  });
+  router.add('PATCH', '/scim/v2/Groups/:name', async (req, res, ctx) => {
+    if (!(await scimAuth(req, res))) return;
+    const name = decodeURIComponent(ctx.params.name as string);
+    if (!(await store.listLocalGroups()).some((g) => g.name === name)) return scimErr(res, 404, 'no such group');
+    const parsed = parseGroupPatch(await readJson(req));
+    if ('error' in parsed) return scimErr(res, 400, parsed.error, 'invalidValue');
+    const users = await store.listUsers();
+    const current = groupMembers(users, name).map((u) => u.id);
+    const target = new Set(applyMemberOps(current, parsed.ops));
+    const currentSet = new Set(current);
+    // Write only the users whose membership actually moved; a member id naming
+    // no user is ignored, never invented.
+    for (const u of users) {
+      const want = target.has(u.id);
+      if (currentSet.has(u.id) === want) continue;
+      await store.setLocalGroups(u.id, want ? [...u.localGroups, name] : u.localGroups.filter((g) => g !== name));
+    }
+    await audit('scim', 'scim.group.patch', `group:${name}`, { before: current.length, after: target.size });
+    scimJson(res, 200, groupToScim(name, memberViews(groupMembers(await store.listUsers(), name)), scimBase));
+  });
+  router.add('DELETE', '/scim/v2/Groups/:name', async (req, res, ctx) => {
+    if (!(await scimAuth(req, res))) return;
+    const name = decodeURIComponent(ctx.params.name as string);
+    if (!(await store.listLocalGroups()).some((g) => g.name === name)) return scimErr(res, 404, 'no such group');
+    await store.deleteLocalGroup(name); // strips it from every member's localGroups
+    await audit('scim', 'scim.group.delete', `group:${name}`);
+    res.writeHead(204); res.end();
+  });
+
   // ── the Lolly web shell, served same-origin at / (plans/16: one origin, so
   // session cookies work and the shell's org/ seam activates). Registered LAST,
   // so every API/console/catalog/render/link route wins; only unmatched GETs
   // reach the SPA fallback. Absent shellDir → these routes aren't added at all.
   const shellDir = config.instance.shellDir;
-  const RESERVED_PREFIX = /^(api|catalog|render|l|admin|healthz)(\/|$)/;
+  const RESERVED_PREFIX = /^(api|catalog|render|l|admin|scim|healthz)(\/|$)/;
   if (shellDir) {
     const serveShell = async (res: ServerResponse, rel: string): Promise<void> => {
       const clean = normalize(rel.replace(/^\/+/, '')).replace(/^(\.\.[/\\])+/, '');

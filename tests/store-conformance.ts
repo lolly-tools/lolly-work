@@ -271,6 +271,136 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.equal((await store.getInstanceAsset('inst/sub1'))?.submission?.state, 'live');
   await store.deleteInstanceAsset('inst/sub1');
 
+  // Org-defined metadata (plans/31 section 4, migrations/0018). Definitions are
+  // policy and round-trip whole, including the select options and the required
+  // flag the editor enforces; listing is id-ordered so the policy document, the
+  // console and the CLI cannot disagree about the order of the form.
+  assert.deepEqual(await store.listCatalogFields(), []);
+  await store.putCatalogField({ id: 'region', label: 'Region', kind: 'select', required: true, options: ['EMEA', 'AMER'] });
+  await store.putCatalogField({ id: 'campaign', label: 'Campaign', kind: 'text' });
+  assert.deepEqual((await store.listCatalogFields()).map((f) => f.id), ['campaign', 'region'], 'definitions list by id');
+  const region = (await store.listCatalogFields()).find((f) => f.id === 'region');
+  assert.equal(region?.required, true);
+  assert.deepEqual(region?.options, ['EMEA', 'AMER']);
+  await store.putCatalogField({ id: 'region', label: 'Sales region', kind: 'select', options: ['EMEA'] });
+  assert.equal((await store.listCatalogFields()).find((f) => f.id === 'region')?.label, 'Sales region', 'put is an upsert');
+  await store.deleteCatalogField('campaign');
+  assert.deepEqual((await store.listCatalogFields()).map((f) => f.id), ['region']);
+
+  // Values are an overlay keyed by CATALOG ASSET ID, which is the whole reason
+  // it is its own table: all three id shapes take one - an instance asset, a
+  // federated ext/* asset whose record belongs to a DAM, and a pack asset whose
+  // record is a file on disk. A driver that could only key the first would make
+  // org metadata an instance-assets-only feature.
+  assert.equal(await store.getAssetMeta('inst/abc'), null);
+  for (const assetId of ['inst/meta1', 'ext/dam1/a1', 'suse/tokens/brand']) {
+    await store.putAssetMeta({
+      assetId, fields: { region: 'EMEA' }, updatedBy: 'user:usr_1', updatedAt: '2026-08-19T00:00:00.000Z',
+    });
+    const got = await store.getAssetMeta(assetId);
+    assert.equal(got?.assetId, assetId);
+    assert.equal(got?.fields.region, 'EMEA');
+    assert.equal(got?.updatedBy, 'user:usr_1');
+  }
+  assert.equal((await store.listAssetMeta()).length, 3);
+  await store.putAssetMeta({ assetId: 'inst/meta1', fields: {}, updatedBy: 'user:usr_2', updatedAt: '2026-08-19T01:00:00.000Z' });
+  assert.deepEqual((await store.getAssetMeta('inst/meta1'))?.fields, {}, 'a cleared bag round-trips as empty, not as absent');
+  await store.deleteAssetMeta('inst/meta1');
+  assert.equal(await store.getAssetMeta('inst/meta1'), null);
+  assert.equal((await store.listAssetMeta()).length, 2);
+  // Retiring a DEFINITION never touches the values filed under it: the served
+  // bag filters to live definitions instead, so re-adding one brings them back.
+  await store.deleteCatalogField('region');
+  assert.equal((await store.getAssetMeta('ext/dam1/a1'))?.fields.region, 'EMEA');
+  await store.deleteAssetMeta('ext/dam1/a1');
+  await store.deleteAssetMeta('suse/tokens/brand');
+
+  // Collections (plans/31 section 5, migrations/0019). Two properties are the
+  // whole storage contract, and both are ones a join table would lose: MEMBER
+  // ORDER is the curator's (a lookbook is a sequence), and a member may be an
+  // inst/*, an ext/* or a pack id, only the first of which this database holds
+  // a row for.
+  assert.deepEqual(await store.listCollections(), []);
+  assert.equal(await store.getCollection('launch'), null);
+  const launch = {
+    id: 'launch',
+    name: 'Launch kit',
+    description: 'Everything for the spring launch.',
+    members: ['ext/dam1/a1', 'inst/hero', 'suse/tokens/brand'],
+    groups: ['design', 'sales'],
+    curator: 'user:usr_1',
+    createdAt: '2026-08-20T00:00:00.000Z',
+    updatedAt: '2026-08-20T00:00:00.000Z',
+  };
+  await store.putCollection(launch);
+  await store.putCollection({ ...launch, id: 'archive', name: 'Archive', members: [], groups: '*' as const });
+  const readBack = await store.getCollection('launch');
+  assert.deepEqual(readBack?.members, ['ext/dam1/a1', 'inst/hero', 'suse/tokens/brand'], 'member ORDER round-trips exactly');
+  assert.deepEqual(readBack?.groups, ['design', 'sales']);
+  assert.equal(readBack?.curator, 'user:usr_1');
+  assert.equal(readBack?.description, 'Everything for the spring launch.');
+  assert.deepEqual((await store.listCollections()).map((c) => c.id), ['archive', 'launch'], 'listing is name-ordered');
+  assert.equal((await store.getCollection('archive'))?.groups, '*', "'*' visibility round-trips as itself");
+  await store.putCollection({ ...launch, name: 'Launch kit 2026', members: ['inst/hero'] });
+  assert.equal((await store.getCollection('launch'))?.name, 'Launch kit 2026', 'put is an upsert');
+  assert.deepEqual((await store.getCollection('launch'))?.members, ['inst/hero'], 'an upsert replaces the member list whole');
+  await store.deleteCollection('archive');
+  assert.equal(await store.getCollection('archive'), null);
+  await store.deleteCollection('nope'); // unknown id is a no-op
+  await store.deleteCollection('launch');
+  assert.deepEqual(await store.listCollections(), []);
+
+  // Asset versions (plans/31 section 6, migrations/0020). Keyed (assetId,
+  // version), listed oldest-first, and an upsert replaces the snapshot whole -
+  // the format SET is what a head move and a rollback swap, so a driver that
+  // merged format lists would make a two-format version un-rollbackable.
+  assert.deepEqual(await store.listAssetVersions('inst/ver1'), []);
+  assert.equal(await store.getAssetVersion('inst/ver1', 1), null);
+  const v1 = {
+    assetId: 'inst/ver1', version: 1,
+    formats: [{ format: 'png', blobId: 'inst/ver1/png', size: 10, checksum: 'sha1', contentType: 'image/png' }],
+    by: 'user:usr_1', at: '2026-08-20T00:00:00.000Z',
+  };
+  await store.putAssetVersion(v1);
+  await store.putAssetVersion({
+    ...v1, version: 2, at: '2026-08-20T01:00:00.000Z', note: 'new crop', width: 8, height: 6,
+    formats: [
+      { format: 'png', blobId: 'inst/ver1/v2/png', size: 20, checksum: 'sha2' },
+      { format: 'svg', blobId: 'inst/ver1/v2/svg', size: 5, checksum: 'sha3' },
+    ],
+  });
+  // A second asset's rows must not leak into the first's history.
+  await store.putAssetVersion({ ...v1, assetId: 'inst/ver2', version: 1 });
+  const history = await store.listAssetVersions('inst/ver1');
+  assert.deepEqual(history.map((r) => r.version), [1, 2], 'versions list oldest-first, one asset at a time');
+  assert.equal(history[1]?.note, 'new crop');
+  assert.equal(history[1]?.width, 8);
+  assert.deepEqual(history[1]?.formats.map((f) => f.format), ['png', 'svg'], 'the whole format set round-trips');
+  assert.equal((await store.getAssetVersion('inst/ver1', 1))?.formats[0]?.contentType, 'image/png');
+  await store.putAssetVersion({ ...v1, formats: [{ format: 'png', blobId: 'inst/ver1/png', size: 11, checksum: 'sha1b' }] });
+  assert.equal((await store.getAssetVersion('inst/ver1', 1))?.formats[0]?.checksum, 'sha1b', 'put is an upsert on (assetId, version)');
+  await store.deleteAssetVersion('inst/ver1', 1);
+  assert.deepEqual((await store.listAssetVersions('inst/ver1')).map((r) => r.version), [2], 'a deleted version leaves a hole');
+  await store.deleteAssetVersion('inst/ver1', 99); // unknown is a no-op
+  await store.deleteAssetVersion('inst/ver1', 2);
+  await store.deleteAssetVersion('inst/ver2', 1);
+  assert.deepEqual(await store.listAssetVersions('inst/ver1'), []);
+
+  // The HEAD is a number on the instance-asset record, never a flag on a row:
+  // a driver that dropped it would silently serve version 1 forever.
+  await store.putInstanceAsset({
+    id: 'inst/headed',
+    entry: { id: 'inst/headed', name: 'Headed', formats: [{ format: 'png', url: '/catalog/inst/headed/png' }] },
+    blobs: { png: 'inst/headed/v3/png' },
+    headVersion: 3,
+    versionSeq: 5,
+    createdAt: '2026-08-20T00:00:00.000Z',
+  });
+  assert.equal((await store.getInstanceAsset('inst/headed'))?.headVersion, 3);
+  assert.equal((await store.getInstanceAsset('inst/headed'))?.versionSeq, 5,
+    'the high-water mark round-trips too, or a deleted version number could be handed out twice');
+  await store.deleteInstanceAsset('inst/headed');
+
   // Submit quota: cumulative, created on first add, addressed by scope, and the
   // add returns the row AFTER the increment (the caller charges, then reads).
   assert.equal(await store.getSubmitQuota('design'), null);
@@ -501,6 +631,23 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.equal(enabled?.sessionEpoch, 2, 're-enable does not bump');
   assert.equal(await store.setUserDisabled('nope', null), null, 'unknown id → null');
   assert.equal(await store.setLocalGroups('nope', []), null, 'unknown id → null');
+
+  // ── SCIM provisioning tokens (plans/31 §8) ────────────────────────────────
+  await store.putScimToken({ id: 'sct_1', idp: 'keycloak', tokenHash: 'h1', createdBy: 'user:owner', createdAt: now });
+  await store.putScimToken({ id: 'sct_2', idp: 'okta', tokenHash: 'h2', createdBy: 'user:owner', createdAt: now });
+  assert.deepEqual((await store.listScimTokens()).map((t) => t.id).sort(), ['sct_1', 'sct_2']);
+  assert.equal((await store.findScimTokenByHash('h1'))?.idp, 'keycloak', 'found by hash');
+  assert.equal(await store.findScimTokenByHash('nope'), null, 'unknown hash → null');
+  // Never the secret, only its hash: nothing on the record is the cleartext token.
+  assert.equal((await store.findScimTokenByHash('h1'))?.tokenHash, 'h1');
+  await store.touchScimToken('sct_1', now);
+  assert.ok((await store.findScimTokenByHash('h1'))?.lastUsedAt, 'last-used stamped');
+  // Revoke is one-way and idempotent-false: a revoked token is kept (still found)
+  // with revokedAt set, and a second revoke reports nothing to do.
+  assert.equal(await store.revokeScimToken('sct_1', now), true);
+  assert.ok((await store.findScimTokenByHash('h1'))?.revokedAt, 'revoked, not deleted');
+  assert.equal(await store.revokeScimToken('sct_1', now), false, 'already revoked → false');
+  assert.equal(await store.revokeScimToken('nope', now), false, 'unknown id → false');
 
   // ── listUsersPage: filter + sort + paginate + total ───────────────────────
   // A unique group isolates these rows from users seeded earlier, so counts are

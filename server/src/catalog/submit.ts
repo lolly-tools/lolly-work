@@ -30,8 +30,16 @@
  *      does not have is a refusal, because the limit an org bought has to hold
  *      once bought.
  *
- * Everything here is store-and-blobs only. Audit, inbox and HTTP status mapping
- * belong to the route, so this module stays testable without a server.
+ * Since plans/31 section 6 the pipeline has TWO endings and one middle: with
+ * `input.target` set the same cap, quota, sniff, scan hook and credential
+ * detection run, and the bytes land as the next VERSION of an asset that is
+ * already in the catalog instead of minting a new id. New bytes for an existing
+ * id are the natural way a version arrives, so they arrive through here rather
+ * than through a second ingest that would drift from this one.
+ *
+ * Everything here is store-and-blobs only. Audit, inbox, retention trimming and
+ * HTTP status mapping belong to the route, so this module stays testable
+ * without a server.
  */
 import { spawn } from 'node:child_process';
 import { createApproval, type Approval, type Chain } from '../approvals/engine.ts';
@@ -40,6 +48,9 @@ import {
   instanceAssetEntry, instanceAssetVisible, submissionServable, INST_PREFIX,
   type AssetSubmission, type InstanceAssetRecord,
 } from './instance-assets.ts';
+import {
+  applyVersionToRecord, backfillVersionOne, nextVersionNumber, versionBlobKey, type AssetVersionRecord,
+} from './versions.ts';
 import type { SubmitPolicy, SubmitScanHook } from '../config/instance.ts';
 import type { BlobStore } from '../blobs/types.ts';
 import type { Store } from '../store/types.ts';
@@ -279,6 +290,17 @@ export interface SubmitDeps {
 
 export interface SubmitInput {
   bytes: Buffer;
+  /**
+   * An existing instance asset these bytes REPLACE (plans/31 section 6). With
+   * it set, the pipeline is identical up to the store write and then lands a
+   * new version on that id instead of minting a new one: same cap, same quota,
+   * same sniff, same pre-store scan hook, same credential detection. One ingest
+   * with two endings, rather than a second ingest that would drift from this
+   * one on the first change to either.
+   */
+  target?: InstanceAssetRecord;
+  /** Why these bytes replaced the last - kept on the version row. */
+  note?: string;
   /** Declared display name; also the filename hint for sniffing and the hook. */
   name: string;
   description?: string;
@@ -317,6 +339,9 @@ export interface SubmitAccepted {
   scan: 'clean' | 'absent' | 'skipped' | 'unavailable';
   credential: CredentialStatus;
   approval?: Approval;
+  /** The version these bytes became, when they landed on an existing asset
+   *  (plans/31 section 6). Absent on a submission that minted a new asset id. */
+  version?: number;
 }
 
 export type SubmitOutcome = SubmitAccepted | SubmitRefusal;
@@ -366,7 +391,16 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
     }
   }
 
-  // 1b. A chain that policy names but the instance does not have is a REFUSAL,
+  // 1b. Review gates CONTRIBUTION - a new asset entering the catalog - and not
+  //     curation of one that is already in it. New bytes for an existing id are
+  //     an edit of a published asset, which is why the route asks `catalog.edit`
+  //     for them rather than `catalog.submit`, and why the chain below is not
+  //     consulted: an approver already decided this asset belongs in the
+  //     catalog, and a curator who may rename it may replace it (plans/31
+  //     section 6; the split the RBAC table already draws between the
+  //     contribution right and the curation right).
+  //
+  //     A chain that policy names but the instance does not have is a REFUSAL,
   //     not open publishing. `policy.submit.chain` lives in instance.json while
   //     chains are seeded from the policy config doc, so the two documents can
   //     drift on a rename or a first-boot ordering - and the org that bought
@@ -375,8 +409,8 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
   //     closed. Checked here, before anything is hashed or stored, so a refusal
   //     leaves no orphan bytes behind. The rest of the app refuses a missing
   //     chain the same way (api/app.ts, POST /api/v1/approvals).
-  const chain: Chain | null = policy.chain ? await store.getChain(policy.chain) : null;
-  if (policy.chain && !chain?.steps.length) {
+  const chain: Chain | null = policy.chain && !input.target ? await store.getChain(policy.chain) : null;
+  if (policy.chain && !input.target && !chain?.steps.length) {
     return {
       ok: false, code: 'SUBMIT_CHAIN_MISSING',
       detail: `policy.submit.chain names ${policy.chain}, which this instance has no usable chain for`,
@@ -388,8 +422,25 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
   //    Only an asset this submitter could already be handed counts as the
   //    duplicate (findByChecksum), so the short-circuit can neither confirm a
   //    file they cannot see nor drop their contribution behind one.
+  //    Against an existing asset the question narrows to that asset's own head:
+  //    "these are the bytes it already serves" is the only duplicate that means
+  //    anything there. A global hit must NOT divert a version submit, because
+  //    the submitter asked for these bytes to be the new head of THIS id, and
+  //    bytes matching an OLDER version of it are a legitimate new head (a
+  //    revert-by-upload, which the version list then shows honestly as its own
+  //    row rather than silently as a rollback).
   const checksum = sha256Hex(input.bytes);
-  const existing = findByChecksum(await store.listInstanceAssets(), checksum, input.submitter.groups);
+  if (input.target) {
+    const head = (input.target.entry.formats ?? []).some((f) => (f as { checksum?: string }).checksum === checksum);
+    if (head) {
+      return {
+        ok: true, duplicate: true, record: input.target, checksum, scan: 'skipped',
+        credential: (await store.getCredential(input.target.id))?.status ?? 'none',
+        version: input.target.headVersion ?? 1,
+      };
+    }
+  }
+  const existing = input.target ? undefined : findByChecksum(await store.listInstanceAssets(), checksum, input.submitter.groups);
   if (existing) {
     return {
       ok: true, duplicate: true, record: existing, checksum, scan: 'skipped',
@@ -439,6 +490,65 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
       await release();
       return { ok: false, code: 'QUOTA_EXCEEDED', detail: over };
     }
+  }
+
+  // 4b-bis. New bytes for an EXISTING id: the same store write, landing as a
+  //     version rather than as a new asset (plans/31 section 6). Version 1 is
+  //     materialized from the record itself first, so an asset that predates
+  //     versioning grows a complete history rather than one starting at 2 -
+  //     lazily, here, which is why migration 0020 needs no data backfill.
+  if (input.target) {
+    const target = input.target;
+    const rows = await store.listAssetVersions(target.id);
+    if (!rows.length) {
+      const first = backfillVersionOne(target);
+      await store.putAssetVersion(first);
+      rows.push(first);
+    }
+    const next = nextVersionNumber(target, rows);
+    let vstat: Awaited<ReturnType<BlobStore['put']>>;
+    const blobId = versionBlobKey(target.id, next, sniffed.format);
+    try {
+      vstat = await blobs.put(blobId, input.bytes, sniffed.contentType);
+    } catch (err) {
+      await release();
+      throw err;
+    }
+    const row: AssetVersionRecord = {
+      assetId: target.id,
+      version: next,
+      formats: [{ format: sniffed.format, blobId, size: vstat.size, checksum: vstat.checksum, contentType: sniffed.contentType }],
+      by: `user:${input.submitter.id}`,
+      at: nowIso,
+      ...(input.note ? { note: input.note.slice(0, 500) } : {}),
+      ...(sniffed.width && sniffed.height ? { width: sniffed.width, height: sniffed.height } : {}),
+    };
+    // The row lands BEFORE the head moves: a crash between the two leaves a
+    // stored version nobody serves yet, which is recoverable, where the reverse
+    // order would leave a record pointing at a version that was never written.
+    // The asset's own `submission` block is left exactly as it was - it records
+    // how this asset ENTERED the catalog, and rewriting it with a later
+    // upload's checksum would make the audit trail say the wrong thing.
+    try {
+      await store.putAssetVersion(row);
+      await store.putInstanceAsset(applyVersionToRecord(target, row));
+    } catch (err) {
+      await release();
+      throw err;
+    }
+    // Bytes changed, so the credential detection for this id is re-run rather
+    // than inherited: a new version may have gained or lost a manifest.
+    const detectedNew = await detectCredential(input.bytes);
+    await store.putCredential({
+      assetId: target.id, status: detectedNew.status,
+      ...(detectedNew.container ? { container: detectedNew.container } : {}),
+      sniffedAt: nowIso,
+    });
+    return {
+      ok: true, duplicate: false,
+      record: (await store.getInstanceAsset(target.id)) ?? applyVersionToRecord(target, row),
+      checksum: vstat.checksum, scan, credential: detectedNew.status, version: next,
+    };
   }
 
   // 4b. Store the bytes, then the record, in state `submitted`. A failure on

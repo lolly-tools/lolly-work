@@ -21,20 +21,22 @@ anything up: a resource arrives as the set of selectors it satisfies (e.g.
 | `member` | the default for any signed-in user | viewer + `tool.use`, `session.create/edit/delete/share`, `project.create`, `export.download`, `export.request`, `link.create` |
 | `author` | group `author` | member + `catalog.submit` |
 | `approver` | group `approver` | member + `approval.act` |
-| `admin` | group `admin` | author ∪ approver + `catalog.publish`, `catalog.expire`, `catalog.hold`, `catalog.scan`, `catalog.provider.read`, `catalog.provider.manage`, `brand.switch`, `catalog.injectable.manage`, `policy.edit`, `grant.edit`, `link.revoke`, `link.create-guest`, `message.send`, `telemetry.view`, `fleet.view`, `audit.export`, `project.manage`, `project.archive`, `approval.assign`, `export.server` |
-| `owner` | group `owner` | admin + `instance.config`, `catalog.provider.credential`, `catalog.provider.publish` |
+| `admin` | group `admin` | author ∪ approver + `catalog.publish`, `catalog.expire`, `catalog.hold`, `catalog.scan`, `catalog.edit`, `catalog.collection.manage`, `catalog.provider.read`, `catalog.provider.manage`, `brand.switch`, `catalog.injectable.manage`, `policy.edit`, `grant.edit`, `link.revoke`, `link.create-guest`, `message.send`, `telemetry.view`, `fleet.view`, `audit.export`, `project.manage`, `project.archive`, `approval.assign`, `export.server` |
+| `owner` | group `owner` | admin + `instance.config`, `catalog.provider.credential`, `catalog.provider.publish`, `scim.manage` |
 | `guest` | a guest-edit link | **nothing** - access is entirely link-scoped grants |
 
 Role comes from the effective group set (IdP ∪ local groups): the highest of `owner`,
 `admin`, `approver`, `author`, else `member`. See [identity](identity.md).
 
-Three actions stay **owner-only** on purpose: an admin can shape a catalog provider and even
+Four actions stay **owner-only** on purpose: an admin can shape a catalog provider and even
 materialize its bytes into the instance's own store, but only an owner puts a credential in
 it or flips its kill switch (including the exit's cutover), only an owner changes deploy
-config, and only an owner may **publish lolly exports out** to a destination DAM
-(`catalog.provider.publish` - an outbound write to a third party). Each is owner-grantable:
-an owner can hand it out per-resource through a grant, but an admin cannot mint it for
-themselves.
+config, only an owner may **publish lolly exports out** to a destination DAM
+(`catalog.provider.publish` - an outbound write to a third party), and only an owner mints a
+**SCIM provisioning token** (`scim.manage`) - the bearer an IdP holds to create, disable and
+re-group people, an identity-infrastructure credential in the same class as a provider key.
+Each is owner-grantable: an owner can hand it out per-resource through a grant, but an admin
+cannot mint it for themselves.
 
 ## Grants
 
@@ -109,6 +111,68 @@ Those are audit vocabulary, not grantable actions - nothing evaluates them.
 Also `catalog.read`, which the `viewer` role already carries, gates the queue itself. The rows
 are the real gate: a caller sees their own submissions plus the ones open on a step their
 groups may act on, and nothing else.
+
+### Editing what the catalog says: `catalog.edit`
+
+`catalog.edit` is the action behind [org-defined metadata](catalog.md#org-defined-metadata) -
+filling in the fields an org defines for itself, and correcting an instance-owned asset's own
+name, description and tags. It sits with `admin` rather than with `author`, because
+contributing an asset and editing what the whole org's catalogue says about one are different
+authorities. Like every action it is grantable, so "the brand team files assets, everyone else
+reads" is one row:
+
+```bash
+lw grants add group:brand catalog.edit '*' --effect allow
+```
+
+Two things it deliberately does not buy. **Defining** the fields is `policy.edit`, because a
+taxonomy is governance and lives in the [governance
+document](governance.md#policy-as-code) - filling a field in is not defining one. And it
+reaches only assets the caller can already see: the editor asks the same exposure question
+link minting asks, so nobody annotates an asset that is invisible to them, and a submission
+still under review is edited through the review queue rather than here.
+
+Audited as `catalog.edit` with the before and after of every field that moved, and as
+`catalog.field.edit` / `catalog.field.delete` when the definitions themselves change.
+
+The same action carries the byte side of curation ([versions](catalog.md#versions)): replacing
+a published asset's bytes with a new version, rolling the head back to a prior one, deleting a
+stored version, and retiring an asset in favour of another (`replacedBy`). The split is
+deliberate - `catalog.submit` contributes an asset, `catalog.edit` changes what an asset that
+is already in the catalog says or serves - and it is why a `policy.submit.chain` gates
+contributions and not versions: an approver already decided this asset belongs here. Audited as
+`catalog.version`, `catalog.rollback` and `catalog.version.delete`, each naming the version it
+moved.
+
+### Curating a shareable set: `catalog.collection.manage`
+
+`catalog.collection.manage` is the action behind [collections](catalog.md#collections) -
+creating a named, ordered set of catalog assets, naming the groups that may see it, and
+deleting it again. It sits with `admin` for the same reason `catalog.edit` does, and is
+grantable the same way:
+
+```bash
+lw grants add group:brand catalog.collection.manage '*' --effect allow
+```
+
+One rule is enforced rather than merely advised: **a collection may only hold assets its
+curator can see.** A collection link is minted on the collection's own visibility and its
+bearer then receives every member, so without that rule a curator with a narrowed grant could
+name assets they were never exposed to and read them back through a link. The check runs when
+the set is saved, where the person can be told which id was refused.
+
+The mirror of it runs at mint, and is what closes the rule for everyone else: **minting a link
+to a collection refuses any member the minter cannot see.** `link.create` is a member default
+while curating is an admin action, so the saved-set check alone would only bind the curator - a
+collection visible to everyone could otherwise hand a member the bytes of an asset their own
+groups are denied. A refusal there reports how many members were unseen and not which ids,
+because the minter did not choose the membership.
+
+Reading collections needs nothing extra: the per-caller catalog feed carries the collections
+a caller's groups admit, with members narrowed to the assets that caller is already served.
+
+Audited as `catalog.collection.edit` and `catalog.collection.delete`, each with the before and
+after of the whole set; minting a link to one audits as `link.create` like any other link.
 
 ### Explicit allow vs role default
 

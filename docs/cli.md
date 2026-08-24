@@ -49,6 +49,18 @@ lw apply governance.json [--dry-run] [--prune]
 hash. `--dry-run` changes nothing; `--prune` also deletes store-only entries. See
 [governance](governance.md).
 
+## SCIM provisioning tokens
+
+```bash
+lw scim token create --idp keycloak   # prints the secret ONCE - paste it into the IdP connector
+lw scim token list                    # metadata only; never the secret
+lw scim token revoke <id>
+```
+
+Owner-only (`scim.manage`). The secret is stored only as its hash and is unrecoverable, so
+the mint is the one moment you can copy it. The IdP then drives `/scim/v2` with it. See
+[identity](identity.md#scim-provisioning).
+
 ## Catalog providers
 
 ```bash
@@ -179,9 +191,66 @@ already in the catalog as inst/ab12cd34 (identical bytes; nothing stored)
 `queue` lists what is waiting, tagged `mine` or `inbox` depending on whether it is your own
 submission or one your groups may act on; `--all` includes what has already been published or
 returned. `edit` corrects a pending submission's declared metadata before it goes out - name,
-type, tags and description, never the bytes or the exposure - and is audited with its before
-and after. `approve` and `return` go through the approvals engine, so you cannot decide your
-own submission.
+type, tags, description and the org's own fields, never the bytes or the exposure - and is
+audited with its before and after. `approve` and `return` go through the approvals engine, so
+you cannot decide your own submission.
+
+## Org-defined metadata
+
+The fields an org defines for itself, on assets it already serves
+([catalog](catalog.md#org-defined-metadata)):
+
+```bash
+lw catalog fields                                            # what this instance defines
+lw catalog meta suse/tokens/brand --field region=EMEA --field campaign="Autumn Launch"
+lw catalog meta inst/ab12cd34 --field region= --name "Campaign Hero 2026" --tags campaign,hero
+```
+
+`--field` is repeatable and takes `fieldId=value`; an empty value (`--field region=`) clears
+one. `meta` needs `catalog.edit`. `--name`, `--tags` and `--label` apply to an instance-owned
+`inst/*` asset only - a federated asset keeps the name its source gives it, and a pack asset is
+a file on disk - while `--field` applies to any asset you can see. Defining the fields
+themselves is `policy.edit` and belongs to the governance document
+([governance](governance.md#policy-as-code)), not to this command.
+
+## Collections
+
+Named, ordered, group-visible sets of catalog assets
+([catalog](catalog.md#collections)):
+
+```bash
+lw catalog collections                                       # every set, with its size and audience
+lw catalog collection launch-kit --name "Launch kit" \
+    --members inst/ab12cd34,ext/brandfolder/a1,suse/logos/mark \
+    --groups design,sales --label "Everything for the spring launch."
+lw catalog collection launch-kit --members inst/ab12cd34      # replaces the member list whole
+lw catalog collection launch-kit --rm
+```
+
+`--members` is comma-separated and **the order you type is the order the set keeps**; passing
+it replaces the whole list rather than appending, so the command is idempotent. `--groups`
+takes group names or `*` for everyone, and `--label` is the description. Both need
+`catalog.collection.manage`, and a save is refused if it names an asset you cannot see.
+
+## Versions and supersession
+
+New bytes for an asset that is already in the catalog, and the two moves that change what it
+serves ([catalog](catalog.md#versions)):
+
+```bash
+lw catalog submit ./hero-2027.png --asset inst/ab12cd34 --note "reshot in studio"
+lw catalog versions inst/ab12cd34        # the history, newest first; * marks what serves
+lw catalog rollback inst/ab12cd34 1      # point the head at version 1
+lw catalog version-rm inst/ab12cd34 2    # delete a stored version (never the served one)
+lw catalog supersede inst/ab12cd34 inst/ef56ab78    # retire in favour of another asset
+lw catalog supersede inst/ab12cd34 --rm             # and undo that
+```
+
+`--asset` turns `submit` into a new version rather than a new asset, so the id and its URL stay
+put and the prior bytes stay readable at `?v=N`. It needs `catalog.edit` (replacing published
+bytes is curation, not contribution), and the descriptive flags are refused with it - use
+`lw catalog meta` for those. `version-rm` answers `409` for the served version and for a held
+asset. `supersede` writes `replacedBy`, which is advice to consumers and not a takedown.
 
 ## Messaging
 

@@ -21,12 +21,29 @@ import type { Message } from '../inbox/target.ts';
 import type { LifecycleRow, OnExpiry } from '../catalog/lifecycle.ts';
 import type { CredentialRow } from '../catalog/credentials.ts';
 import type { InstanceAssetRecord } from '../catalog/instance-assets.ts';
+import type { AssetMetaRecord, CatalogFieldDef } from '../catalog/asset-meta.ts';
+import { sortCollections, type CollectionRecord } from '../catalog/collections.ts';
+import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderFragment, ProviderKind, ProviderRecord } from '../catalog/providers/types.ts';
 import {
   SESSION_REVISION_LIMIT, effectiveGroups,
   type CollabSnapshot, type FleetRow, type ListUsersPageOpts, type LocalGroupRecord, type ProjectRecord,
-  type SessionRecord, type SessionRevision, type Store, type SubmitQuotaRow, type UserRecord,
+  type ScimTokenRecord, type SessionRecord, type SessionRevision, type Store, type SubmitQuotaRow, type UserRecord,
 } from './types.ts';
+
+/** One scim_tokens row → record. `token_hash` never leaves the DB in cleartext;
+ *  the opaque secret it hashes was returned once at mint and is unrecoverable. */
+function scimTokenFromRow(r: Record<string, unknown>): ScimTokenRecord {
+  return {
+    id: r.id as string,
+    idp: r.idp as string,
+    tokenHash: r.token_hash as string,
+    createdBy: r.created_by as string,
+    createdAt: new Date(r.created_at as string).toISOString(),
+    ...(r.last_used_at ? { lastUsedAt: new Date(r.last_used_at as string).toISOString() } : {}),
+    ...(r.revoked_at ? { revokedAt: new Date(r.revoked_at as string).toISOString() } : {}),
+  };
+}
 
 // Minimal structural type for pg.Pool - keeps `pg` out of the type graph
 // so typecheck works without the dep resolved.
@@ -307,6 +324,32 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
           [r.id as string, JSON.stringify(local), JSON.stringify(groups), roleFromGroups(groups)],
         );
       }
+    },
+
+    async putScimToken(rec) {
+      await pool.query(
+        `insert into scim_tokens (id, idp, token_hash, created_by, created_at, last_used_at, revoked_at)
+         values ($1, $2, $3, $4, $5, $6, $7)
+         on conflict (id) do update set idp = excluded.idp, last_used_at = excluded.last_used_at, revoked_at = excluded.revoked_at`,
+        [rec.id, rec.idp, rec.tokenHash, rec.createdBy, rec.createdAt, rec.lastUsedAt ?? null, rec.revokedAt ?? null],
+      );
+    },
+    async listScimTokens() {
+      const { rows } = await pool.query('select * from scim_tokens order by created_at desc');
+      return rows.map(scimTokenFromRow);
+    },
+    async findScimTokenByHash(tokenHash) {
+      const { rows } = await pool.query('select * from scim_tokens where token_hash = $1', [tokenHash]);
+      return rows[0] ? scimTokenFromRow(rows[0]) : null;
+    },
+    async touchScimToken(id, at) {
+      await pool.query('update scim_tokens set last_used_at = $2 where id = $1', [id, at]);
+    },
+    async revokeScimToken(id, at) {
+      const { rowCount } = await pool.query(
+        'update scim_tokens set revoked_at = $2 where id = $1 and revoked_at is null', [id, at],
+      );
+      return (rowCount ?? 0) > 0;
     },
 
     async listGrants() {
@@ -663,6 +706,92 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     async listAliases() {
       const { rows } = await pool.query('select from_id, to_id from catalog_aliases');
       return rows.map((r) => ({ fromId: r.from_id as string, toId: r.to_id as string }));
+    },
+
+    // Org-defined asset metadata (migrations/0018). Definitions come from the
+    // policy document, values are an overlay keyed by catalog asset id - and
+    // that id may name a pack file or a federated asset, so neither table
+    // carries a foreign key into instance_assets.
+    async listCatalogFields() {
+      const { rows } = await pool.query('select def from catalog_field_defs order by id asc');
+      return rows.map((r) => r.def as CatalogFieldDef);
+    },
+    async putCatalogField(def) {
+      await pool.query(
+        `insert into catalog_field_defs (id, def) values ($1, $2::jsonb)
+         on conflict (id) do update set def = excluded.def`,
+        [def.id, JSON.stringify(def)],
+      );
+    },
+    async deleteCatalogField(id) {
+      await pool.query('delete from catalog_field_defs where id = $1', [id]);
+    },
+    async getAssetMeta(assetId) {
+      const { rows } = await pool.query('select record from catalog_asset_meta where asset_id = $1', [assetId]);
+      return rows[0] ? (rows[0].record as AssetMetaRecord) : null;
+    },
+    async putAssetMeta(rec) {
+      await pool.query(
+        `insert into catalog_asset_meta (asset_id, record, updated_at) values ($1, $2::jsonb, now())
+         on conflict (asset_id) do update set record = excluded.record, updated_at = now()`,
+        [rec.assetId, JSON.stringify(rec)],
+      );
+    },
+    async listAssetMeta() {
+      const { rows } = await pool.query('select record from catalog_asset_meta');
+      return rows.map((r) => r.record as AssetMetaRecord);
+    },
+    async deleteAssetMeta(assetId) {
+      await pool.query('delete from catalog_asset_meta where asset_id = $1', [assetId]);
+    },
+
+    // Collections (migrations/0019). The record rides whole as jsonb because
+    // the MEMBER ORDER is the curator's and half of what a collection is; a
+    // join table would sort it away and could not reference a pack or federated
+    // id in the first place.
+    async listCollections() {
+      const { rows } = await pool.query('select record from catalog_collections');
+      return sortCollections(rows.map((r) => r.record as CollectionRecord));
+    },
+    async getCollection(id) {
+      const { rows } = await pool.query('select record from catalog_collections where id = $1', [id]);
+      return rows[0] ? (rows[0].record as CollectionRecord) : null;
+    },
+    async putCollection(rec) {
+      await pool.query(
+        `insert into catalog_collections (id, record, updated_at) values ($1, $2::jsonb, now())
+         on conflict (id) do update set record = excluded.record, updated_at = now()`,
+        [rec.id, JSON.stringify(rec)],
+      );
+    },
+    async deleteCollection(id) {
+      await pool.query('delete from catalog_collections where id = $1', [id]);
+    },
+
+    // Instance asset versions (migrations/0020). Immutable snapshots keyed
+    // (asset_id, version); the head is `headVersion` on the instance-asset
+    // record, so nothing here has to be flipped when the served version moves.
+    async listAssetVersions(assetId) {
+      const { rows } = await pool.query(
+        'select record from catalog_asset_versions where asset_id = $1 order by version asc', [assetId],
+      );
+      return rows.map((r) => r.record as AssetVersionRecord);
+    },
+    async getAssetVersion(assetId, version) {
+      const { rows } = await pool.query(
+        'select record from catalog_asset_versions where asset_id = $1 and version = $2', [assetId, version],
+      );
+      return rows[0] ? (rows[0].record as AssetVersionRecord) : null;
+    },
+    async putAssetVersion(rec) {
+      await pool.query(
+        `insert into catalog_asset_versions (asset_id, version, record) values ($1, $2, $3::jsonb)
+         on conflict (asset_id, version) do update set record = excluded.record`,
+        [rec.assetId, rec.version, JSON.stringify(rec)],
+      );
+    },
+    async deleteAssetVersion(assetId, version) {
+      await pool.query('delete from catalog_asset_versions where asset_id = $1 and version = $2', [assetId, version]);
     },
 
     // Submit quota (migrations/0017). The add is a single upsert-increment so

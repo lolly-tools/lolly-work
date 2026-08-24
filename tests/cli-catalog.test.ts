@@ -3,9 +3,11 @@
  * against a real app: an author submits a file, the reviewer sees it in the
  * queue, corrects its metadata and publishes it.
  *
- * Two HOMEs, because the CLI keeps one session file per home and this flow
- * needs two identities: the author who submits and the reviewer who decides.
- * Nothing here talks to a vendor host, and the blobs live in memory.
+ * Three HOMEs, because the CLI keeps one session file per home and this flow
+ * needs three identities: the author who submits, the reviewer who decides, and
+ * the admin who files the published asset under the org's own metadata
+ * (plans/31 section 4). Nothing here talks to a vendor host, and the blobs live
+ * in memory.
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -32,6 +34,8 @@ let server: Server;
 let base = '';
 let authorHome = '';
 let brandHome = '';
+let adminHome = '';
+let store: ReturnType<typeof createMemoryStore>;
 let file = '';
 
 interface Run { code: number; stdout: string; stderr: string }
@@ -54,6 +58,7 @@ function lw(home: string, args: string[]): Promise<Run> {
 before(async () => {
   authorHome = await mkdtemp(join(tmpdir(), 'lw-cat-author-'));
   brandHome = await mkdtemp(join(tmpdir(), 'lw-cat-brand-'));
+  adminHome = await mkdtemp(join(tmpdir(), 'lw-cat-admin-'));
   const pack = await mkdtemp(join(tmpdir(), 'lw-cat-pack-'));
   await mkdir(join(pack, 'catalog', 'assets'), { recursive: true });
   await writeFile(join(pack, 'catalog', 'assets', 'index.json'), JSON.stringify({ version: 1, assets: [] }));
@@ -67,9 +72,17 @@ before(async () => {
     dev: { enabled: true, users: [
       { email: 'author@test', groups: ['author', 'design'] },
       { email: 'brand@test', groups: ['approver', 'brand'] },
+      // In `design` as well as `admin`: the published asset's exposure was
+      // narrowed to that group at submit, and the editor sees only what the
+      // feed would hand it.
+      { email: 'admin@test', groups: ['admin', 'design'] },
     ] },
   }));
-  const store = createMemoryStore();
+  store = createMemoryStore();
+  // One org-defined field (plans/31 section 4), seeded the way the boot seeder
+  // would from the governance document, so `lw catalog fields` and
+  // `lw catalog meta` have a taxonomy to work against.
+  await store.putCatalogField({ id: 'region', label: 'Region', kind: 'select', options: ['EMEA', 'AMER'] });
   await store.putChain({
     id: 'brand-review', name: 'Brand review',
     steps: [{ name: 'Brand', approvers: { groups: ['brand'] }, rule: 'any' }],
@@ -81,7 +94,7 @@ before(async () => {
   const addr = server.address();
   base = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
 
-  for (const [home, email] of [[authorHome, 'author@test'], [brandHome, 'brand@test']] as const) {
+  for (const [home, email] of [[authorHome, 'author@test'], [brandHome, 'brand@test'], [adminHome, 'admin@test']] as const) {
     const login = await lw(home, ['login', '--email', email]);
     assert.equal(login.code, 0, login.stderr);
   }
@@ -134,6 +147,45 @@ test('queue shows the reviewer their step, edit corrects it, approve publishes i
   assert.match(all.stdout, /live\s+mine\s+inst\//);
 });
 
+test('fields lists the org taxonomy, and meta files a published asset under it', async () => {
+  // The published asset from the previous test, listed by its submitter: the
+  // queue is two-sided by design, so an admin who is neither the submitter nor
+  // on the step sees no rows there at all.
+  const all = await lw(authorHome, ['--json', 'catalog', 'queue', '--all']);
+  const rows = JSON.parse(all.stdout) as Array<{ id: string; state: string }>;
+  const id = rows.find((r) => r.state === 'live')?.id as string;
+  assert.ok(id, 'a published submission to file');
+
+  const defs = await lw(adminHome, ['catalog', 'fields']);
+  assert.equal(defs.code, 0, defs.stderr);
+  assert.match(defs.stdout, /region\s+Region\s+select · EMEA\|AMER/);
+
+  const filed = await lw(adminHome, ['--json', 'catalog', 'meta', id, '--field', 'region=EMEA', '--name', 'Campaign Hero 2026']);
+  assert.equal(filed.code, 0, filed.stderr);
+  const meta = JSON.parse(filed.stdout) as { id: string; name: string; fields: Record<string, string> };
+  assert.equal(meta.name, 'Campaign Hero 2026');
+  assert.deepEqual(meta.fields, { region: 'EMEA' });
+  assert.equal((await store.getAssetMeta(id))?.fields.region, 'EMEA');
+
+  // A value outside the definition is refused by the server, not by the CLI.
+  const bad = await lw(adminHome, ['catalog', 'meta', id, '--field', 'region=APAC']);
+  assert.equal(bad.code, 1);
+  assert.match(bad.stderr, /INVALID_FIELDS/);
+  // A malformed pair never leaves the terminal.
+  const malformed = await lw(adminHome, ['catalog', 'meta', id, '--field', 'region']);
+  assert.equal(malformed.code, 1);
+  assert.match(malformed.stderr, /fieldId=value/);
+  // An empty value clears it.
+  const cleared = await lw(adminHome, ['--json', 'catalog', 'meta', id, '--field', 'region=']);
+  assert.equal(cleared.code, 0, cleared.stderr);
+  assert.deepEqual((JSON.parse(cleared.stdout) as { fields: Record<string, string> }).fields, {});
+
+  // Filing an asset in is catalog.edit, which the submitting author does not have.
+  const refused = await lw(authorHome, ['catalog', 'meta', id, '--field', 'region=EMEA']);
+  assert.equal(refused.code, 1);
+  assert.match(refused.stderr, /403/);
+});
+
 test('a returned submission carries the reason back, and cannot be decided twice', async () => {
   // Distinct bytes, or the duplicate short-circuit would hand back the asset
   // the previous test already published.
@@ -149,4 +201,77 @@ test('a returned submission carries the reason back, and cannot be decided twice
   const twice = await lw(brandHome, ['catalog', 'return', assetId, '--body', 'again']);
   assert.equal(twice.code, 1);
   assert.match(twice.stderr, /already returned/);
+});
+
+test('collections: assemble an ordered set, list it, and remove it', async () => {
+  const published = (await store.listInstanceAssets()).find((r) => r.submission?.state === 'live');
+  assert.ok(published, 'the earlier test published one asset for the set to hold');
+  const id = published.id;
+
+  // The order given is the order kept, and it is the same list on the way back.
+  const made = await lw(adminHome, ['--json', 'catalog', 'collection', 'launch-kit',
+    '--name', 'Launch kit', '--members', `${id},${id}`, '--groups', 'design', '--label', 'Spring launch.']);
+  assert.equal(made.code, 0, made.stderr);
+  const rec = JSON.parse(made.stdout) as { id: string; name: string; members: string[]; groups: string[] };
+  assert.equal(rec.name, 'Launch kit');
+  assert.deepEqual(rec.members, [id], 'a repeat collapses to its first position');
+  assert.deepEqual(rec.groups, ['design']);
+
+  const listed = await lw(adminHome, ['catalog', 'collections']);
+  assert.equal(listed.code, 0, listed.stderr);
+  assert.match(listed.stdout, /launch-kit/);
+  assert.match(listed.stdout, /Launch kit/);
+
+  // Curating is its own action, and the submitting author does not hold it.
+  const refused = await lw(authorHome, ['catalog', 'collection', 'sneaky', '--name', 'Sneaky']);
+  assert.equal(refused.code, 1);
+  assert.match(refused.stderr, /403/);
+
+  const nothing = await lw(adminHome, ['catalog', 'collection', 'launch-kit']);
+  assert.equal(nothing.code, 1);
+  assert.match(nothing.stderr, /nothing to change/);
+
+  const removed = await lw(adminHome, ['catalog', 'collection', 'launch-kit', '--rm']);
+  assert.equal(removed.code, 0, removed.stderr);
+  assert.equal(await store.getCollection('launch-kit'), null);
+});
+
+test('versions: replace the bytes of a published asset, list, roll back, supersede', async () => {
+  const published = (await store.listInstanceAssets()).find((r) => r.submission?.state === 'live');
+  assert.ok(published, 'the earlier test published one asset to version');
+  const id = published.id;
+
+  // New bytes for an existing id: same file, same command, one flag.
+  const next = join(dirname(file), 'campaign-hero-v2.png');
+  await writeFile(next, Buffer.concat([PNG, Buffer.from('take two')]));
+  const made = await lw(adminHome, ['--json', 'catalog', 'submit', next, '--asset', id, '--note', 'reshot in studio']);
+  assert.equal(made.code, 0, made.stderr);
+  const body = JSON.parse(made.stdout) as { assetId: string; version: number };
+  assert.equal(body.assetId, id, 'the id is durable');
+  assert.equal(body.version, 2);
+
+  const listed = await lw(adminHome, ['catalog', 'versions', id]);
+  assert.equal(listed.code, 0, listed.stderr);
+  assert.match(listed.stdout, /v2/);
+  assert.match(listed.stdout, /reshot in studio/);
+  assert.match(listed.stdout, /keeping every version/);
+
+  // Contributing is the author's right; replacing published bytes is not.
+  const refused = await lw(authorHome, ['catalog', 'submit', next, '--asset', id]);
+  assert.equal(refused.code, 1);
+  assert.match(refused.stderr, /403/);
+
+  const back = await lw(adminHome, ['catalog', 'rollback', id, '1']);
+  assert.equal(back.code, 0, back.stderr);
+  assert.match(back.stdout, /now serves version 1/);
+  assert.equal((await store.getInstanceAsset(id))?.headVersion, 1);
+
+  // The version that was head is still there, and is now deletable.
+  const dropped = await lw(adminHome, ['catalog', 'version-rm', id, '2']);
+  assert.equal(dropped.code, 0, dropped.stderr);
+  assert.deepEqual((await store.listAssetVersions(id)).map((v) => v.version), [1]);
+
+  const supersede = await lw(adminHome, ['catalog', 'supersede', id, id]);
+  assert.equal(supersede.code, 1, 'an asset cannot replace itself');
+  assert.match(supersede.stderr, /itself/);
 });

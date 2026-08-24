@@ -41,6 +41,7 @@ plane simply honours it.
 | `render.export` | `toolId`, `format`, `destination`, `approved` |
 | `link.create`, `link.visit` | `linkKind` |
 | `catalog.asset-use` | `assetId` |
+| `catalog.asset-download` | `assetId`, `via` (`direct` / `link` / `zip`) |
 | `approval.requested` / `approved` / `rejected` | `chainId`, `step` |
 | `profile.update` | `fields` (names only) |
 | `collab.join` | `toolId` |
@@ -83,9 +84,15 @@ select an audience by groups × shell × engine-version range (see [api](api.md)
 
 What the deploy discloses to members is a policy choice, and the console states its own
 posture in the UI rather than hiding it - an internal deploy shows utilisation in full.
-Per-item download and transform attribution needs the shells to emit those events; today
-transforms and crops count as tool activity, and the console says so on the page instead of
-implying data it does not have.
+
+Per-item **download** attribution is measured: a shell emits `catalog.asset-download` when a
+catalog asset leaves as a file, with a coarse `via` label (`direct`, `link`, or `zip`) and no
+filename, and the console's Overview shows "Most-downloaded catalog items" beside the
+opened-or-placed popularity of "Most-used". An `assetId` is not an identity attribute, so this
+rides the ordinary attribution rule - attributed where the deploy attributes, aggregate where
+it does not - and the identity floors are untouched. Transform and crop attribution is still
+not its own event: those count as tool activity, and the console says so on the page instead
+of implying data it does not have.
 
 ## Prometheus
 

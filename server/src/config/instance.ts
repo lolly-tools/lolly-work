@@ -46,6 +46,22 @@ export interface SubmitPolicy {
   quota: { bytes: number; count: number };
 }
 
+/** Org policy for the catalog itself (plans/31 section 6). */
+export interface CatalogPolicy {
+  /**
+   * How many versions of one instance asset are kept, head included. 0 (the
+   * default) keeps everything.
+   *
+   * Keep-all is the only defensible default: an org that has just moved its
+   * brand history off a DAM would find a product-chosen ceiling deleting the
+   * originals it moved. Blob growth is real and is an operator's call to make
+   * deliberately, which is why the number is here and the sizing note is in
+   * docs/operations.md. The HEAD is never trimmed whatever its age, so a
+   * rollback onto an old version cannot be undone by retention.
+   */
+  versionKeep: number;
+}
+
 /**
  * The operator-pluggable PRE-STORE scan hook (plans/31 section 3 step 3,
  * open question 3). Instance config, never org policy: it is not in the
@@ -124,6 +140,9 @@ export interface InstanceConfig {
      *  holding `catalog.submit` submits and the asset goes live immediately.
      *  Naming a `chain` buys review; defaults set direction, orgs buy limits. */
     submit: SubmitPolicy;
+    /** Catalog retention (plans/31 section 6). Version history is kept whole by
+     *  default; an org that would rather bound its blob growth sets a ceiling. */
+    catalog: CatalogPolicy;
   };
   render: {
     /**
@@ -229,6 +248,7 @@ const DEFAULTS: InstanceConfig = {
     nearby: { enabled: true },
     sessionTtlHours: 12,
     submit: { maxBytes: 64 * 1024 * 1024, quota: { bytes: 0, count: 0 } },
+    catalog: { versionKeep: 0 },
   },
   render: { allowHooksInFastPath: false, worker: { url: '', timeoutMs: 20000 }, c2pa: { certFile: '', claimGenerator: '' } },
   audit: { headLog: { onBoot: true, intervalMinutes: 60 } },
@@ -295,6 +315,10 @@ export function parseConfig(json: string): InstanceConfig {
   if (!Number.isFinite(sub.maxBytes) || sub.maxBytes <= 0) throw new Error(`invalid policy.submit.maxBytes: ${sub.maxBytes}`);
   for (const k of ['bytes', 'count'] as const) {
     if (!Number.isFinite(sub.quota[k]) || sub.quota[k] < 0) throw new Error(`policy.submit.quota.${k} must be >= 0 (0 = unlimited)`);
+  }
+  const keep = cfg.policy.catalog.versionKeep;
+  if (!Number.isFinite(keep) || keep < 0 || !Number.isInteger(keep)) {
+    throw new Error(`policy.catalog.versionKeep must be a whole number >= 0 (0 = keep every version): ${keep}`);
   }
   const hook = cfg.submit.scanHook;
   if (hook) {

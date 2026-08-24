@@ -68,22 +68,56 @@ Group membership is also how governance targets people: overlay visibility, appr
 eligibility, provider exposure, and grant principals (`group:<name>`) all read groups.
 See [permissions](permissions.md).
 
+## SCIM provisioning
+
+An IdP can push user lifecycle over SCIM 2.0 at `/scim/v2`, so joiners, movers and leavers
+are provisioned without a console visit. The subset is deliberate - Users (create, patch,
+`active=false`) and Group membership - because that is what earns the wave; passwords, bulk,
+sort and ETags are declared unsupported in `GET /scim/v2/ServiceProviderConfig`.
+
+SCIM is **another writer of the one identity model**, never a second one:
+
+- a SCIM **User** is a `UserRecord`. Its `externalId` is the `sub` OIDC login also keys on,
+  so a person the IdP provisions and the same person signing in resolve to **one row** - and
+  the groups SCIM set survive that sign-in, because they land in `localGroups` (durable),
+  not the IdP-authoritative `idpGroups` (re-synced on login).
+- a SCIM **Group** is a local group. Membership is stored per-user (`localGroups`), so a
+  Group `PATCH` becomes a set of per-user edits - the same `localGroups` the console writes.
+- `active=false` is the deprovision: it flips the disabled flag **and** bumps the session
+  epoch, exactly as the console disable does (below), so every live session dies at once.
+
+The connector authenticates with a bearer token, one per IdP, minted by an **owner**
+(`scim.manage`) and shown once:
+
+```
+POST   /api/v1/scim/tokens     { "idp": "keycloak" }   # returns the secret ONCE
+GET    /api/v1/scim/tokens                              # metadata only - never the secret or its hash
+DELETE /api/v1/scim/tokens/:id                          # revoke
+```
+
+The secret is stored only as its sha256, so a leaked database yields hashes, not usable
+tokens. **SAML is not implemented**, and does not need to be: Keycloak (which id.suse.com
+runs) bridges a SAML-only IdP to the OIDC this already speaks.
+
 ## Offboarding, disable and revocation
 
 ```
-POST /api/v1/users/:id/disabled     # { disabled: true }
+POST /api/v1/users/:id/disabled     # { disabled: true }   (or SCIM active=false)
 ```
 
-Disable is **instant** - it is re-checked on every request. The signed session token,
-however, remains valid until it expires: there is no server-side session revocation list
-today. Two consequences worth stating plainly:
+Disable is **instant and it revokes**: `resolveMember` rejects a disabled account on every
+request, and disabling also bumps the user's **session epoch** - a counter each session
+token embeds at mint, so a token minted before the bump is refused from that moment. Every
+live session of the disabled person therefore dies on its next request; there is no window
+to ride out. SCIM `active=false` (above) composes exactly this. Two further notes:
 
+- Revocation is **per user, not per session**: the epoch kills all of a person's sessions at
+  once (there is no list of individual sessions to revoke one of). `bumpSessionEpoch` is the
+  same lever for a "sign everyone-of-this-person out" without disabling them.
 - A group or role change is **immediate for API authorization**: `requireAction` resolves
   the live user record on every request and ignores the role baked into the cookie. What
-  waits for the next token mint is only the role the shell's own token *claims*.
-- Lowering `policy.sessionTtlHours` shortens the window in which a stale session can ride.
-
-This is the one identity gap an auditor will raise; it is tracked in [status](status.md).
+  waits for the next token mint is only the role the shell's own token *claims*; lowering
+  `policy.sessionTtlHours` shortens that window.
 
 ## Guest sessions
 

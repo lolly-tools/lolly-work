@@ -89,6 +89,17 @@ export interface RenderDeps {
    *  Provided by app.ts, which can see the store + federation; absent (older
    *  callers, unit tests) → exports carry no provenance block. */
   resolveProvenance?: (refs: string[]) => Promise<ProvenanceIngredient[]>;
+  /**
+   * The instance-owned half of `catalogVersion` (plans/31 §6). The pack's own
+   * catalog index is a file, so its mtime sees pack changes; instance assets
+   * live in the store and their bytes can move under a stable id when a new
+   * version lands or a rollback points the head at an older one. Without this
+   * component a render that consumed `inst/<id>` would keep serving the old
+   * bytes from cache under a key that never changed. Supplied by app.ts (which
+   * can see the store) and memoized there; absent - older callers, unit tests -
+   * leaves the key exactly as it was.
+   */
+  instanceCatalogVersion?: () => Promise<string> | string;
 }
 
 export interface RenderRequest {
@@ -177,7 +188,10 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
   const bakedValues: Record<string, unknown> = { ...st.values, ...lockedValues(overlay, groups) };
 
   // Cache key: tool + version + engine + catalog + policy + format + baked params.
-  const catalogVersion = await readCatalogVersion(pack);
+  // The catalog half is the pack's index version AND the instance-owned assets'
+  // fingerprint, so a head move on an inst/* asset invalidates every render
+  // that could have consumed it (plans/31 §6).
+  const catalogVersion = await catalogVersionOf(deps, pack);
   const policyVersion = policyVersionOf(req.overlays, {});
   const cacheKey = renderCacheKey({
     toolId: req.toolId,
@@ -344,6 +358,16 @@ function toPx(
 }
 
 // ── catalog version (read once per pack, mtime-checked) ───────────────────────
+
+/** The pack's own catalog version, plus the instance-owned assets' fingerprint
+ *  when a caller wired one. Joined rather than hashed together so an operator
+ *  reading a cache key's inputs can still see which half moved. */
+async function catalogVersionOf(deps: RenderDeps, pack: string): Promise<string> {
+  const packVersion = await readCatalogVersion(pack);
+  if (!deps.instanceCatalogVersion) return packVersion;
+  return `${packVersion}/${await deps.instanceCatalogVersion()}`;
+}
+
 const catalogVersionCache = new Map<string, { mtimeMs: number; version: string }>();
 
 async function readCatalogVersion(pack: string): Promise<string> {

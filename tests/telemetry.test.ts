@@ -112,6 +112,33 @@ test('popularity: top catalog assets + export destinations, descending', () => {
   assert.equal(s.totals.exports, 3); // existing export tally unchanged
 });
 
+test('downloads: catalog.asset-download is a closed-vocab event, and topDownloads folds it (plans/31 §7)', () => {
+  // It survives ingest with only its two labels; `via` is a coarse label, and
+  // any free-text a client tried to attach is dropped like every other event's.
+  const clean = sanitizeEvent(
+    { event: 'catalog.asset-download', attrs: { assetId: 'inst/hero', via: 'zip', filename: '/etc/passwd' } },
+    { level: 'standard', attribution: 'default' }, { id: 'u1' },
+  );
+  assert.deepEqual(clean!.attrs, { assetId: 'inst/hero', via: 'zip' });
+
+  const mk = (attrs: Record<string, string>): StoredEvent =>
+    ({ event: 'catalog.asset-download', at: '2026-07-22T09:00:00Z', attrs });
+  const s = summarize([
+    mk({ assetId: 'inst/hero', via: 'direct' }),
+    mk({ assetId: 'inst/hero', via: 'link' }),
+    mk({ assetId: 'ext/dam/a1', via: 'zip' }),
+    mk({ via: 'direct' }),                                          // no assetId → ignored
+    { event: 'catalog.asset-use', at: '2026-07-22T09:00:00Z', attrs: { assetId: 'inst/hero' } },
+  ], 14, new Date('2026-07-22T12:00:00Z'));
+  assert.deepEqual(s.topDownloads, [
+    { assetId: 'inst/hero', count: 2 },
+    { assetId: 'ext/dam/a1', count: 1 },
+  ]);
+  // Download is its own axis: opened-or-placed use does not leak into it, nor
+  // the reverse.
+  assert.deepEqual(s.topAssets, [{ assetId: 'inst/hero', count: 1 }]);
+});
+
 test('rollups fold by day × dimension', () => {
   const mk = (at: string, toolId: string) =>
     sanitizeEvent({ event: 'tool.open', at, attrs: { toolId } }, { level: 'aggregate', attribution: 'default' }, null)!;

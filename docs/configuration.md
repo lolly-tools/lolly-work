@@ -53,11 +53,18 @@ start otherwise. See [identity](identity.md).
 | `submit.chain` | *unset* | approval chain id gating submissions. Unset means no review: a submitted asset is live the moment it is stored. Set to a chain that does not exist, submissions are refused (`503 SUBMIT_CHAIN_MISSING`) rather than published unreviewed |
 | `submit.quota.bytes` | `0` | cumulative byte ceiling per group; `0` is unlimited |
 | `submit.quota.count` | `0` | cumulative submission-count ceiling per group; `0` is unlimited |
+| `catalog.versionKeep` | `0` | how many versions of one instance asset to keep, head included. `0` keeps every version; a positive number trims oldest-first and deletes the trimmed bytes. The served version is never trimmed, and a held asset is never trimmed at all |
 
 Submit is **open to authors** by default: anyone holding `catalog.submit` submits and the
 asset goes live immediately. Name a `submit.chain` when the org wants review. Quota scopes are
 group names, and a submission is charged to every group its submitter belongs to, so extra
 memberships only tighten a member's budget. See [catalog](catalog.md#submitting-an-asset).
+
+`catalog.versionKeep` keeps everything by default, because an org that has just moved its brand
+history off a DAM would not thank a product-chosen ceiling for deleting the originals it moved.
+Bounding blob growth is a deliberate operator call - see
+[operations](operations.md#blob-growth-and-version-retention) and
+[catalog](catalog.md#versions).
 
 Shorter `sessionTtlHours` is safer: it bounds how long an uncaught revocation (group change,
 offboarding) can ride. Account *disable* is instant regardless - it is checked per request.

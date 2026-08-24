@@ -66,7 +66,7 @@ test('export: gated on policy.edit, secret-free body, stable ETag → 304', asyn
     assert.ok(!text.includes(bad), `export must not leak ${bad}`);
   }
   const doc = JSON.parse(text);
-  assert.deepEqual(Object.keys(doc).sort(), ['chains', 'exportedAt', 'featureFlags', 'grants', 'kind', 'overlays', 'providers', 'version']);
+  assert.deepEqual(Object.keys(doc).sort(), ['catalogFields', 'chains', 'exportedAt', 'featureFlags', 'grants', 'kind', 'overlays', 'providers', 'version']);
   // The config-managed provider is NOT in the document.
   assert.ok(!doc.providers.some((p: { id: string }) => p.id === 'cfg-src'));
   assert.equal((await exportDoc(admin, { 'if-none-match': etag })).status, 304);

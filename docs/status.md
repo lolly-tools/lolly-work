@@ -35,6 +35,17 @@ gaps are named, not smoothed over. Verified against the repository on **2026-08-
 - Catalog submit: members with `catalog.submit` add assets from a browser or the CLI, with a
   size cap, per-group quotas, checksum dedupe, an operator-pluggable pre-store scan hook, C2PA
   detection, and optional review through an approval chain.
+- Org-defined asset metadata: an org names its own fields (text/select/date/url, required or
+  not) in the governance document and fills them in on pack, federated and instance-owned
+  assets alike through `catalog.edit`; the values ride the feed and the search haystack.
+- Collections: named, ordered, group-visible sets of catalog assets, curated behind
+  `catalog.collection.manage`, listed additively on the per-caller feed, and shareable as a
+  signed link that serves a brand-chromed listing page and a zip-all - that set only.
+- Asset versions: new bytes for an existing instance asset become version N+1 under the same id
+  and URL, prior versions stay readable at a gated `?v=N`, rollback moves the head, a hold
+  refuses version deletion, retention is `policy.catalog.versionKeep` (keep-all by default), and
+  a head move busts the render cache. Supersession (`replacedBy`) retires an id in favour of
+  another and rides the feed additively.
 - Telemetry ingest (closed allowlist, attribution at the door), rollups, activity feed, fleet
   registry, hash-chained audit log with an anchorable head.
 - Postgres store + migrations runner behind one conformance-tested seam.
@@ -46,11 +57,15 @@ gaps are named, not smoothed over. Verified against the repository on **2026-08-
 
 ## Open gaps, in the order they will bite
 
-### 1. Session revocation
-Sessions are stateless signed tokens with a `policy.sessionTtlHours` lifetime. Account
-*disable* is instant (checked per request), but offboarding does not kill a live session until
-it expires, and a group or role change lands on the next mint. Auditors will ask for
-revocation or short-TTL-plus-refresh. Mitigation today: lower `sessionTtlHours`.
+### 1. Session revocation - largely closed
+Sessions are stateless signed tokens with a `policy.sessionTtlHours` lifetime, but disabling
+a person (console or SCIM `active=false`) is now **instant revocation**: it bumps the user's
+**session epoch**, a counter the token embeds at mint, so every live session of theirs is
+refused from that request on. `bumpSessionEpoch` is the same lever without a disable. What
+remains is narrow and mostly cosmetic: revocation is **per user, not per individual session**,
+and the *role a shell's token claims* is stale until the next mint (authorization is not -
+`requireAction` resolves the live record every request). Mitigation for the residual: lower
+`sessionTtlHours`. See [identity](identity.md).
 
 ### 2. Audit-head anchoring is manual
 The mechanism is built (`/api/v1/audit/head`, `lw audit head`, optional boot/interval
@@ -102,7 +117,7 @@ The plan sequences phases so each is independently useful:
 | 2 | roles/grants, overlays, profile governance, org-config, message bridge | done; org-scoped MCP endpoint outstanding |
 | 3 | approvals, watermarking, lifecycle, C2PA assertions | largely done (see gap 7) |
 | 4 | shared workspaces, collab presence, telemetry dashboards | projects/sessions and dashboards done; server collab substrate **landed single-node** (ws gateway + rooms + persistence + guest join, `server/src/collab/`) - client presence UI is OSS-side and open |
-| 5 | SAML/SCIM, SIEM streaming, live co-editing, air-gap hardening | live co-editing: server machinery landed (above) but **rollout stays adoption-gated** (the conflict counter on the console Overview is the gate's instrument); SAML/SCIM + SIEM not started |
+| 5 | SAML/SCIM, SIEM streaming, live co-editing, air-gap hardening | **SCIM done** (`/scim/v2`: Users create/patch/`active=false`, Group membership, per-IdP bearer tokens - plans/31 §8); SAML deliberately deferred to Keycloak's SAML→OIDC bridge; live co-editing server machinery landed but **rollout stays adoption-gated** (the conflict counter on the console Overview is the gate's instrument); SIEM streaming not started |
 
 The community gate is worth restating, because it is the test of the brand-agnostic claim:
 **someone who is not us stands a deploy up from the Helm chart.**

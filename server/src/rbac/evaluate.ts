@@ -48,7 +48,20 @@ const ROLE_ACTIONS: Record<Role, string[]> = (() => {
   const approver = [...member, 'approval.act'];
   const admin = [
     ...new Set([...author, ...approver]),
-    'catalog.publish', 'catalog.expire', 'catalog.hold', 'catalog.scan',
+    // `catalog.edit` is org-defined metadata and an instance asset's own
+    // descriptive fields (plans/31 section 4). Admin rather than author,
+    // because editing what a SERVED asset says is a curation act on the whole
+    // org's catalogue, not the contribution right `catalog.submit` carries -
+    // and grant-narrowable, so "the brand team files assets, everyone else
+    // reads" stays one row.
+    // `catalog.collection.manage` is curation of a named, shareable set
+    // (plans/31 section 5). Admin by default and grant-narrowable for the same
+    // reason `catalog.edit` is: a collection speaks for the whole org's
+    // catalogue, and a collection link hands its contents to a bearer with no
+    // session, so the right to assemble one is a curation right rather than the
+    // contribution right `catalog.submit` carries.
+    'catalog.publish', 'catalog.expire', 'catalog.hold', 'catalog.scan', 'catalog.edit',
+    'catalog.collection.manage',
     'catalog.provider.read', 'catalog.provider.manage',
     'brand.switch',
     'catalog.injectable.manage',
@@ -61,7 +74,10 @@ const ROLE_ACTIONS: Record<Role, string[]> = (() => {
   // `catalog.provider.publish` (pushing lolly exports OUT to a destination DAM,
   // plans/27 §10) is owner-grantable too - an outbound write to a third party is
   // an owner's call, though they can grant it per-provider.
-  const owner = [...admin, 'instance.config', 'catalog.provider.credential', 'catalog.provider.publish'];
+  // `scim.manage` mints the bearer an IdP holds to create, disable and re-group
+  // people at this instance - an identity-infrastructure credential, so it sits
+  // with the other owner-only keys rather than with admin curation (plans/31 §8).
+  const owner = [...admin, 'instance.config', 'catalog.provider.credential', 'catalog.provider.publish', 'scim.manage'];
   // Guests get NOTHING by default - their access is entirely link-scoped grants.
   return { viewer, member, author, approver, admin, owner, guest: [] };
 })();

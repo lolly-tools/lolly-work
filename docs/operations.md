@@ -142,6 +142,36 @@ the bytes, `unavailable` when it could not answer and `allow` let the bytes thro
 and `absent` when no hook is configured at all. An outage you chose to ride out never reads as
 a clean scan, so "which files went in unscanned last Tuesday" stays an answerable question.
 
+## Blob growth and version retention
+
+Every version of an instance asset keeps its own bytes, and the default
+(`policy.catalog.versionKeep: 0`) keeps every version forever. That is the right default - an
+org that has just materialized its brand history out of a DAM should not find the product
+deleting the originals it moved - but it does mean the blob store grows with contribution, not
+with the number of assets.
+
+The arithmetic is worth doing before it surprises you. A brand team replacing 200 hero images
+four times a year at 8 MiB apiece adds roughly 6 GiB a year, on top of whatever the originals
+weigh. Where the bytes live decides what that costs: with `blobs.driver: "pg"` the history
+lands in your database and in every database backup, which is the number that usually matters
+first; with `"s3"` it lands in object storage, where it is cheap but is still yours to
+lifecycle. See [configuration](configuration.md#blobs).
+
+Two ways to bound it, and they compose:
+
+- **Retention.** Set `policy.catalog.versionKeep` to the number of versions you want per asset,
+  head included. Trimming happens when a new version lands - oldest-first, deleting the trimmed
+  versions' bytes. The served version is never trimmed even if a rollback made an old one
+  current, and an asset [on hold](catalog.md#holds) is never trimmed at all, so a legal hold
+  does not quietly lose the history it was set to preserve. Lowering the number does not
+  retroactively sweep: it takes effect for each asset the next time that asset gains a version.
+- **Deleting a version by hand.** `lw catalog version-rm <assetId> <n>`, refused for the served
+  version and for a held asset.
+
+Neither is a substitute for watching the store. `GET /metrics` carries the database and blob
+counters; a size alert on the blob table (or the bucket) is the cheap version of this
+paragraph.
+
 ## Monitoring
 
 ```

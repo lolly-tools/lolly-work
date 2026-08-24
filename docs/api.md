@@ -38,6 +38,15 @@ means any signed-in member; *public* means no session needed.
 | `GET /catalog/*` | per access mode | pack blobs, lifecycle-gated |
 | `GET /api/v1/catalog/assets/*` | per access mode | asset feed / entries |
 | `GET /api/v1/catalog/search` | `catalog.read` | live fan-out to search-capable providers |
+| `PUT /api/v1/catalog/assets/<id>/meta` | `catalog.edit` | org-defined field values and `replacedBy` on any asset the caller sees; `name`/`description`/`tags` on `inst/*` only |
+| `GET /api/v1/catalog/assets/<id>/versions` | `catalog.read` | one instance asset's byte history, newest first, with the served version and the retention ceiling |
+| `PUT /api/v1/catalog/assets/<id>/head` | `catalog.edit` | roll back: `{ "version": N }` points the head at a version that already exists |
+| `DELETE /api/v1/catalog/assets/<id>/versions/<n>` | `catalog.edit` | `409 VERSION_IS_HEAD` for the served version, `409 ASSET_HELD` while a hold is set |
+| `GET /catalog/inst/<id>/<format>?v=N` | per access mode | a prior version's bytes, through every gate the head answers to |
+| `GET /api/v1/catalog/fields` | `catalog.read` | the org's field definitions, plus a `canEdit` bit for honest UI |
+| `PUT/DELETE /api/v1/catalog/fields/<id>` | `policy.edit` | define or retire one field; the definitions also ride the governance document |
+| `GET /api/v1/catalog/collections` | `catalog.collection.manage` | the curator's view: every set as curated |
+| `GET/PUT/DELETE /api/v1/catalog/collections/<id>` | `catalog.collection.manage` | create, edit or remove one set; a `PUT` refuses any member the curator cannot see |
 | `GET /api/v1/catalog/lifecycle` | `catalog.expire` | all lifecycle rows |
 | `PUT /api/v1/catalog/lifecycle/*` | `catalog.expire` | set/merge a row; `revoke: true` revokes |
 | `GET /api/brand`, `/api/brand/logo/:variant`, `/api/brand/font/:file` | public | brand chrome only (tokens, wordmark, woff2) so the sign-in screen is on-brand |
@@ -47,9 +56,10 @@ means any signed-in member; *public* means no session needed.
 | Route | Action | Notes |
 |---|---|---|
 | `POST /api/v1/catalog/submit?name=…` | `catalog.submit` | raw bytes in the body; `201` for a new asset, `200` with `duplicate: true` for identical bytes |
+| `POST /api/v1/catalog/submit?assetId=inst/…&note=…` | `catalog.edit` | the same pipeline, landing as the next VERSION of an existing asset; `groups`/`type`/`tags`/`description` are refused here and belong to `…/meta` |
 | `GET /api/v1/catalog/submissions` | `catalog.read` | the caller's own submissions plus the ones open on a step their groups may act on |
 | `GET /api/v1/catalog/submissions/:id/bytes` | `catalog.read` | preview before publication - submitter and reviewer only |
-| `PATCH /api/v1/catalog/submissions/:id` | `catalog.read` | correct a pending submission's `name`/`type`/`tags`/`description`; `409` once it has settled |
+| `PATCH /api/v1/catalog/submissions/:id` | `catalog.read` | correct a pending submission's `name`/`type`/`tags`/`description` and its org `fields`; `409` once it has settled |
 | `POST /api/v1/catalog/submissions/:id/act` | member (the approvals engine gates it) | `approve` publishes, `reject` returns with the comment |
 
 Refusals: `413 PAYLOAD_TOO_LARGE` over `policy.submit.maxBytes`, `409 QUOTA_EXCEEDED`,
@@ -92,6 +102,22 @@ Config-managed providers reject mutations with `409 CONFIG_MANAGED`.
 | `PUT /api/v1/users/:id/local-groups` | `grant.edit` |
 | `POST /api/v1/users/:id/disabled` | `grant.edit` |
 
+## SCIM provisioning
+
+Admin (cookie, owner-only) mints the bearer; the protocol half is what the IdP calls with it.
+See [identity](identity.md#scim-provisioning).
+
+| Route | Auth |
+|---|---|
+| `POST/GET /api/v1/scim/tokens`, `DELETE /api/v1/scim/tokens/:id` | `scim.manage` (owner) |
+| `GET /scim/v2/ServiceProviderConfig` | SCIM bearer |
+| `GET/POST /scim/v2/Users`, `GET/PATCH/DELETE /scim/v2/Users/:id` | SCIM bearer |
+| `GET/POST /scim/v2/Groups`, `GET/PATCH/DELETE /scim/v2/Groups/:name` | SCIM bearer |
+
+`GET /scim/v2/Users?filter=userName eq "…"` (and `externalId eq "…"`) is the existence check
+an IdP runs before create. `active=false` on a User `PATCH` (or a `DELETE`) deprovisions:
+disable + session-epoch bump. Group membership maps to each user's local groups.
+
 ## Approvals and inbox
 
 | Route | Action |
@@ -113,6 +139,7 @@ Message targeting is groups × shell selectors × engine-version range.
 | `GET /api/v1/links[?all=1]` | member (own links; `all=1` needs the admin view) |
 | `POST /api/v1/links/:id/revoke` | own link, or `link.revoke` |
 | `GET /l/:id?s=…[&pw=…][&name=…]` | public (the signature *is* the authorization) |
+| `GET /l/:id?s=…&zip=1`, `…&asset=<id>[&dl=1]` | public - a collection link's zip-all, and one member of that set (an id it does not name is `404 NOT_IN_COLLECTION`) |
 | `GET /render/<toolId>.<format>` | `export.server`, or a guest scoped to that tool |
 
 ## Projects and sessions

@@ -88,7 +88,11 @@ async function submit(
 test('migration 0017 is this stage’s only new file, and declares what the driver reads', async () => {
   const dir = new URL('../migrations/', import.meta.url).pathname;
   const files = (await readdir(dir)).filter((f) => f.endsWith('.sql')).sort();
-  assert.equal(files[files.length - 1], '0017_catalog_submissions.sql', '0017 is the highest on disk');
+  // One migration per stage, in the order plans/31 §11.5 claims them: submit
+  // took 0017 and added nothing else between it and the instance assets of
+  // 0016. Later stages append their own file; none may squeeze in behind this.
+  const at = files.indexOf('0017_catalog_submissions.sql');
+  assert.equal(files[at - 1], '0016_instance_assets.sql', '0017 follows 0016 with nothing between');
   const sql = await readFile(join(dir, '0017_catalog_submissions.sql'), 'utf8');
 
   // Both instance-asset columns are GENERATED from the jsonb record, which is

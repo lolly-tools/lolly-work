@@ -13,7 +13,7 @@ import {
 import { createMemoryStore } from '../server/src/store/memory.ts';
 
 const base = (over: Partial<ConfigDocument> = {}): ConfigDocument => ({
-  kind: CONFIG_DOC_KIND, version: 1, grants: [], overlays: [], chains: [], providers: [], featureFlags: [], ...over,
+  kind: CONFIG_DOC_KIND, version: 1, grants: [], overlays: [], chains: [], providers: [], featureFlags: [], catalogFields: [], ...over,
 });
 
 test('canonicalize deep-sorts object keys, preserves array order; equal docs hash identically', () => {

@@ -90,6 +90,22 @@ export interface InstanceAssetRecord {
   /** Set only on an asset that arrived through the submit pipeline (plans/31
    *  section 3). Its absence means "not a submission", never "a pending one". */
   submission?: AssetSubmission;
+  /**
+   * The version this asset SERVES (plans/31 section 6). Absent means the asset
+   * has never been versioned and reads as version 1 - its `entry` + `blobs` ARE
+   * version 1 - which is what lets migration 0020 ship with no data backfill.
+   * The head lives here rather than as a flag on a version row so that two
+   * heads are unrepresentable and a rollback is one record write.
+   */
+  headVersion?: number;
+  /**
+   * The highest version number ever minted for this asset. It is NOT
+   * `max(rows)`: deleting a version (retention, or an explicit delete) leaves a
+   * hole, and re-using its number would hand a different set of bytes to
+   * anyone still holding its `?v=N` URL. Absent on an asset that has never been
+   * versioned, where the head answers the question.
+   */
+  versionSeq?: number;
   createdAt: string;
 }
 
@@ -137,11 +153,21 @@ export function composeInstanceAssets(index: AssetIndex, records: InstanceAssetR
  *  without importing the driver module into this pure catalog helper. */
 const EXT_PREFIX = 'ext/';
 
-/** Combined content hash of all instance-asset entries - folded into
- *  catalogVersion so a new/changed instance asset ripples render invalidation
- *  like a pack or provider change. */
+/**
+ * Combined content hash of all instance-asset entries - folded into the render
+ * cache key's `catalogVersion` so a new, changed or ROLLED-BACK instance asset
+ * ripples render invalidation like a pack or provider change (plans/31 §6).
+ *
+ * Content-derived rather than a counter, deliberately: two plane nodes that
+ * each recompute it arrive at the same string, where two counters would drift.
+ * The served version rides in it as well as the format checksums, so a head
+ * move is visible even in the corner where two versions hold identical bytes.
+ */
 export function instanceAssetsFingerprint(records: InstanceAssetRecord[]): string {
-  return records.map((r) => `${r.id}:${(r.entry.formats ?? []).map((f) => (f as { checksum?: string }).checksum ?? '').join(',')}`).sort().join('|');
+  return records
+    .map((r) => `${r.id}@${r.headVersion ?? 1}:${(r.entry.formats ?? []).map((f) => (f as { checksum?: string }).checksum ?? '').join(',')}`)
+    .sort()
+    .join('|');
 }
 
 /** The served entry for a materialized asset: its formats point at the inst/*

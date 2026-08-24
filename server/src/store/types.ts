@@ -17,6 +17,9 @@ import type { Approval, ApprovalState, Chain } from '../approvals/engine.ts';
 import type { LifecycleRow } from '../catalog/lifecycle.ts';
 import type { CredentialRow } from '../catalog/credentials.ts';
 import type { InstanceAssetRecord } from '../catalog/instance-assets.ts';
+import type { AssetMetaRecord, CatalogFieldDef } from '../catalog/asset-meta.ts';
+import type { CollectionRecord } from '../catalog/collections.ts';
+import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderRecord, ProviderState } from '../catalog/providers/types.ts';
 
 export interface UserRecord {
@@ -44,12 +47,28 @@ export interface UserRecord {
   lastSeenAt: string;
 }
 
-/** A local group definition (the registry). IdP groups are NOT registered - 
+/** A local group definition (the registry). IdP groups are NOT registered -
  *  they're discovered from users' idpGroups. */
 export interface LocalGroupRecord {
   name: string;
   description?: string;
   createdAt: string;
+}
+
+/** A SCIM provisioning bearer token (plans/31 §8). One per IdP connector; the
+ *  opaque secret is shown once at mint and stored only as `tokenHash`. */
+export interface ScimTokenRecord {
+  id: string;
+  /** The operator's label for the IdP connector this token authorizes. */
+  idp: string;
+  /** sha256 hex of the opaque secret - never the secret itself. */
+  tokenHash: string;
+  /** 'user:<id>' who minted it. */
+  createdBy: string;
+  createdAt: string;
+  lastUsedAt?: string;
+  /** Set on revoke; a revoked token is kept so its trail survives. */
+  revokedAt?: string;
 }
 
 /** The upsert input carries the IdP-authoritative groups as `groups`; the store
@@ -208,6 +227,19 @@ export interface Store {
    *  (recomputing their effective union + role). */
   deleteLocalGroup(name: string): Promise<void>;
 
+  // SCIM provisioning tokens (plans/31 §8). One bearer per IdP connector, stored
+  // hashed; the secret is shown once at mint and never recoverable.
+  putScimToken(rec: ScimTokenRecord): Promise<void>;
+  listScimTokens(): Promise<ScimTokenRecord[]>;
+  /** The token whose secret hashes to this, or null - the SCIM auth lookup. A
+   *  revoked token is still RETURNED (its `revokedAt` is set); the caller
+   *  refuses it, so revocation reads as one fact in one place. */
+  findScimTokenByHash(tokenHash: string): Promise<ScimTokenRecord | null>;
+  /** Stamp last-used after a token authenticates a request. */
+  touchScimToken(id: string, at: string): Promise<void>;
+  /** Set `revokedAt`; returns false when there is no such live token to revoke. */
+  revokeScimToken(id: string, at: string): Promise<boolean>;
+
   // rbac / policy. Grants are identified by their full tuple (no exposed id):
   // put is idempotent on the exact tuple, delete removes every exact match.
   listGrants(): Promise<Grant[]>;
@@ -308,6 +340,46 @@ export interface Store {
   putAlias(fromId: string, toId: string): Promise<void>;
   getAlias(fromId: string): Promise<string | null>;
   listAliases(): Promise<Array<{ fromId: string; toId: string }>>;
+
+  // org-defined asset metadata (plans/31 section 4, migrations/0018). The
+  // DEFINITIONS are policy - the policy-as-code document exports and applies
+  // them, so these three methods are what that commit writes through - and the
+  // VALUES are a local overlay keyed by catalog asset id, which is what makes
+  // them work uniformly for inst/*, ext/* and pack ids.
+  listCatalogFields(): Promise<CatalogFieldDef[]>;
+  putCatalogField(def: CatalogFieldDef): Promise<void>;
+  /** Remove a DEFINITION. Stored values keyed by it are left alone: the served
+   *  bag filters to live definitions, so retiring one hides its values and
+   *  re-adding it brings them back, which a cascading delete could never do. */
+  deleteCatalogField(id: string): Promise<void>;
+  getAssetMeta(assetId: string): Promise<AssetMetaRecord | null>;
+  putAssetMeta(rec: AssetMetaRecord): Promise<void>;
+  listAssetMeta(): Promise<AssetMetaRecord[]>;
+  deleteAssetMeta(assetId: string): Promise<void>;
+
+  // instance asset versions (plans/31 section 6, migrations/0020). Immutable
+  // snapshots of one asset's format set, keyed (assetId, version). The HEAD is
+  // `headVersion` on the instance-asset record rather than a flag here, so a
+  // rollback is one record write and two heads are unrepresentable.
+  listAssetVersions(assetId: string): Promise<AssetVersionRecord[]>;
+  getAssetVersion(assetId: string, version: number): Promise<AssetVersionRecord | null>;
+  putAssetVersion(rec: AssetVersionRecord): Promise<void>;
+  /** Unknown (assetId, version) is a no-op. Numbers are never reused after a
+   *  delete: a bearer may hold a ?v=N URL, and handing them different bytes
+   *  under the same number would be worse than a 404. */
+  deleteAssetVersion(assetId: string, version: number): Promise<void>;
+
+  // catalog collections (plans/31 section 5, migrations/0019). A named, ordered
+  // set of catalog asset ids with group visibility. Members are ids, never
+  // rows: a member may be an inst/*, ext/* or pack asset, and the order is the
+  // curator's, so the whole record rides as one document.
+  listCollections(): Promise<CollectionRecord[]>;
+  getCollection(id: string): Promise<CollectionRecord | null>;
+  putCollection(rec: CollectionRecord): Promise<void>;
+  /** Unknown id is a no-op. Deleting a collection never touches its members:
+   *  it was a list of names, and the assets it named are ordinary catalog
+   *  assets that were never owned by it. */
+  deleteCollection(id: string): Promise<void>;
 
   // catalog submit quota (plans/31 section 3, migrations/0017). Counters are
   // cumulative for everything that was KEPT - a returned submission still spent

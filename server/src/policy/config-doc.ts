@@ -17,6 +17,7 @@ import { ownerOnlyAction, type Grant, type Effect } from '../rbac/evaluate.ts';
 import { normalizeOverlay, type ToolOverlay } from './overlay.ts';
 import { normalizeChain, type Chain } from '../approvals/engine.ts';
 import { normalizeFlagGovernance, isGovernableFlag, type FlagDefault, type FlagVisibility } from './feature-flags.ts';
+import { normalizeCatalogField, type CatalogFieldDef } from '../catalog/asset-meta.ts';
 import { PROVIDER_KINDS, type ProviderKind, type ProviderMapping, type ProviderExposure, type ProviderSyncConfig } from '../catalog/providers/types.ts';
 
 export const CONFIG_DOC_KIND = 'lolly-work/config';
@@ -51,6 +52,13 @@ export interface ConfigDocument {
   chains: Chain[];
   providers: ProviderExport[];
   featureFlags: FlagExport[];
+  /** Org-defined catalog metadata DEFINITIONS (plans/31 section 4). They are
+   *  policy, so they ride the document rather than a parallel store of their
+   *  own: export, apply, prune, dry-run diff and the boot seed all cover them
+   *  for free, and an instance's taxonomy is reviewable in git beside the
+   *  grants that govern who may fill it in. The VALUES are never here - they
+   *  are per-asset data, not policy. */
+  catalogFields: CatalogFieldDef[];
 }
 
 // ── canonical serialization ───────────────────────────────────────────────────
@@ -93,11 +101,12 @@ export async function buildConfigDocument(store: Store): Promise<ConfigDocument>
     .filter((g) => g.default !== undefined || g.visibility !== undefined)
     .map((g) => ({ id: g.id, ...(g.default ? { default: g.default } : {}), ...(g.visibility ? { visibility: g.visibility } : {}) }))
     .sort((a, b) => (a.id < b.id ? -1 : 1));
+  const catalogFields = [...await store.listCatalogFields()].sort((a, b) => (a.id < b.id ? -1 : 1));
   const providers: ProviderExport[] = (await store.listProviders())
     .filter((p) => p.managedBy === 'db')
     .map((p) => ({ id: p.id, kind: p.kind, label: p.label, options: p.options, mapping: p.mapping, exposure: p.exposure, sync: p.sync }))
     .sort((a, b) => (a.id < b.id ? -1 : 1));
-  return { kind: CONFIG_DOC_KIND, version: CONFIG_DOC_VERSION, exportedAt: new Date().toISOString(), grants, overlays, chains, providers, featureFlags };
+  return { kind: CONFIG_DOC_KIND, version: CONFIG_DOC_VERSION, exportedAt: new Date().toISOString(), grants, overlays, chains, providers, featureFlags, catalogFields };
 }
 
 // ── validation ──────────────────────────────────────────────────────────────
@@ -161,6 +170,16 @@ export function validateConfigDocument(raw: unknown): { doc: ConfigDocument } | 
     featureFlags.push({ id: norm.id, ...(norm.default ? { default: norm.default } : {}), ...(norm.visibility ? { visibility: norm.visibility } : {}) });
   });
 
+  const catalogFields: CatalogFieldDef[] = [];
+  const rawFields = Array.isArray(raw.catalogFields) ? raw.catalogFields : [];
+  if (raw.catalogFields !== undefined && !Array.isArray(raw.catalogFields)) errors.push('catalogFields must be an array');
+  rawFields.forEach((f, i) => {
+    if (!isObj(f) || typeof f.id !== 'string') return void errors.push(`catalogFields[${i}]: id required`);
+    const norm = normalizeCatalogField(f.id, f);
+    if (!norm) return void errors.push(`catalogFields[${i}] (${f.id}): malformed field definition (id must be a slug, label required, kind text|select|date|url, options on select only)`);
+    catalogFields.push(norm);
+  });
+
   const providers: ProviderExport[] = [];
   const rawProviders = Array.isArray(raw.providers) ? raw.providers : [];
   if (raw.providers !== undefined && !Array.isArray(raw.providers)) errors.push('providers must be an array');
@@ -185,7 +204,7 @@ export function validateConfigDocument(raw: unknown): { doc: ConfigDocument } | 
   });
 
   if (errors.length) return { errors };
-  return { doc: { kind: CONFIG_DOC_KIND, version: CONFIG_DOC_VERSION, grants, overlays, chains, providers, featureFlags } };
+  return { doc: { kind: CONFIG_DOC_KIND, version: CONFIG_DOC_VERSION, grants, overlays, chains, providers, featureFlags, catalogFields } };
 }
 
 // ── diff ───────────────────────────────────────────────────────────────────
@@ -197,6 +216,7 @@ export interface ConfigDiff {
   chains: CategoryDiff<Chain>;
   providers: CategoryDiff<ProviderExport>;
   featureFlags: CategoryDiff<FlagExport>;
+  catalogFields: CategoryDiff<CatalogFieldDef>;
   conflicts: string[];
 }
 
@@ -225,6 +245,7 @@ export function diffConfigDocument(current: ConfigDocument, incoming: ConfigDocu
     chains: keyedDiff(current.chains, incoming.chains, (c) => c.id, false, opts.prune),
     providers: keyedDiff(current.providers, incoming.providers, (p) => p.id, false, opts.prune),
     featureFlags: keyedDiff(current.featureFlags, incoming.featureFlags, (f) => f.id, false, opts.prune),
+    catalogFields: keyedDiff(current.catalogFields, incoming.catalogFields, (f) => f.id, false, opts.prune),
     conflicts,
   };
 }
@@ -238,7 +259,7 @@ export function requiredActions(diff: ConfigDiff): { actions: string[]; ownerOnl
   // Only a NEW or PRUNED owner-only grant escalates the requirement - re-applying
   // a doc that already contains such a grant (unchanged) is not owner-gated.
   for (const g of [...diff.grants.create, ...diff.grants.delete]) if (ownerOnlyAction(g.action)) ownerOnly = true;
-  if (changed(diff.overlays).length || changed(diff.chains).length || changed(diff.featureFlags).length) a.add('policy.edit');
+  if (changed(diff.overlays).length || changed(diff.chains).length || changed(diff.featureFlags).length || changed(diff.catalogFields).length) a.add('policy.edit');
   if (changed(diff.providers).length) a.add('catalog.provider.manage');
   return { actions: [...a], ownerOnly };
 }
@@ -273,6 +294,15 @@ export async function commitConfigApply(store: Store, diff: ConfigDiff, actorId:
   }
   for (const f of diff.featureFlags.delete) await store.putFlagGovernance({ id: f.id, updatedAt: now }); // clears the row
 
+  for (const f of [...diff.catalogFields.create, ...diff.catalogFields.update]) {
+    const norm = normalizeCatalogField(f.id, f);
+    if (norm) await store.putCatalogField(norm);
+  }
+  // Pruning a definition removes the DEFINITION only. Stored values keyed by it
+  // survive, hidden from every served surface until the definition returns:
+  // a taxonomy change is not a licence to destroy the data filed under it.
+  for (const f of diff.catalogFields.delete) await store.deleteCatalogField(f.id);
+
   if (changed(diff.providers).length) {
     const existing = new Map((await store.listProviders()).map((p) => [p.id, p]));
     for (const p of diff.providers.create) {
@@ -306,6 +336,7 @@ export function diffSummary(diff: ConfigDiff): Record<string, unknown> {
     chains: count(diff.chains),
     providers: count(diff.providers),
     featureFlags: count(diff.featureFlags),
+    catalogFields: count(diff.catalogFields),
     conflicts: diff.conflicts,
   };
 }

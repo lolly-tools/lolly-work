@@ -43,6 +43,12 @@ export const EVENT_ATTRS: Record<string, readonly string[]> = {
   'link.create': ['linkKind'],
   'link.visit': ['linkKind'],
   'catalog.asset-use': ['assetId'],
+  // A catalog asset left as a file (plans/31 §7). `via` is a coarse label -
+  // direct / link / zip - never a URL or a filename, so the no-values invariant
+  // holds the same way `linkKind` does. Distinct from `asset-use` (opened or
+  // placed in a tool): this is the download the console used to disclose it did
+  // not measure, and now does.
+  'catalog.asset-download': ['assetId', 'via'],
   'approval.requested': ['chainId', 'step'],
   'approval.approved': ['chainId', 'step'],
   'approval.rejected': ['chainId', 'step'],
@@ -130,6 +136,10 @@ export interface TelemetrySummary {
   formats: Array<{ format: string; count: number }>;
   /** Most-used catalog assets (catalog.asset-use) - item popularity. */
   topAssets: Array<{ assetId: string; count: number }>;
+  /** Most-downloaded catalog assets (catalog.asset-download) - what actually
+   *  leaves as a file, distinct from topAssets' opened-or-placed popularity
+   *  (plans/31 §7). Empty until the shells emit the event. */
+  topDownloads: Array<{ assetId: string; count: number }>;
   /** Exports broken down by where they went (render.export destination) - the
    *  download vs server-render split, shown in full on this internal instance. */
   destinations: Array<{ destination: string; count: number }>;
@@ -161,6 +171,7 @@ export function summarize(events: StoredEvent[], dayCount = 14, today = new Date
   const tools = new Map<string, number>();
   const formats = new Map<string, number>();
   const assets = new Map<string, number>();
+  const downloads = new Map<string, number>();
   const destinations = new Map<string, number>();
   const users = new Set<string>();
   let exports = 0;
@@ -193,6 +204,9 @@ export function summarize(events: StoredEvent[], dayCount = 14, today = new Date
     if (e.event === 'catalog.asset-use' && e.attrs.assetId) {
       assets.set(e.attrs.assetId, (assets.get(e.attrs.assetId) ?? 0) + 1);
     }
+    if (e.event === 'catalog.asset-download' && e.attrs.assetId) {
+      downloads.set(e.attrs.assetId, (downloads.get(e.attrs.assetId) ?? 0) + 1);
+    }
     if (e.event === 'session.tool' || e.event === 'session.shell') {
       const s = seconds(e.attrs.seconds);
       if (s !== null) {
@@ -218,6 +232,7 @@ export function summarize(events: StoredEvent[], dayCount = 14, today = new Date
     topTools: desc(tools).slice(0, 8).map(([toolId, count]) => ({ toolId, count })),
     formats: desc(formats).map(([format, count]) => ({ format, count })),
     topAssets: desc(assets).slice(0, 8).map(([assetId, count]) => ({ assetId, count })),
+    topDownloads: desc(downloads).slice(0, 8).map(([assetId, count]) => ({ assetId, count })),
     destinations: desc(destinations).map(([destination, count]) => ({ destination, count })),
     sessions: { tool: utility(toolSessions), shell: utility(shellSessions) },
   };

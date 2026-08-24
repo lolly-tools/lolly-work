@@ -25,6 +25,17 @@ export interface LinkTarget {
    * that is still live.
    */
   assetId?: string;
+  /**
+   * A CATALOG COLLECTION a `share` / `download` link points at (plans/31 §5).
+   * The same signed-target machinery as `assetId`, one level up: `share` serves
+   * the collection's own listing page and `download` serves the zip-all, with
+   * exposure checked once at mint (the minter must see the collection) and
+   * LIFECYCLE re-checked per member on every resolve - so an expired or revoked
+   * member disappears from both the page and the archive without the link
+   * changing. `embed` is refused: a collection is a list, not a byte stream, so
+   * there is nothing for an `<img>` to point at.
+   */
+  collectionId?: string;
   /** Render params baked at mint time - URL-bar tampering impossible. */
   params?: Record<string, unknown>;
   /** Render format for a tool target; the format ref for an asset target. */

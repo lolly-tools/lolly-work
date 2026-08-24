@@ -108,6 +108,9 @@ logically-equal states hash identically:
 - catalog-provider **config + exposure** (never credentials, never runtime state, never the
   enable kill-switch)
 - feature-flag governance
+- org-defined catalog metadata **definitions** (`catalogFields`) - the fields an org files its
+  assets under ([catalog](catalog.md#org-defined-metadata)). The definitions are policy; the
+  per-asset values are not, and never appear in the document
 
 ```bash
 lw export --out governance.json                # GET /api/v1/config/export
@@ -124,6 +127,10 @@ document hash. Two guards:
   (`403 OWNER_ONLY_ACTION`).
 - Entries that a config-managed catalog provider owns are conflicts, not overwrites
   (`409 CONFIG_MANAGED`) - edit `instance.json` and redeploy instead.
+
+Pruning a `catalogFields` entry removes the **definition** only. Values already filed under it
+survive, hidden from every served surface until the definition comes back, so a taxonomy change
+never destroys the data filed under it.
 
 ### Seeding at boot
 

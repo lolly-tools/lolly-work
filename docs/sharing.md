@@ -23,8 +23,9 @@ optionally watermark → optionally embed provenance / sign → cache.
   locked value is baked in regardless of the query. `hidden` inputs are absent from the
   schema the shell ever saw.
 - **Caching:** an in-process LRU keyed by the render cache-key contract, plus an `ETag`
-  (`private, max-age=60`). The key folds in the pack version, the overlay state and provider
-  fragment hashes, so a policy edit or a catalog refresh invalidates exactly the affected
+  (`private, max-age=60`). The key folds in the pack version, the overlay state, provider
+  fragment hashes and a fingerprint of the instance's own assets, so a policy edit, a catalog
+  refresh or a [new asset version](catalog.md#versions) invalidates exactly the affected
   renders and nothing else.
 - **Hooked tools:** a tool shipping `hooks.js` does not run in the in-process jsdom fast path
   unless `render.allowHooksInFastPath` is on. With a Chromium worker configured it dispatches
@@ -86,6 +87,40 @@ served here can run as the person who opens it. An old
 federated id keeps resolving after [an exit](offboarding.md) through its alias. TTL, passwords,
 revocation, audit and `link.visit` telemetry are unchanged - an asset link is an ordinary link
 that happens to point at an asset, and the console's Links view lists it as one.
+
+### Linking a collection
+
+`share` and `download` also take a [collection](catalog.md#collections) as their target - the
+same signed-target machinery one level up:
+
+```
+POST /api/v1/links   { "kind": "share", "target": { "collectionId": "launch-kit" } }
+```
+
+- **`share`** resolves to a minimal listing page the instance serves itself: brand chrome from
+  the same unauthenticated `/api/brand` sources the sign-in screen uses, the collection's
+  assets with previews, a download per asset, and one **Download all** button.
+- **`download`** resolves straight to the zip.
+- **`embed`** is refused at mint (`400`). A collection is a list, not a byte stream.
+
+The two checks are the same two, one level up: **exposure at mint** and **lifecycle on every
+visit, per member**. Mint asks both halves of the exposure question - the minter must be able
+to see the collection *and* every asset it names - so a widely visible set curated by someone
+with broad exposure cannot be used to hand its bytes to a colleague who is individually denied
+them. A mint that fails is a `403 MEMBER_NOT_VISIBLE` reporting how many members were unseen,
+never which. An expired or revoked
+asset leaves the page and the archive together, on a link that is otherwise live; the page
+says how many were left out, never which.
+
+The page shows **that collection and nothing else**: no search, no browsing past the set, no
+self-registration, no route into the rest of the catalog. Asking the link for an asset the
+collection does not name is a `404 NOT_IN_COLLECTION` even though the signature is valid. That
+boundary is the feature - it is what keeps a shared set on the right side of the brand-portal
+refusal.
+
+The archive is built in-process from Node's own `zlib`, streamed member by member, with entries
+named for the asset and de-duplicated. A set too large to zip is refused up front rather than
+truncated silently.
 
 **Expiry is enforced from the signature alone**, so a link outlives a lost database row only
 until its own expiry. **Revocation is immediate** and kills live guest sessions with it. A
