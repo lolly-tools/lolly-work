@@ -54,6 +54,7 @@ start otherwise. See [identity](identity.md).
 | `submit.quota.bytes` | `0` | cumulative byte ceiling per group; `0` is unlimited |
 | `submit.quota.count` | `0` | cumulative submission-count ceiling per group; `0` is unlimited |
 | `catalog.versionKeep` | `0` | how many versions of one instance asset to keep, head included. `0` keeps every version; a positive number trims oldest-first and deletes the trimmed bytes. The served version is never trimmed, and a held asset is never trimmed at all |
+| `fleet.minEngine` | *unset* | the stated engine version floor (dotted, e.g. `"1.140.0"`). A statement, never a gate: below-floor engines are highlighted in the Fleet view and the console offers a pre-composed upgrade nudge through the ordinary message path. Nothing is blocked or force-upgraded |
 
 Submit is **open to authors** by default: anyone holding `catalog.submit` submits and the
 asset goes live immediately. Name a `submit.chain` when the org wants review. Quota scopes are

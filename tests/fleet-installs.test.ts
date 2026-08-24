@@ -130,6 +130,37 @@ test('list, rename and forget are admin surfaces; a member is refused', async ()
   assert.equal(((await back.json()) as { installs: unknown[] }).installs.length, 1);
 });
 
+// ── the version floor (plans/34 wave 5) ──────────────────────────────────────
+
+test('policy.fleet.minEngine surfaces on the fleet route and rejects a malformed floor', async () => {
+  const pack = await mkdtemp(join(tmpdir(), 'lw-floor-'));
+  await mkdir(join(pack, 'catalog', 'assets'), { recursive: true });
+  await writeFile(join(pack, 'catalog', 'assets', 'index.json'), JSON.stringify({ version: 1, assets: [] }));
+  const config = parseConfig(JSON.stringify({
+    instance: { name: 'Floor Hub', baseUrl: 'http://localhost', pack },
+    rateLimit: { enabled: false },
+    policy: { fleet: { minEngine: '1.140.0' } },
+    dev: { enabled: true, users: [{ email: 'admin@test', groups: ['admin'] }] },
+  }));
+  const app = buildApp({ config, store: createMemoryStore(), blobs: createMemoryBlobStore(), secrets: { session: 'sV', link: 'lV' } });
+  const server = createServer((req, res) => void app(req, res));
+  servers.push(server);
+  await new Promise<void>((r) => server.listen(0, () => r()));
+  const addr = server.address();
+  const base = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
+  const cookie = await login(base, 'admin@test');
+  const fleet = (await (await fetch(`${base}/api/v1/fleet`, { headers: { cookie } })).json()) as { minEngine: string | null; engineVersion: string | null };
+  assert.equal(fleet.minEngine, '1.140.0');
+  assert.ok(fleet.engineVersion, 'the vendored pin rides beside the floor');
+
+  // The floor is a version string or nothing - a gate-shaped value is refused
+  // at parse, before it could ever masquerade as policy.
+  assert.throws(() => parseConfig(JSON.stringify({
+    instance: { name: 'X', baseUrl: 'http://localhost', pack },
+    policy: { fleet: { minEngine: 'latest' } }, dev: { enabled: true },
+  })), /minEngine/);
+});
+
 // ── the migration ────────────────────────────────────────────────────────────
 
 test('migration 0022 follows 0021, is the ceiling, and keeps the covenant in schema', async () => {

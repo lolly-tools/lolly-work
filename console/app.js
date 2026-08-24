@@ -1745,10 +1745,22 @@ async function viewFeatureFlags(main) {
   render(flags);
 }
 
+// Numeric dotted-version compare for the fleet floor — same semantics as the
+// server's inbox targeting (inbox/target.ts compareVersions).
+function vcmp(a, b) {
+  const pa = String(a).split('.').map(Number), pb = String(b).split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (d) return d < 0 ? -1 : 1;
+  }
+  return 0;
+}
+
 async function viewFleet(main) {
-  const [{ clients, engineVersion }, { installs }] = await Promise.all([
+  const [{ clients, engineVersion, minEngine }, { installs }] = await Promise.all([
     api('/api/v1/fleet'), api('/api/v1/fleet/installs'),
   ]);
+  const belowFloor = (engine) => Boolean(minEngine && engine && vcmp(engine, minEngine) < 0);
   const totalReq = clients.reduce((a, c) => a + c.count, 0);
   const shells = new Set(clients.map((c) => c.info.shell)).size;
   const engines = new Set(clients.map((c) => c.info.engine).filter(Boolean)).size;
@@ -1768,9 +1780,11 @@ async function viewFleet(main) {
       // What THIS deploy serves (the vendored pin) — the fixed point the field
       // histogram drifts against, visible without leaving the page.
       tile('This deploy serves', engineVersion || '—'),
+      ...(minEngine ? [tile('Version floor', minEngine)] : []),
       tile('Requests seen', fmt(totalReq)),
       tile('Last seen', clients.length ? when(lastSeen) : '—'),
     ),
+    ...nudgeCard(),
     el('div', { class: 'card' },
       hbarChart(fleetChartRows(clients), { colorOf: shellColorOf, empty: 'No shells have connected yet.' })),
     el('div', { class: 'card stack' },
@@ -1780,7 +1794,7 @@ async function viewFleet(main) {
           el('td', {}, el('span', { class: 'chip-side' },
             el('span', { class: 'chip' }, c.info.shell),
             c.info.shellVersion ? el('span', { class: 'sec' }, `v${c.info.shellVersion}`) : null)),
-          el('td', {}, c.info.engine ?? '—'),
+          el('td', {}, c.info.engine ?? '—', belowFloor(c.info.engine) ? el('span', { class: 'chip', style: 'margin-left:6px' }, 'below floor') : null),
           el('td', {}, c.info.platform ?? '—'),
           numCell(c.count),
           whenCell(c.lastSeenAt))), { sortable: true, filter: true })),
@@ -1819,11 +1833,45 @@ async function viewFleet(main) {
       el('td', {}, el('span', { class: 'chip-side' },
         el('span', { class: 'chip' }, i.info.shell),
         i.info.shellVersion ? el('span', { class: 'sec' }, `v${i.info.shellVersion}`) : null)),
-      el('td', {}, i.info.engine ?? '—'),
+      el('td', {}, i.info.engine ?? '—', belowFloor(i.info.engine) ? el('span', { class: 'chip', style: 'margin-left:6px' }, 'below floor') : null),
       el('td', {}, i.info.platform ?? '—'),
       el('td', {}, i.userName ?? '—'),
       whenCell(i.lastSeenAt),
       el('td', {}, el('div', { class: 'lc-actions' }, forgetBtn), err));
+  }
+
+  // The version-floor nudge (plans/34 wave 5): a statement plus an offer, never
+  // a gate. The button sends an ordinary targeted message through the ordinary
+  // message path (message.send, audited) — the shells render it as the same
+  // inbox banner any announcement uses. Nothing is blocked or force-upgraded.
+  function nudgeCard() {
+    if (!minEngine) return [];
+    const below = clients.filter((c) => belowFloor(c.info.engine));
+    if (!below.length) return [];
+    const belowInstalls = installs.filter((i) => belowFloor(i.info.engine)).length;
+    const highestBelow = below.map((c) => c.info.engine).sort(vcmp).at(-1);
+    const err = errSpan();
+    const titleInput = el('input', { value: `Please update Lolly (engine ${minEngine}+)` });
+    const bodyInput = el('input', { value: `This deployment asks for engine ${minEngine} or newer. Update from wherever you installed Lolly.` });
+    const sendBtn = el('button', { class: 'primary', onclick: async () => {
+      err.textContent = '';
+      sendBtn.disabled = true;
+      try {
+        await api('/api/v1/messages', { method: 'POST', body: {
+          kind: 'upgrade', severity: 'action',
+          audience: { maxEngine: highestBelow },
+          title: titleInput.value.trim(), body: bodyInput.value.trim(),
+        } });
+        toast('Upgrade nudge sent');
+        route();
+      } catch (e) { err.textContent = e.message; sendBtn.disabled = false; }
+    } }, 'Send the nudge');
+    return [el('div', { class: 'card stack' },
+      el('h2', {}, 'Below the version floor'),
+      el('p', { class: 'muted', style: 'margin-top:-4px' },
+        `${below.length} client ${below.length === 1 ? 'bucket' : 'buckets'} (${belowInstalls} registered ${belowInstalls === 1 ? 'install' : 'installs'}) run engines below ${minEngine}. The nudge targets engines up to ${highestBelow} — an inbox banner, not a gate.`),
+      el('div', { class: 'formrow' }, field('Title', titleInput), field('Body', bodyInput)),
+      el('p', {}, sendBtn), err)];
   }
 }
 

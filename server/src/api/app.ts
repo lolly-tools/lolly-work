@@ -803,7 +803,13 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!(await requireAction(req, res, 'fleet.view'))) return;
     // engineVersion is what THIS deploy serves (the vendored pin) - beside the
     // field histogram it makes drift readable in one place (plans/34 wave 1d).
-    sendJson(res, 200, { clients: await store.fleetSummary(), engineVersion: pinnedEngineVersion() });
+    // minEngine is the operator's stated version floor (wave 5) - a statement
+    // the console highlights and nudges from, never a gate.
+    sendJson(res, 200, {
+      clients: await store.fleetSummary(),
+      engineVersion: pinnedEngineVersion(),
+      minEngine: config.policy.fleet.minEngine ?? null,
+    });
   });
 
   // ── fleet install registry (plans/34 wave 3) ──────────────────────────────

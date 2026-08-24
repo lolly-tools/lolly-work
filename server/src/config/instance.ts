@@ -143,6 +143,11 @@ export interface InstanceConfig {
     /** Catalog retention (plans/31 section 6). Version history is kept whole by
      *  default; an org that would rather bound its blob growth sets a ceiling. */
     catalog: CatalogPolicy;
+    /** Fleet version floor (plans/34 wave 5). `minEngine` is a statement, not a
+     *  gate: engines below it are highlighted in the Fleet view and the console
+     *  offers a pre-composed upgrade NUDGE through the ordinary message path.
+     *  Nothing is blocked, locked out, or force-upgraded - the covenant again. */
+    fleet: { minEngine?: string };
   };
   render: {
     /**
@@ -249,6 +254,7 @@ const DEFAULTS: InstanceConfig = {
     sessionTtlHours: 12,
     submit: { maxBytes: 64 * 1024 * 1024, quota: { bytes: 0, count: 0 } },
     catalog: { versionKeep: 0 },
+    fleet: {},
   },
   render: { allowHooksInFastPath: false, worker: { url: '', timeoutMs: 20000 }, c2pa: { certFile: '', claimGenerator: '' } },
   audit: { headLog: { onBoot: true, intervalMinutes: 60 } },
@@ -291,6 +297,10 @@ export function parseConfig(json: string): InstanceConfig {
   }
   const iv = cfg.audit.headLog.intervalMinutes;
   if (!Number.isInteger(iv) || iv < 0) throw new Error(`invalid audit.headLog.intervalMinutes: ${iv}`);
+  const floor = cfg.policy.fleet.minEngine;
+  if (floor !== undefined && !/^\d+(\.\d+){0,3}$/.test(floor)) {
+    throw new Error(`invalid policy.fleet.minEngine: ${floor} (dotted version, e.g. "1.140.0")`);
+  }
   const wt = cfg.render.worker.timeoutMs;
   if (cfg.render.worker.url && (!Number.isFinite(wt) || wt <= 0)) throw new Error(`invalid render.worker.timeoutMs: ${wt}`);
   const rl = cfg.rateLimit;
