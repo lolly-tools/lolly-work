@@ -205,6 +205,14 @@ export interface InstanceConfig {
   /** Instance-side catalog submit configuration. Only the scan hook lives here;
    *  everything an ORG tunes about submit lives under `policy.submit`. */
   submit: { scanHook?: SubmitScanHook };
+  /** Notification egress (plans/35 wave 1). Absent = dormant, zero egress.
+   *  Both channels are the org talking to itself - its relay, its endpoint -
+   *  never phone-home. Secrets ride env (LW_SMTP_PASSWORD, LW_WEBHOOK_SECRET),
+   *  never this file. */
+  notify: {
+    smtp?: { host: string; port: number; secure: boolean; from: string; user?: string };
+    webhook?: { url: string };
+  };
   rateLimit: RateLimitConfig;
 }
 
@@ -224,6 +232,12 @@ export interface Secrets {
   session: string;
   link: string;
   idpClientSecret?: string;
+  /** SMTP relay password - required only when notify.smtp names a user. */
+  smtpPassword?: string;
+  /** HMAC key for outbound webhook signatures - required with notify.webhook
+   *  (an unsigned webhook is refused at boot: the receiver could never tell a
+   *  forgery from the instance). */
+  webhook?: string;
   /** Master key for sealed provider credentials - absent until the operator sets it. */
   credential?: string;
   /** Bearer token for /metrics. Absent ⇒ metrics are loopback-only (never public). */
@@ -267,6 +281,7 @@ const DEFAULTS: InstanceConfig = {
   dev: { enabled: false, users: [] },
   catalogProviders: [],
   blobs: { driver: 'pg' },
+  notify: {},
   submit: {},
 };
 
@@ -300,6 +315,19 @@ export function parseConfig(json: string): InstanceConfig {
   const floor = cfg.policy.fleet.minEngine;
   if (floor !== undefined && !/^\d+(\.\d+){0,3}$/.test(floor)) {
     throw new Error(`invalid policy.fleet.minEngine: ${floor} (dotted version, e.g. "1.140.0")`);
+  }
+  const smtp = cfg.notify.smtp;
+  if (smtp) {
+    smtp.port = smtp.port ?? 587;
+    smtp.secure = smtp.secure ?? false;
+    if (!smtp.host || typeof smtp.host !== 'string') throw new Error('notify.smtp needs a host');
+    if (!smtp.from || !String(smtp.from).includes('@')) throw new Error('notify.smtp.from must be a mail address');
+    if (!Number.isInteger(smtp.port) || smtp.port <= 0 || smtp.port > 65535) throw new Error(`invalid notify.smtp.port: ${smtp.port}`);
+  }
+  if (cfg.notify.webhook) {
+    let u: URL | null = null;
+    try { u = new URL(cfg.notify.webhook.url); } catch { /* refused below */ }
+    if (!u || !/^https?:$/.test(u.protocol)) throw new Error('notify.webhook.url must be an http(s) URL');
   }
   const wt = cfg.render.worker.timeoutMs;
   if (cfg.render.worker.url && (!Number.isFinite(wt) || wt <= 0)) throw new Error(`invalid render.worker.timeoutMs: ${wt}`);
@@ -386,6 +414,10 @@ export function loadSecrets(env = process.env): Secrets {
   if (env.LW_CREDENTIAL_SECRET) secrets.credential = env.LW_CREDENTIAL_SECRET;
   // Not need()-gated: absence means /metrics is loopback-only, the easy-deploy default.
   if (env.LW_METRICS_TOKEN) secrets.metricsToken = env.LW_METRICS_TOKEN;
+  // Both notify-channel secrets follow the credential-secret pattern: required
+  // only when the matching notify block is configured, enforced at boot.
+  if (env.LW_SMTP_PASSWORD) secrets.smtpPassword = env.LW_SMTP_PASSWORD;
+  if (env.LW_WEBHOOK_SECRET) secrets.webhook = env.LW_WEBHOOK_SECRET;
   if (env.LW_RENDER_WORKER_SECRET) secrets.renderWorker = env.LW_RENDER_WORKER_SECRET;
   if (env.LW_C2PA_SIGNING_KEY) secrets.c2paSigningKey = env.LW_C2PA_SIGNING_KEY;
   return secrets;

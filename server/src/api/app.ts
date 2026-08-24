@@ -31,6 +31,7 @@ import { normalizeUserCode, type DeviceAuthRegistry } from '../iam/device-auth.t
 import { activateDoneHtml, activateFormHtml, activateSignedOutHtml } from '../iam/activate-page.ts';
 import { PACK_BLOB_ID, PACK_META_BLOB_ID, PACK_MAX_BYTES, inspectInstancePack, type InstancePackMeta } from '../catalog/instance-pack.ts';
 import { readBlobBody } from '../blobs/types.ts';
+import { createNotifier } from '../notify/notify.ts';
 import { bearerFromHeader, hashScimSecret, mintScimSecret } from '../scim/tokens.ts';
 import {
   applyMemberOps, groupToScim, parseGroupPatch, parseScimFilter, parseUserCreate, parseUserPatch,
@@ -213,6 +214,20 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
 
   const audit = (actor: string, action: string, subject: string, payload?: Record<string, unknown>) =>
     store.appendAudit({ at: new Date().toISOString(), actor, action, subject, ...(payload ? { payload } : {}) });
+
+  // Notification egress (plans/35 wave 1). Refused at boot, not discovered at
+  // runtime: a webhook without its signing secret would emit forgeable events,
+  // and an authenticated relay without its password can never send.
+  if (config.notify.webhook && !secrets.webhook) {
+    throw new Error('notify.webhook is configured but LW_WEBHOOK_SECRET is not set');
+  }
+  if (config.notify.smtp?.user && !secrets.smtpPassword) {
+    throw new Error('notify.smtp names a user but LW_SMTP_PASSWORD is not set');
+  }
+  const notifier = createNotifier({
+    config, secrets, fetchImpl,
+    onResult: (channel, ok) => metrics.notify(channel, ok ? 'sent' : 'failed'),
+  });
 
   /**
    * The instance-owned half of the render cache key's `catalogVersion`
@@ -1328,6 +1343,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     };
     await store.putMessage(msg);
     await audit(`user:${user.id}`, 'message.send', `message:${msg.id}`, { kind: msg.kind, severity: msg.severity });
+    // Webhook only (plans/35 wave 1): a broadcast forwarded to the org's own
+    // endpoint (a chat channel, usually). Mailing every member would double
+    // the inbox this message IS.
+    notifier.event('message.sent', { id: msg.id, kind: msg.kind, severity: msg.severity, title: msg.title });
     sendJson(res, 201, msg);
   });
 
@@ -1423,6 +1442,15 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         dismissible: true,
       });
     }
+    // Egress (plans/35 wave 1): the step's eligible approvers plus the
+    // nominees, minus the requester - the same audience the inbox targets,
+    // reached where they actually are.
+    const step0 = currentStep(approval);
+    const reviewers = (await store.listUsers()).filter((u) =>
+      !u.disabledAt && u.id !== user.id && (nominees.includes(u.id) || (step0 ? isEligible(step0, u.groups) : false)));
+    notifier.email(reviewers.map((u) => u.email), `Approval requested: ${approval.title}`,
+      `${user.email} asked for review on the “${step0?.name ?? 'first'}” step.\n\nReview it: ${config.instance.baseUrl}/admin#/approvals`);
+    notifier.event('approval.requested', { id: approval.id, title: approval.title, chainId: chain.id, by: user.email });
     sendJson(res, 201, serializeApproval(approval, user.id, undefined, await actorsMap()));
   });
 
@@ -1485,6 +1513,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         cta: { label: 'View', url: '/admin#/approvals' },
         dismissible: true,
       });
+      const creator = await store.getUser(next.createdBy);
+      notifier.email([creator?.email], `Approval ${next.state}: ${next.title}`,
+        `${user.email} ${next.state} your request${comment ? ` — “${comment}”` : ''}.\n\nView it: ${config.instance.baseUrl}/admin#/approvals`);
+      notifier.event('approval.decided', { id: next.id, title: next.title, state: next.state, by: user.email });
     }
     sendJson(res, 200, serializeApproval(next, user.id, undefined, await actorsMap()));
   });
@@ -3128,6 +3160,16 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       data: { assetId: settled.record.id, state: settled.state },
       dismissible: true,
     });
+    const submitter = await store.getUser(submitterId);
+    notifier.email([submitter?.email],
+      settled.state === 'live'
+        ? `Published: ${settled.record.entry.name ?? settled.record.id}`
+        : `Returned: ${settled.record.entry.name ?? settled.record.id}`,
+      (settled.state === 'live'
+        ? 'Your catalog submission was approved and is live.'
+        : `Your catalog submission was returned${settled.comment ? `: “${settled.comment}”` : '.'}`)
+      + `\n\nView it: ${config.instance.baseUrl}/admin#/catalog`);
+    notifier.event('submission.decided', { assetId: settled.record.id, state: settled.state });
     return true;
   };
 
@@ -3229,6 +3271,18 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       ...(trimmed ? { trimmed } : {}),
       ...(outcome.approval ? { approvalId: outcome.approval.id } : {}),
     });
+    // Egress (plans/35 wave 1): a submission entering review reaches the
+    // review step's approvers - the queue is only useful to people who know
+    // something is in it.
+    if (outcome.approval) {
+      const reviewStep = currentStep(outcome.approval);
+      const queueReviewers = (await store.listUsers()).filter((u) =>
+        !u.disabledAt && u.id !== user.id && (reviewStep ? isEligible(reviewStep, u.groups) : false));
+      const assetName = String(outcome.record.entry.name ?? outcome.record.id);
+      notifier.email(queueReviewers.map((u) => u.email), `Submission to review: ${assetName}`,
+        `${user.email} submitted “${assetName}” to the catalog.\n\nReview it: ${config.instance.baseUrl}/admin#/catalog`);
+      notifier.event('submission.queued', { assetId: outcome.record.id, name: assetName, by: user.email });
+    }
     sendJson(res, outcome.duplicate ? 200 : 201, {
       ok: true,
       assetId: outcome.record.id,

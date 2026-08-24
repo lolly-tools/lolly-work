@@ -59,8 +59,12 @@ deliberately.
 
 ## Backup and restore
 
-Postgres is the entire durable state. Back it up with your normal Postgres practice
-(point-in-time recovery if you have it) and keep two things beside it:
+Postgres is the durable state - with one carve-out: under `blobs.driver: "s3"` the byte
+content of instance assets (and the hosted instance pack) lives in the object store, so
+that bucket's versioning/replication is part of the backup story too. Under the default
+`pg` driver the blobs are in Postgres and one backup covers everything. Back Postgres up
+with your normal practice (point-in-time recovery if you have it) and keep two things
+beside it:
 
 - the current `instance.json` (config, safe to keep in git - it holds no secrets), and
 - an exported governance document (`lw export`), which is the reproducible half of the
@@ -141,6 +145,30 @@ accepted submission records what the hook did as `scan` - `clean` when it answer
 the bytes, `unavailable` when it could not answer and `allow` let the bytes through anyway,
 and `absent` when no hook is configured at all. An outage you chose to ride out never reads as
 a clean scan, so "which files went in unscanned last Tuesday" stays an answerable question.
+
+## Notifications
+
+Without a `notify` block the instance sends nothing, ever - approvals and reviews live in
+the in-product inbox alone. With one, the same moments that write an inbox message also
+reach people where they actually are:
+
+| Moment | Mail goes to | Webhook event |
+|---|---|---|
+| Approval requested | the step's eligible approvers + nominees (never the requester) | `approval.requested` |
+| Approval decided | the requester | `approval.decided` |
+| Submission enters review | the review step's approvers | `submission.queued` |
+| Submission decided | the submitter | `submission.decided` |
+| Broadcast message sent | *(nobody - mail would double the inbox it is)* | `message.sent` |
+
+Mail is plain text through the org's own relay (`notify.smtp` - see
+[configuration](configuration.md#notify)); a user without an email address is skipped.
+Webhook events POST to `notify.webhook.url` as JSON with `x-lolly-signature:
+sha256=<hmac(timestamp.body)>` under `LW_WEBHOOK_SECRET` and an `x-lolly-timestamp` header -
+verify both, refuse stale timestamps, and forgeries and replays are dead on arrival. One
+retry, then the failure is counted (`lw_notify_total{outcome="failed"}`) and logged;
+delivery never blocks or fails the request that triggered it. Neither channel is
+phone-home: both targets are the org's own, named in its config, reached only when its
+members act.
 
 ## Blob growth and version retention
 

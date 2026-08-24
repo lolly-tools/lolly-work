@@ -162,6 +162,23 @@ never reaches the policy-as-code document or any shell.
 Wiring ClamAV or an ICAP gateway is written up in
 [operations](operations.md#pre-store-scan-hook-for-submissions).
 
+## `notify`
+
+Notification egress. Absent (the default) means dormant: zero egress, byte-identical to a
+deploy before the feature existed. Both channels are the org talking to itself - its own
+relay, its own endpoint - never phone-home; delivery is fire-and-forget and a sulking relay
+can never fail or slow a request. What gets sent, and to whom, is written up in
+[operations](operations.md#notifications).
+
+| Key | Default | What it does |
+|---|---|---|
+| `smtp.host` | - | the org's SMTP relay |
+| `smtp.port` | `587` | submission port; `465`-style implicit TLS wants `secure: true` |
+| `smtp.secure` | `false` | implicit TLS from the first byte. Off, STARTTLS is taken whenever the relay offers it |
+| `smtp.from` | - | the From address on every notification |
+| `smtp.user` | *unset* | AUTH PLAIN user; the password rides `LW_SMTP_PASSWORD`, never this file |
+| `webhook.url` | *unset* | one JSON POST per event, signed with `LW_WEBHOOK_SECRET` (required - an unsigned webhook is refused at boot) |
+
 ## `catalogProviders`
 
 Deploy-time (GitOps / air-gap) provider entries, upserted at boot as `managedBy: 'config'`
@@ -181,6 +198,8 @@ are startup errors. See [catalog](catalog.md).
 | `LW_IDP_CLIENT_SECRET` | if your IdP issues one | OIDC confidential client secret |
 | `LW_CREDENTIAL_SECRET` | once a provider credential is stored | master key sealing credentials at rest (AES-256-GCM) |
 | `LW_METRICS_TOKEN` | to scrape remotely | bearer token for `/metrics`. Unset ⇒ loopback-only |
+| `LW_SMTP_PASSWORD` | with `notify.smtp.user` | the relay password (AUTH PLAIN) |
+| `LW_WEBHOOK_SECRET` | with `notify.webhook` | HMAC key signing every outbound webhook event |
 | `LW_RENDER_WORKER_SECRET` | with a render worker | shared HMAC key; must match the worker |
 | `LW_C2PA_SIGNING_KEY` | to sign exports | PKCS#8 private-key PEM |
 | `LW_BLOBS_S3_CREDENTIAL` | with `blobs.driver: s3` | `<accessKeyId>:<secretAccessKey>` for the blob bucket |
