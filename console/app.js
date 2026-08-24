@@ -3024,7 +3024,13 @@ function providerRow(p, panels) {
     el('td', {}, providerStatusChip(p), p.state.lastError ? el('div', { class: 'muted', title: p.state.lastError }, el('span', { class: 'trunc' }, p.state.lastError)) : null),
     el('td', { class: 'num' }, fmt(p.state.assetCount)),
     el('td', {}, when(p.state.lastSyncAt)),
-    el('td', { class: 'mono' }, p.credential ? p.credential.fingerprint : '—'),
+    el('td', { class: 'mono' }, p.credential ? p.credential.fingerprint : '—',
+      // Expiry chip (plans/36 §2): the operator stated the vendor's schedule,
+      // so the row says it before a failing sync has to.
+      typeof p.credential?.expiresInDays === 'number' && p.credential.expiresInDays <= 14
+        ? el('span', { class: 'chip', style: 'margin-left:6px' },
+            p.credential.expiresInDays <= 0 ? 'cred EXPIRED' : `expires in ${p.credential.expiresInDays}d`)
+        : null),
     el('td', {}, managed
       ? el('span', { class: 'muted' }, 'via instance.json')
       : el('div', { class: 'lc-actions' }, syncBtn, keyBtn, toggleBtn, delBtn), err));
@@ -3061,13 +3067,15 @@ async function viewProviders(main) {
   // Write-only credential panel: secret in, fingerprint + health out.
   const showCredential = (p) => {
     const secretInput = el('input', { type: 'password', autocomplete: 'off', placeholder: 'API key / token' });
+    // Operator-stated expiry (plans/36 §2) — the vendor's schedule, optional.
+    const expiresInput = el('input', { type: 'date', 'aria-label': 'Credential expiry (optional)' });
     const status = errSpan();
     const saveBtn = el('button', { class: 'primary', onclick: async () => {
       if (!secretInput.value) { status.textContent = 'Enter the secret first.'; return; }
       status.textContent = '';
       saveBtn.disabled = true;
       try {
-        const r = await api(`/api/v1/catalog/providers/${p.id}/credential`, { method: 'PUT', body: { secret: secretInput.value } });
+        const r = await api(`/api/v1/catalog/providers/${p.id}/credential`, { method: 'PUT', body: { secret: secretInput.value, ...(expiresInput.value ? { expiresAt: expiresInput.value } : {}) } });
         secretInput.value = '';
         status.textContent = `Stored (${r.fingerprint}) — health ok.`;
         setTimeout(route, 900);
@@ -3079,7 +3087,8 @@ async function viewProviders(main) {
         el('button', { onclick: () => panelHost.replaceChildren() }, 'Close')),
       el('p', { class: 'sub' }, 'The key is verified against the provider, sealed at rest, and never shown again — only its fingerprint. Replacing it re-runs the same check before anything is overwritten.'),
       el('div', { class: 'formrow' },
-        field('Secret', secretInput)),
+        field('Secret', secretInput),
+        field('Expires (optional — the vendor’s schedule)', expiresInput)),
       el('p', {}, saveBtn),
       status));
     secretInput.focus();
@@ -4198,12 +4207,42 @@ async function renderProjectList(main) {
     el('p', {}, el('button', { class: 'primary' }, 'Create project')),
     err);
 
+  // Ownership transfer (plans/36 §1): the offboarding answer. Users load once,
+  // on the first press; RBAC answers per row (owner or project.manage), so the
+  // control renders for everyone and a refusal reads honestly.
+  let userOptions = null;
+  const transferCell = (p) => {
+    const err = errSpan();
+    const holder = el('div', { class: 'lc-actions' });
+    const btn = el('button', { onclick: async () => {
+      try {
+        userOptions ??= (await api('/api/v1/users')).users;
+      } catch (ex) { err.textContent = ex.message; return; }
+      const sel = el('select', { 'aria-label': `New owner for ${p.name}` },
+        ...userOptions.filter((u) => !u.disabled && u.id !== p.ownerId)
+          .map((u) => el('option', { value: u.id }, u.name || u.email)));
+      const save = el('button', { class: 'primary', onclick: async () => {
+        err.textContent = '';
+        save.disabled = true;
+        try {
+          await api(`/api/v1/projects/${encodeURIComponent(p.id)}`, { method: 'PATCH', body: { ownerId: sel.value } });
+          toast('Project transferred');
+          await renderProjectList(main);
+        } catch (ex) { err.textContent = ex.message; save.disabled = false; }
+      } }, 'Save');
+      holder.replaceChildren(sel, save);
+    } }, 'Transfer');
+    holder.append(btn);
+    return el('td', {}, holder, err);
+  };
+
   const rows = projects.map((p) => el('tr', {},
     el('td', {}, el('a', { class: 'link-btn', href: '#/projects', onclick: (e) => { e.preventDefault(); renderProjectDetail(main, p.id, p.name); } }, p.name)),
     el('td', {}, visibilityChip(p.visibility)),
     el('td', { class: 'num' }, p.sessionCount),
     el('td', {}, when(p.updatedAt)),
-    el('td', {}, p.archivedAt ? el('span', { class: 'status expired' }, 'archived') : el('span', { class: 'status live' }, 'active'))));
+    el('td', {}, p.archivedAt ? el('span', { class: 'status expired' }, 'archived') : el('span', { class: 'status live' }, 'active')),
+    transferCell(p)));
 
   const hdr = await activityHeader('Session edits, conflicts and deletions per day.', [
     { key: 'a', label: 'Edits', match: ['session.create', 'session.update', 'sessions.bulk'] },
@@ -4218,7 +4257,7 @@ async function renderProjectList(main) {
     el('div', { class: 'card stack' },
       projects.length
         ? dataTable(
-            ['Project', 'Visibility', { label: 'Sessions', num: true }, 'Updated', 'State'],
+            ['Project', 'Visibility', { label: 'Sessions', num: true }, 'Updated', 'State', ''],
             rows)
         : el('p', { class: 'empty' }, 'No projects yet. Create one above, or they will appear as teams sync sessions from the shells.')));
 }

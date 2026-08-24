@@ -29,6 +29,7 @@ const OPTIONS = {
     cookie: { type: 'string' },
     token: { type: 'string' },
     role: { type: 'string' },
+    expires: { type: 'string' },
     all: { type: 'boolean' },
     title: { type: 'string' },
     body: { type: 'string' },
@@ -473,14 +474,16 @@ switch (cmd) {
       case 'list': {
         const { providers } = await call('/api/v1/catalog/providers') as {
           providers: Array<{ id: string; kind: string; label: string; managedBy: string; enabled: boolean;
-            credential: { fingerprint: string } | null;
+            credential: { fingerprint: string; expiresInDays: number | null } | null;
             state: { assetCount: number; lastSyncAt: string | null; lastError: string | null } }>;
         };
         out(providers);
         if (!values.json) {
           for (const p of providers) {
             const status = p.enabled ? (p.state.lastError ? 'error' : 'enabled') : 'disabled';
-            console.log(`${status.padEnd(9)} ${p.id.padEnd(20)} ${p.kind.padEnd(12)} ${String(p.state.assetCount).padStart(5)} assets  cred ${p.credential?.fingerprint ?? '—'}  ${p.managedBy === 'config' ? '[config]' : ''}`);
+            const days = p.credential?.expiresInDays;
+            const expiry = typeof days === 'number' ? (days <= 0 ? '  CRED EXPIRED' : days <= 14 ? `  cred expires in ${days}d` : '') : '';
+            console.log(`${status.padEnd(9)} ${p.id.padEnd(20)} ${p.kind.padEnd(12)} ${String(p.state.assetCount).padStart(5)} assets  cred ${p.credential?.fingerprint ?? '—'}${expiry}  ${p.managedBy === 'config' ? '[config]' : ''}`);
             if (p.state.lastError) console.log(`          last error: ${p.state.lastError}`);
           }
         }
@@ -615,12 +618,14 @@ switch (cmd) {
         break;
       }
       case 'credential': {
-        if (!id) fail('usage: lw providers credential <id>   (prompts for the secret)');
+        if (!id) fail('usage: lw providers credential <id> [--expires 2026-12-01]   (prompts for the secret)');
         const secret = await promptHidden(`secret for ${id}: `);
         if (!secret) fail('no secret entered');
-        const r = await call(`/api/v1/catalog/providers/${id}/credential`, { method: 'PUT', body: { secret } }) as { fingerprint: string; health: { ok: boolean } };
+        const r = await call(`/api/v1/catalog/providers/${id}/credential`, {
+          method: 'PUT', body: { secret, ...(values.expires ? { expiresAt: values.expires } : {}) },
+        }) as { fingerprint: string; health: { ok: boolean } };
         out(r);
-        console.log(`credential stored (${r.fingerprint}) — health ${r.health.ok ? 'ok' : 'FAILED'}`);
+        console.log(`credential stored (${r.fingerprint}) — health ${r.health.ok ? 'ok' : 'FAILED'}${values.expires ? `, expires ${values.expires}` : ''}`);
         break;
       }
       case 'enable':

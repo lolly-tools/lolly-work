@@ -18,6 +18,8 @@ import { createCollabGateway } from './collab/gateway.ts';
 import { createNearbyRegistry } from './collab/nearby.ts';
 import { createSiemForwarder } from './observability/siem.ts';
 import { runRetention } from './audit/retention.ts';
+import { createNotifier } from './notify/notify.ts';
+import { expiringCredentials } from './catalog/credential-expiry.ts';
 import { auditHead } from './audit/head.ts';
 import { checkShellDist } from './lib/shell-dist.ts';
 import { existsSync, readFileSync } from 'node:fs';
@@ -154,6 +156,29 @@ if (config.policy.retention.telemetryDays > 0 || config.policy.retention.auditDa
   };
   await runIt();
   setInterval(() => void runIt().catch((e: Error) => console.error(`[lolly-work] retention failed: ${e.message}`)), 24 * 60 * 60 * 1000).unref();
+}
+
+// Credential expiry (plans/36 §2): the daily nudge beside the always-on
+// surfaces (provider rows, console chip, the expiry-days gauge). Threshold-
+// crossing only, so each stated expiry is mentioned a handful of times, never
+// nagged daily; silent without notify egress, like everything notify-shaped.
+{
+  const expiryNotifier = createNotifier({ config, secrets });
+  const checkExpiry = async (): Promise<void> => {
+    const expiring = expiringCredentials(await store.listProviders());
+    if (!expiring.length) return;
+    const owners = (await store.listUsers()).filter((u) => u.role === 'owner' && !u.disabledAt);
+    for (const e of expiring) {
+      const when = e.daysLeft <= 0 ? 'has reached its stated expiry' : `expires in ${e.daysLeft} day(s)`;
+      console.warn(`[lolly-work] provider credential ${when}: ${e.id} (${e.kind})`);
+      expiryNotifier.email(owners.map((u) => u.email),
+        `Provider credential ${e.daysLeft <= 0 ? 'expired' : 'expiring'}: ${e.label}`,
+        `The credential for provider "${e.label}" (${e.id}, ${e.kind}) ${when} (${e.expiresAt.slice(0, 10)}).\n\nRotate it: ${config.instance.baseUrl}/admin#/providers`);
+      expiryNotifier.event('provider.credential.expiring', { id: e.id, kind: e.kind, daysLeft: e.daysLeft, expiresAt: e.expiresAt });
+    }
+  };
+  await checkExpiry();
+  setInterval(() => void checkExpiry().catch((e: Error) => console.error(`[lolly-work] credential expiry check failed: ${e.message}`)), 24 * 60 * 60 * 1000).unref();
 }
 
 // SIEM forwarding (plans/35 wave 2): audit events pushed to the org's receiver

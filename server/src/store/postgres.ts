@@ -207,6 +207,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     ...(r.credential_ciphertext ? { credentialCiphertext: r.credential_ciphertext as Uint8Array } : {}),
     ...(r.credential_fingerprint ? { credentialFingerprint: r.credential_fingerprint as string } : {}),
     ...(r.credential_updated_at ? { credentialUpdatedAt: new Date(r.credential_updated_at as string).toISOString() } : {}),
+    ...(r.credential_expires_at ? { credentialExpiresAt: new Date(r.credential_expires_at as string).toISOString() } : {}),
     ...(r.created_by ? { createdBy: r.created_by as string } : {}),
     createdAt: new Date(r.created_at as string).toISOString(),
     updatedAt: new Date(r.updated_at as string).toISOString(),
@@ -1030,11 +1031,12 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     },
     async putProviderCredential(id, cred) {
       await pool.query(
-        `update catalog_providers set credential_ciphertext = $2, credential_fingerprint = $3, credential_updated_at = $4
+        `update catalog_providers set credential_ciphertext = $2, credential_fingerprint = $3, credential_updated_at = $4,
+           credential_expires_at = $5
          where id = $1`,
         cred
-          ? [id, Buffer.from(cred.ciphertext), cred.fingerprint, cred.updatedAt]
-          : [id, null, null, null],
+          ? [id, Buffer.from(cred.ciphertext), cred.fingerprint, cred.updatedAt, cred.expiresAt ?? null]
+          : [id, null, null, null, null],
       );
     },
     async putProviderState(id, state) {

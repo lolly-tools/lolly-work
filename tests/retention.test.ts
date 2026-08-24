@@ -150,6 +150,40 @@ test('erasure deletes the mapping, scrubs attribution, and refuses to destroy sh
   assert.ok((await store.listAudit()).some((e) => e.subject === `user:${departed.id}` && e.action === 'user.erase'));
 });
 
+test('ownership transfer (plans/36 §1): the other way past an erasure block', async () => {
+  const { base, store } = await boot();
+  const owner = await login(base, 'owner@test');
+  await login(base, 'departed@test');
+  const users = await store.listUsers();
+  const departed = users.find((u) => u.email === 'departed@test') as { id: string };
+  const keeper = users.find((u) => u.email === 'owner@test') as { id: string };
+  await store.putProject({ id: 'p2', name: 'Live campaign', visibility: 'private', ownerId: departed.id, createdAt: new Date().toISOString() });
+
+  const bogus = await fetch(`${base}/api/v1/projects/p2`, {
+    method: 'PATCH', headers: { cookie: owner, 'content-type': 'application/json' }, body: JSON.stringify({ ownerId: 'usr_nope' }),
+  });
+  assert.equal(bogus.status, 404, 'the new owner must exist');
+
+  const moved = await fetch(`${base}/api/v1/projects/p2`, {
+    method: 'PATCH', headers: { cookie: owner, 'content-type': 'application/json' }, body: JSON.stringify({ ownerId: keeper.id }),
+  });
+  assert.equal(moved.status, 200);
+  assert.equal((await store.getProject('p2'))?.ownerId, keeper.id);
+  assert.ok((await store.listAudit()).some((e) => e.action === 'project.transfer' && e.subject === 'project:p2'));
+
+  // With the live project handed over, erasure goes through without archiving.
+  const erased = await fetch(`${base}/api/v1/users/${departed.id}`, { method: 'DELETE', headers: { cookie: owner } });
+  assert.equal(erased.status, 200);
+
+  // A disabled account cannot receive work.
+  const other = await store.upsertUserBySub({ sub: 'dev:parked@test', email: 'parked@test', groups: [], role: 'member' });
+  await store.setUserDisabled(other.id, new Date().toISOString());
+  const toDisabled = await fetch(`${base}/api/v1/projects/p2`, {
+    method: 'PATCH', headers: { cookie: owner, 'content-type': 'application/json' }, body: JSON.stringify({ ownerId: other.id }),
+  });
+  assert.equal(toDisabled.status, 409);
+});
+
 // ── the migration ────────────────────────────────────────────────────────────
 
 test('migration 0025 follows 0024 and is one row by construction', async () => {

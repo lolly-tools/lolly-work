@@ -517,7 +517,7 @@ export interface Store {
   /** null clears the stored credential. */
   putProviderCredential(
     id: string,
-    cred: { ciphertext: Uint8Array; fingerprint: string; updatedAt: string } | null,
+    cred: { ciphertext: Uint8Array; fingerprint: string; updatedAt: string; expiresAt?: string } | null,
   ): Promise<void>;
   putProviderState(id: string, state: ProviderState): Promise<void>;
 

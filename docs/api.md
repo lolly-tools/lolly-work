@@ -192,7 +192,7 @@ Message targeting is groups × shell selectors × engine-version range.
 |---|---|
 | `GET /api/v1/projects` | member (own + team by group; admins all) |
 | `POST /api/v1/projects` | `project.create` |
-| `PATCH /api/v1/projects/:id` | member (own/manage) |
+| `PATCH /api/v1/projects/:id` | member (own/manage) - name, visibility, archive, and `ownerId` (transfer to an enabled member; audited `project.transfer`) |
 | `GET/POST /api/v1/projects/:id/sessions` | member / `session.create` |
 | `GET /api/v1/sessions/:id`, `GET …/revisions` | member |
 | `PUT /api/v1/sessions/:id` | `session.edit` |

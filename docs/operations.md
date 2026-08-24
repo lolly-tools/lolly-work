@@ -214,6 +214,8 @@ Gauges worth alerting on:
 | `lw_audit_chain_intact` | `0` - investigate immediately |
 | `lw_provider_last_error` | `1` for a provider you depend on |
 | `lw_provider_assets` | drops sharply (an exposure or upstream change) |
+| `lw_provider_credential_expiry_days` | `<= 14` - rotate before the vendor's schedule does the telling (emitted only where an expiry was stated at credential entry) |
+| `lw_siem_lag` | grows while forwarding is configured - the receiver stopped confirming |
 | `lw_rate_limit_buckets` | approaching `rateLimit.maxBuckets` |
 | `lw_process_resident_memory_bytes` | trending up across a render-heavy day |
 
@@ -234,7 +236,9 @@ de-attributes their stored telemetry. Two things it deliberately does not do: th
 chain keeps its opaque `user:<id>` actors (rewriting history would break the chain and the
 point of having one - with the mapping gone, the id no longer names a person), and it
 refuses while the person owns unarchived projects, because erasure must never silently
-destroy shared work. Archive their projects first; disable already cut the access.
+destroy shared work. Archive their projects, or transfer them to their successor
+(`PATCH /api/v1/projects/:id` with `ownerId`, or the Projects view's Transfer control);
+disable already cut the access.
 
 ## SIEM forwarding
 

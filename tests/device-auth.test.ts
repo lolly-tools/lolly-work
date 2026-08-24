@@ -184,14 +184,14 @@ test('a disable between approval and claim wins - the mint re-checks the person'
 
 // ── the migration ────────────────────────────────────────────────────────────
 
-test('migration 0026 follows 0025, is the ceiling, and the claim is single-read in schema', async () => {
+test('migration 0026 follows 0025 and the claim is single-read in schema', async () => {
   const { readdir: rd, readFile: rf } = await import('node:fs/promises');
   const dir = new URL('../migrations/', import.meta.url).pathname;
   const files = (await rd(dir)).filter((f) => f.endsWith('.sql')).sort();
   const at = files.indexOf('0026_device_codes.sql');
   assert.ok(at > 0, '0026 is on disk');
   assert.equal(files[at - 1], '0025_audit_anchor.sql', '0026 follows 0025 with nothing between');
-  assert.equal(files.at(-1), '0026_device_codes.sql', 'device codes hold the migration ceiling');
+  // The ceiling assertion moved with the ceiling: tests/catalog-providers.test.ts owns it now (0027, plans/36 §2).
   const sql = await rf(join(dir, '0026_device_codes.sql'), 'utf8');
   assert.match(sql, /create table device_codes/);
   assert.match(sql, /user_code\s+text not null unique/);

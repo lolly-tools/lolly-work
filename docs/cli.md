@@ -100,7 +100,7 @@ lw providers preview --kind <kind> [--options '{…}'] [--mapping '{…}'] [--ex
 lw providers preview --kind <kind> --shape [--remote-id <id>] [--json]
 lw providers add <id> --kind <kind> --label "…" \
     [--options '{…}'] [--mapping '{…}'] [--exposure '{…}']
-lw providers credential <id>      # prompts, hidden - never argv, never shell history
+lw providers credential <id> [--expires 2026-12-01]   # prompts, hidden - never argv; --expires states the vendor's schedule
 lw providers auth <id>            # the OAuth kinds with a registered consent flow
 lw providers enable|disable <id>  # owner-only
 lw providers sync|health <id>

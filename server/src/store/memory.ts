@@ -626,9 +626,13 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     async putProviderCredential(id, cred) {
       const p = providers.get(id);
       if (!p) return;
-      const { credentialCiphertext: _c, credentialFingerprint: _f, credentialUpdatedAt: _u, ...rest } = p;
+      const { credentialCiphertext: _c, credentialFingerprint: _f, credentialUpdatedAt: _u, credentialExpiresAt: _e, ...rest } = p;
       providers.set(id, cred
-        ? { ...rest, credentialCiphertext: cred.ciphertext, credentialFingerprint: cred.fingerprint, credentialUpdatedAt: cred.updatedAt }
+        ? {
+            ...rest,
+            credentialCiphertext: cred.ciphertext, credentialFingerprint: cred.fingerprint, credentialUpdatedAt: cred.updatedAt,
+            ...(cred.expiresAt ? { credentialExpiresAt: cred.expiresAt } : {}),
+          }
         : rest);
     },
     async putProviderState(id, state) {

@@ -142,6 +142,22 @@ test('(b) credential flow: bad key refused by health check (nothing stored), goo
   assert.ok(!JSON.stringify(wireRest).includes(MOCK_SECRET));
   const audit = await store.listAudit();
   assert.ok(!JSON.stringify(audit).includes(MOCK_SECRET), 'audit log never carries the secret');
+
+  // Operator-stated expiry (plans/36 §2): rides the same PUT, surfaces as a
+  // date plus a computed days-left, and a garbage date is refused.
+  const dated = await fetch(`${base}/api/v1/catalog/providers/dam1/credential`, {
+    method: 'PUT', headers: jsonHeaders(owner), body: JSON.stringify({ secret: MOCK_SECRET, expiresAt: '2099-01-01' }),
+  });
+  assert.equal(dated.status, 200);
+  const wire = await (await fetch(`${base}/api/v1/catalog/providers/dam1`, { headers: { cookie: owner } })).json() as {
+    credential: { expiresAt: string | null; expiresInDays: number | null };
+  };
+  assert.equal(wire.credential.expiresAt?.slice(0, 10), '2099-01-01');
+  assert.ok((wire.credential.expiresInDays ?? 0) > 20000, 'days-left is computed from the stated date');
+  const garbage = await fetch(`${base}/api/v1/catalog/providers/dam1/credential`, {
+    method: 'PUT', headers: jsonHeaders(owner), body: JSON.stringify({ secret: MOCK_SECRET, expiresAt: 'whenever' }),
+  });
+  assert.equal(garbage.status, 400);
 });
 
 test('(c) enable + federation: entries appear namespaced for exposed groups only, slice filters hold', async () => {
@@ -227,6 +243,31 @@ test('(g) kill switch: disable drops the fragment and 410s blobs; delete require
   assert.equal((await fetch(`${base}/api/v1/catalog/providers/dam1/disable`, { method: 'POST', headers: { cookie: owner } })).status, 200);
   assert.equal((await fetch(`${base}/api/v1/catalog/providers/dam1`, { method: 'DELETE', headers: { cookie: admin } })).status, 200);
   assert.equal((await fetch(`${base}/api/v1/catalog/providers/dam1`, { headers: { cookie: admin } })).status, 404);
+});
+
+test('(b2) expiry thresholds fire once each; the unstated are never mentioned (plans/36 §2)', async () => {
+  const { expiringCredentials } = await import('../server/src/catalog/credential-expiry.ts');
+  const day = 86_400_000;
+  const now = Date.now();
+  const p = (id: string, daysOut?: number) => ({
+    id, label: id, kind: 'mock', managedBy: 'db', enabled: true, options: {}, mapping: {}, exposure: {}, sync: {},
+    createdAt: '', updatedAt: '', state: { assetCount: 0 },
+    ...(daysOut !== undefined ? { credentialExpiresAt: new Date(now + daysOut * day + day / 2).toISOString() } : {}),
+  }) as unknown as import('../server/src/catalog/providers/types.ts').ProviderRecord;
+  const hits = expiringCredentials([p('a', 14), p('b', 7), p('c', 10), p('d', 0), p('e')], () => now);
+  assert.deepEqual(hits.map((h) => `${h.id}:${h.daysLeft}`), ['d:0', 'b:7', 'a:14'],
+    'threshold days only, sorted most-urgent first, no-date never mentioned');
+});
+
+test('(b3) migration 0027 follows 0026 and is the ceiling', async () => {
+  const { readdir, readFile } = await import('node:fs/promises');
+  const dir = new URL('../migrations/', import.meta.url).pathname;
+  const files = (await readdir(dir)).filter((f) => f.endsWith('.sql')).sort();
+  const at = files.indexOf('0027_credential_expiry.sql');
+  assert.ok(at > 0, '0027 is on disk');
+  assert.equal(files[at - 1], '0026_device_codes.sql', '0027 follows 0026 with nothing between');
+  assert.equal(files.at(-1), '0027_credential_expiry.sql', 'credential expiry holds the migration ceiling');
+  assert.match(await readFile(`${dir}/0027_credential_expiry.sql`, 'utf8'), /add column credential_expires_at/);
 });
 
 test('(h) config-managed records are read-only in the API and say why', async () => {

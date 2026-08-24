@@ -145,6 +145,9 @@ export interface ProviderRecord {
   /** Display-safe: sha256 prefix + last-4. The only credential shape APIs return. */
   credentialFingerprint?: string;
   credentialUpdatedAt?: string;
+  /** Operator-stated expiry (plans/36 §2) - the vendor's schedule, which only
+   *  the operator knows. Absent = unknown; nothing nags about the unstated. */
+  credentialExpiresAt?: string;
   createdBy?: string;
   createdAt: string;
   updatedAt: string;

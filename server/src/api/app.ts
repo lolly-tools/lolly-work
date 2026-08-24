@@ -330,6 +330,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       gauges.push({ name: 'lw_provider_enabled', help: 'Catalog provider enabled (1) or disabled (0).', type: 'gauge', labels: { provider: p.id, kind: p.kind }, value: p.enabled ? 1 : 0 });
       gauges.push({ name: 'lw_provider_assets', help: 'Assets last synced from a catalog provider.', type: 'gauge', labels: { provider: p.id }, value: p.state?.assetCount ?? 0 });
       gauges.push({ name: 'lw_provider_last_error', help: 'Provider last sync recorded an error (1) or not (0).', type: 'gauge', labels: { provider: p.id }, value: p.state?.lastError ? 1 : 0 });
+      if (p.credentialExpiresAt) {
+        gauges.push({ name: 'lw_provider_credential_expiry_days', help: 'Days until the operator-stated credential expiry (negative = past it).', type: 'gauge', labels: { provider: p.id }, value: Math.floor((new Date(p.credentialExpiresAt).getTime() - Date.now()) / 86_400_000) });
+      }
     }
     res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4; charset=utf-8', 'cache-control': 'no-store' });
     res.end(metrics.renderText(gauges));
@@ -1226,7 +1229,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const owned = (await store.listProjects()).filter((p) => p.ownerId === target.id && !p.archivedAt);
     if (owned.length) {
       return sendError(res, 409, 'ERASE_HAS_PROJECTS',
-        `archive their ${owned.length} project(s) first - erasure never silently destroys shared work`);
+        `archive or transfer their ${owned.length} project(s) first (PATCH the project's ownerId) - erasure never silently destroys shared work`);
     }
     const scrubbed = await store.scrubTelemetryUser(target.id);
     await store.deleteUser(target.id);
@@ -3830,7 +3833,16 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     id: rec.id, kind: rec.kind, label: rec.label, managedBy: rec.managedBy, enabled: rec.enabled,
     options: rec.options, mapping: rec.mapping, exposure: rec.exposure, sync: rec.sync,
     credential: rec.credentialFingerprint
-      ? { fingerprint: rec.credentialFingerprint, updatedAt: rec.credentialUpdatedAt ?? null }
+      ? {
+          fingerprint: rec.credentialFingerprint,
+          updatedAt: rec.credentialUpdatedAt ?? null,
+          expiresAt: rec.credentialExpiresAt ?? null,
+          // Days until the operator-stated expiry (negative = past it); null
+          // when no date was stated - unknown is unknown, never zero.
+          expiresInDays: rec.credentialExpiresAt
+            ? Math.floor((new Date(rec.credentialExpiresAt).getTime() - Date.now()) / 86_400_000)
+            : null,
+        }
       : null,
     createdAt: rec.createdAt, updatedAt: rec.updatedAt,
     state: {
@@ -4056,9 +4068,16 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!user) return;
     const rec = await dbManagedProvider(res, ctx.params.id as string);
     if (!rec) return;
-    const body = (await readJson(req)) as { secret?: string } | null;
+    const body = (await readJson(req)) as { secret?: string; expiresAt?: unknown } | null;
     if (typeof body?.secret !== 'string' || body.secret.length < 8) {
       return sendError(res, 400, 'INVALID_INPUT', 'secret required (min 8 chars)');
+    }
+    // Operator-stated expiry (plans/36 §2): the vendor's schedule, optional.
+    let expiresAt: string | undefined;
+    if (body.expiresAt !== undefined && body.expiresAt !== null && body.expiresAt !== '') {
+      const t = Date.parse(String(body.expiresAt));
+      if (!Number.isFinite(t)) return sendError(res, 400, 'INVALID_INPUT', 'expiresAt must be a date (e.g. 2026-12-01)');
+      expiresAt = new Date(t).toISOString();
     }
     if (!secrets.credential) {
       return sendError(res, 409, 'CREDENTIAL_SECRET_MISSING', 'set LW_CREDENTIAL_SECRET before storing provider credentials');
@@ -4077,11 +4096,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       ciphertext: sealSecret(body.secret, secrets.credential, credentialContext(rec.id)),
       fingerprint,
       updatedAt: new Date().toISOString(),
+      ...(expiresAt ? { expiresAt } : {}),
     });
     federation.invalidate(rec.id);
     invalidateAccessTokens(rec.id); // OAuth kinds: cached access tokens die with the rotated grant
     await audit(`user:${user.id}`, 'catalog.provider.credential', `provider:${rec.id}`, {
-      fingerprint, rotatedFrom: rec.credentialFingerprint ?? null,
+      fingerprint, rotatedFrom: rec.credentialFingerprint ?? null, ...(expiresAt ? { expiresAt } : {}),
     });
     sendJson(res, 200, { fingerprint, health }, { 'cache-control': 'no-store' });
   });
@@ -4475,12 +4495,26 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const mayManage = project.ownerId === user.id ||
       evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'project.manage', ['*'], grants);
     if (!mayManage) return sendError(res, 403, 'FORBIDDEN', 'owner or project.manage required');
-    const body = (await readJson(req)) as { name?: string; visibility?: unknown; archived?: boolean } | null;
+    const body = (await readJson(req)) as { name?: string; visibility?: unknown; archived?: boolean; ownerId?: unknown } | null;
     const next: ProjectRecord = { ...project };
     if (typeof body?.name === 'string' && body.name.trim()) next.name = body.name.slice(0, 200);
     if (body?.visibility !== undefined) next.visibility = normalizeVisibility(body.visibility);
     if (body?.archived === true) next.archivedAt = new Date().toISOString();
     else if (body?.archived === false) delete next.archivedAt;
+    // Ownership transfer (plans/36 §1) - the offboarding answer erasure was
+    // missing. The new owner must be a real, enabled member: a disabled
+    // account cannot receive work, and a service principal owning a project
+    // would put shared work behind an automation credential.
+    if (body?.ownerId !== undefined) {
+      if (typeof body.ownerId !== 'string' || !body.ownerId) return sendError(res, 400, 'INVALID_INPUT', 'ownerId must be a user id');
+      const target = await store.getUser(body.ownerId);
+      if (!target) return sendError(res, 404, 'NOT_FOUND', 'no such user to transfer to');
+      if (target.disabledAt) return sendError(res, 409, 'OWNER_DISABLED', 'transfer to an enabled member - this account is disabled');
+      if (target.id !== project.ownerId) {
+        next.ownerId = target.id;
+        await audit(`user:${user.id}`, 'project.transfer', `project:${next.id}`, { from: project.ownerId, to: target.id });
+      }
+    }
     await store.putProject(next);
     await audit(`user:${user.id}`, 'project.update', `project:${next.id}`, {
       visibility: next.visibility, archived: Boolean(next.archivedAt),
