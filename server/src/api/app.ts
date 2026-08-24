@@ -9,7 +9,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { readdir, readFile, stat } from 'node:fs/promises';
-import { join, normalize, resolve as resolvePath, sep } from 'node:path';
+import { isAbsolute, join, normalize, resolve as resolvePath, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -403,6 +403,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // policy beyond the access mode that /api/auth/config already states. Rate
   // limited with the auth bucket (see observability/rate-limit.ts).
   router.add('GET', '/api/v1/instance', async (_req, res) => {
+    await ensureConnectPack();
     const packHosted = await blobs.head(PACK_BLOB_ID);
     sendJson(res, 200, {
       name: config.instance.name,
@@ -1129,7 +1130,36 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // The control plane SERVES the signed `.lolly` pack; it never builds one -
   // the format belongs to the OSS builder (see catalog/instance-pack.ts). The
   // upload gate holds one line: a hosted pack must point at THIS deployment.
+  // Boot-seeded connect pack (plans/36 ship work): a config-named `.lolly`
+  // hosted lazily on first read, so a read-only or ephemeral deploy (the
+  // Vercel demo) offers the download without an owner ever running the PUT.
+  // An uploaded pack always wins (the seed only fills an empty store), and a
+  // file naming a different instance base is refused loudly, exactly as the
+  // upload would refuse it.
+  let connectPackSeeded: Promise<void> | null = null;
+  const ensureConnectPack = (): Promise<void> => {
+    connectPackSeeded ??= (async () => {
+      const rel = config.instance.connectPack;
+      if (!rel) return;
+      if (await blobs.head(PACK_BLOB_ID)) return;
+      const file = isAbsolute(rel) ? rel : join(config.instance.pack, rel);
+      const bytes = await readFile(file);
+      const inspected = inspectInstancePack(Buffer.from(bytes), config.instance.baseUrl);
+      const stat = await blobs.put(PACK_BLOB_ID, bytes, 'application/octet-stream');
+      const meta: InstancePackMeta = {
+        ...inspected, size: stat.size, checksum: stat.checksum,
+        uploadedAt: new Date().toISOString(), uploadedBy: 'system',
+      };
+      await blobs.put(PACK_META_BLOB_ID, Buffer.from(JSON.stringify(meta)), 'application/json');
+      console.log(`[lolly-work] hosting the configured connect pack (${inspected.signed ? 'signed' : 'UNSIGNED - dev only'}, ${stat.size} bytes)`);
+    })().catch((e: Error) => {
+      console.error(`[lolly-work] connect pack not hosted: ${e.message}`);
+    });
+    return connectPackSeeded;
+  };
+
   const readPackMeta = async (): Promise<InstancePackMeta | null> => {
+    await ensureConnectPack();
     const meta = await blobs.get(PACK_META_BLOB_ID);
     if (!meta) return null;
     try {
@@ -1191,11 +1221,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       const me = await resolveMember(store, req.headers.cookie, sessionVerify);
       if (!me) return sendError(res, 401, 'UNAUTHORIZED', 'sign in to download the instance pack');
     }
+    await ensureConnectPack();
     const blob = await blobs.get(PACK_BLOB_ID);
     if (!blob) return sendError(res, 404, 'NOT_FOUND', 'no instance pack is hosted here');
     res.writeHead(200, {
       'content-type': 'application/octet-stream',
-      'content-disposition': `attachment; filename="${config.instance.name.replace(/[^A-Za-z0-9._ -]/g, '') || 'instance'}.lolly"`,
+      'content-disposition': `attachment; filename="${config.instance.name.replace(/[^A-Za-z0-9._ -]/g, '').replace(/\s+/g, ' ').trim() || 'instance'}.lolly"`,
       'content-length': String(blob.stat.size),
       'cache-control': 'private, no-store',
       'x-content-type-options': 'nosniff',

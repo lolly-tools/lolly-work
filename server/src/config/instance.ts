@@ -106,6 +106,14 @@ export interface InstanceConfig {
      *  deploy. The console routes its "Open Lolly" and tool/session/project
      *  deep links through this. Absent → links stay same-origin (`/`). */
     appUrl?: string;
+    /** Optional `.lolly` instance pack to HOST from boot (plans/36 ship work):
+     *  a path relative to `pack` (or absolute). Seeded into the blob store on
+     *  first read when nothing is hosted yet - so a read-only or ephemeral
+     *  deploy (the Vercel demo) offers the connect download without an owner
+     *  ever running the PUT, and an owner's own upload always wins. The same
+     *  inspection as the upload applies: a file naming a different instance
+     *  base is refused, loudly, at seed time. */
+    connectPack?: string;
   };
   idp: {
     issuer: string;

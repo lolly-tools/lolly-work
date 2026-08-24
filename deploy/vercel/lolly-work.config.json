@@ -1,8 +1,9 @@
 {
   "instance": {
-    "name": "Lolly Work — Demo",
+    "name": "Lolly Work \u2014 Demo",
     "baseUrl": "https://lolly.work",
-    "pack": "packs/demo"
+    "pack": "packs/demo",
+    "connectPack": "suse-brand-1.0.0.lolly"
   },
   "idp": {
     "issuer": "",
@@ -20,16 +21,47 @@
     "defaultAccessMode": "open",
     "telemetry": "standard",
     "telemetryAttribution": "opt-in",
-    "guestLinks": { "enabled": true, "maxTtlHours": 168, "defaultTtlHours": 72 }
+    "guestLinks": {
+      "enabled": true,
+      "maxTtlHours": 168,
+      "defaultTtlHours": 72
+    }
   },
-  "render": { "allowHooksInFastPath": true },
+  "render": {
+    "allowHooksInFastPath": true
+  },
   "dev": {
     "enabled": true,
     "users": [
-      { "email": "admin@suse.example", "name": "Ada (Admin)", "groups": ["admin"] },
-      { "email": "brand@suse.example", "name": "Bruno (Brand lead)", "groups": ["brand-team", "approver"] },
-      { "email": "marketer@suse.example", "name": "Mira (Marketer)", "groups": ["marketing"] },
-      { "email": "contractor@suse.example", "name": "Cveta (Contractor)", "groups": ["contractors"] }
+      {
+        "email": "admin@suse.example",
+        "name": "Ada (Admin)",
+        "groups": [
+          "admin"
+        ]
+      },
+      {
+        "email": "brand@suse.example",
+        "name": "Bruno (Brand lead)",
+        "groups": [
+          "brand-team",
+          "approver"
+        ]
+      },
+      {
+        "email": "marketer@suse.example",
+        "name": "Mira (Marketer)",
+        "groups": [
+          "marketing"
+        ]
+      },
+      {
+        "email": "contractor@suse.example",
+        "name": "Cveta (Contractor)",
+        "groups": [
+          "contractors"
+        ]
+      }
     ]
   }
 }

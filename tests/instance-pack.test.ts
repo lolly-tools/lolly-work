@@ -129,6 +129,47 @@ test('owner hosts the pack; the manifest advertises it; gated download needs a s
   assert.equal(after1.connect, undefined, 'the manifest stops advertising a removed pack');
 });
 
+test('a configured connectPack seeds the empty store on first read - and a wrong base never does', async () => {
+  // The Vercel-demo shape (plans/36 ship work): read-only-ish deploy, a .lolly
+  // beside the pack, no owner ever runs the PUT.
+  const packDir = await mkdtemp(join(tmpdir(), 'lw-seed-'));
+  await mkdir(join(packDir, 'catalog', 'assets'), { recursive: true });
+  await writeFile(join(packDir, 'catalog', 'assets', 'index.json'), JSON.stringify({ version: 1, assets: [] }));
+  const bytes = packBytes(GOOD('http://packs.example'));
+  await writeFile(join(packDir, 'connect.lolly'), new Uint8Array(bytes));
+  const config = parseConfig(JSON.stringify({
+    instance: { name: 'Seed Hub', baseUrl: 'http://packs.example', pack: packDir, connectPack: 'connect.lolly' },
+    rateLimit: { enabled: false },
+    policy: { defaultAccessMode: 'open' },
+    dev: { enabled: true },
+  }));
+  const app = buildApp({ config, store: createMemoryStore(), blobs: createMemoryBlobStore(), secrets: { session: 'sS', link: 'lS' } });
+  const server = createServer((req, res) => void app(req, res));
+  servers.push(server);
+  await new Promise<void>((r) => server.listen(0, () => r()));
+  const addr = server.address();
+  const base = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
+
+  const manifest = (await (await fetch(`${base}/api/v1/instance`)).json()) as { connect?: { packUrl: string } };
+  assert.equal(manifest.connect?.packUrl, 'http://packs.example/connect/pack.lolly', 'the seed advertises without any PUT');
+  const dl = await fetch(`${base}/connect/pack.lolly`);
+  assert.equal(dl.status, 200);
+  assert.deepEqual(Buffer.from(await dl.arrayBuffer()), bytes, 'the seeded bytes serve exactly');
+
+  // A seed file naming ANOTHER instance is refused at seed time, loudly, and
+  // the deploy simply hosts nothing - never someone else's enrollment.
+  await writeFile(join(packDir, 'connect.lolly'), new Uint8Array(packBytes(GOOD('http://other.example'))));
+  const app2 = buildApp({ config, store: createMemoryStore(), blobs: createMemoryBlobStore(), secrets: { session: 'sS2', link: 'lS2' } });
+  const server2 = createServer((req, res) => void app2(req, res));
+  servers.push(server2);
+  await new Promise<void>((r) => server2.listen(0, () => r()));
+  const addr2 = server2.address();
+  const base2 = `http://127.0.0.1:${typeof addr2 === 'object' && addr2 ? addr2.port : 0}`;
+  assert.equal((await fetch(`${base2}/connect/pack.lolly`)).status, 404);
+  const m2 = (await (await fetch(`${base2}/api/v1/instance`)).json()) as { connect?: unknown };
+  assert.equal(m2.connect, undefined);
+});
+
 test('an open instance serves the pack to anyone - the zero-friction arm', async () => {
   const base = await boot('open');
   const owner = await login(base, 'owner@test');

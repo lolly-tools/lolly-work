@@ -1,0 +1,491 @@
+{
+  "$description": "SUSE brand colour tokens. color/font under `base` are generated from shells/web/src/palette.ts by scripts/build-brand-tokens.ts (DO NOT hand-edit those) - NOTE: that generator is currently STALE, it now reads the unrelated neutral-starter palette, so do not re-run it against this file until it is repointed at the real SUSE swatches. `light`/`dark` color.semantic.* were added by hand (2026-07-09) to satisfy the brand token contract (plans/brand-token-contract.md) and are hand-maintained - they mirror the SUSE chrome colors already hardcoded in shells/web/src/styles/tokens.css exactly, so activating them changes nothing visually. HAND-AUTHORED $extensions (2026-08-24): core colours carry `pantone` spot references, and the four background colours (pine/jungle/white/fog) carry `combinations` - the brand-approved foreground token names for text vs graphic use (graphics-only pairings appear in `graphic` but not `text`). These and the spectrum usage notes must survive any future regeneration.",
+  "$metadata": {
+    "tokenSetOrder": [
+      "base",
+      "light",
+      "dark"
+    ]
+  },
+  "$themes": [
+    {
+      "name": "light",
+      "selectedTokenSets": {
+        "base": "enabled",
+        "light": "enabled"
+      }
+    },
+    {
+      "name": "dark",
+      "selectedTokenSets": {
+        "base": "enabled",
+        "dark": "enabled"
+      }
+    }
+  ],
+  "base": {
+    "color": {
+      "$type": "color",
+      "brand": {
+        "transparent": {
+          "$value": "transparent",
+          "$description": "Transparent"
+        },
+        "pine": {
+          "$value": "#0c322c",
+          "$description": "Pine",
+          "$extensions": {
+            "com.suse.lolly": {
+              "cmyk": [
+                65,
+                0,
+                35,
+                85
+              ],
+              "pantone": "627 C",
+              "combinations": {
+                "text": ["mint", "persimmon", "jungle", "fog", "white"],
+                "graphic": ["mint", "persimmon", "jungle", "fog", "white"]
+              }
+            }
+          }
+        },
+        "jungle": {
+          "$value": "#30ba78",
+          "$description": "Jungle",
+          "$extensions": {
+            "com.suse.lolly": {
+              "cmyk": [
+                70,
+                0,
+                65,
+                0
+              ],
+              "pantone": "7479 C",
+              "combinations": {
+                "text": ["pine", "midnight"],
+                "graphic": ["pine", "midnight", "fog", "white"]
+              }
+            }
+          }
+        },
+        "mint": {
+          "$value": "#90ebcd",
+          "$description": "Mint",
+          "$extensions": {
+            "com.suse.lolly": {
+              "cmyk": [
+                40,
+                0,
+                30,
+                0
+              ],
+              "pantone": "565 C"
+            }
+          }
+        },
+        "persimmon": {
+          "$value": "#fe7c3f",
+          "$description": "Persimmon",
+          "$extensions": {
+            "com.suse.lolly": {
+              "cmyk": [
+                0,
+                60,
+                80,
+                0
+              ],
+              "pantone": "1575 C"
+            }
+          }
+        },
+        "midnight": {
+          "$value": "#192072",
+          "$description": "Midnight",
+          "$extensions": {
+            "com.suse.lolly": {
+              "cmyk": [
+                100,
+                85,
+                0,
+                30
+              ],
+              "pantone": "2756 C"
+            }
+          }
+        },
+        "waterhole": {
+          "$value": "#2453ff",
+          "$description": "Waterhole",
+          "$extensions": {
+            "com.suse.lolly": {
+              "cmyk": [
+                90,
+                50,
+                0,
+                0
+              ],
+              "pantone": "285 C"
+            }
+          }
+        },
+        "fog": {
+          "$value": "#efefef",
+          "$description": "Fog",
+          "$extensions": {
+            "com.suse.lolly": {
+              "cmyk": [
+                0,
+                0,
+                0,
+                7
+              ],
+              "pantone": "Cool Gray 1",
+              "combinations": {
+                "text": ["pine", "waterhole", "midnight"],
+                "graphic": ["pine", "waterhole", "midnight", "jungle"]
+              }
+            }
+          }
+        },
+        "white": {
+          "$value": "#ffffff",
+          "$description": "White",
+          "$extensions": {
+            "com.suse.lolly": {
+              "cmyk": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "combinations": {
+                "text": ["pine", "waterhole", "midnight"],
+                "graphic": ["pine", "waterhole", "midnight", "jungle"]
+              }
+            }
+          }
+        },
+        "black": {
+          "$value": "#000000",
+          "$description": "Black",
+          "$extensions": {
+            "com.suse.lolly": {
+              "cmyk": [
+                0,
+                0,
+                0,
+                100
+              ]
+            }
+          }
+        },
+        "ultra-black": {
+          "$value": "#050505",
+          "$description": "Ultra Black",
+          "$extensions": {
+            "com.suse.lolly": {
+              "cmyk": [
+                80,
+                70,
+                60,
+                100
+              ]
+            }
+          }
+        }
+      },
+      "ramp": {
+        "jungle": {
+          "1": {
+            "$value": "#0c322c",
+            "$description": "Jungle 1"
+          },
+          "2": {
+            "$value": "#025937",
+            "$description": "Jungle 2"
+          },
+          "3": {
+            "$value": "#008657",
+            "$description": "Jungle 3"
+          },
+          "4": {
+            "$value": "#30ba78",
+            "$description": "Jungle 4"
+          },
+          "5": {
+            "$value": "#42d29f",
+            "$description": "Jungle 5"
+          },
+          "6": {
+            "$value": "#83e1be",
+            "$description": "Jungle 6"
+          },
+          "7": {
+            "$value": "#c0efde",
+            "$description": "Jungle 7"
+          },
+          "8": {
+            "$value": "#eafaf4",
+            "$description": "Jungle 8"
+          }
+        },
+        "pine": {
+          "1": {
+            "$value": "#0c322c",
+            "$description": "Pine 1"
+          },
+          "2": {
+            "$value": "#01564a",
+            "$description": "Pine 2"
+          },
+          "3": {
+            "$value": "#008878",
+            "$description": "Pine 3"
+          },
+          "4": {
+            "$value": "#00bda7",
+            "$description": "Pine 4"
+          },
+          "5": {
+            "$value": "#38d5b4",
+            "$description": "Pine 5"
+          },
+          "6": {
+            "$value": "#90ebcd",
+            "$description": "Pine 6"
+          },
+          "7": {
+            "$value": "#bff1ea",
+            "$description": "Pine 7"
+          },
+          "8": {
+            "$value": "#eafaf8",
+            "$description": "Pine 8"
+          }
+        },
+        "persimmon": {
+          "1": {
+            "$value": "#47190d",
+            "$description": "Persimmon 1"
+          },
+          "2": {
+            "$value": "#8e2810",
+            "$description": "Persimmon 2"
+          },
+          "3": {
+            "$value": "#bd3314",
+            "$description": "Persimmon 3"
+          },
+          "4": {
+            "$value": "#ff5a2b",
+            "$description": "Persimmon 4"
+          },
+          "5": {
+            "$value": "#fe7c3f",
+            "$description": "Persimmon 5"
+          },
+          "6": {
+            "$value": "#ffb184",
+            "$description": "Persimmon 6"
+          },
+          "7": {
+            "$value": "#ffd3bd",
+            "$description": "Persimmon 7"
+          },
+          "8": {
+            "$value": "#ffefe9",
+            "$description": "Persimmon 8"
+          }
+        },
+        "blue": {
+          "1": {
+            "$value": "#0a112b",
+            "$description": "Blue 1"
+          },
+          "2": {
+            "$value": "#192072",
+            "$description": "Blue 2"
+          },
+          "3": {
+            "$value": "#0b41b7",
+            "$description": "Blue 3"
+          },
+          "4": {
+            "$value": "#2453ff",
+            "$description": "Blue 4"
+          },
+          "5": {
+            "$value": "#3c8eef",
+            "$description": "Blue 5"
+          },
+          "6": {
+            "$value": "#81aefc",
+            "$description": "Blue 6"
+          },
+          "7": {
+            "$value": "#c8dafc",
+            "$description": "Blue 7"
+          },
+          "8": {
+            "$value": "#e6edfe",
+            "$description": "Blue 8"
+          }
+        },
+        "fog": {
+          "1": {
+            "$value": "#1d1d1d",
+            "$description": "Fog 1"
+          },
+          "2": {
+            "$value": "#3e3e3e",
+            "$description": "Fog 2"
+          },
+          "3": {
+            "$value": "#525252",
+            "$description": "Fog 3"
+          },
+          "4": {
+            "$value": "#6f6f6f",
+            "$description": "Fog 4"
+          },
+          "5": {
+            "$value": "#999999",
+            "$description": "Fog 5"
+          },
+          "6": {
+            "$value": "#bababa",
+            "$description": "Fog 6"
+          },
+          "7": {
+            "$value": "#dcdbdc",
+            "$description": "Fog 7"
+          },
+          "8": {
+            "$value": "#efefef",
+            "$description": "Fog 8"
+          }
+        }
+      },
+      "spectrum": {
+        "teal": {
+          "$value": "#00bda7",
+          "$description": "Teal - infographics palette, charts and data viz only"
+        },
+        "lime": {
+          "$value": "#a1ef8b",
+          "$description": "Lime - infographics palette, charts and data viz only"
+        },
+        "sky": {
+          "$value": "#7dc6e2",
+          "$description": "Sky - infographics palette, charts and data viz only"
+        },
+        "lilac": {
+          "$value": "#e8c1f7",
+          "$description": "Lilac - infographics palette, charts and data viz only"
+        },
+        "amethyst": {
+          "$value": "#5d4f99",
+          "$description": "Amethyst - infographics palette, charts and data viz only"
+        },
+        "peach": {
+          "$value": "#f9cabf",
+          "$description": "Peach - infographics palette, charts and data viz only"
+        },
+        "marigold": {
+          "$value": "#fcb244",
+          "$description": "Marigold - infographics palette, charts and data viz only"
+        },
+        "rust": {
+          "$value": "#bd3314",
+          "$description": "Rust - infographics palette, charts and data viz only"
+        }
+      }
+    },
+    "font": {
+      "$type": "fontFamily",
+      "brand": {
+        "$value": "SUSE",
+        "$description": "UI & body - the SUSE brand face (catalog-served variable font). The shell reads this as font.brand and applies it to the app chrome."
+      },
+      "mono": {
+        "$value": "SUSE Mono",
+        "$description": "Code, readouts & data - SUSE Mono (also the platform default mono)."
+      }
+    }
+  },
+  "light": {
+    "color": {
+      "$type": "color",
+      "semantic": {
+        "$type": "color",
+        "$description": "The seven semantic slots for the light look. Primary/on-primary alias the exact colors already hardcoded for SUSE’s light chrome theme.",
+        "primary": {
+          "$value": "{color.brand.pine}",
+          "$description": "The brand color - matches tokens.css light --primary (#0c322c) exactly"
+        },
+        "on-primary": {
+          "$value": "{color.brand.white}",
+          "$description": "Text/icons on primary - matches light --primary-foreground exactly"
+        },
+        "secondary": {
+          "$value": "{color.brand.jungle}",
+          "$description": "Supporting accent"
+        },
+        "surface": {
+          "$value": "{color.brand.white}",
+          "$description": "Canvas/page background"
+        },
+        "text": {
+          "$value": "{color.brand.pine}",
+          "$description": "Main foreground"
+        },
+        "muted": {
+          "$value": "{color.ramp.fog.4}",
+          "$description": "Secondary foreground"
+        },
+        "edge": {
+          "$value": "{color.ramp.fog.7}",
+          "$description": "Hairlines and borders"
+        }
+      }
+    }
+  },
+  "dark": {
+    "color": {
+      "$type": "color",
+      "semantic": {
+        "$type": "color",
+        "$description": "The seven semantic slots for the dark look. Primary/on-primary alias the exact colors already hardcoded for SUSE’s dark chrome theme.",
+        "primary": {
+          "$value": "{color.brand.jungle}",
+          "$description": "The brand color lifted for dark surfaces - matches tokens.css dark --primary (#30ba78) exactly"
+        },
+        "on-primary": {
+          "$value": "{color.brand.black}",
+          "$description": "Text/icons on primary"
+        },
+        "secondary": {
+          "$value": "{color.brand.mint}",
+          "$description": "Supporting accent lifted to match"
+        },
+        "surface": {
+          "$value": "{color.brand.pine}",
+          "$description": "Canvas/page background - matches the dark brand theme’s background exactly"
+        },
+        "text": {
+          "$value": "{color.brand.white}",
+          "$description": "Main foreground"
+        },
+        "muted": {
+          "$value": "{color.ramp.fog.5}",
+          "$description": "Secondary foreground"
+        },
+        "edge": {
+          "$value": "{color.ramp.fog.2}",
+          "$description": "Hairlines and borders"
+        }
+      }
+    }
+  }
+}

@@ -112,9 +112,14 @@ console.log('▶ copy native @resvg/resvg-js');
 cpSync(join(ROOT, 'node_modules', '@resvg'), join(NM, '@resvg'), { recursive: true, dereference: true });
 
 // 4. Data dirs the handler reads at runtime, as siblings of index.mjs (FN_ROOT base).
+// dereference: the demo pack's catalog is a brand-profile SYMLINK
+// (packs/demo/catalog -> brands/suse/catalog); the function bundle gets real
+// files, which serves identically and never depends on the platform preserving
+// links. Profile SWITCHING is impossible on a read-only deploy either way -
+// the marker still names the active profile, so listing stays honest.
 for (const d of ['migrations', 'console', 'docs', join('packs', 'demo')]) {
   console.log('▶ copy data', d);
-  cpSync(join(ROOT, d), join(FUNC, d), { recursive: true });
+  cpSync(join(ROOT, d), join(FUNC, d), { recursive: true, dereference: true });
 }
 
 // 5. Function + platform config (Build Output API v3).

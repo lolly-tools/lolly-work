@@ -20,6 +20,7 @@ the environment.
 | `pack` | `./packs/demo` | the brand pack mount: catalog, tools, design tokens, fonts, logos. The default is the small demo pack committed at `packs/demo`; the server warns at boot if the path does not exist, and the catalog is empty until it does |
 | `shellDir` | *unset* | path to a built Lolly `shells/web/dist`. Set ⇒ the shell is served at `/` on one origin (session cookies work, the shell's `org/` governance seam activates) |
 | `appUrl` | *unset* | where the Lolly app lives when it is *not* same-origin (a Vite dev server, a split deploy). The console routes "Open Lolly" and deep links through it |
+| `connectPack` | *unset* | a `.lolly` instance pack to HOST from boot - a path relative to `pack` (or absolute). Seeded into the blob store on first read when nothing is hosted yet, so an ephemeral deploy offers `/connect/pack.lolly` without an owner ever uploading; an owner's own upload always wins, and a file naming a different instance base is refused loudly at seed time |
 
 Under a non-`open` access mode, a `shellDir` that is missing or predates the `org/`
 governance module **stops boot**. `LW_ALLOW_STALE_SHELL=1` downgrades it to a warning.

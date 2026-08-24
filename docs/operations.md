@@ -307,7 +307,10 @@ order:
    at upload any pack whose instance base is not this deployment - hosting a
    pack that enrolls devices somewhere else is the one mistake an operator
    must not be able to make silently. A key-pinned build refuses an unsigned
-   or wrongly-signed pack on import.
+   or wrongly-signed pack on import. A deploy can also carry the pack in its
+   own mount and host it from boot (`instance.connectPack` - how the demo
+   sandbox offers its SUSE pack) - the same inspection applies, and an
+   owner's upload still wins.
 2. **The first-run instance sheet** (desktop and mobile shells): the person
    types this deployment's URL; the shell probes `GET /api/v1/instance` and
    `GET /api/auth/config` and takes it from there.
