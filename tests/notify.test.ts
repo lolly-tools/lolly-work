@@ -36,6 +36,7 @@ function smtpFixture(): Promise<{ port: number; mails: CapturedMail[]; connectio
   let connections = 0;
   const server = createNetServer((socket: Socket) => {
     connections++;
+    socket.on('error', () => { /* client teardown races are fine for a fixture */ });
     let mail: CapturedMail = { from: '', to: [], data: '' };
     let inData = false;
     let buf = '';

@@ -52,7 +52,8 @@ export function dataSection(text: string): string {
 function lineReader(socket: Socket): { read: () => Promise<string>; swap: (s: Socket) => void } {
   let buf = '';
   let current = socket;
-  const waiters: Array<(line: string) => void> = [];
+  let failed: Error | null = null;
+  const waiters: Array<{ resolve: (line: string) => void; reject: (e: Error) => void }> = [];
   const pend: string[] = [];
   const onData = (chunk: Buffer): void => {
     buf += chunk.toString('utf8');
@@ -61,24 +62,35 @@ function lineReader(socket: Socket): { read: () => Promise<string>; swap: (s: So
       const line = buf.slice(0, at);
       buf = buf.slice(at + 2);
       const w = waiters.shift();
-      if (w) w(line); else pend.push(line);
+      if (w) w.resolve(line); else pend.push(line);
     }
   };
+  // A socket error MUST land in the pending read, not as an uncaught 'error'
+  // event: a relay resetting mid-dialogue (or right after QUIT) fails the send
+  // cleanly instead of crashing the process.
+  const onError = (e: Error): void => {
+    failed = e;
+    for (const w of waiters.splice(0)) w.reject(e);
+  };
   current.on('data', onData);
+  current.on('error', onError);
   return {
     read: () => {
       const queued = pend.shift();
       if (queued !== undefined) return Promise.resolve(queued);
+      if (failed) return Promise.reject(failed);
       return new Promise<string>((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('SMTP reply timeout')), TIMEOUT_MS);
-        waiters.push((line) => { clearTimeout(timer); resolve(line); });
+        waiters.push({ resolve: (line) => { clearTimeout(timer); resolve(line); }, reject: (e) => { clearTimeout(timer); reject(e); } });
       });
     },
     swap: (s: Socket) => {
       current.off('data', onData);
+      current.off('error', onError);
       current = s;
       buf = '';
       current.on('data', onData);
+      current.on('error', onError);
     },
   };
 }
@@ -147,7 +159,10 @@ export async function sendMail(
     ].join('\r\n');
     socket.write(`${headers}\r\n\r\n${dataSection(mail.text)}\r\n.\r\n`);
     await expect(250, 'message accept');
+    // Wait for the goodbye tolerantly: the message is already accepted, and a
+    // relay that resets instead of answering QUIT changes nothing.
     send('QUIT');
+    await readReply(reader.read).catch(() => { /* accepted above - done */ });
   } finally {
     socket.destroy();
   }
