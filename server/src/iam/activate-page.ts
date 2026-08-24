@@ -30,19 +30,19 @@ const SHELL_STYLE = `
   a { color: inherit; }
 `;
 
-function page(instanceName: string, body: string): string {
+function page(instanceName: string, body: string, heading = 'Connect a device'): string {
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<title>Connect a device - ${esc(instanceName)}</title>
+<title>${esc(heading)} - ${esc(instanceName)}</title>
 <style>${SHELL_STYLE}</style>
 </head>
 <body>
 <main>
-<h1>Connect a device</h1>
+<h1>${esc(heading)}</h1>
 <p class="muted">${esc(instanceName)}</p>
 ${body}
 </main>
@@ -77,6 +77,21 @@ ${known ? `<p class="muted">Asking: <span class="tag">${esc(opts.clientTag ?? 'u
 </div>
 </form>
 </div>`);
+}
+
+/** The IdP chooser (plans/36 §3): served by /api/auth/login when several
+ *  houses are configured and none was named. Script-free like everything on
+ *  this page; the buttons are ordinary links carrying ?idp= + returnTo, so
+ *  the OSS shell's gate and the console gate get multi-IdP with zero client
+ *  changes - their one sign-in link simply arrives here first. */
+export function idpChooserHtml(instanceName: string, entries: Array<{ href: string; label: string }>): string {
+  const buttons = entries.map((e) =>
+    `<p style="margin:.5rem 0"><a href="${esc(e.href)}" style="display:inline-flex;align-items:center;justify-content:center;min-width:16rem;padding:9px 18px;border-radius:8px;border:1px solid color-mix(in srgb, CanvasText 30%, transparent);text-decoration:none">${esc(e.label)}</a></p>`).join('\n');
+  return page(instanceName, `
+<div class="card">
+<p>Choose where you sign in.</p>
+${buttons}
+</div>`, 'Sign in');
 }
 
 export function activateDoneHtml(instanceName: string, outcome: 'approved' | 'denied' | 'unknown'): string {

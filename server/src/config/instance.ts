@@ -116,6 +116,14 @@ export interface InstanceConfig {
      *  "Keycloak", "SUSE ID", "ZITADEL". Any OIDC issuer works (open and
      *  sovereign providers first-class); absent → the console says "SSO". */
     displayName: string;
+    /** Further IdPs beside the primary (plans/36 §3) - a migration in flight,
+     *  a subsidiary on its own house. The primary stays exactly what it was:
+     *  its subs are raw, its SCIM linkage untouched. An additional IdP's subs
+     *  are namespaced `<id>:<sub>` so two issuers handing out the same bare
+     *  sub can never collide into one row. With several IdPs configured,
+     *  /api/auth/login with no ?idp= serves a script-free chooser - the OSS
+     *  gate and the console gate grow multiple buttons with zero client work. */
+    additional: AdditionalIdp[];
   };
   policy: {
     defaultAccessMode: 'open' | 'gated' | 'per-tool';
@@ -236,6 +244,21 @@ export interface RateLimitConfig {
   link: RateLimitSurfaceConfig;
 }
 
+/** One further IdP beside the primary (plans/36 §3). `id` is the slug the
+ *  login URL and the sub namespace carry ('primary' is reserved). The
+ *  confidential client secret rides the env var `clientSecretRef` names - the
+ *  provider-credentialRef precedent - and is absent for public/PKCE clients. */
+export interface AdditionalIdp {
+  id: string;
+  issuer: string;
+  clientId: string;
+  /** Required: the chooser button must say which house. */
+  displayName: string;
+  groupsClaim: string;
+  claimMap: ClaimMap;
+  clientSecretRef?: string;
+}
+
 export interface Secrets {
   session: string;
   link: string;
@@ -275,6 +298,7 @@ const DEFAULTS: InstanceConfig = {
     groupsClaim: 'groups',
     claimMap: { firstname: 'given_name', lastname: 'family_name', email: 'email', title: 'title' },
     displayName: '',
+    additional: [],
   },
   policy: {
     defaultAccessMode: 'gated',
@@ -338,6 +362,25 @@ export function parseConfig(json: string): InstanceConfig {
   for (const k of ['telemetryDays', 'auditDays'] as const) {
     const v = cfg.policy.retention[k];
     if (!Number.isInteger(v) || v < 0) throw new Error(`invalid policy.retention.${k}: ${v} (days, 0 = keep forever)`);
+  }
+  // Additional IdPs (plans/36 §3): defaults applied, then validated hard - a
+  // half-described issuer would fail at sign-in, in front of the person.
+  if (!Array.isArray(cfg.idp.additional)) throw new Error('idp.additional must be a list');
+  const idpIds = new Set<string>();
+  for (const a of cfg.idp.additional) {
+    if (!a.id || !/^[a-z0-9][a-z0-9-]*$/.test(a.id)) throw new Error(`invalid idp.additional id: ${a.id} (lowercase slug)`);
+    if (a.id === 'primary' || a.id === 'dev') throw new Error(`idp.additional id "${a.id}" is reserved`);
+    if (idpIds.has(a.id)) throw new Error(`duplicate idp.additional id: ${a.id}`);
+    idpIds.add(a.id);
+    if (!cfg.idp.issuer) throw new Error('idp.additional needs the primary idp.issuer configured first');
+    if (!a.issuer || typeof a.issuer !== 'string') throw new Error(`idp.additional "${a.id}" needs an issuer`);
+    if (!a.clientId) throw new Error(`idp.additional "${a.id}" needs a clientId`);
+    if (!a.displayName) throw new Error(`idp.additional "${a.id}" needs a displayName - the chooser button must say which house`);
+    if (a.clientSecretRef !== undefined && !/^[A-Z][A-Z0-9_]*$/.test(a.clientSecretRef)) {
+      throw new Error(`idp.additional "${a.id}" clientSecretRef must name an env var (UPPER_SNAKE)`);
+    }
+    a.groupsClaim = a.groupsClaim || cfg.idp.groupsClaim;
+    a.claimMap = { ...cfg.idp.claimMap, ...(a.claimMap ?? {}) };
   }
   const smtp = cfg.notify.smtp;
   if (smtp) {

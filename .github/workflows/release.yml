@@ -12,6 +12,9 @@ on:
 permissions:
   contents: read
   packages: write
+  # cosign keyless signing exchanges the workflow's OIDC identity for a
+  # short-lived certificate - no key to store, nothing to leak (plans/36 §4).
+  id-token: write
 
 jobs:
   server-image:
@@ -37,12 +40,28 @@ jobs:
       # (ghcr.io/lolly-tools/lolly-work-server) under the lolly-tools org, and
       # the chart's empty image.tag defaults to appVersion — kept in sync with
       # package.json "version", so `helm install` pulls exactly this build.
-      - name: Build and push (amd64 + arm64)
+      - name: Build and push (amd64 + arm64, with SBOM + provenance attestations)
         run: |
           IMAGE="ghcr.io/${{ github.repository_owner }}/lolly-work-server"
           VERSION="${GITHUB_REF_NAME#v}"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           docker buildx build --platform linux/amd64,linux/arm64 \
+            --provenance=mode=max --sbom=true \
             -f deploy/compose/Dockerfile -t "$IMAGE:$VERSION" -t "$IMAGE:latest" --push .
+
+      # Keyless signature over the pushed manifest digest - verifiable against
+      # this workflow's identity, no signing key anywhere:
+      #   cosign verify "$IMAGE:<version>" \
+      #     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+      #     --certificate-identity-regexp 'github.com/.+/lolly-work/\.github/workflows/release\.yml@.*'
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign the image (keyless)
+        env:
+          COSIGN_YES: "true"
+        run: |
+          DIGEST=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{ printf "%s" .Manifest.Digest }}')
+          cosign sign "$IMAGE@$DIGEST"
 
   render-worker-image:
     name: render-worker image
@@ -64,9 +83,21 @@ jobs:
       # deploy/helm/values.yaml renderWorker.image.repository already points at
       # ghcr.io/lolly-tools/lolly-work-render-worker, which matches this under
       # the lolly-tools org.
-      - name: Build and push (amd64 + arm64)
+      - name: Build and push (amd64 + arm64, with SBOM + provenance attestations)
         run: |
           IMAGE="ghcr.io/${{ github.repository_owner }}/lolly-work-render-worker"
           VERSION="${GITHUB_REF_NAME#v}"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           docker buildx build --platform linux/amd64,linux/arm64 \
+            --provenance=mode=max --sbom=true \
             -t "$IMAGE:$VERSION" -t "$IMAGE:latest" --push workers/render
+
+      # Same keyless signature as the server image - one verify recipe covers both.
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign the image (keyless)
+        env:
+          COSIGN_YES: "true"
+        run: |
+          DIGEST=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{ printf "%s" .Manifest.Digest }}')
+          cosign sign "$IMAGE@$DIGEST"

@@ -33,6 +33,7 @@ governance module **stops boot**. `LW_ALLOW_STALE_SHELL=1` downgrades it to a wa
 | `displayName` | `""` | human name on the sign-in button ("Keycloak", "SUSE ID", "ZITADEL"). Empty ⇒ "SSO" |
 | `groupsClaim` | `groups` | the claim carrying group membership |
 | `claimMap` | `given_name` / `family_name` / `email` / `title` | which claims fill firstname, lastname, email, title |
+| `additional` | `[]` | further IdPs beside the primary - each `{ id, issuer, clientId, displayName, groupsClaim?, claimMap?, clientSecretRef? }`. Unset claims inherit the primary's; the secret rides the env var `clientSecretRef` names; subs store namespaced `<id>:<sub>`. With several houses, plain `/api/auth/login` serves a chooser. See [identity](identity.md#more-than-one-idp) |
 
 Gated access needs `idp.issuer` - or `dev.enabled` for local work. The server refuses to
 start otherwise. See [identity](identity.md).

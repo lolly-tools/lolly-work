@@ -236,6 +236,22 @@ web shell is not served (the demo landing at `/` stands in), and **no real WebSo
 (the Rooms panel shows mock rooms; live editing is the sovereign Helm deploy's ws gateway - 
 see `deploy/vercel/WS-SPIKE.md`). Live at **lolly.work**; runbook: `deploy/vercel/README.md`.
 
+## Verifying the images
+
+Release images (`v*` tags) are signed keylessly in CI and carry SBOM + provenance
+attestations. Verification needs no key of ours - the signature binds to the release
+workflow's own identity:
+
+```bash
+cosign verify ghcr.io/lolly-tools/lolly-work-server:<version> \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp 'github.com/.+/lolly-work/\.github/workflows/release\.yml@.*'
+```
+
+The same recipe covers `lolly-work-render-worker`. A cluster can enforce this at admission
+(Kyverno/Sigstore policy controller) so an unsigned or re-tagged image never schedules.
+The source SBOM (`sbom.cdx.json`) stays in the repo beside the per-image attestations.
+
 ## Air-gap
 
 Nothing in the serving path reaches the internet unless you configure a catalog provider

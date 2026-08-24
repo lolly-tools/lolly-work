@@ -42,6 +42,33 @@ the org user record through `claimMap`.
 Routes: `GET /api/auth/config` (what the sign-in screen needs), `GET /api/auth/login`,
 `GET /api/auth/callback`, `GET /api/auth/session`, `POST /api/auth/logout`.
 
+### More than one IdP
+
+A migration in flight, or a subsidiary on its own house: `idp.additional` lists further
+issuers beside the primary (plans/36) -
+
+```json
+"idp": {
+  "issuer": "https://id.example.com/realms/main", "clientId": "lolly-work", "displayName": "Example ID",
+  "additional": [{
+    "id": "subsidiary", "issuer": "https://login.subsidiary.example", "clientId": "lolly",
+    "displayName": "Subsidiary SSO", "groupsClaim": "roles", "clientSecretRef": "LW_IDP_SECRET_SUBSIDIARY"
+  }]
+}
+```
+
+Each entry carries its own client, display name, and (optionally) its own `groupsClaim`
+and `claimMap` - unset ones inherit the primary's. A confidential secret rides the env
+var `clientSecretRef` names; omit it for a public/PKCE client. With several houses
+configured, plain `/api/auth/login` serves a script-free **chooser page**, so every
+existing sign-in link (the console gate, the OSS shell's gate) grows the buttons with no
+client change; `?idp=<id>` picks one directly, and `/api/auth/config` +
+`GET /api/v1/instance` list `providers` for clients that render their own. The IdP that
+STARTS a flow finishes it - the id rides the signed state token - and an additional
+house's subs are stored namespaced (`<id>:<sub>`), so two issuers handing out the same
+bare sub can never collide into one row. The primary's subs stay raw: existing rows and
+the SCIM `externalId` linkage are untouched.
+
 ## The dev provider
 
 `dev.enabled: true` plus a `dev.users` list enables `GET /api/auth/dev?email=…`: a

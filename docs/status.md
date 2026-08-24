@@ -72,9 +72,12 @@ The mechanism is built (`/api/v1/audit/head`, `lw audit head`, optional boot/int
 logging). Nothing schedules it, and Postgres carries no append-only constraint - so head
 publishing *is* the truncation defence and needs to become routine. See [audit](audit.md).
 
-### 3. No published container image
-The image builds in CI, but nothing publishes it yet, so a Helm install still requires you to
-build and push. `image.repository`/`tag` must be set deliberately.
+### 3. Container image: publish wired and signed, first tagged release pending
+The release workflow builds and pushes both images (server, render-worker) to GHCR on a
+`v*` tag, multi-arch, with SBOM + provenance attestations and a keyless cosign signature
+over each manifest digest (verify recipe in [deployment](deployment.md#verifying-the-images)).
+Until a release tag is pushed under this setup, a Helm install still requires you to build
+and push; `image.repository`/`tag` must be set deliberately.
 
 ### 4. Shell delivery on Kubernetes
 Serving the web shell needs a built dist on a volume you populate; brand-pack delivery is
@@ -124,8 +127,9 @@ The community gate is worth restating, because it is the test of the brand-agnos
 
 ## Next three things worth doing
 
-1. **Publish the container image** from CI and pin it in the chart - the last packaging step
-   between "builds" and "installable".
+1. **Push a release tag** so the wired publish-and-sign workflow produces the first signed
+   images, then pin them in the chart - the last packaging step between "builds" and
+   "installable".
 2. **Make audit-head anchoring routine** (a scheduled commit or sink) so the truncation
    defence is real and not merely available.
 3. **Automate the engine re-pin** cadence, with the bridge-contract version check as the gate.

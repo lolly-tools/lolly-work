@@ -28,7 +28,7 @@ import {
 import { buildAuthorizeUrl, discover, exchangeCode, mapClaims, pkcePair, verifyIdToken } from '../iam/oidc.ts';
 import { displayName, resolveMember } from '../iam/member.ts';
 import { createDeviceAuth, normalizeUserCode } from '../iam/device-auth.ts';
-import { activateDoneHtml, activateFormHtml, activateSignedOutHtml } from '../iam/activate-page.ts';
+import { activateDoneHtml, activateFormHtml, activateSignedOutHtml, idpChooserHtml } from '../iam/activate-page.ts';
 import { PACK_BLOB_ID, PACK_META_BLOB_ID, PACK_MAX_BYTES, inspectInstancePack, type InstancePackMeta } from '../catalog/instance-pack.ts';
 import { readBlobBody } from '../blobs/types.ts';
 import { createNotifier } from '../notify/notify.ts';
@@ -350,8 +350,50 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       // Docs view (see console/app.js publicMode) instead of the sign-in gate.
       // Mirrors the server-side `docsReadable` gate below, so the two never drift.
       publicDocs: config.dev.enabled,
+      // One entry per configured house (plans/36 §3) - a client that wants its
+      // own buttons renders these; one that follows loginPath arrives at the
+      // chooser when several exist, which needs no client change at all.
+      providers: idpProviders(),
     });
   });
+
+  // ── IdP resolution (plans/36 §3) ──────────────────────────────────────────
+  // 'primary' (or absent) is the idp block itself, untouched semantics and raw
+  // subs; an additional IdP namespaces its subs `<id>:<sub>` so two issuers
+  // handing out the same bare sub can never collide into one row. Confidential
+  // secrets ride the env var the ref names - the provider-credentialRef
+  // precedent (see the config-managed provider credential resolution below).
+  interface ResolvedIdp {
+    id: string; issuer: string; clientId: string; displayName: string;
+    groupsClaim: string; claimMap: typeof config.idp.claimMap; clientSecret?: string; subPrefix: string;
+  }
+  const resolveIdp = (raw: string | null): ResolvedIdp | null => {
+    if (!raw || raw === 'primary') {
+      if (!config.idp.issuer) return null;
+      return {
+        id: 'primary', issuer: config.idp.issuer, clientId: config.idp.clientId,
+        displayName: config.idp.displayName, groupsClaim: config.idp.groupsClaim,
+        claimMap: config.idp.claimMap,
+        ...(secrets.idpClientSecret ? { clientSecret: secrets.idpClientSecret } : {}),
+        subPrefix: '',
+      };
+    }
+    const extra = config.idp.additional.find((a) => a.id === raw);
+    if (!extra) return null;
+    const secret = extra.clientSecretRef ? process.env[extra.clientSecretRef] : undefined;
+    return {
+      id: extra.id, issuer: extra.issuer, clientId: extra.clientId,
+      displayName: extra.displayName, groupsClaim: extra.groupsClaim, claimMap: extra.claimMap,
+      ...(secret ? { clientSecret: secret } : {}),
+      subPrefix: `${extra.id}:`,
+    };
+  };
+  /** What /api/auth/config and the manifest advertise - one entry per house. */
+  const idpProviders = (): Array<{ id: string; name: string; loginPath: string }> =>
+    !config.idp.issuer ? [] : [
+      { id: 'primary', name: config.idp.displayName || 'SSO', loginPath: '/api/auth/login?idp=primary' },
+      ...config.idp.additional.map((a) => ({ id: a.id, name: a.displayName, loginPath: `/api/auth/login?idp=${a.id}` })),
+    ];
 
   // ── instance manifest (plans/34 wave 1a) ──────────────────────────────────
   // The card a fresh app-store shell reads before anyone signs in: what this
@@ -375,6 +417,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       // Statically true today; stated so an older deploy (whose manifest lacks
       // a key) and a newer one read differently to the same probe.
       capabilities: { catalog: true, collab: true, submit: true, scim: true },
+      providers: idpProviders(),
       // Present only while a pack is hosted (plans/34 wave 2). The URL itself
       // may still ask for a session on a gated instance.
       ...(packHosted ? { connect: { packUrl: `${config.instance.baseUrl}/connect/pack.lolly` } } : {}),
@@ -383,14 +426,32 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
 
   router.add('GET', '/api/auth/login', async (_req, res, ctx) => {
     if (!config.idp.issuer) return sendError(res, 404, 'NO_IDP', 'no OIDC issuer configured');
-    const disco = await discover(config.idp.issuer, fetchImpl);
+    const wanted = ctx.url.searchParams.get('idp');
+    // Several houses, none named: the script-free chooser (plans/36 §3). The
+    // returnTo rides each button, so the choice costs nothing downstream.
+    if (!wanted && config.idp.additional.length) {
+      const returnTo = ctx.url.searchParams.get('returnTo');
+      const carry = returnTo ? `&returnTo=${encodeURIComponent(returnTo)}` : '';
+      res.writeHead(200, {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'private, no-store',
+        'x-content-type-options': 'nosniff',
+        'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+      });
+      res.end(idpChooserHtml(config.instance.name,
+        idpProviders().map((p) => ({ href: `${p.loginPath}${carry}`, label: `Sign in with ${p.name}` }))));
+      return;
+    }
+    const idp = resolveIdp(wanted);
+    if (!idp) return sendError(res, 404, 'NO_IDP', `no IdP named "${wanted}" is configured`);
+    const disco = await discover(idp.issuer, fetchImpl);
     const { verifier, challenge } = pkcePair();
     const nonce = randomId(12);
     const state = randomId(12);
-    const stateToken = mintToken('lw/state', { returnTo: returnToSafe(ctx.url.searchParams.get('returnTo')), verifier, nonce, state }, secrets.session, 600);
+    const stateToken = mintToken('lw/state', { returnTo: returnToSafe(ctx.url.searchParams.get('returnTo')), verifier, nonce, state, idp: idp.id }, secrets.session, 600);
     const authorize = buildAuthorizeUrl({
       authorizationEndpoint: disco.authorization_endpoint,
-      clientId: config.idp.clientId,
+      clientId: idp.clientId,
       redirectUri: `${config.instance.baseUrl}/api/auth/callback`,
       state, nonce, codeChallenge: challenge,
     });
@@ -406,34 +467,41 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const cookies = req.headers.cookie ?? '';
     const stateCookie = /(?:^|;\s*)lw_state=([^;]+)/.exec(cookies)?.[1];
     const box = stateCookie
-      ? verifyToken<{ returnTo: string; verifier: string; nonce: string; state: string }>('lw/state', stateCookie, sessionVerify)
+      ? verifyToken<{ returnTo: string; verifier: string; nonce: string; state: string; idp?: string }>('lw/state', stateCookie, sessionVerify)
       : null;
     if (!box || box.state !== ctx.url.searchParams.get('state')) {
       return sendError(res, 400, 'BAD_STATE', 'login state missing or mismatched — restart sign-in');
     }
+    // The SAME house that started the flow finishes it - the id rides the
+    // signed state token, so a crafted callback cannot cross issuers. A token
+    // from before multi-IdP carries no id and reads as primary.
+    const idp = resolveIdp(box.idp ?? 'primary');
+    if (!idp) return sendError(res, 400, 'BAD_STATE', 'the IdP that started this sign-in is no longer configured');
     const code = ctx.url.searchParams.get('code');
     if (!code) return sendError(res, 400, 'NO_CODE', 'IdP returned no authorization code');
-    const disco = await discover(config.idp.issuer, fetchImpl);
+    const disco = await discover(idp.issuer, fetchImpl);
     const tokens = await exchangeCode({
       tokenEndpoint: disco.token_endpoint,
       code, verifier: box.verifier,
-      clientId: config.idp.clientId,
-      ...(secrets.idpClientSecret ? { clientSecret: secrets.idpClientSecret } : {}),
+      clientId: idp.clientId,
+      ...(idp.clientSecret ? { clientSecret: idp.clientSecret } : {}),
       redirectUri: `${config.instance.baseUrl}/api/auth/callback`,
       fetchImpl,
     });
     if (!tokens.id_token) return sendError(res, 502, 'NO_ID_TOKEN', 'IdP returned no id_token');
     const jwks = (await (await fetchImpl(disco.jwks_uri)).json()) as { keys: [] };
     const claims = await verifyIdToken(tokens.id_token, jwks, {
-      issuer: disco.issuer, clientId: config.idp.clientId, nonce: box.nonce,
+      issuer: disco.issuer, clientId: idp.clientId, nonce: box.nonce,
     });
-    const identity = mapClaims(claims, config.idp.claimMap, config.idp.groupsClaim);
+    const identity = mapClaims(claims, idp.claimMap, idp.groupsClaim);
+    // The namespace prefix (empty for primary) keeps two issuers' subs apart.
+    identity.sub = `${idp.subPrefix}${identity.sub}`;
     const user = await store.upsertUserBySub({ ...identity, role: roleFromGroups(identity.groups) });
     const sessionUser: SessionUser = {
       sub: user.sub, email: user.email, groups: user.groups, role: user.role,
       name: displayName(user), epoch: user.sessionEpoch,
     };
-    await audit(`user:${user.id}`, 'auth.login', 'session', { provider: 'oidc' });
+    await audit(`user:${user.id}`, 'auth.login', 'session', { provider: 'oidc', idp: idp.id });
     res.writeHead(302, {
       location: box.returnTo,
       'set-cookie': [

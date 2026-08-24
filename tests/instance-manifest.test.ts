@@ -44,13 +44,14 @@ test('the manifest answers without a session and carries exactly the declared ke
   const res = await fetch(`${base}/api/v1/instance`);
   assert.equal(res.status, 200);
   const body = (await res.json()) as Record<string, unknown>;
-  assert.deepEqual(Object.keys(body).sort(), ['accessMode', 'capabilities', 'engineVersion', 'loginPath', 'name', 'provider', 'providerName'].sort());
+  assert.deepEqual(Object.keys(body).sort(), ['accessMode', 'capabilities', 'engineVersion', 'loginPath', 'name', 'provider', 'providerName', 'providers'].sort());
   assert.equal(body.name, 'Manifest Hub');
   assert.equal(body.accessMode, 'gated'); // the config default - the test config sets no override
   assert.equal(body.provider, 'dev');
   assert.equal(body.providerName, null);
   assert.equal(body.loginPath, '/api/auth/dev');
   assert.deepEqual(body.capabilities, { catalog: true, collab: true, submit: true, scim: true });
+  assert.deepEqual((body as { providers: unknown }).providers, [], 'no OIDC issuer means no provider entries');
 });
 
 test('engineVersion is the vendored pin, read off engine-pin.json itself', async () => {
