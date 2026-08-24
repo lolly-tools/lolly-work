@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-import type { InstanceConfig, Secrets } from '../config/instance.ts';
+import { linkKeys, sessionKeys, type InstanceConfig, type Secrets } from '../config/instance.ts';
 import type { ProjectRecord, ScimTokenRecord, SessionRecord, Store, UserRecord } from '../store/types.ts';
 import type { RoomSnapshot } from '../collab/rooms.ts';
 import type { NearbyRegistry } from '../collab/nearby.ts';
@@ -205,14 +205,19 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     return intact;
   };
 
+  // Dual-key rotation (plans/35 wave 4): every VERIFY path takes the key
+  // list (current, then previous); every mint keeps the plain current secret.
+  const sessionVerify = sessionKeys(secrets);
+  const linkVerify = linkKeys(secrets);
+
   const principalOf = (req: IncomingMessage): Principal | null =>
-    readPrincipal(req.headers.cookie, secrets.session);
+    readPrincipal(req.headers.cookie, sessionVerify);
 
   // Shared with the collab ws gateway (server/src/iam/member.ts), which must
   // authenticate an `upgrade` request with byte-identical semantics - including
   // the disabled-account and pre-epoch-token refusals.
   const memberOf = (req: IncomingMessage): Promise<UserRecord | null> =>
-    resolveMember(store, req.headers.cookie, secrets.session);
+    resolveMember(store, req.headers.cookie, sessionVerify);
 
   const audit = (actor: string, action: string, subject: string, payload?: Record<string, unknown>) =>
     store.appendAudit({ at: new Date().toISOString(), actor, action, subject, ...(payload ? { payload } : {}) });
@@ -398,7 +403,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const cookies = req.headers.cookie ?? '';
     const stateCookie = /(?:^|;\s*)lw_state=([^;]+)/.exec(cookies)?.[1];
     const box = stateCookie
-      ? verifyToken<{ returnTo: string; verifier: string; nonce: string; state: string }>('lw/state', stateCookie, secrets.session)
+      ? verifyToken<{ returnTo: string; verifier: string; nonce: string; state: string }>('lw/state', stateCookie, sessionVerify)
       : null;
     if (!box || box.state !== ctx.url.searchParams.get('state')) {
       return sendError(res, 400, 'BAD_STATE', 'login state missing or mismatched — restart sign-in');
@@ -550,7 +555,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   router.add('GET', '/activate', async (req, res, ctx) => {
     const html = await (async () => {
       if (!deviceAuth) return activateDoneHtml(config.instance.name, 'unknown');
-      const me = await resolveMember(store, req.headers.cookie, secrets.session);
+      const me = await resolveMember(store, req.headers.cookie, sessionVerify);
       if (!me) return activateSignedOutHtml(config.instance.name, loginPathFor('/activate') ?? '/');
       const code = ctx.url.searchParams.get('code') ?? '';
       const pend = code ? deviceAuth.describe(code) : null;
@@ -567,7 +572,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   router.add('POST', '/activate', async (req, res) => {
     const render = (html: string): void => { res.writeHead(200, activateHeaders); res.end(html); };
     if (!deviceAuth) return render(activateDoneHtml(config.instance.name, 'unknown'));
-    const me = await resolveMember(store, req.headers.cookie, secrets.session);
+    const me = await resolveMember(store, req.headers.cookie, sessionVerify);
     if (!me) return render(activateSignedOutHtml(config.instance.name, loginPathFor('/activate') ?? '/'));
     const form = new URLSearchParams(await readRaw(req, 4096).then((b) => b.toString('utf8')).catch(() => ''));
     const code = form.get('code') ?? '';
@@ -867,7 +872,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const sig = ctx.url.searchParams.get('s') ?? '';
     const pw = ctx.url.searchParams.get('pw');
     const passwordOk = link.pwHash ? (pw !== null && verifyPassword(pw, link.pwHash)) : true;
-    const status = checkLink(link, sig, secrets.link, { passwordOk });
+    const status = checkLink(link, sig, linkVerify, { passwordOk });
     if (status === 'bad-signature') return sendError(res, 403, 'BAD_SIGNATURE', 'link signature invalid');
     if (status === 'expired') return sendError(res, 410, 'LINK_EXPIRED', 'this link has expired');
     if (status === 'revoked') return sendError(res, 410, 'LINK_REVOKED', 'this link was revoked');
@@ -1117,7 +1122,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // instance serves the pack publicly; anything else asks for a member
     // session. The pack holds no secrets, but it does hold the brand.
     if (config.policy.defaultAccessMode !== 'open') {
-      const me = await resolveMember(store, req.headers.cookie, secrets.session);
+      const me = await resolveMember(store, req.headers.cookie, sessionVerify);
       if (!me) return sendError(res, 401, 'UNAUTHORIZED', 'sign in to download the instance pack');
     }
     const blob = await blobs.get(PACK_BLOB_ID);
@@ -5529,7 +5534,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // and no phone-home anywhere. Fire-and-forget like the histogram.
     const installId = client?.extra?.install;
     if (client && installId && installId.length <= 64) {
-      void resolveMember(store, req.headers.cookie, secrets.session)
+      void resolveMember(store, req.headers.cookie, sessionVerify)
         .then((u) => (u ? store.upsertInstall(installId, client, u.id) : undefined))
         .catch(() => {});
     }

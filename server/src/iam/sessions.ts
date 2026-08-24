@@ -91,7 +91,7 @@ export function mintGuestCookie(guest: GuestSession, secret: string, secure: boo
 }
 
 /** Member session wins when both cookies are present. Returns null when neither verifies. */
-export function readPrincipal(cookieHeader: string | undefined, secret: string): Principal | null {
+export function readPrincipal(cookieHeader: string | undefined, secret: string | readonly string[]): Principal | null {
   const cookies = parseCookies(cookieHeader);
   const session = cookies[SESSION_COOKIE];
   if (session) {

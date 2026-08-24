@@ -47,8 +47,8 @@ The render cache is per-process (an in-process LRU). Replicas simply warm indepe
 
 | Secret | Rotation cost |
 |---|---|
-| `LW_SESSION_SECRET` | forced global logout - there is no dual-key window today |
-| `LW_LINK_SECRET` | every outstanding signed link stops verifying |
+| `LW_SESSION_SECRET` | none inside the window: deploy the new value with `LW_SESSION_SECRET_PREVIOUS=<old>`, then drop PREVIOUS once the longest session TTL has passed. Verification accepts both; every new session signs with current |
+| `LW_LINK_SECRET` | none inside the window: same two-step recipe with `LW_LINK_SECRET_PREVIOUS`. Keep PREVIOUS as long as your longest-lived outstanding links (embed links default to 90 days), then drop it - links signed under the old key die at that moment, not before |
 | `LW_CREDENTIAL_SECRET` | stored provider credentials can no longer be unsealed; re-enter them |
 | `LW_METRICS_TOKEN` | update the scraper |
 | `LW_RENDER_WORKER_SECRET` | rotate app and worker together |

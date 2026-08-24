@@ -210,7 +210,9 @@ are startup errors. See [catalog](catalog.md).
 | Var | When | What |
 |---|---|---|
 | `LW_SESSION_SECRET` | required in prod | member/guest/state token HMAC key |
+| `LW_SESSION_SECRET_PREVIOUS` | during a rotation | verification accepts it beside the current key; minting never uses it. Drop after the longest session TTL |
 | `LW_LINK_SECRET` | required in prod | link signature key |
+| `LW_LINK_SECRET_PREVIOUS` | during a rotation | same window contract for outstanding signed links |
 | `LW_IDP_CLIENT_SECRET` | if your IdP issues one | OIDC confidential client secret |
 | `LW_CREDENTIAL_SECRET` | once a provider credential is stored | master key sealing credentials at rest (AES-256-GCM) |
 | `LW_METRICS_TOKEN` | to scrape remotely | bearer token for `/metrics`. Unset ⇒ loopback-only |

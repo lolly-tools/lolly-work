@@ -25,7 +25,7 @@ import { readPrincipal } from './sessions.ts';
 export async function resolveMember(
   store: Store,
   cookieHeader: string | undefined,
-  sessionSecret: string,
+  sessionSecret: string | readonly string[],
 ): Promise<UserRecord | null> {
   const p = readPrincipal(cookieHeader, sessionSecret);
   if (p?.kind !== 'member') return null;

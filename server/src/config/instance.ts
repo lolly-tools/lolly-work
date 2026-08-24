@@ -239,6 +239,12 @@ export interface RateLimitConfig {
 export interface Secrets {
   session: string;
   link: string;
+  /** Dual-key rotation (plans/35 wave 4): verification accepts the previous
+   *  key beside the current one; minting always uses current. Rotation is two
+   *  deploys - add PREVIOUS with the new current, later drop PREVIOUS - with
+   *  no forced logout and no dead links inside the window. */
+  sessionPrevious?: string;
+  linkPrevious?: string;
   idpClientSecret?: string;
   /** SMTP relay password - required only when notify.smtp names a user. */
   smtpPassword?: string;
@@ -427,6 +433,17 @@ export function parseAutoMigrate(env: NodeJS.ProcessEnv = process.env): boolean 
   return !['0', 'false', 'off', 'no', ''].includes(v.trim().toLowerCase());
 }
 
+/** The session VERIFICATION key list: current first, previous (rotation
+ *  window) second. Minting never uses this - it always signs current. */
+export function sessionKeys(s: Secrets): readonly string[] {
+  return s.sessionPrevious ? [s.session, s.sessionPrevious] : [s.session];
+}
+
+/** The link verification key list - same contract as sessionKeys. */
+export function linkKeys(s: Secrets): readonly string[] {
+  return s.linkPrevious ? [s.link, s.linkPrevious] : [s.link];
+}
+
 export function loadSecrets(env = process.env): Secrets {
   const prod = env.NODE_ENV === 'production';
   const need = (name: string): string => {
@@ -436,6 +453,8 @@ export function loadSecrets(env = process.env): Secrets {
     return `dev-only-${randomId(8)}`; // ephemeral: dev sessions die on restart, which is correct
   };
   const secrets: Secrets = { session: need('LW_SESSION_SECRET'), link: need('LW_LINK_SECRET') };
+  if (env.LW_SESSION_SECRET_PREVIOUS) secrets.sessionPrevious = env.LW_SESSION_SECRET_PREVIOUS;
+  if (env.LW_LINK_SECRET_PREVIOUS) secrets.linkPrevious = env.LW_LINK_SECRET_PREVIOUS;
   if (env.LW_IDP_CLIENT_SECRET) secrets.idpClientSecret = env.LW_IDP_CLIENT_SECRET;
   // Not `need()`: only required once a db-managed provider credential is stored,
   // enforced where sealing happens so credential-free instances need no key.

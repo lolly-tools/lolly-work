@@ -100,11 +100,14 @@ export type LinkStatus = 'ok' | 'expired' | 'revoked' | 'bad-signature' | 'passw
 export function checkLink(
   link: LinkRecord,
   sig: string,
-  secret: string,
+  secret: string | readonly string[],
   opts: { now?: number; passwordOk?: boolean } = {},
 ): LinkStatus {
   const now = opts.now ?? Date.now();
-  if (!macEquals(sig, signLink(link, secret))) return 'bad-signature';
+  // Dual-key rotation (plans/35 wave 4): a link signed under the previous key
+  // keeps resolving through the rotation window; minting always signs current.
+  const keys = typeof secret === 'string' ? [secret] : secret;
+  if (!keys.some((k) => macEquals(sig, signLink(link, k)))) return 'bad-signature';
   if (link.exp * 1000 <= now) return 'expired';
   if (link.revokedAt) return 'revoked';
   if (link.pwHash && !opts.passwordOk) return 'password-required';

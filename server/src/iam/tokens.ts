@@ -23,12 +23,15 @@ export function mintToken<T>(typ: TokenDomain, payload: T, secret: string, ttlSe
 }
 
 /** Verify signature + domain + expiry. Returns the payload or null - never throws on bad input. */
-export function verifyToken<T>(typ: TokenDomain, token: string, secret: string, now = Date.now()): T | null {
+export function verifyToken<T>(typ: TokenDomain, token: string, secret: string | readonly string[], now = Date.now()): T | null {
   const dot = token.lastIndexOf('.');
   if (dot <= 0) return null;
   const body = token.slice(0, dot);
   const sig = token.slice(dot + 1);
-  if (!macEquals(sig, hmac(`${typ}.${body}`, secret))) return null;
+  // Dual-key rotation (plans/35 wave 4): verification accepts current-then-
+  // previous; minting always uses current. A list of one is the ordinary case.
+  const keys = typeof secret === 'string' ? [secret] : secret;
+  if (!keys.some((k) => macEquals(sig, hmac(`${typ}.${body}`, k)))) return null;
   let box: TokenBox<T>;
   try {
     box = JSON.parse(b64uDecode(body).toString('utf8')) as TokenBox<T>;

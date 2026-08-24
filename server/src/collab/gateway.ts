@@ -92,7 +92,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { isCompatibleOpVersion, CANVAS_OP_VERSION } from '@lolly-tools/core/canvas-op-v1';
 import type { BoxRow, CanvasOp, GeometryField, OpOrigin, ParamValue, Scalar } from '@lolly-tools/core/canvas-op-v1';
 
-import type { InstanceConfig, Secrets } from '../config/instance.ts';
+import { sessionKeys, type InstanceConfig, type Secrets } from '../config/instance.ts';
 import type { ProjectRecord, SessionRecord, Store, UserRecord } from '../store/types.ts';
 import { displayName, resolveMember } from '../iam/member.ts';
 import { guestActor, readPrincipal, type GuestSession } from '../iam/sessions.ts';
@@ -610,6 +610,8 @@ interface SeatCommon {
 
 export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
   const { config, store, secrets } = deps;
+  // Dual-key rotation (plans/35 wave 4): verification takes the key list.
+  const sessionVerify = sessionKeys(secrets);
   const pingIntervalMs = deps.pingIntervalMs ?? PING_INTERVAL_MS;
   // The room owns its document; persistence owns the snapshot cadence, the
   // quiesce→revision write, and crash recovery (persistence.ts, plans/14 §6).
@@ -721,7 +723,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
   const authorizeMemberOps = async (ctx: Admitted): Promise<OpsAuthz | null> => {
     const { id: sessionId, projectId, toolId } = ctx.session;
     const [user, overlays, grants, inputs, session, project] = await Promise.all([
-      resolveMember(store, ctx.cookie, secrets.session),
+      resolveMember(store, ctx.cookie, sessionVerify),
       store.listOverlays(),
       store.listGrants(),
       readToolInputs(config.instance.pack, toolId),
@@ -796,7 +798,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
     // The instance-wide kill switch. An operator who turns guest links off has
     // turned them off for the sockets already open too, not merely for minting.
     if (!config.policy.guestLinks.enabled) return null;
-    const principal = readPrincipal(cookie, secrets.session);
+    const principal = readPrincipal(cookie, sessionVerify);
     if (principal?.kind !== 'guest' || principal.guest.linkId !== linkId) return null;
     if (!link) return null;
     return guestSeatOf(link, principal.guest, sessionId);
@@ -861,7 +863,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
       return (await guestInviterStanding(seat.link)) !== null;
     }
     const [user, grants, session, project] = await Promise.all([
-      resolveMember(store, ctx.cookie, secrets.session),
+      resolveMember(store, ctx.cookie, sessionVerify),
       store.listGrants(),
       store.getSession(sessionId),
       store.getProject(projectId),
@@ -1006,11 +1008,11 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
     //    before any member-shaped gate runs; `readPrincipal` prefers a member
     //    cookie when both are present, exactly as every HTTP route does, so a
     //    signed-in user with a stale guest cookie is still judged as a member.
-    const who = readPrincipal(req.headers.cookie, secrets.session);
+    const who = readPrincipal(req.headers.cookie, sessionVerify);
     if (!who) return refuse(socket, 401, 'UNAUTHORIZED');
     if (who.kind === 'guest') return admitGuest(req, socket, head, sessionId, who.guest);
 
-    const user = await resolveMember(store, req.headers.cookie, secrets.session);
+    const user = await resolveMember(store, req.headers.cookie, sessionVerify);
     if (!user) return refuse(socket, 401, 'UNAUTHORIZED');
 
     // 1b. the connection ceilings, applied BEFORE the store reads the read gate
