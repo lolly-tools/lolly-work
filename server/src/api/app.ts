@@ -32,6 +32,7 @@ import { activateDoneHtml, activateFormHtml, activateSignedOutHtml } from '../ia
 import { PACK_BLOB_ID, PACK_META_BLOB_ID, PACK_MAX_BYTES, inspectInstancePack, type InstancePackMeta } from '../catalog/instance-pack.ts';
 import { readBlobBody } from '../blobs/types.ts';
 import { createNotifier } from '../notify/notify.ts';
+import { SERVICE_TOKEN_PREFIX, TOKEN_ROLES, hashServiceSecret, mintServiceSecret, serviceAccountFor } from '../iam/service-tokens.ts';
 import { bearerFromHeader, hashScimSecret, mintScimSecret } from '../scim/tokens.ts';
 import {
   applyMemberOps, groupToScim, parseGroupPatch, parseScimFilter, parseUserCreate, parseUserPatch,
@@ -312,6 +313,13 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       { name: 'lw_process_resident_memory_bytes', help: 'Resident set size in bytes.', type: 'gauge', value: process.memoryUsage().rss },
       { name: 'lw_rate_limit_buckets', help: 'Live per-IP rate-limit buckets in memory.', type: 'gauge', value: limiter.size() },
     ];
+    // SIEM delivery lag (plans/35 wave 2): head seq minus confirmed cursor.
+    // Emitted only when forwarding is configured, so an alert on it means
+    // something and the gauge's very existence documents the wiring.
+    if (config.siem.url) {
+      const [head, cursor] = await Promise.all([auditHead(store), store.getSiemCursor()]);
+      gauges.push({ name: 'lw_siem_lag', help: 'Audit events not yet confirmed by the SIEM receiver.', type: 'gauge', value: Math.max(0, head.seq - cursor) });
+    }
     for (const p of await store.listProviders()) {
       gauges.push({ name: 'lw_provider_enabled', help: 'Catalog provider enabled (1) or disabled (0).', type: 'gauge', labels: { provider: p.id, kind: p.kind }, value: p.enabled ? 1 : 0 });
       gauges.push({ name: 'lw_provider_assets', help: 'Assets last synced from a catalog provider.', type: 'gauge', labels: { provider: p.id }, value: p.state?.assetCount ?? 0 });
@@ -925,8 +933,22 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   });
 
   // ── admin API (the console and the CLI share these routes) ───────────────
+  // Service-token resolution (plans/35 wave 2): a Bearer lwt_* on the
+  // Authorization header resolves to the token's synthetic principal. Only the
+  // ACTION-GATED surface accepts one - the member workflow routes (approvals,
+  // submit, collab, telemetry consent) stay human, because those flows mean "a
+  // person decided", and a token impersonating that would launder authorship.
+  const serviceAccountOf = async (req: IncomingMessage): Promise<UserRecord | null> => {
+    const bearer = bearerFromHeader(req.headers.authorization);
+    if (!bearer || !bearer.startsWith(SERVICE_TOKEN_PREFIX)) return null;
+    const rec = await store.findApiTokenByHash(hashServiceSecret(bearer));
+    if (!rec || rec.revokedAt) return null;
+    void store.touchApiToken(rec.id, new Date().toISOString());
+    return serviceAccountFor(rec);
+  };
+
   const requireAction = async (req: IncomingMessage, res: ServerResponse, action: string): Promise<UserRecord | null> => {
-    const user = await memberOf(req);
+    const user = (await memberOf(req)) ?? (await serviceAccountOf(req));
     if (!user) {
       sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
       return null;
@@ -938,6 +960,45 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
     return user;
   };
+
+  // ── service tokens (plans/35 wave 2) ──────────────────────────────────────
+  const tokenWire = (t: { id: string; label: string; role: string; createdBy: string; createdAt: string; lastUsedAt?: string; revokedAt?: string }) =>
+    ({ id: t.id, label: t.label, role: t.role, createdBy: t.createdBy, createdAt: t.createdAt, lastUsedAt: t.lastUsedAt ?? null, revokedAt: t.revokedAt ?? null });
+
+  router.add('POST', '/api/v1/tokens', async (req, res) => {
+    const actor = await requireAction(req, res, 'token.manage');
+    if (!actor) return;
+    const body = (await readJson(req)) as { label?: unknown; role?: unknown } | null;
+    const label = typeof body?.label === 'string' ? body.label.trim().slice(0, 80) : '';
+    if (!label) return sendError(res, 400, 'INVALID_INPUT', 'label required - name the automation, not a person');
+    if (typeof body?.role !== 'string' || !TOKEN_ROLES.includes(body.role)) {
+      return sendError(res, 400, 'INVALID_INPUT', `role must be one of: ${TOKEN_ROLES.join(', ')}`);
+    }
+    const { secret, tokenHash } = mintServiceSecret();
+    const rec = {
+      id: `tok_${randomId(8)}`, label, role: body.role, tokenHash,
+      createdBy: `user:${actor.id}`, createdAt: new Date().toISOString(),
+    };
+    await store.putApiToken(rec);
+    await audit(`user:${actor.id}`, 'token.create', `token:${rec.id}`, { label, role: body.role });
+    // The one and only time the secret exists in a response.
+    sendJson(res, 201, { ...tokenWire(rec), token: secret });
+  });
+
+  router.add('GET', '/api/v1/tokens', async (req, res) => {
+    if (!(await requireAction(req, res, 'token.manage'))) return;
+    sendJson(res, 200, { tokens: (await store.listApiTokens()).map(tokenWire) });
+  });
+
+  router.add('DELETE', '/api/v1/tokens/:id', async (req, res, ctx) => {
+    const actor = await requireAction(req, res, 'token.manage');
+    if (!actor) return;
+    if (!(await store.revokeApiToken(ctx.params.id!, new Date().toISOString()))) {
+      return sendError(res, 404, 'NOT_FOUND', 'no such live token');
+    }
+    await audit(`user:${actor.id}`, 'token.revoke', `token:${ctx.params.id}`);
+    sendJson(res, 200, { ok: true });
+  });
 
   router.add('GET', '/api/v1/fleet', async (req, res) => {
     if (!(await requireAction(req, res, 'fleet.view'))) return;
@@ -3695,7 +3756,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // authorize EACH change from the diff (owner-only grants need the owner role,
   // so import can't escalate) → dryRun returns the diff, else commit + one audit.
   router.add('POST', '/api/v1/config/apply', async (req, res, ctx) => {
-    const user = await memberOf(req);
+    // Accepts a service token (plans/35 wave 2): apply is THE CI verb, it is
+    // not a personal workflow, and it action-checks every mutation below via
+    // the same evaluator a session goes through.
+    const user = (await memberOf(req)) ?? (await serviceAccountOf(req));
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const dryRun = ctx.url.searchParams.get('dryRun') === '1';
     const prune = ctx.url.searchParams.get('prune') === '1';

@@ -169,7 +169,8 @@ test('migration 0022 follows 0021, is the ceiling, and keeps the covenant in sch
   const at = files.indexOf('0022_fleet_installs.sql');
   assert.ok(at > 0, '0022 is on disk');
   assert.equal(files[at - 1], '0021_scim.sql', '0022 follows 0021 with nothing between');
-  assert.equal(files.at(-1), '0022_fleet_installs.sql', 'the install registry holds the migration ceiling');
+  // The ceiling assertion moved with the ceiling: tests/siem.test.ts owns it
+  // now (0024, plans/35 wave 2).
   const sql = await readFile(join(dir, '0022_fleet_installs.sql'), 'utf8');
   assert.match(sql, /create table fleet_installs/);
   assert.match(sql, /install_id\s+text primary key/);

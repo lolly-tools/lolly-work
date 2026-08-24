@@ -27,9 +27,23 @@ import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderFragment, ProviderKind, ProviderRecord } from '../catalog/providers/types.ts';
 import {
   SESSION_REVISION_LIMIT, effectiveGroups,
-  type CollabSnapshot, type FleetRow, type InstallRow, type ListUsersPageOpts, type LocalGroupRecord, type ProjectRecord,
+  type ApiTokenRecord, type CollabSnapshot, type FleetRow, type InstallRow, type ListUsersPageOpts, type LocalGroupRecord, type ProjectRecord,
   type ScimTokenRecord, type SessionRecord, type SessionRevision, type Store, type SubmitQuotaRow, type UserRecord,
 } from './types.ts';
+
+/** One api_tokens row → record (plans/35 wave 2). */
+function apiTokenFromRow(r: Record<string, unknown>): ApiTokenRecord {
+  return {
+    id: r.id as string,
+    label: r.label as string,
+    role: r.role as string,
+    tokenHash: r.token_hash as string,
+    createdBy: r.created_by as string,
+    createdAt: new Date(r.created_at as string).toISOString(),
+    ...(r.last_used_at ? { lastUsedAt: new Date(r.last_used_at as string).toISOString() } : {}),
+    ...(r.revoked_at ? { revokedAt: new Date(r.revoked_at as string).toISOString() } : {}),
+  };
+}
 
 /** One fleet_installs row → record (plans/34 wave 3). */
 function installRow(r: Record<string, unknown>): InstallRow {
@@ -364,6 +378,33 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       return (rowCount ?? 0) > 0;
     },
 
+    // Service tokens (plans/35 wave 2) - the SCIM block's shapes, one row kind over.
+    async putApiToken(rec) {
+      await pool.query(
+        `insert into api_tokens (id, label, role, token_hash, created_by, created_at, last_used_at, revoked_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8)
+         on conflict (id) do update set label = excluded.label, last_used_at = excluded.last_used_at, revoked_at = excluded.revoked_at`,
+        [rec.id, rec.label, rec.role, rec.tokenHash, rec.createdBy, rec.createdAt, rec.lastUsedAt ?? null, rec.revokedAt ?? null],
+      );
+    },
+    async listApiTokens() {
+      const { rows } = await pool.query('select * from api_tokens order by created_at desc');
+      return rows.map(apiTokenFromRow);
+    },
+    async findApiTokenByHash(tokenHash) {
+      const { rows } = await pool.query('select * from api_tokens where token_hash = $1', [tokenHash]);
+      return rows[0] ? apiTokenFromRow(rows[0]) : null;
+    },
+    async touchApiToken(id, at) {
+      await pool.query('update api_tokens set last_used_at = $2 where id = $1', [id, at]);
+    },
+    async revokeApiToken(id, at) {
+      const { rowCount } = await pool.query(
+        'update api_tokens set revoked_at = $2 where id = $1 and revoked_at is null', [id, at],
+      );
+      return (rowCount ?? 0) > 0;
+    },
+
     async listGrants() {
       const { rows } = await pool.query('select principal, action, resource, effect from grants');
       return rows as unknown as Grant[];
@@ -495,6 +536,30 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       } finally {
         client.release();
       }
+    },
+    async listAuditAfter(after, limit) {
+      const { rows } = await pool.query('select * from audit_log where seq > $1 order by seq asc limit $2', [after, limit]);
+      return rows.map((r) => ({
+        seq: Number(r.seq),
+        at: new Date(r.at as string).toISOString(),
+        actor: r.actor as string,
+        action: r.action as string,
+        subject: r.subject as string,
+        ...(r.payload ? { payload: r.payload as Record<string, unknown> } : {}),
+        prevHash: r.prev_hash as string,
+        hash: r.hash as string,
+      }));
+    },
+    async getSiemCursor() {
+      const { rows } = await pool.query('select seq from siem_cursor where id = 1');
+      return rows[0] ? Number(rows[0].seq) : 0;
+    },
+    async setSiemCursor(seq) {
+      await pool.query(
+        `insert into siem_cursor (id, seq) values (1, $1)
+         on conflict (id) do update set seq = $1, updated_at = now()`,
+        [seq],
+      );
     },
     async listAudit() {
       const { rows } = await pool.query('select * from audit_log order by seq asc');

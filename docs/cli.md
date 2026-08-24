@@ -52,6 +52,19 @@ The pack is cut in the OSS repo (`node scripts/build-instance-pack.ts --brand <n
 points anywhere else. An unsigned pack is hosted but labelled dev-only - a key-pinned
 app build will refuse it.
 
+## Service tokens
+
+```bash
+lw tokens create --label ci --role admin    # owner; the secret prints once - store it now
+lw tokens                                   # list (label, role, last used, revoked)
+lw tokens revoke <id>
+LW_TOKEN=lwt_… lw export --out governance.json    # any command, authenticated as the automation
+```
+
+A token outranks a stored session cookie when both are present - automation acts as the
+automation, never as whoever last signed in on the machine. Tokens drive the action-gated
+API (export/apply, providers, fleet, audit); the member-workflow commands refuse them.
+
 ## Governance
 
 ```bash

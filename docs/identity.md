@@ -112,6 +112,20 @@ The secret is stored only as its sha256, so a leaked database yields hashes, not
 tokens. **SAML is not implemented**, and does not need to be: Keycloak (which id.suse.com
 runs) bridges a SAML-only IdP to the OIDC this already speaks.
 
+## Service tokens
+
+Automation identity (plans/35): CI running `lw export`/`lw apply`, a
+governance-drift check, an audit poller. Until these existed, automation had to
+carry a person's session cookie in a secret store - the thing IT policy rightly
+forbids. A token is minted by an owner (`lw tokens create --label ci --role
+admin`), shown once, stored as a hash, and revoked with one command; presenting
+it resolves to a synthetic principal with the token's role and no groups, so
+the RBAC evaluator, grants and the audit trail treat it exactly like a person -
+there is no second authorization model. Tokens work on the action-gated
+API and are refused on the member-workflow routes (approvals, submissions,
+collab): those flows mean "a person decided". Authenticate the CLI with
+`LW_TOKEN=<token>` or `--token`.
+
 ## Offboarding, disable and revocation
 
 ```

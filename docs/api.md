@@ -128,6 +128,22 @@ Config-managed providers reject mutations with `409 CONFIG_MANAGED`.
 | `PUT /api/v1/users/:id/local-groups` | `grant.edit` |
 | `POST /api/v1/users/:id/disabled` | `grant.edit` |
 
+## Service tokens
+
+| Route | Action | Notes |
+|---|---|---|
+| `POST /api/v1/tokens` | `token.manage` (**owner**) | mint; the secret (`lwt_…`) appears in this response and never again |
+| `GET /api/v1/tokens` | `token.manage` (**owner**) | list with last-used and revocation state - never secrets |
+| `DELETE /api/v1/tokens/:id` | `token.manage` (**owner**) | revoke; the very next use gets `401` |
+
+A minted token rides `Authorization: Bearer lwt_…` and resolves to a synthetic
+principal carrying the token's role (no groups) - RBAC, grants and audit see it
+like any member (`user:svc_<id>` actor). It works on the **action-gated**
+surface (fleet, providers, governance export/apply, audit, telemetry summary);
+the member-workflow routes (approvals, submit, collab) refuse it - those flows
+mean "a person decided", and a token deciding would launder authorship. See
+[identity](identity.md#service-tokens).
+
 ## SCIM provisioning
 
 Admin (cookie, owner-only) mints the bearer; the protocol half is what the IdP calls with it.

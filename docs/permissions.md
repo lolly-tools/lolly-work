@@ -22,7 +22,7 @@ anything up: a resource arrives as the set of selectors it satisfies (e.g.
 | `author` | group `author` | member + `catalog.submit` |
 | `approver` | group `approver` | member + `approval.act` |
 | `admin` | group `admin` | author ∪ approver + `catalog.publish`, `catalog.expire`, `catalog.hold`, `catalog.scan`, `catalog.edit`, `catalog.collection.manage`, `catalog.provider.read`, `catalog.provider.manage`, `brand.switch`, `catalog.injectable.manage`, `policy.edit`, `grant.edit`, `link.revoke`, `link.create-guest`, `message.send`, `telemetry.view`, `fleet.view`, `fleet.manage`, `audit.export`, `project.manage`, `project.archive`, `approval.assign`, `export.server` |
-| `owner` | group `owner` | admin + `instance.config`, `catalog.provider.credential`, `catalog.provider.publish`, `scim.manage` |
+| `owner` | group `owner` | admin + `instance.config`, `catalog.provider.credential`, `catalog.provider.publish`, `scim.manage`, `token.manage` |
 | `guest` | a guest-edit link | **nothing** - access is entirely link-scoped grants |
 
 Role comes from the effective group set (IdP ∪ local groups): the highest of `owner`,

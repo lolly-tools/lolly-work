@@ -179,6 +179,20 @@ can never fail or slow a request. What gets sent, and to whom, is written up in
 | `smtp.user` | *unset* | AUTH PLAIN user; the password rides `LW_SMTP_PASSWORD`, never this file |
 | `webhook.url` | *unset* | one JSON POST per event, signed with `LW_WEBHOOK_SECRET` (required - an unsigned webhook is refused at boot) |
 
+## `siem`
+
+Audit events pushed to the org's own receiver in signed batches (plans/35). `url` absent
+(the default) means off. Loss-free by construction: the audit log is the outbox, a durable
+cursor records the highest seq the receiver confirmed, and a refused batch replays whole.
+Long-lived server only - on a serverless deploy, poll `GET /api/v1/audit` with a service
+token instead. Delivery lag is the `lw_siem_lag` gauge on `/metrics`.
+
+| Key | Default | What it does |
+|---|---|---|
+| `url` | *unset* | the receiver; batches POST as JSON signed with `LW_SIEM_SECRET` (same header scheme as notify webhooks) |
+| `batchSize` | `200` | events per POST (1-1000) |
+| `intervalSeconds` | `30` | forwarding cadence (>= 5) |
+
 ## `catalogProviders`
 
 Deploy-time (GitOps / air-gap) provider entries, upserted at boot as `managedBy: 'config'`
@@ -200,6 +214,7 @@ are startup errors. See [catalog](catalog.md).
 | `LW_METRICS_TOKEN` | to scrape remotely | bearer token for `/metrics`. Unset ⇒ loopback-only |
 | `LW_SMTP_PASSWORD` | with `notify.smtp.user` | the relay password (AUTH PLAIN) |
 | `LW_WEBHOOK_SECRET` | with `notify.webhook` | HMAC key signing every outbound webhook event |
+| `LW_SIEM_SECRET` | with `siem.url` | HMAC key signing every forwarded audit batch |
 | `LW_RENDER_WORKER_SECRET` | with a render worker | shared HMAC key; must match the worker |
 | `LW_C2PA_SIGNING_KEY` | to sign exports | PKCS#8 private-key PEM |
 | `LW_BLOBS_S3_CREDENTIAL` | with `blobs.driver: s3` | `<accessKeyId>:<secretAccessKey>` for the blob bucket |

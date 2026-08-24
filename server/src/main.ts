@@ -17,6 +17,7 @@ import { buildApp } from './api/app.ts';
 import { createCollabGateway } from './collab/gateway.ts';
 import { createNearbyRegistry } from './collab/nearby.ts';
 import { createDeviceAuthRegistry } from './iam/device-auth.ts';
+import { createSiemForwarder } from './observability/siem.ts';
 import { auditHead } from './audit/head.ts';
 import { checkShellDist } from './lib/shell-dist.ts';
 import { existsSync, readFileSync } from 'node:fs';
@@ -138,6 +139,18 @@ const logAuditHead = async () => {
 if (config.audit.headLog.onBoot) await logAuditHead();
 if (config.audit.headLog.intervalMinutes > 0) {
   setInterval(() => void logAuditHead(), config.audit.headLog.intervalMinutes * 60_000).unref();
+}
+
+// SIEM forwarding (plans/35 wave 2): audit events pushed to the org's receiver
+// in signed batches, replayed from the durable cursor on any failure. Long-
+// lived server only, same reasoning as nearby - a function instance has no
+// place to keep the loop (the growing lw_siem_lag gauge says so out loud, and
+// a service token polling GET /api/v1/audit is the supported path there).
+if (config.siem.url) {
+  const siem = createSiemForwarder({ config, secrets, store });
+  await siem.tick();
+  siem.start();
+  console.log(`[lolly-work] siem forwarding to ${config.siem.url} every ${config.siem.intervalSeconds}s`);
 }
 
 const port = Number(process.env.PORT ?? 8787);

@@ -177,6 +177,28 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.equal((await store.listInstalls()).some((i) => i.installId === 'ins_1'), false, 'forget is a row delete');
   await store.forgetInstall('ins_1'); // idempotent
 
+  // service tokens (plans/35 wave 2): hash lookup, touch, revoke-once
+  await store.putApiToken({ id: 'tok_1', label: 'ci', role: 'admin', tokenHash: 'hash-a', createdBy: 'user:u1', createdAt: new Date().toISOString() });
+  assert.equal((await store.findApiTokenByHash('hash-a'))?.label, 'ci');
+  assert.equal(await store.findApiTokenByHash('nope'), null);
+  await store.touchApiToken('tok_1', '2026-08-24T12:00:00.000Z');
+  assert.equal((await store.listApiTokens()).find((t) => t.id === 'tok_1')?.lastUsedAt, '2026-08-24T12:00:00.000Z');
+  assert.equal(await store.revokeApiToken('tok_1', '2026-08-24T13:00:00.000Z'), true);
+  assert.equal(await store.revokeApiToken('tok_1', '2026-08-24T13:00:00.000Z'), false, 'a revoked token revokes once');
+  assert.ok((await store.findApiTokenByHash('hash-a'))?.revokedAt, 'revoked rows are returned, callers refuse them');
+
+  // SIEM cursor + windowed audit reads (plans/35 wave 2)
+  assert.equal(await store.getSiemCursor(), 0, 'no deliveries yet reads as zero');
+  const allAudit = await store.listAudit();
+  const lastSeq = allAudit[allAudit.length - 1]?.seq ?? 0;
+  assert.ok(lastSeq > 0, 'earlier sections appended audit rows');
+  const windowed = await store.listAuditAfter(0, 2);
+  assert.equal(windowed.length, 2);
+  assert.ok((windowed[1] as { seq: number }).seq > (windowed[0] as { seq: number }).seq, 'ascending');
+  assert.deepEqual(await store.listAuditAfter(lastSeq, 10), [], 'past the head is empty');
+  await store.setSiemCursor(lastSeq);
+  assert.equal(await store.getSiemCursor(), lastSeq);
+
   // approvals: chain round-trip + approval round-trip with created_by / state / eligibleGroups filters
   const brandChain: Chain = {
     id: 'brand-review', name: 'Brand review',

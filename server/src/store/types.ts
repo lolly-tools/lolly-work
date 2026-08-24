@@ -71,6 +71,26 @@ export interface ScimTokenRecord {
   revokedAt?: string;
 }
 
+/** A service token (plans/35 wave 2) - automation identity, the SCIM-token
+ *  pattern generalized. Presenting the secret resolves to a synthetic
+ *  principal carrying `role` (no groups), so CI drives the action-gated API
+ *  without a person's session cookie in a secret store. */
+export interface ApiTokenRecord {
+  id: string;
+  /** Operator label ("ci", "governance-sync") - names the automation, never a person. */
+  label: string;
+  /** The role the synthetic principal carries; the evaluator owns the vocabulary. */
+  role: string;
+  /** sha256 hex of the opaque secret - never the secret itself. */
+  tokenHash: string;
+  /** 'user:<id>' who minted it. */
+  createdBy: string;
+  createdAt: string;
+  lastUsedAt?: string;
+  /** Set on revoke; a revoked token is kept so its trail survives. */
+  revokedAt?: string;
+}
+
 /** The upsert input carries the IdP-authoritative groups as `groups`; the store
  *  reinterprets them as idpGroups, preserves stored localGroups, and derives the
  *  effective union + role. So callers never construct the split themselves. */
@@ -258,6 +278,13 @@ export interface Store {
   /** Set `revokedAt`; returns false when there is no such live token to revoke. */
   revokeScimToken(id: string, at: string): Promise<boolean>;
 
+  // Service tokens (plans/35 wave 2) - same contract shapes as the SCIM set.
+  putApiToken(rec: ApiTokenRecord): Promise<void>;
+  listApiTokens(): Promise<ApiTokenRecord[]>;
+  findApiTokenByHash(tokenHash: string): Promise<ApiTokenRecord | null>;
+  touchApiToken(id: string, at: string): Promise<void>;
+  revokeApiToken(id: string, at: string): Promise<boolean>;
+
   // rbac / policy. Grants are identified by their full tuple (no exposed id):
   // put is idempotent on the exact tuple, delete removes every exact match.
   listGrants(): Promise<Grant[]>;
@@ -296,6 +323,12 @@ export interface Store {
   // audit
   appendAudit(body: AuditEventBody): Promise<AuditEvent>;
   listAudit(): Promise<AuditEvent[]>;
+  /** Events with seq > after, ascending, at most limit - the SIEM forwarder's
+   *  read (plans/35 wave 2), so forwarding never loads the whole log. */
+  listAuditAfter(after: number, limit: number): Promise<AuditEvent[]>;
+  /** The SIEM delivery cursor: the highest seq confirmed received (0 = none). */
+  getSiemCursor(): Promise<number>;
+  setSiemCursor(seq: number): Promise<void>;
 
   // telemetry
   putEvents(events: StoredEvent[]): Promise<void>;

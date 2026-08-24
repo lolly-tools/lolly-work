@@ -27,6 +27,8 @@ const OPTIONS = {
     base: { type: 'string' },
     email: { type: 'string' },
     cookie: { type: 'string' },
+    token: { type: 'string' },
+    role: { type: 'string' },
     all: { type: 'boolean' },
     title: { type: 'string' },
     body: { type: 'string' },
@@ -97,12 +99,16 @@ function savedCookie(): string | null {
 
 async function call(path: string, opts: { method?: string; body?: unknown } = {}): Promise<unknown> {
   const cookie = savedCookie();
+  // A service token (plans/35 wave 2) outranks a stored session: automation
+  // passing --token or LW_TOKEN means "act as the automation", never as
+  // whoever last signed in on this machine.
+  const bearer = values.token ?? process.env.LW_TOKEN;
   let res: Response;
   try {
     res = await fetch(`${base}${path}`, {
       method: opts.method ?? 'GET',
       headers: {
-        ...(cookie ? { cookie } : {}),
+        ...(bearer ? { authorization: `Bearer ${bearer}` } : cookie ? { cookie } : {}),
         ...(opts.body !== undefined ? { 'content-type': 'application/json' } : {}),
         'x-lolly-client': 'lw-cli engine/0',
       },
@@ -296,6 +302,36 @@ switch (cmd) {
       // drift-from-here rather than a bare version list.
       if (engineVersion) console.log(`this deploy serves engine ${engineVersion}`);
       for (const c of clients) console.log(`${String(c.count).padStart(6)}  ${c.bucket}  (last ${c.lastSeenAt})`);
+    }
+    break;
+  }
+
+  case 'tokens': {
+    // Service tokens (plans/35 wave 2): automation identity, owner-minted.
+    if (sub === 'create') {
+      const label = values.label ?? fail('usage: lw tokens create --label ci --role admin');
+      const role = values.role ?? fail('--role required (viewer|member|author|approver|admin|owner)');
+      const t = await call('/api/v1/tokens', { method: 'POST', body: { label, role } }) as { id: string; token: string; role: string };
+      out(t);
+      if (!values.json) {
+        console.log(`${t.id}  role ${t.role}`);
+        console.log(`token (shown once, store it now): ${t.token}`);
+        console.log('use it: LW_TOKEN=<token> lw … (or --token <token>)');
+      }
+      break;
+    }
+    if (sub === 'revoke') {
+      const id = positionals[2] ?? fail('usage: lw tokens revoke <id>');
+      await call(`/api/v1/tokens/${id}`, { method: 'DELETE' });
+      console.log(`revoked ${id}`);
+      break;
+    }
+    const { tokens } = await call('/api/v1/tokens') as {
+      tokens: Array<{ id: string; label: string; role: string; createdAt: string; lastUsedAt: string | null; revokedAt: string | null }>;
+    };
+    out(tokens);
+    if (!values.json) for (const t of tokens) {
+      console.log(`${t.id}  ${t.label}  role ${t.role}  ${t.revokedAt ? `REVOKED ${t.revokedAt}` : `last used ${t.lastUsedAt ?? 'never'}`}`);
     }
     break;
   }
@@ -1156,6 +1192,7 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   login --email <dev-user>   sign in via the dev provider
   login --cookie 'lw_session=…'   store a browser session
   whoami · summary · fleet · fleet installs · audit verify|head
+  tokens [create --label <l> --role <r> | revoke <id>]   service tokens for automation (LW_TOKEN / --token authenticates any command)
   instance                   the public instance manifest (what a fresh app reads)
   instance pack <file.lolly> host the signed instance pack cut by the OSS builder (owner)
   instance pack-rm           stop hosting the pack

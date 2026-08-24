@@ -220,6 +220,16 @@ Gauges worth alerting on:
 The Helm chart's ServiceMonitor needs `metricsToken`, because `/metrics` is loopback-only
 without one.
 
+## SIEM forwarding
+
+`siem.url` streams the audit log to your Splunk/Sentinel/collector as signed JSON batches -
+see [configuration](configuration.md#siem) for the block and the loss-free cursor design,
+and verify `x-lolly-signature` + `x-lolly-timestamp` receiver-side exactly as with notify
+webhooks. Alert on `lw_siem_lag` (events not yet confirmed): a healthy forwarder holds it
+near zero, a dead receiver grows it without losing anything, and on a serverless deploy -
+where the forwarding loop cannot run - a service token polling `GET /api/v1/audit` is the
+supported path.
+
 ## Upgrades
 
 1. Read the migration list in the release and run `npm run migrate:status` against production.

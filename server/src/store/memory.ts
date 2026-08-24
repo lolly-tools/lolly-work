@@ -22,7 +22,7 @@ import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderRecord } from '../catalog/providers/types.ts';
 import {
   SESSION_REVISION_LIMIT, effectiveGroups,
-  type CollabSnapshot, type FleetRow, type InstallRow, type LocalGroupRecord, type ProjectRecord, type ScimTokenRecord,
+  type ApiTokenRecord, type CollabSnapshot, type FleetRow, type InstallRow, type LocalGroupRecord, type ProjectRecord, type ScimTokenRecord,
   type SessionRecord, type SessionRevision, type Store, type SubmitQuotaRow, type UserRecord,
 } from './types.ts';
 
@@ -34,6 +34,8 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const users = new Map<string, UserRecord>(); // by sub
   const localGroups = new Map<string, LocalGroupRecord>(); // registry, by name
   const scimTokens = new Map<string, ScimTokenRecord>(); // SCIM provisioning bearers, by id
+  const apiTokens = new Map<string, ApiTokenRecord>(); // service tokens (plans/35), by id
+  let siemCursor = 0; // highest audit seq confirmed delivered to the SIEM receiver
   const grants: Grant[] = [...(seed?.grants ?? [])];
   const overlays = new Map<string, ToolOverlay>((seed?.overlays ?? []).map((o) => [o.toolId, o]));
   const flagGovernance = new Map<string, FlagGovernance>((seed?.flagGovernance ?? []).map((g) => [g.id, g]));
@@ -202,6 +204,27 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       return true;
     },
 
+    async putApiToken(rec) {
+      apiTokens.set(rec.id, { ...rec });
+    },
+    async listApiTokens() {
+      return [...apiTokens.values()].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+    },
+    async findApiTokenByHash(tokenHash) {
+      for (const t of apiTokens.values()) if (t.tokenHash === tokenHash) return { ...t };
+      return null;
+    },
+    async touchApiToken(id, at) {
+      const t = apiTokens.get(id);
+      if (t) apiTokens.set(id, { ...t, lastUsedAt: at });
+    },
+    async revokeApiToken(id, at) {
+      const t = apiTokens.get(id);
+      if (!t || t.revokedAt) return false;
+      apiTokens.set(id, { ...t, revokedAt: at });
+      return true;
+    },
+
     async listGrants() {
       return [...grants];
     },
@@ -271,6 +294,15 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     },
     async listAudit() {
       return [...audit];
+    },
+    async listAuditAfter(after, limit) {
+      return audit.filter((e) => e.seq > after).slice(0, limit);
+    },
+    async getSiemCursor() {
+      return siemCursor;
+    },
+    async setSiemCursor(seq) {
+      siemCursor = seq;
     },
 
     async putEvents(batch) {

@@ -213,6 +213,10 @@ export interface InstanceConfig {
     smtp?: { host: string; port: number; secure: boolean; from: string; user?: string };
     webhook?: { url: string };
   };
+  /** SIEM forwarding (plans/35 wave 2): audit events pushed to the org's own
+   *  receiver in signed batches, loss-free behind the siem_cursor. `url`
+   *  absent = off. Long-lived server only; the HMAC key rides LW_SIEM_SECRET. */
+  siem: { url?: string; batchSize: number; intervalSeconds: number };
   rateLimit: RateLimitConfig;
 }
 
@@ -238,6 +242,9 @@ export interface Secrets {
    *  (an unsigned webhook is refused at boot: the receiver could never tell a
    *  forgery from the instance). */
   webhook?: string;
+  /** HMAC key for SIEM batch signatures - required with siem.url, enforced
+   *  where the forwarder is built. */
+  siem?: string;
   /** Master key for sealed provider credentials - absent until the operator sets it. */
   credential?: string;
   /** Bearer token for /metrics. Absent ⇒ metrics are loopback-only (never public). */
@@ -282,6 +289,7 @@ const DEFAULTS: InstanceConfig = {
   catalogProviders: [],
   blobs: { driver: 'pg' },
   notify: {},
+  siem: { batchSize: 200, intervalSeconds: 30 },
   submit: {},
 };
 
@@ -328,6 +336,17 @@ export function parseConfig(json: string): InstanceConfig {
     let u: URL | null = null;
     try { u = new URL(cfg.notify.webhook.url); } catch { /* refused below */ }
     if (!u || !/^https?:$/.test(u.protocol)) throw new Error('notify.webhook.url must be an http(s) URL');
+  }
+  if (cfg.siem.url !== undefined) {
+    let u: URL | null = null;
+    try { u = new URL(cfg.siem.url); } catch { /* refused below */ }
+    if (!u || !/^https?:$/.test(u.protocol)) throw new Error('siem.url must be an http(s) URL');
+  }
+  if (!Number.isInteger(cfg.siem.batchSize) || cfg.siem.batchSize < 1 || cfg.siem.batchSize > 1000) {
+    throw new Error(`invalid siem.batchSize: ${cfg.siem.batchSize} (1-1000)`);
+  }
+  if (!Number.isInteger(cfg.siem.intervalSeconds) || cfg.siem.intervalSeconds < 5) {
+    throw new Error(`invalid siem.intervalSeconds: ${cfg.siem.intervalSeconds} (>= 5)`);
   }
   const wt = cfg.render.worker.timeoutMs;
   if (cfg.render.worker.url && (!Number.isFinite(wt) || wt <= 0)) throw new Error(`invalid render.worker.timeoutMs: ${wt}`);
@@ -418,6 +437,7 @@ export function loadSecrets(env = process.env): Secrets {
   // only when the matching notify block is configured, enforced at boot.
   if (env.LW_SMTP_PASSWORD) secrets.smtpPassword = env.LW_SMTP_PASSWORD;
   if (env.LW_WEBHOOK_SECRET) secrets.webhook = env.LW_WEBHOOK_SECRET;
+  if (env.LW_SIEM_SECRET) secrets.siem = env.LW_SIEM_SECRET;
   if (env.LW_RENDER_WORKER_SECRET) secrets.renderWorker = env.LW_RENDER_WORKER_SECRET;
   if (env.LW_C2PA_SIGNING_KEY) secrets.c2paSigningKey = env.LW_C2PA_SIGNING_KEY;
   return secrets;

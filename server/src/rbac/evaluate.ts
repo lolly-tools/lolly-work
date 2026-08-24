@@ -80,7 +80,10 @@ const ROLE_ACTIONS: Record<Role, string[]> = (() => {
   // `scim.manage` mints the bearer an IdP holds to create, disable and re-group
   // people at this instance - an identity-infrastructure credential, so it sits
   // with the other owner-only keys rather than with admin curation (plans/31 §8).
-  const owner = [...admin, 'instance.config', 'catalog.provider.credential', 'catalog.provider.publish', 'scim.manage'];
+  // `token.manage` (plans/35 wave 2) mints and revokes service tokens - an
+  // automation credential is in the same class as a SCIM bearer or a provider
+  // key, so it sits with them behind the owner.
+  const owner = [...admin, 'instance.config', 'catalog.provider.credential', 'catalog.provider.publish', 'scim.manage', 'token.manage'];
   // Guests get NOTHING by default - their access is entirely link-scoped grants.
   return { viewer, member, author, approver, admin, owner, guest: [] };
 })();
