@@ -87,9 +87,11 @@ profile) come from the open-source Lolly repo, which this repo never builds. To 
 clone it beside this one once:
 
 ```bash
-git clone https://github.com/lolly-tools/lolly.git ../lolly
-cd ../lolly && npm install && npm run build:web && cd -
+git clone --recurse-submodules https://github.com/lolly-tools/lolly.git ../lolly
+cd ../lolly && npm install && npm run build:web && cd -   # needs Node >=22.18 or >=24
 ```
+
+`--recurse-submodules` matters: the OSS tools and catalog are git submodules, so `npm install` there needs them present first, and `build:web` produces an empty catalog without them.
 
 Then re-run `npm run demo`. It looks for `$LOLLY_OSS_DIR`, then `../lolly`; the boot banner
 says which of the three states it found (no shell / stale shell / fresh shell). The console

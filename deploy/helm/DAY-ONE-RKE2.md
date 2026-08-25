@@ -75,13 +75,13 @@ blind" line was validated without a cluster; day one is the short list after it.
 
 ## Images
 
-Published by `release.yml` on the `v0.1.1` tag (2026-08-11 — v0.1.0 existed for minutes
-before its own first CI run caught a HIGH advisory in the production tree; 0.1.1 is the
-clean build, use nothing older):
-`ghcr.io/lolly-tools/lolly-work-server:0.1.1` and
-`ghcr.io/lolly-tools/lolly-work-render-worker:0.1.1`. The chart's empty
-`image.tag`/`renderWorker.image.tag` default to `appVersion` (= `0.1.1`), so a plain
-install pulls exactly these. If the GHCR packages are private in your org, add an
+Published by `release.yml` on the `v0.2.0` tag (2026-08-14), multi-arch, SBOM- and
+provenance-attested and cosign-signed:
+`ghcr.io/lolly-tools/lolly-work-server:0.2.0` and
+`ghcr.io/lolly-tools/lolly-work-render-worker:0.2.0`. The chart's empty
+`image.tag`/`renderWorker.image.tag` default to `appVersion` (= `0.2.0`, kept in step with
+`package.json`), so a plain install pulls exactly these. Bump both together and re-tag before
+launch so the runbook keeps pulling the latest signed build. If the GHCR packages are private in your org, add an
 `imagePullSecret` (or mirror into the SUSE registry — preferable air-gap posture anyway).
 
 ## What only the cluster can prove

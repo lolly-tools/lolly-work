@@ -894,7 +894,16 @@ async function main(): Promise<void> {
   // panel is empty; demoRooms() stands in for the gateway's live-room registry.
   const app = buildApp({ config, store, secrets, listCollabRooms: () => demoRooms(seeded) });
   const server = createServer((req, res) => void app(req, res));
-  await new Promise<void>((resolve) => server.listen(port, () => resolve()));
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', (err: NodeJS.ErrnoException) => {
+      if (err.code === 'EADDRINUSE') {
+        console.error(`\n  Port ${port} is already in use (another demo or dev server?).\n  Pick another port:  PORT=${port + 1} npm run demo\n`);
+        process.exit(1);
+      }
+      reject(err);
+    });
+    server.listen(port, () => resolve());
+  });
 
   const http = await seedViaHttp(baseUrl);
 
@@ -916,7 +925,7 @@ ${line}
         ? 'FRESH → gated: the shell shows the sign-in gate + governance UX.'
         : 'STALE → open: the shipped shell loads catalog + renders; rebuild the'}
     ${!dist.present
-      ? '(git clone https://github.com/lolly-tools/lolly.git ../lolly; npm install && npm run build:web) to get the web shell at /.'
+      ? '(git clone --recurse-submodules https://github.com/lolly-tools/lolly.git ../lolly; npm install && npm run build:web) to get the web shell at /.'
       : dist.fresh ? '' : 'shell (npm run build:web in ../lolly) to demo the employee governance UX.'}
 
   Sign in (dev provider — click a link, no password):

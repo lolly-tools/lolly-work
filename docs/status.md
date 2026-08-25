@@ -88,11 +88,15 @@ likewise bring-your-own (`pack.type` defaults to `none`). The stale-dist boot gu
 wrong path now fails loudly instead of quietly un-governing employees, which is the
 improvement - not a substitute for a delivery pipeline.
 
-### 5. Engine pin drift
+### 5. Engine pin drift (refuses 4 tools on the server render plane)
 The vendored engine is pinned and pin-verified (`@lolly/engine@1.146.0`), but it now lags OSS
-HEAD (`1.152.0` - six additive minors) and re-pinning is manual. The gap is still safe (minors
-are additive-only under the HostV1 contract), but an automated re-pin cadence, gated on the
-bridge-contract version check, is wanted before it turns into a mismatch.
+HEAD (`1.152.0`). This is no longer only theoretical: four shipped tools declare
+`engineVersion >=1.150.0` (`audiogram`, `captions`, `record`, `top-tail-recorder`), so the
+1.146 render plane **refuses** them on the server path (`loadTool` enforces the range). They
+still render on-device in the shell; only hosted/link/embed renders fail. Re-pin the vendored
+engine to the current OSS release (>=1.150) before launch - `npm run repin-engine -- --apply`
+from a clean OSS checkout - and add an automated re-pin cadence plus a pack engine-range
+preflight, so this drift can never ship silently again.
 
 ### 6. Postgres leg depends on CI
 The Postgres driver only runs under `LW_TEST_DATABASE_URL`. CI now provides one, so this is
