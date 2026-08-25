@@ -500,7 +500,13 @@ export function loadSecrets(env = process.env): Secrets {
   const need = (name: string): string => {
     const v = env[name];
     if (v) return v;
-    if (prod) throw new Error(`${name} is required in production`);
+    if (prod) {
+      throw new Error(
+        `${name} is required in production. Generate one with \`openssl rand -hex 32\` and set it ` +
+          `in the environment (container/compose, the systemd unit, or your secrets manager) - ` +
+          `never in instance.json. See docs/install.md and SECURITY.md.`,
+      );
+    }
     return `dev-only-${randomId(8)}`; // ephemeral: dev sessions die on restart, which is correct
   };
   const secrets: Secrets = { session: need('LW_SESSION_SECRET'), link: need('LW_LINK_SECRET') };
