@@ -147,21 +147,28 @@ cookie - the in-shell governance UX won't activate here; use `npm run demo` for 
 
 | Done (tested) | Pending (planned, in order) |
 |---|---|
-| Deployment config + secrets, OIDC login (discovery/PKCE/JWKS-verified), dev provider, member+guest sessions with domain-separated tokens | Chromium worker tier (hooked/HTML-heavy tools; fast path refuses them by default - `render.allowHooksInFastPath` is the curated-pack interim) |
+| Deployment config + secrets, OIDC login (discovery/PKCE/JWKS-verified), dev provider, member+guest sessions with domain-separated tokens | ✓ **Chromium worker tier shipped** - deployable `workers/render` image, built + cosign-signed in `release.yml`; the fast path still refuses hooked/HTML-heavy tools by default (`render.allowHooksInFastPath` is the curated-pack interim), and the tier is not wired on the Vercel demo |
 | **Render plane v1** - fourth HostV1 shell: real engine via file:-linked `@lolly/engine` (interim until the publish pipeline), jsdom fast path, svg+png (resvg), policy-checked (`INPUT_LOCKED`, locked values baked), LRU + ETag, share/embed/download links serve bytes, brick-pattern PREVIEW watermark | Engine publish pipeline in the OSS repo (replaces the file: links) |
-| RBAC evaluator (roles + grants, deny-wins), tool overlays (editable/choice/locked/hidden, hidden = absent), org-config payload with ETag + SUSE profile-lock defaults | Catalog channels/expiry sweeps |
+| RBAC evaluator (roles + grants, deny-wins), tool overlays (editable/choice/locked/hidden, hidden = absent), org-config payload with ETag + SUSE profile-lock defaults | Catalog channels (staged distribution) - lifecycle/expiry sweeps have shipped |
 | Links: mint/verify/expire/revoke, passwords (scrypt), guest-edit admission flow with TTL caps | Sessions/projects sync |
-| Catalog serving from the pack mount, per-caller visibility filtering | Vercel trial: **scaffolded** (`api/` + `vercel.json` + `deploy/vercel/README.md`) - project creation + deploy pending |
+| Catalog serving from the pack mount, per-caller visibility filtering | ✓ **Vercel demo live** at www.lolly.work (v0.2.0) - `GET /render/<toolId>.<format>` serves real SVG/PNG; memory-only, no Chromium tier, so pilot-grade not production |
 | **Approvals engine** - chains (any/quorum/all), approver nomination from the eligible team, separation of duties, per-user inbox notifications, console Approvals view (`migrations/0002`) | |
-| Telemetry ingest (closed attr allowlist, opt-in attribution enforced at ingest), rollups + dashboard summary | SCIM, SAML, collab gateway |
-| Inbox targeting (groups × shell × engine-version), fleet registry from `X-Lolly-Client` | CLI device-code login against OIDC (dev-provider + pasted-cookie today) |
+| Telemetry ingest (closed attr allowlist, opt-in attribution enforced at ingest), rollups + dashboard summary | SAML (deliberately deferred to Keycloak's SAML→OIDC bridge) - **SCIM and the collab gateway have shipped** |
+| Inbox targeting (groups × shell × engine-version), fleet registry from `X-Lolly-Client` | ✓ **CLI device-code login shipped** (store-backed device codes over OIDC); org-scoped MCP endpoint still outstanding |
 | **Postgres store driver** + migrations runner (shared conformance suite; PG run gated on `LW_TEST_DATABASE_URL`) | |
 | **Org-config + preview-as-group** - the one polled document (`GET /api/v1/org-config`), plus `GET /api/v1/org-config/preview?groups=…`, console `#/preview`, and `lw preview`: an admin/brand author sees the exact role, permissions, tool/input governance, and profile policy a member in any group set would receive - computed through the same assembler the live client polls, so it can't drift | |
 | **Grants editor** - console `#/grants` + `lw grants` + `GET/POST/DELETE /api/v1/grants` under `grant.edit` (admin), with the owner-only escalation guard (grants touching `instance.config`/`catalog.provider.credential` need the owner role); deny-wins effects live on the next request; audited | |
 | **Tool policy control plane** - console `#/tools` view + `GET /api/v1/policy/tools` / `PUT /api/v1/policy/overlays/:toolId`: visibility groups, per-input rules (lock to preset / restrict to choices / hide), watermark enforcement; `policy.edit` grantable to brand groups; audited with before/after, render cache busted on save | |
 | **Admin console** at `/admin` - overview dashboards, fleet, links (revoke), messages (compose + reach), audit chain view, people | |
 | **Admin CLI** `lw` - login/whoami/summary/fleet/links/msg/audit-verify over the same API | |
-| **Catalog providers** - federate Brandfolder/S3/git/… read-only into the catalog: DB-backed control plane (console `#/providers` + `lw providers`), sealed write-only credentials (`LW_CREDENTIAL_SECRET`), exposure governance (groups/sections/approved), lifecycle overlays on `ext/*` ids, `/api/v1/catalog/search` with live fan-out. Drivers: Brandfolder, S3 (hand-rolled SigV4), git (raw-HTTP manifest), Dropbox, Google Drive, O365/Graph (refresh-token OAuth via `lw providers auth` PKCE loopback flow), mock. **Export provenance**: C2PA-shaped ingredients embedded in SVG (`<metadata>`) and PNG (iTXt) exports + `x-lolly-provenance` header - "«filename» from «provider»" travels even when the upstream has no C2PA | Real C2PA signing; provider fragment hashes → render cache keys |
+| **Catalog providers** - federate Brandfolder/S3/git/… read-only into the catalog: DB-backed control plane (console `#/providers` + `lw providers`), sealed write-only credentials (`LW_CREDENTIAL_SECRET`), exposure governance (groups/sections/approved), lifecycle overlays on `ext/*` ids, `/api/v1/catalog/search` with live fan-out. Drivers: Brandfolder, S3 (hand-rolled SigV4), git (raw-HTTP manifest), Dropbox, Google Drive, O365/Graph (refresh-token OAuth via `lw providers auth` PKCE loopback flow), mock. **Export provenance**: C2PA-shaped ingredients embedded in SVG (`<metadata>`) and PNG (iTXt) exports + `x-lolly-provenance` header - "«filename» from «provider»" travels even when the upstream has no C2PA | ✓ **Real C2PA signing shipped** (genuine signature when an identity is configured); provider fragment hashes → render cache keys still pending |
+
+Also shipped since this table was first drawn (plans/34-36), and not to be read as pending:
+store-backed device-code sign-in, multi-IdP + the signed release image, ownership transfer +
+credential-expiry surfacing, service tokens + **SIEM forwarding**, dual-key secret rotation,
+retention + erasure, and SMTP/webhook approval egress. The authoritative, dated status lives
+in [`docs/status.md`](docs/status.md) (served at `/admin#/docs`); treat it as the source of
+truth if this table and it ever disagree.
 
 ### Third-party provider terms
 

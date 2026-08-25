@@ -1,7 +1,7 @@
 # Status and roadmap
 
 The honest state of this deploy. Written to be safe to hand to an auditor or a CIO: the
-gaps are named, not smoothed over. Verified against the repository on **2026-08-18**.
+gaps are named, not smoothed over. Verified against the repository on **2026-08-25**.
 
 ![The client fleet - which shell and engine versions are talking to this deployment](shots/client-fleet.svg)
 
@@ -72,12 +72,15 @@ The mechanism is built (`/api/v1/audit/head`, `lw audit head`, optional boot/int
 logging). Nothing schedules it, and Postgres carries no append-only constraint - so head
 publishing *is* the truncation defence and needs to become routine. See [audit](audit.md).
 
-### 3. Container image: publish wired and signed, first tagged release pending
-The release workflow builds and pushes both images (server, render-worker) to GHCR on a
-`v*` tag, multi-arch, with SBOM + provenance attestations and a keyless cosign signature
-over each manifest digest (verify recipe in [deployment](deployment.md#verifying-the-images)).
-Until a release tag is pushed under this setup, a Helm install still requires you to build
-and push; `image.repository`/`tag` must be set deliberately.
+### 3. Container image: shipped and signed; tag lag + package visibility
+The first tagged release (**v0.2.0**, 2026-08-14) built and pushed both images (server,
+render-worker) to GHCR on a `v*` tag, multi-arch, with SBOM + provenance attestations and a
+keyless cosign signature over each manifest digest (verify recipe in
+[deployment](deployment.md#verifying-the-images)). Two things remain before a third party can
+`helm install` unattended: (a) `main` has since moved past v0.2.0 with no version bump, so the
+tag needs refreshing before launch, and (b) the GHCR packages are currently **private** (an
+anonymous pull returns 401) - either make the `lolly-tools` packages public or ship an
+`imagePullSecrets` bootstrap snippet. Until then `image.repository`/`tag` must be set deliberately.
 
 ### 4. Shell delivery on Kubernetes
 Serving the web shell needs a built dist on a volume you populate; brand-pack delivery is
@@ -86,8 +89,10 @@ wrong path now fails loudly instead of quietly un-governing employees, which is 
 improvement - not a substitute for a delivery pipeline.
 
 ### 5. Engine pin drift
-The vendored engine is pinned and pin-verified, but it lags OSS HEAD and re-pinning is manual.
-An automated re-pin cadence is wanted before that gap turns into a bridge-contract mismatch.
+The vendored engine is pinned and pin-verified (`@lolly/engine@1.146.0`), but it now lags OSS
+HEAD (`1.152.0` - six additive minors) and re-pinning is manual. The gap is still safe (minors
+are additive-only under the HostV1 contract), but an automated re-pin cadence, gated on the
+bridge-contract version check, is wanted before it turns into a mismatch.
 
 ### 6. Postgres leg depends on CI
 The Postgres driver only runs under `LW_TEST_DATABASE_URL`. CI now provides one, so this is
@@ -98,12 +103,26 @@ covered on `main` - but a local `npm test` still exercises only the memory drive
 is deliberately not built yet. Bind a chain *and* set `always` if you need the guarantee today.
 
 ### 8. Vercel is a pilot vehicle
-No pack serving, no `/render/*`, no Chromium. Fine for a trial, not for production.
+The hosted demo renders for real - `GET /render/<toolId>.<format>` serves live SVG/PNG bytes
+off the jsdom fast path (verified against www.lolly.work). What makes it a pilot, not
+production: it runs **memory-only** (no `DATABASE_URL`, so seeded/created state resets), there
+is **no Chromium worker tier** (hooked / HTML-heavy tools are refused on the fast path), and
+pack delivery is demo-scoped. Fine for a trial, not for production.
 
 ### 9. OSS license clearance (open-source side, external)
-580 Rust crates report "unknown" license in the OSS SBOM (desktop shells only) and two
-LGPL-3.0 packages are bundled in the web PWA. This needs an OSS-office pass and third-party
-notice entries; it is the likeliest external-review blocker for wide distribution.
+Two distinct issues, often conflated. **(a) Manifest drift, mechanical:** the desktop/mobile
+`Cargo.lock`s have outrun the committed license map, so `check:cargo-licenses` and the SBOM
+freshness gate both fail - ~93 crates are present in the lock but absent from
+`cargo-licenses.json`. (The "580 crates report unknown" figure was a miscount: all 580 mapped
+crates carry a valid SPDX expression; the fault is coverage drift, not unknown licenses.) Fix
+is `npm run build:cargo-licenses && npm run build:sbom` on a Rust toolchain, then commit.
+**(b) Copyleft review, needs counsel:** the two LGPL-3.0 web-PWA deps (`heic-to`,
+`@breezystack/lamejs`) are dynamically `import()`ed with source offers already in the notices,
+so the substantive obligation is largely met but the formal relink/substitution analysis is
+still open; and a GPL-3.0-only build-time crate (`auto_generate_cdp`, via headless_chrome's
+CDP codegen) needs verifying as build-only-and-not-distributed. The hosted web product is
+close to clear; wide distribution of downloadable desktop/mobile binaries is not, and remains
+the likeliest external-review blocker.
 
 ### 10. Bus factor
 One person commits to both repos. The plans directory and honest inline documentation are the
