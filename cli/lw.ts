@@ -9,10 +9,10 @@
  *   lw msg send --title "…" [--severity action --groups a,b --max-engine 1.52.99]
  *   lw audit verify
  *
- * Auth: dev-provider login stores the session cookie at
- * ~/.config/lolly-work/session (0600). Against an OIDC instance, sign in in a
- * browser and `lw login --cookie 'lw_session=…'` - a device-code flow is the
- * planned replacement.
+ * Auth: `lw login` runs the device-code flow (print a short code, confirm it in
+ * a signed-in browser). The session cookie is stored at
+ * ~/.config/lolly-work/session (0600). `--email` uses the dev provider where
+ * enabled, and `--cookie 'lw_session=…'` pastes a browser session directly.
  */
 import { parseArgs } from 'node:util';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';

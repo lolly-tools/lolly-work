@@ -92,6 +92,18 @@ Owner-only (`scim.manage`). The secret is stored only as its hash and is unrecov
 the mint is the one moment you can copy it. The IdP then drives `/scim/v2` with it. See
 [identity](identity.md#scim-provisioning).
 
+## Data lifecycle
+
+```bash
+lw retention run            # apply the stated retention policy now (trims telemetry + audit)
+lw users erase <id>         # erasure: delete the person's row + de-attribute their telemetry
+```
+
+`retention run` also runs daily on a long-lived server; on serverless, cron it with a service
+token (`LW_TOKEN=… lw retention run`). `users erase` is owner-only and answers a data-subject
+request - the person's projects must be archived first, and the audit chain keeps its opaque
+user id (the mapping to a person is what is removed). See [operations](operations.md).
+
 ## Catalog providers
 
 ```bash
