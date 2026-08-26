@@ -1,0 +1,110 @@
+# Dependabot — automated dependency-update PRs. Ported from the OSS repo
+# (lolly-tools/lolly .github/dependabot.yml) so lolly-work gets the same
+# supply-chain floor: version updates land as reviewable PRs, and — once
+# "Dependabot security updates" is enabled in Settings → Code security —
+# vulnerable deps get an immediate fix PR to back up the CI `audit` gate
+# (npm audit --omit=dev + SBOM drift in ci.yml).
+#
+# Scope: this repo's own manifests. The vendored engine + core live under
+# vendor/ as `file:` deps pinned by content hash (engine-pin.json, verified by
+# scripts/verify-engine-pin.ts on pretest + CI); Dependabot does not — and must
+# not — touch those. They move only via `npm run repin-engine` from a clean OSS
+# checkout, and the weekly engine-drift.yml watches the pin.
+version: 2
+updates:
+  # ── npm: the control plane (root package.json + package-lock.json) ─────────
+  # pg, ws, yjs, jsdom, @resvg/resvg-js + the dev toolchain (tsc, esbuild,
+  # @types/*). Grouped weekly to keep PR noise down; security PRs are ungrouped
+  # and immediate regardless of this schedule. Majors fall through as their own
+  # PRs for a manual, tested merge.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "deps"
+      prefix-development: "deps-dev"
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ── npm: the render worker (its own package.json + lock, not a workspace) ──
+  # workers/render carries playwright-core separately from the root tree (the
+  # plane never imports it). CI installs it with `npm ci --prefix workers/render`
+  # and its Dockerfile runs `playwright-core install --with-deps chromium`, so a
+  # bump here keeps Chromium current.
+  - package-ecosystem: "npm"
+    directory: "/workers/render"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "deps"
+      prefix-development: "deps-dev"
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ── GitHub Actions: the CI/release workflows (.github/workflows/*.yml) ─────
+  # ci.yml, release.yml, engine-drift.yml pin actions by tag today
+  # (actions/*, docker/*, sigstore/cosign-installer). Keep them current so a
+  # tag-pinned action can't quietly rot; this is also the on-ramp to SHA-pinning
+  # the third-party ones (docker/*, sigstore/*) — Dependabot updates a SHA pin in
+  # place the same way it updates a tag.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "ci"
+    commit-message:
+      prefix: "ci"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  # ── Docker: the two release base images, digest-pinned ────────────────────
+  # deploy/compose/Dockerfile (server) and workers/render/Dockerfile (render
+  # worker) are pinned to a node:24 multi-arch index by sha256 digest. This
+  # keeps each pin moving as the upstream tag is rebuilt, so a digest pin does
+  # not become a stale base nobody patches — the failure mode that makes digest
+  # pinning worse than a tag. release.yml builds, cosign-signs and pushes these,
+  # so the base they attest must stay patched.
+  - package-ecosystem: "docker"
+    directory: "/deploy/compose"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "deploy"
+    commit-message:
+      prefix: "deploy"
+
+  - package-ecosystem: "docker"
+    directory: "/workers/render"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "deploy"
+    commit-message:
+      prefix: "deploy"
