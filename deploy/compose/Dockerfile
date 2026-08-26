@@ -5,7 +5,7 @@
 # signed+attested release image is reproducible and the tag can't shift under a
 # rebuild. Dependabot's docker updater (/.github/dependabot.yml, dir
 # /deploy/compose) keeps the pin moving as node:24-alpine is rebuilt.
-FROM node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43
+FROM node:26-alpine@sha256:aadf416b2cdce311a8811ba3f0608a61b77dbf997500e2eafe781b51f6a0b019
 WORKDIR /app
 
 # vendor/ must land BEFORE npm ci: package.json's @lolly/engine and
