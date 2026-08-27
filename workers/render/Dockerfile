@@ -8,7 +8,7 @@
 # signed+attested release image is reproducible and the tag can't shift under a
 # rebuild. Dependabot's docker updater (/.github/dependabot.yml, dir
 # /workers/render) keeps the pin moving as node:24-bookworm-slim is rebuilt.
-FROM node:24-bookworm-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df
+FROM node:25-bookworm-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370
 WORKDIR /app
 
 ENV NODE_ENV=production
