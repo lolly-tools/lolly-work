@@ -4,14 +4,24 @@
  * mounted (`instance.shellDir` unset) but the passwordless dev provider is on
  * (`dev.enabled`). That combination is exactly the hosted testing sandbox
  * (deploy/vercel - lolly.work): there is no 1.9 GB governed web shell to serve,
- * so `/` is instead a one-click way into the governed admin console + the live
- * render endpoint.
+ * so `/` is instead the front door - persona sign-in, the docs, a short pitch,
+ * and the live render endpoint.
  *
- * Its chrome is near self-contained (inline CSS; the SUSE mark inlined below) - 
+ * Its chrome is near self-contained (inline CSS; the SUSE mark inlined below) -
  * the only fetched asset is the Lolly icon, served same-origin from
  * /admin/icon.svg with its C2PA seal intact, so the page stays CDN-free and
- * CSP-clean. It renders only the personas actually configured in `dev.users` - 
+ * CSP-clean. It renders only the personas actually configured in `dev.users` -
  * so what you can click is exactly what the instance will accept at `/api/auth/dev`.
+ *
+ * RENDER EXAMPLES MUST PASS ANONYMOUS POLICY. The demo overlays
+ * (scripts/demo.ts) lock qr-code's `color` and hide its `background` for every
+ * group but brand-team, so an example naming either dies as a 422 for the
+ * anonymous visitor this page exists for. tests/demo-landing.test.ts checks
+ * every example against those overlays and each tool's manifest - keep it green.
+ *
+ * The `origin` argument is the request's own scheme://host (derived and
+ * validated by the route in api/app.ts), so the printed example URLs carry the
+ * hostname the visitor is actually on; `instance.baseUrl` is the fallback.
  *
  * SECURITY: this page exposes passwordless sign-in on a public origin. It only
  * ever appears when `dev.enabled` is true, which a real IdP-backed deployment
@@ -37,27 +47,43 @@ function esc(s: string): string {
   );
 }
 
-/** A friendly role label from a persona's groups (mirrors roleFromGroups' intent
- *  without importing it - this is presentation only). */
-function roleLabel(groups: string[]): string {
-  if (groups.includes('admin')) return 'Admin';
-  if (groups.includes('approver')) return 'Approver';
-  return 'Member';
+/** Presentation-only persona chrome derived from a persona's groups: a chip
+ *  label and one line saying what governance that persona demonstrates. The
+ *  blurbs describe the demo seed (scripts/demo.ts overlays + grants); an
+ *  instance configured with other groups gets the neutral fallbacks. */
+function personaMeta(groups: string[]): { label: string; blurb: string } {
+  if (groups.includes('admin')) {
+    return { label: 'Admin', blurb: 'Runs the deploy: policy overlays, grants, approval chains, telemetry.' };
+  }
+  if (groups.includes('brand-team')) {
+    return { label: 'Brand team', blurb: 'Edits the inputs policy locks for everyone else, and clears brand approvals.' };
+  }
+  if (groups.includes('marketing')) {
+    return { label: 'Marketing', blurb: 'A governed member: locked brand inputs, approval requests on gated output.' };
+  }
+  if (groups.includes('contractors')) {
+    return { label: 'Contractor', blurb: 'The narrowest view. Tools hidden by policy never even appear.' };
+  }
+  if (groups.includes('approver')) return { label: 'Approver', blurb: 'Reviews and clears output waiting on sign-off.' };
+  return { label: 'Member', blurb: 'A standard governed member of the org.' };
 }
 
-/** Live-render examples, grouped by tool, each with tryable params so a visitor can
- *  see how the same GET reshapes the output. Params are real inputs from each tool's
- *  manifest (packs/demo). These are Tier-A (SVG + resvg PNG, no Chromium). */
-interface Example { label: string; href: string; note: string }
-const RENDER_GROUPS: Array<{ tool: string; blurb: string; examples: Example[] }> = [
+/** Live-render examples, grouped by tool, each with tryable params so a visitor
+ *  can see how the same GET reshapes the output. Params are real inputs from each
+ *  tool's manifest (packs/demo) AND allowed for the anonymous caller under the
+ *  demo overlays - qr-code's color/background are deliberately absent (locked /
+ *  hidden: that policy is part of the demo). These are Tier-A (SVG + resvg PNG,
+ *  no Chromium). Enforced by tests/demo-landing.test.ts. */
+export interface Example { label: string; href: string; note: string }
+export const RENDER_GROUPS: Array<{ tool: string; blurb: string; examples: Example[] }> = [
   {
     tool: 'qr-code',
-    blurb: 'A real QR to any URL — the canonical “render a tool over a GET”.',
+    blurb: 'A real QR to any URL, with governance you can watch working: policy locks the module colour to SUSE green for visitors and hides the background input entirely. Sign in as the Brand team persona and the same endpoint hands both back.',
     examples: [
-      { label: 'Black on white', href: '/render/qr-code.svg?url=https://lolly.tools/info&background=white&color=black', note: 'url, background, color' },
-      { label: 'SUSE jungle, high error-correction', href: '/render/qr-code.svg?url=https://lolly.work&color=%2330ba78&ecl=H&padding=2', note: 'color, ecl=H, padding' },
-      { label: 'On pine, tight quiet-zone', href: '/render/qr-code.svg?url=https://www.suse.com&color=%23eafaf4&background=%230c322c&padding=1', note: 'color, background' },
-      { label: 'PNG @ 512', href: '/render/qr-code.png?url=https://lolly.work&width=512&color=%23192072', note: '.png, width' },
+      { label: 'Scan me', href: '/render/qr-code.svg?url=https://lolly.work', note: 'url' },
+      { label: 'High error-correction, wide quiet zone', href: '/render/qr-code.svg?url=https://www.suse.com&ecl=H&padding=6', note: 'ecl=H, padding' },
+      { label: 'Separate modules', href: '/render/qr-code.svg?url=https://lolly.tools/info&join=false&ecl=Q', note: 'join=false, ecl' },
+      { label: 'PNG', href: '/render/qr-code.png?url=https://lolly.work', note: '.png' },
     ],
   },
   {
@@ -82,15 +108,29 @@ const RENDER_GROUPS: Array<{ tool: string; blurb: string; examples: Example[] }>
   },
 ];
 
-export function demoLandingHtml(config: InstanceConfig): string {
+/** What the control plane adds for an organization - the pitch, kept honest:
+ *  every card names a feature this deploy actually demonstrates. */
+const FEATURES: Array<{ title: string; body: string }> = [
+  { title: 'One governed catalog', body: 'Every team renders from the same vetted tools and templates. Visibility is per group: a tool hidden from contractors does not exist for them.' },
+  { title: 'Policy enforced at render time', body: 'Inputs can be locked to brand values, limited to a choice, or hidden per group, and the API refuses what the console never offered. The QR tool below is live proof.' },
+  { title: 'Approvals and watermarks', body: 'Output can escalate through brand and legal chains, and previews carry a watermark until sign-off clears.' },
+  { title: 'Provenance and audit', body: 'Server renders are C2PA-signed, the audit log is hash-chained and append-only, and telemetry rolls up for dashboards and your SIEM.' },
+  { title: 'Your identity, your infrastructure', body: 'OIDC against the IdP you already run, roles plus fine-grained grants. Deploy with Compose, systemd, or Kubernetes/Helm; the sovereign SUSE stack is the reference path.' },
+  { title: 'Open and exit-friendly', body: 'MPL-2.0 open source. Rendering happens on-device, existing DAM libraries federate in, and moving off a platform is a documented path, not a fight.' },
+];
+
+export function demoLandingHtml(config: InstanceConfig, origin?: string): string {
   const name = esc(config.instance.name || 'Lolly Work');
+  // The origin printed in front of every example path. The route derives it from
+  // the request's validated Host header; baseUrl covers direct calls and tests.
+  const base = (origin || config.instance.baseUrl || '').replace(/\/+$/, '');
   const personas = (config.dev.users ?? []).map((u) => {
     const groups = u.groups ?? [];
     return {
       email: u.email,
-      name: u.name || u.email,
-      role: roleLabel(groups),
+      name: u.name,
       groups: groups.join(', ') || '—',
+      ...personaMeta(groups),
     };
   });
 
@@ -98,13 +138,17 @@ export function demoLandingHtml(config: InstanceConfig): string {
     .map(
       (p) => `
       <a class="persona" href="/api/auth/dev?email=${encodeURIComponent(p.email)}&returnTo=/admin">
-        <span class="persona-role">${esc(p.role)}</span>
-        <span class="persona-name">${esc(p.name)}</span>
+        <span class="persona-role">${esc(p.label)}</span>
+        ${p.name ? `<span class="persona-name">${esc(p.name)}</span>` : ''}
         <span class="persona-email">${esc(p.email)}</span>
-        <span class="persona-groups">${esc(p.groups)}</span>
+        <span class="persona-blurb">${esc(p.blurb)}</span>
+        <span class="persona-groups">groups: ${esc(p.groups)}</span>
       </a>`,
     )
     .join('');
+
+  const featureCards = FEATURES.map((f) => `
+    <div class="feature"><h3>${esc(f.title)}</h3><p>${esc(f.body)}</p></div>`).join('');
 
   const renderGroups = RENDER_GROUPS.map((g) => `
     <div class="tool">
@@ -113,7 +157,7 @@ export function demoLandingHtml(config: InstanceConfig): string {
         ${g.examples.map((e) => `<li>
           <a href="${esc(e.href)}">${esc(e.label)}</a>
           <span class="params">${esc(e.note)}</span>
-          <code>${esc(e.href)}</code>
+          <code>${esc(base + e.href)}</code>
         </li>`).join('')}
       </ul>
     </div>`).join('');
@@ -125,7 +169,7 @@ export function demoLandingHtml(config: InstanceConfig): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <link rel="icon" type="image/svg+xml" href="/admin/icon.svg">
-<title>${name} — demo sandbox</title>
+<title>${name} · demo sandbox</title>
 <style>
   /* SUSE brand fonts, served from the pack (same-origin) via /api/brand/font. */
   @font-face { font-family:'SUSE'; src:url('/api/brand/font/SUSE-Variable.woff2') format('woff2'); font-weight:100 800; font-display:swap; }
@@ -153,20 +197,26 @@ export function demoLandingHtml(config: InstanceConfig): string {
   .sandbox { display:flex; gap:10px; align-items:flex-start; background:rgba(252,178,68,.1); border:1px solid rgba(252,178,68,.35); color:#ffdca0; border-radius:12px; padding:12px 14px; font-size:13.5px; margin-bottom:28px; }
   .sandbox strong { color:var(--warn); }
   h1 { font-size:30px; font-weight:800; margin:0 0 6px; letter-spacing:-.02em; }
-  .lede { color:var(--muted); margin:0 0 28px; max-width:60ch; }
+  .lede { color:var(--muted); margin:0 0 28px; max-width:64ch; }
+  .lede.tight { margin-bottom:10px; }
   h2 { font-size:12px; text-transform:uppercase; letter-spacing:.1em; color:var(--mint); margin:34px 0 12px; font-weight:700; }
-  .personas { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:12px; }
+  .personas { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:12px; }
   .persona { display:flex; flex-direction:column; gap:2px; text-decoration:none; color:var(--fg); background:var(--card); border:1px solid var(--line); border-radius:12px; padding:15px; transition:border-color .15s, transform .05s, background .15s; }
   .persona:hover { border-color:var(--jungle); background:#0e3a32; }
   .persona:active { transform:translateY(1px); }
   .persona-role { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--jungle); font-weight:800; }
   .persona-name { font-weight:700; margin-top:2px; }
-  .persona-email { color:var(--muted); font-size:12.5px; font-family:'SUSE Mono',ui-monospace,monospace; }
-  .persona-groups { color:var(--muted); font-size:11.5px; margin-top:6px; opacity:.8; }
+  .persona-email { color:var(--fg); font-size:12.5px; font-weight:600; font-family:'SUSE Mono',ui-monospace,monospace; margin-top:2px; }
+  .persona-blurb { color:var(--muted); font-size:12px; margin-top:6px; line-height:1.45; }
+  .persona-groups { color:var(--muted); font-size:11px; margin-top:6px; opacity:.7; font-family:'SUSE Mono',ui-monospace,monospace; }
+  .features { display:grid; grid-template-columns:repeat(auto-fill,minmax(270px,1fr)); gap:12px; }
+  .feature { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:15px; }
+  .feature h3 { margin:0 0 4px; font-size:14px; font-weight:700; color:var(--fg); }
+  .feature p { margin:0; color:var(--muted); font-size:13px; line-height:1.5; }
   .tool { margin:14px 0 8px; }
   .tool-head { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:2px; }
   .tool-id { background:transparent; border:0; color:var(--jungle); font-weight:700; font-size:14px; padding:0; }
-  .tool-blurb { color:var(--muted); font-size:13px; }
+  .tool-blurb { color:var(--muted); font-size:13px; max-width:72ch; }
   ul { list-style:none; padding:0; margin:0; }
   .links li { display:grid; grid-template-columns:minmax(180px,auto) 1fr; align-items:center; gap:8px 12px; padding:8px 0; border-bottom:1px solid var(--line); }
   .links a { color:var(--fg); text-decoration:none; font-weight:600; }
@@ -191,30 +241,30 @@ export function demoLandingHtml(config: InstanceConfig): string {
   </div>
   <div class="sandbox">
     <span>⚠️</span>
-    <div><strong>Public testing sandbox.</strong> Sign-in is passwordless — anyone can enter as any persona, including admin. State is in-memory and resets on redeploy. Do not put anything real or sensitive here.</div>
+    <div><strong>Public testing sandbox.</strong> Sign-in is passwordless: anyone can enter as any persona, including admin. State is in-memory and resets on redeploy. Do not put anything real or sensitive here.</div>
   </div>
 
   <h1>${name}</h1>
-  <p class="lede">The Lolly control plane — governed catalog, policy, approvals, telemetry, and an on-device render path — running as a hosted demo. Pick a persona to sign in.</p>
+  <p class="lede">The open-source control plane for Lolly, SUSE's on-brand content tooling: the layer an organization hosts so thousands of people can use creative tools without a brand, legal, or compliance incident. Everything on this page is the real product running with demo data.</p>
 
-  <h2>Sign in as a demo persona</h2>
-  <div class="personas">${personaCards || '<p class="lede">No dev personas configured.</p>'}</div>
-
-  <h2>Or jump straight in</h2>
-  <div class="row">
-    <a class="btn" href="/admin">Open the admin console</a>
-    <a class="btn secondary" href="/healthz">Health check</a>
-  </div>
-
-  <h2>Documentation</h2>
-  <p class="lede" style="margin-bottom:10px">Installing, configuring, governing and operating Lolly — the full operator docs, readable right here with no sign-in.</p>
+  <h2>Start here</h2>
   <div class="row">
     <a class="btn" href="/admin#/docs">Read the docs →</a>
+    <a class="btn secondary" href="/admin">Open the admin console</a>
     <a class="btn secondary" href="${REPO_URL}" target="_blank" rel="noopener">View on GitHub ↗</a>
   </div>
+  <p class="lede tight" style="margin-top:10px">The full operator docs (install, config, governance, API and CLI references) are readable right here, no sign-in needed.</p>
 
-  <h2>Live renders (the MCP GET endpoint)</h2>
-  <p class="lede" style="margin-bottom:10px">Every catalog tool renders over a plain <code>GET /render/&lt;tool&gt;.&lt;format&gt;?params</code> — the same URL an agent or an <code>&lt;img&gt;</code> tag hits. Change the params to reshape the output; click any to open it:</p>
+  <h2>Sign in as a demo persona</h2>
+  <p class="lede tight">One click, no password. Each persona opens the same console with different governance applied, so pick two and compare what they can see and change.</p>
+  <div class="personas">${personaCards || '<p class="lede">No dev personas configured.</p>'}</div>
+
+  <h2>What the control plane does</h2>
+  <p class="lede tight">Lolly's tools are free and render on-device for anyone. The control plane is what makes them safe to hand to an entire enterprise:</p>
+  <div class="features">${featureCards}</div>
+
+  <h2>Live renders, over a plain GET</h2>
+  <p class="lede tight">Every catalog tool renders from a URL an agent, a pipeline, or an <code style="grid-column:auto">&lt;img&gt;</code> tag can hit: <code style="grid-column:auto">GET ${esc(base)}/render/&lt;tool&gt;.&lt;format&gt;?params</code> - governed by the same policy as the console. Click an example, then change the params:</p>
   ${renderGroups}
 
   <footer>
