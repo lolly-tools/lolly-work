@@ -16,7 +16,7 @@ copy-pasted as written.
 
 The server is **zero-build**: it runs TypeScript directly on Node, no compile step, no
 external assets. Sections 1 to 4 are the same for every shape - do them first, then pick
-one shape from 5, 6 or 7. section 9 is the last leg for every shape.
+one shape from 5, 6 or 7. Section 9 is the last leg for every shape.
 
 ## 0. Hosted demo (zero install)
 
@@ -61,8 +61,8 @@ the above:
 
 | Shape | Also needs | Check it with |
 |---|---|---|
-| section 5 Compose | Docker with the **Compose v2** plugin | `docker compose version` prints a version. The older standalone `docker-compose` is not it, and `docker compose up --build` fails with `unknown flag: --build` when the plugin is missing |
-| section 7 Kubernetes | `kubectl` and **Helm 3**, pointed at a cluster | `kubectl cluster-info` and `helm version` |
+| Section 5 (Compose) | Docker with the **Compose v2** plugin | `docker compose version` prints a version. The older standalone `docker-compose` is not it, and `docker compose up --build` fails with `unknown flag: --build` when the plugin is missing |
+| Section 7 (Kubernetes) | `kubectl` and **Helm 3**, pointed at a cluster | `kubectl cluster-info` and `helm version` |
 
 ## 1. Local demo
 
@@ -75,8 +75,8 @@ npm run demo            # http://localhost:8787   (PORT=8788 for another port)
 
 `npm run demo` builds its **own** config (it ignores `instance.json`) and seeds a whole
 governed deployment in memory: four personas, tool overlays, an approval chain, projects,
-14 days of usage telemetry and sixty days of audit history behind the console charts. It prints one passwordless
-sign-in link per persona at boot. Open the printed URL:
+fourteen days of usage telemetry and sixty days of audit history behind the console
+charts. It prints one passwordless sign-in link per persona at boot. Open the printed URL:
 
 - **Admin console** at `/admin` - sign in as `admin@suse.example`.
 - **This documentation** at `/admin#/docs`.
