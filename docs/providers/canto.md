@@ -74,13 +74,13 @@ lw providers credential acme-canto
 lw providers health acme-canto
 ```
 
-`oauth token refresh failed (401)` means the App ID/Secret or the refresh token is wrong, or
-the grant was revoked - re-capture the credential. A `400` there is the token endpoint
-rejecting the **request shape**, which re-capturing cannot fix; the runbook's row 2a says what
-to edit. `canto api 401` means the token exchange worked but the tenant rejected the access
-token; `canto api 403` means the tenant refused the call, most often because API access is not
-on the contract tier. `canto url outside allowed hosts` means a `baseUrl` or `tokenUrl`
-override points off the Canto family.
+| Error | Meaning |
+|---|---|
+| `oauth token refresh failed (401)` | App ID/Secret or refresh token wrong, or the grant revoked - re-capture the credential |
+| `oauth token refresh failed (400)` | the token endpoint rejects the **request shape**; re-capturing cannot fix it - the runbook's row 2a says what to edit |
+| `canto api 401` | token exchange worked, tenant rejected the access token |
+| `canto api 403` | tenant refused the call - most often API access is not on the contract tier |
+| `canto url outside allowed hosts` | a `baseUrl` or `tokenUrl` override points off the Canto family |
 
 With a real tenant in hand, run the
 [Canto live-verify runbook](canto-live-verify.md): the ordered pass that confirms every guessed
@@ -92,10 +92,9 @@ endpoint and field name, and which constant to edit when one is wrong.
   Canto's public documentation and have not been confirmed against a live tenant; lolly holds
   no Canto account, so that pass runs on a customer's own tenant under their contract. Read the
   first sync as the verification and report anything that does not match.
-- **Listing walks schemes.** Canto lists by scheme (image, video, audio, document,
-  presentation, other) rather than from one assets endpoint, so a full sync pages through each
-  scheme in turn and a federated id carries its scheme (`image:AB12C`). An album-scoped sync
-  pages the album once instead, since album membership already crosses schemes.
+- **Listing walks schemes.** Canto lists per scheme (image, video, audio, document,
+  presentation, other), so a federated id carries its scheme (`image:AB12C`). An album-scoped
+  sync pages the album once instead.
 - Original bytes are fetched **per request**, streamed, host-pinned to the
   `canto.com`/`canto.global`/`canto.de` family, and never persisted (`expiringUrls`). The
   driver identifies itself with a `User-Agent` and self-caps at about 3 requests/second, which

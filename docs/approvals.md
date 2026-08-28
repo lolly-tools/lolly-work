@@ -30,10 +30,12 @@ PUT /api/v1/chains/:id        # policy.edit
 |---|---|
 | `any` | one eligible approver approves |
 | `{ quorum: n }` | `n` **distinct** approvers approve |
-| `all` | every eligible approver has approved |
+| `all` | every **nominee named at submit** has approved; with no nominees it behaves as `any` |
 
-A chain is bound to work by an overlay's `enforce.escalation` ([governance](governance.md)),
-so "everything this tool produces goes through brand review" is a policy edit, not code.
+Chains bind to work in two places today: catalog submissions go through the chain
+`policy.submit.chain` names ([catalog](catalog.md)), and any other approval names its
+`chainId` when it is raised. The overlay key `enforce.escalation` is declared in the type
+but the overlay write paths do not accept it yet - see [status](status.md).
 
 ## Raising and acting
 
@@ -41,7 +43,7 @@ so "everything this tool produces goes through brand review" is a policy edit, n
 POST /api/v1/approvals              # subjectType, subjectRef, title, chainId, nominees?
 GET  /api/v1/approvals              # filtered to what the caller may see
 GET  /api/v1/approvals/approvers    # who is eligible for a step, for nomination
-POST /api/v1/approvals/:id/act      # { action: 'approve' | 'reject', comment? } - approval.act
+POST /api/v1/approvals/:id/act      # { action: 'approve' | 'reject', comment? }
 POST /api/v1/approvals/:id/withdraw
 ```
 
@@ -51,7 +53,9 @@ thing to approve.
 The chain is **snapshotted at submit**: an approval is judged by the rules it was raised
 under, so editing a chain never rewrites decisions already in flight.
 
-States: `submitted` → `in_review` → `approved` | `rejected` | `withdrawn`.
+States: `in_review` → `approved` | `rejected` | `withdrawn` (a stepless chain approves at
+once). Acting needs no separate permission: any signed-in member of a step's approver
+groups can act, minus the separation-of-duties rules below.
 
 ## Invariants the engine enforces
 
@@ -78,9 +82,10 @@ the console's Approvals view) shows what needs them. The console's overview surf
 
 An overlay can set `enforce.watermark: 'until-approved'`, which is the intended pairing with
 a chain: previews carry the diagonal PREVIEW brick pattern while the work is unapproved.
-Today the compositor knows only "watermark now" vs "don't" - the per-render *until-approved*
-linkage to approval state is deliberately not yet wired (`always` and `never` behave fully).
-See [sharing](sharing.md) and [status](status.md).
+Today the compositor knows only "watermark now" vs "don't": `always` is enforced, the
+per-render *until-approved* linkage to approval state is deliberately not yet wired, and
+`never` is stored but behaves the same as unset. See [sharing](sharing.md) and
+[status](status.md).
 
 ## Related
 

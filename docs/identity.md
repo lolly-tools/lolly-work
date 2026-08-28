@@ -112,9 +112,9 @@ See [permissions](permissions.md).
 ## SCIM provisioning
 
 An IdP can push user lifecycle over SCIM 2.0 at `/scim/v2`, so joiners, movers and leavers
-are provisioned without a console visit. The subset is deliberate - Users (create, patch,
-`active=false`) and Group membership - because that is what earns the wave; passwords, bulk,
-sort and ETags are declared unsupported in `GET /scim/v2/ServiceProviderConfig`.
+are provisioned without a console visit. Supported: Users (create, patch, `active=false`)
+and Group membership; passwords, bulk, sort and ETags are declared unsupported in
+`GET /scim/v2/ServiceProviderConfig`.
 
 SCIM is **another writer of the one identity model**, never a second one:
 
@@ -143,9 +143,8 @@ runs) bridges a SAML-only IdP to the OIDC this already speaks.
 ## Service tokens
 
 Automation identity (plans/35): CI running `lw export`/`lw apply`, a
-governance-drift check, an audit poller. Until these existed, automation had to
-carry a person's session cookie in a secret store - the thing IT policy rightly
-forbids. A token is minted by an owner (`lw tokens create --label ci --role
+governance-drift check, an audit poller - no more session cookies in secret
+stores. A token is minted by an owner (`lw tokens create --label ci --role
 admin`), shown once, stored as a hash, and revoked with one command; presenting
 it resolves to a synthetic principal with the token's role and no groups, so
 the RBAC evaluator, grants and the audit trail treat it exactly like a person -

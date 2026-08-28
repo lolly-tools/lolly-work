@@ -75,6 +75,9 @@ this instance" in [operations](operations.md) for the connect story.
 | `GET/PUT/DELETE /api/v1/catalog/collections/<id>` | `catalog.collection.manage` | create, edit or remove one set; a `PUT` refuses any member the curator cannot see |
 | `GET /api/v1/catalog/lifecycle` | `catalog.expire` | all lifecycle rows |
 | `PUT /api/v1/catalog/lifecycle/*` | `catalog.expire` | set/merge a row; `revoke: true` revokes |
+| `POST /api/v1/catalog/scan/*` | `catalog.scan` | record a C2PA scan result for one asset ([c2pa](c2pa.md)) |
+| `GET/POST /api/v1/injectables`, `DELETE …/:id` | `catalog.injectable.manage` | the assets/tools injected into member shells |
+| `GET /api/v1/brand/profiles`, `PUT /api/v1/brand/profile` | member / `brand.switch` | list brand profiles; switch the active one |
 | `GET /api/brand`, `/api/brand/logo/:variant`, `/api/brand/font/:file` | public | brand chrome only (tokens, wordmark, woff2) so the sign-in screen is on-brand |
 
 ## Catalog submit
@@ -100,7 +103,7 @@ published asset's lifecycle stops it, like every other surface that hands out by
 | Route | Action |
 |---|---|
 | `GET /api/v1/catalog/providers`, `GET …/:id`, `GET …/:id/health`, `GET …/:id/drift` | `catalog.provider.read` |
-| `POST /api/v1/catalog/providers`, `PUT …/:id`, `DELETE …/:id`, `POST …/preview`, `POST …/:id/sync`, `POST …/:id/materialize` | `catalog.provider.manage` |
+| `POST /api/v1/catalog/providers`, `PUT …/:id`, `DELETE …/:id`, `POST …/preview`, `POST …/:id/sync`, `POST …/:id/materialize`, `POST …/:id/import` (one asset) | `catalog.provider.manage` |
 | `PUT/DELETE …/:id/credential`, `POST …/:id/enable`, `POST …/:id/disable`, `POST …/:id/cutover` | `catalog.provider.credential` (**owner**) |
 | `POST …/:id/publish` | `catalog.provider.publish` (**owner**) |
 
@@ -123,7 +126,8 @@ Config-managed providers reject mutations with `409 CONFIG_MANAGED`.
 
 | Route | Action |
 |---|---|
-| `GET /api/v1/users`, `GET /api/v1/users/:id` | member (filtered by role) |
+| `GET /api/v1/users`, `GET /api/v1/users/:id` | admin/owner role |
+| `POST /api/v1/users/:id/revoke-sessions` | `grant.edit` - sign-out-everywhere: bumps the user's session epoch, every prior cookie and token fails its next request |
 | `DELETE /api/v1/users/:id` | `instance.config` (**owner**) - erasure: deletes the row + de-attributes telemetry; `409` while they own unarchived projects |
 | `POST /api/v1/retention/run` | `instance.config` (**owner**) - apply the stated retention policy now |
 | `GET/POST /api/v1/groups`, `DELETE /api/v1/groups/:name` | `grant.edit` |
@@ -142,9 +146,8 @@ A minted token rides `Authorization: Bearer lwt_…` and resolves to a synthetic
 principal carrying the token's role (no groups) - RBAC, grants and audit see it
 like any member (`user:svc_<id>` actor). It works on the **action-gated**
 surface (fleet, providers, governance export/apply, audit, telemetry summary);
-the member-workflow routes (approvals, submit, collab) refuse it - those flows
-mean "a person decided", and a token deciding would launder authorship. See
-[identity](identity.md#service-tokens).
+approvals, submit and collab refuse it - those flows mean "a person decided".
+See [identity](identity.md#service-tokens).
 
 ## SCIM provisioning
 
@@ -200,6 +203,8 @@ Message targeting is groups × shell selectors × engine-version range.
 | `POST /api/v1/sessions/bulk` | member |
 | `GET /api/v1/collab/invitees?sessionId=…&q=…` | member with read access to the session |
 | `POST /api/v1/collab/invites` | `collab.edit` (= `session.edit`) |
+| `GET /api/v1/collab/rooms` | `telemetry.view` - live room census for the console |
+| `GET/POST /api/v1/collab/nearby` | `collab.join` - the nearby-discovery handover lane |
 
 **Session writes are compare-and-set, never last-writer-wins.** `PUT` requires the `rev`
 you read; a stale `rev` answers `409 CONFLICT` with the **full current server session** in
@@ -210,25 +215,19 @@ edited between preview and apply is **skipped, not stomped**, and reported as
 audited as `session.conflict` (ids and revs only - never input values) and folded into
 `GET /api/v1/stats/overview`'s `sessions.conflicts30d`.
 
-`invitees` is an autocomplete over **eligible principals only** - the people a
-live room would already admit for that session, never the directory. Eligibility
-is project **membership** (the project's owner, or a member of one of its
-visibility groups) plus `collab.join`: the admin/owner "sees every project"
-bypass deliberately does *not* make someone invitable, or any member could mint
-a project and read back a list of the instance's admins. An admin who is in the
-project's group is offered like anyone else. Prefix match on display name,
-capped, self excluded, no email addresses. `invites` validates the **same**
-predicate server-side - so a 201-vs-400 answer can never reveal what the search
-hides - and delivers through the inbox (`kind: "collab"`, targeted at the one
-invitee, `data.sessionId` for the client's deep link). Re-inviting the same
-person to the same session refreshes the pending message instead of adding a
-second, and re-raises it if they had already dismissed it.
+`invitees` autocompletes over **eligible principals only** - project membership
+plus `collab.join`, never the directory, and the admin/owner "sees every
+project" bypass does not make someone invitable. Prefix match on display name,
+capped, self excluded, no email addresses. `invites` enforces the same predicate
+server-side and delivers through the inbox (`kind: "collab"`, `data.sessionId`
+for the deep link); re-inviting refreshes the pending message instead of adding
+a second.
 
 ## Telemetry, activity, audit, fleet, system
 
 | Route | Action |
 |---|---|
-| `POST /api/v1/telemetry` | member or anonymous per level |
+| `POST /api/v1/telemetry` | member or guest session; attribution per level/consent |
 | `POST /api/v1/telemetry/consent` | member |
 | `GET /api/v1/telemetry/summary` | `telemetry.view` |
 | `GET /api/v1/stats/overview` | `telemetry.view` |

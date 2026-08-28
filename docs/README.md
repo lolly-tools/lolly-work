@@ -3,9 +3,10 @@
 Operator and administrator documentation for a **deploy** of the Lolly control plane. These
 pages describe what is *built*.
 
-**Read them in the console:** every page here is served at `/admin#/docs` on a running
-deploy, so whoever is operating it does not need the repository. `docs.json` is the source of
-truth for that surface - a page added here without an entry there gets no console page.
+**Read them in the console:** every page this index links to is served at `/admin#/docs` on
+a running deploy, so whoever is operating it does not need the repository. `docs.json` is
+the source of truth for that surface (this index itself stays repo-side - the console has
+its own navigation) - a page added here without an entry there gets no console page.
 
 The open-source half of Lolly (engine, catalog, shells) documents itself at **`/info/`** on
 any Lolly deployment. The console links there when this deploy serves or points at one.
@@ -56,7 +57,7 @@ how to verify. All of them are served in the console too.
 | live-verify runbooks | [webdav](providers/webdav-live-verify.md) · [canto](providers/canto-live-verify.md) · [imagerelay](providers/imagerelay-live-verify.md) · [intelligencebank](providers/intelligencebank-live-verify.md) · [acquia-dam](providers/acquia-dam-live-verify.md) |
 
 Connecting your first one end to end, with commands:
-[install §9](install.md#9-connect-a-source).
+[install section 9](install.md#9-connect-a-source).
 
 ## Operate
 

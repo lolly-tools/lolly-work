@@ -63,8 +63,8 @@ direction; limits are something an org chooses.
 
 Once chosen, the limit holds: if `policy.submit.chain` names a chain this instance does not
 have - a rename, a deletion, a first boot in the wrong order - submissions are refused with
-`503 SUBMIT_CHAIN_MISSING` naming the chain to fix. Review that a typo turns off would be
-worse than an outage, because nothing would say it had stopped happening.
+`503 SUBMIT_CHAIN_MISSING` naming the chain to fix - a refusal, never silently-open
+publishing.
 
 What happens to the bytes, in order:
 
@@ -72,7 +72,7 @@ What happens to the bytes, in order:
 |---|---|
 | Size cap | `policy.submit.maxBytes`, 64 MiB by default, the same cap publish-out uses |
 | Quota | per-group counters (`policy.submit.quota`), both 0 (unlimited) by default |
-| sha256 | an exact duplicate returns the asset that already holds those bytes, `200` with `duplicate: true` - reported, never an error. Only an asset the submitter can already see and fetch counts: a checksum hit on something invisible to them, or on one still under review or returned, stores a second copy instead, so the short-circuit can neither confirm a file they have no access to nor drop their contribution behind one |
+| sha256 | an exact duplicate of an asset the submitter can already see returns it (`200`, `duplicate: true`); a checksum hit on anything they cannot see stores a second copy, so the short-circuit confirms nothing hidden |
 | Scan hook | the operator's pre-store veto, if one is wired ([operations](operations.md#pre-store-scan-hook-for-submissions)) |
 | Store | `BlobStore.put`, then an instance-asset record carrying the submitter, the declared metadata, and the sniffed type and pixel dimensions |
 | Credentials | a C2PA **detection** pass, recorded and badged. Unlike publish-out no lolly export assertion is required: a submission is an arbitrary org file, and detection never refuses one |
@@ -86,11 +86,8 @@ in - nobody publishes into a group they are not a member of. With no `groups`, t
 visible to every member, like a pack asset.
 
 A quota scope is a group name, and a submission is charged to **every** group its submitter
-belongs to, so extra memberships only ever tighten a member's budget rather than buying more
-of it. The charge is made before the bytes are stored and is what enforces the cap - a check
-read earlier is a window that concurrent submissions all pass through - and a submission that
-is then refused gives its charge back. Counters are otherwise cumulative and are not credited
-back when a submission is returned: the bytes were still stored.
+belongs to, before the bytes are stored, so extra memberships only tighten a budget. A
+refused submission is refunded; a returned one is not (the bytes were still stored).
 
 Submitted bytes are served with a content-security policy that sandboxes them and allows no
 script. An SVG is markup rather than a picture, and the console shares this origin, so a file
@@ -298,17 +295,13 @@ TTL, passwords, revocation and audit are the ordinary link rules. Lifecycle is r
 archive at once, on a link that is otherwise still perfectly live; the page says how many were
 left out and never which.
 
-That limit is deliberate and complete: the page shows **that collection only**. No search, no
-browsing past the set, no self-registration, no route into the rest of the catalog. Asking the
-link for an asset the collection does not name is refused even though the signature is valid.
-That is what keeps it a list somebody sent you rather than a brand portal.
+The page shows **that collection only**: no search, no browsing past the set, no route into
+the rest of the catalog. Asking the link for an asset the collection does not name is
+refused even though the signature is valid.
 
-The zip is built in-process from Node's own `zlib` - no archiver dependency, no temporary
-files. Members stream out one at a time (each is buffered only long enough to compute its CRC
-and length), entries are named for the asset and de-duplicated, and DEFLATE is kept only where
-it actually wins, so a set of already-compressed photographs is stored rather than pointlessly
-recompressed. Very large sets are refused before a byte is sent rather than truncated
-silently - download those assets individually.
+The zip is streamed in-process (Node's own `zlib`, no temp files), entries named for the
+asset and de-duplicated. Very large sets are refused before a byte is sent rather than
+truncated silently - download those assets individually.
 
 ## Versions
 
@@ -410,7 +403,7 @@ Every asset can carry a lifecycle row - the "stop sharing" primitive, as one act
 
 ```
 GET /api/v1/catalog/lifecycle
-PUT /api/v1/catalog/lifecycle/<assetId>     # catalog.expire / catalog.publish
+PUT /api/v1/catalog/lifecycle/<assetId>     # catalog.expire (holds: catalog.hold)
 ```
 
 | Field | Meaning |
@@ -460,9 +453,9 @@ byte-durable.
 ### Imported availability windows
 
 A federated asset can also carry an **upstream availability window** - the DAM's own
-scheduling/expiry, imported where the provider exposes it (Brandfolder's
-`availability_start`/`availability_end`; other kinds via a `mapping.availabilityFields`
-custom-field map). The window rides on the feed entry as `availableFrom`/`availableUntil`
+scheduling/expiry, imported where the provider exposes it (native fields on
+`brandfolder`, `acquia-dam`, `intelligencebank` and `optimizely-cmp`; a
+`mapping.availabilityFields` custom-field map for `imagerelay`, `canto` and `webdav`). The window rides on the feed entry as `availableFrom`/`availableUntil`
 and is combined with the local lifecycle row **most-restrictive-wins**: the asset is
 `scheduled` if either start is still in the future and `expired` if either end has passed.
 So a local admin can *narrow* an upstream window (pull the end earlier, delay the start
@@ -551,6 +544,10 @@ Config-managed providers (declared in `instance.json`) are upserted at boot as
 read-only in the API: editing one returns `409 CONFIG_MANAGED` - change the file and
 redeploy. That is the GitOps/air-gap path.
 
+A credential can carry the vendor's rotation date: `lw providers credential <id>
+--expires 2026-12-01`. `lw providers list` then warns `cred expires in Nd` and flags
+`CRED EXPIRED` when the date passes ([operations](operations.md)).
+
 ### Sync and resilience
 
 Request-driven, not a cron: each provider keeps an in-process fragment with a TTL
@@ -579,7 +576,8 @@ lw providers cutover acme-bf                         # identities ext/* → inst
   remoteId, filename, `sourceUpdatedAt`, `materializedAt`) so provenance stays honest after the DAM
   is gone. It is idempotent per asset and needs `catalog.provider.manage` (admin). The pinned
   asset keeps its `ext/*` identity and its federated entry; only the bytes change hands, served
-  from the local copy.
+  from the local copy. A single asset can be pulled the same way with
+  `POST /api/v1/catalog/providers/:id/import` (console: the provider's asset list).
 - **Cutover** moves the identity to `inst/*` - the instance entry now substitutes for the
   federated one, so nothing appears twice - migrates the lifecycle row (including any hold),
   the credential detection and asset-specific grants, and writes **aliases** so every old
@@ -646,7 +644,7 @@ project *includes an integration for* those services and is not affiliated with 
   [IntelligenceBank](providers/intelligencebank.md), [Penpot](providers/penpot.md),
   [git](providers/git.md), [Dropbox](providers/dropbox.md), [Google Drive](providers/gdrive.md),
   [M365](providers/o365.md)).
-- **Connecting your first one, end to end:** [install §9](install.md#9-connect-a-source).
+- **Connecting your first one, end to end:** [install section 9](install.md#9-connect-a-source).
 - **Leaving a DAM:** [off-boarding](offboarding.md).
 - Restricting tools and inputs: [governance](governance.md)
 - Serving and sharing what the catalog holds: [sharing](sharing.md)

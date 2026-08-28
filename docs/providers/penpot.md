@@ -10,7 +10,7 @@ asset classes, handled differently:
   console's **Search & import** panel; a curator imports the ones worth keeping, and each
   import snapshots the exporter-rendered board into an instance-owned copy with full
   rigor. Experimentation stays in Penpot; only curated boards enter the catalog
-  ([plans/30 §3.1](../../plans/30-penpot-design-source.md)).
+  ([plans/30 section 3.1](../../plans/30-penpot-design-source.md)).
 
 Read-only; Penpot stays the source of truth.
 

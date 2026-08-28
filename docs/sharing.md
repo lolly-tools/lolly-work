@@ -12,7 +12,8 @@ can wrap that render in a signed, expiring, revocable URL. Everything here enfor
 GET /render/<toolId>.<format>?<tool inputs>
 ```
 
-Formats: `svg` and `png` (rasterised with resvg). The flow: load the tool through the real
+Formats: `svg` and `png` (rasterised with resvg) always; `jpg` and `pdf` too when a
+Chromium render worker is configured ([deployment](deployment.md)). The flow: load the tool through the real
 engine → resolve overlays for the caller's groups → refuse or bake locked inputs → render →
 optionally watermark → optionally embed provenance / sign → cache.
 
@@ -81,9 +82,8 @@ Two checks, at two different times, and both matter:
 
 `download` sets `Content-Disposition: attachment`; `share` and `embed` serve inline. Either
 way the bytes carry the same private, no-CDN cache headers as `/catalog/*` plus a
-content-security policy that sandboxes them and allows no script - a member-submitted SVG is
-markup, and a link is the one asset surface an unauthenticated bearer reaches, so nothing
-served here can run as the person who opens it. An old
+content-security policy that sandboxes them and allows no script, so a shared SVG cannot
+execute as the person who opens it. An old
 federated id keeps resolving after [an exit](offboarding.md) through its alias. TTL, passwords,
 revocation, audit and `link.visit` telemetry are unchanged - an asset link is an ordinary link
 that happens to point at an asset, and the console's Links view lists it as one.
@@ -104,19 +104,15 @@ POST /api/v1/links   { "kind": "share", "target": { "collectionId": "launch-kit"
 - **`embed`** is refused at mint (`400`). A collection is a list, not a byte stream.
 
 The two checks are the same two, one level up: **exposure at mint** and **lifecycle on every
-visit, per member**. Mint asks both halves of the exposure question - the minter must be able
-to see the collection *and* every asset it names - so a widely visible set curated by someone
-with broad exposure cannot be used to hand its bytes to a colleague who is individually denied
-them. A mint that fails is a `403 MEMBER_NOT_VISIBLE` reporting how many members were unseen,
-never which. An expired or revoked
+visit, per member**. Minting requires the minter to see the collection *and* every asset it
+names; a mint that fails is a `403 MEMBER_NOT_VISIBLE` reporting how many members were
+unseen, never which. An expired or revoked
 asset leaves the page and the archive together, on a link that is otherwise live; the page
 says how many were left out, never which.
 
 The page shows **that collection and nothing else**: no search, no browsing past the set, no
 self-registration, no route into the rest of the catalog. Asking the link for an asset the
-collection does not name is a `404 NOT_IN_COLLECTION` even though the signature is valid. That
-boundary is the feature - it is what keeps a shared set on the right side of the brand-portal
-refusal.
+collection does not name is a `404 NOT_IN_COLLECTION` even though the signature is valid.
 
 The archive is built in-process from Node's own `zlib`, streamed member by member, with entries
 named for the asset and de-duplicated. A set too large to zip is refused up front rather than

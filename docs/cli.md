@@ -119,13 +119,14 @@ lw providers sync|health <id>
 lw providers drift <id>
 lw providers materialize <id> [--remote-id <id> | --section <name>]
 lw providers cutover <id>         # owner-only
+lw providers publish <id> --in <export-file> [--name <name>]   # owner-grantable publish-out
 lw providers rm <id>
 ```
 
-Kinds: `brandfolder`, `s3`, `git`, `dropbox`, `gdrive`, `o365`, `optimizely-cmp`,
+Kinds: `webdav`, `s3`, `git`, `brandfolder`, `dropbox`, `gdrive`, `o365`, `optimizely-cmp`,
 `imagerelay`, `canto`, `acquia-dam`, `intelligencebank`, `penpot`, `mock`. See
 [catalog](catalog.md), the first-connection walkthrough in
-[install §9](install.md#9-connect-a-source), and the per-kind
+[install section 9](install.md#9-connect-a-source), and the per-kind
 [provider guides](providers/README.md).
 
 ### `preview` - the dry run
@@ -192,8 +193,8 @@ It is read-only: it stores nothing and re-materializes nothing, so it is safe on
 A copy taken when the source carried no timestamp is compared against its `materializedAt`
 instead.
 
-**"Cannot tell" is never dressed up as "unchanged".** `compared` counts only the copies that
-got a real answer; every other copy is counted, and printed, under its own reason:
+`compared` counts only the copies that got a real answer; every other copy is counted, and
+printed, under its own reason:
 
 ```
 not compared: 4 copy(ies) whose upstream record carries no change stamp the driver can read - check this kind's UPDATED_AT_KEYS against its live-verify runbook.
@@ -202,11 +203,9 @@ not compared: 1 copy(ies) whose remote id is no longer in the listing at all.
 read with care: 3 comparison(s) used a stamp that names no timezone (shape NN/NN/NNNN NN:NN) - it was read in THIS server's timezone, so those answers can be off by its UTC offset.
 ```
 
-The stamp **shapes** are printed, never the stamps: digits collapse to `N` and letters to `A`,
-so `NNNNNNNNNN` is an epoch integer and `NN/NN/NNNN NN:NN` a zoneless local datetime. That
-names the format for a driver fix without carrying an upstream value. A source stamping either
-one therefore reports as "cannot tell" or as a timezone caveat, never as a clean bill of
-health, which is the failure mode these lines exist to catch.
+The stamp **shapes** are printed, never the stamps: digits collapse to `N` and letters to
+`A` (`NNNNNNNNNN` is an epoch integer, `NN/NN/NNNN NN:NN` a zoneless local datetime), so
+the line names the format for a driver fix without leaking an upstream value.
 
 ## Catalog submit
 
@@ -323,5 +322,6 @@ skip it and use your own chain. See [c2pa](c2pa.md).
 | `--base <url>` / `LW_BASE` | which deploy to talk to (default `http://localhost:8787`) |
 | `--json` | machine-readable output |
 
-Exit codes: `1` on any API error or usage mistake, `2` specifically for a broken audit chain
-or a pending schema - so both are usable as monitoring checks.
+Exit codes: `1` on any API error or usage mistake (including `migrate --check` with a
+pending schema), `2` specifically for a broken audit chain or a failing provider health
+check - so both are usable as monitoring checks.

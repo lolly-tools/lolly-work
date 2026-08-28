@@ -7,7 +7,8 @@ and consent flow common to all OAuth kinds.
 ## What you need from Dropbox
 
 - **A Dropbox app** you register (App Console), with **`files.content.read`** and
-  **`files.metadata.read`** scopes and `offline_access` (for the refresh token). A
+  **`files.metadata.read`** scopes, and offline access for the refresh token - there is no
+  scope to tick: the consent flow requests `token_access_type=offline` itself. A
   scoped-access app restricted to one folder is ideal.
 - BYOT: the app's key/secret are yours; the refresh token is captured by `lw providers auth`.
 

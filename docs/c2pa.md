@@ -129,9 +129,8 @@ can **detect** that.
   inspect route (`GET /api/v1/catalog/assets/<id>`) returns the detection row.
 - It is a **detector, never a verifier**. It records only *whether* a manifest is
   present and in which container - never a `valid`/`trusted` verdict, never a
-  parsed claim. Validation is the reader's to do against the bytes they received,
-  in the console's own verify view; the deploy does not mark its own homework.
-  This reuses the vendored engine's container handling (one C2PA implementation
+  parsed claim. Validate in the console's verify view, against the bytes you
+  received. This reuses the vendored engine's container handling (one C2PA implementation
   across both repos), and the engine-pin check asserts those modules stay present.
 - On **export**, provenance ingredients upgrade `c2pa: null` → `{ kind: 'embedded' }`
   for any consumed asset that has an embedded detection - so the export can

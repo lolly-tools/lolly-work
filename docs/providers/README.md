@@ -49,8 +49,7 @@ the original rather than a rendition:
 
 The four DAM runbooks are written for the platform team running the pass on a customer's tenant;
 the `webdav` one is written for whoever administers the server, since with this kind that is
-usually the same organization. All of them name file paths and constants. A runbook is the
-checklist for that day, not a record of one.
+usually the same organization. All of them name file paths and constants.
 
 Universal rules across every kind: credentials are **write-only** (sealed at rest, only a
 fingerprint is ever returned), providers are **read-only** federation (deleting one never

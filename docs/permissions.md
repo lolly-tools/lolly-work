@@ -17,7 +17,7 @@ anything up: a resource arrives as the set of selectors it satisfies (e.g.
 
 | Role | Comes from | Carries |
 |---|---|---|
-| `viewer` | assigned | `catalog.read`, `session.view`, `collab.join` |
+| `viewer` | service tokens only (`lw tokens create --role viewer`) - no group resolves a person to it | `catalog.read`, `session.view`, `collab.join` |
 | `member` | the default for any signed-in user | viewer + `tool.use`, `session.create/edit/delete/share`, `project.create`, `export.download`, `export.request`, `link.create` |
 | `author` | group `author` | member + `catalog.submit` |
 | `approver` | group `approver` | member + `approval.act` |
@@ -28,15 +28,14 @@ anything up: a resource arrives as the set of selectors it satisfies (e.g.
 Role comes from the effective group set (IdP ∪ local groups): the highest of `owner`,
 `admin`, `approver`, `author`, else `member`. See [identity](identity.md).
 
-Four actions stay **owner-only** on purpose: an admin can shape a catalog provider and even
+Five actions stay **owner-only** on purpose: an admin can shape a catalog provider and even
 materialize its bytes into the instance's own store, but only an owner puts a credential in
 it or flips its kill switch (including the exit's cutover), only an owner changes deploy
 config, only an owner may **publish lolly exports out** to a destination DAM
-(`catalog.provider.publish` - an outbound write to a third party), and only an owner mints a
-**SCIM provisioning token** (`scim.manage`) - the bearer an IdP holds to create, disable and
-re-group people, an identity-infrastructure credential in the same class as a provider key.
-Each is owner-grantable: an owner can hand it out per-resource through a grant, but an admin
-cannot mint it for themselves.
+(`catalog.provider.publish` - an outbound write to a third party), and only an owner mints
+the standing bearer credentials: a **SCIM provisioning token** (`scim.manage`) for the IdP
+and a **service token** (`token.manage`) for automation. Each is owner-grantable: an owner
+can hand it out per-resource through a grant, but an admin cannot mint it for themselves.
 
 ## Grants
 
@@ -62,9 +61,10 @@ Every mutation is audited.
 
 ### The escalation guard
 
-A grant that creates or removes `instance.config` or `catalog.provider.credential` requires
-the **owner** role, even though grant editing itself is an admin action. Attempting it
-returns `403 OWNER_ONLY_ACTION`.
+A grant that creates or removes any owner-only action (`instance.config`,
+`catalog.provider.credential`, `catalog.provider.publish`, `scim.manage`, `token.manage`)
+requires the **owner** role, even though grant editing itself is an admin action.
+Attempting it returns `403 OWNER_ONLY_ACTION`.
 
 The guard stops an admin minting an owner-only *grant*. It does not stop an admin becoming
 an owner: role is derived from group membership, group editing is an admin action, and a
@@ -98,8 +98,8 @@ lw grants add group:design catalog.submit '*' --effect allow
 
 It is deliberately the whole of the submitter's authority. **There is no separate action for
 deciding a submission**: when `policy.submit.chain` names a chain, the decision is an ordinary
-approval, gated by `approval.act` and by the chain's own step eligibility, and the review queue
-is only an ergonomic door onto it. Whoever may act on the step may also correct a pending
+approval - eligibility is membership of the step's approver groups plus separation of duties
+([approvals](approvals.md)), and the review queue is only an ergonomic door onto it. Whoever may act on the step may also correct a pending
 submission's declared metadata before publishing it - name, type, tags and description, never
 the bytes and never the exposure the submitter chose.
 
@@ -195,11 +195,10 @@ That asymmetry is easy to trip over. A grant like
 lw grants add '*' session.edit '*' --effect deny
 ```
 
-silences every **member's** write access in a live room (`mayEditCollab` calls `evaluate()`,
-which this grant matches for any principal) - and reaches no guest, because a guest's
-writer/observer split never runs `evaluate()` against the guest. `session.edit`, `collab.join`,
-a role change, a group removal - evaluated against the guest's own principal, none of it decides
-anything, because nothing evaluates that principal.
+silences every **member's** write access in a live room (`mayEditCollab` calls `evaluate()`)
+and reaches no guest: a guest's writer/observer split never runs `evaluate()` against the
+guest's own principal, so no grant, role change or group removal naming a guest decides
+anything.
 
 **One action is the exception, and it is the one that matters: `link.create-guest`, evaluated
 against the INVITER.** The gateway re-checks the inviter's standing on every gesture and every
@@ -217,14 +216,11 @@ Four levers, then - three that act on the guest, one that acts on the inviter:
 | `guestLinks.enabled: false` ([configuration](configuration.md)) | The instance-wide kill switch. Stops new links from minting *and* evicts every guest already connected - re-checked live, not only at mint time. |
 | Taking `link.create-guest` off the **inviter** - a deny grant, a role change, removing them from the group that carried it, or disabling the account | Evicts every guest **that inviter** admitted, on the guest's next op or keepalive. The one lever that covers links nobody can enumerate; it leaves guests invited by anyone else alone. |
 
-The `inputAccess` lever is one-way, and not in the direction the group names suggest. A guest
-carries only the synthetic `guests` group, so a rule written for a tool's real editing groups
-(`'team-eng'`, `'admin'`, …) matches no guest - and a guest that matches no rule on a **governed**
-input does not inherit the member-side `editable` fallback: the gateway locks it
-(`vetoOps` + `inputIsGoverned`, `INPUT_LOCKED`). So governing an input at all narrows it for
-guests, and nothing widens it back: even `{"groups": ["guests"], "level": "editable"}` resolves to
-locked in a live room, because the guest fallback is applied after resolution. An input with **no**
-rules at all is untouched and stays editable for everyone, guests included.
+The `inputAccess` lever is one-way for guests: governing an input **at all** locks it for
+them. A guest carries only the synthetic `guests` group and never inherits the member-side
+`editable` fallback (`vetoOps` + `inputIsGoverned`, `INPUT_LOCKED`) - even
+`{"groups": ["guests"], "level": "editable"}` resolves to locked in a live room. An input
+with **no** rules stays editable for everyone, guests included.
 
 What is not a lever: a grant naming the guest, and any action other than `link.create-guest`.
 Those never reach the path a guest's write decision takes.

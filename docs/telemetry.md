@@ -62,9 +62,9 @@ Ingest: `POST /api/v1/telemetry`. Rate-limited per IP
 
 | Surface | Route | Action |
 |---|---|---|
-| Overview stats | `GET /api/v1/stats/overview` | signed-in |
+| Overview stats | `GET /api/v1/stats/overview` | `telemetry.view` |
 | Rollup summary | `GET /api/v1/telemetry/summary` | `telemetry.view` |
-| Activity feed | `GET /api/v1/activity` | signed-in, filtered to what the caller may see |
+| Activity feed | `GET /api/v1/activity` | `audit.export` |
 | Fleet | `GET /api/v1/fleet` | `fleet.view` |
 
 The console's **Overview** leads with a role-aware "what needs me" panel, then popularity and
@@ -88,11 +88,9 @@ posture in the UI rather than hiding it - an internal deploy shows utilisation i
 Per-item **download** attribution is measured: a shell emits `catalog.asset-download` when a
 catalog asset leaves as a file, with a coarse `via` label (`direct`, `link`, or `zip`) and no
 filename, and the console's Overview shows "Most-downloaded catalog items" beside the
-opened-or-placed popularity of "Most-used". An `assetId` is not an identity attribute, so this
-rides the ordinary attribution rule - attributed where the deploy attributes, aggregate where
-it does not - and the identity floors are untouched. Transform and crop attribution is still
-not its own event: those count as tool activity, and the console says so on the page instead
-of implying data it does not have.
+opened-or-placed popularity of "Most-used". Downloads follow the same attribution rule as
+every other event; transforms and crops count as tool activity, not a separate event, and
+the console says so on the page.
 
 ## Prometheus
 

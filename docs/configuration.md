@@ -56,8 +56,8 @@ start otherwise. See [identity](identity.md).
 | `submit.quota.bytes` | `0` | cumulative byte ceiling per group; `0` is unlimited |
 | `submit.quota.count` | `0` | cumulative submission-count ceiling per group; `0` is unlimited |
 | `catalog.versionKeep` | `0` | how many versions of one instance asset to keep, head included. `0` keeps every version; a positive number trims oldest-first and deletes the trimmed bytes. The served version is never trimmed, and a held asset is never trimmed at all |
-| `fleet.minEngine` | *unset* | the stated engine version floor (dotted, e.g. `"1.140.0"`). A statement, never a gate: below-floor engines are highlighted in the Fleet view and the console offers a pre-composed upgrade nudge through the ordinary message path. Nothing is blocked or force-upgraded |
-| `retention.telemetryDays` | `0` | delete telemetry events older than this; `0` keeps everything - an org states its policy, the product never assumes one |
+| `fleet.minEngine` | *unset* | advisory engine version floor (dotted, e.g. `"1.140.0"`): below-floor engines are highlighted in the Fleet view with an upgrade nudge; nothing is blocked or force-upgraded |
+| `retention.telemetryDays` | `0` | delete telemetry events older than this; `0` keeps everything |
 | `retention.auditDays` | `0` | trim audit rows older than this. The chain stays verifiable (the boundary's seq + hash are anchored before anything is deleted, and the head row is never trimmed), and a trim never passes the SIEM delivery cursor - an unreachable receiver pauses audit retention rather than losing events. See [operations](operations.md#retention-and-erasure) |
 
 Submit is **open to authors** by default: anyone holding `catalog.submit` submits and the
@@ -65,9 +65,8 @@ asset goes live immediately. Name a `submit.chain` when the org wants review. Qu
 group names, and a submission is charged to every group its submitter belongs to, so extra
 memberships only tighten a member's budget. See [catalog](catalog.md#submitting-an-asset).
 
-`catalog.versionKeep` keeps everything by default, because an org that has just moved its brand
-history off a DAM would not thank a product-chosen ceiling for deleting the originals it moved.
-Bounding blob growth is a deliberate operator call - see
+`catalog.versionKeep` keeps everything by default; set a ceiling only when you deliberately
+want to bound blob growth - see
 [operations](operations.md#blob-growth-and-version-retention) and
 [catalog](catalog.md#versions).
 
@@ -168,10 +167,9 @@ Wiring ClamAV or an ICAP gateway is written up in
 
 ## `notify`
 
-Notification egress. Absent (the default) means dormant: zero egress, byte-identical to a
-deploy before the feature existed. Both channels are the org talking to itself - its own
-relay, its own endpoint - never phone-home; delivery is fire-and-forget and a sulking relay
-can never fail or slow a request. What gets sent, and to whom, is written up in
+Notification egress. Absent (the default) means dormant: zero egress. Sends only to
+endpoints you configure, never phone-home; delivery is fire-and-forget, so an unreachable
+relay never fails or slows a request. What gets sent, and to whom, is written up in
 [operations](operations.md#notifications).
 
 | Key | Default | What it does |

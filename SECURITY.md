@@ -71,13 +71,13 @@ enforces it.
 These are documented design choices, not vulnerabilities — please check here
 before reporting.
 
-- **Stateless sessions: no pre-expiry token revocation.** Session and guest
-  cookies are HMAC-signed stateless tokens (`server/src/iam/sessions.ts`,
-  `server/src/iam/tokens.ts`); there is no server-side session table to
-  invalidate a single token early. Disabling an account takes effect on the
-  next request (the principal is re-checked), but an already-minted token for
-  a still-enabled account remains valid until its TTL (default 12h,
-  operator-tunable via `policy.sessionTtlHours`) expires.
+- **Stateless sessions: no per-individual-session revocation.** Session and
+  guest cookies are HMAC-signed stateless tokens (`server/src/iam/sessions.ts`,
+  `server/src/iam/tokens.ts`); there is no session table naming one token to
+  kill early. Per **user**, sign-out-everywhere exists: disabling an account,
+  or `POST /api/v1/users/:id/revoke-sessions`, bumps the user's session epoch
+  and every prior token fails its next request. The residual is scoped to one
+  token vs all of a user's, bounded by `policy.sessionTtlHours` (default 12h).
 - **CSRF stance is `SameSite=Lax`.** All cookies are `HttpOnly; SameSite=Lax`
   (plus `Secure` on https instances). There is no per-request CSRF token; we
   rely on Lax cookie semantics and on state-changing routes not being

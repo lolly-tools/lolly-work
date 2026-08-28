@@ -9,7 +9,7 @@ gaps are named, not smoothed over. Verified against the repository on **2026-08-
 
 | | Control plane (this repo) | Lolly OSS |
 |---|---|---|
-| Tests | 587 (584 pass, 3 conditional skips, ~8 s) | 5,220 (5,189 pass, 31 conditional skips, ~51 s) |
+| Tests | 786 (783 pass, 3 conditional skips, ~9 s) | 5,220 (5,189 pass, 31 conditional skips, ~51 s) |
 | CI | 4 blocking gates: test (with a real Postgres service), typecheck, audit (npm audit + SBOM freshness), package (image build) | 7 blocking gates incl. SBOM drift + license checks |
 | Runtime deps | 7 (2 vendored); `npm audit`: 0 findings | 1 npm (+ Rust for desktop shells) |
 | Compliance artefacts | `SECURITY.md`, CycloneDX `sbom.cdx.json` (CI-checked for drift) | SBOM (CI-gated), SECURITY.md with threat model, third-party notices |
@@ -67,10 +67,11 @@ and the *role a shell's token claims* is stale until the next mint (authorizatio
 `requireAction` resolves the live record every request). Mitigation for the residual: lower
 `sessionTtlHours`. See [identity](identity.md).
 
-### 2. Audit-head anchoring is manual
-The mechanism is built (`/api/v1/audit/head`, `lw audit head`, optional boot/interval
-logging). Nothing schedules it, and Postgres carries no append-only constraint - so head
-publishing *is* the truncation defence and needs to become routine. See [audit](audit.md).
+### 2. Audit-head anchoring stops at the log line
+The mechanism is built and head **logging is on by default** (boot + hourly,
+`audit.headLog`). What is unscheduled is committing the head to an **external sink**, and
+Postgres carries no append-only constraint - so out-of-band head publishing *is* the
+truncation defence and needs to become routine. See [audit](audit.md).
 
 ### 3. Container image: shipped and signed; tag lag + package visibility
 The first tagged release (**v0.2.0**, 2026-08-14) built and pushed both images (server,
@@ -103,8 +104,9 @@ The Postgres driver only runs under `LW_TEST_DATABASE_URL`. CI now provides one,
 covered on `main` - but a local `npm test` still exercises only the memory driver.
 
 ### 7. `until-approved` watermarking
-`always` and `never` are wired; the per-render linkage between approval state and watermarking
-is deliberately not built yet. Bind a chain *and* set `always` if you need the guarantee today.
+`always` is wired; `never` is stored but never consulted (equivalent to unset); the
+per-render linkage between approval state and watermarking is deliberately not built yet.
+Set `always` if you need the guarantee today.
 
 ### 8. Vercel is a pilot vehicle
 The hosted demo renders for real - `GET /render/<toolId>.<format>` serves live SVG/PNG bytes
@@ -120,17 +122,22 @@ freshness gate both fail - ~93 crates are present in the lock but absent from
 `cargo-licenses.json`. (The "580 crates report unknown" figure was a miscount: all 580 mapped
 crates carry a valid SPDX expression; the fault is coverage drift, not unknown licenses.) Fix
 is `npm run build:cargo-licenses && npm run build:sbom` on a Rust toolchain, then commit.
-**(b) Copyleft review, needs counsel:** the two LGPL-3.0 web-PWA deps (`heic-to`,
-`@breezystack/lamejs`) are dynamically `import()`ed with source offers already in the notices,
-so the substantive obligation is largely met but the formal relink/substitution analysis is
-still open; and a GPL-3.0-only build-time crate (`auto_generate_cdp`, via headless_chrome's
-CDP codegen) needs verifying as build-only-and-not-distributed. The hosted web product is
-close to clear; wide distribution of downloadable desktop/mobile binaries is not, and remains
-the likeliest external-review blocker.
+**(b) Copyleft review, needs counsel:** the hosted web product is close to clear (the two
+LGPL-3.0 web deps carry source offers; formal relink analysis open); wide distribution of
+downloadable desktop/mobile binaries is not, and remains the likeliest external-review
+blocker.
 
 ### 10. Bus factor
 One person commits to both repos. The plans directory and honest inline documentation are the
 mitigation; they are not a substitute for a second maintainer.
+
+### 11. Two documented-then-corrected policy seams
+The overlay `enforce` keys `c2pa` and `escalation` are declared in the type but the write
+paths (`PUT /api/v1/policy/overlays/:toolId`, `lw apply`) do not accept them, and no route
+evaluates an `approval.act` RBAC action - approval eligibility is step-group membership plus
+separation of duties. The docs now say so ([governance](governance.md),
+[approvals](approvals.md)); wire the keys and the action check, or delete them from the
+type, before an org expects either lever to exist.
 
 ## Roadmap shape
 
@@ -143,16 +150,16 @@ The plan sequences phases so each is independently useful:
 | 2 | roles/grants, overlays, profile governance, org-config, message bridge | done; org-scoped MCP endpoint outstanding |
 | 3 | approvals, watermarking, lifecycle, C2PA assertions | largely done (see gap 7) |
 | 4 | shared workspaces, collab presence, telemetry dashboards | projects/sessions and dashboards done; server collab substrate **done single-node** (ws gateway + rooms + persistence + guest join, `server/src/collab/`) - client presence UI is OSS-side and open |
-| 5 | SAML/SCIM, SIEM streaming, live co-editing, air-gap hardening | **SCIM done** (`/scim/v2`: Users create/patch/`active=false`, Group membership, per-IdP bearer tokens - plans/31 §8); SAML deliberately deferred to Keycloak's SAML→OIDC bridge; live co-editing server side done but **rollout stays adoption-gated** (the conflict counter on the console Overview is the gate's instrument); SIEM streaming not started |
+| 5 | SAML/SCIM, SIEM streaming, live co-editing, air-gap hardening | **SCIM done** (`/scim/v2`: Users create/patch/`active=false`, Group membership, per-IdP bearer tokens - plans/31 section 8); SAML deliberately deferred to Keycloak's SAML→OIDC bridge; live co-editing server side done but **rollout stays adoption-gated** (the conflict counter on the console Overview is the gate's instrument); SIEM forwarding **done** (plans/35: batched, cursor-tracked, `lw_siem_lag` gauge - see [operations](operations.md#siem-forwarding)) |
 
 The community gate is worth restating, because it is the test of the brand-agnostic claim:
 **someone who is not us stands a deploy up from the Helm chart.**
 
 ## Next three things worth doing
 
-1. **Push a release tag** so the wired publish-and-sign workflow produces the first signed
-   images, then pin them in the chart - the last packaging step between "builds" and
-   "installable".
+1. **Cut a tag past v0.2.0 and make the GHCR packages public** (or ship an
+   `imagePullSecrets` snippet), then pin the images in the chart - the last step between
+   "signed" and "third-party installable" (gap 3).
 2. **Make audit-head anchoring routine** (a scheduled commit or sink) so the truncation
    defence is real and not merely available.
 3. **Automate the engine re-pin** cadence, with the bridge-contract version check as the gate.

@@ -58,13 +58,20 @@ server/src/     the app - zero-dependency Node (node:http, node:crypto, native T
   links/        signed expiring revocable links (share/embed/download/guest-edit)
   audit/        hash-chained append-only log
   telemetry/    ingest (attr allowlist, attribution policy at the door), rollups
+  approvals/    chains, steps, separation of duties
+  catalog/      submit, lifecycle, versions, collections + the provider drivers
+  collab/       live co-editing gateway, rooms, guest links
+  scim/         SCIM 2.0 provisioning (Users, Group membership)
+  observability/ Prometheus metrics + SIEM forwarding
   inbox/        message bridge audience targeting
   fleet/        X-Lolly-Client parsing + version registry
-  store/        storage seam: memory driver now, Postgres next (migrations/ has the schema)
-  render/       cache-key contract (render pipeline itself ships next)
+  blobs/        instance-owned bytes behind the BlobStore seam
+  store/        memory + Postgres drivers behind one conformance-tested seam
+  render/       render plane: jsdom fast path, Chromium worker client, LRU cache
   api/          router + the HTTP app
-migrations/     Postgres schema v0
-deploy/compose/ single-VM shape (Dockerfile + docker-compose)
+workers/render/ the Chromium render worker (its own container image)
+migrations/     Postgres schema
+deploy/         compose (single VM), helm (Kubernetes), vercel (the hosted demo)
 packs/          deployment pack mount (your pack is data, never committed; packs/demo ships)
 ```
 
@@ -161,7 +168,7 @@ cookie - the in-shell governance UX won't activate here; use `npm run demo` for 
 | **Tool policy control plane** - console `#/tools` view + `GET /api/v1/policy/tools` / `PUT /api/v1/policy/overlays/:toolId`: visibility groups, per-input rules (lock to preset / restrict to choices / hide), watermark enforcement; `policy.edit` grantable to brand groups; audited with before/after, render cache busted on save | |
 | **Admin console** at `/admin` - overview dashboards, fleet, links (revoke), messages (compose + reach), audit chain view, people | |
 | **Admin CLI** `lw` - login/whoami/summary/fleet/links/msg/audit-verify over the same API | |
-| **Catalog providers** - federate Brandfolder/S3/git/… read-only into the catalog: DB-backed control plane (console `#/providers` + `lw providers`), sealed write-only credentials (`LW_CREDENTIAL_SECRET`), exposure governance (groups/sections/approved), lifecycle overlays on `ext/*` ids, `/api/v1/catalog/search` with live fan-out. Drivers: Brandfolder, S3 (hand-rolled SigV4), git (raw-HTTP manifest), Dropbox, Google Drive, O365/Graph (refresh-token OAuth via `lw providers auth` PKCE loopback flow), mock. **Export provenance**: C2PA-shaped ingredients embedded in SVG (`<metadata>`) and PNG (iTXt) exports + `x-lolly-provenance` header - "«filename» from «provider»" travels even when the upstream has no C2PA | ✓ **Real C2PA signing shipped** (genuine signature when an identity is configured); provider fragment hashes → render cache keys still pending |
+| **Catalog providers** - federate DAMs and storage read-only into the catalog: 13 kinds (WebDAV, S3, git, Brandfolder, Image Relay, Canto, Acquia DAM / Widen, IntelligenceBank, Optimizely CMP, Penpot, Dropbox, Google Drive, O365), sealed write-only credentials, exposure governance, live search fan-out, C2PA-shaped export provenance, off-boarding via materialize → cutover ([docs/catalog.md](docs/catalog.md) + [the per-kind guides](docs/providers/README.md)) | ✓ **Real C2PA signing shipped** (genuine signature when an identity is configured); provider fragment hashes → render cache keys still pending |
 
 Also shipped since this table was first drawn (plans/34-36), and not to be read as pending:
 store-backed device-code sign-in, multi-IdP + the signed release image, ownership transfer +

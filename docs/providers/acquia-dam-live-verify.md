@@ -127,14 +127,18 @@ file /tmp/widen-lolly.bin
 ```
 
 The format segment is `original`, not `download`: this kind names its single format after the
-embed it reads. Download the same asset from the Widen UI as the original and checksum that too.
-A matching checksum strikes row 18. A different one means the embed named `original` is a
-conversion of it - compare sizes, pixel dimensions, colour profile and EXIF/ICC metadata, report it
-as row 18 rather than a materialize bug (materialize checksums whatever it is given, so a
-conversion arrives silently as the wrong bytes), and say whether `_links.download.href` did better;
-the fallback order is one line to swap. Repeat per file type you plan to exit (photo, PDF, video,
-InDesign package): Widen's conversion behaviour differs by type. A failure on the blob route
-surfaces as `502 PROVIDER_UNAVAILABLE`; the diagnosis is in the materialize output, not there.
+embed it reads. Download the same asset from the Widen UI as the original, checksum both, then:
+
+- **Checksums match** - strike row 18.
+- **Checksums differ** - the embed named `original` is a conversion. Compare size, pixel
+  dimensions and ICC/EXIF, report it as row 18 (not a materialize bug: materialize checksums
+  whatever it is given), and say whether `_links.download.href` did better - the fallback
+  order is one line to swap.
+- **Repeat per file type** you plan to exit (photo, PDF, video, InDesign package): Widen's
+  conversion behaviour differs by type.
+
+A failure on the blob route surfaces as `502 PROVIDER_UNAVAILABLE`; the diagnosis is in the
+materialize output, not there.
 
 Last, the stamp the exit cadence depends on:
 

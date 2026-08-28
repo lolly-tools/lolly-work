@@ -6,7 +6,9 @@ provider changes, catalog changes, config applies.
 
 ![The audit chain - an append-only, hash-linked record of every governed action](shots/audit-chain.svg)
 
-Entries are never edited or deleted - only added.
+Entries are never edited - only added, and only ever removed by stated retention:
+`policy.retention.auditDays` trims rows older than the window behind an anchor (seq + hash)
+that keeps the chain verifiable ([operations](operations.md#retention-and-erasure)).
 
 ## How the chain works
 

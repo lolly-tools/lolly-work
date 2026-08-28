@@ -63,13 +63,12 @@ lw providers credential acme-imagerelay
 lw providers health acme-imagerelay
 ```
 
-`oauth token refresh failed (401)` means the client id/secret or the refresh token is wrong, or
-the grant was revoked - re-capture the credential. A `400` there is the token endpoint
-rejecting the **request shape**, which re-capturing cannot fix; the runbook's row 5a says what
-to edit. `imagerelay api 401` means the token exchange worked but the tenant rejected the
-access token; `imagerelay url outside allowed hosts` means a `baseUrl`/`tokenUrl` override or a
-download link points off `imagerelay.com`. The API, token and download hosts are all pinned to
-that family, so an override can move an endpoint within it and nowhere else.
+| Error | Meaning |
+|---|---|
+| `oauth token refresh failed (401)` | client id/secret or refresh token wrong, or the grant revoked - re-capture the credential |
+| `oauth token refresh failed (400)` | the token endpoint rejects the **request shape**; re-capturing cannot fix it - the runbook's row 5a says what to edit |
+| `imagerelay api 401` | token exchange worked, tenant rejected the access token |
+| `imagerelay url outside allowed hosts` | a `baseUrl`/`tokenUrl` override or download link points off `imagerelay.com` (API, token and download hosts are all pinned to that family) |
 
 With a real tenant in hand, run the
 [Image Relay live-verify runbook](imagerelay-live-verify.md): the ordered pass that confirms

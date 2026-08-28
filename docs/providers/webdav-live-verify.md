@@ -63,14 +63,12 @@ lw providers preview --kind webdav --shape \
     > webdav-shape.txt
 ```
 
-The file holds one report for a `PROPFIND` with `Depth: 1` on the files root. That call is the
-report's **own**, and it asks with `<d:propname/>`: property names, no values at all. It has to be
-its own, because a `PROPFIND` that names properties gets back only what it named (RFC 4918 §9.1),
-so a report built from the sync's request could only ever say that a guess matched or did not, and
-never what the server calls the property instead. So: no values, no file content, no hrefs (a path
-is content this report has no business carrying), and for the Nextcloud flavor the endpoint line
-prints `/remote.php/dav/files/<username>/` rather than the real login, because that login is half
-the Basic credential. The prompt goes to stderr. Read the three groups in this order:
+The file holds one report for a `PROPFIND` with `Depth: 1` on the files root, asked with
+`<d:propname/>`: names only, no values, no file content, no hrefs - a request that named
+properties would get back only what it named (RFC 4918 section 9.1) and could never say what
+the server calls a property instead. The Nextcloud endpoint line prints
+`/remote.php/dav/files/<username>/` with the real login masked (it is half the Basic
+credential). The prompt goes to stderr. Read the three groups in this order:
 
 1. **EXPECTED BY THIS DRIVER, ABSENT** - the wrong guesses, and the answer this page exists for.
    Each entry reads `key|alternatives (CONSTANT_NAME)`, so it names the constant to widen.
@@ -169,9 +167,10 @@ Last, the change stamp the drift cadence reads:
 lw providers drift acme-nextcloud
 ```
 
-`not compared: … carries no change stamp the driver can read` is row 4 (`PROP_MODIFIED_KEYS`).
-`… would not parse as a date (shape …)` means the server spells `getlastmodified` in something
-other than the RFC 1123 form the driver parses - send the shape it prints.
+`not compared: … carries no change stamp the driver can read` is row 4: the server spells
+its modified property in something other than `PROP_MODIFIED_KEYS` (an unparsable
+`getlastmodified` is dropped at sync time, so it reports here too) - send the shape/names
+the report prints.
 
 Then take the pass down. Materialized copies are instance-owned and survive the delete:
 

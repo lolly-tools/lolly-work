@@ -39,8 +39,8 @@ project:
   `sourceUpdatedAt` against today's upstream `updatedAt`, and names the remedy without running
   it. Drifted copies are worth a re-run; a provider whose assets have stopped drifting has
   gone quiet, and a quiet upstream is when cutover is safe. Weekly during an active exit.
-- **`lw providers health` failing tenant-wide is the deadline arriving**, not a reason to
-  start planning.
+- **If `lw providers health` starts failing tenant-wide, materialize immediately** - that
+  is the deadline arriving, not the moment to start planning.
 
 ## Canto and Image Relay: which driver do you exit through?
 
@@ -85,7 +85,7 @@ guess turns out wrong: [canto](providers/canto-live-verify.md),
 
 The non-DAM kinds (`webdav`, `s3`, `git`, `dropbox`, `gdrive`, `o365`, `penpot`) are storage and
 design sources, not brand libraries held under someone else's contract. They have no
-off-boarding story and are absent from the table deliberately. `webdav` appears twice deliberately:
+off-boarding story and are absent from the table deliberately. `webdav` earns its own note:
 a Nextcloud or an Apache `mod_dav` mount is a server the organization runs itself, so there is
 no vendor to leave, and it is far more often **the destination of an exit** than the start of one.
 Materialize works against it like any other source, and its driver is fixture-verified with its

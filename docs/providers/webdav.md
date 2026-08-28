@@ -17,7 +17,7 @@ multistatus body is read by a small parser written for that one layout. No SDK, 
    reusing a person's. Give it read access to what you want federated: share the folder or the
    Group folder with it as **"Read only"**, or put the files in its own Files tree. A share shows
    up in that account's Files root under the share name, which is what `options.root` then points
-   at. Federation never writes, so no write, create, delete or reshare permission is needed.
+   at. No write, create, delete or reshare permission is needed.
 2. **An app password for that account**, generated under
    **Settings > Security > Devices and sessions > Create new app password**. Nextcloud shows the
    generated password once - copy it then. Never use the account password: an account with 2FA on
@@ -25,8 +25,7 @@ multistatus body is read by a small parser written for that one layout. No SDK, 
    touching the account or any other integration.
 3. **The account's LOGIN name.** The DAV path carries the login, which can differ from the display
    name (Settings > Personal info shows both, and it is the last path segment when that account
-   opens Files). That is `options.username`; it defaults to the username half of the credential,
-   which is the same string in the ordinary case.
+   opens Files). That is `options.username`; it defaults to the username half of the credential.
 4. **The server root** as `options.baseUrl`, e.g. `https://cloud.example`. If Nextcloud is served
    under a subpath, include it: `https://example.org/nextcloud`. The driver builds the files root
    as `<baseUrl>/remote.php/dav/files/<username>/<root>` and pins every request to that host.
@@ -95,12 +94,9 @@ Generic WebDAV:
 }
 ```
 
-- **`options.baseUrl`** (required) - parsed when the provider is constructed, so an address that
-  will not parse is refused at configuration time rather than once per sync. Its host is the pin,
-  and it is enforced three ways: a request URL is always **built** from it, an `<href>` in a
-  response naming another host is refused rather than followed, and the driver asks `fetch` not to
-  follow redirects, so a `3xx` is an error naming where it was being sent rather than a detour on
-  to some other origin's bytes.
+- **`options.baseUrl`** (required) - parsed at configuration time, and its host is the pin:
+  request URLs are built from it, an `<href>` naming another host is refused, and redirects are
+  never followed (a `3xx` is an error naming its target).
 - **`options.flavor`** - `"nextcloud"` or `"generic"` (default). It picks the URL template and
   whether Nextcloud's `oc:tags` property is requested. Everything else is plain WebDAV either way.
 - **`options.username`** - the Nextcloud login the DAV path carries. Defaults to the username half
@@ -116,14 +112,11 @@ Generic WebDAV:
   requests a second). WebDAV publishes no rate limit, so that default is deliberate caution rather
   than a documented ceiling; raise it for a small self-hosted box.
 - **`mapping.availabilityFields`** applies only if your server exposes a **custom DAV property**
-  carrying a date, in which case naming it here imports an
-  [availability window](../catalog.md#imported-availability-windows). Give the **local** name, with
-  the namespace prefix dropped (`embargo-until`, not `x:embargo-until`): a namespace URI is not
-  something the driver can guess. Setting it also changes the request - the `PROPFIND` asks for
-  `<d:allprop/>` instead of the five named properties, because a `PROPFIND` that names properties
-  gets only those back (RFC 4918 §9.1) and a custom property that was never asked for could never
-  arrive. That is the more expensive call, which is why it is opt-in. Plain WebDAV has no such
-  property - see Notes below.
+  carrying a date; naming it imports an
+  [availability window](../catalog.md#imported-availability-windows). Give the **local** name
+  with the namespace prefix dropped (`embargo-until`, not `x:embargo-until`). Setting it
+  switches the `PROPFIND` to `<d:allprop/>` so the custom property is actually returned
+  (RFC 4918 section 9.1) - the more expensive call, which is why it is opt-in.
 
 ## Verify
 
@@ -172,11 +165,9 @@ constant to edit when one is wrong.
   relies on (Nextcloud's SEARCH method is deliberately not built until one server confirms it),
   no rendition endpoint, and bytes stream through the driver per request rather than through a
   signed URL, so nothing expires.
-- **No availability window.** A WebDAV file has a size, a modification stamp and a content type,
-  and nothing that says when it may be published. Unless your server exposes a custom (dead)
-  property carrying a date, the manual `catalog.expire` arm is the whole story for this kind.
-  Naming that property in `mapping.availabilityFields` switches the `PROPFIND` to `<d:allprop/>`
-  so it is actually requested, and reads the date off that response. Nothing is inferred.
+- **No availability window.** A WebDAV file has a size, a modification stamp and a content
+  type, and nothing that says when it may be published: the manual `catalog.expire` arm is the
+  whole story unless a custom property is named in `mapping.availabilityFields` (above).
 - **A rename federates as a new asset.** The federated id is the file's path relative to the files
   root, so moving or renaming a file upstream produces a new one downstream. Nextcloud's
   `oc:fileid` would survive a rename but cannot address bytes, so it is deliberately not requested.

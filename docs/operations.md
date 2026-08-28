@@ -90,11 +90,10 @@ throttled.
 
 ## Pre-store scan hook for submissions
 
-**There is no scan hook by default, and no bundled antivirus. State that plainly rather than
-assuming otherwise:** an unconfigured deploy stores whatever a member with `catalog.submit`
-sends, exactly as it stores whatever a federated source hands back. This project ships the
-hook, never a scanner - no engine, no signature database, no updates. Scanning is yours, and
-so is keeping it current.
+**No scanner ships and none runs by default**: an unconfigured deploy stores whatever a
+member with `catalog.submit` sends, exactly as it stores whatever a federated source hands
+back. This project ships the hook, never a scanner - wiring one, and keeping it current, is
+yours.
 
 Wire one in `instance.json` under `submit.scanHook`. It is **instance config, not org
 policy**: it never appears in the policy-as-code document, in `org-config`, or in anything a
@@ -134,10 +133,8 @@ answer at all - a timeout, a refused connection, a missing binary. The default i
 so an unreachable scanner refuses submissions rather than quietly turning the gate off. Set
 `allow` only if you would rather take the bytes than block contributions during an outage.
 
-Both transports ship because both deployment shapes are real here: `exec` keeps a single-node
-install to one config block and no new service, while `http` is the only path that works
-where there is no local process to spawn or where the scanner is an ICAP gateway your security
-team already runs.
+`exec` suits a single-node install (one config block, no new service); `http` is for
+serverless shapes and ICAP gateways your security team already runs.
 
 The verdict is audited either way, under `catalog.submit`: a refusal carries the code and the
 scanner's reason, and there is nothing else for it to hang off, since no asset was created. An
@@ -336,18 +333,15 @@ Two realities shape the setup:
 
 ### Enrollment, and leaving
 
-Connecting is a nomination: the individual chooses governance, and the
-instance never reaches out to a device. While signed in, org policy applies
-and work saved here is the organization's - projects, sessions, submissions
-and audit live server-side continuously, which is the whole of the
-"surrender". Leaving is unilateral on both sides: the person leaves from
-their client (the OSS shells' Profile → Lolly instance → Leave removes the
-org brand, tools, cached catalog and install id in one act; personal work is
-untouched), and the organization ends enrollment by disabling the user
-(every live session dies on its next request). Neither side can reach into
-the other afterwards: no remote wipe, no export block, no exit toll - and
-equally, a departed device keeps no org catalog. Exports made while enrolled
-keep their Content Credentials; history is history.
+Users enroll from their client; the instance never reaches out to a device.
+While signed in, org policy applies and work saved here (projects, sessions,
+submissions, audit) lives server-side. Either side can end it unilaterally:
+the person leaves from the client (Profile → Lolly instance → Leave removes
+the org brand, tools, cached catalog and install id; personal work is
+untouched), the organization disables the user (every live session dies on
+its next request). Afterwards: no remote wipe, no export block, no exit
+toll - and a departed device keeps no org catalog. Exports made while
+enrolled keep their Content Credentials.
 
 ## Checks and artefacts
 

@@ -1,6 +1,6 @@
 # Installing
 
-Nothing to a **running, configured, governed instance** - on a workstation (SLES /
+From nothing to a **running, configured, governed instance** - on a workstation (SLES /
 openSUSE Leap / macOS), a single VM, or Kubernetes. Every command here is meant to be
 copy-pasted as written.
 
@@ -16,7 +16,7 @@ copy-pasted as written.
 
 The server is **zero-build**: it runs TypeScript directly on Node, no compile step, no
 external assets. Sections 1 to 4 are the same for every shape - do them first, then pick
-one shape from 5, 6 or 7. §9 is the last leg for every shape.
+one shape from 5, 6 or 7. section 9 is the last leg for every shape.
 
 ## 0. Hosted demo (zero install)
 
@@ -27,7 +27,7 @@ in-memory and resets on redeploy; it holds nothing real.
 
 > The demo is hosted on Vercel today purely for convenience; it is **not** the deployment
 > model and will move to a **European sovereign cloud** (likely Evroc). For a real
-> deployment, especially a sovereign one, you self-host: see §7 and
+> deployment, especially a sovereign one, you self-host: see section 7 and
 > [deployment](deployment.md).
 
 ## Prerequisites
@@ -52,17 +52,17 @@ nvm install 24 && nvm use 24
 
 Verify: `node -v` prints `v24.x`.
 
-**PostgreSQL 16 or 17** for anything that keeps state (§3). Not needed for §1 or a
-first look at §2 - without a database the in-memory store runs and everything resets on
-restart. Compose (§5) and the Helm eval install bring their own; systemd (§6) does not.
+**PostgreSQL 16 or 17** for anything that keeps state (section 3). Not needed for section 1 or a
+first look at section 2 - without a database the in-memory store runs and everything resets on
+restart. Compose (section 5) and the Helm eval install bring their own; systemd (section 6) does not.
 
 **One more tool, only for the shape you pick.** Sections 1, 2 and 6 need nothing beyond
 the above:
 
 | Shape | Also needs | Check it with |
 |---|---|---|
-| §5 Compose | Docker with the **Compose v2** plugin | `docker compose version` prints a version. The older standalone `docker-compose` is not it, and `docker compose up --build` fails with `unknown flag: --build` when the plugin is missing |
-| §7 Kubernetes | `kubectl` and **Helm 3**, pointed at a cluster | `kubectl cluster-info` and `helm version` |
+| section 5 Compose | Docker with the **Compose v2** plugin | `docker compose version` prints a version. The older standalone `docker-compose` is not it, and `docker compose up --build` fails with `unknown flag: --build` when the plugin is missing |
+| section 7 Kubernetes | `kubectl` and **Helm 3**, pointed at a cluster | `kubectl cluster-info` and `helm version` |
 
 ## 1. Local demo
 
@@ -75,7 +75,7 @@ npm run demo            # http://localhost:8787   (PORT=8788 for another port)
 
 `npm run demo` builds its **own** config (it ignores `instance.json`) and seeds a whole
 governed deployment in memory: four personas, tool overlays, an approval chain, projects,
-and sixty days of activity history behind every console chart. It prints one passwordless
+14 days of usage telemetry and sixty days of audit history behind the console charts. It prints one passwordless
 sign-in link per persona at boot. Open the printed URL:
 
 - **Admin console** at `/admin` - sign in as `admin@suse.example`.
@@ -100,7 +100,7 @@ and render plane work in all three.
 ## 2. Your first real instance
 
 This is the configuration every real shape uses. Do it locally first - the file you produce
-here is what §5, §6 and §7 deploy.
+here is what section 5, section 6 and section 7 deploy.
 
 ```bash
 npm install                              # once per checkout, before anything runs
@@ -154,7 +154,7 @@ curl -s -o out.svg -w '%{http_code} %{content_type}\n' -H "Cookie: $C" \
 
 An empty `tools` array means `instance.pack` points somewhere that does not exist; the
 server warns about that at boot. A `501 HOOKED_TOOL_NEEDS_CHROMIUM` on the render means
-`render.allowHooksInFastPath` is `false` - see §4.
+`render.allowHooksInFastPath` is `false` - see section 4.
 
 ### The first owner
 
@@ -167,11 +167,11 @@ to connect a real DAM.
 
 | Situation | How the first owner appears |
 |---|---|
-| Local (§2) | `instance.example.json` ships `owner@example.test` in group `owner`. Sign in as that persona |
-| Kubernetes eval (§7a) | `deploy/helm/values-eval.yaml` ships `owner@eval.example` in group `owner`. Different addresses from §2; the §2 ones `403` there |
-| SSO (§4) | Create a group named exactly `owner` in your IdP, put the deploy operator in it, and make sure it arrives in the claim named by `idp.groupsClaim` (default `groups`) |
+| Local (section 2) | `instance.example.json` ships `owner@example.test` in group `owner`. Sign in as that persona |
+| Kubernetes eval (section 7a) | `deploy/helm/values-eval.yaml` ships `owner@eval.example` in group `owner`. Different addresses from section 2; the section 2 ones `403` there |
+| SSO (section 4) | Create a group named exactly `owner` in your IdP, put the deploy operator in it, and make sure it arrives in the claim named by `idp.groupsClaim` (default `groups`) |
 | SSO where you cannot add that group | Any admin can mint one: `POST /api/v1/groups {"name":"owner"}` then `PUT /api/v1/users/<id>/local-groups {"groups":["owner"]}`. Both are `grant.edit`, which admin holds, and both are audited |
-| GitOps / air-gap | A `LW_SEED_CONFIG` document is trusted and may grant owner-only actions to a group before any human signs in (§8, [governance](governance.md)) |
+| GitOps / air-gap | A `LW_SEED_CONFIG` document is trusted and may grant owner-only actions to a group before any human signs in (section 8, [governance](governance.md)) |
 
 Role changes take effect on the next API request, not on the next token mint: authorization
 resolves the live user record, so the same cookie gains and loses powers immediately.
@@ -182,7 +182,7 @@ resolves the live user record, so the same cookie gains and loses powers immedia
 |---|---|---|
 | `instance.baseUrl` | the URL this deploy actually answers on | drives OIDC redirect URIs and the `Secure` cookie flag. Wrong value breaks SSO |
 | `instance.pack` | your brand pack mount | the catalog, design tokens, console theming and tools all come from here |
-| `instance.shellDir` | a built `shells/web/dist` (from §1) | serves Lolly at `/` on one origin, so session cookies work and the in-shell governance UX activates |
+| `instance.shellDir` | a built `shells/web/dist` (from section 1) | serves Lolly at `/` on one origin, so session cookies work and the in-shell governance UX activates |
 | `idp.issuer` + `idp.clientId` | your OIDC issuer | real SSO ([identity](identity.md)) |
 
 Under a non-`open` access mode the server **refuses to start** if `shellDir` points at a
@@ -199,13 +199,13 @@ passwordless bypass until you say so. Before any instance is reachable by anyone
 1. `"dev": { "enabled": false }` in `instance.json`. The server warns at boot if a real
    issuer and the dev provider are both configured.
 2. `instance.baseUrl` set to the real URL.
-3. Both secrets set, and `NODE_ENV=production` so their absence is fatal (§4).
+3. Both secrets set, and `NODE_ENV=production` so their absence is fatal (section 4).
 4. Behind a reverse proxy or ingress, `rateLimit.trustedProxyHops: 1`, or per-IP limits
    only ever see the proxy.
-5. A database password you chose. The Compose file falls back to the literal `lolly` so a
-   tyre-kick stays one command, so any instance that started that way is still using it.
-   Set `PG_PASSWORD` in `.env` ([§5](#5-container-compose)); after first boot the `pgdata`
-   volume keeps the old one, so changing it also needs `alter role`.
+5. A database password you chose. The Compose file defaults it to the literal `lolly`,
+   so any instance that started without one is still using it. Set `PG_PASSWORD` in
+   `.env` ([section 5](#5-container-compose)); after first boot the `pgdata` volume keeps
+   the old one, so changing it also needs `alter role`.
 
 ## 3. Persistence
 
@@ -247,7 +247,7 @@ npm run migrate:status               # lists pending migrations, exits 1 if any
 npm run migrate                      # or just start the server: migrations auto-apply at boot
 ```
 
-Restart-survival needs the two secrets in §4 as well: with a database but no
+Restart-survival needs the two secrets in section 4 as well: with a database but no
 `LW_SESSION_SECRET`, data persists and every session still dies on restart.
 
 For multi-replica rollouts, turn boot DDL off (`LW_AUTO_MIGRATE=false`) and run migrations
@@ -274,7 +274,7 @@ in-process render path refuses to run a tool's `hooks.js` unless you opt in, ans
 `501 HOOKED_TOOL_NEEDS_CHROMIUM` instead. Every tool in `packs/demo` ships hooks, so
 `instance.example.json` sets it `true` - that pack is curated in this repo end to end. When
 you repoint `instance.pack` at a pack you do not fully control, set it back to `false` and
-attach a Chromium worker (§7) instead.
+attach a Chromium worker (section 7) instead.
 
 ## 5. Container (Compose)
 
@@ -283,12 +283,12 @@ system user to manage.
 
 ```bash
 cd <your checkout>                              # the REPO ROOT: the mount is ../../instance.json
-test -f instance.json && echo "using the instance.json you authored in §2" \
-  || cp instance.example.json instance.json     # only if you skipped §2
+test -f instance.json && echo "using the instance.json you authored in section 2" \
+  || cp instance.example.json instance.json     # only if you skipped section 2
 ```
 
 **Do not blind-copy the example over your own file.** The compose stack mounts
-`instance.json` from the **repo root** - the same file §2 had you author. Copying the
+`instance.json` from the **repo root** - the same file section 2 had you author. Copying the
 example over it silently reverts `baseUrl`, `pack`, `idp.issuer` and `dev.enabled` to the
 demo values, and no later step notices.
 
@@ -300,15 +300,13 @@ docker compose up --build                  # :8787, Postgres 17 alongside
 ```
 
 All three lines of `.env` matter. The compose file refuses to start without the two
-`LW_` secrets, and `PG_PASSWORD` defaults to the literal string `lolly` when you leave it
-out - a database password nobody chose. Setting it here is the whole of the fix, since
-both the server's `DATABASE_URL` and the Postgres container read the same variable. Change
-it after first boot and the existing `pgdata` volume keeps the old password: `docker
-compose down -v` (destroys data) or `alter role lolly password '<new>'` inside the container.
+`LW_` secrets. `PG_PASSWORD` feeds both the server's `DATABASE_URL` and the Postgres
+container; left out, both fall back to the literal `lolly` (section 2). Changing it after
+first boot also needs `alter role lolly password '<new>'` inside the container (the
+`pgdata` volume keeps the old one), or `docker compose down -v` (destroys data).
 
-The compose file mounts a **directory** where `instance.json` should be if the file is
-missing (that is Docker's behaviour at a missing bind source), and the server then fails to
-read a directory as its config - which is why the first command checks rather than assumes.
+If `instance.json` is missing, Docker creates a **directory** at the bind source and the
+server then fails to read a directory as its config - hence the `test -f` check above.
 
 ### Verify
 
@@ -316,7 +314,7 @@ read a directory as its config - which is why the first command checks rather th
 curl -s http://localhost:8787/healthz     # "name" must be YOUR instance.name, not the example's
 ```
 
-Then run the rest of the §2 ladder against `http://localhost:8787`, signing in as an address
+Then run the rest of the section 2 ladder against `http://localhost:8787`, signing in as an address
 your own `dev.users` lists (or through your IdP if you already set `idp.issuer` and turned
 the dev provider off). The image sets `NODE_ENV=production`, so a missing secret is a hard
 failure rather than a silent downgrade. The pack and an optional built shell are
@@ -324,7 +322,7 @@ bind-mounted read-only; migrations auto-apply at boot.
 
 ### Before you call it done
 
-This shape is a real deploy, so it needs the same three things §6 needs, and nothing above
+This shape is a real deploy, so it needs the same three things section 6 needs, and nothing above
 does them for you:
 
 1. `instance.baseUrl` set to the URL this host actually answers on. It drives OIDC redirect
@@ -340,19 +338,19 @@ Shape details (bind mounts, shell mount, boot guard): [deployment](deployment.md
 ## 6. Bare metal (systemd)
 
 Same code, less orchestration, when you would rather not run containers. Install
-PostgreSQL and create the role and database first (§3) - the unit crashloops without them.
+PostgreSQL and create the role and database first (section 3) - the unit crashloops without them.
 
 ```bash
 sudo useradd --system --home /opt/lolly-work --shell /usr/sbin/nologin lolly
 sudo git clone https://github.com/lolly-tools/lolly-work.git /opt/lolly-work
 sudo chown -R lolly:lolly /opt/lolly-work
 cd /opt/lolly-work && sudo -u lolly -H npm install --omit=dev
-sudo -u lolly cp instance.example.json instance.json    # then edit it (§2)
+sudo -u lolly cp instance.example.json instance.json    # then edit it (section 2)
 ```
 
 The secrets file the unit reads. `EnvironmentFile` does no shell expansion, so the values
 must be written already resolved. `DATABASE_URL` goes in here too, not in the unit: it
-carries the password you set at §3's `createuser --pwprompt` prompt, and this file is the
+carries the password you set at section 3's `createuser --pwprompt` prompt, and this file is the
 one that is `0600`. Substitute that password for `<password>` below:
 
 ```bash
@@ -398,8 +396,8 @@ curl -s http://localhost:8787/healthz          # "name" must be YOUR instance.na
 sudo journalctl -u lolly-work -n 50            # if it did not come up
 ```
 
-Then the rest of the §2 ladder, signing in as an address **your** `dev.users` lists, or
-through your IdP if you already set `idp.issuer` and turned the dev provider off. The §2
+Then the rest of the section 2 ladder, signing in as an address **your** `dev.users` lists, or
+through your IdP if you already set `idp.issuer` and turned the dev provider off. The section 2
 addresses only exist in the shipped example.
 
 Put TLS (nginx / Caddy) in front, or terminate at your load balancer, and set
@@ -412,17 +410,10 @@ Put TLS (nginx / Caddy) in front, or terminate at your load balancer, and set
 The production path: HA, on **RKE2 or k3s** (both Rancher-managed, both verified) or any
 conformant cluster.
 
-> **Most sovereign, your choice of paid or free:**
-> - **SUSE Linux Enterprise Server + SUSE Rancher Prime** (paid, supported), or
-> - **openSUSE Leap + Rancher Community** (free - Leap is built from the same SLES sources).
->
-> Both share the same supply chain: SUSE builds SLES/Leap and its BCI base images
-> **reproducibly**, with dependencies **frozen in time alongside the build** in SUSE's
-> governed datacentre in **Prague** - an auditable, rebuildable, EU-jurisdiction chain.
-> With lolly-work's vendored engine (`engine-pin.json`, hash-verified, no external fetch),
-> the control plane **and** the Chromium render worker run as ordinary pods on your own
-> cluster: air-gappable, no US hyperscaler, no `gcloud`, no Vercel. This is the safest
-> deployment.
+> **Most sovereign, your choice of paid or free:** **SLES + SUSE Rancher Prime** (paid,
+> supported) or **openSUSE Leap + Rancher Community** (free, same SLES sources). Same
+> reproducible supply chain, air-gappable, EU jurisdiction - the why is in
+> [deployment - Sovereignty](deployment.md#sovereignty---the-recommended-path).
 
 **The image comes first.** Multi-arch images (amd64 + arm64) publish to
 `ghcr.io/lolly-tools/lolly-work-server` and `...-render-worker` on every `v*` release, but
@@ -434,6 +425,9 @@ air-gap posture anyway, and is the assumption in the commands below:
 docker build -f deploy/compose/Dockerfile -t <registry>/lolly-work-server:0.2.0 .
 docker push <registry>/lolly-work-server:0.2.0
 ```
+
+Enabling the chart's optional `renderWorker` tier needs a second image, built the same
+way from `workers/render/Dockerfile`.
 
 ### 7a. Evaluate on a cluster
 
@@ -448,7 +442,7 @@ The release is named `lolly-work` on purpose: Helm prefixes every object with th
 name, so this is what makes the Service `lolly-work` and lets the verification commands
 below work unchanged. Name it something else and adjust them to match.
 
-**Verify the eval install.** It is a different instance from §2 - its own name, its own
+**Verify the eval install.** It is a different instance from section 2 - its own name, its own
 personas - so it gets its own ladder rather than a cross-reference. `values-eval.yaml` sets
 `instance.baseUrl` to `http://localhost:8787`, which is exactly what the port-forward gives
 you, so browser sign-in works too:
@@ -477,14 +471,12 @@ curl -s -o out.svg -w '%{http_code} %{content_type}\n' -H "Cookie: $C" \
 Then open <http://localhost:8787/admin> in a browser and sign in as `owner@eval.example`.
 
 `values-eval.yaml` ships four dev personas: `owner@eval.example` (group `owner`),
-`admin@eval.example`, `brand@eval.example`, `marketer@eval.example`. The addresses in §2 do
+`admin@eval.example`, `brand@eval.example`, `marketer@eval.example`. The addresses in section 2 do
 **not** exist here; the dev provider answers `403` to anything outside its own `dev.users`.
 
 **Reaching it over the ingress instead of the port-forward.** The eval ingress is plain
-HTTP with an empty host, so you can curl the node or load-balancer IP directly - but
-`instance.baseUrl` then no longer matches, and because it still starts with `http:` the
-session cookie is minted without `Secure`, which is correct for that URL. Point it at the
-real host so OIDC redirects and links resolve:
+HTTP with an empty host, so `curl` works against the node or load-balancer IP directly -
+but browser sign-in and links need `instance.baseUrl` to match. Point it at the real host:
 
 ```bash
 helm upgrade lolly-work deploy/helm -f deploy/helm/values-eval.yaml \
@@ -508,7 +500,7 @@ helm upgrade lolly-work deploy/helm -f deploy/helm/values-eval.yaml \
 ### 7b. Production
 
 For production, `deploy/helm/values.yaml` is the one file you edit (heavily commented).
-Author `instance.json` first (§2), with a real `idp.issuer` and `instance.baseUrl` matching
+Author `instance.json` first (section 2), with a real `idp.issuer` and `instance.baseUrl` matching
 the ingress host - the pods refuse to start on a gated instance with neither an issuer nor
 the dev provider:
 
@@ -530,7 +522,7 @@ in the chart. Values reference and the per-key notes:
 [deployment](deployment.md#kubernetes-helm---the-production-path).
 
 Verify it, remembering that this instance is **your** `instance.json`, so its name, its
-personas and its sign-in provider are the ones you authored in §2:
+personas and its sign-in provider are the ones you authored in section 2:
 
 ```bash
 kubectl get pods -l app.kubernetes.io/name=lolly-work        # wait for Running
@@ -543,9 +535,9 @@ curl -s http://localhost:8787/healthz                        # your instance.nam
 `kubectl port-forward` resolves the remote number against the **Service's** ports, so
 `8787:8787` fails with `Service lolly-work does not have a service port 8787`.
 
-With `dev.enabled: false` (which §2 told you to set before exposing anything) there is no
+With `dev.enabled: false` (which section 2 told you to set before exposing anything) there is no
 `/api/auth/dev` here: sign in through your IdP at `https://<your-host>/admin`. The first
-owner arrives the SSO way, from the table in §2.
+owner arrives the SSO way, from the table in section 2.
 
 ## 8. The CLI
 
@@ -559,8 +551,9 @@ npm run cli -- whoami --base http://localhost:8787
 
 `login` first: everything else needs a session, stored at
 `~/.config/lolly-work/session`. `--base` (or `LW_BASE`) names the instance; it defaults to
-`http://localhost:8787`. On an OIDC instance there is no `--email` flow yet: sign in with a
-browser and pass the cookie, `lw login --cookie 'lw_session=...'`.
+`http://localhost:8787`. On an OIDC instance plain `lw login` runs a device-code flow:
+open the printed URL in any signed-in browser and confirm the short code there.
+`lw login --cookie 'lw_session=...'` is the manual fallback.
 
 To get a real `lw` command instead of `npm run cli --`, link the checkout once:
 
@@ -591,7 +584,7 @@ Full command reference: [cli](cli.md).
 The last leg. A deploy with no catalog source serves only what its pack ships; connecting
 one is what makes it *your* instance. Every kind follows the same six steps, and the whole
 sequence is **owner-only** (`catalog.provider.credential` and `catalog.provider.publish`),
-so do §2's "The first owner" before you start.
+so do section 2's "The first owner" before you start.
 
 **Rehearse it once with no account anywhere.** The `mock` kind takes its assets straight
 from `--options`, so these commands run against a fresh instance with no network, no
@@ -599,7 +592,7 @@ vendor and no credentials. Run them, watch each step answer, then swap the kind.
 
 ```bash
 export LW_BASE=http://localhost:8787            # or your instance URL
-lw login --email owner@example.test              # the owner from §2
+lw login --email owner@example.test              # the owner from section 2
 
 OPTS='{"assets":[
   {"remoteId":"a1","name":"Hero banner","nativeType":"image",
@@ -650,9 +643,10 @@ lw providers sync <id> && lw providers health <id>
 ```
 
 **What `--options` must contain is per platform**, and so is where the credential comes
-from. One guide per kind, each written for the owner of the source platform: Brandfolder,
-S3 / MinIO, git manifest, Optimizely CMP, Image Relay, Canto, Acquia DAM / Widen,
-IntelligenceBank, Penpot, Dropbox, Google Drive, Microsoft 365. Start at
+from. One guide per kind, each written for the owner of the source platform: WebDAV
+(Nextcloud / ownCloud), Brandfolder, S3 / MinIO, git manifest, Optimizely CMP, Image
+Relay, Canto, Acquia DAM / Widen, IntelligenceBank, Penpot, Dropbox, Google Drive,
+Microsoft 365. Start at
 [the provider guides](providers/README.md) and pick yours. Some OAuth kinds
 (`dropbox`, `gdrive`, `o365`) replace the `credential` prompt with
 `lw providers auth <id>`, a PKCE loopback consent flow.
@@ -675,5 +669,5 @@ npm run sbom       # regenerate sbom.cdx.json
 - **Identity / SSO** - wiring your OIDC issuer: [identity](identity.md)
 - **Deployment shapes** - the full matrix, RKE2/k3s, air-gap: [deployment](deployment.md)
 - **Operations** - migrations, scaling, backups: [operations](operations.md)
-- **Connecting a DAM** - the governance around what §9 connected: [catalog](catalog.md)
+- **Connecting a DAM** - the governance around what section 9 connected: [catalog](catalog.md)
 - **Per-platform setup** - one guide per provider kind: [provider guides](providers/README.md)

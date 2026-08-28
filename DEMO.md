@@ -12,8 +12,9 @@ renders - is one URL to click around.
 ## 1. Prerequisites
 
 - **Node 24+** (the repo runs `.ts` directly via native type-stripping).
-- The pack + shell are read from the sibling OSS repo at `../lolly` (the demo
-  points `pack` and `shellDir` there). No build step is required to start.
+- The pack + shell are read from the sibling OSS repo at `../lolly` (or set
+  `LOLLY_OSS_DIR` to a checkout elsewhere; the demo points `pack` and `shellDir`
+  there). No build step is required to start.
 - **For the full employee governance UX**, build the web shell once, in `../lolly`:
 
   ```bash
@@ -97,8 +98,7 @@ Sign-in is the **dev provider** - no passwords. Click a link, or hit
   consent (opt-in).
 - **This Deploy → Feature flags** - govern the shell's per-user flags: seeded
   here, *Strip metadata from uploads* is forced **On** org-wide, and *Jelly
-  effects* is **hidden** (its default still applies, but members get no toggle - 
-  the way a seasonal surprise ships dark, then lights up when you flip it On).
+  effects* is **hidden** (its default still applies, but members get no toggle).
 - **Fleet** - which shells + engine versions are talking to the deployment.
 - **Rooms** - live collaborative sessions on the deployment *right now*: who is in
   each shared session and whether they can write (writer/observer), with a per-room
@@ -120,7 +120,7 @@ Sign-in is the **dev provider** - no passwords. Click a link, or hit
 - **Render plane** - the server renders **hook-less** tools in-process (jsdom +
   the real engine), e.g. `countdown-timer` (seeded with an always-on preview
   watermark). A tool that ships `hooks.js` returns **501 HOOKED_TOOL_NEEDS_CHROMIUM**
- - the Chromium sandbox is a later milestone.
+ - the demo does not run the Chromium render-worker tier (`deploy/helm` enables it).
 - **Sync** - server + console are the source of truth; the shell reads org-config
   and opens catalog assets/sessions.
 - **Live collab (Rooms)** - the console **Rooms** panel is populated with a few

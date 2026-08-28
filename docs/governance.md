@@ -62,11 +62,12 @@ enforcement can't disagree.
 | Key | Values | Meaning |
 |---|---|---|
 | `formats` | e.g. `["svg","png"]` | restrict output formats |
-| `c2pa` | `org-identity` \| `off` | sign exports with the deploy identity ([c2pa](c2pa.md)) |
-| `watermark` | `always` \| `until-approved` \| `never` | preview watermarking ([sharing](sharing.md)) |
-| `escalation` | a chain id | bind this tool's outputs to an approval chain ([approvals](approvals.md)) |
+| `watermark` | `always` \| `until-approved` \| `never` | preview watermarking ([sharing](sharing.md)); only `always` is enforced today ([approvals](approvals.md)) |
 
-`defaults` seeds initial input values without locking them.
+`defaults` seeds initial input values without locking them. Two more keys (`c2pa`,
+`escalation`) are declared in the overlay type but the write paths do not accept them
+yet - C2PA signing is instance-wide via `render.c2pa` ([c2pa](c2pa.md)), and chain
+binding works as [approvals](approvals.md) describes. See [status](status.md).
 
 ## Profile governance
 
@@ -92,6 +93,9 @@ Governable today (ids are the shell's own):
 | `neurospicy` | on | calmer, lower-stimulation interface with an optional focus-music dock |
 | `jelly-effects` | on | soft-body squish on chrome controls; respects reduced-motion, never touches output |
 | `strip-upload-metadata` | off | strips EXIF/GPS from uploaded images (C2PA credentials are preserved either way) |
+| `export-preflight` | off | the export panel's prepress card: bleed, resolution, ink coverage, plate counts |
+| `private-collab` | on | the P2P invite/accept co-editing ceremony; force off + hide to route collab through the control plane only |
+| `nearby-discovery` | on | mDNS discovery of nearby Lolly devices for handing over collab invites (native shells only) |
 
 `GET /api/v1/policy/flags`, `PUT /api/v1/policy/flags/:flagId`, same `policy.edit` gate.
 The `off` + `hide` combination is how a seasonal surprise ships dark: stage it now, flip the
@@ -122,9 +126,9 @@ lw apply governance.json --prune               # also delete store-only entries
 The diff reports create/update/delete/unchanged per category, and the response carries the
 document hash. Two guards:
 
-- Applying a document that creates or removes an owner-only grant
-  (`instance.config` / `catalog.provider.credential`) requires the **owner** role
-  (`403 OWNER_ONLY_ACTION`).
+- Applying a document that creates or removes a grant on any owner-only action
+  (`instance.config`, `catalog.provider.credential`, `catalog.provider.publish`,
+  `scim.manage`, `token.manage`) requires the **owner** role (`403 OWNER_ONLY_ACTION`).
 - Entries that a config-managed catalog provider owns are conflicts, not overwrites
   (`409 CONFIG_MANAGED`) - edit `instance.json` and redeploy instead.
 

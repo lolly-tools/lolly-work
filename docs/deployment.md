@@ -48,11 +48,10 @@ sovereignty either way:
 - **Free / community:** **openSUSE Leap** + **Rancher (Community)** - openSUSE Leap is built from
   the *same* SLES sources, so it inherits the same supply chain.
 
-The reason it is the safest is the supply chain underneath both: SUSE builds SLES/Leap and the
-container base images (BCI) **reproducibly**, from sources whose dependencies are **frozen in
-time alongside the build** in SUSE's own governed datacentre in **Prague** - so what you run is
-auditable and rebuildable from a pinned, jurisdiction-controlled source of truth, not a moving
-set of upstream artifacts. Combined with lolly-work's own design - 
+The reason it is the safest is the supply chain underneath both: SUSE builds SLES/Leap and
+the container base images (BCI) **reproducibly**, with dependencies frozen alongside the
+build in SUSE's governed datacentre in **Prague**. What you run is auditable and rebuildable
+from a pinned, EU-jurisdiction source of truth. Combined with lolly-work's own design - 
 the engine **vendored** (pinned, hash-verified, no external fetch - see `../engine-pin.json`),
 the console self-hosting its assets, the pack a plain directory, and **nothing in the serving
 path phoning home** - the SUSE stack gives an **air-gappable, EU-jurisdiction, reproducible**
@@ -87,14 +86,13 @@ operational, not functional:
   install below requests 100m/192Mi. The render worker wants ~2 GB per pod; on small
   boxes leave it off (hooked tools answer 501 and shells are told upfront) or point
   `render.worker.url` at a worker running on beefier hardware.
-- **ARM nodes:** release images are multi-arch (amd64 + arm64) from v0.1.2.
+- **ARM nodes:** release images are multi-arch (amd64 + arm64) from v0.2.0.
 
 ### Evaluation in one command (no Postgres, no IdP, no pack mount)
 
-**The command lives in [install §7a](install.md#7a-evaluate-on-a-cluster)**, with the
-verification ladder and the persona addresses beside it. This page describes what that
-install *is*; it deliberately keeps no second copy of the command, because the two copies
-drifted the moment they both existed.
+**The command lives in [install section 7a](install.md#7a-evaluate-on-a-cluster)**, with the
+verification ladder and the persona addresses beside it - one copy, there. This page
+describes what that install *is*.
 
 What you get: in-memory store (a restart is a factory reset - a feature for demos),
 passwordless dev personas through the real sign-in gate (including an `owner`, so the
@@ -105,7 +103,7 @@ uses or the session cookie's `Secure` flag will be wrong.
 
 Graduate the same install in place by adding a database with `helm upgrade` (the single pod
 then applies DDL at boot; going multi-replica means also setting `migrate.enabled=true` so
-the hook Job owns the schema) - again, [install §7a](install.md#7a-evaluate-on-a-cluster).
+the hook Job owns the schema) - again, [install section 7a](install.md#7a-evaluate-on-a-cluster).
 
 GHCR is private today, so add `imagePullSecrets`, build and push your own image (see the
 production notes below), or side-load: `docker save` + `k3d image import` /
@@ -116,7 +114,7 @@ production notes below), or side-load: `docker save` + `k3d image import` /
 `deploy/helm/values.yaml` is the one file you edit; it is heavily commented and is the
 authority if it disagrees with this page.
 
-**The install commands live in [install §7b](install.md#7b-production)** - secret creation,
+**The install commands live in [install section 7b](install.md#7b-production)** - secret creation,
 `helm install` with the image override, and the verification. One copy, there. This page is
 the values reference and the list of things to know before you run it.
 
@@ -184,7 +182,7 @@ self-hosted), no Redis/queue/cache tier, no external SaaS in the serving path.
 
 ## Single VM (Compose)
 
-**The commands live in [install §5](install.md#5-container-compose)**, including the `.env`
+**The commands live in [install section 5](install.md#5-container-compose)**, including the `.env`
 recipe (three variables, not two - `PG_PASSWORD` has a default nobody chose) and the TLS /
 `baseUrl` / `trustedProxyHops` work this shape still needs. One copy, there.
 
@@ -192,7 +190,7 @@ Two constraints that shape those commands. The compose file uses the fail-if-uns
 both `LW_` secrets, so `up` aborts without `.env`; and Docker creates a *directory* at a
 missing bind source, so a missing repo-root `instance.json` makes the server read a
 directory as its config. The mounted `instance.json` is the one you authored at
-[install §2](install.md#2-your-first-real-instance), not a fresh copy of the example.
+[install section 2](install.md#2-your-first-real-instance), not a fresh copy of the example.
 
 `instance.json` and `packs/` are bind-mounted read-only from the repo root;
 `LW_AUTO_MIGRATE` stays at its
@@ -208,7 +206,7 @@ access mode, `instance.shellDir` with a missing or stale dist stops boot
 
 ## Vercel (trial / public demo)
 
-> **This is a demo host, not a sovereign deployment.** Vercel (and any hyperscaler-hosted render worker - the preferred worker host is the RKE2 cluster pod, `deploy/vercel/README.md` §4a)
+> **This is a demo host, not a sovereign deployment.** Vercel (and any hyperscaler-hosted render worker - the preferred worker host is the RKE2 cluster pod, `deploy/vercel/README.md` section 4a)
 > host the public **lolly.work** demo and the blank-brand starter so anyone can try the product at
 > a URL - nothing more. It is a temporary convenience: the demo + blank brand will move to a
 > **trusted European sovereign cloud** (Elastio / Evroc-class - likely **Evroc**; partnership in
@@ -226,12 +224,12 @@ in-memory store (ephemeral). On the public demo (no `DATABASE_URL`, `dev.enabled
 in-memory store is **fully seeded on every cold start** - governance fixture, plus 14 days of
 usage telemetry, a mixed fleet, shared links, approvals across every state, and a synthetic
 live-room registry - so a signed-in visitor arrives at populated dashboards, not empty states
-(`scripts/demo.ts` `seedStore`/`seedActivity`/`demoRooms`; details in `deploy/vercel/README.md` §5).
+(`scripts/demo.ts` `seedStore`/`seedActivity`/`demoRooms`; details in `deploy/vercel/README.md` section 5).
 
 Auth, org-config, RBAC, overlays, links, telemetry, inbox, audit, fleet, console, CLI **and
 `/render/*`** all work - the small `packs/demo` (qr-code, mesh-gradient, colour-palette) is
 bundled into the function, so Tier-A (SVG + resvg PNG) renders in-process. What's still
-absent: no large real pack mount, no Chromium (Tier-B pdf/tiff/video), the 1.9 GB Lolly
+absent: no large real pack mount, no Chromium (Tier-B jpg/pdf), the 1.9 GB Lolly
 web shell is not served (the demo landing at `/` stands in), and **no real WebSocket collab**
 (the Rooms panel shows mock rooms; live editing is the sovereign Helm deploy's ws gateway - 
 see `deploy/vercel/WS-SPIKE.md`). Live at **lolly.work**; runbook: `deploy/vercel/README.md`.
