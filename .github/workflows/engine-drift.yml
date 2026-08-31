@@ -19,14 +19,14 @@ jobs:
     name: pin vs OSS HEAD
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Clone OSS repo at HEAD
         run: git clone --depth 50 https://github.com/lolly-tools/lolly.git /tmp/lolly
         # depth 50: enough history for the commits-behind count to resolve the
         # pinned commit in the common case; an unknown count still reports.
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with: { node-version: 24 }
 
       - name: Report drift (fail = re-pin due)
