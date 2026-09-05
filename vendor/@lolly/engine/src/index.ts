@@ -8,6 +8,16 @@
 
 export { loadTool, ToolLoadError, applyManifestI18n } from './loader.ts';
 export type { LoadedTool, ToolManifest, ToolFetchFile, LoadToolOpts, ToolIntegrityOpts, ToolI18nOverlay } from './loader.ts';
+export { resolveChartTheme, validateChartSpec, inspectChartSpec } from './chart-spec.ts';
+export type { ChartBrandThemeInput, ChartThemeOverrides } from './chart-spec.ts';
+export { CHART_SPEC_VERSION } from '@lolly-tools/core';
+export type {
+  ChartValue, ChartFieldType, ChartDimension, ChartExportFidelity, ChartMark,
+  ChartChannel, ChartFieldV1, ChartDatasetV1, ChartEncodingV1, ChartSeriesV1,
+  ChartScaleV1, ChartAxisV1, ChartLegendV1, ChartFormatterV1, ChartThemeV1,
+  ChartMotionV1, ChartAccessibilityV1, ChartPresentationV1, ChartSpecV1,
+  ChartFindingV1, ChartValidationResultV1, ResolvedChartReportV1,
+} from '@lolly-tools/core';
 export {
   canonicalJson, sha256Hex, jwkThumbprint, importSpkiOrJwkPublicKey,
   signCatalogEnvelope, verifyEnvelopeSignature, verifyCatalogEnvelope, verifyToolFile,
@@ -17,6 +27,10 @@ export type {
   CatalogSignatureEnvelope, UnsignedCatalogEnvelope, IntegrityResult,
 } from './catalog-integrity.ts';
 export { validateManifest, validateRateCard } from './validate.ts';
+export { parseProviderRef, isProviderRef, ASSET_PROVIDER_REF_RE } from './asset-provider.ts';
+export type { AssetProviderRef } from './asset-provider.ts';
+export { DOCUMENT_API_VERSION, compileDocument, validateDocument, documentSchema, inspectDocument, diffDocuments, measureDocument, optimizeDocument, packageDocument, renderDocument, compile, validate, inspect, diff, measure, optimize, package, render } from './document-api.ts';
+export type { CompiledDocument, CompileResult, ValidationTarget, DocumentValidationResult, DocumentInspection, BytesInspection, DocumentDiff, DocumentMeasurement, OptimizeStage } from './document-api.ts';
 export { createRuntime, HOOK_BUDGET_MS, inRealmHookExecutor } from './runtime.ts';
 export type { HookExecutor, Hooks } from './runtime.ts';
 export { hydrate, annotateTemplate } from './template.ts';
@@ -34,20 +48,20 @@ export {
   PSD_BLEND_TO_CSS, CSS_TO_PSD_BLEND, XCF_MODE_TO_CSS, psdBlendToCss, xcfModeToCss,
 } from './raster-layers.ts';
 export type { CssBlendMode, RasterLayer, LayeredRasterDoc, InflateFn } from './raster-layers.ts';
-export { buildInputModel, summarizeInputs, normalizeTableValue, DEFAULT_FILE_MAX_BYTES } from './inputs.ts';
-export type { TableValue } from './inputs.ts';
-export { parseUrlState, serializeUrlState, serializeHdr, encodeTableCompact, decodeTableCompact, RESERVED, HDR_DEFAULTS } from './url-mode.ts';
+export { buildInputModel, summarizeInputs, normalizeTableValue, deriveExportFilename, DEFAULT_FILE_MAX_BYTES } from './inputs.ts';
+export type { TableValue, TableColumnEditor } from './inputs.ts';
+export { parseUrlState, serializeUrlState, serializeHdr, encodeBlocksCompact, encodeTableCompact, decodeTableCompact, RESERVED, HDR_DEFAULTS, VIDEO_CODEC_STRINGS, parseVideoParams, hasVideoParams } from './url-mode.ts';
 // The `s=` state address + the still-export frame filter both shells apply (plan 112).
 export { parseFrameAddress, selectFramePage, frameFilterApplies, FRAME_FILTER_SKIP_FORMATS } from './frame-address.ts';
 export type { FrameAddress, FrameSelection } from './frame-address.ts';
 export { looksLikeTable, parseTableText, toTsv, toMarkdown, toHtmlTable } from './table-text.ts';
-export type { HdrSettings, DepthSetting } from './url-mode.ts';
+export type { HdrSettings, DepthSetting, VideoUrlSettings, VideoCodecName, VideoQuality } from './url-mode.ts';
 export { LANGS, LANG_META, isLang, normalizeLang, flagEmoji, sortedLangs } from './lang.ts';
 export type { Lang, LangMeta, LangSort } from './lang.ts';
 export { packQuery, unpackToken, expandQuery, hasPackedState, isPackAvailable, PACK_PARAM } from './url-pack.ts';
 export { packEncrypted, unpackEncrypted, hasEncryptedState, isEncryptAvailable, ENC_PARAM } from './url-pack.ts';
 export { parseEmbedUrl } from './embed.ts';
-export { parseToolUrl, buildEmbedUrl, isToolUrl } from './tool-url.ts';
+export { parseToolUrl, buildEmbedUrl, isToolUrl, lollySchemeToHttps, APP_PATH_WORDS } from './tool-url.ts';
 export {
   assertComposeStack, ComposeGuardError, MAX_COMPOSE_DEPTH,
   bakeAssetRef, isBakedRef, MAX_BAKED_URL_CHARS,
@@ -56,8 +70,19 @@ export {
 export { toCSV, parseDelimited, detectDelimiter, parseBatchCsv, batchCsvTemplate, batchCsvTemplateWithNotes } from './batch.ts';
 export type { BatchRow, BatchTemplateTool } from './batch.ts';
 export { buildExportMeta } from './metadata.ts';
-export { extractFileMetadata, readMpfIndex, appendedIsExpected, META_GROUP_ORDER, META_GROUP_LABEL } from './file-metadata.ts';
+export { extractFileMetadata, extractXmpPacket, readMpfIndex, appendedIsExpected, META_GROUP_ORDER, META_GROUP_LABEL } from './file-metadata.ts';
 export type { FileMetadata, MetaField, MetaGroup, JpegMpfIndex, MediaProducer } from './file-metadata.ts';
+// Image-metadata byte stampers + the metadata carry (plans/144 Wave 1). The
+// stampers graduated here from the web shell's bridge/export-image-meta.ts
+// (now a thin re-export) so the transform path and the CLI share them.
+export {
+  patchJpegDpi, readU32, writeU32, pngChunk, insertPngPhys, setAvifCicp, insertPngCicp,
+  iTXtChunk, insertPngMeta, buildExifTiff, insertJpegExif, svgMetaBlock, injectSvgMeta,
+  withGifComment, insertPngIcc, insertJpegIcc, inflateBytes, deflateBytes,
+  carryImageMetadata, buildCarryExifTiff, insertWebpMeta, insertAvifExif, buildExportXmp,
+  insertPngXmp, insertJpegXmp, META_CARRY_FIELDS,
+} from './image-meta.ts';
+export type { CarrySource, CarryOutput, CarryOpts } from './image-meta.ts';
 export { stripMetadata, isStrippableFormat, hasResidualMetadata } from './strip-metadata.ts';
 export type { StripFormat } from './strip-metadata.ts';
 export {
@@ -80,6 +105,11 @@ export {
   UNITS, CSS_DPI, isUnit, parseDimension,
   toInches, isPhysical, toPixels, toPoints, toCssPx, toCssLength, toUnit,
 } from './units.ts';
+export {
+  frameRect, framingStyle, normalizeFraming, isNeutralFraming, isTilted,
+  framingQuad, projectFramingPoint, minZoomForCover, FRAMING_PERSPECTIVE,
+} from './framing.ts';
+export type { Framing, FramingFit, FrameRect } from './framing.ts';
 export {
   srgbIccProfile, pqBt2020IccProfile, iccProfileBytes, COLOR_PROFILES,
   rgbToCmyk, cmykCondition, CMYK_CONDITIONS, DEFAULT_CMYK_CONDITION,
@@ -115,8 +145,8 @@ export {
   premultiply, unpremultiply, mapScanlines, convertSpace,
 } from './pixels.ts';
 export type { PixelSpace, DeepFrame } from './pixels.ts';
-export { hdrBoostToPQ, pqEncode, hdrViewTransform, pqEncodeFrame, pqToU16, HDR_PQ_CICP } from './hdr.ts';
-export type { HdrBoostOptions, PqImage } from './hdr.ts';
+export { hdrBoostToPQ, pqEncode, hdrViewTransform, pqEncodeFrame, pqToU16, pqToI420P10, HDR_PQ_CICP } from './hdr.ts';
+export type { HdrBoostOptions, PqImage, I420P10Frame } from './hdr.ts';
 export {
   computePrintGeometry, cmykToRgbApprox, PRINT_MARK_DEFAULTS,
 } from './print-marks.ts';
@@ -178,8 +208,8 @@ export type { AudioAnalysis, AudioAnalyseOpts, AudioFrames } from './audio-analy
 // Captions (host.speech, v1.96) - spoken-word timings in, subtitle cues out. The
 // grouping and VTT/SRT timestamp maths live here so the browser and a headless
 // export break caption lines at the same words.
-export { groupWordsToCues, cuesToVtt, cuesToSrt, cueAt } from './captions.ts';
-export type { CaptionCue, GroupWordsOpts } from './captions.ts';
+export { groupWordsToCues, cuesForSlide, cuesToVtt, cuesToSrt, cueAt } from './captions.ts';
+export type { CaptionCue, GroupWordsOpts, SlideCueOpts } from './captions.ts';
 // Text AI-likelihood signals (plans/125) - a string in, a tiered SIGNAL (never a
 // verdict) out: byte-level artifact tells on digital text, chatbot-boilerplate
 // phrase evidence, English-gated writing-style heuristics, per-finding heat
@@ -237,8 +267,18 @@ export {
   splitSentences, splitWords, phonemeTokenSpans, chunkByPhonemeLength,
   wordTimingsFromDurations, concatClips, normalizeText, splitPunctuation,
   postProcessPhonemes, phonemizeChunk,
+  // v1.170 (plans/181): the vocab-safe phoneme filter, the script marks
+  // grammar, voice blending and the per-sentence segment tiling.
+  KOKORO_VOCAB, filterToVocab, normalizeForSpeech,
+  PAUSE_DEFAULT_S, SLOW_SPEED, FAST_SPEED, MIN_SPEECH_SPEED, MAX_SPEECH_SPEED,
+  CLIP_EDGE_PAD_S, pauseGapS, parseScriptMarks, scriptLinesOf,
+  parseVoiceBlend, accentOfBlend,
+  MIN_SEAM_GAP_S, endsSentence, deriveSegmentsFromWords,
 } from './speech-text.ts';
-export type { TokenSpan, PhonemeChunk, SentenceClip, EspeakFn } from './speech-text.ts';
+export type {
+  TokenSpan, PhonemeChunk, SentenceClip, EspeakFn,
+  ScriptSentence, ParsedScript, ParseScriptOpts, VoiceBlendComponent, TtsSegment,
+} from './speech-text.ts';
 // The dependency-free WAV reader that backs host.audio where there is no platform
 // codec (the Node shells). Byte parsing, so it lives beside tiff.ts/apng.ts.
 export { parseWav, packWav } from './wav.ts';
@@ -268,6 +308,16 @@ export {
   diffTokenDocs, collectAssetTokens, collectFontFamilies, applyPinnedAssets,
 } from './design-version.ts';
 export type { PinnedAsset, VersionEntry, VersionIndex } from './design-version.ts';
+// Design-system identity (plans/186 section 6) - the same argument one level up: which
+// system an asset id belongs to, and what a design system is called, must read
+// IDENTICALLY in the web bridge, the CLI and the MCP server, or a share opens under
+// a system its author never used.
+export {
+  DESIGN_SYSTEM_ID_RE, DESIGN_SYSTEM_ID_MAX, DEFAULT_DESIGN_SYSTEM_ID, SHIPPED_DESIGN_SYSTEM_ID,
+  isDesignSystemId, slugifyDesignSystemId, designSystemNamespace, designSystemHeadId,
+  designMaterialOf, readDesignSystemIdentity, withDesignSystemIdentity,
+} from './design-system.ts';
+export type { DesignMaterial, DesignMaterialKind, DesignSystemIdentity } from './design-system.ts';
 export {
   parseCssLength, cornerRadii, uniformRadius, insetCorners, roundedRectPath, parseBoxShadow, parseTextShadow, gaussianShadowBands, gaussianShadowRings,
   parseCssMatrix, isNonAffineTransform, multiplyMat, matAboutPivot, isAxisAlignedMat, matToSvg, IDENTITY_2D,
@@ -377,6 +427,7 @@ export { buildPptxParts, EMU_PER_INCH, EMU_PER_PX } from './pptx.ts';
 export type {
   PptxSlide, PptxShape, PptxRect, PptxText, PptxPic, PptxRun, PptxPara, PptxFill, PptxMedia, PptxBuildOpts,
   PptxTable, PptxTableCell, PptxLine, PptxTheme, PptxPath, PptxLayout, PptxPlaceholder, PptxPhType,
+  PptxSlideTransition, PptxAudio,
 } from './pptx.ts';
 export { svgToCustGeomPaths, svgToNativePptx } from './svg-custgeom.ts';
 export type { SvgNativePptx } from './svg-custgeom.ts';
@@ -387,11 +438,18 @@ export { isPptx, readPptx, pptxMediaImages, readingOrder as pptxReadingOrder } f
 export type {
   PptxParts, XmlParser, PptxDeckRead, PptxReadSlide, PptxReadNode, PptxReadTheme,
   PptxReadColor, PptxReadRun, PptxReadPara, PptxTextNode, PptxShapeNode, PptxPicNode,
-  PptxTableNode, PptxUnknownNode, PptxMediaImage,
+  PptxTableNode, PptxUnknownNode, PptxMediaImage, PptxSlideAudio,
   // The read-side placeholder record; aliased because the WRITER's layout
   // placeholder (pptx.ts) already owns the bare name on this surface.
   PptxPlaceholder as PptxReadPlaceholder,
 } from './pptx-read.ts';
+// SCORM packaging, the pure half (plans/180 section 6): manifests, the runtime
+// adapter source and the D1 launch page. The shell owns the zip.
+export { scormManifest, scormManifest12, scormManifest2004, scormAdapterJs, scormLaunchHtml } from './scorm.ts';
+export type {
+  ScormVersion, ScormManifestOpts, ScormSlide, ScormVideo, ScormFont, ScormLaunchOpts,
+  ScormLaunchLabels,
+} from './scorm.ts';
 export { deckToMarkdown } from './deck-md.ts';
 export type { DeckMarkdown, DeckMediaRef } from './deck-md.ts';
 export type { DocBlock, DocInline, DocListItem, DocTableCell, DocMedia } from './doc-model.ts';
@@ -604,6 +662,25 @@ export {
   scanPenpotAppliedTokens,
 } from './brand-import.ts';
 export type { TokensExtraction, PenpotUsage, PenpotUsageColor, PenpotUsageGradient, PenpotAppliedToken } from './brand-import.ts';
+// .penpot writer (plans/178): binfile-v3 entries from a Lolly document + the brand tokens.
+export {
+  buildPenpotEntries, boxesToPenpotDoc, svgToPenpotDoc, imageToPenpotDoc, penpotTokensJson,
+  parsePenpotImportStream, penpotWorkspaceUrl, imageDimensions, decodeDataUrl, decodeBase64,
+  parsePenpotColor, gradSpecToPenpot, designTextRuns, penpotUuid, seededPenpotUuid,
+  PENPOT_MIME, PENPOT_ROOT_ID, PENPOT_FILE_VERSION, PENPOT_FEATURES, PENPOT_MIGRATIONS, PENPOT_IMAGE_MTYPES,
+} from './penpot-file.ts';
+export { appSurfaceBoxes, appSurfaceExportReport, appSurfaceToPenpotDoc } from './app-surface.ts';
+export type {
+  AppSurface, AppSurfaceNode, AppSurfaceFrame, AppSurfaceRect, AppSurfaceText,
+  AppSurfaceRole, AppSurfaceDataPolicy, AppSurfaceComponent, AppSurfaceExportReport,
+} from './app-surface.ts';
+export type {
+  PenpotDoc, PenpotIrPage, PenpotIrShape, PenpotIrBoard, PenpotIrGroup, PenpotIrRect, PenpotIrCircle, PenpotIrPath,
+  PenpotIrText, PenpotIrImage, PenpotIrFill, PenpotIrGradient, PenpotIrGradientStop, PenpotIrStroke, PenpotIrShadow,
+  PenpotIrTextRun, PenpotIrParagraph, PenpotIrTypography, PenpotPaletteColor, PenpotMedia, PenpotBuild,
+  PenpotBuildOptions, BoxesToPenpotOptions, SvgToPenpotOptions, SvgToPenpotResult, PenpotPendingImage,
+  PenpotImportResult, PenpotColor, PenpotMatrix,
+} from './penpot-file.ts';
 export {
   parseThemedAssetId, buildThemedAssetId, isThemableIconSvg, isValidThemeId,
   applyIconTheme, restyleIconTheme, parseIconThemesDoc,
@@ -652,6 +729,12 @@ export type {
 // Per-minor contract changelog: engine/CHANGELOG.md (one entry per ENGINE_VERSION
 // minor, moved out of this barrel so prose edits stop conflicting with exports).
 export { ENGINE_VERSION } from './version.ts';
+export { createTruePeakLimiter, activitySpans } from './audio-dynamics.ts';
+export type { TruePeakLimiter, TruePeakLimiterOpts, ActivitySpanOpts } from './audio-dynamics.ts';
+export { createLoudnessMeter, integratedLoudness, normalizeGain, LOUDNESS_RATE } from './audio-loudness.ts';
+export type { LoudnessMeter } from './audio-loudness.ts';
+export { parseFxChain, serializeFxChain, processFxPcm, FX_PRESETS, FX_CHAIN_MAX_CHARS } from './audio-fx.ts';
+export type { FxEntry, ParsedFxChain } from './audio-fx.ts';
 export { satisfiesRange, parseVersion } from './semver-range.ts';
 export { encodeFsToken, decodeFsToken } from './fs-token.ts';
 export {

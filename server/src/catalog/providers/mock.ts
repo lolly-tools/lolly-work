@@ -7,6 +7,11 @@ import type { CatalogProvider, ProviderAssetRef } from './types.ts';
 
 export interface MockProviderOptions {
   assets?: ProviderAssetRef[];
+  /** Optional deterministic blob bodies keyed by remote id. Tests use this to
+   * exercise JSON/CSV live bindings through the real provider path. */
+  blobText?: Record<string, string>;
+  blobBase64?: Record<string, string>;
+  blobContentType?: Record<string, string>;
   /** When set, listAssets/searchAssets/healthCheck all fail with this message. */
   failWith?: string;
   /** Remote ids whose blob refuses to stream - the per-asset materialize
@@ -47,7 +52,9 @@ export function createMockProvider(id: string, options: MockProviderOptions, sec
       const asset = assets.find((a) => a.remoteId === remoteId);
       const fmt = asset?.formats.find((f) => f.remoteRef === formatRef);
       if (!asset || (!fmt && formatRef !== 'thumb')) throw new Error(`unknown blob ${remoteId}/${formatRef}`);
-      const bytes = new TextEncoder().encode(`mock:${id}:${remoteId}:${formatRef}`);
+      const bytes = options.blobBase64?.[remoteId]
+        ? new Uint8Array(Buffer.from(options.blobBase64[remoteId], 'base64'))
+        : new TextEncoder().encode(options.blobText?.[remoteId] ?? `mock:${id}:${remoteId}:${formatRef}`);
       return {
         kind: 'stream',
         body: new ReadableStream<Uint8Array>({
@@ -56,7 +63,7 @@ export function createMockProvider(id: string, options: MockProviderOptions, sec
             controller.close();
           },
         }),
-        contentType: 'application/octet-stream',
+        contentType: options.blobContentType?.[remoteId] ?? 'application/octet-stream',
         size: bytes.length,
       };
     },

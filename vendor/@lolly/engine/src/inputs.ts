@@ -42,6 +42,13 @@ export type TableValue = {
 };
 
 /**
+ * The editor a shell offers for one `table` column (schema `columnEditors`).
+ * 'text' is a plain cell, 'url' a plain cell with a URL keyboard, 'emoji' a
+ * button that opens an emoji picker. Cells stay plain strings in every case.
+ */
+export type TableColumnEditor = 'text' | 'url' | 'emoji';
+
+/**
  * Any value an input can hold in the model (and the shapes URL/saved-state
  * initial values arrive in). Structured members cover: token-linked colours
  * ({ ref, value }), loaded files, asset refs, vector compounds, blocks lists,
@@ -134,6 +141,15 @@ export interface BlockFieldSpec extends VectorFieldSpec {
    *  control instead of a stacked text label (on a `labelledFields` block). The engine
    *  only carries it; the web shell resolves + renders the glyph. */
   icon?: string;
+  /** On an ASSET sub-field: the shared PREFIX of the row's framing numbers -
+   *  <prefix>Zoom / <prefix>X / <prefix>Y / <prefix>Rotate / <prefix>Pitch /
+   *  <prefix>Yaw - declaring that those siblings frame THIS image (plans/148). A
+   *  block sub-field cannot be a `vector`, so a row spells the values out; naming
+   *  the prefix here is what lets the shell's framing overlay bind a block row.
+   *  Normally the field's own id; a different prefix only where the numbers
+   *  already ship under one (color-block's bgImage + bgX/bgY/bgZoom), since those
+   *  ids are permanent URL contracts. */
+  framingFor?: string;
 }
 
 /** Typed "+ Add" menu on a blocks input (one sub-field is the discriminator). */
@@ -177,13 +193,13 @@ export interface InputSpec {
   /** Embed this input's value into the export's provenance metadata under the named
    *  field (EXIF/XMP/PNG text + the C2PA manifest), overriding the profile-derived
    *  default. 'copyright'/'license' are USER-ASSERTED IP fields with no profile
-   *  source. See engine/src/metadata.ts (buildExportMeta) and the embed-track-image
+   *  source. See engine/src/metadata.ts (buildExportMeta) and the claim
    *  tool. Carried onto InputModelItem via this extends. */
   bindToMeta?: 'author' | 'contact' | 'description' | 'copyright' | 'license';
   /** For an `asset`/`file` input: the export format DEFAULTS to this input's uploaded
    *  format (a dropped JPEG defaults the export to jpg) until the user picks a format
    *  themselves. The uploaded format must be one the tool offers. Read by the web
-   *  shell's renderActions; see the embed-track-image tool. */
+   *  shell's renderActions; see the claim tool. */
   matchExportFormat?: boolean;
   group?: string;
   showIf?: Record<string, InputValue>;
@@ -236,10 +252,22 @@ export interface InputSpec {
    *  ordinary input everywhere else (URL params, hooks, state, undo). The engine
    *  only carries it; the web shell places it. */
   attachTo?: string;
+  /** On a `vector` input holding image framing ({ zoom, x, y, rotate? }): the id of
+   *  the asset input whose content it frames (plans/148). Declares this as THE
+   *  framing control for that image - the web shell mounts its generic on-canvas
+   *  pan/zoom/rotate overlay on it and offers "Use as a new image". The engine only
+   *  carries it; the placement maths is framing.ts and the gestures are shell code. */
+  framingFor?: string;
   placeholder?: string;
   /** Unit label shown beside a slider value (e.g. "mm"). */
   unit?: string;
   suffix?: string;
+  // table presentation
+  /** On a `table` input: which editor each COLUMN uses, matched to the columns by
+   *  position (a column with no entry edits as plain text). The engine only carries
+   *  it - the stored TableValue is the same strings whichever editor wrote them, so
+   *  URL mode and the CLI are unaffected. See schema `columnEditors`. */
+  columnEditors?: TableColumnEditor[];
   // blocks presentation/behaviour
   addMenu?: BlocksAddMenu;
   labelledFields?: boolean;
@@ -344,30 +372,29 @@ function isObjectValue(v: InputValue | null | undefined): v is { [key: string]: 
 }
 
 /**
- * @param manifest the tool manifest (inputs + render option slice)
- * @param opts.profile  user profile, for bindToProfile resolution
- * @param opts.initial  initial values (from saved state or URL)
+ * Render-level options surfaced as synthetic boolean inputs, so hooks can react to them
+ * (onInit/onInput) and URL mode can set them - without a tool redeclaring them. Shared by
+ * buildInputModel (the model) and parseUrlState (URL/CLI params): if only buildInputModel
+ * knew about these, `?transparentBg=true` would be silently dropped on load, which is
+ * exactly the bug this centralises away.
  */
-export function buildInputModel(
-  manifest: InputManifest,
-  { profile = {}, initial = {} }: { profile?: ProfileValues; initial?: Record<string, InputValue> } = {},
-): InputModelItem[] {
+export function syntheticInputs(manifest: InputManifest): InputSpec[] {
   const declared = manifest.inputs ?? [];
-
-  // Synthesise model entries for render-level options so hooks can react to them
-  // via onInput/onInit without tools needing to redeclare them as user inputs.
   const synthetic: InputSpec[] = [];
   if (
     manifest.render?.transparentBg !== undefined &&
     !declared.some(i => i.id === 'transparentBg')
   ) {
+    // A sidebar input, NOT group:'export': the background is a creative choice the
+    // user makes alongside colour/theme, and they rarely open the export panel where
+    // it used to hide. (convertPaths below stays in the export group - it only ever
+    // affects the exported vector file, not the on-canvas result.)
     synthetic.push({
       id: 'transparentBg',
-      label: 'No BG',
+      label: 'Transparent background',
       type: 'boolean',
       default: Boolean(manifest.render.transparentBg),
-      group: 'export',
-      help: 'Remove the background fill so alpha-supporting formats export with transparency.',
+      help: 'Remove the background fill so alpha-supporting formats (PNG/WebP/SVG) keep transparency.',
     });
   }
 
@@ -392,6 +419,20 @@ export function buildInputModel(
       help: 'Outline text as vector paths so SVG/PDF render identically without the fonts installed. Turn off to keep selectable, editable text.',
     });
   }
+  return synthetic;
+}
+
+/**
+ * @param manifest the tool manifest (inputs + render option slice)
+ * @param opts.profile  user profile, for bindToProfile resolution
+ * @param opts.initial  initial values (from saved state or URL)
+ */
+export function buildInputModel(
+  manifest: InputManifest,
+  { profile = {}, initial = {} }: { profile?: ProfileValues; initial?: Record<string, InputValue> } = {},
+): InputModelItem[] {
+  const declared = manifest.inputs ?? [];
+  const synthetic = syntheticInputs(manifest);
 
   return [...declared, ...synthetic].map(input => {
     const value = resolveInitialValue(input, profile, initial);
@@ -704,4 +745,35 @@ export function flattenValue(v: InputValue): InputValue {
   // The cached value is a resolved colour string; anything else (or a missing
   // cache) flattens to '' - the same fallback the `?? ''` gave.
   return typeof v.value === 'string' ? v.value : '';
+}
+
+/**
+ * Content-derived export filename (plans/140 S1). `render.filenameFrom` names
+ * input ids whose VALUES name the exported file - "ana-kovac", not a fifth
+ * "Event Name Badge.pdf". Returns the slug of the listed values in order, or
+ * null when the manifest opts out or every listed value is empty (callers keep
+ * their existing fallback, the tool name). A URL value contributes its host and
+ * path ("https://suse.com/events" - "suse-com-events") so link tools name by
+ * destination. Pure string derivation shared by the web export bar and the
+ * batch grid, so both produce the same name for the same values.
+ */
+export function deriveExportFilename(
+  manifest: { render?: { filenameFrom?: unknown } },
+  values: Record<string, unknown>,
+): string | null {
+  const ids = manifest.render?.filenameFrom;
+  if (!Array.isArray(ids) || ids.length === 0) return null;
+  const parts: string[] = [];
+  for (const id of ids) {
+    const v = flattenValue(values[String(id)] as InputValue);
+    if (v == null || v === '' || typeof v === 'object') continue;
+    let s = String(v);
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) {
+      try { const u = new URL(s); s = `${u.hostname}${u.pathname}`; } catch { /* keep the raw string */ }
+    }
+    const slug = s.normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase().slice(0, 40).replace(/-+$/, '');
+    if (slug) parts.push(slug);
+  }
+  return parts.length ? parts.join('-').slice(0, 80).replace(/-+$/, '') : null;
 }

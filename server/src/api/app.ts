@@ -77,7 +77,7 @@ import { verifyLollyExport, extractProvenance } from '../catalog/publish.ts';
 import { listBrandProfiles, switchBrandProfile } from '../brand/profiles.ts';
 import { createMemoryBlobStore } from '../blobs/memory.ts';
 import type { BlobStore } from '../blobs/types.ts';
-import { EXT_PREFIX, extAssetId, PROVIDER_KINDS, type ProviderKind, type ProviderRecord } from '../catalog/providers/types.ts';
+import { EXT_PREFIX, extAssetId, PROVIDER_KINDS, type CatalogProvider, type ProviderAssetRef, type ProviderKind, type ProviderRecord } from '../catalog/providers/types.ts';
 import { createProvider } from '../catalog/providers/registry.ts';
 import { noDetailShapeLine, noShapeLine, renderShapeReport, type ProviderShapeReport } from '../catalog/providers/shape.ts';
 import { invalidateAccessTokens } from '../catalog/providers/oauth.ts';
@@ -93,6 +93,10 @@ import { checkLink, linkPath, linkResourceSelectors, DEFAULT_TTL_SEC, type LinkK
 import { accentFromTokens, collectionPageHtml, isPreviewableFormat, type CollectionPageItem } from '../links/collection-page.ts';
 import { safeEntryName, ZipBuilder } from '../links/zip.ts';
 import { renderTool, RenderError, invalidateRenderByTool } from '../render/pipeline.ts';
+import { compileVerb, diffVerb, documentVerb, packageVerb, queryFromInputs, schemaVerb, validateVerb } from '../automation/verbs.ts';
+import { AutomationQueue, jobWire, type AutomationJob } from '../automation/jobs.ts';
+import { createHostedAssetResolver, optimizeHostedAsset, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
+import { resolveBindingRows, type DataBinding } from '../automation/bindings.ts';
 import { resolveC2paSigner } from '../render/c2pa-signer.ts';
 import type { ProvenanceDoc, ProvenanceIngredient } from '../render/provenance.ts';
 import type { Profile } from '../render/contract.ts';
@@ -173,6 +177,20 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   const router = createRouter();
   const metrics = deps.metrics ?? createMetrics();
   const limiter = createRateLimiter(config.rateLimit);
+  const automationResultUrl = (job: AutomationJob): string => {
+    const token = mintToken('lw/job', { jobId: job.id, principal: job.principal }, secrets.link, 24 * 3600);
+    return `${config.instance.baseUrl}/api/v1/jobs/${job.id}/result?token=${encodeURIComponent(token)}`;
+  };
+  const automationJobs = new AutomationQueue({
+    store,
+    blobs,
+    fetchImpl,
+    callbackSecret: secrets.webhook,
+    // Callback egress is an instance decision, never an arbitrary request-time
+    // URL. Reuse the configured webhook endpoint as the initial allowlist.
+    callbackAllowed: (url) => url === config.notify.webhook?.url,
+    resultUrl: automationResultUrl,
+  });
   // The Chromium render worker is active only when both the URL and the shared
   // HMAC key are present; otherwise hooked tools keep 501-ing (unchanged).
   const renderWorker = config.render.worker.url && secrets.renderWorker
@@ -292,6 +310,75 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     console.error('catalog provider config upsert failed:', (err as Error).message);
   });
 
+  // ── hosted asset-provider rung (plans/39 §6) ─────────────────────────────
+  // cms://<provider-id>/<remote-id> is resolved by the SAME driver and stored
+  // credential as catalog federation. The caller's groups are part of the
+  // resolver instance, so a direct provider ref cannot bypass provider exposure.
+  const hostedAssetMaxBytes = 64 * 1024 * 1024;
+  const configuredAssetOrigins = config.catalogProviders.flatMap((provider) =>
+    Object.values(provider.options ?? {}).filter((value): value is string => typeof value === 'string' && /^https:\/\//i.test(value)));
+  const findProviderAsset = async (provider: CatalogProvider, remoteId: string): Promise<ProviderAssetRef | null> => {
+    if (provider.getAsset) return provider.getAsset(remoteId);
+    let cursor: string | undefined;
+    for (let page = 0; page < 50; page++) {
+      const batch = await provider.listAssets(cursor);
+      const found = batch.assets.find((asset) => asset.remoteId === remoteId);
+      if (found) return found;
+      if (!batch.next) break;
+      cursor = batch.next;
+    }
+    return null;
+  };
+  const cmsBytes = (groups: string[]) => async (ref: HostedProviderRef): Promise<{ bytes: Uint8Array; mime: string; id?: string } | null> => {
+    await providersReady;
+    const rec = await store.getProvider(ref.scope);
+    if (!rec || !rec.enabled || !callerSeesProvider(rec, groups)) return null;
+    if (!ref.path) throw new Error('cms provider refs require a remote asset id');
+    const provider = federation.instantiate(rec);
+    const asset = await findProviderAsset(provider, ref.path);
+    if (!asset || !passesExposure(rec, asset)) return null;
+    const local = await store.getLifecycle(extAssetId(rec.id, asset.remoteId));
+    const { state, upstreamExpired } = combinedState(local ?? undefined, entryWindow(mapProviderAsset(rec, asset)), Date.now());
+    if (state === 'revoked' || state === 'scheduled' || (state === 'expired' && (upstreamExpired || local?.onExpiry !== 'warn'))) {
+      throw new Error(`cms asset is ${state}`);
+    }
+    const requestedSource = ref.query.sourceFormat ?? ref.query.format;
+    const format = asset.formats.find((candidate) => candidate.format === requestedSource) ?? asset.formats[0];
+    if (!format) throw new Error('cms asset has no resolvable format');
+    const resolved = await provider.resolveBlob(asset.remoteId, format.remoteRef);
+    if (resolved.kind === 'stream') {
+      if (resolved.size !== undefined && resolved.size > hostedAssetMaxBytes) throw new Error('cms asset exceeds the byte limit');
+      return { bytes: new Uint8Array(await readBlobBody(resolved.body, hostedAssetMaxBytes)), mime: resolved.contentType, id: extAssetId(rec.id, asset.remoteId) };
+    }
+    const response = await fetchImpl(resolved.url, { redirect: 'error', signal: AbortSignal.timeout(20_000) });
+    if (!response.ok || !response.body) throw new Error(`cms asset fetch failed (${response.status})`);
+    const declared = Number(response.headers.get('content-length') ?? 0);
+    if (declared > hostedAssetMaxBytes) throw new Error('cms asset exceeds the byte limit');
+    return {
+      bytes: new Uint8Array(await readBlobBody(response.body, hostedAssetMaxBytes)),
+      mime: response.headers.get('content-type')?.split(';')[0] ?? `image/${format.format.replace('jpg', 'jpeg')}`,
+      id: extAssetId(rec.id, asset.remoteId),
+    };
+  };
+  const hostedResolvers = new Map<string, (ref: HostedProviderRef) => Promise<HostedAssetResult | null>>();
+  const hostedAssetResolverFor = (groups: string[]): ((ref: HostedProviderRef) => Promise<HostedAssetResult | null>) => {
+    const key = [...new Set(groups)].sort().join('\u0000');
+    let resolver = hostedResolvers.get(key);
+    if (!resolver) {
+      resolver = createHostedAssetResolver({
+        // Provider configuration is the net:// egress allowlist. Arbitrary
+        // caller origins never enter it; each URL was installed by an operator.
+        allowedOrigins: configuredAssetOrigins,
+        fetchImpl,
+        maxBytes: hostedAssetMaxBytes,
+        cms: cmsBytes(groups),
+        optimize: optimizeHostedAsset,
+      });
+      hostedResolvers.set(key, resolver);
+    }
+    return resolver;
+  };
+
   const returnToSafe = (raw: string | null): string => {
     if (!raw) return '/';
     if (raw.startsWith('/') && !raw.startsWith('//')) return raw;
@@ -402,9 +489,17 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // unauthenticated - and deliberately narrow: no secrets, no user data, no
   // policy beyond the access mode that /api/auth/config already states. Rate
   // limited with the auth bucket (see observability/rate-limit.ts).
+  //
+  // Readable from any origin (OSS plans/186 section 3.6): a person on the open
+  // source client, on lolly.tools or in a desktop shell, adds this deployment's
+  // design system by pasting its URL, and their browser reads this card first.
+  // Nothing here is per-user or secret, so the wildcard states what the route
+  // already is rather than opening anything new.
   router.add('GET', '/api/v1/instance', async (_req, res) => {
+    allowCrossOriginRead(res);
     await ensureConnectPack();
     const packHosted = await blobs.head(PACK_BLOB_ID);
+    const packUrl = packHosted ? `${config.instance.baseUrl}/connect/pack.lolly` : null;
     sendJson(res, 200, {
       name: config.instance.name,
       accessMode: config.policy.defaultAccessMode,
@@ -419,11 +514,20 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       // a key) and a newer one read differently to the same probe.
       capabilities: { catalog: true, collab: true, submit: true, scim: true },
       providers: idpProviders(),
+      // Which brand this deployment hosts, and whether it has moved since a
+      // client last looked (OSS plans/186 section 7). Always present, null when
+      // the pack ships no tokens asset.
+      brand: await brandCard(packUrl),
       // Present only while a pack is hosted (plans/34 wave 2). The URL itself
       // may still ask for a session on a gated instance.
-      ...(packHosted ? { connect: { packUrl: `${config.instance.baseUrl}/connect/pack.lolly` } } : {}),
+      ...(packUrl ? { connect: { packUrl } } : {}),
     });
   });
+
+  // The preflight for the read above. A plain cross-origin GET needs none, but
+  // a client that sends `If-None-Match` (the pack revalidation next door) does,
+  // and one answer for both paths is simpler than two rules.
+  router.add('OPTIONS', '/api/v1/instance', (_req, res) => sendReadPreflight(res));
 
   router.add('GET', '/api/auth/login', async (_req, res, ctx) => {
     if (!config.idp.issuer) return sendError(res, 404, 'NO_IDP', 'no OIDC issuer configured');
@@ -1217,21 +1321,59 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // Gating follows defaultAccessMode (plans/34 §7b, resolved): an open
     // instance serves the pack publicly; anything else asks for a member
     // session. The pack holds no secrets, but it does hold the brand.
+    //
+    // Cross-origin reads follow that same gate (OSS plans/186 section 3.6). An
+    // open instance is readable from anywhere and exposes the ETag, since the
+    // client compares tags to decide whether to download again. A gated one
+    // sends no CORS headers at all: a page on another origin cannot present the
+    // session cookie, and a wildcard with credentials is refused by browsers
+    // anyway, so the honest answer there is to sign in on the instance and
+    // export the pack, or use the desktop app.
+    if (config.policy.defaultAccessMode === 'open') allowCrossOriginRead(res, 'ETag');
     if (config.policy.defaultAccessMode !== 'open') {
       const me = await resolveMember(store, req.headers.cookie, sessionVerify);
       if (!me) return sendError(res, 401, 'UNAUTHORIZED', 'sign in to download the instance pack');
     }
     await ensureConnectPack();
+    // The stored checksum IS the pack's cache identity - the same value the
+    // meta route reports, since both come from the write's own stat. A client
+    // that already holds these bytes revalidates for the price of one header
+    // instead of pulling megabytes again, and re-hosting a pack changes the
+    // tag by itself. `no-cache` rather than `no-store`: a browser may keep the
+    // copy, it just may not serve it without asking us first. The tag is read
+    // AFTER the access gate above, so a gated instance never leaks it.
+    const head = await blobs.head(PACK_BLOB_ID);
+    if (!head) return sendError(res, 404, 'NOT_FOUND', 'no instance pack is hosted here');
+    const etag = `"${head.checksum}"`;
+    if (ifNoneMatchHits(req.headers['if-none-match'], etag)) {
+      res.writeHead(304, { etag, 'cache-control': 'private, no-cache' });
+      res.end();
+      return;
+    }
     const blob = await blobs.get(PACK_BLOB_ID);
     if (!blob) return sendError(res, 404, 'NOT_FOUND', 'no instance pack is hosted here');
     res.writeHead(200, {
       'content-type': 'application/octet-stream',
       'content-disposition': `attachment; filename="${config.instance.name.replace(/[^A-Za-z0-9._ -]/g, '').replace(/\s+/g, ' ').trim() || 'instance'}.lolly"`,
       'content-length': String(blob.stat.size),
-      'cache-control': 'private, no-store',
+      etag,
+      'cache-control': 'private, no-cache',
       'x-content-type-options': 'nosniff',
     });
     Readable.fromWeb(blob.body as import('node:stream/web').ReadableStream<Uint8Array>).pipe(res);
+  });
+
+  // The preflight a browser sends before a cross-origin `If-None-Match` GET of
+  // the pack. Open instances only, matching the gate on the download itself: a
+  // gated instance answers with no CORS headers, which is how the browser
+  // learns the cross-origin path is closed here.
+  router.add('OPTIONS', '/connect/pack.lolly', (_req, res) => {
+    if (config.policy.defaultAccessMode !== 'open') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+    sendReadPreflight(res);
   });
 
   // Schema readiness - pending migrations on the live store. Owner-gated
@@ -3777,7 +3919,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const overlay = normalizeOverlay(toolId, await readJson(req), existing?.version ?? 0);
     if (!overlay) {
       return sendError(res, 400, 'INVALID_INPUT',
-        'overlay must be {inputAccess?: {input: [{groups[], level, value?, allow?}]}, visibility?: {groups[]}, enforce?, defaults?}');
+        'overlay must be {name?, inputAccess?: {input: [{groups[], level, value?, allow?, reason?}]}, visibility?: {groups[]}, enforce?, defaults?}');
     }
     await store.putOverlay(overlay);
     // Policy moved: cached renders of this tool are stale (the cache key folds
@@ -4972,6 +5114,273 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     return p;
   };
 
+  const automationCaller = async (req: IncomingMessage): Promise<{ user: UserRecord | null; profile: Profile; principal: string; groups: string[] } | null> => {
+    const member = await memberOf(req);
+    const service = member ? null : await serviceAccountOf(req);
+    const user = member ?? service;
+    if (!user && config.policy.defaultAccessMode === 'gated') return null;
+    return {
+      user,
+      profile: member ? renderProfileOf(member) : {},
+      principal: member ? `user:${member.id}` : service ? `service:${service.id}` : `guest:${clientIp(req, config.rateLimit.trustedProxyHops)}`,
+      groups: user?.groups ?? [],
+    };
+  };
+  const automationBody = async (req: IncomingMessage, res: ServerResponse): Promise<Record<string, unknown> | null> => {
+    const body = await readJson(req);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) { sendError(res, 400, 'INVALID_INPUT', 'JSON object body required'); return null; }
+    return body as Record<string, unknown>;
+  };
+  const automationMayRender = async (caller: NonNullable<Awaited<ReturnType<typeof automationCaller>>>, toolId: string): Promise<boolean> => {
+    if (!caller.user) return config.policy.defaultAccessMode === 'open';
+    if (!(await automationMayUse(caller, toolId))) return false;
+    return evaluate({ userId: caller.user.id, groups: caller.user.groups, role: caller.user.role as Role }, 'export.server', [`tool:${toolId}`, '*'], await store.listGrants());
+  };
+  const automationMayUse = async (caller: NonNullable<Awaited<ReturnType<typeof automationCaller>>>, toolId: string): Promise<boolean> => {
+    if (!caller.user) return config.policy.defaultAccessMode === 'open';
+    const principal = { userId: caller.user.id, groups: caller.user.groups, role: caller.user.role as Role };
+    const grants = await store.listGrants();
+    const decision = grantDecision(principal, 'tool.use', [`tool:${toolId}`, '*'], grants);
+    if (decision === 'deny') return false;
+    const overlay = (await store.listOverlays()).get(toolId);
+    if (!toolVisibleTo(overlay, caller.groups) && decision !== 'allow') return false;
+    return evaluate(principal, 'tool.use', [`tool:${toolId}`, '*'], grants);
+  };
+  const requireAutomationTools = async (
+    res: ServerResponse,
+    caller: NonNullable<Awaited<ReturnType<typeof automationCaller>>>,
+    ...values: unknown[]
+  ): Promise<boolean> => {
+    const ids = new Set<string>();
+    for (const value of values) {
+      if (value && typeof value === 'object' && typeof (value as { toolId?: unknown }).toolId === 'string') ids.add((value as { toolId: string }).toolId);
+    }
+    for (const id of ids) {
+      if (!(await automationMayUse(caller, id))) {
+        sendError(res, 403, 'FORBIDDEN', 'tool.use required');
+        return false;
+      }
+    }
+    return true;
+  };
+  const enqueueAutomation = async (
+    res: ServerResponse,
+    caller: NonNullable<Awaited<ReturnType<typeof automationCaller>>>,
+    verb: string,
+    body: Record<string, unknown>,
+    run: Parameters<AutomationQueue['create']>[3],
+    idempotencyKey?: string,
+  ): Promise<Awaited<ReturnType<AutomationQueue['create']>> | null> => {
+    try { return await automationJobs.create(caller.principal, verb, body, run, idempotencyKey); }
+    catch (e) {
+      if ((e as Error).message === 'IDEMPOTENCY_KEY_REUSED') {
+        sendError(res, 409, 'IDEMPOTENCY_KEY_REUSED', 'this Idempotency-Key was already used for a different request');
+        return null;
+      }
+      throw e;
+    }
+  };
+
+  router.add('GET', '/api/v1/schema/:toolId', async (req, res, ctx) => {
+    const caller = await automationCaller(req);
+    if (!caller) return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
+    if (!(await requireAutomationTools(res, caller, { toolId: ctx.params.toolId! }))) return;
+    try { return sendJson(res, 200, await schemaVerb({ pack: config.instance.pack, profile: caller.profile }, ctx.params.toolId!)); }
+    catch (e) { return sendError(res, 400, 'DOCUMENT_API_ERROR', (e as Error).message); }
+  });
+
+  for (const verb of ['compile', 'validate', 'inspect', 'diff', 'measure', 'optimize'] as const) {
+    router.add('POST', `/api/v1/${verb}`, async (req, res, ctx) => {
+      const caller = await automationCaller(req);
+      if (!caller) return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
+      const body = await automationBody(req, res); if (!body) return;
+      if (!(await requireAutomationTools(res, caller, body, body.document, body.a, body.b))) return;
+      const hostedResolver = hostedAssetResolverFor(caller.groups);
+      const automationContext = { pack: config.instance.pack, profile: caller.profile, hostedResolver };
+      const execute = async (): Promise<unknown> => {
+        let result: unknown;
+        if (verb === 'compile') result = await compileVerb(automationContext, body as unknown as Parameters<typeof compileVerb>[1]);
+        else if (verb === 'validate') result = await validateVerb(automationContext, body);
+        else if (verb === 'diff') result = await diffVerb(body.a, body.b);
+        else result = await documentVerb(automationContext, verb, body as unknown as Parameters<typeof documentVerb>[2]);
+        return result;
+      };
+      const wantsAsync = ctx.url.searchParams.get('async') === '1' || /respond-async/i.test(String(req.headers.prefer ?? ''));
+      if (wantsAsync) {
+        const queued = await enqueueAutomation(res, caller, verb, body, async () => {
+          const value = await execute();
+          return { mime: 'application/json', bytes: new TextEncoder().encode(JSON.stringify(value)), value };
+        }, String(req.headers['idempotency-key'] ?? '') || undefined);
+        if (!queued) return;
+        const { job, reused } = queued;
+        return sendJson(res, reused && job.state === 'done' ? 200 : 202, jobWire(job, automationResultUrl(job)), { location: `/api/v1/jobs/${job.id}` });
+      }
+      try { return sendJson(res, 200, await execute()); }
+      catch (e) { return sendError(res, 400, 'DOCUMENT_API_ERROR', (e as Error).message); }
+    });
+  }
+
+  router.add('POST', '/api/v1/package', async (req, res, ctx) => {
+    const caller = await automationCaller(req);
+    if (!caller) return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
+    const body = await automationBody(req, res); if (!body) return;
+    if (body.document === undefined && typeof body.toolId !== 'string') return sendError(res, 400, 'INVALID_INPUT', 'document or toolId is required');
+    if (!(await requireAutomationTools(res, caller, body, body.document))) return;
+    const execute = async () => {
+      const document = body.document ?? (await compileVerb(
+        { pack: config.instance.pack, profile: caller.profile, hostedResolver: hostedAssetResolverFor(caller.groups) },
+        body as unknown as Parameters<typeof compileVerb>[1],
+      ) as { document: unknown }).document;
+      return packageVerb(document);
+    };
+    const wantsAsync = ctx.url.searchParams.get('async') === '1' || /respond-async/i.test(String(req.headers.prefer ?? ''));
+    if (wantsAsync) {
+      const queued = await enqueueAutomation(res, caller, 'package', body, async () => {
+        const packed = await execute();
+        return { mime: 'application/vnd.lolly+zip', bytes: packed.bytes };
+      }, String(req.headers['idempotency-key'] ?? '') || undefined);
+      if (!queued) return;
+      const { job, reused } = queued;
+      return sendJson(res, reused && job.state === 'done' ? 200 : 202, jobWire(job, automationResultUrl(job)), { location: `/api/v1/jobs/${job.id}` });
+    }
+    try {
+      const packed = await execute();
+      res.writeHead(200, { 'content-type': 'application/vnd.lolly+zip', 'content-length': String(packed.bytes.byteLength), 'content-disposition': 'attachment; filename="document.lolly"' });
+      res.end(Buffer.from(packed.bytes));
+    } catch (e) { return sendError(res, 400, 'DOCUMENT_API_ERROR', (e as Error).message); }
+  });
+
+  router.add('POST', '/api/v1/render', async (req, res, ctx) => {
+    const caller = await automationCaller(req);
+    if (!caller) return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
+    const body = await automationBody(req, res); if (!body) return;
+    if (typeof body.toolId !== 'string' || typeof body.format !== 'string') return sendError(res, 400, 'INVALID_INPUT', 'toolId and format are required');
+    const toolId = body.toolId; const format = body.format;
+    if (!(await automationMayRender(caller, toolId))) return sendError(res, 403, 'FORBIDDEN', 'export.server required');
+    const execute = async () => {
+      const result = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer: await getC2paSigner(), hostedResolver: hostedAssetResolverFor(caller.groups) }, {
+        toolId, format, query: queryFromInputs((body.inputs ?? {}) as Record<string, unknown>),
+        principal: caller.user ? { groups: caller.user.groups } : { groups: [] }, profile: caller.profile,
+        overlays: await store.listOverlays(),
+      });
+      return result;
+    };
+    const wantsAsync = ctx.url.searchParams.get('async') === '1' || /respond-async/i.test(String(req.headers.prefer ?? ''));
+    if (wantsAsync) {
+      const queued = await enqueueAutomation(res, caller, 'render', body, async () => {
+        const result = await execute();
+        return { mime: result.mime, bytes: result.bytes };
+      }, String(req.headers['idempotency-key'] ?? '') || undefined);
+      if (!queued) return;
+      const { job, reused } = queued;
+      return sendJson(res, reused && job.state === 'done' ? 200 : 202, jobWire(job, automationResultUrl(job)), { location: `/api/v1/jobs/${job.id}` });
+    }
+    try {
+      const result = await execute();
+      res.writeHead(200, { 'content-type': result.mime, 'x-lolly-cache-key': result.cacheKey });
+      res.end(Buffer.from(result.bytes));
+    } catch (e) { if (e instanceof RenderError) return sendError(res, e.status, e.code, e.message); throw e; }
+  });
+
+  router.add('POST', '/api/v1/batch', async (req, res) => {
+    const caller = await automationCaller(req);
+    if (!caller) return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
+    const body = await automationBody(req, res); if (!body) return;
+    if (typeof body.toolId !== 'string' || typeof body.format !== 'string' || (!Array.isArray(body.rows) && !body.bind)) return sendError(res, 400, 'INVALID_INPUT', 'toolId, format and rows or bind are required');
+    if (!(await automationMayRender(caller, body.toolId))) return sendError(res, 403, 'FORBIDDEN', 'export.server required');
+    let rows: Array<Record<string, unknown>>;
+    try {
+      rows = Array.isArray(body.rows)
+        ? body.rows as Array<Record<string, unknown>>
+        : await resolveBindingRows(body.bind as DataBinding, hostedAssetResolverFor(caller.groups));
+    } catch (e) {
+      return sendError(res, 400, 'DATA_BINDING_ERROR', (e as Error).message);
+    }
+    if (!rows.length || rows.some((row) => !row || typeof row !== 'object' || Array.isArray(row))) return sendError(res, 400, 'INVALID_INPUT', 'batch rows must be a non-empty array of objects');
+    for (let index = 0; index < rows.length; index++) {
+      const check = await validateVerb(
+        { pack: config.instance.pack, profile: caller.profile, hostedResolver: hostedAssetResolverFor(caller.groups) },
+        { toolId: body.toolId, inputs: rows[index] },
+      ) as { ok: boolean; errors?: unknown[] };
+      if (!check.ok) return sendError(res, 422, 'ROW_VALIDATION_FAILED', `batch row ${index} does not satisfy the tool input schema`, { row: index, errors: check.errors ?? [] });
+    }
+    const queued = await enqueueAutomation(res, caller, 'batch', body, async (record: AutomationJob) => {
+      const zip = new ZipBuilder(); const used = new Set<string>(); const chunks: Buffer[] = [];
+      const manifest: { toolId: string; format: string; total: number; succeeded: number; failed: number; rows: Array<{ index: number; name?: string; error?: string }> } = { toolId: body.toolId as string, format: body.format as string, total: rows.length, succeeded: 0, failed: 0, rows: [] };
+      const retries = Math.max(0, Math.min(3, Number(body.retries ?? 0) || 0));
+      const concurrency = Math.max(1, Math.min(4, Math.trunc(Number(body.concurrency ?? 1) || 1)));
+      const overlays = await store.listOverlays();
+      const outcomes: Array<{ result?: Awaited<ReturnType<typeof renderTool>>; error?: unknown }> = new Array(rows.length);
+      let next = 0; let done = 0; let stop = false;
+      record.progress = { done: 0, total: rows.length };
+      const renderRows = async (): Promise<void> => {
+        while (!stop) {
+          const index = next++;
+          if (index >= rows.length) return;
+          let result: Awaited<ReturnType<typeof renderTool>> | null = null; let error: unknown;
+          for (let attempt = 0; attempt <= retries && !result; attempt++) {
+            try { result = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer: await getC2paSigner(), hostedResolver: hostedAssetResolverFor(caller.groups) }, { toolId: body.toolId as string, format: body.format as string, query: queryFromInputs(rows[index]!), principal: { groups: caller.groups }, profile: caller.profile, overlays }); }
+            catch (caught) { error = caught; }
+          }
+          outcomes[index] = result ? { result } : { error };
+          done++;
+          record.progress = { done, total: rows.length };
+          await automationJobs.save(record);
+          if (!result && body.keepGoing !== true) stop = true;
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(concurrency, rows.length) }, () => renderRows()));
+      if (stop) throw outcomes.find((outcome) => outcome?.error)?.error ?? new Error('batch row failed');
+      for (let index = 0; index < outcomes.length; index++) {
+        const { result, error } = outcomes[index] ?? {};
+        if (result) {
+          const name = safeEntryName(`${String(body.name ?? body.toolId)}-${index + 1}.${body.format}`, used);
+          chunks.push(zip.add(name, Buffer.from(result.bytes))); manifest.succeeded++; manifest.rows.push({ index, name });
+        } else {
+          const message = error instanceof Error ? error.message : String(error); manifest.failed++; manifest.rows.push({ index, error: message });
+        }
+      }
+      chunks.push(zip.add('manifest.json', Buffer.from(JSON.stringify(manifest, null, 2))));
+      chunks.push(zip.end());
+      return { mime: 'application/zip', bytes: Buffer.concat(chunks) };
+    }, String(req.headers['idempotency-key'] ?? '') || undefined);
+    if (!queued) return;
+    const { job, reused } = queued;
+    return sendJson(res, reused && job.state === 'done' ? 200 : 202, jobWire(job, automationResultUrl(job)), { location: `/api/v1/jobs/${job.id}` });
+  });
+
+  router.add('GET', '/api/v1/jobs', async (req, res) => {
+    const caller = await automationCaller(req);
+    if (!caller) return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
+    return sendJson(res, 200, { jobs: (await automationJobs.list(caller.principal)).map((job) => jobWire(job, automationResultUrl(job))) });
+  });
+  router.add('GET', '/api/v1/jobs/:id', async (req, res, ctx) => {
+    const caller = await automationCaller(req);
+    if (!caller) return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
+    const job = await automationJobs.get(ctx.params.id!, caller.principal);
+    return job ? sendJson(res, 200, jobWire(job, automationResultUrl(job))) : sendError(res, 404, 'NOT_FOUND', 'job not found');
+  });
+  router.add('GET', '/api/v1/jobs/:id/result', async (req, res, ctx) => {
+    const token = ctx.url.searchParams.get('token');
+    const signed = token ? verifyToken<{ jobId: string; principal: string }>('lw/job', token, linkVerify) : null;
+    const caller = signed ? null : await automationCaller(req);
+    if (!signed && !caller) return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
+    if (signed && signed.jobId !== ctx.params.id) return sendError(res, 403, 'FORBIDDEN', 'result token does not match this job');
+    const principal = signed?.principal ?? caller!.principal;
+    const job = await automationJobs.get(ctx.params.id!, principal);
+    if (!job) return sendError(res, 404, 'NOT_FOUND', 'job not found');
+    const output = await automationJobs.result(job.id, principal);
+    if (!output) return sendError(res, 409, 'JOB_NOT_DONE', 'job has not completed');
+    res.writeHead(200, { 'content-type': output.mime, 'content-length': String(output.bytes.byteLength), 'cache-control': 'private, no-store' });
+    res.end(Buffer.from(output.bytes));
+  });
+
+  router.add('DELETE', '/api/v1/jobs/:id', async (req, res, ctx) => {
+    const caller = await automationCaller(req);
+    if (!caller) return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
+    return (await automationJobs.remove(ctx.params.id!, caller.principal)) ? sendJson(res, 200, { ok: true }) : sendError(res, 404, 'NOT_FOUND', 'job not found');
+  });
+
   router.add('GET', '/render/:spec', async (req, res, ctx) => {
     const spec = ctx.params.spec as string;
     const dot = spec.lastIndexOf('.');
@@ -5024,7 +5433,13 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
           await audit(actor, 'render.denied', `tool:${toolId}`, { code: err.code, params: err.violations.map((v) => v.param) });
         }
         if (err.retryAfter !== undefined) res.setHeader('retry-after', String(err.retryAfter));
-        return sendError(res, err.status, err.code, err.message);
+        // A policy refusal names the input and the overlay that refused it, so an
+        // agent driving the render reads the same explanation the shell puts
+        // beside the control instead of asking a human what changed.
+        const v = err.violations?.[0];
+        return sendError(res, err.status, err.code, err.message, v
+          ? { input: v.param, ...(v.by ? { by: v.by } : {}), ...(v.reason ? { reason: v.reason } : {}) }
+          : undefined);
       }
       throw err;
     }
@@ -5226,15 +5641,39 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     | { name: string; tokens: unknown; fontsBase: string; logos: { light: string | null; dark: string | null } }
     | null
     | undefined;
+  /**
+   * The tokens asset's identity as the pack's own index states it, filled by the
+   * SAME pass that builds the chrome so the public manifest and /api/brand can
+   * never describe different brands. A client that keeps this design system on
+   * the device compares the checksum to answer one question cheaply: has the
+   * brand here changed since I copied it (OSS plans/186 section 7). `null` means
+   * the pack ships no tokens asset at all.
+   */
+  let brandFacts: { label: string | null; checksum: string | null; locked: boolean } | null | undefined;
   const loadBrandChrome = async (): Promise<typeof brandChrome> => {
-    if (brandChrome !== undefined) return brandChrome;
+    if (brandChrome !== undefined && brandFacts !== undefined) return brandChrome;
+    brandFacts = null;
     try {
       const idx = JSON.parse(await readFile(join(config.instance.pack, 'catalog', 'assets', 'index.json'), 'utf8')) as {
-        assets?: Array<{ type?: string; tags?: string[]; formats?: Array<{ format?: string; url?: string }> }>;
+        assets?: Array<{
+          type?: string; name?: string; checksum?: string; brandLock?: boolean;
+          tags?: string[]; formats?: Array<{ format?: string; url?: string; checksum?: string }>;
+        }>;
       };
       const assets = idx.assets ?? [];
       const tok = assets.find((a) => a?.type === 'tokens');
       const fmt = tok?.formats?.find((f) => f.format === 'json') ?? tok?.formats?.[0];
+      if (tok) {
+        brandFacts = {
+          label: typeof tok.name === 'string' ? tok.name : null,
+          // The OSS catalog build (scripts/checksum-assets.ts) writes an
+          // SRI-format checksum per format FILE, so that is the honest change
+          // detector; an asset-level one wins if a pack carries it.
+          checksum: typeof tok.checksum === 'string' ? tok.checksum
+            : typeof fmt?.checksum === 'string' ? fmt.checksum : null,
+          locked: tok.brandLock === true,
+        };
+      }
       if (!fmt?.url) return (brandChrome = null);
       const abs = (url: string) => join(config.instance.pack, 'catalog', normalize(url.replace(/^\/?catalog\//, '')));
       const tokens = JSON.parse(await readFile(abs(fmt.url), 'utf8'));
@@ -5255,6 +5694,34 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       brandChrome = null;
     }
     return brandChrome;
+  };
+  /**
+   * The manifest's `brand` block (OSS plans/186 section 7). A client that adds a
+   * hosted design system by URL keeps it on the device for offline use, then
+   * asks now and then whether the host's brand moved; this answers that in one
+   * unauthenticated read, without shipping the tokens themselves. `checksum` is
+   * the comparison, `locked` says the brand is authoritative (a client must not
+   * offer to customise it), `profile` names the active brand profile on a
+   * profile-aware pack, `version` is the hosted pack's own version, and
+   * `packUrl` repeats `connect.packUrl` so one block answers "what is here and
+   * where do I get it". Null when the pack ships no tokens asset.
+   */
+  const brandCard = async (packUrl: string | null): Promise<{
+    profile: string | null; label: string | null; version: string | null;
+    checksum: string | null; locked: boolean; packUrl: string | null;
+  } | null> => {
+    await loadBrandChrome();
+    const facts = brandFacts;
+    if (!facts) return null;
+    const profiles = await listBrandProfiles(config.instance.pack);
+    return {
+      profile: profiles.available ? profiles.active : null,
+      label: facts.label,
+      version: packUrl ? (await readPackMeta())?.version ?? null : null,
+      checksum: facts.checksum,
+      locked: facts.locked,
+      packUrl,
+    };
   };
   /**
    * The pack's own webfont, for a page the server renders itself (the
@@ -5344,7 +5811,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // The pack pointer moved - drop every cache derived from it so the new brand
     // serves immediately. brandChrome is memoized forever; the asset caches are
     // mtime-gated, but a symlink swap can share an mtime, so clear them too.
+    // brandFacts is the manifest's copy of the same index and goes with it: a
+    // client polling the public manifest must see the new brand, not the old
+    // checksum.
     brandChrome = undefined;
+    brandFacts = undefined;
     delete brandLogoFiles.light;
     delete brandLogoFiles.dark;
     assetByIdCache.delete(config.instance.pack);
@@ -5681,8 +6152,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
     let routeClass = 'unmatched';
     res.on('finish', () => metrics.httpRequest(routeClass, statusClass(res.statusCode)));
-    // Rate-limit the unauthenticated surface only (auth, telemetry ingest, /l/:id);
-    // authenticated console/API paths never map to a surface, so are never throttled.
+    // Rate-limit exposed request surfaces (auth, telemetry, links, automation).
+    // Automation remains bounded even for authenticated callers; the console's
+    // ordinary CRUD/API paths still never map to a bucket.
     const surface = rateLimitSurface(req.method ?? 'GET', new URL(req.url ?? '/', 'http://local').pathname);
     if (surface) {
       const verdict = limiter.take(surface, clientIp(req, config.rateLimit.trustedProxyHops));
@@ -5710,6 +6182,50 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
  *  light, on-dark for dark) and, within that, the brand-colour face for light and
  *  the white mono face for dark; degrades gracefully to any 'logo' vector. Chrome
  *  only - the caller serves it through the narrow /api/brand/logo passthrough. */
+/** Let a browser on any origin read this response. Used by the two routes a
+ *  client fetches cross-origin when someone adds a hosted design system by URL
+ *  (OSS plans/186 section 3.6) - the unauthenticated manifest, and the pack
+ *  download on an open instance. A wildcard is the right shape for both: they
+ *  carry nothing per-user, no cookie is sent with them, and a wildcard plus
+ *  credentials is refused by browsers, so there is no credentialed variant to
+ *  vary on. `expose` names a response header script may read on top of the
+ *  handful CORS allows by default (the pack's `ETag`, which is the whole point
+ *  of the conditional request). No `Vary: Origin` - the answer is the same
+ *  whoever asks. */
+function allowCrossOriginRead(res: ServerResponse, expose?: string): void {
+  res.setHeader('access-control-allow-origin', '*');
+  if (expose) res.setHeader('access-control-expose-headers', expose);
+}
+
+/** Answer the preflight for one of those reads. Browsers preflight a GET that
+ *  carries `If-None-Match`, which is exactly what a client holding a copy of
+ *  the pack sends. A day of caching, so the check costs one extra request per
+ *  client per day rather than one per poll. */
+function sendReadPreflight(res: ServerResponse): void {
+  res.writeHead(204, {
+    'access-control-allow-origin': '*',
+    'access-control-allow-methods': 'GET',
+    'access-control-allow-headers': 'If-None-Match',
+    'access-control-max-age': '86400',
+  });
+  res.end();
+}
+
+/** Does an `If-None-Match` header cover this entity tag (RFC 9110 section 13.1.2)?
+ *  `*` matches any stored representation; otherwise any member of the comma list
+ *  that equals the tag counts. The comparison is weak, so a `W/` prefix on either
+ *  side is ignored - a byte-identical pack is a match however it was tagged. */
+function ifNoneMatchHits(header: string | string[] | undefined, etag: string): boolean {
+  const raw = Array.isArray(header) ? header.join(',') : header;
+  if (!raw) return false;
+  const bare = (tag: string): string => tag.trim().replace(/^W\//, '');
+  const want = bare(etag);
+  return raw.split(',').some((tag) => {
+    const candidate = bare(tag);
+    return candidate === '*' || candidate === want;
+  });
+}
+
 function pickBrandLogoUrl(
   assets: Array<{ type?: string; tags?: string[]; formats?: Array<{ format?: string; url?: string }> }>,
   theme: 'light' | 'dark',

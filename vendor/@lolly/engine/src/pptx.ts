@@ -27,6 +27,8 @@
  */
 
 import { parseSvgPath } from './svg-path.ts';
+import { corePropsXml } from './ooxml-props.ts';
+import { base64ToBytes } from './bytes.ts';
 
 export const EMU_PER_INCH = 914400;
 export const EMU_PER_PX = EMU_PER_INCH / 96; // CSS px at the 96-DPI convention
@@ -66,14 +68,14 @@ export interface PptxPara {
   spaceAfterPt?: number;
 }
 
-export interface PptxRect { kind: 'rect'; x: number; y: number; cx: number; cy: number; rot?: number; fill?: PptxFill; line?: { color: string; w: number; alpha?: number }; radius?: number; }
+export interface PptxRect { kind: 'rect'; x: number; y: number; cx: number; cy: number; rot?: number; fill?: PptxFill; line?: { color: string; w: number; alpha?: number }; radius?: number; anim?: PptxAnim; }
 /** A NATIVE custom-geometry vector shape (`p:sp` with `a:custGeom`). Its `paths` are
  *  SVG `d` strings whose coordinates already live in this shape's EMU box space
  *  (0..cx, 0..cy). The emitter parses each with parseSvgPath and lowers M/L/C/Z to
  *  a:moveTo / a:lnTo / a:cubicBezTo / a:close inside one `a:path w=cx h=cy`, so holes
  *  (opposite-wound subpaths) survive. Solid fill + solid stroke only; svg-custgeom.ts
  *  bails to a raster pic for gradients/filters/opacity/blend. */
-export interface PptxPath { kind: 'path'; x: number; y: number; cx: number; cy: number; rot?: number; fill?: PptxFill; line?: { color: string; w: number; alpha?: number }; paths: Array<{ d: string }>; }
+export interface PptxPath { kind: 'path'; x: number; y: number; cx: number; cy: number; rot?: number; fill?: PptxFill; line?: { color: string; w: number; alpha?: number }; paths: Array<{ d: string }>; anim?: PptxAnim; }
 export interface PptxText {
   kind: 'text'; x: number; y: number; cx: number; cy: number; rot?: number; paras: PptxPara[]; anchor?: 't' | 'ctr' | 'b';
   /** Bind this text to a layout placeholder (emits `<p:ph>` in nvPr). The shape KEEPS its
@@ -81,6 +83,8 @@ export interface PptxText {
    *  drops the layout still renders the text where it was. Bound text is what makes
    *  outline view / Reset Slide / re-layout work in PowerPoint. */
   ph?: { type: PptxPhType; idx?: number };
+  /** Native animation (plans/175 WP-E) - see PptxAnim below. */
+  anim?: PptxAnim;
 }
 /** A picture. `media` is the index (into the slide's media[]) of the raster blip;
  *  `svg`, when set, is the index of an .svg part embedded via svgBlip (media is then
@@ -90,6 +94,8 @@ export interface PptxPic {
   /** Source crop (object-fit:cover), as fractions 0..1 cropped off each edge. The
    *  blip stays the full image (un-croppable in PowerPoint), only the view is cropped. */
   srcRect?: { l?: number; t?: number; r?: number; b?: number };
+  /** Native animation (plans/175 WP-E) - see PptxAnim below. */
+  anim?: PptxAnim;
 }
 /** A cell border edge (colour + width in EMU). */
 export interface PptxLine { color: string; w: number; }
@@ -120,14 +126,107 @@ export interface PptxTable {
   rows: Array<{ h?: number; cells: PptxTableCell[] }>;
   firstRow?: boolean;
   styleId?: string;
+  /** Native animation (plans/175 WP-E) - see PptxAnim below. */
+  anim?: PptxAnim;
 }
 export type PptxShape = PptxRect | PptxText | PptxPic | PptxTable | PptxPath;
 
+// ─── native animation (plans/175 WP-E) ──────────────────────────────────────────
+/**
+ * One entrance/exit effect on a shape, in the SUPPORTED OOXML subset. The vocabulary
+ * here is already PowerPoint's - the shell (pptx-deck.ts) maps Lolly's richer kinds
+ * onto it and logs each degrade; this module only ever emits what it names.
+ *
+ * The behaviours (`p:set`/`p:anim`/`p:animScale`/`p:animEffect`) are what actually
+ * play; `presetID`/`presetClass` are the label PowerPoint's animation pane shows.
+ */
+export interface PptxEffect {
+  preset: 'appear' | 'fade' | 'fly' | 'zoom' | 'zoomOut';
+  /** Fly edge: the shape enters FROM this edge (or exits TOWARD it). */
+  dir?: 't' | 'r' | 'b' | 'l';
+  /** Effect duration, ms. */
+  ms: number;
+  /** Delay after the group's trigger, ms - a timed box's offset into its slide. */
+  delayMs?: number;
+  /**
+   * Per-text-unit iteration - OOXML `<p:iterate>` with an ABSOLUTE gap, which is
+   * exactly Lolly's stagger field (the typewriter maps losslessly: appear + iterate).
+   */
+  iterate?: { by: 'letter' | 'word'; staggerMs: number; backwards?: boolean };
+  /** Easing approximation: fraction of the duration spent accelerating/decelerating,
+   *  in 1000ths of a percent (0..100000) - CT_TLCommonTimeNodeData's own units. */
+  accel?: number;
+  decel?: number;
+}
+export interface PptxAnim {
+  enter?: PptxEffect;
+  exit?: PptxEffect;
+  /** Click step: 0/absent = plays automatically with the slide; 1+ = on the Nth click
+   *  (the presentation-mode `build` order, natively). */
+  click?: number;
+}
+
 export interface PptxMedia { bytes: Uint8Array; ext: 'png' | 'jpeg' | 'emf' | 'svg'; }
+
+/**
+ * One narration clip attached to a slide (plans/180 section 5).
+ *
+ * Audio is its OWN part family, not another `PptxMedia` entry: it needs a different
+ * content-type Default, a DIFFERENT relationship type (two of them, in fact), and it
+ * never takes part in the image `mediaRid` numbering that `picXml` depends on. Keeping
+ * the two families apart is what stops an audio clip shifting every image's rel id.
+ *
+ * `bytes` go into the package VERBATIM. A narration clip carries a C2PA manifest in its
+ * RIFF chunks saying the voice is synthetic (plans/180 section 7), and re-encoding here
+ * would strip it, so this builder never transcodes - the caller supplies the exact bytes
+ * it signed.
+ *
+ * `durationMs` is the clip's own length, carried so a caller can derive
+ * `advanceAfterMs` from it; the element itself has no duration attribute.
+ * `autoplay` puts a `<p:audio>` media node in the slide's step-0 timing group, which is
+ * how PowerPoint expresses "play with the slide" (there is no attribute for it).
+ * `advanceAfterMs` sets `advTm` on the slide's `<p:transition>` - the deck moves on by
+ * itself after that many milliseconds. A click still advances: `advClick` is left at its
+ * default, so auto-advance never traps a presenter on a slide.
+ */
+export interface PptxAudio {
+  bytes: Uint8Array;
+  ext: 'wav' | 'mp3' | 'm4a';
+  durationMs: number;
+  autoplay?: boolean;
+  advanceAfterMs?: number;
+  /** The shape's name in the selection pane, e.g. the clip's file name. */
+  name?: string;
+}
+
+/**
+ * How this slide ARRIVES on screen - PowerPoint's own slide transition, played as the
+ * deck moves from the previous slide onto this one.
+ *
+ * Three kinds, because three is what maps honestly. `fade` and `push` are real OOXML
+ * transitions (`<p:fade/>`, `<p:push dir="…"/>`); `cut` is the absence of one, and is
+ * spelled out rather than left to `undefined` so a caller can say "no transition here"
+ * deliberately. Both produce no `<p:transition>` element at all, which is what keeps a
+ * deck that never sets this byte-identical to the decks this builder wrote before the
+ * field existed.
+ *
+ * `dir` applies to `push` only ('l' = the new slide pushes in from the right, moving
+ * leftwards - ST_TransitionSlideDirection's own convention). `ms` is a REQUESTED length:
+ * ECMA-376 only carries three speeds on `p:transition`, so it is bucketed into `spd`
+ * (a real duration needs the p14 extension namespace, which is not worth its cost here).
+ */
+export interface PptxSlideTransition {
+  kind: 'fade' | 'push' | 'cut';
+  dir?: 'l' | 'r' | 'u' | 'd';
+  ms?: number;
+}
+
 /** `notes` is the slide's speaker note (PowerPoint's Notes pane). Blank/absent =>
  *  no notes parts are emitted for this slide at all (see buildPptxParts).
- *  `layout` is a 0-based index into PptxBuildOpts.layouts (clamped; absent = 0). */
-export interface PptxSlide { shapes: PptxShape[]; media: PptxMedia[]; notes?: string; layout?: number; }
+ *  `layout` is a 0-based index into PptxBuildOpts.layouts (clamped; absent = 0).
+ *  `transition` is how the deck moves ONTO this slide (absent = a cut).
+ *  `audio` is the slide's narration clip (absent = no audio parts at all). */
+export interface PptxSlide { shapes: PptxShape[]; media: PptxMedia[]; notes?: string; layout?: number; transition?: PptxSlideTransition; audio?: PptxAudio; }
 
 // ─── slide layouts (the branded layout gallery) ────────────────────────────────
 /** Placeholder types this builder emits. The template convention: `title`/`ctrTitle`
@@ -172,7 +271,7 @@ export interface PptxTheme {
 export interface PptxBuildOpts {
   emuW?: number;
   emuH?: number;
-  meta?: { title?: string; description?: string; source?: string; contact?: string } | null;
+  meta?: { title?: string; description?: string; source?: string; contact?: string; author?: string; sourceAuthor?: string } | null;
   now?: string;
   /** Brand theme (values only). Threads into theme1.xml (+ the notes theme2.xml). */
   theme?: PptxTheme;
@@ -198,9 +297,34 @@ const CT = 'http://schemas.openxmlformats.org/package/2006/content-types';
 // Fixed GUID that flags a blip's SVG companion (Office 2016+ SVG-in-Office feature).
 const SVG_EXT_URI = '{96DAC541-7B7A-43D3-8B79-37D633B846F1}';
 
+// Fixed GUID that hangs the p14 media reference off an audio pic's nvPr (Office 2010+
+// embedded media). PowerPoint writes it on every embedded sound; without it the clip is
+// a LINK only, and a package moved to another machine plays nothing.
+const P14_MEDIA_EXT_URI = '{DAA4B4D4-6D71-4841-9C94-3DE7FCFB9230}';
+const P14_NS = 'http://schemas.microsoft.com/office/powerpoint/2010/main';
+
 const MEDIA_CT: Record<PptxMedia['ext'], string> = {
   emf: 'image/x-emf', png: 'image/png', jpeg: 'image/jpeg', svg: 'image/svg+xml',
 };
+/** Content types for the AUDIO part family - deliberately separate from MEDIA_CT so a
+ *  sound extension can never be mistaken for an image one at the rel-id arithmetic. */
+const AUDIO_CT: Record<PptxAudio['ext'], string> = {
+  wav: 'audio/wav', mp3: 'audio/mpeg', m4a: 'audio/mp4',
+};
+
+// The poster an audio `p:pic` draws. A p:pic MUST have a blipFill - it is a picture that
+// happens to carry a sound - so a deck with narration needs one real image part. This is
+// a 32x32 greyscale+alpha PNG of a speaker with two waves, 169 bytes, shared by every
+// narrated slide in the deck (one part, N relationships) rather than repeated per slide.
+const AUDIO_ICON_B64 =
+  'iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAQAAADZc7J/AAAAcElEQVR42s2VUQrAIAxDc5bd/44RNj8UBekSrfhhFfII' +
+  'ta14oC2cBDAZQA1ADUA/gBEAB0Bzisg5y0lEzs5+vYkD+ggrydzBF7/7HwBaD4kApgMyc7B4RrmQzKUsN5OhnQ0DxTDS' +
+  'oAOgA3ABYM/vXADdSY0KmlRrpAAAAABJRU5ErkJggg==';
+/** The icon's bytes, decoded once. Deterministic, so two builds of one deck match. */
+const AUDIO_ICON_PNG: Uint8Array = base64ToBytes(AUDIO_ICON_B64);
+/** The icon's on-slide box: 0.4in square, 0.15in in from the bottom-right corner. */
+const AUDIO_ICON_EMU = Math.round(EMU_PER_INCH * 0.4);
+const AUDIO_ICON_MARGIN_EMU = Math.round(EMU_PER_INCH * 0.15);
 const clampInt = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, Math.round(v)));
 // A finite rounded integer, or `fallback` for NaN/±Infinity. Geometry that reaches an
 // XML attribute must never be the literal "NaN" (schema-invalid → PowerPoint repair).
@@ -373,6 +497,76 @@ function picXml(p: PptxPic, id: number): string {
     `<p:spPr>${xfrmXml(p)}<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>`;
 }
 
+// ─── the audio part family (plans/180 section 5) ───────────────────────────────
+//
+// A slide's narration is a `p:pic` that draws the speaker icon and carries the sound.
+// It needs THREE relationships, all outside the image `mediaRid` run:
+//   • audio (r:link on `a:audioFile`) - the classic, and what old viewers read
+//   • media (r:embed on the `p14:media` extension) - what PowerPoint 2010+ actually plays
+//   • image (r:embed on the blip) - the poster, which is the shared speaker icon
+// The first two point at the SAME sound part. Both are required: the audioFile alone is
+// treated as a link, the p14 extension alone is invisible to anything pre-2010.
+
+/**
+ * The slide's narration clip, or undefined when it has none this builder can write.
+ *
+ * The ONE gate every audio path reads, so the rel ids, the parts map, the shape and the
+ * timing tree can never disagree about whether a slide is narrated. An unknown extension
+ * is dropped rather than written: there would be no content-type Default for it, and a
+ * package with an undeclared part extension is a PowerPoint repair. `Object.hasOwn`, not
+ * `in`, so a clip claiming `ext: 'constructor'` finds nothing.
+ */
+function audioOf(slide: PptxSlide): PptxAudio | undefined {
+  const a = slide.audio;
+  if (!a || !a.bytes || typeof a.ext !== 'string' || !Object.hasOwn(AUDIO_CT, a.ext)) return undefined;
+  return a;
+}
+
+/** The rId number of a slide's FIRST audio relationship - past the layout (rId1), the
+ *  images (rId2…), and the notesSlide when the slide carries a note. */
+const audioRidBase = (mediaCount: number, hasNotes: boolean): number => mediaCount + 2 + (hasNotes ? 1 : 0);
+/** How many relationships one audio clip takes (audio, media, image). */
+const AUDIO_RELS = 3;
+
+/** The three rel ids for a slide's audio clip, in the order slideRelsXml writes them. */
+function audioRids(mediaCount: number, hasNotes: boolean): { link: string; embed: string; icon: string } {
+  const b = audioRidBase(mediaCount, hasNotes);
+  return { link: `rId${b}`, embed: `rId${b + 1}`, icon: `rId${b + 2}` };
+}
+
+/** The audio `p:pic`, placed small at the slide's bottom-right corner. */
+function audioPicXml(audio: PptxAudio, id: number, emuW: number, emuH: number, rids: { link: string; embed: string; icon: string }): string {
+  const cx = AUDIO_ICON_EMU;
+  const cy = AUDIO_ICON_EMU;
+  const x = Math.max(0, Math.round(emuW - cx - AUDIO_ICON_MARGIN_EMU));
+  const y = Math.max(0, Math.round(emuH - cy - AUDIO_ICON_MARGIN_EMU));
+  // The empty r:id on hlinkClick is PowerPoint's own shape: the action is what marks the
+  // picture as a media trigger, and there is no target document to point at.
+  const name = xmlEsc(audio.name?.trim() || `narration.${audio.ext}`);
+  return `<p:pic><p:nvPicPr><p:cNvPr id="${id}" name="${name}"><a:hlinkClick r:id="" action="ppaction://media"/></p:cNvPr>` +
+    `<p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr>` +
+    `<p:nvPr><a:audioFile r:link="${rids.link}"/>` +
+    `<p:extLst><p:ext uri="${P14_MEDIA_EXT_URI}"><p14:media xmlns:p14="${P14_NS}" r:embed="${rids.embed}"/></p:ext></p:extLst>` +
+    `</p:nvPr></p:nvPicPr>` +
+    `<p:blipFill><a:blip r:embed="${rids.icon}"/><a:stretch><a:fillRect/></a:stretch></p:blipFill>` +
+    `<p:spPr>${xfrmXml({ x, y, cx, cy })}<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>`;
+}
+
+/**
+ * The `<p:audio>` media node that makes a clip play when the slide arrives.
+ *
+ * Autoplay is not an attribute anywhere in the file format - it is a node in the slide's
+ * timing tree, exactly like an entrance effect, and `delay="0"` in the step-0 group is
+ * what "with the slide" means. `isNarration="1"` is what tells PowerPoint this sound is
+ * the speaker rather than a sound effect (it is the flag Record Slide Show sets), and
+ * `display="0"` keeps the node out of the animation pane's numbered list.
+ */
+function audioNodeXml(id: number, embedRid: string): string {
+  return `<p:audio isNarration="1"><p:cMediaNode><p:cTn id="${id}" fill="hold" display="0">` +
+    `<p:stCondLst><p:cond delay="0"/></p:stCondLst></p:cTn>` +
+    `<p:tgtEl><p:sndTgt r:embed="${embedRid}"/></p:tgtEl></p:cMediaNode></p:audio>`;
+}
+
 // ─── native table (a:tbl) ─────────────────────────────────────────────────────
 // A table is inline DrawingML in the spTree: a p:graphicFrame wrapping a:tbl. It
 // needs NO extra part, relationship, or content-type entry (unlike a chart). Built-in
@@ -503,17 +697,235 @@ function shapeXml(shape: PptxShape, id: number): string {
   }
 }
 
-function slideXml(slide: PptxSlide): string {
+// ─── the timing tree (plans/175 WP-E) ───────────────────────────────────────────
+//
+// One `<p:timing>` per slide that carries any PptxAnim: a root par → the main `<p:seq>`
+// → one group par per click step (step 0 fires with the slide, steps 1+ on each click)
+// → an inner par → one effect par per shape effect. That triple nesting is exactly what
+// PowerPoint itself writes, and diverging from it is what earns a repair prompt.
+//
+// The BEHAVIOURS drive playback; presetID/presetClass only label the effect in the
+// animation pane. Every duration/delay is clamped, every id is unique within the tree,
+// and a slide with no anim emits NOTHING - byte-identity with every deck before this.
+
+const EFFECT_PRESET_IDS: Record<PptxEffect['preset'], number> = { appear: 1, fly: 2, fade: 10, zoom: 23, zoomOut: 23 };
+/** Fly-direction bitfield (t=1, r=2, b=4, l=8) - the OOXML presetSubtype convention. */
+const FLY_SUBTYPE: Record<NonNullable<PptxEffect['dir']>, number> = { t: 1, r: 2, b: 4, l: 8 };
+const MAX_EFFECT_MS = 60_000;
+const MAX_DELAY_MS = 600_000;
+/** Longest auto-advance a slide may carry: one hour, the same ceiling the Design tool
+ *  clamps a scene's own length to. A hostile value becomes a long slide, never NaN. */
+const MAX_ADV_TM_MS = 3_600_000;
+
+/** The `<p:spTgt>` every behaviour points at. */
+const tgt = (spid: number): string => `<p:tgtEl><p:spTgt spid="${spid}"/></p:tgtEl>`;
+
+/** A behaviour's own cTn: duration + the easing approximation. */
+function bhvrCTn(id: number, dur: number, fx: PptxEffect): string {
+  const accel = fx.accel && fx.accel > 0 ? ` accel="${clampInt(fx.accel, 0, 100000)}"` : '';
+  const decel = fx.decel && fx.decel > 0 ? ` decel="${clampInt(fx.decel, 0, 100000)}"` : '';
+  return `<p:cTn id="${id}" dur="${dur}"${accel}${decel} fill="hold"/>`;
+}
+
+/** `style.visibility` set - entrance shows the shape up front, exit hides it at the end. */
+function setVisibilityXml(id: number, spid: number, visible: boolean, delay: number): string {
+  return `<p:set><p:cBhvr><p:cTn id="${id}" dur="1" fill="hold"><p:stCondLst><p:cond delay="${delay}"/></p:stCondLst></p:cTn>` +
+    `${tgt(spid)}<p:attrNameLst><p:attrName>style.visibility</p:attrName></p:attrNameLst></p:cBhvr>` +
+    `<p:to><p:strVal val="${visible ? 'visible' : 'hidden'}"/></p:to></p:set>`;
+}
+
+function fadeFxXml(id: number, spid: number, dur: number, entering: boolean, fx: PptxEffect): string {
+  return `<p:animEffect transition="${entering ? 'in' : 'out'}" filter="fade"><p:cBhvr>${bhvrCTn(id, dur, fx)}${tgt(spid)}</p:cBhvr></p:animEffect>`;
+}
+
+/** The moving axis of a fly, as PowerPoint's own `#ppt_*` formulas (fractions of the slide). */
+function flyAnimXml(id: number, spid: number, dur: number, dir: NonNullable<PptxEffect['dir']>, entering: boolean, fx: PptxEffect): string {
+  const attr = dir === 'l' || dir === 'r' ? 'ppt_x' : 'ppt_y';
+  const rest = `#${attr}`;
+  const off = dir === 'r' ? '1+#ppt_w/2' : dir === 'l' ? '0-#ppt_w/2' : dir === 'b' ? '1+#ppt_h/2' : '0-#ppt_h/2';
+  const from = entering ? off : rest;
+  const to = entering ? rest : off;
+  return `<p:anim calcmode="lin" valueType="num"><p:cBhvr additive="base">${bhvrCTn(id, dur, fx)}${tgt(spid)}` +
+    `<p:attrNameLst><p:attrName>${attr}</p:attrName></p:attrNameLst></p:cBhvr>` +
+    `<p:tavLst><p:tav tm="0"><p:val><p:strVal val="${from}"/></p:val></p:tav>` +
+    `<p:tav tm="100000"><p:val><p:strVal val="${to}"/></p:val></p:tav></p:tavLst></p:anim>`;
+}
+
+function scaleFxXml(id: number, spid: number, dur: number, fromPct: number, toPct: number, fx: PptxEffect): string {
+  return `<p:animScale><p:cBhvr>${bhvrCTn(id, dur, fx)}${tgt(spid)}</p:cBhvr>` +
+    `<p:from x="${fromPct}" y="${fromPct}"/><p:to x="${toPct}" y="${toPct}"/></p:animScale>`;
+}
+
+/** The behaviours one effect plays, per preset × direction. */
+function effectBehaviorsXml(nextId: () => number, spid: number, cls: 'entr' | 'exit', fx: PptxEffect): string {
+  const dur = clampInt(fx.ms, 1, MAX_EFFECT_MS);
+  const entering = cls === 'entr';
+  // An entrance reveals the shape as its first act; an exit hides it as its last
+  // (delay dur-1 puts the hide on the effect's final tick, PowerPoint's own shape).
+  // Ids are minted in DOCUMENT order - the hide's id is drawn after the motion's.
+  const show = entering ? setVisibilityXml(nextId(), spid, true, 0) : '';
+  let motion = '';
+  switch (fx.preset) {
+    case 'appear': break; // visibility is the whole effect
+    case 'fade': motion = fadeFxXml(nextId(), spid, dur, entering, fx); break;
+    case 'fly': motion = flyAnimXml(nextId(), spid, dur, fx.dir ?? 'b', entering, fx); break;
+    case 'zoom':
+      motion = scaleFxXml(nextId(), spid, dur, entering ? 25000 : 100000, entering ? 100000 : 25000, fx)
+        + fadeFxXml(nextId(), spid, dur, entering, fx);
+      break;
+    case 'zoomOut':
+      motion = scaleFxXml(nextId(), spid, dur, entering ? 150000 : 100000, entering ? 100000 : 150000, fx)
+        + fadeFxXml(nextId(), spid, dur, entering, fx);
+      break;
+  }
+  const hide = entering ? '' : setVisibilityXml(nextId(), spid, false, Math.max(0, dur - 1));
+  return show + motion + hide;
+}
+
+/**
+ * One effect's `<p:par>`: the preset-labelled cTn, its (optional) text iterate, its
+ * behaviours. `grpId` is the effect's index AMONG THIS SHAPE'S effects - PowerPoint's
+ * own numbering, mirrored by one `<p:bldP>` per (shape, group) below. Two effects on
+ * one shape sharing a group is how a timed exit after an entrance silently never
+ * plays (the 2026-09-01 real-PowerPoint finding), so the group is never reused.
+ */
+function effectParXml(nextId: () => number, spid: number, grpId: number, cls: 'entr' | 'exit', fx: PptxEffect, nodeType: string): string {
+  const id = nextId();
+  const presetSubtype = fx.preset === 'fly' ? FLY_SUBTYPE[fx.dir ?? 'b'] : fx.preset === 'zoomOut' ? 32 : fx.preset === 'zoom' ? 16 : 0;
+  const delay = clampInt(fx.delayMs ?? 0, 0, MAX_DELAY_MS);
+  const it = fx.iterate && fx.iterate.staggerMs > 0
+    ? `<p:iterate type="${fx.iterate.by === 'word' ? 'wd' : 'lt'}"${fx.iterate.backwards ? ' backwards="1"' : ''}>` +
+      `<p:tmAbs val="${clampInt(fx.iterate.staggerMs, 1, MAX_EFFECT_MS)}"/></p:iterate>`
+    : '';
+  return `<p:par><p:cTn id="${id}" presetID="${EFFECT_PRESET_IDS[fx.preset]}" presetClass="${cls}" presetSubtype="${presetSubtype}" fill="hold" grpId="${grpId}" nodeType="${nodeType}">` +
+    `<p:stCondLst><p:cond delay="${delay}"/></p:stCondLst>${it}` +
+    `<p:childTnLst>${effectBehaviorsXml(nextId, spid, cls, fx)}</p:childTnLst></p:cTn></p:par>`;
+}
+
+/**
+ * The whole `<p:timing>` for a slide, or '' when nothing animates and nothing plays
+ * (byte-identity).
+ *
+ * An autoplaying narration clip needs the same tree an entrance effect does, so a slide
+ * whose ONLY timed thing is its audio still gets one - the step-0 group exists, holds no
+ * effects, and carries the `<p:audio>` media node.
+ */
+export function timingXml(slide: PptxSlide): string {
+  interface Row { spid: number; grpId: number; cls: 'entr' | 'exit'; fx: PptxEffect; click: number; text: boolean }
+  const rows: Row[] = [];
+  slide.shapes.forEach((s, i) => {
+    const anim = (s as { anim?: PptxAnim }).anim;
+    if (!anim) return;
+    const spid = i + 2; // slideXml's own numbering: shape i is cNvPr id i+2
+    const click = clampInt(Number.isFinite(anim.click as number) ? (anim.click as number) : 0, 0, 999);
+    // Each effect on a shape takes the next group number: enter 0, exit 1.
+    let grp = 0;
+    if (anim.enter) rows.push({ spid, grpId: grp++, cls: 'entr', fx: anim.enter, click, text: s.kind === 'text' });
+    if (anim.exit) rows.push({ spid, grpId: grp++, cls: 'exit', fx: anim.exit, click, text: s.kind === 'text' });
+  });
+  const audio = audioOf(slide);
+  const wantAudio = !!(audio && audio.autoplay);
+  if (!rows.length && !wantAudio) return '';
+  const embedRid = wantAudio
+    ? audioRids(slide.media.length, (slide.notes ?? '').trim() !== '').embed
+    : '';
+  let n = 2; // ids 1 (root) and 2 (main seq) are taken below
+  const nextId = (): number => ++n;
+  const clickSet = new Set(rows.map((r) => r.click));
+  if (wantAudio) clickSet.add(0); // the sound plays with the slide, so step 0 must exist
+  const clicks = [...clickSet].sort((a, b) => a - b);
+  const groups = clicks.map((click) => {
+    // Group and inner ids first, so the tree's ids read in document order.
+    const groupId = nextId();
+    const innerId = nextId();
+    const inGroup = rows.filter((r) => r.click === click)
+      .sort((a, b) => (a.fx.delayMs ?? 0) - (b.fx.delayMs ?? 0) || a.spid - b.spid);
+    const effects = inGroup.map((r, idx) => effectParXml(
+      nextId, r.spid, r.grpId, r.cls, r.fx,
+      // Step 0 plays with the slide; a click step's first effect is the click itself.
+      click === 0 ? (idx === 0 ? 'afterEffect' : 'withEffect') : (idx === 0 ? 'clickEffect' : 'withEffect'),
+    )).join('');
+    // The media node rides the step-0 group, after that step's effects: the slide's
+    // entrances play and the narration starts, both on arrival.
+    const sound = click === 0 && wantAudio ? audioNodeXml(nextId(), embedRid) : '';
+    return `<p:par><p:cTn id="${groupId}" fill="hold"><p:stCondLst><p:cond delay="${click === 0 ? '0' : 'indefinite'}"/></p:stCondLst>` +
+      `<p:childTnLst><p:par><p:cTn id="${innerId}" fill="hold"><p:stCondLst><p:cond delay="0"/></p:stCondLst>` +
+      `<p:childTnLst>${effects}${sound}</p:childTnLst></p:cTn></p:par></p:childTnLst></p:cTn></p:par>`;
+  }).join('');
+  // One build entry per animated TEXT shape PER EFFECT GROUP - PowerPoint's own list,
+  // which is what makes the pane treat the iterate units as a build and keeps a
+  // shape's second effect (a timed exit) alive as its own group.
+  const bldRows = rows.filter((r) => r.text);
+  const bld = bldRows.length
+    ? `<p:bldLst>${bldRows.map((r) => `<p:bldP spid="${r.spid}" grpId="${r.grpId}"/>`).join('')}</p:bldLst>`
+    : '';
+  return `<p:timing><p:tnLst><p:par><p:cTn id="1" dur="indefinite" restart="never" nodeType="tmRoot"><p:childTnLst>` +
+    `<p:seq concurrent="1" nextAc="seek"><p:cTn id="2" dur="indefinite" nodeType="mainSeq"><p:childTnLst>${groups}</p:childTnLst></p:cTn>` +
+    `<p:prevCondLst><p:cond evt="onPrev" delay="0"><p:tgtEl><p:sldTgt/></p:tgtEl></p:cond></p:prevCondLst>` +
+    `<p:nextCondLst><p:cond evt="onNext" delay="0"><p:tgtEl><p:sldTgt/></p:tgtEl></p:cond></p:nextCondLst></p:seq>` +
+    `</p:childTnLst></p:cTn></p:par></p:tnLst>${bld}</p:timing>`;
+}
+
+/**
+ * The slide's `<p:transition>`, or '' when there is nothing to say.
+ *
+ * A `cut` (and an absent transition) emits NOTHING - not an empty element. That is the
+ * byte-identity rule: every deck written before this field existed must still come out
+ * of the builder unchanged, and PowerPoint's own default for a slide with no transition
+ * element is exactly the cut we would be describing.
+ *
+ * `spd` is the only length ECMA-376 puts on this element, in three buckets, so a
+ * requested millisecond count is bucketed rather than rounded: under 500 ms is fast,
+ * over a second is slow, and everything between is the medium PowerPoint itself uses.
+ *
+ * AUTO-ADVANCE (plans/180) rides the same element: `advTm` is how long the slide holds
+ * before the deck moves on by itself, which is what a narrated deck needs. It is the one
+ * thing that can make this element appear on a slide with no transition at all - the
+ * empty `<p:transition advTm="…"/>` PowerPoint itself writes for "After: 00:12.40" with
+ * the transition set to None. `advClick` is deliberately left at its default, so a click
+ * still advances and the timing never traps a presenter on a slide.
+ */
+function transitionXml(slide: PptxSlide): string {
+  const tr = slide.transition;
+  const kind = tr && tr.kind !== 'cut' ? tr.kind : null;
+  const rawAdv = audioOf(slide)?.advanceAfterMs;
+  const advTm = Number.isFinite(rawAdv as number) && (rawAdv as number) > 0
+    ? clampInt(rawAdv as number, 1, MAX_ADV_TM_MS)
+    : null;
+  if (!kind && advTm == null) return '';
+  const ms = Number.isFinite(tr?.ms as number) ? (tr!.ms as number) : 0;
+  // CT_SlideTransition's attribute order is spd, advClick, advTm.
+  const spd = kind ? ` spd="${ms > 0 && ms < 500 ? 'fast' : ms > 1000 ? 'slow' : 'med'}"` : '';
+  const adv = advTm != null ? ` advTm="${advTm}"` : '';
+  const inner = !kind ? ''
+    : kind === 'push'
+      ? `<p:push dir="${tr!.dir === 'r' || tr!.dir === 'u' || tr!.dir === 'd' ? tr!.dir : 'l'}"/>`
+      : '<p:fade/>';
+  return inner ? `<p:transition${spd}${adv}>${inner}</p:transition>` : `<p:transition${adv}/>`;
+}
+
+function slideXml(slide: PptxSlide, emuW: number, emuH: number): string {
   let id = 1;
   const shapes = slide.shapes.map(s => shapeXml(s, ++id)).join('');
+  // The narration pic is appended LAST, so every animated shape keeps the spid
+  // (index + 2) the timing tree already computes for it.
+  const clip = audioOf(slide);
+  const audio = clip
+    ? audioPicXml(clip, ++id, emuW, emuH, audioRids(slide.media.length, (slide.notes ?? '').trim() !== ''))
+    : '';
   return (
     `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n` +
     `<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="${REL}" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">` +
     `<p:cSld><p:spTree>` +
     `<p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>` +
     `<p:grpSpPr/>` +
-    shapes +
+    shapes + audio +
     `</p:spTree></p:cSld><p:clrMapOvr><a:overrideClrMapping bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/></p:clrMapOvr>` +
+    // CT_Slide's child order is cSld, clrMapOvr, transition, timing, extLst - so the
+    // slide transition (plans/179 M4) goes here, and the timing tree (plans/175 WP-E)
+    // straight after it. Out of order, PowerPoint offers to repair the file.
+    transitionXml(slide) +
+    timingXml(slide) +
     `</p:sld>`
   );
 }
@@ -523,10 +935,16 @@ function slideXml(slide: PptxSlide): string {
 // their own `limage` prefix so a layout's logo can never collide with slide media.
 const mediaName = (slideIdx: number, mediaIdx: number, ext: string): string => `image${slideIdx + 1}_${mediaIdx + 1}.${ext}`;
 const layoutMediaName = (layoutIdx: number, mediaIdx: number, ext: string): string => `limage${layoutIdx + 1}_${mediaIdx + 1}.${ext}`;
+/** A slide's narration part. One per slide, so a re-export can never collide. */
+const audioName = (slideIdx: number, ext: string): string => `audio${slideIdx + 1}.${ext}`;
+/** The speaker poster every narrated slide's blipFill points at - one part per deck. */
+const AUDIO_ICON_NAME = 'audioIcon.png';
 
 // The base rId for a slide's first slide-jump link relationship: past the layout (rId1),
-// the media (rId2…), and the notesSlide (one more, when present).
-const linkRidBase = (mediaCount: number, hasNotes: boolean): number => mediaCount + 2 + (hasNotes ? 1 : 0);
+// the media (rId2…), the notesSlide (one more, when present), and the audio clip's three
+// (when the slide is narrated).
+const linkRidBase = (mediaCount: number, hasNotes: boolean, hasAudio = false): number =>
+  audioRidBase(mediaCount, hasNotes) + (hasAudio ? AUDIO_RELS : 0);
 
 // Unique, sorted 0-based slide-jump targets referenced by a slide's TEXT runs (the agenda
 // ToC case). One slide→slide relationship is emitted per target.
@@ -540,13 +958,22 @@ function collectLinkTargets(slide: PptxSlide): number[] {
 }
 
 // slide rels: rId1 → layout, then one relationship per media entry (rId2, rId3, …), then,
-// only when the slide carries a note, the notesSlide, then any slide-jump links (past all
-// the above). A slide→slide relationship targets `slideM.xml` in the same folder.
-function slideRelsXml(slideIdx: number, media: PptxMedia[], hasNotes = false, linkTargets: readonly number[] = [], layoutIdx = 0): string {
+// only when the slide carries a note, the notesSlide, then the audio clip's three (only
+// when the slide is narrated), then any slide-jump links (past all the above). A
+// slide→slide relationship targets `slideM.xml` in the same folder.
+function slideRelsXml(slideIdx: number, media: PptxMedia[], hasNotes = false, linkTargets: readonly number[] = [], layoutIdx = 0, audio?: PptxAudio): string {
   let rels = `<Relationship Id="rId1" Type="${REL}/slideLayout" Target="../slideLayouts/slideLayout${layoutIdx + 1}.xml"/>`;
   media.forEach((m, i) => { rels += `<Relationship Id="${mediaRid(i)}" Type="${REL}/image" Target="../media/${mediaName(slideIdx, i, m.ext)}"/>`; });
   if (hasNotes) rels += `<Relationship Id="rId${media.length + 2}" Type="${REL}/notesSlide" Target="../notesSlides/notesSlide${slideIdx + 1}.xml"/>`;
-  const base = linkRidBase(media.length, hasNotes);
+  if (audio) {
+    const rid = audioRids(media.length, hasNotes);
+    const target = `../media/${audioName(slideIdx, audio.ext)}`;
+    // Same part, two relationship types - see the audio part family notes above.
+    rels += `<Relationship Id="${rid.link}" Type="${REL}/audio" Target="${target}"/>`;
+    rels += `<Relationship Id="${rid.embed}" Type="${REL}/media" Target="${target}"/>`;
+    rels += `<Relationship Id="${rid.icon}" Type="${REL}/image" Target="../media/${AUDIO_ICON_NAME}"/>`;
+  }
+  const base = linkRidBase(media.length, hasNotes, !!audio);
   linkTargets.forEach((t, k) => { rels += `<Relationship Id="rId${base + k}" Type="${REL}/slide" Target="slide${t + 1}.xml"/>`; });
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="${PKG_REL_NS}">${rels}</Relationships>`;
 }
@@ -640,12 +1067,14 @@ function presentationRelsXml(n: number, hasAnyNotes = false): string {
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="${PKG_REL_NS}">${rels}</Relationships>`;
 }
 
-function contentTypesXml(n: number, exts: Set<string>, notedIdxs: readonly number[] = [], nLayouts = 1): string {
+function contentTypesXml(n: number, exts: Set<string>, notedIdxs: readonly number[] = [], nLayouts = 1, audioExts: ReadonlySet<string> = new Set()): string {
   const defaults = [
     `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>`,
     `<Default Extension="xml" ContentType="application/xml"/>`,
   ];
   for (const e of exts) defaults.push(`<Default Extension="${e}" ContentType="${MEDIA_CT[e as PptxMedia['ext']]}"/>`);
+  // Audio Defaults come after the image ones, so a deck with no sound is byte-identical.
+  for (const e of audioExts) defaults.push(`<Default Extension="${e}" ContentType="${AUDIO_CT[e as PptxAudio['ext']]}"/>`);
   let overrides =
     `<Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>` +
     `<Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/>`;
@@ -667,7 +1096,10 @@ const ROOT_RELS =
   `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n` +
   `<Relationships xmlns="${PKG_REL_NS}">` +
   `<Relationship Id="rId1" Type="${REL}/officeDocument" Target="ppt/presentation.xml"/>` +
-  `<Relationship Id="rId2" Type="${REL}/metadata/core-properties" Target="docProps/core.xml"/>` +
+  // Core props ride the PACKAGE relationship namespace (OPC section 8.3.3.2) - the
+  // officeDocument-prefixed type this used to write kept PowerPoint's Properties
+  // dialog from seeing the part (plans/144 Wave 2 G6).
+  `<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>` +
   `<Relationship Id="rId3" Type="${REL}/extended-properties" Target="docProps/app.xml"/>` +
   `</Relationships>`;
 
@@ -801,18 +1233,8 @@ function themeXml(theme?: PptxTheme): string {
   );
 }
 
-function corePropsXml(meta: PptxBuildOpts['meta'], now: string): string {
-  const title = xmlEsc(meta?.title ?? 'Presentation');
-  const desc = [meta?.description, meta?.contact, meta?.source].filter(Boolean).map(String).join(' · ');
-  return (
-    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n` +
-    `<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">` +
-    `<dc:title>${title}</dc:title>` + (desc ? `<dc:description>${xmlEsc(desc)}</dc:description>` : '') +
-    `<dc:creator>Lolly</dc:creator><cp:lastModifiedBy>Lolly</cp:lastModifiedBy>` +
-    `<dcterms:created xsi:type="dcterms:W3CDTF">${now}</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">${now}</dcterms:modified>` +
-    `</cp:coreProperties>`
-  );
-}
+// docProps/core.xml comes from the shared OOXML writer (ooxml-props.ts) so the
+// authorship fields stay identical across pptx and docx output.
 const appPropsXml = (n: number): string =>
   `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n` +
   `<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"><Application>Lolly</Application><Slides>${n}</Slides><PresentationFormat>Custom</PresentationFormat></Properties>`;
@@ -823,7 +1245,9 @@ const appPropsXml = (n: number): string =>
  *
  * The notes parts (notesSlides + the shared notesMaster and its theme) are emitted
  * ONLY for slides carrying a non-blank `notes`; a deck with no notes anywhere is
- * byte-for-byte what it was before speaker notes existed.
+ * byte-for-byte what it was before speaker notes existed. The same holds for the audio
+ * part family (plans/180): no `audio` on any slide and the output is exactly what this
+ * builder wrote before narration existed, down to the content-type Defaults.
  */
 export function buildPptxParts(slides: PptxSlide[], opts: PptxBuildOpts = {}): Record<string, string | Uint8Array> {
   if (!slides.length) throw new Error('buildPptxParts: at least one slide is required');
@@ -836,13 +1260,19 @@ export function buildPptxParts(slides: PptxSlide[], opts: PptxBuildOpts = {}): R
   const exts = new Set<string>();
   for (const s of slides) for (const m of s.media) exts.add(m.ext);
   if (layouts) for (const L of layouts) for (const m of L.media ?? []) exts.add(m.ext);
+  // Narration (plans/180): the sound extensions get their own Defaults, and the shared
+  // speaker poster means a narrated deck always declares png even with no image on it.
+  const audioExts = new Set<string>();
+  for (const s of slides) { const a = audioOf(s); if (a) audioExts.add(a.ext); }
+  const hasAnyAudio = audioExts.size > 0;
+  if (hasAnyAudio) exts.add('png');
   const now = opts.now ?? '2026-01-01T00:00:00Z';
   // Slide indices that actually carry a note. This drives every notes part below.
   const noted = slides.map((s, i) => ({ i, notes: (s.notes ?? '').trim() })).filter(x => x.notes !== '');
   const hasAnyNotes = noted.length > 0;
 
   const parts: Record<string, string | Uint8Array> = {
-    '[Content_Types].xml': contentTypesXml(n, exts, noted.map(x => x.i), nLayouts),
+    '[Content_Types].xml': contentTypesXml(n, exts, noted.map(x => x.i), nLayouts, audioExts),
     '_rels/.rels': ROOT_RELS,
     'ppt/presentation.xml': presentationXml(n, emuW, emuH, hasAnyNotes),
     'ppt/_rels/presentation.xml.rels': presentationRelsXml(n, hasAnyNotes),
@@ -862,23 +1292,28 @@ export function buildPptxParts(slides: PptxSlide[], opts: PptxBuildOpts = {}): R
     parts['ppt/slideLayouts/_rels/slideLayout1.xml.rels'] = slideLayoutRelsXml();
   }
   parts['ppt/theme/theme1.xml'] = themeXml(opts.theme);
-  parts['docProps/core.xml'] = corePropsXml(opts.meta, now);
+  parts['docProps/core.xml'] = corePropsXml(opts.meta, now, 'Presentation');
   parts['docProps/app.xml'] = appPropsXml(n);
+  if (hasAnyAudio) parts[`ppt/media/${AUDIO_ICON_NAME}`] = AUDIO_ICON_PNG;
   slides.forEach((slide, i) => {
     const hasNotes = (slide.notes ?? '').trim() !== '';
+    const clip = audioOf(slide);
     const targets = collectLinkTargets(slide);
     // Wire this slide's linkSlide targets → their relationship ids for the run serializer,
     // then clear it so a later slide can't inherit a stale map.
     if (targets.length) {
-      const base = linkRidBase(slide.media.length, hasNotes);
+      const base = linkRidBase(slide.media.length, hasNotes, !!clip);
       const map = new Map(targets.map((t, k) => [t, `rId${base + k}`] as const));
       slideLinkRid = t => map.get(t);
     }
     const layoutIdx = clampInt(finInt(slide.layout ?? 0), 0, nLayouts - 1);
-    parts[`ppt/slides/slide${i + 1}.xml`] = slideXml(slide);
+    parts[`ppt/slides/slide${i + 1}.xml`] = slideXml(slide, emuW, emuH);
     slideLinkRid = null;
-    parts[`ppt/slides/_rels/slide${i + 1}.xml.rels`] = slideRelsXml(i, slide.media, hasNotes, targets, layoutIdx);
+    parts[`ppt/slides/_rels/slide${i + 1}.xml.rels`] = slideRelsXml(i, slide.media, hasNotes, targets, layoutIdx, clip);
     slide.media.forEach((m, j) => { parts[`ppt/media/${mediaName(i, j, m.ext)}`] = m.bytes; });
+    // The narration bytes go in exactly as supplied - never re-encoded, because the
+    // synthetic-voice credential lives inside them (plans/180 section 7).
+    if (clip) parts[`ppt/media/${audioName(i, clip.ext)}`] = clip.bytes;
   });
   if (hasAnyNotes) {
     // Notes page = the deck's notesSz (presentationXml swaps the slide's axes).

@@ -57,6 +57,13 @@ Enforcement is server-side and pre-render: a locked input supplied by a caller i
 request said. The same pure functions filter the schema the shell sees, so the UI and the
 enforcement can't disagree.
 
+Give the overlay a `name` and a rule an optional `reason` and the person meets an answer
+instead of a dead control: the resolved access carries `by` (the overlay name) and
+`reason` into `org-config`, where the shell prints them under the input, and into the
+`422` body as `{ "error": { "code": "INPUT_LOCKED", "input": "bg", "by": "...", "reason":
+"..." } }`, so an agent driving a render reads the same explanation. Both are optional and
+an unnamed overlay attributes nothing, exactly as before.
+
 ### The enforce block
 
 | Key | Values | Meaning |

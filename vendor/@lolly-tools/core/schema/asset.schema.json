@@ -16,7 +16,7 @@
     "description": { "type": "string" },
     "type": {
       "type": "string",
-      "enum": ["vector", "raster", "video", "audio", "lottie", "palette", "tokens", "font", "profile", "ratecard", "text", "data"]
+      "enum": ["vector", "raster", "video", "audio", "lottie", "model", "lut", "palette", "tokens", "font", "profile", "ratecard", "text", "data"]
     },
     "version": {
       "type": "string",
@@ -32,6 +32,11 @@
       "type": "array",
       "items": { "type": "string" },
       "description": "Used by host.assets.query() and pickers to filter."
+    },
+    "added": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+      "description": "The date this asset's primary file was first added to its brand pack (YYYY-MM-DD). Never hand-authored: `scripts/gen-asset-added-dates.ts` mints a committed map from the packs' git history and `npm run build:catalog` stamps it here, so the index regenerates identically on a shallow CI checkout. Assets that moved in during the 2026-07 repository split floor at the split date."
     },
     "formats": {
       "type": "array",
@@ -78,6 +83,10 @@
     "license": {
       "type": "string",
       "description": "e.g. 'internal', 'cc-by-4.0', 'all-rights-reserved'."
+    },
+    "attribution": {
+      "type": "string",
+      "description": "Human-readable credit for a licensed asset that requires attribution (e.g. a CC-BY work). Shown in the catalog asset details view. e.g. 'SUSE · Peter Chamalian'."
     },
     "aiGenerated": {
       "type": "string",

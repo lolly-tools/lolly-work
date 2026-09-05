@@ -138,6 +138,14 @@ export interface RenderSpec {
    *  `'microphone'`/`'camera'` capability): which record affordance the shell
    *  mounts. `'screen'` is display capture via `host.recorder`. */
   capture?: 'audio' | 'video' | 'av' | 'screen';
+  /** Speech to text, declared instead of built (v1.150). `source` names the asset
+   *  input holding the audio/video, `target` the text input the cues are written
+   *  into (one write, so one undo step), `format` what is written ('srt' default,
+   *  'vtt', or 'words' - the plain spoken text). `auto` names a boolean input:
+   *  while it is true a newly recorded or picked source transcribes with no click.
+   *  Feature-detected on `host.speech.transcribeAvailable()`, never capability-
+   *  gated - a shell without it mounts nothing and leaves the target untouched. */
+  transcribe?: { source: string; target: string; format?: 'srt' | 'vtt' | 'words'; auto?: string };
   /** Requested longest edge (px) for live-camera frames (see `MediaAPI`). */
   liveMaxEdge?: number;
   /** id of a number input whose value overrides `liveMaxEdge`: a user-facing
@@ -155,6 +163,11 @@ export interface RenderSpec {
    *  `paged: true` for the scrolling all-pages canvas. */
   paginate?: { source: string };
   aspectWarning?: { min?: number; max?: number; message?: string };
+  /** Input ids whose VALUES name the exported file (slugified, in order) - the
+   *  download bar and the batch grid fall back to the tool name / tool id when
+   *  absent or when every listed value is empty. See the engine's
+   *  deriveExportFilename. */
+  filenameFrom?: string[];
   preview?: Record<string, unknown>;
   video?: Record<string, unknown>;
   actions?: unknown[];
@@ -259,6 +272,12 @@ export interface ToolManifest {
   category?: string;
   new?: boolean;
   listed?: boolean;
+  /** The tool assumes it is the ONLY instance on the page - it parks a mutable handle
+   *  on `window` and disposes the previous instance when a new one mounts, and/or holds
+   *  a WebGL context (capped ~16/tab), so N live copies can't coexist. Multi-edit renders
+   *  such a tool's cells as sequential still previews rather than N live instances (which
+   *  would dispose each other). Default false: an ordinary tool runs live in every cell. */
+  singleInstance?: boolean;
   /** `'on-device'` marks a privacy utility: never watermarked, no embedded provenance. */
   privacy?: 'on-device';
   tags?: string[];

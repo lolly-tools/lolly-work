@@ -27,6 +27,7 @@ import type { LoadedSigner } from './c2pa-signer.ts';
 import { renderCacheKey } from './cache-key.ts';
 import { applyPreviewWatermark } from './watermark.ts';
 import { withRenderHost } from './host.ts';
+import { parseHostedProviderRef, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
 import {
   addPngProvenance, collectCatalogRefs, embedSvgProvenance, provenanceDoc,
   type ProvenanceDoc, type ProvenanceIngredient,
@@ -100,6 +101,10 @@ export interface RenderDeps {
    * leaves the key exactly as it was.
    */
   instanceCatalogVersion?: () => Promise<string> | string;
+  /** Hosted rungs of the engine asset-provider grammar. Resolved before the
+   * cache key and before worker dispatch so both render tiers see identical,
+   * content-addressed values. */
+  hostedResolver?: (ref: HostedProviderRef) => Promise<HostedAssetResult | null>;
 }
 
 export interface RenderRequest {
@@ -123,6 +128,31 @@ export interface RenderOutput {
   cacheKey: string;
   /** Present when the render consumed catalog assets and a resolver was wired. */
   provenance?: ProvenanceDoc;
+}
+
+async function resolveHostedValues(value: unknown, resolve?: RenderDeps['hostedResolver']): Promise<unknown> {
+  if (!resolve) return value;
+  const ref = parseHostedProviderRef(value);
+  if (ref && (ref.provider === 'cms' || ref.provider === 'net')) {
+    const result = await resolve(ref);
+    if (!result) throw new RenderError('ASSET_PROVIDER_UNAVAILABLE', 422, `No hosted resolver could resolve ${ref.raw}`);
+    return result.asset;
+  }
+  if (Array.isArray(value)) return Promise.all(value.map((item) => resolveHostedValues(item, resolve)));
+  if (value && typeof value === 'object') {
+    const entries = await Promise.all(Object.entries(value).map(async ([key, item]) => [key, await resolveHostedValues(item, resolve)] as const));
+    return Object.fromEntries(entries);
+  }
+  return value;
+}
+
+function queryFromValues(values: Record<string, unknown>): string {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(values)) {
+    if (value === undefined || value === null) continue;
+    query.set(key, typeof value === 'object' ? JSON.stringify(value) : String(value));
+  }
+  return query.toString();
 }
 
 export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<RenderOutput> {
@@ -185,7 +215,9 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
     throw new RenderError(violations[0]!.code, 422,
       `Policy forbids these params for your access: ${params}`, violations);
   }
-  const bakedValues: Record<string, unknown> = { ...st.values, ...lockedValues(overlay, groups) };
+  const bakedValues = await resolveHostedValues(
+    { ...st.values, ...lockedValues(overlay, groups) }, deps.hostedResolver,
+  ) as Record<string, unknown>;
 
   // Cache key: tool + version + engine + catalog + policy + format + baked params.
   // The catalog half is the pack's index version AND the instance-owned assets'
@@ -226,8 +258,8 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
     try {
       svgStr = await renderViaWorker(deps.worker, {
         toolId: req.toolId,
-        query: req.query,
-        overrides: lockedValues(overlay, groups),
+        query: queryFromValues(bakedValues),
+        overrides: {},
         format: 'svg',
         profile: req.profile,
       });
@@ -236,7 +268,7 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
       throw e;
     }
   } else {
-    svgStr = await withRenderHost({ pack, profile: req.profile }, async (dom, host) => {
+    svgStr = await withRenderHost({ pack, profile: req.profile, hostedResolver: deps.hostedResolver }, async (dom, host) => {
       const runtime = await engine.createRuntime(tool, host, bakedValues);
       const canvas = dom.window.document.getElementById('canvas');
       if (!canvas) throw new RenderError('RENDER_FAILED', 500, 'render canvas missing');

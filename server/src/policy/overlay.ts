@@ -16,11 +16,20 @@ export interface InputRule {
   value?: unknown;
   /** For 'choice': the allowed set. */
   allow?: unknown[];
+  /** Free text the author writes for the person who meets this rule ("Legal
+   *  signs off headline copy"). Travels with the resolved access into
+   *  org-config and into the 422 body, so the shell and an agent can both say
+   *  WHY, not just that something is locked. */
+  reason?: string;
 }
 
 export interface ToolOverlay {
   toolId: string;
   version: number;
+  /** Display name for this overlay, shown to the person a rule applies to
+   *  ("Set by Brand guardrails"). Optional: an unnamed overlay attributes
+   *  nothing and every surface renders exactly as it did before. */
+  name?: string;
   /** input id (or '*' default) → ordered rule list; first group-match wins. */
   inputAccess?: Record<string, InputRule[]>;
   visibility?: { groups: string[] };
@@ -37,6 +46,11 @@ export interface ResolvedAccess {
   level: AccessLevel;
   value?: unknown;
   allow?: unknown[];
+  /** The overlay's display name - who decided this. Absent when the overlay is
+   *  unnamed, in which case every consumer renders as it did before. */
+  by?: string;
+  /** The rule author's free-text reason, when one was written. */
+  reason?: string;
 }
 
 const EDITABLE: ResolvedAccess = { level: 'editable' };
@@ -73,6 +87,12 @@ export function resolveInputAccess(
     const out: ResolvedAccess = { level: rule.level };
     if ('value' in rule) out.value = rule.value;
     if (rule.allow) out.allow = rule.allow;
+    // Attribution rides every MATCHED rule, so "why is this locked?" is
+    // answered by the same resolution that locked it and the two can never
+    // disagree. Both stay absent when the overlay is unnamed / the rule
+    // carries no reason.
+    if (overlay.name) out.by = overlay.name;
+    if (rule.reason) out.reason = rule.reason;
     return out;
   }
   return EDITABLE;
@@ -126,6 +146,11 @@ export function filterInputs<T extends { id: string }>(
 export interface ParamViolation {
   param: string;
   code: 'INPUT_LOCKED' | 'INPUT_HIDDEN' | 'INPUT_NOT_ALLOWED';
+  /** The overlay that refused it, and why - the same attribution the shell
+   *  shows on the control, so an agent reading the 422 gets the same answer a
+   *  person reads in the sidebar. Absent for an unnamed overlay. */
+  by?: string;
+  reason?: string;
 }
 
 /**
@@ -142,10 +167,11 @@ export function checkParams(
   const violations: ParamViolation[] = [];
   for (const [param, value] of Object.entries(params)) {
     const access = resolveInputAccess(overlay, param, groups);
-    if (access.level === 'locked') violations.push({ param, code: 'INPUT_LOCKED' });
-    else if (access.level === 'hidden') violations.push({ param, code: 'INPUT_HIDDEN' });
+    const why = { ...(access.by ? { by: access.by } : {}), ...(access.reason ? { reason: access.reason } : {}) };
+    if (access.level === 'locked') violations.push({ param, code: 'INPUT_LOCKED', ...why });
+    else if (access.level === 'hidden') violations.push({ param, code: 'INPUT_HIDDEN', ...why });
     else if (access.level === 'choice' && access.allow && !access.allow.some((a) => a === value)) {
-      violations.push({ param, code: 'INPUT_NOT_ALLOWED' });
+      violations.push({ param, code: 'INPUT_NOT_ALLOWED', ...why });
     }
   }
   return violations;
@@ -165,6 +191,9 @@ export function lockedValues(overlay: ToolOverlay | undefined, groups: string[])
 
 const ACCESS_LEVELS: AccessLevel[] = ['editable', 'choice', 'locked', 'hidden'];
 const WATERMARKS = ['until-approved', 'always', 'never'] as const;
+/** Attribution is fine print beside a sidebar control, not a policy essay. */
+const NAME_MAX = 80;
+const REASON_MAX = 200;
 
 /**
  * Validate + normalize an overlay edit from the control plane (console/CLI)
@@ -176,13 +205,27 @@ const WATERMARKS = ['until-approved', 'always', 'never'] as const;
  * baked value. An overlay that governs nothing (no rules, no visibility, no
  * enforce, no defaults) is returned with empty sections - storing it is a
  * legitimate "reset to ungoverned".
+ *
+ * `name` and a rule's `reason` are the attribution an author writes for the
+ * person the rule applies to. They are free text that ends up rendered in a
+ * shell, so they are trimmed and length-capped here rather than trusted
+ * because the author holds `policy.edit`; blank after trimming is the same as
+ * absent, which keeps "unnamed" a single state.
  */
 export function normalizeOverlay(toolId: string, raw: unknown, currentVersion = 0): ToolOverlay | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const body = raw as {
-    inputAccess?: unknown; visibility?: unknown; enforce?: unknown; defaults?: unknown;
+    name?: unknown; inputAccess?: unknown; visibility?: unknown; enforce?: unknown; defaults?: unknown;
   };
   const overlay: ToolOverlay = { toolId, version: currentVersion + 1 };
+
+  const cleanText = (v: unknown, max: number): string | undefined => {
+    if (typeof v !== 'string') return undefined;
+    const text = v.trim().slice(0, max);
+    return text || undefined;
+  };
+  const name = cleanText(body.name, NAME_MAX);
+  if (name) overlay.name = name;
 
   const cleanGroups = (v: unknown): string[] | null => {
     if (!Array.isArray(v)) return null;
@@ -202,6 +245,8 @@ export function normalizeOverlay(toolId: string, raw: unknown, currentVersion = 
         const groups = cleanGroups(rule.groups);
         if (!groups) return null;
         const out: InputRule = { groups, level: rule.level as AccessLevel };
+        const reason = cleanText(rule.reason, REASON_MAX);
+        if (reason) out.reason = reason;
         if (rule.level === 'locked' && 'value' in (rule as object)) out.value = rule.value;
         if (rule.level === 'choice') {
           if (!Array.isArray(rule.allow) || !rule.allow.length) return null;

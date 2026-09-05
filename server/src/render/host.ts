@@ -22,6 +22,7 @@ import {
   type AssetQuery, type AssetRef, type AssetsAPI, type ExportOpts,
   type Profile, type RenderDom, type RenderElement, type StateEntry, type WorkHost,
 } from './contract.ts';
+import type { HostedAssetResult, HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
 
 // One catalog-asset record as it appears in <pack>/catalog/assets/index.json.
 interface CatalogAssetFormat { format: string; url: string; checksum?: string; width?: number; height?: number }
@@ -63,7 +64,7 @@ function matchesFilter(meta: CatalogAsset, filter: AssetQuery): boolean {
  * `get` returns referenced files as data: URLs (jsdom has no createObjectURL),
  * `pick` throws (no picker chrome server-side).
  */
-async function buildAssets(pack: string): Promise<AssetsAPI> {
+async function buildAssets(pack: string, hostedResolver?: (ref: HostedProviderRef) => Promise<HostedAssetResult | null>): Promise<AssetsAPI> {
   const catalogDir = join(pack, 'catalog');
   const byId = new Map<string, CatalogAsset>();
   try {
@@ -73,19 +74,35 @@ async function buildAssets(pack: string): Promise<AssetsAPI> {
   } catch {
     /* no asset catalog in this pack — leave the map empty */
   }
+  const get = async (id: string): Promise<AssetRef> => {
+    const meta = byId.get(id);
+    if (!meta) throw new Error(`Asset not in catalog: ${id}`);
+    const fmt = meta.formats[0];
+    if (!fmt) throw new Error(`Asset has no formats: ${id}`);
+    const bytes = await readFile(join(catalogDir, fmt.url.replace(/^\//, '')));
+    const url = `data:${mimeFor(fmt.format)};base64,${bytes.toString('base64')}`;
+    return { source: 'library', id, type: meta.type, format: fmt.format, url, version: meta.version, checksum: fmt.checksum, meta: { name: meta.name, tags: meta.tags } };
+  };
   return {
-    async get(id: string): Promise<AssetRef> {
-      const meta = byId.get(id);
-      if (!meta) throw new Error(`Asset not in catalog: ${id}`);
-      const fmt = meta.formats[0];
-      if (!fmt) throw new Error(`Asset has no formats: ${id}`);
-      const bytes = await readFile(join(catalogDir, fmt.url.replace(/^\//, '')));
-      const url = `data:${mimeFor(fmt.format)};base64,${bytes.toString('base64')}`;
-      return {
-        source: 'library', id, type: meta.type, format: fmt.format, url,
-        version: meta.version, checksum: fmt.checksum, meta: { name: meta.name, tags: meta.tags },
-      };
+    async resolveProvider(ref): Promise<AssetRef | null> {
+      // Hosted and on-device compilation share this grammar. These rungs need
+      // no egress and therefore work even when the instance has no DAM driver.
+      if (ref.provider === 'catalog' || ref.provider === 'library') {
+        const id = [ref.scope, ref.path].filter(Boolean).join('/');
+        try { return await get(id); } catch { return null; }
+      }
+      if (ref.provider === 'image' && ref.scope === 'brand') {
+        const wanted = ref.path || 'logo';
+        const asset = [...byId.values()].find((item) => item.id === wanted || item.tags?.includes(wanted) || (wanted === 'logo' && item.tags?.includes('logo')));
+        if (!asset) return null;
+        try { return await get(asset.id); } catch { return null; }
+      }
+      if (hostedResolver && (ref.provider === 'cms' || ref.provider === 'net')) return (await hostedResolver(ref))?.asset ?? null;
+      // cms:// and net:// deliberately fail closed until an instance-configured
+      // provider supplies credentials and an outbound allowlist.
+      return null;
     },
+    get,
     async query(filter: AssetQuery = {}): Promise<AssetRef[]> {
       return [...byId.values()].filter((m) => matchesFilter(m, filter)).map((m): AssetRef => ({
         source: 'library', id: m.id, type: m.type, format: m.formats[0]?.format ?? 'svg', url: '',
@@ -110,10 +127,10 @@ function safeJson(v: unknown): string {
  * `pack`. Produces SVG only (the render plane rasterises to PNG downstream via
  * resvg); every other format throws so a mis-wired caller fails honestly.
  */
-async function buildHost(dom: RenderDom, pack: string, profile: Profile): Promise<WorkHost> {
+async function buildHost(dom: RenderDom, pack: string, profile: Profile, hostedResolver?: (ref: HostedProviderRef) => Promise<HostedAssetResult | null>): Promise<WorkHost> {
   const w = dom.window;
   const state = new Map<string, object>();
-  const assets = await buildAssets(pack);
+  const assets = await buildAssets(pack, hostedResolver);
 
   return {
     version: '1',
@@ -186,7 +203,7 @@ function enqueue<T>(fn: () => Promise<T>): Promise<T> {
  * afterward; serialized process-wide via the mutex above.
  */
 export function withRenderHost<T>(
-  opts: { pack: string; profile: Profile },
+  opts: { pack: string; profile: Profile; hostedResolver?: (ref: HostedProviderRef) => Promise<HostedAssetResult | null> },
   fn: (dom: RenderDom, host: WorkHost) => Promise<T>,
 ): Promise<T> {
   return enqueue(async () => {
@@ -198,7 +215,7 @@ export function withRenderHost<T>(
     g['document'] = dom.window.document;
     g['Element'] = dom.window.Element;
     try {
-      const host = await buildHost(dom, opts.pack, opts.profile);
+      const host = await buildHost(dom, opts.pack, opts.profile, opts.hostedResolver);
       return await fn(dom, host);
     } finally {
       g['window'] = prev.window;

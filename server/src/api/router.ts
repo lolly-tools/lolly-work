@@ -97,6 +97,11 @@ export function sendJson(res: ServerResponse, status: number, body: unknown, hea
   res.end(data);
 }
 
-export function sendError(res: ServerResponse, status: number, code: string, message: string): void {
-  sendJson(res, status, { error: { code, message } });
+/** `detail` merges extra, already-safe fields into the error object (e.g. the
+ *  input a policy refused and the overlay that refused it), so a caller gets
+ *  the explanation without parsing the prose message. */
+export function sendError(
+  res: ServerResponse, status: number, code: string, message: string, detail?: Record<string, unknown>,
+): void {
+  sendJson(res, status, { error: { code, message, ...detail } });
 }

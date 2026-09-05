@@ -8,7 +8,7 @@
  */
 import { b64u, b64uDecode, hmac, macEquals } from '../lib/crypto.ts';
 
-export type TokenDomain = 'lw/session' | 'lw/guest' | 'lw/state' | 'lw/link' | 'lw/api-key';
+export type TokenDomain = 'lw/session' | 'lw/guest' | 'lw/state' | 'lw/link' | 'lw/job' | 'lw/api-key';
 
 export interface TokenBox<T> {
   typ: TokenDomain;

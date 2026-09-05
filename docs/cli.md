@@ -52,6 +52,11 @@ The pack is cut in the OSS repo (`node scripts/build-instance-pack.ts --brand <n
 points anywhere else. An unsigned pack is hosted but labelled dev-only - a key-pinned
 app build will refuse it.
 
+Lolly Work treats the pack as a signed byte artifact, not as a second token processor.
+It does not parse, rewrite, or filter `tokens.json`: the shell-reserved
+`lolly.foundation` and `lolly.ui` namespaces (including aliases between them) download
+exactly as the OSS builder produced them.
+
 ## Service tokens
 
 ```bash

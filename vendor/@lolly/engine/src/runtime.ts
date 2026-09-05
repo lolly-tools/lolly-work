@@ -41,6 +41,7 @@ import type {
   AudioLevel, RecordOpts, RecordSession, IngredientCredential,
 } from './bridge/host-v1.ts';
 import { prepareC2paIngredientFromStore } from './c2pa-verify.ts';
+import { parseProviderRef } from './asset-provider.ts';
 
 /** One state emission: the current model plus the hydrated template. */
 export interface RuntimeState {
@@ -217,6 +218,17 @@ export interface Runtime {
    * exactly once, after the last hook.
    */
   applyPatch(values: Record<string, unknown>): Promise<void>;
+  /**
+   * Re-resolve unresolved asset + token refs in the CURRENT model, then re-emit if
+   * anything changed. createRuntime resolves these once from the initial seed, but a
+   * batch applied AFTER mount (a template/preset picked mid-doc, via applyPatch or a
+   * setInput loop) arrives with its `{color.*}` token aliases and tool-URL asset stubs
+   * still unresolved - setInput/applyPatch deliberately never re-render a child or hit
+   * the token set per keystroke. Call this ONCE after such a batch so a picked template
+   * renders exactly like one opened fresh. Both underlying resolvers no-op when there is
+   * nothing to resolve (and resolveTokenRefs is a no-op without host.tokens).
+   */
+  resolveRefs(): Promise<void>;
   subscribe(fn: (state: RuntimeState) => void): () => void;
   /** Re-notify subscribers with the CURRENT model - no value change. */
   refresh(): void;
@@ -250,7 +262,7 @@ export interface Runtime {
    * digitalCapture for a decoded file would be a false statement in a signed
    * manifest (1.113).
    */
-  startLive(opts?: { source?: 'camera' | 'asset' }): Promise<boolean>;
+  startLive(opts?: { source?: 'camera' | 'asset'; facingMode?: 'user' | 'environment' }): Promise<boolean>;
   stopLive(): void;
   /** True when this tool declares an `onLevel` hook (it CAN react to live audio levels). */
   hasLevelHook: boolean;
@@ -262,7 +274,7 @@ export interface Runtime {
    * is denied or there's no mic (the shell shows that error). No-op (false) if
    * already metering, the tool has no onLevel, or the shell provides no host.recorder.
    */
-  startMeter(): Promise<boolean>;
+  startMeter(opts?: { deviceId?: string }): Promise<boolean>;
   /** Stop the level-meter loop and release the mic reference (idempotent). */
   stopMeter(): void;
   /** Whether a recording session is currently capturing. */
@@ -302,6 +314,11 @@ export interface Runtime {
  *        compose bridge when rendering a child, so nested composition
  *        (A embeds B embeds C) carries cycle/depth detection downward.
  */
+// Raster formats that carry an alpha channel - the ones a transparent background is
+// meaningful for. SVG keeps its transparency through a fill:none bg rect, so it needs no
+// help here; JPEG has no alpha at all.
+const ALPHA_EXPORT_FORMATS = new Set(['png', 'webp', 'avif', 'apng', 'webp-anim', 'gif']);
+
 export async function createRuntime(
   tool: LoadedTool,
   host: HostV1,
@@ -794,6 +811,20 @@ export async function createRuntime(
     // deferred preview (manifest.render.preview) when the capture geometry changes.
     refresh: emit,
 
+    // Re-resolve asset + token refs the mount already ran once (see the top of
+    // createRuntime), for values applied AFTER mount. A template/preset picked
+    // mid-doc pushes its `{color.*}` backdrop tokens and tool-URL image stubs in through
+    // applyPatch/setInput, neither of which resolves them; without this a picked
+    // template renders black colours + a placeholder image where a freshly-opened one
+    // renders the real gradient. Both resolvers return the same model reference when
+    // nothing needed resolving, so a call that changed nothing skips the re-emit.
+    async resolveRefs() {
+      const before = model;
+      model = await resolveAssetRefs(model, host, droppedAssets, composeStack, tool.manifest.id);
+      model = await resolveTokenRefs(model, host);
+      if (model !== before) emit();
+    },
+
     // True when this tool declares an `onFrame` hook - i.e. it CAN react to a live
     // camera. The shell still gates the actual "go live" affordance on host.media
     // being present, so a tool without a camera shell just runs as a still tool.
@@ -809,7 +840,7 @@ export async function createRuntime(
      * is denied or there's no camera (the shell shows that error). No-op (returns
      * false) if already live, the tool has no onFrame, or there's no host.media.
      */
-    async startLive(opts?: { source?: 'camera' | 'asset' }) {
+    async startLive(opts?: { source?: 'camera' | 'asset'; facingMode?: 'user' | 'environment' }) {
       // Capture the hook + media locals so the deferred subscribe callback keeps
       // its narrowed (non-null) types; `hooks` is a mutable closure variable.
       const onFrame = hooks?.onFrame;
@@ -819,7 +850,13 @@ export async function createRuntime(
       // capture. A shell replaying an ANIMATED ASSET through the same frame loop
       // passes source:'asset' so the export never over-claims digitalCapture.
       const sensorSource = opts?.source !== 'asset';
-      await media.start(); // may reject (permission/no camera) - the shell catches
+      // Which camera: the explicit request, else the tool's manifest default
+      // (render.liveFacing - a code reader wants 'environment', the rear camera).
+      // Honoured only when this start() creates the stream (media is refcounted;
+      // a flip is stop() then start()).
+      const facingMode = opts?.facingMode
+        ?? (tool.manifest.render as { liveFacing?: 'user' | 'environment' } | undefined)?.liveFacing;
+      await media.start(facingMode ? { facingMode } : undefined); // may reject (permission/no camera) - the shell catches
       // A raster-output tool can ask for higher-resolution frames than the shell's
       // default vector-trace working size (render.liveMaxEdge, or a live slider via
       // render.liveMaxEdgeInput - see liveEdge()); the shell clamps it to the native
@@ -869,11 +906,14 @@ export async function createRuntime(
      * sound check). Rejects if permission is denied or there's no mic (the shell
      * catches). No-op (false) if already metering, no onLevel, or no host.recorder.
      */
-    async startMeter() {
+    async startMeter(opts) {
       const onLevel = hooks?.onLevel;
       const recorder = host.recorder;
       if (meterUnsub || !onLevel || !recorder) return false;
-      await recorder.meter.start(); // may reject (permission/no mic) - the shell catches
+      // The sound-check MUST open the same mic the take will (opts.deviceId ===
+      // the startRecording opts.audioDeviceId), or its levels describe a different
+      // device. The caller (record-control) passes the chosen mic to both.
+      await recorder.meter.start(opts?.deviceId ? { deviceId: opts.deviceId } : undefined); // may reject - the shell catches
       stopMeterSource = () => recorder.meter.stop();
       meterUnsub = driveLevels(recorder.meter);
       return true;
@@ -988,6 +1028,18 @@ export async function createRuntime(
         // raise user-facing preconditions (e.g. url-shot's "enter a URL"), and
         // exporting an unstaged canvas silently would be worse than failing.
         await runHook('beforeExport', () => beforeExport({ node: renderedNode, format, opts, host }));
+      }
+      // Central transparent-background default - the counterpart to a tool's own beforeExport.
+      // A tool whose synthesised `transparentBg` input is ON wants a transparent backdrop, but
+      // many only omit the SVG bg rect and never clear the RASTER canvas, so their PNG/WebP
+      // exported composited onto opaque white (the gap d3 carried). Honour the input here for
+      // alpha-capable formats when neither the caller nor the tool's beforeExport set a
+      // background - a tool's explicit background always wins, since this runs only while
+      // opts.background is still unset. Effect tools with a prefixed toggle (filter's
+      // ht_transparentBg) clear the canvas in their own beforeExport and are untouched.
+      if (opts.background == null && ALPHA_EXPORT_FORMATS.has(format)
+          && model.find(i => i.id === 'transparentBg')?.value === true) {
+        opts.background = 'transparent';
       }
       // Tool-owned still: a tool that computes its own high-precision bytes for
       // this format (e.g. a float grading pipeline → 16-bit PNG / OpenEXR the
@@ -1223,9 +1275,12 @@ export async function createRuntime(
 // model rather than the rendered DOM, so the engine assembles the payload and
 // the host just wraps it in a Blob. JSON defaults to the resolved input values,
 // but a tool that ships a sibling template.json owns it instead (see below);
-// ICS/VCF/CSV/CSS/SCSS/GPL all come from a sibling text template (template.<ext>).
-const DATA_FORMATS: Record<string, string> =
+// ICS/VCF/CSV/SRT/VTT/CSS/SCSS/GPL all come from a sibling text template
+// (template.<ext>). SubRip has no registered MIME of its own, so it ships as
+// text/plain - the type every player and editor accepts for a .srt sidecar.
+export const DATA_FORMATS: Record<string, string> =
   { json: 'application/json', csv: 'text/csv', ics: 'text/calendar', vcf: 'text/vcard',
+    srt: 'text/plain', vtt: 'text/vtt',
     css: 'text/css', scss: 'text/x-scss', gpl: 'text/plain' };
 
 // Returns { dataText, dataMime } for a data/text format, or {} for render
@@ -1282,6 +1337,10 @@ function buildDataPayload(
 // saved-session refs). Null when the value isn't ref-shaped. Mirrors the inline
 // `x && typeof x === 'object' && typeof x.id === 'string'` check.
 function assetRefId(v: unknown): string | null {
+  // Typed-object transports (document API, automation POST, data binding) send
+  // asset ids and provider refs as strings. URL mode often wraps the same value
+  // in an unresolved object, so accept both representations here.
+  if (typeof v === 'string') return v || null;
   if (!v || typeof v !== 'object') return null;
   const id = (v as { id?: unknown }).id;
   return typeof id === 'string' ? id : null;
@@ -1346,6 +1405,17 @@ async function resolveAssetRefs(
           : null;
         if (ref) return ref;
         dropped.push({ inputId, label, id, reason: 'render-failed' });
+        return null;
+      }
+      // The grammar intentionally parses any URI scheme, including http(s),
+      // but plain web URLs retain the established direct-asset path above/below:
+      // Lolly share URLs compose and ordinary URLs go through assets.get. Only
+      // logical schemes are delegated to the additive provider resolver.
+      const providerRef = parseProviderRef(id);
+      if (providerRef && providerRef.provider !== 'http' && providerRef.provider !== 'https') {
+        const resolved = await host.assets.resolveProvider?.(providerRef) ?? null;
+        if (resolved) return resolved;
+        dropped.push({ inputId, label, id, reason: 'not-found' });
         return null;
       }
       return await host.assets.get(id);
@@ -1536,11 +1606,16 @@ function mergePatch(
   const modelPatch: Record<string, InputValue> = {};
   let hasModelPatch = false;
   for (const [k, v] of Object.entries(patch as Record<string, unknown>)) {
-    // A key whose value is undefined is a hook MENTIONING an input, not
-    // setting it (`{ boxes: migrated || undefined }` is the shipped bug this
-    // guards: key presence used to blank the input to undefined and every
-    // consumer downstream saw nothing). Skipping is safe for extras too - an
-    // undefined extra is indistinguishable from an absent one in templates.
+    // A key whose value is undefined is a hook MENTIONING a key, not setting
+    // it - for an input (`{ boxes: migrated || undefined }` is the shipped bug
+    // this guards: key presence used to blank the input) AND for an extra:
+    // darkroom's `videoLook` cache contract publishes undefined on every
+    // unchanged-colour run precisely so the expensive extra it already
+    // published stands. A hook that means "this run computed NOTHING for this
+    // key - clear it" says so with null: null is stored, and a template's
+    // {{#if}} reads it as absent (design's frameGroups does exactly this when
+    // a doc leaves frames mode - an undefined there kept the stale artboard
+    // alive forever).
     if (v === undefined) continue;
     // Hook trust boundary: a patched input value is whatever the tool
     // computed - the same latitude the untyped runtime always gave hooks.

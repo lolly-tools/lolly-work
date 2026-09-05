@@ -185,6 +185,17 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.equal((await store.listApiTokens()).find((t) => t.id === 'tok_1')?.lastUsedAt, '2026-08-24T12:00:00.000Z');
   assert.equal(await store.revokeApiToken('tok_1', '2026-08-24T13:00:00.000Z'), true);
   assert.equal(await store.revokeApiToken('tok_1', '2026-08-24T13:00:00.000Z'), false, 'a revoked token revokes once');
+
+  // durable automation jobs: principal isolation, idempotency lookup and delete
+  const jobAt = '2026-09-04T12:00:00.000Z';
+  await store.putAutomationJob({ id: 'job_1', principal: 'user:a', verb: 'render', request: { toolId: 'card' }, state: 'queued', createdAt: jobAt, updatedAt: jobAt, idempotencyKey: 'idem-1', priority: 0, attempt: 0 });
+  assert.equal((await store.getAutomationJob('job_1', 'user:a'))?.verb, 'render');
+  assert.equal(await store.getAutomationJob('job_1', 'user:b'), null, 'jobs are principal-isolated');
+  assert.equal((await store.findAutomationJobByIdempotency('user:a', 'idem-1'))?.id, 'job_1');
+  assert.equal((await store.listAutomationJobs('user:a')).length, 1);
+  assert.equal(await store.deleteAutomationJob('job_1', 'user:b'), false);
+  assert.equal(await store.deleteAutomationJob('job_1', 'user:a'), true);
+  assert.equal(await store.getAutomationJob('job_1', 'user:a'), null);
   assert.ok((await store.findApiTokenByHash('hash-a'))?.revokedAt, 'revoked rows are returned, callers refuse them');
 
   // SIEM cursor + windowed audit reads (plans/35 wave 2)

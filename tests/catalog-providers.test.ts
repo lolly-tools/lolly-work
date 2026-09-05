@@ -259,15 +259,17 @@ test('(b2) expiry thresholds fire once each; the unstated are never mentioned (p
     'threshold days only, sorted most-urgent first, no-date never mentioned');
 });
 
-test('(b3) migration 0027 follows 0026 and is the ceiling', async () => {
+test('(b3) credential expiry is 0027 and automation jobs advance the ceiling to 0028', async () => {
   const { readdir, readFile } = await import('node:fs/promises');
   const dir = new URL('../migrations/', import.meta.url).pathname;
   const files = (await readdir(dir)).filter((f) => f.endsWith('.sql')).sort();
   const at = files.indexOf('0027_credential_expiry.sql');
   assert.ok(at > 0, '0027 is on disk');
   assert.equal(files[at - 1], '0026_device_codes.sql', '0027 follows 0026 with nothing between');
-  assert.equal(files.at(-1), '0027_credential_expiry.sql', 'credential expiry holds the migration ceiling');
+  assert.equal(files[at + 1], '0028_automation_jobs.sql', 'automation jobs follows credential expiry with nothing between');
+  assert.equal(files.at(-1), '0028_automation_jobs.sql', 'automation jobs holds the migration ceiling');
   assert.match(await readFile(`${dir}/0027_credential_expiry.sql`, 'utf8'), /add column credential_expires_at/);
+  assert.match(await readFile(`${dir}/0028_automation_jobs.sql`, 'utf8'), /create table automation_jobs/);
 });
 
 test('(h) config-managed records are read-only in the API and say why', async () => {

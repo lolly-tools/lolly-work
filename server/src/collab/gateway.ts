@@ -77,6 +77,26 @@
  * hands the raw frame to `room.relayPresence`, and rooms.ts imports no policy
  * module, so presence structurally cannot be authorized (plans/100 §7 item 5).
  *
+ * THE DESIGN-SYSTEM GATE (OSS plans/186 §3.10, which calls it the fourth gate
+ * beside the three policy ones). A room hosted here runs under exactly ONE
+ * design system: the one this deployment governs. Two people editing the same
+ * session with different brands loaded would each see their own colours, fonts
+ * and logos on the same document, and neither would be wrong about what they
+ * saw - so the room refuses the mismatch at the door instead of rendering two
+ * truths. THE CARRIER IS THE UPGRADE URL, `?ds=<profile>&dsi=<instance base>`,
+ * because everything else the gates read (the cookie, the Origin header, the
+ * session id) is on the upgrade request too, and a refusal here has to be an
+ * HTTP status written to the raw socket like every other refusal in this file.
+ * The `join` frame is too late: by then the WebSocket exists and the client is
+ * about to be handed the document.
+ *
+ * It is ADDITIVE AND TOLERANT, which is what matters for a shell that ships on
+ * its own schedule: a client that sends neither param is an older client and
+ * joins exactly as it did before, and a client that sends only one of them has
+ * only that half checked. What is refused is a client that STATES a design
+ * system this instance does not govern. See `designSystemClaim` (the parse) and
+ * `designSystemRefusal` (the rule).
+ *
  * VALIDATION IS HAND-ROLLED, deliberately. `@lolly-tools/core` exports an ajv
  * `validateCanvasOp`, but only from its package ROOT, whose module graph
  * references DOM globals this project's tsconfig excludes on purpose (the house
@@ -98,6 +118,7 @@ import { displayName, resolveMember } from '../iam/member.ts';
 import { guestActor, readPrincipal, type GuestSession } from '../iam/sessions.ts';
 import { linkResourceSelectors, type LinkRecord } from '../links/sign.ts';
 import { canSeeProject } from '../rbac/project-access.ts';
+import { listBrandProfiles } from '../brand/profiles.ts';
 import { mayCreateGuestLinks, mayEditCollab, mayJoinCollab, type Grant, type Role } from '../rbac/evaluate.ts';
 import { resolveInputAccess, type ResolvedAccess, type ToolOverlay, inputIsGoverned } from '../policy/overlay.ts';
 import { readToolInputs } from '../policy/tool-inputs.ts';
@@ -321,6 +342,80 @@ export function isAllowedOrigin(
     }
   }
   return false;
+}
+
+// ── the design-system claim (OSS plans/186 §3.10) ─────────────────────────────
+
+/** Longest `ds`/`dsi` value read off the upgrade URL. A brand profile name is a
+ *  short path segment and an instance base is a URL; anything past this is not
+ *  one of ours, and keeping the read bounded means a silly-length query cannot
+ *  be carried around by the gate. */
+const MAX_DESIGN_SYSTEM_CHARS = 256;
+
+/** What a client says it is rendering with. Either half may be absent, and an
+ *  absent half is simply not checked - see `designSystemRefusal`. */
+export interface DesignSystemClaim {
+  /** The brand profile name the client believes it has active, from `ds=`. */
+  id: string | null;
+  /** The instance base the client believes that design system came from, from
+   *  `dsi=`. */
+  instance: string | null;
+}
+
+/**
+ * `?ds=<profile>&dsi=<instance base>` off the upgrade URL, or `null` when the
+ * client named neither - an older shell, which must keep working.
+ *
+ * An EMPTY value counts as absent rather than as a claim of "". A client that
+ * has no design system loaded and fills the template in anyway is not making a
+ * statement about this room, and refusing it would be refusing a blank.
+ *
+ * Total, like `collabSessionId` and for the same reason: it runs on the
+ * synchronous upgrade path, where a throw takes the process down.
+ */
+export function designSystemClaim(rawUrl: string | undefined): DesignSystemClaim | null {
+  let params: URLSearchParams;
+  try {
+    params = new URL(rawUrl ?? '/', 'http://local').searchParams;
+  } catch {
+    return null;
+  }
+  const read = (key: string): string | null => {
+    const raw = params.get(key);
+    if (raw === null) return null;
+    const value = raw.trim().slice(0, MAX_DESIGN_SYSTEM_CHARS);
+    return value.length > 0 ? value : null;
+  };
+  const id = read('ds');
+  const instance = read('dsi');
+  return id === null && instance === null ? null : { id, instance };
+}
+
+/**
+ * Do two instance bases name the same deployment? Normalised the way plans/186
+ * asks: a trailing slash is not a difference, and the comparison is on the
+ * ORIGIN, case-insensitively, so `https://Brand.Example/` and
+ * `https://brand.example` are one instance.
+ *
+ * A value that is not a URL at all (or an opaque one, whose origin is the string
+ * "null") falls back to a trimmed, lowercased, slash-stripped string compare -
+ * so a client that sends a bare name gets an honest mismatch rather than an
+ * accidental match against every other opaque value.
+ */
+export function sameInstanceBase(a: string | undefined, b: string | undefined): boolean {
+  const normalise = (value: string | undefined): string | null => {
+    const trimmed = (value ?? '').trim();
+    if (!trimmed) return null;
+    try {
+      const { origin } = new URL(trimmed);
+      if (origin && origin !== 'null') return origin.toLowerCase();
+    } catch {
+      /* not a URL - fall through to the string form */
+    }
+    return trimmed.replace(/\/+$/, '').toLowerCase();
+  };
+  const left = normalise(a);
+  return left !== null && left === normalise(b);
 }
 
 // ── op parsing + hardening ────────────────────────────────────────────────────
@@ -961,9 +1056,14 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
   };
 
   /** A refusal BEFORE the handshake: a plain HTTP response on the raw socket, so
-   *  a `ws` client surfaces the real status instead of a mystery disconnect. */
-  const refuse = (socket: Duplex, status: number, code: string): void => {
-    const body = `${code}\n`;
+   *  a `ws` client surfaces the real status instead of a mystery disconnect. The
+   *  machine code is both the reason phrase and the first line of the body; an
+   *  optional second line carries a sentence a person can act on, for the one
+   *  refusal where "403" alone would not tell anyone what to change (the
+   *  design-system gate). Every message written here is server-authored - none
+   *  of it echoes what the client sent. */
+  const refuse = (socket: Duplex, status: number, code: string, message?: string): void => {
+    const body = message ? `${code}\n${message}\n` : `${code}\n`;
     socket.write(
       `HTTP/1.1 ${status} ${code}\r\n`
       + 'connection: close\r\n'
@@ -971,6 +1071,51 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
       + `content-length: ${Buffer.byteLength(body)}\r\n\r\n${body}`,
     );
     socket.destroy();
+  };
+
+  /**
+   * The design-system gate (OSS plans/186 §3.10; see this file's header for why
+   * the carrier is the upgrade URL). Returns the sentence to refuse with, or
+   * `null` to let the upgrade through.
+   *
+   * THE RULE, in the order the plan states it:
+   *   - no claim at all → allow. An older client says nothing and keeps working.
+   *   - `dsi` present → it must name THIS deployment (`sameInstanceBase` against
+   *     `config.instance.baseUrl`). A design system copied from another host is
+   *     not the one this room is governed by, whatever it happens to be called.
+   *   - `ds` present AND the pack is profile-aware → it must be the ACTIVE brand
+   *     profile. On a pack with no `brands/` dir there is only one design system
+   *     here and nothing to compare a name against, so the instance check is the
+   *     whole gate. A profile-aware pack whose active profile cannot be resolved
+   *     at all (no marker, no readable symlink) is the same situation and is
+   *     treated the same way rather than refusing everyone.
+   *
+   * The message names what to switch TO, never what the client sent. The brand
+   * LABEL lives inside `buildApp`'s pack-index read and is not reachable from
+   * here without a second read of the same file, so the active profile name is
+   * what this says when there is one, and a plain phrase when there is not.
+   *
+   * NOT AUDITED, deliberately, and matching every other gate in this file: a
+   * refused upgrade writes no audit row (the audit calls here are `collab.join`,
+   * `collab.leave` and the rollups, all of them AFTER a seat exists). A gate
+   * that logged its refusals would also be a way for an unseated caller to write
+   * to the audit chain behind its instance-global lock.
+   */
+  const designSystemRefusal = async (req: IncomingMessage): Promise<string | null> => {
+    const claim = designSystemClaim(req.url);
+    if (!claim) return null;
+    // One read, on the path where a client actually made a claim. The active
+    // profile can be switched while the server runs (brand/profiles.ts), so it
+    // is read per upgrade rather than cached - the same thing the HTTP brand
+    // routes do.
+    const profiles = await listBrandProfiles(config.instance.pack);
+    const active = profiles.available ? profiles.active : null;
+    const instanceOk = claim.instance === null
+      || sameInstanceBase(claim.instance, config.instance.baseUrl);
+    const idOk = claim.id === null || active === null || claim.id === active;
+    if (instanceOk && idOk) return null;
+    const target = active ? `the "${active}" design system` : "this instance's design system";
+    return `this room runs ${target} at ${config.instance.baseUrl}; switch to it to join`;
   };
 
   /** Live sockets per PRINCIPAL id, and their upgrade rate. Both are
@@ -1051,6 +1196,13 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
     //    grant is not a refusal: the member joins as an observer (plans/14 §6).
     const mayEdit = mayEditCollab(principal, grants);
 
+    // 5. the DESIGN-SYSTEM gate (OSS plans/186 §3.10). Last of the gates on
+    //    purpose: the message names this instance's active brand profile, and
+    //    that is a thing about the deployment nobody who was going to be refused
+    //    anyway should be told. A member who reaches this line was joining.
+    const wrongDesignSystem = await designSystemRefusal(req);
+    if (wrongDesignSystem) return refuse(socket, 403, 'DESIGN_SYSTEM_MISMATCH', wrongDesignSystem);
+
     if (closing) return refuse(socket, 503, 'SHUTTING_DOWN');
     // The cookie is carried forward so every ops message can re-authorize; see
     // `authorizeOps`. It is the same bearer the client would send on an HTTP
@@ -1122,6 +1274,13 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
     const session = await store.getSession(sessionId);
     if (!session) return refuse(socket, 404, 'NOT_FOUND');
     if (session.deletedAt) return refuse(socket, 410, 'SESSION_DELETED');
+
+    // The design-system gate applies to a guest for the same reason it applies
+    // to a member: one room, one design system, and a guest renders the document
+    // with whatever it has loaded. Same placement (last, after the seat is
+    // otherwise settled) and the same tolerance for a client that claims nothing.
+    const wrongDesignSystem = await designSystemRefusal(req);
+    if (wrongDesignSystem) return refuse(socket, 403, 'DESIGN_SYSTEM_MISMATCH', wrongDesignSystem);
 
     if (closing) return refuse(socket, 503, 'SHUTTING_DOWN');
     wss.handleUpgrade(req, socket, head, (ws) => onConnection(ws, {

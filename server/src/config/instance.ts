@@ -250,6 +250,9 @@ export interface RateLimitConfig {
   auth: RateLimitSurfaceConfig;
   telemetry: RateLimitSurfaceConfig;
   link: RateLimitSurfaceConfig;
+  /** Automation endpoints can be public on an open instance and are expensive
+   * even when authenticated; keep a separate, operator-tunable bucket. */
+  automation: RateLimitSurfaceConfig;
 }
 
 /** One further IdP beside the primary (plans/36 §3). `id` is the slug the
@@ -327,6 +330,7 @@ const DEFAULTS: InstanceConfig = {
     auth: { capacity: 10, refillPerSec: 0.2 },
     telemetry: { capacity: 120, refillPerSec: 4 },
     link: { capacity: 30, refillPerSec: 1 },
+    automation: { capacity: 120, refillPerSec: 2 },
   },
   dev: { enabled: false, users: [] },
   catalogProviders: [],
@@ -418,7 +422,7 @@ export function parseConfig(json: string): InstanceConfig {
   if (cfg.render.worker.url && (!Number.isFinite(wt) || wt <= 0)) throw new Error(`invalid render.worker.timeoutMs: ${wt}`);
   const rl = cfg.rateLimit;
   if (!Number.isFinite(rl.trustedProxyHops) || rl.trustedProxyHops < 0) throw new Error('rateLimit.trustedProxyHops must be >= 0');
-  for (const s of ['auth', 'telemetry', 'link'] as const) {
+  for (const s of ['auth', 'telemetry', 'link', 'automation'] as const) {
     if (rl[s].capacity <= 0 || rl[s].refillPerSec < 0) throw new Error(`rateLimit.${s} needs capacity>0 and refillPerSec>=0`);
   }
   if (cfg.policy.defaultAccessMode !== 'open' && !cfg.idp.issuer && !cfg.dev.enabled) {

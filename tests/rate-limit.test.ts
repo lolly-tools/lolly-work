@@ -13,6 +13,7 @@ const cfg = (over: Partial<RateLimitConfig> = {}): RateLimitConfig => ({
   auth: { capacity: 3, refillPerSec: 1 },
   telemetry: { capacity: 5, refillPerSec: 5 },
   link: { capacity: 3, refillPerSec: 1 },
+  automation: { capacity: 10, refillPerSec: 1 },
   ...over,
 });
 
@@ -61,6 +62,8 @@ test('surface classifier: dev provider is NOT throttled; real auth + telemetry +
   assert.equal(rateLimitSurface('GET', '/api/v1/telemetry'), null); // only POST ingest
   assert.equal(rateLimitSurface('GET', '/l/abc'), 'link');
   assert.equal(rateLimitSurface('GET', '/connect/pack.lolly'), 'link'); // public pack download rides the link bucket
+  assert.equal(rateLimitSurface('POST', '/api/v1/render'), 'automation');
+  assert.equal(rateLimitSurface('GET', '/api/v1/jobs/job-1'), 'automation');
   assert.equal(rateLimitSurface('GET', '/api/v1/users'), null); // authed API never throttled
 });
 

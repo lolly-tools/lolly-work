@@ -22,7 +22,7 @@ import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderRecord } from '../catalog/providers/types.ts';
 import {
   SESSION_REVISION_LIMIT, effectiveGroups,
-  type ApiTokenRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type LocalGroupRecord, type ProjectRecord, type ScimTokenRecord,
+  type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type LocalGroupRecord, type ProjectRecord, type ScimTokenRecord,
   type SessionRecord, type SessionRevision, type Store, type SubmitQuotaRow, type UserRecord,
 } from './types.ts';
 
@@ -35,6 +35,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const localGroups = new Map<string, LocalGroupRecord>(); // registry, by name
   const scimTokens = new Map<string, ScimTokenRecord>(); // SCIM provisioning bearers, by id
   const apiTokens = new Map<string, ApiTokenRecord>(); // service tokens (plans/35), by id
+  const automationJobs = new Map<string, AutomationJobRecord>();
   let siemCursor = 0; // highest audit seq confirmed delivered to the SIEM receiver
   let auditAnchor: AuditAnchor | null = null; // retention trim boundary (plans/35 wave 3)
   const deviceCodes = new Map<string, DeviceCodeRecord>(); // device sign-in codes, by deviceCode
@@ -229,6 +230,25 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       if (!t || t.revokedAt) return false;
       apiTokens.set(id, { ...t, revokedAt: at });
       return true;
+    },
+
+    async putAutomationJob(job) {
+      automationJobs.set(job.id, structuredClone(job));
+    },
+    async getAutomationJob(id, principal) {
+      const job = automationJobs.get(id);
+      return job?.principal === principal ? structuredClone(job) : null;
+    },
+    async listAutomationJobs(principal) {
+      return [...automationJobs.values()].filter((job) => job.principal === principal).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((job) => structuredClone(job));
+    },
+    async findAutomationJobByIdempotency(principal, key) {
+      const job = [...automationJobs.values()].find((candidate) => candidate.principal === principal && candidate.idempotencyKey === key);
+      return job ? structuredClone(job) : null;
+    },
+    async deleteAutomationJob(id, principal) {
+      const job = automationJobs.get(id);
+      return Boolean(job?.principal === principal && automationJobs.delete(id));
     },
 
     async listGrants() {

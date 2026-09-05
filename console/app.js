@@ -2874,11 +2874,18 @@ function renderToolPolicyEditor(tool, host) {
     model[inputId] = rules.map((r) => ({
       groups: r.groups.join(', '), level: r.level,
       value: showValue(r.value), allow: (r.allow ?? []).map(showValue).join(', '),
+      reason: r.reason ?? '',
     }));
   }
   const declared = (tool.inputs ?? []).map((i) => i.id);
   const err = errSpan();
 
+  // What a member sees beside a locked control ("Set by Brand guardrails").
+  // Unnamed is fine and stays the default: the shell then attributes nothing.
+  const nameInput = el('input', {
+    placeholder: 'e.g. Brand guardrails',
+    value: tool.overlay?.name ?? '',
+  });
   const visibilityInput = el('input', {
     placeholder: 'everyone (or: brand, marketing)',
     value: tool.overlay?.visibility?.groups?.join(', ') ?? '',
@@ -2902,10 +2909,15 @@ function renderToolPolicyEditor(tool, host) {
           : rule.level === 'choice'
             ? el('input', { value: rule.allow, placeholder: 'allowed: a, b, c', oninput: (e) => { rule.allow = e.target.value; } })
             : el('span', { class: 'muted' }, rule.level === 'hidden' ? 'input absent for these groups' : 'free input');
+        const reasonIn = el('input', {
+          value: rule.reason, placeholder: 'why (shown to the member)',
+          oninput: (e) => { rule.reason = e.target.value; },
+        });
         return el('div', { class: 'formrow' },
           field('groups', groupsIn),
           field('access', levelSel),
           field('detail', detail),
+          field('reason', reasonIn),
           el('div', {}, el('label', {}, ' '),
             el('button', { onclick: () => { model[inputId].splice(idx, 1); renderRules(); } }, 'Remove')));
       });
@@ -2916,12 +2928,12 @@ function renderToolPolicyEditor(tool, host) {
           el('span', { class: 'muted' }, `${decl?.type ? ` ${decl.type}` : ''}${hint}`),
           ' ',
           el('button', { onclick: () => {
-            (model[inputId] ??= []).push({ groups: '*', level: 'locked', value: showValue(decl?.default), allow: '' });
+            (model[inputId] ??= []).push({ groups: '*', level: 'locked', value: showValue(decl?.default), allow: '', reason: '' });
             renderRules();
           } }, rows.length ? '+ rule' : 'Govern')),
         ...rows);
     }),
-    el('p', {}, el('button', { onclick: () => { model['*'] ??= []; model['*'].push({ groups: '*', level: 'editable', value: '', allow: '' }); renderRules(); } },
+    el('p', {}, el('button', { onclick: () => { model['*'] ??= []; model['*'].push({ groups: '*', level: 'editable', value: '', allow: '', reason: '' }); renderRules(); } },
       '+ default rule for all inputs (*)')));
   };
   renderRules();
@@ -2936,11 +2948,13 @@ function renderToolPolicyEditor(tool, host) {
         level: r.level,
         ...(r.level === 'locked' && r.value.trim() !== '' ? { value: parseValue(r.value) } : {}),
         ...(r.level === 'choice' ? { allow: parseValueList(r.allow) } : {}),
+        ...(r.reason.trim() ? { reason: r.reason.trim() } : {}),
       })).filter((r) => r.groups.length);
       if (clean.length) inputAccess[inputId] = clean;
     }
     const visGroups = visibilityInput.value.split(',').map((s) => s.trim()).filter(Boolean);
     const body = {
+      ...(nameInput.value.trim() ? { name: nameInput.value.trim() } : {}),
       ...(Object.keys(inputAccess).length ? { inputAccess } : {}),
       ...(visGroups.length ? { visibility: { groups: visGroups } } : {}),
       ...(watermarkSel.value ? { enforce: { watermark: watermarkSel.value } } : {}),
@@ -2955,6 +2969,7 @@ function renderToolPolicyEditor(tool, host) {
     el('h2', {}, `Policy — ${tool.name}`),
     el('p', { class: 'sub' }, 'Rules are ordered per input; the first rule matching a member’s groups wins, and members with no matching rule keep free input. Locked presets are baked at render time — a caller supplying their own value is refused. Hidden inputs disappear from the tool entirely.'),
     el('div', { class: 'formrow' },
+      field('Policy name (shown to members)', nameInput),
       field('Visible to groups (empty = everyone)', visibilityInput),
       field('Watermark', watermarkSel)),
     tool.inputs === null
@@ -4455,10 +4470,15 @@ async function viewGrants(main) {
 
 function accessDetail(access) {
   if (!access) return el('span', { class: 'muted' }, 'editable');
-  if (access.level === 'locked') return el('span', {}, el('span', { class: 'status expired' }, 'locked'), ' → ', el('span', { class: 'mono' }, showValue(access.value)));
-  if (access.level === 'choice') return el('span', {}, el('span', { class: 'status expired' }, 'choice'), ' → ', el('span', { class: 'mono' }, (access.allow ?? []).map(showValue).join(', ')));
-  if (access.level === 'hidden') return el('span', { class: 'status revoked' }, 'hidden');
-  return el('span', { class: 'muted' }, access.level);
+  // The attribution the member's own sidebar shows beside the control, so the
+  // preview answers "why is this locked?" the same way they will read it.
+  const by = access.by
+    ? el('span', { class: 'muted' }, ` · set by ${access.by}${access.reason ? `: ${access.reason}` : ''}`)
+    : null;
+  if (access.level === 'locked') return el('span', {}, el('span', { class: 'status expired' }, 'locked'), ' → ', el('span', { class: 'mono' }, showValue(access.value)), by);
+  if (access.level === 'choice') return el('span', {}, el('span', { class: 'status expired' }, 'choice'), ' → ', el('span', { class: 'mono' }, (access.allow ?? []).map(showValue).join(', ')), by);
+  if (access.level === 'hidden') return el('span', {}, el('span', { class: 'status revoked' }, 'hidden'), by);
+  return el('span', {}, el('span', { class: 'muted' }, access.level), by);
 }
 
 function renderPreview(data) {

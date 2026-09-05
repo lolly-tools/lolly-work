@@ -18,21 +18,68 @@ means any signed-in member; *public* means no session needed.
 | Route | Action | Notes |
 |---|---|---|
 | `GET /api/v1/instance` | public | the card a fresh shell reads before sign-in |
-| `GET /connect/pack.lolly` | open: public · else member | the hosted signed instance pack; `404` when none is hosted |
+| `GET /connect/pack.lolly` | open: public · else member | the hosted signed instance pack; `404` when none is hosted; `ETag` + `If-None-Match` → `304` |
 | `GET /api/v1/instance-pack` | `fleet.view` | the hosted pack's metadata (name, version, signed, checksum), or null |
 | `PUT /api/v1/instance-pack` | `instance.config` (**owner**) | host a pack cut by the OSS builder; refused unless its instance base is this deployment |
 | `DELETE /api/v1/instance-pack` | `instance.config` (**owner**) | stop hosting |
 
 The manifest is what a downloaded app learns about this deployment before
 anyone signs in: `{ name, accessMode, provider, providerName, loginPath,
-engineVersion, capabilities, connect? }`. `engineVersion` is the vendored
+engineVersion, capabilities, brand, connect? }`. `engineVersion` is the vendored
 engine pin this deploy serves tools against; `capabilities` names the surfaces
 the server ships (`catalog`, `collab`, `submit`, `scim`); `connect.packUrl`
 appears exactly while a pack is hosted. It carries no secrets and no user
-data, and shares the auth rate-limit bucket. The pack itself is never built
+data, and shares the auth rate-limit bucket. Any origin may read it
+(`Access-Control-Allow-Origin: *`, with `OPTIONS` answering the preflight),
+because a client that adds this deployment's design system by URL fetches this
+card from its own page before anyone has signed in. The pack itself is never built
 here - the OSS repo's `build-instance-pack.ts` owns the signed format, and
 this instance is where the finished pack publishes to. See "Connecting apps to
 this instance" in [operations](operations.md) for the connect story.
+
+`brand` is the design system this deployment hosts, for a client that adds one
+by URL and keeps it on the device for offline use (OSS `plans/186`):
+
+```json
+"brand": {
+  "profile": "suse",
+  "label": "SUSE tokens",
+  "version": "1.2.0",
+  "checksum": "sha256-QOn2…",
+  "locked": true,
+  "packUrl": "https://brand.example/connect/pack.lolly"
+}
+```
+
+Every field comes from the mounted pack itself, never from a second copy here.
+`profile` is the active brand profile on a profile-aware pack (the one
+`GET /api/v1/brand/profiles` lists) and `null` on a single-brand one; `label` is the
+tokens asset's name; `checksum` is that asset's own integrity checksum, which is
+what a client compares to ask "has the brand here changed since I copied it"
+without downloading anything; `locked` mirrors the tokens asset's `brandLock`,
+so a client knows the brand is authoritative and must not offer to customise it;
+`version` is the hosted pack's version when one is hosted; `packUrl` repeats
+`connect.packUrl` so one block answers both what is here and where to get it.
+The whole block is `null` when the pack ships no tokens asset, and it changes
+the moment an admin switches brand profile. It states no colours and no font
+files: those stay behind `GET /api/brand`.
+
+The pack download is conditional. `GET /connect/pack.lolly` sends a strong
+`ETag` (the hosted pack's checksum, the same one `GET /api/v1/instance-pack`
+reports) with `cache-control: private, no-cache`, and answers `304` to an
+`If-None-Match` that matches, so a client re-checks a pack it already holds for
+the price of one header. The access gate is unchanged and runs first: on a gated
+instance an unauthenticated conditional request gets `401` and no tag.
+
+Cross-origin reads of the pack follow that same gate. An **open** instance sends
+`Access-Control-Allow-Origin: *` and `Access-Control-Expose-Headers: ETag` (a
+browser hides the tag from script otherwise, and the tag is what the client came
+for), and answers the `OPTIONS` preflight a conditional GET triggers with
+`Allow-Methods: GET`, `Allow-Headers: If-None-Match` and a day of `Max-Age`. A
+**gated** instance sends no CORS header at all, on the download or the
+preflight: a page on another origin cannot present the session cookie, and a
+wildcard with credentials is refused by browsers, so the answer there is to sign
+in on the instance and export the pack, or connect from the desktop app.
 
 ## Auth
 
@@ -223,6 +270,35 @@ server-side and delivers through the inbox (`kind: "collab"`, `data.sessionId`
 for the deep link); re-inviting refreshes the pending message instead of adding
 a second.
 
+### The collab socket
+
+Live co-editing runs over `GET /ws/collab/:sessionId`, a WebSocket upgrade
+carrying the same session cookie an HTTP call would. Authorization happens
+**before the handshake completes**, so a refusal is a plain HTTP status on the
+socket rather than a mystery disconnect: `401` unauthenticated, `404` no such
+session, `403` the project is not visible to you or `collab.join` is denied,
+`410` the session is in the bin, `429` too many connections or reconnects, `503`
+busy or shutting down. Write access is not a refusal: a member who may read but
+not edit is seated as an **observer**.
+
+One optional field rides the upgrade URL, and a client that omits it is
+unaffected:
+
+| Param | Meaning |
+|---|---|
+| `ds` | the brand profile the client is rendering with |
+| `dsi` | the instance base that design system came from |
+
+A room hosted here runs under exactly one design system, the one this deployment
+governs (OSS `plans/186` section 3.10). When a client names one, `dsi` must be
+this instance's `baseUrl` (a trailing slash and letter case are not a
+difference, and the comparison is on the origin) and, on a profile-aware pack,
+`ds` must be the **active** brand profile that `GET /api/v1/brand/profiles`
+reports. A mismatch is refused `403 DESIGN_SYSTEM_MISMATCH`, whose body names
+the design system to switch to. On a pack with no brand profiles there is
+nothing to compare a name against, so only `dsi` is checked. Sending neither
+param joins as before; sending one of the two checks only that one.
+
 ## Telemetry, activity, audit, fleet, system
 
 | Route | Action |
@@ -261,6 +337,11 @@ a second.
 | `CONFLICT` | 409 | stale session `rev` - the body's `current` is the server session to rebase on |
 | `LINK_EXPIRED` / `LINK_REVOKED` | 410 | self-explanatory |
 | `INPUT_LOCKED` | 422 | a locked input was supplied by the caller |
+| `INVALID_INPUT` | 400 | an automation request is missing or has malformed required fields |
+| `DOCUMENT_API_ERROR` | 400 | the requested compile/inspect/diff/measure/optimise/package operation could not be performed |
+| `DATA_BINDING_ERROR` | 400 | a live JSON/CSV provider binding could not resolve, parse, query or validate |
+| `ROW_VALIDATION_FAILED` | 422 | a batch row does not satisfy the selected tool contract |
+| `IDEMPOTENCY_KEY_REUSED` | 409 | the principal reused an idempotency key for different request bytes |
 | `UNSUPPORTED_FORMAT` | 400 | a format this deployment cannot produce (org_config's `render.formats` names what it can) |
 | `FORMAT_NOT_ALLOWED` | 403 | the format exists here but this tool's overlay policy excludes it |
 | `RENDER_BUSY` | 503 | the render worker is at capacity - retry after `Retry-After` seconds |
@@ -275,3 +356,49 @@ that carries a live member session, it registers the install in the fleet regist
 Anonymous and guest traffic with the same token feeds the histogram and nothing else, and
 there is no heartbeat: an install is seen exactly when its person uses the instance, and
 leaving the instance client-side deletes the id.
+# Automation and document API
+
+The typed automation surface mirrors the open-source engine's document verbs:
+`POST /api/v1/compile`, `/validate`, `/inspect`, `/diff`, `/measure`, `/optimize`,
+`/package`, and `/render`; `GET /api/v1/schema/:toolId` publishes a tool's input
+schema. JSON requests use `{toolId, inputs}` rather than URL-only merge fields.
+Schema, compile, package and render all enforce the caller's `tool.use` decision
+and tool-visibility overlay; a document verb cannot be used to discover a tool
+hidden from that principal. Render additionally requires `export.server`.
+
+Pass `?async=1` or `Prefer: respond-async` to receive `202 {jobId,statusUrl}`.
+Poll `GET /api/v1/jobs/:id`, download a completed result from
+`GET /api/v1/jobs/:id/result`, or list the caller's jobs at `GET /api/v1/jobs`.
+`DELETE /api/v1/jobs/:id` removes queued work or retained output. Jobs are
+isolated to the member or service principal that created them. Repeating a
+request with the same `Idempotency-Key` returns its existing job; reusing that
+key for different request bytes returns `409 IDEMPOTENCY_KEY_REUSED`. A
+`callbackUrl` is used only when it exactly matches the instance-configured
+webhook endpoint; callback requests carry `x-lolly-timestamp` and a signed
+`x-lolly-signature` header. Their absolute result URL carries its own 24-hour
+signature, so the receiver does not need the caller's session cookie.
+
+`POST /api/v1/batch {toolId,format,rows,keepGoing?,retries?,concurrency?,priority?}`
+always creates a job and produces one ZIP. Requested concurrency is capped at
+four in this process, priority at 0–9, and retries at three. Progress is exposed
+as `{done,total}` and the ZIP's `manifest.json` records every row outcome. In
+place of `rows`, `bind:{source,query?,as?}` reads JSON/CSV from a governed
+provider; `as` may be the JSON Schema returned by the schema route, and every
+row is also checked against the actual tool before enqueue. `query` is a typed,
+nested equality selector: it is forwarded to the provider and enforced again
+over the returned objects. CSV follows RFC 4180, including quoted commas,
+escaped quotes and embedded newlines; its cell values are strings.
+
+Provider refs are resolved during compile and before render cache identity.
+Local `image://brand`, `catalog://`, and `library://` refs stay offline-first.
+`cms://<provider-id>/<remote-id>` uses that enabled catalog provider's stored
+credential, exposure and lifecycle; `net://<operator-allowed-origin>/<path>` is
+restricted to origins present in provider configuration. Both are timeout- and
+byte-bounded, content-addressed, and use immutable resize, format-conversion and
+metadata-strip stages. `/inspect` and `/optimize` also accept `bytesBase64` or a
+provider `source`; `/package` accepts either a compiled `document` or
+`{toolId,inputs}` and can run asynchronously.
+
+These routes use the configurable `rateLimit.automation` bucket. It is technical
+admission control, not printer-rate pricing; durable per-principal quotas and
+usage accounting are specified in plan 45.

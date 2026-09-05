@@ -83,7 +83,8 @@ let hooksAllowed: Harness;
 // Overlays on the MAIN server: `locked-card` locks `bg`; `wm-card` forces the mark.
 const LOCK_OVERLAY: ToolOverlay = {
   toolId: 'locked-card', version: 1,
-  inputAccess: { bg: [{ groups: ['*'], level: 'locked', value: '#123456' }] },
+  name: 'Brand guardrails',
+  inputAccess: { bg: [{ groups: ['*'], level: 'locked', value: '#123456', reason: 'One background per campaign' }] },
 };
 const WM_OVERLAY: ToolOverlay = {
   toolId: 'wm-card', version: 1,
@@ -95,17 +96,22 @@ const FMT_OVERLAY: ToolOverlay = {
   toolId: 'fmt-card', version: 1,
   enforce: { formats: ['svg', 'pdf'] },
 };
+const HIDDEN_OVERLAY: ToolOverlay = {
+  toolId: 'hidden-card', version: 1,
+  visibility: { groups: ['marketing'] },
+};
 
 before(async () => {
   pack = await mkdtemp(join(tmpdir(), 'lw-render-'));
   await mkdir(join(pack, 'catalog', 'tools'), { recursive: true });
   await writeFile(join(pack, 'catalog', 'tools', 'index.json'), JSON.stringify({
-    version: 3, tools: [{ id: 'test-card' }, { id: 'locked-card' }, { id: 'wm-card' }, { id: 'fmt-card' }, { id: 'hooky' }],
+    version: 3, tools: [{ id: 'test-card' }, { id: 'locked-card' }, { id: 'wm-card' }, { id: 'fmt-card' }, { id: 'hidden-card' }, { id: 'hooky' }],
   }));
   await writeCard('test-card');
   await writeCard('locked-card');
   await writeCard('wm-card');
   await writeCard('fmt-card');
+  await writeCard('hidden-card');
   // A hooked tool - its presence of hooks.js is what the fast path refuses.
   const hookyDir = join(pack, 'tools', 'hooky');
   await mkdir(hookyDir, { recursive: true });
@@ -121,7 +127,7 @@ before(async () => {
     '<text x="20" y="110" font-size="28" fill="#fff">{{title}}</text></svg>');
   await writeFile(join(hookyDir, 'hooks.js'), 'function onInit(ctx) { return {}; }\n');
 
-  main = await makeServer({}, [LOCK_OVERLAY, WM_OVERLAY, FMT_OVERLAY]);
+  main = await makeServer({}, [LOCK_OVERLAY, WM_OVERLAY, FMT_OVERLAY, HIDDEN_OVERLAY]);
   hooksAllowed = await makeServer({ render: { allowHooksInFastPath: true } });
 });
 
@@ -167,9 +173,15 @@ test('(c) locked input: supplying it → 422 INPUT_LOCKED; omitting it bakes the
   // Supplying the locked `bg` is refused.
   const refused = await fetch(`${main.base}/render/locked-card.svg?title=Hi&bg=%23ff0000`, { headers: { cookie } });
   assert.equal(refused.status, 422);
-  const body = await refused.json() as { error: { code: string; message: string } };
+  const body = await refused.json() as { error: { code: string; message: string; input?: string; by?: string; reason?: string } };
   assert.equal(body.error.code, 'INPUT_LOCKED');
   assert.match(body.error.message, /bg/);
+  // The refusal explains itself: which input, which policy, and why - the same
+  // attribution the shell prints under the control, so an agent driving the
+  // render is not left guessing what changed.
+  assert.equal(body.error.input, 'bg');
+  assert.equal(body.error.by, 'Brand guardrails');
+  assert.equal(body.error.reason, 'One background per campaign');
   // Probing a locked param is audited as render.denied.
   const audit = await main.store.listAudit();
   assert.ok(audit.some((e) => e.action === 'render.denied'), 'render.denied audited');
@@ -280,6 +292,93 @@ test('(f) hooked tool dispatches to a configured Chromium worker; HMAC-signed', 
   assert.ok(sawSig, 'worker received a valid HMAC signature');
   assert.equal(sawToolId, 'hooky');
   worker.close();
+});
+
+test('(n) automation document verbs and durable async render share the engine contract', async () => {
+  const cookie = await login(main.base, 'admin@test');
+  const headers = { cookie, 'content-type': 'application/json' };
+  const schema = await fetch(`${main.base}/api/v1/schema/test-card`, { headers });
+  assert.equal(schema.status, 200);
+  assert.equal(((await schema.json()) as any).schema.properties.title.type, 'string');
+
+  const compiled = await fetch(`${main.base}/api/v1/compile`, { method: 'POST', headers, body: JSON.stringify({ toolId: 'test-card', inputs: { title: 'Typed' } }) });
+  assert.equal(compiled.status, 200);
+  assert.match(((await compiled.json()) as any).document.hydrated, /Typed/);
+
+  const request = { toolId: 'test-card', format: 'svg', inputs: { title: 'Async' } };
+  const first = await fetch(`${main.base}/api/v1/render?async=1`, { method: 'POST', headers: { ...headers, 'idempotency-key': 'render-once' }, body: JSON.stringify(request) });
+  assert.equal(first.status, 202);
+  const jobId = ((await first.json()) as any).jobId as string;
+  const duplicate = await fetch(`${main.base}/api/v1/render?async=1`, { method: 'POST', headers: { ...headers, 'idempotency-key': 'render-once' }, body: JSON.stringify(request) });
+  assert.equal(((await duplicate.json()) as any).jobId, jobId);
+  let state = '';
+  for (let i = 0; i < 50 && state !== 'done'; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    state = ((await (await fetch(`${main.base}/api/v1/jobs/${jobId}`, { headers })).json()) as any).state;
+  }
+  assert.equal(state, 'done');
+  const output = await fetch(`${main.base}/api/v1/jobs/${jobId}/result`, { headers });
+  assert.equal(output.status, 200); assert.match(await output.text(), /Async/);
+  const settled = await (await fetch(`${main.base}/api/v1/jobs/${jobId}`, { headers })).json() as any;
+  const signed = new URL(settled.resultUrl);
+  const callbackDownload = await fetch(`${main.base}${signed.pathname}${signed.search}`);
+  assert.equal(callbackDownload.status, 200, 'signed result URL works without the caller session');
+  assert.match(await callbackDownload.text(), /Async/);
+
+  const conflict = await fetch(`${main.base}/api/v1/render?async=1`, { method: 'POST', headers: { ...headers, 'idempotency-key': 'render-once' }, body: JSON.stringify({ ...request, inputs: { title: 'Different' } }) });
+  assert.equal(conflict.status, 409);
+  assert.equal(((await conflict.json()) as any).error.code, 'IDEMPOTENCY_KEY_REUSED');
+});
+
+test('(n2) automation schema, compile and render cannot bypass governed tool visibility', async () => {
+  const admin = await login(main.base, 'admin@test');
+  const adminHeaders = { cookie: admin, 'content-type': 'application/json' };
+  assert.equal((await fetch(`${main.base}/api/v1/schema/hidden-card`, { headers: adminHeaders })).status, 403);
+  assert.equal((await fetch(`${main.base}/api/v1/compile`, { method: 'POST', headers: adminHeaders, body: JSON.stringify({ toolId: 'hidden-card', inputs: {} }) })).status, 403);
+  assert.equal((await fetch(`${main.base}/api/v1/render`, { method: 'POST', headers: adminHeaders, body: JSON.stringify({ toolId: 'hidden-card', format: 'svg', inputs: {} }) })).status, 403);
+
+  const marketer = await login(main.base, 'marketer@test');
+  const marketerHeaders = { cookie: marketer, 'content-type': 'application/json' };
+  assert.equal((await fetch(`${main.base}/api/v1/schema/hidden-card`, { headers: marketerHeaders })).status, 200);
+  assert.equal((await fetch(`${main.base}/api/v1/compile`, { method: 'POST', headers: marketerHeaders, body: JSON.stringify({ toolId: 'hidden-card', inputs: {} }) })).status, 200);
+});
+
+test('(p) cms provider refs use governed provider credentials/exposure during compile', async () => {
+  const dir = join(pack, 'tools', 'asset-card');
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, 'tool.json'), JSON.stringify({
+    id: 'asset-card', name: 'Asset card', version: '1.0.0', engineVersion: '^1.0.0', status: 'official',
+    render: { width: 100, height: 100, formats: ['svg'] },
+    inputs: [{ id: 'image', label: 'Image', type: 'asset', default: null }],
+  }));
+  await writeFile(join(dir, 'template.html'), '<svg xmlns="http://www.w3.org/2000/svg"><image href="{{image.url}}"/></svg>');
+  const providerAsset = { remoteId: 'logo', name: 'Logo', nativeType: 'image', sections: ['approved'], tags: ['logo'], approved: true, formats: [{ format: 'png', remoteRef: 'original' }] };
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  const srv = await makeServer({ catalogProviders: [{ id: 'dam', kind: 'mock', label: 'DAM', enabled: true, exposure: { groups: ['marketing'], requireApproved: true }, options: { assets: [providerAsset], blobBase64: { logo: png }, blobContentType: { logo: 'image/png' } } }] });
+  const marketer = await login(srv.base, 'marketer@test');
+  const allowed = await fetch(`${srv.base}/api/v1/compile`, { method: 'POST', headers: { cookie: marketer, 'content-type': 'application/json' }, body: JSON.stringify({ toolId: 'asset-card', inputs: { image: 'cms://dam/logo' } }) });
+  assert.equal(allowed.status, 200);
+  const compiled = await allowed.json() as any;
+  assert.equal(compiled.document.values.image.id, 'cms://dam/logo');
+  assert.match(compiled.document.values.image.url, /^data:image\/png;base64,/);
+
+  const admin = await login(srv.base, 'admin@test');
+  const hidden = await fetch(`${srv.base}/api/v1/compile`, { method: 'POST', headers: { cookie: admin, 'content-type': 'application/json' }, body: JSON.stringify({ toolId: 'asset-card', inputs: { image: 'cms://dam/logo' } }) });
+  assert.equal(hidden.status, 200);
+  assert.equal((await hidden.json() as any).document.values.image, null, 'direct refs cannot bypass provider group exposure');
+});
+
+test('(o) automation batch yields a ZIP with a per-row output manifest', async () => {
+  const cookie = await login(main.base, 'admin@test');
+  const headers = { cookie, 'content-type': 'application/json' };
+  const started = await fetch(`${main.base}/api/v1/batch`, { method: 'POST', headers, body: JSON.stringify({ toolId: 'test-card', format: 'svg', rows: [{ title: 'A' }, { title: 'B' }], keepGoing: true }) });
+  assert.equal(started.status, 202); const id = ((await started.json()) as any).jobId as string;
+  let state = '';
+  for (let i = 0; i < 50 && state !== 'done'; i++) { await new Promise((resolve) => setTimeout(resolve, 5)); state = ((await (await fetch(`${main.base}/api/v1/jobs/${id}`, { headers })).json()) as any).state; }
+  assert.equal(state, 'done');
+  const result = await fetch(`${main.base}/api/v1/jobs/${id}/result`, { headers });
+  assert.equal(result.headers.get('content-type'), 'application/zip');
+  assert.deepEqual([...new Uint8Array(await result.arrayBuffer()).slice(0, 4)], [0x50, 0x4b, 0x03, 0x04]);
 });
 
 test('(g) hooked tool still 501s when no worker is configured', async () => {

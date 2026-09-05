@@ -35,19 +35,30 @@ export interface BlobStore {
 
 export type BlobBody = AsyncIterable<Uint8Array> | ReadableStream<Uint8Array> | Uint8Array;
 
-/** Drain any supported body shape into one Buffer (see the buffering note above). */
-export async function readBlobBody(body: BlobBody): Promise<Buffer> {
-  if (body instanceof Uint8Array) return Buffer.from(body);
+/** Drain any supported body shape into one Buffer (see the buffering note above).
+ * `maxBytes` lets request-driven callers stop a streaming response before it can
+ * become an unbounded allocation; trusted internal blob reads omit it. */
+export async function readBlobBody(body: BlobBody, maxBytes = Number.POSITIVE_INFINITY): Promise<Buffer> {
+  if (body instanceof Uint8Array) {
+    if (body.byteLength > maxBytes) throw new Error('blob exceeds the byte limit');
+    return Buffer.from(body);
+  }
   const chunks: Uint8Array[] = [];
+  let total = 0;
+  const push = (chunk: Uint8Array): void => {
+    total += chunk.byteLength;
+    if (total > maxBytes) throw new Error('blob exceeds the byte limit');
+    chunks.push(chunk);
+  };
   if (typeof (body as ReadableStream<Uint8Array>).getReader === 'function') {
     const reader = (body as ReadableStream<Uint8Array>).getReader();
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      if (value) chunks.push(value);
+      if (value) push(value);
     }
   } else {
-    for await (const chunk of body as AsyncIterable<Uint8Array>) chunks.push(chunk);
+    for await (const chunk of body as AsyncIterable<Uint8Array>) push(chunk);
   }
   return Buffer.concat(chunks.map((c) => Buffer.from(c)));
 }

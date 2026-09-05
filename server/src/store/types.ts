@@ -91,6 +91,30 @@ export interface ApiTokenRecord {
   revokedAt?: string;
 }
 
+export type AutomationJobState = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
+/** Durable automation job metadata. Result bytes live in BlobStore; this row
+ * only holds the reference and lifecycle needed to recover across processes. */
+export interface AutomationJobRecord {
+  id: string;
+  principal: string;
+  verb: string;
+  request: Record<string, unknown>;
+  state: AutomationJobState;
+  createdAt: string;
+  updatedAt: string;
+  finishedAt?: string;
+  resultRef?: string;
+  resultMime?: string;
+  error?: string;
+  callbackUrl?: string;
+  callbackFailed?: boolean;
+  progress?: { done: number; total: number };
+  idempotencyKey?: string;
+  /** Higher values drain first within this process; bounded to 0..9. */
+  priority: number;
+  attempt: number;
+}
+
 /** The upsert input carries the IdP-authoritative groups as `groups`; the store
  *  reinterprets them as idpGroups, preserves stored localGroups, and derives the
  *  effective union + role. So callers never construct the split themselves. */
@@ -301,6 +325,14 @@ export interface Store {
   findApiTokenByHash(tokenHash: string): Promise<ApiTokenRecord | null>;
   touchApiToken(id: string, at: string): Promise<void>;
   revokeApiToken(id: string, at: string): Promise<boolean>;
+
+  // Durable automation jobs (plans/39 and 40). All reads are principal-scoped
+  // except the runner claim, which atomically leases the oldest queued job.
+  putAutomationJob(job: AutomationJobRecord): Promise<void>;
+  getAutomationJob(id: string, principal: string): Promise<AutomationJobRecord | null>;
+  listAutomationJobs(principal: string): Promise<AutomationJobRecord[]>;
+  findAutomationJobByIdempotency(principal: string, key: string): Promise<AutomationJobRecord | null>;
+  deleteAutomationJob(id: string, principal: string): Promise<boolean>;
 
   // rbac / policy. Grants are identified by their full tuple (no exposed id):
   // put is idempotent on the exact tuple, delete removes every exact match.

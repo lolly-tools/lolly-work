@@ -58,6 +58,7 @@ export interface AssetQuery {
 }
 
 export interface AssetsAPI {
+  resolveProvider?(ref: { raw: string; provider: string; scope: string; path: string; query: Readonly<Record<string, string>> }): Promise<AssetRef | null>;
   get(id: string, opts?: { format?: string; version?: string }): Promise<AssetRef>;
   query(filter?: AssetQuery): Promise<AssetRef[]>;
   pick(opts?: unknown): Promise<AssetRef | null>;
@@ -170,6 +171,15 @@ export interface EngineApi {
   expandQuery(query: string): Promise<string>;
   parseDimension(input: string | number | null | undefined, defaultUnit?: string): unknown;
   toPixels(dim: unknown, dpi: number): number;
+  DOCUMENT_API_VERSION: string;
+  compileDocument(tool: LoadedTool, inputs: Record<string, unknown>, opts: { host: unknown; designVersion?: string }): Promise<{ document: unknown; warnings: string[] }>;
+  validateDocument(target: unknown): { ok: boolean; errors: unknown[]; warnings: unknown[] };
+  documentSchema(tool: LoadedTool): Record<string, unknown>;
+  inspectDocument(document: unknown): unknown;
+  diffDocuments(a: unknown, b: unknown): unknown;
+  measureDocument(document: unknown, opts?: Record<string, unknown>): unknown;
+  optimizeDocument(value: unknown, opts?: Record<string, unknown>): Promise<{ value: unknown; savedBytes: number; stages: string[] }>;
+  packageDocument(value: unknown, opts?: Record<string, unknown>): Promise<{ bytes: Uint8Array; manifest: Record<string, unknown> }>;
   /** Embed a signed C2PA Content Credential into `bytes` (svg/png/…). The signer
    *  ({privateKey, certDer, chain}) is the instance identity; without one the
    *  engine would self-sign ephemerally, but the control plane always passes its

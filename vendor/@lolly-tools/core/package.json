@@ -1,6 +1,6 @@
 {
   "name": "@lolly-tools/core",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "The Lolly tool-author contract: HostV1 capability-bridge types, the tool.json manifest schema + validator, an in-memory mock host for testing, and typed authoring helpers. Depend on this to build a Lolly tool without the platform monorepo.",
   "license": "MPL-2.0",
   "type": "module",
@@ -15,10 +15,12 @@
     "./canvas-op-v1": "./src/canvas-op-v1.ts",
     "./canvas-op-testkit": "./src/canvas-op-testkit.ts",
     "./preflight": "./src/preflight.ts",
+    "./chart-v1": "./src/chart-v1.ts",
     "./schema/tool.schema.json": "./schema/tool.schema.json",
     "./schema/asset.schema.json": "./schema/asset.schema.json",
     "./schema/asset-ref.schema.json": "./schema/asset-ref.schema.json",
-    "./schema/canvas-op.schema.json": "./schema/canvas-op.schema.json"
+    "./schema/canvas-op.schema.json": "./schema/canvas-op.schema.json",
+    "./schema/chart-v1.schema.json": "./schema/chart-v1.schema.json"
   },
   "files": [
     "src",

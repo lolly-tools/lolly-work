@@ -48,6 +48,7 @@ test('rateLimit: deep-merges defaults; a partial override keeps the rest', () =>
   const over = parseConfig(JSON.stringify({ policy: { defaultAccessMode: 'open' }, rateLimit: { auth: { capacity: 3, refillPerSec: 0.5 } } })).rateLimit;
   assert.equal(over.auth.capacity, 3);
   assert.equal(over.telemetry.capacity, 120); // untouched default survives
+  assert.equal(over.automation.capacity, 120);
   assert.equal(over.enabled, true);
   assert.throws(() => parseConfig(JSON.stringify({ policy: { defaultAccessMode: 'open' }, rateLimit: { auth: { capacity: 0, refillPerSec: 1 } } })), /rateLimit\.auth/);
 });

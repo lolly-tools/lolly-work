@@ -16,6 +16,11 @@
  * one mistake an operator must not be able to make silently. The read is a
  * plain central-directory walk, no dependency, same posture as links/zip.ts
  * on the write side; zip64 is refused (a pack is budgeted far below it).
+ *
+ * `tokens.json` is deliberately opaque here. In particular, the OSS shell's
+ * reserved `lolly.foundation` / `lolly.ui` namespaces travel inside an instance
+ * pack exactly as signed: this service must never flatten, filter, rename or
+ * independently interpret application-token references while hosting it.
  */
 import { inflateRawSync } from 'node:zlib';
 

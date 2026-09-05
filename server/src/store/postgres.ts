@@ -27,7 +27,7 @@ import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderFragment, ProviderKind, ProviderRecord } from '../catalog/providers/types.ts';
 import {
   SESSION_REVISION_LIMIT, effectiveGroups,
-  type ApiTokenRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type ListUsersPageOpts, type LocalGroupRecord, type ProjectRecord,
+  type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type ListUsersPageOpts, type LocalGroupRecord, type ProjectRecord,
   type ScimTokenRecord, type SessionRecord, type SessionRevision, type Store, type SubmitQuotaRow, type UserRecord,
 } from './types.ts';
 
@@ -42,6 +42,19 @@ function apiTokenFromRow(r: Record<string, unknown>): ApiTokenRecord {
     createdAt: new Date(r.created_at as string).toISOString(),
     ...(r.last_used_at ? { lastUsedAt: new Date(r.last_used_at as string).toISOString() } : {}),
     ...(r.revoked_at ? { revokedAt: new Date(r.revoked_at as string).toISOString() } : {}),
+  };
+}
+
+function automationJobFromRow(r: Record<string, unknown>): AutomationJobRecord {
+  return {
+    id: r.id as string, principal: r.principal as string, verb: r.verb as string,
+    request: (r.request as Record<string, unknown>) ?? {}, state: r.state as AutomationJobRecord['state'],
+    createdAt: new Date(r.created_at as string).toISOString(), updatedAt: new Date(r.updated_at as string).toISOString(),
+    ...(r.finished_at ? { finishedAt: new Date(r.finished_at as string).toISOString() } : {}),
+    ...(r.result_ref ? { resultRef: r.result_ref as string } : {}), ...(r.result_mime ? { resultMime: r.result_mime as string } : {}),
+    ...(r.error ? { error: r.error as string } : {}), ...(r.callback_url ? { callbackUrl: r.callback_url as string } : {}),
+    ...(r.callback_failed ? { callbackFailed: true } : {}), ...(r.progress ? { progress: r.progress as { done: number; total: number } } : {}),
+    ...(r.idempotency_key ? { idempotencyKey: r.idempotency_key as string } : {}), priority: Number(r.priority ?? 0), attempt: Number(r.attempt ?? 0),
   };
 }
 
@@ -416,6 +429,31 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       const { rowCount } = await pool.query(
         'update api_tokens set revoked_at = $2 where id = $1 and revoked_at is null', [id, at],
       );
+      return (rowCount ?? 0) > 0;
+    },
+
+    async putAutomationJob(job) {
+      await pool.query(
+        `insert into automation_jobs (id, principal, verb, request, state, created_at, updated_at, finished_at, result_ref, result_mime, error, callback_url, callback_failed, progress, idempotency_key, priority, attempt)
+         values ($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,$17)
+         on conflict (id) do update set state=excluded.state, updated_at=excluded.updated_at, finished_at=excluded.finished_at, result_ref=excluded.result_ref, result_mime=excluded.result_mime, error=excluded.error, callback_failed=excluded.callback_failed, progress=excluded.progress, priority=excluded.priority, attempt=excluded.attempt`,
+        [job.id, job.principal, job.verb, JSON.stringify(job.request), job.state, job.createdAt, job.updatedAt, job.finishedAt ?? null, job.resultRef ?? null, job.resultMime ?? null, job.error ?? null, job.callbackUrl ?? null, job.callbackFailed ?? false, job.progress ? JSON.stringify(job.progress) : null, job.idempotencyKey ?? null, job.priority, job.attempt],
+      );
+    },
+    async getAutomationJob(id, principal) {
+      const { rows } = await pool.query('select * from automation_jobs where id=$1 and principal=$2', [id, principal]);
+      return rows[0] ? automationJobFromRow(rows[0]) : null;
+    },
+    async listAutomationJobs(principal) {
+      const { rows } = await pool.query('select * from automation_jobs where principal=$1 order by created_at desc', [principal]);
+      return rows.map(automationJobFromRow);
+    },
+    async findAutomationJobByIdempotency(principal, key) {
+      const { rows } = await pool.query('select * from automation_jobs where principal=$1 and idempotency_key=$2', [principal, key]);
+      return rows[0] ? automationJobFromRow(rows[0]) : null;
+    },
+    async deleteAutomationJob(id, principal) {
+      const { rowCount } = await pool.query('delete from automation_jobs where id=$1 and principal=$2', [id, principal]);
       return (rowCount ?? 0) > 0;
     },
 

@@ -26,6 +26,7 @@ export const CONFIG_DOC_VERSION = 1 as const;
 /** An overlay minus its runtime `version` (which churns and isn't policy). */
 export interface OverlayExport {
   toolId: string;
+  name?: ToolOverlay['name'];
   inputAccess?: ToolOverlay['inputAccess'];
   visibility?: ToolOverlay['visibility'];
   enforce?: ToolOverlay['enforce'];

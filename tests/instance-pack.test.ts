@@ -34,7 +34,15 @@ function packBytes(entries: Record<string, string>): Buffer {
 const GOOD = (instance: string) => ({
   'manifest.json': JSON.stringify({ format: 'lolly-brand', formatVersion: 3 }),
   'instance.json': JSON.stringify({ kind: 'instance', name: 'Acme Brand', publisher: 'Acme', version: '1.2.0', instance }),
-  'tokens.json': '{}',
+  // The hosted pack is a byte-for-byte transport for the OSS app's token
+  // contract. These references must reach a connected Lolly shell unchanged;
+  // Lolly Work deliberately does not parse or flatten this reserved namespace.
+  'tokens.json': JSON.stringify({
+    lolly: {
+      foundation: { radius: { sm: { $type: 'dimension', $value: '8px' } } },
+      ui: { radius: { control: { $type: 'borderRadius', $value: '{lolly.foundation.radius.sm}' } } },
+    },
+  }),
   'pack.sig': 'sig-bytes',
 });
 
@@ -118,7 +126,10 @@ test('owner hosts the pack; the manifest advertises it; gated download needs a s
   const dl = await fetch(`${base}/connect/pack.lolly`, { headers: { cookie: admin } });
   assert.equal(dl.status, 200);
   assert.ok(dl.headers.get('content-disposition')?.includes('.lolly'));
-  assert.deepEqual(Buffer.from(await dl.arrayBuffer()), bytes, 'the bytes round-trip exactly');
+  // This is deliberately a whole-archive equality assertion, not a parsed
+  // token comparison: it proves the hosted byte artifact retains the exact
+  // `lolly.foundation` → `lolly.ui` reference authored by the OSS builder.
+  assert.deepEqual(Buffer.from(await dl.arrayBuffer()), bytes, 'the bytes round-trip exactly, including opaque Lolly UI tokens');
 
   const wrong = await upload(base, owner, packBytes(GOOD('http://other.example')));
   assert.equal(wrong.status, 400, 'a pack for another instance is refused at the door');

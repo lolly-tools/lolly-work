@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  checkParams, filterInputs, filterToolIndex, inputIsGoverned, lockedValues, resolveInputAccess, toolVisibleTo,
-  type ToolOverlay,
+  checkParams, filterInputs, filterToolIndex, inputIsGoverned, lockedValues, normalizeOverlay, resolveInputAccess,
+  toolVisibleTo, type ToolOverlay,
 } from '../server/src/policy/overlay.ts';
 
 // The event-badge overlay from the parent plan §4.C, abbreviated.
@@ -110,4 +110,80 @@ test('visibility filters the catalog feed; no overlay = visible', () => {
   const tools = [{ id: 'event-badge' }, { id: 'qr-code' }];
   assert.deepEqual(filterToolIndex(tools, overlays, ['engineering']).map((t) => t.id), ['qr-code']);
   assert.deepEqual(filterToolIndex(tools, overlays, ['marketing']).map((t) => t.id), ['event-badge', 'qr-code']);
+});
+
+// ── explainable locks (C7) ──────────────────────────────────────────────────
+// The overlay above is deliberately UNNAMED, and every test before this point
+// is the regression proof that an unnamed overlay resolves exactly as it always
+// did. These name one and check the attribution rides the same resolution that
+// did the locking, so the two can never disagree.
+
+const named: ToolOverlay = {
+  toolId: 'event-badge',
+  version: 1,
+  name: 'Brand guardrails',
+  inputAccess: {
+    logo: [{ groups: ['*'], level: 'locked', value: 'acme/logo/primary', reason: 'One mark per campaign' }],
+    accent: [{ groups: ['*'], level: 'choice', allow: ['#0c322c'] }],
+    discount: [{ groups: ['*'], level: 'hidden' }],
+  },
+};
+
+test('a named overlay attributes every matched rule; an unnamed one attributes nothing', () => {
+  const logo = resolveInputAccess(named, 'logo', ['marketing']);
+  assert.equal(logo.by, 'Brand guardrails');
+  assert.equal(logo.reason, 'One mark per campaign');
+  // A rule with no reason of its own still says who: `by` is the overlay's.
+  const accent = resolveInputAccess(named, 'accent', ['marketing']);
+  assert.equal(accent.by, 'Brand guardrails');
+  assert.equal(accent.reason, undefined);
+  // No rule matched at all - nothing to attribute, and the editable fallback is
+  // untouched.
+  assert.deepEqual(resolveInputAccess(named, 'headline', ['marketing']), { level: 'editable' });
+  // The unnamed overlay carries neither key, so every existing surface renders
+  // exactly as before.
+  const before = resolveInputAccess(overlay, 'logo', ['marketing']);
+  assert.equal('by' in before, false);
+  assert.equal('reason' in before, false);
+});
+
+test('filterInputs ships the attribution to the shell alongside the access level', () => {
+  const filtered = filterInputs([{ id: 'logo' }, { id: 'discount' }], named, ['marketing']);
+  assert.deepEqual(filtered.map((i) => i.id), ['logo'], 'hidden stays absent');
+  assert.equal(filtered[0]?.access?.by, 'Brand guardrails');
+  assert.equal(filtered[0]?.access?.reason, 'One mark per campaign');
+});
+
+test('a violation names the overlay that refused it (the 422 body)', () => {
+  const violations = checkParams({ logo: 'evil', accent: '#ff0000', discount: '90' }, named, ['marketing']);
+  assert.deepEqual(
+    violations.map((v) => `${v.param}:${v.code}:${v.by}`).sort(),
+    ['accent:INPUT_NOT_ALLOWED:Brand guardrails', 'discount:INPUT_HIDDEN:Brand guardrails', 'logo:INPUT_LOCKED:Brand guardrails'],
+  );
+  assert.equal(violations.find((v) => v.param === 'logo')?.reason, 'One mark per campaign');
+  // An unnamed overlay produces exactly the violation shape it always did.
+  assert.deepEqual(checkParams({ logo: 'evil' }, overlay, ['marketing']), [{ param: 'logo', code: 'INPUT_LOCKED' }]);
+});
+
+test('normalizeOverlay trims, caps and drops blank attribution', () => {
+  const norm = normalizeOverlay('t', {
+    name: '  Brand guardrails  ',
+    inputAccess: {
+      a: [{ groups: ['*'], level: 'locked', reason: '  Legal signs off copy  ' }],
+      b: [{ groups: ['*'], level: 'locked', reason: '   ' }],
+      c: [{ groups: ['*'], level: 'locked' }],
+    },
+  });
+  assert.equal(norm?.name, 'Brand guardrails');
+  assert.equal(norm?.inputAccess?.a?.[0]?.reason, 'Legal signs off copy');
+  assert.equal('reason' in (norm?.inputAccess?.b?.[0] ?? {}), false, 'whitespace-only reason is absent, not empty');
+  assert.equal('reason' in (norm?.inputAccess?.c?.[0] ?? {}), false);
+  // Blank / non-string names leave the overlay unnamed rather than storing junk.
+  assert.equal(normalizeOverlay('t', { name: '   ' })?.name, undefined);
+  assert.equal(normalizeOverlay('t', { name: 42 })?.name, undefined);
+  // Free text bound for a sidebar is length-capped here, not trusted because the
+  // author holds policy.edit.
+  assert.equal(normalizeOverlay('t', { name: 'x'.repeat(500) })?.name?.length, 80);
+  const long = normalizeOverlay('t', { inputAccess: { a: [{ groups: ['*'], level: 'locked', reason: 'y'.repeat(500) }] } });
+  assert.equal(long?.inputAccess?.a?.[0]?.reason?.length, 200);
 });

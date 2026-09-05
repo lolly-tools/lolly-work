@@ -6,6 +6,403 @@ minors, never removed or signature-changed without a major bump.
 
 Moved verbatim from the comment block that used to live in `src/index.ts`.
 
+1.176.0 - Semantic document diffs now compare recursively canonicalised values,
+so object member insertion order cannot produce a false input/token change.
+
+1.175.0 - Declarative charts and the renderer-neutral brand seam (plan 193). Adds
+the portable `ChartSpecV1` document family to `@lolly-tools/core` (datasets, typed
+fields, series/channels including genuine z, scales, axes, legends, formatting,
+resolved themes, motion, presentation and required accessibility metadata), its
+published JSON Schema, and the pure engine helpers `resolveChartTheme`,
+`validateChartSpec` and `inspectChartSpec`. Theme resolution keeps the active
+brand's authored colour order, derives missing categorical/sequential/diverging
+roles perceptually, records provenance and design-system identity/read-only state,
+and contains no renderer defaults. This is an additive document/compiler surface;
+HostV1 methods are unchanged.
+
+1.174.0 - Document API and asset-provider scheme (plan 189). Adds the versioned,
+transport-neutral compiler verbs (`compileDocument`, `validateDocument`,
+`documentSchema`, `inspectDocument`, `diffDocuments`, `measureDocument`,
+`optimizeDocument`, `packageDocument`, and the shell-owned `renderDocument`) and
+the pure `provider://scope/path` parser. `AssetsAPI.resolveProvider` is an optional,
+additive host rung; the runtime invokes it before ordinary catalog lookup.
+
+1.173.0 - Design-system identity, the pure half (plans/186 section 6). New module
+`design-system.ts`: `DESIGN_SYSTEM_ID_RE` / `DESIGN_SYSTEM_ID_MAX` / `isDesignSystemId` and
+`slugifyDesignSystemId` (a label to an addressable id, never null - "design-system" is the
+fallback), `designSystemNamespace` / `designSystemHeadId` (the migrated `default` keeps the
+legacy `user/` prefix forever, every other system mints under `user/ds/<id>/`, and `shipped`
+has no user namespace at all so both throw for it), `designMaterialOf` (which system an asset
+id belongs to and what kind of material it is, read structurally from the id with exact segment
+counts, so a personal upload and `user/tokens/brandx` are both nothing), and
+`readDesignSystemIdentity` / `withDesignSystemIdentity` over
+`$extensions[TOKEN_EXT].designSystem`, so a file, a share or a pack carries its own name with
+no sidecar. Un-identified docs store nothing, the withVersionIndex rule. `ds` joins RESERVED as
+`UrlState.designSystem`, validated against the id grammar and PARSE-ONLY on exactly the
+`designv` rule: serializeUrlState never writes it, because a link must not pin its recipient to
+a design system that isn't theirs. `TokensAPI` gains two OPTIONAL reads, `list()` and
+`active()`, returning the new `DesignSystemSummary`; switching stays a host concern. No v1
+method changed. Saved sessions gain an optional `designSystem: { id, label }` stamp (`SESSION_FORMAT_VERSION` 2, reader 2; additive, no data transform), so a session can say which design system it was made with.
+
+1.172.0 - Video export controls in URL mode. Five reserved params for the motion formats
+(`mp4`/`webm`/`gif`/`apng`/`webp-anim`): `fps` (integer 1..120), `seconds` (clip length
+0.5..3600, carried as a DELIBERATE length - `durationUserSet` - so a tool hook that runs a clip
+to its material stands down), `wait` (settle seconds 0..30), `codec` (`h264`/`hevc`/`vp9`/`av1`
+with the common aliases; `VIDEO_CODEC_STRINGS` maps them to the WebCodecs strings the web
+export panel offers) and `vq` (`smaller`/`balanced`/`best`). `parseVideoParams`,
+`hasVideoParams`, the `VideoUrlSettings`/`VideoCodecName`/`VideoQuality` types, and
+`UrlState.video`; `serializeUrlState` writes them only when given, in the parser's own
+vocabulary. Named to collide with no input id in any pack (`duration` and `quality` are input
+ids, so `seconds` and `vq`). The CLI's `--fps/--seconds/--wait/--codec/--vq` and the MCP query
+are these params under other transports; this is the parity fix for a CLI that had no video
+knobs at all (plans/183 follow-up).
+
+1.171.0 - Narrated slides: PPTX audio, SCORM and the caption window (plans/180 sections 3, 5
+and 6). `PptxSlide.audio` (new exported type `PptxAudio`: `{bytes, ext:'wav'|'mp3'|'m4a',
+durationMs, autoplay?, advanceAfterMs?, name?}`) writes a slide's narration as its own part
+family - its own content-type Defaults, its own rel-id run past the images and the notesSlide,
+and the `p:pic` PowerPoint actually reads: `a:hlinkClick action="ppaction://media"`, an
+`a:audioFile r:link` AND the `p14:media r:embed` extension under
+`{DAA4B4D4-6D71-4841-9C94-3DE7FCFB9230}`, both pointing at one sound part, with a shared
+169-byte speaker PNG as the blipFill poster at the bottom-right. Autoplay is a `<p:audio
+isNarration="1">` media node in the step-0 timing group (there is no attribute for it), and
+`advanceAfterMs` writes `advTm` on `p:transition` - including on a slide with no transition,
+where the empty `<p:transition advTm="…"/>` is what PowerPoint itself writes. The bytes go in
+VERBATIM: a narration clip carries its synthetic-voice C2PA in the RIFF chunks and a re-encode
+would strip it. A deck with no audio anywhere is byte-identical to what this builder wrote
+before. Read side: `PptxReadSlide.audio` (`PptxSlideAudio`, `{part, ext}`) resolves a slide's
+audio rel - or its media rel when the target really is a sound, since a video shares that
+relationship type. New module `scorm.ts`: `scormManifest12` / `scormManifest2004` /
+`scormManifest` build `imsmanifest.xml` for SCORM 1.2 and 2004 4th Edition (one organization,
+one item, one `webcontent` sco resource listing every packaged file; the `scormtype` /
+`scormType` casing differs between the two schemas and both are written correctly),
+`scormAdapterJs` the dependency-free runtime adapter (depth-capped `findAPI` over
+parent/opener for `API` and `API_1484_11`, completion on the last slide, session time in
+1.2's `HHHH:MM:SS.SS` or 2004's ISO 8601 duration, the slide index in `suspend_data`,
+Terminate on unload), and `scormLaunchHtml` the D1 launch page (packaged slide images, a
+plain keyboard/click navigator, the narrated video with a `<track kind="captions">`, a visible
+"AI voice" line, every URL relative and every font a real woff2 file). Also
+`captions.cuesForSlide(words, slideStartMs, slideEndMs, opts)` - the same grouping, clamped to
+one slide's window so a caption can never leak onto the next slide. Additive.
+
+1.170.0 - Expressive speech, the pure half (plans/181 sections 3, 4, 5.1 and 7). `KOKORO_VOCAB`
+pins the tokenizer's 115 symbols and `filterToVocab` drops everything else from a word's phonemes
+inside `phonemizeChunk`, so `input_ids.length === phonemes.length + 2` holds and a clip stops
+falling back to sentence-granular word timings; `normalizeForSpeech` is `normalizeText` with
+kokoro.js's `(` to guillemet mapping undone, which is what broke every parenthesis (48 of 48 cells,
+measured 2026-09-03). New grammar: `parseScriptMarks` / `scriptLinesOf` read `[pause N]`,
+`[slow]` / `[fast]` / `[speed N]` and `[word](/ipa/)` out of a script into per-sentence speed, gap
+and pronunciation overrides, with `pauseGapS` subtracting the clips' own lead-in/lead-out padding so
+`[pause N]` sounds like N. `parseVoiceBlend` / `accentOfBlend` read 'af_heart+bf_lily:0.3' into
+normalised weights and the heaviest component's accent. `SentenceClip.gapBefore` lets one join
+override the default gap, and `concatClips` additionally returns a `TtsSegment[]` tiling;
+`deriveSegmentsFromWords` recovers that tiling from a clip saved before it was recorded.
+`SpeechSynthesizeOpts` gains `prenormalized?: boolean` (the normalizer is not idempotent) and
+`voice`'s doc comment now admits a blend string. All additive.
+
+1.169.0 - Slide transitions in the `.pptx` writer (plans/179 M4): `PptxSlide.transition`
+(`{kind:'fade'|'push'|'cut', dir?, ms?}`, new exported type `PptxSlideTransition`) emits a real
+`<p:transition>` between `</p:clrMapOvr>` and the timing tree, so a Design deck's per-slide
+Fade/Slide reaches PowerPoint as PowerPoint's own transition instead of being dropped at the
+door. `cut` and an absent transition emit nothing, so every deck written before this comes out
+byte-identical. `ms` is bucketed into the element's three `spd` speeds (a true duration needs
+the p14 extension namespace). Additive.
+
+1.168.0 - The `lolly://` URL scheme is a recognised Lolly address (plans/174): `parseToolUrl` and
+`isToolUrl` accept `lolly://t/<id>?…`, `lolly://tool/<id>[.<ext>]?…` and a bare `lolly://<id>?…` exactly
+as they accept the https forms, and `lollySchemeToHttps` (new export, also re-exported from
+`index.ts` with `APP_PATH_WORDS`) is the one-line normalisation behind it - `lolly://<route>` becomes
+`https://lolly.tools/<route>`, with a pasted `lolly://lolly.tools/…` host segment dropped rather than
+read as a tool id. The web shell's deep-link mapper (`lib/deep-link.ts`) builds on the same recogniser
+so the desktop poll loop, the Android bridge and the iOS queue all route one grammar. Additive.
+
+1.167.0 - `.penpot` writer (plans/178): `engine/src/penpot-file.ts` emits the binfile-v3 archive Penpot
+itself exports and imports. `buildPenpotEntries` writes manifest, file, pages, one JSON per shape, media
+with their storage objects, library colours, typographies and the brand's `tokens.json`
+(`penpotTokensJson` filters a Tokens-Studio/DTCG document to the types Penpot reads and pushes group
+`$type`s onto leaves). Three producers feed one shape IR: `boxesToPenpotDoc` (the Design tool's raw box
+rows - frames become boards, boxes become rects/ellipses/texts/images/paths with gradients, strokes,
+shadows, blurs, blend modes and rotation), `svgToPenpotDoc` (any vector render, lowered permissively and
+returning null where Penpot has no equivalent so the caller keeps the SVG whole as one picture), and
+`imageToPenpotDoc` (one board, one picture). Also `parsePenpotImportStream` (Penpot's `import-binfile`
+server-sent-event body: file ids from `end`, the hint from `error`), `imageDimensions` (PNG/GIF/JPEG/
+WebP/SVG headers), `decodeDataUrl`, `parsePenpotColor`, `gradSpecToPenpot` (the inverse of design-map's
+`penpotGradientToSpec`), `penpotWorkspaceUrl`, and the `PENPOT_MIME` blob type. Additive.
+
+1.166.0 - `readPptx` surfaces what a slide INHERITS (additive read model): `PptxReadSlide.inherited`
+carries the master's and the layout's non-placeholder shapes, pictures and graphic frames in
+paint order (master first, honouring `showMasterSp` on the layout and the slide), and
+`PptxReadSlide.background` the slide's ground resolved slide → layout → master (`p:bgPr`
+solid or picture fill, or a `p:bgRef` colour). A slide placeholder with no `a:xfrm` now takes
+its slot's geometry from the layout, else the master. Why: a Google Slides export of a
+branded template holds nothing on its slides but empty placeholders - every logo, colour
+bar and page ground lives in the layouts - so the deck read as 28 blank pages. Consumers
+(`pptxSlideToSvg`, the Design importer's `pptxSlideToNodes`) paint `inherited` behind
+`nodes`; a consumer that ignores both fields reads exactly what it read before.
+Same minor, `findVectorArtwork` (pdf-artwork.ts): a plain rectangle that is a page
+ground, a panel (> 20 % of the page) or a page-wide bar (> 80 % of the long side) is
+kept OUT of the clustering pool. It was already refused as a mark, but as a pool
+member a full-bleed ground overlapped every shape and glued the slide into one
+cluster - so a deck on full-bleed fills yielded zero marks, logo included.
+
+1.165.0 - `RecordOpts.frame` (bridge, additive): a camera take can name a target
+frame `{width, height}` and the shell records a cover-cropped canvas of exactly
+that size - the timeline panel's "Record a video" button asks for the artboard's
+export dimensions, so a colleague's take lands as a clip that already fits the
+frame. The web shell publishes the framed stream as the self-view, so what the
+person sees is what the file gets. Video only; ignored otherwise.
+
+1.164.0 - the per-clip fx kernels + grammar (plans/101 sections 2.2/3.4, the
+deferred tier). `audio-fx.ts`: RBJ-cookbook biquads (hp/lp/peak/shelves/notch),
+public-domain Freeverb rescaled to the running rate, echo, an envelope-followed
+noise gate, mains de-hum, bitcrush and reverse - plus `parseFxChain` /
+`serializeFxChain` / `processFxPcm` for the append-only wire grammar (entries
+joined by dots, integer params in fixed scales, unknown tokens skipped and
+reported, 200-char cap) and `FX_PRESETS` (writers that store the EXPANDED chain,
+so a later re-tune never changes a shared link's sound). The registry also carries
+`clean()` - on-device GTCRN speech enhancement - as a SHELL entry: it parses like
+any token but `processFxPcm` skips it (the model cannot live in the zero-dep
+engine); the web shell splices its driver in at the token's position, and a shell
+without the model plays the rest of the chain. Deviation from the 101
+spec, stated in the module: pitch is NOT a grammar token - it shipped as its own
+wire field (WP-7b) and two doors onto one value would drift. See
+tests/audio-fx.test.ts.
+
+1.163.0 - BS.1770-4 integrated loudness (plans/101 section 2.5, the deferred tier).
+`createLoudnessMeter` / `integratedLoudness` / `normalizeGain` in
+`audio-loudness.ts`: K-weighting with the standard's published 48 kHz biquads
+(any other rate is refused, never mis-measured), 400 ms blocks at 75% overlap,
+the -70 LKFS absolute gate then the -10 LU relative gate. Streaming and
+chunk-invariant - the meter keeps block energies, never PCM, so a mix meters in
+constant memory. The calibration the tests pin: a 997 Hz stereo sine reads its
+own dBFS level as LKFS. Behind the export bar's Normalize-loudness targets and
+the inspector's per-clip Normalize. See tests/audio-loudness.test.ts.
+
+1.162.0 - signal activity detection (plans/165 WP-6 v2). `activitySpans` in
+`audio-dynamics.ts`: block-RMS gating with hysteresis (-45 dBFS open / -51 close by
+default) over decoded PCM, with near-miss merging and short-span dropping - where a
+clip actually MAKES SOUND, in its own seconds. This upgrades clip-presence ducking to
+signal-derived ducking in the export mix: a voiceover with two sentences and a long
+pause ducks the bed twice, not once across its whole window. Pure and deterministic.
+See tests/audio-dynamics.test.ts.
+
+1.161.0 - the master true-peak limiter (plans/165 Slice E, plans/101 section 2.5).
+`createTruePeakLimiter` in `audio-dynamics.ts`: pure, deterministic, streaming - a
+4x-oversampled Kaiser-sinc true-peak detector, a sliding-minimum lookahead gain with
+exponential release, and a copy-not-multiply path while the gain sits at 1, so any
+mix that never approaches the ceiling comes out byte-identical. Chunk-invariant by
+construction (state is a pure function of the stream consumed), which is what lets
+the web shell's 0.1 s windowed feeder and the worker's whole-range call stay
+byte-identical. Never a DynamicsCompressorNode: that node's detector is
+implementation-defined, and a mix must render the same on every machine. Shipped as
+the gate WP-7 time-stretch waits on (the spike's 0.5x stretch peaked at 1.004 from a
+0.99 input). See tests/audio-dynamics.test.ts.
+
+1.160.0 - a BOX can tilt, not just the camera (plans/104 P2.1). `KfLayerPose` gains
+optional `rx`/`ry` in degrees - the box's own tilt, resolved base-field-then-keyed
+exactly as `z` is - and `projectLayer` composes the box's local homography onto
+whatever the camera handed back, in BOTH branches: onto the camera's element-local
+matrix when the camera tilts, onto the leading `translate(dx, dy)` when it does not.
+So `KfProjection.m` is now non-null for a tilted box under a parked camera, and every
+consumer reads it unchanged - it still REPLACES the leading translate and nothing else,
+`scale` still carries eff, `rot` still applies after it. A box tilt is authored in the
+BOX's own frame, pivoting on its centre at the scene perspective, and composes with a
+tilted camera as a homography product rather than as a plate rotated in world space.
+It is CSS's `perspective(P) rotateY(ry) rotateX(rx)` exactly - the OBJECT rotation
+`R = Ry·Rx`, not the camera's `Rᵀ` - so a box `rx` and a camera `rx` tip the picture
+opposite ways, and a board posed with no timeline (which renders through that CSS
+string alone) shows the same picture the first frame of a timeline does. With no angle
+on either the camera or the box, `m` stays null and every expression is the one that
+shipped - the byte-identity floor is untouched.
+
+1.159.0 - a shaped run can be handed back in pieces (plans/175 WP-D). `TextToPathOpts`
+gains `clusters?: boolean` and `TextPathResult` gains `clusters?: TextPathCluster[]` -
+one entry per HarfBuzz cluster (a grapheme; a ligature or base+marks sequence stays ONE
+piece), each with its UTF-16 `start`/`end`, its own outline `d` in the merged path's
+coordinates, pen `x` and `advance`, sorted in logical order. Both text APIs (the web
+bridge and the Node-shell port) implement it identically. This is the primitive the
+web shell's glyph-tier letter animation is built on: shape the word first, then move
+the pieces - so kerning, ligatures and Arabic joining survive a per-letter animation
+that HTML span-splitting could never keep. Off by default; the merged `d` is unchanged
+either way, so every existing caller is byte-identical.
+Also in this minor (a fix, no contract change): `timingXml` now gives each effect on a
+shape its own `grpId` (entrance 0, exit 1) with one `<p:bldP>` per (shape, group) and
+mints cTn ids in document order - real PowerPoint (2026-09-01) played an entrance but
+silently dropped the same shape's timed exit while both carried `grpId="0"`.
+
+1.158.0 - a deck's animations travel natively (plans/175 WP-E). `pptx.ts` gains
+`PptxAnim`/`PptxEffect` - an optional `anim` on every shape kind - and `timingXml`,
+which emits one `<p:timing>` tree per slide after `<p:clrMapOvr>`: a root par →
+main `<p:seq>` → one group par per click step (step 0 fires with the slide, the
+presentation-mode `build` order becomes real clicks) → one effect par per
+entrance/exit. The supported effect vocabulary is deliberately PowerPoint's own
+subset (appear, fade, fly with a t/r/b/l edge, zoom, zoomOut); behaviours are
+emitted in PowerPoint's own triple-nested shape (`p:set` visibility, `p:anim`
+ppt_x/ppt_y formulas, `p:animScale`, `p:animEffect` fade), with per-behaviour
+`accel`/`decel` as the easing approximation. Split-text animation maps through
+`<p:iterate type="lt"|"wd">` with an ABSOLUTE `p:tmAbs` gap - Lolly's stagger
+field verbatim, so appear+iterate IS the native typewriter - and `backwards`
+carries the reverse order. Animated text shapes get a `<p:bldP>` build entry.
+A slide with no `anim` emits no timing element at all: every deck built before
+this version serialises byte-identically. The Lolly-kind → subset mapping (and
+its logged degrades) lives shell-side in pptx-deck.ts, not here.
+
+1.157.0 - an export names the exact tool that made it. `ExportMeta` (packages/core
+host-v1) gains optional `toolId` + `toolVersion`, filled by `buildExportMeta` from the
+manifest; `source` becomes the tool's own page in the canonical share form
+(`https://lolly.tools/t/<id>`) when the id is known, the site root otherwise. The web
+shell writes both new fields into the `tools.lolly.export` C2PA assertion beside the
+display name, and /verify's "Recreate with these settings" resolves the tool by id
+before falling back to the name match. Additive: metas built without an id are
+byte-identical to before; older records simply lack the two keys.
+
+1.156.0 - a brand's typefaces travel with its palette (plans/173 slice 1).
+`paletteTokensJson` (palette-export) takes an optional `PaletteTokensOpts`:
+`fonts: [{role, families}]` emits DTCG `fontFamilies` tokens under `font.<role>`
+beside the colour leaves - the shape Penpot (>= 2.6) and Tokens Studio import
+natively, and the same group vocabulary the web shell's chrome scale uses.
+Additive: existing single-argument call sites emit byte-identical output.
+
+1.155.0 - URL contract freeze (plans/171), executed on the last day of the id-break
+window. Parse surface is strictly widened; the one behavioural break is app-level:
+- BREAK (app flag, not bridge): the presenter kiosk flag renamed `loop` → `kiosk`
+  and `kiosk` added to RESERVED - `loop` is a live input id in five tools and could
+  never be reserved. Old `?present&loop` links open the deck but no longer wrap.
+- The `_` prefix is a reserved namespace forever: parseUrlState skips any `_`-named
+  param before input matching (`_v` is the founding member), and the schema +
+  validate-catalog refuse `_`-prefixed input ids/urlKeys. Future reserved params
+  are minted there so they can never collide with a shipped tool's inputs.
+- `tool-url.ts`: parseToolUrl now recognises the CANONICAL `/t/<id>` address-bar/
+  Share/OG form (it never did - pasting your own link into a picker failed) and
+  `/design`; the stale APP_ROUTES exclusion set became the exported, frozen
+  APP_PATH_WORDS top-level path vocabulary, which validate-catalog now enforces
+  against tool ids (`design` stays the one sanctioned vanity-path tool).
+- `encodeBlocksCompact` moved INTO the engine (url-mode.ts, beside its decoder;
+  the web's lib/blocks-url.ts re-exports it) and serializeUrlState's blocks branch
+  now emits the compact tilde form instead of JSON - every shell mints the same
+  compact link for the same state (the CLI/MCP path was 1.5-10x larger before).
+  Decode accepted both forms all along, so no existing link changes meaning.
+  The encoder materialises a field's declared DEFAULT when a row omits it: the
+  positional form has no absent token (decode re-pads to an explicit ''), so a
+  sparse row - a hook or composition seed - would otherwise lose per-field
+  defaults on the round-trip the JSON form preserved by omission.
+- serializeUrlState gained `keepUserIds?` (default false): the "device-local
+  `user/…` ids never leave the device" rule is now an engine guarantee - a
+  top-level `user/` asset param is omitted, a block sub-field blanked - instead of
+  a web-shell call-site courtesy. The web address bar passes true (same device).
+- urlKey entered the tool schema (pattern + 16-char cap) and validate-catalog:
+  unique per tool across ids+urlKeys, never RESERVED, never `_`-prefixed. Blocks
+  field ORDER is pinned per input in schemas/blocks-wire-order.json (append-only,
+  validator-enforced) - the positional wire format is now a guarded contract.
+
+1.154.0 - device-picker + picker fixes (plans/162), all optional/additive:
+- `AssetQuery.motion?` - a boolean on the `host.assets` query/pick filter. When set
+  on a `type:'image'` query it also admits `video` - a motion tool (an onFrame
+  consumer) takes catalog video in an image slot the same way it takes a user's
+  video upload. Fixes the asset picker hiding every catalog video from a motion slot.
+- `RecordOpts.audioDeviceId?` - record from a specific microphone (device picker).
+- `MeterAPI.start(opts?.deviceId)` - sound-check that SAME mic. The two MUST pair:
+  a meter on a different device reports the wrong levels/noise floor.
+No existing method changed; camera device-selection is shell-private (no contract).
+
+1.153.0 - `host.scan`, an optional/additive on-device code reader (plans/162
+Part 2). New `ScanAPI` on the bridge (`packages/core/src/host-v1.ts`):
+`formats()` lists the symbologies this shell can decode (BarcodeDetector naming),
+and `detect(frame, opts?)` finds every machine-readable code in one RGBA frame
+(a live `MediaFrame` or a still-image `RasterFrame` are both structurally valid),
+resolving `ScanHit[]` (`format` + `rawValue` + optional `rawBytes`/`corners`).
+The dual of the qr-code generator: same-platform generate + read. Shell ladder is
+native `BarcodeDetector` → lazy zxing-wasm; absent on shells with no decoder, and
+NOT capability-gated (progressive enhancement, like `media`). Decoded text is
+untrusted - the contract says a reader must not act on it automatically.
+
+1.152.0 - one uniform image framing (plans/148). New module `framing.ts`:
+`frameRect()` (where an image lands inside a frame, as source + destination
+rectangles plus a roll about the pan point) and `framingStyle()` (the same
+placement as CSS), plus the perspective envelope - `projectFramingPoint()`,
+`framingQuad()` and `minZoomForCover()` (Lightroom's Constrain Crop), projecting
+through `FRAMING_PERSPECTIVE`. New `{{framing "<inputId>"}}` template helper
+emitting both the style and the `data-framing` marker the shell's generic
+overlay binds to, in top-level and blocks-row modes, plus `framing=` on
+`{{media}}`. New optional manifest key `framingFor` on a `vector` input (and on
+a blocks ASSET sub-field), naming the asset it frames; canonical `imageFraming`
+gains three optional fields - `rotate` (roll, -180..180) and `pitch` / `yaw`
+(the two perspective axes, -45..45) - and canonical `imageFit` / `imageCrop`
+join the registry. `community/_shared/framing.js` carries the byte-synced
+hook-side twin, drawing a tile mesh when the framing is tilted because canvas
+2-D has no projective transform either - pinned to the engine by a fixture table
+in tests/framing.test.ts. A tilted image is a projective homography, which SVG
+and PDF cannot express, so those exports take the walker's existing posed-raster
+path for that element; pan/zoom/roll stay fully vector. Manifest + template +
+helper additions only; no HostV1 change.
+
+1.151.0 - QR-friendly packed links: `z` codec tag `2` (url-pack.ts). The same
+raw-DEFLATE bytes as tag 1, carried in base32-upper (RFC 4648, unpadded)
+instead of base64url, so the token fits a QR encoder's alphanumeric mode
+(5.5 bits/char against byte mode's 8): about 20% more characters, about 17%
+fewer QR bits. Minted only on request via `packQuery(query, { qr: true })` -
+tag 1 stays the default everywhere else - and `unpackToken` reads both tags,
+so a scanned tag-2 link decodes on every existing load boundary (web, CLI,
+embed) with no shell changes. No HostV1 change.
+
+1.150.0 - transcription as a DECLARATION (plans/147 T1a). New manifest key
+`render.transcribe` = { source, target, format?: 'srt' | 'vtt' | 'words',
+auto? }: a tool names the asset input holding audio/video and the text input
+that receives the cues, and the shell mounts the whole affordance - consent for
+the one-time on-device model download, the background job whose toast owns
+progress and cancel, and one undoable write into the target. Feature-detected
+on `host.speech.transcribeAvailable()`, never capability-gated, so the CLI (no
+host.speech) mounts nothing and leaves the target input untouched. No HostV1
+change: `speech.transcribe` has existed since 1.99. Also two new sibling text
+formats, `srt` (text/plain - SubRip has no registered MIME) and `vtt`
+(text/vtt): declare the format and ship `template.srt` / `template.vtt` and the
+export is model-derived exactly like template.csv.
+
+1.149.0 - metadata honor (plans/144 Waves 1+2). images: additive `carryMetadata`
+on ImageResizeOpts/ImageEncodeOpts and `carried: MetaCarryReport` on
+ImageResult - host.images rebuilds a source's descriptive metadata (EXIF
+authorship, copyright, description, software, capture date, and the XMP
+packet; GPS only on `{ gps: true }`) into the re-encoded JPEG/PNG/WebP and
+reports exactly what carried and what dropped. A C2PA credential is never
+copied across a re-encode (hard binding). The image byte stampers graduated
+from the web bridge into engine/src/image-meta.ts (the bridge file is now a
+re-export shim); file-metadata.ts gains extractXmpPacket. Export parity: WebP
+output gets the ExportMeta EXIF chunk (insertWebpMeta, VP8X flag handled),
+DOCX gets docProps/core.xml + app.xml (shared ooxml-props.ts writer; the pptx
+core-properties relationship type fixed to the OPC package namespace), and WAV
+gets a LIST/INFO chunk at the export seam (embedWavInfo, new ICOP copyright
+field). AVIF EXIF is a recorded follow-up, not claimed.
+Also (Wave 2 G6) pptx-read/docx-read surface the source package's
+docProps/core.xml as `coreProps` (OoxmlCoreProps), and (Wave 5 O2)
+file-metadata reads IPTC-IIM (JPEG APP13 by-line/credit/copyright/caption/
+keywords) and XMP dc:subject keywords, while buildExportXmp +
+insertPngXmp/insertJpegXmp (and insertWebpMeta) write the pro-photo XMP
+namespaces (dc, xmpRights, photoshop:Credit, plus:Licensor) on raster export.
+Follow-ups closed in the same minor: file-metadata reads HEIF/AVIF meta-box
+ITEMS (iinf/iloc walk - an iPhone HEIC's Exif and XMP items, which is what
+makes the HEIC convert carry real; format sniff now says HEIC/AVIF instead of
+MP4), image-meta gains insertAvifExif (a HEIF Exif item with iloc offsets
+rewritten for the meta-box growth), and the shared OOXML core props take
+`sourceAuthor` - dc:creator carries BOTH authors when an imported document's
+author differs from the current user ("Ana Kovac; Andy Fitzsimon", Word's
+separator; cp:lastModifiedBy stays the current actor).
+
+1.148.0 - url-mode: new reserved param `preset` (plans/142) - the id of a preset
+inside a `?template=` entry. A preset is a curated values overlay on its
+template's base values (`?template=poster&preset=story`); reserving the name
+keeps it out of tool inputs on every shell. Resolution is shell-side (the web
+shell merges base + overlay in-process); the CLI ignores it like `template`.
+Also preflight (plans/141 follow-up): `STILL_IMAGE_FORMATS` + the
+`count.artboard-fanout` info check - a still export of a multi-board stage
+fans out to one file per page box, so the panel says so instead of letting a
+single width×height imply one file. Additive check, no HostV1 change.
+
+1.147.0 - exports: `deriveExportFilename(manifest, values)` (inputs.ts) plus the
+`render.filenameFrom` manifest field (schema + SDK RenderSpec) - a tool names
+its exported file from its own input VALUES ("ana-kovac", a URL's host+path)
+instead of a colliding tool-name default. Pure derivation; the web download bar
+and the batch grid consume it, callers keep their tool-name/tool-id fallback.
+
 1.146.0 - lifecycle: a raced-out async onInit/onInput now applies its LATE
 resolution when it finally arrives, iff no newer onInit/onInput run has started
 since (a per-runtime sequence guards ordering; the runtime logs the recovery

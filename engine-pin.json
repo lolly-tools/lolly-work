@@ -1,25 +1,26 @@
 {
-  "generatedFrom": "2349c625cd5bb6d083e62536208a52328aa6426e",
+  "generatedFrom": "0c4ae8f75927fd737b6fa4b5a6d5cab1778985da",
   "note": "Pin manifest - a consumer verifies vendored content against contentHash. tarballSha256 is informational (gzip is not reproducible).",
   "core": {
-    "version": "0.1.0",
-    "tarball": "lolly-tools-core-0.1.0.tgz",
-    "tarballSha256": "be463e6bd120d4397e59c2fd6d3c92ec4db5ef81dd3e0ccccdc34c59b6284473",
-    "contentHash": "1c43c6b112a0bd00efa086f7748b410f12e58d4e0d9cf83c502baf2e2cd6ed24"
+    "version": "1.0.0",
+    "tarball": "lolly-tools-core-1.0.0.tgz",
+    "tarballSha256": "bac2905dfce4fcd20295f1f9fc6576615926910ad37e41d3cf4a6835410ab3cd",
+    "contentHash": "be3ae1a36a407ff453eb10bf5ebabd37d6fa961d0b64e75b222dc7e69614e73e"
   },
   "engine": {
-    "version": "1.146.0",
-    "tarball": "lolly-engine-1.146.0.tgz",
-    "tarballSha256": "f3fc0bb3f747cf55beaeef9e3d0553227f49eb9050f7b6a680876ee78e15735b",
-    "contentHash": "93859f5411dbb74c9aae53658fa2cd22bcd8da7ba4dcee8208e4fce6ff50800c"
+    "version": "1.176.0",
+    "tarball": "lolly-engine-1.176.0.tgz",
+    "tarballSha256": "02d9bc674db0456f117b16600632a561f21f9100c1981fb639f9c80856cb5379",
+    "contentHash": "f07c7c1356c64f58c9e8aec0f24fe4d4dc9e0a891762c8e87f78b6b2b84bcc1d"
   },
   "schemas": {
-    "asset-ref.schema.json": "62cb6d50ebf483811a49647339b0446c5add3516e460a47bf6673bc7f0166465",
-    "asset.schema.json": "8f832c930d717dceba8669c8cc0ac8f0ca8f3bd27080eaf4d204ecbf5aa991b8",
-    "canonical-inputs.json": "5836ecadd0350a19d6aa7f136a465e912548aaf97d27bd3b013d22cf2c09e395",
+    "asset-ref.schema.json": "613b34c7aabed9c9825779fb34ac294d4cd3c7a9bde785bc4b56c43b38263c9b",
+    "asset.schema.json": "b0f41d857fdf0baafce44a51bda41dbf90ca53d5439a699f4054ff7ca1143e8c",
+    "blocks-wire-order.json": "1e312cc087e36362651300e99dbd79a19ffdab621f6ab2089f26fd9f672c15dc",
+    "canonical-inputs.json": "bd5f7e210049f8a5bfe0aa5df6c2ae8c843231b20924fa052e2f34a1fbd8d6c4",
     "canvas-op.schema.json": "e1acaf0c98b875012104b49582994bf5b5bdb9aa3fc3e210a0d9e3c527f9453d",
     "ratecard.schema.json": "e164d8ce234279c04877511cb9673cc721d0118647cdae0401246c8f35d0b777",
     "tokens.schema.json": "be8a2f388d451f778aeaf334c903556689e3897e7523e6c31b7c428040673384",
-    "tool.schema.json": "8666f3720ba98012cd30d3917d1c05ae9cfc428d37cbe2843fa05bb854760cd7"
+    "tool.schema.json": "2030e03bcdb8983f4550e893ef6ab94678ab193b39efe6457589d488e1ee326a"
   }
 }

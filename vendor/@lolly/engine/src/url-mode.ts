@@ -24,9 +24,18 @@
  *                  entry's `values` are read in-process by the shell (never packed
  *                  into the URL). Unknown/absent id falls through to the normal
  *                  fresh-open flow. Web shell only; ignored by the CLI.
+ *   - `preset` - id of a preset INSIDE the named template (plans/142: a preset is
+ *                  a values overlay on its template's base values, e.g.
+ *                  `?template=poster&preset=story`). Only read alongside `template`;
+ *                  unknown/absent id applies the template base alone. Web shell
+ *                  only; ignored by the CLI.
  *   - `output` - output filename (CLI only)
  *   - `filename` - download filename (web shell)
- *   - `_v` - tool version pinning (optional)
+ *   - `_v` - tool version pinning (optional). The `_` PREFIX as a whole is a
+ *                  reserved namespace: any param starting with `_` is skipped before
+ *                  input matching (and the schema/validator refuse `_`-prefixed
+ *                  input ids/urlKeys), so future reserved params minted there can
+ *                  never collide with a tool input.
  *   - `width`/`w`, `height`/`h` - output dimensions (value in `unit`, default px)
  *   - `unit` - physical unit for width/height: px (default), mm, cm, in, pt
  *   - `dpi` - raster resolution for physical units (default 300; px → 96)
@@ -79,6 +88,20 @@
  *                  Junk (`depth=32`, `depth=deep`, empty) degrades to `auto`
  *                  rather than erroring - same total-function discipline as
  *                  `cuts`/`unit`. See plans/61-deeprichpixels.md section 10.
+ *   - `fps`, `seconds`, `wait`, `codec`, `vq` - VIDEO EXPORT CONTROLS for the
+ *                  motion formats (`mp4`/`webm`/`gif`/`apng`/`webp-anim`), the
+ *                  URL form of the export panel's Frame rate, Duration, Start
+ *                  after, Codec and Quality fields - so a link, the CLI and the
+ *                  MCP server can ask for exactly the clip the panel can. `fps` is
+ *                  an integer 1..120; `seconds` the clip length (0.5..3600) and,
+ *                  when present, a DELIBERATE length (`durationUserSet`) that a
+ *                  tool hook must not lengthen to its material; `wait` the settle
+ *                  time before the first frame (0..30); `codec` one of `h264`,
+ *                  `hevc`, `vp9`, `av1` (WebCodecs strings in VIDEO_CODEC_STRINGS);
+ *                  `vq` `smaller`, `balanced` or `best`. Junk degrades to absent
+ *                  (the shell's own default), never an error. Named to collide
+ *                  with no input id in any pack: `duration` and `quality` ARE
+ *                  input ids (3d, flythrough, convert-image), hence `seconds`/`vq`.
  *   - `cuts` - CONTACT SHEET for a still export (`png`/`jpg`/`webp`/`svg`/`pdf`)
  *                  of a TIMED composition (a stage carrying `data-sequence`).
  *                  An integer, default `1`. `cuts=1` renders the frame at the
@@ -113,6 +136,14 @@
  *                  lever ("check against `latest`, fix, then publish"), which is why
  *                  serializeUrlState never writes it: a share link must not pin its
  *                  recipient to a version of a system that isn't theirs.
+ *   - `ds` - the DESIGN SYSTEM this render resolves against: the id of one of
+ *                  the systems held on the device (plans/186 section 3.8). Validated
+ *                  against the id grammar on parse (engine/src/design-system.ts) and
+ *                  null when it is junk; an id naming a system this device does not
+ *                  hold falls through to the active one with a warning, rather than
+ *                  failing the render. Parse-only, on exactly the `designv` rule
+ *                  above: serializeUrlState never writes it, because a link must not
+ *                  pin its recipient to a design system that isn't theirs.
  *   - `present` - presence flag (web shell only): open a frame document's frames as
  *                  a fullscreen click-advanced DECK (design presentation mode,
  *                  plan 112). A frame doc opens the presenter; a non-frame TIMED doc
@@ -128,8 +159,16 @@
  *                  why it is carried verbatim in UrlState: `frame-address.ts` resolves
  *                  it against the rendered pages for the web fan-out and the CLI alike.
  *                  Build steps are presenter-only - a still export always shows every
- *                  build. (The signage flag `loop` is NOT reserved - see the RESERVED
- *                  set below for why - but travels alongside these as `?present&loop`.)
+ *                  build.
+ *   - `kiosk` - presence flag (web shell only): with `present`, the presenter wraps
+ *                  at the ends and a timed document's transport loops, so
+ *                  `?present&kiosk` is digital signage. Renamed from the unreserved
+ *                  `loop` flag on 2026-08-28 (the last day of the id-break window):
+ *                  `loop` is a live input id in several tools (deck-builder, 3d,
+ *                  flythrough, digi-ad, lottie-digi-ad), so reserving it would have
+ *                  stripped their `?loop=…` value on parse forever, and reading it
+ *                  raw was a standing ambiguity if presentation mode ever reached a
+ *                  tool with a `loop` input. `kiosk` collides with nothing.
  *   - `z` - a PACKED whole-state token (raw DEFLATE + base64url) that carries
  *                  the entire query for complex tools whose readable form would blow
  *                  past practical URL limits. Expanded back into a plain query by
@@ -169,9 +208,10 @@ import type { Unit } from './units.ts';
 import { isTokenValue, isAlias } from './tokens.ts';
 import { isToolUrl } from './tool-url.ts';
 import { assetIdForUrl, blocksForUrl } from './bake.ts';
+import { isDesignSystemId } from './design-system.ts';
 import { normalizeLang } from './lang.ts';
 import type { Lang } from './lang.ts';
-import { normalizeTableValue } from './inputs.ts';
+import { normalizeTableValue, syntheticInputs } from './inputs.ts';
 import type { BlockFieldSpec, InputManifest, InputSpec, InputValue, TableValue } from './inputs.ts';
 import type { PrintMarksFlags } from './print-marks.ts';
 import type { AssetRef } from './bridge/host-v1.ts';
@@ -215,6 +255,55 @@ export type DepthSetting = 8 | 16 | 'float' | 'auto';
 const DEPTH_VALUES = new Map<string, DepthSetting>([['8', 8], ['16', 16], ['float', 'float'], ['auto', 'auto']]);
 
 /** Parsed URL state: input values plus the reserved export/render controls. */
+/** Codec names the `codec` param accepts, and the WebCodecs strings the web shell's
+ *  export panel offers for them (the panel's <select> values, kept in step by test). */
+export type VideoCodecName = 'h264' | 'hevc' | 'vp9' | 'av1';
+export const VIDEO_CODEC_STRINGS: Readonly<Record<VideoCodecName, string>> = Object.freeze({
+  h264: 'avc1.640033',
+  hevc: 'hvc1.1.6.L93.B0',
+  vp9: 'vp09.00.10.08',
+  av1: 'av01.0.08M.08',
+});
+/** The `vq` param's three stops - the export panel's Quality select. */
+export type VideoQuality = 'smaller' | 'balanced' | 'best';
+/** The video export controls a URL can carry (see the header). Every field is null
+ *  when absent or junk, so a consumer applies its own default per field. */
+export interface VideoUrlSettings {
+  fps: number | null;
+  seconds: number | null;
+  wait: number | null;
+  codec: VideoCodecName | null;
+  quality: VideoQuality | null;
+}
+const VIDEO_CODEC_ALIASES: Readonly<Record<string, VideoCodecName>> = Object.freeze({
+  h264: 'h264', avc: 'h264', avc1: 'h264', 'h.264': 'h264',
+  hevc: 'hevc', h265: 'hevc', 'h.265': 'hevc', hvc1: 'hevc',
+  vp9: 'vp9', vp09: 'vp9',
+  av1: 'av1', av01: 'av1',
+});
+function numberIn(raw: string | null, min: number, max: number, integer = false): number | null {
+  if (raw == null || raw.trim() === '') return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < min || n > max) return null;
+  return integer ? Math.round(n) : n;
+}
+/** Parse the five video params. Total: junk reads as absent, never throws. */
+export function parseVideoParams(params: URLSearchParams): VideoUrlSettings {
+  const codecRaw = (params.get('codec') ?? '').trim().toLowerCase();
+  const vqRaw = (params.get('vq') ?? '').trim().toLowerCase();
+  return {
+    fps: numberIn(params.get('fps'), 1, 120, true),
+    seconds: numberIn(params.get('seconds'), 0.5, 3600),
+    wait: numberIn(params.get('wait'), 0, 30),
+    codec: VIDEO_CODEC_ALIASES[codecRaw] ?? null,
+    quality: vqRaw === 'smaller' || vqRaw === 'balanced' || vqRaw === 'best' ? vqRaw : null,
+  };
+}
+/** True when any of the five video params was given (so a consumer can skip the whole block). */
+export function hasVideoParams(v: VideoUrlSettings | null | undefined): boolean {
+  return !!v && (v.fps != null || v.seconds != null || v.wait != null || v.codec != null || v.quality != null);
+}
+
 export interface UrlState {
   values: Record<string, InputValue>;
   format: string | null;
@@ -252,6 +341,9 @@ export interface UrlState {
    *  PQ encoding with brand-colour luminance boost (raster only), carrying the
    *  author's tuning dials; null ⇒ absent/off ⇒ SDR. `hdr=1` ⇒ HDR_DEFAULTS. */
   hdr: HdrSettings | null;
+  /** Video export controls (`fps`/`seconds`/`wait`/`codec`/`vq`) for the motion
+   *  formats; every field null when absent. See VideoUrlSettings and the header. */
+  video: VideoUrlSettings;
   /** REQUESTED export bit depth (the `depth` param). Always one of 8 / 16 /
    *  'float' / 'auto'; absent or unrecognized ⇒ 'auto' (the default), so there is
    *  no null case to handle. Consumers must apply depth-follows-provenance - see
@@ -270,6 +362,11 @@ export interface UrlState {
    *  ladder in engine/src/design-version.ts decides what it resolves to, since only
    *  the caller knows which versions this device holds. See the header. */
   designVersion: string | null;
+  /** Design-system override (the `ds` param): the id of a design system on the device,
+   *  or null when absent or when the value fails the id grammar. Which systems this
+   *  device holds is not something url-mode can know, so an unknown id is the caller's
+   *  fall-through to the active one. See the header. */
+  designSystem: string | null;
   /** The `s` STATE ADDRESS of a multi-frame document (plan 112): `2` (1-based position in
    *  presentation order), a frame id (`slide1`, a ULID), or either with an `.N` build-step
    *  suffix. Carried VERBATIM - what it resolves to is a question about the pages a render
@@ -318,6 +415,13 @@ export interface SerializeUrlOpts {
   /** HDR raster export (the `hdr` param). Truthy serialised as `hdr=1`; omitted
    *  otherwise - opt-in, off by default. */
   hdr?: string | null;
+  /** Video export controls (the `fps`/`seconds`/`wait`/`codec`/`vq` params). Each is
+   *  written only when given, so an ordinary link carries none of them. */
+  fps?: number | null;
+  seconds?: number | null;
+  wait?: number | null;
+  codec?: VideoCodecName | string | null;
+  vq?: VideoQuality | string | null;
   /** Requested export bit depth (the `depth` param). Written only for a real
    *  request - 'auto' (the default) and anything unrecognized write nothing, so a
    *  plain link stays clean. */
@@ -328,19 +432,31 @@ export interface SerializeUrlOpts {
   /** UI/content language to stamp on a share link (see `lang` in the header
    *  comment). Omitted for English - the implicit default. */
   lang?: string | null;
+  /** Keep device-local `user/…` asset ids in the serialised state (plan 171).
+   *  Default FALSE - the engine-enforced product contract is that a device-local
+   *  id never leaves the device (docs/url-mode.md), so a top-level `user/` asset
+   *  is omitted and a `user/` block sub-field is blanked. The web address bar
+   *  passes true: on the SAME device a refresh/bookmark resolves them fine. */
+  keepUserIds?: boolean;
 }
 
 // Param names that are NOT tool inputs (export/render controls). Exported so the
 // engine contract test can assert it stays in lock-step with the documented list
 // (the header comment above + docs/url-mode.md) and nothing drifts silently.
-export const RESERVED = new Set(['format', 'export', 'copy', 'slot', 'output', 'filename', '_v', 'width', 'height', 'w', 'h', 'unit', 'dpi', 'profile', 'password', 'bleed', 'marks', 'c2pa', 'imprint', 'durable', 'meta', 'hdr', 'depth', 'cuts', 'lang', 'designv', 'full', 'options', 'nostage', 'template', 'present', 's', 'z', 'zx']);
-// NOTE on the presentation-mode kiosk flag `loop` (plan 112): it is deliberately
-// NOT in this set. `loop` is a live *input* id in several tools (slides, deck-builder,
-// 3d, digi-ad, lottie-digi-ad - a GIF-playback / animation control), so reserving it
-// would strip their `?loop=…` value on parse. The presenter reads `loop` as a raw
-// presence flag only in design, which has no `loop` input, so there is no
-// ambiguity there; the shell keeps it through shrinkUrl via RESERVED_KEEP instead.
-// If design ever gains a `loop` input, rename the signage flag (e.g. `kiosk`).
+export const RESERVED = new Set(['format', 'export', 'copy', 'slot', 'output', 'filename', '_v', 'width', 'height', 'w', 'h', 'unit', 'dpi', 'profile', 'password', 'bleed', 'marks', 'c2pa', 'imprint', 'durable', 'meta', 'hdr', 'depth', 'cuts', 'lang', 'designv', 'ds', 'full', 'options', 'nostage', 'template', 'preset', 'present', 's', 'kiosk', 'z', 'zx', 'fps', 'seconds', 'wait', 'codec', 'vq']);
+// NOTE on the presentation-mode kiosk flag: it was the unreserved `loop` until
+// 2026-08-28 (plan 171 executed the rename inside the id-break window). `loop` is a
+// live *input* id in several tools (deck-builder, 3d, flythrough, digi-ad,
+// lottie-digi-ad - a GIF-playback / animation control), so reserving IT would strip
+// their `?loop=…` value on parse; reading it raw was a standing ambiguity instead.
+// `kiosk` collides with no input id or urlKey in any profile (checked at the rename,
+// and validate-catalog now rejects new collisions with RESERVED outright).
+//
+// The `_` PREFIX IS RESERVED FOREVER (plan 171, same window): parseUrlState skips
+// any param whose name starts with '_' before input matching, the schema/validator
+// refuse `_`-prefixed input ids and urlKeys, and future reserved params must be
+// minted from that namespace (`_v` is the founding member) so they can never
+// collide with a shipped tool's input the way `loop` did.
 
 // Parse the `marks` param (csv: crop,reg,bleed,bars,prov) into a print-mark
 // toggle map. Returns null when absent so callers fall back to their own defaults.
@@ -479,7 +595,11 @@ export function parseUrlState(searchParams: string | URLSearchParams, manifest: 
   // Vector sub-fields are flat params named "<inputId>.<fieldId>" (e.g.
   // transform.zoom=200) - legible and one value per param.
   const vectorFieldByKey: Record<string, { input: InputSpec; field: BlockFieldSpec }> = {};
-  for (const i of manifest.inputs ?? []) {
+  // Declared inputs PLUS the synthesised ones (transparentBg / convertPaths) - otherwise a
+  // URL/CLI param for a synthesised input is silently dropped (it's absent from
+  // manifest.inputs), so ?transparentBg=true never reaches the render. Same source of truth
+  // as buildInputModel.
+  for (const i of [...(manifest.inputs ?? []), ...syntheticInputs(manifest)]) {
     inputsByKey[i.id] = i;
     if (i.urlKey) inputsByKey[i.urlKey] = i;
     if (i.type === 'vector') {
@@ -489,6 +609,10 @@ export function parseUrlState(searchParams: string | URLSearchParams, manifest: 
 
   for (const [key, raw] of params.entries()) {
     if (RESERVED.has(key)) continue;
+    // The `_` prefix is a reserved namespace (see the RESERVED note): a key minted
+    // there in a future engine must read as an unknown control on an old one, never
+    // as a tool input - and no input may claim such a name (validator-enforced).
+    if (key.startsWith('_')) continue;
     const vec = vectorFieldByKey[key];
     if (vec) {
       const n = Number(raw);
@@ -543,6 +667,7 @@ export function parseUrlState(searchParams: string | URLSearchParams, manifest: 
     durable:  parseDurable(params.get('durable')),
     // Opt-in HDR raster export (see header). null ⇒ SDR.
     hdr:      parseHdr(params.get('hdr')),
+    video:    parseVideoParams(params),
     // Requested export bit depth (see header). Always 8/16/'float'/'auto'; junk
     // and absence both read as 'auto'. Depth follows provenance at the consumer.
     depth:    parseDepth(params.get('depth')),
@@ -554,6 +679,10 @@ export function parseUrlState(searchParams: string | URLSearchParams, manifest: 
     // Design-system version override (see header). Verbatim, never validated here:
     // whether a slug names a real version is a question about the device's ledger.
     designVersion: params.get('designv') || null,
+    // Design-system override (see header). Validated against the id grammar, not the
+    // device: a junk value reads as absent, and an id for a system the device lacks is
+    // the caller's fall-through.
+    designSystem: isDesignSystemId(params.get('ds')) ? params.get('ds') : null,
     // The deck state address (see header). Verbatim: frame-address.ts resolves it against
     // the pages a render produced, which is the only place that knows what exists.
     slide: params.get('s') || null,
@@ -588,7 +717,12 @@ export function serializeUrlState(model: UrlSerializableInput[], opts: Serialize
       const t = normalizeTableValue(input.value);
       if (!t || (!t.columns.length && !t.rows.length)) continue;
     }
-    params.set(input.id, coerceToString(input, input.value));
+    const str = coerceToString(input, input.value, opts.keepUserIds === true);
+    // A device-local `user/…` asset id never leaves the device (plan 171 made this
+    // an engine guarantee, not a web-shell courtesy): omit the param entirely so
+    // the recipient's tool falls back to its default instead of a dead ref.
+    if (input.type === 'asset' && opts.keepUserIds !== true && str.startsWith('user/')) continue;
+    params.set(input.id, str);
   }
   if (opts.format) params.set('format', opts.format);
   if (opts.export) params.set('export', '');
@@ -611,6 +745,12 @@ export function serializeUrlState(model: UrlSerializableInput[], opts: Serialize
   // Opt-in, off by default: only an explicit request writes the param.
   if (opts.durable) params.set('durable', '1');
   if (opts.hdr) params.set('hdr', '1');
+  // Video controls: only what was given, validated the way the parser reads it back.
+  if (opts.fps != null && numberIn(String(opts.fps), 1, 120, true) != null) params.set('fps', String(Math.round(Number(opts.fps))));
+  if (opts.seconds != null && numberIn(String(opts.seconds), 0.5, 3600) != null) params.set('seconds', String(opts.seconds));
+  if (opts.wait != null && numberIn(String(opts.wait), 0, 30) != null) params.set('wait', String(opts.wait));
+  if (opts.codec && VIDEO_CODEC_ALIASES[String(opts.codec).toLowerCase()]) params.set('codec', VIDEO_CODEC_ALIASES[String(opts.codec).toLowerCase()]!);
+  if (opts.vq === 'smaller' || opts.vq === 'balanced' || opts.vq === 'best') params.set('vq', opts.vq);
   // Only a real depth request writes the param: 'auto' is the default and junk is
   // not worth round-tripping, so both leave the link clean (the parser reads either
   // back as 'auto' anyway).
@@ -671,7 +811,7 @@ function coerceFromString(input: InputSpec, raw: string): InputValue {
   }
 }
 
-function coerceToString(input: UrlSerializableInput, value: InputValue): string {
+function coerceToString(input: UrlSerializableInput, value: InputValue, keepUserIds = false): string {
   if (input.type === 'boolean') return value ? '1' : '0';
   if (input.type === 'asset' && value && typeof value === 'object') {
     const ref = value as AssetRef;
@@ -683,10 +823,16 @@ function coerceToString(input: UrlSerializableInput, value: InputValue): string 
   // A token-backed colour serialises to its reference ('{color.brand.jungle}'),
   // so a shared link re-resolves against the destination's tokens (canonical).
   if (input.type === 'color' && isTokenValue(value)) return value.ref;
-  // Baked refs in block sub-fields get the same degradation as top-level assets
-  // (blocksForUrl) - otherwise a frozen block image would inline its whole
-  // data: URL into the query and blow every link-length ceiling.
-  if (input.type === 'blocks') return JSON.stringify(blocksForUrl(value) ?? []);
+  // Blocks emit the compact tilde form (plan 171: engine-owned, so CLI/web links
+  // match byte-for-byte; the encoder handles baked refs via assetIdForUrl and the
+  // user/ policy per field). The JSON fallback covers what compact structurally
+  // can't carry: an empty array, or an input with no declared fields - there
+  // blocksForUrl still degrades baked refs so a frozen image never inlines its
+  // data: URL into the query.
+  if (input.type === 'blocks') {
+    const compact = encodeBlocksCompact(value, input.fields ?? [], { keepUserIds });
+    return compact ?? JSON.stringify(blocksForUrl(value) ?? []);
+  }
   if (input.type === 'table') return encodeTableCompact(normalizeTableValue(value));
   // 'vector' is serialised per-field in serializeUrlState, not here.
   return String(value);
@@ -734,6 +880,68 @@ function decodeBlocksCompact(str: string, fields: BlockFieldSpec[]): InputValue[
     });
     return obj;
   });
+}
+
+/** A real hex colour (`#rgb`..`#rrggbbaa`) - only these lose their '#' in the
+ *  compact blocks form (restored by decodeBlocksCompact). A CSS var()/keyword/token
+ *  colour is left verbatim. */
+const HEX_COLOR = /^#[0-9a-fA-F]{3,8}$/;
+
+/**
+ * Encode a blocks array into the compact tilde-delimited URL format, or null only
+ * when it structurally can't be one (not an array, empty, or no declared fields) -
+ * the caller falls back to the lossless JSON form.
+ *
+ * Engine-owned since plan 171 (moved from the web shell's lib/blocks-url.ts, which
+ * now re-exports it) so every shell mints the SAME compact link for the same state:
+ * before the move, the CLI/engine path always emitted the 1.5-10x larger JSON form.
+ *
+ * Format: rows joined by '~', each row its declared fields joined by ',' in FIELD
+ * ORDER - the order IS the wire format, so a blocks `fields` list is append-only
+ * forever (schemas/blocks-wire-order.json pins every list; validate-catalog
+ * enforces it). Each value is encodeURIComponent'd with '~' hand-escaped (it is
+ * unreserved, so encodeURIComponent leaves it raw and it would split the row);
+ * real hex colours drop their '#'; trailing empty fields are trimmed (decode
+ * re-pads). The compact string is a query-param VALUE and always travels through
+ * one more url-encode layer (URLSearchParams / encodeURIComponent), so the load
+ * boundary's single decode restores in-value %2C/%7E escapes intact - same
+ * discipline as encodeTableCompact.
+ *
+ * `keepUserIds` is the ADDRESS-BAR variant: a `user/…` upload id is device-local,
+ * so it resolves on a refresh/bookmark of THIS device; everywhere else it is
+ * blanked - a link that referenced one would not resolve on another device.
+ */
+export function encodeBlocksCompact(
+  items: InputValue,
+  fields: BlockFieldSpec[],
+  opts: { keepUserIds?: boolean } = {},
+): string | null {
+  if (!Array.isArray(items) || !items.length || !fields.length) return null;
+  const cell = (s: string): string => encodeURIComponent(s).replace(/~/g, '%7E');
+  return items.map(item => {
+    const row = (item && typeof item === 'object' ? item : {}) as Record<string, InputValue | undefined>;
+    const vals = fields.map(f => {
+      // A row that OMITS a field means "the field's declared default" (the JSON
+      // wire form preserved that by omission), but this positional form has no
+      // absent token - decode re-pads a missing part to an explicit '' - so the
+      // default must be materialised at encode time or a sparse row (a hook /
+      // composition seed) loses it on the round-trip. An explicit '' (a cleared
+      // field) still encodes as '' and stays cleared.
+      const raw = row[f.id] !== undefined ? row[f.id] : (f as { default?: InputValue }).default;
+      // Asset sub-fields hold an AssetRef - share its link-safe id (a baked ref
+      // shares as its provenance URL via assetIdForUrl, never its data: bytes).
+      if (f.type === 'asset') {
+        const id = raw && typeof raw === 'object' ? assetIdForUrl(raw as AssetRef) : '';
+        return cell(id && (opts.keepUserIds || !String(id).startsWith('user/')) ? String(id) : '');
+      }
+      let v = String(raw ?? '');
+      if (f.type === 'color' && HEX_COLOR.test(v)) v = v.slice(1);
+      return cell(v);
+    });
+    let end = vals.length;
+    while (end > 0 && vals[end - 1] === '') end--;
+    return vals.slice(0, end).join(',');
+  }).join('~');
 }
 
 /**

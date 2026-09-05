@@ -1,14 +1,13 @@
 /**
- * In-memory per-IP token-bucket limiter for the UNAUTHENTICATED surface only
- * (plan Track B hardening): auth endpoints, telemetry ingest, and the public link
- * resolver. Authenticated console/API paths are never classified into a surface,
- * so they are never throttled. No timers (lazy refill + LRU prune) so it's
- * test-friendly and leaks nothing across the many servers the suite spins up.
+ * In-memory per-IP token-bucket limiter for request surfaces exposed before or
+ * beyond the interactive console: auth, telemetry, public links, and automation.
+ * No timers (lazy refill + LRU prune) so it is test-friendly and leaks nothing
+ * across the many servers the suite spins up.
  */
 import type { IncomingMessage } from 'node:http';
 import type { RateLimitConfig } from '../config/instance.ts';
 
-export type Surface = 'auth' | 'telemetry' | 'link';
+export type Surface = 'auth' | 'telemetry' | 'link' | 'automation';
 export interface RateLimiter {
   take(surface: Surface, ip: string): { ok: boolean; retryAfterSec: number };
   size(): number;
@@ -72,6 +71,7 @@ export function rateLimitSurface(method: string, pathname: string): Surface | nu
   // The instance-pack download (plans/34 wave 2) is public on an open instance,
   // so it rides the link bucket like the other bearer-ish byte surface.
   if (pathname === '/connect/pack.lolly') return 'link';
+  if (/^\/api\/v1\/(?:schema\/|compile$|validate$|inspect$|diff$|measure$|optimize$|package$|render$|batch$|jobs(?:\/|$))/.test(pathname)) return 'automation';
   return null;
 }
 

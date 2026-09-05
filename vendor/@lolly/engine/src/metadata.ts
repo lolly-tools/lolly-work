@@ -10,7 +10,7 @@
  *
  * Scope: provenance (who/what made the file) PLUS user-asserted copyright/licence
  * when a tool's inputs supply them via `bindToMeta` (the artist declaring the IP of
- * their OWN work; see the embed-track-image tool). Those two are NEVER auto-derived
+ * their OWN work; see the claim tool). Those two are NEVER auto-derived
  * from the profile. Lolly does not assert ownership the user did not state. Personal
  * fields (author/contact) appear only if the user filled in their profile; the
  * "Lolly" software/source tags are always stamped.
@@ -26,6 +26,7 @@ export interface MetadataHost {
 export interface MetadataManifest {
   id?: string;
   name?: string;
+  version?: string;
 }
 
 /** The slice of an input-model item buildExportMeta reads for bindToMeta merging. */
@@ -56,14 +57,20 @@ export async function buildExportMeta(
   const author  = optedIn ? [clean(p.firstname), clean(p.lastname)].filter(Boolean).join(' ') : '';
   const contact = optedIn ? [clean(p.email), clean(p.phone)].filter(Boolean).join(' · ') : '';
   const tool    = clean(manifest?.name) || clean(manifest?.id);
+  const toolId  = clean(manifest?.id);
+  const toolVersion = clean(manifest?.version);
 
   const description = ['Made with https://lolly.tools', tool && `: ${tool}`, author && `by ${author}`]
     .filter(Boolean).join(' ');
 
   const meta: ExportMeta = {
     software: 'Lolly',
-    source: 'https://lolly.tools',
+    // The tool's own page in the canonical share form (/t/<id>, engine/src/tool-url.ts)
+    // when the id is known, else the site root. An identifier only - no inputs ride here.
+    source: toolId ? `https://lolly.tools/t/${toolId}` : 'https://lolly.tools',
     tool,
+    ...(toolId ? { toolId } : {}),
+    ...(toolVersion ? { toolVersion } : {}),
     author,                                                   // '' if not opted in
     contact,                                                  // '' if none
     description,

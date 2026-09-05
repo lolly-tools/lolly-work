@@ -161,10 +161,48 @@ export type PptxReadNode =
   | PptxTableNode
   | PptxUnknownNode;
 
+/** A slide's ground: the `p:bg` of the slide itself, else its layout's, else its master's. */
+export interface PptxBackground {
+  /** A solid fill (`p:bgPr/a:solidFill`), or a style reference's colour (`p:bgRef`). */
+  color?: PptxReadColor;
+  /** A picture fill (`p:bgPr/a:blipFill`): the media part path the rel resolves to. */
+  media?: string;
+}
+
 export interface PptxReadSlide {
   index: number;
   nodes: PptxReadNode[];
   notes?: string;
+  /**
+   * The furniture the slide INHERITS from its layout and master (1.166): every
+   * non-placeholder shape, picture and graphic frame of the master (unless the
+   * layout or the slide says `showMasterSp="0"`), then of the layout, in paint
+   * order, painted BEHIND `nodes`. A template deck's logos, colour bars and page
+   * furniture live here rather than on the slides - a Google Slides export of a
+   * branded template has slides that are nothing but empty placeholders, and
+   * without this layer every one of them read as blank. Absent when there is none.
+   */
+  inherited?: PptxReadNode[];
+  /** The slide's ground, resolved slide → layout → master. Absent when none declares one. */
+  background?: PptxBackground;
+  /**
+   * The slide's narration clip, resolved from its audio relationship (plans/180
+   * section 5). Absent when the slide has no sound. The Design importer binds this to a
+   * `kind:'audio'` box; the bytes stay in the caller's part map, this only names the part.
+   *
+   * NOT a claim about word timings. Audio we did not synthesise has none, so captions for
+   * it must be recovered by Whisper and filed under their own key - see the plan's note
+   * that the two rungs are different claims about where the words came from.
+   */
+  audio?: PptxSlideAudio;
+}
+
+/** One sound part a slide points at: the zip part path and its lowercased extension. */
+export interface PptxSlideAudio {
+  /** The zip part path, e.g. "ppt/media/audio1.wav". */
+  part: string;
+  /** The part's extension, lowercased and without the dot, e.g. "wav". */
+  ext: string;
 }
 
 export interface PptxReadTheme {
@@ -174,11 +212,24 @@ export interface PptxReadTheme {
   minorFont?: string;
 }
 
+/** The source package's own docProps/core.xml facts (plans/144 Wave 2 G6):
+ *  who made the deck and what it says about itself, surfaced so a round trip
+ *  can carry the SOURCE's authorship instead of silently re-authoring it. */
+export interface OoxmlCoreProps {
+  title?: string;
+  creator?: string;
+  description?: string;
+  /** dcterms:created, verbatim W3CDTF text. */
+  created?: string;
+}
+
 export interface PptxDeckRead {
   widthEmu: number;
   heightEmu: number;
   theme: PptxReadTheme;
   slides: PptxReadSlide[];
+  /** Present when the package carries readable core properties. */
+  coreProps?: OoxmlCoreProps;
 }
 
 // ─── hardening caps ──────────────────────────────────────────────────────────
@@ -495,6 +546,29 @@ function pickThemePart(store: PartStore): string | null {
   return themes[0] ?? null;
 }
 
+// docProps/core.xml → the source's own authorship facts. Values are clamped
+// like every other text read here; a missing part returns null.
+const MAX_CORE_PROP_LEN = 2048;
+function readCoreProps(store: PartStore, parseXml: XmlParser): OoxmlCoreProps | null {
+  const doc = parsePart(store, 'docProps/core.xml', parseXml);
+  const root = doc?.documentElement;
+  if (!root) return null;
+  const grab = (local: string): string | undefined => {
+    const t = descendantByLocal(root, local)?.textContent?.trim();
+    return t ? t.slice(0, MAX_CORE_PROP_LEN) : undefined;
+  };
+  const out: OoxmlCoreProps = {};
+  const title = grab('title');
+  if (title) out.title = title;
+  const creator = grab('creator');
+  if (creator) out.creator = creator;
+  const description = grab('description');
+  if (description) out.description = description;
+  const created = grab('created');
+  if (created) out.created = created;
+  return Object.keys(out).length ? out : null;
+}
+
 function readTheme(store: PartStore, parseXml: XmlParser): PptxReadTheme {
   const theme: PptxReadTheme = { colors: {} };
   const path = pickThemePart(store);
@@ -639,6 +713,8 @@ interface PhStyle {
   type?: string;
   idx?: number;
   lvls?: Levels;
+  /** The slot's own geometry - what a slide placeholder without an `a:xfrm` inherits. */
+  box?: NodeBox;
 }
 
 /** A parsed slideLayout or slideMaster part, reduced to what the cascade needs. */
@@ -650,6 +726,13 @@ interface PhLayer {
   otherStyle?: Levels;
   /** layout only: the master part path its rels point at. */
   masterPath?: string;
+  /** The part's NON-placeholder shapes, pictures and frames, in paint order - what
+   *  every slide using it shows behind its own content (1.166). */
+  furniture: PptxReadNode[];
+  /** `showMasterSp` on the part's root - false when a layout hides the master's shapes. */
+  showMasterSp: boolean;
+  /** The part's own `p:bg`, if it declares one. */
+  background?: PptxBackground;
 }
 
 /** The layers a slide's shapes resolve through, above the shape's own state. */
@@ -808,6 +891,13 @@ function readSp(sp: Element, theme: PptxReadTheme, cascade?: Cascade): PptxReadN
     const resolved = layoutPh?.type ?? masterPh?.type;
     if (resolved) ph = { ...ph, type: resolved };
   }
+  // A placeholder that states no geometry of its own sits where its slot does - on
+  // the layout, else the master (ECMA-376 19.3.1.36). PowerPoint writes exactly this
+  // for every content placeholder a user never moved.
+  if (ph && box.cxEmu === 0 && box.cyEmu === 0) {
+    const slot = layoutPh?.box ?? masterPh?.box;
+    if (slot) Object.assign(box, slot);
+  }
 
   const txBody = firstChildByLocal(sp, 'txBody');
   const shapeLvls = readLevels(txBody ? firstChildByLocal(txBody, 'lstStyle') : null, theme);
@@ -858,7 +948,11 @@ function readPhLayer(store: PartStore, path: string, parseXml: XmlParser, theme:
   const doc = parsePart(store, path, parseXml);
   const root = doc?.documentElement;
   if (!root) return null;
-  const layer: PhLayer = { phs: [] };
+  const layer: PhLayer = { phs: [], furniture: [], showMasterSp: attrByLocal(root, 'showMasterSp') !== '0' };
+  // The part's own rels: a layout's logo is `r:embed` against the LAYOUT's rels,
+  // not the slide's, so its media resolves here, once, for every slide using it.
+  const rels = parseRels(store, path, parseXml);
+  const relsById = new Map<string, Rel>(rels.map((r) => [r.id, r]));
   const spTree = descendantByLocal(root, 'spTree');
   if (spTree) {
     for (const sp of childrenByLocal(spTree, 'sp')) {
@@ -869,9 +963,17 @@ function readPhLayer(store: PartStore, path: string, parseXml: XmlParser, theme:
       const entry: PhStyle = { type: read.ph.type, idx: read.ph.idx };
       const lvls = readLevels(txBody ? firstChildByLocal(txBody, 'lstStyle') : null, theme);
       if (lvls) entry.lvls = lvls;
+      const box = readXfrm(firstChildByLocal(sp, 'spPr'));
+      if (box.cxEmu > 0 || box.cyEmu > 0) entry.box = box;
       layer.phs.push(entry);
     }
+    // Furniture: everything that is NOT a placeholder slot. A slot is where a slide
+    // puts its content; a colour bar, a logo picture or a "Confidential" text box is
+    // the design itself and paints on every slide that uses the part.
+    walkTree(spTree, theme, relsById, layer.furniture, 0, undefined, true);
   }
+  const bg = readBackground(root, relsById, theme);
+  if (bg) layer.background = bg;
   const txStyles = firstChildByLocal(root, 'txStyles');
   if (txStyles) {
     layer.titleStyle = readLevels(firstChildByLocal(txStyles, 'titleStyle'), theme);
@@ -881,6 +983,35 @@ function readPhLayer(store: PartStore, path: string, parseXml: XmlParser, theme:
   const masterRel = parseRels(store, path, parseXml).find((r) => /slideMaster$/i.test(r.type) && !r.external);
   if (masterRel?.target) layer.masterPath = masterRel.target;
   return layer;
+}
+
+/**
+ * A part's own `p:cSld/p:bg`: a solid fill or a picture fill under `p:bgPr`, or the
+ * colour a `p:bgRef` style reference names. A gradient or pattern fill reads as no
+ * ground (the consumer keeps the theme's `lt1`) rather than a wrong flat colour.
+ */
+function readBackground(root: Element, relsById: Map<string, Rel>, theme: PptxReadTheme): PptxBackground | undefined {
+  const cSld = firstChildByLocal(root, 'cSld');
+  const bg = cSld ? firstChildByLocal(cSld, 'bg') : null;
+  if (!bg) return undefined;
+  const bgPr = firstChildByLocal(bg, 'bgPr');
+  if (bgPr) {
+    const out: PptxBackground = {};
+    const color = readColor(firstChildByLocal(bgPr, 'solidFill'), theme);
+    if (color) out.color = color;
+    const blipFill = firstChildByLocal(bgPr, 'blipFill');
+    const blip = blipFill ? firstChildByLocal(blipFill, 'blip') : null;
+    const embed = blip ? attrByLocal(blip, 'embed') || attrByLocal(blip, 'link') : null;
+    const rel = embed ? relsById.get(embed) : undefined;
+    if (rel && !rel.external) out.media = rel.target;
+    return out.color || out.media ? out : undefined;
+  }
+  const bgRef = firstChildByLocal(bg, 'bgRef');
+  if (bgRef) {
+    const color = readColor(bgRef, theme);
+    if (color) return { color };
+  }
+  return undefined;
 }
 
 function readPic(pic: Element, slideRelsById: Map<string, Rel>): PptxPicNode {
@@ -933,6 +1064,7 @@ function walkTree(
   out: PptxReadNode[],
   depth: number,
   cascade?: Cascade,
+  skipPlaceholders = false,
 ): void {
   if (depth > MAX_GROUP_DEPTH) return;
   for (const child of childElements(tree)) {
@@ -941,6 +1073,9 @@ function walkTree(
     try {
       switch (ln) {
         case 'sp':
+          // On a layout or master a placeholder is a SLOT, not content: skipped when
+          // the walk is collecting the part's furniture.
+          if (skipPlaceholders && readPlaceholder(child)) break;
           out.push(readSp(child, theme, cascade));
           break;
         case 'cxnSp': // connector: a shape with geom + line, no text
@@ -955,7 +1090,7 @@ function walkTree(
         case 'grpSp':
           // NOTE: group child-offset transform (chOff/chExt) is DEFERRED.
           // Children keep their own authored xfrm.
-          walkTree(child, theme, slideRelsById, out, depth + 1, cascade);
+          walkTree(child, theme, slideRelsById, out, depth + 1, cascade, skipPlaceholders);
           break;
         case 'nvGrpSpPr':
         case 'grpSpPr':
@@ -967,6 +1102,44 @@ function walkTree(
       // A malformed shape never sinks the slide.
     }
   }
+}
+
+// ─── narration (plans/180 section 5) ─────────────────────────────────────────
+
+/** Sound extensions a slide's media rel may legitimately name. Everything else on the
+ *  media relationship is a video, and a video is not narration. */
+const AUDIO_EXTS: ReadonlySet<string> = new Set(['wav', 'mp3', 'm4a', 'mp4a', 'aac', 'ogg', 'oga', 'flac', 'wma', 'aiff', 'aif', 'mid', 'midi']);
+
+/** The extension of a part path, lowercased and without the dot ('' when it has none). */
+function extOf(path: string): string {
+  const base = path.slice(path.lastIndexOf('/') + 1);
+  const dot = base.lastIndexOf('.');
+  return dot > 0 ? base.slice(dot + 1).toLowerCase() : '';
+}
+
+/**
+ * The slide's narration part, from its relationships.
+ *
+ * PowerPoint writes an embedded sound as TWO relationships to one part - `audio` (the
+ * `a:audioFile` link) and `media` (the p14 embed) - so reading either one finds it. The
+ * `audio` rel is preferred because only a sound ever carries it; the `media` rel is taken
+ * only when its target's extension says sound, since an embedded VIDEO uses that same
+ * relationship type. An external (linked) sound is skipped: there are no bytes in the
+ * package to bind.
+ */
+function readSlideAudio(rels: readonly Rel[]): PptxSlideAudio | undefined {
+  for (const r of rels) {
+    if (r.external || !r.target) continue;
+    if (!/\/audio$/i.test(r.type)) continue;
+    return { part: r.target, ext: extOf(r.target) };
+  }
+  for (const r of rels) {
+    if (r.external || !r.target) continue;
+    if (!/\/media$/i.test(r.type)) continue;
+    const ext = extOf(r.target);
+    if (AUDIO_EXTS.has(ext)) return { part: r.target, ext };
+  }
+  return undefined;
 }
 
 // ─── notes ───────────────────────────────────────────────────────────────────
@@ -1164,6 +1337,13 @@ export function readPptx(parts: PptxParts, parseXml: XmlParser): PptxDeckRead {
     /* keep empty theme */
   }
 
+  try {
+    const cp = readCoreProps(store, parseXml);
+    if (cp) deck.coreProps = cp;
+  } catch {
+    /* absent or unreadable core props stay absent */
+  }
+
   // slide size + the deck-wide default text style (the cascade's last layer)
   let defaults: Levels | undefined;
   try {
@@ -1224,6 +1404,21 @@ export function readPptx(parts: PptxParts, parseXml: XmlParser): PptxDeckRead {
         const cascade: Cascade | undefined = layout || master || defaults ? { layout, master, defaults } : undefined;
         const spTree = descendantByLocal(doc.documentElement, 'spTree');
         if (spTree) walkTree(spTree, deck.theme, relsById, slide.nodes, 0, cascade);
+        // What the slide inherits (1.166): the master's furniture when both the slide
+        // and its layout still show master shapes, then the layout's own - always, a
+        // layout's shapes are part of the layout. Painted behind the slide's nodes.
+        const slideShowsMaster = attrByLocal(doc.documentElement, 'showMasterSp') !== '0';
+        const inherited: PptxReadNode[] = [];
+        if (master && slideShowsMaster && (!layout || layout.showMasterSp)) inherited.push(...master.furniture);
+        if (layout) inherited.push(...layout.furniture);
+        if (inherited.length) slide.inherited = inherited;
+        const background = readBackground(doc.documentElement, relsById, deck.theme) ?? layout?.background ?? master?.background;
+        if (background) slide.background = background;
+        // narration (plans/180): the audio rel is the classic one, the media rel is the
+        // p14 embed pointing at the same part. Prefer audio; fall back to media only
+        // when its target really is a sound, because a VIDEO uses the media rel too.
+        const audio = readSlideAudio(rels);
+        if (audio) slide.audio = audio;
         // notes
         const notesRel = rels.find((r) => /notesSlide$/i.test(r.type) && !r.external);
         if (notesRel) {
