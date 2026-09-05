@@ -23,7 +23,7 @@
  *    no resume in v1.
  */
 
-export type SubjectType = 'asset' | 'tool-change' | 'config' | 'guest-link';
+export type SubjectType = 'asset' | 'tool-change' | 'config' | 'guest-link' | 'delivery';
 
 export type ApprovalState = 'submitted' | 'in_review' | 'approved' | 'rejected' | 'withdrawn';
 

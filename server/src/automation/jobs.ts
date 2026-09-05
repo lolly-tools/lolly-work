@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 /** Durable automation queue: Store owns metadata and BlobStore owns bytes. */
-import { randomUUID, createHmac } from 'node:crypto';
+import { randomUUID, createHash, createHmac } from 'node:crypto';
 import type { BlobStore } from '../blobs/types.ts';
 import { readBlobBody } from '../blobs/types.ts';
 import type { AutomationJobRecord, Store } from '../store/types.ts';
@@ -74,9 +74,10 @@ export class AutomationQueue {
     const pendingIndex = this.pending.findIndex((candidate) => candidate.job.id === id);
     if (pendingIndex >= 0) this.pending.splice(pendingIndex, 1);
     if (this.running.has(id)) this.cancelled.add(id);
-    if (job.resultRef) await this.options.blobs?.delete(job.resultRef);
+    if (this.options.store && !(await this.options.store.deleteAutomationJob(id, principal))) return false;
     this.jobs.delete(id);
-    return this.options.store ? this.options.store.deleteAutomationJob(id, principal) : true;
+    if (job.resultRef) await this.options.blobs?.delete(job.resultRef);
+    return true;
   }
 
   async save(job: AutomationJob): Promise<void> {
@@ -122,7 +123,10 @@ export class AutomationQueue {
           const ref = `automation/${job.id}/result`;
           await this.options.blobs.put(ref, output.bytes, output.mime);
           if (this.cancelled.has(job.id)) { await this.options.blobs.delete(ref); return; }
-          job.resultRef = ref; job.resultMime = output.mime; job.state = 'done';
+          job.resultRef = ref;
+          job.resultMime = output.mime;
+          job.resultSha256 = createHash('sha256').update(output.bytes).digest('hex');
+          job.state = 'done';
         } catch (error) { failure = error; output = null; }
       }
     }
@@ -152,5 +156,5 @@ export class AutomationQueue {
 }
 
 export function jobWire(job: AutomationJob, resultUrl = `/api/v1/jobs/${job.id}/result`): Record<string, unknown> {
-  return { jobId: job.id, verb: job.verb, state: job.state, statusUrl: `/api/v1/jobs/${job.id}`, resultUrl: job.state === 'done' ? resultUrl : null, error: job.error ?? null, callbackFailed: job.callbackFailed ?? false, progress: job.progress ?? null, priority: job.priority, attempt: job.attempt, createdAt: job.createdAt, finishedAt: job.finishedAt ?? null };
+  return { jobId: job.id, verb: job.verb, state: job.state, statusUrl: `/api/v1/jobs/${job.id}`, resultUrl: job.state === 'done' ? resultUrl : null, resultSha256: job.resultSha256 ?? null, error: job.error ?? null, callbackFailed: job.callbackFailed ?? false, progress: job.progress ?? null, priority: job.priority, attempt: job.attempt, createdAt: job.createdAt, finishedAt: job.finishedAt ?? null };
 }

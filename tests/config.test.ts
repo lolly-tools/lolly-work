@@ -8,6 +8,8 @@ test('defaults merge under a partial config', () => {
   assert.equal(cfg.policy.defaultAccessMode, 'gated');
   assert.equal(cfg.policy.telemetryAttribution, 'opt-in');
   assert.equal(cfg.idp.claimMap.firstname, 'given_name');
+  assert.equal(cfg.delivery.maxBytes, 64 * 1024 * 1024);
+  assert.deepEqual(cfg.delivery.destinations, []);
 });
 
 test('gated without an IdP or dev provider is rejected', () => {
@@ -59,4 +61,47 @@ test('secrets: required in production, ephemeral in dev', () => {
   assert.ok(dev.session.startsWith('dev-only-'));
   const prod = loadSecrets({ NODE_ENV: 'production', LW_SESSION_SECRET: 'a', LW_LINK_SECRET: 'b' } as NodeJS.ProcessEnv);
   assert.deepEqual([prod.session, prod.link], ['a', 'b']);
+});
+
+test('delivery destinations are explicit, normalized, and fail closed at config parse', () => {
+  const base = { policy: { defaultAccessMode: 'open' } };
+  const valid = {
+    id: 'campaign-archive', kind: 's3', label: 'Campaign archive', credentialRef: 'LW_DESTINATION_ARCHIVE',
+    enabled: true, groups: ['brand'], formats: ['PNG', 'png', 'PDF-CMYK'],
+    options: { bucket: 'output', endpoint: 'https://objects.example', prefix: 'approved' },
+  };
+  const parsed = parseConfig(JSON.stringify({ ...base, delivery: { destinations: [valid] } }));
+  assert.deepEqual(parsed.delivery.destinations[0]?.formats, ['png', 'pdf-cmyk']);
+  assert.equal(parseConfig(JSON.stringify({ ...base, delivery: { destinations: [{
+    ...valid, approvalChain: 'brand-review',
+  }] } })).delivery.destinations[0]?.approvalChain, 'brand-review');
+  for (const [destination, message] of [
+    [{ ...valid, id: '../escape' }, /invalid delivery destination id/],
+    [{ ...valid, kind: 'ftp' }, /unknown delivery destination kind/],
+    [{ ...valid, credentialRef: '' }, /needs credentialRef/],
+    [{ ...valid, formats: [] }, /formats allowlist/],
+    [{ ...valid, options: {} }, /needs options\.bucket/],
+    [{ ...valid, approvalChain: '../review' }, /invalid delivery destination .* approvalChain/],
+    [{ ...valid, options: { bucket: 'x', endpoint: 'file:\/\/\/tmp' } }, /must be an http\(s\) URL/],
+  ] as const) {
+    assert.throws(() => parseConfig(JSON.stringify({ ...base, delivery: { destinations: [destination] } })), message);
+  }
+  assert.throws(() => parseConfig(JSON.stringify({ ...base, delivery: { maxBytes: 0 } })), /invalid delivery\.maxBytes/);
+
+  const webdav = parseConfig(JSON.stringify({ ...base, delivery: { destinations: [{
+    ...valid, id: 'team-dav', kind: 'webdav',
+    options: { url: 'https://cloud.example/remote.php/dav/files/team/outgoing', prefix: 'approved' },
+  }] } }));
+  assert.equal(webdav.delivery.destinations[0]?.kind, 'webdav');
+  const https = parseConfig(JSON.stringify({ ...base, delivery: { destinations: [{
+    ...valid, id: 'publisher', kind: 'https', options: { url: 'https://publisher.example/lolly' },
+  }] } }));
+  assert.equal(https.delivery.destinations[0]?.kind, 'https');
+  for (const [destination, message] of [
+    [{ ...valid, id: 'bad-dav', kind: 'webdav', options: {} }, /needs options\.url/],
+    [{ ...valid, id: 'dav-query', kind: 'webdav', options: { url: 'https:\/\/cloud.example\/dav?token=secret' } }, /without credentials, query or fragment/],
+    [{ ...valid, id: 'plain-http', kind: 'https', options: { url: 'http:\/\/publisher.example\/lolly' } }, /must be an HTTPS URL/],
+  ] as const) {
+    assert.throws(() => parseConfig(JSON.stringify({ ...base, delivery: { destinations: [destination] } })), message);
+  }
 });

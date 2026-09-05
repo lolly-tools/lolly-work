@@ -63,6 +63,9 @@ const OPTIONS = {
     asset: { type: 'string' },
     note: { type: 'string' },
     'replaced-by': { type: 'string' },
+    destination: { type: 'string' },
+    format: { type: 'string' },
+    'idempotency-key': { type: 'string' },
     rm: { type: 'boolean' },
     // SCIM (plans/31 §8): the label for the IdP connector a provisioning token
     // belongs to, carried onto every audit event the token drives.
@@ -98,7 +101,7 @@ function savedCookie(): string | null {
   try { return readFileSync(SESSION_FILE, 'utf8').trim() || null; } catch { return null; }
 }
 
-async function call(path: string, opts: { method?: string; body?: unknown } = {}): Promise<unknown> {
+async function call(path: string, opts: { method?: string; body?: unknown; headers?: Record<string, string> } = {}): Promise<unknown> {
   const cookie = savedCookie();
   // A service token (plans/35 wave 2) outranks a stored session: automation
   // passing --token or LW_TOKEN means "act as the automation", never as
@@ -111,6 +114,7 @@ async function call(path: string, opts: { method?: string; body?: unknown } = {}
       headers: {
         ...(bearer ? { authorization: `Bearer ${bearer}` } : cookie ? { cookie } : {}),
         ...(opts.body !== undefined ? { 'content-type': 'application/json' } : {}),
+        ...opts.headers,
         'x-lolly-client': 'lw-cli engine/0',
       },
       ...(opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
@@ -408,6 +412,73 @@ switch (cmd) {
           ?? (l.target.collectionId ? `collection:${l.target.collectionId}` : undefined) ?? '—';
         console.log(`${l.status.padEnd(8)} ${l.kind.padEnd(11)} ${target.padEnd(24)} exp ${l.expiresAt}  ${l.id}`);
       }
+    }
+    break;
+  }
+
+  case 'destinations': {
+    const { destinations } = await call('/api/v1/destinations') as {
+      destinations: Array<{ id: string; kind: string; label: string; formats: string[]; maxBytes: number; visibility: string }>;
+    };
+    out(destinations);
+    if (!values.json) {
+      for (const d of destinations) {
+        console.log(`${d.id.padEnd(22)} ${d.kind.padEnd(8)} ${d.visibility.padEnd(7)} ${String(d.maxBytes).padStart(10)} B  ${d.formats.join(',')}  ${d.label}`);
+      }
+      if (!destinations.length) console.log('(no organization destinations available to this principal)');
+    }
+    break;
+  }
+
+  case 'deliveries': {
+    type DeliveryView = {
+      id: string; destinationId: string; name: string; format: string; state: string;
+      attempt: number; size: number; sourceJobId: string | null; url: string | null; error: string | null;
+    };
+    if (sub === 'publish') {
+      const jobId = positionals[2] ?? fail('usage: lw deliveries publish <jobId> --destination <id> --name "…" [--format <format>] [--idempotency-key <key>]');
+      const destinationId = values.destination ?? fail('--destination <id> required');
+      const name = values.name ?? fail('--name required');
+      const delivery = await call(`/api/v1/jobs/${encodeURIComponent(jobId)}/deliveries`, {
+        method: 'POST',
+        body: { destinationId, name, ...(values.format ? { format: values.format } : {}) },
+        ...(values['idempotency-key'] ? { headers: { 'idempotency-key': values['idempotency-key'] } } : {}),
+      }) as DeliveryView;
+      out(delivery);
+      if (!values.json) {
+        console.log(`${delivery.id}  ${delivery.state}  ${delivery.name}.${delivery.format} → ${delivery.destinationId}`);
+        if (delivery.state === 'awaiting-approval') console.log('waiting on the destination approval chain');
+        if (delivery.url) console.log(delivery.url);
+      }
+      break;
+    }
+    if (sub === 'retry') {
+      const id = positionals[2] ?? fail('usage: lw deliveries retry <id>');
+      const delivery = await call(`/api/v1/deliveries/${encodeURIComponent(id)}/retry`, { method: 'POST' }) as DeliveryView;
+      out(delivery);
+      if (!values.json) console.log(`${delivery.id}  ${delivery.state} after attempt ${delivery.attempt}${delivery.url ? `  ${delivery.url}` : ''}`);
+      break;
+    }
+    if (sub === 'show') {
+      const id = positionals[2] ?? fail('usage: lw deliveries show <id>');
+      const delivery = await call(`/api/v1/deliveries/${encodeURIComponent(id)}`) as DeliveryView;
+      out(delivery);
+      if (!values.json) {
+        console.log(`${delivery.state.padEnd(18)} ${delivery.id}  ${delivery.name}.${delivery.format} → ${delivery.destinationId}`);
+        console.log(`${delivery.size} B · attempt ${delivery.attempt}${delivery.sourceJobId ? ` · job ${delivery.sourceJobId}` : ''}`);
+        if (delivery.url) console.log(delivery.url);
+        if (delivery.error) console.log(`error: ${delivery.error}`);
+      }
+      break;
+    }
+    if (sub && sub !== 'list') fail('usage: lw deliveries [list|show <id>|retry <id>|publish <jobId> --destination <id> --name "…"]');
+    const { deliveries } = await call('/api/v1/deliveries') as { deliveries: DeliveryView[] };
+    out(deliveries);
+    if (!values.json) {
+      for (const d of deliveries) {
+        console.log(`${d.state.padEnd(18)} ${d.id}  ${d.name}.${d.format} → ${d.destinationId}  attempt ${d.attempt}${d.sourceJobId ? `  job ${d.sourceJobId}` : ''}`);
+      }
+      if (!deliveries.length) console.log('(no deliveries)');
     }
     break;
   }
@@ -1223,6 +1294,9 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   export [--out file]        dump governance (grants, overlays, chains, providers, flags) as canonical JSON
   apply <file> [--dry-run] [--prune]   apply a governance document (dry-run shows the diff; prune removes store-only entries)
   links [--all] · links revoke <id>
+  destinations                list the fixed organization targets available to this principal (no secrets)
+  deliveries [list|show <id>|retry <id>]
+  deliveries publish <jobId> --destination <id> --name "…" [--idempotency-key <key>]   publish a retained render output by reference
   providers [list] · providers add <id> --kind … --label "…" [--options/--mapping/--exposure {json}]
   providers preview --kind <kind> [--options/--mapping/--exposure {json}]   dry run: health + a mapped sample of this tenant, nothing stored
   providers preview --kind <kind> --shape [--remote-id <id>]   instead of the sample: the tenant's record structure, key names and types only

@@ -64,6 +64,10 @@ test('surface classifier: dev provider is NOT throttled; real auth + telemetry +
   assert.equal(rateLimitSurface('GET', '/connect/pack.lolly'), 'link'); // public pack download rides the link bucket
   assert.equal(rateLimitSurface('POST', '/api/v1/render'), 'automation');
   assert.equal(rateLimitSurface('GET', '/api/v1/jobs/job-1'), 'automation');
+  assert.equal(rateLimitSurface('POST', '/api/v1/destinations/archive/deliveries'), 'automation');
+  assert.equal(rateLimitSurface('POST', '/api/v1/jobs/job-1/deliveries'), 'automation');
+  assert.equal(rateLimitSurface('POST', '/api/v1/deliveries/del_1/retry'), 'automation');
+  assert.equal(rateLimitSurface('GET', '/api/v1/deliveries/del_1'), null);
   assert.equal(rateLimitSurface('GET', '/api/v1/users'), null); // authed API never throttled
 });
 

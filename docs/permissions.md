@@ -18,7 +18,7 @@ anything up: a resource arrives as the set of selectors it satisfies (e.g.
 | Role | Comes from | Carries |
 |---|---|---|
 | `viewer` | service tokens only (`lw tokens create --role viewer`) - no group resolves a person to it | `catalog.read`, `session.view`, `collab.join` |
-| `member` | the default for any signed-in user | viewer + `tool.use`, `session.create/edit/delete/share`, `project.create`, `export.download`, `export.request`, `link.create` |
+| `member` | the default for any signed-in user | viewer + `tool.use`, `session.create/edit/delete/share`, `project.create`, `export.download`, `export.request`, `delivery.create`, `link.create` |
 | `author` | group `author` | member + `catalog.submit` |
 | `approver` | group `approver` | member + `approval.act` |
 | `admin` | group `admin` | author ∪ approver + `catalog.publish`, `catalog.expire`, `catalog.hold`, `catalog.scan`, `catalog.edit`, `catalog.collection.manage`, `catalog.provider.read`, `catalog.provider.manage`, `brand.switch`, `catalog.injectable.manage`, `policy.edit`, `grant.edit`, `link.revoke`, `link.create-guest`, `message.send`, `telemetry.view`, `fleet.view`, `fleet.manage`, `audit.export`, `project.manage`, `project.archive`, `approval.assign`, `export.server` |
@@ -107,6 +107,39 @@ Three audit actions record the round trip: `catalog.submit` (on the way in, whet
 stored or refused), and `catalog.approve-submission` / `catalog.return-submission` on the way
 out. A metadata correction is audited as `catalog.edit-submission` with its before and after.
 Those are audit vocabulary, not grantable actions - nothing evaluates them.
+
+### Sending organization output: `delivery.create`
+
+`delivery.create` is the manual use right for a fixed organization destination. Members carry
+it by default because the operator has already chosen, credentialed and explicitly enabled the
+target; `groups` exposure and resource grants can narrow each target independently:
+
+```bash
+lw grants add group:contractors delivery.create 'destination:campaign-archive' --effect deny
+```
+
+An explicit per-destination allow can also extend a target beyond its configured groups; for
+example, to give a `viewer` service token exactly one delivery capability without upgrading its
+role. The same deny-wins decision is used for discovery, creation and retry.
+
+A matching deny removes that destination from the caller's `org-config` and is re-evaluated at
+the write boundary. The action has no authority over personal send targets: those remain on the
+person's device and never appear in Work configuration, grants, history or credentials.
+
+Creation is audited once as `delivery.created`; every attempt then records
+`delivery.delivered` or `delivery.failed`. Permission loss stops new sends and retries but does
+not erase the caller's own historical receipts. Those are event names, not additional permissions. See
+[outbound delivery](delivery.md).
+
+When a destination names `approvalChain`, `delivery.create` authorizes staging and requesting
+review, not provider egress. The existing approval chain and separation-of-duties rules decide
+that. Approval delivers the immutable staged bytes; rejection/withdrawal are terminal and the
+retry route cannot bypass them. Service tokens are refused on a human-review-bound target.
+
+The same action governs a completed automation render's publish command. It adds no ambient
+BlobStore authority: the caller must own the named job, it must be a settled `render`, its
+recorded format cannot be changed, and its retained bytes pass integrity and C2PA verification
+again. A delivery reference prevents deletion of that job output until retention releases it.
 
 Also `catalog.read`, which the `viewer` role already carries, gates the queue itself. The rows
 are the real gate: a caller sees their own submissions plus the ones open on a step their

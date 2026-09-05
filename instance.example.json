@@ -46,5 +46,25 @@
       "sync": { "ttlSeconds": 300 }
     }
   ],
+  "delivery": {
+    "maxBytes": 67108864,
+    "destinations": [
+      {
+        "id": "example-archive",
+        "kind": "s3",
+        "label": "Campaign archive",
+        "credentialRef": "LW_DESTINATION_EXAMPLE_ARCHIVE_CREDENTIAL",
+        "enabled": false,
+        "groups": "*",
+        "formats": ["svg", "png", "jpg", "pdf"],
+        "options": {
+          "bucket": "lolly-output",
+          "endpoint": "https://s3.example.test",
+          "region": "us-east-1",
+          "prefix": "approved"
+        }
+      }
+    ]
+  },
   "blobs": { "driver": "pg" }
 }

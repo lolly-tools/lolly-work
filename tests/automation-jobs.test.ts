@@ -3,19 +3,25 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { AutomationQueue, jobWire } from '../server/src/automation/jobs.ts';
 import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
+import { sha256Hex } from '../server/src/lib/crypto.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
 
 const settle = async () => { for (let i = 0; i < 10; i++) await new Promise((resolve) => setTimeout(resolve, 1)); };
 
 test('automation jobs are isolated by principal and retain result bytes', async () => {
   const queue = new AutomationQueue({ store: createMemoryStore(), blobs: createMemoryBlobStore() });
-  const { job } = await queue.create('user:a', 'compile', { toolId: 'card' }, async () => ({ mime: 'application/json', bytes: new TextEncoder().encode('{"ok":true}') }));
+  const bytes = new TextEncoder().encode('{"ok":true}');
+  const { job } = await queue.create('user:a', 'compile', { toolId: 'card' }, async () => ({ mime: 'application/json', bytes }));
   assert.ok(job.state === 'queued' || job.state === 'running');
   assert.equal(await queue.get(job.id, 'user:b'), null);
   await settle();
-  assert.equal((await queue.get(job.id, 'user:a'))?.state, 'done');
+  const completed = await queue.get(job.id, 'user:a');
+  assert.equal(completed?.state, 'done');
+  assert.equal(completed?.resultSha256, sha256Hex(bytes));
   assert.equal(new TextDecoder().decode((await queue.result(job.id, 'user:a'))?.bytes), '{"ok":true}');
-  assert.equal(jobWire((await queue.get(job.id, 'user:a'))!).resultUrl, `/api/v1/jobs/${job.id}/result`);
+  const wire = jobWire(completed!);
+  assert.equal(wire.resultUrl, `/api/v1/jobs/${job.id}/result`);
+  assert.equal(wire.resultSha256, sha256Hex(bytes));
 });
 
 test('callbacks fail closed unless their exact URL is instance-approved', async () => {

@@ -198,6 +198,43 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.equal(await store.getAutomationJob('job_1', 'user:a'), null);
   assert.ok((await store.findApiTokenByHash('hash-a'))?.revokedAt, 'revoked rows are returned, callers refuse them');
 
+  // organization deliveries: principal isolation, idempotency, lifecycle
+  // updates, and immutable output/target facts across those updates.
+  const deliveryAt = '2026-09-05T10:00:00.000Z';
+  await store.putAutomationJob({
+    id: 'job_delivery_source', principal: 'user:a', verb: 'render', request: { toolId: 'card', format: 'png' },
+    state: 'done', createdAt: deliveryAt, updatedAt: deliveryAt, finishedAt: deliveryAt,
+    resultRef: 'automation/job_delivery_source/result', resultMime: 'image/png',
+    resultSha256: 'd'.repeat(64), priority: 0, attempt: 1,
+  });
+  await store.putDelivery({
+    id: 'del_1', principal: 'user:a', destinationId: 'archive', destinationVersion: 'v1',
+    name: 'poster', format: 'png', contentType: 'image/png', size: 12, sha256: 'a'.repeat(64),
+    requestHash: 'b'.repeat(64), sourceRef: 'automation/job_delivery_source/result',
+    sourceJobId: 'job_delivery_source', state: 'queued', attempt: 0,
+    idempotencyKey: 'delivery-idem-1', createdAt: deliveryAt, updatedAt: deliveryAt,
+  });
+  assert.equal((await store.getDelivery('del_1', 'user:a'))?.destinationId, 'archive');
+  assert.equal(await store.getDelivery('del_1', 'user:b'), null, 'deliveries are principal-isolated');
+  assert.equal((await store.findDeliveryByIdempotency('user:a', 'delivery-idem-1'))?.id, 'del_1');
+  assert.equal((await store.findDeliveryBySourceJob('user:a', 'job_delivery_source'))?.id, 'del_1');
+  assert.equal(await store.findDeliveryBySourceJob('user:b', 'job_delivery_source'), null);
+  assert.equal((await store.listDeliveries('user:a')).length, 1);
+  await store.putDelivery({
+    ...(await store.getDelivery('del_1', 'user:a'))!,
+    destinationId: 'must-not-change', sha256: 'c'.repeat(64), state: 'delivered', attempt: 1,
+    remoteId: 'archive/del_1/poster.png', deliveredSha256: 'a'.repeat(64), transformation: 'none',
+    updatedAt: '2026-09-05T10:01:00.000Z', deliveredAt: '2026-09-05T10:01:00.000Z',
+  });
+  const delivered = await store.getDelivery('del_1', 'user:a');
+  assert.equal(delivered?.state, 'delivered');
+  assert.equal(delivered?.destinationId, 'archive', 'destination identity is immutable');
+  assert.equal(delivered?.sha256, 'a'.repeat(64), 'output digest is immutable');
+  assert.equal(delivered?.sourceJobId, 'job_delivery_source', 'source relation is immutable');
+  assert.equal(delivered?.remoteId, 'archive/del_1/poster.png');
+  assert.equal(await store.deleteAutomationJob('job_delivery_source', 'user:a'), false,
+    'a retained delivery keeps its immutable job output alive');
+
   // SIEM cursor + windowed audit reads (plans/35 wave 2)
   assert.equal(await store.getSiemCursor(), 0, 'no deliveries yet reads as zero');
   const allAudit = await store.listAudit();

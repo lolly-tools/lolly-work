@@ -13,6 +13,8 @@ import { projectInjectables, flagInjectableGovernance, injectablesForVersion } f
 import type { InjectableRecord } from '../injectables/types.ts';
 import type { InstanceConfig } from '../config/instance.ts';
 import type { UserRecord } from '../store/types.ts';
+import { destinationAvailableTo, destinationDescriptor, destinationVersion } from '../delivery/destinations.ts';
+import type { ConfigDeliveryDestination, DeliveryDestinationDescriptor } from '../delivery/types.ts';
 
 /** Actions whose yes/no the shell needs to render honest controls (e.g. the
  *  export button becoming "Save / Request approval"). Evaluated server-side;
@@ -35,6 +37,9 @@ const CLIENT_ACTIONS = [
   // own uploads is dormant by ABSENCE - a public build sees no org-config at
   // all, so the bit is simply never there and the action never renders.
   'catalog.submit',
+  // Organization-owned targets only. Personal send targets remain device-local
+  // and never enter this permission or payload.
+  'delivery.create',
 ] as const;
 
 export interface ProfileFieldPolicy {
@@ -83,6 +88,9 @@ export interface OrgConfigPayload {
    *  the shell consumes: tools, typed catalog resources, and UI chrome (flag-kind
    *  ones ride `featureFlags` above). Group-scoped; genuinely-hidden ones absent. */
   injectables: Array<Record<string, unknown>>;
+  /** Fixed organization targets visible to THIS caller; no provider options,
+   *  credential references, bucket names or paths cross the boundary. */
+  destinations: DeliveryDestinationDescriptor[];
   telemetry: { level: string; attribution: string; consented: boolean };
   inboxUnread: number;
   policyVersion: string;
@@ -109,6 +117,8 @@ export function policyVersionOf(
   injectables?: Map<string, InjectableRecord>,
   render?: RenderCapabilities,
   nearbyEnabled: boolean = true,
+  deliveryDestinations: ConfigDeliveryDestination[] = [],
+  grants: Grant[] = [],
 ): string {
   const doc = {
     overlays: [...overlays.values()].sort((a, b) => a.toolId.localeCompare(b.toolId)),
@@ -126,6 +136,19 @@ export function policyVersionOf(
     // admin toggling policy.nearby.enabled must move the hash or connected shells
     // sit on a stale 304 with the wrong capability (plans/26 §8).
     nearby: nearbyEnabled,
+    // Only public semantics enter the hash. Credential env-var names are not
+    // client data, and rotating a key does not change what a destination means.
+    deliveryDestinations: deliveryDestinations.map((destination) => ({
+      id: destination.id,
+      enabled: destination.enabled === true,
+      version: destinationVersion(destination),
+    })).sort((a, b) => a.id.localeCompare(b.id)),
+    // `can` and destination visibility are grant-derived. Without this term a
+    // deny-wins change could leave a polling shell on a stale 304.
+    grants: grants.map((grant) => ({ ...grant })).sort((a, b) =>
+      `${a.principal}\u0000${a.action}\u0000${a.resource}\u0000${a.effect}`.localeCompare(
+        `${b.principal}\u0000${b.action}\u0000${b.resource}\u0000${b.effect}`,
+      )),
   };
   return sha256Hex(canonicalJson(doc)).slice(0, 16);
 }
@@ -205,6 +228,14 @@ export function assembleOrgConfig(opts: {
   // `?? true` mirrors the loaded-config default (parseConfig deep-merges nearby in);
   // hand-built test configs that omit `policy.nearby` get the enabled default.
   can['collab.nearby'] = (config.policy.nearby?.enabled ?? true) && can['collab.join'] === true;
+  const destinations = (config.delivery?.destinations ?? [])
+    .filter((destination) => destinationAvailableTo(destination, principal, grants))
+    .map((destination) => destinationDescriptor(destination, config.delivery?.maxBytes ?? 64 * 1024 * 1024));
+  // This bit means "there is somewhere I may deliver", not merely that the
+  // caller's broad role contains the action. That keeps narrowly granted
+  // viewer/service principals honest and hides a dead affordance when no
+  // destination is configured or exposed.
+  can['delivery.create'] = destinations.length > 0;
   return {
     instance: { name: config.instance.name },
     session: {
@@ -229,12 +260,16 @@ export function assembleOrgConfig(opts: {
       return base;
     })(),
     injectables: projectInjectables(injectables.values(), user.groups),
+    destinations,
     telemetry: {
       level: config.policy.telemetry,
       attribution: config.policy.telemetryAttribution,
       consented: user.telemetryConsent === true,
     },
     inboxUnread,
-    policyVersion: policyVersionOf(overlays, profilePolicy, flagGovernance, injectables, render, config.policy.nearby?.enabled ?? true),
+    policyVersion: policyVersionOf(
+      overlays, profilePolicy, flagGovernance, injectables, render,
+      config.policy.nearby?.enabled ?? true, config.delivery?.destinations ?? [], grants,
+    ),
   };
 }

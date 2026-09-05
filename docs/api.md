@@ -156,6 +156,23 @@ published asset's lifecycle stops it, like every other surface that hands out by
 
 Config-managed providers reject mutations with `409 CONFIG_MANAGED`.
 
+## Outbound delivery
+
+| Route | Action | Notes |
+|---|---|---|
+| `GET /api/v1/destinations` | authenticated; results filtered by `delivery.create` per target | safe fixed-target descriptors visible to this caller; never endpoints, bucket names, prefixes or credential refs |
+| `POST /api/v1/destinations/:id/deliveries?name=…&format=…` | `delivery.create` on `destination:<id>` | verified Lolly export as the raw body; `201` after immediate delivery, or `202 awaiting-approval` when the target binds a chain |
+| `POST /api/v1/jobs/:id/deliveries` | job owner + `delivery.create` on the body’s `destinationId` | deliver a completed render job’s retained output by reference; JSON `{destinationId,name,format?}` |
+| `GET /api/v1/deliveries` | authenticated | caller's own delivery history remains readable after permission loss |
+| `GET /api/v1/deliveries/:id` | authenticated | caller's own delivery receipt; another principal receives 404 |
+| `POST /api/v1/deliveries/:id/retry` | `delivery.create` on the destination | retry failed/stalled work from its immutable staged bytes; refuses a changed destination |
+
+Both create routes accept `Idempotency-Key`; repeating the same delivery returns its existing
+record without another provider write, while reuse for different bytes/metadata returns
+`409 IDEMPOTENCY_KEY_REUSED`. The raw body, or the referenced job output, must carry Lolly's
+C2PA export assertion. See
+[outbound delivery](delivery.md).
+
 ## Policy and governance
 
 | Route | Action |
@@ -369,8 +386,13 @@ hidden from that principal. Render additionally requires `export.server`.
 Pass `?async=1` or `Prefer: respond-async` to receive `202 {jobId,statusUrl}`.
 Poll `GET /api/v1/jobs/:id`, download a completed result from
 `GET /api/v1/jobs/:id/result`, or list the caller's jobs at `GET /api/v1/jobs`.
-`DELETE /api/v1/jobs/:id` removes queued work or retained output. Jobs are
-isolated to the member or service principal that created them. Repeating a
+Completed job resources include `resultSha256`, computed from the output bytes rather than blob
+provider metadata; it is `null` until a result exists.
+`DELETE /api/v1/jobs/:id` removes queued work or retained output, except while a delivery
+retains that output (`409 JOB_OUTPUT_IN_USE`). Jobs are isolated to the member or service
+principal that created them. A completed render can be delivered without a download/upload
+round trip through `POST /api/v1/jobs/:id/deliveries`; the delivery shares the immutable result
+blob and records the source job id. Repeating a
 request with the same `Idempotency-Key` returns its existing job; reusing that
 key for different request bytes returns `409 IDEMPOTENCY_KEY_REUSED`. A
 `callbackUrl` is used only when it exactly matches the instance-configured

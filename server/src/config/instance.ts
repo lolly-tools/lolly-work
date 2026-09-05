@@ -15,6 +15,7 @@
 import { readFileSync } from 'node:fs';
 import { randomId } from '../lib/crypto.ts';
 import { PROVIDER_KINDS, type ProviderExposure, type ProviderKind, type ProviderMapping, type ProviderSyncConfig } from '../catalog/providers/types.ts';
+import { DELIVERY_DESTINATION_KINDS, type ConfigDeliveryDestination } from '../delivery/types.ts';
 import type { ClaimMap } from '../iam/oidc.ts';
 
 /** A deploy-time (GitOps/air-gap) provider entry - upserted at boot with
@@ -211,6 +212,15 @@ export interface InstanceConfig {
   };
   catalogProviders: ConfigCatalogProvider[];
   /**
+   * Fixed organization-owned outbound targets. Credentials are per-entry env
+   * refs, never part of org-config; personal device targets do not enter this
+   * block at all.
+   */
+  delivery: {
+    maxBytes: number;
+    destinations: ConfigDeliveryDestination[];
+  };
+  /**
    * Where instance-owned catalog bytes live (plans/26 §2, plans/27 §5): the
    * materialized-out-of-a-DAM assets and, later, collab staging. `pg` (default)
    * keeps the zero-moving-parts single-node deploy - PG works everywhere the
@@ -334,6 +344,7 @@ const DEFAULTS: InstanceConfig = {
   },
   dev: { enabled: false, users: [] },
   catalogProviders: [],
+  delivery: { maxBytes: 64 * 1024 * 1024, destinations: [] },
   blobs: { driver: 'pg' },
   notify: {},
   siem: { batchSize: 200, intervalSeconds: 30 },
@@ -435,6 +446,71 @@ export function parseConfig(json: string): InstanceConfig {
     seen.add(p.id);
     if (!PROVIDER_KINDS.includes(p.kind)) throw new Error(`unknown catalog provider kind: ${p.kind}`);
     if (!p.label) throw new Error(`catalog provider ${p.id} needs a label`);
+  }
+  if (!Number.isFinite(cfg.delivery.maxBytes) || cfg.delivery.maxBytes <= 0) {
+    throw new Error(`invalid delivery.maxBytes: ${cfg.delivery.maxBytes}`);
+  }
+  const destinationIds = new Set<string>();
+  for (const destination of cfg.delivery.destinations) {
+    if (!destination.id || !/^[a-z0-9][a-z0-9-]*$/.test(destination.id)) {
+      throw new Error(`invalid delivery destination id: ${destination.id}`);
+    }
+    if (destinationIds.has(destination.id)) throw new Error(`duplicate delivery destination id: ${destination.id}`);
+    destinationIds.add(destination.id);
+    if (!DELIVERY_DESTINATION_KINDS.includes(destination.kind)) {
+      throw new Error(`unknown delivery destination kind: ${destination.kind}`);
+    }
+    if (!destination.label?.trim()) throw new Error(`delivery destination ${destination.id} needs a label`);
+    if (!destination.credentialRef?.trim()) throw new Error(`delivery destination ${destination.id} needs credentialRef`);
+    if (!Array.isArray(destination.formats) || !destination.formats.length
+      || destination.formats.some((format) => !/^[a-z0-9][a-z0-9-]*$/i.test(format))) {
+      throw new Error(`delivery destination ${destination.id} needs a non-empty formats allowlist`);
+    }
+    destination.formats = [...new Set(destination.formats.map((format) => format.toLowerCase()))];
+    if (destination.groups !== undefined && destination.groups !== '*'
+      && (!Array.isArray(destination.groups) || destination.groups.some((group) => typeof group !== 'string' || !group.trim()))) {
+      throw new Error(`delivery destination ${destination.id} groups must be '*' or non-empty strings`);
+    }
+    if (destination.maxBytes !== undefined && (!Number.isFinite(destination.maxBytes) || destination.maxBytes <= 0)) {
+      throw new Error(`invalid delivery destination ${destination.id} maxBytes: ${destination.maxBytes}`);
+    }
+    if (destination.approvalChain !== undefined
+      && (typeof destination.approvalChain !== 'string' || !/^[a-z0-9][a-z0-9-]*$/.test(destination.approvalChain))) {
+      throw new Error(`invalid delivery destination ${destination.id} approvalChain`);
+    }
+    if (destination.kind === 's3') {
+      const bucket = destination.options?.bucket;
+      if (typeof bucket !== 'string' || !bucket.trim()) throw new Error(`s3 delivery destination ${destination.id} needs options.bucket`);
+      for (const key of ['endpoint', 'publicBaseUrl'] as const) {
+        const raw = destination.options?.[key];
+        if (raw === undefined) continue;
+        let parsed: URL | null = null;
+        try { parsed = new URL(String(raw)); } catch { /* refused below */ }
+        if (!parsed || !/^https?:$/.test(parsed.protocol)) {
+          throw new Error(`s3 delivery destination ${destination.id} options.${key} must be an http(s) URL`);
+        }
+      }
+    } else if (destination.kind === 'webdav') {
+      for (const key of ['url', 'publicBaseUrl'] as const) {
+        const raw = destination.options?.[key];
+        if (key === 'url' && (typeof raw !== 'string' || !raw.trim())) {
+          throw new Error(`webdav delivery destination ${destination.id} needs options.url`);
+        }
+        if (raw === undefined) continue;
+        let parsed: URL | null = null;
+        try { parsed = new URL(String(raw)); } catch { /* refused below */ }
+        if (!parsed || !/^https?:$/.test(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash) {
+          throw new Error(`webdav delivery destination ${destination.id} options.${key} must be an http(s) collection URL without credentials, query or fragment`);
+        }
+      }
+    } else if (destination.kind === 'https') {
+      const raw = destination.options?.url;
+      let parsed: URL | null = null;
+      try { parsed = new URL(String(raw ?? '')); } catch { /* refused below */ }
+      if (!parsed || parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.hash) {
+        throw new Error(`https delivery destination ${destination.id} options.url must be an HTTPS URL without embedded credentials or a fragment`);
+      }
+    }
   }
   if (cfg.blobs.driver !== 'pg' && cfg.blobs.driver !== 's3') throw new Error(`unknown blobs.driver: ${cfg.blobs.driver} (pg | s3)`);
   if (cfg.blobs.driver === 's3' && !cfg.blobs.s3?.bucket) throw new Error('blobs.driver "s3" requires blobs.s3.bucket');

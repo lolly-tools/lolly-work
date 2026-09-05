@@ -147,6 +147,48 @@ credential is a secret, `LW_BLOBS_S3_CREDENTIAL`, formatted `<accessKeyId>:<secr
 This is the exit route for media-sized estates and the air-gap story: see
 [off-boarding](offboarding.md).
 
+## `delivery`
+
+Fixed organization-owned destinations for intentional outbound delivery. This is separate
+from `catalogProviders` (assets coming in) and from a person's device-owned send targets.
+No destination exists by default, so an unconfigured instance sends nothing anywhere.
+
+| Key | Default | What it does |
+|---|---|---|
+| `maxBytes` | `67108864` | instance-wide per-delivery cap (64 MiB) |
+| `destinations` | `[]` | fixed, config-managed outbound targets |
+| `destinations[].id` | - | stable lowercase/dash id; also the `destination:<id>` RBAC resource |
+| `destinations[].kind` | - | `s3`, `webdav`, or `https` |
+| `destinations[].label` | - | member-visible name |
+| `destinations[].credentialRef` | - | environment variable containing the write credential; never sent to a shell |
+| `destinations[].enabled` | `false` | kill switch; only explicitly enabled targets are visible or writable |
+| `destinations[].groups` | `*` | `*`/absent for all members, or an array of groups |
+| `destinations[].formats` | - | required non-empty format allowlist |
+| `destinations[].maxBytes` | global cap | narrower target-specific byte ceiling |
+| `destinations[].approvalChain` | *unset* | optional existing approval-chain id; stages bytes and withholds provider egress until approved |
+| `destinations[].options` | - | provider-specific fixed-target options below; never sent to a shell |
+
+Provider options and credential forms:
+
+| Kind | Options | Credential in `credentialRef` |
+|---|---|---|
+| `s3` | `bucket` (required), `region`, `endpoint`, `prefix`, `publicBaseUrl` | `<accessKeyId>:<secretAccessKey>` |
+| `webdav` | `url` (required existing writable collection), `prefix` (existing subdirectory), `publicBaseUrl` | `<username>:<password>` or `bearer:<token>` |
+| `https` | `url` (required exact HTTPS receiver; query allowed, redirects refused) | non-empty HMAC secret |
+
+For S3, `endpoint` selects MinIO, Ceph, Garage, UpCloud or another compatible store;
+omitting it uses AWS. For S3 and WebDAV, `publicBaseUrl` means the resulting object has a
+public URL; omit it for private storage. WebDAV permits HTTP for an explicitly private/air-gap
+deployment, but credentials then depend entirely on that network boundary - use HTTPS anywhere
+else. The signed-HTTPS adapter always requires TLS.
+
+Give every destination its own write-limited credential even when the same service is already
+configured as a read-only catalog provider or as `blobs.driver`. Restrict it to the configured
+bucket, collection or receiver. A destination credential is not a person's connected-service
+credential and must not be reused as one.
+
+See [outbound delivery](delivery.md) for the lifecycle, API and freedom boundaries.
+
 ## `submit`
 
 The instance-side half of catalog submit: a single optional pre-store scan hook. Everything an
@@ -222,7 +264,7 @@ are startup errors. See [catalog](catalog.md).
 | `LW_RENDER_WORKER_SECRET` | with a render worker | shared HMAC key; must match the worker |
 | `LW_C2PA_SIGNING_KEY` | to sign exports | PKCS#8 private-key PEM |
 | `LW_BLOBS_S3_CREDENTIAL` | with `blobs.driver: s3` | `<accessKeyId>:<secretAccessKey>` for the blob bucket |
-| `<credentialRef>` | per config-managed provider | resolved at boot, never persisted |
+| `<credentialRef>` | per config-managed provider or delivery destination | resolved at boot, never persisted |
 
 In development, `LW_SESSION_SECRET` and `LW_LINK_SECRET` fall back to ephemeral randoms, so
 sessions die on restart. In production (`NODE_ENV=production`) their absence throws.

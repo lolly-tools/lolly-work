@@ -20,6 +20,7 @@ import { sortFields, type AssetMetaRecord, type CatalogFieldDef } from '../catal
 import { sortCollections, type CollectionRecord } from '../catalog/collections.ts';
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderRecord } from '../catalog/providers/types.ts';
+import type { DeliveryRecord } from '../delivery/types.ts';
 import {
   SESSION_REVISION_LIMIT, effectiveGroups,
   type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type LocalGroupRecord, type ProjectRecord, type ScimTokenRecord,
@@ -36,6 +37,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const scimTokens = new Map<string, ScimTokenRecord>(); // SCIM provisioning bearers, by id
   const apiTokens = new Map<string, ApiTokenRecord>(); // service tokens (plans/35), by id
   const automationJobs = new Map<string, AutomationJobRecord>();
+  const deliveries = new Map<string, DeliveryRecord>();
   let siemCursor = 0; // highest audit seq confirmed delivered to the SIEM receiver
   let auditAnchor: AuditAnchor | null = null; // retention trim boundary (plans/35 wave 3)
   const deviceCodes = new Map<string, DeviceCodeRecord>(); // device sign-in codes, by deviceCode
@@ -248,7 +250,52 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     },
     async deleteAutomationJob(id, principal) {
       const job = automationJobs.get(id);
+      if ([...deliveries.values()].some((delivery) => delivery.sourceJobId === id)) return false;
       return Boolean(job?.principal === principal && automationJobs.delete(id));
+    },
+
+    async putDelivery(delivery) {
+      const existing = deliveries.get(delivery.id);
+      // Match Postgres: the identity/export/target tuple is immutable after
+      // creation; only execution state and receipt fields advance.
+      if (!existing) {
+        deliveries.set(delivery.id, structuredClone(delivery));
+        return;
+      }
+      const next: DeliveryRecord = {
+        ...existing,
+        state: delivery.state,
+        attempt: delivery.attempt,
+        updatedAt: delivery.updatedAt,
+        ...(delivery.remoteId ? { remoteId: delivery.remoteId } : {}),
+        ...(delivery.url ? { url: delivery.url } : {}),
+        ...(delivery.deliveredSha256 ? { deliveredSha256: delivery.deliveredSha256 } : {}),
+        ...(delivery.transformation ? { transformation: delivery.transformation } : {}),
+        ...(delivery.deliveredAt ? { deliveredAt: delivery.deliveredAt } : {}),
+      };
+      if (delivery.error) next.error = delivery.error;
+      else delete next.error;
+      deliveries.set(delivery.id, structuredClone(next));
+    },
+    async getDelivery(id, principal) {
+      const delivery = deliveries.get(id);
+      return delivery?.principal === principal ? structuredClone(delivery) : null;
+    },
+    async listDeliveries(principal) {
+      return [...deliveries.values()]
+        .filter((delivery) => delivery.principal === principal)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+        .map((delivery) => structuredClone(delivery));
+    },
+    async findDeliveryByIdempotency(principal, key) {
+      const delivery = [...deliveries.values()].find((candidate) =>
+        candidate.principal === principal && candidate.idempotencyKey === key);
+      return delivery ? structuredClone(delivery) : null;
+    },
+    async findDeliveryBySourceJob(principal, jobId) {
+      const delivery = [...deliveries.values()].find((candidate) =>
+        candidate.principal === principal && candidate.sourceJobId === jobId);
+      return delivery ? structuredClone(delivery) : null;
     },
 
     async listGrants() {

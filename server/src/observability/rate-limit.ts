@@ -71,6 +71,12 @@ export function rateLimitSurface(method: string, pathname: string): Surface | nu
   // The instance-pack download (plans/34 wave 2) is public on an open instance,
   // so it rides the link bucket like the other bearer-ish byte surface.
   if (pathname === '/connect/pack.lolly') return 'link';
+  // Each of these POSTs can spend an organization-owned provider credential.
+  // Reuse the automation budget rather than inventing a second egress limiter.
+  if (method === 'POST' && (
+    /^\/api\/v1\/destinations\/[^/]+\/deliveries$/.test(pathname) ||
+    /^\/api\/v1\/deliveries\/[^/]+\/retry$/.test(pathname)
+  )) return 'automation';
   if (/^\/api\/v1\/(?:schema\/|compile$|validate$|inspect$|diff$|measure$|optimize$|package$|render$|batch$|jobs(?:\/|$))/.test(pathname)) return 'automation';
   return null;
 }

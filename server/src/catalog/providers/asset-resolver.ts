@@ -12,6 +12,9 @@ export interface HostedAssetResolverOptions {
   allowedOrigins: string[];
   fetchImpl?: typeof fetch;
   maxBytes?: number;
+  /** Retained data-URL characters (charged as UTF-16 bytes), across a bounded LRU. */
+  cacheMaxBytes?: number;
+  cacheMaxEntries?: number;
   cms?: (ref: HostedProviderRef) => Promise<{ bytes: Uint8Array; mime: string; id?: string } | null>;
   optimize?: (bytes: Uint8Array, request: { width?: number; height?: number; format?: string; sourceMime: string }) => Promise<{ bytes: Uint8Array; mime: string; stages: string[] }>;
 }
@@ -34,9 +37,15 @@ export function parseHostedProviderRef(value: unknown): HostedProviderRef | null
 }
 
 export function createHostedAssetResolver(options: HostedAssetResolverOptions) {
-  const cache = new Map<string, HostedAssetResult>();
+  const cache = new Map<string, { result: HostedAssetResult; weight: number }>();
   const fetchImpl = options.fetchImpl ?? fetch;
   const maxBytes = options.maxBytes ?? 64 * 1024 * 1024;
+  const cacheMaxBytes = options.cacheMaxBytes ?? 32 * 1024 * 1024;
+  const cacheMaxEntries = options.cacheMaxEntries ?? 128;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || !Number.isSafeInteger(cacheMaxBytes) || cacheMaxBytes < 0 || !Number.isSafeInteger(cacheMaxEntries) || cacheMaxEntries < 0) {
+    throw new Error('asset provider limits must be finite non-negative integers (maxBytes must be positive)');
+  }
+  let cacheBytes = 0;
   const origins = new Set(options.allowedOrigins.map((origin) => new URL(origin).origin));
   return async (ref: HostedProviderRef): Promise<HostedAssetResult | null> => {
     const request = { width: positive(ref.query.width), height: positive(ref.query.height), format: ref.query.format };
@@ -46,27 +55,69 @@ export function createHostedAssetResolver(options: HostedAssetResolverOptions) {
       const target = netTarget(ref);
       if (!target || !origins.has(target.origin)) throw new Error('asset provider egress is not allowed for this origin');
       const response = await fetchImpl(target, { redirect: 'error', signal: AbortSignal.timeout(20_000) });
-      if (!response.ok) throw new Error(`asset provider fetch failed (${response.status})`);
-      const declared = Number(response.headers.get('content-length') ?? 0);
-      if (declared > maxBytes) throw new Error('asset provider response exceeds the byte limit');
-      const bytes = new Uint8Array(await response.arrayBuffer());
-      if (bytes.byteLength > maxBytes) throw new Error('asset provider response exceeds the byte limit');
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => {});
+        throw new Error(`asset provider fetch failed (${response.status})`);
+      }
+      const bytes = await readBoundedAssetResponse(response, maxBytes);
       loaded = { bytes, mime: response.headers.get('content-type')?.split(';')[0] ?? 'application/octet-stream', id: target.href };
     } else return null;
     if (!loaded) throw new Error(`asset provider could not resolve ${ref.raw}`);
+    if (loaded.bytes.byteLength > maxBytes) throw new Error('asset provider source exceeds the byte limit');
     const contentHash = createHash('sha256').update(loaded.bytes).digest('hex');
-    const cacheKey = createHash('sha256').update(JSON.stringify({ provider: ref.provider, scope: ref.scope, path: ref.path, request, contentHash })).digest('hex');
-    const hit = cache.get(cacheKey); if (hit) return hit;
+    const cacheKey = createHash('sha256').update(JSON.stringify({ provider: ref.provider, scope: ref.scope, path: ref.path, request, contentHash, sourceMime: loaded.mime, sourceId: loaded.id ?? ref.raw })).digest('hex');
+    const hit = cache.get(cacheKey);
+    if (hit) { cache.delete(cacheKey); cache.set(cacheKey, hit); return hit.result; }
     const transformed = options.optimize ? await options.optimize(loaded.bytes, { ...request, sourceMime: loaded.mime }) : { bytes: loaded.bytes, mime: loaded.mime, stages: [] };
+    if (transformed.bytes.byteLength > maxBytes) throw new Error('asset provider output exceeds the byte limit');
     const format = request.format ?? formatOf(transformed.mime);
     const outputHash = createHash('sha256').update(transformed.bytes).digest('hex');
     const result: HostedAssetResult = {
       cacheKey, stages: transformed.stages, sourceBytes: loaded.bytes.byteLength, outputBytes: transformed.bytes.byteLength,
       asset: { source: 'remote', id: ref.raw, type: transformed.mime === 'image/svg+xml' ? 'vector' : 'raster', format, url: `data:${transformed.mime};base64,${Buffer.from(transformed.bytes).toString('base64')}`, checksum: `sha256-${Buffer.from(outputHash, 'hex').toString('base64')}`, meta: { provider: ref.provider, source: loaded.id ?? ref.raw, sourceChecksum: `sha256-${Buffer.from(contentHash, 'hex').toString('base64')}`, stages: transformed.stages } },
     };
-    cache.set(cacheKey, result);
+    const weight = JSON.stringify(result).length * 2;
+    if (cacheMaxEntries > 0 && weight <= cacheMaxBytes) {
+      while (cache.size && (cache.size >= cacheMaxEntries || cacheBytes + weight > cacheMaxBytes)) {
+        const oldest = cache.keys().next().value!;
+        cacheBytes -= cache.get(oldest)!.weight;
+        cache.delete(oldest);
+      }
+      cache.set(cacheKey, { result, weight }); cacheBytes += weight;
+    }
     return result;
   };
+}
+
+/** Enforce decoded body bytes while reading: Content-Length is only an early hint. */
+async function readBoundedAssetResponse(response: Response, maxBytes: number): Promise<Uint8Array> {
+  if (Number(response.headers.get('content-length')) > maxBytes) {
+    await response.body?.cancel().catch(() => {});
+    throw new Error('asset provider response exceeds the byte limit');
+  }
+  if (!response.body) return new Uint8Array();
+  const reader = response.body.getReader();
+  // Coalesce even one-byte stream chunks: bounding payload alone must not allow
+  // millions of retained chunk objects to exhaust the process heap.
+  let buffer = new Uint8Array(Math.min(64 * 1024, maxBytes));
+  let size = 0, complete = false;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) { complete = true; break; }
+      const nextSize = size + value.byteLength;
+      if (nextSize > maxBytes) throw new Error('asset provider response exceeds the byte limit');
+      if (nextSize > buffer.length) {
+        const next = new Uint8Array(Math.min(maxBytes, Math.max(nextSize, buffer.length * 2)));
+        next.set(buffer.subarray(0, size)); buffer = next;
+      }
+      buffer.set(value, size); size = nextSize;
+    }
+    return size === buffer.length ? buffer : buffer.slice(0, size);
+  } finally {
+    if (!complete) await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
 }
 
 /** The hosted immutable image stages. Sharp strips metadata unless explicitly

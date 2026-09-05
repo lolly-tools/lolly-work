@@ -70,6 +70,26 @@ A token outranks a stored session cookie when both are present - automation acts
 automation, never as whoever last signed in on the machine. Tokens drive the action-gated
 API (export/apply, providers, fleet, audit); the member-workflow commands refuse them.
 
+## Organization delivery
+
+```bash
+lw destinations
+lw deliveries
+lw deliveries show <deliveryId>
+lw deliveries retry <deliveryId>
+lw deliveries publish <completedRenderJobId> \
+  --destination campaign-archive --name "Launch poster" \
+  --idempotency-key campaign-42-poster-v1
+```
+
+`destinations` prints only the safe descriptors available to the current principal: label,
+kind, formats, byte ceiling and public/private result visibility. It cannot read or edit an
+endpoint, bucket, prefix or credential. `deliveries publish` sends a job id and destination id,
+not the output bytes: Work consumes that principal's retained render result directly, checks
+its digest and Content Credential again, and records the relationship on the receipt. An
+optional `--format` is an equality assertion against the completed render, never a conversion
+or override. See [outbound delivery](delivery.md).
+
 ## Governance
 
 ```bash

@@ -77,6 +77,9 @@ import { verifyLollyExport, extractProvenance } from '../catalog/publish.ts';
 import { listBrandProfiles, switchBrandProfile } from '../brand/profiles.ts';
 import { createMemoryBlobStore } from '../blobs/memory.ts';
 import type { BlobStore } from '../blobs/types.ts';
+import { createDeliveryProvider } from '../delivery/registry.ts';
+import { deliveryContentType, destinationAvailableTo, destinationDescriptor, destinationVersion } from '../delivery/destinations.ts';
+import type { ConfigDeliveryDestination, DeliveryRecord } from '../delivery/types.ts';
 import { EXT_PREFIX, extAssetId, PROVIDER_KINDS, type CatalogProvider, type ProviderAssetRef, type ProviderKind, type ProviderRecord } from '../catalog/providers/types.ts';
 import { createProvider } from '../catalog/providers/registry.ts';
 import { noDetailShapeLine, noShapeLine, renderShapeReport, type ProviderShapeReport } from '../catalog/providers/shape.ts';
@@ -166,6 +169,9 @@ export interface AppDeps {
    *  main.ts builds the configured driver (pg default / s3); tests and the
    *  Vercel path fall back to an in-memory store. */
   blobs?: BlobStore;
+  /** Test/deployment injection for config-managed destination credentials.
+   *  Production defaults to each destination's credentialRef environment var. */
+  destinationSecrets?: ReadonlyMap<string, string>;
 }
 
 export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
@@ -309,6 +315,20 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   })().catch((err) => {
     console.error('catalog provider config upsert failed:', (err as Error).message);
   });
+
+  // ── outbound delivery destinations ──────────────────────────────────────
+  // Fixed, config-managed targets only in v1. This is intentionally a second
+  // registry rather than a writable arm on catalog providers: catalog is
+  // inbound federation; these credentials authorize outbound bytes.
+  const deliveryDestinations = new Map<string, ConfigDeliveryDestination>(
+    config.delivery.destinations.map((destination) => [destination.id, destination]),
+  );
+  const deliverySecrets = deps.destinationSecrets ?? new Map(
+    config.delivery.destinations.flatMap((destination) => {
+      const value = process.env[destination.credentialRef];
+      return value ? [[destination.id, value] as const] : [];
+    }),
+  );
 
   // ── hosted asset-provider rung (plans/39 §6) ─────────────────────────────
   // cms://<provider-id>/<remote-id> is resolved by the SAME driver and stored
@@ -1124,19 +1144,579 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     return serviceAccountFor(rec);
   };
 
-  const requireAction = async (req: IncomingMessage, res: ServerResponse, action: string): Promise<UserRecord | null> => {
+  const requireAction = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+    action: string,
+    resources: string[] = ['*'],
+  ): Promise<UserRecord | null> => {
     const user = (await memberOf(req)) ?? (await serviceAccountOf(req));
     if (!user) {
       sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
       return null;
     }
     const grants = await store.listGrants();
-    if (!evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, action, ['*'], grants)) {
+    if (!evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, action, resources, grants)) {
       sendError(res, 403, 'FORBIDDEN', `${action} required`);
       return null;
     }
     return user;
   };
+
+  const requireDeliveryActor = async (req: IncomingMessage, res: ServerResponse): Promise<UserRecord | null> => {
+    const user = (await memberOf(req)) ?? (await serviceAccountOf(req));
+    if (!user) sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+    return user;
+  };
+
+  const deliveryWire = (delivery: DeliveryRecord): Record<string, unknown> => ({
+    id: delivery.id,
+    destinationId: delivery.destinationId,
+    destinationVersion: delivery.destinationVersion,
+    name: delivery.name,
+    format: delivery.format,
+    contentType: delivery.contentType,
+    size: delivery.size,
+    sha256: delivery.sha256,
+    sourceJobId: delivery.sourceJobId ?? null,
+    state: delivery.state,
+    attempt: delivery.attempt,
+    approvalId: delivery.approvalId ?? null,
+    remoteId: delivery.remoteId ?? null,
+    url: delivery.url ?? null,
+    deliveredSha256: delivery.deliveredSha256 ?? null,
+    transformation: delivery.transformation ?? null,
+    error: delivery.error ?? null,
+    createdAt: delivery.createdAt,
+    updatedAt: delivery.updatedAt,
+    deliveredAt: delivery.deliveredAt ?? null,
+  });
+
+  const runDelivery = async (delivery: DeliveryRecord, supplied?: Uint8Array): Promise<DeliveryRecord> => {
+    const started: DeliveryRecord = {
+      ...delivery,
+      state: 'delivering',
+      attempt: delivery.attempt + 1,
+      updatedAt: new Date().toISOString(),
+    };
+    delete started.error;
+    await store.putDelivery(started);
+    try {
+      const destination = deliveryDestinations.get(delivery.destinationId);
+      if (!destination || destination.enabled !== true) throw new Error('delivery destination is disabled or gone');
+      if (destinationVersion(destination) !== delivery.destinationVersion) {
+        throw new Error('delivery destination changed; create a new delivery against the current target');
+      }
+      let bytes = supplied;
+      if (!bytes) {
+        const stored = await blobs.get(delivery.sourceRef);
+        if (!stored) throw new Error('delivery source bytes are unavailable');
+        bytes = new Uint8Array(await readBlobBody(stored.body, delivery.size + 1));
+      }
+      if (bytes.byteLength !== delivery.size || sha256Hex(bytes) !== delivery.sha256) {
+        throw new Error('delivery source bytes no longer match the immutable digest');
+      }
+      const provider = createDeliveryProvider(destination, deliverySecrets.get(destination.id), fetchImpl);
+      const receipt = await provider.deliver({
+        deliveryId: delivery.id,
+        bytes,
+        name: delivery.name,
+        format: delivery.format,
+        contentType: delivery.contentType,
+        sha256: delivery.sha256,
+      });
+      const now = new Date().toISOString();
+      const delivered: DeliveryRecord = {
+        ...started,
+        state: 'delivered',
+        remoteId: receipt.remoteId,
+        ...(receipt.url ? { url: receipt.url } : {}),
+        ...(receipt.deliveredSha256 ? { deliveredSha256: receipt.deliveredSha256 } : {}),
+        transformation: receipt.transformation,
+        updatedAt: now,
+        deliveredAt: now,
+      };
+      await store.putDelivery(delivered);
+      await audit(delivery.principal, 'delivery.delivered', `delivery:${delivery.id}`, {
+        destinationId: delivery.destinationId,
+        remoteId: receipt.remoteId,
+        name: delivery.name,
+        format: delivery.format,
+        size: delivery.size,
+        sha256: delivery.sha256,
+        transformation: receipt.transformation,
+      });
+      return delivered;
+    } catch (error) {
+      const failed: DeliveryRecord = {
+        ...started,
+        state: 'failed',
+        error: error instanceof Error ? error.message : String(error),
+        updatedAt: new Date().toISOString(),
+      };
+      await store.putDelivery(failed);
+      await audit(delivery.principal, 'delivery.failed', `delivery:${delivery.id}`, {
+        destinationId: delivery.destinationId,
+        name: delivery.name,
+        format: delivery.format,
+        size: delivery.size,
+        sha256: delivery.sha256,
+        attempt: failed.attempt,
+      });
+      return failed;
+    }
+  };
+
+  /** Settle the one delivery an approval names. The immutable record is the
+   *  approval subject, so the decision cannot be replayed over different bytes
+   *  or a changed destination. */
+  const settleDeliveryApproval = async (approval: Approval, actorId: string): Promise<boolean> => {
+    if (approval.subjectType !== 'delivery') return false;
+    const principal = `user:${approval.createdBy}`;
+    const delivery = await store.getDelivery(approval.subjectRef, principal);
+    if (!delivery || delivery.approvalId !== approval.id) return true;
+    if (delivery.state !== 'awaiting-approval') return true;
+    let settled: DeliveryRecord;
+    if (approval.state === 'approved') {
+      settled = await runDelivery({ ...delivery, state: 'queued', updatedAt: new Date().toISOString() });
+    } else {
+      const state = approval.state === 'withdrawn' ? 'cancelled' : 'rejected';
+      settled = {
+        ...delivery,
+        state,
+        error: state === 'cancelled' ? 'delivery approval was withdrawn' : 'delivery approval was rejected',
+        updatedAt: new Date().toISOString(),
+      };
+      await store.putDelivery(settled);
+      await audit(`user:${actorId}`, `delivery.${state}`, `delivery:${delivery.id}`, {
+        approvalId: approval.id, destinationId: delivery.destinationId, sha256: delivery.sha256,
+      });
+    }
+    await store.putMessage({
+      id: `msg_${randomId(8)}`,
+      kind: 'approval', severity: settled.state === 'delivered' ? 'info' : 'action',
+      audience: { users: [approval.createdBy] },
+      title: settled.state === 'delivered'
+        ? `Delivered: ${delivery.name}`
+        : `Delivery ${settled.state}: ${delivery.name}`,
+      body: settled.state === 'delivered'
+        ? 'Your approved export was delivered to its organization destination.'
+        : (settled.error ?? `The delivery is ${settled.state}.`),
+      cta: { label: 'View', url: '/admin#/approvals' },
+      data: { deliveryId: delivery.id, approvalId: approval.id, state: settled.state },
+      dismissible: true,
+    });
+    notifier.event('delivery.decided', {
+      id: delivery.id, approvalId: approval.id, state: settled.state, destinationId: delivery.destinationId,
+    });
+    return true;
+  };
+
+  // Safe descriptors only: the caller never sees endpoint, bucket, prefix or
+  // credentialRef. Per-target deny grants and group exposure both remove the
+  // target entirely rather than disclosing an unusable destination.
+  router.add('GET', '/api/v1/destinations', async (req, res) => {
+    const user = await requireDeliveryActor(req, res);
+    if (!user) return;
+    const grants = await store.listGrants();
+    const principal = { userId: user.id, groups: user.groups, role: user.role as Role };
+    const destinations = config.delivery.destinations
+      .filter((destination) => destinationAvailableTo(destination, principal, grants))
+      .map((destination) => destinationDescriptor(destination, config.delivery.maxBytes));
+    sendJson(res, 200, { destinations }, { 'cache-control': 'private, no-store' });
+  });
+
+  router.add('POST', '/api/v1/destinations/:id/deliveries', async (req, res, ctx) => {
+    const destinationId = ctx.params.id as string;
+    const user = await requireAction(req, res, 'delivery.create', [`destination:${destinationId}`, '*']);
+    if (!user) return;
+    const destination = deliveryDestinations.get(destinationId);
+    const grants = await store.listGrants();
+    if (!destination || !destinationAvailableTo(
+      destination,
+      { userId: user.id, groups: user.groups, role: user.role as Role },
+      grants,
+    )) {
+      return sendError(res, 404, 'NOT_FOUND', 'no such delivery destination');
+    }
+    if (!deliverySecrets.has(destination.id)) {
+      return sendError(res, 503, 'DESTINATION_UNAVAILABLE', 'delivery destination credential is not configured');
+    }
+    const approvalChain = destination.approvalChain
+      ? await store.getChain(destination.approvalChain)
+      : null;
+    if (destination.approvalChain && !approvalChain) {
+      return sendError(res, 503, 'APPROVAL_CHAIN_UNAVAILABLE', 'the destination approval chain is not configured');
+    }
+    if (approvalChain && user.id.startsWith('svc_')) {
+      return sendError(res, 403, 'HUMAN_APPROVAL_REQUIRED', 'this destination requires a member to request human approval');
+    }
+    const name = (ctx.url.searchParams.get('name') ?? '').trim();
+    const format = (ctx.url.searchParams.get('format') ?? '').trim().toLowerCase();
+    if (!name || name.length > 200 || !/^[a-z0-9][a-z0-9-]*$/i.test(format)) {
+      return sendError(res, 400, 'INVALID_INPUT', 'name (1-200 characters) and format are required');
+    }
+    if (!destination.formats.includes(format)) {
+      return sendError(res, 415, 'FORMAT_NOT_ALLOWED', `${format} is not allowed for this destination`);
+    }
+    const maxBytes = Math.min(config.delivery.maxBytes, destination.maxBytes ?? config.delivery.maxBytes);
+    let bytes: Buffer;
+    try {
+      bytes = await readRaw(req, maxBytes);
+    } catch {
+      return sendError(res, 413, 'PAYLOAD_TOO_LARGE', `delivery exceeds the ${maxBytes} byte cap`);
+    }
+    if (!bytes.length) return sendError(res, 400, 'INVALID_INPUT', 'empty delivery body');
+    const gate = await verifyLollyExport(bytes, format);
+    if (!gate.ok) return sendError(res, 422, 'NOT_LOLLY_EXPORT', gate.detail ?? 'only Lolly exports may be delivered');
+
+    const sha256 = sha256Hex(bytes);
+    const version = destinationVersion(destination);
+    // The verified format, not a caller-controlled header, owns the object MIME.
+    const mime = deliveryContentType(format);
+    const requestHash = sha256Hex(JSON.stringify({ destinationId, version, name, format, contentType: mime, size: bytes.length, sha256 }));
+    const idempotencyKey = String(req.headers['idempotency-key'] ?? '').trim();
+    if (idempotencyKey.length > 200) return sendError(res, 400, 'INVALID_INPUT', 'Idempotency-Key is at most 200 characters');
+    const principal = `user:${user.id}`;
+    if (idempotencyKey) {
+      const existing = await store.findDeliveryByIdempotency(principal, idempotencyKey);
+      if (existing) {
+        if (existing.requestHash !== requestHash) {
+          return sendError(res, 409, 'IDEMPOTENCY_KEY_REUSED', 'this Idempotency-Key was already used for a different delivery');
+        }
+        return sendJson(res, 200, deliveryWire(existing), { 'cache-control': 'private, no-store' });
+      }
+    }
+
+    const id = `del_${randomId(16)}`;
+    const approvalId = approvalChain ? `apr_${randomId(8)}` : undefined;
+    const sourceRef = `delivery/${id}/source`;
+    const now = new Date().toISOString();
+    const delivery: DeliveryRecord = {
+      id,
+      principal,
+      destinationId,
+      destinationVersion: version,
+      name,
+      format,
+      contentType: mime,
+      size: bytes.length,
+      sha256,
+      requestHash,
+      sourceRef,
+      state: approvalChain ? 'awaiting-approval' : 'queued',
+      attempt: 0,
+      ...(approvalId ? { approvalId } : {}),
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+      createdAt: now,
+      updatedAt: now,
+    };
+    try {
+      await blobs.put(sourceRef, bytes, mime);
+      await store.putDelivery(delivery);
+      if (approvalChain && approvalId) {
+        await store.putApproval(createApproval({
+          id: approvalId,
+          subjectType: 'delivery',
+          subjectRef: id,
+          title: `Deliver ${name} to ${destination.label}`,
+          chain: approvalChain,
+          nominees: [],
+          createdBy: user.id,
+          now,
+        }));
+      }
+    } catch (error) {
+      try { await blobs.delete(sourceRef); } catch { /* best-effort orphan cleanup */ }
+      // Postgres' (principal,idempotency_key) unique index closes the race
+      // between two replicas that both observed no record above. If this loser
+      // can now see the winner, return normal idempotency semantics rather than
+      // surfacing the constraint as a staging failure.
+      const raced = idempotencyKey
+        ? await store.findDeliveryByIdempotency(principal, idempotencyKey).catch(() => null)
+        : null;
+      if (raced) {
+        if (raced.requestHash !== requestHash) {
+          return sendError(res, 409, 'IDEMPOTENCY_KEY_REUSED', 'this Idempotency-Key was already used for a different delivery');
+        }
+        return sendJson(res, 200, deliveryWire(raced), { 'cache-control': 'private, no-store' });
+      }
+      return sendError(res, 502, 'DELIVERY_STAGE_FAILED', (error as Error).message);
+    }
+    await audit(principal, 'delivery.created', `delivery:${id}`, {
+      destinationId, name, format, size: bytes.length, sha256,
+      ...(approvalId ? { approvalId } : {}),
+    });
+    if (approvalChain && approvalId) {
+      const approval = await store.getApproval(approvalId);
+      const step = approval ? currentStep(approval) : null;
+      await audit(principal, 'approval.submit', `approval:${approvalId}`, {
+        chainId: approvalChain.id, subjectType: 'delivery', deliveryId: id,
+      });
+      if (step) {
+        await store.putMessage({
+          id: `msg_${randomId(8)}`,
+          kind: 'approval', severity: 'action', audience: { groups: step.approvers.groups },
+          title: `Approval requested: Deliver ${name} to ${destination.label}`,
+          body: `${user.email} asked for review on the “${step.name}” step.`,
+          cta: { label: 'Review', url: '/admin#/approvals' },
+          dismissible: true,
+        });
+        const reviewers = (await store.listUsers()).filter((candidate) =>
+          !candidate.disabledAt && candidate.id !== user.id && isEligible(step, candidate.groups));
+        notifier.email(reviewers.map((candidate) => candidate.email),
+          `Approval requested: Deliver ${name} to ${destination.label}`,
+          `${user.email} asked for review on the “${step.name}” step.\n\nReview it: ${config.instance.baseUrl}/admin#/approvals`);
+      }
+      notifier.event('approval.requested', {
+        id: approvalId, title: `Deliver ${name} to ${destination.label}`,
+        chainId: approvalChain.id, by: user.email,
+      });
+      return sendJson(res, 202, deliveryWire(delivery), {
+        location: `/api/v1/deliveries/${id}`, 'cache-control': 'private, no-store',
+      });
+    }
+    const completed = await runDelivery(delivery, bytes);
+    if (completed.state === 'failed') {
+      return sendError(res, 502, 'DELIVERY_FAILED', completed.error ?? 'delivery failed', { delivery: deliveryWire(completed) });
+    }
+    sendJson(res, 201, deliveryWire(completed), { location: `/api/v1/deliveries/${id}`, 'cache-control': 'private, no-store' });
+  });
+
+  // Publish one completed automation render by REFERENCE. The result blob is
+  // already the immutable output owned by the job, so this path never asks the
+  // caller to download and upload it again and never creates a second blob.
+  router.add('POST', '/api/v1/jobs/:id/deliveries', async (req, res, ctx) => {
+    const body = (await readJson(req, 32 * 1024)) as {
+      destinationId?: unknown;
+      name?: unknown;
+      format?: unknown;
+    } | null;
+    const destinationId = typeof body?.destinationId === 'string' ? body.destinationId.trim() : '';
+    const name = typeof body?.name === 'string' ? body.name.trim() : '';
+    if (!destinationId || !name || name.length > 200) {
+      return sendError(res, 400, 'INVALID_INPUT', 'destinationId and name (1-200 characters) are required');
+    }
+    const user = await requireAction(req, res, 'delivery.create', [`destination:${destinationId}`, '*']);
+    if (!user) return;
+    const destination = deliveryDestinations.get(destinationId);
+    const grants = await store.listGrants();
+    if (!destination || !destinationAvailableTo(
+      destination,
+      { userId: user.id, groups: user.groups, role: user.role as Role },
+      grants,
+    )) {
+      return sendError(res, 404, 'NOT_FOUND', 'no such delivery destination');
+    }
+    if (!deliverySecrets.has(destination.id)) {
+      return sendError(res, 503, 'DESTINATION_UNAVAILABLE', 'delivery destination credential is not configured');
+    }
+    const approvalChain = destination.approvalChain
+      ? await store.getChain(destination.approvalChain)
+      : null;
+    if (destination.approvalChain && !approvalChain) {
+      return sendError(res, 503, 'APPROVAL_CHAIN_UNAVAILABLE', 'the destination approval chain is not configured');
+    }
+    if (approvalChain && user.id.startsWith('svc_')) {
+      return sendError(res, 403, 'HUMAN_APPROVAL_REQUIRED', 'this destination requires a member to request human approval');
+    }
+
+    const jobPrincipal = user.id.startsWith('svc_') ? `service:${user.id}` : `user:${user.id}`;
+    const job = await store.getAutomationJob(ctx.params.id as string, jobPrincipal);
+    if (!job) return sendError(res, 404, 'NOT_FOUND', 'no such automation job');
+    if (job.state !== 'done') return sendError(res, 409, 'JOB_NOT_DONE', 'the automation job has not completed');
+    const format = job.verb === 'render' && typeof job.request.format === 'string'
+      ? job.request.format.trim().toLowerCase()
+      : '';
+    if (!format || !job.resultRef || !job.resultSha256) {
+      return sendError(res, 409, 'JOB_OUTPUT_NOT_DELIVERABLE', 'only a completed render output can be delivered');
+    }
+    if (body?.format !== undefined && (typeof body.format !== 'string' || body.format.trim().toLowerCase() !== format)) {
+      return sendError(res, 409, 'OUTPUT_FORMAT_MISMATCH', 'format must match the immutable render output');
+    }
+    if (!destination.formats.includes(format)) {
+      return sendError(res, 415, 'FORMAT_NOT_ALLOWED', `${format} is not allowed for this destination`);
+    }
+    const mime = deliveryContentType(format);
+    if (job.resultMime && job.resultMime.split(';', 1)[0] !== mime.split(';', 1)[0]) {
+      return sendError(res, 409, 'JOB_OUTPUT_NOT_DELIVERABLE', 'the render output MIME does not match its format');
+    }
+    const maxBytes = Math.min(config.delivery.maxBytes, destination.maxBytes ?? config.delivery.maxBytes);
+    const source = await blobs.get(job.resultRef);
+    if (!source) return sendError(res, 410, 'JOB_OUTPUT_GONE', 'the retained render output is no longer available');
+    if (!source.stat.size) return sendError(res, 409, 'JOB_OUTPUT_NOT_DELIVERABLE', 'the render output is empty');
+    if (source.stat.size > maxBytes) {
+      return sendError(res, 413, 'PAYLOAD_TOO_LARGE', `delivery exceeds the ${maxBytes} byte cap`);
+    }
+    let bytes: Buffer;
+    try {
+      bytes = await readBlobBody(source.body, maxBytes);
+    } catch {
+      return sendError(res, 413, 'PAYLOAD_TOO_LARGE', `delivery exceeds the ${maxBytes} byte cap`);
+    }
+    const sha256 = sha256Hex(bytes);
+    if (bytes.length !== source.stat.size || sha256 !== job.resultSha256) {
+      return sendError(res, 409, 'JOB_OUTPUT_CORRUPT', 'the retained render output failed its integrity check');
+    }
+    const gate = await verifyLollyExport(bytes, format);
+    if (!gate.ok) return sendError(res, 422, 'NOT_LOLLY_EXPORT', gate.detail ?? 'only Lolly exports may be delivered');
+
+    const version = destinationVersion(destination);
+    const requestHash = sha256Hex(JSON.stringify({
+      destinationId, version, name, format, contentType: mime, size: bytes.length, sha256,
+      sourceJobId: job.id,
+    }));
+    const idempotencyKey = String(req.headers['idempotency-key'] ?? '').trim();
+    if (idempotencyKey.length > 200) return sendError(res, 400, 'INVALID_INPUT', 'Idempotency-Key is at most 200 characters');
+    const principal = `user:${user.id}`;
+    if (idempotencyKey) {
+      const existing = await store.findDeliveryByIdempotency(principal, idempotencyKey);
+      if (existing) {
+        if (existing.requestHash !== requestHash) {
+          return sendError(res, 409, 'IDEMPOTENCY_KEY_REUSED', 'this Idempotency-Key was already used for a different delivery');
+        }
+        return sendJson(res, 200, deliveryWire(existing), { 'cache-control': 'private, no-store' });
+      }
+    }
+
+    const id = `del_${randomId(16)}`;
+    const approvalId = approvalChain ? `apr_${randomId(8)}` : undefined;
+    const now = new Date().toISOString();
+    const delivery: DeliveryRecord = {
+      id,
+      principal,
+      destinationId,
+      destinationVersion: version,
+      name,
+      format,
+      contentType: mime,
+      size: bytes.length,
+      sha256,
+      requestHash,
+      sourceRef: job.resultRef,
+      sourceJobId: job.id,
+      state: approvalChain ? 'awaiting-approval' : 'queued',
+      attempt: 0,
+      ...(approvalId ? { approvalId } : {}),
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+      createdAt: now,
+      updatedAt: now,
+    };
+    try {
+      await store.putDelivery(delivery);
+      if (approvalChain && approvalId) {
+        await store.putApproval(createApproval({
+          id: approvalId,
+          subjectType: 'delivery',
+          subjectRef: id,
+          title: `Deliver ${name} to ${destination.label}`,
+          chain: approvalChain,
+          nominees: [],
+          createdBy: user.id,
+          now,
+        }));
+      }
+    } catch (error) {
+      const raced = idempotencyKey
+        ? await store.findDeliveryByIdempotency(principal, idempotencyKey).catch(() => null)
+        : null;
+      if (raced) {
+        if (raced.requestHash !== requestHash) {
+          return sendError(res, 409, 'IDEMPOTENCY_KEY_REUSED', 'this Idempotency-Key was already used for a different delivery');
+        }
+        return sendJson(res, 200, deliveryWire(raced), { 'cache-control': 'private, no-store' });
+      }
+      return sendError(res, 502, 'DELIVERY_STAGE_FAILED', (error as Error).message);
+    }
+    await audit(principal, 'delivery.created', `delivery:${id}`, {
+      destinationId, name, format, size: bytes.length, sha256, sourceJobId: job.id,
+      ...(approvalId ? { approvalId } : {}),
+    });
+    if (approvalChain && approvalId) {
+      const approval = await store.getApproval(approvalId);
+      const step = approval ? currentStep(approval) : null;
+      await audit(principal, 'approval.submit', `approval:${approvalId}`, {
+        chainId: approvalChain.id, subjectType: 'delivery', deliveryId: id, sourceJobId: job.id,
+      });
+      if (step) {
+        await store.putMessage({
+          id: `msg_${randomId(8)}`,
+          kind: 'approval', severity: 'action', audience: { groups: step.approvers.groups },
+          title: `Approval requested: Deliver ${name} to ${destination.label}`,
+          body: `${user.email} asked for review on the “${step.name}” step.`,
+          cta: { label: 'Review', url: '/admin#/approvals' },
+          dismissible: true,
+        });
+        const reviewers = (await store.listUsers()).filter((candidate) =>
+          !candidate.disabledAt && candidate.id !== user.id && isEligible(step, candidate.groups));
+        notifier.email(reviewers.map((candidate) => candidate.email),
+          `Approval requested: Deliver ${name} to ${destination.label}`,
+          `${user.email} asked for review on the “${step.name}” step.\n\nReview it: ${config.instance.baseUrl}/admin#/approvals`);
+      }
+      notifier.event('approval.requested', {
+        id: approvalId, title: `Deliver ${name} to ${destination.label}`,
+        chainId: approvalChain.id, by: user.email,
+      });
+      return sendJson(res, 202, deliveryWire(delivery), {
+        location: `/api/v1/deliveries/${id}`, 'cache-control': 'private, no-store',
+      });
+    }
+    const completed = await runDelivery(delivery, bytes);
+    if (completed.state === 'failed') {
+      return sendError(res, 502, 'DELIVERY_FAILED', completed.error ?? 'delivery failed', { delivery: deliveryWire(completed) });
+    }
+    sendJson(res, 201, deliveryWire(completed), {
+      location: `/api/v1/deliveries/${id}`, 'cache-control': 'private, no-store',
+    });
+  });
+
+  router.add('GET', '/api/v1/deliveries', async (req, res) => {
+    const user = await requireDeliveryActor(req, res);
+    if (!user) return;
+    sendJson(res, 200, {
+      deliveries: (await store.listDeliveries(`user:${user.id}`)).map(deliveryWire),
+    }, { 'cache-control': 'private, no-store' });
+  });
+
+  router.add('GET', '/api/v1/deliveries/:id', async (req, res, ctx) => {
+    const user = await requireDeliveryActor(req, res);
+    if (!user) return;
+    const delivery = await store.getDelivery(ctx.params.id as string, `user:${user.id}`);
+    if (!delivery) return sendError(res, 404, 'NOT_FOUND', 'no such delivery');
+    sendJson(res, 200, deliveryWire(delivery), { 'cache-control': 'private, no-store' });
+  });
+
+  router.add('POST', '/api/v1/deliveries/:id/retry', async (req, res, ctx) => {
+    const user = await requireDeliveryActor(req, res);
+    if (!user) return;
+    const principal = `user:${user.id}`;
+    const delivery = await store.getDelivery(ctx.params.id as string, principal);
+    if (!delivery) return sendError(res, 404, 'NOT_FOUND', 'no such delivery');
+    if (delivery.state === 'delivered') return sendError(res, 409, 'ALREADY_DELIVERED', 'this delivery already completed');
+    if (delivery.state !== 'failed') {
+      return sendError(res, 409, 'DELIVERY_NOT_RETRYABLE', `a ${delivery.state} delivery cannot be retried`);
+    }
+    const destination = deliveryDestinations.get(delivery.destinationId);
+    if (!destination || destination.enabled !== true) {
+      return sendError(res, 410, 'DESTINATION_GONE', 'the delivery destination is no longer available');
+    }
+    const grants = await store.listGrants();
+    if (!destinationAvailableTo(
+      destination,
+      { userId: user.id, groups: user.groups, role: user.role as Role },
+      grants,
+    )) {
+      return sendError(res, 403, 'FORBIDDEN', 'delivery.create required for this destination');
+    }
+    if (destinationVersion(destination) !== delivery.destinationVersion) {
+      return sendError(res, 409, 'DESTINATION_CHANGED', 'the destination changed; create a new delivery against its current configuration');
+    }
+    const completed = await runDelivery(delivery);
+    if (completed.state === 'failed') {
+      return sendError(res, 502, 'DELIVERY_FAILED', completed.error ?? 'delivery failed', { delivery: deliveryWire(completed) });
+    }
+    sendJson(res, 200, deliveryWire(completed), { 'cache-control': 'private, no-store' });
+  });
 
   // ── service tokens (plans/35 wave 2) ──────────────────────────────────────
   const tokenWire = (t: { id: string; label: string; role: string; createdBy: string; createdAt: string; lastUsedAt?: string; revokedAt?: string }) =>
@@ -1844,8 +2424,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // inbox does not leave the asset stuck behind a closed approval. It sends
     // the submitter its own, more specific message, so the generic one below is
     // skipped rather than doubled up.
-    const wasSubmission = isTerminal(next.state) ? await settleAssetSubmission(next, user.id) : false;
-    if (isTerminal(next.state) && !wasSubmission) {
+    const wasDomainSubject = isTerminal(next.state)
+      ? (await settleAssetSubmission(next, user.id) || await settleDeliveryApproval(next, user.id))
+      : false;
+    if (isTerminal(next.state) && !wasDomainSubject) {
       await store.putMessage({
         id: `msg_${randomId(8)}`,
         kind: 'approval', severity: next.state === 'approved' ? 'info' : 'action',
@@ -1882,6 +2464,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // Withdrawing the review of a catalog submission returns the asset too:
     // leaving it `submitted` behind a closed approval would strand it.
     await settleAssetSubmission(next, user.id);
+    await settleDeliveryApproval(next, user.id);
     sendJson(res, 200, serializeApproval(next, user.id, undefined, await actorsMap()));
   });
 
@@ -5378,7 +5961,19 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   router.add('DELETE', '/api/v1/jobs/:id', async (req, res, ctx) => {
     const caller = await automationCaller(req);
     if (!caller) return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
-    return (await automationJobs.remove(ctx.params.id!, caller.principal)) ? sendJson(res, 200, { ok: true }) : sendError(res, 404, 'NOT_FOUND', 'job not found');
+    const job = await automationJobs.get(ctx.params.id!, caller.principal);
+    if (!job) return sendError(res, 404, 'NOT_FOUND', 'job not found');
+    const deliveryPrincipal = caller.user ? `user:${caller.user.id}` : caller.principal;
+    if (await store.findDeliveryBySourceJob(deliveryPrincipal, job.id)) {
+      return sendError(res, 409, 'JOB_OUTPUT_IN_USE', 'a delivery retains this immutable job output');
+    }
+    if (await automationJobs.remove(job.id, caller.principal)) return sendJson(res, 200, { ok: true });
+    // A delivery may have won the race after the preflight. The store-level
+    // reference guard keeps the blob intact; report the real conflict.
+    if (await automationJobs.get(job.id, caller.principal)) {
+      return sendError(res, 409, 'JOB_OUTPUT_IN_USE', 'a delivery retains this immutable job output');
+    }
+    return sendError(res, 404, 'NOT_FOUND', 'job not found');
   });
 
   router.add('GET', '/render/:spec', async (req, res, ctx) => {
@@ -6125,7 +6720,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     res.setHeader('vary', 'Origin');
     if (req.method === 'OPTIONS') {
       res.setHeader('access-control-allow-methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-      res.setHeader('access-control-allow-headers', 'content-type, x-lolly-client, if-none-match');
+      res.setHeader('access-control-allow-headers', 'content-type, x-lolly-client, if-none-match, idempotency-key');
       res.setHeader('access-control-max-age', '600');
       res.writeHead(204);
       res.end();

@@ -42,6 +42,10 @@ const ROLE_ACTIONS: Record<Role, string[]> = (() => {
     'session.create', 'session.edit', 'session.delete', 'session.share',
     'project.create',
     'export.download', 'export.request',
+    // Sending to an organization target is a member workflow once an owner has
+    // configured and exposed that fixed target. Per-destination grants/groups
+    // can narrow it; personal targets are outside this action entirely.
+    'delivery.create',
     'link.create',
   ];
   const author = [...member, 'catalog.submit'];

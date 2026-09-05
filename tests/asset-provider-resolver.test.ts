@@ -24,3 +24,47 @@ test('hosted net assets are allowlisted, optimized and content-cached', async ()
 });
 
 const digest = (bytes: number[]): string => `sha256-${createHash('sha256').update(new Uint8Array(bytes)).digest('base64')}`;
+
+const netRef = { raw: 'net://assets.example/a.png', provider: 'net', scope: 'assets.example', path: 'a.png', query: {} };
+
+test('chunked or dishonest bodies are stopped and cancelled at the decoded byte limit', async () => {
+  for (const headers of [{}, { 'content-length': '1' }, { 'content-length': '1000' }]) {
+    let cancelled = false, pulls = 0;
+    const resolve = createHostedAssetResolver({
+      allowedOrigins: ['https://assets.example'], maxBytes: 5,
+      fetchImpl: async () => new Response(new ReadableStream({
+        pull(controller) { pulls++; controller.enqueue(new Uint8Array(3)); },
+        cancel() { cancelled = true; },
+      }), { headers }),
+    });
+    await assert.rejects(resolve(netRef), /byte limit/);
+    assert.equal(cancelled, true);
+    assert.ok(pulls <= 3, `must stop pulling, got ${pulls}`);
+  }
+});
+
+test('source and optimized output limits also cover CMS drivers', async () => {
+  const ref = { ...netRef, provider: 'cms' };
+  const source = createHostedAssetResolver({ allowedOrigins: [], maxBytes: 2, cms: async () => ({ bytes: new Uint8Array(3), mime: 'image/png' }) });
+  await assert.rejects(source(ref), /source exceeds/);
+  const output = createHostedAssetResolver({ allowedOrigins: [], maxBytes: 2,
+    cms: async () => ({ bytes: new Uint8Array(1), mime: 'image/png' }),
+    optimize: async () => ({ bytes: new Uint8Array(3), mime: 'image/png', stages: [] }),
+  });
+  await assert.rejects(output(ref), /output exceeds/);
+});
+
+test('LRU is entry-bounded and oversized results are not retained', async () => {
+  for (const limits of [{ cacheMaxEntries: 1 }, { cacheMaxBytes: 1 }]) {
+    let optimized = 0;
+    const resolve = createHostedAssetResolver({ allowedOrigins: ['https://assets.example'], ...limits,
+      fetchImpl: async () => new Response(new Uint8Array([1])),
+      optimize: async (bytes) => { optimized++; return { bytes, mime: 'image/png', stages: [] }; },
+    });
+    await resolve(netRef);
+    await resolve({ ...netRef, path: 'b.png' });
+    await resolve(netRef);
+    assert.equal(optimized, 3);
+  }
+  assert.throws(() => createHostedAssetResolver({ allowedOrigins: [], maxBytes: Infinity }), /limits/);
+});

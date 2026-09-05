@@ -1,7 +1,7 @@
 # Status and roadmap
 
 The honest state of this deploy. Written to be safe to hand to an auditor or a CIO: the
-gaps are named, not smoothed over. Verified against the repository on **2026-08-25**.
+gaps are named, not smoothed over. Verified against the repository on **2026-09-05**.
 
 ![The client fleet - which shell and engine versions are talking to this deployment](shots/client-fleet.svg)
 
@@ -9,7 +9,7 @@ gaps are named, not smoothed over. Verified against the repository on **2026-08-
 
 | | Control plane (this repo) | Lolly OSS |
 |---|---|---|
-| Tests | 786 (783 pass, 3 conditional skips, ~9 s) | 5,220 (5,189 pass, 31 conditional skips, ~51 s) |
+| Tests | 837 (833 pass, 4 conditional skips, ~21 s) | 5,220 (5,189 pass, 31 conditional skips, ~51 s) |
 | CI | 4 blocking gates: test (with a real Postgres service), typecheck, audit (npm audit + SBOM freshness), package (image build) | 7 blocking gates incl. SBOM drift + license checks |
 | Runtime deps | 7 (2 vendored); `npm audit`: 0 findings | 1 npm (+ Rust for desktop shells) |
 | Compliance artefacts | `SECURITY.md`, CycloneDX `sbom.cdx.json` (CI-checked for drift) | SBOM (CI-gated), SECURITY.md with threat model, third-party notices |
@@ -35,6 +35,13 @@ gaps are named, not smoothed over. Verified against the repository on **2026-08-
 - Catalog submit: members with `catalog.submit` add assets from a browser or the CLI, with a
   size cap, per-group quotas, checksum dedupe, an operator-pluggable pre-store scan hook, C2PA
   detection, and optional review through an approval chain.
+- Outbound delivery: fixed, group/RBAC-scoped organization targets with S3-compatible, WebDAV
+  and signed-HTTPS adapters, shell presentation beside (never over) personal targets, C2PA and
+  byte gates, optional approval-chain binding over immutable staged bytes, immutable durable
+  receipts, idempotency, retry and audit. Completed automation renders publish by reference to
+  the same retained bytes, scoped to the job principal and protected from deletion while in
+  use. No target is configured by default, and personal device targets remain outside the
+  control plane.
 - Org-defined asset metadata: an org names its own fields (text/select/date/url, required or
   not) in the governance document and fills them in on pack, federated and instance-owned
   assets alike through `catalog.edit`; the values ride the feed and the search haystack.

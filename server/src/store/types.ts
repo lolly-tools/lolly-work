@@ -21,6 +21,7 @@ import type { AssetMetaRecord, CatalogFieldDef } from '../catalog/asset-meta.ts'
 import type { CollectionRecord } from '../catalog/collections.ts';
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderRecord, ProviderState } from '../catalog/providers/types.ts';
+import type { DeliveryRecord } from '../delivery/types.ts';
 
 export interface UserRecord {
   id: string;
@@ -105,6 +106,9 @@ export interface AutomationJobRecord {
   finishedAt?: string;
   resultRef?: string;
   resultMime?: string;
+  /** SHA-256 of the immutable result bytes. Provider ETags are not content
+   * digests (multipart S3 in particular), so consumers bind to this value. */
+  resultSha256?: string;
   error?: string;
   callbackUrl?: string;
   callbackFailed?: boolean;
@@ -333,6 +337,14 @@ export interface Store {
   listAutomationJobs(principal: string): Promise<AutomationJobRecord[]>;
   findAutomationJobByIdempotency(principal: string, key: string): Promise<AutomationJobRecord | null>;
   deleteAutomationJob(id: string, principal: string): Promise<boolean>;
+
+  // Organization delivery history. Reads and idempotency lookup are scoped to
+  // the requesting principal; destination credentials never enter this store.
+  putDelivery(delivery: DeliveryRecord): Promise<void>;
+  getDelivery(id: string, principal: string): Promise<DeliveryRecord | null>;
+  listDeliveries(principal: string): Promise<DeliveryRecord[]>;
+  findDeliveryByIdempotency(principal: string, key: string): Promise<DeliveryRecord | null>;
+  findDeliveryBySourceJob(principal: string, jobId: string): Promise<DeliveryRecord | null>;
 
   // rbac / policy. Grants are identified by their full tuple (no exposed id):
   // put is idempotent on the exact tuple, delete removes every exact match.

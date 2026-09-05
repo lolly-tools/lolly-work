@@ -83,6 +83,11 @@
           "summary": "Server renders, signed links, guest sessions, watermarks, provenance."
         },
         {
+          "slug": "delivery",
+          "title": "Outbound delivery",
+          "summary": "Fixed organization destinations, durable receipts, S3/WebDAV/signed-HTTPS adapters, automation output references, retries, and the personal/organization boundary."
+        },
+        {
           "slug": "c2pa",
           "title": "Signing exports (C2PA)",
           "summary": "Give this deploy a signing identity so exports carry a verifiable credential."

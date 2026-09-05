@@ -25,6 +25,7 @@ import type { AssetMetaRecord, CatalogFieldDef } from '../catalog/asset-meta.ts'
 import { sortCollections, type CollectionRecord } from '../catalog/collections.ts';
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderFragment, ProviderKind, ProviderRecord } from '../catalog/providers/types.ts';
+import type { DeliveryRecord } from '../delivery/types.ts';
 import {
   SESSION_REVISION_LIMIT, effectiveGroups,
   type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type ListUsersPageOpts, type LocalGroupRecord, type ProjectRecord,
@@ -52,9 +53,39 @@ function automationJobFromRow(r: Record<string, unknown>): AutomationJobRecord {
     createdAt: new Date(r.created_at as string).toISOString(), updatedAt: new Date(r.updated_at as string).toISOString(),
     ...(r.finished_at ? { finishedAt: new Date(r.finished_at as string).toISOString() } : {}),
     ...(r.result_ref ? { resultRef: r.result_ref as string } : {}), ...(r.result_mime ? { resultMime: r.result_mime as string } : {}),
+    ...(r.result_sha256 ? { resultSha256: r.result_sha256 as string } : {}),
     ...(r.error ? { error: r.error as string } : {}), ...(r.callback_url ? { callbackUrl: r.callback_url as string } : {}),
     ...(r.callback_failed ? { callbackFailed: true } : {}), ...(r.progress ? { progress: r.progress as { done: number; total: number } } : {}),
     ...(r.idempotency_key ? { idempotencyKey: r.idempotency_key as string } : {}), priority: Number(r.priority ?? 0), attempt: Number(r.attempt ?? 0),
+  };
+}
+
+function deliveryFromRow(r: Record<string, unknown>): DeliveryRecord {
+  return {
+    id: r.id as string,
+    principal: r.principal as string,
+    destinationId: r.destination_id as string,
+    destinationVersion: r.destination_version as string,
+    name: r.name as string,
+    format: r.format as string,
+    contentType: r.content_type as string,
+    size: Number(r.size),
+    sha256: r.sha256 as string,
+    requestHash: r.request_hash as string,
+    sourceRef: r.source_ref as string,
+    ...(r.source_job_id ? { sourceJobId: r.source_job_id as string } : {}),
+    state: r.state as DeliveryRecord['state'],
+    attempt: Number(r.attempt ?? 0),
+    ...(r.approval_id ? { approvalId: r.approval_id as string } : {}),
+    ...(r.idempotency_key ? { idempotencyKey: r.idempotency_key as string } : {}),
+    ...(r.remote_id ? { remoteId: r.remote_id as string } : {}),
+    ...(r.url ? { url: r.url as string } : {}),
+    ...(r.delivered_sha256 ? { deliveredSha256: r.delivered_sha256 as string } : {}),
+    ...(r.transformation ? { transformation: r.transformation as DeliveryRecord['transformation'] } : {}),
+    ...(r.error ? { error: r.error as string } : {}),
+    createdAt: new Date(r.created_at as string).toISOString(),
+    updatedAt: new Date(r.updated_at as string).toISOString(),
+    ...(r.delivered_at ? { deliveredAt: new Date(r.delivered_at as string).toISOString() } : {}),
   };
 }
 
@@ -434,10 +465,10 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
 
     async putAutomationJob(job) {
       await pool.query(
-        `insert into automation_jobs (id, principal, verb, request, state, created_at, updated_at, finished_at, result_ref, result_mime, error, callback_url, callback_failed, progress, idempotency_key, priority, attempt)
-         values ($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,$17)
-         on conflict (id) do update set state=excluded.state, updated_at=excluded.updated_at, finished_at=excluded.finished_at, result_ref=excluded.result_ref, result_mime=excluded.result_mime, error=excluded.error, callback_failed=excluded.callback_failed, progress=excluded.progress, priority=excluded.priority, attempt=excluded.attempt`,
-        [job.id, job.principal, job.verb, JSON.stringify(job.request), job.state, job.createdAt, job.updatedAt, job.finishedAt ?? null, job.resultRef ?? null, job.resultMime ?? null, job.error ?? null, job.callbackUrl ?? null, job.callbackFailed ?? false, job.progress ? JSON.stringify(job.progress) : null, job.idempotencyKey ?? null, job.priority, job.attempt],
+        `insert into automation_jobs (id, principal, verb, request, state, created_at, updated_at, finished_at, result_ref, result_mime, result_sha256, error, callback_url, callback_failed, progress, idempotency_key, priority, attempt)
+         values ($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16,$17,$18)
+         on conflict (id) do update set state=excluded.state, updated_at=excluded.updated_at, finished_at=excluded.finished_at, result_ref=excluded.result_ref, result_mime=excluded.result_mime, result_sha256=excluded.result_sha256, error=excluded.error, callback_failed=excluded.callback_failed, progress=excluded.progress, priority=excluded.priority, attempt=excluded.attempt`,
+        [job.id, job.principal, job.verb, JSON.stringify(job.request), job.state, job.createdAt, job.updatedAt, job.finishedAt ?? null, job.resultRef ?? null, job.resultMime ?? null, job.resultSha256 ?? null, job.error ?? null, job.callbackUrl ?? null, job.callbackFailed ?? false, job.progress ? JSON.stringify(job.progress) : null, job.idempotencyKey ?? null, job.priority, job.attempt],
       );
     },
     async getAutomationJob(id, principal) {
@@ -453,8 +484,56 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       return rows[0] ? automationJobFromRow(rows[0]) : null;
     },
     async deleteAutomationJob(id, principal) {
-      const { rowCount } = await pool.query('delete from automation_jobs where id=$1 and principal=$2', [id, principal]);
+      const { rowCount } = await pool.query(
+        `delete from automation_jobs
+         where id=$1 and principal=$2
+           and not exists (select 1 from deliveries where source_job_id=$1)`,
+        [id, principal],
+      );
       return (rowCount ?? 0) > 0;
+    },
+
+    async putDelivery(delivery) {
+      await pool.query(
+        `insert into deliveries (
+           id, principal, destination_id, destination_version, name, format,
+           content_type, size, sha256, request_hash, source_ref, source_job_id, state, attempt,
+           approval_id, idempotency_key, remote_id, url, delivered_sha256, transformation,
+           error, created_at, updated_at, delivered_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
+         on conflict (id) do update set
+           state=excluded.state, attempt=excluded.attempt, remote_id=excluded.remote_id,
+           url=excluded.url, delivered_sha256=excluded.delivered_sha256,
+           transformation=excluded.transformation, error=excluded.error,
+           updated_at=excluded.updated_at, delivered_at=excluded.delivered_at`,
+        [
+          delivery.id, delivery.principal, delivery.destinationId, delivery.destinationVersion,
+          delivery.name, delivery.format, delivery.contentType, delivery.size, delivery.sha256,
+          delivery.requestHash, delivery.sourceRef, delivery.sourceJobId ?? null, delivery.state, delivery.attempt,
+          delivery.approvalId ?? null, delivery.idempotencyKey ?? null, delivery.remoteId ?? null, delivery.url ?? null,
+          delivery.deliveredSha256 ?? null, delivery.transformation ?? null, delivery.error ?? null,
+          delivery.createdAt, delivery.updatedAt, delivery.deliveredAt ?? null,
+        ],
+      );
+    },
+    async getDelivery(id, principal) {
+      const { rows } = await pool.query('select * from deliveries where id=$1 and principal=$2', [id, principal]);
+      return rows[0] ? deliveryFromRow(rows[0]) : null;
+    },
+    async listDeliveries(principal) {
+      const { rows } = await pool.query('select * from deliveries where principal=$1 order by created_at desc', [principal]);
+      return rows.map(deliveryFromRow);
+    },
+    async findDeliveryByIdempotency(principal, key) {
+      const { rows } = await pool.query('select * from deliveries where principal=$1 and idempotency_key=$2', [principal, key]);
+      return rows[0] ? deliveryFromRow(rows[0]) : null;
+    },
+    async findDeliveryBySourceJob(principal, jobId) {
+      const { rows } = await pool.query(
+        'select * from deliveries where principal=$1 and source_job_id=$2 order by created_at desc limit 1',
+        [principal, jobId],
+      );
+      return rows[0] ? deliveryFromRow(rows[0]) : null;
     },
 
     async listGrants() {
