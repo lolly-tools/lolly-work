@@ -4,9 +4,10 @@ import { randomUUID, createHash, createHmac } from 'node:crypto';
 import type { BlobStore } from '../blobs/types.ts';
 import { readBlobBody } from '../blobs/types.ts';
 import type { AutomationJobRecord, Store } from '../store/types.ts';
+import { DurableAutomationRunner, type DurableExecutor } from './durable-runner.ts';
 
 export type AutomationJob = AutomationJobRecord;
-type JobStore = Pick<Store, 'putAutomationJob' | 'getAutomationJob' | 'listAutomationJobs' | 'findAutomationJobByIdempotency' | 'deleteAutomationJob'>;
+type JobStore = Pick<Store, 'putAutomationJob' | 'getAutomationJob' | 'listAutomationJobs' | 'findAutomationJobByIdempotency' | 'deleteAutomationJob' | 'claimAutomationJob' | 'renewAutomationJob' | 'saveClaimedAutomationJob'>;
 export interface JobOutput { mime: string; bytes: Uint8Array; value?: unknown }
 
 export interface AutomationQueueOptions {
@@ -32,7 +33,20 @@ export class AutomationQueue {
   private readonly running = new Set<string>();
   private readonly cancelled = new Set<string>();
   private active = 0;
+  private durable?: DurableAutomationRunner;
+  private durableVerbs = new Set<string>();
+  private durableTimer?: ReturnType<typeof setInterval>;
   constructor(options: AutomationQueueOptions = {}) { this.options = options; }
+
+  enableDurable(executors: Record<string, DurableExecutor>): void {
+    if (!this.options.store || !this.options.blobs) throw new Error('Durable execution needs metadata and blob stores.');
+    if (this.durable) throw new Error('Durable executors already registered.');
+    this.durableVerbs = new Set(Object.keys(executors));
+    this.durable = new DurableAutomationRunner(this.options.store, this.options.blobs, executors, { concurrency: this.options.maxConcurrent, onComplete: job => this.callback(job) });
+    const poll = (): void => { void this.durable?.poll().catch(() => {}); };
+    this.durableTimer = setInterval(poll, 1000); this.durableTimer.unref(); poll();
+  }
+  stop(): void { clearInterval(this.durableTimer); this.durable?.stop(); }
 
   async create(principal: string, verb: string, request: Record<string, unknown>, run: (job: AutomationJob) => Promise<JobOutput>, idempotencyKey?: string): Promise<{ job: AutomationJob; reused: boolean }> {
     if (idempotencyKey) {
@@ -45,7 +59,16 @@ export class AutomationQueue {
     const now = new Date().toISOString();
     const priority = Math.max(0, Math.min(9, Math.trunc(Number(request.priority ?? 0) || 0)));
     const job: AutomationJob = { id: randomUUID(), principal, verb, request: structuredClone(request), state: 'queued', createdAt: now, updatedAt: now, priority, attempt: 0, ...(typeof request.callbackUrl === 'string' ? { callbackUrl: request.callbackUrl } : {}), ...(idempotencyKey ? { idempotencyKey } : {}) };
-    await this.save(job);
+    try { await this.save(job); }
+    catch (error) {
+      // The durable unique constraint, not this process's initial lookup, wins
+      // a concurrent submission race across replicas.
+      const existing = idempotencyKey ? await this.findByKey(principal, idempotencyKey) : null;
+      if (!existing) throw error;
+      if (existing.verb !== verb || JSON.stringify(existing.request) !== JSON.stringify(request)) throw new Error('IDEMPOTENCY_KEY_REUSED');
+      return { job: existing, reused: true };
+    }
+    if (this.durableVerbs.has(verb)) { void this.durable?.poll().catch(() => {}); return { job, reused: false }; }
     this.pending.push({ job, work: run });
     this.pending.sort((a, b) => b.job.priority - a.job.priority || a.job.createdAt.localeCompare(b.job.createdAt));
     queueMicrotask(() => this.drain());
@@ -66,7 +89,9 @@ export class AutomationQueue {
     const job = await this.get(id, principal);
     if (!job?.resultRef || !job.resultMime || job.state !== 'done' || !this.options.blobs) return null;
     const blob = await this.options.blobs.get(job.resultRef); if (!blob) return null;
-    return { mime: job.resultMime, bytes: new Uint8Array(await readBlobBody(blob.body)) };
+    const bytes = new Uint8Array(await readBlobBody(blob.body, 256 * 1024 * 1024));
+    if (job.resultSha256 && createHash('sha256').update(bytes).digest('hex') !== job.resultSha256) throw new Error('Automation result integrity check failed.');
+    return { mime: job.resultMime, bytes };
   }
 
   async remove(id: string, principal: string): Promise<boolean> {
@@ -82,7 +107,12 @@ export class AutomationQueue {
 
   async save(job: AutomationJob): Promise<void> {
     if (this.cancelled.has(job.id)) return;
-    job.updatedAt = new Date().toISOString(); this.jobs.set(job.id, structuredClone(job));
+    if (job.leaseToken) {
+      if (!await this.options.store?.saveClaimedAutomationJob(job)) throw new Error('Automation execution lease was lost.');
+      return;
+    }
+    job.updatedAt = new Date().toISOString();
+    if (!this.options.store) this.jobs.set(job.id, structuredClone(job));
     await this.options.store?.putAutomationJob(job);
   }
 
@@ -146,8 +176,9 @@ export class AutomationQueue {
     const signature = createHmac('sha256', this.options.callbackSecret).update(`${timestamp}.${body}`).digest('hex');
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        const response = await fetchImpl(job.callbackUrl, { method: 'POST', headers: { 'content-type': 'application/json', 'x-lolly-timestamp': timestamp, 'x-lolly-signature': `sha256=${signature}` }, body });
-        if (response.ok) return;
+        const response = await fetchImpl(job.callbackUrl, { method: 'POST', headers: { 'content-type': 'application/json', 'x-lolly-timestamp': timestamp, 'x-lolly-signature': `sha256=${signature}` }, body, signal: AbortSignal.timeout(10_000), redirect: 'error' });
+        await response.body?.cancel();
+        if (response.ok) { job.callbackFailed = false; await this.save(job); return; }
       } catch { /* bounded retry below */ }
       if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 25 * (2 ** attempt)));
     }

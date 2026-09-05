@@ -101,7 +101,7 @@ function savedCookie(): string | null {
   try { return readFileSync(SESSION_FILE, 'utf8').trim() || null; } catch { return null; }
 }
 
-async function call(path: string, opts: { method?: string; body?: unknown; headers?: Record<string, string> } = {}): Promise<unknown> {
+async function response(path: string, opts: { method?: string; body?: unknown; headers?: Record<string, string> } = {}): Promise<Response> {
   const cookie = savedCookie();
   // A service token (plans/35 wave 2) outranks a stored session: automation
   // passing --token or LW_TOKEN means "act as the automation", never as
@@ -124,6 +124,11 @@ async function call(path: string, opts: { method?: string; body?: unknown; heade
     // answer is always the same: the instance is elsewhere, or is not up.
     fail(`cannot reach ${base} — start the instance, or point at it with --base <url> (or LW_BASE)`);
   }
+  return res;
+}
+
+async function call(path: string, opts: { method?: string; body?: unknown; headers?: Record<string, string> } = {}): Promise<unknown> {
+  const res = await response(path, opts);
   const data = await res.json().catch(() => null);
   if (!res.ok) {
     const err = (data as { error?: { code?: string; message?: string } })?.error;
@@ -204,6 +209,54 @@ async function promptHidden(prompt: string): Promise<string> {
 const [cmd, sub] = positionals;
 
 switch (cmd) {
+  case 'renders':
+  case 'render-batches': {
+    const batch = cmd === 'render-batches';
+    const path = `/api/v1/${cmd}`;
+    const action = sub ?? 'list';
+    const id = positionals[2];
+    const keyHeaders: Record<string, string> = values['idempotency-key'] ? { 'idempotency-key': values['idempotency-key'] } : {};
+    let value: unknown;
+    if (action === 'submit') {
+      if (!id) fail(`${cmd} submit <request.json> [--idempotency-key <key>]`);
+      let body: unknown;
+      try { body = JSON.parse(readFileSync(id, 'utf8')); }
+      catch { fail(`cannot read render request JSON: ${id}`); }
+      value = await call(path, { method: 'POST', body, headers: keyHeaders });
+    } else if (action === 'list') {
+      value = await call(path);
+    } else if (['show', 'retry', 'cancel', ...(batch ? ['manifest'] : ['output', 'evidence'])].includes(action)) {
+      if (!id) fail(`${cmd} ${action} <id>`);
+      const resource = `${path}/${encodeURIComponent(id)}`;
+      if (action === 'output' || action === 'manifest' || action === 'evidence') {
+        if (!values.out) fail(`${cmd} ${action} <id> --out <file>`);
+        const res = await response(`${resource}/${action === 'output' ? 'output/default' : action}`);
+        if (!res.ok) {
+          const body = await res.json().catch(() => null) as { error?: { code?: string; message?: string } } | null;
+          fail(`${res.status} ${body?.error?.code ?? ''} ${body?.error?.message ?? ''}`.trim());
+        }
+        const bytes = Buffer.from(await res.arrayBuffer());
+        writeFileSync(values.out, bytes);
+        out({ file: values.out, bytes: bytes.byteLength });
+        if (!values.json) console.log(`${values.out} (${bytes.byteLength} bytes)`);
+        break;
+      }
+      value = await call(`${resource}${action === 'retry' ? '/retry' : ''}`, {
+        method: action === 'retry' ? 'POST' : action === 'cancel' ? 'DELETE' : 'GET', headers: keyHeaders,
+      });
+    } else fail(`${cmd}: use submit, list, show, ${batch ? 'manifest' : 'output, evidence'}, cancel or retry`);
+    if (values.json) out(value);
+    else {
+      type Row = { id: string; state: string; attempt: number; request: { toolId: string; format: string }; progress?: { done: number; total: number; succeeded: number; failed: number; cancelled: number }; error?: { message: string } };
+      const rows = action === 'list' ? (value as Record<string, Row[]>)[batch ? 'batches' : 'renders']! : [value as Row];
+      for (const row of rows) {
+        const progress = row.progress;
+        const detail = progress ? `${progress.done}/${progress.total} rows complete (${progress.succeeded} succeeded, ${progress.failed} failed, ${progress.cancelled} cancelled)` : `attempt ${row.attempt}`;
+        console.log(`${row.id}  ${row.state}  ${row.request.toolId}.${row.request.format}  ${detail}${row.error ? `  ${row.error.message}` : ''}`);
+      }
+    }
+    break;
+  }
   case 'login': {
     if (values.cookie) {
       mkdirSync(CONFIG_DIR, { recursive: true });
@@ -1295,6 +1348,11 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   apply <file> [--dry-run] [--prune]   apply a governance document (dry-run shows the diff; prune removes store-only entries)
   links [--all] · links revoke <id>
   destinations                list the fixed organization targets available to this principal (no secrets)
+  renders submit <request.json> [--idempotency-key <key>]   submit a recoverable single render
+  renders [list|show <id>|cancel <id>|retry <id>] · renders output <id> --out <file>
+  renders evidence <id> --out <file>   download the retained execution receipt
+  render-batches submit <request.json> [--idempotency-key <key>]   submit durable rows
+  render-batches [list|show <id>|cancel <id>|retry <id>] · render-batches manifest <id> --out <file>
   deliveries [list|show <id>|retry <id>]
   deliveries publish <jobId> --destination <id> --name "…" [--idempotency-key <key>]   publish a retained render output by reference
   providers [list] · providers add <id> --kind … --label "…" [--options/--mapping/--exposure {json}]

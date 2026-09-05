@@ -147,6 +147,9 @@ export interface LoadedTool {
 }
 
 export interface Runtime {
+  getModel(): { id: string; value: unknown }[];
+  destroy(): void;
+  droppedAssets: unknown[];
   getHydrated(): string;
   export(node: unknown, format: string, opts?: Record<string, unknown>): Promise<Blob>;
   hookErrors: Array<{ hook: string; message: string }>;

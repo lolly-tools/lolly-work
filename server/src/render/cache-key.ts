@@ -1,14 +1,14 @@
 /**
  * Render cache key (plans/07 §4): toolId + toolVersion + engineVersion +
- * catalogVersion + policyVersion + sorted-normalized query. Policy edits and
- * pack publishes invalidate exactly the affected keys - the brand-refresh
- * ripple depends on this composition.
+ * catalogVersion + policyVersion + canonical typed values and prepared context.
+ * The context includes loaded source content, profile, dimensions and watermark.
+ * This request key is not a complete dependency lock.
  *
  * The render pipeline itself (fourth HostV1 shell - jsdom fast path, with
  * Chromium workers as a later addition - see pipeline.ts) consumes this key
  * contract; it was fixed first because links sign over it.
  */
-import { sha256Hex } from '../lib/crypto.ts';
+import { canonicalJson, sha256Hex } from '../lib/crypto.ts';
 
 export interface RenderKeyParts {
   toolId: string;
@@ -18,18 +18,15 @@ export interface RenderKeyParts {
   policyVersion: string;
   format: string;
   params: Record<string, unknown>;
+  /** Output-affecting context: profile, dimensions, watermark, loaded sources and renderer. */
+  context?: Record<string, unknown>;
 }
 
-/** Sorted, duplicate-free, value-stringified param normalization. */
+/** Keep nested JSON and value types distinct; object key order is insignificant. */
 export function normalizeParams(params: Record<string, unknown>): string {
-  return Object.keys(params)
-    .sort()
-    .map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(String(params[k]))}`)
-    .join('&');
+  return canonicalJson(params);
 }
 
 export function renderCacheKey(parts: RenderKeyParts): string {
-  return sha256Hex(
-    [parts.toolId, parts.toolVersion, parts.engineVersion, parts.catalogVersion, parts.policyVersion, parts.format, normalizeParams(parts.params)].join('\n'),
-  );
+  return sha256Hex(canonicalJson({ apiVersion: 2, ...parts }));
 }

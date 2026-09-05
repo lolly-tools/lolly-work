@@ -26,6 +26,7 @@ import { sortCollections, type CollectionRecord } from '../catalog/collections.t
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderFragment, ProviderKind, ProviderRecord } from '../catalog/providers/types.ts';
 import type { DeliveryRecord } from '../delivery/types.ts';
+import { createPostgresRenderStore } from '../renders/postgres.ts';
 import {
   SESSION_REVISION_LIMIT, effectiveGroups,
   type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type ListUsersPageOpts, type LocalGroupRecord, type ProjectRecord,
@@ -50,6 +51,8 @@ function automationJobFromRow(r: Record<string, unknown>): AutomationJobRecord {
   return {
     id: r.id as string, principal: r.principal as string, verb: r.verb as string,
     request: (r.request as Record<string, unknown>) ?? {}, state: r.state as AutomationJobRecord['state'],
+    leaseOwner: r.lease_owner as string | undefined, leaseToken: Number(r.lease_token ?? 0),
+    ...(r.lease_until ? { leaseUntil: new Date(r.lease_until as string).toISOString() } : {}),
     createdAt: new Date(r.created_at as string).toISOString(), updatedAt: new Date(r.updated_at as string).toISOString(),
     ...(r.finished_at ? { finishedAt: new Date(r.finished_at as string).toISOString() } : {}),
     ...(r.result_ref ? { resultRef: r.result_ref as string } : {}), ...(r.result_mime ? { resultMime: r.result_mime as string } : {}),
@@ -288,6 +291,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
   });
 
   return {
+    ...createPostgresRenderStore(pool),
     async upsertUserBySub(user) {
       // Incoming groups are IdP-authoritative; preserve any stored localGroups
       // and derive the effective union + role in JS (mirrors the memory driver).
@@ -463,6 +467,25 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       return (rowCount ?? 0) > 0;
     },
 
+    async claimAutomationJob(owner, verbs, leaseMs) {
+      const { rows } = await pool.query(
+        `update automation_jobs j set state='running', lease_owner=$1, lease_until=now()+($3 * interval '1 millisecond'), lease_token=j.lease_token+1, attempt=j.attempt+1, updated_at=now()
+         from (select id from automation_jobs where verb=any($2::text[]) and (state='queued' or (state='running' and (lease_until is null or lease_until < now())))
+           order by priority desc, created_at for update skip locked limit 1) candidate
+         where j.id=candidate.id returning j.*`, [owner, verbs, leaseMs]);
+      return rows[0] ? automationJobFromRow(rows[0]) : null;
+    },
+    async renewAutomationJob(job, leaseMs) {
+      const { rowCount } = await pool.query(`update automation_jobs set lease_until=now()+($4 * interval '1 millisecond') where id=$1 and lease_owner=$2 and lease_token=$3 and state='running' and lease_until > now()`, [job.id, job.leaseOwner, job.leaseToken, leaseMs]);
+      return (rowCount ?? 0) > 0;
+    },
+    async saveClaimedAutomationJob(job) {
+      const { rowCount } = await pool.query(
+        `update automation_jobs set state=$4, updated_at=now(), finished_at=$5, result_ref=$6, result_mime=$7, result_sha256=$8, error=$9, progress=$10::jsonb, callback_failed=$11
+         where id=$1 and lease_owner=$2 and lease_token=$3 and ((state='running' and lease_until > now()) or (state=$4 and state in ('done','failed')))`,
+        [job.id, job.leaseOwner, job.leaseToken, job.state, job.finishedAt ?? null, job.resultRef ?? null, job.resultMime ?? null, job.resultSha256 ?? null, job.error ?? null, job.progress ? JSON.stringify(job.progress) : null, job.callbackFailed ?? false]);
+      return (rowCount ?? 0) > 0;
+    },
     async putAutomationJob(job) {
       await pool.query(
         `insert into automation_jobs (id, principal, verb, request, state, created_at, updated_at, finished_at, result_ref, result_mime, result_sha256, error, callback_url, callback_failed, progress, idempotency_key, priority, attempt)

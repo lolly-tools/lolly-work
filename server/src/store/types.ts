@@ -22,6 +22,7 @@ import type { CollectionRecord } from '../catalog/collections.ts';
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderRecord, ProviderState } from '../catalog/providers/types.ts';
 import type { DeliveryRecord } from '../delivery/types.ts';
+import type { RenderStore } from '../renders/types.ts';
 
 export interface UserRecord {
   id: string;
@@ -117,6 +118,9 @@ export interface AutomationJobRecord {
   /** Higher values drain first within this process; bounded to 0..9. */
   priority: number;
   attempt: number;
+  leaseOwner?: string;
+  leaseUntil?: string;
+  leaseToken?: number;
 }
 
 /** The upsert input carries the IdP-authoritative groups as `groups`; the store
@@ -273,7 +277,7 @@ export interface SubmitQuotaRow {
   updatedAt: string;
 }
 
-export interface Store {
+export interface Store extends RenderStore {
   // users
   upsertUserBySub(user: UserUpsert): Promise<UserRecord>;
   getUserBySub(sub: string): Promise<UserRecord | null>;
@@ -337,6 +341,9 @@ export interface Store {
   listAutomationJobs(principal: string): Promise<AutomationJobRecord[]>;
   findAutomationJobByIdempotency(principal: string, key: string): Promise<AutomationJobRecord | null>;
   deleteAutomationJob(id: string, principal: string): Promise<boolean>;
+  claimAutomationJob(owner: string, verbs: string[], leaseMs: number): Promise<AutomationJobRecord | null>;
+  renewAutomationJob(job: AutomationJobRecord, leaseMs: number): Promise<boolean>;
+  saveClaimedAutomationJob(job: AutomationJobRecord): Promise<boolean>;
 
   // Organization delivery history. Reads and idempotency lookup are scoped to
   // the requesting principal; destination credentials never enter this store.

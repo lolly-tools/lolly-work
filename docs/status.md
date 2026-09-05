@@ -16,6 +16,17 @@ gaps are named, not smoothed over. Verified against the repository on **2026-09-
 
 ## What is built and tested
 
+- Recoverable single renders (`/api/v1/renders`, `lw renders`): principal-owned
+  requests, atomic idempotency, expiring claims, heartbeat/fenced completion,
+  bounded retries, cancellation and digest-verified retained output. Standalone
+  startup recovers queued/expired work; persistence needs Postgres and durable
+  BlobStore. Durable render batches (`/api/v1/render-batches`, `lw render-batches`)
+  commit parents and children together, recover individual rows, retain a JSON
+  manifest and retry unsuccessful rows while reusing successes. New outputs
+  retain partial execution evidence for loaded sources, context and observed
+  asset bytes, committed with the output under the same lease. Full dependency
+  locking and campaign reconciliation remain next slices. See [Recoverable renders](renders.md).
+
 - Deploy config + fail-closed secrets; OIDC login (discovery, PKCE, JWKS-verified), dev
   provider, member and guest sessions with domain-separated tokens.
 - RBAC evaluator (roles + deny-wins grants) with the owner-only escalation guard; the grants

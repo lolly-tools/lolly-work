@@ -36,6 +36,7 @@ any Lolly deployment. The console links there when this deploy serves or points 
 | [offboarding](offboarding.md) | Leaving a DAM: pin early, the Canto/Image Relay fork, exit readiness per vendor |
 | [approvals](approvals.md) | Chains, rules, separation of duties |
 | [sharing](sharing.md) | Server renders, signed links, watermarks, provenance |
+| [renders](renders.md) | Recoverable renders and batches, row retries, output manifests, execution evidence and API/CLI |
 | [c2pa](c2pa.md) | Giving this deploy a signing identity for verifiable exports |
 
 ## Connect a source

@@ -24,6 +24,9 @@ import {
 } from './contract.ts';
 import type { HostedAssetResult, HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
 
+/** Called only for bytes actually read by the catalog bridge. */
+export type ObserveCatalogAsset = (asset: AssetRef, bytes: Uint8Array) => void;
+
 // One catalog-asset record as it appears in <pack>/catalog/assets/index.json.
 interface CatalogAssetFormat { format: string; url: string; checksum?: string; width?: number; height?: number }
 interface CatalogAsset {
@@ -64,7 +67,7 @@ function matchesFilter(meta: CatalogAsset, filter: AssetQuery): boolean {
  * `get` returns referenced files as data: URLs (jsdom has no createObjectURL),
  * `pick` throws (no picker chrome server-side).
  */
-async function buildAssets(pack: string, hostedResolver?: (ref: HostedProviderRef) => Promise<HostedAssetResult | null>): Promise<AssetsAPI> {
+async function buildAssets(pack: string, hostedResolver?: (ref: HostedProviderRef) => Promise<HostedAssetResult | null>, observe?: ObserveCatalogAsset): Promise<AssetsAPI> {
   const catalogDir = join(pack, 'catalog');
   const byId = new Map<string, CatalogAsset>();
   try {
@@ -81,7 +84,9 @@ async function buildAssets(pack: string, hostedResolver?: (ref: HostedProviderRe
     if (!fmt) throw new Error(`Asset has no formats: ${id}`);
     const bytes = await readFile(join(catalogDir, fmt.url.replace(/^\//, '')));
     const url = `data:${mimeFor(fmt.format)};base64,${bytes.toString('base64')}`;
-    return { source: 'library', id, type: meta.type, format: fmt.format, url, version: meta.version, checksum: fmt.checksum, meta: { name: meta.name, tags: meta.tags } };
+    const asset: AssetRef = { source: 'library', id, type: meta.type, format: fmt.format, url, version: meta.version, checksum: fmt.checksum, meta: { name: meta.name, tags: meta.tags } };
+    observe?.(asset, bytes);
+    return asset;
   };
   return {
     async resolveProvider(ref): Promise<AssetRef | null> {
@@ -127,10 +132,10 @@ function safeJson(v: unknown): string {
  * `pack`. Produces SVG only (the render plane rasterises to PNG downstream via
  * resvg); every other format throws so a mis-wired caller fails honestly.
  */
-async function buildHost(dom: RenderDom, pack: string, profile: Profile, hostedResolver?: (ref: HostedProviderRef) => Promise<HostedAssetResult | null>): Promise<WorkHost> {
+async function buildHost(dom: RenderDom, pack: string, profile: Profile, hostedResolver?: (ref: HostedProviderRef) => Promise<HostedAssetResult | null>, observe?: ObserveCatalogAsset): Promise<WorkHost> {
   const w = dom.window;
   const state = new Map<string, object>();
-  const assets = await buildAssets(pack, hostedResolver);
+  const assets = await buildAssets(pack, hostedResolver, observe);
 
   return {
     version: '1',
@@ -203,7 +208,7 @@ function enqueue<T>(fn: () => Promise<T>): Promise<T> {
  * afterward; serialized process-wide via the mutex above.
  */
 export function withRenderHost<T>(
-  opts: { pack: string; profile: Profile; hostedResolver?: (ref: HostedProviderRef) => Promise<HostedAssetResult | null> },
+  opts: { pack: string; profile: Profile; hostedResolver?: (ref: HostedProviderRef) => Promise<HostedAssetResult | null>; observeCatalogAsset?: ObserveCatalogAsset },
   fn: (dom: RenderDom, host: WorkHost) => Promise<T>,
 ): Promise<T> {
   return enqueue(async () => {
@@ -215,7 +220,7 @@ export function withRenderHost<T>(
     g['document'] = dom.window.document;
     g['Element'] = dom.window.Element;
     try {
-      const host = await buildHost(dom, opts.pack, opts.profile, opts.hostedResolver);
+      const host = await buildHost(dom, opts.pack, opts.profile, opts.hostedResolver, opts.observeCatalogAsset);
       return await fn(dom, host);
     } finally {
       g['window'] = prev.window;

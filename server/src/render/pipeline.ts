@@ -25,6 +25,8 @@ import { policyVersionOf } from '../policy/org-config.ts';
 import { renderViaWorker, rasteriseViaWorker, WorkerError, type WorkerConfig } from './worker-client.ts';
 import type { LoadedSigner } from './c2pa-signer.ts';
 import { renderCacheKey } from './cache-key.ts';
+import { sha256Hex } from '../lib/crypto.ts';
+import { createAssetObserver, evidenceHash, finishRenderEvidence, type RenderEvidence } from './evidence.ts';
 import { applyPreviewWatermark } from './watermark.ts';
 import { withRenderHost } from './host.ts';
 import { parseHostedProviderRef, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
@@ -79,6 +81,8 @@ function renderErrorFromWorker(e: WorkerError): RenderError {
 
 export interface RenderDeps {
   config: InstanceConfig;
+  /** Durable attempts collect fresh observations; cached bytes cannot attest a new attempt. */
+  captureEvidence?: boolean;
   /** The Chromium render worker, when configured (config.render.worker.url set +
    *  LW_RENDER_WORKER_SECRET present). Absent ⇒ hooked tools still 501. */
   worker?: WorkerConfig;
@@ -128,11 +132,16 @@ export interface RenderOutput {
   cacheKey: string;
   /** Present when the render consumed catalog assets and a resolver was wired. */
   provenance?: ProvenanceDoc;
+  evidence?: RenderEvidence;
 }
 
 async function resolveHostedValues(value: unknown, resolve?: RenderDeps['hostedResolver']): Promise<unknown> {
   if (!resolve) return value;
-  const ref = parseHostedProviderRef(value);
+  // URL mode wraps asset inputs as {source,id,_unresolved}; resolve the whole
+  // reference. Recursing into its id would replace that string with an object
+  // and leave the engine with an asset it can no longer identify.
+  const asset = value && typeof value === 'object' && !Array.isArray(value) ? value as { source?: unknown; id?: unknown } : null;
+  const ref = parseHostedProviderRef(value) ?? (asset && ['library', 'remote', 'user'].includes(String(asset.source)) ? parseHostedProviderRef(asset.id) : null);
   if (ref && (ref.provider === 'cms' || ref.provider === 'net')) {
     const result = await resolve(ref);
     if (!result) throw new RenderError('ASSET_PROVIDER_UNAVAILABLE', 422, `No hosted resolver could resolve ${ref.raw}`);
@@ -171,10 +180,29 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
 
   const engine = await loadEngine();
   const pack = deps.config.instance.pack;
+  const observer = deps.captureEvidence ? createAssetObserver() : undefined;
+  const resolvedProviders = new Map<string, Promise<HostedAssetResult | null>>();
+  const hostedResolver: RenderDeps['hostedResolver'] = deps.hostedResolver ? async (ref) => {
+    let pending = resolvedProviders.get(ref.raw);
+    if (!pending) {
+      pending = deps.hostedResolver!(ref);
+      // Preflight and the engine's re-resolution must see the same returned
+      // asset. This cache lasts for one attempt and holds at most 256 refs.
+      if (resolvedProviders.size < 256) resolvedProviders.set(ref.raw, pending);
+    }
+    const result = await pending;
+    if (result) observer?.observe('provider', result.asset);
+    return result;
+  } : undefined;
 
   // Load the tool through the real engine (validates the manifest + enforces its
   // engineVersion range). fetchFile resolves against <pack>/tools/.
-  const fetchFile = (p: string): Promise<string> => readFile(join(pack, 'tools', p), 'utf8');
+  const files: RenderEvidence['tool']['files'] = [];
+  const fetchFile = async (p: string): Promise<string> => {
+    const text = await readFile(join(pack, 'tools', p), 'utf8');
+    files.push({ path: p, sha256: sha256Hex(text), size: Buffer.byteLength(text) });
+    return text;
+  };
   let tool: LoadedTool;
   try {
     tool = await engine.loadTool(req.toolId, fetchFile);
@@ -216,7 +244,7 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
       `Policy forbids these params for your access: ${params}`, violations);
   }
   const bakedValues = await resolveHostedValues(
-    { ...st.values, ...lockedValues(overlay, groups) }, deps.hostedResolver,
+    { ...st.values, ...lockedValues(overlay, groups) }, hostedResolver,
   ) as Record<string, unknown>;
 
   // Cache key: tool + version + engine + catalog + policy + format + baked params.
@@ -225,6 +253,18 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
   // that could have consumed it (plans/31 §6).
   const catalogVersion = await catalogVersionOf(deps, pack);
   const policyVersion = policyVersionOf(req.overlays, {});
+  files.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  const sourceHash = evidenceHash(files);
+  const watermark = req.watermarkPreview === true || overlay?.enforce?.watermark === 'always';
+  const pxW = toPx(engine, st.width, st.unit, st.dpi);
+  const pxH = toPx(engine, st.height, st.unit, st.dpi);
+  const context: RenderEvidence['context'] = {
+    paramsHash: evidenceHash(bakedValues), profileHash: evidenceHash(req.profile), groupsHash: evidenceHash([...new Set(groups)].sort()),
+    policyVersion, catalogVersion, format, widthPx: pxW, heightPx: pxH, watermark,
+    renderer: hooked ? 'chromium-worker' : 'work-jsdom',
+    rasterizer: format === 'svg' ? 'none' : deps.worker && !LEGACY_RESVG ? 'chromium-worker' : 'resvg',
+    signerCertificateHash: deps.signer ? sha256Hex(deps.signer.certDer) : null,
+  };
   const cacheKey = renderCacheKey({
     toolId: req.toolId,
     toolVersion: tool.manifest.version,
@@ -233,21 +273,22 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
     policyVersion,
     format,
     params: bakedValues,
+    context: { ...context, sourceHash, pack: evidenceHash(pack), instance: evidenceHash(deps.config.instance.baseUrl),
+      worker: deps.worker ? evidenceHash(deps.worker.url) : null,
+      signer: deps.signer ? evidenceHash({ chain: deps.signer.chain.map((cert) => sha256Hex(cert)), claimGenerator: deps.signer.claimGenerator }) : null },
   });
 
-  const cached = cacheGet(cacheKey);
+  // Hooks can read mutable state outside this host. Durable receipts always
+  // observe a fresh attempt, even when a previous output has the same request key.
+  const cacheable = !deps.captureEvidence && !tool.manifest.hooks;
+  const cached = cacheable ? cacheGet(cacheKey) : undefined;
   if (cached) return { bytes: cached.bytes, mime: cached.mime, cacheKey, ...(cached.provenance ? { provenance: cached.provenance } : {}) };
-
-  const watermark = req.watermarkPreview === true || overlay?.enforce?.watermark === 'always';
-
-  // Pixel dimensions for the export (physical units → px via the engine's math).
-  const pxW = toPx(engine, st.width, st.unit, st.dpi);
-  const pxH = toPx(engine, st.height, st.unit, st.dpi);
 
   // Render path: hooked tool → Chromium worker (or 501 when none); otherwise the
   // in-process jsdom fast path. Both converge on an SVG string post-processed
   // identically below (watermark → provenance → raster).
   let svgStr: string;
+  let runtimeEvidence: RenderEvidence['runtime'];
   if (hooked) {
     if (!deps.worker) {
       throw new RenderError('HOOKED_TOOL_NEEDS_CHROMIUM', 501,
@@ -268,24 +309,32 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
       throw e;
     }
   } else {
-    svgStr = await withRenderHost({ pack, profile: req.profile, hostedResolver: deps.hostedResolver }, async (dom, host) => {
+    svgStr = await withRenderHost({ pack, profile: req.profile, hostedResolver,
+      ...(observer ? { observeCatalogAsset: (asset, bytes) => observer.observe('catalog', asset, bytes) } : {}),
+    }, async (dom, host) => {
       const runtime = await engine.createRuntime(tool, host, bakedValues);
-      const canvas = dom.window.document.getElementById('canvas');
-      if (!canvas) throw new RenderError('RENDER_FAILED', 500, 'render canvas missing');
-      canvas.innerHTML = runtime.getHydrated();
-      const opts: Record<string, unknown> = { embedMeta: false, watermark };
-      if (pxW) opts.width = pxW;
-      if (pxH) opts.height = pxH;
-      const blob = await runtime.export(canvas, 'svg', opts);
-      const text = new TextDecoder().decode(new Uint8Array(await blob.arrayBuffer()));
-      // Honest failure: a lifecycle hook threw AND the output is blank ⇒ the bytes
-      // aren't a real render. (A hookless tool has no hookErrors; a trivial {} hook
-      // doesn't error.)
-      if (runtime.hookErrors.length && (!text.trim() || !/<svg[\s>]/i.test(text))) {
-        const detail = runtime.hookErrors.map((h) => `${h.hook}: ${h.message}`).join('; ');
-        throw new RenderError('RENDER_FAILED', 400, `Render produced no output — ${detail}`);
-      }
-      return text;
+      try {
+        const canvas = dom.window.document.getElementById('canvas');
+        if (!canvas) throw new RenderError('RENDER_FAILED', 500, 'render canvas missing');
+        canvas.innerHTML = runtime.getHydrated();
+        if (observer) runtimeEvidence = {
+          initialValuesHash: evidenceHash(Object.fromEntries(runtime.getModel().map((input) => [input.id, input.value]))),
+          hydratedHash: sha256Hex(runtime.getHydrated()), hookErrors: runtime.hookErrors.length, droppedAssets: runtime.droppedAssets.length,
+        };
+        const opts: Record<string, unknown> = { embedMeta: false, watermark };
+        if (pxW) opts.width = pxW;
+        if (pxH) opts.height = pxH;
+        const blob = await runtime.export(canvas, 'svg', opts);
+        const text = new TextDecoder().decode(new Uint8Array(await blob.arrayBuffer()));
+        // Honest failure: a lifecycle hook threw AND the output is blank ⇒ the bytes
+        // aren't a real render. (A hookless tool has no hookErrors; a trivial {} hook
+        // doesn't error.)
+        if (runtime.hookErrors.length && (!text.trim() || !/<svg[\s>]/i.test(text))) {
+          const detail = runtime.hookErrors.map((h) => `${h.hook}: ${h.message}`).join('; ');
+          throw new RenderError('RENDER_FAILED', 400, `Render produced no output — ${detail}`);
+        }
+        return text;
+      } finally { runtime.destroy(); }
     });
   }
 
@@ -353,8 +402,19 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
     }
   }
 
-  cachePut(cacheKey, out, req.toolId);
-  return { ...out, cacheKey };
+  if (cacheable) cachePut(cacheKey, out, req.toolId);
+  const observation = observer?.finish();
+  const evidence = observation ? finishRenderEvidence({
+    engine: { version: engine.ENGINE_VERSION, documentApiVersion: engine.DOCUMENT_API_VERSION, scope: 'control-plane' },
+    tool: { id: req.toolId, version: tool.manifest.version, sourceHash, files, scope: hooked ? 'control-plane-validation' : 'local-runtime' },
+    context, ...(runtimeEvidence ? { runtime: runtimeEvidence } : {}), assets: observation.assets,
+    limitations: ['engine-dependency-graph-unavailable', 'dependencies-not-locked', 'unobserved-template-and-global-resources',
+      ...(hooked ? ['worker-tool-and-assets-unattested', 'worker-profile-and-inputs-unattested'] : []),
+      ...(tool.manifest.hooks ? ['hooks-not-isolated'] : []),
+      ...(format !== 'svg' ? ['rasterizer-fonts-unattested'] : []),
+      ...observation.limitations].sort(),
+  }, out.bytes) : undefined;
+  return { ...out, cacheKey, ...(evidence ? { evidence } : {}) };
 }
 
 /** Rasterise an SVG string to PNG via resvg, longest edge bounded by the cap. */

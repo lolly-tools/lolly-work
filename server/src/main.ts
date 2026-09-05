@@ -14,6 +14,7 @@ import { createPostgresBlobStore } from './blobs/postgres.ts';
 import { createS3BlobStore } from './blobs/s3.ts';
 import { runMigrations, pendingMigrations } from './store/migrate.ts';
 import { buildApp } from './api/app.ts';
+import type { RenderRunner } from './renders/runner.ts';
 import { createCollabGateway } from './collab/gateway.ts';
 import { createNearbyRegistry } from './collab/nearby.ts';
 import { createSiemForwarder } from './observability/siem.ts';
@@ -129,7 +130,13 @@ const blobs = config.blobs.driver === 's3'
     ? await createPostgresBlobStore(databaseUrl)
     : createMemoryBlobStore();
 
-const app = buildApp({ config, store, secrets, blobs, listCollabRooms: () => collab.snapshot(), nearby });
+let renderRunner: RenderRunner | undefined;
+const app = buildApp({ config, store, secrets, blobs, listCollabRooms: () => collab.snapshot(), nearby,
+  onRenderRunner: (runner) => { renderRunner = runner; },
+});
+// Poll persisted requests at boot as well as after submission. Other replicas
+// may run the same loop: the store owns claims and fencing.
+renderRunner?.start();
 
 // External anchoring of the audit chain (plan Rec 5): emit the head hash so any
 // log pipeline captures it off-box. On by default (boot + hourly); intervalMinutes
@@ -219,6 +226,7 @@ const shutdown = async (signal: string): Promise<void> => {
   shuttingDown = true;
   console.log(`[lolly-work] ${signal} — draining ${collab.rooms()} live collab room(s)`);
   server.close(); // stop accepting; in-flight requests finish
+  await renderRunner?.stop();
   try {
     await collab.drain();
   } catch (err) {

@@ -259,7 +259,7 @@ test('(b2) expiry thresholds fire once each; the unstated are never mentioned (p
     'threshold days only, sorted most-urgent first, no-date never mentioned');
 });
 
-test('(b3) credential expiry, automation jobs and deliveries form the migration tail', async () => {
+test('(b3) credential expiry, automation jobs, deliveries and render resources form the migration tail', async () => {
   const { readdir, readFile } = await import('node:fs/promises');
   const dir = new URL('../migrations/', import.meta.url).pathname;
   const files = (await readdir(dir)).filter((f) => f.endsWith('.sql')).sort();
@@ -269,7 +269,10 @@ test('(b3) credential expiry, automation jobs and deliveries form the migration 
   assert.equal(files[at + 1], '0028_automation_jobs.sql', 'automation jobs follows credential expiry with nothing between');
   assert.equal(files[at + 2], '0029_deliveries.sql', 'deliveries follows automation jobs with nothing between');
   assert.equal(files[at + 3], '0030_automation_job_digest.sql', 'the portable result digest follows deliveries');
-  assert.equal(files.at(-1), '0030_automation_job_digest.sql', 'the result digest holds the migration ceiling');
+  assert.equal(files[at + 4], '0031_automation_leases.sql', 'automation leases follow result digests');
+  assert.equal(files[at + 5], '0032_render_resources.sql', 'render resources follow automation leases');
+  assert.equal(files[at + 6], '0033_render_batches.sql', 'batch membership follows render resources');
+  assert.equal(files.at(-1), '0033_render_batches.sql', 'render batches hold the migration ceiling');
   assert.match(await readFile(`${dir}/0027_credential_expiry.sql`, 'utf8'), /add column credential_expires_at/);
   assert.match(await readFile(`${dir}/0028_automation_jobs.sql`, 'utf8'), /create table automation_jobs/);
   assert.match(await readFile(`${dir}/0029_deliveries.sql`, 'utf8'), /create table deliveries/);

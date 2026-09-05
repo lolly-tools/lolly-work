@@ -70,6 +70,39 @@ A token outranks a stored session cookie when both are present - automation acts
 automation, never as whoever last signed in on the machine. Tokens drive the action-gated
 API (export/apply, providers, fleet, audit); the member-workflow commands refuse them.
 
+## Recoverable renders
+
+```bash
+lw renders submit render.json --idempotency-key campaign-v1 --json
+lw renders list --json
+lw renders show <renderId> --json
+lw renders output <renderId> --out artwork.svg
+lw renders evidence <renderId> --out evidence.json
+lw renders cancel <renderId>
+lw renders retry <renderId> --idempotency-key campaign-v1-retry
+```
+
+The [render resource guide](renders.md) explains the request JSON, persisted
+status, restart recovery and retained output. Retrying creates a new resource
+linked to the original. Output and evidence downloads require an explicit file
+path. [Execution evidence](renders.md#execution-evidence) records observed source,
+context and asset digests with explicit coverage limits.
+
+For multiple rows with individual recovery and output receipts:
+
+```bash
+lw render-batches submit batch.json --idempotency-key campaign-v1 --json
+lw render-batches show <batchId> --json
+lw render-batches manifest <batchId> --out manifest.json
+lw render-batches cancel <batchId>
+lw render-batches retry <batchId> --idempotency-key campaign-v1-retry --json
+```
+
+The [batch guide](renders.md#batches-with-durable-rows) defines shared inputs and
+row keys. Retry creates a new parent and replaces only unsuccessful rows;
+successful children keep their original output. Download each child through
+`lw renders output <childRenderId> --out <file>`.
+
 ## Organization delivery
 
 ```bash

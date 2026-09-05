@@ -77,7 +77,7 @@ export function rateLimitSurface(method: string, pathname: string): Surface | nu
     /^\/api\/v1\/destinations\/[^/]+\/deliveries$/.test(pathname) ||
     /^\/api\/v1\/deliveries\/[^/]+\/retry$/.test(pathname)
   )) return 'automation';
-  if (/^\/api\/v1\/(?:schema\/|compile$|validate$|inspect$|diff$|measure$|optimize$|package$|render$|batch$|jobs(?:\/|$))/.test(pathname)) return 'automation';
+  if (/^\/api\/v1\/(?:schema\/|compile$|validate$|inspect$|diff$|measure$|optimize$|package$|render$|renders(?:\/|$)|render-batches(?:\/|$)|batch$|jobs(?:\/|$))/.test(pathname)) return 'automation';
   return null;
 }
 

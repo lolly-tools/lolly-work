@@ -45,22 +45,31 @@ export async function readBlobBody(body: BlobBody, maxBytes = Number.POSITIVE_IN
   }
   const chunks: Uint8Array[] = [];
   let total = 0;
+  let page = new Uint8Array(64 * 1024), used = 0;
   const push = (chunk: Uint8Array): void => {
     total += chunk.byteLength;
     if (total > maxBytes) throw new Error('blob exceeds the byte limit');
-    chunks.push(chunk);
+    for (let offset = 0; offset < chunk.byteLength;) {
+      const count = Math.min(page.length - used, chunk.byteLength - offset);
+      page.set(chunk.subarray(offset, offset + count), used); used += count; offset += count;
+      if (used === page.length) { chunks.push(page); page = new Uint8Array(64 * 1024); used = 0; }
+    }
   };
   if (typeof (body as ReadableStream<Uint8Array>).getReader === 'function') {
     const reader = (body as ReadableStream<Uint8Array>).getReader();
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) push(value);
-    }
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) push(value);
+      }
+    } catch (error) { await reader.cancel(error).catch(() => {}); throw error; }
+    finally { reader.releaseLock(); }
   } else {
     for await (const chunk of body as AsyncIterable<Uint8Array>) push(chunk);
   }
-  return Buffer.concat(chunks.map((c) => Buffer.from(c)));
+  if (used) chunks.push(page.subarray(0, used));
+  return Buffer.concat(chunks, total);
 }
 
 /** Wrap a buffer as a one-shot web ReadableStream (the read path for the

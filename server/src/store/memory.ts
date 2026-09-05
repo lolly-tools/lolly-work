@@ -21,6 +21,7 @@ import { sortCollections, type CollectionRecord } from '../catalog/collections.t
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderRecord } from '../catalog/providers/types.ts';
 import type { DeliveryRecord } from '../delivery/types.ts';
+import { createMemoryRenderStore } from '../renders/memory.ts';
 import {
   SESSION_REVISION_LIMIT, effectiveGroups,
   type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type LocalGroupRecord, type ProjectRecord, type ScimTokenRecord,
@@ -77,6 +78,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const collabSnapshots = new Map<string, CollabSnapshot>(); // sessionId -> the live room's doc
 
   return {
+    ...createMemoryRenderStore(),
     async upsertUserBySub(user) {
       const now = new Date().toISOString();
       const existing = users.get(user.sub);
@@ -234,7 +236,27 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       return true;
     },
 
+    async claimAutomationJob(owner, verbs, leaseMs) {
+      const now = Date.now();
+      const job = [...automationJobs.values()].filter(j => verbs.includes(j.verb) && (j.state === 'queued' || j.state === 'running' && (!j.leaseUntil || Date.parse(j.leaseUntil) < now)))
+        .sort((a, b) => b.priority - a.priority || a.createdAt.localeCompare(b.createdAt))[0];
+      if (!job) return null;
+      Object.assign(job, { state: 'running', leaseOwner: owner, leaseUntil: new Date(now + leaseMs).toISOString(), leaseToken: (job.leaseToken ?? 0) + 1, attempt: job.attempt + 1, updatedAt: new Date(now).toISOString() });
+      return structuredClone(job);
+    },
+    async renewAutomationJob(job, leaseMs) {
+      const live = automationJobs.get(job.id);
+      if (!live || live.state !== 'running' || live.leaseOwner !== job.leaseOwner || live.leaseToken !== job.leaseToken || Date.parse(live.leaseUntil ?? '') <= Date.now()) return false;
+      live.leaseUntil = new Date(Date.now() + leaseMs).toISOString(); return true;
+    },
+    async saveClaimedAutomationJob(job) {
+      const live = automationJobs.get(job.id);
+      if (!live || live.leaseOwner !== job.leaseOwner || live.leaseToken !== job.leaseToken) return false;
+      if (!(live.state === 'running' && Date.parse(live.leaseUntil ?? '') > Date.now() || live.state === job.state && ['done', 'failed'].includes(live.state))) return false;
+      automationJobs.set(job.id, { ...structuredClone(job), leaseUntil: live.leaseUntil }); return true;
+    },
     async putAutomationJob(job) {
+      if (job.idempotencyKey && [...automationJobs.values()].some(existing => existing.id !== job.id && existing.principal === job.principal && existing.idempotencyKey === job.idempotencyKey)) throw new Error('IDEMPOTENCY_KEY_REUSED');
       automationJobs.set(job.id, structuredClone(job));
     },
     async getAutomationJob(id, principal) {

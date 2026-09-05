@@ -253,6 +253,25 @@ Message targeting is groups × shell selectors × engine-version range.
 | `GET /l/:id?s=…&zip=1`, `…&asset=<id>[&dl=1]` | public - a collection link's zip-all, and one member of that set (an id it does not name is `404 NOT_IN_COLLECTION`) |
 | `GET /render/<toolId>.<format>` | `export.server`, or a guest scoped to that tool |
 
+## Recoverable render resources
+
+`POST /api/v1/renders` submits an authenticated, persistent single-tool request.
+List/get its state, retrieve its verified output, cancel it, or create a retry
+resource through the same API. The standalone server recovers expired leases;
+function-only hosts refuse new submissions. See [Recoverable renders](renders.md)
+for the request contract, routes, limits and deployment requirements.
+
+New durable outputs expose a partial execution receipt at
+`GET /api/v1/renders/:id/evidence`. It records loaded source hashes, prepared
+context, observed asset byte digests and the output digest under the same lease.
+The receipt describes its coverage gaps; it is not a complete dependency lock.
+
+`POST /api/v1/render-batches` creates a parent and up to 200 independent child
+renders atomically. Read its ordered rows and output receipts, download a JSON
+manifest, cancel unfinished rows or retry a terminal batch while retaining its
+successful children. The [batch API](renders.md#batches-with-durable-rows) is
+separate from the existing `/api/v1/batch` job/ZIP contract.
+
 ## Projects and sessions
 
 | Route | Action |

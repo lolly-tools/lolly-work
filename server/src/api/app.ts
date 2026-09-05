@@ -98,6 +98,9 @@ import { safeEntryName, ZipBuilder } from '../links/zip.ts';
 import { renderTool, RenderError, invalidateRenderByTool } from '../render/pipeline.ts';
 import { compileVerb, diffVerb, documentVerb, packageVerb, queryFromInputs, schemaVerb, validateVerb } from '../automation/verbs.ts';
 import { AutomationQueue, jobWire, type AutomationJob } from '../automation/jobs.ts';
+import { RenderRunner } from '../renders/runner.ts';
+import { registerRenderRoutes } from '../renders/routes.ts';
+import { RenderResourceError, type RenderSpec } from '../renders/types.ts';
 import { createHostedAssetResolver, optimizeHostedAsset, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
 import { resolveBindingRows, type DataBinding } from '../automation/bindings.ts';
 import { resolveC2paSigner } from '../render/c2pa-signer.ts';
@@ -172,6 +175,9 @@ export interface AppDeps {
   /** Test/deployment injection for config-managed destination credentials.
    *  Production defaults to each destination's credentialRef environment var. */
   destinationSecrets?: ReadonlyMap<string, string>;
+  /** Explicit host ownership: main.ts starts/stops this runner; function hosts
+   * omit the callback and cannot accept work they cannot reliably execute. */
+  onRenderRunner?: (runner: RenderRunner) => void;
 }
 
 export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
@@ -5729,6 +5735,64 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!toolVisibleTo(overlay, caller.groups) && decision !== 'allow') return false;
     return evaluate(principal, 'tool.use', [`tool:${toolId}`, '*'], grants);
   };
+  // Durable resources store identity references, never a session/token or a
+  // captured permission decision. Each attempt resolves the current account.
+  const currentRenderCaller = async (principal: string, request: RenderSpec) => {
+    let user: UserRecord | null = null;
+    let member = false;
+    if (principal.startsWith('user:')) {
+      user = await store.getUser(principal.slice(5));
+      member = true;
+    } else if (principal.startsWith('service:svc_')) {
+      const id = principal.slice('service:svc_'.length);
+      const token = (await store.listApiTokens()).find((t) => t.id === id && !t.revokedAt);
+      if (token) user = serviceAccountFor(token);
+    }
+    if (!user || user.disabledAt) throw new RenderResourceError('PRINCIPAL_UNAVAILABLE', 403, 'render owner is no longer active');
+    const caller = { user, principal, groups: user.groups, profile: member ? renderProfileOf(user) : {} };
+    if (!(await automationMayRender(caller, request.toolId))) throw new RenderResourceError('FORBIDDEN', 403, 'tool.use and export.server are required');
+    return caller;
+  };
+  const validateRenderRequest = async (principal: string, request: RenderSpec): Promise<void> => {
+    const caller = await currentRenderCaller(principal, request);
+    if (!renderCaps.formats.includes(request.format)) throw new RenderResourceError('FORMAT_UNSUPPORTED', 422, 'this deployment cannot render the requested format');
+    try {
+      const result = await validateVerb({ pack: config.instance.pack, profile: caller.profile }, { toolId: request.toolId, inputs: request.inputs }) as { ok: boolean };
+      if (!result.ok) throw new RenderResourceError('INPUT_VALIDATION_FAILED', 422, 'inputs do not satisfy the tool schema');
+    } catch (e) {
+      if (e instanceof RenderResourceError) throw e;
+      throw new RenderResourceError('TOOL_UNAVAILABLE', 422, 'tool could not be loaded for validation');
+    }
+  };
+  const durableRenders = new RenderRunner({
+    store, blobs,
+    execute: async (record, signal) => {
+      const caller = await currentRenderCaller(record.principal, record.request);
+      await validateRenderRequest(record.principal, record.request);
+      signal.throwIfAborted();
+      const result = await renderTool({ config, captureEvidence: true, resolveProvenance, instanceCatalogVersion, worker: renderWorker,
+        signer: await getC2paSigner(), hostedResolver: hostedAssetResolverFor(caller.groups) }, {
+        toolId: record.request.toolId, format: record.request.format, query: queryFromInputs(record.request.inputs),
+        principal: { groups: caller.groups }, profile: caller.profile, overlays: await store.listOverlays(),
+      });
+      signal.throwIfAborted();
+      await currentRenderCaller(record.principal, record.request);
+      return result;
+    },
+  });
+  registerRenderRoutes(router, {
+    store, blobs,
+    authenticate: async (req) => {
+      const caller = await automationCaller(req);
+      return caller?.user ? caller.principal : null;
+    },
+    authorize: async (principal, request) => { await currentRenderCaller(principal, request); },
+    validate: validateRenderRequest,
+    ...(deps.onRenderRunner ? { kick: () => durableRenders.kick() } : {}),
+    audit: async (principal, action, id, facts) => { await audit(principal, action, `${id.startsWith('rbt_') ? 'render-batch' : 'render'}:${id}`, facts); },
+  });
+  deps.onRenderRunner?.(durableRenders);
+
   const requireAutomationTools = async (
     res: ServerResponse,
     caller: NonNullable<Awaited<ReturnType<typeof automationCaller>>>,
@@ -5746,6 +5810,93 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
     return true;
   };
+  // Reconstruct execution from stored requests after a restart, and re-check the
+  // live identity/grants. An old group's permissions are never a durable credential.
+  const executeDurableAutomation = async (job: AutomationJob, signal: AbortSignal) => {
+    signal.throwIfAborted();
+    let user: UserRecord | null = null;
+    if (job.principal.startsWith('user:')) user = await store.getUser(job.principal.slice(5));
+    else if (job.principal.startsWith('service:svc_')) {
+      const token = (await store.listApiTokens()).find(token => token.id === job.principal.slice(12) && !token.revokedAt);
+      if (token) user = serviceAccountFor(token);
+    }
+    const guest = job.principal.startsWith('guest:') && config.policy.defaultAccessMode === 'open';
+    if ((!user && !guest) || user?.disabledAt) throw new Error('The job principal is no longer authorized.');
+    const caller = { user, profile: job.principal.startsWith('user:') && user ? renderProfileOf(user) : {}, principal: job.principal, groups: user?.groups ?? [] };
+    const body = job.request;
+    for (const value of [body, body.document, body.a, body.b]) {
+      const id = value && typeof value === 'object' ? (value as { toolId?: unknown }).toolId : undefined;
+      if (typeof id === 'string' && !await automationMayUse(caller, id)) throw new Error('tool.use is no longer granted.');
+    }
+    const context = { pack: config.instance.pack, profile: caller.profile, hostedResolver: hostedAssetResolverFor(caller.groups) };
+    if (job.verb === 'batch') {
+      if (typeof body.toolId !== 'string' || !await automationMayRender(caller, body.toolId)) throw new Error('export.server required.');
+      const record = job;
+      const rows = body.rows as Array<Record<string, unknown>>;
+      if (!Array.isArray(rows) || !rows.length || rows.length > 200) throw new Error('Durable batches need 1–200 snapshotted rows.');
+      const zip = new ZipBuilder(); const used = new Set<string>(); const chunks: Buffer[] = [];
+      const manifest: { toolId: string; format: string; total: number; succeeded: number; failed: number; rows: Array<{ index: number; name?: string; error?: string }> } = { toolId: body.toolId as string, format: body.format as string, total: rows.length, succeeded: 0, failed: 0, rows: [] };
+      const retries = Math.max(0, Math.min(3, Number(body.retries ?? 0) || 0));
+      const concurrency = Math.max(1, Math.min(4, Math.trunc(Number(body.concurrency ?? 1) || 1)));
+      const overlays = await store.listOverlays();
+      const outcomes: Array<{ result?: Awaited<ReturnType<typeof renderTool>>; error?: unknown }> = new Array(rows.length);
+      let retainedBytes = 0;
+      let next = 0; let done = 0; let stop = false;
+      record.progress = { done: 0, total: rows.length };
+      const renderRows = async (): Promise<void> => {
+        while (!stop) {
+          signal.throwIfAborted();
+          const index = next++;
+          if (index >= rows.length) return;
+          let result: Awaited<ReturnType<typeof renderTool>> | null = null; let error: unknown;
+          for (let attempt = 0; attempt <= retries && !result; attempt++) {
+            try { result = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer: await getC2paSigner(), hostedResolver: hostedAssetResolverFor(caller.groups) }, { toolId: body.toolId as string, format: body.format as string, query: queryFromInputs(rows[index]!), principal: { groups: caller.groups }, profile: caller.profile, overlays }); }
+            catch (caught) { error = caught; }
+          }
+          if (result) { retainedBytes += result.bytes.byteLength; if (retainedBytes > 128 * 1024 * 1024) throw new Error('Batch output exceeds 128 MB. Split the batch.'); }
+          signal.throwIfAborted();
+          outcomes[index] = result ? { result } : { error };
+          done++;
+          record.progress = { done, total: rows.length };
+          await automationJobs.save(record);
+          if (!result && body.keepGoing !== true) stop = true;
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(concurrency, rows.length) }, () => renderRows()));
+      if (stop) throw outcomes.find((outcome) => outcome?.error)?.error ?? new Error('batch row failed');
+      for (let index = 0; index < outcomes.length; index++) {
+        const { result, error } = outcomes[index] ?? {};
+        if (result) {
+          const name = safeEntryName(`${String(body.name ?? body.toolId)}-${index + 1}.${body.format}`, used);
+          chunks.push(zip.add(name, Buffer.from(result.bytes))); manifest.succeeded++; manifest.rows.push({ index, name });
+        } else {
+          const message = error instanceof Error ? error.message : String(error); manifest.failed++; manifest.rows.push({ index, error: message });
+        }
+      }
+      chunks.push(zip.add('manifest.json', Buffer.from(JSON.stringify(manifest, null, 2))));
+      chunks.push(zip.end());
+      return { mime: 'application/zip', bytes: Buffer.concat(chunks) };
+    }
+    if (job.verb === 'render') {
+      if (typeof body.toolId !== 'string' || typeof body.format !== 'string' || !await automationMayRender(caller, body.toolId)) throw new Error('export.server required.');
+      const rendered = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer: await getC2paSigner(), hostedResolver: context.hostedResolver }, {
+        toolId: body.toolId, format: body.format, query: queryFromInputs((body.inputs ?? {}) as Record<string, unknown>), principal: { groups: caller.groups }, profile: caller.profile, overlays: await store.listOverlays(),
+      });
+      signal.throwIfAborted(); return { mime: rendered.mime, bytes: rendered.bytes };
+    }
+    if (job.verb === 'package') {
+      const document = body.document ?? (await compileVerb(context, body as unknown as Parameters<typeof compileVerb>[1]) as { document: unknown }).document;
+      const packed = await packageVerb(document); signal.throwIfAborted();
+      return { mime: 'application/vnd.lolly+zip', bytes: packed.bytes };
+    }
+    const value = job.verb === 'compile' ? await compileVerb(context, body as unknown as Parameters<typeof compileVerb>[1])
+      : job.verb === 'validate' ? await validateVerb(context, body)
+      : job.verb === 'diff' ? await diffVerb(body.a, body.b)
+      : await documentVerb(context, job.verb as 'inspect' | 'measure' | 'optimize', body as unknown as Parameters<typeof documentVerb>[2]);
+    signal.throwIfAborted(); return { mime: 'application/json', bytes: new TextEncoder().encode(JSON.stringify(value)) };
+  };
+  automationJobs.enableDurable(Object.fromEntries(['compile', 'validate', 'inspect', 'diff', 'measure', 'optimize', 'package', 'render', 'batch'].map(verb => [verb, executeDurableAutomation])));
+
   const enqueueAutomation = async (
     res: ServerResponse,
     caller: NonNullable<Awaited<ReturnType<typeof automationCaller>>>,
@@ -5879,7 +6030,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     } catch (e) {
       return sendError(res, 400, 'DATA_BINDING_ERROR', (e as Error).message);
     }
-    if (!rows.length || rows.some((row) => !row || typeof row !== 'object' || Array.isArray(row))) return sendError(res, 400, 'INVALID_INPUT', 'batch rows must be a non-empty array of objects');
+    if (!rows.length || rows.length > 200 || rows.some((row) => !row || typeof row !== 'object' || Array.isArray(row))) return sendError(res, 400, 'INVALID_INPUT', 'batch rows must be a non-empty array of objects');
     for (let index = 0; index < rows.length; index++) {
       const check = await validateVerb(
         { pack: config.instance.pack, profile: caller.profile, hostedResolver: hostedAssetResolverFor(caller.groups) },
@@ -5887,45 +6038,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       ) as { ok: boolean; errors?: unknown[] };
       if (!check.ok) return sendError(res, 422, 'ROW_VALIDATION_FAILED', `batch row ${index} does not satisfy the tool input schema`, { row: index, errors: check.errors ?? [] });
     }
-    const queued = await enqueueAutomation(res, caller, 'batch', body, async (record: AutomationJob) => {
-      const zip = new ZipBuilder(); const used = new Set<string>(); const chunks: Buffer[] = [];
-      const manifest: { toolId: string; format: string; total: number; succeeded: number; failed: number; rows: Array<{ index: number; name?: string; error?: string }> } = { toolId: body.toolId as string, format: body.format as string, total: rows.length, succeeded: 0, failed: 0, rows: [] };
-      const retries = Math.max(0, Math.min(3, Number(body.retries ?? 0) || 0));
-      const concurrency = Math.max(1, Math.min(4, Math.trunc(Number(body.concurrency ?? 1) || 1)));
-      const overlays = await store.listOverlays();
-      const outcomes: Array<{ result?: Awaited<ReturnType<typeof renderTool>>; error?: unknown }> = new Array(rows.length);
-      let next = 0; let done = 0; let stop = false;
-      record.progress = { done: 0, total: rows.length };
-      const renderRows = async (): Promise<void> => {
-        while (!stop) {
-          const index = next++;
-          if (index >= rows.length) return;
-          let result: Awaited<ReturnType<typeof renderTool>> | null = null; let error: unknown;
-          for (let attempt = 0; attempt <= retries && !result; attempt++) {
-            try { result = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer: await getC2paSigner(), hostedResolver: hostedAssetResolverFor(caller.groups) }, { toolId: body.toolId as string, format: body.format as string, query: queryFromInputs(rows[index]!), principal: { groups: caller.groups }, profile: caller.profile, overlays }); }
-            catch (caught) { error = caught; }
-          }
-          outcomes[index] = result ? { result } : { error };
-          done++;
-          record.progress = { done, total: rows.length };
-          await automationJobs.save(record);
-          if (!result && body.keepGoing !== true) stop = true;
-        }
-      };
-      await Promise.all(Array.from({ length: Math.min(concurrency, rows.length) }, () => renderRows()));
-      if (stop) throw outcomes.find((outcome) => outcome?.error)?.error ?? new Error('batch row failed');
-      for (let index = 0; index < outcomes.length; index++) {
-        const { result, error } = outcomes[index] ?? {};
-        if (result) {
-          const name = safeEntryName(`${String(body.name ?? body.toolId)}-${index + 1}.${body.format}`, used);
-          chunks.push(zip.add(name, Buffer.from(result.bytes))); manifest.succeeded++; manifest.rows.push({ index, name });
-        } else {
-          const message = error instanceof Error ? error.message : String(error); manifest.failed++; manifest.rows.push({ index, error: message });
-        }
-      }
-      chunks.push(zip.add('manifest.json', Buffer.from(JSON.stringify(manifest, null, 2))));
-      chunks.push(zip.end());
-      return { mime: 'application/zip', bytes: Buffer.concat(chunks) };
+    const queued = await enqueueAutomation(res, caller, 'batch', { ...body, rows }, async record => {
+      return executeDurableAutomation(record, new AbortController().signal);
     }, String(req.headers['idempotency-key'] ?? '') || undefined);
     if (!queued) return;
     const { job, reused } = queued;
