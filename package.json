@@ -27,7 +27,7 @@
     "check:code-comments": "node scripts/check-code-comment-vernacular.ts"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
+    "@types/node": "^26.4.1",
     "@types/pg": "^8.20.0",
     "esbuild": "^0.28.1",
     "typescript": "^5.5.0"
