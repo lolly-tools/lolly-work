@@ -3,8 +3,22 @@
  * and content-addressed reuse. Provider credentials stay inside the injected
  * CMS driver; callers only supply logical refs. */
 import { createHash } from 'node:crypto';
-import sharp from 'sharp';
 import type { AssetRef } from '../../render/contract.ts';
+
+/**
+ * sharp is loaded on the first raster optimisation, not at module load: it is a
+ * native module whose platform binary can be missing from a deploy, and a missing
+ * binary must fail the one request that needed a resize, never every route in the
+ * process (which is what a top-level import did to the 2026-09-05 lolly.work deploy).
+ */
+let sharpModule: Promise<typeof import('sharp')> | null = null;
+function loadSharp(): Promise<typeof import('sharp')> {
+  sharpModule ??= import('sharp').catch((e: unknown) => {
+    sharpModule = null;
+    throw new Error(`hosted asset optimisation needs the sharp native module on this host: ${e instanceof Error ? e.message : String(e)}`);
+  });
+  return sharpModule;
+}
 
 export interface HostedProviderRef { raw: string; provider: string; scope: string; path: string; query: Readonly<Record<string, string>> }
 export interface HostedAssetResult { asset: AssetRef; cacheKey: string; stages: string[]; sourceBytes: number; outputBytes: number }
@@ -150,6 +164,7 @@ export async function optimizeHostedAsset(
   if (!['png', 'jpg', 'webp', 'avif', 'gif', 'tiff'].includes(targetFormat)) {
     throw new Error(`unsupported hosted asset format: ${targetFormat}`);
   }
+  const { default: sharp } = await loadSharp();
   let image = sharp(bytes, { animated: true, limitInputPixels: 100_000_000 }).rotate();
   const stages: string[] = [];
   if (request.width || request.height) {

@@ -26,7 +26,7 @@ const NM = join(FUNC, 'node_modules');
 
 // Native modules esbuild must not try to bundle — resvg is the real one (a .node
 // binary); the rest are optional natives of pg/jsdom that they load only if present.
-const NATIVE = ['@resvg/resvg-js', 'canvas', 'bufferutil', 'utf-8-validate', 'pg-native'];
+const NATIVE = ['@resvg/resvg-js', 'sharp', 'canvas', 'bufferutil', 'utf-8-validate', 'pg-native'];
 // Loaded at runtime via a non-literal `import(specifier)` (contract.ts), so esbuild
 // can't inline them — provide each as a self-contained bundle in the func node_modules.
 const RUNTIME_DYNAMIC = ['@lolly/engine', 'jsdom'];
@@ -110,6 +110,18 @@ copyPkgClosure('jsdom');
 //    platform (Vercel Linux); that is why it is the buildCommand, not a prebuilt upload.
 console.log('▶ copy native @resvg/resvg-js');
 cpSync(join(ROOT, 'node_modules', '@resvg'), join(NM, '@resvg'), { recursive: true, dereference: true });
+
+// 3b. sharp (asset-resolver's raster optimiser) is native too: its JS loader picks a
+//     platform package at runtime (`@img/sharp-linux-x64` + the matching libvips), which
+//     esbuild cannot inline. Ship sharp with its dependency closure, plus every @img
+//     package npm installed for THIS platform - on Vercel Linux that is the x64 pair.
+//     Bundling sharp instead left the loader with no @img package beside it, and the
+//     first request to any route died on the module-level import (2026-09-05).
+console.log('▶ copy native sharp + @img platform packages');
+copyPkgClosure('sharp');
+if (existsSync(join(ROOT, 'node_modules', '@img'))) {
+  cpSync(join(ROOT, 'node_modules', '@img'), join(NM, '@img'), { recursive: true, dereference: true });
+}
 
 // 4. Data dirs the handler reads at runtime, as siblings of index.mjs (FN_ROOT base).
 for (const d of ['migrations', 'console', 'docs', join('packs', 'demo')]) {
