@@ -15,15 +15,17 @@ import type {
   ChartValidationResultV1,
   ResolvedChartReportV1,
 } from '@lolly-tools/core';
-import { deltaEOk, rampOklab } from './color-tools.ts';
 import { rotateHue } from './brand-schemes.ts';
+import { deltaEOk, rampOklab } from './color-tools.ts';
 
 const HEX = /^#[0-9a-f]{6}$/i;
 const ID = /^[a-zA-Z][a-zA-Z0-9._-]{0,127}$/;
 const clamp = (n: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, n));
 
 function hex(value: unknown, fallback: string): string {
-  const s = String(value ?? '').trim().toLowerCase();
+  const s = String(value ?? '')
+    .trim()
+    .toLowerCase();
   if (HEX.test(s)) return s;
   if (/^#[0-9a-f]{3}$/i.test(s)) return `#${s[1]}${s[1]}${s[2]}${s[2]}${s[3]}${s[3]}`.toLowerCase();
   return fallback;
@@ -33,7 +35,7 @@ function colours(values: readonly unknown[] | undefined): string[] {
   const out: string[] = [];
   for (const value of values ?? []) {
     const c = hex(value, '');
-    if (!c || out.some(existing => existing === c || deltaEOk(existing, c) < 0.035)) continue;
+    if (!c || out.some((existing) => existing === c || deltaEOk(existing, c) < 0.035)) continue;
     out.push(c);
   }
   return out;
@@ -79,7 +81,7 @@ export interface ChartThemeOverrides {
 export function resolveChartTheme(
   brand: ChartBrandThemeInput = {},
   style = 'brand-default',
-  overrides: ChartThemeOverrides = {},
+  overrides: ChartThemeOverrides = {}
 ): ChartThemeV1 {
   const bc = brand.colours ?? {};
   const surface = hex(bc.surface, '#ffffff');
@@ -95,35 +97,41 @@ export function resolveChartTheme(
   // authored lead colours. Perceptual de-duplication above prevents near-clones.
   for (let i = 1; categorical.length < 10 && i < 30; i++) {
     const candidate = rotateHue(primary, i * 137.50776405);
-    if (!categorical.some(c => c === candidate || deltaEOk(c, candidate) < 0.055)) categorical.push(candidate);
+    if (!categorical.some((c) => c === candidate || deltaEOk(c, candidate) < 0.055))
+      categorical.push(candidate);
   }
   // A truly neutral seed cannot gain chroma by hue rotation. Keep it honest and
   // let patterns carry category identity instead of inventing a colourful brand.
-  if (categorical.length === 1) {
+  const neutralSeed = categorical.length === 1;
+  if (neutralSeed) {
     for (const c of neutral.slice(1, 8)) if (!categorical.includes(c)) categorical.push(c);
   }
 
   const seqAuthored = colours(bc.sequential);
   const divAuthored = colours(bc.diverging);
-  const sequential = seqAuthored.length >= 3
-    ? seqAuthored
-    : rampOklab([surface, primary, ink], 7, { correctLightness: true });
-  const diverging = divAuthored.length >= 3
-    ? divAuthored
-    : rampOklab([secondary, surface, primary], 7, { correctLightness: false });
+  const sequential =
+    seqAuthored.length >= 3
+      ? seqAuthored
+      : rampOklab([surface, primary, ink], 7, { correctLightness: true });
+  const diverging =
+    divAuthored.length >= 3
+      ? divAuthored
+      : rampOklab([secondary, surface, primary], 7, { correctLightness: false });
 
-  const styleMarks: Partial<ChartThemeV1['marks']> = style === 'editorial'
-    ? { lineWidth: 2, cornerRadius: 0, pointShape: 'circle' }
-    : style === 'technical'
-      ? { lineWidth: 1.5, cornerRadius: 0, pointShape: 'square' }
-      : style === 'poster'
-        ? { lineWidth: 5, cornerRadius: 10, pointShape: 'circle' }
-        : {};
-  const styleScene: Partial<ChartThemeV1['scene']> = style === 'glass-3d'
-    ? { material: 'glass', roughness: 0.12, metalness: 0.05, shadows: true }
-    : style === 'technical'
-      ? { material: 'accurate', roughness: 0.82, metalness: 0, shadows: false }
-      : { material: 'matte', roughness: 0.58, metalness: 0.04, shadows: true };
+  const styleMarks: Partial<ChartThemeV1['marks']> =
+    style === 'editorial'
+      ? { lineWidth: 2, cornerRadius: 0, pointShape: 'circle' }
+      : style === 'technical'
+        ? { lineWidth: 1.5, cornerRadius: 0, pointShape: 'square' }
+        : style === 'poster'
+          ? { lineWidth: 5, cornerRadius: 10, pointShape: 'circle' }
+          : {};
+  const styleScene: Partial<ChartThemeV1['scene']> =
+    style === 'glass-3d'
+      ? { material: 'glass', roughness: 0.12, metalness: 0.05, shadows: true }
+      : style === 'technical'
+        ? { material: 'accurate', roughness: 0.82, metalness: 0, shadows: false }
+        : { material: 'matte', roughness: 0.58, metalness: 0.04, shadows: true };
 
   const sparse = !brand.colours || !bc.primary || !(bc.categorical?.length || bc.secondary);
   return {
@@ -160,7 +168,7 @@ export function resolveChartTheme(
       lineWidth: clamp(overrides.marks?.lineWidth ?? styleMarks.lineWidth ?? 3, 0.5, 16),
       cornerRadius: clamp(overrides.marks?.cornerRadius ?? styleMarks.cornerRadius ?? 3, 0, 40),
       pointShape: overrides.marks?.pointShape ?? styleMarks.pointShape ?? 'circle',
-      patterns: overrides.marks?.patterns ?? (brand.monochrome === true || categorical.length < 4),
+      patterns: overrides.marks?.patterns ?? (brand.monochrome === true || neutralSeed),
     },
     scene: {
       material: overrides.scene?.material ?? styleScene.material ?? 'matte',
@@ -187,7 +195,7 @@ function finding(
   id: string,
   severity: ChartFindingV1['severity'],
   message: string,
-  path?: string,
+  path?: string
 ): void {
   findings.push({ id, severity, message, ...(path ? { path } : {}) });
 }
@@ -200,51 +208,158 @@ export function validateChartSpec(spec: unknown): ChartValidationResultV1 {
     return { ok: false, findings };
   }
   const s = spec as Partial<ChartSpecV1>;
-  if (s.version !== 1) finding(findings, 'chart.spec.version', 'error', 'Unsupported chart spec version.', 'version');
-  if (!Array.isArray(s.datasets) || !s.datasets.length) finding(findings, 'chart.dataset.missing', 'error', 'At least one dataset is required.', 'datasets');
-  if (!Array.isArray(s.series) || !s.series.length) finding(findings, 'chart.series.missing', 'error', 'At least one series is required.', 'series');
+  if (s.version !== 1)
+    finding(findings, 'chart.spec.version', 'error', 'Unsupported chart spec version.', 'version');
+  if (!Array.isArray(s.datasets) || !s.datasets.length)
+    finding(
+      findings,
+      'chart.dataset.missing',
+      'error',
+      'At least one dataset is required.',
+      'datasets'
+    );
+  if (!Array.isArray(s.series) || !s.series.length)
+    finding(
+      findings,
+      'chart.series.missing',
+      'error',
+      'At least one series is required.',
+      'series'
+    );
 
   const datasetIds = new Set<string>();
   const fieldsByDataset = new Map<string, Set<string>>();
   for (const [di, dataset] of (s.datasets ?? []).entries()) {
-    if (!ID.test(dataset.id || '')) finding(findings, 'chart.dataset.id', 'error', 'Dataset id is invalid.', `datasets.${di}.id`);
-    if (datasetIds.has(dataset.id)) finding(findings, 'chart.dataset.duplicate', 'error', `Duplicate dataset id “${dataset.id}”.`, `datasets.${di}.id`);
+    if (!ID.test(dataset.id || ''))
+      finding(findings, 'chart.dataset.id', 'error', 'Dataset id is invalid.', `datasets.${di}.id`);
+    if (datasetIds.has(dataset.id))
+      finding(
+        findings,
+        'chart.dataset.duplicate',
+        'error',
+        `Duplicate dataset id “${dataset.id}”.`,
+        `datasets.${di}.id`
+      );
     datasetIds.add(dataset.id);
     const fieldIds = new Set<string>();
     for (const [fi, field] of (dataset.fields ?? []).entries()) {
-      if (!ID.test(field.id || '')) finding(findings, 'chart.field.id', 'error', 'Field id is invalid.', `datasets.${di}.fields.${fi}.id`);
-      if (fieldIds.has(field.id)) finding(findings, 'chart.field.duplicate', 'error', `Duplicate field id “${field.id}”.`, `datasets.${di}.fields.${fi}.id`);
+      if (!ID.test(field.id || ''))
+        finding(
+          findings,
+          'chart.field.id',
+          'error',
+          'Field id is invalid.',
+          `datasets.${di}.fields.${fi}.id`
+        );
+      if (fieldIds.has(field.id))
+        finding(
+          findings,
+          'chart.field.duplicate',
+          'error',
+          `Duplicate field id “${field.id}”.`,
+          `datasets.${di}.fields.${fi}.id`
+        );
       fieldIds.add(field.id);
     }
     fieldsByDataset.set(dataset.id, fieldIds);
-    if ((dataset.rows?.length ?? 0) > 100000) finding(findings, 'chart.rows.limit', 'error', 'Dataset exceeds the 100,000-row document limit.', `datasets.${di}.rows`);
+    if ((dataset.rows?.length ?? 0) > 100000)
+      finding(
+        findings,
+        'chart.rows.limit',
+        'error',
+        'Dataset exceeds the 100,000-row document limit.',
+        `datasets.${di}.rows`
+      );
   }
 
   const seriesIds = new Set<string>();
   for (const [si, series] of (s.series ?? []).entries()) {
-    if (!ID.test(series.id || '')) finding(findings, 'chart.series.id', 'error', 'Series id is invalid.', `series.${si}.id`);
-    if (seriesIds.has(series.id)) finding(findings, 'chart.series.duplicate', 'error', `Duplicate series id “${series.id}”.`, `series.${si}.id`);
+    if (!ID.test(series.id || ''))
+      finding(findings, 'chart.series.id', 'error', 'Series id is invalid.', `series.${si}.id`);
+    if (seriesIds.has(series.id))
+      finding(
+        findings,
+        'chart.series.duplicate',
+        'error',
+        `Duplicate series id “${series.id}”.`,
+        `series.${si}.id`
+      );
     seriesIds.add(series.id);
     if (!datasetIds.has(series.dataset)) {
-      finding(findings, 'chart.series.dataset', 'error', `Series “${series.id}” references missing dataset “${series.dataset}”.`, `series.${si}.dataset`);
+      finding(
+        findings,
+        'chart.series.dataset',
+        'error',
+        `Series “${series.id}” references missing dataset “${series.dataset}”.`,
+        `series.${si}.dataset`
+      );
       continue;
     }
     const fields = fieldsByDataset.get(series.dataset) ?? new Set();
     for (const [channel, encoding] of Object.entries(series.channels ?? {})) {
-      if (encoding && !fields.has(encoding.field)) finding(findings, 'chart.channel.field', 'error', `Channel “${channel}” references missing field “${encoding.field}”.`, `series.${si}.channels.${channel}`);
+      if (encoding && !fields.has(encoding.field))
+        finding(
+          findings,
+          'chart.channel.field',
+          'error',
+          `Channel “${channel}” references missing field “${encoding.field}”.`,
+          `series.${si}.channels.${channel}`
+        );
     }
-    if ((series.mark === 'bar3d' || series.mark === 'scatter3d' || series.mark === 'surface3d' || series.mark === 'mesh3d' || series.mark === 'volume3d') && !series.channels.z) {
-      finding(findings, 'chart.channel.z', 'error', `${series.mark} requires a genuine z channel.`, `series.${si}.channels.z`);
+    if (
+      (series.mark === 'bar3d' ||
+        series.mark === 'line3d' ||
+        series.mark === 'ribbon3d' ||
+        series.mark === 'scatter3d' ||
+        series.mark === 'surface3d' ||
+        series.mark === 'mesh3d' ||
+        series.mark === 'volume3d') &&
+      !series.channels.z
+    ) {
+      finding(
+        findings,
+        'chart.channel.z',
+        'error',
+        `${series.mark} requires a genuine z channel.`,
+        `series.${si}.channels.z`
+      );
     }
   }
 
-  if (!s.accessibility?.title?.trim()) finding(findings, 'chart.a11y.title', 'error', 'An accessible chart title is required.', 'accessibility.title');
-  if (!s.accessibility?.description?.trim()) finding(findings, 'chart.a11y.description', 'error', 'An accessible chart description is required.', 'accessibility.description');
-  if (s.accessibility?.colourOnly && (s.series?.length ?? 0) > 1) finding(findings, 'chart.a11y.colour-only', 'warning', 'Series are distinguished by colour alone; enable patterns or shapes.', 'accessibility.colourOnly');
+  if (!s.accessibility?.title?.trim())
+    finding(
+      findings,
+      'chart.a11y.title',
+      'error',
+      'An accessible chart title is required.',
+      'accessibility.title'
+    );
+  if (!s.accessibility?.description?.trim())
+    finding(
+      findings,
+      'chart.a11y.description',
+      'error',
+      'An accessible chart description is required.',
+      'accessibility.description'
+    );
+  if (s.accessibility?.colourOnly && (s.series?.length ?? 0) > 1)
+    finding(
+      findings,
+      'chart.a11y.colour-only',
+      'warning',
+      'Series are distinguished by colour alone; enable patterns or shapes.',
+      'accessibility.colourOnly'
+    );
   if (s.presentation?.dimension === 3 && s.presentation.exportFidelity === 'vector') {
-    finding(findings, 'chart.export.3d-vector', 'info', 'The 3-D chart declares vector output; only projected/unshaded geometry can satisfy it.', 'presentation.exportFidelity');
+    finding(
+      findings,
+      'chart.export.3d-vector',
+      'info',
+      'The 3-D chart declares vector output; only projected/unshaded geometry can satisfy it.',
+      'presentation.exportFidelity'
+    );
   }
-  return { ok: !findings.some(f => f.severity === 'error'), findings };
+  return { ok: !findings.some((f) => f.severity === 'error'), findings };
 }
 
 export function inspectChartSpec(spec: ChartSpecV1, rendererId?: string): ResolvedChartReportV1 {

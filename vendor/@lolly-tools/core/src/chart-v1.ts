@@ -12,25 +12,97 @@ export const CHART_SPEC_VERSION = 1 as const;
 
 export type ChartValue = string | number | boolean | null;
 export type ChartFieldType = 'string' | 'number' | 'date' | 'datetime' | 'boolean';
+export type ChartFieldRole =
+  | 'dimension'
+  | 'measure'
+  | 'identifier'
+  | 'time'
+  | 'series'
+  | 'uncertainty'
+  | 'unknown';
+export type ChartFieldFormat =
+  | 'plain'
+  | 'integer'
+  | 'decimal'
+  | 'percent'
+  | 'currency'
+  | 'date'
+  | 'datetime'
+  | 'boolean';
 export type ChartDimension = 2 | 3;
 export type ChartExportFidelity = 'vector' | 'hybrid' | 'raster';
 
 export type ChartMark =
-  | 'bar' | 'line' | 'area' | 'point' | 'arc' | 'radial-bar' | 'radar'
-  | 'treemap' | 'pack' | 'heatmap' | 'histogram' | 'box' | 'violin'
-  | 'beeswarm' | 'lollipop' | 'dumbbell' | 'slope' | 'bump' | 'stream'
-  | 'waterfall' | 'marimekko' | 'parallel' | 'polar' | 'funnel' | 'gauge'
-  | 'waffle' | 'sunburst' | 'icicle' | 'chord' | 'wordcloud'
-  | 'bar3d' | 'scatter3d' | 'surface3d' | 'mesh3d' | 'volume3d';
+  | 'bar'
+  | 'line'
+  | 'area'
+  | 'point'
+  | 'arc'
+  | 'radial-bar'
+  | 'radar'
+  | 'treemap'
+  | 'pack'
+  | 'heatmap'
+  | 'histogram'
+  | 'box'
+  | 'violin'
+  | 'beeswarm'
+  | 'lollipop'
+  | 'dumbbell'
+  | 'slope'
+  | 'bump'
+  | 'stream'
+  | 'waterfall'
+  | 'marimekko'
+  | 'parallel'
+  | 'polar'
+  | 'funnel'
+  | 'gauge'
+  | 'waffle'
+  | 'sunburst'
+  | 'icicle'
+  | 'chord'
+  | 'wordcloud'
+  | 'rule'
+  | 'density'
+  | 'hexbin'
+  | 'regression'
+  | 'candlestick'
+  | 'bar3d'
+  | 'line3d'
+  | 'ribbon3d'
+  | 'scatter3d'
+  | 'surface3d'
+  | 'mesh3d'
+  | 'volume3d';
 
 export type ChartChannel =
-  | 'x' | 'y' | 'z' | 'size' | 'colour' | 'label' | 'detail' | 'frame'
-  | 'low' | 'high' | 'source' | 'target';
+  | 'x'
+  | 'y'
+  | 'z'
+  | 'size'
+  | 'colour'
+  | 'label'
+  | 'detail'
+  | 'frame'
+  | 'low'
+  | 'high'
+  | 'open'
+  | 'close'
+  | 'facetX'
+  | 'facetY'
+  | 'source'
+  | 'target';
 
 export interface ChartFieldV1 {
   id: string;
   label: string;
   type: ChartFieldType;
+  /** Inferred or explicitly assigned semantic role; never renderer vocabulary. */
+  role?: ChartFieldRole;
+  /** Portable display meaning inferred from source cells. */
+  format?: ChartFieldFormat;
+  nullable?: boolean;
 }
 
 export interface ChartDatasetV1 {
@@ -130,7 +202,7 @@ export interface ChartThemeV1 {
 
 export interface ChartMotionV1 {
   enabled: boolean;
-  preset: 'none' | 'reveal' | 'by-frame-field' | 'race' | 'orbit' | 'reveal-orbit';
+  preset: 'none' | 'reveal' | 'stagger' | 'by-frame-field' | 'race' | 'orbit' | 'reveal-orbit' | 'data-flight';
   duration: number;
   loop: 'once' | 'loop' | 'bounce';
   easing: 'linear' | 'smooth' | 'steps';
@@ -189,6 +261,33 @@ export interface ChartFindingV1 {
   path?: string;
 }
 
+export interface ChartColumnProfileV1 {
+  name: string;
+  type: ChartFieldType;
+  role: ChartFieldRole;
+  format: ChartFieldFormat;
+  missing: number;
+  unique: number;
+}
+
+export interface ChartDataProfileV1 {
+  shape: 'empty' | 'single' | 'wide' | 'long' | 'matrix';
+  rows: number;
+  columns: number;
+  missing: number;
+  fields: ChartColumnProfileV1[];
+}
+
+export interface ChartRecommendationV1 {
+  intent: 'auto' | 'compare' | 'trend' | 'composition' | 'distribution' | 'relationship' | 'uncertainty' | 'story';
+  renderMode: 'vector' | 'statistical' | 'scene' | 'cinematic';
+  chartType: string;
+  label: string;
+  reason: string;
+  confidence: 'low' | 'medium' | 'high';
+  mappings: Partial<Record<'x' | 'y' | 'z' | 'colour' | 'size' | 'facet' | 'label' | 'error' | 'frame' | 'camera', string[]>>;
+}
+
 export interface ChartValidationResultV1 {
   ok: boolean;
   findings: ChartFindingV1[];
@@ -204,6 +303,11 @@ export interface ResolvedChartReportV1 {
   datasets: number;
   rows: number;
   series: number;
-  theme: Pick<ChartThemeV1, 'id' | 'source' | 'sourceId' | 'sourceLabel' | 'sourceChecksum' | 'locked'>;
+  theme: Pick<
+    ChartThemeV1,
+    'id' | 'source' | 'sourceId' | 'sourceLabel' | 'sourceChecksum' | 'locked'
+  >;
+  dataProfile?: ChartDataProfileV1;
+  recommendation?: ChartRecommendationV1;
   findings: ChartFindingV1[];
 }

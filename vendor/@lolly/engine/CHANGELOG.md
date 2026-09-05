@@ -6,6 +6,78 @@ minors, never removed or signature-changed without a major bump.
 
 Moved verbatim from the comment block that used to live in `src/index.ts`.
 
+1.181.0 - Extends renderer-neutral chart fields with optional semantic role,
+display-format and nullability metadata, and the resolved chart report with a
+portable data profile plus an explained recommendation. Renderers still receive
+the same bounded `ChartSpecV1`; the additions let beginner guidance and expert
+field mapping share one inspectable meaning.
+
+Also adds `fontConversionTargets` and `convertFontContainer`: shared, outline-aware
+font container policy. Shells can reject TTF/CFF relabeling and offer only the
+actual SFNT flavor when unpacking WOFF, without changing the existing codec APIs.
+
+Adds shared values-only `sourceToGrid` / `gridToTarget` file conversion primitives.
+Browser and Node adapters now use the same table conversion and reject headings
+that would silently drop data during JSON object construction.
+
+1.180.0 - Adds renderer-neutral `line3d` and `ribbon3d` marks plus the
+`data-flight` motion preset to `ChartSpecV1`. These describe cinematic charts
+whose camera follows a genuine x/y/z data path; Three.js remains an adapter
+detail and static vector export remains an explicit projected poster.
+
+1.179.0 - Extends `ChartMotionV1` with the renderer-neutral `stagger` preset.
+Chart's statistical SVG adapter uses it for deterministic mark-by-mark reveals;
+preview and exported motion still follow the same normalised Lolly frame clock.
+
+1.178.0 - Adds `HostV1.export.pack(spec)` (optional): a tool's `exportFile` hook
+seals fonts/icons/wallpapers it holds into a Linux package (`.rpm` or `.tar.gz`)
+and returns the bytes, via the engine's package writers (`buildLinuxPack`,
+`buildHomeTarball`) - the tool never touches the RPM/cpio format. Like `file()`
+it never watermarks or stamps provenance. Plan 197 (M5). Also adds the `pkg.`
+reserved URL namespace for the `format=rpm|srpm|tar.gz` export path.
+Also hardens the PDF/AI content interpreter with named public page-node,
+token, decoded-stream, nesting, pattern and soft-mask budgets. Token accounting
+now includes nested array members before allocating the full token tree, and
+repeated form/pattern/mask execution shares one decoded-character budget.
+The gzip/TAR read path now refuses oversized recovered gzip members before
+inflation, caps TAR member fan-out and aggregate payload/archive bytes before
+copying entries, and uses non-int32 padding arithmetic for large USTAR sizes.
+BMP/ICO/APNG/animated-WebP readers now expose and enforce decoded-pixel,
+container fan-out and aggregate output ceilings before allocating or handing a
+declared canvas to the host; APNG/WebP frame regions are also canvas-validated.
+Plain ZIP extraction now has public compressed-input, entry, per-member and
+aggregate expansion ceilings, rejects multi-disk/malformed directory layouts,
+and accepts stricter caller budgets. EPUB prose ingest applies a 64 MiB profile,
+caps OPF/nav/spine cardinality and output, and replaces paired-tag regexes with a
+forward-only scanner; its writer-produced and malformed seeds join the fuzz soak.
+The four second-order PDF consumers now enforce public direct-call budgets for
+node, line, text, clip/mask, gradient, structure-reference and page fan-out.
+Artwork bounds input visits rather than accepted shapes, oversized culls fail
+open without a walk, and one structured `pdf-derived` target exercises SVG,
+text reconstruction, artwork detection and hidden-text detection together.
+The shared JPEG segment/MPF surface is promoted into the scheduled mutation
+suite with real assembled gain-map seeds; its segment and identifier ceilings
+are now public named constants for downstream readers.
+The SVG colour/layer/custom-geometry/path readers and URL keyframe grammar now
+have shared mutation targets. SVG path output, geometry attributes and colour
+scans have public allocation ceilings; malformed quoted colour attributes use a
+forward-only scan rather than repeatedly searching an unterminated tail.
+MIDI joins the mutation corpus and exposes its cardinality ceilings. Public
+ZzFXM synth/song entry points now validate structure, references, numeric ranges,
+duration, mixer work, and sample-cache amplification before the unchanged
+vendored renderers allocate; hostile direct song objects can no longer bypass
+the MIDI converter's limits.
+Radiance, SEAL, PNG unfiltering and the three watermark analyzers complete direct
+mutation coverage for every registered parser surface. SEAL now scans bounded
+edge strings instead of duplicating whole media files and caps records, fields,
+ranges and assembled messages. Content Seal enforces its calibrated 4x256 input
+shape; LSB analysis has a fixed work sample; PNG reversal has a direct output cap.
+
+1.177.0 - Extends the renderer-neutral `ChartSpecV1` vocabulary for curated
+statistical and editorial compilation: rule, density, hexbin, regression and
+candlestick marks plus open, close and facet channels. The chart document stays
+portable and contains no Observable Plot, D3 or other renderer configuration.
+
 1.176.0 - Semantic document diffs now compare recursively canonicalised values,
 so object member insertion order cannot produce a false input/token change.
 

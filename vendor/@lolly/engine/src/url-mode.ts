@@ -457,6 +457,11 @@ export const RESERVED = new Set(['format', 'export', 'copy', 'slot', 'output', '
 // refuse `_`-prefixed input ids and urlKeys, and future reserved params must be
 // minted from that namespace (`_v` is the founding member) so they can never
 // collide with a shipped tool's input the way `loop` did.
+//
+// The `pkg.` PREFIX is a second reserved namespace (plan 197): Linux-package
+// metadata for the `format=rpm|srpm|tar.gz` export path (pkg.name, pkg.version,
+// pkg.dest, pkg.type, …). parseUrlState skips it before input matching, and no
+// tool input id/urlKey may start with `pkg.`.
 
 // Parse the `marks` param (csv: crop,reg,bleed,bars,prov) into a print-mark
 // toggle map. Returns null when absent so callers fall back to their own defaults.
@@ -613,6 +618,10 @@ export function parseUrlState(searchParams: string | URLSearchParams, manifest: 
     // there in a future engine must read as an unknown control on an old one, never
     // as a tool input - and no input may claim such a name (validator-enforced).
     if (key.startsWith('_')) continue;
+    // The `pkg.` prefix is a reserved namespace too (plan 197): Linux-package
+    // metadata (pkg.name, pkg.version, pkg.dest, …) read by the export bridge when
+    // format=rpm|srpm|tar.gz, never as a tool input. No input may claim such a name.
+    if (key.startsWith('pkg.')) continue;
     const vec = vectorFieldByKey[key];
     if (vec) {
       const n = Number(raw);

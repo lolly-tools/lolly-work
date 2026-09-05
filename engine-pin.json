@@ -1,17 +1,17 @@
 {
-  "generatedFrom": "0c4ae8f75927fd737b6fa4b5a6d5cab1778985da",
+  "generatedFrom": "1444d1ec7d28c7f11678e852eef682aedddc73e6",
   "note": "Pin manifest - a consumer verifies vendored content against contentHash. tarballSha256 is informational (gzip is not reproducible).",
   "core": {
     "version": "1.0.0",
     "tarball": "lolly-tools-core-1.0.0.tgz",
-    "tarballSha256": "bac2905dfce4fcd20295f1f9fc6576615926910ad37e41d3cf4a6835410ab3cd",
-    "contentHash": "be3ae1a36a407ff453eb10bf5ebabd37d6fa961d0b64e75b222dc7e69614e73e"
+    "tarballSha256": "8cf271eaf82460fee8810bcb80a93cad24637e169058720655b899c574f840fc",
+    "contentHash": "d80b0f7a41f9b4bed91c2e7fa0202d0ce2034530283f8f93ecdd4200c2f8be0f"
   },
   "engine": {
-    "version": "1.176.0",
-    "tarball": "lolly-engine-1.176.0.tgz",
-    "tarballSha256": "02d9bc674db0456f117b16600632a561f21f9100c1981fb639f9c80856cb5379",
-    "contentHash": "f07c7c1356c64f58c9e8aec0f24fe4d4dc9e0a891762c8e87f78b6b2b84bcc1d"
+    "version": "1.181.0",
+    "tarball": "lolly-engine-1.181.0.tgz",
+    "tarballSha256": "568b5a86ad12a9f027da023bbc8de404af7c5a0749854f81dff1cc443cec0d06",
+    "contentHash": "5d749e45ec2278a11490c229a983f1bb8043bb2a293a31a8e629d7f5572a876b"
   },
   "schemas": {
     "asset-ref.schema.json": "613b34c7aabed9c9825779fb34ac294d4cd3c7a9bde785bc4b56c43b38263c9b",
@@ -19,8 +19,11 @@
     "blocks-wire-order.json": "1e312cc087e36362651300e99dbd79a19ffdab621f6ab2089f26fd9f672c15dc",
     "canonical-inputs.json": "bd5f7e210049f8a5bfe0aa5df6c2ae8c843231b20924fa052e2f34a1fbd8d6c4",
     "canvas-op.schema.json": "e1acaf0c98b875012104b49582994bf5b5bdb9aa3fc3e210a0d9e3c527f9453d",
+    "chart-v1.schema.json": "7bc73ce09be779f9ba04ad7c2a0f872f5c663dc39558c81a74bf8295b272e822",
+    "file-operation-report-v1.schema.json": "f95969fd3f0f5099ef642679e079de1eec7432b73275dfc1772e25a79b0447d7",
+    "file-operation-request-v1.schema.json": "20ca45779c17949e4d5a8482209106fd9be768ff89ee71127624860d8d2c13e2",
     "ratecard.schema.json": "e164d8ce234279c04877511cb9673cc721d0118647cdae0401246c8f35d0b777",
     "tokens.schema.json": "be8a2f388d451f778aeaf334c903556689e3897e7523e6c31b7c428040673384",
-    "tool.schema.json": "2030e03bcdb8983f4550e893ef6ab94678ab193b39efe6457589d488e1ee326a"
+    "tool.schema.json": "8b546545735f8ccc2fcbb123dd56dfb29f48c5c4c90d54d40da0c24e278e3be6"
   }
 }
