@@ -108,8 +108,8 @@ wrong path now fails loudly instead of quietly un-governing employees, which is 
 improvement - not a substitute for a delivery pipeline.
 
 ### 5. Engine pin drift (a recurring risk, currently closed)
-The vendored engine is pinned and pin-verified (`engine-pin.json`, `@lolly/engine@1.181.0`
-as of 2026-09-05), which matches OSS HEAD today. It has lagged before: at 1.146 the render
+The vendored engine is pinned and pin-verified (`engine-pin.json`, `@lolly/engine@1.183.0`
+as of 2026-09-06), which matches OSS HEAD today. It has lagged before: at 1.146 the render
 plane refused four shipped tools whose manifests demanded `>=1.150.0`, while the shell still
 rendered them on-device. The pin is re-verified as `pretest` and `engine-drift.yml` watches the
 OSS repo, but there is no automated re-pin cadence and no pack engine-range preflight yet, so

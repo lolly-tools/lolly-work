@@ -105,7 +105,7 @@ before(async () => {
   pack = await mkdtemp(join(tmpdir(), 'lw-render-'));
   await mkdir(join(pack, 'catalog', 'tools'), { recursive: true });
   await writeFile(join(pack, 'catalog', 'tools', 'index.json'), JSON.stringify({
-    version: 3, tools: [{ id: 'test-card' }, { id: 'locked-card' }, { id: 'wm-card' }, { id: 'fmt-card' }, { id: 'hidden-card' }, { id: 'hooky' }],
+    version: 3, tools: [{ id: 'test-card' }, { id: 'locked-card' }, { id: 'wm-card' }, { id: 'fmt-card' }, { id: 'hidden-card' }, { id: 'hooky' }, { id: 'needy' }],
   }));
   await writeCard('test-card');
   await writeCard('locked-card');
@@ -126,6 +126,20 @@ before(async () => {
     '<rect width="400" height="200" fill="#0b7285"/>' +
     '<text x="20" y="110" font-size="28" fill="#fff">{{title}}</text></svg>');
   await writeFile(join(hookyDir, 'hooks.js'), 'function onInit(ctx) { return {}; }\n');
+  // A hooked tool whose manifest `requires` names host.text - an API the
+  // in-process work host never provides (it lives in the Chromium worker's shell).
+  const needyDir = join(pack, 'tools', 'needy');
+  await mkdir(needyDir, { recursive: true });
+  await writeFile(join(needyDir, 'tool.json'), JSON.stringify({
+    id: 'needy', name: 'Needy', version: '1.0.0', engineVersion: '^1.0.0', status: 'official',
+    render: { width: 400, height: 200, formats: ['svg'] },
+    inputs: [{ id: 'title', label: 'Title', type: 'text', default: 'Needs text' }],
+    requires: ['text'],
+    hooks: { onInit: true },
+  }, null, 2));
+  await writeFile(join(needyDir, 'template.html'),
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 200" width="400" height="200"><text x="20" y="110">{{title}}</text></svg>');
+  await writeFile(join(needyDir, 'hooks.js'), 'async function onInit({ host }) { await host.text.preload([]); return {}; }\n');
 
   main = await makeServer({}, [LOCK_OVERLAY, WM_OVERLAY, FMT_OVERLAY, HIDDEN_OVERLAY]);
   hooksAllowed = await makeServer({ render: { allowHooksInFastPath: true } });
@@ -205,6 +219,22 @@ test('(d) hooked tool: refused 501 by default; renders when the pack allows fast
   assert.equal(rendered.status, 200);
   const svg = await rendered.text();
   assert.ok(svg.includes('HOOKRUN'), 'the hooked tool rendered (trivial onInit returning {})');
+});
+
+test('(d2) manifest requires: an API the in-process host lacks is a named 501, not a bare 500', async () => {
+  // Without fast-path hooks the hooked-tool refusal still comes first.
+  const cookie = await login(main.base, 'admin@test');
+  const hooked = await fetch(`${main.base}/render/needy.svg`, { headers: { cookie } });
+  assert.equal(hooked.status, 501);
+  assert.equal((await hooked.json() as { error: { code: string } }).error.code, 'HOOKED_TOOL_NEEDS_CHROMIUM');
+
+  const allowCookie = await login(hooksAllowed.base, 'admin@test');
+  const refused = await fetch(`${hooksAllowed.base}/render/needy.svg`, { headers: { cookie: allowCookie } });
+  assert.equal(refused.status, 501);
+  const body = await refused.json() as { error: { code: string; message: string } };
+  assert.equal(body.error.code, 'TOOL_REQUIRES_UNMET');
+  assert.match(body.error.message, /requires host\.text/, 'the refusal names the missing API');
+  assert.match(body.error.message, /render\.worker\.url/, 'and points at the fix');
 });
 
 test('(e) share link serves rendered bytes with a public cache header; revoked → 410', async () => {

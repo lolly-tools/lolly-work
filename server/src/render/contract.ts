@@ -154,6 +154,8 @@ export interface LoadedTool {
     id: string;
     version: string;
     render: { formats: string[]; width?: number; height?: number };
+    /** Optional host.* APIs the hooks call unguarded (engine 1.183+); the fast path preflights them. */
+    requires?: string[];
     [k: string]: unknown;
   };
   hooksSource: string | null;
