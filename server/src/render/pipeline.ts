@@ -313,6 +313,21 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
     svgStr = await withRenderHost({ pack, profile: req.profile, hostedResolver,
       ...(observer ? { observeCatalogAsset: (asset, bytes) => observer.observe('catalog', asset, bytes) } : {}),
     }, async (dom, host) => {
+      // Manifest `requires` (engine 1.183): the optional host.* APIs the hooks
+      // call unguarded. The engine refuses the mount when one is absent; say so
+      // as a 501 with the API named, like the hooked-tool refusal, instead of a
+      // bare 500. The work host carries tokens (when the pack has them) and
+      // color; text, compose, audio and the device APIs live in the Chromium
+      // worker's shell, so the fix is the worker, not a config flag.
+      // (Mirrors core's `missingRequires`; the root `@lolly-tools/core` entry
+      // pulls DOM-typed modules this Node-only program cannot check, and the
+      // engine applies the real predicate at createRuntime regardless.)
+      const unmet = (tool.manifest.requires ?? []).filter((name) => (host as unknown as Record<string, unknown>)[name] == null);
+      if (unmet.length) {
+        throw new RenderError('TOOL_REQUIRES_UNMET', 501,
+          `Tool "${req.toolId}" requires host.${unmet.join(', host.')} and the in-process render host does not provide ` +
+          `${unmet.length === 1 ? 'it' : 'them'} (configure render.worker.url + LW_RENDER_WORKER_SECRET for the Chromium worker - see docs/configuration.md)`);
+      }
       // A curated pack's hooks run in a node:vm context (vm-hooks.ts), not the
       // server's realm - no process.env, no ambient fetch, no require.
       const runtime = await engine.createRuntime(tool, host, bakedValues,

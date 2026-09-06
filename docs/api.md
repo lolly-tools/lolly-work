@@ -383,6 +383,7 @@ param joins as before; sending one of the two checks only that one.
 | `FORMAT_NOT_ALLOWED` | 403 | the format exists here but this tool's overlay policy excludes it |
 | `RENDER_BUSY` | 503 | the render worker is at capacity - retry after `Retry-After` seconds |
 | `HOOKED_TOOL_NEEDS_CHROMIUM` | 501 | hooked tool, no worker configured (org_config's `render.hookedTools` is `false`) |
+| `TOOL_REQUIRES_UNMET` | 501 | the manifest's `requires` names a `host.*` API the in-process render host lacks (`text`, `compose`, `audio`, the device APIs); route the tool through the Chromium worker |
 
 ## Client identification
 
