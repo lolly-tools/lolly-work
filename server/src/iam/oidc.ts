@@ -110,6 +110,47 @@ interface Jwk {
   e?: string;
 }
 
+/** Clock skew tolerated on `iat` - an id_token minted further in the future than this is refused. */
+const IAT_SKEW_MS = 5 * 60 * 1000;
+const JWKS_TTL_MS = 10 * 60 * 1000;
+const jwksCache = new Map<string, { keys: Jwk[]; at: number }>();
+
+/** The `kid` an id_token's header names, so the JWKS cache knows when a rotation forces a refetch. */
+export function kidOf(idToken: string): string | undefined {
+  try {
+    const header = JSON.parse(b64uDecode(idToken.split('.')[0] ?? '').toString('utf8')) as { kid?: unknown };
+    return typeof header.kid === 'string' ? header.kid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** JWKS by URI, cached for JWKS_TTL_MS and refetched early when the token's
+ *  `kid` is not in the cached set (a key rotation), so a callback neither hits
+ *  the IdP on every sign-in nor fails for the TTL after a rotation. */
+export async function fetchJwks(
+  uri: string,
+  fetchImpl: typeof fetch,
+  kid?: string,
+  now = Date.now(),
+): Promise<{ keys: Jwk[] }> {
+  const cached = jwksCache.get(uri);
+  if (cached && now - cached.at < JWKS_TTL_MS && (!kid || cached.keys.some((k) => k.kid === kid))) {
+    return { keys: cached.keys };
+  }
+  const res = await fetchImpl(uri);
+  if (!res.ok) throw new Error(`JWKS fetch failed: ${res.status}`);
+  const body = (await res.json()) as { keys?: Jwk[] };
+  const keys = Array.isArray(body.keys) ? body.keys : [];
+  jwksCache.set(uri, { keys, at: now });
+  return { keys };
+}
+
+/** Test seam: forget every cached JWKS. */
+export function resetJwksCache(): void {
+  jwksCache.clear();
+}
+
 /** Verify an RS256 id_token against a JWKS and return its claims, or throw. */
 export async function verifyIdToken(
   idToken: string,
@@ -122,7 +163,7 @@ export async function verifyIdToken(
   const [h, p, s] = parts as [string, string, string];
   const header = JSON.parse(b64uDecode(h).toString('utf8')) as { alg?: string; kid?: string };
   if (header.alg !== 'RS256') throw new Error(`unsupported id_token alg: ${header.alg}`);
-  const jwk = jwks.keys.find((k) => k.kty === 'RSA' && (!header.kid || k.kid === header.kid));
+  const jwk = jwks.keys.find((k) => k.kty === 'RSA' && (!header.kid || k.kid === header.kid) && (k.use === undefined || k.use === 'sig'));
   if (!jwk) throw new Error('no matching JWKS key');
   const key = await crypto.subtle.importKey(
     'jwk',
@@ -144,6 +185,7 @@ export async function verifyIdToken(
   const audOk = Array.isArray(aud) ? aud.includes(expect.clientId) : aud === expect.clientId;
   if (!audOk) throw new Error('id_token audience mismatch');
   if (typeof claims.exp !== 'number' || claims.exp * 1000 <= now) throw new Error('id_token expired');
+  if (typeof claims.iat === 'number' && claims.iat * 1000 > now + IAT_SKEW_MS) throw new Error('id_token issued in the future');
   if (expect.nonce && claims.nonce !== expect.nonce) throw new Error('id_token nonce mismatch');
   return claims;
 }

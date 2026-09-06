@@ -50,7 +50,8 @@ the console links there when this deploy serves or points at one (`instance.appU
 
 ```
 docs/           operator documentation (also served at /admin#/docs)
-server/src/     the app - zero-dependency Node (node:http, node:crypto, native TS)
+server/src/     the app - Node, node:http + node:crypto, native TS; no framework and no third-party crypto.
+                Runtime deps are the render plane (jsdom, resvg, sharp), Postgres (pg) and collab (ws, yjs)
   config/       instance.json loader (+ env secrets)
   iam/          OIDC (generic, Keycloak-first), HMAC tokens, member/guest sessions
   rbac/         roles + fine-grained grants evaluator
@@ -155,9 +156,9 @@ cookie - the in-shell governance UX won't activate here; use `npm run demo` for 
 | Done (tested) | Pending (planned, in order) |
 |---|---|
 | Deployment config + secrets, OIDC login (discovery/PKCE/JWKS-verified), dev provider, member+guest sessions with domain-separated tokens | ✓ **Chromium worker tier shipped** - deployable `workers/render` image, built + cosign-signed in `release.yml`; the fast path still refuses hooked/HTML-heavy tools by default (`render.allowHooksInFastPath` is the curated-pack interim), and the tier is not wired on the Vercel demo |
-| **Render plane v1** - fourth HostV1 shell: real engine via file:-linked `@lolly/engine` (interim until the publish pipeline), jsdom fast path, svg+png (resvg), policy-checked (`INPUT_LOCKED`, locked values baked), LRU + ETag, share/embed/download links serve bytes, brick-pattern PREVIEW watermark | Engine publish pipeline in the OSS repo (replaces the file: links) |
+| **Render plane v1** - fourth HostV1 shell: real engine via file:-linked `@lolly/engine` (interim until the publish pipeline), jsdom fast path, svg+png (resvg), policy-checked (`INPUT_LOCKED`, locked values baked), LRU + ETag, share/embed/download links serve bytes, brick-pattern PREVIEW watermark. The host carries the required surface plus `tokens` (the pack's DTCG document through the engine resolver), `color` and `export.imprint`; hooked tools run in a `node:vm` context on the curated fast path | Engine publish pipeline in the OSS repo (replaces the file: links) |
 | RBAC evaluator (roles + grants, deny-wins), tool overlays (editable/choice/locked/hidden, hidden = absent), org-config payload with ETag + SUSE profile-lock defaults | Catalog channels (staged distribution) - lifecycle/expiry sweeps have shipped |
-| Links: mint/verify/expire/revoke, passwords (scrypt), guest-edit admission flow with TTL caps | Sessions/projects sync |
+| Links: mint/verify/expire/revoke, passwords (scrypt), guest-edit admission flow with TTL caps | ✓ **Sessions/projects sync shipped** (`migrations/0004`) |
 | Catalog serving from the pack mount, per-caller visibility filtering | ✓ **Vercel demo live** at www.lolly.work (v0.2.0) - `GET /render/<toolId>.<format>` serves real SVG/PNG; memory-only, no Chromium tier, so pilot-grade not production |
 | **Approvals engine** - chains (any/quorum/all), approver nomination from the eligible team, separation of duties, per-user inbox notifications, console Approvals view (`migrations/0002`) | |
 | Telemetry ingest (closed attr allowlist, opt-in attribution enforced at ingest), rollups + dashboard summary | SAML (deliberately deferred to Keycloak's SAML→OIDC bridge) - **SCIM and the collab gateway have shipped** |

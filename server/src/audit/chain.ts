@@ -6,7 +6,7 @@
  * detectable seq. Payloads must already be privacy-safe (digests, field
  * names - never raw input values); this module doesn't inspect them.
  */
-import { canonicalJson, sha256Hex } from '../lib/crypto.ts';
+import { canonicalJson, sha256Hex, hmac, macEquals, deriveKey } from '../lib/crypto.ts';
 
 export interface AuditEventBody {
   at: string; // ISO timestamp
@@ -20,6 +20,9 @@ export interface AuditEvent extends AuditEventBody {
   seq: number;
   prevHash: string;
   hash: string;
+  /** HMAC of `hash` under the deployment's audit key (migration 0034). Absent
+   *  on rows written before the key existed, and on unkeyed (demo) stores. */
+  mac?: string;
 }
 
 export const GENESIS_HASH = sha256Hex('lolly-work-audit-genesis');
@@ -28,11 +31,23 @@ export function hashEvent(prevHash: string, seq: number, body: AuditEventBody): 
   return sha256Hex(`${prevHash}\n${seq}\n${canonicalJson(body)}`);
 }
 
+/** The audit MAC key is derived from the session secret, never stored: a
+ *  database holder who can recompute the public hash chain still cannot
+ *  produce a MAC that verifies. */
+export function deriveAuditMacKey(sessionSecret: string): string {
+  return deriveKey(sessionSecret, 'lw/audit-mac');
+}
+
+export function macEvent(macKey: string, hash: string): string {
+  return hmac(`lw/audit-mac\n${hash}`, macKey);
+}
+
 /** Build the next chain entry from the current tail (tail = null for an empty log). */
-export function nextEvent(tail: AuditEvent | null, body: AuditEventBody): AuditEvent {
+export function nextEvent(tail: AuditEvent | null, body: AuditEventBody, macKey?: string): AuditEvent {
   const seq = (tail?.seq ?? 0) + 1;
   const prevHash = tail?.hash ?? GENESIS_HASH;
-  return { ...body, seq, prevHash, hash: hashEvent(prevHash, seq, body) };
+  const hash = hashEvent(prevHash, seq, body);
+  return { ...body, seq, prevHash, hash, ...(macKey ? { mac: macEvent(macKey, hash) } : {}) };
 }
 
 /** The retention trim's high-water mark (plans/35 wave 3): the last trimmed
@@ -44,17 +59,29 @@ export interface AuditAnchor { seq: number; hash: string }
  *  anchor, verification starts from it - rows at or below the anchor (still
  *  present after a trim interrupted between anchor-write and delete) are
  *  skipped rather than double-checked, so a half-finished trim is safe. */
-export function verifyChain(events: AuditEvent[], anchor?: AuditAnchor | null): { ok: boolean; badSeq?: number } {
+export interface ChainVerdict {
+  ok: boolean;
+  badSeq?: number;
+  /** With a key: how many rows carried no MAC (written before the key existed). */
+  unkeyed?: number;
+}
+
+export function verifyChain(events: AuditEvent[], anchor?: AuditAnchor | null, macKey?: string): ChainVerdict {
   let prevHash = anchor?.hash ?? GENESIS_HASH;
   let prevSeq = anchor?.seq ?? 0;
+  let unkeyed = 0;
   if (anchor) events = events.filter((e) => e.seq > anchor.seq);
   for (const evt of events) {
-    const { seq, prevHash: claimedPrev, hash, ...body } = evt;
+    const { seq, prevHash: claimedPrev, hash, mac, ...body } = evt;
     if (seq !== prevSeq + 1 || claimedPrev !== prevHash || hashEvent(prevHash, seq, body) !== hash) {
-      return { ok: false, badSeq: seq };
+      return { ok: false, badSeq: seq, ...(macKey ? { unkeyed } : {}) };
+    }
+    if (macKey) {
+      if (mac === undefined) unkeyed++;
+      else if (!macEquals(mac, macEvent(macKey, hash))) return { ok: false, badSeq: seq, unkeyed };
     }
     prevHash = hash;
     prevSeq = seq;
   }
-  return { ok: true };
+  return { ok: true, ...(macKey ? { unkeyed } : {}) };
 }

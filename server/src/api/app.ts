@@ -25,7 +25,7 @@ import {
   GUEST_COOKIE, SESSION_COOKIE, clearCookie, guestActor, mintGuestCookie, mintSessionCookie, readPrincipal,
   type Principal, type SessionUser,
 } from '../iam/sessions.ts';
-import { buildAuthorizeUrl, discover, exchangeCode, mapClaims, pkcePair, verifyIdToken } from '../iam/oidc.ts';
+import { buildAuthorizeUrl, discover, exchangeCode, mapClaims, pkcePair, verifyIdToken, fetchJwks, kidOf } from '../iam/oidc.ts';
 import { displayName, resolveMember } from '../iam/member.ts';
 import { resolveProxyIdentity } from '../iam/proxy-auth.ts';
 import { createDeviceAuth, normalizeUserCode } from '../iam/device-auth.ts';
@@ -112,7 +112,10 @@ import { demoLandingHtml } from '../lib/demo-landing.ts';
 import { sanitizeEvent, summarize, type RawEvent } from '../telemetry/ingest.ts';
 import { targetedMessages, type Message } from '../inbox/target.ts';
 import { parseClientHeader } from '../fleet/client-header.ts';
-import { verifyChain } from '../audit/chain.ts';
+import { verifyChain, deriveAuditMacKey } from '../audit/chain.ts';
+import { createLogger, requestId } from '../observability/log.ts';
+import { safeReturnTo } from '../iam/return-to.ts';
+import { csrfVerdict } from '../iam/csrf.ts';
 import { auditHead } from '../audit/head.ts';
 import { createMetrics, statusClass, metricsGate, type Metrics, type GaugeLine } from '../observability/metrics.ts';
 import { createRateLimiter, clientIp, rateLimitSurface } from '../observability/rate-limit.ts';
@@ -222,14 +225,17 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   };
   // Memoize the audit-chain gauge so /metrics never runs verifyChain more than
   // ~once/10s regardless of scrape frequency.
-  let auditGauge: { at: number; intact: boolean } | null = null;
-  const auditIntact = async (): Promise<boolean> => {
+  let auditGauge: { at: number; verdict: ReturnType<typeof verifyChain> } | null = null;
+  // One full-chain verification at most every 10 s, shared by /metrics, the
+  // audit page and the head: a paged audit read never re-walks the whole log.
+  const auditVerdict = async (): Promise<ReturnType<typeof verifyChain>> => {
     const now = Date.now();
-    if (auditGauge && now - auditGauge.at < 10_000) return auditGauge.intact;
-    const intact = verifyChain(await store.listAudit(), await store.getAuditAnchor()).ok;
-    auditGauge = { at: now, intact };
-    return intact;
+    if (auditGauge && now - auditGauge.at < 10_000) return auditGauge.verdict;
+    const verdict = verifyChain(await store.listAudit(), await store.getAuditAnchor(), auditMacKey);
+    auditGauge = { at: now, verdict };
+    return verdict;
   };
+  const auditIntact = async (): Promise<boolean> => (await auditVerdict()).ok;
 
   // Dual-key rotation (plans/35 wave 4): every VERIFY path takes the key
   // list (current, then previous); every mint keeps the plain current secret.
@@ -406,13 +412,23 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     return resolver;
   };
 
-  const returnToSafe = (raw: string | null): string => {
-    if (!raw) return '/';
-    if (raw.startsWith('/') && !raw.startsWith('//')) return raw;
-    if (raw.startsWith(config.instance.baseUrl)) return raw;
-    return '/';
-  };
+  const returnToSafe = (raw: string | null): string => safeReturnTo(raw, config.instance.baseUrl);
+  // Keyed audit MAC (audit/chain.ts): the store signs rows with it, every
+  // verification here checks with it. Derived, never stored.
+  const auditMacKey = deriveAuditMacKey(secrets.session);
+  const log = createLogger();
+  // Password guessing against one public link: ten misses lock the link for a
+  // quarter hour, on top of the per-IP link bucket. In-memory per process.
+  const linkPasswordMisses = new Map<string, { n: number; until: number }>();
+  const LINK_PASSWORD_MISSES = 10;
+  const LINK_PASSWORD_LOCK_MS = 15 * 60 * 1000;
 
+  // Readiness, distinct from liveness: a pod whose store cannot answer must
+  // leave the Service until it can. Unauthenticated and cheap (`select 1`).
+  router.add('GET', '/readyz', async (_req, res) => {
+    const ok = await store.ping().catch(() => false);
+    sendJson(res, ok ? 200 : 503, { ok, store: process.env.DATABASE_URL ? 'postgres' : 'memory' });
+  });
   // ── health + metrics ──────────────────────────────────────────────────────
   router.add('GET', '/healthz', (_req, res) => {
     sendJson(res, 200, {
@@ -437,7 +453,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // Emitted only when forwarding is configured, so an alert on it means
     // something and the gauge's very existence documents the wiring.
     if (config.siem.url) {
-      const [head, cursor] = await Promise.all([auditHead(store), store.getSiemCursor()]);
+      const [head, cursor] = await Promise.all([auditHead(store, auditMacKey), store.getSiemCursor()]);
       gauges.push({ name: 'lw_siem_lag', help: 'Audit events not yet confirmed by the SIEM receiver.', type: 'gauge', value: Math.max(0, head.seq - cursor) });
     }
     for (const p of await store.listProviders()) {
@@ -620,6 +636,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const code = ctx.url.searchParams.get('code');
     if (!code) return sendError(res, 400, 'NO_CODE', 'IdP returned no authorization code');
     const disco = await discover(idp.issuer, fetchImpl);
+    // OIDC Discovery 4.3: the document's issuer must be the one it was fetched
+    // for. Checking it against the CONFIGURED issuer, not against itself, is
+    // what stops a discovery answer from naming a different authority.
+    if (disco.issuer.replace(/\/+$/, '') !== idp.issuer.replace(/\/+$/, '')) {
+      return sendError(res, 502, 'ISSUER_MISMATCH', 'IdP discovery names a different issuer than configured');
+    }
     const tokens = await exchangeCode({
       tokenEndpoint: disco.token_endpoint,
       code, verifier: box.verifier,
@@ -629,7 +651,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       fetchImpl,
     });
     if (!tokens.id_token) return sendError(res, 502, 'NO_ID_TOKEN', 'IdP returned no id_token');
-    const jwks = (await (await fetchImpl(disco.jwks_uri)).json()) as { keys: [] };
+    const jwks = await fetchJwks(disco.jwks_uri, fetchImpl, kidOf(tokens.id_token));
     const claims = await verifyIdToken(tokens.id_token, jwks, {
       issuer: disco.issuer, clientId: idp.clientId, nonce: box.nonce,
     });
@@ -746,9 +768,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   };
 
   router.add('POST', '/api/v1/auth/device', async (req, res) => {
-    const started = await deviceAuth.request(req.headers['x-lolly-client'] as string | undefined);
+    const started = await deviceAuth.request(req.headers['x-lolly-client'] as string | undefined, clientIp(req, config.rateLimit.trustedProxyHops));
     if (!started) return sendError(res, 429, 'TOO_MANY_REQUESTS', 'too many pending device codes - try again shortly');
-    await audit(`device:${started.userCode}`, 'auth.device.requested', 'session');
+    // No audit row here: an unauthenticated request must not be able to grow
+    // the audit log; the approval and denial are the recorded events.
     sendJson(res, 200, {
       deviceCode: started.deviceCode,
       userCode: started.userCode,
@@ -1078,7 +1101,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       exp: Math.floor(Date.now() / 1000) + Math.floor(ttlHours * 3600),
       createdBy: user.id,
       createdAt: new Date().toISOString(),
-      ...(body.password ? { pwHash: hashPassword(body.password) } : {}),
+      ...(body.password ? { pwHash: await hashPassword(body.password) } : {}),
       ...(body.projectId ? { projectId: body.projectId } : {}),
     };
     await store.putLink(link);
@@ -1110,7 +1133,22 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!link) return sendError(res, 404, 'NOT_FOUND', 'no such link');
     const sig = ctx.url.searchParams.get('s') ?? '';
     const pw = ctx.url.searchParams.get('pw');
-    const passwordOk = link.pwHash ? (pw !== null && verifyPassword(pw, link.pwHash)) : true;
+    let passwordOk = true;
+    if (link.pwHash) {
+      const miss = linkPasswordMisses.get(link.id);
+      if (miss && miss.n >= LINK_PASSWORD_MISSES && Date.now() < miss.until) {
+        res.setHeader('retry-after', String(Math.ceil((miss.until - Date.now()) / 1000)));
+        return sendError(res, 429, 'PASSWORD_LOCKED', 'too many wrong passwords for this link - try again later');
+      }
+      passwordOk = pw !== null && (await verifyPassword(pw, link.pwHash));
+      if (pw !== null && !passwordOk) {
+        const fresh = !miss || Date.now() >= miss.until;
+        linkPasswordMisses.set(link.id, { n: fresh ? 1 : miss.n + 1, until: Date.now() + LINK_PASSWORD_LOCK_MS });
+        if (linkPasswordMisses.size > 10_000) linkPasswordMisses.clear();
+      } else if (passwordOk) {
+        linkPasswordMisses.delete(link.id);
+      }
+    }
     const status = checkLink(link, sig, linkVerify, { passwordOk });
     if (status === 'bad-signature') return sendError(res, 403, 'BAD_SIGNATURE', 'link signature invalid');
     if (status === 'expired') return sendError(res, 410, 'LINK_EXPIRED', 'this link has expired');
@@ -2055,19 +2093,27 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     sendJson(res, 200, { rooms });
   });
 
+  // Paged: `limit` newest events, or the `limit` events older than `before`
+  // (a seq). `nextBefore` is the oldest seq on the page while older rows
+  // exist. The chain verdict is the shared memo, not a per-request walk.
   router.add('GET', '/api/v1/audit', async (req, res, ctx) => {
     if (!(await requireAction(req, res, 'audit.export'))) return;
-    const events = await store.listAudit();
-    const chain = verifyChain(events, await store.getAuditAnchor());
-    const limit = Math.min(Number(ctx.url.searchParams.get('limit') ?? 200), 1000);
-    sendJson(res, 200, { chain, total: events.length, events: events.slice(-limit) });
+    const limit = Math.min(Math.max(1, Number(ctx.url.searchParams.get('limit') ?? 200) || 200), 1000);
+    const before = Math.max(0, Number(ctx.url.searchParams.get('before') ?? 0) || 0);
+    const [events, total, chain, anchor] = await Promise.all([
+      store.listAuditBefore(before, limit), store.countAudit(), auditVerdict(), store.getAuditAnchor(),
+    ]);
+    const floor = (anchor?.seq ?? 0) + 1;
+    const oldest = events[0]?.seq;
+    const nextBefore = oldest !== undefined && oldest > floor ? oldest : null;
+    sendJson(res, 200, { chain, total, events, nextBefore });
   });
 
   // The chain head alone (seq + hash + intact flag) - small enough to record
   // externally on a schedule, so DB-level truncation becomes detectable.
   router.add('GET', '/api/v1/audit/head', async (req, res) => {
     if (!(await requireAction(req, res, 'audit.export'))) return;
-    sendJson(res, 200, await auditHead(store));
+    sendJson(res, 200, await auditHead(store, auditMacKey));
   });
 
   // ── retention + erasure (plans/35 wave 3) ─────────────────────────────────
@@ -6902,7 +6948,24 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         .catch(() => {});
     }
     let routeClass = 'unmatched';
-    res.on('finish', () => metrics.httpRequest(routeClass, statusClass(res.statusCode)));
+    // Request id: echoed on the response and on the access line, so a 5xx in
+    // the logs joins to the request a person reports.
+    const reqId = requestId(req.headers['x-request-id']);
+    res.setHeader('x-request-id', reqId);
+    const startedAt = Date.now();
+    res.on('finish', () => {
+      metrics.httpRequest(routeClass, statusClass(res.statusCode));
+      if (log.accessLog) log('info', 'http', { reqId, method: req.method, route: routeClass, status: res.statusCode, ms: Date.now() - startedAt });
+    });
+    // Cookie-authenticated mutations from another site are refused before any
+    // route runs (iam/csrf.ts). Bearer callers and cookie-less requests pass.
+    const csrf = csrfVerdict(req.method, req.headers);
+    if (csrf) {
+      routeClass = 'csrf-blocked';
+      res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: { code: 'CSRF_BLOCKED', message: csrf } }));
+      return;
+    }
     // Rate-limit exposed request surfaces (auth, telemetry, links, automation).
     // Automation remains bounded even for authenticated callers; the console's
     // ordinary CRUD/API paths still never map to a bucket.

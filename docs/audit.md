@@ -34,11 +34,23 @@ Payloads must already be privacy-safe when they are written - digests and field 
 raw input values. The chain module does not inspect them; the call sites are responsible, and
 policy edits record before/after *shapes*.
 
+## What holds the database itself to account
+
+Two things beyond the chain. Every row also carries a **keyed MAC**: an HMAC of its hash
+under a key derived at boot from `LW_SESSION_SECRET`, which the database never holds. A
+database holder who edits a row and recomputes the public chain from there on still cannot
+produce MACs that verify, and every verification path (`/api/v1/audit`, the head, the
+Prometheus gauge, `lw audit verify`) checks them. Rows written before the key existed have
+no MAC; verification counts them as `unkeyed` rather than failing them. On Postgres,
+migration `0034` adds a trigger that refuses `UPDATE` and `DELETE` on `audit_log`; the
+retention trim is the one delete it admits, and it announces itself inside its own
+transaction after writing the anchor.
+
 ## The one limitation, stated plainly
 
-Hash-chaining detects edits **within** the log. It does not, by itself, stop someone with
-direct database access from truncating the newest entries and re-chaining the remainder:
-Postgres has no append-only constraint here.
+Hash-chaining and the MAC detect edits **within** the log. They do not, by themselves,
+stop someone with superuser access from dropping the trigger and truncating the newest
+entries: rows that never existed leave nothing to verify.
 
 The defence is to record the head hash somewhere **outside** this deploy. A later chain that
 does not contain the head you saved is provably truncated.

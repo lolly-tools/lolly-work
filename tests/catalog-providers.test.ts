@@ -130,7 +130,7 @@ test('(b) credential flow: bad key refused by health check (nothing stored), goo
   });
   assert.equal(good.status, 200);
   const body = await good.json() as { fingerprint: string; health: { ok: boolean } };
-  assert.match(body.fingerprint, /^[0-9a-f]{8}…/);
+  assert.match(body.fingerprint, /^[0-9a-f]{12}$/);
   assert.equal(body.health.ok, true);
   assert.ok(!JSON.stringify(body).includes(MOCK_SECRET), 'response never carries the secret');
 
@@ -272,7 +272,7 @@ test('(b3) credential expiry, automation jobs, deliveries and render resources f
   assert.equal(files[at + 4], '0031_automation_leases.sql', 'automation leases follow result digests');
   assert.equal(files[at + 5], '0032_render_resources.sql', 'render resources follow automation leases');
   assert.equal(files[at + 6], '0033_render_batches.sql', 'batch membership follows render resources');
-  assert.equal(files.at(-1), '0033_render_batches.sql', 'render batches hold the migration ceiling');
+  assert.equal(files.at(-1), '0034_audit_mac_and_append_guard.sql', 'the keyed audit MAC + append-only guard hold the migration ceiling');
   assert.match(await readFile(`${dir}/0027_credential_expiry.sql`, 'utf8'), /add column credential_expires_at/);
   assert.match(await readFile(`${dir}/0028_automation_jobs.sql`, 'utf8'), /create table automation_jobs/);
   assert.match(await readFile(`${dir}/0029_deliveries.sql`, 'utf8'), /create table deliveries/);

@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { scryptSync } from 'node:crypto';
 import { checkLink, linkPath, signLink, type LinkRecord } from '../server/src/links/sign.ts';
 import { hashPassword, verifyPassword } from '../server/src/lib/crypto.ts';
 
@@ -46,13 +47,18 @@ test('target and expiry are tamper-proof: changing either invalidates the signat
   assert.equal(checkLink(paramsSwapped, sig, SECRET, { now: NOW }), 'bad-signature');
 });
 
-test('password gate: required until passwordOk, scrypt verifies', () => {
-  const pwHash = hashPassword('open sesame');
+test('password gate: required until passwordOk, scrypt verifies', async () => {
+  const pwHash = await hashPassword('open sesame');
   const link = record({ pwHash });
   const sig = signLink(link, SECRET);
   assert.equal(checkLink(link, sig, SECRET, { now: NOW }), 'password-required');
   assert.equal(checkLink(link, sig, SECRET, { now: NOW, passwordOk: true }), 'ok');
-  assert.equal(verifyPassword('open sesame', pwHash), true);
-  assert.equal(verifyPassword('wrong', pwHash), false);
-  assert.equal(verifyPassword('x', 'garbage'), false);
+  assert.match(pwHash, /^s2\.16\./);
+  assert.equal(await verifyPassword('open sesame', pwHash), true);
+  assert.equal(await verifyPassword('wrong', pwHash), false);
+  assert.equal(await verifyPassword('x', 'garbage'), false);
+  // A row hashed before the parameter bump (s1 = node's default N=2^14) still verifies.
+  const legacy = `s1.${Buffer.from('0123456789abcdef').toString('base64url')}.${scryptSync('open sesame', '0123456789abcdef', 32).toString('base64url')}`;
+  assert.equal(await verifyPassword('open sesame', legacy), true);
+  assert.equal(await verifyPassword('nope', legacy), false);
 });

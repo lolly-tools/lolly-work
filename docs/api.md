@@ -10,7 +10,8 @@ means any signed-in member; *public* means no session needed.
 
 | Route | Action | Notes |
 |---|---|---|
-| `GET /healthz` | public | `{ ok, name, accessMode, appUrl? }` |
+| `GET /healthz` | public | `{ ok, name, accessMode, appUrl? }` - liveness |
+| `GET /readyz` | public | `{ ok, store }`, 503 while the store cannot answer - readiness |
 | `GET /metrics` | token | Prometheus; loopback-only unless `LW_METRICS_TOKEN` is set |
 
 ## Instance manifest and the connect surface
@@ -345,7 +346,7 @@ param joins as before; sending one of the two checks only that one.
 | `GET /api/v1/stats/overview` | `telemetry.view` |
 | `GET /api/v1/stats/series?days=N` | `telemetry.view` - day-bucketed audit-action counts (counts only), the console's per-view activity headers; `days` clamps 7–90 |
 | `GET /api/v1/activity` | `audit.export` |
-| `GET /api/v1/audit`, `GET /api/v1/audit/head` | `audit.export` |
+| `GET /api/v1/audit?limit=&before=` (paged: the `limit` newest events, or those older than the `before` seq; `nextBefore` is the cursor while older rows exist), `GET /api/v1/audit/head` | `audit.export` |
 | `GET /api/v1/fleet` | `fleet.view` - the version histogram, plus `engineVersion` (this deploy's vendored pin) |
 | `GET /api/v1/fleet/installs` | `fleet.view` - registered installs, newest activity first |
 | `PATCH /api/v1/fleet/installs/:id` | `fleet.manage` - set or clear the operator name |

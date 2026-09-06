@@ -18,9 +18,9 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
-  loadJsdom,
+  loadJsdom, loadEngine,
   type AssetQuery, type AssetRef, type AssetsAPI, type ExportOpts,
-  type Profile, type RenderDom, type RenderElement, type StateEntry, type WorkHost,
+  type EngineApi, type Profile, type RenderDom, type RenderElement, type StateEntry, type TokenSetLike, type WorkHost,
 } from './contract.ts';
 import type { HostedAssetResult, HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
 
@@ -120,6 +120,48 @@ async function buildAssets(pack: string, hostedResolver?: (ref: HostedProviderRe
     async isAvailable(id: string): Promise<boolean> {
       return byId.has(id);
     },
+    // v1.183: bytes behind a ref. This host hands tools data: urls only.
+    async bytes(target: AssetRef | string): Promise<Uint8Array> {
+      const url = typeof target === 'string' ? target : target.url;
+      if (!url.startsWith('data:')) throw new Error('host.assets.bytes: the render host serves data: urls only');
+      const comma = url.indexOf(',');
+      const meta = url.slice(5, comma);
+      const payload = url.slice(comma + 1);
+      return new Uint8Array(/;base64$/i.test(meta) ? Buffer.from(payload, 'base64') : Buffer.from(decodeURIComponent(payload), 'utf8'));
+    },
+  };
+}
+
+/**
+ * The pack's design tokens as HostV1 `tokens`. The first `type: "tokens"` asset
+ * in the catalog index is the brand document (the shells pick the same way);
+ * the engine's createTokenSet resolves aliases and themes, cached per theme.
+ * Null when the pack has none, so `host.tokens` is absent rather than empty.
+ */
+async function buildTokens(pack: string, engine: EngineApi): Promise<WorkHost['tokens'] | null> {
+  const catalogDir = join(pack, 'catalog');
+  let doc: unknown = null;
+  try {
+    const index = JSON.parse(await readFile(join(catalogDir, 'assets', 'index.json'), 'utf8')) as { assets?: CatalogAsset[] };
+    const asset = (index.assets ?? []).find((a) => a.type === 'tokens' && a.formats[0]?.url);
+    // Index urls are catalog-rooted (`/catalog/assets/…`) or pack-relative; both resolve under catalogDir.
+    if (asset) doc = JSON.parse(await readFile(join(catalogDir, asset.formats[0]!.url.replace(/^\/?(?:catalog\/)?/, '')), 'utf8'));
+  } catch {
+    return null;
+  }
+  if (!doc) return null;
+  const sets = new Map<string, TokenSetLike>();
+  const set = (theme?: string): TokenSetLike => {
+    const key = theme ?? '';
+    let s = sets.get(key);
+    if (!s) { s = engine.createTokenSet(doc, theme ? { theme } : {}); sets.set(key, s); }
+    return s;
+  };
+  return {
+    async get(opts = {}) { return set(opts.theme); },
+    async colors(opts = {}) { return set(opts.theme).colors(); },
+    async resolve(ref, opts = {}) { return set(opts.theme).resolve(ref); },
+    async themes() { return set().themes(); },
   };
 }
 
@@ -136,6 +178,8 @@ async function buildHost(dom: RenderDom, pack: string, profile: Profile, hostedR
   const w = dom.window;
   const state = new Map<string, object>();
   const assets = await buildAssets(pack, hostedResolver, observe);
+  const engine = await loadEngine();
+  const tokens = await buildTokens(pack, engine);
 
   return {
     version: '1',
@@ -150,6 +194,8 @@ async function buildHost(dom: RenderDom, pack: string, profile: Profile, hostedR
       subscribe(): () => void { return () => {}; },
     },
     assets,
+    ...(tokens ? { tokens } : {}),
+    color: engine.makeColorApi(),
     state: {
       async save(slot, data): Promise<void> { state.set(slot, data); },
       async load(slot): Promise<object | null> { return state.get(slot) ?? null; },
@@ -188,6 +234,8 @@ async function buildHost(dom: RenderDom, pack: string, profile: Profile, hostedR
       },
       async download(): Promise<void> { throw new Error('No browser download server-side'); },
       async file(): Promise<void> { throw new Error('No file delivery server-side'); },
+      // No rasteriser in-process: the contract says return the bytes unchanged.
+      async imprint(bytes: Uint8Array): Promise<Uint8Array> { return bytes; },
     },
   };
 }

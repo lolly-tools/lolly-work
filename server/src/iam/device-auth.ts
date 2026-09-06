@@ -31,6 +31,11 @@ export const DEVICE_CODE_TTL_SEC = 600;
 export const DEVICE_POLL_INTERVAL_SEC = 5;
 /** Pending-request ceiling - a memory/table bound, far above any honest use. */
 const MAX_PENDING = 100;
+/** Per-caller ceiling on flows STARTED in a window: the global MAX_PENDING
+ *  alone let one address fill the table and lock every `lw login` out for
+ *  the code TTL. */
+const PER_IP_STARTS = 5;
+const PER_IP_WINDOW_MS = 10 * 60 * 1000;
 
 export interface DeviceAuthPending {
   userCode: string;
@@ -46,7 +51,7 @@ export type DeviceClaim =
 
 export interface DeviceAuth {
   /** Start a flow. Null when the pending ceiling is hit (the route answers 429). */
-  request(clientTag?: string): Promise<{ deviceCode: string; userCode: string; expiresIn: number; interval: number } | null>;
+  request(clientTag?: string, ip?: string): Promise<{ deviceCode: string; userCode: string; expiresIn: number; interval: number } | null>;
   /** The pending request behind a user code - what /activate renders. */
   describe(userCode: string): Promise<DeviceAuthPending | null>;
   /** Bind the approving person's session identity to the pending code. */
@@ -73,11 +78,22 @@ export function normalizeUserCode(raw: string): string {
 }
 
 export function createDeviceAuth(store: Store, now: () => number = Date.now): DeviceAuth {
+  const startsByIp = new Map<string, number[]>();
   const toPending = (r: { userCode: string; clientTag?: string; createdAt: string }): DeviceAuthPending =>
     ({ userCode: r.userCode, ...(r.clientTag ? { clientTag: r.clientTag } : {}), createdAt: r.createdAt });
 
   return {
-    async request(clientTag) {
+    async request(clientTag, ip) {
+      if (ip) {
+        const t = now();
+        const recent = (startsByIp.get(ip) ?? []).filter((at) => t - at < PER_IP_WINDOW_MS);
+        if (recent.length >= PER_IP_STARTS) return null;
+        recent.push(t);
+        startsByIp.set(ip, recent);
+        if (startsByIp.size > 10_000) {
+          for (const [k, v] of startsByIp) if (v.every((at) => t - at >= PER_IP_WINDOW_MS)) startsByIp.delete(k);
+        }
+      }
       if ((await store.listPendingDeviceCodes()).length >= MAX_PENDING) return null;
       const rec = {
         deviceCode: randomBytes(24).toString('base64url'),

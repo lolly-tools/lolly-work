@@ -21,13 +21,15 @@ export interface AuditHead {
   chainIntact: boolean;
   /** Present only when chainIntact === false. */
   badSeq?: number;
+  /** With an audit key configured: rows that predate it and carry no MAC. */
+  unkeyed?: number;
 }
 
-export async function auditHead(store: Store): Promise<AuditHead> {
+export async function auditHead(store: Store, macKey?: string): Promise<AuditHead> {
   const [events, anchor] = await Promise.all([store.listAudit(), store.getAuditAnchor()]);
   // Anchor-aware (plans/35 wave 3): after a retention trim, verification and
   // the empty-log head both stand on the recorded boundary, not on genesis.
-  const chain = verifyChain(events, anchor);
+  const chain = verifyChain(events, anchor, macKey);
   const tail = events[events.length - 1];
   return {
     seq: tail?.seq ?? anchor?.seq ?? 0,
@@ -36,5 +38,6 @@ export async function auditHead(store: Store): Promise<AuditHead> {
     count: events.length,
     chainIntact: chain.ok,
     ...(chain.ok ? {} : { badSeq: chain.badSeq }),
+    ...(chain.unkeyed !== undefined ? { unkeyed: chain.unkeyed } : {}),
   };
 }

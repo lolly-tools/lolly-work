@@ -390,7 +390,16 @@ export interface Store extends RenderStore {
 
   // audit
   appendAudit(body: AuditEventBody): Promise<AuditEvent>;
+  /** Install the keyed-MAC key (audit/chain.ts deriveAuditMacKey) so every
+   *  row appended from now on carries a `mac`. Optional: a demo or test store
+   *  may run unkeyed. */
+  setAuditMacKey?(key: string): void;
   listAudit(): Promise<AuditEvent[]>;
+  /** The `limit` newest events with seq < before (before <= 0 ⇒ the newest page), ascending - the console's audit pager. */
+  listAuditBefore(before: number, limit: number): Promise<AuditEvent[]>;
+  countAudit(): Promise<number>;
+  /** Readiness: can the store answer right now? Memory always can; Postgres runs `select 1`. */
+  ping(): Promise<boolean>;
   /** Events with seq > after, ascending, at most limit - the SIEM forwarder's
    *  read (plans/35 wave 2), so forwarding never loads the whole log. */
   listAuditAfter(after: number, limit: number): Promise<AuditEvent[]>;
