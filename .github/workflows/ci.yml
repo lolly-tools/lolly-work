@@ -48,9 +48,9 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
@@ -69,9 +69,9 @@ jobs:
     name: typecheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
@@ -93,9 +93,9 @@ jobs:
     name: npm audit (high+critical) + SBOM
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
@@ -122,7 +122,7 @@ jobs:
     name: container image builds
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build the server image (no push)
         run: docker build -f deploy/compose/Dockerfile .
@@ -142,7 +142,7 @@ jobs:
       VERCEL_ORG_ID: team_6XAaRitEb6CnNoNPwI3pI6hb
       VERCEL_PROJECT_ID: prj_35faMWKpIv5tWrDGSLwkzY7MFhIG
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Deploy to Vercel production
         env:
