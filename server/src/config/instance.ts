@@ -210,6 +210,13 @@ export interface InstanceConfig {
     enabled: boolean;
     users: Array<{ email: string; name?: string; groups?: string[] }>;
   };
+  /** Reverse-proxy sign-in: an authenticating proxy in front of the instance
+   *  (YunoHost's SSOwat, Authelia, oauth2-proxy) states who the person is in
+   *  request headers, and the instance mints an ordinary member session from
+   *  them. Trust rests on two things the proxy owns: it strips any identity
+   *  header a client sent, and it injects the shared secret the `secretRef`
+   *  env var holds. Optional LDAP lookup fills attributes and groups. */
+  proxyAuth: ProxyAuthConfig;
   catalogProviders: ConfigCatalogProvider[];
   /**
    * Fixed organization-owned outbound targets. Credentials are per-entry env
@@ -280,6 +287,55 @@ export interface AdditionalIdp {
   clientSecretRef?: string;
 }
 
+/** Request headers the proxy sets (names lowercased for lookup, so `YNH_USER`
+ *  and `Ynh-User` both read as `ynh_user`). Only `user` is required; the rest
+ *  fall back to the directory lookup, then to blanks. */
+export interface ProxyAuthHeaders {
+  user: string;
+  email: string;
+  name: string;
+  /** Comma-separated group names from the proxy; empty = the proxy sends none. */
+  groups: string;
+}
+
+/** One rule turning a directory attribute's values into group names: every
+ *  value matching `pattern` contributes its first capture group. */
+export interface ProxyAuthGroupRule {
+  attribute: string;
+  pattern: string;
+}
+
+/** The optional LDAP lookup behind proxy sign-in. Read-only, one entry per
+ *  sign-in: the user's own object, fetched by DN, never a subtree search. */
+export interface ProxyAuthDirectory {
+  /** `ldap://host:port` (plain TCP). ldaps is not supported; run the lookup on
+   *  the loopback of the host that owns the directory. */
+  url: string;
+  /** Simple bind identity; both empty = anonymous. The password rides the env
+   *  var `bindPasswordRef` names. */
+  bindDn: string;
+  bindPasswordRef: string;
+  /** DN template; `{user}` is replaced with the RFC 4514-escaped user header. */
+  userDn: string;
+  /** Which attributes fill which member fields when the headers left them blank. */
+  attributes: { email: string; firstname: string; lastname: string; name: string };
+  groupMap: ProxyAuthGroupRule[];
+  timeoutMs: number;
+}
+
+export interface ProxyAuthConfig {
+  enabled: boolean;
+  /** Sign-in button copy ("YunoHost", "Authelia"). Required when enabled. */
+  displayName: string;
+  /** Env var NAME holding the shared secret; the request header
+   *  `x-lw-proxy-auth` must equal its value or the sign-in is refused. */
+  secretRef: string;
+  headers: ProxyAuthHeaders;
+  /** Static grants unioned in at sign-in: `{ "<user>": ["owner"] }`. */
+  groups: Record<string, string[]>;
+  directory: ProxyAuthDirectory | null;
+}
+
 export interface Secrets {
   session: string;
   link: string;
@@ -290,6 +346,12 @@ export interface Secrets {
   sessionPrevious?: string;
   linkPrevious?: string;
   idpClientSecret?: string;
+  /** Shared secret the reverse proxy injects as `x-lw-proxy-auth`; read from
+   *  the env var `proxyAuth.secretRef` names. Required when proxyAuth is on. */
+  proxyAuth?: string;
+  /** Simple-bind password for the proxyAuth directory lookup, from the env var
+   *  `proxyAuth.directory.bindPasswordRef` names. Absent = anonymous bind. */
+  proxyAuthBind?: string;
   /** SMTP relay password - required only when notify.smtp names a user. */
   smtpPassword?: string;
   /** HMAC key for outbound webhook signatures - required with notify.webhook
@@ -343,6 +405,16 @@ const DEFAULTS: InstanceConfig = {
     automation: { capacity: 120, refillPerSec: 2 },
   },
   dev: { enabled: false, users: [] },
+  proxyAuth: {
+    enabled: false,
+    displayName: '',
+    secretRef: 'LW_PROXY_AUTH_SECRET',
+    // SSOwat's names. Authelia sends remote-user / remote-email / remote-name /
+    // remote-groups; oauth2-proxy sends x-forwarded-user / x-forwarded-email.
+    headers: { user: 'ynh_user', email: 'ynh_user_email', name: 'ynh_user_fullname', groups: '' },
+    groups: {},
+    directory: null,
+  },
   catalogProviders: [],
   delivery: { maxBytes: 64 * 1024 * 1024, destinations: [] },
   blobs: { driver: 'pg' },
@@ -362,6 +434,61 @@ function merge<T extends Record<string, unknown>>(base: T, over: Partial<T> | un
         : v;
   }
   return out;
+}
+
+const DIRECTORY_DEFAULTS: ProxyAuthDirectory = {
+  url: 'ldap://127.0.0.1:389',
+  bindDn: '',
+  bindPasswordRef: '',
+  userDn: 'uid={user},ou=users,dc=yunohost,dc=org',
+  attributes: { email: 'mail', firstname: 'givenName', lastname: 'sn', name: 'cn' },
+  groupMap: [],
+  timeoutMs: 5000,
+};
+
+const ENV_NAME = /^[A-Z][A-Z0-9_]*$/;
+
+/** Validate (and default) the proxyAuth block in place. A half-described proxy
+ *  would refuse every sign-in in front of the person, so refuse the config. */
+function validateProxyAuth(pa: ProxyAuthConfig): void {
+  if (typeof pa.enabled !== 'boolean') throw new Error('proxyAuth.enabled must be true or false');
+  if (!ENV_NAME.test(pa.secretRef)) throw new Error('proxyAuth.secretRef must name an env var (UPPER_SNAKE)');
+  if (!pa.headers || typeof pa.headers.user !== 'string' || !pa.headers.user.trim()) {
+    throw new Error('proxyAuth.headers.user must name the header carrying the login');
+  }
+  for (const k of ['user', 'email', 'name', 'groups'] as const) {
+    const v = pa.headers[k] ?? '';
+    if (typeof v !== 'string') throw new Error(`proxyAuth.headers.${k} must be a string`);
+    pa.headers[k] = v.trim().toLowerCase();
+  }
+  if (!pa.groups || typeof pa.groups !== 'object' || Array.isArray(pa.groups)) throw new Error('proxyAuth.groups must be an object of user -> group list');
+  for (const [user, groups] of Object.entries(pa.groups)) {
+    if (!Array.isArray(groups) || groups.some((g) => typeof g !== 'string' || !g.trim())) {
+      throw new Error(`proxyAuth.groups["${user}"] must be a list of group names`);
+    }
+  }
+  if (pa.enabled && !pa.displayName?.trim()) throw new Error('proxyAuth.displayName is required when proxyAuth is enabled - the sign-in button must say what it signs in with');
+  if (pa.directory === null || pa.directory === undefined) { pa.directory = null; return; }
+  if (typeof pa.directory !== 'object') throw new Error('proxyAuth.directory must be an object or null');
+  const d = merge(DIRECTORY_DEFAULTS as unknown as Record<string, unknown>, pa.directory as unknown as Record<string, unknown>) as unknown as ProxyAuthDirectory;
+  let u: URL | null = null;
+  try { u = new URL(d.url); } catch { /* refused below */ }
+  if (!u || u.protocol !== 'ldap:' || !u.hostname) throw new Error(`proxyAuth.directory.url must be an ldap://host[:port] URL: ${d.url}`);
+  if (typeof d.bindDn !== 'string') throw new Error('proxyAuth.directory.bindDn must be a string');
+  if (d.bindPasswordRef && !ENV_NAME.test(d.bindPasswordRef)) throw new Error('proxyAuth.directory.bindPasswordRef must name an env var (UPPER_SNAKE)');
+  if (typeof d.userDn !== 'string' || !d.userDn.includes('{user}')) throw new Error('proxyAuth.directory.userDn must contain {user}');
+  for (const k of ['email', 'firstname', 'lastname', 'name'] as const) {
+    if (typeof d.attributes[k] !== 'string') throw new Error(`proxyAuth.directory.attributes.${k} must be an attribute name (empty to skip)`);
+  }
+  if (!Array.isArray(d.groupMap)) throw new Error('proxyAuth.directory.groupMap must be a list');
+  for (const rule of d.groupMap) {
+    if (!rule || typeof rule.attribute !== 'string' || !rule.attribute.trim()) throw new Error('proxyAuth.directory.groupMap entries need an attribute');
+    let re: RegExp;
+    try { re = new RegExp(rule.pattern); } catch { throw new Error(`proxyAuth.directory.groupMap pattern does not compile: ${rule.pattern}`); }
+    if (new RegExp(`${re.source}|`).exec('')!.length < 2) throw new Error(`proxyAuth.directory.groupMap pattern needs a capture group for the group name: ${rule.pattern}`);
+  }
+  if (!Number.isFinite(d.timeoutMs) || d.timeoutMs <= 0) throw new Error(`invalid proxyAuth.directory.timeoutMs: ${d.timeoutMs}`);
+  pa.directory = d;
 }
 
 export function parseConfig(json: string): InstanceConfig {
@@ -436,8 +563,9 @@ export function parseConfig(json: string): InstanceConfig {
   for (const s of ['auth', 'telemetry', 'link', 'automation'] as const) {
     if (rl[s].capacity <= 0 || rl[s].refillPerSec < 0) throw new Error(`rateLimit.${s} needs capacity>0 and refillPerSec>=0`);
   }
-  if (cfg.policy.defaultAccessMode !== 'open' && !cfg.idp.issuer && !cfg.dev.enabled) {
-    throw new Error('gated access needs idp.issuer (or dev.enabled for local work)');
+  validateProxyAuth(cfg.proxyAuth);
+  if (cfg.policy.defaultAccessMode !== 'open' && !cfg.idp.issuer && !cfg.proxyAuth.enabled && !cfg.dev.enabled) {
+    throw new Error('gated access needs idp.issuer or proxyAuth.enabled (or dev.enabled for local work)');
   }
   const seen = new Set<string>();
   for (const p of cfg.catalogProviders) {
@@ -575,7 +703,7 @@ export function linkKeys(s: Secrets): readonly string[] {
   return s.linkPrevious ? [s.link, s.linkPrevious] : [s.link];
 }
 
-export function loadSecrets(env = process.env): Secrets {
+export function loadSecrets(env = process.env, cfg?: Pick<InstanceConfig, 'proxyAuth'>): Secrets {
   const prod = env.NODE_ENV === 'production';
   const need = (name: string): string => {
     const v = env[name];
@@ -593,6 +721,22 @@ export function loadSecrets(env = process.env): Secrets {
   if (env.LW_SESSION_SECRET_PREVIOUS) secrets.sessionPrevious = env.LW_SESSION_SECRET_PREVIOUS;
   if (env.LW_LINK_SECRET_PREVIOUS) secrets.linkPrevious = env.LW_LINK_SECRET_PREVIOUS;
   if (env.LW_IDP_CLIENT_SECRET) secrets.idpClientSecret = env.LW_IDP_CLIENT_SECRET;
+  // The proxy secret's env var is NAMED by config (proxyAuth.secretRef), so it
+  // resolves only when the caller passes the config. Required whenever the
+  // provider is on: a random fallback would be one the proxy cannot know, so
+  // production refuses to boot and development gets a loud warning plus a
+  // route that fails closed (every proxy sign-in answers 403).
+  if (cfg?.proxyAuth.enabled) {
+    const v = env[cfg.proxyAuth.secretRef];
+    if (v) secrets.proxyAuth = v;
+    else if (prod) {
+      throw new Error(`${cfg.proxyAuth.secretRef} is required in production when proxyAuth is enabled - the reverse proxy must inject the same value as x-lw-proxy-auth. See docs/identity.md.`);
+    } else {
+      console.warn(`[lolly-work] WARNING — proxyAuth is enabled but ${cfg.proxyAuth.secretRef} is not set; every /api/auth/proxy sign-in will be refused.`);
+    }
+    const bindRef = cfg.proxyAuth.directory?.bindPasswordRef;
+    if (bindRef && env[bindRef]) secrets.proxyAuthBind = env[bindRef];
+  }
   // Not `need()`: only required once a db-managed provider credential is stored,
   // enforced where sealing happens so credential-free instances need no key.
   if (env.LW_CREDENTIAL_SECRET) secrets.credential = env.LW_CREDENTIAL_SECRET;

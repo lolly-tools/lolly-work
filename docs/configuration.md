@@ -119,6 +119,31 @@ log pipeline that keeps stdout is an external anchor - see [audit](audit.md).
 not turn it off - the two coexist happily and the passwordless route stays live. The server
 warns at boot when it finds both.
 
+## `proxyAuth`
+
+Reverse-proxy sign-in: an authenticating proxy in front of the instance (YunoHost's SSOwat,
+Authelia, oauth2-proxy) states who the person is in request headers. See
+[identity](identity.md#reverse-proxy-sign-in) for the contract and the security posture.
+
+| Key | Default | What it does |
+|---|---|---|
+| `enabled` | `false` | enables `GET /api/auth/proxy?returnTo=…`. Satisfies the gated-access requirement on its own (no `idp.issuer` needed) |
+| `displayName` | `""` | the sign-in button copy ("YunoHost"). Required when enabled |
+| `secretRef` | `LW_PROXY_AUTH_SECRET` | env var NAME holding the shared secret; the header `x-lw-proxy-auth` must equal its value or the sign-in is `403` |
+| `headers.user` | `ynh_user` | header carrying the stable login (required). Names are matched case-insensitively |
+| `headers.email` | `ynh_user_email` | header carrying the mail address |
+| `headers.name` | `ynh_user_fullname` | header carrying the display name; split into first and last name when the directory gives neither |
+| `headers.groups` | `""` | header carrying a comma-separated group list; empty = the proxy sends none |
+| `groups` | `{}` | static grants unioned in at sign-in: `{ "<login>": ["owner"] }` |
+| `directory` | `null` | optional LDAP read of the person's own entry, once per sign-in. Fail-closed: configured but unreachable means `502` and no session |
+| `directory.url` | `ldap://127.0.0.1:389` | plain `ldap://` over TCP; `ldaps` is refused |
+| `directory.bindDn` | `""` | simple-bind DN; empty = anonymous |
+| `directory.bindPasswordRef` | `""` | env var NAME holding the bind password |
+| `directory.userDn` | `uid={user},ou=users,dc=yunohost,dc=org` | DN template; `{user}` is the RFC 4514-escaped login |
+| `directory.attributes` | `mail` / `givenName` / `sn` / `cn` | which attributes fill email, firstname, lastname, name when the headers left them blank (empty string skips one) |
+| `directory.groupMap` | `[]` | `{ attribute, pattern }` rules: every value of `attribute` matching `pattern` contributes its first capture group as a group name |
+| `directory.timeoutMs` | `5000` | the whole bind + search must finish inside this |
+
 ## `rateLimit`
 
 | Key | Default | What it does |
@@ -256,6 +281,7 @@ are startup errors. See [catalog](catalog.md).
 | `LW_LINK_SECRET` | required in prod | link signature key |
 | `LW_LINK_SECRET_PREVIOUS` | during a rotation | same window contract for outstanding signed links |
 | `LW_IDP_CLIENT_SECRET` | if your IdP issues one | OIDC confidential client secret |
+| `LW_PROXY_AUTH_SECRET` | with `proxyAuth.enabled` | the shared secret the reverse proxy injects as `x-lw-proxy-auth`. The name is `proxyAuth.secretRef`; `proxyAuth.directory.bindPasswordRef` names the LDAP bind password the same way |
 | `LW_CREDENTIAL_SECRET` | once a provider credential is stored | master key sealing credentials at rest (AES-256-GCM) |
 | `LW_METRICS_TOKEN` | to scrape remotely | bearer token for `/metrics`. Unset ⇒ loopback-only |
 | `LW_SMTP_PASSWORD` | with `notify.smtp.user` | the relay password (AUTH PLAIN) |

@@ -20,6 +20,7 @@
     "verify:engine-pin": "node scripts/verify-engine-pin.ts",
     "repin-engine": "node scripts/repin-engine.ts",
     "sbom": "node scripts/build-sbom.ts",
+    "release:yunohost": "node scripts/yunohost-release.ts",
     "pretest": "node scripts/verify-engine-pin.ts",
     "test": "node --test \"tests/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",

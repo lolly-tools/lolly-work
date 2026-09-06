@@ -1,0 +1,152 @@
+#:schema https://raw.githubusercontent.com/YunoHost/apps/main/schemas/manifest.v2.schema.json
+# YunoHost package for Lolly Work: a governed Lolly instance for a team, signed in
+# with the host's own accounts. This directory IS the `lolly-work_ynh` app
+# repository as YunoHost's catalog and CI expect it (manifest.toml at the root,
+# scripts/, conf/, doc/, tests.toml), developed here beside the Compose and Helm
+# shapes and mirrored to github.com/lolly-tools/lolly-work_ynh at release time.
+#
+# The release-pinned fields (version, both sources' url + sha256) are written by
+# `npm run release:yunohost`, which builds the server tarball and reads the web
+# shell's pin from the Lolly repository. Do not hand-edit them.
+
+packaging_format = 2
+
+id = "lolly-work"
+name = "Lolly Work"
+description.en = "Governed Lolly for a team: one brand, locked tool inputs, approvals and audit, signed in with your YunoHost accounts"
+description.fr = "Lolly gouverné pour une équipe : une marque, des outils verrouillés, approbations et audit, connexion avec vos comptes YunoHost"
+
+version = "0.2.0~ynh1"
+
+maintainers = ["Andy Fitzsimon"]
+
+[upstream]
+license = "MPL-2.0"
+website = "https://lolly.work"
+demo = "https://lolly.work"
+admindoc = "https://lolly.work/admin#/docs"
+code = "https://github.com/lolly-tools/lolly-work"
+
+[integration]
+yunohost = ">= 12.0.9"
+helpers_version = "2.1"
+# sharp and resvg ship prebuilt binaries for these two; there is no 32-bit ARM build.
+architectures = ["amd64", "arm64"]
+multi_instance = true
+# Members sign in with their YunoHost account through the portal (SSOwat hands the
+# identity to the server), and roles follow YunoHost groups and this app's
+# permissions, read from the host's LDAP at sign-in.
+ldap = true
+sso = true
+disk = "2G"
+ram.build = "1G"
+ram.runtime = "512M"
+
+[install]
+    [install.domain]
+    type = "domain"
+    # The control plane and the web shell it serves resolve every route from the
+    # domain root (/admin, /api, /render, the shell's assets and service worker).
+    full_domain = true
+
+    [install.admin]
+    ask.en = "First owner"
+    ask.fr = "Premier propriétaire"
+    help.en = "This YunoHost user gets the owner role: they can change instance settings and connect brand sources. Owners, admins, approvers and authors are YunoHost permissions of this app afterwards (Users › Groups and permissions)."
+    help.fr = "Cet utilisateur YunoHost obtient le rôle propriétaire : réglages de l'instance et connexion des sources de marque. Ensuite, propriétaires, admins, approbateurs et auteurs sont des permissions YunoHost de cette app (Utilisateurs › Groupes et permissions)."
+    type = "user"
+
+    [install.init_main_permission]
+    help.en = "Who may open Lolly Work. Members sign in with their YunoHost account; keep this to your users or a group - the instance is governed, not public."
+    help.fr = "Qui peut ouvrir Lolly Work. Les membres se connectent avec leur compte YunoHost ; gardez vos utilisateurs ou un groupe - l'instance est gouvernée, pas publique."
+    type = "group"
+    default = "all_users"
+
+    [install.instance_name]
+    ask.en = "Instance name"
+    ask.fr = "Nom de l'instance"
+    help.en = "Shown in the console and to connecting apps, e.g. your organisation's name."
+    help.fr = "Affiché dans la console et aux applications qui se connectent, par exemple le nom de votre organisation."
+    type = "string"
+    default = "Lolly Work"
+    # Written into a JSON document verbatim.
+    pattern.regexp = '^[^"\\]{1,80}$'
+    pattern.error = "Up to 80 characters, without double quotes or backslashes"
+
+[resources]
+    [resources.sources]
+
+    [resources.sources.main]
+    # The control plane at a release tag (server, console, vendored engine, docs),
+    # without node_modules: the install script runs `npm ci --omit=dev`. Built and
+    # published by scripts/yunohost-release.ts; see deploy/yunohost/README.md.
+    url = "https://lolli.li/lolly-work-0.2.0.tar.gz"
+    sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+    format = "tar.gz"
+    in_subdir = true
+
+    [resources.sources.shell]
+    # The Lolly web shell (shells/web/dist of the open-source repo, neutral brand,
+    # English docs, models from lolli.li) that the server serves at / - and, since
+    # the build carries the full community tool set and catalog, also the initial
+    # instance pack. The same tarball the `lolly` YunoHost app installs; its pin is
+    # copied from that package's manifest.
+    url = "https://lolli.li/lolly-web-1.0.7.tar.gz"
+    sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+    format = "tar.gz"
+    in_subdir = false
+
+    [resources.nodejs]
+    # The server runs its TypeScript sources directly on Node's type stripping.
+    version = "24"
+
+    [resources.system_user]
+
+    [resources.install_dir]
+
+    [resources.data_dir]
+    # The instance pack the admin may replace with their own brand (see doc/ADMIN.md).
+    # Not backed up before upgrades, like every data_dir, and kept on remove unless
+    # --purge.
+
+    [resources.ports]
+    main.default = 8787
+
+    [resources.permissions]
+    # The app: shell at /, console at /admin. SSOwat authenticates the member and
+    # attaches the identity headers the server reads at /api/auth/proxy.
+    main.url = "/"
+    main.auth_header = true
+
+    # The sign-in endpoint on its own permission, so it can never be opened to
+    # visitors: a request reaching it has always been through the portal, and
+    # SSOwat has already replaced any client-sent identity header.
+    sso.url = "/api/auth/proxy"
+    sso.allowed = "all_users"
+    sso.show_tile = false
+    sso.auth_header = true
+    sso.protected = true
+
+    # The API and the other surfaces that non-browser clients reach: the `lw` CLI,
+    # MCP, SCIM from an identity provider, signed share and render links, the
+    # instance card an open-source Lolly client reads, health and metrics. The
+    # server authenticates every one of these itself (session cookie, service
+    # token or link signature), so SSOwat passes them through untouched.
+    api.url = "/api"
+    api.additional_urls = ["/scim", "/healthz", "/metrics", "re:/l/.*", "re:/render/.*", "re:/connect/.*"]
+    api.allowed = "visitors"
+    api.show_tile = false
+    api.auth_header = false
+    api.protected = true
+
+    # Roles, as YunoHost permissions with no URL: whoever holds one is that role in
+    # Lolly Work (the server reads them from LDAP at sign-in). The install script
+    # grants `owner` to the chosen first owner; YunoHost admins start as admins.
+    owner.show_tile = false
+    admin.allowed = "admins"
+    admin.show_tile = false
+    approver.show_tile = false
+    author.show_tile = false
+
+    [resources.database]
+    type = "postgresql"

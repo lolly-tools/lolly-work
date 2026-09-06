@@ -27,6 +27,7 @@ import {
 } from '../iam/sessions.ts';
 import { buildAuthorizeUrl, discover, exchangeCode, mapClaims, pkcePair, verifyIdToken } from '../iam/oidc.ts';
 import { displayName, resolveMember } from '../iam/member.ts';
+import { resolveProxyIdentity } from '../iam/proxy-auth.ts';
 import { createDeviceAuth, normalizeUserCode } from '../iam/device-auth.ts';
 import { activateDoneHtml, activateFormHtml, activateSignedOutHtml, idpChooserHtml } from '../iam/activate-page.ts';
 import { PACK_BLOB_ID, PACK_META_BLOB_ID, PACK_MAX_BYTES, inspectInstancePack, type InstancePackMeta } from '../catalog/instance-pack.ts';
@@ -452,12 +453,22 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   });
 
   // ── auth ──────────────────────────────────────────────────────────────────
+  // The ONE place that says how a person signs in here. Every surface that
+  // advertises a provider (the auth config, the instance card, the gate's
+  // login link) reads this, so a new provider can never reach one and miss
+  // another. Precedence: a real IdP, then the reverse proxy, then the dev
+  // provider - the most accountable path wins when several are on.
+  const authProvider = (): { provider: 'oidc' | 'proxy' | 'dev' | null; providerName: string | null; loginPath: string | null } => {
+    if (config.idp.issuer) return { provider: 'oidc', providerName: config.idp.displayName || null, loginPath: '/api/auth/login' };
+    if (config.proxyAuth.enabled) return { provider: 'proxy', providerName: config.proxyAuth.displayName, loginPath: '/api/auth/proxy' };
+    if (config.dev.enabled) return { provider: 'dev', providerName: null, loginPath: '/api/auth/dev' };
+    return { provider: null, providerName: null, loginPath: null };
+  };
+
   router.add('GET', '/api/auth/config', (_req, res) => {
     sendJson(res, 200, {
       mode: config.policy.defaultAccessMode,
-      provider: config.idp.issuer ? 'oidc' : config.dev.enabled ? 'dev' : null,
-      providerName: config.idp.displayName || null,
-      loginPath: config.idp.issuer ? '/api/auth/login' : config.dev.enabled ? '/api/auth/dev' : null,
+      ...authProvider(),
       // The public sandbox (dev.enabled) serves the deployment docs to anyone - 
       // the console reads this so an anonymous visitor can land straight on the
       // Docs view (see console/app.js publicMode) instead of the sign-in gate.
@@ -529,9 +540,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     sendJson(res, 200, {
       name: config.instance.name,
       accessMode: config.policy.defaultAccessMode,
-      provider: config.idp.issuer ? 'oidc' : config.dev.enabled ? 'dev' : null,
-      providerName: config.idp.displayName || null,
-      loginPath: config.idp.issuer ? '/api/auth/login' : config.dev.enabled ? '/api/auth/dev' : null,
+      ...authProvider(),
       // The vendored contract version this deploy serves tools against - what a
       // client compares its own engine to, and the fixed point fleet drift is
       // measured from.
@@ -667,6 +676,38 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     res.end();
   });
 
+  // Reverse-proxy provider (iam/proxy-auth.ts): the authenticating proxy in
+  // front of this instance already knows who the person is and says so in
+  // request headers; this route turns that into an ordinary member session.
+  // The proxy's shared secret gates it, so a request that reached the port
+  // without passing the proxy gets a 403 and an audit row, never a session.
+  router.add('GET', '/api/auth/proxy', async (req, res, ctx) => {
+    if (!config.proxyAuth.enabled) return sendError(res, 404, 'NOT_FOUND', 'proxy sign-in disabled');
+    const resolved = await resolveProxyIdentity(req.headers, config.proxyAuth, secrets);
+    if (!resolved.ok) {
+      // The presented secret is never written anywhere; only that one was wrong.
+      await audit('anonymous', 'auth.proxy.rejected', 'session', { code: resolved.code, ...(resolved.cause ? { cause: resolved.cause } : {}) });
+      return sendError(res, resolved.status, resolved.code, resolved.message);
+    }
+    const id = resolved.identity;
+    const user = await store.upsertUserBySub({
+      sub: `proxy:${id.user}`, email: id.email, groups: id.groups,
+      role: roleFromGroups(id.groups),
+      ...(id.firstname ? { firstname: id.firstname } : {}),
+      ...(id.lastname ? { lastname: id.lastname } : {}),
+    });
+    const sessionUser: SessionUser = {
+      sub: user.sub, email: user.email, groups: user.groups, role: user.role,
+      name: displayName(user), epoch: user.sessionEpoch,
+    };
+    await audit(`user:${user.id}`, 'auth.login', 'session', { provider: 'proxy', directory: id.sources.directory });
+    res.writeHead(302, {
+      location: returnToSafe(ctx.url.searchParams.get('returnTo')),
+      'set-cookie': mintSessionCookie(sessionUser, secrets.session, secure, sessionTtlSec),
+    });
+    res.end();
+  });
+
   router.add('GET', '/api/auth/session', async (req, res) => {
     const p = principalOf(req);
     if (!p) return sendError(res, 401, 'UNAUTHORIZED', 'no session');
@@ -699,9 +740,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // form-action 'self', so the confirm form can submit.
     'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
   };
-  const loginPathFor = (returnTo: string): string | null =>
-    config.idp.issuer ? `/api/auth/login?returnTo=${encodeURIComponent(returnTo)}`
-      : config.dev.enabled ? `/api/auth/dev?returnTo=${encodeURIComponent(returnTo)}` : null;
+  const loginPathFor = (returnTo: string): string | null => {
+    const { loginPath } = authProvider();
+    return loginPath ? `${loginPath}?returnTo=${encodeURIComponent(returnTo)}` : null;
+  };
 
   router.add('POST', '/api/v1/auth/device', async (req, res) => {
     const started = await deviceAuth.request(req.headers['x-lolly-client'] as string | undefined);

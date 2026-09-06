@@ -7,7 +7,7 @@ there is no session table.
 
 | Principal | Cookie | Comes from | Lives |
 |---|---|---|---|
-| Member | `lw_session` | OIDC sign-in, or the dev provider | `policy.sessionTtlHours` (default 12h) |
+| Member | `lw_session` | OIDC sign-in, reverse-proxy sign-in, or the dev provider | `policy.sessionTtlHours` (default 12h) |
 | Guest | `lw_guest` | admission through a guest-edit link | the remaining lifetime of that link |
 
 Cookies are `HttpOnly`, `SameSite=Lax`, `Path=/`, and `Secure` whenever `instance.baseUrl`
@@ -74,6 +74,84 @@ the SCIM `externalId` linkage are untouched.
 `dev.enabled: true` plus a `dev.users` list enables `GET /api/auth/dev?email=…`: a
 passwordless local sign-in for development, demos and tests. It bypasses OIDC entirely - 
 keep it off in production. The Helm values ship it disabled.
+
+## Reverse-proxy sign-in
+
+Some hosts already authenticate every request before it reaches the instance: YunoHost's
+SSOwat, Authelia, oauth2-proxy, an enterprise gateway. `proxyAuth` lets that proxy be the
+identity provider. It states who the person is in request headers, and
+`GET /api/auth/proxy?returnTo=…` turns those headers into an ordinary member session - the
+same cookie, the same role derivation, the same audit row (`auth.login` with
+`provider: "proxy"`) as OIDC. Members get the sub `proxy:<login>`.
+
+```json
+"proxyAuth": {
+  "enabled": true,
+  "displayName": "YunoHost",
+  "secretRef": "LW_PROXY_AUTH_SECRET",
+  "headers": { "user": "ynh_user", "email": "ynh_user_email", "name": "ynh_user_fullname", "groups": "" },
+  "groups": { "andy": ["owner"] },
+  "directory": {
+    "url": "ldap://127.0.0.1:389",
+    "userDn": "uid={user},ou=users,dc=yunohost,dc=org",
+    "groupMap": [
+      { "attribute": "memberOf",   "pattern": "^cn=([^,]+),ou=groups,dc=yunohost,dc=org$" },
+      { "attribute": "permission", "pattern": "^cn=lolly-work\\.(owner|admin|approver|author),ou=permission,dc=yunohost,dc=org$" }
+    ]
+  }
+}
+```
+
+**The header contract.** `headers.user` is the only required header: the stable login the
+proxy asserts. `email` and `name` fill the member record when present, `groups` is a
+comma-separated list when the proxy sends one (Authelia's `Remote-Groups`). Names are
+matched case-insensitively, so `YNH_USER` and `Remote-User` both work as written. The
+defaults are the three headers SSOwat sets: `YNH_USER`, `YNH_USER_EMAIL`,
+`YNH_USER_FULLNAME`. For Authelia set `remote-user` / `remote-email` / `remote-name` /
+`remote-groups`; for oauth2-proxy `x-forwarded-user` / `x-forwarded-email`.
+
+**The shared secret.** The proxy must add one more header, `x-lw-proxy-auth`, carrying the
+value of the environment variable `secretRef` names (`LW_PROXY_AUTH_SECRET` by default).
+A request without it, or with the wrong value, is refused with `403 PROXY_SECRET_MISMATCH`
+and an `auth.proxy.rejected` audit row; the presented value is never recorded. This is what
+stops a process on the same host from reaching the instance port directly and naming
+itself an owner: only the proxy knows the secret, and it injects the header on every request
+it forwards. In production the variable is required whenever the provider is enabled; the
+server refuses to boot without it.
+
+**Static grants.** `groups` maps a login to groups that are unioned in at every sign-in -
+the way a deployment gives its first owner the `owner` group before any directory or group
+header exists. It follows the same rule as everything else here: role is derived from
+groups, never assigned.
+
+**The directory.** An optional LDAP read, once per sign-in, of the person's own entry.
+`userDn` is a template; `{user}` is replaced with the login, escaped per RFC 4514 so a login
+can never break out of its own RDN. `attributes` (defaults `mail`, `givenName`, `sn`, `cn`)
+fill whatever the headers left blank, and `groupMap` turns attribute values into groups:
+every value of `attribute` that matches `pattern` contributes its first capture group. The
+bind is anonymous unless `bindDn` is set; the bind password rides the env var
+`bindPasswordRef` names. Groups from the headers, the directory and the static grants are
+unioned, and a group named after the login itself is dropped (YunoHost gives every account a
+primary group of its own name). The directory is fail-closed: configured but not answering
+means `502 DIRECTORY_UNAVAILABLE` and no session, never a session with fewer groups than the
+person holds. The client is `server/src/iam/ldap.ts`, plain `ldap://` over TCP, meant for
+the loopback of the host that owns the directory.
+
+**YunoHost, worked through.** SSOwat authenticates against the portal, strips any `ynh_*`
+header and any `Authorization: Basic` a client sent, then sets `YNH_USER`, `YNH_USER_EMAIL`
+and `YNH_USER_FULLNAME` for a signed-in user. Each user's LDAP entry carries `memberOf`
+(YunoHost groups) and `permission` (the app permissions the user holds), which the two
+`groupMap` rules above turn into groups: a YunoHost group `marketing` becomes the
+lolly-work group `marketing`, and the app permissions `lolly-work.owner` / `.admin` /
+`.approver` / `.author` become the role groups. Roles are therefore managed in YunoHost's
+own Users → Groups and permissions screen, and take effect at the next sign-in. The
+YunoHost package sets all of this up, including the nginx line that injects the secret.
+
+**Security posture.** Never enable `proxyAuth` unless both hold: the proxy strips every
+client-supplied identity header before adding its own, and the proxy is the only thing
+that knows the shared secret. With either missing, anyone who can reach the port can be
+anyone. The route rides the auth rate-limit bucket, and `POST /api/auth/logout` clears the
+instance session only - the proxy's own session is the proxy's to end.
 
 ## Device-code sign-in
 

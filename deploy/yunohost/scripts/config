@@ -1,0 +1,15 @@
+#!/bin/bash
+
+source _common.sh
+source /usr/share/yunohost/helpers
+
+# Every question in config_panel.toml is an app setting of the same id (the
+# default binding), and instance.json is a template over those settings. So the
+# only thing to add to the stock apply step is regenerating that file; the panel's
+# `services` entry restarts the server afterwards.
+ynh_app_config_apply() {
+    _ynh_app_config_apply
+    lollywork_add_config
+}
+
+ynh_app_config_run "$1"

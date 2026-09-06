@@ -28,7 +28,7 @@ import { resolve } from 'node:path';
 import { validateConfigDocument, buildConfigDocument, diffConfigDocument, commitConfigApply, canonicalHash, diffSummary } from './policy/config-doc.ts';
 
 const config = loadConfig();
-const secrets = loadSecrets();
+const secrets = loadSecrets(process.env, config);
 
 // The pack is read lazily per request, so a wrong path used to boot cleanly and
 // then serve an empty catalog with no signal anywhere. Say it once at boot.
@@ -41,6 +41,9 @@ if (!existsSync(resolve(config.instance.pack))) {
 // else in the system would ever mention it.
 if (config.dev.enabled && config.idp.issuer) {
   console.warn(`[lolly-work] WARNING — dev.enabled is true while idp.issuer is set (${config.idp.issuer}). /api/auth/dev is a passwordless admin bypass and is still live. Set "dev": { "enabled": false } before exposing this instance.`);
+}
+if (config.dev.enabled && config.proxyAuth.enabled) {
+  console.warn(`[lolly-work] WARNING — dev.enabled is true while proxyAuth is enabled (${config.proxyAuth.displayName}). /api/auth/dev is a passwordless admin bypass and is still live. Set "dev": { "enabled": false } before exposing this instance.`);
 }
 
 // Governance UX must not silently vanish: under a non-open access mode, a shell

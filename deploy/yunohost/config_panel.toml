@@ -1,0 +1,61 @@
+#:schema https://github.com/YunoHost/apps/raw/main/schemas/config_panel.v1.schema.json
+
+version = "1.0"
+
+[main]
+name.en = "Instance"
+name.fr = "Instance"
+services = ["__APP__"]
+
+    [main.governance]
+    name.en = "Governance"
+    name.fr = "Gouvernance"
+    help.en = "These write the server's instance.json and restart it. Everything finer (who sees which tool, locked inputs, approval chains, brand sources) is in the console at /admin."
+    help.fr = "Ces réglages écrivent l'instance.json du serveur et le redémarrent. Le reste (outils visibles, entrées verrouillées, chaînes d'approbation, sources de marque) est dans la console, sur /admin."
+
+        [main.governance.instance_name]
+        ask.en = "Instance name"
+        ask.fr = "Nom de l'instance"
+        type = "string"
+        pattern.regexp = '^[^"\\]{1,80}$'
+        pattern.error = "Up to 80 characters, without double quotes or backslashes"
+
+        [main.governance.access_mode]
+        ask.en = "Access mode"
+        ask.fr = "Mode d'accès"
+        type = "select"
+        choices.gated = "Gated: every tool needs a signed-in member"
+        choices.per-tool = "Per tool: the tool's overlay decides who may render it"
+        choices.open = "Open: anyone who reaches the domain may render"
+        help.en = "Open only makes sense if the YunoHost permission on the app is also public; renders through signed links work in every mode."
+        help.fr = "Ouvert n'a de sens que si la permission YunoHost de l'app est aussi publique ; les rendus par liens signés fonctionnent dans tous les modes."
+
+        [main.governance.guest_links]
+        ask.en = "Guest edit links"
+        ask.fr = "Liens d'édition invités"
+        type = "boolean"
+        yes = "true"
+        no = "false"
+        help.en = "Let members invite an outside person (a contractor, an agency) to edit one tool through a time-limited link, without an account."
+        help.fr = "Permettre aux membres d'inviter une personne extérieure à modifier un outil via un lien à durée limitée, sans compte."
+
+        [main.governance.telemetry]
+        ask.en = "Usage telemetry"
+        ask.fr = "Télémétrie d'usage"
+        type = "select"
+        choices.standard = "Standard: per-tool usage, attributed only to members who opt in"
+        choices.aggregate = "Aggregate: counts only, never per person"
+        choices.off = "Off"
+
+    [main.rendering]
+    name.en = "Rendering"
+    name.fr = "Rendu"
+
+        [main.rendering.hooks_fast_path]
+        ask.en = "Run tool hooks in the server's in-process renderer"
+        ask.fr = "Exécuter les hooks des outils dans le moteur de rendu du serveur"
+        type = "boolean"
+        yes = "true"
+        no = "false"
+        help.en = "On for the shipped pack, whose tools the Lolly project curates. Turn it off if you point the instance pack at tools you do not control: hooked tools then answer 501 until a Chromium render worker is attached."
+        help.fr = "Activé pour le pack fourni, dont les outils sont maintenus par le projet Lolly. Désactivez-le si vous pointez le pack d'instance vers des outils que vous ne contrôlez pas : les outils avec hooks répondent alors 501 jusqu'à ce qu'un worker Chromium soit attaché."

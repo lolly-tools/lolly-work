@@ -116,7 +116,7 @@ async function boot(): Promise<NodeHandler> {
     (config.instance as { pack: string }).pack = dataDir(`${rel}/`);
   }
 
-  const secrets = loadSecrets(process.env);
+  const secrets = loadSecrets(process.env, config);
 
   const databaseUrl = process.env.DATABASE_URL;
   let store: Store;

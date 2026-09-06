@@ -880,7 +880,7 @@ async function main(): Promise<void> {
   const shellDir = dist.present ? SHELL_DIR : undefined;
 
   const config = buildDemoConfig({ baseUrl, accessMode, shellDir });
-  const secrets = loadSecrets();
+  const secrets = loadSecrets(process.env, config);
   const store = createMemoryStore({ grants: demoGrants() });
   const seeded = await seedStore(store);
   // Sixty days of audit history, direct to the store - the serverless path gets

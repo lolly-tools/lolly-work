@@ -10,6 +10,7 @@ copy-pasted as written.
 | Evaluate locally | [1. Local demo](#1-local-demo) | 2 min |
 | Evaluate on a cluster | [7a. Kubernetes eval](#7a-evaluate-on-a-cluster) | 5 min |
 | Run a real single-host deploy | [5. Container (Compose)](#5-container-compose) | 15 min |
+| Run it on a YunoHost box, signed in with its accounts | [6. Bare metal → YunoHost](#yunohost) | 10 min |
 | Run it in production | [7b. Kubernetes production](#7b-production) | 30 min |
 | Drive it from a terminal | [8. The CLI](#8-the-cli) | - |
 | Connect a DAM or a bucket | [9. Connect a source](#9-connect-a-source) | 10 min |
@@ -402,6 +403,43 @@ addresses only exist in the shipped example.
 
 Put TLS (nginx / Caddy) in front, or terminate at your load balancer, and set
 `rateLimit.trustedProxyHops: 1` in `instance.json`.
+
+### YunoHost
+
+The same bare-metal shape, packaged: a [YunoHost](https://yunohost.org) app that
+installs the service, its PostgreSQL database and the Lolly web shell on a domain of
+its own, and signs members in with the host's accounts. The package is the
+`deploy/yunohost/` directory of this repository, mirrored to the
+`lolly-tools/lolly-work_ynh` app repository at each release.
+
+```bash
+sudo yunohost app install https://github.com/lolly-tools/lolly-work_ynh
+```
+
+Three questions: the domain (a whole one), the **first owner** (a YunoHost user), and
+the instance name. What you get is section 2's "real instance" with every setting
+already made:
+
+- `instance.baseUrl` is the domain, `instance.shellDir` is the web shell the package
+  installed beside the server, and `instance.pack` starts as that shell's own tool set
+  and catalog (the neutral starter brand), copied into the app's data directory so you
+  can replace it with your own pack.
+- Sign-in is the [reverse-proxy provider](identity.md#reverse-proxy-sign-in): the
+  YunoHost portal authenticates, SSOwat attaches the identity headers, nginx adds the
+  shared secret, and the server reads the member's groups and this app's role
+  permissions from the host's LDAP. The dev provider is off.
+- Roles are YunoHost permissions of the app (`owner`, `admin`, `approver`,
+  `author`, managed in Users › Groups and permissions), the first owner holds
+  `owner`, YunoHost admins start as admins, and every YunoHost group is a group
+  here, so overlays and approval chains can target them at once.
+- Secrets are generated at install and kept in the app's `.env`; `NODE_ENV` is
+  production; `rateLimit.trustedProxyHops` is 1.
+
+The app's config panel changes the access mode, guest links, telemetry level and
+whether hooks run in the in-process renderer; the console at `/admin` does the rest.
+The package keeps the API, share links, render links and the instance card
+reachable for non-browser clients (the `lw` CLI, MCP, SCIM, an open-source Lolly
+client connecting to this instance), because the server authenticates those itself.
 
 ## 7. Kubernetes (Helm)
 

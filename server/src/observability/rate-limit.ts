@@ -58,6 +58,9 @@ export function createRateLimiter(cfg: RateLimitConfig, now: () => number = Date
  *  only the real OIDC login/callback are. */
 export function rateLimitSurface(method: string, pathname: string): Surface | null {
   if (pathname === '/api/auth/login' || pathname === '/api/auth/callback') return 'auth';
+  // Proxy sign-in is unauthenticated at this layer and may cost a directory
+  // round trip, so it rides the auth bucket like the OIDC pair.
+  if (pathname === '/api/auth/proxy') return 'auth';
   // The instance manifest is unauthenticated by design (plans/34 wave 1a) - a
   // first-run shell probes it before anyone signs in - so it shares the auth
   // bucket rather than being free to hammer.

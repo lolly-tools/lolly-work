@@ -1,0 +1,78 @@
+#!/bin/bash
+
+source _common.sh
+source /usr/share/yunohost/helpers
+
+#=================================================
+# STOP SYSTEMD SERVICE
+#=================================================
+ynh_script_progression "Stopping $app's systemd service..."
+
+ynh_systemctl --service="$app" --action="stop"
+
+#=================================================
+# ENSURE DOWNWARD COMPATIBILITY
+#=================================================
+ynh_script_progression "Ensuring downward compatibility..."
+
+# Settings a future install writes and an older one may lack.
+ynh_app_setting_set_default --key=instance_name --value="Lolly Work"
+ynh_app_setting_set_default --key=access_mode --value="gated"
+ynh_app_setting_set_default --key=telemetry --value="standard"
+ynh_app_setting_set_default --key=guest_links --value="true"
+ynh_app_setting_set_default --key=hooks_fast_path --value="true"
+if [ -z "${proxy_secret:-}" ]; then
+    proxy_secret=$(ynh_string_random --length=48)
+    ynh_app_setting_set --key=proxy_secret --value="$proxy_secret"
+fi
+
+#=================================================
+# DOWNLOAD, CHECK AND UNPACK SOURCE
+#=================================================
+ynh_script_progression "Upgrading source files..."
+
+# The server tree is replaced whole; the two files the admin may have edited stay,
+# and the shell is replaced by its own source next.
+ynh_setup_source --dest_dir="$install_dir" --full_replace --keep="instance.json .env shell"
+ynh_setup_source --source_id="shell" --dest_dir="$install_dir/shell" --full_replace
+
+#=================================================
+# INSTALL DEPENDENCIES
+#=================================================
+ynh_script_progression "Installing Node dependencies..."
+
+lollywork_npm_install
+
+#=================================================
+# UPDATE A CONFIG FILE
+#=================================================
+ynh_script_progression "Updating $app's configuration files..."
+
+# ynh_config_add keeps a checksum: a hand-edited instance.json is backed up beside
+# the new one rather than overwritten silently.
+lollywork_add_config
+lollywork_seed_pack
+
+#=================================================
+# REAPPLY SYSTEM CONFIGURATION
+#=================================================
+ynh_script_progression "Upgrading system configurations related to $app..."
+
+lollywork_add_nginx
+ynh_config_add_systemd
+lollywork_register_service
+ynh_config_add_logrotate
+
+#=================================================
+# START SYSTEMD SERVICE
+#=================================================
+ynh_script_progression "Starting $app's systemd service..."
+
+# Database migrations apply at boot (LW_AUTO_MIGRATE defaults on).
+lollywork_wait_started
+
+#=================================================
+# END OF SCRIPT
+#=================================================
+
+ynh_script_progression "Upgrade of $app completed"

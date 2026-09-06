@@ -5175,6 +5175,10 @@ async function signInGate() {
     el('p', { class: 'gate-lede' }, 'Sign in to manage your organisation’s tools, approvals, and catalog.'),
     cfg?.provider === 'oidc'
       ? el('a', { class: 'btn gate-go', href: `/api/auth/login?returnTo=${returnTo}` }, `Sign in with ${cfg?.providerName || 'SSO'}`)
+      : cfg?.provider === 'proxy'
+        // The reverse proxy in front of the deploy already holds the session
+        // (YunoHost's portal, Authelia); one click turns it into ours.
+        ? el('a', { class: 'btn gate-go', href: `/api/auth/proxy?returnTo=${returnTo}` }, `Continue with ${cfg?.providerName || 'your sign-in'}`)
       : cfg?.provider === 'dev'
         ? el('form', { class: 'gate-form', onsubmit: (e) => { e.preventDefault(); location.href = `/api/auth/dev?email=${encodeURIComponent(new FormData(e.target).get('email'))}&returnTo=${returnTo}`; } },
             el('label', { for: 'gate-email' }, 'Work email'),

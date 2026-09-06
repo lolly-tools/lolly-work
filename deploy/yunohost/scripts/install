@@ -1,0 +1,80 @@
+#!/bin/bash
+
+source _common.sh
+source /usr/share/yunohost/helpers
+
+#=================================================
+# INITIALIZE AND STORE SETTINGS
+#=================================================
+
+# Generated once, kept for the life of the install (upgrade reads them back).
+session_secret=$(ynh_string_random --length=64)
+link_secret=$(ynh_string_random --length=64)
+proxy_secret=$(ynh_string_random --length=48)
+ynh_app_setting_set --key=session_secret --value="$session_secret"
+ynh_app_setting_set --key=link_secret --value="$link_secret"
+ynh_app_setting_set --key=proxy_secret --value="$proxy_secret"
+
+# Governance settings the admin can change later in the config panel; the
+# instance.json template reads them, at install and at every upgrade.
+access_mode="gated"
+telemetry="standard"
+guest_links="true"
+hooks_fast_path="true"
+ynh_app_setting_set --key=access_mode --value="$access_mode"
+ynh_app_setting_set --key=telemetry --value="$telemetry"
+ynh_app_setting_set --key=guest_links --value="$guest_links"
+ynh_app_setting_set --key=hooks_fast_path --value="$hooks_fast_path"
+
+#=================================================
+# DOWNLOAD, CHECK AND UNPACK SOURCE
+#=================================================
+ynh_script_progression "Setting up source files..."
+
+ynh_setup_source --dest_dir="$install_dir"
+ynh_setup_source --source_id="shell" --dest_dir="$install_dir/shell"
+
+#=================================================
+# INSTALL DEPENDENCIES
+#=================================================
+ynh_script_progression "Installing Node dependencies..."
+
+lollywork_npm_install
+
+#=================================================
+# APP INITIAL CONFIGURATION
+#=================================================
+ynh_script_progression "Adding $app's configuration files..."
+
+lollywork_add_config
+lollywork_seed_pack
+
+#=================================================
+# SYSTEM CONFIGURATION
+#=================================================
+ynh_script_progression "Adding system configurations related to $app..."
+
+lollywork_add_nginx
+ynh_config_add_systemd
+lollywork_register_service
+ynh_config_add_logrotate
+
+#=================================================
+# ROLES
+#=================================================
+ynh_script_progression "Granting the owner role to $admin..."
+
+lollywork_grant_first_owner
+
+#=================================================
+# START SYSTEMD SERVICE
+#=================================================
+ynh_script_progression "Starting $app's systemd service..."
+
+lollywork_wait_started
+
+#=================================================
+# END OF SCRIPT
+#=================================================
+
+ynh_script_progression "Installation of $app completed"

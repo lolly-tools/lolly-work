@@ -9,6 +9,7 @@ Chromium worker are present.
 | Local (`node server/src/main.ts`) | development, evaluation | boot auto-migrate | local paths |
 | Compose (`deploy/compose/`) | single VM, small org | boot auto-migrate | bind mounts |
 | Helm (`deploy/helm/`) | Kubernetes / Rancher, HA | pre-install/upgrade Job | volumes you mount |
+| YunoHost (`deploy/yunohost/`) | a self-hosting box, sign-in with its accounts | boot auto-migrate | seeded from the shell into the app's data directory |
 | Vercel (`vercel.json` + `scripts/build-vercel-fn.mjs`) | trial / pilot / public demo | Neon + external migrate | demo pack bundled; shell not served |
 
 ## Render topologies - the default is Chromium-free
