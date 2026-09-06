@@ -34,7 +34,7 @@ Then mirror this directory and tag it:
 ```bash
 git clone git@github.com:lolly-tools/lolly-work_ynh.git /tmp/lolly-work_ynh
 rsync -a --delete --exclude .git deploy/yunohost/ /tmp/lolly-work_ynh/
-cd /tmp/lolly-work_ynh && git add -A && git commit -m "Lolly Work <ver>~ynh1" && git tag v<ver>~ynh1 && git push --follow-tags
+cd /tmp/lolly-work_ynh && git add -A && git commit -m "Lolly Work <ver>~ynh1" && git tag v<ver>-ynh1 && git push --follow-tags
 ```
 
 Both tarballs must be live on lolli.li first: the manifest's checksums are verified at install.
