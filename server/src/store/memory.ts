@@ -41,6 +41,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const deliveries = new Map<string, DeliveryRecord>();
   let siemCursor = 0; // highest audit seq confirmed delivered to the SIEM receiver
   let auditAnchor: AuditAnchor | null = null; // retention trim boundary (plans/35 wave 3)
+  let auditMacKey: string | undefined;
   const deviceCodes = new Map<string, DeviceCodeRecord>(); // device sign-in codes, by deviceCode
   const pruneDeviceCodes = (): void => {
     const now = new Date().toISOString();
@@ -382,13 +383,26 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       return [...links.values()];
     },
 
+    setAuditMacKey(key: string) {
+      auditMacKey = key;
+    },
     async appendAudit(body: AuditEventBody) {
-      const evt = nextEvent(audit[audit.length - 1] ?? null, body);
+      const evt = nextEvent(audit[audit.length - 1] ?? null, body, auditMacKey);
       audit.push(evt);
       return evt;
     },
     async listAudit() {
       return [...audit];
+    },
+    async listAuditBefore(before, limit) {
+      const upto = before > 0 ? audit.filter((e) => e.seq < before) : audit;
+      return upto.slice(Math.max(0, upto.length - limit));
+    },
+    async countAudit() {
+      return audit.length;
+    },
+    async ping() {
+      return true;
     },
     async listAuditAfter(after, limit) {
       return audit.filter((e) => e.seq > after).slice(0, limit);

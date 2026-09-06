@@ -77,7 +77,7 @@ offboarding) can ride. Account *disable* is instant regardless - it is checked p
 
 | Key | Default | What it does |
 |---|---|---|
-| `allowHooksInFastPath` | `false` | whether the in-process jsdom path may run a tool's `hooks.js`. Default refuses hooked tools with `501 HOOKED_TOOL_NEEDS_CHROMIUM` instead of running untrusted code in-realm. Turn on only for a pack you curate end to end |
+| `allowHooksInFastPath` | `false` | whether the in-process jsdom path may run a tool's `hooks.js`. Default refuses hooked tools with `501 HOOKED_TOOL_NEEDS_CHROMIUM`. When on, hooks run in a `node:vm` context with the DOM and host bridge but no `process`, `require` or `fetch` - contained, not isolated. Turn on only for a pack you curate end to end; the server warns at boot when it is on for any pack other than the bundled `packs/demo` |
 | `worker.url` | `""` | the Chromium render worker. Set (with `LW_RENDER_WORKER_SECRET`) ⇒ hooked/HTML-heavy tools dispatch there instead of `501`. **This pair is the render-topology switch** - the deployment's capability set is advertised to shells via org_config's `render` block either way ([deployment](deployment.md)) |
 | `worker.timeoutMs` | `20000` | per-job timeout |
 | `c2pa.certFile` | `""` | signing-cert chain PEM (leaf first), public |
@@ -281,6 +281,8 @@ are startup errors. See [catalog](catalog.md).
 | `LW_LINK_SECRET` | required in prod | link signature key |
 | `LW_LINK_SECRET_PREVIOUS` | during a rotation | same window contract for outstanding signed links |
 | `LW_IDP_CLIENT_SECRET` | if your IdP issues one | OIDC confidential client secret |
+| `LW_LOG_FORMAT` | `text` | `json` writes one JSON object per log line (and turns the http access line on) for a log pipeline |
+| `LW_LOG_HTTP` | off | `1` writes an access line per request in text mode: request id, method, route label, status, ms |
 | `LW_PROXY_AUTH_SECRET` | with `proxyAuth.enabled` | the shared secret the reverse proxy injects as `x-lw-proxy-auth`. The name is `proxyAuth.secretRef`; `proxyAuth.directory.bindPasswordRef` names the LDAP bind password the same way |
 | `LW_CREDENTIAL_SECRET` | once a provider credential is stored | master key sealing credentials at rest (AES-256-GCM) |
 | `LW_METRICS_TOKEN` | to scrape remotely | bearer token for `/metrics`. Unset ⇒ loopback-only |

@@ -31,8 +31,9 @@ test('wrong master key and tampered bytes both refuse', () => {
   assert.throws(() => openSecret(new Uint8Array(4), MASTER, 'ctx'), /too short/);
 });
 
-test('fingerprint shows hash prefix + last four, never the middle', () => {
+test('fingerprint is a hash prefix only - no cleartext characters at all', () => {
   const fp = secretFingerprint('super-secret-token-abcd');
-  assert.match(fp, /^[0-9a-f]{8}…abcd$/);
-  assert.ok(!fp.includes('super-secret'), 'no plaintext prefix leaks');
+  assert.match(fp, /^[0-9a-f]{12}$/);
+  assert.ok(!fp.includes('abcd') && !fp.includes('super'), 'neither the head nor the tail of the secret leaks');
+  assert.notEqual(secretFingerprint('super-secret-token-abce'), fp);
 });

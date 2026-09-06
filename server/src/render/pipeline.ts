@@ -29,6 +29,7 @@ import { sha256Hex } from '../lib/crypto.ts';
 import { createAssetObserver, evidenceHash, finishRenderEvidence, type RenderEvidence } from './evidence.ts';
 import { applyPreviewWatermark } from './watermark.ts';
 import { withRenderHost } from './host.ts';
+import { createVmHookExecutor } from './vm-hooks.ts';
 import { parseHostedProviderRef, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
 import {
   addPngProvenance, collectCatalogRefs, embedSvgProvenance, provenanceDoc,
@@ -312,7 +313,10 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
     svgStr = await withRenderHost({ pack, profile: req.profile, hostedResolver,
       ...(observer ? { observeCatalogAsset: (asset, bytes) => observer.observe('catalog', asset, bytes) } : {}),
     }, async (dom, host) => {
-      const runtime = await engine.createRuntime(tool, host, bakedValues);
+      // A curated pack's hooks run in a node:vm context (vm-hooks.ts), not the
+      // server's realm - no process.env, no ambient fetch, no require.
+      const runtime = await engine.createRuntime(tool, host, bakedValues,
+        tool.hooksSource ? { hookExecutor: createVmHookExecutor(dom) } : undefined);
       try {
         const canvas = dom.window.document.getElementById('canvas');
         if (!canvas) throw new RenderError('RENDER_FAILED', 500, 'render canvas missing');

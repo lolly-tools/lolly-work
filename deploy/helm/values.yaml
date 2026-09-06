@@ -37,6 +37,12 @@
 # `ingress.annotations` comment below for what multi-replica needs.
 replicaCount: 2
 
+# With more than one replica, keep at least one serving through node drains
+# and rollouts (templates/pdb.yaml renders only when replicaCount > 1).
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
 # Seconds Kubernetes waits after SIGTERM before SIGKILL. The app handles SIGTERM
 # by DRAINING live collab rooms (server/src/main.ts): each room quiesces into an
 # ordinary session revision before the process exits. Without enough grace the
@@ -509,7 +515,7 @@ livenessProbe:
   failureThreshold: 3
 readinessProbe:
   httpGet:
-    path: /healthz
+    path: /readyz
     port: http
   initialDelaySeconds: 5
   periodSeconds: 10

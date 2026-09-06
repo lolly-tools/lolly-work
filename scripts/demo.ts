@@ -522,7 +522,7 @@ export function demoFleetClients(): Array<{ info: ClientInfo; count: number }> {
 /** Four shared links spanning every kind, one of them revoked (index 3). The
  *  guest-edit link carries a real scrypt password hash ('summit'), so it is
  *  genuinely gated - not merely flagged protected in the console. */
-export function demoLinks(adminId: string, now = Date.now()): { records: LinkRecord[]; revokeIndex: number } {
+export async function demoLinks(adminId: string, now = Date.now()): Promise<{ records: LinkRecord[]; revokeIndex: number }> {
   const expSec = (hours: number) => Math.floor(now / 1000) + hours * 3600;
   const createdAt = new Date(now).toISOString();
   const mk = (kind: LinkRecord['kind'], target: LinkRecord['target'], hours: number, extra: Partial<LinkRecord> = {}): LinkRecord => ({
@@ -530,7 +530,7 @@ export function demoLinks(adminId: string, now = Date.now()): { records: LinkRec
   });
   const records: LinkRecord[] = [
     mk('embed', { toolId: 'qr-code', params: { url: 'https://suse.com' } }, 2160),
-    mk('guest-edit', { toolId: 'event-name-badge' }, 72, { pwHash: hashPassword('summit') }),
+    mk('guest-edit', { toolId: 'event-name-badge' }, 72, { pwHash: await hashPassword('summit') }),
     mk('download', { toolId: 'countdown-timer' }, 24),
     mk('share', { toolId: 'street-map' }, 168),
   ];
@@ -595,7 +595,7 @@ export async function seedActivity(
     for (let i = 0; i < count; i++) await store.recordClient(info);
   }
 
-  const { records, revokeIndex } = demoLinks(admin.id, now);
+  const { records, revokeIndex } = await demoLinks(admin.id, now);
   for (const link of records) await store.putLink(link);
   await store.revokeLink(records[revokeIndex]!.id, new Date(now).toISOString());
 

@@ -200,7 +200,8 @@ paragraph.
 ## Monitoring
 
 ```
-GET /healthz     unauthenticated, cheap - liveness and readiness both use it
+GET /healthz     unauthenticated, cheap - liveness (the process answers)
+GET /readyz      unauthenticated - readiness: the store answers `select 1` (503 while it cannot); the Helm chart's readinessProbe
 GET /metrics     Prometheus; loopback-only unless LW_METRICS_TOKEN is set
 ```
 

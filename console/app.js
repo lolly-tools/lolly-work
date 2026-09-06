@@ -2976,8 +2976,17 @@ function renderToolPolicyEditor(tool, host) {
       ? el('p', { class: 'empty' }, 'tool.json not readable — rules can still be edited by input id.')
       : null,
     rulesHost,
-    el('p', {}, saveBtn, ' ', el('button', { onclick: () => host.replaceChildren() }, 'Close')),
+    el('p', {}, saveBtn, ' ', el('button', { onclick: () => host.replaceChildren() }, 'Close'), ' ',
+      el('a', { href: '#/preview', class: 'sub' }, 'Preview what a group sees →')),
     err));
+  // The editor renders below a paged table; bring it into view and hand it
+  // focus, so Edit on row 3 of 33 does not look like nothing happened.
+  const card = host.firstElementChild;
+  if (card) {
+    card.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    const h2 = card.querySelector('h2');
+    if (h2) { h2.tabIndex = -1; h2.focus({ preventScroll: true }); }
+  }
 }
 
 async function viewTools(main) {
@@ -3573,8 +3582,13 @@ async function viewMessages(main) {
   );
 }
 
-async function viewAudit(main) {
-  const { chain, total, events } = await api('/api/v1/audit?limit=60');
+async function viewAudit(main, params) {
+  const before = Number(params?.get?.('before') ?? 0) || 0;
+  const { chain, total, events, nextBefore } = await api(`/api/v1/audit?limit=60${before ? `&before=${before}` : ''}`);
+  const pager = el('p', { class: 'sub' },
+    before ? el('a', { href: '#/audit' }, '← Newest') : null,
+    before && nextBefore ? ' · ' : null,
+    nextBefore ? el('a', { href: `#/audit?before=${nextBefore}` }, 'Older events →') : null);
   const strip = el('div', { class: 'chain', role: 'img', 'aria-label': `audit chain, ${total} events, ${chain.ok ? 'intact' : `broken at ${chain.badSeq}`}` },
     ...events.map((evt) => el('div', {
       class: `seg${chain.ok === false && evt.seq >= (chain.badSeq ?? 0) ? ' bad' : ''}`,
@@ -3591,8 +3605,9 @@ async function viewAudit(main) {
     el('div', { class: 'card' },
       el('div', { class: 'chain-badge' },
         chain.ok ? el('span', { class: 'ok' }, '● Chain intact') : el('span', { class: 'broken' }, `● Chain broken at #${chain.badSeq}`),
-        el('span', {}, ` · ${fmt(total)} events, latest ${events.length} shown`)),
+        el('span', {}, ` · ${fmt(total)} events, ${before ? `${events.length} older than #${before}` : `latest ${events.length}`} shown`)),
       strip,
+      pager,
       // Progressive disclosure: the mechanism, for the admin who wants to know
       // exactly what "intact" proves and what it doesn't.
       el('details', { class: 'chain-explain' },
@@ -5032,10 +5047,11 @@ const VIEWS = {
   fleet: { title: 'Fleet', render: viewFleet },
   rooms: { title: 'Rooms', render: viewRooms },
   links: { title: 'Links', render: viewLinks },
-  // Consolidated into the This Deploy tab bar — kept routable (deep links,
-  // e.g. the activity feed's #/catalog) but hidden from the sidebar.
-  tools: { title: 'Tools', render: viewTools, hidden: true },
-  catalog: { title: 'Catalog', render: viewCatalog, hidden: true },
+  // Tools and Catalog are the governance surface an admin comes here for, so
+  // they sit in the rail (they are also tabs of This Deploy); providers and
+  // injectables stay reachable by deep link and tab only.
+  tools: { title: 'Tools', render: viewTools },
+  catalog: { title: 'Catalog', render: viewCatalog },
   providers: { title: 'Providers', render: viewProviders, hidden: true },
   injectables: { title: 'Injectables', render: viewInjectables, hidden: true },
   approvals: { title: 'Approvals', render: viewApprovals },

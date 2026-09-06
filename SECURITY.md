@@ -42,9 +42,15 @@ enforces it.
 
 - **Tamper-evident audit trail** — every governance-relevant action is
   appended to a hash-chained log (`server/src/audit/chain.ts`): each event's
-  hash covers the previous hash plus the canonical JSON of the event body, so
-  truncation or in-place edits break the chain at a detectable sequence
-  number. Payloads carry digests and field names, never raw input values.
+  hash covers the previous hash plus the canonical JSON of the event body, and
+  each row also carries an HMAC of that hash under a key derived from
+  `LW_SESSION_SECRET` that the database never holds. An in-place edit breaks
+  the chain at a detectable sequence number; a rewrite that recomputes the
+  public chain still fails the MAC. On Postgres a trigger refuses `UPDATE` and
+  `DELETE` on `audit_log` (migration 0034); the retention trim is the one
+  delete it admits, and it writes its anchor first. Truncating the newest rows
+  remains visible only through the externally logged head (`docs/audit.md`).
+  Payloads carry digests and field names, never raw input values.
 - **Deny-wins authorization** — RBAC evaluation
   (`server/src/rbac/evaluate.ts`) is a pure function over a fixed role set
   plus fine-grained grants, evaluated deny → allow → role default. An explicit
@@ -78,10 +84,29 @@ before reporting.
   or `POST /api/v1/users/:id/revoke-sessions`, bumps the user's session epoch
   and every prior token fails its next request. The residual is scoped to one
   token vs all of a user's, bounded by `policy.sessionTtlHours` (default 12h).
-- **CSRF stance is `SameSite=Lax`.** All cookies are `HttpOnly; SameSite=Lax`
-  (plus `Secure` on https instances). There is no per-request CSRF token; we
-  rely on Lax cookie semantics and on state-changing routes not being
-  top-level-navigation GETs.
+- **CSRF stance is `SameSite=Lax` plus a site check.** All cookies are
+  `HttpOnly; SameSite=Lax` (plus `Secure` on https instances). There is no
+  per-request CSRF token; a cookie-authenticated mutation is refused before
+  routing when the browser reports `Sec-Fetch-Site: cross-site` or its
+  `Origin` is a different site from the `Host` (`server/src/iam/csrf.ts`).
+  Sign-in routes still mint a session on a GET (`/api/auth/dev`,
+  `/api/auth/proxy`, the OIDC callback), so a login-CSRF - being signed in as
+  an attacker's account - is not prevented; it grants the attacker nothing.
+- **The dev sign-in provider is unthrottled.** `/api/auth/dev` exists for
+  local evaluation and the hosted sandbox; it upserts a user and writes an
+  audit row per hit and is exempt from the auth rate bucket, so it must be off
+  (`dev.enabled: false`) on any instance with a real IdP. The server warns at
+  boot when it is not.
+- **In-process hooks are contained, not isolated.** With
+  `render.allowHooksInFastPath` on, a pack's `hooks.js` runs in a `node:vm`
+  context (`server/src/render/vm-hooks.ts`) that carries the render's DOM and
+  the host bridge but no `process`, `require` or working `fetch`. That removes
+  ambient authority; it is not a hardened sandbox, because objects from the
+  outer realm are reachable through prototypes. Keep the switch off for any
+  pack you do not curate and use the Chromium worker tier.
+- **Anonymous automation principals are the caller's IP** in open access
+  mode, so callers behind one NAT share a job namespace. Gated mode has no
+  anonymous principal.
 - **Authenticated paths are unthrottled by design.** The rate limiter
   classifies only the unauthenticated surface; console and API traffic from a
   signed-in principal is never throttled. Abuse by an authenticated user is an

@@ -493,6 +493,13 @@ function validateProxyAuth(pa: ProxyAuthConfig): void {
 
 export function parseConfig(json: string): InstanceConfig {
   const raw = JSON.parse(json) as Partial<InstanceConfig>;
+  // A key the schema does not know is almost always a typo that silently
+  // leaves a default in force (`render.allowHooksInFastpath`). Say so once.
+  for (const key of Object.keys(raw as Record<string, unknown>)) {
+    if (!(key in DEFAULTS) && !key.startsWith('_') && !key.startsWith('$')) {
+      console.warn(`[lolly-work] WARNING — instance config carries an unknown top-level key "${key}"; it is ignored`);
+    }
+  }
   const cfg = merge(DEFAULTS as unknown as Record<string, unknown>, raw as Record<string, unknown>) as unknown as InstanceConfig;
   const mode = cfg.policy.defaultAccessMode;
   if (!['open', 'gated', 'per-tool'].includes(mode)) throw new Error(`invalid defaultAccessMode: ${mode}`);

@@ -54,8 +54,10 @@ export function createRateLimiter(cfg: RateLimitConfig, now: () => number = Date
 
 /** Which unauthenticated surface (if any) a request belongs to. Everything else
  *  returns null and is never throttled. The dev provider (/api/auth/dev) is a
- *  local-only convenience gated behind dev.enabled - deliberately NOT throttled;
- *  only the real OIDC login/callback are. */
+ *  local-only convenience gated behind dev.enabled - deliberately NOT throttled
+ *  (the demo seeds and the test suites sign in far faster than the auth bucket
+ *  refills); main.ts warns at boot whenever it is left on beside a real IdP or
+ *  proxy sign-in, because every hit upserts a user and writes an audit row. */
 export function rateLimitSurface(method: string, pathname: string): Surface | null {
   if (pathname === '/api/auth/login' || pathname === '/api/auth/callback') return 'auth';
   // Proxy sign-in is unauthenticated at this layer and may cost a directory

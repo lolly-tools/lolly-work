@@ -157,6 +157,7 @@ const addClause = (clauses: string[], values: unknown[], column: string, value: 
 };
 
 export async function createPostgresStore(databaseUrl: string): Promise<Store & { close(): Promise<void> }> {
+  let auditMacKey: string | undefined;
   const { default: pg } = await import('pg');
   const pool: PgPool = new pg.Pool({ connectionString: databaseUrl }) as unknown as PgPool;
 
@@ -656,6 +657,9 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       return links.filter((l): l is LinkRecord => l !== null);
     },
 
+    setAuditMacKey(key: string) {
+      auditMacKey = key;
+    },
     async appendAudit(body: AuditEventBody) {
       const client = await pool.connect();
       try {
@@ -673,14 +677,15 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
               ...(tailRow.payload ? { payload: tailRow.payload as Record<string, unknown> } : {}),
               prevHash: tailRow.prev_hash as string,
               hash: tailRow.hash as string,
+              ...(tailRow.mac ? { mac: tailRow.mac as string } : {}),
             }
           : null;
-        const evt = nextEvent(tail, body);
+        const evt = nextEvent(tail, body, auditMacKey);
         await client.query(
-          `insert into audit_log (seq, at, actor, action, subject, payload, prev_hash, hash)
-           values ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)`,
+          `insert into audit_log (seq, at, actor, action, subject, payload, prev_hash, hash, mac)
+           values ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)`,
           [evt.seq, evt.at, evt.actor, evt.action, evt.subject,
-           evt.payload ? JSON.stringify(evt.payload) : null, evt.prevHash, evt.hash],
+           evt.payload ? JSON.stringify(evt.payload) : null, evt.prevHash, evt.hash, evt.mac ?? null],
         );
         await client.query('commit');
         return evt;
@@ -702,6 +707,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         ...(r.payload ? { payload: r.payload as Record<string, unknown> } : {}),
         prevHash: r.prev_hash as string,
         hash: r.hash as string,
+        ...(r.mac ? { mac: r.mac as string } : {}),
       }));
     },
     async getSiemCursor() {
@@ -727,8 +733,21 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       );
     },
     async trimAudit(uptoSeq) {
-      const { rowCount } = await pool.query('delete from audit_log where seq <= $1', [uptoSeq]);
-      return rowCount ?? 0;
+      // The append-only trigger (0034) lets a delete through only when the
+      // transaction announces itself as the retention trim.
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        await client.query("set local lolly_work.audit_trim = 'on'");
+        const { rowCount } = await client.query('delete from audit_log where seq <= $1', [uptoSeq]);
+        await client.query('commit');
+        return rowCount ?? 0;
+      } catch (err) {
+        await client.query('rollback');
+        throw err;
+      } finally {
+        client.release();
+      }
     },
     async trimTelemetry(beforeIso) {
       const { rowCount } = await pool.query('delete from telemetry_events where at < $1', [beforeIso]);
@@ -787,6 +806,29 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       );
       return rows.map(deviceCodeFromRow);
     },
+    async listAuditBefore(before, limit) {
+      const { rows } = before > 0
+        ? await pool.query('select * from (select * from audit_log where seq < $1 order by seq desc limit $2) p order by seq asc', [before, limit])
+        : await pool.query('select * from (select * from audit_log order by seq desc limit $1) p order by seq asc', [limit]);
+      return rows.map((r) => ({
+        seq: Number(r.seq),
+        at: new Date(r.at as string).toISOString(),
+        actor: r.actor as string,
+        action: r.action as string,
+        subject: r.subject as string,
+        ...(r.payload ? { payload: r.payload as Record<string, unknown> } : {}),
+        prevHash: r.prev_hash as string,
+        hash: r.hash as string,
+        ...(r.mac ? { mac: r.mac as string } : {}),
+      }));
+    },
+    async countAudit() {
+      const { rows } = await pool.query('select count(*)::int as n from audit_log');
+      return Number(rows[0]?.n ?? 0);
+    },
+    async ping() {
+      try { await pool.query('select 1'); return true; } catch { return false; }
+    },
     async listAudit() {
       const { rows } = await pool.query('select * from audit_log order by seq asc');
       return rows.map((r) => ({
@@ -798,6 +840,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         ...(r.payload ? { payload: r.payload as Record<string, unknown> } : {}),
         prevHash: r.prev_hash as string,
         hash: r.hash as string,
+        ...(r.mac ? { mac: r.mac as string } : {}),
       }));
     },
 

@@ -2,7 +2,7 @@
  * Shared crypto helpers - node:crypto only, no dependencies.
  * HMAC values and tokens use base64url throughout (cookie/URL-safe).
  */
-import { createHmac, createHash, randomBytes, timingSafeEqual, scryptSync, hkdfSync, createCipheriv, createDecipheriv } from 'node:crypto';
+import { createHmac, createHash, randomBytes, timingSafeEqual, scrypt, hkdfSync, createCipheriv, createDecipheriv } from 'node:crypto';
 
 export function b64u(data: string | Uint8Array): string {
   return Buffer.from(data).toString('base64url');
@@ -32,20 +32,77 @@ export function randomId(bytes = 16): string {
   return randomBytes(bytes).toString('base64url');
 }
 
-/** Password hashing for link passwords - scrypt with a per-password salt. */
-export function hashPassword(pw: string): string {
-  const salt = randomBytes(16);
-  const key = scryptSync(pw.normalize('NFKC'), salt, 32);
-  return `s1.${salt.toString('base64url')}.${key.toString('base64url')}`;
+/**
+ * Password hashing for link passwords - scrypt with a per-password salt.
+ *
+ * `s2.<log2 N>.<salt>.<key>`: N = 2^16, r = 8, p = 1 (64 MiB per derivation),
+ * run off the event loop through the async `scrypt` and at most
+ * SCRYPT_CONCURRENCY at a time, so a burst of guesses against a public link
+ * cannot stall the process or balloon its memory. `s1.` rows from before
+ * this (N = 2^14, the node default) still verify; a rehash happens the next
+ * time the link is minted, never in place.
+ */
+const SCRYPT_LOG2N = 16;
+const SCRYPT_R = 8;
+const SCRYPT_P = 1;
+const SCRYPT_CONCURRENCY = 2;
+let scryptInflight = 0;
+const scryptWaiters: (() => void)[] = [];
+
+function scryptDerive(pw: string, salt: Buffer, log2N: number): Promise<Buffer> {
+  const N = 2 ** log2N;
+  return new Promise((resolve, reject) => {
+    scrypt(pw.normalize('NFKC'), salt, 32, { N, r: SCRYPT_R, p: SCRYPT_P, maxmem: 128 * N * SCRYPT_R * 2 }, (err, key) => {
+      if (err) reject(err);
+      else resolve(key);
+    });
+  });
 }
 
-export function verifyPassword(pw: string, stored: string): boolean {
+async function withScryptSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (scryptInflight >= SCRYPT_CONCURRENCY) await new Promise<void>((r) => scryptWaiters.push(r));
+  scryptInflight++;
+  try {
+    return await fn();
+  } finally {
+    scryptInflight--;
+    scryptWaiters.shift()?.();
+  }
+}
+
+export async function hashPassword(pw: string): Promise<string> {
+  const salt = randomBytes(16);
+  const key = await withScryptSlot(() => scryptDerive(pw, salt, SCRYPT_LOG2N));
+  return `s2.${SCRYPT_LOG2N}.${salt.toString('base64url')}.${key.toString('base64url')}`;
+}
+
+export async function verifyPassword(pw: string, stored: string): Promise<boolean> {
   const parts = stored.split('.');
-  if (parts.length !== 3 || parts[0] !== 's1') return false;
-  const salt = b64uDecode(parts[1] ?? '');
-  const expect = b64uDecode(parts[2] ?? '');
-  const key = scryptSync(pw.normalize('NFKC'), salt, 32);
-  return expect.length === key.length && timingSafeEqual(key, expect);
+  let log2N: number;
+  let saltB64: string;
+  let keyB64: string;
+  if (parts.length === 3 && parts[0] === 's1') {
+    log2N = 14;
+    saltB64 = parts[1] ?? '';
+    keyB64 = parts[2] ?? '';
+  } else if (parts.length === 4 && parts[0] === 's2') {
+    log2N = Number(parts[1]);
+    if (!Number.isInteger(log2N) || log2N < 10 || log2N > 20) return false;
+    saltB64 = parts[2] ?? '';
+    keyB64 = parts[3] ?? '';
+  } else {
+    return false;
+  }
+  const salt = b64uDecode(saltB64);
+  const expect = b64uDecode(keyB64);
+  if (salt.length === 0 || expect.length !== 32) return false;
+  const key = await withScryptSlot(() => scryptDerive(pw, salt, log2N));
+  return timingSafeEqual(key, expect);
+}
+
+/** HKDF-derive a purpose-bound key from a master secret. */
+export function deriveKey(masterSecret: string, context: string): string {
+  return Buffer.from(hkdfSync('sha256', masterSecret, '', context, 32)).toString('base64url');
 }
 
 const GCM_KEY_LEN = 32; // AES-256
@@ -76,11 +133,12 @@ export function openSecret(sealed: Uint8Array, masterSecret: string, context: st
   return Buffer.concat([decipher.update(buf.subarray(GCM_IV_LEN + GCM_TAG_LEN)), decipher.final()]).toString('utf8');
 }
 
-/** Display-safe identifier for a stored secret: sha256 prefix + last four
- *  characters (card-number style) - what APIs and audit entries show instead
- *  of the value. */
+/** Display-safe identifier for a stored secret: the first twelve hex digits
+ *  of its sha256 - what APIs, audit entries and SIEM rows show instead of the
+ *  value. No cleartext characters, however few: a fingerprint travels further
+ *  than the secret ever should. */
 export function secretFingerprint(secret: string): string {
-  return `${sha256Hex(secret).slice(0, 8)}…${secret.slice(-4)}`;
+  return sha256Hex(secret).slice(0, 12);
 }
 
 /** JSON.stringify with recursively sorted object keys - stable input for hashing. */

@@ -58,6 +58,7 @@ export interface AssetQuery {
 }
 
 export interface AssetsAPI {
+  bytes?(target: AssetRef | string): Promise<Uint8Array>;
   resolveProvider?(ref: { raw: string; provider: string; scope: string; path: string; query: Readonly<Record<string, string>> }): Promise<AssetRef | null>;
   get(id: string, opts?: { format?: string; version?: string }): Promise<AssetRef>;
   query(filter?: AssetQuery): Promise<AssetRef[]>;
@@ -88,6 +89,17 @@ export interface WorkHost {
   log(level: 'debug' | 'info' | 'warn' | 'error', msg: string, ctx?: object): void;
   profile: { get(): Promise<Profile>; subscribe(fn: (p: Profile) => void): () => void };
   assets: AssetsAPI;
+  /** Design tokens (HostV1 `tokens`, v1.91): the pack's DTCG document through the
+   *  engine's own resolver, so a token-aware tool renders its brand colours here
+   *  exactly as the shell does. Absent when the pack ships no tokens asset. */
+  tokens?: {
+    get(opts?: { theme?: string }): Promise<TokenSetLike>;
+    colors(opts?: { theme?: string }): Promise<unknown[]>;
+    resolve(ref: string, opts?: { theme?: string }): Promise<unknown>;
+    themes(): Promise<{ name: string; group: string | null }[]>;
+  };
+  /** Perceptual colour maths (HostV1 `color`, v1.40): the engine's pure implementation, attached verbatim. */
+  color?: Record<string, unknown>;
   state: {
     save(slot: string, data: object): Promise<void>;
     load(slot: string): Promise<object | null>;
@@ -99,6 +111,8 @@ export interface WorkHost {
     writeImage(blob: Blob): Promise<{ method: 'clipboard' | 'download' }>;
   };
   export: {
+    /** HostV1 `export.imprint` (v1.104): a shell without a rasteriser returns the bytes unchanged. */
+    imprint(bytes: Uint8Array, format: string, opts?: { durable?: boolean }): Promise<Uint8Array>;
     render(node: unknown, format: string, opts?: ExportOpts): Promise<Blob>;
     download(blob: Blob, filename: string): Promise<void>;
     file(blob: Blob, opts?: { filename?: string }): Promise<void>;
@@ -166,10 +180,20 @@ export interface UrlState {
   [k: string]: unknown;
 }
 
+/** The engine's TokenSet, as much of it as the render host reads. */
+export interface TokenSetLike {
+  readonly size: number;
+  resolve(ref: string): unknown;
+  colors(): unknown[];
+  themes(): { name: string; group: string | null }[];
+}
+
 export interface EngineApi {
+  createTokenSet(doc: unknown, opts?: { theme?: string }): TokenSetLike;
+  makeColorApi(): Record<string, unknown>;
   ENGINE_VERSION: string;
   loadTool(toolId: string, fetchFile: (p: string) => Promise<string>, opts?: { lang?: string }): Promise<LoadedTool>;
-  createRuntime(tool: LoadedTool, host: unknown, initialState?: Record<string, unknown>): Promise<Runtime>;
+  createRuntime(tool: LoadedTool, host: unknown, initialState?: Record<string, unknown>, opts?: { hookExecutor?: (tool: LoadedTool, host: unknown) => Promise<unknown> }): Promise<Runtime>;
   parseUrlState(query: string, manifest: unknown): UrlState;
   expandQuery(query: string): Promise<string>;
   parseDimension(input: string | number | null | undefined, defaultUnit?: string): unknown;

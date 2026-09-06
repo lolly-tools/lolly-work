@@ -1,7 +1,7 @@
 # Status and roadmap
 
 The honest state of this deploy. Written to be safe to hand to an auditor or a CIO: the
-gaps are named, not smoothed over. Verified against the repository on **2026-09-05**.
+gaps are named, not smoothed over. Verified against the repository on **2026-09-06**.
 
 ![The client fleet - which shell and engine versions are talking to this deployment](shots/client-fleet.svg)
 
@@ -9,9 +9,9 @@ gaps are named, not smoothed over. Verified against the repository on **2026-09-
 
 | | Control plane (this repo) | Lolly OSS |
 |---|---|---|
-| Tests | 837 (833 pass, 4 conditional skips, ~21 s) | 5,220 (5,189 pass, 31 conditional skips, ~51 s) |
+| Tests | 913 cases (896 pass, 14 conditional skips; the YunoHost package cases wait on its config template, still being built) | 5,800+ (see the OSS `npm test`) |
 | CI | 4 blocking gates: test (with a real Postgres service), typecheck, audit (npm audit + SBOM freshness), package (image build) | 7 blocking gates incl. SBOM drift + license checks |
-| Runtime deps | 7 (2 vendored); `npm audit`: 0 findings | 1 npm (+ Rust for desktop shells) |
+| Runtime deps | 8 (2 vendored: the pinned engine and core SDK); `npm audit`: 0 findings | 1 npm (+ Rust for desktop shells) |
 | Compliance artefacts | `SECURITY.md`, CycloneDX `sbom.cdx.json` (CI-checked for drift) | SBOM (CI-gated), SECURITY.md with threat model, third-party notices |
 
 ## What is built and tested
@@ -107,15 +107,13 @@ likewise bring-your-own (`pack.type` defaults to `none`). The stale-dist boot gu
 wrong path now fails loudly instead of quietly un-governing employees, which is the
 improvement - not a substitute for a delivery pipeline.
 
-### 5. Engine pin drift (refuses 4 tools on the server render plane)
-The vendored engine is pinned and pin-verified (`@lolly/engine@1.146.0`), but it now lags OSS
-HEAD (`1.152.0`). This is no longer only theoretical: four shipped tools declare
-`engineVersion >=1.150.0` (`audiogram`, `captions`, `record`, `top-tail-recorder`), so the
-1.146 render plane **refuses** them on the server path (`loadTool` enforces the range). They
-still render on-device in the shell; only hosted/link/embed renders fail. Re-pin the vendored
-engine to the current OSS release (>=1.150) before launch - `npm run repin-engine -- --apply`
-from a clean OSS checkout - and add an automated re-pin cadence plus a pack engine-range
-preflight, so this drift can never ship silently again.
+### 5. Engine pin drift (a recurring risk, currently closed)
+The vendored engine is pinned and pin-verified (`engine-pin.json`, `@lolly/engine@1.181.0`
+as of 2026-09-05), which matches OSS HEAD today. It has lagged before: at 1.146 the render
+plane refused four shipped tools whose manifests demanded `>=1.150.0`, while the shell still
+rendered them on-device. The pin is re-verified as `pretest` and `engine-drift.yml` watches the
+OSS repo, but there is no automated re-pin cadence and no pack engine-range preflight yet, so
+the same drift can reopen between releases.
 
 ### 6. Postgres leg depends on CI
 The Postgres driver only runs under `LW_TEST_DATABASE_URL`. CI now provides one, so this is

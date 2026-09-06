@@ -22,6 +22,7 @@ import { runRetention } from './audit/retention.ts';
 import { createNotifier } from './notify/notify.ts';
 import { expiringCredentials } from './catalog/credential-expiry.ts';
 import { auditHead } from './audit/head.ts';
+import { deriveAuditMacKey } from './audit/chain.ts';
 import { checkShellDist } from './lib/shell-dist.ts';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -41,6 +42,12 @@ if (!existsSync(resolve(config.instance.pack))) {
 // else in the system would ever mention it.
 if (config.dev.enabled && config.idp.issuer) {
   console.warn(`[lolly-work] WARNING — dev.enabled is true while idp.issuer is set (${config.idp.issuer}). /api/auth/dev is a passwordless admin bypass and is still live. Set "dev": { "enabled": false } before exposing this instance.`);
+}
+// hooks.js from the pack runs in-process on the fast path when this is on. It
+// is meant for the curated demo pack; with any other pack the render path runs
+// code the operator did not write, so say so every boot.
+if (config.render.allowHooksInFastPath && !/(^|[\\/])packs[\\/]demo[\\/]?$/.test(resolve(config.instance.pack))) {
+  console.warn(`[lolly-work] WARNING — render.allowHooksInFastPath is true for pack ${resolve(config.instance.pack)}. The in-process render path will run that pack's hooks.js (in a node:vm context, which limits but does not isolate). Set it false unless you curate every tool in the pack, and use the Chromium worker for the rest.`);
 }
 if (config.dev.enabled && config.proxyAuth.enabled) {
   console.warn(`[lolly-work] WARNING — dev.enabled is true while proxyAuth is enabled (${config.proxyAuth.displayName}). /api/auth/dev is a passwordless admin bypass and is still live. Set "dev": { "enabled": false } before exposing this instance.`);
@@ -90,6 +97,7 @@ const store = databaseUrl
       return createPostgresStore(databaseUrl);
     })()
   : createMemoryStore();
+store.setAuditMacKey?.(deriveAuditMacKey(secrets.session));
 
 // Optional one-command governance seed (plan Rec 2): apply a policy-as-code
 // document at boot. Trusted (filesystem access), so it bypasses the owner-only
@@ -145,7 +153,7 @@ renderRunner?.start();
 // log pipeline captures it off-box. On by default (boot + hourly); intervalMinutes
 // 0 disables the timer. Unref'd so it never keeps the process alive on shutdown.
 const logAuditHead = async () => {
-  const h = await auditHead(store);
+  const h = await auditHead(store, deriveAuditMacKey(secrets.session));
   console.log(`[lolly-work] audit head seq=${h.seq} hash=${h.hash} count=${h.count} intact=${h.chainIntact}`);
 };
 if (config.audit.headLog.onBoot) await logAuditHead();
