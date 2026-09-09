@@ -24,3 +24,7 @@ instance.yaml
 # plans are local-only working documents — never committed (public-MPL prep; history
 # handling for already-committed plans is the plans/24 flip-day decision)
 plans/
+
+# Installer templates contain placeholders, not instance credentials.
+!deploy/yunohost/conf/instance.json
+!deploy/yunohost/conf/.env

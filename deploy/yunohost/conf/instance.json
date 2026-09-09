@@ -1,0 +1,61 @@
+{
+  "instance": {
+    "name": "__INSTANCE_NAME__",
+    "baseUrl": "https://__DOMAIN__",
+    "pack": "__DATA_DIR__/pack",
+    "shellDir": "__INSTALL_DIR__/shell"
+  },
+  "idp": {
+    "issuer": "",
+    "clientId": "",
+    "displayName": "",
+    "groupsClaim": "groups",
+    "claimMap": {
+      "firstname": "given_name",
+      "lastname": "family_name",
+      "email": "email",
+      "title": "title"
+    }
+  },
+  "proxyAuth": {
+    "enabled": true,
+    "displayName": "YunoHost",
+    "secretRef": "LW_PROXY_AUTH_SECRET",
+    "headers": {
+      "user": "ynh_user",
+      "email": "ynh_user_email",
+      "name": "ynh_user_fullname",
+      "groups": ""
+    },
+    "groups": {},
+    "directory": {
+      "url": "ldap://127.0.0.1:389",
+      "bindDn": "",
+      "bindPasswordRef": "",
+      "userDn": "uid={user},ou=users,dc=yunohost,dc=org",
+      "attributes": {
+        "email": "mail",
+        "firstname": "givenName",
+        "lastname": "sn",
+        "name": "cn"
+      },
+      "groupMap": [
+        { "attribute": "memberOf", "pattern": "^cn=([^,]+),ou=groups,dc=yunohost,dc=org$" },
+        { "attribute": "permission", "pattern": "^cn=__APP__\\.(owner|admin|approver|author),ou=permission,dc=yunohost,dc=org$" }
+      ],
+      "timeoutMs": 5000
+    }
+  },
+  "policy": {
+    "defaultAccessMode": "__ACCESS_MODE__",
+    "telemetry": "__TELEMETRY__",
+    "telemetryAttribution": "opt-in",
+    "guestLinks": { "enabled": __GUEST_LINKS__, "maxTtlHours": 168, "defaultTtlHours": 72 },
+    "nearby": { "enabled": true },
+    "sessionTtlHours": 12
+  },
+  "render": { "allowHooksInFastPath": __HOOKS_FAST_PATH__ },
+  "rateLimit": { "enabled": true, "trustedProxyHops": 1 },
+  "dev": { "enabled": false, "users": [] },
+  "blobs": { "driver": "pg" }
+}
