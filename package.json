@@ -2,7 +2,7 @@
   "name": "lolly-work",
   "private": true,
   "version": "0.2.0",
-  "description": "Lolly control plane — identity, provisioning, governance, serving, telemetry. MPL-2.0.",
+  "description": "Lolly control plane \u2014 identity, provisioning, governance, serving, telemetry. MPL-2.0.",
   "type": "module",
   "license": "MPL-2.0",
   "bin": {
@@ -25,22 +25,25 @@
     "test": "node --test \"tests/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
     "check:docs-vernacular": "node scripts/check-docs-vernacular.ts",
-    "check:code-comments": "node scripts/check-code-comment-vernacular.ts"
+    "check:code-comments": "node scripts/check-code-comment-vernacular.ts",
+    "update:npm-licenses": "node scripts/update-npm-licenses.ts pnpm-lock.yaml workers/render/pnpm-lock.yaml"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "@types/pg": "^8.20.0",
     "esbuild": "^0.28.1",
-    "typescript": "^5.5.0"
+    "typescript": "^5.5.0",
+    "yaml": "^2.8.3"
   },
   "dependencies": {
-    "@lolly-tools/core": "file:vendor/@lolly-tools/core",
-    "@lolly/engine": "file:vendor/@lolly/engine",
+    "@lolly-tools/core": "workspace:*",
+    "@lolly/engine": "workspace:*",
     "@resvg/resvg-js": "^2.6.2",
     "jsdom": "^25.0.1",
     "pg": "^8.22.0",
     "sharp": "^0.35.4",
     "ws": "^8.21.1",
     "yjs": "^13.6.20"
-  }
+  },
+  "packageManager": "pnpm@11.1.2"
 }

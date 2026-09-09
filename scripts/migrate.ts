@@ -2,8 +2,8 @@
  * Explicit migration runner - the infra path for HA deploys where the server
  * runs with LW_AUTO_MIGRATE=false and refuses to start on a pending schema.
  *
- *   npm run migrate           apply pending migrations
- *   npm run migrate:status     report pending migrations (exit 1 if any), no DDL
+ *   pnpm run migrate           apply pending migrations
+ *   pnpm run migrate:status     report pending migrations (exit 1 if any), no DDL
  *
  * Reuses server/src/store/migrate.ts so there is one implementation of the SQL
  * and the ordering. Needs DATABASE_URL to point at the target database.

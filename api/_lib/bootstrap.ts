@@ -130,7 +130,7 @@ async function boot(): Promise<NodeHandler> {
     store = await createPostgresStore(databaseUrl);
   } else if (config.dev.enabled) {
     // Demo sandbox: seed the in-memory store with the same rich fixture the local
-    // `npm run demo` uses, so the console feels like a live deploy - RBAC grants,
+    // `pnpm run demo` uses, so the console feels like a live deploy - RBAC grants,
     // tool overlays, an approval chain, feature-flag governance, injectables, two
     // projects with sessions, catalog-lifecycle rows and inbox messages. The seeded
     // users share the `dev:<email>` subs the passwordless login upserts, so persona

@@ -6,7 +6,7 @@
  * and fingerprint unicode kept reappearing in copy, and a list in a memory file
  * only binds whoever reads it. A script binds everyone.
  *
- * Enforced twice: `tests/docs-vernacular.test.ts` (so `npm test` and the
+ * Enforced twice: `tests/docs-vernacular.test.ts` (so `pnpm test` and the
  * `loldev ship` gate fail on a violation) and as a standalone CLI:
  *
  *   node scripts/check-docs-vernacular.ts

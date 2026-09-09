@@ -152,7 +152,7 @@ is the ready-to-paste `LW_CONFIG_JSON` for it:
 - `dev.enabled: true` with four personas (admin / brand-lead / marketer / contractor).
 
 **What a signed-in visitor sees.** With `dev.enabled` and no `DATABASE_URL`, `api/_lib/bootstrap.ts`
-seeds the in-memory store with the same rich fixture the local `npm run demo` uses (`scripts/demo.ts`):
+seeds the in-memory store with the same rich fixture the local `pnpm run demo` uses (`scripts/demo.ts`):
 `seedStore()` lays down the governance state (RBAC grants, tool overlays, the brand-review approval
 chain, feature-flag governance, injectables, two projects with sessions, catalog-lifecycle rows,
 inbox messages), then `seedActivity()` adds the **runtime activity** the dashboards are built from —

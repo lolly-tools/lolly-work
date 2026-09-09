@@ -13,7 +13,7 @@
  *
  * The tarball is `git archive` of HEAD: the server, console, vendored engine, docs,
  * migrations and lockfile, with no node_modules (the install script runs
- * `npm ci --omit=dev` on the host). Four trees are left out on purpose - `packs/`
+ * `pnpm install --frozen-lockfile --prod` on the host). Four trees are left out on purpose - `packs/`
  * because the demo pack carries SUSE's proprietary brand assets (packs/demo/brands/
  * suse/NOTICE.md) and the YunoHost instance seeds its pack from the web shell
  * instead; `tests/`, `plans/` and `deploy/` because a running instance never reads

@@ -58,7 +58,7 @@ const ossDir = resolveOssDir();
 const esbuild = join(ossDir, 'node_modules/.bin/esbuild');
 const walkerSrc = join(ossDir, 'shells/web/src/bridge/export.ts');
 if (!existsSync(esbuild)) {
-  throw new Error(`OSS repo has no esbuild at ${esbuild} — run \`npm install\` in ${ossDir}.`);
+  throw new Error(`OSS repo has no esbuild at ${esbuild} — run \`pnpm install\` in ${ossDir}.`);
 }
 
 // The entry: expose renderSvgFromHtml as window.__lollyWalkerShot(selector, opts).

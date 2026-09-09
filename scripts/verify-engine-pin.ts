@@ -13,31 +13,14 @@
  *   node scripts/verify-engine-pin.ts
  */
 import { createHash } from 'node:crypto';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { contentHash } from './lib/content-hash.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-function contentHash(dir: string): string {
-  const files: string[] = [];
-  const walk = (d: string): void => {
-    for (const name of readdirSync(d).sort()) {
-      const full = join(d, name);
-      if (statSync(full).isDirectory()) walk(full);
-      else files.push(full);
-    }
-  };
-  walk(dir);
-  const h = createHash('sha256');
-  for (const f of files.sort()) {
-    h.update(relative(dir, f).split('\\').join('/'));
-    h.update('\0');
-    h.update(readFileSync(f));
-    h.update('\0');
-  }
-  return h.digest('hex');
-}
 
 function sha256File(path: string): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex');

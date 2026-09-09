@@ -1,6 +1,6 @@
 # BuildKit per-Dockerfile ignore (lives beside the Dockerfile it governs).
 # The context is the repo root; keep the host's node_modules out so the image
-# always installs from package-lock.json, and skip everything COPY never asks for.
+# always installs from pnpm-lock.yaml, and skip everything COPY never asks for.
 node_modules
 .git
 console/node_modules

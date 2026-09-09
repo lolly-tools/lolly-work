@@ -8,11 +8,11 @@
 # Scope: this repo's own manifests. The vendored engine + core live under
 # vendor/ as `file:` deps pinned by content hash (engine-pin.json, verified by
 # scripts/verify-engine-pin.ts on pretest + CI); Dependabot does not — and must
-# not — touch those. They move only via `npm run repin-engine` from a clean OSS
+# not — touch those. They move only via `pnpm run repin-engine` from a clean OSS
 # checkout, and the weekly engine-drift.yml watches the pin.
 version: 2
 updates:
-  # ── npm: the control plane (root package.json + package-lock.json) ─────────
+  # ── npm: the control plane (root package.json + pnpm-lock.yaml) ─────────
   # pg, ws, yjs, jsdom, @resvg/resvg-js + the dev toolchain (tsc, esbuild,
   # @types/*). Grouped weekly to keep PR noise down; security PRs are ungrouped
   # and immediate regardless of this schedule. Majors fall through as their own
@@ -36,7 +36,7 @@ updates:
 
   # ── npm: the render worker (its own package.json + lock, not a workspace) ──
   # workers/render carries playwright-core separately from the root tree (the
-  # plane never imports it). CI installs it with `npm ci --prefix workers/render`
+  # plane never imports it). CI installs it with `pnpm -C workers/render install --frozen-lockfile`
   # and its Dockerfile runs `playwright-core install --with-deps chromium`, so a
   # bump here keeps Chromium current.
   - package-ecosystem: "npm"

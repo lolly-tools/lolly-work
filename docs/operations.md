@@ -14,8 +14,8 @@ Two drivers behind one seam, both passing a single shared conformance suite:
 | Postgres 16/17 | `DATABASE_URL` set | the production driver |
 
 ```bash
-npm run migrate            # apply pending migrations
-npm run migrate:status     # exit 1 if anything is pending
+pnpm run migrate            # apply pending migrations
+pnpm run migrate:status     # exit 1 if anything is pending
 lw migrate [--check]       # same, run where the database is reachable (not via LW_BASE)
 GET /api/v1/system/migrations      # pending list - owner-gated (instance.config)
 ```
@@ -250,7 +250,7 @@ supported path.
 
 ## Upgrades
 
-1. Read the migration list in the release and run `npm run migrate:status` against production.
+1. Read the migration list in the release and run `pnpm run migrate:status` against production.
 2. Roll the image. On the HA path the migrate Job runs first and must succeed.
 3. Watch `/healthz` readiness - a pod refusing to start on a pending schema is the guard
    working, not a flake.
@@ -259,22 +259,22 @@ supported path.
 ### The engine pin
 
 The open-source engine is vendored, pinned and unmodified; `engine-pin.json` records the pin
-and `npm run verify:engine-pin` (which runs automatically before `npm test`) fails if the
+and `pnpm run verify:engine-pin` (which runs automatically before `pnpm test`) fails if the
 vendored tree and the pin disagree. Re-pinning is a deliberate act: bump the pin, run the
 suite, check the bridge-contract version label, commit. Letting the pin drift far behind is a
 known maintenance risk - see [status](status.md).
 
 #### Re-pin cadence
 
-`npm run repin-engine` reports drift against the sibling OSS checkout (`LOLLY_OSS_DIR`, or
+`pnpm run repin-engine` reports drift against the sibling OSS checkout (`LOLLY_OSS_DIR`, or
 `../lolly` next to this repo): commits behind OSS HEAD and pinned vs current engine/core
 versions. It is read-only and cheap - run it in CI or before a release to see how stale the
 pin is.
 
-`npm run repin-engine -- --apply` performs the re-pin: it backs up `vendor/` and the pin to
+`pnpm run repin-engine --apply` performs the re-pin: it backs up `vendor/` and the pin to
 a temp dir, runs the OSS repo's `scripts/pack-engine.ts`, extracts the fresh tarballs into
 `vendor/`, adopts the new manifest as `engine-pin.json`, syncs the lockfile, then proves
-coherence with `npm run verify:engine-pin` and `npm test`. Any failure restores the previous
+coherence with `pnpm run verify:engine-pin` and `pnpm test`. Any failure restores the previous
 vendor tree and pin, so the working copy is never left half-vendored. After a successful
 apply, review the diff (including the bridge-contract version label) and commit.
 
@@ -347,10 +347,10 @@ enrolled keep their Content Credentials.
 ## Checks and artefacts
 
 ```bash
-npm test                     # node:test over tests/
-LW_TEST_DATABASE_URL=… npm test   # adds the Postgres conformance leg
-npm run typecheck
-npm run sbom                 # regenerate sbom.cdx.json (CycloneDX)
+pnpm test                     # node:test over tests/
+LW_TEST_DATABASE_URL=… pnpm test   # adds the Postgres conformance leg
+pnpm run typecheck
+pnpm run sbom                 # regenerate sbom.cdx.json (CycloneDX)
 ```
 
 CI workflows live in `.github/workflows/`. The Postgres leg only runs when

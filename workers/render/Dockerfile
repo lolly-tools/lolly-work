@@ -15,11 +15,11 @@ ENV NODE_ENV=production
 # Keep the browser inside the image (not a user cache) so the runtime is self-contained.
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
-COPY package.json ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 # playwright-core only (no @playwright/test); install Chromium + its apt deps.
-RUN npm install --omit=dev --no-audit --no-fund \
- && npx --yes playwright-core install --with-deps chromium \
- && npm cache clean --force
+RUN npm install --global pnpm@11.1.2
+RUN pnpm install --frozen-lockfile --prod \
+ && pnpm exec playwright-core install --with-deps chromium
 
 COPY src ./src
 

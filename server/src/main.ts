@@ -69,7 +69,7 @@ if (config.instance.shellDir && config.policy.defaultAccessMode !== 'open') {
       console.warn(`[lolly-work] WARNING — ${why}; serving it anyway (LW_ALLOW_STALE_SHELL=1). This shell enforces NO session gate or locked-input UX.`);
     } else {
       console.error(`[lolly-work] REFUSING TO START — ${why}. Access mode is '${config.policy.defaultAccessMode}' but this shell cannot enforce it: employees would get no session gate or locked-input UX.`);
-      console.error('[lolly-work] Rebuild the shell (npm run build:web in the OSS repo) and redeploy it, or set LW_ALLOW_STALE_SHELL=1 to serve the stale dist with a loud warning.');
+      console.error('[lolly-work] Rebuild the shell (pnpm run build:web in the OSS repo) and redeploy it, or set LW_ALLOW_STALE_SHELL=1 to serve the stale dist with a loud warning.');
       process.exit(1);
     }
   }
@@ -78,7 +78,7 @@ if (config.instance.shellDir && config.policy.defaultAccessMode !== 'open') {
 // click around, gone on restart). With Postgres, LW_AUTO_MIGRATE (default true)
 // keeps the single-node one-command deploy by auto-applying at boot; set it false
 // for HA rollouts, where the server runs no DDL and refuses to start on a pending
-// schema (migrate explicitly with `npm run migrate` / `lw migrate` first).
+// schema (migrate explicitly with `pnpm run migrate` / `lw migrate` first).
 const databaseUrl = process.env.DATABASE_URL;
 const store = databaseUrl
   ? await (async () => {
@@ -89,7 +89,7 @@ const store = databaseUrl
         const pending = await pendingMigrations(databaseUrl);
         if (pending.length) {
           console.error(`[lolly-work] REFUSING TO START — ${pending.length} pending migration(s): ${pending.join(', ')}`);
-          console.error('[lolly-work] LW_AUTO_MIGRATE is off. Run `npm run migrate` (or `lw migrate`) against this database, then restart.');
+          console.error('[lolly-work] LW_AUTO_MIGRATE is off. Run `pnpm run migrate` (or `lw migrate`) against this database, then restart.');
           process.exit(1);
         }
         console.log('[lolly-work] schema current (auto-migrate off)');

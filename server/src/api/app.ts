@@ -6909,7 +6909,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     });
   }
 
-  // Dev-only CORS: lets a Vite dev-server shell (npm run dev:web on another port)
+  // Dev-only CORS: lets a Vite dev-server shell (pnpm run dev:web on another port)
   // talk to this instance with credentials. Gated hard on dev.enabled and to
   // localhost origins - never a production surface. Same-origin serving (above)
   // is the primary path and needs none of this.

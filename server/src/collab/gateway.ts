@@ -314,7 +314,7 @@ export function collabSessionId(rawUrl: string | undefined): string | null {
  *     (a split deploy: the shell on one host, the control plane on another) →
  *     allowed.
  *   - dev.enabled additionally allows localhost, matching `devCors` in app.ts
- *     exactly, so `npm run dev:web` on :5173 keeps working.
+ *     exactly, so `pnpm run dev:web` on :5173 keeps working.
  *   - anything else → refused before the handshake.
  */
 export function isAllowedOrigin(

@@ -50,20 +50,25 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
+        with:
+          version: 11.1.2
+          run_install: false
+
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
-          cache: npm
+          cache: pnpm
 
       - name: Install
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Full test suite (postgres store un-skipped)
         env:
           # tests/store-postgres.test.ts gates on this exact variable; without
           # it the conformance run skips silently and the gate is not real.
           LW_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/lollywork_test
-        run: npm test
+        run: pnpm test
 
   typecheck:
     name: typecheck
@@ -71,23 +76,28 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
+        with:
+          version: 11.1.2
+          run_install: false
+
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
-          cache: npm
+          cache: pnpm
 
       - name: Install
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       # The worker keeps its own package.json (playwright-core lives there, not
       # in the root tree — the plane never imports it). Its tests import
       # workers/render/src/server.ts, which pulls the worker into the root tsc
       # project, so its types must be installed for typecheck to see them.
       - name: Install worker deps
-        run: npm ci --prefix workers/render
+        run: pnpm -C workers/render install --frozen-lockfile
 
       - name: Typecheck (tsc --noEmit)
-        run: npm run typecheck
+        run: pnpm run typecheck
 
   audit:
     name: npm audit (high+critical) + SBOM
@@ -95,22 +105,27 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
+        with:
+          version: 11.1.2
+          run_install: false
+
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
-          cache: npm
+          cache: pnpm
 
       - name: Install
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Audit — block on high/critical (production deps only)
-        run: npm audit --omit=dev --audit-level=high
+        run: pnpm audit --prod --audit-level=high
 
       - name: Full advisory report (non-blocking, for the log)
         if: always()
-        run: npm audit || true
+        run: pnpm audit || true
 
-      # The committed SBOM is generated from package-lock.json; --check
+      # The committed SBOM is generated from pnpm-lock.yaml; --check
       # recomputes it and fails on any drift vs what is checked in, so the
       # SBOM can't go stale against the installed graph.
       - name: SBOM up to date (fails on drift)

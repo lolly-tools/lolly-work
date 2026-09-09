@@ -309,8 +309,8 @@ sessions die on restart. In production (`NODE_ENV=production`) their absence thr
 | `LW_ALLOW_STALE_SHELL` | - | `1` downgrades the stale-shell boot refusal to a warning |
 | `PORT` | `8787` | listen port |
 | `NODE_ENV` | - | `production` makes secret checks fail-closed |
-| `LW_TEST_DATABASE_URL` | - | enables the Postgres conformance leg in `npm test` |
-| `LOLLY_OSS_DIR` | `../lolly` | where `npm run demo` finds the built OSS web shell |
+| `LW_TEST_DATABASE_URL` | - | enables the Postgres conformance leg in `pnpm test` |
+| `LOLLY_OSS_DIR` | `../lolly` | where `pnpm run demo` finds the built OSS web shell |
 
 ## Changing configuration
 

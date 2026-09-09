@@ -84,7 +84,7 @@ test('the canonical guide covers the whole first-deploy arc', () => {
   // Each of these was a hole a first-timer fell into; the assertion is that the
   // step is present at all, not how it is worded.
   for (const step of [
-    /npm install/,            // deps, before any command that needs them
+    /pnpm install/,            // deps, before any command that needs them
     /cp instance\.example\.json instance\.json/,
     /\/api\/auth\/dev/,       // how the first human signs in
     /healthz/,                // the verification ladder

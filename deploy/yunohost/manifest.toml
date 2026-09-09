@@ -6,7 +6,7 @@
 # shapes and mirrored to github.com/lolly-tools/lolly-work_ynh at release time.
 #
 # The release-pinned fields (version, both sources' url + sha256) are written by
-# `npm run release:yunohost`, which builds the server tarball and reads the web
+# `pnpm run release:yunohost`, which builds the server tarball and reads the web
 # shell's pin from the Lolly repository. Do not hand-edit them.
 
 packaging_format = 2
@@ -78,7 +78,7 @@ ram.runtime = "512M"
 
     [resources.sources.main]
     # The control plane at a release tag (server, console, vendored engine, docs),
-    # without node_modules: the install script runs `npm ci --omit=dev`. Built and
+    # without node_modules: the install script runs `pnpm install --frozen-lockfile --prod`. Built and
     # published by scripts/yunohost-release.ts; see deploy/yunohost/README.md.
     url = "https://lolli.li/lolly-work-0.2.0.tar.gz"
     sha256 = "0e42e12bd7057c935f2b972d7356c8750d7137d3954feac09fde08939bb933ab"

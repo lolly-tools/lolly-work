@@ -62,7 +62,7 @@ image:
   #   docker push <registry>/lolly-work-server:0.2.0
   #   helm install … --set image.repository=<registry>/lolly-work-server --set image.tag=0.2.0
   #
-  # The migrate Job runs `npm run migrate` (node scripts/migrate.ts); the stock
+  # The migrate Job runs `pnpm run migrate` (node scripts/migrate.ts); the stock
   # deploy/compose/Dockerfile ships scripts/, migrations/, package.json and the
   # installed production deps, so the image built above works for it as-is.
   # Must match what .github/workflows/release.yml pushes:
@@ -283,7 +283,7 @@ migrate:
   enabled: true
   # Command the hook Job runs. Must apply pending migrations against DATABASE_URL.
   # Override if your image places the runner elsewhere (see the image note above).
-  command: ["npm", "run", "migrate"]
+  command: ["pnpm", "run", "migrate"]
   backoffLimit: 3
   # Give a slow/large migration room; the Job has no deadline unless set.
   activeDeadlineSeconds: 600

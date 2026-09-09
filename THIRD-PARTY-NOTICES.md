@@ -4,7 +4,7 @@ This file lists the third-party components lolly-work distributes and
 reproduces their required copyright and permission notices. lolly-work itself
 is licensed under **MPL-2.0**; the third-party components below keep their own licenses.
 The full machine-readable dependency graph, with per-component registry
-hashes, is `sbom.cdx.json` (`npm run sbom`).
+hashes, is `sbom.cdx.json` (`pnpm run sbom`).
 
 Only runtime dependencies appear here — dev tooling (TypeScript, type
 packages) is neither distributed nor listed.

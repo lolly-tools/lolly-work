@@ -7,7 +7,7 @@
  *
  * Emits a CycloneDX 1.5 SBOM at `sbom.cdx.json` describing the third-party npm
  * packages the control plane actually ships. Same self-contained philosophy as
- * the OSS repo's scripts/build-sbom.ts: read the npm lockfile (the install's
+ * the OSS repo's scripts/build-sbom.ts: read the pnpm lockfile (the install's
  * own source of truth), no network, no new dependency.
  *
  * Two deliberate departures from the OSS generator:
@@ -35,6 +35,7 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readPnpmLock } from './lib/pnpm-lock.ts';
 
 // ─── CycloneDX component shapes (partial - only the fields this tool emits) ───
 interface Hash {
@@ -66,7 +67,7 @@ const OUT_PATH = join(ROOT, 'sbom.cdx.json');
 const CHECK = process.argv.includes('--check');
 
 const rootPkg = readJson('package.json');
-const lock = readJson('package-lock.json');
+const lock = readPnpmLock(ROOT);
 
 // ─── SRI integrity → CycloneDX hashes ───────────────────────────────────────
 // Lockfile integrity is base64 SRI ("sha512-<base64>"); CycloneDX wants the
@@ -180,7 +181,7 @@ const output = JSON.stringify(bom, null, 2) + '\n';
 if (CHECK) {
   const committed = existsSync(OUT_PATH) ? readFileSync(OUT_PATH, 'utf8') : null;
   if (committed !== output) {
-    console.error('✗ sbom.cdx.json is stale — run `npm run sbom` and commit the result.');
+    console.error('✗ sbom.cdx.json is stale — run `pnpm run sbom` and commit the result.');
     process.exit(1);
   }
   console.log(`✓ sbom.cdx.json is up to date (${components.length} runtime components)`);

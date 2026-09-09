@@ -1,15 +1,15 @@
 # `lw` CLI
 
 A thin wrapper over the same API the console uses, so the two grow in parity by
-construction. Run it as `npm run cli -- <args>` from the repo, or `node cli/lw.ts`. To get
+construction. Run it as `pnpm run cli <args>` from the repo, or `node cli/lw.ts`. To get
 the plain `lw` the examples below use, run `npm link` once in the checkout - that is the
 only thing that puts it on `PATH` (it is not in the container image or the Helm pod, so
 `lw` drives a deploy from a checkout, not from inside it).
 
 ```bash
 export LW_BASE=https://lolly.example.com    # or pass --base <url>
-npm run cli -- summary
-npm run cli -- --json audit head            # machine output
+pnpm run cli summary
+pnpm run cli --json audit head            # machine output
 ```
 
 ## Signing in

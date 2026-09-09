@@ -50,7 +50,7 @@ Serving the web shell: dist mounted at {{ .Values.shell.mountPath }} (type={{ .V
 Point config.instance.shellDir at the directory holding index.html. Under a
 non-open access mode the pods REFUSE to start if the dist is missing or
 predates the org governance module — a stale shell would serve employees
-without the session gate / locked-input UX. Rebuild the shell (npm run
+without the session gate / locked-input UX. Rebuild the shell (pnpm run
 build:web in the OSS repo) and repopulate the volume; extraEnv
 LW_ALLOW_STALE_SHELL=1 downgrades the refusal to a loud warning.
 {{- else }}

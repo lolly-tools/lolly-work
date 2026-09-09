@@ -9,7 +9,7 @@ gaps are named, not smoothed over. Verified against the repository on **2026-09-
 
 | | Control plane (this repo) | Lolly OSS |
 |---|---|---|
-| Tests | 913 cases (896 pass, 14 conditional skips; the YunoHost package cases wait on its config template, still being built) | 5,800+ (see the OSS `npm test`) |
+| Tests | 913 cases (896 pass, 14 conditional skips; the YunoHost package cases wait on its config template, still being built) | 5,800+ (see the OSS `pnpm test`) |
 | CI | 4 blocking gates: test (with a real Postgres service), typecheck, audit (npm audit + SBOM freshness), package (image build) | 7 blocking gates incl. SBOM drift + license checks |
 | Runtime deps | 8 (2 vendored: the pinned engine and core SDK); `npm audit`: 0 findings | 1 npm (+ Rust for desktop shells) |
 | Compliance artefacts | `SECURITY.md`, CycloneDX `sbom.cdx.json` (CI-checked for drift) | SBOM (CI-gated), SECURITY.md with threat model, third-party notices |
@@ -117,7 +117,7 @@ the same drift can reopen between releases.
 
 ### 6. Postgres leg depends on CI
 The Postgres driver only runs under `LW_TEST_DATABASE_URL`. CI now provides one, so this is
-covered on `main` - but a local `npm test` still exercises only the memory driver.
+covered on `main` - but a local `pnpm test` still exercises only the memory driver.
 
 ### 7. `until-approved` watermarking
 `always` is wired; `never` is stored but never consulted (equivalent to unset); the
@@ -137,7 +137,7 @@ Two distinct issues, often conflated. **(a) Manifest drift, mechanical:** the de
 freshness gate both fail - ~93 crates are present in the lock but absent from
 `cargo-licenses.json`. (The "580 crates report unknown" figure was a miscount: all 580 mapped
 crates carry a valid SPDX expression; the fault is coverage drift, not unknown licenses.) Fix
-is `npm run build:cargo-licenses && npm run build:sbom` on a Rust toolchain, then commit.
+is `pnpm run build:cargo-licenses && pnpm run build:sbom` on a Rust toolchain, then commit.
 **(b) Copyleft review, needs counsel:** the hosted web product is close to clear (the two
 LGPL-3.0 web deps carry source offers; formal relink analysis open); wide distribution of
 downloadable desktop/mobile binaries is not, and remains the likeliest external-review

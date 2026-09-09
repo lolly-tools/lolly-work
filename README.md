@@ -16,7 +16,7 @@ A running web UI + CLI, dead easy. The one install guide is
 
 - **See it now, install nothing** - the hosted sandbox at <https://lolly.work> (passwordless
   personas, governed console, live GET renders).
-- **Evaluate locally** - `npm install && npm run demo` (Node 24+) → a fully-seeded governed
+- **Evaluate locally** - `pnpm install && pnpm run demo` (Node 24+) → a fully-seeded governed
   deployment at <http://localhost:8787>.
 - **Deploy for real** - self-hosted: single host
   ([Compose](docs/install.md#5-container-compose) /
@@ -79,7 +79,9 @@ packs/          deployment pack mount (your pack is data, never committed; packs
 ## Run it
 
 ```bash
-npm install                              # once per checkout
+# Install the pinned package manager once (or use Corepack).
+npm install --global pnpm@11.1.2
+pnpm install                              # once per checkout
 cp instance.example.json instance.json   # dev provider enabled, gated mode, packs/demo
 npm start                                # → http://localhost:8787
 
@@ -94,8 +96,8 @@ store a catalog-provider credential. Full walkthrough and verification steps:
 [`docs/install.md`](docs/install.md).
 
 ```bash
-npm test             # node:test over tests/ (Postgres conformance runs when LW_TEST_DATABASE_URL is set)
-npm run typecheck    # tsc --noEmit (needs devDependencies installed)
+pnpm test             # node:test over tests/ (Postgres conformance runs when LW_TEST_DATABASE_URL is set)
+pnpm run typecheck    # tsc --noEmit (needs devDependencies installed)
 ```
 
 **Admin console:** `http://localhost:8787/admin` - dashboards (activity, top tools,
@@ -105,10 +107,10 @@ repo's `docs/`, rendered in-console). Light/dark, no build step, no external ass
 **Admin CLI** (same API as the console, parity by construction):
 
 ```bash
-npm run cli -- login --email owner@example.test   # or `npm link` once, then plain `lw`
-npm run cli -- summary          # or: whoami · fleet · audit verify
-npm run cli -- links --all
-npm run cli -- msg send --title "Update by Aug 15" --severity action --shells tauri --max-engine 1.52.99
+pnpm run cli login --email owner@example.test   # or `npm link` once, then plain `lw`
+pnpm run cli summary          # or: whoami · fleet · audit verify
+pnpm run cli links --all
+pnpm run cli msg send --title "Update by Aug 15" --severity action --shells tauri --max-engine 1.52.99
 ```
 
 **Postgres:** set `DATABASE_URL` and migrations auto-apply on boot; without it the
@@ -123,7 +125,7 @@ There are two entrypoints, and they don't share state - pick the one that matche
 you're showing. The store is in-memory either way (unless `DATABASE_URL` is set), so
 seeded/created data evaporates on restart.
 
-**`npm run demo` - the full self-contained demo** (see `DEMO.md` for detail). Builds its
+**`pnpm run demo` - the full self-contained demo** (see `DEMO.md` for detail). Builds its
 own config (it ignores `instance.json`), seeds everything - 4 personas, tool overlays,
 an approval chain, projects/sessions, catalog lifecycle, messages, telemetry, fleet,
 links, approvals - and serves the *built* web shell from the sibling OSS repo
@@ -132,7 +134,7 @@ in-shell employee governance UX: the sign-in gate, locked tool inputs, and the
 **locked user profile** (identity fields IdP-locked, feature-flag toggles hidden).
 
 ```bash
-npm run demo    # → http://localhost:8787 (PORT=8788 for another port)
+pnpm run demo    # → http://localhost:8787 (PORT=8788 for another port)
 ```
 
 Sign-in links are printed at boot (dev provider, no passwords). To demo the locked
@@ -141,7 +143,7 @@ firstname/lastname/email/title render padlocked (`mode: locked, source: idp` in
 `GET /api/v1/org-config`). The admin console is at `/admin` - sign in as
 `admin@suse.example`. A shell dist built before the org governance module makes the
 demo fall back to `open` mode (data + console still demo; the in-shell governance UX
-needs a fresh `npm run build:web` in the OSS repo - the demo never builds anything).
+needs a fresh `pnpm run build:web` in the OSS repo - the demo never builds anything).
 
 **`npm start` - split development.** Boots from `instance.json` with an *empty* store:
 control plane + console on :8787, your own Lolly dev server (e.g. Vite on :5173)
@@ -149,7 +151,7 @@ separately. Set `instance.appUrl` (e.g. `"http://localhost:5173"`) so the consol
 "Open Lolly" and deep links point at your dev shell, and `instance.pack` at a real pack
 mount (e.g. the OSS repo) so the Design-system tab and console theming show the actual
 brand tokens instead of the neutral fallback. Cross-origin means no shared session
-cookie - the in-shell governance UX won't activate here; use `npm run demo` for that.
+cookie - the in-shell governance UX won't activate here; use `pnpm run demo` for that.
 
 ## What's implemented vs pending
 

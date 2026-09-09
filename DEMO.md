@@ -1,6 +1,6 @@
 # Demo: the lolly-work control plane, one command
 
-`npm run demo` boots a fully-seeded local deployment of the control plane - identity,
+`pnpm run demo` boots a fully-seeded local deployment of the control plane - identity,
 governance, the governed catalog, the render plane, telemetry, and the admin
 console - on a single port, from an in-memory store. Nothing is written to disk;
 stop the server and it's gone.
@@ -18,7 +18,7 @@ renders - is one URL to click around.
 - **For the full employee governance UX**, build the web shell once, in `../lolly`:
 
   ```bash
-  cd ../lolly && npm run build:web
+  cd ../lolly && pnpm run build:web
   ```
 
   Why: the shipped `../lolly/shells/web/dist` may predate the shell's `org/`
@@ -39,8 +39,8 @@ renders - is one URL to click around.
 ## 2. Run it
 
 ```bash
-npm run demo            # boots on :8787
-PORT=8788 npm run demo  # any other port
+pnpm run demo            # boots on :8787
+PORT=8788 pnpm run demo  # any other port
 ```
 
 Open the **OPEN** URL from the banner. The banner also prints one dev sign-in

@@ -70,11 +70,16 @@ the above:
 ```bash
 git clone https://github.com/lolly-tools/lolly-work.git
 cd lolly-work
-npm install
-npm run demo            # http://localhost:8787   (PORT=8788 for another port)
+# Install the pinned package manager once (or use Corepack).
+npm install --global pnpm@11.1.2
+pnpm install
+pnpm run demo            # http://localhost:8787   (PORT=8788 for another port)
 ```
 
-`npm run demo` builds its **own** config (it ignores `instance.json`) and seeds a whole
+The root `pnpm-workspace.yaml` links the pinned vendored engine and SDK without changing their source. Use the pinned pnpm version and commit `pnpm-lock.yaml` after dependency changes; deployments install with `--frozen-lockfile`. The render worker has its own lockfile: install it with `pnpm -C workers/render install`. The hoisted module layout supports the server's deployment packager. Run `pnpm run update:npm-licenses` and `pnpm run sbom` after dependency changes, then commit the license metadata cache and SBOM.
+
+
+`pnpm run demo` builds its **own** config (it ignores `instance.json`) and seeds a whole
 governed deployment in memory: four personas, tool overlays, an approval chain, projects,
 fourteen days of usage telemetry and sixty days of audit history behind the console
 charts. It prints one passwordless sign-in link per persona at boot. Open the printed URL:
@@ -89,12 +94,12 @@ clone it beside this one once:
 
 ```bash
 git clone --recurse-submodules https://github.com/lolly-tools/lolly.git ../lolly
-cd ../lolly && npm install && npm run build:web && cd -   # needs Node >=22.18 or >=24
+cd ../lolly && pnpm install && pnpm run build:web && cd -   # needs Node >=22.18 or >=24
 ```
 
-`--recurse-submodules` matters: the OSS tools and catalog are git submodules, so `npm install` there needs them present first, and `build:web` produces an empty catalog without them.
+`--recurse-submodules` matters: the OSS tools and catalog are git submodules, so `pnpm install` there needs them present first, and `build:web` produces an empty catalog without them.
 
-Then re-run `npm run demo`. It looks for `$LOLLY_OSS_DIR`, then `../lolly`; the boot banner
+Then re-run `pnpm run demo`. It looks for `$LOLLY_OSS_DIR`, then `../lolly`; the boot banner
 says which of the three states it found (no shell / stale shell / fresh shell). The console
 and render plane work in all three.
 
@@ -104,7 +109,7 @@ This is the configuration every real shape uses. Do it locally first - the file 
 here is what section 5, section 6 and section 7 deploy.
 
 ```bash
-npm install                              # once per checkout, before anything runs
+pnpm install                              # once per checkout, before anything runs
 cp instance.example.json instance.json
 npm start                                # http://localhost:8787
 ```
@@ -244,8 +249,8 @@ prompt:
 ```bash
 export DATABASE_URL=postgres://lolly:<password>@localhost/lolly_work
 psql "$DATABASE_URL" -c 'select 1'   # role, database and password all correct before you go on
-npm run migrate:status               # lists pending migrations, exits 1 if any
-npm run migrate                      # or just start the server: migrations auto-apply at boot
+pnpm run migrate:status               # lists pending migrations, exits 1 if any
+pnpm run migrate                      # or just start the server: migrations auto-apply at boot
 ```
 
 Restart-survival needs the two secrets in section 4 as well: with a database but no
@@ -345,7 +350,7 @@ PostgreSQL and create the role and database first (section 3) - the unit crashlo
 sudo useradd --system --home /opt/lolly-work --shell /usr/sbin/nologin lolly
 sudo git clone https://github.com/lolly-tools/lolly-work.git /opt/lolly-work
 sudo chown -R lolly:lolly /opt/lolly-work
-cd /opt/lolly-work && sudo -u lolly -H npm install --omit=dev
+cd /opt/lolly-work && sudo -u lolly -H pnpm install --prod
 sudo -u lolly cp instance.example.json instance.json    # then edit it (section 2)
 ```
 
@@ -582,9 +587,9 @@ owner arrives the SSO way, from the table in section 2.
 Every governance action the console does is scriptable. From a checkout:
 
 ```bash
-npm run cli                                      # the command list
-npm run cli -- login --email owner@example.test --base http://localhost:8787
-npm run cli -- whoami --base http://localhost:8787
+pnpm run cli                                      # the command list
+pnpm run cli login --email owner@example.test --base http://localhost:8787
+pnpm run cli whoami --base http://localhost:8787
 ```
 
 `login` first: everything else needs a session, stored at
@@ -593,7 +598,7 @@ npm run cli -- whoami --base http://localhost:8787
 open the printed URL in any signed-in browser and confirm the short code there.
 `lw login --cookie 'lw_session=...'` is the manual fallback.
 
-To get a real `lw` command instead of `npm run cli --`, link the checkout once:
+To get a real `lw` command instead of `pnpm run cli --`, link the checkout once:
 
 ```bash
 npm link            # puts `lw` on PATH
@@ -696,9 +701,9 @@ decision on the same record: [catalog](catalog.md).
 ## Checks
 
 ```bash
-npm test           # node:test over tests/ (Postgres leg runs when LW_TEST_DATABASE_URL is set)
-npm run typecheck  # tsc --noEmit
-npm run sbom       # regenerate sbom.cdx.json
+pnpm test           # node:test over tests/ (Postgres leg runs when LW_TEST_DATABASE_URL is set)
+pnpm run typecheck  # tsc --noEmit
+pnpm run sbom       # regenerate sbom.cdx.json
 ```
 
 ## What next

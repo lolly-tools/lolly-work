@@ -16,13 +16,13 @@
  * repo's scripts/pack-engine.ts is the publish half; engine-pin.json is its
  * manifest.json verbatim - see verify-engine-pin.ts):
  *
- *   1. back up vendor/ + engine-pin.json + package-lock.json to a temp dir
+ *   1. back up vendor/ + engine-pin.json + pnpm-lock.yaml to a temp dir
  *   2. run `node scripts/pack-engine.ts` in the OSS repo → dist/engine-pack/
  *   3. extract the core + engine tarballs into vendor/@lolly-tools/core and
  *      vendor/@lolly/engine, copy schemas/ to vendor/@lolly/schemas, and adopt
  *      manifest.json as the new engine-pin.json
- *   4. `npm install` to sync the lockfile's vendored-package versions
- *   5. prove coherence: `npm run verify:engine-pin` then `npm test`
+ *   4. `pnpm install` to sync the lockfile's vendored-package versions
+ *   5. prove coherence: `pnpm run verify:engine-pin` then `pnpm test`
  *
  * Any failure after step 1 restores the previous vendor/ + pin + lockfile, so
  * a broken re-pin can never leave the working tree half-vendored.
@@ -142,12 +142,12 @@ function report(d: Drift): void {
   console.log(
     d.inSync
       ? '✓ pin is current with OSS HEAD.'
-      : `→ re-pin with: npm run repin-engine -- --apply`,
+      : `→ re-pin with: pnpm run repin-engine --apply`,
   );
 }
 
 // ── apply ────────────────────────────────────────────────────────────────────
-const BACKED_UP = ['vendor', 'engine-pin.json', 'package-lock.json'] as const;
+const BACKED_UP = ['vendor', 'engine-pin.json', 'pnpm-lock.yaml'] as const;
 
 function backup(): string {
   const dir = mkdtempSync(join(tmpdir(), 'repin-engine-backup-'));
@@ -205,14 +205,14 @@ function apply(ossDir: string, drift: Drift): void {
     if (process.env.LOLLY_REPIN_TEST_FAIL) throw new Error('LOLLY_REPIN_TEST_FAIL — injected failure to exercise restore');
 
     // 3. Sync the lockfile's vendored-package versions.
-    console.log('\n▶ npm install (lockfile sync)');
-    run('npm', ['install', '--no-audit', '--no-fund'], ROOT);
+    console.log('\n▶ pnpm install (lockfile sync)');
+    run('pnpm', ['install', '--no-frozen-lockfile'], ROOT);
 
     // 4. Prove the new pin is coherent.
-    console.log('\n▶ npm run verify:engine-pin');
-    run('npm', ['run', 'verify:engine-pin'], ROOT);
-    console.log('\n▶ npm test');
-    run('npm', ['test'], ROOT);
+    console.log('\n▶ pnpm run verify:engine-pin');
+    run('pnpm', ['run', 'verify:engine-pin'], ROOT);
+    console.log('\n▶ pnpm test');
+    run('pnpm', ['test'], ROOT);
   } catch (err) {
     console.error(`\n✗ re-pin failed — restoring previous vendor/ + pin from ${backupDir}`);
     restore(backupDir);

@@ -114,7 +114,7 @@ cpSync(join(ROOT, 'node_modules', '@resvg'), join(NM, '@resvg'), { recursive: tr
 // 3b. sharp (asset-resolver's raster optimiser) is native too: its JS loader picks a
 //     platform package at runtime (`@img/sharp-linux-x64` + the matching libvips), which
 //     esbuild cannot inline. Ship sharp with its dependency closure, plus every @img
-//     package npm installed for THIS platform - on Vercel Linux that is the x64 pair.
+//     package pnpm installed for THIS platform - on Vercel Linux that is the x64 pair.
 //     Bundling sharp instead left the loader with no @img package beside it, and the
 //     first request to any route died on the module-level import (2026-09-05).
 console.log('▶ copy native sharp + @img platform packages');

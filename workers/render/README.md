@@ -43,7 +43,7 @@ The signature covers the exact request bytes; `ts` must be within ±5 min
 ## Run / build
 
 ```bash
-npm install && npm run install:browser   # local: fetch Chromium
+pnpm install && pnpm run install:browser   # local: fetch Chromium
 LW_RENDER_WORKER_SECRET=… LOLLY_WEB_BASE=https://lolly.example npm start
 
 docker build -t <registry>/lolly-render-worker:0.1.0 workers/render

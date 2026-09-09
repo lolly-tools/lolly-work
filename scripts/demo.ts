@@ -2,8 +2,8 @@
  * scripts/demo.ts - a one-command, richly-seeded local demo of the lolly-work
  * control plane.
  *
- *     npm run demo            # → open the printed URL
- *     PORT=8788 npm run demo  # a different port
+ *     pnpm run demo            # → open the printed URL
+ *     PORT=8788 pnpm run demo  # a different port
  *
  * It builds an InstanceConfig in memory (nothing written to disk), seeds a
  * memory store across EVERY governance feature (overlays, grants, approval
@@ -19,7 +19,7 @@
  * DETECTS that (grepping the built bundle for an org-config marker) and, if the
  * dist is stale, boots in `open` access mode so the shipped shell still loads
  * the catalog + renders. A fresh dist boots `gated`, demoing the sign-in gate.
- * Rebuilding the shell (`npm run build:web` in the OSS repo) is the owner's to
+ * Rebuilding the shell (`pnpm run build:web` in the OSS repo) is the owner's to
  * run - this script never builds anything.
  */
 import { createServer } from 'node:http';
@@ -369,7 +369,7 @@ export async function seedStore(store: Store, now = Date.now()): Promise<SeedRes
 // seedStore above lays down CONFIG-shaped state (overlays, chains, projects, …).
 // But the dashboards a signed-in visitor first lands on - the usage charts, the
 // attributed activity timeline, the fleet, the approvals inbox, shared links - 
-// are fed by RUNTIME activity. The local `npm run demo` produces that by firing
+// are fed by RUNTIME activity. The local `pnpm run demo` produces that by firing
 // real HTTP self-calls once its server is up (seedViaHttp). Serverless (the
 // Vercel function) has no server to call during a cold-start boot, so the SAME
 // activity is written DIRECTLY to the store here by seedActivity(). Both paths
@@ -897,7 +897,7 @@ async function main(): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     server.once('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
-        console.error(`\n  Port ${port} is already in use (another demo or dev server?).\n  Pick another port:  PORT=${port + 1} npm run demo\n`);
+        console.error(`\n  Port ${port} is already in use (another demo or dev server?).\n  Pick another port:  PORT=${port + 1} pnpm run demo\n`);
         process.exit(1);
       }
       reject(err);
@@ -925,8 +925,8 @@ ${line}
         ? 'FRESH → gated: the shell shows the sign-in gate + governance UX.'
         : 'STALE → open: the shipped shell loads catalog + renders; rebuild the'}
     ${!dist.present
-      ? '(git clone --recurse-submodules https://github.com/lolly-tools/lolly.git ../lolly; npm install && npm run build:web) to get the web shell at /.'
-      : dist.fresh ? '' : 'shell (npm run build:web in ../lolly) to demo the employee governance UX.'}
+      ? '(git clone --recurse-submodules https://github.com/lolly-tools/lolly.git ../lolly; pnpm install && pnpm run build:web) to get the web shell at /.'
+      : dist.fresh ? '' : 'shell (pnpm run build:web in ../lolly) to demo the employee governance UX.'}
 
   Sign in (dev provider — click a link, no password):
     admin       ${devUrl('admin@suse.example', '/admin')}

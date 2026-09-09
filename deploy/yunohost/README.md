@@ -11,7 +11,7 @@ This directory is developed inside the Lolly Work repository at `deploy/yunohost
 ## Shape
 
 - **One service, one database.** Node 24 (YunoHost's `nodejs` resource) runs `server/src/main.ts` behind the domain's nginx; PostgreSQL from the `database` resource; migrations at boot.
-- **Two sources.** `main` is this repository at the release tag (no `node_modules`; the install runs `npm ci --omit=dev`). `shell` is the Lolly web app build the open-source `lolly` YunoHost package installs, served at `/` and seeded as the instance pack.
+- **Two sources.** `main` is this repository at the release tag (no `node_modules`; the install runs `pnpm install --frozen-lockfile --prod`). `shell` is the Lolly web app build the open-source `lolly` YunoHost package installs, served at `/` and seeded as the instance pack.
 - **YunoHost SSO, no passwords.** `proxyAuth` in the server (docs/identity.md, "Reverse-proxy sign-in"): SSOwat's `YNH_USER` / `YNH_USER_EMAIL` / `YNH_USER_FULLNAME` headers plus a shared secret nginx injects, and an anonymous read of the host's LDAP for groups and this app's role permissions.
 - **Whole domain**, `multi_instance`, `amd64` + `arm64`.
 
@@ -20,9 +20,9 @@ This directory is developed inside the Lolly Work repository at `deploy/yunohost
 The release-pinned fields (`version`, both sources' `url` + `sha256`) are written by a script, never by hand. The web shell's pin is read from the open-source repository's package, so release Lolly first:
 
 ```bash
-# in ../lolly: npm run release:yunohost -- --build   (pins lolly-web-<ver>.tar.gz)
+# in ../lolly: pnpm run release:yunohost --build   (pins lolly-web-<ver>.tar.gz)
 git status --porcelain            # must be empty: the tarball is HEAD
-npm run release:yunohost          # git archive HEAD, pin the manifest (main + shell)
+pnpm run release:yunohost          # git archive HEAD, pin the manifest (main + shell)
 # → ~/.cache/lolly-release/artifacts/lolly-work-<ver>.tar.gz
 ../lolly/shells/tauri-desktop/release/lolli.py put ~/.cache/lolly-release/artifacts/lolly-work-<ver>.tar.gz
 ```
