@@ -14,6 +14,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { randomId } from '../lib/crypto.ts';
+import { validateAiConfig } from '../policy/ai.ts';
 import { PROVIDER_KINDS, type ProviderExposure, type ProviderKind, type ProviderMapping, type ProviderSyncConfig } from '../catalog/providers/types.ts';
 import { DELIVERY_DESTINATION_KINDS, type ConfigDeliveryDestination } from '../delivery/types.ts';
 import type { ClaimMap } from '../iam/oidc.ts';
@@ -135,6 +136,9 @@ export interface InstanceConfig {
     additional: AdditionalIdp[];
   };
   policy: {
+    /** Managed AI is off unless both this approval ceiling and the audited
+     * operator flag allow it. A personal shell preference cannot enable it. */
+    ai: import('../policy/ai.ts').AiConfig;
     defaultAccessMode: 'open' | 'gated' | 'per-tool';
     telemetry: 'off' | 'aggregate' | 'standard';
     telemetryAttribution: 'default' | 'opt-in';
@@ -148,9 +152,9 @@ export interface InstanceConfig {
      *  surface dark fleet-wide. */
     nearby: { enabled: boolean };
     /** Member session lifetime (hours) - sets both the signed-token exp and the
-     *  cookie Max-Age. Shorter is safer: it bounds how long an uncaught revocation
-     *  (group/role change, offboarding) can ride before it self-expires. Account
-     *  disable is instant regardless (per-request check in memberOf). */
+     *  cookie Max-Age. Bounds token lifetime if a directory change has not
+     *  reached Work. Once received, roles/groups are resolved live; disable
+     *  and session-epoch bumps revoke tokens on the next member request. */
     sessionTtlHours: number;
     /** Catalog submit (plans/31 section 3) - the ORG policy half, so it belongs
      *  beside the other things an org tunes. Open to authors by default: anyone
@@ -384,6 +388,7 @@ const DEFAULTS: InstanceConfig = {
     additional: [],
   },
   policy: {
+    ai: { enabled: false, capabilities: [] },
     defaultAccessMode: 'gated',
     telemetry: 'standard',
     telemetryAttribution: 'opt-in',
@@ -502,6 +507,7 @@ export function parseConfig(json: string): InstanceConfig {
   }
   const cfg = merge(DEFAULTS as unknown as Record<string, unknown>, raw as Record<string, unknown>) as unknown as InstanceConfig;
   const mode = cfg.policy.defaultAccessMode;
+  validateAiConfig(cfg.policy.ai);
   if (!['open', 'gated', 'per-tool'].includes(mode)) throw new Error(`invalid defaultAccessMode: ${mode}`);
   if (!['off', 'aggregate', 'standard'].includes(cfg.policy.telemetry)) {
     throw new Error(`invalid telemetry level: ${cfg.policy.telemetry}`);

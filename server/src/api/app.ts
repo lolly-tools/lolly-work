@@ -86,6 +86,7 @@ import { createProvider } from '../catalog/providers/registry.ts';
 import { noDetailShapeLine, noShapeLine, renderShapeReport, type ProviderShapeReport } from '../catalog/providers/shape.ts';
 import { invalidateAccessTokens } from '../catalog/providers/oauth.ts';
 import { assembleOrgConfig } from '../policy/org-config.ts';
+import { resolveAiPolicy } from '../policy/ai.ts';
 import { renderCapabilities } from '../render/capabilities.ts';
 import { flagGovernanceCatalog, normalizeFlagGovernance } from '../policy/feature-flags.ts';
 import { validatePublish, factsFor } from '../injectables/registry.ts';
@@ -872,6 +873,14 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
     return assembleOrgConfig({ config, user: subject, overlays, grants, toolInputs, flagGovernance, injectables, render: renderCaps, inboxUnread: unread });
   };
+
+  // A small, uncached lease renewal. Resolve membership on every request so a
+  // disabled account or revoked session cannot renew AI permission.
+  router.add('GET', '/api/v1/policy/ai', async (req, res) => {
+    if (!(await memberOf(req))) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+    res.setHeader('Cache-Control', 'no-store');
+    sendJson(res, 200, resolveAiPolicy(config.policy.ai, await store.listFlagGovernance()));
+  });
 
   router.add('GET', '/api/v1/org-config', async (req, res) => {
     const user = await memberOf(req);
@@ -2131,6 +2140,25 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     sendJson(res, 200, result);
   });
 
+  router.add('GET', '/api/v1/users/:id/erasure-preview', async (req, res, ctx) => {
+    const actor = await requireAction(req, res, 'instance.config');
+    if (!actor) return;
+    const target = await store.getUser(ctx.params.id!);
+    if (!target) return sendError(res, 404, 'NOT_FOUND', 'no such user');
+    const preview = await store.previewUserErasure(target.id);
+    sendJson(res, 200, {
+      scope: 'account-identity-and-telemetry-attribution',
+      userId: target.id,
+      accountDisabled: !!target.disabledAt,
+      blocked: target.id === actor.id || Object.values(preview.references).some((count) => count > 0),
+      self: target.id === actor.id,
+      ...preview,
+      completePersonalDataErasure: false,
+      reviewRequired: ['shared content and revisions', 'uploads and asset versions', 'render and delivery records',
+        'audit, fleet and integration records', 'directory, recipients, device caches and exports', 'holds, retention and backup restoration'],
+    }, { 'cache-control': 'no-store' });
+  });
+
   router.add('DELETE', '/api/v1/users/:id', async (req, res, ctx) => {
     const actor = await requireAction(req, res, 'instance.config');
     if (!actor) return;
@@ -2144,12 +2172,15 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const owned = (await store.listProjects()).filter((p) => p.ownerId === target.id && !p.archivedAt);
     if (owned.length) {
       return sendError(res, 409, 'ERASE_HAS_PROJECTS',
-        `archive or transfer their ${owned.length} project(s) first (PATCH the project's ownerId) - erasure never silently destroys shared work`);
+        `transfer their ${owned.length} active project(s) and inspect erasure-preview for retained references - erasure never silently destroys shared work`);
     }
-    const scrubbed = await store.scrubTelemetryUser(target.id);
-    await store.deleteUser(target.id);
+    const result = await store.eraseUserAccount(target.id);
+    if (result.status === 'referenced') return sendError(res, 409, 'ERASE_REFERENCED',
+      'retained records still reference this account; inspect erasure-preview and resolve their approved lifecycle first. Archiving does not remove references. No identity or telemetry was changed.');
+    if (result.status === 'not-found') return sendError(res, 404, 'NOT_FOUND', 'no such user');
+    const { scrubbed } = result;
     await audit(`user:${actor.id}`, 'user.erase', `user:${target.id}`, { scrubbed });
-    sendJson(res, 200, { ok: true, scrubbed });
+    sendJson(res, 200, { ok: true, scrubbed, scope: 'account-identity-and-telemetry-attribution', completePersonalDataErasure: false });
   });
 
   router.add('GET', '/api/v1/links', async (req, res, ctx) => {

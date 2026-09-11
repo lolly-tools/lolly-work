@@ -419,6 +419,12 @@ export interface Store extends RenderStore {
   scrubTelemetryUser(userId: string): Promise<number>;
   /** Erasure: delete the user row itself. False when the id is unknown. */
   deleteUser(id: string): Promise<boolean>;
+  /** Counts the relational references that prevent deleting the identity row.
+   * This is an account-erasure preview, not a full personal-data inventory. */
+  previewUserErasure(id: string): Promise<{ references: Record<'projects' | 'sessions' | 'links' | 'approvals' | 'messageAcks', number>; telemetryEvents: number }>;
+  /** Atomic identity deletion + telemetry de-attribution. Referential blocks
+   * leave BOTH untouched; callers must never imply shared content was erased. */
+  eraseUserAccount(id: string): Promise<{ status: 'erased'; scrubbed: number } | { status: 'referenced' } | { status: 'not-found' }>;
 
   // Device sign-in codes (plans/35 wave 5) - store-backed so any replica can
   // answer the poll and serverless gains the flow. iam/device-auth.ts owns

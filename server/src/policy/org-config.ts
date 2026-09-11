@@ -5,6 +5,7 @@
  * policyVersion so quiet polls are 304s.
  */
 import { canonicalJson, sha256Hex } from '../lib/crypto.ts';
+import { resolveAiPolicy, type AiPolicy } from './ai.ts';
 import { renderCapabilities, type RenderCapabilities } from '../render/capabilities.ts';
 import { filterInputs, resolveInputAccess, toolVisibleTo, type ToolOverlay, type ResolvedAccess } from './overlay.ts';
 import { evaluate, grantDecision, mayEditCollab, type Grant, type Role } from '../rbac/evaluate.ts';
@@ -49,6 +50,7 @@ export interface ProfileFieldPolicy {
 }
 
 export interface OrgConfigPayload {
+  ai: AiPolicy;
   instance: { name: string };
   session: {
     sub: string;
@@ -119,8 +121,10 @@ export function policyVersionOf(
   nearbyEnabled: boolean = true,
   deliveryDestinations: ConfigDeliveryDestination[] = [],
   grants: Grant[] = [],
+  ai: AiPolicy = resolveAiPolicy(undefined, new Map()),
 ): string {
   const doc = {
+    ai,
     overlays: [...overlays.values()].sort((a, b) => a.toolId.localeCompare(b.toolId)),
     profilePolicy,
     featureFlags: flagGovernance ? flagGovernanceForVersion(flagGovernance) : [],
@@ -237,6 +241,7 @@ export function assembleOrgConfig(opts: {
   // destination is configured or exposed.
   can['delivery.create'] = destinations.length > 0;
   return {
+    ai: resolveAiPolicy(config.policy.ai, flagGovernance),
     instance: { name: config.instance.name },
     session: {
       sub: user.sub,
@@ -270,6 +275,7 @@ export function assembleOrgConfig(opts: {
     policyVersion: policyVersionOf(
       overlays, profilePolicy, flagGovernance, injectables, render,
       config.policy.nearby?.enabled ?? true, config.delivery?.destinations ?? [], grants,
+      resolveAiPolicy(config.policy.ai, flagGovernance),
     ),
   };
 }

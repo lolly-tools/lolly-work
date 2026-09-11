@@ -119,9 +119,9 @@ config:
   render:
     allowHooksInFastPath: false
   audit:
-    # Audit-chain head hash on stdout at boot and hourly — your log pipeline
-    # captures it, which is the external anchor. Set intervalMinutes: 0 and
-    # onBoot: false to opt out.
+    # Audit-chain head hash on stdout at boot and hourly. Configure and verify
+    # forwarding to independently retained external logs; stdout alone is not
+    # an external anchor. Disable only if another anchoring path is in place.
     headLog:
       onBoot: true
       intervalMinutes: 60

@@ -1690,6 +1690,7 @@ async function viewFeatureFlags(main) {
   function row(f) {
     const effectiveOn = f.default != null ? f.default === 'on' : f.builtinDefault;
     const hidden = f.visibility === 'hide';
+    const serviceAi = f.id === 'ai';
     const status = el('span', { class: 'muted', role: 'status', style: 'margin-left:auto;font-size:.85rem' });
 
     const opt = (value, label, on) => el('option', { value, selected: on ? 'selected' : null }, label);
@@ -1724,9 +1725,9 @@ async function viewFeatureFlags(main) {
       el('div', { class: 'list-bar' }, el('h2', { class: 'flush' }, f.label), status),
       f.info ? el('p', { class: 'sub flush' }, f.info) : null,
       el('div', { style: 'display:flex;gap:14px;flex-wrap:wrap' },
-        control('Default state', defSel), control('User toggle', visSel)),
+        control(serviceAi ? 'Service switch' : 'Default state', defSel), serviceAi ? null : control('User toggle', visSel)),
       el('p', { class: 'sub flush' },
-        `Members who haven’t chosen get ${effectiveOn ? 'On' : 'Off'}` +
+        serviceAi ? (effectiveOn ? 'On is requested. The instance approval ceiling and capability list still apply. There is no personal override.' : 'Managed AI is disabled. There is no personal override.') : `Members who haven’t chosen get ${effectiveOn ? 'On' : 'Off'}` +
         (hidden
           ? ' — and the toggle is hidden from their profile (a padlock stands in). Flip the default to reveal a surprise on the day without ever showing a switch.'
           : ' — and can change it themselves in their profile.')));

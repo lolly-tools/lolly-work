@@ -16,6 +16,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { parseAllDocuments } from 'yaml';
+import { parseConfig } from '../server/src/config/instance.ts';
 
 const CHART = fileURLToPath(new URL('../deploy/helm', import.meta.url));
 const helm = spawnSync('helm', ['version', '--short'], { encoding: 'utf8' });
@@ -56,6 +58,40 @@ test('default topology is light: renders valid, no worker anywhere', { skip: noH
   assert.ok(docsOf(r.out).length >= 5, 'core manifests render');
   assert.ok(!workerDeployment(r.out), 'renderWorker.enabled defaults to false — no Chromium in a default install');
   assert.ok(!/HorizontalPodAutoscaler/.test(r.out), 'no worker ⇒ no worker HPA');
+});
+
+test('internal policy overlay produces a valid gated config and preserves environment settings', { skip: noHelm }, () => {
+  const r = render([
+    '-f', `${CHART}/values-internal.yaml`,
+    '--set', 'existingSecret=internal-test-secrets',
+    '--set', 'config.instance.baseUrl=https://work.example.test',
+    '--set', 'config.idp.issuer=https://idp.example.test',
+    '--set', 'config.idp.clientId=internal-test-client',
+    '--set', 'config.policy.retention.auditDays=180',
+  ]);
+  assert.ok(r.ok, r.err);
+  const configMap = parseAllDocuments(r.out).map(doc => doc.toJSON())
+    .find(doc => doc?.kind === 'ConfigMap' && doc.data?.['instance.json']);
+  assert.ok(configMap, 'the chart must deliver an instance config');
+  const cfg = parseConfig(configMap.data['instance.json']);
+  assert.equal(cfg.instance.baseUrl, 'https://work.example.test');
+  assert.equal(cfg.idp.clientId, 'internal-test-client');
+  assert.equal(cfg.policy.defaultAccessMode, 'gated');
+  assert.equal(cfg.dev.enabled, false);
+  assert.equal(cfg.proxyAuth.enabled, false);
+  assert.equal(cfg.policy.telemetry, 'off');
+  assert.equal(cfg.policy.guestLinks.enabled, false);
+  assert.equal(cfg.policy.nearby.enabled, false);
+  assert.equal(cfg.policy.retention.auditDays, 180, 'retain the environment-approved schedule');
+  assert.ok(cfg.policy.sessionTtlHours <= 24);
+  assert.equal(cfg.render.allowHooksInFastPath, false);
+  assert.equal(cfg.audit.headLog.onBoot, true);
+  assert.ok(!parseAllDocuments(r.out).some(doc => doc.toJSON()?.kind === 'Secret'), 'use the external secret');
+
+  const missingIdp = JSON.parse(configMap.data['instance.json']);
+  missingIdp.idp.issuer = '';
+  missingIdp.idp.clientId = '';
+  assert.throws(() => parseConfig(JSON.stringify(missingIdp)), /gated access needs idp.issuer/);
 });
 
 test('worker topology: /readyz readiness vs /healthz liveness, concurrency env, static replicas', { skip: noHelm }, () => {

@@ -44,6 +44,8 @@ start otherwise. See [identity](identity.md).
 | Key | Default | What it does |
 |---|---|---|
 | `defaultAccessMode` | `gated` | `open` (anonymous catalog), `gated` (sign-in required), `per-tool` |
+| `ai.enabled` | `false` | approval ceiling for managed AI; the audited `ai` flag must also be explicitly On. See [managed AI](ai-policy.md). |
+| `ai.capabilities` | `[]` | explicit capability list; required and nonempty when enabling AI. Unknown or duplicate capabilities are rejected. |
 | `telemetry` | `standard` | `off`, `aggregate`, `standard` |
 | `telemetryAttribution` | `opt-in` | `opt-in` strips the user id until the user consents; `default` attributes at `standard` |
 | `guestLinks.enabled` | `true` | whether guest-edit links may be minted at all |
@@ -70,8 +72,10 @@ want to bound blob growth - see
 [operations](operations.md#blob-growth-and-version-retention) and
 [catalog](catalog.md#versions).
 
-Shorter `sessionTtlHours` is safer: it bounds how long an uncaught revocation (group change,
-offboarding) can ride. Account *disable* is instant regardless - it is checked per request.
+Shorter `sessionTtlHours` bounds token lifetime if a directory change has not yet reached
+Work. Once Work receives a group/role change, authorization uses the live record on each
+request. Account disable and a session-epoch bump revoke existing member tokens on their
+next authenticated request. Token expiry does not replace the offboarding integration.
 
 ## `render`
 
@@ -105,8 +109,9 @@ Worker HMAC key and C2PA private key are secrets - see below and [c2pa](c2pa.md)
 | `headLog.onBoot` | `true` | print the audit-chain head hash at boot |
 | `headLog.intervalMinutes` | `60` | print it periodically (0 = off). The timer is unref'd, so it never holds the process open |
 
-Anchoring the head off-box is the truncation defence, and the defaults do it for you: any
-log pipeline that keeps stdout is an external anchor - see [audit](audit.md).
+The defaults print the head; operators must forward and retain it outside this
+deployment's control to establish an external anchor. Verify collection, retention and
+restricted deletion access in the receiving system - see [audit](audit.md).
 
 ## `dev`
 

@@ -372,10 +372,11 @@ switch (cmd) {
   }
 
   case 'users': {
-    if (sub !== 'erase') fail('usage: lw users erase <id>');
-    const id = positionals[2] ?? fail('usage: lw users erase <id>');
-    const r = await call(`/api/v1/users/${id}`, { method: 'DELETE' }) as { scrubbed: number };
-    console.log(`erased ${id} - ${r.scrubbed} telemetry event(s) de-attributed. The audit chain keeps its opaque user id; the mapping to a person is gone.`);
+    if (sub !== 'erase' && sub !== 'erase-preview') fail('usage: lw users erase|erase-preview <id>');
+    const id = positionals[2] ?? fail('usage: lw users erase|erase-preview <id>');
+    if (sub === 'erase-preview') { out(await call(`/api/v1/users/${encodeURIComponent(id)}/erasure-preview`)); break; }
+    const r = await call(`/api/v1/users/${encodeURIComponent(id)}`, { method: 'DELETE' }) as { scrubbed: number };
+    console.log(`erased account identity ${id} - ${r.scrubbed} telemetry event(s) de-attributed. Other retained records, audit identifiers, external copies and backups require separate review; this is not complete personal-data erasure.`);
     break;
   }
 
@@ -1338,7 +1339,8 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   whoami · summary · fleet · fleet installs · audit verify|head
   tokens [create --label <l> --role <r> | revoke <id>]   service tokens for automation (LW_TOKEN / --token authenticates any command)
   retention run              apply the stated retention policy now (also runs daily on the long-lived server)
-  users erase <id>           erasure: delete the person's row + de-attribute their telemetry (owner; projects must be archived first)
+  users erase-preview <id>   read-only reference counts and account-erasure scope (owner)
+  users erase <id>           atomic account-row removal + telemetry de-attribution (owner; retained references block it)
   instance                   the public instance manifest (what a fresh app reads)
   instance pack <file.lolly> host the signed instance pack cut by the OSS builder (owner)
   instance pack-rm           stop hosting the pack

@@ -85,6 +85,10 @@ The user keeps everything the org has no opinion about.
 
 ## Feature flags
 
+**Managed AI** is a service execution switch with an additional deployment approval
+ceiling; it has no personal override. See [managed AI](ai-policy.md). The other
+flags below govern personal defaults and visibility.
+
 The control plane governs the shell's per-user toggles it knows about, instance-wide. Two
 knobs per flag:
 

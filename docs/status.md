@@ -86,10 +86,11 @@ and the *role a shell's token claims* is stale until the next mint (authorizatio
 `sessionTtlHours`. See [identity](identity.md).
 
 ### 2. Audit-head anchoring stops at the log line
-The mechanism is built and head **logging is on by default** (boot + hourly,
-`audit.headLog`). What is unscheduled is committing the head to an **external sink**, and
-Postgres carries no append-only constraint - so out-of-band head publishing *is* the
-truncation defence and needs to become routine. See [audit](audit.md).
+Head **logging is on by default** (boot + hourly, `audit.headLog`). Migration `0034`
+adds keyed audit MAC storage and a PostgreSQL append guard, with a controlled retention
+delete path. A database superuser can still bypass the trigger or truncate the tail.
+Operators must collect heads in an independently retained external sink and verify
+receipt; local stdout alone is not an external anchor. See [audit](audit.md).
 
 ### 3. Container image: shipped and signed; tag lag + package visibility
 The first tagged release (**v0.2.0**, 2026-08-14) built and pushed both images (server,

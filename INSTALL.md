@@ -4,13 +4,13 @@
 copy, and it is the one a running deploy serves at `/admin#/docs`, so whoever operates an
 instance reads the same page you do. This file is a pointer so the two cannot drift.
 
-You need **Node 24+** and pnpm 11.1.2. The server is zero-build: it runs
+You need **Node 24+** and pnpm 11.26.0. The server is zero-build: it runs
 TypeScript directly, no compile step, no external assets.
 
 ```bash
 git clone https://github.com/lolly-tools/lolly-work.git
 cd lolly-work
-npm install --global pnpm@11.1.2
+npm install --global pnpm@11.26.0
 pnpm install
 pnpm run demo            # http://localhost:8787, passwordless sign-in links print at boot
 ```

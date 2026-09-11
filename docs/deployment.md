@@ -115,6 +115,11 @@ production notes below), or side-load: `docker save` + `k3d image import` /
 `deploy/helm/values.yaml` is the one file you edit; it is heavily commented and is the
 authority if it disagrees with this page.
 
+For an employee-only first release, the source checkout includes the optional
+`deploy/helm/values-internal.yaml` policy overlay and instructions in
+`deploy/helm/INTERNAL-RELEASE.md`. Merge it with the existing environment configuration
+and collect evidence from staging before production promotion.
+
 **The install commands live in [install section 7b](install.md#7b-production)** - secret creation,
 `helm install` with the image override, and the verification. One copy, there. This page is
 the values reference and the list of things to know before you run it.

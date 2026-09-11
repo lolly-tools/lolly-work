@@ -15,5 +15,5 @@
   "dependencies": {
     "playwright-core": "^1.49.0"
   },
-  "packageManager": "pnpm@11.1.2"
+  "packageManager": "pnpm@11.26.0"
 }

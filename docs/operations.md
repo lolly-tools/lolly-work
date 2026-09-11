@@ -71,9 +71,10 @@ beside it:
   deploy.
 
 The pack and the shell dist are build artefacts you can rebuild; recording *which* versions
-were in service matters more than backing up the bytes. The audit head is already anchored
-off-box by default - the server prints it to stdout at boot and hourly, so your log pipeline
-holds it; keep a snapshot beside the backup too ([audit](audit.md)).
+were in service matters more than backing up the bytes. The server prints the audit head
+to stdout at boot and hourly. Configure and verify collection into an independently
+retained external log system; printing alone does not preserve it outside this deployment.
+Keep a snapshot beside the backup too ([audit](audit.md)).
 
 Restore drill: fresh database → run migrations → `LW_SEED_CONFIG=./governance.json` →
 mount the same pack → point at the same IdP. Provider credentials must be re-entered (they
@@ -228,15 +229,19 @@ trims, delivery before deletion, `0` keeps everything). The long-lived server ap
 stated policy at boot and daily; on serverless, cron `lw retention run` (a service token
 works) - the route and the interval run the same code.
 
-**Erasure** (`lw users erase <id>`, owner) answers the data-subject request the disable
-switch cannot: it deletes the person's user row - the id-to-identity mapping - and
-de-attributes their stored telemetry. Two things it deliberately does not do: the audit
-chain keeps its opaque `user:<id>` actors (rewriting history would break the chain and the
-point of having one - with the mapping gone, the id no longer names a person), and it
-refuses while the person owns unarchived projects, because erasure must never silently
-destroy shared work. Archive their projects, or transfer them to their successor
-(`PATCH /api/v1/projects/:id` with `ownerId`, or the Projects view's Transfer control);
-disable already cut the access.
+**Account erasure** is deliberately limited. Run `lw users erase-preview <id>`
+first: it reports retained references and affected telemetry without changing data.
+`lw users erase <id>` atomically removes the account's identity row and de-attributes
+telemetry, or leaves both unchanged if a retained reference or database error blocks
+it. Archiving a project retains its foreign key; ownership transfer or an approved
+lifecycle action is needed. Sessions, approvals, links and message acknowledgements
+can also block removal. The memory store now matches PostgreSQL on these conditions.
+
+Audit actor IDs and other retained references can remain linkable. Neither the account
+operation nor turning analytics off deletes all personal content, historical copies,
+external deliveries or backups. Complete the scoped rights and restore-handling process
+in [data lifecycle](data-lifecycle.md); a successful account operation is not proof
+that the entire request has been fulfilled.
 
 ## SIEM forwarding
 

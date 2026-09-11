@@ -97,6 +97,16 @@ async function renderSvg(job: { toolId: string; query: string; overrides: Record
   const browser = await getBrowser();
   const ctx = await browser.newContext({ serviceWorkers: 'block', acceptDownloads: true });
   try {
+    // Server exports have no member AI lease. Keep their supported shell AI
+    // paths off even if WEB_BASE points at a standalone build. Also refuse
+    // model assets on the worker's network path (fresh context, no SW cache).
+    await ctx.addInitScript(() => {
+      Object.defineProperty(globalThis, '__LOLLY_AI_DISABLED__', { value: true, writable: false, configurable: false });
+    });
+    await ctx.route('**/*', (route) => {
+      const path = new URL(route.request().url()).pathname;
+      return /\/models\/|\.(onnx|gguf|safetensors)$/i.test(path) ? route.abort('blockedbyclient') : route.continue();
+    });
     const page = await ctx.newPage();
     const downloadP = page.waitForEvent('download', { timeout: EXPORT_TIMEOUT_MS });
     // 'commit' returns once navigation starts; the export fires later, after the

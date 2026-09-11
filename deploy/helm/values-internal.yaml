@@ -1,0 +1,33 @@
+# Optional policy overlay for an employee-only first release. This is not a
+# complete environment configuration or a claim of organisational approval.
+# Merge with the reviewed environment values; inspect the rendered instance.json.
+# Existing ingress, IdP registration, pack/shell, database and secret references
+# must come from that environment. Do not combine with values-eval.yaml.
+config:
+  policy:
+    ai:
+      enabled: false
+      capabilities: []
+    defaultAccessMode: gated
+    sessionTtlHours: 12
+    # Optional usage analytics are off; security audit events remain enabled.
+    telemetry: "off"
+    telemetryAttribution: opt-in
+    guestLinks:
+      enabled: false
+    nearby:
+      enabled: false
+    # Supply retention.telemetryDays / retention.auditDays in the environment
+    # values after approval of the retention schedule. Omitting them keeps the
+    # application's indefinite-retention default; that is not an approval.
+  dev:
+    enabled: false
+    users: []
+  proxyAuth:
+    enabled: false
+  render:
+    allowHooksInFastPath: false
+  audit:
+    headLog:
+      onBoot: true
+      intervalMinutes: 60

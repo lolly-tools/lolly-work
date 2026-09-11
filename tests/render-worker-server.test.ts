@@ -11,6 +11,7 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { runInNewContext } from 'node:vm';
 import { signBody } from '../server/src/render/worker-client.ts';
 
 const SECRET = 'worker-test-secret';
@@ -68,6 +69,24 @@ function stubRenderBrowser(onContextOpen: () => void, hold: Promise<void>) {
     async newContext() {
       onContextOpen();
       return {
+        async addInitScript(script: () => void) {
+          const realm: Record<string, unknown> = {};
+          runInNewContext(`(${script.toString()})()`, realm);
+          assert.equal(realm.__LOLLY_AI_DISABLED__, true);
+          assert.equal(Object.getOwnPropertyDescriptor(realm, '__LOLLY_AI_DISABLED__')?.writable, false);
+        },
+        async route(_pattern: string, handler: (route: any) => Promise<void>) {
+          for (const [url, expected] of [
+            ['http://web.test/models/ocr/model.onnx', 'abort'],
+            ['https://models.test/weights.gguf', 'abort'],
+            ['http://web.test/assets/app.js', 'continue'],
+          ]) {
+            let action = '';
+            await handler({ request: () => ({ url: () => url }),
+              abort: async () => { action = 'abort'; }, continue: async () => { action = 'continue'; } });
+            assert.equal(action, expected);
+          }
+        },
         async newPage() {
           return {
             async waitForEvent() {

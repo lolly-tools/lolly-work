@@ -56,9 +56,10 @@ a quiet poll is a `304`.
 - **Policy is enforced server-side, before rendering.** A locked input is a `422
   INPUT_LOCKED`, not a hidden field.
 - **Sessions are stateless, signed, domain-separated tokens.** A session token cannot be
-  replayed as a guest token, a link signature or an OAuth state. Account disable is instant;
-  a session itself lives until `policy.sessionTtlHours` expires - see
-  [audit](audit.md) and [status](status.md) for the open revocation gap.
+  replayed as a guest token, a link signature or an OAuth state. Member requests resolve
+  the live account: disable or a session-epoch bump revokes its existing tokens, and
+  authorization uses current roles/groups. Tokens also expire at `policy.sessionTtlHours`.
+  Revocation is per user; individual-session revocation remains open. See [identity](identity.md).
 - **Telemetry never carries input values**, and below `standard` (or without consent when
   attribution is opt-in) it never carries a user id.
 - **The audit log is hash-chained**, so edits and truncation are detectable - provided you

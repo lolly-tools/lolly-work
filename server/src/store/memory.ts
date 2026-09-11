@@ -78,6 +78,17 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const sessionRevisions = new Map<string, SessionRevision[]>(); // sessionId -> ascending by rev
   const collabSnapshots = new Map<string, CollabSnapshot>(); // sessionId -> the live room's doc
 
+  const erasurePreview = (id: string) => ({
+    references: {
+      projects: [...projects.values()].filter((p) => p.ownerId === id).length,
+      sessions: [...sessions.values()].filter((s) => s.createdBy === id || s.updatedBy === id).length,
+      links: [...links.values()].filter((l) => l.createdBy === id).length,
+      approvals: [...approvals.values()].filter((a) => a.createdBy === id).length,
+      messageAcks: acks.get(id)?.size ?? 0,
+    },
+    telemetryEvents: events.filter((e) => e.userId === id).length,
+  });
+
   return {
     ...createMemoryRenderStore(),
     async upsertUserBySub(user) {
@@ -453,6 +464,23 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
         }
       }
       return false;
+    },
+
+    async previewUserErasure(id) { return erasurePreview(id); },
+    async eraseUserAccount(id) {
+      const user = [...users.values()].find((u) => u.id === id);
+      if (!user) return { status: 'not-found' };
+      if (Object.values(erasurePreview(id).references).some((count) => count > 0)) return { status: 'referenced' };
+      let scrubbed = 0;
+      for (let i = 0; i < events.length; i++) {
+        const event = events[i]!;
+        if (event.userId !== id) continue;
+        const { userId: _removed, ...rest } = event;
+        events[i] = rest;
+        scrubbed++;
+      }
+      users.delete(user.sub);
+      return { status: 'erased', scrubbed };
     },
 
     async putDeviceCode(rec) {

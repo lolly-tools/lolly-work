@@ -17,7 +17,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 # playwright-core only (no @playwright/test); install Chromium + its apt deps.
-RUN npm install --global pnpm@11.1.2
+RUN npm install --global pnpm@11.26.0
 RUN pnpm install --frozen-lockfile --prod \
  && pnpm exec playwright-core install --with-deps chromium
 

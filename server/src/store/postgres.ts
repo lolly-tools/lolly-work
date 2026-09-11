@@ -762,6 +762,38 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       return (rowCount ?? 0) > 0;
     },
 
+    async previewUserErasure(id) {
+      const { rows } = await pool.query(`select
+        (select count(*) from projects where owner_id = $1) as projects,
+        (select count(*) from sessions where created_by = $1 or updated_by = $1) as sessions,
+        (select count(*) from links where created_by = $1) as links,
+        (select count(*) from approvals where created_by = $1) as approvals,
+        (select count(*) from message_acks where user_id = $1) as acks,
+        (select count(*) from telemetry_events where user_id = $1) as telemetry`, [id]);
+      const row = rows[0]!;
+      return { references: {
+        projects: Number(row.projects), sessions: Number(row.sessions), links: Number(row.links),
+        approvals: Number(row.approvals), messageAcks: Number(row.acks),
+      }, telemetryEvents: Number(row.telemetry) };
+    },
+    async eraseUserAccount(id) {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        // Delete first: FK checks also cover references created concurrently
+        // after the preview. Never cascade shared records to make erasure pass.
+        const deleted = await client.query('delete from users where id = $1', [id]);
+        if (!deleted.rowCount) { await client.query('rollback'); return { status: 'not-found' }; }
+        const scrubbed = await client.query('update telemetry_events set user_id = null where user_id = $1', [id]);
+        await client.query('commit');
+        return { status: 'erased', scrubbed: scrubbed.rowCount ?? 0 };
+      } catch (error) {
+        await client.query('rollback');
+        if ((error as { code?: string }).code === '23503') return { status: 'referenced' };
+        throw error;
+      } finally { client.release(); }
+    },
+
     // Device sign-in codes (plans/35 wave 5). Prune rides the writes; the
     // claim's single-read is DELETE ... RETURNING, atomic across replicas.
     async putDeviceCode(rec) {

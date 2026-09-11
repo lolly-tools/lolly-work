@@ -214,7 +214,10 @@ export const BANNED_PHRASES: { what: string; re: RegExp }[] = [
  * conscious, reviewable decision, and a stale entry fails loudly when the
  * line it sanctioned goes away (see the test's stale-allow assertion).
  */
-const ALLOW: Record<string, string[]> = {};
+const ALLOW: Record<string, string[]> = {
+  // Literal capability identifier in policy/ai.ts, not figurative prose.
+  'docs/ai-policy.md': ['`speech`, `transcription`'],
+};
 
 /**
  * VERBATIM output quotes: the ONLY unicode exemption, held to a strict test.

@@ -55,16 +55,17 @@ entries: rows that never existed leave nothing to verify.
 The defence is to record the head hash somewhere **outside** this deploy. A later chain that
 does not contain the head you saved is provably truncated.
 
-**The server does this for you by default.** Every instance prints the head at boot and then
-hourly:
+**The server prints the head by default.** Every instance emits it at boot and then
+hourly; external collection and retention are an operator responsibility:
 
 ```
 [lolly-work] audit head seq=… hash=… count=… intact=…
 ```
 
-Anything that keeps stdout - journald, `kubectl logs` shipped to Loki, CloudWatch, a plain
-file - is therefore an external anchor with no setup. The timer is unref'd, so it never
-holds the process open. The defaults are
+Ship those lines to an independently retained log service with controlled deletion
+access, and verify receipt and retention there. Local journald, a local file or
+`kubectl logs` alone can disappear with the host or deployment and do not establish an
+external anchor. The timer is unref'd, so it never holds the process open. The defaults are
 
 ```json
 "audit": { "headLog": { "onBoot": true, "intervalMinutes": 60 } }

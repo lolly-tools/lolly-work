@@ -9,6 +9,7 @@ import { verifyChain } from '../server/src/audit/chain.ts';
 import { createApproval, type Chain } from '../server/src/approvals/engine.ts';
 import type { Message } from '../server/src/inbox/target.ts';
 import type { Store } from '../server/src/store/types.ts';
+import { runErasureConformance } from './erasure-conformance.ts';
 
 export async function runStoreConformance(store: Store): Promise<void> {
   // users: upsert by sub, re-upsert updates in place
@@ -815,4 +816,5 @@ export async function runStoreConformance(store: Store): Promise<void> {
   // prefix composes with the other filters
   assert.equal((await store.listUsersPage({ group: PG, prefix: 'w', status: 'disabled', limit: 10, offset: 0 })).total, 1);
   assert.equal((await store.listUsersPage({ group: PG, prefix: 'v', status: 'disabled', limit: 10, offset: 0 })).total, 0);
+  await runErasureConformance(store);
 }

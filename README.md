@@ -80,7 +80,7 @@ packs/          deployment pack mount (your pack is data, never committed; packs
 
 ```bash
 # Install the pinned package manager once (or use Corepack).
-npm install --global pnpm@11.1.2
+npm install --global pnpm@11.26.0
 pnpm install                              # once per checkout
 cp instance.example.json instance.json   # dev provider enabled, gated mode, packs/demo
 npm start                                # → http://localhost:8787

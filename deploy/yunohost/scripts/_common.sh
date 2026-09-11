@@ -29,7 +29,7 @@ lollywork_add_config() {
 # sharp and resvg fetch prebuilt binaries for this architecture.
 lollywork_npm_install() {
     pushd "$install_dir" >/dev/null
-    ynh_hide_warnings ynh_exec_as_app npm exec --yes --package=pnpm@11.1.2 -- pnpm install --frozen-lockfile --prod
+    ynh_hide_warnings ynh_exec_as_app npm exec --yes --package=pnpm@11.26.0 -- pnpm install --frozen-lockfile --prod
     popd >/dev/null
 }
 

@@ -29,6 +29,12 @@ export interface GovernableFlag {
 /** The flags this control plane can govern. Ids are the shell's flag ids. */
 export const GOVERNABLE_FLAGS: readonly GovernableFlag[] = [
   {
+    id: 'ai',
+    label: 'Managed AI',
+    builtinDefault: false,
+    info: 'Service switch for AI execution. Off or Inherit stops managed AI. On permits only capabilities approved in policy.ai; members cannot override it. Updated shells renew every 30 seconds and stop on renewal failure or after a 60-second lease. The first production profile keeps the configuration ceiling off.',
+  },
+  {
     id: 'neurospicy',
     label: 'Neurospicy Mode',
     builtinDefault: true,

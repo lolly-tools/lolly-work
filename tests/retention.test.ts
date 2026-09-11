@@ -141,6 +141,18 @@ test('erasure deletes the mapping, scrubs attribution, and refuses to destroy sh
   assert.equal(blocked.status, 409, 'an unarchived project blocks erasure');
 
   await store.putProject({ id: 'p1', name: 'Campaign', visibility: 'private', ownerId: departed.id, createdAt: new Date().toISOString(), archivedAt: new Date().toISOString() });
+  const preview = await fetch(`${base}/api/v1/users/${departed.id}/erasure-preview`, { headers: { cookie: owner } });
+  assert.equal(preview.status, 200);
+  assert.equal(preview.headers.get('cache-control'), 'no-store');
+  const body = await preview.json() as { blocked: boolean; completePersonalDataErasure: boolean; references: { projects: number }; telemetryEvents: number };
+  assert.equal(body.blocked, true);
+  assert.equal(body.completePersonalDataErasure, false);
+  assert.equal(body.references.projects, 1);
+  assert.equal(body.telemetryEvents, 1);
+  const archived = await fetch(`${base}/api/v1/users/${departed.id}`, { method: 'DELETE', headers: { cookie: owner } });
+  assert.equal(archived.status, 409, 'archiving retains the foreign key');
+  assert.equal((await store.listEvents()).filter((e) => e.userId === departed.id).length, 1, 'blocked deletion leaves telemetry unchanged');
+  await store.putProject({ id: 'p1', name: 'Campaign', visibility: 'private', ownerId: self.id, createdAt: new Date().toISOString(), archivedAt: new Date().toISOString() });
   const erased = await fetch(`${base}/api/v1/users/${departed.id}`, { method: 'DELETE', headers: { cookie: owner } });
   assert.equal(erased.status, 200);
   assert.equal(((await erased.json()) as { scrubbed: number }).scrubbed, 1);
@@ -148,6 +160,16 @@ test('erasure deletes the mapping, scrubs attribution, and refuses to destroy sh
   assert.equal((await store.listEvents()).some((e) => e.userId === departed.id), false, 'attribution is gone');
   // The audit chain keeps its opaque actor - erasure is a mapping delete, not history rewriting.
   assert.ok((await store.listAudit()).some((e) => e.subject === `user:${departed.id}` && e.action === 'user.erase'));
+});
+
+test('erasure preview requires the owner permission and does not change the target', async () => {
+  const { base, store } = await boot();
+  const member = await login(base, 'departed@test');
+  const target = (await store.listUsers()).find((u) => u.email === 'departed@test')!;
+  const url = `${base}/api/v1/users/${target.id}/erasure-preview`;
+  assert.equal((await fetch(url)).status, 401);
+  assert.equal((await fetch(url, { headers: { cookie: member } })).status, 403);
+  assert.deepEqual(await store.getUser(target.id), target);
 });
 
 test('ownership transfer (plans/36 §1): the other way past an erasure block', async () => {

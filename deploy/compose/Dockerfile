@@ -5,19 +5,30 @@
 # signed+attested release image is reproducible and the tag can't shift under a
 # rebuild. Dependabot's docker updater (/.github/dependabot.yml, dir
 # /deploy/compose) keeps the pin moving as node:24-alpine is rebuilt.
-FROM node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43
+FROM node:24-alpine@sha256:50c8e8ca1d27439048670df5883f32d57cf81cff6233222c893fd0d9884cbd81
 WORKDIR /app
+
+# The pinned Node image predates these Alpine OpenSSL fixes. Keep the reviewed
+# package versions explicit until a refreshed base already includes them.
+RUN apk add --no-cache libcrypto3=3.5.8-r0 libssl3=3.5.8-r0
 
 # vendor/ must land BEFORE pnpm install --frozen-lockfile: package.json's @lolly/engine and
 # @lolly-tools/core are workspace links pointing there, and pnpm install --frozen-lockfile both reads them
 # at install and leaves node_modules symlinks into /app/vendor — so vendor/
 # stays in the final image, it is not a build-time scratch dir.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY vendor ./vendor
-RUN npm install --global pnpm@11.1.2
+# Only these two vendored packages are runtime dependencies. The optional full
+# Lolly checkout contains unrelated tools, native lockfiles and its own SBOM.
+COPY vendor/@lolly ./vendor/@lolly
+COPY vendor/@lolly-tools ./vendor/@lolly-tools
+RUN npm install --global pnpm@11.26.0
 RUN pnpm install --frozen-lockfile --prod
+# Runtime and the migration Job use Node/pnpm. Remove the unused npm CLI and
+# its separate dependency tree after installing the pinned package manager.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
 COPY tsconfig.json ./
+COPY sbom.cdx.json THIRD-PARTY-NOTICES.md LICENSE ./
 COPY server ./server
 # console/ — server/src/api/app.ts serves the admin console from
 # `new URL('../../../console/', import.meta.url)` → /app/console.
@@ -41,8 +52,7 @@ COPY scripts ./scripts
 RUN mkdir -p packs
 COPY packs/demo ./packs/demo
 
-# Dry-run verification (docker unavailable in the authoring env): every runtime
-# import the server can hit, and where it resolves in this image —
+# Runtime import map (also exercised by the local container rehearsal):
 #   static server/** imports          → COPY server        (/app/server)
 #   lazy import('pg')                 → pnpm install --frozen-lockfile             (store/postgres.ts:50, store/migrate.ts:35,49)
 #   lazy import('jsdom')              → pnpm install --frozen-lockfile             (render/contract.ts JSDOM_SPECIFIER)
@@ -60,4 +70,6 @@ COPY packs/demo ./packs/demo
 ENV NODE_ENV=production
 USER node
 EXPOSE 8787
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:' + (process.env.PORT || '8787') + '/healthz', { signal: AbortSignal.timeout(4000) }).then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
 CMD ["node", "server/src/main.ts"]
