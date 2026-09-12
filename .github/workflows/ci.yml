@@ -6,7 +6,10 @@
 #                the vendored engine pin (MPL "consumed unmodified" check).
 #   typecheck  — tsc --noEmit across the repo.
 #   audit      — npm audit on production deps (blocks on HIGH/CRITICAL) + SBOM
-#                freshness (scripts/build-sbom.ts --check fails on drift).
+#                freshness (regenerate sbom.cdx.json, fail on drift - advisory
+#                only on a dependabot[bot] PR, which cannot carry the
+#                regenerated file; sbom-refresh.yml repairs main after the
+#                merge).
 #   package    — the server container image must build (deploy/compose/
 #                Dockerfile); nothing is pushed here, release.yml does that.
 # After all four gates pass on a push to main (never on a PR), `deploy` ships the
@@ -125,11 +128,38 @@ jobs:
         if: always()
         run: pnpm audit || true
 
-      # The committed SBOM is generated from pnpm-lock.yaml; --check
-      # recomputes it and fails on any drift vs what is checked in, so the
-      # SBOM can't go stale against the installed graph.
-      - name: SBOM up to date (fails on drift)
-        run: node scripts/build-sbom.ts --check
+      # The committed SBOM is generated from pnpm-lock.yaml (scripts/build-sbom.ts,
+      # deterministic). Regenerate it here and fail on drift, so the SBOM can't go
+      # stale against the installed graph.
+      #
+      # One exception, and only one: Dependabot's own PRs. A bump changes the
+      # lockfile, so the SBOM moves, but Dependabot commits nothing except the
+      # lockfile and the manifest - it cannot carry a regenerated artifact, and
+      # nobody can add one to its branch without taking the PR over by hand.
+      # Failing here would park every bump forever (or, worse, train us to merge
+      # red). So on a dependabot[bot] PR the drift is reported as a warning and the
+      # job carries on; main repairs itself right after the merge via
+      # .github/workflows/sbom-refresh.yml, which regenerates and commits
+      # sbom.cdx.json on push.
+      #
+      # For every other actor this is still a hard failure: a human who touches the
+      # lockfile commits the regenerated SBOM alongside it, same as before.
+      - name: SBOM up to date (regenerate; fail on drift, warn for Dependabot)
+        env:
+          SBOM_DRIFT_ADVISORY: ${{ github.actor == 'dependabot[bot]' }}
+        run: |
+          pnpm run sbom
+          if git diff --quiet -- sbom.cdx.json; then
+            echo "sbom.cdx.json matches the dependency graph."
+            exit 0
+          fi
+          git --no-pager diff --stat -- sbom.cdx.json
+          if [ "$SBOM_DRIFT_ADVISORY" = 'true' ]; then
+            echo "::warning title=SBOM drift (advisory for Dependabot)::sbom.cdx.json is stale for this bump. sbom-refresh.yml regenerates and commits it on main once this merges."
+            exit 0
+          fi
+          echo "::error title=SBOM drift::sbom.cdx.json is stale. Run pnpm run sbom and commit the result."
+          exit 1
 
   # Packaging gate — the image release.yml ships must at least build on every
   # change. Build only, no registry login, nothing pushed.
