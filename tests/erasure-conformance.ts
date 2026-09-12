@@ -33,4 +33,15 @@ export async function runErasureConformance(store: Store): Promise<void> {
   assert.equal(await store.getUser(unreferenced.id), null);
   assert.equal((await store.listEvents()).some((e) => e.userId === unreferenced.id), false);
   assert.deepEqual(await store.eraseUserAccount(unreferenced.id), { status: 'not-found' });
+
+  // Ownership transfer must persist in the database too. Otherwise an API
+  // transfer appears successful but the retained project still blocks erasure.
+  const departedOwner = await user('erasure-transferred-owner');
+  const transferredProject = { ...project, id: 'erasure-transferred', ownerId: departedOwner.id, archivedAt: now };
+  await store.putProject(transferredProject);
+  await store.putProject({ ...transferredProject, ownerId: keeper.id });
+  assert.equal((await store.getProject(transferredProject.id))?.ownerId, keeper.id);
+  assert.equal((await store.previewUserErasure(departedOwner.id)).references.projects, 0);
+  assert.deepEqual(await store.eraseUserAccount(departedOwner.id), { status: 'erased', scrubbed: 0 });
+  assert.deepEqual(await store.getProject(transferredProject.id), { ...transferredProject, ownerId: keeper.id });
 }

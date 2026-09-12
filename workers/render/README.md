@@ -1,8 +1,8 @@
-# Render worker — the Chromium tier
+# Render worker: the Chromium tier
 
 The isolated browser worker the control plane dispatches **hooked / HTML-heavy
 tools** to. Those tools ship `hooks.js` that may touch real browser APIs, so they
-can't run in the control plane's in-process jsdom fast path — and because they run
+can't run in the control plane's in-process jsdom fast path - and because they run
 the least-trusted content, they run **here**, in a separate, hardened deployment
 that is blast-separated from the control plane (no database, no secrets beyond the
 shared HMAC key).
@@ -10,8 +10,8 @@ shared HMAC key).
 ## How it renders
 
 It mirrors the proven MCP Tier-B path: drive a headless Chromium against a real
-Lolly **web shell** export URL —
-`<LOLLY_WEB_BASE>/t/<toolId>?<query>&<locked-overrides>&format=svg&export` — and
+Lolly **web shell** export URL -
+`<LOLLY_WEB_BASE>/t/<toolId>?<query>&<locked-overrides>&format=svg&export` - and
 capture the SVG the app's own export downloads. The tool's hooks run in a real
 browser exactly as a user's Download would. The control plane keeps all policy:
 it bakes locked values into the `overrides` before signing the job, and it
@@ -23,8 +23,8 @@ watermarks / adds provenance / rasterises the returned SVG itself.
 POST /render
   x-lw-render-sig: base64url( HMAC-SHA256(rawBody, LW_RENDER_WORKER_SECRET) )
   { "toolId", "query", "overrides", "format": "svg", "profile", "ts": <epoch ms> }
-  → 200 { "svg": "<svg …>" } | 4xx/5xx { "error": { "code", "message" } }
-GET /healthz → 200 { "ok": true }
+  -> 200 { "svg": "<svg …>" } | 4xx/5xx { "error": { "code", "message" } }
+GET /healthz -> 200 { "ok": true }
 ```
 
 The signature covers the exact request bytes; `ts` must be within ±5 min
@@ -59,5 +59,32 @@ hooked tools render via this worker; without them, they still return
 Runs as a non-root user with Chromium's `--no-sandbox` (pod-level isolation
 substitutes for Chromium's own sandbox, which needs privileges we don't grant).
 In production run it under a sandboxed runtimeClass (gVisor / Kata) and a strict
-NetworkPolicy — it only needs to reach `LOLLY_WEB_BASE`, and only the control
+NetworkPolicy - it only needs to reach `LOLLY_WEB_BASE`, and only the control
 plane needs to reach it.
+
+## Packaged browser and verification
+
+The Dockerfile uses pinned Node 24 Alpine, explicitly patched OpenSSL packages
+and a pinned Alpine Chromium package driven by `playwright-core`. The executable
+is set through the server's existing `LOLLY_BROWSER_PATH` option. Update the
+browser package pin alongside its vulnerability review and real rendering tests;
+do not replace it with Playwright's glibc browser download in this musl image.
+
+Run as the unprivileged `node` user with a read-only root filesystem, dropped
+capabilities, no-new-privileges and writable ephemeral `/tmp`. Chromium's user-data
+directory, XDG configuration and cache use that temporary mount. Health is HTTP
+`/healthz`; `/readyz` reports available request capacity. Supply the approved
+`LW_RENDER_WORKER_SECRET` and `LOLLY_WEB_BASE` using deployment configuration and
+secret references. The browser sandbox setting and pod isolation are described
+in the chart; prefer the approved stronger runtime isolation where available.
+
+Shell renders lock supported AI off and reject model URLs. Finished-SVG
+rasterisation disables JavaScript and also rejects model URLs. The raster path
+therefore does not execute scripts embedded in uploaded SVGs. It still requires
+an authenticated HMAC request, and network restrictions must reflect the approved
+service boundary.
+
+Before promotion, exercise a real signed-shell tool export and PNG/PDF rendering
+in the built image, verify signature refusal and AI/model containment, scan that
+exact image and collect staging results. A passing health probe alone does not
+prove Chromium can start under the deployment's filesystem/security settings.

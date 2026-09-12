@@ -113,9 +113,15 @@ function stubRenderBrowser(onContextOpen: () => void, hold: Promise<void>) {
  *  rather than goto/waitForEvent - the pause point moves to setContent. */
 function stubRasterBrowser(onContextOpen: () => void, hold: Promise<void>) {
   return {
-    async newContext() {
+    async newContext(options: { javaScriptEnabled?: boolean }) {
+      assert.equal(options.javaScriptEnabled, false);
       onContextOpen();
       return {
+        async route(_pattern: string, handler: (route: unknown) => Promise<void>) {
+          let blocked = false;
+          await handler({ request: () => ({ url: () => 'https://shell.example/models/ocr/model.onnx' }), abort: async () => { blocked = true; }, continue: async () => {} });
+          assert.equal(blocked, true);
+        },
         async newPage() {
           return {
             async setContent() { await hold; },

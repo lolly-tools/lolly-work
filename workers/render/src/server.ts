@@ -158,8 +158,14 @@ export function pinPdfDates(pdf: Buffer): Buffer {
 async function rasterise(job: { svg: string; format: string; width?: number }): Promise<{ bytes: Buffer; mime: string }> {
   const fmt = job.format.toLowerCase();
   const browser = await getBrowser();
-  const ctx = await browser.newContext({ serviceWorkers: 'block', deviceScaleFactor: 1 });
+  // This path receives a finished SVG, not an application: embedded scripts
+  // must not execute, and model URLs must not acquire weights through markup.
+  const ctx = await browser.newContext({ serviceWorkers: 'block', deviceScaleFactor: 1, javaScriptEnabled: false });
   try {
+    await ctx.route('**/*', (route) => {
+      const path = new URL(route.request().url()).pathname;
+      return /\/models\/|\.(onnx|gguf|safetensors)$/i.test(path) ? route.abort('blockedbyclient') : route.continue();
+    });
     const page = await ctx.newPage();
     const w = job.width && job.width > 0 ? Math.min(Math.round(job.width), RASTER_MAX_EDGE) : 0;
     // Lay the SVG out at the requested width (height follows its aspect). Transparent

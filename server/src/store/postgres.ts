@@ -1269,7 +1269,8 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         `insert into projects (id, name, visibility, owner_id, created_at, archived_at)
          values ($1, $2, $3::jsonb, $4, $5, $6)
          on conflict (id) do update set
-           name = excluded.name, visibility = excluded.visibility, archived_at = excluded.archived_at`,
+           name = excluded.name, visibility = excluded.visibility,
+           owner_id = excluded.owner_id, archived_at = excluded.archived_at`,
         [project.id, project.name, JSON.stringify(project.visibility), project.ownerId,
          project.createdAt, project.archivedAt ?? null],
       );
