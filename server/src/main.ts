@@ -25,16 +25,23 @@ import { auditHead } from './audit/head.ts';
 import { deriveAuditMacKey } from './audit/chain.ts';
 import { checkShellDist } from './lib/shell-dist.ts';
 import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { validateConfigDocument, buildConfigDocument, diffConfigDocument, commitConfigApply, canonicalHash, diffSummary } from './policy/config-doc.ts';
 
 const config = loadConfig();
 const secrets = loadSecrets(process.env, config);
 
 // The pack is read lazily per request, so a wrong path used to boot cleanly and
-// then serve an empty catalog with no signal anywhere. Say it once at boot.
-if (!existsSync(resolve(config.instance.pack))) {
-  console.warn(`[lolly-work] WARNING — no pack at ${resolve(config.instance.pack)} (instance.pack = "${config.instance.pack}"). The catalog will be empty until this path exists; packs/demo ships in this repo.`);
+// then serve an empty catalog with no signal anywhere. Say it once at boot. The
+// same goes for a path that exists but is not laid out as a pack: since the
+// Lolly repo's 2026-09-11 fold a checkout carries profiles.json rather than
+// tools/ + catalog/, and mounting one reads as an empty pack whose tool
+// policies reach the shell without their manifests.
+const packRoot = resolve(config.instance.pack);
+if (!existsSync(packRoot)) {
+  console.warn(`[lolly-work] WARNING — no pack at ${packRoot} (instance.pack = "${config.instance.pack}"). The catalog will be empty until this path exists; packs/demo ships in this repo.`);
+} else if (!existsSync(join(packRoot, 'tools')) || !existsSync(join(packRoot, 'catalog'))) {
+  console.warn(`[lolly-work] WARNING - ${packRoot} is not laid out as a pack (instance.pack = "${config.instance.pack}"): expected tools/ and catalog/, which an extracted .lolly carries and packs/demo ships. Every tool manifest read will miss, so the catalog is empty and a tool policy reaches the shell only for the input ids it names. Point instance.pack at an extracted pack, or run scripts/demo.ts, which builds that view of a Lolly checkout.`);
 }
 
 // The dev provider is a passwordless bypass of OIDC. An instance that has a real

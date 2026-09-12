@@ -287,8 +287,13 @@ const errSpan = () => el('span', { class: 'form-err', role: 'status' });
 // the control). Returns the wrapping div used inside .formrow and forms.
 let _fieldSeq = 0;
 function field(labelText, control, attrs = {}) {
-  if (!control.id) control.id = `fld-${++_fieldSeq}`;
-  return el('div', attrs, el('label', { for: control.id }, labelText), control);
+  // A wrapper element cannot carry a label (searchSelect returns its input plus
+  // a datalist inside a span), so point `for` at the real control inside it.
+  const target = control.matches?.('input, select, textarea')
+    ? control
+    : control.querySelector?.('input, select, textarea') ?? control;
+  if (!target.id) target.id = `fld-${++_fieldSeq}`;
+  return el('div', attrs, el('label', { for: target.id }, labelText), control);
 }
 
 // Cells that carry a canonical `data-sort` value so a sortable column orders by
@@ -313,7 +318,7 @@ function armConfirmButton(attrs, idleLabel, armedLabel, onConfirm) {
   let armed = false;
   let armTimer = null;
   const disarm = () => { armed = false; btn.textContent = labelText(); };
-  const btn = el('button', { ...attrs, onclick: async () => {
+  const btn = el('button', { type: 'button', ...attrs, onclick: async () => {
     if (!armed) {
       armed = true;
       btn.textContent = armedLabel;
@@ -355,7 +360,11 @@ const SERIES = ['var(--series-1)', 'var(--series-2)', 'var(--series-3)'];
 
 /** Two-series day line chart with crosshair + tooltip, end labels, clean y ticks. */
 function lineChart(days, series /* [{key,label}] */) {
-  const W = 640, H = 200, L = 34, R = 86, T = 10, B = 22;
+  const W = 640, H = 200, L = 34, T = 10, B = 22;
+  // The right gutter holds the end labels ("<series> <value>"), so measure it
+  // from the longest one: a fixed 86 clipped "Guest sessions 0" at the card edge.
+  const endLabel = (s) => `${s.label} ${fmt(days[days.length - 1][s.key])}`;
+  const R = Math.min(210, Math.max(86, 16 + 6 * Math.max(...series.map((s) => endLabel(s).length))));
   const max = Math.max(1, ...days.flatMap((d) => series.map((s) => d[s.key])));
   const step = max <= 5 ? 1 : max <= 20 ? 5 : max <= 100 ? 25 : 10 ** Math.floor(Math.log10(max)) / 2;
   const top = Math.ceil(max / step) * step;
@@ -889,7 +898,8 @@ const shellColorOf = (r) => SHELL_COLOR[r.shell] ?? 'var(--muted)';
 // and the dedicated Fleet view.
 function fleetChartRows(clients) {
   return clients.map((c) => ({
-    label: `${c.info.shell}${c.info.engine ? ` · engine ${c.info.engine}` : ''}`, value: c.count, shell: c.info.shell,
+    label: [c.info.shell, c.info.engine || null, c.info.platform || null]
+      .filter(Boolean).join(' · '), value: c.count, shell: c.info.shell,
   }));
 }
 
@@ -902,6 +912,14 @@ function fleetChartRows(clients) {
 //   app (Lolly, served at /):  tool → /t/<id> · session → /t/<tool>?session=<id>
 //                              project → /#/p/<id>
 //   console (hash routes):     person → #/users?focus=<id> · link → #/links · etc.
+// Reader-facing names for the audit categories. The keys below are code
+// identifiers; the filter and the row tags print these instead.
+const ACT_CAT_LABEL = {
+  link: 'Share links', render: 'Renders', session: 'Sessions', project: 'Projects',
+  catalog: 'Catalog', provider: 'Providers', grant: 'Grants', group: 'Groups',
+  user: 'People', approval: 'Approvals', chain: 'Approval chains', message: 'Messages',
+  auth: 'Sign-ins', telemetry: 'Telemetry', guest: 'Guests', collab: 'Collab',
+};
 const ACT_CAT_ICON = {
   link: 'links', render: 'tools', session: 'projects', project: 'projects',
   catalog: 'catalog', provider: 'providers', grant: 'grants', group: 'users',
@@ -1034,8 +1052,8 @@ async function renderActivityFeed(host) {
     ]);
   } catch (e) {
     host.replaceChildren(el('p', { class: 'sub' }, e.status === 403
-      ? 'The activity feed needs audit access (audit.export).'
-      : `Couldn’t load activity: ${e.message}`));
+      ? 'You cannot see the activity timeline. It needs permission to read the audit log, which a deployment admin grants.'
+      : `Activity did not load: ${e.message}`));
     return;
   }
   names = { ...names, ...(first.names || {}) };
@@ -1045,7 +1063,7 @@ async function renderActivityFeed(host) {
   let deb; search.oninput = () => { clearTimeout(deb); deb = setTimeout(() => { state.q = search.value.trim(); reload(); }, 250); };
   const catSel = el('select', { 'aria-label': 'Filter by type' },
     el('option', { value: '' }, 'All types'),
-    ...first.categories.map((c) => el('option', { value: c.key }, `${c.key} (${c.count})`)));
+    ...first.categories.map((c) => el('option', { value: c.key }, `${ACT_CAT_LABEL[c.key] ?? c.key} (${c.count})`)));
   catSel.onchange = () => { state.category = catSel.value; reload(); };
   // People and groups can be long lists → searchable comboboxes.
   const personBox = searchSelect(first.actors.map((a) => ({ value: a.id, label: a.name })),
@@ -1155,18 +1173,18 @@ async function viewOverview(main) {
   // "broken" without this — orient the admin toward the first useful steps.
   if (events14 === 0 && clients === 0 && liveLinks === 0) {
     main.append(el('div', { class: 'card zero-banner' },
-      el('h2', { class: 'flush' }, 'Nothing here yet — that’s expected on a new deployment'),
-      el('p', { class: 'sub' }, 'Numbers fill in as people sign in and shells connect. To get going:'),
+      el('h2', { class: 'flush' }, 'Nothing here yet'),
+      el('p', { class: 'sub' }, 'That is expected on a new deployment. Numbers fill in as people sign in and apps connect. To get going:'),
       el('ul', { class: 'zero-steps' },
         el('li', {}, 'Invite people (they appear under ', el('a', { href: '#/users' }, 'People'), ' after first sign-in).'),
         el('li', {}, 'Confirm the mounted brand pack in ', el('a', { href: '#/instance?tab=design' }, 'This Deploy → Design system'), '.'),
-        el('li', {}, 'Mint a share or guest link from ', el('a', { href: '#/links' }, 'Links'), ' to see it tracked here.'))));
+        el('li', {}, 'Mint a time-boxed guest link under ', el('a', { href: '#/contractors' }, 'Contractors'), '. Every link this deployment mints, from here or from the apps, is tracked under ', el('a', { href: '#/links' }, 'Links'), '.'))));
   }
   main.append(
     el('div', { class: 'grid tiles' },
       tile('Events (14 days)', fmt(events14)),
       tile('Exports (14 days)', fmt(exports14)),
-      tile('People attributed', fmt(summary.totals.activeUsers)),
+      tile('Active people', fmt(summary.totals.activeUsers)),
       tile('Live links', fmt(liveLinks)),
       tile('Client requests seen', fmt(clients)),
     ),
@@ -1176,7 +1194,7 @@ async function viewOverview(main) {
       el('div', { class: 'card' }, el('h2', {}, 'Top tools'),
         hbarChart(summary.topTools.map((t) => ({ label: t.toolId, value: t.count })), { empty: 'No tool usage in the last 14 days.' })),
       el('div', { class: 'card' }, el('h2', {}, 'Exports by format'),
-        hbarChart(summary.formats.map((f) => ({ label: f.format, value: f.count })), { color: SERIES[1], empty: 'No exports yet — they appear once shells render.' })),
+        hbarChart(summary.formats.map((f) => ({ label: f.format, value: f.count })), { color: SERIES[1], empty: 'No exports yet. They appear once an app renders one.' })),
       el('div', { class: 'card' }, el('h2', {}, 'Fleet by client'),
         hbarChart(fleetChartRows(fleet.clients), { colorOf: shellColorOf, empty: 'No shells have connected yet.' })),
     ),
@@ -1197,12 +1215,12 @@ async function viewOverview(main) {
   // the headline activity numbers instead of an undifferentiated wall of charts.
   main.append(
     el('details', { class: 'ov-section' },
-      el('summary', {}, el('span', { class: 'section-h' }, 'Seat utility')),
+      el('summary', {}, el('h2', { class: 'section-h' }, 'Session time')),
       el('p', { class: 'sub' }, 'Editor and web-shell session time across the last 14 days. This is an internal deployment, so utilisation is shown in full.'),
       el('div', { class: 'grid tiles' },
         tile('Total session time', fmtDuration(totalSecs)),
         tile('Avg session length', fmtDuration(avgSecs)),
-        tile('Sessions / active user', perUser ? perUser.toFixed(1) : '—'),
+        tile('Sessions per person', perUser ? perUser.toFixed(1) : '—'),
         tile('Active users', fmt(activeUsers)),
         tile('Tool sessions', fmt(sess.tool.count)),
         tile('Shell sessions', fmt(sess.shell.count)),
@@ -1231,7 +1249,7 @@ async function viewOverview(main) {
 
   main.append(
     el('details', { class: 'ov-section' },
-      el('summary', {}, el('span', { class: 'section-h' }, 'Catalog & content')),
+      el('summary', {}, el('h2', { class: 'section-h' }, 'Catalog and content')),
       el('p', { class: 'sub' }, 'What this deployment serves, how it gets used, and where the work lives. Popularity and export figures cover the last 14 days; inventory is current.'),
       el('div', { class: 'grid tiles' },
         tile('Catalog items', fmt(cat.total)),
@@ -1285,7 +1303,7 @@ async function viewActivity(main) {
   ]);
   main.replaceChildren(
     el('h1', {}, 'Activity'),
-    el('p', { class: 'sub' }, 'A linear timeline of what people are doing — sharelinks, sessions, downloads, approvals and more. Click a name to open that person, a tool or session to jump into it in Lolly, or a date to filter to that day.'),
+    el('p', { class: 'sub' }, 'What people are doing, newest first: share links, sessions, downloads, approvals and more. Click a name to open that person, a tool or session to open it in Lolly, or a date to filter to that day.'),
     ...(hdr ? [hdr] : []),
     actHost,
   );
@@ -1309,6 +1327,7 @@ async function viewInstance(main, params) {
   const panel = el('div', { class: 'inst-panel', id: 'inst-panel', role: 'tabpanel', tabindex: '0' });
   const tabbar = el('div', { class: 'tabbar', role: 'tablist', 'aria-label': 'This Deploy sections' });
   const buttons = new Map();
+  let selectSeq = 0;
   const tabId = (key) => `inst-tab-${key}`;
 
   async function select(key) {
@@ -1324,17 +1343,23 @@ async function viewInstance(main, params) {
     // Deep-linkable without a full re-route (replaceState fires no hashchange).
     try { history.replaceState(null, '', `#/instance?tab=${key}`); } catch { /* ignore */ }
     const tab = INSTANCE_TABS.find((t) => t.key === key);
-    const loading = loadingCard(tab.label);
-    panel.replaceChildren(loading);
-    try { await tab.render(panel); }
+    const run = ++selectSeq;
+    panel.replaceChildren(loadingCard(tab.label));
+    // Each tab renderer appends into the host it is given, so a slower earlier
+    // render must never reach the live panel: build into a detached host and
+    // drop the result if a newer selection started while this one was waiting.
+    const host = el('div', {});
+    let body;
+    try { await tab.render(host); body = [...host.childNodes]; }
     catch (e) {
-      panel.replaceChildren(e.status === 403
-        ? el('p', { class: 'sub' }, 'Your role doesn’t include this section.')
-        : el('div', {}, el('p', { class: 'sub' }, 'Couldn’t load this section.'),
+      body = [e.status === 403
+        ? el('p', { class: 'sub' }, 'This section needs a permission your account does not have. An administrator can grant it.')
+        : el('div', {}, el('p', { class: 'sub' }, 'This section did not load.'),
             el('p', {}, el('button', { class: 'primary', onclick: () => select(key) }, 'Try again')),
-            el('p', { class: 'muted mono', style: 'margin-top:8px;font-size:12px' }, e.message || '')));
+            el('p', { class: 'muted mono', style: 'margin-top:8px;font-size:12px' }, e.message || ''))];
     }
-    loading.remove();
+    if (run !== selectSeq) return;
+    panel.replaceChildren(...body);
   }
 
   // Arrow-key roving between tabs (WAI-ARIA tabs keyboard model).
@@ -1365,8 +1390,8 @@ async function viewInstance(main, params) {
   }
 
   main.replaceChildren(
-    el('h1', {}, 'This Deploy'),
-    el('p', { class: 'sub' }, 'Everything this deployment serves and governs, in one place — its tools, catalog, connected providers, projects and design system.'),
+    el('h1', {}, 'This deployment'),
+    el('p', { class: 'sub' }, 'Everything this deployment serves and governs, in one place: its tools, catalog, connected providers, design system, feature flags and the capability it adds to the app.'),
     tabbar, panel);
   await select(active);
 }
@@ -1423,16 +1448,18 @@ async function viewDesignSystem(main) {
     const rows = profiles.profiles.map((p) => {
       let action = null;
       if (unlocked && !p.active) {
-        const btn = el('button', { class: 'btn' }, 'Switch to this brand');
-        btn.onclick = async () => {
-          btn.disabled = true;
-          try {
-            await api('/api/v1/brand/profile', { method: 'PUT', body: { name: p.name } });
-            toast(`Brand switched to ${p.name}`);
-            await applyPackTheme(); // re-theme the console chrome from the new pack
-            route();                // re-render — new active badge + new tokens
-          } catch (e) { toast(e.message); btn.disabled = false; }
-        };
+        // Fleet-wide and immediate, so it arms first like every other
+        // consequential action in this console (revoke, forget, deny, remove).
+        const btn = armConfirmButton({ class: 'btn' }, `Switch everyone to ${p.name}`,
+          'Re-theme for everyone?', async (disarm) => {
+            btn.disabled = true;
+            try {
+              await api('/api/v1/brand/profile', { method: 'PUT', body: { name: p.name } });
+              toast(`Design system switched to ${p.name}`);
+              await applyPackTheme(); // re-theme the console chrome from the new pack
+              route();                // re-render: new active badge, new tokens
+            } catch (e) { toast(e.message); btn.disabled = false; disarm(); }
+          });
         action = btn;
       }
       return el('div', { class: 'ds-profile-row' },
@@ -1471,14 +1498,14 @@ async function viewDesignSystem(main) {
   const typographyCard = el('div', { class: 'card stack' }, el('h2', {}, 'Typography'),
     el('div', { class: 'ds-type', style: `font-family:${fontSans}` }, 'The quick brown fox jumps over the lazy dog — 0123456789'),
     el('div', { class: 'ds-type mono', style: `font-family:${fontMono}` }, 'const lolly = { render: "on-device" };'),
-    el('p', { class: 'sub flush' }, `Sans: ${fontSans.split(',')[0]} · Mono: ${fontMono.split(',')[0]}`));
+    el('p', { class: 'sub flush' }, `Sans: ${fontSans.split(',')[0].replace(/["']/g, '')} · Mono: ${fontMono.split(',')[0].replace(/["']/g, '')}`));
 
   const editorCard = unlocked
     ? el('div', { class: 'card stack' },
         el('div', { class: 'list-bar' },
           el('h2', { class: 'flush' }, 'Brand editor'),
           el('a', { class: 'btn', href: lollyHref('/#/start'), target: '_blank', rel: 'noopener' }, 'Open in Lolly ↗')),
-        el('p', { class: 'sub flush' }, 'Edit this deployment’s brand in the Lolly /start wizard — palette, type and tokens. Changes apply to the served pack.'))
+        el('p', { class: 'sub flush' }, 'Open the design system editor in Lolly to change palette, type and tokens. Changes apply to the pack this deployment serves.'))
     : el('div', { class: 'card' },
         el('h2', {}, 'Brand editor'),
         el('p', { class: 'sub flush' }, 'Editing is disabled for this managed brand. An owner can change the deployment brand.'));
@@ -1494,7 +1521,7 @@ async function viewDesignSystem(main) {
     ];
     main.replaceChildren(
       el('h1', {}, 'Design system'),
-      el('p', { class: 'sub' }, 'No brand design tokens are mounted on this deployment, so these are the console’s own chrome tokens. Mount a brand pack to see the deployment design system here.'),
+      el('p', { class: 'sub' }, 'No design tokens are readable here, so what follows is the console’s own colour and type rather than the deployment design system. A pack that carries a tokens file fills this in.'),
       ...(profileCard ? [profileCard] : []),
       el('div', { class: 'card' }, el('h2', {}, 'Chrome palette'),
         el('div', { class: 'ds-grid' }, ...chrome.map(([n, v]) => dsSwatch(n, v)))),
@@ -1561,7 +1588,7 @@ const INJECTABLE_FIELDS = {
   flag: [
     { name: 'flagId', label: 'Flag id', placeholder: 'a governable shell flag id' },
     { name: 'default', label: 'Default', type: 'select', options: ['on', 'off'] },
-    { name: 'visibility', label: 'Toggle', type: 'select', options: ['show', 'hide'] },
+    { name: 'visibility', label: 'Toggle in member settings', type: 'select', options: ['show', 'hide'] },
   ],
   resource: [
     { name: 'resourceType', label: 'Resource type', placeholder: 'e.g. ratecard' },
@@ -1657,7 +1684,7 @@ async function viewInjectables(main) {
     return el('tr', {},
       el('td', {}, el('div', {}, r.title), el('div', { class: 'muted mono' }, r.id)),
       el('td', {}, r.kind),
-      el('td', {}, el('span', { class: 'muted', style: 'font-size:.85rem' }, facts)),
+      el('td', {}, el('span', { class: 'muted mono' }, facts)),
       el('td', {}, (r.groups ?? []).join(', ')),
       el('td', {}, el('span', { class: `status ${r.state === 'revoked' ? 'revoked' : 'live'}` }, r.state)),
       whenCell(r.updatedAt),
@@ -1670,7 +1697,7 @@ async function viewInjectables(main) {
   ]);
   main.append(
     el('h1', {}, 'Injectables'),
-    el('p', { class: 'sub' }, 'Publish, list and revoke the capability this deploy injects into the shell it governs — tools, feature flags, typed catalog resources and declarative UI chrome. Group-scoped; connected shells pick up a change on their next poll.'),
+    el('p', { class: 'sub' }, 'Add tools, feature flags, catalog resources and banners to the app this deployment governs, and take them away again. Each one is data the app reads, scoped to the groups you name, and connected apps pick up a change on their next poll.'),
     ...(hdr ? [hdr] : []),
     publishCard,
     el('div', { class: 'card stack' },
@@ -1777,13 +1804,13 @@ async function viewFleet(main) {
     el('p', { class: 'sub' }, 'Which Lolly versions are talking to this deployment. Publish checks and upgrade nudges start here.'),
     ...(hdr ? [hdr] : []),
     el('div', { class: 'grid tiles' },
-      tile('Clients', fmt(clients.length)),
+      tile('Client versions seen', fmt(clients.length)),
       tile('Distinct shells', fmt(shells)),
       tile('Engine versions', fmt(engines)),
-      // What THIS deploy serves (the vendored pin) — the fixed point the field
+      // What THIS deploy serves (the vendored pin): the fixed point the field
       // histogram drifts against, visible without leaving the page.
-      tile('This deploy serves', engineVersion || '—'),
-      ...(minEngine ? [tile('Version floor', minEngine)] : []),
+      tile('Engine served here', engineVersion || '—'),
+      ...(minEngine ? [tile('Minimum engine', minEngine)] : []),
       tile('Requests seen', fmt(totalReq)),
       tile('Last seen', clients.length ? when(lastSeen) : '—'),
     ),
@@ -1791,8 +1818,10 @@ async function viewFleet(main) {
     ...nudgeCard(),
     ...deviceCodesCard(),
     el('div', { class: 'card' },
+      el('h2', {}, 'Requests by client version'),
       hbarChart(fleetChartRows(clients), { colorOf: shellColorOf, empty: 'No shells have connected yet.' })),
     el('div', { class: 'card stack' },
+      el('h2', {}, 'Connected clients'),
       dataTable(
         ['Shell', 'Engine', 'Platform', { label: 'Requests', num: true }, { label: 'Last seen', sort: 'date' }],
         clients.map((c) => el('tr', {},
@@ -1811,9 +1840,11 @@ async function viewFleet(main) {
       el('h2', {}, 'Installs'),
       el('p', { class: 'muted', style: 'margin-top:-4px' },
         'Devices registered while signed in — no heartbeat, rows refresh only when the person uses the instance. Forgetting is bookkeeping; the next signed-in use re-registers.'),
-      dataTable(
-        ['Name', 'Shell', 'Engine', 'Platform', 'Last used by', { label: 'Last seen', sort: 'date' }, ''],
-        installs.map((i) => installRow(i)), { sortable: true, filter: true })),
+      installs.length
+        ? dataTable(
+            ['Name', 'Shell', 'Engine', 'Platform', 'Last used by', { label: 'Last seen', sort: 'date' }, ''],
+            installs.map((i) => installRow(i)), { sortable: true, filter: true })
+        : el('p', { class: 'empty' }, 'No device has registered yet. A device registers itself the first time someone uses this deployment while signed in.')),
   );
 
   function installRow(i) {
@@ -1880,13 +1911,13 @@ async function viewFleet(main) {
       manifestRow,
       pack
         ? el('p', {},
-            el('span', { class: 'chip' }, pack.signed ? 'signed' : 'UNSIGNED (dev only)'),
+            el('span', { class: pack.signed ? 'status live' : 'status revoked' }, pack.signed ? 'signed' : 'not signed'),
             ' ', pack.name ?? 'pack', pack.version ? ` v${pack.version}` : '', ` · ${fmt(Math.round(pack.size / 1024))} KB · `,
             el('a', { href: '/connect/pack.lolly' }, 'download'), ' · ',
             el('span', { class: 'mono muted' }, `${origin}/connect/pack.lolly`), ' ',
             copyButton(() => `${origin}/connect/pack.lolly`, 'Copy'))
         : el('p', { class: 'muted' },
-            'No pack hosted yet. Cut one with the OSS builder (node scripts/build-instance-pack.ts --brand <name> --keyfile …) with this deployment as its instance base, then host it here (owner).'),
+            'No connection pack is hosted yet. A pack lets a Lolly app connect to this deployment without anyone typing a URL. Build one with the Lolly pack builder, pointing it at this deployment, then upload it below. Only an owner can host a pack, and the exact command is in Docs under Operations.'),
       el('div', { class: 'lc-actions' }, fileInput, uploadBtn, removeBtn),
       err);
   }
@@ -1930,7 +1961,7 @@ async function viewFleet(main) {
     const highestBelow = below.map((c) => c.info.engine).sort(vcmp).at(-1);
     const err = errSpan();
     const titleInput = el('input', { value: `Please update Lolly (engine ${minEngine}+)` });
-    const bodyInput = el('input', { value: `This deployment asks for engine ${minEngine} or newer. Update from wherever you installed Lolly.` });
+    const bodyInput = el('textarea', { rows: '3' }, `This deployment asks for engine ${minEngine} or newer. Update from wherever you installed Lolly.`);
     const sendBtn = el('button', { class: 'primary', onclick: async () => {
       err.textContent = '';
       sendBtn.disabled = true;
@@ -1945,7 +1976,7 @@ async function viewFleet(main) {
       } catch (e) { err.textContent = e.message; sendBtn.disabled = false; }
     } }, 'Send the nudge');
     return [el('div', { class: 'card stack' },
-      el('h2', {}, 'Below the version floor'),
+      el('h2', {}, 'Running an older engine'),
       el('p', { class: 'muted', style: 'margin-top:-4px' },
         `${below.length} client ${below.length === 1 ? 'bucket' : 'buckets'} (${belowInstalls} registered ${belowInstalls === 1 ? 'install' : 'installs'}) run engines below ${minEngine}. The nudge targets engines up to ${highestBelow} — an inbox banner, not a gate.`),
       el('div', { class: 'formrow' }, field('Title', titleInput), field('Body', bodyInput)),
@@ -1979,15 +2010,15 @@ async function renderRooms(main) {
   ]);
   main.replaceChildren(
     el('h1', {}, 'Rooms'),
-    el('p', { class: 'sub' }, 'Live collaborative editing on this deployment, right now — who is in each session and whether they can write. Counters and display names only; no input value, cursor position or keystroke ever reaches this view.'),
+    el('p', { class: 'sub' }, 'Who is collaborating on this deployment right now, and whether they can write. Counters and display names only: no input value, cursor position or keystroke ever reaches this view.'),
     ...(hdr ? [hdr] : []),
     el('p', {}, el('button', { onclick: () => renderRooms(main) }, 'Refresh')),
     el('div', { class: 'card stack' },
       rooms.length
         ? dataTable(
-            ['Session', 'Tool', 'Members', { label: 'Ops', num: true }, { label: 'Started', sort: 'date' }],
+            ['Session', 'Tool', 'Members', { label: 'Edits', num: true }, { label: 'Started', sort: 'date' }],
             rooms.map((r) => el('tr', {},
-              el('td', { class: 'mono', title: r.sessionId }, r.sessionLabel || r.sessionId),
+              el('td', r.sessionLabel ? { title: r.sessionId } : { class: 'mono', title: r.sessionId }, r.sessionLabel || r.sessionId),
               el('td', {}, el('span', { class: 'chip' }, r.toolId)),
               el('td', {}, el('span', { class: 'chips' }, ...r.members.map(memberChip))),
               numCell(r.opsApplied),
@@ -2012,7 +2043,7 @@ function linkRow(l) {
   const copy = copyButton(() => l.url, 'Copy');
   return el('tr', {},
     el('td', {}, el('span', { class: 'chip' }, l.kind)),
-    el('td', {}, l.target.toolId ?? l.target.assetId ?? (l.target.collectionId ? `collection: ${l.target.collectionId}` : null) ?? l.target.sessionId ?? '—', l.protected ? ' 🔒' : ''),
+    el('td', {}, l.target.toolId ?? l.target.assetId ?? (l.target.collectionId ? `collection: ${l.target.collectionId}` : null) ?? l.target.sessionId ?? '—', l.protected ? [' ', el('span', { class: 'chip', title: 'Opening this link needs a password' }, 'password')] : null),
     el('td', { class: 'mono url-cell', title: l.url }, l.url),
     el('td', {}, el('span', { class: `status ${l.status}` }, l.status)),
     whenCell(l.expiresAt),
@@ -2028,7 +2059,7 @@ async function viewLinks(main) {
   ]);
   main.replaceChildren(
     el('h1', {}, 'Links'),
-    el('p', { class: 'sub' }, 'Every share, embed, download and guest link this deployment has minted, with its full signed URL. Copy a link to hand it over; revoking kills it immediately, including live guest sessions.'),
+    el('p', { class: 'sub' }, 'Every share, embed, download and guest link this deployment has minted, with its full signed URL. Links are minted elsewhere: the apps and the API mint share, embed and download links, and guest links are minted under Contractors. Copy a link to hand it over; revoking kills it immediately, including live guest sessions.'),
     ...(hdr ? [hdr] : []),
     el('div', { class: 'card' },
       el('h2', {}, 'Minted links'),
@@ -2074,7 +2105,7 @@ function catalogPreviewUrl(entry) {
  *  no remote fetch). `onOpen` makes the tile a keyboard-reachable inspect trigger. */
 function catalogThumb(entry, size, onOpen) {
   const ph = () => el('span', { class: 'cat-thumb-ph', 'aria-hidden': 'true' },
-    el('span', { class: 'cat-thumb-ext' }, String(entry?.type ?? 'asset').slice(0, 3)));
+    el('span', { class: 'cat-thumb-ext' }, (String(entry?.formats?.[0]?.format ?? entry?.contentType ?? '').split('/').pop().split(/[@+;]/)[0] || '').slice(0, 4) || null));
   const box = el(onOpen ? 'button' : 'div', {
     class: `cat-thumb${onOpen ? ' cat-thumb--btn' : ''}`,
     style: `--cat-thumb:${size}px`,
@@ -2292,7 +2323,7 @@ function renderSubmissionReview(s, host, opener, fieldDefs) {
           : el('div', { class: 'stack' },
               el('p', { class: 'sub', style: 'margin:0 0 8px' },
                 'Approving publishes the asset and mints its lifecycle row, so the expire and revoke controls work from that moment. Returning it sends your comment back to the submitter and the bytes never reach the feed.'),
-              el('div', { class: 'formrow' }, field('Comment', comment)),
+              el('div', { class: 'formrow' }, field('Comment (required to return it)', comment)),
               el('div', { class: 'lc-actions' }, approve, rtn))),
     err);
 }
@@ -2334,10 +2365,10 @@ async function submissionQueue() {
     return el('tr', {},
       el('td', {}, catalogThumb(s, 40, () => open(s, openBtn))),
       el('td', {}, s.name, el('div', { class: 'muted mono' }, s.id)),
-      el('td', {}, s.byName, el('div', { class: 'muted' }, s.relation === 'mine' ? 'your submission' : 'on your step')),
+      el('td', {}, s.byName, el('div', { class: 'muted' }, s.relation === 'mine' ? 'your submission' : 'waiting on you')),
       whenCell(s.at),
       el('td', { class: 'muted' }, [s.contentType, dims, fmtBytes(s.size)].filter(Boolean).join(' · ')),
-      el('td', {}, el('span', { class: `status ${s.state === 'live' ? 'live' : s.state === 'returned' ? 'revoked' : 'review'}` }, s.state)),
+      el('td', {}, el('span', { class: `status ${s.state === 'live' ? 'live' : s.state === 'returned' ? 'revoked' : 'review'}` }, s.state === 'live' ? 'published' : s.state === 'returned' ? 'returned' : 'waiting on review')),
       el('td', {}, openBtn));
   };
 
@@ -2346,7 +2377,7 @@ async function submissionQueue() {
         [{ label: '', w: '52px', sort: false }, 'Asset', 'Submitted by', { label: 'Submitted', sort: 'date' },
           { label: 'File', sort: false }, 'State', { label: '', w: '1%', sort: false }],
         rows.map(rowFor), { csvName: 'submissions' })
-    : el('p', { class: 'empty' }, 'Nothing in this state.');
+    : el('p', { class: 'empty' }, 'No submissions in this state yet.');
 
   // Waiting-on-review is the list someone can act on, so it is what the card
   // opens with; the other states are here so a returned asset's comment and a
@@ -2382,7 +2413,7 @@ function catalogRow(entry, onInspect) {
     el('td', {}, entry.type),
     el('td', { class: 'tags' }, el('span', { class: 'trunc', title: tagText }, tagText)),
     el('td', {}, catalogStateChip(entry.state)),
-    el('td', {}, when(entry.validUntil)),
+    whenCell(entry.validUntil),
     el('td', {}, node, err));
 }
 
@@ -2595,7 +2626,7 @@ function renderCatalogDetail(detail, entry, host, opener, history) {
       el('p', { class: 'sub', style: 'margin:0 0 8px' },
         lc
           ? `On expiry: ${lc.onExpiry ?? 'hide'}${lc.validFrom ? ` · valid from ${when(lc.validFrom)}` : ''}${lc.revokedAt ? ` · revoked ${when(lc.revokedAt)}` : ''}`
-          : 'No lifecycle rule — live and served by default.'),
+          : 'No lifecycle rule. This asset is live and served by default.'),
       lcNode, lcErr));
 }
 
@@ -2691,7 +2722,7 @@ function renderCollectionEditor(existing, known, nameOf, host, opener) {
               onclick: () => { members.splice(i + 1, 0, members.splice(i, 1)[0]); renderMembers(); } }, '↓'),
             el('button', { onclick: () => { members.splice(i, 1); renderMembers(); } }, 'Remove')))))
       ,
-      members.length ? null : el('p', { class: 'empty' }, 'No assets in this set yet.'));
+      ...(members.length ? [] : [el('p', { class: 'empty' }, 'No assets in this set yet.')]));
   };
   renderMembers();
   picker.onchange = () => {
@@ -2733,7 +2764,7 @@ function renderCollectionEditor(existing, known, nameOf, host, opener) {
   const saveBtn = el('button', { class: 'primary', onclick: async () => {
     err.textContent = '';
     const id = (idInput.value || '').trim();
-    if (!id) { err.textContent = 'An id is required — lowercase letters, digits and dashes.'; return; }
+    if (!id) { err.textContent = 'Enter an id: lowercase letters, digits and dashes.'; return; }
     saveBtn.disabled = true;
     const groups = groupsInput.value.split(',').map((g) => g.trim()).filter(Boolean);
     try {
@@ -2804,7 +2835,7 @@ async function viewCatalog(main) {
   ]);
   main.append(
     el('h1', {}, 'Catalog'),
-    el('p', { class: 'sub' }, 'Every asset this deployment serves, with a thumbnail, its expiry and revocation state. Inspect an asset for its full metadata and a larger preview. Revoking or hiding-on-expiry drops an asset from the feed immediately; it stays listed here — without its catalog metadata — so it can still be managed.'),
+    el('p', { class: 'sub' }, 'Every asset this deployment serves, with a thumbnail, its expiry and its revocation state. Inspect an asset for its full metadata and a larger preview. Revoking an asset, or hiding it on expiry, drops it from the feed at once. It stays listed here, without its catalog metadata, so you can still manage it.'),
     ...(hdr ? [hdr] : []),
     ...(queue ? [queue] : []),
     ...(collections ? [collections] : []),
@@ -2812,7 +2843,7 @@ async function viewCatalog(main) {
       el('h2', {}, 'Served assets'),
       entries.length
         ? dataTable(
-            [{ label: '', w: '52px' }, { label: 'Asset', w: '200px' }, 'Type', 'Tags', 'State', 'Expires', { label: 'Actions', w: '272px' }],
+            [{ label: '', w: '52px', sort: false }, { label: 'Asset', w: '200px' }, 'Type', 'Tags', 'State', { label: 'Expires', sort: 'date' }, { label: 'Actions', w: '272px', sort: false }],
             entries.map((e) => catalogRow(e, onInspect)))
         : el('p', { class: 'empty' }, 'No catalog assets found. Mount a brand pack to populate this table.')),
     detailHost,
@@ -2862,7 +2893,7 @@ function toolPolicyRow(tool, expandHost) {
     el('td', {}, el('div', {}, tool.name), el('div', { class: 'muted mono' }, tool.id)),
     el('td', {}, visibility),
     el('td', { class: 'num' }, governed ? String(governed) : '—'),
-    el('td', {}, ov?.enforce?.watermark ?? '—'),
+    el('td', {}, ov?.enforce?.watermark ?? el('span', { class: 'muted' }, 'no rule')),
     el('td', { class: 'num' }, ov ? `v${ov.version}` : el('span', { class: 'muted' }, 'ungoverned')),
     el('td', {}, el('button', { onclick: () => renderToolPolicyEditor(tool, expandHost) }, 'Edit')));
 }
@@ -2891,9 +2922,10 @@ function renderToolPolicyEditor(tool, host) {
     placeholder: 'everyone (or: brand, marketing)',
     value: tool.overlay?.visibility?.groups?.join(', ') ?? '',
   });
+  const WATERMARK_LABELS = { '': 'No rule', never: 'Never watermark', 'until-approved': 'Watermark until approved', always: 'Always watermark' };
   const watermarkSel = el('select', {},
     ...['', 'never', 'until-approved', 'always'].map((w) =>
-      el('option', { value: w, selected: (tool.overlay?.enforce?.watermark ?? '') === w ? 'selected' : null }, w || '(no rule)')));
+      el('option', { value: w, selected: (tool.overlay?.enforce?.watermark ?? '') === w ? 'selected' : null }, WATERMARK_LABELS[w])));
 
   const rulesHost = el('div', {});
   const renderRules = () => {
@@ -2909,7 +2941,7 @@ function renderToolPolicyEditor(tool, host) {
           ? el('input', { value: rule.value, placeholder: 'preset value', oninput: (e) => { rule.value = e.target.value; } })
           : rule.level === 'choice'
             ? el('input', { value: rule.allow, placeholder: 'allowed: a, b, c', oninput: (e) => { rule.allow = e.target.value; } })
-            : el('span', { class: 'muted' }, rule.level === 'hidden' ? 'input absent for these groups' : 'free input');
+            : el('span', { class: 'muted' }, rule.level === 'hidden' ? 'Hidden from these groups' : 'These groups can edit it freely');
         const reasonIn = el('input', {
           value: rule.reason, placeholder: 'why (shown to the member)',
           oninput: (e) => { rule.reason = e.target.value; },
@@ -2962,6 +2994,7 @@ function renderToolPolicyEditor(tool, host) {
     };
     try {
       await api(`/api/v1/policy/overlays/${tool.id}`, { method: 'PUT', body });
+      toast(`Policy saved for ${tool.name}`);
       route();
     } catch (e) { err.textContent = e.message; saveBtn.disabled = false; }
   } }, 'Save policy');
@@ -2974,11 +3007,12 @@ function renderToolPolicyEditor(tool, host) {
       field('Visible to groups (empty = everyone)', visibilityInput),
       field('Watermark', watermarkSel)),
     tool.inputs === null
-      ? el('p', { class: 'empty' }, 'tool.json not readable — rules can still be edited by input id.')
+      ? el('p', { class: 'empty' }, 'This tool’s input list is unavailable, so its inputs cannot be listed here. Rules already in this policy stay editable, and the default (*) rule below applies to every input.')
       : null,
     rulesHost,
     el('p', {}, saveBtn, ' ', el('button', { onclick: () => host.replaceChildren() }, 'Close'), ' ',
-      el('a', { href: '#/preview', class: 'sub' }, 'Preview what a group sees →')),
+      el('a', { href: '#/preview', class: 'link-btn' }, 'Preview what a group sees'), ' ',
+      el('a', { href: '#/docs?doc=governance', class: 'link-btn' }, 'How rules are ordered')),
     err));
   // The editor renders below a paged table; bring it into view and hand it
   // focus, so Edit on row 3 of 33 does not look like nothing happened.
@@ -3001,7 +3035,7 @@ async function viewTools(main) {
     el('p', { class: 'sub' }, 'Govern who sees each tool and what they may change: lock inputs to brand presets, restrict them to approved choices, or hide them outright. Admins hold this by default; grant policy.edit to a brand group to delegate stewardship.'),
     ...(hdr ? [hdr] : []),
     el('div', { class: 'card' },
-      el('h2', {}, 'Governed tools'),
+      el('h2', {}, 'Tools and their policies'),
       tools.length
         ? dataTable(
             [{ label: '', w: '1%' }, 'Tool', 'Visible to', { label: 'Governed inputs', num: true }, 'Watermark', { label: 'Policy', num: true }, { label: 'Actions', w: '1%' }],
@@ -3031,7 +3065,7 @@ function providerRow(p, panels) {
   syncBtn.onclick = busy(syncBtn, () => api(`/api/v1/catalog/providers/${p.id}/sync`, { method: 'POST' }), `Synced ${p.label}`);
   const toggleBtn = el('button', { class: p.enabled ? 'danger' : '' }, p.enabled ? 'Disable' : 'Enable');
   toggleBtn.onclick = busy(toggleBtn, () => api(`/api/v1/catalog/providers/${p.id}/${p.enabled ? 'disable' : 'enable'}`, { method: 'POST' }), p.enabled ? `Disabled ${p.label}` : `Enabled ${p.label}`);
-  const keyBtn = el('button', { onclick: () => panels.showCredential(p) }, 'Key…');
+  const keyBtn = el('button', { onclick: () => panels.showCredential(p) }, p.credential ? 'Replace key' : 'Set key');
 
   // Two-click arm/confirm delete, disabled-only server-side anyway.
   const delBtn = armConfirmButton({ class: 'danger' }, 'Delete', 'Really delete?', async (disarm) => {
@@ -3069,7 +3103,7 @@ function providerRow(p, panels) {
 // git driver is any git host, the s3 driver is any SigV4 store). Proprietary
 // SaaS sources follow, plainly labelled.
 const PROVIDER_INTEGRATIONS = [
-  { kind: 'git', name: 'Git repository', blurb: 'Sync brand assets from any git host — Forgejo, Gitea, GitLab, Codeberg, GitHub — via a repository manifest.', options: '{"repo": "org/brand", "ref": "main"}' },
+  { kind: 'git', name: 'Git repository', blurb: 'Sync design assets from any git host (Forgejo, Gitea, GitLab, Codeberg, GitHub) through a repository manifest.', options: '{"repo": "org/brand", "ref": "main"}' },
   { kind: 's3', name: 'S3-compatible storage', blurb: 'Federate a bucket from any S3-compatible object store — MinIO, Ceph, Garage, Mulga Spinifex S3, or a public cloud.', options: '{"bucket": "…", "prefix": "brand/", "endpoint": "https://s3.your-host.example", "region": "us-east-1"}' },
   { kind: 'webdav', name: 'WebDAV storage', blurb: 'Any WebDAV server the org runs — Nextcloud, ownCloud, Apache mod_dav — federated read-only over the open protocol.', options: '{"baseUrl": "https://cloud.your-host.example", "flavor": "nextcloud", "root": "Brand"}' },
   { kind: 'penpot', name: 'Penpot', blurb: 'Open, self-hostable design tool — federate your design tokens (DTCG) so /design and brand themes inherit from Penpot, and search-and-import boards as catalog media.', options: '{"baseUrl": "https://design.your-host.example", "teamId": "…"}', mapping: '{"typeMap": {"tokens": "tokens", "board": "image"}, "defaultType": "image"}' },
@@ -3126,7 +3160,7 @@ async function viewProviders(main) {
   // — the only change is the kind is fixed by the card, not chosen in a dropdown.
   const showConnect = (integration) => {
     const idInput = el('input', { placeholder: 'brand-dam (lowercase slug)' });
-    const labelInput = el('input', { placeholder: integration.name });
+    const labelInput = el('input', { value: integration.name, placeholder: integration.name });
     const optionsInput = el('textarea', { rows: 2, placeholder: integration.options });
     // Mapping is how a source's native types land in the catalog (e.g. Penpot's
     // tokens → the `tokens` type). Prefilled from the card when it ships a default.
@@ -3184,7 +3218,7 @@ async function viewProviders(main) {
 
     panelHost.replaceChildren(el('div', { class: 'card stack' },
       el('div', { class: 'list-bar' },
-        el('h2', { class: 'flush' }, `Connect ${integration.name}`, el('span', { class: 'muted mono' }, `  ${integration.kind}`)),
+        el('h2', { class: 'flush' }, `Connect ${integration.name}`),
         el('button', { onclick: () => panelHost.replaceChildren() }, 'Close')),
       el('p', { class: 'sub' }, 'Test the connection first — the dry run verifies the key against the provider and previews how assets will map, without saving anything. New sources are created disabled: set a key on the row below, then enable.'),
       el('div', { class: 'formrow' },
@@ -3250,7 +3284,7 @@ async function viewProviders(main) {
     return el('div', { class: 'card stack' },
       el('h2', {}, 'Search & import'),
       el('p', { class: 'sub' }, 'Live-search connected sources and import a result into the catalog as an instance-owned copy — keep experimentation upstream (e.g. in Penpot), land only curated assets here, with full rigor.'),
-      el('div', { class: 'formrow' }, field('Query', qInput), el('button', { onclick: run }, 'Search')),
+      el('div', { class: 'form-inline' }, field('Query', qInput), el('button', { class: 'primary', onclick: run }, 'Search')),
       out, status);
   };
 
@@ -3263,7 +3297,7 @@ async function viewProviders(main) {
   ]);
   main.append(
     el('h1', {}, 'Providers'),
-    el('p', { class: 'sub' }, 'Federated catalog sources — the external system stays the source of truth; lolly consumes read-only, and exposure rules decide which slice your members see. Pick an integration to connect; new sources start disabled: configure, set a key, then enable.'),
+    el('p', { class: 'sub' }, 'Federated catalog sources. The external system stays the source of truth: Lolly consumes it read-only, and exposure rules decide which slice your members see. Pick an integration below to connect one. New sources start disabled, so configure it, set a key, then enable it.'),
     ...(hdr ? [hdr] : []),
     providers.length
       ? el('div', { class: 'grid tiles' },
@@ -3428,11 +3462,12 @@ function approvalFooter(a) {
   const err = errSpan();
   const act = async (action) => {
     const reason = comment.value.trim();
-    if (action === 'reject' && !reason) { comment.classList.add('need'); comment.setAttribute('aria-invalid', 'true'); comment.focus(); return; }
+    if (action === 'reject' && !reason) { comment.classList.add('need'); comment.setAttribute('aria-invalid', 'true'); err.textContent = 'Add a reason before rejecting.'; comment.focus(); return; }
     clearNeed();
     err.textContent = '';
     try {
       await api(`/api/v1/approvals/${a.id}/act`, { method: 'POST', body: { action, comment: reason || undefined } });
+      toast(action === 'approve' ? `Approved “${a.title}”` : `Rejected “${a.title}”`);
       route();
     } catch (e) { err.textContent = e.message; }
   };
@@ -3440,7 +3475,7 @@ function approvalFooter(a) {
     el('div', { class: 'appr-act' },
       comment,
       el('button', { class: 'primary', onclick: () => act('approve') }, 'Approve'),
-      el('button', { class: 'danger', onclick: () => act('reject') }, 'Reject')),
+      armConfirmButton({ class: 'danger' }, 'Reject', 'Really reject?', async (disarm) => { await act('reject'); disarm(); })),
     err);
 }
 
@@ -3455,15 +3490,18 @@ function renderApprovalCard(a, { actionable }) {
           el('span', { class: 'chip' }, a.subjectType),
           a.subjectRef ? el('span', { class: 'mono' }, a.subjectRef) : null,
           el('span', { class: 'muted' }, a.chainName),
-          el('span', { class: 'muted' }, 'raised by ', a.createdByName ?? a.createdBy, ' · ', relTime(a.createdAt)))),
+          el('span', { class: 'muted' }, a.mine ? 'raised by you' : ['raised by ', a.createdByName ?? a.createdBy], ' · ', relTime(a.createdAt)))),
       stateChip(a.state)),
     // The actionable inbox stays fully expanded; a request you've only raised
     // collapses its stepper behind a one-line progress summary (it's reference,
     // not something you act on) so "Your requests" scans at a glance.
     actionable
       ? renderStepper(a, { actionable })
-      : el('details', { class: 'appr-steps' },
-          el('summary', {}, `Step ${Math.min(a.stepIndex + 1, stepsOf(a).length)} of ${stepsOf(a).length}`),
+      : el('details', { class: 'appr-steps', open: a.state === 'rejected' ? 'true' : null },
+          el('summary', {}, a.state === 'approved' ? 'Approved, see the steps'
+            : a.state === 'rejected' ? 'Rejected, see why'
+            : a.state === 'withdrawn' ? 'Withdrawn, see the steps'
+            : `In review, step ${Math.min(a.stepIndex + 1, stepsOf(a).length)} of ${stepsOf(a).length}`),
           renderStepper(a, { actionable })),
     actionable ? approvalFooter(a) : null);
 }
@@ -3471,7 +3509,12 @@ function renderApprovalCard(a, { actionable }) {
 async function viewApprovals(main) {
   const { approvals } = await api('/api/v1/approvals');
   const inbox = approvals.filter((a) => a.relation === 'inbox');
-  const mine = approvals.filter((a) => a.relation === 'mine');
+  // Open requests first: a member tracking a live request should not scan past
+  // finished history to reach it (the server orders on createdAt alone, so the
+  // one in-review row sorts last, under four resolved ones).
+  const OPEN = new Set(['submitted', 'in_review']);
+  const mine = approvals.filter((a) => a.relation === 'mine')
+    .sort((x, y) => (OPEN.has(y.state) ? 1 : 0) - (OPEN.has(x.state) ? 1 : 0));
   const hdr = await activityHeader('Submissions, decisions and withdrawals per day.', [
     { key: 'a', label: 'Submitted', match: ['approval.submit'] },
     { key: 'b', label: 'Decided', match: ['approval.approve', 'approval.reject'] },
@@ -3479,7 +3522,7 @@ async function viewApprovals(main) {
   ]);
   main.append(
     el('h1', {}, 'Approvals'),
-    el('p', { class: 'sub' }, 'Review requests routed to your groups, and track the ones you have raised. Separation of duties means you never review your own request.'),
+    el('p', { class: 'sub' }, 'Requests routed to your groups arrive under Waiting on you, and the ones you raised are tracked below. You never review your own request.'),
     ...(hdr ? [hdr] : []),
     el('div', { class: 'card' },
       el('h2', {}, 'Waiting on you'),
@@ -3551,9 +3594,9 @@ async function viewMessages(main) {
     el('div', { class: 'formrow' },
       field('Kind', el('select', { name: 'kind' }, ...['announcement', 'upgrade', 'policy'].map((k) => el('option', {}, k)))),
       field('Severity', el('select', { name: 'severity' }, ...['info', 'action', 'blocking'].map((k) => el('option', {}, k)))),
-      field('Groups (comma, empty = everyone)', el('input', { name: 'groups', placeholder: 'marketing, brand-team' })),
-      field('Shells (comma)', el('input', { name: 'shells', placeholder: 'tauri' })),
-      field('Max engine (targets older clients)', el('input', { name: 'maxEngine', placeholder: '1.52.99' })),
+      field('Groups (blank reaches everyone)', el('input', { name: 'groups', placeholder: 'marketing, brand-team' })),
+      field('Shells', el('input', { name: 'shells', placeholder: 'tauri, web' })),
+      field('Only shells on this engine version or older', el('input', { name: 'maxEngine', placeholder: '1.52.99' })),
       field('Ends', el('input', { name: 'endsAt', type: 'date' })),
     ),
     el('p', {}, sendBtn, sendErr),
@@ -3563,10 +3606,11 @@ async function viewMessages(main) {
   ]);
   main.append(
     el('h1', {}, 'Messages'),
-    el('p', { class: 'sub' }, 'Announcements, upgrade reminders and policy notices, delivered to connected shells. Reach shows who has seen each one.'),
+    el('p', { class: 'sub' }, 'Announcements, upgrade reminders and policy notices, delivered to connected apps. The count shows how many people have acknowledged each one.'),
     ...(hdr ? [hdr] : []),
     // Lead with the sent-log; composing is a deliberate action one click away.
     el('div', { class: 'card stack' },
+      el('h2', {}, 'Sent'),
       messages.length
         ? dataTable(
             ['Title', 'Kind', 'Severity', 'Audience', { label: 'Seen by', num: true }],
@@ -3842,6 +3886,25 @@ async function viewUsers(main, params) {
     let u = initialU;
     let grants = [];
     const opener = document.activeElement; // restore focus here on Close
+    // Escape closes the sheet. Below 700px .detail-sheet is a fixed overlay and
+    // Close scrolls off the top, so Escape is the only reliable dismissal.
+    // Reopening replaces the handler instead of stacking a second one, so the
+    // focus restore always names the row that opened the sheet you are looking at.
+    if (detailHost._esc) document.removeEventListener('keydown', detailHost._esc);
+    const closeDetail = () => {
+      document.removeEventListener('keydown', onEsc);
+      if (detailHost._esc === onEsc) detailHost._esc = null;
+      detailHost.replaceChildren();
+      opener?.focus?.();
+    };
+    const onEsc = (ev) => {
+      if (!detailHost.isConnected) { document.removeEventListener('keydown', onEsc); return; }
+      if (ev.key !== 'Escape' || !detailHost.firstChild) return;
+      ev.stopPropagation();
+      closeDetail();
+    };
+    detailHost._esc = onEsc;
+    document.addEventListener('keydown', onEsc);
     detailHost.replaceChildren(el('div', { class: 'card detail-sheet' }, el('p', { class: 'sub flush' }, `Loading ${u.name}…`)));
     scrollIntoViewMotionSafe(detailHost);
     const tools = await loadTools();
@@ -3860,7 +3923,7 @@ async function viewUsers(main, params) {
       detailHost.replaceChildren(el('div', { class: 'card stack detail-sheet' },
         el('div', { class: 'list-bar' },
           heading,
-          el('button', { onclick: () => { detailHost.replaceChildren(); opener?.focus?.(); } }, 'Close')),
+          el('button', { onclick: closeDetail }, 'Close')),
         identityBlock(),
         section(`Groups (${(u.groups ?? []).length})`, groupsBlock()),
         section(`Individual tool access (${grants.filter((g) => g.principal === `user:${u.id}` && g.action === 'tool.use' && g.effect === 'allow').length})`, toolAccessBlock()),
@@ -3932,7 +3995,7 @@ async function viewUsers(main, params) {
             el('p', {}, saveBtn), err)),
         el('div', { class: 'formrow newgrp' },
           field('New local group', newName),
-          el('div', {}, el('label', {}, ' '), addBtn)),
+          el('div', {}, addBtn)),
         newErr);
     }
 
@@ -4005,7 +4068,7 @@ async function viewUsers(main, params) {
       // bumps the session epoch so every live session dies, but they can sign
       // back in immediately. Disabling already revokes on its own.
       const revokeErr = errSpan();
-      const revokeBtn = armConfirmButton({ class: 'danger' }, 'Sign out everywhere', 'Really sign out?', async (disarm) => {
+      const revokeBtn = armConfirmButton({}, 'Sign out everywhere', 'Really sign out?', async (disarm) => {
         revokeErr.textContent = '';
         revokeBtn.disabled = true;
         try {
@@ -4094,7 +4157,7 @@ async function viewContractors(main) {
         })
       : null;
     return el('tr', {},
-      el('td', {}, l.target.toolId ?? '—', l.protected ? ' 🔒' : ''),
+      el('td', { 'data-sort': l.target.toolId ?? '' }, l.target.toolId ?? '—', l.protected ? el('span', { class: 'chip', style: 'margin-left:8px', title: 'Opening this link needs the password you set' }, 'password') : null),
       el('td', {}, el('span', { class: `status ${l.status}` }, l.status)),
       whenCell(l.expiresAt),
       el('td', { class: 'mono', title: l.id }, l.id),
@@ -4115,13 +4178,13 @@ async function viewContractors(main) {
   }
 
   // ── mint form ──
-  const toolSel = el('select', { 'aria-label': 'Tool' }, ...tools.map((t) => el('option', { value: t.id }, `${t.name} (${t.id})`)));
+  const toolSel = el('select', { 'aria-label': 'Tool' }, ...tools.map((t) => el('option', { value: t.id }, t.name === t.id ? t.name : `${t.name} (${t.id})`)));
   const ttlInput = el('input', { type: 'number', min: '1', step: '1', required: 'true', value: '72', 'aria-label': 'Expires in hours' });
   const pwInput = el('input', { type: 'password', autocomplete: 'off', placeholder: 'optional password' });
   const err = errSpan();
   const result = el('div', { class: 'me-result' });
 
-  const mintBtn = el('button', { class: 'primary' }, 'Mint guest link');
+  const mintBtn = el('button', { class: 'primary', disabled: tools.length ? null : 'true' }, 'Mint guest link');
   const form = el('form', { class: 'card', onsubmit: async (e) => {
     e.preventDefault();
     err.textContent = '';
@@ -4153,13 +4216,13 @@ async function viewContractors(main) {
     mintBtn.disabled = false;
   } },
     el('h2', {}, 'Mint a guest link'),
-    el('p', { class: 'sub' }, 'Contractors get a time-boxed, single-tool guest session — no account. Expiry is mandatory and capped by the deployment; the created link shows its real expiry. Minting requires link.create-guest, which admins can delegate to a local group (e.g. group:brand) via the Grants view.'),
+    el('p', { class: 'sub' }, 'Contractors get a time-boxed, single-tool guest session, with no account. Expiry is required and capped by the deployment, and the new link shows its real expiry. Minting needs the link.create-guest permission, which an administrator can grant to a group from Grants.'),
     tools.length
       ? el('div', { class: 'formrow' },
           field('Tool', toolSel),
-          field('Expires in (hours, required)', ttlInput),
+          field('Expires in hours', ttlInput),
           field('Password (optional)', pwInput))
-      : el('p', { class: 'empty' }, 'No tools found — mount a brand pack with tools to scope guest links.'),
+      : el('p', { class: 'empty' }, 'No tools found. Mount a brand pack with tools before minting a guest link.'),
     el('p', {}, mintBtn),
     err,
     result);
@@ -4169,10 +4232,10 @@ async function viewContractors(main) {
   ]);
   main.replaceChildren(
     el('h1', {}, 'Contractors'),
-    el('p', { class: 'sub' }, 'External collaborators work through expiring, tool-scoped guest links instead of accounts. Mint a link, hand it over, and revoke it the moment the engagement ends — revoking kills any live guest session immediately.'),
-    ...(hdr ? [hdr] : []),
+    el('p', { class: 'sub' }, 'External collaborators work through expiring, tool-scoped guest links instead of accounts. Mint a link, hand it over, and revoke it the moment the engagement ends. Revoking kills any live guest session immediately.'),
     form,
-    listHost);
+    listHost,
+    ...(hdr ? [hdr] : []));
   renderList((linksResp.links ?? []).filter((l) => l.kind === 'guest-edit'));
 }
 
@@ -4189,7 +4252,7 @@ function visibilityChip(v) {
 
 /** Render a value cell for a diff — undefined (unset) reads as a muted dash. */
 function fmtVal(v) {
-  if (v === undefined) return el('span', { class: 'muted' }, '—');
+  if (v === undefined) return el('span', { class: 'muted' }, 'not set');
   if (v === null) return 'null';
   return typeof v === 'object' ? JSON.stringify(v) : String(v);
 }
@@ -4234,7 +4297,7 @@ async function renderProjectList(main) {
     el('h2', {}, 'New project'),
     el('div', { class: 'formrow' },
       field('Name', el('input', { name: 'name', required: 'true', maxlength: 200, placeholder: 'e.g. Summit 2026' })),
-      field('Groups (comma, empty = private)', el('input', { name: 'groups', placeholder: 'team-eng, brand-team' }))),
+      field('Groups that can see it', el('input', { name: 'groups', placeholder: 'team-eng, brand-team' }))),
     el('p', {}, el('button', { class: 'primary' }, 'Create project')),
     err);
 
@@ -4252,16 +4315,19 @@ async function renderProjectList(main) {
       const sel = el('select', { 'aria-label': `New owner for ${p.name}` },
         ...userOptions.filter((u) => !u.disabled && u.id !== p.ownerId)
           .map((u) => el('option', { value: u.id }, u.name || u.email)));
-      const save = el('button', { class: 'primary', onclick: async () => {
+      // Ownership transfer matches the other consequential actions in this
+      // console: arm, then confirm. Cancel puts the row back the way it was.
+      const save = armConfirmButton({ class: 'primary' }, 'Transfer', 'Really transfer?', async (disarm) => {
         err.textContent = '';
         save.disabled = true;
         try {
           await api(`/api/v1/projects/${encodeURIComponent(p.id)}`, { method: 'PATCH', body: { ownerId: sel.value } });
-          toast('Project transferred');
+          toast(`${p.name} transferred to ${sel.selectedOptions[0]?.textContent ?? 'the new owner'}`);
           await renderProjectList(main);
-        } catch (ex) { err.textContent = ex.message; save.disabled = false; }
-      } }, 'Save');
-      holder.replaceChildren(sel, save);
+        } catch (ex) { err.textContent = ex.message; save.disabled = false; disarm(); }
+      });
+      const cancel = el('button', { onclick: () => { err.textContent = ''; holder.replaceChildren(btn); } }, 'Cancel');
+      holder.replaceChildren(sel, save, cancel);
     } }, 'Transfer');
     holder.append(btn);
     return el('td', {}, holder, err);
@@ -4282,7 +4348,7 @@ async function renderProjectList(main) {
   ]);
   main.replaceChildren(
     el('h1', {}, 'Projects'),
-    el('p', { class: 'sub' }, 'Shared workspaces — folders over saved tool sessions. A team project names the groups that can see it; a private one is yours alone. Open a project to browse its sessions and run a multi-edit.'),
+    el('p', { class: 'sub' }, 'Folders for saved tool sessions. A team project lists the groups that can see it, and a private project is yours alone. Open a project to see its sessions and change a field across all of them at once.'),
     ...(hdr ? [hdr] : []),
     form,
     el('div', { class: 'card stack' },
@@ -4330,7 +4396,8 @@ function multiEditPanel(main, projectId, projectName, toolIds) {
     err.textContent = '';
     result.replaceChildren();
     const set = parsePairs(pairsInput.value);
-    if (!Object.keys(set).length) { err.textContent = 'Enter at least one field=value.'; return; }
+    if (!pairsInput.value.trim()) { err.textContent = 'Add at least one line, for example title=Summit 2026.'; return; }
+    if (!Object.keys(set).length) { err.textContent = 'No field=value pairs found. Each line needs a field name, an equals sign, then the value.'; return; }
     try {
       const dry = await api('/api/v1/sessions/bulk', { method: 'POST', body: { filter: { projectId, toolId: toolSel.value }, set, dryRun: true } });
       result.replaceChildren(renderDiff(main, projectId, projectName, toolSel.value, set, dry));
@@ -4342,7 +4409,7 @@ function multiEditPanel(main, projectId, projectName, toolIds) {
     el('p', { class: 'sub' }, 'Set one or more inputs across every session of a tool in this project. Preview the exact change, then apply — each session keeps a revision.'),
     el('div', { class: 'formrow' },
       field('Tool', toolSel),
-      field('Fields (one field=value per line)', pairsInput)),
+      field('Fields to set', pairsInput)),
     el('p', {}, preview),
     err,
     result);
@@ -4439,22 +4506,34 @@ async function viewGrants(main) {
     err.textContent = '';
     const principal = kindSel.value === '*' ? '*' : `${kindSel.value}:${nameInput.value.trim()}`;
     if (principal.endsWith(':')) { err.textContent = 'Name the group or user.'; return; }
+    const action = actionInput.value.trim();
+    if (!action) { err.textContent = 'Pick a permission from the list.'; return; }
+    // An unknown permission is not refused: the server takes any action string
+    // and its vocabulary is wider than KNOWN_ACTIONS (brand.switch,
+    // token.manage, collab.join and more are enforced but unlisted). A typo
+    // would still read as governance in the table, so ask once before storing.
+    if (!KNOWN_ACTIONS.includes(action) && actionInput.dataset.confirmed !== action) {
+      actionInput.dataset.confirmed = action;
+      err.textContent = `${action} is not in the console list. If that is deliberate, press Add grant again to store it.`;
+      return;
+    }
     addBtn.disabled = true;
     try {
       await api('/api/v1/grants', { method: 'POST', body: {
-        principal, action: actionInput.value.trim(), resource: resourceInput.value.trim() || '*', effect: effectSel.value,
+        principal, action, resource: resourceInput.value.trim() || '*', effect: effectSel.value,
       } });
+      toast(`${effectSel.value === 'deny' ? 'Denied' : 'Allowed'} ${action} for ${principal}`);
       route();
     } catch (e) { err.textContent = e.message; addBtn.disabled = false; }
   } },
     el('h2', {}, 'Add grant'),
     datalist,
     el('div', { class: 'formrow' },
-      field('Principal', kindSel),
-      field('Name', nameInput),
-      field('Action', actionInput),
-      field('Resource', resourceInput),
-      field('Effect', effectSel)),
+      field('Applies to', kindSel),
+      field('Group or person', nameInput),
+      field('Permission', actionInput),
+      field('Scope', resourceInput),
+      field('Allow or deny', effectSel)),
     el('p', {}, addBtn),
     err);
 
@@ -4472,7 +4551,7 @@ async function viewGrants(main) {
       el('h2', {}, 'Active grants'),
       sorted.length
         ? dataTable(['Principal', { label: 'Action', w: '180px' }, { label: 'Resource', w: '220px' }, 'Effect', { label: 'Actions', w: '1%', sort: false }], sorted.map(grantRow), { sortable: true, filter: true })
-        : el('p', { class: 'empty' }, 'No grants — every member currently has exactly their role defaults.')),
+        : el('p', { class: 'empty' }, 'No grants yet. Everyone has the permissions their role gives them. Add a grant below to allow or deny one permission for a group or a person.')),
     addForm,
   );
 }
@@ -4517,7 +4596,7 @@ function renderPreview(data) {
         return el('div', { style: 'margin-top:10px' },
           el('div', {}, el('span', { class: 'mono' }, id),
             t.approvalChain ? el('span', { class: 'muted' }, ` · approval: ${t.approvalChain}`) : null),
-          inputRows.length ? dataTable(['Input', 'Access'], inputRows) : el('p', { class: 'muted' }, 'visible, all inputs editable'));
+          inputRows.length ? dataTable(['Input', 'Access'], inputRows) : el('p', { class: 'muted' }, 'Visible. No per-input rules resolved for this tool.'));
       })
     : [el('p', { class: 'empty' }, 'No governed tools are visible to this group (ungoverned tools are always visible and fully editable).')];
 
@@ -4542,12 +4621,12 @@ function renderPreview(data) {
             el('span', { class: 'mono' }, preview.hiddenTools.join(', ')))
         : null),
     el('div', { class: 'card stack' },
-      el('h2', {}, 'Profile fields'), dataTable(['Field', 'Mode', 'Locked value'], profileRows)),
+      el('h2', {}, 'Profile fields'), dataTable(['Field', 'Access', 'Locked to'], profileRows)),
   );
 }
 
 async function viewPreview(main) {
-  const groupsInput = el('input', { placeholder: 'brand, marketing' });
+  const groupsInput = el('input', { placeholder: 'marketing, brand-team' });
   const resultHost = el('div', {});
   const err = errSpan();
 
@@ -4575,11 +4654,16 @@ async function viewPreview(main) {
       }
     }
     suggestions = [...new Set([...suggestions, ...[...seen].sort()])];
-  } catch { /* best-effort — the free-text field always works */ }
+  } catch (e) {
+    // A member who lands on this admin-only view degrades the way every other
+    // view does: let the 403 reach the router, which renders the role message.
+    // Anything else stays best-effort, since the free-text field always works.
+    if (e.status === 403) throw e;
+  }
 
   main.append(
     el('h1', {}, 'Preview'),
-    el('p', { class: 'sub' }, 'See exactly what a member in a given set of groups would receive — role, permissions, tool and input governance, profile policy. Computed through the same assembler the live client polls, so what you see here is what they get. Nothing is signed in or stored.'),
+    el('p', { class: 'sub' }, 'See what someone in these groups gets: their role, what they are allowed to do, which tools and inputs they can change, and which profile fields are managed for them. It is worked out by the same code a signed-in app asks, so what you see here is what they see. Nothing is signed in and nothing is saved.'),
     el('div', { class: 'card' },
       el('div', { class: 'formrow' }, field('Groups (comma-separated)', groupsInput)),
       el('p', {}, previewBtn),
@@ -4887,15 +4971,20 @@ async function viewDocs(main, params) {
   // A tapped-open credential line closes on Escape or an outside click — the pointer
   // reveal (hover/focus) needs no JS, but a tap toggle does. Scoped to this view.
   const closeCreds = (ev) => {
-    for (const w of main.querySelectorAll('.shot-cred[data-open]')) {
+    for (const w of document.querySelectorAll('.shot-cred[data-open]')) {
       if (ev.type === 'keydown' || !w.contains(ev.target)) {
         w.removeAttribute('data-open');
         w.querySelector('.shot-cred-btn')?.setAttribute('aria-expanded', 'false');
       }
     }
   };
-  document.addEventListener('click', closeCreds);
-  document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') closeCreds(ev); });
+  // Registered once for the page, not once per visit: this view has no teardown
+  // hook, so a per-visit pair stacked on every navigation back to Docs.
+  if (!globalThis.__lwDocCredsBound) {
+    globalThis.__lwDocCredsBound = true;
+    document.addEventListener('click', closeCreds);
+    document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') closeCreds(ev); });
+  }
 }
 
 // ── shell & routing ─────────────────────────────────────────────────────────
@@ -4963,9 +5052,9 @@ function loadVerifyLib() {
 const CHECK_COPY = {
   'claimSignature.validated': 'Signature verified against the signing key',
   'claimSignature.insideValidity': 'Signed within the certificate’s validity window',
-  'assertion.dataHash.match': 'File bytes match the credential — not tampered since signing',
+  'assertion.dataHash.match': 'File bytes match the credential, so nothing changed after signing',
   'assertion.hashedURI.match': 'Every assertion matches its recorded hash',
-  'signingCredential.untrusted': 'Signer is self-signed — not in your trust list',
+  'signingCredential.untrusted': 'Signer is self-signed, so it is not in your trust list',
   'signingCredential.trusted': 'Signer chains to a trusted root',
   'signingCredential.expired': 'Signing certificate has expired',
 };
@@ -4973,15 +5062,15 @@ const humanCheck = (code) => CHECK_COPY[code] ?? code.replace(/\./g, ' · ');
 
 function verifyCard(report, verdict, name) {
   const tone = verdict?.tone ?? (report.state === 'valid' ? 'good' : report.state === 'invalid' ? 'bad' : 'warn');
-  const hero = report.state === 'none' ? 'No Content Credential found'
-    : report.state === 'invalid' ? 'Invalid — the file changed after it was signed'
-    : report.trusted ? 'Valid and trusted' : 'Valid — integrity intact';
+  const hero = report.state === 'none' ? 'No Content Credential in this file'
+    : report.state === 'invalid' ? 'Not valid. The file changed after it was signed'
+    : report.trusted ? 'Valid, and signed by someone you trust' : 'Valid. Nothing has changed since it was signed';
   const signer = report.signer?.organization || report.signer?.commonName;
   const whenIso = report.environment?.date || report.history?.[0]?.when;
   const gi = report.claim?.generatorInfo;
   const gen = gi?.name ? `${gi.name} ${gi.version ?? ''}`.trim() : report.claim?.claimGenerator;
   const rows = [];
-  if (signer) rows.push(['Signed by', signer + (report.trusted ? '' : ' — self-signed, not in your trust list')]);
+  if (signer) rows.push(['Signed by', signer + (report.trusted ? '' : ' (self-signed, so not in your trust list)')]);
   if (whenIso) rows.push(['Signed', when(whenIso)]);
   if (gen) rows.push(['Made with', gen]);
   if (report.environment?.tool) rows.push(['Captured', `${report.environment.tool}${report.environment.surface ? ` · ${report.environment.surface}` : ''}`]);
@@ -5001,13 +5090,13 @@ function verifyCard(report, verdict, name) {
     rows.length ? el('dl', { class: 'verify-facts' }, ...rows.flatMap(([k, v]) => [el('dt', {}, k), el('dd', {}, v)])) : null,
     checks.length ? el('div', {}, el('h3', {}, 'What was checked'), el('ul', { class: 'verify-checks' }, ...checks)) : null,
     el('p', { class: 'muted', style: 'margin-top:10px;font-size:12px' },
-      'Verified on your device by the vendored engine — no bytes left this browser.'));
+      'Checked on your device. The file never left this browser.'));
 }
 
 async function viewVerify(main, params) {
   main.replaceChildren(
     el('h1', {}, 'Verify a Content Credential'),
-    el('p', { class: 'sub' }, 'Checked in your browser against the exact bytes — this deployment does not mark its own homework. Drop any signed file, or arrive here from a shot’s “Check it yourself”.'));
+    el('p', { class: 'sub' }, 'Your browser checks the file’s own bytes, so you never have to take this deployment’s word for it. Drop a signed SVG, PNG, JPG or PDF below, or arrive here from a screenshot’s “Check it yourself” link.'));
   const host = el('div', {});
   const input = el('input', { type: 'file', accept: '.svg,.png,.jpg,.jpeg,.pdf', style: 'display:none',
     onchange: (e) => { const f = e.target.files?.[0]; if (f) verifyFile(f); } });
@@ -5044,7 +5133,7 @@ async function viewVerify(main, params) {
 const VIEWS = {
   overview: { title: 'Overview', render: viewOverview },
   activity: { title: 'Activity', render: viewActivity },
-  instance: { title: 'This Deploy', render: viewInstance },
+  instance: { title: 'This deployment', render: viewInstance },
   fleet: { title: 'Fleet', render: viewFleet },
   rooms: { title: 'Rooms', render: viewRooms },
   links: { title: 'Links', render: viewLinks },
@@ -5109,7 +5198,7 @@ function shell(current, content) {
     el('aside', { class: 'rail' },
       logo
         ? el('div', { class: 'brand brand--logo' }, logo, el('small', { class: 'brand-sub' }, instanceName))
-        : el('div', { class: 'brand' }, el('span', { class: 'brand-name' }, instanceName), el('small', {}, 'control plane console')),
+        : el('div', { class: 'brand' }, el('span', { class: 'brand-name' }, instanceName), el('small', {}, 'Control plane console')),
       el('a', { class: 'back', href: lollyHref('/') }, 'Open Lolly →'),
       railToggleBtn(),
       el('nav', { id: 'rail-nav', 'aria-label': 'Console sections' },
@@ -5123,6 +5212,9 @@ function shell(current, content) {
     content,
   );
   applyRailState(); // keep the toggle's aria + html attribute correct after each re-render
+  // On the narrow bottom-bar rail the current section can sit outside the scroll
+  // window, so a navigation leaves the active item invisible.
+  document.querySelector('#rail-nav a[aria-current="page"]')?.scrollIntoView({ block: 'nearest', inline: 'center' });
 }
 
 // Minimal chrome for the anonymous public docs on the sandbox (publicMode): the
@@ -5189,19 +5281,19 @@ async function signInGate() {
   const cfg = authConfig ?? await api('/api/auth/config').catch(() => null);
   const returnTo = encodeURIComponent('/admin');
   gate([
-    el('p', { class: 'gate-lede' }, 'Sign in to manage your organisation’s tools, approvals, and catalog.'),
+    el('p', { class: 'gate-lede' }, 'Sign in to manage your organisation’s tools, approvals and catalog.'),
     cfg?.provider === 'oidc'
-      ? el('a', { class: 'btn gate-go', href: `/api/auth/login?returnTo=${returnTo}` }, `Sign in with ${cfg?.providerName || 'SSO'}`)
+      ? el('a', { class: 'btn primary gate-go', href: `/api/auth/login?returnTo=${returnTo}` }, `Sign in with ${cfg?.providerName || 'SSO'}`)
       : cfg?.provider === 'proxy'
         // The reverse proxy in front of the deploy already holds the session
         // (YunoHost's portal, Authelia); one click turns it into ours.
-        ? el('a', { class: 'btn gate-go', href: `/api/auth/proxy?returnTo=${returnTo}` }, `Continue with ${cfg?.providerName || 'your sign-in'}`)
+        ? el('a', { class: 'btn primary gate-go', href: `/api/auth/proxy?returnTo=${returnTo}` }, `Continue with ${cfg?.providerName || 'your sign-in'}`)
       : cfg?.provider === 'dev'
         ? el('form', { class: 'gate-form', onsubmit: (e) => { e.preventDefault(); location.href = `/api/auth/dev?email=${encodeURIComponent(new FormData(e.target).get('email'))}&returnTo=${returnTo}`; } },
             el('label', { for: 'gate-email' }, 'Work email'),
             el('input', { id: 'gate-email', name: 'email', type: 'email', autocomplete: 'email', placeholder: 'you@example.com', autofocus: 'true' }),
             el('button', { class: 'primary gate-go' }, 'Continue'),
-            el('p', { class: 'gate-hint' }, 'Development sign-in — no password required.'))
+            el('p', { class: 'gate-hint' }, 'Development sign-in, no password required.'))
         : el('p', { class: 'empty' }, 'No identity provider is configured on this deployment.'),
   ]);
 }
@@ -5216,6 +5308,17 @@ async function route() {
   // Public (anonymous) mode: only the public views are reachable; any other route
   // drops to the sign-in gate — that's how a visitor crosses from docs into admin.
   if (publicMode && !PUBLIC_VIEWS.has(id)) { await signInGate(); return; }
+  // Overview is admin-only, so an approver, author or member landing on the
+  // default route gets a permission error instead of their work. Send each role
+  // to the first section it can open; an explicit #/overview still renders its
+  // denial. replaceState (not a hash assignment) keeps the redirect out of
+  // history, so Back does not bounce through it again.
+  const LANDING = { approver: 'approvals', author: 'projects', member: 'projects' };
+  const home = LANDING[session?.user?.role ?? ''];
+  if (id === 'overview' && home && !location.hash.includes('overview')) {
+    try { history.replaceState(null, '', `#/${home}`); } catch { /* ignore */ }
+    return route();
+  }
   const view = VIEWS[id] ?? VIEWS.overview;
   // id + tabindex make <main> the skip-link target and focus anchor.
   const main = el('main', { id: 'main', tabindex: '-1' });
@@ -5229,7 +5332,10 @@ async function route() {
   } catch (err) {
     loading.remove();
     if (err.status === 403) {
-      main.append(el('h1', {}, view.title), el('p', { class: 'sub' }, 'Your role doesn’t include this section.'));
+      main.append(el('h1', {}, view.title),
+        el('p', { class: 'sub' }, 'This section needs a permission your account does not have. An administrator can grant it.'),
+        el('p', {}, el('a', { class: 'btn', href: '#/approvals' }, 'Go to Approvals'), ' ',
+          el('a', { class: 'btn', href: '#/projects' }, 'Open Projects')));
     } else {
       main.append(
         el('h1', {}, view.title),
@@ -5282,7 +5388,8 @@ function railCollapsed() {
 }
 function applyRailState() {
   const c = railCollapsed();
-  document.documentElement.setAttribute('data-rail', c ? 'collapsed' : '');
+  if (c) document.documentElement.setAttribute('data-rail', 'collapsed');
+  else document.documentElement.removeAttribute('data-rail');
   const b = document.getElementById('rail-toggle');
   if (b) {
     b.setAttribute('aria-expanded', String(!c));
@@ -5333,7 +5440,7 @@ function syncThemeButton(btn) {
   const next = THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length];
   btn.querySelector('svg').innerHTML = THEME_META[cur].icon;
   btn.setAttribute('aria-label', `Theme: ${THEME_META[cur].label}. Switch to ${THEME_META[next].label}.`);
-  btn.setAttribute('title', `Theme: ${THEME_META[cur].label} — click for ${THEME_META[next].label}`);
+  btn.setAttribute('title', `Theme: ${THEME_META[cur].label}. Switch to ${THEME_META[next].label}.`);
 }
 function setTheme(name) {
   document.documentElement.setAttribute('data-theme', name);
@@ -5352,7 +5459,7 @@ function mountThemeToggle() {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   for (const [k, v] of Object.entries({ class: 'nav-ico', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.75', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true' })) svg.setAttribute(k, v);
   const btn = el('button', { id: 'theme-toggle', class: 'theme-toggle', type: 'button', onclick: cycleTheme }, svg);
-  document.body.appendChild(btn);
+  document.body.insertBefore(btn, $app); // before #app: a global control should not be the last tab stop on the page
   syncThemeButton(btn);
   applyThemeChrome();
   // Keep the icon honest if the OS flips while the console is unpinned.

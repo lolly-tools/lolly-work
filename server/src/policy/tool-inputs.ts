@@ -23,6 +23,20 @@ export interface DeclaredInput {
 }
 
 const cache = new Map<string, { mtimeMs: number; inputs: DeclaredInput[] | null }>();
+/** Manifest paths already reported missing. A miss is a per-request answer but
+ *  a per-deployment fact, so it is said once, not on every org-config poll. */
+const reportedMissing = new Set<string>();
+
+/** A tool with a policy but no readable manifest used to be a silent null: the
+ *  org-config projection shipped no annotations and the shell showed the locked
+ *  input as editable, with nothing anywhere saying why. Say it once per path. */
+function reportMissing(toolId: string, path: string): void {
+  if (reportedMissing.has(path)) return;
+  reportedMissing.add(path);
+  console.warn(
+    `[lolly-work] no manifest for tool "${toolId}" at ${path}. Its policy reaches the shell only for the input ids the overlay names (a "*" rule needs the manifest to expand) and collab has no declared-input check for it. Is instance.pack laid out as tools/ + catalog/? A Lolly repo checkout has not carried that view at its root since 2026-09-11.`,
+  );
+}
 
 /**
  * Declared inputs for a tool in this pack, or null when the manifest cannot be
@@ -38,6 +52,7 @@ export async function readToolInputs(packDir: string, toolId: string): Promise<D
   try {
     mtimeMs = (await stat(path)).mtimeMs;
   } catch {
+    reportMissing(toolId, path);
     return null;
   }
   const hit = cache.get(path);

@@ -157,6 +157,13 @@ export function policyVersionOf(
   return sha256Hex(canonicalJson(doc)).slice(0, 16);
 }
 
+/** The input ids an overlay names in its own rules, minus the '*' default. */
+function namedInputsOf(overlay: ToolOverlay): Array<{ id: string }> {
+  return Object.keys(overlay.inputAccess ?? {})
+    .filter((id) => id !== '*')
+    .map((id) => ({ id }));
+}
+
 export function assembleOrgConfig(opts: {
   config: InstanceConfig;
   user: UserRecord;
@@ -191,7 +198,11 @@ export function assembleOrgConfig(opts: {
     const decision = grantDecision(principal, 'tool.use', [`tool:${toolId}`, '*'], grants);
     if (decision === 'deny') continue;
     if (!(toolVisibleTo(overlay, user.groups) || decision === 'allow')) continue;
-    const declared = opts.toolInputs?.get(toolId);
+    // Without a readable manifest the overlay's own rule keys stand in for the
+    // declared list: a lock or a hide the operator wrote by id still reaches
+    // the shell. Only a '*' rule needs the manifest to expand, and that miss is
+    // reported where it happens (readToolInputs), not swallowed here.
+    const declared = opts.toolInputs?.get(toolId) ?? namedInputsOf(overlay);
     const entry: OrgConfigPayload['tools'][string] = {};
     if (declared) {
       const filtered = filterInputs(declared, overlay, user.groups);

@@ -67,7 +67,7 @@ export const GOVERNABLE_FLAGS: readonly GovernableFlag[] = [
     // switch's position. This value exists to make "inherit" honest, so it moves
     // when the shell moves - never on its own.
     builtinDefault: true,
-    info: 'The P2P invite/accept ceremony that lets two devices co-edit a tool session directly, no account or server (OSS plans/100 Track A). On by default for everyone since 2026-08-10; the shell still labels it beta. Nothing reaches the network until a user starts or accepts a collab. An instance that wants collaboration to go through the control plane only (Track B, gated by the collab.join/collab.edit org-config bits — see policy/org-config.ts) can force this default off and hide the toggle, which overrides any per-user choice.',
+    info: 'Lets two devices co-edit one tool session directly, with no account and no server in between. On by default for everyone; the app still labels it beta. Nothing reaches the network until someone starts or accepts a collab. A deployment that wants all collaboration to go through the control plane can force this off and hide the toggle, which overrides any personal choice.',
   },
   {
     id: 'nearby-discovery',

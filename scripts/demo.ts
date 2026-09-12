@@ -23,7 +23,9 @@
  * run - this script never builds anything.
  */
 import { createServer } from 'node:http';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import {
+  existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 
 import { parseConfig, loadSecrets, type InstanceConfig } from '../server/src/config/instance.ts';
@@ -41,19 +43,21 @@ import type { LifecycleRow } from '../server/src/catalog/lifecycle.ts';
 import type { Message } from '../server/src/inbox/target.ts';
 import type { Grant } from '../server/src/rbac/evaluate.ts';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+const HERE = dirname(fileURLToPath(import.meta.url)); // .../lolly-work/scripts
 
 // ── demo constants (real ids from the mounted pack) ──────────────────────────
-// The demo mounts the sibling OSS repo as its pack + shell. Resolve its location
-// portably so the demo runs on any machine (the easy-deploy goal), in
-// priority order: LOLLY_OSS_DIR env → a sibling `lolly` checkout next to this
-// repo. First one that exists on disk wins; no machine-specific path is baked
-// in, so what a newcomer sees here is what everyone sees.
+// The demo mounts the sibling OSS repo as its shell, and a view of its content
+// as the pack (see resolvePack below). Resolve its location portably so the
+// demo runs on any machine (the easy-deploy goal), in priority order:
+// LOLLY_OSS_DIR env → a sibling `lolly` checkout next to this repo. First one
+// that exists on disk wins; no machine-specific path is baked in, so what a
+// newcomer sees here is what everyone sees.
 function resolveOssDir(): string {
-  const here = dirname(fileURLToPath(import.meta.url)); // .../lolly-work/scripts
   const candidates = [
     process.env.LOLLY_OSS_DIR,
-    resolve(here, '..', '..', 'lolly'), // sibling checkout: ../../lolly
+    resolve(HERE, '..', '..', 'lolly'), // sibling checkout: ../../lolly
   ].filter((p): p is string => typeof p === 'string' && p.length > 0);
   for (const c of candidates) {
     if (existsSync(join(c, 'shells', 'web'))) return resolve(c);
@@ -63,8 +67,165 @@ function resolveOssDir(): string {
   return resolve(candidates[0] ?? '/Users/andy/Build/lolly');
 }
 
-export const PACK = resolveOssDir();
-export const SHELL_DIR = join(PACK, 'shells', 'web', 'dist');
+export const OSS_DIR = resolveOssDir();
+export const SHELL_DIR = join(OSS_DIR, 'shells', 'web', 'dist');
+
+// ── the pack: a tools/ + catalog/ view of the OSS checkout ───────────────────
+// The server reads its pack as `<pack>/tools/<id>/` and `<pack>/catalog/`: the
+// layout an extracted .lolly carries and packs/demo ships. The OSS checkout used
+// to carry that same view at its root (a gitignored symlink farm), so mounting
+// the checkout was mounting a pack. Since its 2026-09-11 fold it carries
+// profiles.json instead and its resolver answers where each tool lives, so the
+// checkout root reads as an EMPTY pack: every manifest read misses, the policy
+// code takes a miss as "not in this instance's pack", and the governed shell
+// shows a locked input as editable. The demo therefore rebuilds that view under
+// packs/oss-view (gitignored) from the resolver on every boot, one link per
+// tool, so it is never stale and never a copy.
+
+/** Where the view is written. Under packs/ because packs are data, never
+ *  committed (.gitignore keeps only packs/demo). */
+export const PACK_VIEW = resolve(HERE, '..', 'packs', 'oss-view');
+/** The profile the demo constants below belong to (BRAND_LOGO_ASSET, BRAND_GREEN
+ *  are SUSE catalog values). LOLLY_PROFILE overrides it. */
+const DEMO_PROFILE = 'suse';
+
+/** The slice of the OSS resolver (packages/node-shell/src/content-roots.ts) the
+ *  view needs. Typed here because the module is imported by path at run time:
+ *  the demo's one dependency on the OSS repo's internals, beside the shell dist
+ *  it already mounts. */
+export interface ContentRootsModule {
+  contentRoots(opts?: { profile?: string; root?: string }): ContentRootsLike;
+  toolDirs(r: ContentRootsLike): Map<string, { dir: string; base?: string }>;
+  readToolManifestText(id: string, r: ContentRootsLike): string;
+  listToolFiles(id: string, r: ContentRootsLike): string[];
+  toolFile(id: string, rel: string, r: ContentRootsLike): string | null;
+}
+export interface ContentRootsLike {
+  profile: string;
+  catalogRoot: string;
+}
+
+export interface PackVerdict {
+  dir: string;
+  /** env: LOLLY_PACK_DIR named it. root: the OSS checkout still carries tools/
+   *  + catalog/ itself. view: rebuilt under packs/oss-view from the resolver. */
+  how: 'env' | 'root' | 'view';
+  profile?: string;
+  tools?: number;
+  note?: string;
+}
+
+/** Remove a tree WITHOUT following links. The view is links into the OSS
+ *  checkout (a private submodule among them); a remover that followed one
+ *  would delete the checkout's own files. */
+function removeView(p: string): void {
+  let st: ReturnType<typeof lstatSync>;
+  try {
+    st = lstatSync(p);
+  } catch {
+    return;
+  }
+  if (st.isSymbolicLink() || !st.isDirectory()) {
+    unlinkSync(p);
+    return;
+  }
+  for (const name of readdirSync(p)) removeView(join(p, name));
+  rmdirSync(p);
+}
+
+/** Write the view into `dest`: `tools/<id>` links to each tool's directory (a
+ *  brand overlay of a community tool gets a real directory with its merged
+ *  manifest written and every other file linked), and `catalog` links to the
+ *  profile's catalog. A source stamp beside them says what was mounted.
+ *  Returns the tool count. */
+export function buildPackView(dest: string, mod: ContentRootsModule, roots: ContentRootsLike): number {
+  const toolsOut = join(dest, 'tools');
+  removeView(toolsOut);
+  removeView(join(dest, 'catalog'));
+  mkdirSync(toolsOut, { recursive: true });
+  const plan = mod.toolDirs(roots);
+  for (const [id, { dir, base }] of plan) {
+    const out = join(toolsOut, id);
+    if (!base) {
+      symlinkSync(dir, out, 'dir');
+      continue;
+    }
+    mkdirSync(out, { recursive: true });
+    writeFileSync(join(out, 'tool.json'), mod.readToolManifestText(id, roots));
+    for (const rel of mod.listToolFiles(id, roots)) {
+      if (rel === 'tool.json') continue;
+      const from = mod.toolFile(id, rel, roots);
+      if (!from) continue;
+      const to = join(out, ...rel.split('/'));
+      mkdirSync(dirname(to), { recursive: true });
+      symlinkSync(from, to, 'file');
+    }
+  }
+  symlinkSync(roots.catalogRoot, join(dest, 'catalog'), 'dir');
+  const stamp = { profile: roots.profile, catalog: roots.catalogRoot, tools: plan.size, generatedAt: new Date().toISOString() };
+  writeFileSync(join(dest, '.lolly-pack-source.json'), `${JSON.stringify(stamp, null, 2)}\n`);
+  return plan.size;
+}
+
+/** Decide what the server mounts as its pack. LOLLY_PACK_DIR wins; a checkout
+ *  that still carries tools/ + catalog/ is mounted as it is; otherwise the view
+ *  is rebuilt from the OSS resolver. */
+export async function resolvePack(oss = OSS_DIR): Promise<PackVerdict> {
+  const env = process.env.LOLLY_PACK_DIR;
+  if (env) return { dir: resolve(env), how: 'env' };
+  if (existsSync(join(oss, 'tools')) && existsSync(join(oss, 'catalog'))) return { dir: oss, how: 'root' };
+  const modPath = join(oss, 'packages', 'node-shell', 'src', 'content-roots.ts');
+  if (!existsSync(modPath)) {
+    return {
+      dir: oss,
+      how: 'root',
+      note: `no tools/ + catalog/ under ${oss} and no resolver at ${modPath}: the server will read an empty pack`,
+    };
+  }
+  const mod = (await import(pathToFileURL(modPath).href)) as ContentRootsModule;
+  const wanted = process.env.LOLLY_PROFILE?.trim() || DEMO_PROFILE;
+  let roots: ContentRootsLike;
+  let note: string | undefined;
+  try {
+    roots = mod.contentRoots({ root: oss, profile: wanted });
+  } catch (err) {
+    // A public clone has no private SUSE pack: take the resolver's own choice
+    // and say that the demo's locked values name assets it will not find.
+    roots = mod.contentRoots({ root: oss });
+    const why = (err instanceof Error ? err.message : String(err)).split('\n')[0];
+    note = `profile "${wanted}" is not on disk (${why}); mounted "${roots.profile}" instead. The locked logo and colour values name SUSE assets and will not resolve on it.`;
+  }
+  const tools = buildPackView(PACK_VIEW, mod, roots);
+  return { dir: PACK_VIEW, how: 'view', profile: roots.profile, tools, note };
+}
+
+/** One line for the boot banner: what the mounted pack is. */
+export function describePack(pack: PackVerdict): string {
+  switch (pack.how) {
+    case 'env':
+      return 'named by LOLLY_PACK_DIR.';
+    case 'root':
+      return 'the OSS checkout carries tools/ + catalog/ itself.';
+    case 'view':
+      return `a tools/ + catalog/ view of ${OSS_DIR} (profile "${pack.profile}", ${pack.tools} tools), rebuilt at every boot.`;
+  }
+}
+
+/** Tool ids the pack carries that the shell dist's own tools/ lacks. The shell
+ *  fetches tool files from its own origin's /tools/, which the server serves
+ *  from the dist, while the catalog index comes from the pack: a dist built on
+ *  another profile lists tools it cannot open. */
+export function distToolGap(distDir: string, packDir: string): string[] {
+  const list = (dir: string): string[] => {
+    try {
+      return readdirSync(join(dir, 'tools')).filter((n) => !n.startsWith('.') && existsSync(join(dir, 'tools', n, 'tool.json')));
+    } catch {
+      return [];
+    }
+  };
+  const inDist = new Set(list(distDir));
+  return list(packDir).filter((id) => !inDist.has(id)).sort();
+}
 
 /** Real logo asset id in the SUSE-profile catalog - the value a locked logo
  *  input bakes to. */
@@ -195,7 +356,7 @@ export function demoMessages(): Message[] {
       severity: 'info',
       audience: {},
       title: 'Brand pack v2026.3 is live',
-      body: 'Embeds refresh automatically — nothing to re-download.',
+      body: 'Embeds refresh automatically, so there is nothing to re-download.',
       dismissible: true,
     },
     {
@@ -260,7 +421,7 @@ export async function seedStore(store: Store, now = Date.now()): Promise<SeedRes
   const injAt = new Date().toISOString();
   const inj = (id: string, kind: string, title: string, groups: string[], payload: Record<string, unknown>) =>
     store.putInjectable({ id, kind: kind as 'flag' | 'resource' | 'tool' | 'chrome', title, groups, payload, state: 'live', version: 1, createdBy: 'system', createdAt: injAt, updatedAt: injAt });
-  await inj('maintenance-note', 'chrome', 'Maintenance banner', ['*'], { slot: 'banner', tone: 'warn', text: 'Planned maintenance this Sunday 02:00–03:00 UTC.', link: { label: 'Status', href: '/status' } });
+  await inj('maintenance-note', 'chrome', 'Maintenance banner', ['*'], { slot: 'banner', tone: 'warn', text: 'Planned maintenance this Sunday 02:00–03:00 UTC.', link: { label: 'Deployment docs', href: '/admin#/docs' } });
   await inj('brand-rates', 'resource', 'Printer rate card', ['design', 'marketing'], { resourceType: 'ratecard', assetId: 'acme/rates-2026' });
   await inj('qr-tool', 'tool', 'QR code tool', ['*'], { toolId: 'qr-code', source: 'catalog' });
   // A url-source tool: the same tool preconfigured via a Lolly tool URL - the shell
@@ -730,12 +891,12 @@ export function detectDist(distDir = SHELL_DIR): DistVerdict {
 }
 
 // ── config ───────────────────────────────────────────────────────────────────
-export function buildDemoConfig(opts: { baseUrl: string; accessMode: 'open' | 'gated'; shellDir?: string }): InstanceConfig {
+export function buildDemoConfig(opts: { baseUrl: string; accessMode: 'open' | 'gated'; pack: string; shellDir?: string }): InstanceConfig {
   return parseConfig(JSON.stringify({
     instance: {
       name: 'SUSE Content Automation',
       baseUrl: opts.baseUrl,
-      pack: PACK,
+      pack: opts.pack,
       ...(opts.shellDir ? { shellDir: opts.shellDir } : {}),
     },
     policy: {
@@ -878,8 +1039,10 @@ async function main(): Promise<void> {
   const dist = detectDist(SHELL_DIR);
   const accessMode: 'open' | 'gated' = dist.fresh ? 'gated' : 'open';
   const shellDir = dist.present ? SHELL_DIR : undefined;
+  const pack = await resolvePack();
+  const gap = dist.present ? distToolGap(SHELL_DIR, pack.dir) : [];
 
-  const config = buildDemoConfig({ baseUrl, accessMode, shellDir });
+  const config = buildDemoConfig({ baseUrl, accessMode, pack: pack.dir, shellDir });
   const secrets = loadSecrets(process.env, config);
   const store = createMemoryStore({ grants: demoGrants() });
   const seeded = await seedStore(store);
@@ -917,6 +1080,10 @@ ${line}
   ▸ Console  ${baseUrl}/admin      ▸ Health  ${baseUrl}/healthz
 
   Access mode: ${accessMode.toUpperCase()}
+  Pack:        ${pack.dir}
+    ${describePack(pack)}${pack.note ? `\n    ${pack.note}` : ''}${gap.length
+      ? `\n    ${gap.length} tool${gap.length === 1 ? ' the pack carries is' : 's the pack carries are'} not in the shell dist (${gap.slice(0, 4).join(', ')}${gap.length > 4 ? ', ...' : ''}): rebuild it with LOLLY_PROFILE=${pack.profile ?? DEMO_PROFILE} pnpm run build:web in ${OSS_DIR}.`
+      : ''}
   Shell dist:  ${dist.present ? SHELL_DIR : '(none — console + API only)'}
     ${dist.reason}
     ${!dist.present

@@ -2558,7 +2558,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         kind: 'approval', severity: next.state === 'approved' ? 'info' : 'action',
         audience: { users: [next.createdBy] },
         title: `Approval ${next.state}: ${next.title}`,
-        body: `${user.email} ${next.state} your request${comment ? ` — “${comment}”` : ''}.`,
+        body: `${displayName(user)} ${next.state} your request${comment ? `: “${comment}”` : '.'}`,
         cta: { label: 'View', url: '/admin#/approvals' },
         dismissible: true,
       });

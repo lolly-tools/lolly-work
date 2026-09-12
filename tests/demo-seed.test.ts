@@ -160,8 +160,10 @@ test('demo helpers are internally consistent', () => {
   assert.equal(rows.filter((r) => r.validUntil).length, 3);
 
   // Config builds + validates for both access modes.
-  assert.equal(buildDemoConfig({ baseUrl: 'http://localhost:9', accessMode: 'open' }).policy.defaultAccessMode, 'open');
-  assert.equal(buildDemoConfig({ baseUrl: 'http://localhost:9', accessMode: 'gated', shellDir: '/x' }).instance.shellDir, '/x');
+  assert.equal(buildDemoConfig({ baseUrl: 'http://localhost:9', accessMode: 'open', pack: '/x-pack' }).policy.defaultAccessMode, 'open');
+  const gated = buildDemoConfig({ baseUrl: 'http://localhost:9', accessMode: 'gated', pack: '/x-pack', shellDir: '/x' });
+  assert.equal(gated.instance.shellDir, '/x');
+  assert.equal(gated.instance.pack, '/x-pack'); // the caller names the pack; nothing defaults to a checkout root
 
   // Static shapes.
   assert.equal(demoChains()[0]?.onReject, 'return-to-submitter');

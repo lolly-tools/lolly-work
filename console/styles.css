@@ -68,15 +68,18 @@
   --critical: #d03b3b;
   /* Shape scale — the shell's rounded 1rem corner (tokens.css --radius) on
      everything; controls take a slightly tighter cut so dense rows stay calm. */
-  --radius-sm: 0.7rem; /* controls: buttons, inputs, nav links, tooltip */
-  --radius: 1rem;      /* cards + panels — shell --radius */
-  --radius-lg: 1.25rem; /* elevated surfaces: sign-in card */
-  --radius-pill: 99px; /* chips, badges */
+  --radius: 1rem;                          /* the one shape knob, as in the shell */
+  --radius-sm: calc(var(--radius) * .7);   /* controls: buttons, inputs, nav links, tooltip */
+  --radius-lg: calc(var(--radius) * 1.25); /* elevated surfaces: sign-in card */
+  --radius-pill: 99px;                     /* chips, badges: a clamped pill, not a step on the scale */
   /* The shell's select chevron + embossed-control shadows, declared once. */
   --field-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23888888' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
-  --emboss: inset 0 1px #fff1, 0 .1rem .3rem #0002;          /* resting field */
-  --emboss-hover: inset 0 1px #fff2, 0 .12rem .4rem #0004;   /* hover LIFTS */
-  --emboss-btn: inset 0 1px #fff3, 0 1px 3px #0002;          /* resting button */
+  /* One white-alpha top light for every embossed control, like the shell's
+     --bevel; depth is then a step on the shadow ramp, not a fourth alpha. */
+  --bevel: inset 0 1px #fff2;
+  --emboss: var(--bevel), 0 1px 3px #0002;                   /* resting field, the shell's shadow-1 */
+  --emboss-hover: var(--bevel), var(--shadow-pop);           /* hover LIFTS, the shell's shadow-2 */
+  --emboss-btn: var(--bevel), 0 1px 3px #0002;               /* resting button, the same object as a field */
   /* Elevation — per-theme so a card still separates from the plane in dark,
      where a near-black shadow on a near-black plane would vanish. */
   --shadow-pop: 0 4px 14px rgba(0, 0, 0, 0.14);
@@ -169,6 +172,14 @@
      above; the system stack is the tail, so a failed font load still reads. */
   --font-sys: 'SUSE', ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-mono-sys: 'SUSE Mono', ui-monospace, SFMono-Regular, Menlo, "Cascadia Code", monospace;
+  /* Type, space and motion steps, matching the shell's tokens.css. Before these
+     the sheet carried 16 raw font sizes (six fractional), 26 spacing values and
+     8 timings in two units. Fold call sites family by family as each is touched. */
+  --fs-2xs: 10px; --fs-xs: 11px; --fs-sm: 12px; --fs-md: 13px; --fs-lg: 14px; --fs-xl: 16px;
+  --sp-1: 2px; --sp-2: 4px; --sp-3: 6px; --sp-4: 8px; --sp-5: 10px; --sp-6: 12px; --sp-7: 16px; --sp-8: 24px;
+  --dur-1: .12s; --dur-2: .18s; --dur-3: .3s;
+  --ease-out: cubic-bezier(.32, .72, 0, 1);
+  --track-label: .06em;
 }
 
 * { box-sizing: border-box; }
@@ -311,6 +322,10 @@ main { padding: 22px 26px 48px; max-width: 1060px; min-width: 0; }
 @media (max-width: 1332px) { main { padding-right: 56px; } }
 h1 { font-size: 20px; font-weight: 650; margin: 0 0 4px; letter-spacing: -0.01em; }
 .sub { color: var(--muted); margin: 0 0 20px; }
+/* The muted text tier as a class of its own. app.js marks text `muted` on about
+   eighty elements; only three of those sat inside a scoped rule that set the
+   colour, so every other one rendered at full body ink. */
+.muted { color: var(--muted); }
 /* Card/section titles take the shell's micro-label gesture — tiny, uppercase,
    heavy, wide-tracked, muted (fields.css .field-label / .section-card-head). */
 h2 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; }
@@ -384,13 +399,13 @@ h2 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacin
 .tab {
   display: inline-flex; align-items: center; gap: 7px;
   background: none; border: 0; cursor: pointer;
-  padding: 8px 12px; margin-bottom: -1px;
+  padding: 8px 12px;
   color: var(--ink-2); font: inherit; font-weight: 500;
-  border-bottom: 2px solid transparent; border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  border-radius: var(--radius-sm);
 }
 .tab .nav-ico { width: 17px; height: 17px; }
 .tab:hover { color: var(--ink); background: color-mix(in oklab, var(--accent) 7%, transparent); }
-.tab[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
+.tab[aria-selected="true"] { color: var(--accent); background: color-mix(in oklab, var(--accent) 14%, transparent); font-weight: 600; }
 /* The reused views render their own <h1>; the tab already titles it. */
 .inst-panel > h1:first-child { display: none; }
 @media (prefers-reduced-motion: no-preference) { .tab { transition: color .12s ease, background .12s ease; } }
@@ -446,7 +461,14 @@ h2 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacin
     background: var(--surface);
     border-right: 0; border-top: 1px solid var(--grid);
   }
-  #app .rail nav { flex-direction: row; align-items: center; gap: 2px; margin: 0; flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; }
+  #app .rail nav {
+    flex-direction: row; align-items: center; gap: 2px; margin: 0; flex: 1; min-width: 0;
+    overflow-x: auto; overflow-y: hidden;
+    /* 17 sections in roughly 307px: fade both ends so the overflow is visible on
+       a touch device, where no scrollbar is painted. */
+    -webkit-mask-image: linear-gradient(to right, transparent, #000 14px, #000 calc(100% - 14px), transparent);
+    mask-image: linear-gradient(to right, transparent, #000 14px, #000 calc(100% - 14px), transparent);
+  }
   #app .rail a { flex: none; justify-content: center; padding: 11px 12px; }
   #app .rail nav a > span { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   #app .rail .brand, #app .rail .brand-sub, #app .rail .back, #app .rail .rail-toggle,
@@ -488,7 +510,7 @@ h2 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacin
 .empty { color: var(--muted); padding: 18px 0; }
 
 details.tbl { margin-top: 10px; }
-details.tbl summary { color: var(--muted); font-size: 12px; cursor: pointer; }
+details.tbl summary { color: var(--muted); font-size: 12px; cursor: pointer; width: max-content; }
 
 /* ── tables ────────────────────────────────────────────────────────────── */
 /* One calm, dense, scannable style for every table. Header lives in <thead>
@@ -502,6 +524,7 @@ th { text-align: left; color: var(--muted); font-size: 10.5px; font-weight: 600;
 td { padding: 7px 10px 7px 0; border-bottom: 1px solid var(--grid); vertical-align: middle; }
 tbody tr:last-child td { border-bottom: 0; }
 tbody tr:hover td { background: color-mix(in oklab, var(--ink) 4%, transparent); }
+tbody tr.row-click:hover td { background: color-mix(in oklab, var(--accent) 8%, transparent); }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; padding-right: 20px; }
 /* Constrained id/hash/mono columns: cap width, single line, graceful ellipsis. */
 .mono { font-family: var(--font-mono, var(--font-mono-sys)); font-size: 11.5px; color: var(--muted); }
@@ -536,9 +559,10 @@ thead th { position: sticky; top: 0; background: var(--surface); z-index: 2; }
 /* When a chip is an actual control (e.g. Preview quick-picks) it stays visually
    compact but the click/tap target meets the 24px minimum (WCAG 2.5.8). */
 button.chip { min-height: 24px; display: inline-flex; align-items: center; cursor: pointer; }
-/* "No constraint" chip — a dashed, muted outline so an unconstrained audience
-   ("Everyone") reads as a deliberate open state, not a stray label. */
-.chip-all { border-style: dashed; color: var(--muted); }
+/* "No constraint" chip: a tinted fill and muted ink so an unconstrained
+   audience ("Everyone") reads as a deliberate open state, not a stray label.
+   Dashed is reserved for a real drop area (.verify-drop). */
+.chip-all { color: var(--muted); background: color-mix(in oklab, var(--ink) 5%, transparent); }
 /* A row of small chips (e.g. a humanised message audience). */
 .chips { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 /* Type chip + a quiet secondary descriptor (visibility groups, shell version). */
@@ -551,7 +575,7 @@ button.chip { min-height: 24px; display: inline-flex; align-items: center; curso
    express STATE and are never brand-themed; --accent is the current-node ring
    only (wayfinding chrome). No one-sided borders — a full 1px --grid card. */
 .appr-list { display: flex; flex-direction: column; gap: 14px; }
-.appr-card { border: 1px solid var(--grid); border-radius: var(--radius); padding: 14px 16px; background: var(--surface); }
+.appr-card { border: 1px solid var(--hairline); border-radius: var(--radius); padding: 14px 16px; background: var(--surface); }
 .appr-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .appr-headmain { min-width: 0; }
 .appr-title { font-weight: 600; }
@@ -595,7 +619,7 @@ button.chip { min-height: 24px; display: inline-flex; align-items: center; curso
 .smark-done .smark-glyph { stroke: #fff; }
 .smark-rejected .smark-ring { fill: var(--critical); stroke: var(--critical); }
 .smark-rejected .smark-glyph { stroke: #fff; }
-.smark-current .smark-ring { stroke: var(--accent); stroke-width: 2.75; }
+.smark-current .smark-ring { fill: color-mix(in oklab, var(--accent) 14%, var(--surface)); stroke: var(--grid); }
 .smark-current .smark-num { fill: var(--accent); }
 .smark-frozen .smark-ring { stroke-dasharray: 3 2.6; }
 
@@ -653,7 +677,8 @@ button.chip { min-height: 24px; display: inline-flex; align-items: center; curso
 
 /* ── catalog lifecycle ─────────────────────────────────────────────────── */
 /* One inline row so a catalog row stays single-line (never a 2-line stack). */
-.lc-actions { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; justify-content: flex-end; }
+.lc-actions { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
+td .lc-actions { justify-content: flex-end; }
 .lc-actions input[type="date"] { width: auto; min-width: 112px; }
 .lc-actions button { white-space: nowrap; padding: 6px 9px; }
 
@@ -673,7 +698,7 @@ button.chip { min-height: 24px; display: inline-flex; align-items: center; curso
 .cat-thumb-img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .cat-thumb-ph {
   width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
-  border: 1px dashed var(--baseline); border-radius: inherit; color: var(--muted);
+  background: color-mix(in oklab, var(--ink) 5%, transparent); border-radius: inherit; color: var(--muted);
 }
 .cat-thumb-ext { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; font-variant: small-caps; }
 /* Inspect header: the larger preview beside a metadata grid, stacking narrow. */
@@ -699,17 +724,17 @@ button, .btn {
   font: inherit; font-size: 13px; color: var(--ink); background: var(--surface);
   border: 1px solid var(--baseline); border-radius: var(--radius-sm); padding: 6px 14px; cursor: pointer;
   box-shadow: var(--emboss-btn);
-  transition: background .12s, border-color .12s, color .12s, filter .12s;
+  transition: background .12s, border-color .12s, color .12s, box-shadow .12s, filter .12s;
 }
-button:hover:not(:disabled):not(.tab):not(.rail-toggle):not(.act-time):not(.act-tag):not(.link-btn):not(.col-sort):not(.alpha-btn), .btn:hover:not(:disabled) { border-color: color-mix(in oklab, var(--accent) 55%, transparent); }
+button:hover:not(:disabled):not(.tab):not(.rail-toggle):not(.act-time):not(.act-tag):not(.link-btn):not(.col-sort):not(.alpha-btn), .btn:hover:not(:disabled) { border-color: color-mix(in oklab, var(--accent) 55%, transparent); box-shadow: var(--emboss-hover); }
 /* Ghost-shaped buttons stay flat — the emboss belongs to boxed controls only. */
 .tab, .rail-toggle, .act-time, .act-tag, .link-btn, button.chip,
 .tab:active, .rail-toggle:active, .act-time:active, .act-tag:active, .link-btn:active, button.chip:active { box-shadow: none; }
 /* --on-accent: white by default (matches the built-in accents); a pack whose
    accent is light-toned (e.g. a mid-green "jungle") gets black text instead —
    applyPackTheme() picks whichever reads better against the resolved color. */
-button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent, #fff); font-weight: 600; }
-button.primary:hover:not(:disabled) { filter: brightness(1.08); border-color: var(--accent); }
+.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent, #fff); font-weight: 600; }
+.primary:hover:not(:disabled) { filter: brightness(1.08); border-color: var(--accent); }
 button.danger { color: var(--critical); }
 button:active:not(:disabled):not(.tab):not(.rail-toggle):not(.act-time):not(.act-tag):not(.link-btn):not(.col-sort):not(.alpha-btn), .btn:active:not(:disabled) { box-shadow: inset 0 1px 3px #0003; }
 /* app.js sets btn.disabled while a request is in flight (the universal busy
@@ -723,6 +748,14 @@ input, select, textarea {
   transition: box-shadow .12s, background-position .12s;
 }
 input:hover:not(:disabled), select:hover:not(:disabled), textarea:hover:not(:disabled) { box-shadow: var(--emboss-hover); }
+/* A user who asked the OS for more contrast gets a real 3:1 boundary rather than
+   the emboss texture, which measures about 1:1 against the page. Inset, so it
+   composites over the field's own fill and the corner still reads. Ticks, radios
+   and range tracks keep their drawn size. */
+@media (prefers-contrast: more) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select, textarea { box-shadow: inset 0 0 0 1px var(--muted), var(--emboss); }
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus, select:focus, textarea:focus { box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px color-mix(in oklab, var(--accent) 35%, transparent); }
+}
 input:focus, select:focus, textarea:focus { box-shadow: inset 0 1px #fff2, 0 0 0 3px color-mix(in oklab, var(--accent) 20%, transparent); }
 input::placeholder, textarea::placeholder { color: var(--muted); }
 /* Invalid only once the user has actually typed something wrong. */
@@ -746,7 +779,16 @@ input:disabled, select:disabled, textarea:disabled { opacity: .5; cursor: not-al
 label { display: block; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 10px 0 4px; }
 /* Explicit row-gap so wrapped field groups keep their vertical rhythm from the
    grid itself, not from the label's own margin. */
-.formrow { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 14px 12px; }
+.formrow { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 14px 12px; margin-top: 14px; }
+/* The grid owns the rhythm, so the label drops its own top margin: every label
+   sat 10px below its item's top edge, and an unlabelled item in the same row
+   started 10px higher. The row's own top margin now carries the separation
+   between stacked rows that the label margin used to give by accident. */
+.formrow label { margin-top: 0; }
+/* A field plus its action. Not the form grid: an auto-fit 1fr column stretched a
+   button into a 481 by 66 slab beside its own field. */
+.form-inline { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
+.form-inline > div { flex: 1 1 220px; }
 /* Shared inline form/row-action error+status line (role="status" in JS) — used
    everywhere a form or row action reports its result, not just approvals. */
 .form-err { color: var(--critical); font-size: 12px; flex-basis: 100%; margin-top: 6px; }
@@ -772,7 +814,7 @@ main:focus, h1[tabindex="-1"]:focus, h2[tabindex="-1"]:focus, h3[tabindex="-1"]:
 
 /* ── tooltip ───────────────────────────────────────────────────────────── */
 .tip {
-  position: fixed; z-index: 10; pointer-events: none;
+  position: fixed; z-index: 55; pointer-events: none;
   background: var(--surface); color: var(--ink);
   border: 1px solid var(--hairline); border-radius: var(--radius-sm);
   box-shadow: var(--shadow-pop);
@@ -824,6 +866,7 @@ main:focus, h1[tabindex="-1"]:focus, h2[tabindex="-1"]:focus, h3[tabindex="-1"]:
    while the filter controls (outside it) keep focus. The detail panel reuses
    the card/chip/status grammar; only a few layout affordances are new. */
 .list-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+.list-bar select { width: auto; min-width: 180px; }
 /* Jump-to-letter strip — quiet flat chips; the active letter takes the accent
    fill (same voice as the primary button). Wraps on narrow viewports. */
 .alpha-bar { display: flex; flex-wrap: wrap; gap: 2px; margin: 12px 0 10px; }
@@ -840,7 +883,7 @@ main:focus, h1[tabindex="-1"]:focus, h2[tabindex="-1"]:focus, h3[tabindex="-1"]:
    a real button — full keyboard access, focus ring, 24px+ target via padding. */
 .col-sort {
   font: inherit; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
-  background: none; border: 0; padding: 2px 0; margin: 0; cursor: pointer; box-shadow: none;
+  background: none; border: 0; padding: 6px 0; margin: -6px 0; min-height: 24px; cursor: pointer; box-shadow: none;
   display: inline-flex; align-items: center; gap: 3px;
 }
 .col-sort:hover:not(:disabled) { border: 0; }
@@ -857,11 +900,17 @@ th[aria-sort] { cursor: pointer; }
    top-level section, and air under the summary once opened. */
 .filters-more { margin-top: 10px; }
 .filters-more[open] > summary { margin-bottom: 4px; }
-.ov-section > summary, .compose-section > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; }
+.ov-section > summary, .compose-section > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; min-height: 24px; padding: 3px 0; }
 .ov-section > summary::-webkit-details-marker, .compose-section > summary::-webkit-details-marker { display: none; }
 .ov-section > summary::before, .compose-section > summary::before { content: '▸'; color: var(--muted); font-size: 11px; transition: transform .12s ease; }
 .ov-section[open] > summary::before, .compose-section[open] > summary::before { transform: rotate(90deg); }
 .ov-section > summary .section-h, .compose-section > summary .section-h { margin: 0; }
+/* A section head that contains cards reads above them: 15px, sentence case, full
+   ink, so a real heading in a summary escapes the micro-label rule. The person
+   detail keeps the eyebrow it opts into with .detail-h. */
+.ov-section > summary .section-h:not(.detail-h), .compose-section > summary .section-h:not(.detail-h) {
+  font-size: 15px; font-weight: 600; color: var(--ink); text-transform: none; letter-spacing: 0;
+}
 .compose-section > form { margin-top: 12px; }
 .appr-steps > summary { cursor: pointer; font-size: 12.5px; color: var(--ink-2); width: max-content; }
 .appr-steps > summary:hover { color: var(--ink); }
@@ -877,8 +926,8 @@ th[aria-sort] { cursor: pointer; }
 .needs-link {
   display: inline-flex; align-items: center; gap: 9px;
   padding: 7px 14px 7px 10px; border-radius: var(--radius-pill);
-  border: 1px solid var(--lvl, var(--baseline));
-  background: color-mix(in oklab, var(--lvl, var(--muted)) 10%, transparent);
+  border: 1px solid var(--hairline);
+  background: color-mix(in oklab, var(--lvl, var(--muted)) 16%, transparent);
   color: var(--ink); text-decoration: none; font-weight: 500;
   max-width: 100%; min-width: 0;
 }
@@ -895,8 +944,9 @@ th[aria-sort] { cursor: pointer; }
   .needs-link { transition: background .12s ease, border-color .12s ease; }
 }
 
-/* First-run zero-state banner */
-.zero-banner { border-style: dashed; }
+/* First-run zero-state banner: a faint accent wash, never a dashed edge, which
+   in this language means "drop here". The .card hairline is already the edge. */
+.zero-banner { background: color-mix(in oklab, var(--accent) 5%, var(--surface)); }
 .zero-steps { margin: 8px 0 0; padding-left: 20px; color: var(--ink-2); font-size: 13px; line-height: 1.9; }
 
 /* Transient success toast (mutation confirmations) */
@@ -975,7 +1025,7 @@ tr.row-click { cursor: pointer; }
 td.url-cell { max-width: 240px; }
 
 /* ── contractors (guest links) ─────────────────────────────────────────────── */
-.mint-out { border-color: var(--good); margin-top: 12px; }
+.mint-out { background: color-mix(in oklab, var(--good) 7%, var(--surface)); margin-top: 12px; }
 .url-line { word-break: break-all; margin: 8px 0; }
 
 /* ── phone card-list tables ─────────────────────────────────────────────────
@@ -1008,6 +1058,7 @@ td.url-cell { max-width: 240px; }
   .tbl-cards td:not([data-label])::before, .tbl-cards td[data-label=""]::before { content: none; }
   .tbl-cards td.num, .tbl-cards th.num { text-align: left; padding-right: 0; }
   .tbl-cards td.mono, .tbl-cards td.url-cell, .tbl-cards td.tags { max-width: none; white-space: normal; overflow-wrap: anywhere; }
+  .tbl-cards .lc-actions { flex-wrap: wrap; justify-content: flex-start; }
   .tbl-cards tr.row-click td { cursor: pointer; }
   /* The QoL bar fits one line: search yields width instead of pushing CSV down. */
   .tbl-filter { flex: 1 1 120px; min-width: 120px; }
@@ -1094,8 +1145,10 @@ td.url-cell { max-width: 240px; }
 .doc-tbl thead th { position: static; }
 
 @media (max-width: 780px) {
-  .docs-layout { grid-template-columns: 1fr; }
-  .docs-nav { position: static; }
+  /* minmax(0, 1fr) as in the desktop rule: a bare 1fr takes its min-content floor
+     from the widest child, which pushed the document 535px wide at 390px. */
+  .docs-layout { grid-template-columns: minmax(0, 1fr); }
+  .docs-nav { position: static; min-width: 0; max-height: none; }
 }
 
 /* ── documentation screenshots + their Content Credential ────────────────────
@@ -1130,7 +1183,7 @@ td.url-cell { max-width: 240px; }
 /* Show the theme-matching variant — a dark shot for a dark reader, a light shot
    for a light one — mirroring the brand-logo dual-image toggle. `brand` is a
    near-black theme (light text), so it takes the dark shot too. */
-.shot-img--dark, .shot-cred--dark { display: none; }
+.doc-prose .shot-img--dark, .doc-prose .shot-cred--dark { display: none; }
 @media (prefers-color-scheme: dark) {
   :root:where(:not([data-theme="light"])) .shot-img--light { display: none; }
   :root:where(:not([data-theme="light"])) .shot-img--dark { display: block; }
@@ -1153,14 +1206,14 @@ td.url-cell { max-width: 240px; }
   pointer-events: none;
 }
 .shot-cred-btn {
-  display: inline-grid; place-items: center; width: 22px; height: 22px; padding: 0;
+  display: inline-grid; place-items: center; width: 24px; height: 24px; padding: 0;
   color: var(--ink-2); background: color-mix(in oklab, var(--surface, #fff) 82%, transparent);
   border: 1px solid var(--hairline); border-radius: 999px; cursor: pointer;
   opacity: .55; pointer-events: auto; transition: opacity .15s ease;
   backdrop-filter: blur(3px);
 }
 .shot-cred-btn:hover, .shot-cred:focus-within .shot-cred-btn, .shot-cred[data-open] .shot-cred-btn { opacity: 1; }
-.shot-cred--ai .shot-cred-btn { opacity: 1; color: var(--accent); border-color: var(--accent); }
+.shot-cred--ai .shot-cred-btn { opacity: 1; color: var(--accent); background: color-mix(in oklab, var(--accent) 14%, var(--surface, #fff)); }
 .shot-cred-line {
   display: flex; flex-direction: column; gap: 5px; align-items: flex-end;
   opacity: 0; pointer-events: none; transform: translateX(.4rem);
@@ -1181,7 +1234,7 @@ td.url-cell { max-width: 240px; }
 }
 .prov-pill svg { flex: none; }
 .prov-sig { color: var(--ink); }
-.prov-entity { font-weight: 600; color: var(--ink); background: color-mix(in oklab, var(--accent) 12%, var(--surface, #fff)); border-color: color-mix(in oklab, var(--accent) 30%, transparent); padding: 1px 6px; }
+.prov-entity { font-weight: 600; color: var(--ink); background: color-mix(in oklab, var(--accent) 16%, var(--surface, #fff)); border-color: var(--hairline); padding: 1px 6px; }
 .prov-detail { color: var(--muted); }
 .shot-cred-do {
   font-size: 10.5px; padding: 2px 8px; border-radius: 999px; text-decoration: none;
@@ -1195,17 +1248,21 @@ td.url-cell { max-width: 240px; }
   display: flex; flex-direction: column; align-items: center; gap: 8px;
   padding: 34px 20px; margin: 4px 0 16px; max-width: 560px; cursor: pointer;
   color: var(--ink-2); text-align: center;
+  /* The dropzone is a <label>, so it inherits the uppercase micro-label voice.
+     Its text is the view's primary instruction, not a field label (same opt-out
+     as .chk). */
+  font-size: 13px; font-weight: 500; text-transform: none; letter-spacing: 0;
   border: 1.5px dashed var(--hairline); border-radius: var(--radius); background: color-mix(in oklab, var(--ink) 2%, transparent);
 }
-.verify-drop:hover, .verify-drop:focus-visible, .verify-drop.is-drag { border-color: var(--accent); color: var(--ink); background: color-mix(in oklab, var(--accent) 6%, transparent); outline: none; }
+.verify-drop:hover, .verify-drop:focus-visible, .verify-drop.is-drag { border-color: var(--accent); color: var(--ink); background: color-mix(in oklab, var(--accent) 6%, transparent); }
 .verify-drop svg { width: 22px; height: 22px; }
 .verify-card { max-width: 620px; }
 .verify-hero { display: flex; align-items: center; gap: 10px; font-size: 15px; padding-bottom: 12px; margin-bottom: 12px; border-bottom: 1px solid var(--hairline); }
 .verify-hero svg { width: 20px; height: 20px; flex: none; }
 .verify-hero .muted { margin-left: auto; font-size: 12px; }
-.verify-hero.tone-good { color: var(--ok, #1a7f4b); }
-.verify-hero.tone-warn { color: var(--warn, #b26a00); }
-.verify-hero.tone-bad { color: var(--danger, #c0392b); }
+.verify-hero.tone-good { color: var(--good-text); }
+.verify-hero.tone-warn { color: color-mix(in oklab, var(--warning) 65%, var(--ink)); }
+.verify-hero.tone-bad { color: var(--critical); }
 .verify-facts { display: grid; grid-template-columns: minmax(90px, auto) 1fr; gap: 4px 14px; margin: 0 0 14px; font-size: 13px; }
 .verify-facts dt { color: var(--muted); }
 .verify-facts dd { margin: 0; color: var(--ink); }
@@ -1252,6 +1309,15 @@ td.url-cell { max-width: 240px; }
   .pub-name, .pub-kicker { display: none; }
   .pub-nav { gap: 4px; }
   .pub-link { padding: 6px 8px; }
+}
+
+/* Forced colors (Windows High Contrast) sets box-shadow to none, and the fields
+   here are borderless by design, so every input and select loses its only
+   boundary. Same block and same reasoning as the OSS parts/fields.css. */
+@media (forced-colors: active) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select, textarea { border: 1px solid ButtonBorder; }
+  input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid Highlight; outline-offset: 2px; }
+  .legend .swatch, .hbar .bar, .status::before, .vchk-dot, .chain .seg.bad { forced-color-adjust: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
