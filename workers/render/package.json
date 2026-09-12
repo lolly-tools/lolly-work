@@ -13,7 +13,7 @@
     "install:browser": "playwright-core install chromium"
   },
   "dependencies": {
-    "playwright-core": "^1.49.0"
+    "playwright-core": "^1.63.0"
   },
   "packageManager": "pnpm@11.26.0"
 }
