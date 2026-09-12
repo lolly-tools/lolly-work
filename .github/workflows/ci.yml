@@ -144,6 +144,12 @@ jobs:
       #
       # For every other actor this is still a hard failure: a human who touches the
       # lockfile commits the regenerated SBOM alongside it, same as before.
+      #
+      # github.actor is the actor of THIS run, not the PR author, so a human who
+      # re-runs a Dependabot PR's jobs turns the warning back into a failure for
+      # that run. Harmless (merge still needs the queue's green run, and main
+      # repairs itself either way), but it looks arbitrary if you hit it without
+      # knowing why.
       - name: SBOM up to date (regenerate; fail on drift, warn for Dependabot)
         env:
           SBOM_DRIFT_ADVISORY: ${{ github.actor == 'dependabot[bot]' }}
