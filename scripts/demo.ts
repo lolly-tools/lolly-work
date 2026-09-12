@@ -211,21 +211,6 @@ export function describePack(pack: PackVerdict): string {
   }
 }
 
-/** Tool ids the pack carries that the shell dist's own tools/ lacks. The shell
- *  fetches tool files from its own origin's /tools/, which the server serves
- *  from the dist, while the catalog index comes from the pack: a dist built on
- *  another profile lists tools it cannot open. */
-export function distToolGap(distDir: string, packDir: string): string[] {
-  const list = (dir: string): string[] => {
-    try {
-      return readdirSync(join(dir, 'tools')).filter((n) => !n.startsWith('.') && existsSync(join(dir, 'tools', n, 'tool.json')));
-    } catch {
-      return [];
-    }
-  };
-  const inDist = new Set(list(distDir));
-  return list(packDir).filter((id) => !inDist.has(id)).sort();
-}
 
 /** Real logo asset id in the SUSE-profile catalog - the value a locked logo
  *  input bakes to. */
@@ -1040,7 +1025,6 @@ async function main(): Promise<void> {
   const accessMode: 'open' | 'gated' = dist.fresh ? 'gated' : 'open';
   const shellDir = dist.present ? SHELL_DIR : undefined;
   const pack = await resolvePack();
-  const gap = dist.present ? distToolGap(SHELL_DIR, pack.dir) : [];
 
   const config = buildDemoConfig({ baseUrl, accessMode, pack: pack.dir, shellDir });
   const secrets = loadSecrets(process.env, config);
@@ -1081,9 +1065,8 @@ ${line}
 
   Access mode: ${accessMode.toUpperCase()}
   Pack:        ${pack.dir}
-    ${describePack(pack)}${pack.note ? `\n    ${pack.note}` : ''}${gap.length
-      ? `\n    ${gap.length} tool${gap.length === 1 ? ' the pack carries is' : 's the pack carries are'} not in the shell dist (${gap.slice(0, 4).join(', ')}${gap.length > 4 ? ', ...' : ''}): rebuild it with LOLLY_PROFILE=${pack.profile ?? DEMO_PROFILE} pnpm run build:web in ${OSS_DIR}.`
-      : ''}
+    ${describePack(pack)}${pack.note ? `\n    ${pack.note}` : ''}
+    Tool files and the catalog are served from here; the shell dist supplies only the app.
   Shell dist:  ${dist.present ? SHELL_DIR : '(none — console + API only)'}
     ${dist.reason}
     ${!dist.present

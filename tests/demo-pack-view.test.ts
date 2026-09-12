@@ -12,7 +12,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  buildPackView, distToolGap, resolvePack, type ContentRootsLike, type ContentRootsModule,
+  buildPackView, resolvePack, type ContentRootsLike, type ContentRootsModule,
 } from '../scripts/demo.ts';
 
 /** A checkout-shaped tree: one plain community tool, one brand overlay of a
@@ -103,20 +103,6 @@ test('rebuilding drops stale entries and never follows a link into the checkout'
     join(plan.get('poster')!.base!, 'assets', 'bg.png'),
     join(roots.catalogRoot, 'tools', 'index.json'),
   ]) assert.ok(existsSync(p), `${p} survived the rebuild`);
-});
-
-test('distToolGap names the pack tools a shell dist cannot open', () => {
-  const dist = mkdtempSync(join(tmpdir(), 'lw-dist-'));
-  const pack = mkdtempSync(join(tmpdir(), 'lw-pack-'));
-  for (const [dir, ids] of [[dist, ['qr-code']], [pack, ['qr-code', 'poster', 'badge']]] as const) {
-    for (const id of ids) {
-      mkdirSync(join(dir, 'tools', id), { recursive: true });
-      writeFileSync(join(dir, 'tools', id, 'tool.json'), '{}');
-    }
-  }
-  assert.deepEqual(distToolGap(dist, pack), ['badge', 'poster']);
-  assert.deepEqual(distToolGap('/nonexistent-dist', pack), ['badge', 'poster', 'qr-code']);
-  assert.deepEqual(distToolGap(dist, '/nonexistent-pack'), []);
 });
 
 test('resolvePack: LOLLY_PACK_DIR wins, a checkout with the layout mounts as it is, and no resolver is said out loud', async () => {

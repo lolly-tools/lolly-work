@@ -2790,6 +2790,37 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     return drop.length;
   };
 
+  // ── tool files (pack mount, the tool index's own per-caller visibility) ────
+  // The shell fetches `/tools/<id>/<file>` from its own origin. Served from the
+  // pack so the files agree with the tool index (the pack's, filtered per caller)
+  // rather than with whatever profile the shell dist was built on, and so a tool
+  // the caller's groups cannot see is not fetchable by URL: it answers 404, the
+  // same absence the index shows. A guest may fetch the tool its link opens.
+  // `tools` is a reserved prefix below, so the dist's copy is never consulted.
+  router.add('GET', '/tools/*', async (req, res, ctx) => {
+    const user = await memberOf(req);
+    const p = principalOf(req);
+    if (config.policy.defaultAccessMode === 'gated' && !user && p?.kind !== 'guest') {
+      return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
+    }
+    const rel = normalize(ctx.params['*'] ?? '').replace(/^(\.\.[/\\])+/, '');
+    if (!rel || rel.includes('..')) return sendError(res, 400, 'INVALID_INPUT', 'bad path');
+    const toolId = rel.split(/[/\\]/, 1)[0] ?? '';
+    if (!/^[a-z0-9-]+$/i.test(toolId)) return sendError(res, 400, 'INVALID_INPUT', 'bad tool id');
+    const guestTool = p?.kind === 'guest' && p.guest.toolId === toolId;
+    if (!guestTool && !toolVisibleTo((await store.listOverlays()).get(toolId), user?.groups ?? [])) {
+      return sendError(res, 404, 'NOT_FOUND', 'no such tool file');
+    }
+    let bytes: Buffer;
+    try {
+      bytes = await readFile(join(config.instance.pack, 'tools', rel));
+    } catch {
+      return sendError(res, 404, 'NOT_FOUND', 'no such tool file');
+    }
+    res.writeHead(200, { 'content-type': contentType(rel), 'cache-control': 'private, max-age=300' });
+    res.end(bytes);
+  });
+
   // ── catalog serving (pack mount, per-caller filtered, lifecycle-enforced) ──
   router.add('GET', '/catalog/*', async (req, res, ctx) => {
     const user = await memberOf(req);
@@ -6887,7 +6918,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // so every API/console/catalog/render/link route wins; only unmatched GETs
   // reach the SPA fallback. Absent shellDir → these routes aren't added at all.
   const shellDir = config.instance.shellDir;
-  const RESERVED_PREFIX = /^(api|catalog|render|l|admin|scim|healthz|activate|connect)(\/|$)/;
+  const RESERVED_PREFIX = /^(api|catalog|tools|render|l|admin|scim|healthz|activate|connect)(\/|$)/;
   if (shellDir) {
     const serveShell = async (res: ServerResponse, rel: string): Promise<void> => {
       const clean = normalize(rel.replace(/^\/+/, '')).replace(/^(\.\.[/\\])+/, '');

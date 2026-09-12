@@ -359,7 +359,8 @@ param joins as before; sending one of the two checks only that one.
 | Route | Notes |
 |---|---|
 | `GET /admin`, `GET /admin/*` | the admin console (static; every call it makes is auth-enforced) |
-| `GET /`, `GET /*` | the Lolly web shell, when `instance.shellDir` is set. Registered last, so API/console/catalog/render/link routes always win; `api`, `catalog`, `render`, `l`, `admin`, `healthz` are reserved prefixes |
+| `GET /tools/*` | a tool's files (`tool.json`, `template.html`, `hooks.js`, ...) from the pack's `tools/<id>/`, never from the shell dist. Gated like `/catalog/*`, and a tool the caller's groups cannot see answers 404, the same absence the tool index shows. A guest may fetch the tool its link opens |
+| `GET /`, `GET /*` | the Lolly web shell, when `instance.shellDir` is set. Registered last, so API/console/catalog/render/link routes always win; `api`, `catalog`, `tools`, `render`, `l`, `admin`, `healthz` are reserved prefixes |
 
 ## Common error codes
 

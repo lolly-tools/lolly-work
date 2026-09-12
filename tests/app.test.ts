@@ -55,6 +55,10 @@ before(async () => {
     join(pack, 'tools', 'qr-code', 'tool.json'),
     JSON.stringify({ id: 'qr-code', inputs: [{ id: 'url' }, { id: 'logo' }, { id: 'discount' }] }),
   );
+  await writeFile(join(pack, 'tools', 'qr-code', 'template.html'), '<svg data-tool="qr-code"></svg>');
+  // event-badge is on disk too, so its 404 below is visibility, not absence.
+  await mkdir(join(pack, 'tools', 'event-badge'), { recursive: true });
+  await writeFile(join(pack, 'tools', 'event-badge', 'tool.json'), JSON.stringify({ id: 'event-badge', inputs: [{ id: 'logo' }] }));
   const config = parseConfig(JSON.stringify({
     instance: { name: 'Test Hub', baseUrl: 'http://localhost', pack },
     policy: { telemetry: 'standard', telemetryAttribution: 'opt-in' },
@@ -145,6 +149,31 @@ test('catalog index is filtered per caller groups', async () => {
   assert.deepEqual(index.tools.map((t) => t.id), ['qr-code']); // event-badge visible to brand-team only
 });
 
+test('tool files come from the pack, with the index\'s own visibility', async () => {
+  // Gated instance: no session, no bytes.
+  assert.equal((await fetch(`${base}/tools/qr-code/tool.json`)).status, 401);
+
+  const cookie = await login('marketer@test');
+  const manifest = await fetch(`${base}/tools/qr-code/tool.json`, { headers: { cookie } });
+  assert.equal(manifest.status, 200);
+  assert.match(manifest.headers.get('content-type') ?? '', /^application\/json/);
+  assert.equal(((await manifest.json()) as { id: string }).id, 'qr-code');
+  const template = await fetch(`${base}/tools/qr-code/template.html`, { headers: { cookie } });
+  assert.equal(template.status, 200);
+  assert.match(template.headers.get('content-type') ?? '', /^text\/html/);
+  assert.match(await template.text(), /data-tool="qr-code"/);
+
+  // A tool the caller cannot see is the same absence the index shows: 404, and
+  // never the SPA index (the dist's fallback) or the file's bytes.
+  assert.equal((await fetch(`${base}/tools/event-badge/tool.json`, { headers: { cookie } })).status, 404);
+  // A file that is not there is 404 too, not the shell.
+  assert.equal((await fetch(`${base}/tools/qr-code/nope.css`, { headers: { cookie } })).status, 404);
+  // No walking out of the pack, and no id that is not a flat directory name.
+  const walk = await fetch(`${base}/tools/..%2F..%2Fetc%2Fpasswd`, { headers: { cookie } });
+  assert.ok([400, 404].includes(walk.status), `traversal answered ${walk.status}`);
+  assert.equal((await fetch(`${base}/tools/not%20an%20id/tool.json`, { headers: { cookie } })).status, 400);
+});
+
 test('guest-link lifecycle: mint (admin) → password gate → guest session → revoke → 410', async () => {
   const cookie = await login('admin@test');
   const mint = await fetch(`${base}/api/v1/links`, {
@@ -166,6 +195,9 @@ test('guest-link lifecycle: mint (admin) → password gate → guest session →
   assert.equal(session.kind, 'guest');
   assert.equal(session.guest.name, 'Sam');
   assert.equal(session.guest.toolId, 'event-badge');
+  // The guest's shell can load the tool the link opens, even though no group of
+  // theirs sees event-badge in the index; nothing else changes for them.
+  assert.equal((await fetch(`${base}/tools/event-badge/tool.json`, { headers: { cookie: guestCookie as string } })).status, 200);
 
   const revoke = await fetch(`${base}/api/v1/links/${id}/revoke`, { method: 'POST', headers: { cookie } });
   assert.equal(revoke.status, 200);
