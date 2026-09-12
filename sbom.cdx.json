@@ -1,7 +1,7 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:d73f7f83-2a0a-4176-8e1f-760b7990ca74",
+  "serialNumber": "urn:uuid:f7c0bf29-8145-4c91-8089-a0bf54a09491",
   "version": 1,
   "metadata": {
     "tools": [
@@ -1659,10 +1659,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/pg-protocol@1.15.0",
+      "bom-ref": "pkg:npm/pg-protocol@1.16.0",
       "name": "pg-protocol",
-      "version": "1.15.0",
-      "purl": "pkg:npm/pg-protocol@1.15.0",
+      "version": "1.16.0",
+      "purl": "pkg:npm/pg-protocol@1.16.0",
       "scope": "required",
       "licenses": [
         {
@@ -1674,7 +1674,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "72af6c102239b34fae3d45e36f3f22a323c99e2e91cec4626f4512ebb8b92284d92b0f1f35e625544eeef05e1d1bbbc4249b5ce70743d4ad7cf65082530a964d"
+          "content": "b082d7bad2d58c22e3703b8e9af857e5ed99e1c4b9a86ffa06edd592917075fffadf712518ba4487d6e09ae239238b2a2aa9227d0886ca209cc751ddb6b2bbb6"
         }
       ]
     },
@@ -1701,10 +1701,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/pg@8.22.0",
+      "bom-ref": "pkg:npm/pg@8.23.0",
       "name": "pg",
-      "version": "8.22.0",
-      "purl": "pkg:npm/pg@8.22.0",
+      "version": "8.23.0",
+      "purl": "pkg:npm/pg@8.23.0",
       "scope": "required",
       "licenses": [
         {
@@ -1716,7 +1716,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "f308a1d6f54804cc6850cda8078b2826c0fdb439c3a4bbf8397049f8427316cbf2703fa57f222b782da0187abbf1ff236cb2edf9bbe53d315d1597c990ebb300"
+          "content": "229d844029e0a3024b18e7c2c241613d753bfe58e5867e91c659b2e1761f2f663ebf244ce7dfbcb91db1a9158a75899b5e6c4214e0262b106e49409d177e2a2e"
         }
       ]
     },
@@ -2303,10 +2303,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/ws@8.21.1",
+      "bom-ref": "pkg:npm/ws@8.21.3",
       "name": "ws",
-      "version": "8.21.1",
-      "purl": "pkg:npm/ws@8.21.1",
+      "version": "8.21.3",
+      "purl": "pkg:npm/ws@8.21.3",
       "scope": "required",
       "licenses": [
         {
@@ -2318,7 +2318,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "fb43539d6efb7c537f0e3422ea4fd2abf62f9384a06a3c3bbab5bc57e6ac8d79d1803b3d8321a475bec4ce07e10388285ec44864a136f1fcc85c11c4ce1ba25b"
+          "content": "db4d5367f90f5b1a0faff38a5a3aae651d5258a5dcbf1747f9ed71af1f3d6f761b9b32cc1422df9da1b51c52205b324e11667b32fa4afbea1d66e7e0611e7447"
         }
       ]
     },
