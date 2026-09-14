@@ -138,7 +138,7 @@ export interface PageText {
   columns: number;
   /**
    * The page paints no text but is mostly covered by an image: a SCAN.
-   * There is nothing to extract without OCR, and callers must say so rather
+   * There is nothing to extract without OCR, and callers must report it rather
    * than present an empty result as "this page is blank".
    */
   scanned: boolean;
@@ -667,7 +667,7 @@ export function extractPageText(nodes: PdfNode[], opts: PdfTextOptions = {}): Pa
     if (totalChars > 0 && taggedChars / totalChars >= MIN_TAGGED_COVERAGE && tb.length) {
       // Whatever the tree did not claim is usually an artifact (a running head, a
       // page number) that genuinely sits outside the flow. It is appended, and counted
-      // so a caller can say so rather than imply the page was fully tagged.
+      // so a caller can report it rather than imply the page was fully tagged.
       const leftovers = items.filter((it) => !used.has(it));
       const extra = leftovers.length ? blocksFromColumn(toLines(leftovers), 0) : [];
       const blocks = [...tb, ...extra];

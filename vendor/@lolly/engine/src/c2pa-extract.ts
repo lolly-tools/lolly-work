@@ -19,6 +19,7 @@ import { locateOpusComment, parseOpusTags, commentKey, commentValue, OGG_C2PA_KE
 // Type-only - no runtime cycle: c2pa-verify.ts imports VALUES from this file,
 // this file imports only a TYPE back (erased at compile time).
 import type { C2paHistoryStep } from './c2pa-verify.ts';
+import type { RightsRecord } from '@lolly-tools/core/host-v1';
 
 const td = new TextDecoder();
 const te = new TextEncoder();
@@ -1455,8 +1456,6 @@ const VS_HIGH_START = 0xe0100;
 const VS_HIGH_END = 0xe01ef;
 /** section A.8.2.2 `magic = 0x4332504154585400` - "C2PATXT\0". */
 const WRAPPER_MAGIC = [0x43, 0x32, 0x50, 0x41, 0x54, 0x58, 0x54, 0x00];
-/** magic(8) + version(1) + manifestLength(4). */
-const WRAPPER_HEADER_BYTES = 13;
 /** section A.8.4.1 expects one; a hostile paste can hold many. Collect a bounded few -
  *  enough to report `multipleWrappers` honestly, not enough to be a workload. */
 const MAX_TEXT_WRAPPERS = 32;
@@ -1704,7 +1703,6 @@ export const EXTRACTORS: Record<SniffFormat, (bytes: Uint8Array) => { manifest: 
   text: asExtractor(readTextVs),
 };
 
-
 // The AI DigitalSourceType lookup lives in ai-kind.ts (file-metadata.ts needs it
 // without the rest of this module); re-exported here so every existing
 // `from './c2pa-extract.ts'` / `from './c2pa-verify.ts'` import keeps working.
@@ -1804,6 +1802,9 @@ export interface C2paIngredientData {
   activeLabel: string;
   title?: string;
   format: string;
+  /** `parentOf` (default) or `componentOf`; a nested element found inside a
+   *  container is a component of it, and a manifest may carry one parentOf only. */
+  relationship?: string;
   digitalSourceType?: string;
 }
 
@@ -1865,11 +1866,165 @@ export function collectIngredients(bytes: Uint8Array): C2paIngredientData[] {
     if (ing && ing.activeLabel && !seen.has(ing.activeLabel)) { seen.add(ing.activeLabel); out.push(ing); }
   };
   if (!(bytes instanceof Uint8Array)) return out;
-  // 1. The container's own manifest.
+  // 1. The container's own manifest - the one parentOf ingredient.
   push(prepareC2paIngredient(bytes));
   // 2. Nested rasters an SVG embeds as data URIs - each may carry its own C2PA.
+  //    They are components of the container, so the writer records them as
+  //    placed (a manifest may carry only one parentOf ingredient).
   if (sniffFormat(bytes) === 'svg') {
-    for (const raster of svgEmbeddedRasters(bytes)) push(prepareC2paIngredient(raster));
+    for (const raster of svgEmbeddedRasters(bytes)) {
+      const nested = prepareC2paIngredient(raster);
+      push(nested ? { ...nested, relationship: 'componentOf' } : null);
+    }
+  }
+  return out;
+}
+
+/**
+ * One ingredient assertion as a manifest recorded it - credentialed (it names
+ * an active manifest carried in the store) or a plain source (no manifest of
+ * its own; the writer described it and may have bound its bytes by external
+ * hashed URI). Read for display: nothing here is verified beyond the claim's
+ * own hashed-URI checks, which cover the assertion bytes. `rights` is Lolly's
+ * `tools.lolly.rights` entry bound to this assertion, when the same manifest
+ * carries one - the exporter's observation of the source's notices, not the
+ * source author's signature.
+ */
+export interface C2paIngredientRecord {
+  /** Label of the manifest that recorded the ingredient. */
+  manifest: string;
+  /** The assertion's own label (c2pa.ingredient.v3, __N suffixed when several). */
+  label: string;
+  credentialed: boolean;
+  relationship?: string;
+  title?: string;
+  format?: string;
+  activeManifest?: string;
+  instanceId?: string;
+  description?: string;
+  informationalUri?: string;
+  digitalSourceType?: string;
+  /** The external hashed URI binding the source bytes (hash as hex). */
+  data?: { url: string; alg?: string; hash?: string; format?: string; size?: number };
+  rights?: RightsRecord;
+}
+
+const INGREDIENT_LABEL = /^c2pa\.ingredient(\.v[23])?(__\d+)?$/;
+const RIGHTS_LABEL = /^tools\.lolly\.rights(__\d+)?$/;
+const asText = (value: unknown): string | undefined => (typeof value === 'string' && value ? value : undefined);
+
+/**
+ * Walk EVERY manifest in the store and read the ingredient assertions each
+ * recorded, oldest manifest first (the same order as {@link collectActionChain}),
+ * attaching the rights record bound to each. Every parse is guarded: an
+ * assertion this reader cannot decode is skipped, never fatal.
+ */
+export function collectIngredientRecords(store: Uint8Array): C2paIngredientRecord[] {
+  const out: C2paIngredientRecord[] = [];
+  let root: Superbox;
+  try {
+    const top = walkBoxes(store, 0, store.length);
+    if (!top.length) return out;
+    root = parseSuperbox(store, top[0]!);
+  } catch { return out; }
+  if (root.label !== 'c2pa') return out;
+  for (const manifestBox of root.children) {
+    let manifest: Superbox;
+    try { manifest = parseSuperbox(store, manifestBox); } catch { continue; }
+    const records: C2paIngredientRecord[] = [];
+    const rights = new Map<string, RightsRecord>();
+    for (const child of manifest.children) {
+      let sub: Superbox;
+      try { sub = parseSuperbox(store, child); } catch { continue; }
+      if (sub.label !== 'c2pa.assertions') continue;
+      for (const a of sub.children) {
+        let ab: Superbox;
+        try { ab = parseSuperbox(store, a); } catch { continue; }
+        if (INGREDIENT_LABEL.test(ab.label)) {
+          try {
+            const map = decodeCbor(contentOf(store, ab));
+            if (map instanceof Map) records.push(ingredientRecord(manifest.label, ab.label, map));
+          } catch { /* opaque ingredient assertion - skip it */ }
+        } else if (RIGHTS_LABEL.test(ab.label)) {
+          try {
+            const map = decodeCbor(contentOf(store, ab));
+            if (map instanceof Map) for (const [label, record] of rightsEntries(map)) rights.set(label, record);
+          } catch { /* opaque rights assertion - skip it */ }
+        }
+      }
+    }
+    for (const record of records) {
+      const bound = rights.get(record.label);
+      if (bound) record.rights = bound;
+      out.push(record);
+    }
+  }
+  return out;
+}
+
+function ingredientRecord(manifest: string, label: string, map: Map<unknown, unknown>): C2paIngredientRecord {
+  // v3 names the manifest `activeManifest`; the deprecated v1/v2 shapes used `c2pa_manifest`.
+  const active = map.get('activeManifest') ?? map.get('c2pa_manifest');
+  const record: C2paIngredientRecord = { manifest, label, credentialed: active instanceof Map };
+  const activeUrl = active instanceof Map ? asText(active.get('url')) : undefined;
+  if (activeUrl) record.activeManifest = activeUrl;
+  const relationship = asText(map.get('relationship'));
+  if (relationship) record.relationship = relationship;
+  const title = asText(map.get('dc:title'));
+  if (title) record.title = title;
+  const format = asText(map.get('dc:format'));
+  if (format) record.format = format;
+  const instanceId = asText(map.get('instanceID'));
+  if (instanceId) record.instanceId = instanceId;
+  const description = asText(map.get('description'));
+  if (description) record.description = description;
+  const informationalUri = asText(map.get('informationalURI'));
+  if (informationalUri) record.informationalUri = informationalUri;
+  const digitalSourceType = asText(map.get('digitalSourceType'));
+  if (digitalSourceType) record.digitalSourceType = digitalSourceType;
+  const data = map.get('data');
+  const dataUrl = data instanceof Map ? asText(data.get('url')) : undefined;
+  if (data instanceof Map && dataUrl) {
+    record.data = { url: dataUrl };
+    const alg = asText(data.get('alg'));
+    if (alg) record.data.alg = alg;
+    const hash = data.get('hash');
+    if (hash instanceof Uint8Array) record.data.hash = hexOf(hash);
+    const dataFormat = asText(data.get('dc:format'));
+    if (dataFormat) record.data.format = dataFormat;
+    const size = data.get('size');
+    if (typeof size === 'number' && Number.isInteger(size) && size >= 0) record.data.size = size;
+  }
+  return record;
+}
+
+// tools.lolly.rights → [ingredient assertion label, record] pairs. A source
+// whose `ingredient.url` is not a hashed URI into this manifest's assertion
+// store is skipped: the record only means something bound to an ingredient.
+function rightsEntries(map: Map<unknown, unknown>): [string, RightsRecord][] {
+  const sources = map.get('sources');
+  if (!Array.isArray(sources)) return [];
+  const out: [string, RightsRecord][] = [];
+  for (const source of sources) {
+    if (!(source instanceof Map)) continue;
+    const ingredient = source.get('ingredient');
+    const url = ingredient instanceof Map ? asText(ingredient.get('url')) : undefined;
+    if (!url?.startsWith('self#jumbf=c2pa.assertions/')) continue;
+    const modifications = source.get('modifications');
+    const record: RightsRecord = {
+      creator: asText(source.get('creator')) ?? '',
+      license: asText(source.get('license')) ?? '',
+      licenseUrl: asText(source.get('licenseUrl')) ?? '',
+      attribution: asText(source.get('attribution')) ?? '',
+      sourceUrl: asText(source.get('sourceUrl')) ?? '',
+      modifications: Array.isArray(modifications) ? modifications.filter((m): m is string => typeof m === 'string') : [],
+      sourceHash: asText(source.get('sourceHash')) ?? '',
+    };
+    const revision = asText(source.get('revision'));
+    if (revision) record.revision = revision;
+    const usedHash = asText(source.get('usedHash'));
+    if (usedHash) record.usedHash = usedHash;
+    out.push([url.slice('self#jumbf=c2pa.assertions/'.length), record]);
   }
   return out;
 }

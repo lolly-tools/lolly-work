@@ -134,3 +134,19 @@ export type {
 
 /** The `HostV1` contract version this SDK targets (matches `HostV1.version`). */
 export const CONTRACT_VERSION = '1';
+
+export { RIGHTS_ISSUE_CODES, RIGHTS_STATUSES, CREATIVE_OPERATIONS } from './rights-v1.ts';
+export type {
+  RightsIssueCodeV1, RightsStatusV1, RightsAssertingPartyV1, RightsEvidenceSourceV1, RightsEvidenceStatusV1,
+  RightsEvidenceV1, CreativePartyV1, PermissionGrantV1, CreativeWorkRecordV1, CreativeUseRoleV1, CreativeOperationV1,
+  CreativeClassificationV1, CreativeUseV1, DeliveryRouteV1, UseContextV1, RightsRemedyV1, RightsIssueV1,
+  AttributionNoticeV1, AttributionChannelV1, AttributionPlanV1, CreativeUseResultV1, RightsDecisionV1,
+  RightsEvaluationV1, ReceiptStateV1, AttributionReceiptV1, RightsReportSourceV1, RightsReportV1,
+} from './rights-v1.ts';
+export type {
+  EmojiPackPinV1, EmojiSourceV1, EmojiMeaningV1, EmojiMetricsV1, EmojiGlyphV1,
+  EmojiPackManifestV1, EmojiStyleV1, EmojiRequestV1, EmojiIssueCodeV1,
+  EmojiIssueV1, ResolvedEmojiGlyphV1, EmojiResolutionV1,
+} from './emoji-v1.ts';
+
+export type { LearningProgressEventV1, LearningTarget, LearningSource, LearningBlock, LearningLesson, LearningModule, LearningFile, LearningContentBlock, LearningContent, LearningAttempt, LearningFinding, LearningRelease } from './learning-v1.ts';

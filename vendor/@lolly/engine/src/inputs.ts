@@ -11,7 +11,7 @@
  * we keep behaviour consistent across web/Tauri/CLI.
  */
 
-import { isTokenValue } from './tokens.ts';
+import { isTokenValue, aliasPath } from './tokens.ts';
 import type { TokenValue } from './tokens.ts';
 import type { AssetRef, InputFile } from './bridge/host-v1.ts';
 
@@ -66,10 +66,36 @@ export type InputValue =
   | InputValue[]
   | { [key: string]: InputValue | undefined };
 
+/**
+ * A visibility condition on an input or a select option. A map is every pair
+ * required: the named input's current value must be the value, or one of the
+ * listed values. A list of maps is any one map sufficient (an OR of ANDs).
+ */
+export type ShowIf = Record<string, InputValue> | Array<Record<string, InputValue>>;
+
+/**
+ * Whether a condition holds against the current model values. Undefined holds
+ * (nothing declared, always shown); an empty map holds; an empty list does not.
+ * A visibility overlay only: it never decides what a value may be.
+ */
+export function matchesShowIf(showIf: ShowIf | undefined, values: Record<string, unknown>): boolean {
+  if (!showIf) return true;
+  const matchesMap = (map: Record<string, InputValue>): boolean =>
+    Object.entries(map).every(([k, v]) =>
+      Array.isArray(v) ? (v as unknown[]).includes(values[k]) : values[k] === v
+    );
+  return Array.isArray(showIf) ? showIf.some(matchesMap) : matchesMap(showIf);
+}
+
 /** One `select` option (may carry an export size the shell applies). */
 export interface SelectOption {
   value: string;
   label?: string;
+  /** Offer this option only while the model matches (same shape and semantics as
+   *  an input's showIf). A visibility overlay: the option that is currently
+   *  selected stays offered whatever this says, so a saved session or a link never
+   *  changes meaning, and validation still runs against the whole option set. */
+  showIf?: ShowIf;
   width?: number;
   height?: number;
   unit?: string;
@@ -202,7 +228,10 @@ export interface InputSpec {
    *  shell's renderActions; see the claim tool. */
   matchExportFormat?: boolean;
   group?: string;
-  showIf?: Record<string, InputValue>;
+  /** Render only while the model matches: one map of input id to an accepted
+   *  value (or list of values), every pair required; or a list of such maps, any
+   *  one sufficient. See matchesShowIf. */
+  showIf?: ShowIf;
   // text / longtext
   maxLength?: number;
   minLength?: number;
@@ -268,6 +297,10 @@ export interface InputSpec {
    *  it - the stored TableValue is the same strings whichever editor wrote them, so
    *  URL mode and the CLI are unaffected. See schema `columnEditors`. */
   columnEditors?: TableColumnEditor[];
+  /** On flat scalar `blocks`: edit rows in the shared table, in this field order.
+   * Unlisted fields follow in declaration order. Stored objects and URL field order
+   * stay unchanged; shells without the presentation can keep their block editor. */
+  tableColumns?: string[];
   // blocks presentation/behaviour
   addMenu?: BlocksAddMenu;
   labelledFields?: boolean;
@@ -540,7 +573,10 @@ function pickControl(input: InputSpec): InputControl {
   if (input.type === 'boolean') return 'checkbox';
   if (input.type === 'time') return 'time-input';
   if (input.type === 'datetime-local') return 'datetime-local-input';
-  if (input.type === 'blocks') return 'blocks';
+  if (input.type === 'blocks') return input.tableColumns?.length &&
+    !input.nesting && !input.addMenu && input.fields?.every(f =>
+      !f.showIf && !f.showFor && ['text', 'url', 'color', 'boolean', 'number', 'select'].includes(f.type ?? 'text')
+    ) ? 'table' : 'blocks';
   if (input.type === 'vector') return 'vector';
   if (input.type === 'file') return 'file-picker';
   if (input.type === 'table') return 'table';
@@ -745,6 +781,25 @@ export function flattenValue(v: InputValue): InputValue {
   // The cached value is a resolved colour string; anything else (or a missing
   // cache) flattens to '' - the same fallback the `?? ''` gave.
   return typeof v.value === 'string' ? v.value : '';
+}
+
+/**
+ * Input id → the dotted token path it inherits, for every input still carrying a
+ * `{ref, value}` after `resolveTokenRefs` (a token-linked colour) (plans/222). The
+ * source that `flattenValue`/`modelToValues` erase on the way to the template - the
+ * runtime feeds this to `resolvePaintBindings` so an inherited colour survives into
+ * the `.penpot` export as an applied-token binding. Empty when no input is
+ * token-linked, which is most renders.
+ */
+export function tokenBindingsOf(model: InputModelItem[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const input of model) {
+    const v = input.value;
+    if (!isTokenValue(v)) continue;
+    const path = aliasPath(v.ref) ?? v.ref.replace(/^\{|\}$/g, '');
+    if (path) out[input.id] = path;
+  }
+  return out;
 }
 
 /**

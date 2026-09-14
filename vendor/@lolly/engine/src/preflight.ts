@@ -49,6 +49,7 @@ import type { Dimension } from './units.ts';
 import { isPhysical, toCssPx, toInches, toPixels, toPoints } from './units.ts';
 import { rgbToCmyk, cmykCondition, DEFAULT_CMYK_CONDITION } from './color.ts';
 import { ENGINE_VERSION } from './version.ts';
+import { clamp } from './clamp.ts';
 
 /** Re-exported so a shell can import the whole preflight vocabulary from one
  *  place (`@lolly/engine`) without also depending on the tool-author SDK. */
@@ -323,7 +324,6 @@ export interface PreflightJob {
 
 const lower = (v: unknown): string => (typeof v === 'string' ? v.toLowerCase() : '');
 const isFiniteNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
-const clamp = (n: number, lo: number, hi: number): number => (n < lo ? lo : n > hi ? hi : n);
 
 /** Format a number for a message: no trailing noise, at most 2 decimals. */
 const num = (n: number): string => {
@@ -890,7 +890,7 @@ const physicalTrim = (c: Ctx): { w: Dimension; h: Dimension } | null => {
 //    (the raster is rendered at toPixels(dim, dpi)). Measurable, needs nothing.
 //  • A single placed image's effective DPI (the "logo is 96 DPI here" case) needs
 //    the mounted DOM: the image's intrinsic pixels vs. how big it prints. When the
-//    stage is absent (headless) we say so (checkImageDpiNeedsStage), never guess.
+//    stage is absent (headless) we report it (checkImageDpiNeedsStage), never guess.
 //
 // Thresholds vary by INTENT, derived from the trim's long edge, not a new control:
 // offset/sheet-fed wants 300 (250-300 acceptable, <150 a hard fault); large-format

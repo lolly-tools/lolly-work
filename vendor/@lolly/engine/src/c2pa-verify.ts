@@ -64,10 +64,10 @@ import type { DerTlv } from './der-read.ts';
 import {
   decodeCbor, parseC2paStore, sniffFormat, extractC2paFromPdf, EXTRACTORS,
   collectActionChain, aiKind, extractC2paStore, prepareC2paIngredient, prepareC2paIngredientFromStore,
-  collectIngredients, bmffTopBoxes, extractC2paDetailed, C2PA_TEXT_STATUS,
+  collectIngredients, collectIngredientRecords, bmffTopBoxes, extractC2paDetailed, C2PA_TEXT_STATUS,
 } from './c2pa-extract.ts';
 import type {
-  C2paStoreParts, SniffFormat, C2paIngredientData, BmffBox,
+  C2paStoreParts, SniffFormat, C2paIngredientData, C2paIngredientRecord, BmffBox,
   C2paTextCarrier, C2paTextWrapper, C2paExclusion,
 } from './c2pa-extract.ts';
 // Re-exported so every existing `from './c2pa-verify.ts'` import (index.ts, the
@@ -75,9 +75,9 @@ import type {
 // know these moved to c2pa-extract.ts.
 export {
   decodeCbor, parseC2paStore, sniffFormat, extractC2paFromPdf,
-  extractC2paStore, prepareC2paIngredient, prepareC2paIngredientFromStore, collectIngredients, aiKind,
+  extractC2paStore, prepareC2paIngredient, prepareC2paIngredientFromStore, collectIngredients, collectIngredientRecords, aiKind,
 };
-export type { C2paIngredientData };
+export type { C2paIngredientData, C2paIngredientRecord };
 
 const td = new TextDecoder();
 const te = new TextEncoder();
@@ -205,7 +205,6 @@ const HASH_OIDS: Record<string, string> = {
   '608648016503040201': 'SHA-256', '608648016503040202': 'SHA-384',
   '608648016503040203': 'SHA-512', '2b0e03021a': 'SHA-1',
 };
-const HASH_LEN: Record<string, number> = { 'SHA-1': 20, 'SHA-256': 32, 'SHA-384': 48, 'SHA-512': 64 };
 
 // Parse a signatureAlgorithm AlgorithmIdentifier into a verify recipe, or null
 // for anything unrecognised (→ the chain step is a quiet no-match, never a
@@ -661,6 +660,11 @@ export interface C2paReport {
   // The full provenance chain - every manifest's actions (parent/ingredient →
   // active), flattened in store order with adjacent duplicates collapsed.
   history?: C2paHistoryStep[];
+  // Every ingredient assertion any manifest in the store recorded, in the same
+  // order, with the rights record bound to each (v1.194). A credentialed
+  // ingredient's own manifest is also in the chain above; a source ingredient
+  // (no credential of its own) appears only here.
+  ingredients?: C2paIngredientRecord[];
 }
 
 // ─── C2PA 2.4 text bindings: read-side helpers ────────────────────────────────
@@ -872,7 +876,6 @@ function readAiDisclosure(content: Uint8Array): C2paAiDisclosure | undefined {
     return Object.keys(out).length ? out : undefined;
   } catch { return undefined; }
 }
-
 
 /**
  * Verify a file's Content Credentials entirely on-device. Sniffs the
@@ -1159,6 +1162,10 @@ export async function verifyC2pa(
   // and to flag AI origin wherever in the chain it was declared.
   const chain = collectActionChain(extracted.manifest);
   if (chain.length) report.history = chain;
+  // What went into it: every recorded ingredient, credentialed or plain source,
+  // with the rights Lolly bound to it - for the Verify page's sources list.
+  const ingredientRecords = collectIngredientRecords(extracted.manifest);
+  if (ingredientRecords.length) report.ingredients = ingredientRecords;
 
   // AI-generated provenance: scan the chain's digitalSourceType for the IPTC
   // "trained algorithmic media" codes. A single full-AI step wins over any number

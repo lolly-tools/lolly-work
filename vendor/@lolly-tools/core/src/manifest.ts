@@ -38,6 +38,10 @@ export type InputType =
 export interface SelectOption {
   value: string;
   label?: string;
+  /** Offer this option only while the model matches: one map of input id to an
+   *  accepted value (or list of values), every pair required, or a list of such
+   *  maps, any one sufficient. The selected option always stays offered. */
+  showIf?: Record<string, unknown> | Array<Record<string, unknown>>;
   /** Short pill shown beside the option (e.g. 'vector'/'raster'). Any option with a
    *  badge switches the select to a badged picker in the web shell. */
   badge?: string;
@@ -70,8 +74,10 @@ export interface InputSpec {
   /** Collapsible sidebar section this control renders under. */
   section?: string;
   group?: string;
-  /** Show this input only while the named inputs hold the given values. */
-  showIf?: Record<string, unknown>;
+  /** Show this input only while the named inputs hold the given values: one map
+   *  (every pair required; a value may be a list of accepted values) or a list of
+   *  maps (any one sufficient). */
+  showIf?: Record<string, unknown> | Array<Record<string, unknown>>;
   // text / longtext
   maxLength?: number;
   minLength?: number;
@@ -117,6 +123,8 @@ export interface RenderSpec {
    *  panes). A full-bleed tool that still exports keeps its export pill and canvas.
    *  The declared inputs are a pure DATA channel the template must NOT reference. */
   sidebar?: boolean;
+  /** Keep live edits out of the address bar; explicit URL inputs remain supported. */
+  urlSync?: boolean;
   dims?: boolean;
   /** Set false to offer pixels only. The download bar hides the physical-unit
    *  selector and DPI field, so an on-screen pixel is an exported pixel. */
@@ -243,6 +251,47 @@ export interface ToolGuide {
 }
 
 /**
+ * One curated variant inside a template: a `values` overlay merged over the
+ * template's base values, shallow and per input id, the preset winning. A blocks
+ * input therefore carries its FULL replacement array, never a fragment. Deep-linked
+ * as `?template=<tid>&preset=<pid>`.
+ */
+export interface TemplatePreset {
+  /** Stable id, unique within the template's `presets`. Permanent, like a tool id. */
+  id: string;
+  /** Display name shown on the preset chip. */
+  name: string;
+  description?: string;
+  /** The overlay. Lives in the external template file; the synced index strips it. */
+  values?: Record<string, unknown>;
+}
+
+/**
+ * One named starting point for the "New from template" chooser.
+ *
+ * Two shapes satisfy this type, which is why `values` is optional: the EXTERNAL
+ * file `tools/<id>/templates/<tid>.json`, which carries the seed, and the
+ * metadata-only entry the synced catalog index carries, which strips it (and each
+ * preset's) so templates cost nothing at rest however large a seed grows.
+ */
+export interface TemplateVariant {
+  /** Stable id, equal to the file basename. The `?template=<id>` address. */
+  id: string;
+  /** Display name shown on the chooser tile. */
+  name: string;
+  description?: string;
+  /** Optional grouping label; tiles sharing one are grouped in the chooser. */
+  category?: string;
+  /** Optional thumbnail: a tool-relative asset path or data URI. */
+  thumb?: string;
+  /** Optional curated motion metadata (Design). */
+  motion?: Record<string, unknown>;
+  /** The full input seed a fresh session opens with. */
+  values?: Record<string, unknown>;
+  presets?: TemplatePreset[];
+}
+
+/**
  * A parsed tool manifest. Author it with {@link defineTool} for type-checking, then
  * validate with {@link validateTool} before shipping (Lolly's catalog CI does the
  * same). `id` is a permanent contract: never rename or reuse it.
@@ -289,12 +338,14 @@ export interface ToolManifest {
   featured?: { blurb?: string; order?: number; variants?: unknown[] };
   examples?: unknown[];
   /** Named starting points for the web shell's "New from template" chooser (shown
-   *  only on a blank fresh open). Each entry is `{ id, name, description?, category?,
-   *  thumb?, values }`; `values` is a full input seed read in-process (never packed
-   *  into the URL), and the reserved `?template=<id>` param launches one directly,
-   *  skipping the chooser. Additive: a tool without it is unchanged, and the
-   *  manifest `default` composition still renders on URL-mode/CLI/deep-link opens. */
-  templates?: unknown[];
+   *  only on a blank fresh open). The source of truth is one file per template in
+   *  `tools/<id>/templates/<tid>.json`; this inline field is the fallback for a tool
+   *  that prefers its metadata in the manifest. `values` is a full input seed read
+   *  in-process (never packed into the URL), and the reserved `?template=<id>` param
+   *  launches one directly, skipping the chooser. Additive: a tool without it is
+   *  unchanged, and the manifest `default` composition still renders on
+   *  URL-mode/CLI/deep-link opens. */
+  templates?: TemplateVariant[];
   capabilities?: Capability[];
   /**
    * Optional HostV1 APIs this tool calls without feature-detecting them

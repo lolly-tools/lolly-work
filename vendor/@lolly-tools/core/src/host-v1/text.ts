@@ -3,6 +3,8 @@
 // ─── Text-to-path ───────────────────────────────────────────────────────────
 
 export interface TextAPI {
+  /** Actual Unicode character map of a font file, without fallback (v1.191). */
+  characters?(fontUrl: string): Promise<number[]>;
   /**
    * Shape `text` using the given font at `fontSize` px and return an SVG path.
    *
@@ -22,7 +24,7 @@ export interface TextAPI {
   /**
    * The font's variable-axis DEFAULT values, tag → value (`{ wght: 400 }`), or
    * `{}` for a static font. A caller embedding the raw file into a renderer with
-   * no variable-axis control (jsPDF) gets exactly this instance, so it needs the
+   * no variable-axis control (a plain PDF font embed) gets exactly this instance, so it needs the
    * defaults to know whether the file will render at the weight it wants.
    * Optional/additive (v1.30); absent on older hosts. (v1.30)
    */
@@ -58,6 +60,9 @@ export interface TextToPathOpts {
    * instead of forcing a non-outlined <text> fallback. Defaults to 0.
    */
   letterSpacing?: number;
+  /** Shape whitespace-only runs for their advance, keeping an empty path and null bbox.
+   *  Defaults to false for compatibility. Mixed text/emoji layout needs this (v1.192). */
+  preserveWhitespaceAdvance?: boolean;
   /**
    * OpenType variation-axis settings for a VARIABLE font, as HarfBuzz strings
    * (`['wght=700']`). Without them a variable face shapes at its default

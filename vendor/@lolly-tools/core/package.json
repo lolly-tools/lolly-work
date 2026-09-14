@@ -17,6 +17,10 @@
     "./preflight": "./src/preflight.ts",
     "./chart-v1": "./src/chart-v1.ts",
     "./design-v1": "./src/design-v1.ts",
+    "./emoji-v1": "./src/emoji-v1.ts",
+    "./rights-v1": "./src/rights-v1.ts",
+    "./schema/emoji-pack-v1.schema.json": "./schema/emoji-pack-v1.schema.json",
+    "./schema/emoji-style-v1.schema.json": "./schema/emoji-style-v1.schema.json",
     "./file-v1": "./src/file-v1.ts",
     "./file-operation-v1": "./src/file-operation-v1.ts",
     "./image-operation-v1": "./src/image-operation-v1.ts",
@@ -26,7 +30,9 @@
     "./schema/file-operation-request-v1.schema.json": "./schema/file-operation-request-v1.schema.json",
     "./schema/file-operation-report-v1.schema.json": "./schema/file-operation-report-v1.schema.json",
     "./schema/canvas-op.schema.json": "./schema/canvas-op.schema.json",
-    "./schema/chart-v1.schema.json": "./schema/chart-v1.schema.json"
+    "./schema/chart-v1.schema.json": "./schema/chart-v1.schema.json",
+    "./learning-v1": "./src/learning-v1.ts",
+    "./schema/learning-module-v1.schema.json": "./schema/learning-module-v1.schema.json"
   },
   "files": [
     "src",
@@ -40,14 +46,14 @@
     "capability-bridge",
     "content-generation"
   ],
-  "scripts": {
-    "test": "node --test \"test/**/*.test.ts\"",
-    "typecheck": "tsc -p ."
-  },
   "dependencies": {
     "ajv": "^8.17.1"
   },
   "devDependencies": {
     "typescript": "^5.5.0"
+  },
+  "scripts": {
+    "test": "node --test \"test/**/*.test.ts\"",
+    "typecheck": "tsc -p ."
   }
 }

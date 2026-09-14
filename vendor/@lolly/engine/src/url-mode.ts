@@ -181,6 +181,21 @@
  *                  decrypts client-side (no server). Not expanded by `expandQuery`
  *                  (the headless embed path can't prompt), so parseUrlState only ever
  *                  ignores it. Listed here so a stray one is never a tool input.
+ *   - `emoji` - the EMOJI SET this render draws its emoji from: `<id>@<version>`
+ *                  (e.g. `community/emoji/twemoji/color-starter@17.0.3`), or the id's
+ *                  last two segments (`twemoji/color-starter@17.0.3`) when they name
+ *                  one set on the device. The set's checksum is never in the link: the
+ *                  host pins it from its own listing, so a link can name a set but can
+ *                  never describe its bytes. Unlike `ds` and `designv` this one IS
+ *                  written into a share link, because the emoji a document draws are
+ *                  part of the document.
+ *   - `emojifx` - the brand TREATMENT applied to that artwork: `original`,
+ *                  `influence:<bps>` (1 to 9999 basis points toward the nearest brand
+ *                  colour), `snap`, `mono` or `duotone`, with an optional
+ *                  `,unprotected` suffix that lets the treatment recolour skin tones,
+ *                  flags and custom symbols too. The palette comes from the brand in
+ *                  force when the link is opened, never from the URL. Written into a
+ *                  share link alongside `emoji`.
  *
  * NOTE: this list, the RESERVED set below, and docs/url-mode.md must stay in
  * sync - tests/engine.test.js asserts the RESERVED set against an inline copy.
@@ -374,6 +389,16 @@ export interface UrlState {
    *  into a page selection for the still-export filter (web fan-out + CLI, same code).
    *  null ⇒ absent ⇒ every page exports, the unchanged default. */
   slide: string | null;
+  /** The emoji set this render draws from (the `emoji` param), verbatim: `<id>@<version>`
+   *  or the short `<family>/<style>@<version>` form. Which sets a device holds is not
+   *  something url-mode can know, so `parseEmojiParams` (engine/src/emoji-style.ts)
+   *  turns it into a pinned style against the host's own listing. null ⇒ absent. */
+  emoji: string | null;
+  /** The brand treatment for that artwork (the `emojifx` param), verbatim: `original`,
+   *  `influence:<bps>`, `snap`, `mono` or `duotone`, with an optional `,unprotected`
+   *  suffix. Resolved against the brand's palette by `parseEmojiParams`, which is the
+   *  only place that knows the colours. null ⇒ absent. */
+  emojiFx: string | null;
 }
 
 /** The slice of an input model item serializeUrlState reads. */
@@ -432,6 +457,11 @@ export interface SerializeUrlOpts {
   /** UI/content language to stamp on a share link (see `lang` in the header
    *  comment). Omitted for English - the implicit default. */
   lang?: string | null;
+  /** The emoji set (`emoji`) and its brand treatment (`emojifx`), as written by
+   *  `emojiParams` in engine/src/emoji-style.ts. Both travel in a share link: the
+   *  emoji a document draws belong to the document, not to the device. */
+  emoji?: string | null;
+  emojiFx?: string | null;
   /** Keep device-local `user/…` asset ids in the serialised state (plan 171).
    *  Default FALSE - the engine-enforced product contract is that a device-local
    *  id never leaves the device (docs/url-mode.md), so a top-level `user/` asset
@@ -443,7 +473,7 @@ export interface SerializeUrlOpts {
 // Param names that are NOT tool inputs (export/render controls). Exported so the
 // engine contract test can assert it stays in lock-step with the documented list
 // (the header comment above + docs/url-mode.md) and nothing drifts silently.
-export const RESERVED = new Set(['format', 'export', 'copy', 'slot', 'output', 'filename', '_v', 'width', 'height', 'w', 'h', 'unit', 'dpi', 'profile', 'password', 'bleed', 'marks', 'c2pa', 'imprint', 'durable', 'meta', 'hdr', 'depth', 'cuts', 'lang', 'designv', 'ds', 'full', 'options', 'nostage', 'template', 'preset', 'present', 's', 'kiosk', 'z', 'zx', 'fps', 'seconds', 'wait', 'codec', 'vq']);
+export const RESERVED = new Set(['format', 'export', 'copy', 'slot', 'output', 'filename', '_v', 'width', 'height', 'w', 'h', 'unit', 'dpi', 'profile', 'password', 'bleed', 'marks', 'c2pa', 'imprint', 'durable', 'meta', 'hdr', 'depth', 'cuts', 'lang', 'designv', 'ds', 'full', 'options', 'nostage', 'template', 'preset', 'present', 's', 'kiosk', 'z', 'zx', 'fps', 'seconds', 'wait', 'codec', 'vq', 'emoji', 'emojifx']);
 // NOTE on the presentation-mode kiosk flag: it was the unreserved `loop` until
 // 2026-08-28 (plan 171 executed the rename inside the id-break window). `loop` is a
 // live *input* id in several tools (deck-builder, 3d, flythrough, digi-ad,
@@ -695,6 +725,10 @@ export function parseUrlState(searchParams: string | URLSearchParams, manifest: 
     // The deck state address (see header). Verbatim: frame-address.ts resolves it against
     // the pages a render produced, which is the only place that knows what exists.
     slide: params.get('s') || null,
+    // The emoji set and its brand treatment (see header). Verbatim: parseEmojiParams
+    // pins them against the sets the host actually holds and the brand's palette.
+    emoji: params.get('emoji') || null,
+    emojiFx: params.get('emojifx') || null,
   };
 }
 
@@ -771,6 +805,10 @@ export function serializeUrlState(model: UrlSerializableInput[], opts: Serialize
   // same clamp as the parser so a serialised link can't carry a value parse rejects.
   if (opts.cuts != null && parseCuts(String(opts.cuts)) > 1) params.set('cuts', String(parseCuts(String(opts.cuts))));
   if (opts.lang && opts.lang !== 'en') params.set('lang', opts.lang);
+  // Unlike `ds` and `designv`, these two are written: a link whose emoji set did not
+  // travel would draw placeholders for the recipient.
+  if (opts.emoji?.trim()) params.set('emoji', opts.emoji.trim());
+  if (opts.emojiFx?.trim()) params.set('emojifx', opts.emojiFx.trim());
   return params.toString();
 }
 
@@ -940,7 +978,7 @@ export function encodeBlocksCompact(
       // Asset sub-fields hold an AssetRef - share its link-safe id (a baked ref
       // shares as its provenance URL via assetIdForUrl, never its data: bytes).
       if (f.type === 'asset') {
-        const id = raw && typeof raw === 'object' ? assetIdForUrl(raw as AssetRef) : '';
+        const id = raw && typeof raw === 'object' ? assetIdForUrl(raw as AssetRef) : typeof raw === 'string' ? raw : '';
         return cell(id && (opts.keepUserIds || !String(id).startsWith('user/')) ? String(id) : '');
       }
       let v = String(raw ?? '');

@@ -1,30 +1,32 @@
 {
-  "generatedFrom": "6fcfaf7d661dbcd01be0a0605151fd0ab00e76a1",
+  "generatedFrom": "28e2fd91642a0d6baa36d37ef02090b895a77da0",
   "note": "Pin manifest - a consumer verifies vendored content against contentHash. tarballSha256 is informational (gzip is not reproducible).",
   "core": {
     "version": "1.0.0",
     "tarball": "lolly-tools-core-1.0.0.tgz",
-    "tarballSha256": "a18f4aa4ee6dc5b8bba862848c2e8b13996d63bae6ae4eb3b5d0a7739ba81563",
-    "contentHash": "8ac687d31e28eb747a0a739c5794636043ddd008740dc013ec0bf99a39de2d8c"
+    "tarballSha256": "bd89feda56bf0128e4bff661c47d39f383f90168083681f736a4a4c7c08ffe15",
+    "contentHash": "a4456198ae2970bfc31a058aa9ea16123f42849ec0638329c2a0f9af647ad57a"
   },
   "engine": {
-    "version": "1.183.0",
-    "tarball": "lolly-engine-1.183.0.tgz",
-    "tarballSha256": "3226db21a015a56331711d826920f886554236d793d348864692c5e1595ae8b9",
-    "contentHash": "698107632e3f9aaad6596b946c78c8878a1283e0c00a89867439b9e48c703c7c"
+    "version": "1.197.0",
+    "tarball": "lolly-engine-1.197.0.tgz",
+    "tarballSha256": "902ef774d9871e83e3f42eeb007c2b783418d2584d378fab46453ea973f4893a",
+    "contentHash": "fc80437a68c41a934748143a545d726ed7bbee861e751410847b6c982c9b2d74"
   },
   "schemas": {
-    "asset-ref.schema.json": "613b34c7aabed9c9825779fb34ac294d4cd3c7a9bde785bc4b56c43b38263c9b",
-    "asset.schema.json": "b0f41d857fdf0baafce44a51bda41dbf90ca53d5439a699f4054ff7ca1143e8c",
-    "blocks-wire-order.json": "1e312cc087e36362651300e99dbd79a19ffdab621f6ab2089f26fd9f672c15dc",
+    "asset-ref.schema.json": "7a9de36f6c25ab8fea81987f8705cf2e1f509b1520b5ea1d8bbcb8e4c268c3a5",
+    "asset.schema.json": "c34f9bf7ee977501fb28de6826ec0a6a161dad2de23d31b7dc1f5d863e5c9c08",
+    "blocks-wire-order.json": "51339094c7de0548937f04ae71a8fe3e8456e2113179954934a9de9e3d040a42",
     "canonical-aliases.json": "3b008b3d5c2936cd68246d736b0de877e98d5a37939645928ef55380aff7cc29",
-    "canonical-inputs.json": "bd5f7e210049f8a5bfe0aa5df6c2ae8c843231b20924fa052e2f34a1fbd8d6c4",
+    "canonical-inputs.json": "1b3120fbc35a6e1266badbc94cce118469df784adfd30c1a206720b28b043df1",
     "canvas-op.schema.json": "e1acaf0c98b875012104b49582994bf5b5bdb9aa3fc3e210a0d9e3c527f9453d",
     "chart-v1.schema.json": "7bc73ce09be779f9ba04ad7c2a0f872f5c663dc39558c81a74bf8295b272e822",
+    "emoji-pack-v1.schema.json": "48b5dbaaddd8269f242544157cf542519f76b50384745bee5bf0aa45bb92de89",
+    "emoji-style-v1.schema.json": "940b007355b2b2fe2d985b238499f4cb4b02211a1471682bde0b8b77bc1494e1",
     "file-operation-report-v1.schema.json": "f95969fd3f0f5099ef642679e079de1eec7432b73275dfc1772e25a79b0447d7",
     "file-operation-request-v1.schema.json": "20ca45779c17949e4d5a8482209106fd9be768ff89ee71127624860d8d2c13e2",
     "ratecard.schema.json": "e164d8ce234279c04877511cb9673cc721d0118647cdae0401246c8f35d0b777",
     "tokens.schema.json": "be8a2f388d451f778aeaf334c903556689e3897e7523e6c31b7c428040673384",
-    "tool.schema.json": "5a9952039138596de43fca350f2fe6ec5537d39009b10030e23bf7ff11780a20"
+    "tool.schema.json": "656483337f5825f8f0749121ac515669e675bba7e34c861b48a413fcfd1cf44d"
   }
 }

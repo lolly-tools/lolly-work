@@ -70,7 +70,7 @@ export interface PptxInspectColor {
  * images dropped onto blank slides) carries no colour or typeface a rebrand can
  * reach: the theme swap still rewrites the theme part, but nothing on the slides
  * references it, so the visible result is identical to the input. A tool should
- * say so BEFORE the user spends a download on it.
+ * report it BEFORE the user spends a download on it.
  */
 export interface PptxInspectContent {
   /** Picture nodes (embedded bitmaps/EMF/SVG) across all slides. */

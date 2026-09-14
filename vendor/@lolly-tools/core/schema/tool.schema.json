@@ -25,7 +25,7 @@
       "enum": [
         "community"
       ],
-      "description": "Brand-overlay marker - only valid on a tool inside a brand pack (brands/<brand>/tools/<id>/), never on a community tool. Declares this directory a per-file OVERLAY of the base pack's tool with the SAME id: scripts/use-profile.ts composes the profile view from community/<id>/ plus this dir (overlay file wins on filename collision, recursing one level into subdirs such as i18n/ and assets/) and strips this field from the composed tool.json, so shells and the engine never see it. The base community/<id>/tool.json must exist - a missing base fails the profile build loudly (never a silent partial tool). v1 supports only \"community\" as the base pack."
+      "description": "Brand-overlay marker - only valid on a tool inside a brand pack (brands/<brand>/tools/<id>/), never on a community tool. Declares this directory a per-file OVERLAY of the base pack's tool with the SAME id: packages/node-shell/src/content-roots.ts reads the tool as the union of community/<id>/ plus this dir (overlay file wins on filename collision, recursing one level into subdirs such as i18n/ and assets/) and strips this field from the manifest it hands out, so shells and the engine never see it. The base community/<id>/tool.json must exist - a missing base is an error, never a silent partial tool. v1 supports only \"community\" as the base pack."
     },
     "name": {
       "type": "string",
@@ -64,11 +64,26 @@
     },
     "category": {
       "type": "string",
+      "enum": [
+        "everyone",
+        "designer",
+        "utility",
+        "event"
+      ],
       "description": "Free-form, used for gallery grouping. Examples: 'everyone', 'event', 'product', 'designer'."
     },
     "new": {
       "type": "boolean",
       "description": "Force the gallery's 'New' badge on this tool regardless of catalog position. Newness is otherwise inferred from catalog order (the most-recently-appended tools wear the badge and it self-expires as more ship); set this to keep a tool flagged new even after later tools push it out of that trailing window."
+    },
+    "deprecated": {
+      "type": "boolean",
+      "default": false,
+      "description": "Soft-deprecate a tool before removal: its id stays a permanent contract (saved URLs and sessions still open it), but it must be `listed: false` so the gallery stops offering it, and it should name its successor in `replacedBy`. The validator refuses a deprecated tool that is still listed."
+    },
+    "replacedBy": {
+      "type": "string",
+      "description": "If deprecated, the tool id that supersedes this one. Must exist in the same profile; the validator checks it."
     },
     "listed": {
       "type": "boolean",
@@ -211,6 +226,13 @@
             "type": "string"
           },
           "description": "Section labels (input.section values) whose controls render in a denser 2-column grid instead of one control per row. A chrome-only presentation hint for input-dense pro tools; it never changes the input model, URL encoding, or determinism, and collapses back to one column on narrow panels/large-text. Wide controls (vector, blocks, textarea, asset, colour) still span the full width."
+        },
+        "sectionIcons": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Section label (input.section value) to the name of a shell icon drawn before it on the folded section head, so a tool with many sections can be scanned by glyph as well as by word. A chrome-only presentation hint like denseSections: an unknown icon name draws nothing, and the CLI and TUI ignore it."
         },
         "actions": {
           "type": "array",
@@ -379,10 +401,19 @@
         "liveCameraWhen": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["input", "value"],
+          "required": [
+            "input",
+            "value"
+          ],
           "properties": {
-            "input": { "type": "string", "description": "Id of an input whose value drives the live camera." },
-            "value": { "type": "string", "description": "The input value that means 'camera on'." }
+            "input": {
+              "type": "string",
+              "description": "Id of an input whose value drives the live camera."
+            },
+            "value": {
+              "type": "string",
+              "description": "The input value that means 'camera on'."
+            }
           },
           "description": "For onFrame (live camera) tools: AUTO-start the camera when the named input holds `value`, and stop it otherwise - so a reader/scanner turns the camera on when it loads in that mode (and when the user selects it) without a manual 'Use camera' tap. Prompts for permission the first time; a denial degrades to the tool's non-camera modes. Honoured only where a camera is usable."
         },
@@ -499,6 +530,11 @@
               "description": "The warning text shown to the editor."
             }
           }
+        },
+        "urlSync": {
+          "type": "boolean",
+          "default": true,
+          "description": "Set false to keep live edits out of the address bar. Explicit URL inputs and generated share links remain supported; local recovery uses the session slot."
         }
       }
     },
@@ -527,6 +563,46 @@
         ]
       },
       "description": "Declares what host capabilities this tool needs. The host disables the tool on shells that can't provide them (e.g. an ffmpeg-using tool is unavailable in the web shell; a 'microphone'/'camera'/'screen' recording tool is unavailable in the headless CLI). 'screen' (v1.54) is DISPLAY capture via host.recorder - the user picks a screen/window/tab in browser-native UI; distinct from 'capture', which rasterises a URL the tool itself names."
+    },
+    "requires": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "net",
+          "tokens",
+          "text",
+          "textTools",
+          "pdf",
+          "prepare",
+          "compare",
+          "pptx",
+          "capture",
+          "compose",
+          "media",
+          "scan",
+          "lift",
+          "keyframes",
+          "recorder",
+          "audio",
+          "codec",
+          "layers",
+          "upscale",
+          "matte",
+          "ocr",
+          "speech",
+          "viz",
+          "color",
+          "images",
+          "raster",
+          "geom",
+          "connectors",
+          "c2pa",
+          "emoji"
+        ]
+      },
+      "description": "Optional HostV1 APIs (`host.text`, `host.pdf`, …) this tool calls WITHOUT feature-detecting them. The runtime refuses to mount the tool on a shell that lacks one, before any hook runs, and the gallery greys it out there. An API the hooks guard (`if (host.text)`, `host.text?.`) is NOT required and must not be listed. `scripts/tool-requires.ts` computes this from hooks.js and can rewrite it (`--write`); `validate:catalog` warns when the two disagree. Distinct from `capabilities`, which names device abilities (camera, microphone, screen, …) rather than bridge APIs."
     },
     "network": {
       "type": "object",
@@ -773,9 +849,21 @@
           "description": "Optional grouping tag. The reserved value 'export' moves an input out of the sidebar into the export panel; the engine injects its own export-group toggles (transparentBg, convertPaths). Any other value is a free-form label for related controls."
         },
         "showIf": {
-          "type": "object",
-          "description": "Conditional visibility: the input renders in the sidebar only while every { otherInputId: value } pair here matches the current model (e.g. { \"vectorize\": true }).",
-          "additionalProperties": true
+          "description": "Conditional visibility: the input renders in the sidebar only while the current model matches. One object is every { otherInputId: value } pair required, where a value may be a list of accepted values (e.g. { \"vectorize\": true } or { \"chartType\": [\"bar\", \"line\"] }); an array of such objects renders when ANY of them matches, for conditions an ANDed map cannot say (\"vector bar, or a 3-D bar scene\"). A visibility overlay only: URL params, hooks and validation see the input either way.",
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": true
+            },
+            {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          ]
         },
         "attachTo": {
           "type": "string",
@@ -784,6 +872,15 @@
         "framingFor": {
           "type": "string",
           "description": "On a `vector` input holding image framing ({ zoom, x, y, rotate? }): the id of the asset input whose content it frames. Declares the input as THE framing control for that image, which is what lets the shell mount its generic on-canvas pan/zoom/rotate overlay, bound zoom against the image's real aspect ratio, and offer 'Use as a new image' (bake the framing into a new library asset). Reuse the canonical `imageFraming` field set (schemas/canonical-inputs.json) so the values stay bulk-writable in /batch. Ignored if the target id does not exist or is not an asset input. See plans/148."
+        },
+        "tableColumns": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          },
+          "description": "On flat scalar blocks, edit rows using the shared table in this field-id order; unlisted fields follow in declaration order. Stored block objects and URL field order are unchanged. Fixed headings, spreadsheet paste, copy, and pop-out are available. Complex/nested blocks keep the block editor."
         },
         "columnEditors": {
           "type": "array",
@@ -972,6 +1069,23 @@
                     },
                     "label": {
                       "type": "string"
+                    },
+                    "showIf": {
+                      "description": "Offer this option only while the current model matches, with exactly the shape and semantics of an input's showIf (one object, every pair required, or an array of objects, any one sufficient). A visibility overlay: the option that is currently selected stays offered and marked not applicable, so a saved session or a link never changes meaning, and validation still runs against the whole option set.",
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "additionalProperties": true
+                        },
+                        {
+                          "type": "array",
+                          "minItems": 1,
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": true
+                          }
+                        }
+                      ]
                     },
                     "icon": {
                       "type": "string",
@@ -2033,9 +2147,82 @@
           "type": "string",
           "description": "Optional thumbnail: a tool-relative asset path or data URI. Absent → the chooser draws a glyph tile."
         },
+        "motion": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "collection",
+            "recipe",
+            "durationMs",
+            "posterMs",
+            "beats"
+          ],
+          "properties": {
+            "collection": {
+              "type": "string",
+              "minLength": 1
+            },
+            "recipe": {
+              "type": "string",
+              "minLength": 1
+            },
+            "durationMs": {
+              "type": "number",
+              "minimum": 800,
+              "maximum": 30000
+            },
+            "posterMs": {
+              "type": "number",
+              "minimum": 0
+            },
+            "beats": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 160
+              }
+            }
+          }
+        },
         "values": {
           "type": "object",
           "description": "Map of input id -> value read directly into the fresh session - the same shape URL params resolve to, and the same shape a `default` composition uses. Authored in the EXTERNAL per-template file tools/<id>/templates/<tid>.json (not the synced index, which carries metadata only). Any size (a free-canvas `boxes` array can be many KB), because it is fetched on demand and seeded in-process, never serialised into a URL."
+        },
+        "presets": {
+          "type": "array",
+          "description": "Curated variants INSIDE this template - each one a values overlay merged over the template's base `values` (shallow, per input id, the preset wins). Deep-linked as `?template=<tid>&preset=<pid>`. Same two shapes as the template itself: the external file carries each overlay's `values`, the synced index carries id/name/description only.",
+          "items": {
+            "$ref": "#/$defs/templatePreset"
+          }
+        }
+      }
+    },
+    "templatePreset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name"
+      ],
+      "description": "One curated variant of a template: a values overlay merged over the template base.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable id, unique within this template's `presets[]`. Addressable via the reserved `?preset=<id>` param, so treat it as a permanent contract."
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name shown on the preset chip."
+        },
+        "description": {
+          "type": "string",
+          "description": "Optional one-line description shown beside the name."
+        },
+        "values": {
+          "type": "object",
+          "description": "The overlay merged over the template's base `values` - only the input ids this variant changes, each carrying a FULL replacement value (a blocks array is replaced whole, never merged element-wise). Lives in the external template file; the synced index strips it."
         }
       }
     }

@@ -38,7 +38,7 @@
 
     "imageFraming": {
       "type": "vector",
-      "label": "Zoom & Position",
+      "label": "Zoom & position",
       "description": "The whole envelope of an image inside its frame: zoom + pan (object-position with a scale), roll, and the two perspective axes. THE framing control - pair it with `framingFor: \"<assetInputId>\"` so the shell mounts its generic on-canvas overlay and offers 'Use as a new image'. Every field is opt-in: a tool that only pans declares x/y, one that straightens adds `rotate`, one that corrects converging verticals adds `pitch`/`yaw` (the Geometry panel in Lightroom, 'Adjust' in Instagram). Render it with the {{framing}} helper - never a hand-written object-position string - so the canvas, every export path and the hooks' frameRect()/drawFramed() place the image identically. Note pitch/yaw make the placement a projective homography, which SVG and PDF cannot express: those exports take the walker's posed-raster path for that element. See plans/148.",
       "fields": [
         { "id": "zoom",   "label": "Zoom",   "min": 100,  "max": 400, "step": 1,   "default": 100 },

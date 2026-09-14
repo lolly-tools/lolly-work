@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import type { IngredientCredential } from './assets.ts';
+import type { IngredientCredential, SourceIngredient } from './assets.ts';
 
 // ─── Content Credentials signing (optional, v1.85; widened v1.104) ────────────
 
@@ -26,9 +26,11 @@ export interface C2paSignOpts {
    * `extractC2paStore` / `prepareC2paIngredientFromStore` (and `extractC2paFromPdf`
    * for a document-level PDF manifest). When present the engine prepends a
    * `c2pa.opened` step per ingredient and the new claim reads as an edit of prior
-   * work, so the history must NOT also claim `c2pa.created`.
+   * work, so the history must NOT also claim `c2pa.created`. A componentOf
+   * ingredient is recorded as `c2pa.placed` instead. A {@link SourceIngredient}
+   * (v1.194) describes a source with no credential of its own.
    */
-  ingredients?: IngredientCredential[];
+  ingredients?: (IngredientCredential | SourceIngredient)[];
   /**
    * What Lolly did to the bytes, for an honest action history:
    * • `'imported'` - content authored elsewhere; authorship/rights/metadata added

@@ -26,17 +26,39 @@
  * somewhere to stand instead of guessing at every unversioned file forever.
  */
 
+import type { RightsDecisionV1 } from '@lolly-tools/core/rights-v1';
 import { ENGINE_VERSION } from './version.ts';
 
 /** The record LAYOUT this build writes. Bump on any change to the record shape.
  *  v2 (engine 1.173, plans/186): the optional `designSystem: { id, label }` stamp,
  *  which design system the session was made with. Additive - a v1 reader ignores
- *  it and a v2 reader treats its absence as "unknown". */
-export const SESSION_FORMAT_VERSION = 2;
+ *  it and a v2 reader treats its absence as "unknown".
+ *  v3 (plans/252): the optional `emoji: { emoji, emojifx }` stamp, which emoji set
+ *  and brand treatment the session's text was drawn with. Additive in the same way:
+ *  an older reader ignores it, and a v3 reader treats its absence as "the person's
+ *  own preference decides", exactly as a session saved before this existed.
+ *  v4 (plans/253): the optional `rightsDecisions` list, the licence choices and
+ *  recorded permissions a person made about the sources in this document. Additive
+ *  again: an older reader ignores it, and a v4 reader treats its absence as "no
+ *  choice was recorded", which is what the evaluator assumes anyway. */
+export const SESSION_FORMAT_VERSION = 4;
 
 /** The newest record layout this build knows how to read. A record is readable
  *  when its `formatVersion` is ≤ this; a higher one is from a newer app. */
-export const SESSION_READER_VERSION = 2;
+export const SESSION_READER_VERSION = 4;
+
+/**
+ * Which emoji artwork a saved session was made with: the two reserved URL params
+ * verbatim (`emoji=<id>@<version>`, `emojifx=<treatment>`), so reopening the
+ * session resolves the same set through the same parser a link does. Deliberately
+ * not the resolved style: a set's bytes belong to the device that holds them, and
+ * a stamp that named a checksum could not be reopened on a device that has a
+ * different build of the same set.
+ */
+export interface SessionEmojiStamp {
+  emoji: string;
+  emojifx: string;
+}
 
 export interface SessionVersionStamp {
   formatVersion: number;
@@ -56,6 +78,57 @@ export interface StoredSessionRecord {
   formatVersion?: unknown;
   engineVersion?: unknown;
   data?: unknown;
+  emoji?: unknown;
+  rightsDecisions?: unknown;
+}
+
+/** The decision kinds a record may carry. An `acknowledged` decision records that
+ *  a warning was seen and resolves nothing, which is why it is kept apart from the
+ *  two that do. */
+const DECISION_KINDS = new Set(['output-licence', 'separate-permission', 'acknowledged']);
+
+/**
+ * The licence decisions off a stored record, or null when it carries none or
+ * carries junk. Total over untrusted rows, like the emoji stamp above: a
+ * malformed entry is dropped rather than throwing, an entry with no work or no
+ * kind is not a decision, and an empty result reads as "nothing was recorded".
+ *
+ * Bounded on purpose. A record is device-local but it is also what a `.lolly`
+ * file and a restored backup carry, so the reader never trusts the length or the
+ * field sizes of what it was handed.
+ */
+export function sessionRightsDecisions(record: StoredSessionRecord | null | undefined): RightsDecisionV1[] | null {
+  const raw = record?.rightsDecisions;
+  if (!Array.isArray(raw)) return null;
+  // Keyed by work and kind, keeping the last, so a stored array that named one
+  // work twice cannot let its own order decide which choice applies. The key
+  // goes through JSON because a work id is arbitrary text out of an untrusted
+  // record, and a key glued together with a separator could be made to collide.
+  const out = new Map<string, RightsDecisionV1>();
+  for (const entry of raw.slice(0, 200)) {
+    if (!entry || typeof entry !== 'object') continue;
+    const { work, kind, licence, note, fingerprint, recordedAt } = entry as Record<string, unknown>;
+    if (typeof work !== 'string' || !work.trim()) continue;
+    if (typeof kind !== 'string' || !DECISION_KINDS.has(kind)) continue;
+    const decision: RightsDecisionV1 = { work: work.slice(0, 300), kind: kind as RightsDecisionV1['kind'] };
+    if (typeof fingerprint === 'string' && fingerprint) decision.fingerprint = fingerprint.slice(0, 200);
+    if (typeof licence === 'string' && licence) decision.licence = licence.slice(0, 200);
+    if (typeof note === 'string' && note) decision.note = note.slice(0, 2000);
+    if (typeof recordedAt === 'string' && recordedAt) decision.recordedAt = recordedAt.slice(0, 40);
+    out.set(JSON.stringify([decision.work, decision.kind]), decision);
+  }
+  return out.size ? [...out.values()] : null;
+}
+
+/** The emoji stamp off a stored record, or null when it carries none or carries
+ *  junk. Total over untrusted rows: a malformed stamp reads as absent, never
+ *  throws, and never half-applies. */
+export function sessionEmojiStamp(record: StoredSessionRecord | null | undefined): SessionEmojiStamp | null {
+  const stamp = record?.emoji;
+  if (!stamp || typeof stamp !== 'object') return null;
+  const { emoji, emojifx } = stamp as { emoji?: unknown; emojifx?: unknown };
+  if (typeof emoji !== 'string' || !emoji.trim()) return null;
+  return { emoji: emoji.trim(), emojifx: typeof emojifx === 'string' ? emojifx.trim() : '' };
 }
 
 export type SessionLogger = (
@@ -94,10 +167,14 @@ export function migrateSessionRecord(
     return data as object;
   }
 
-  // fromVersion ≤ current: migrate forward, step by step. The v0→v1 (add-stamps)
-  // and v1→v2 (add the design-system stamp) steps are both additive and no-ops
-  // on the data, so there is nothing to transform yet. Future breaking steps
-  // slot in here, e.g.:
-  //   if (fromVersion < 3) { /* v2 → v3: reshape data */ }
+  // fromVersion ≤ current: migrate forward, step by step. The v0→v1 (add-stamps),
+  // v1→v2 (add the design-system stamp), v2→v3 (add the emoji stamp) and v3→v4
+  // (add the recorded licence decisions) steps are all additive and no-ops on the
+  // data, so there is nothing to transform yet. A v2 record simply has no emoji
+  // stamp, which reads as "no set was chosen when this was saved" - the same
+  // answer it gave before the stamp existed, and a v3 record carries no recorded
+  // decision, which is what the evaluator assumes of any session. Future breaking
+  // steps slot in here, e.g.:
+  //   if (fromVersion < 5) { /* v4 → v5: reshape data */ }
   return data as object;
 }

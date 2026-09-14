@@ -372,7 +372,7 @@ export interface SvgLayer {
    * source's geometry with no fix-up at all.
    *
    * ⚑ Unless {@link viewBox} is present, in which case the document is CROPPED
-   * to that rect (its `viewBox`, `width` and `height` say so) and drops into the
+   * to that rect (its `viewBox`, `width` and `height` report it) and drops into the
    * part of the source box that rect maps to. Same picture either way; the
    * cropped form is the one whose shadow, blur and plate follow its ink.
    */
@@ -1523,7 +1523,7 @@ function filterRegion(tags: Tag[], index: IdIndex, value: string): SvgLayerBox |
  * layer was handed a bigger window (a walker screenshot of a scrolling page has
  * layers taller than the picture); and no crop at all when it would save
  * nothing - a layer that fills the stage IS the stage, and rewriting its root to
- * say so is churn.
+ * declare that is churn.
  */
 function cropFor(
   tags: Tag[], c: Candidate, src: SvgLayerBox, index: IdIndex,

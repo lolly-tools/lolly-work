@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import type { IngredientCredential } from './assets.ts';
+import type { AttributionPlanV1, AttributionReceiptV1 } from '../rights-v1.ts';
+import type { IngredientCredential, SourceIngredient } from './assets.ts';
 
 // ─── Export ─────────────────────────────────────────────────────────────────
 
@@ -284,9 +285,11 @@ export interface ExportOpts {
    * Content Credentials to preserve from placed source assets (added v1.26). The
    * runtime gathers these from credentialed uploads used in the design; the C2PA
    * embedder carries their manifests into the export's provenance chain. Opaque
-   * to the shell; ignored by exports that aren't C2PA-stamped.
+   * to the shell; ignored by exports that aren't C2PA-stamped. A
+   * {@link SourceIngredient} (v1.194) describes a placed source that has no
+   * credential of its own, with its rights record.
    */
-  ingredients?: IngredientCredential[];
+  ingredients?: (IngredientCredential | SourceIngredient)[];
 
   /**
    * A compact digest of the tool's scalar inputs (id → short string) that
@@ -329,6 +332,29 @@ export interface ExportOpts {
    * model that enlarged it. Opaque to the shell; ignored by non-C2PA exports.
    */
   c2paAiUpscale?: { model: string; version: string };
+
+  /**
+   * The attribution this export promised, and the way back to say what it
+   * actually delivered (added v1.197, plan 253). The runtime freezes ONE
+   * evaluation of the recorded sources per export and puts its plan here, so
+   * the credits a panel shows, the ingredients in the credential and the
+   * receipt all describe the same source revisions.
+   *
+   * `onReceipt` is how the measurement returns. `render()` resolves to a Blob,
+   * which has no field to carry a receipt, and a receipt must not travel as a
+   * log line: a host that reads back the bytes it wrote calls this once, with
+   * `readback-confirmed` only when every required source was found in the
+   * delivered file. A host that reads nothing back calls nothing, and the
+   * caller keeps the honest "will be included" state. Ignored by hosts that do
+   * not know the field, which is why nothing here is required for an export to
+   * succeed.
+   */
+  rights?: {
+    plan: AttributionPlanV1;
+    /** The evaluation's fingerprint, so a receipt names the facts it measured. */
+    fingerprint: string;
+    onReceipt?(receipt: AttributionReceiptV1): void;
+  };
 }
 
 // Provenance attribution, auto-assembled from the profile + tool. The trailing two

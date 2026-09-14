@@ -22,7 +22,7 @@ import {
 import { generateSigner } from './x509.ts';
 import { concatBytes, sha256, bytesToBin } from './bytes.ts';
 import { locateOpusComment, parseOpusTags, buildOpusTags, buildOggPage, commentKey, OGG_C2PA_KEY } from './ogg.ts';
-import { buildC2paManifest, urnUuid, BMFF_HASH_LABEL } from './c2pa.ts';
+import { buildC2paManifest, urnUuid, } from './c2pa.ts';
 import type { Signer, Exclusion, EmbedOptions, PlaceResult } from './c2pa.ts';
 // Runtime-light: gainmap-jpeg's only value imports are bytes.ts + jpeg-segments.ts
 // (GainMapMeta is type-only), so this pulls no pixel machinery into the C2PA path.
@@ -282,7 +282,7 @@ const xrefEntryLine = (offset: number, gen: number): string => `${String(offset)
  * /Filespec with /AFRelationship /C2PA_Manifest, the manifest as an
  * /EmbeddedFile stream, a classic xref section and a trailer whose /Prev
  * points at the original startxref. Requires a classic cross-reference
- * table (jsPDF-style); cross-reference streams throw a clear Error the
+ * table (the classic form); cross-reference streams throw a clear Error the
  * shell treats as "cannot attach".
  */
 export async function embedC2paInPdf(pdfBytes: Uint8Array, { title, claimGenerator, generatorInfo, environment, author, authorship, rights, actions, ingredients, aiDisclosure, specVersion, dates = {}, signer }: EmbedOptions = {}): Promise<Uint8Array> {

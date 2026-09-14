@@ -6,6 +6,255 @@ minors, never removed or signature-changed without a major bump.
 
 Moved verbatim from the comment block that used to live in `src/index.ts`.
 
+1.197.0 - An export says what attribution it promised, and a host says what it
+delivered. The new optional `rights` export option carries the attribution plan
+one frozen evaluation produced, plus the callback a host reports its receipt
+through after reading the written bytes back, so a panel, a credential and a
+receipt all describe the same source revisions and nothing claims credits are
+included before a reader found them (plan 253). The runtime gains `rights()`,
+`setRightsDecision()`, `setRightsDecisions()`, `rightsDecisions()` and
+`lastReceipt` over the same evaluation, and the saved session record moves to
+format 4 with the licence decisions a person recorded, which older readers still
+open. Additive: a host that ignores the option behaves exactly as before.
+The public surface gains the rules themselves, all of them pure: the versioned
+identifier table and the seven reviewed licence profiles with the section of each
+primary text they were read from (`RIGHTS_RULES_VERSION`, `normaliseLicence`,
+`readLicenceExpression`, `licenceProfile`, `licenceProfiles`,
+`licenceDisplayName`, `roleObligation`, `publicLocator`), the deterministic
+evaluator (`evaluateCreativeUses`), attribution delivery
+(`attributionCredits`, `attributionCompanion`, `sourceIngredientsFor`,
+`checkAttributionReadback`) and the file-level report Verify, the CLI, the TUI
+and MCP all answer from (`rightsReportFromC2pa`, `evaluateReuse`). The types are
+the SDK's `@lolly-tools/core/rights-v1`, with `RIGHTS_ISSUE_CODES` and
+`RIGHTS_STATUSES` as the stable machine vocabulary. No network, no clock and no
+filesystem: the rule data is versioned and in the repository, a context carries
+the date when a caller wants one recorded, and NonCommercial and NoDerivatives
+are recognised and deliberately not interpreted.
+Also in this minor, from the learning workstream: portable website learning
+delivery, source rendition selection, course summaries and export preflight
+helpers (`compileLearningModule`, `learningRenditions`, `learningSummary`,
+`checkLearningExportSize` and their types). Browser progress is isolated by
+course release and path, and the additive v1 event contract leaves learner
+identity and server storage to future integrations.
+A monochrome emoji set now follows the text colour. Under the `original`
+treatment the engine checks whether an admitted glyph is single ink (every
+fill, stroke and stop colour on every element is `none`, black or white) and,
+if it is, binds its black paints to `currentColor`; white stays white and
+nothing else in the tree moves. An inline `<svg>` inherits CSS `color`, so a
+glyph drawn from a black set reads the colour of the run it sits in, the way
+the same artwork behaves when the set ships as a font, instead of staying black
+against white text and on a dark surface. `isSingleInkEmojiSvg` and
+`inkPreparedEmojiSvg` are the new pure functions in `emoji-svg.ts`, the inked
+tree carries the normalizer `static-svg-v1+emoji-ink-v1`, and one change is
+recorded: `Single-ink paints follow the surrounding text colour.` That sentence
+is deliberately not a recolour, because no palette was applied and no colour
+was chosen, the document's own text colour draws it, so the rights census
+reports the glyph as placed and a ShareAlike set asks for no adaptation
+decision. The rule reads the artwork, not the pack, so it also reaches the 79
+OpenMoji Color glyphs that set draws as black line art; the 3,953 Twemoji
+Color glyphs are untouched and their prepared bytes are unchanged. `influence`,
+`snap`, `mono` and `duotone` run exactly as before, because there black is a
+palette decision like any other colour.
+
+1.196.0 - Emoji in ordinary text is drawn from a chosen, pinned vector pack, not
+from the operating system. Optional `host.emoji.sets/manifest/artwork/parseXml`
+lets a shell mount packs from its catalog and hand over exact bytes for an exact
+pin; a host holding a different release answers null rather than a substitute.
+The asset manifest gains an optional `meta` object, the type-specific facts a
+shell reads before it downloads the bytes (an emoji pack's pin, glyph count and
+licence). `emoji` and `emojifx` are reserved URL and CLI params, written into
+share links so a document's set and treatment travel with it. The runtime runs
+one idempotent pass over a rendered node, before every export as well as on a
+live canvas, replacing each emoji cluster with the pack's canonical artwork and
+appending the packs' rights to the export's Content Credentials as source
+ingredients. Brand treatments (original, influence, snap, mono, duotone) recolour
+that artwork through a pinned palette with deterministic colour maths, so every
+host produces the same bytes; skin tones, flags and custom symbols keep their own
+colours unless the treatment says otherwise. An unresolved cluster draws a neutral
+placeholder and never falls back to a system font.
+The runtime API is `applyEmojiToDom`, `revertEmojiDom` (a text box puts the
+characters back before it becomes editable), `setEmojiStyle`, `emoji`,
+`onEmojiChange` and `emojiIngredients` for a shell that builds its own C2PA
+options. `applyEmojiToDom` takes an optional second argument,
+`{ track?, idScope? }`: a tracked pass IS the render, so its tree is the one a
+set change redraws and its counts are what `emoji` reports, while chrome that
+draws emoji of its own - a sidebar cell, a picker grid, a specimen row - passes
+`track: false` and an id scope of its own, because placement ids come from a work
+item's place in the tree it was handed and two roots in one document would
+otherwise mint the same local ids. Only those types reach the barrel: the pinned Unicode tables are half a
+megabyte, so a render with no emoji in it loads none of the modules. The SDK
+gains `Profile.emoji`, a personal preference that seeds new work and never
+restyles a document, a session or a link that already names a set, and the
+session record gains an optional `emoji` stamp at format version 3, which older
+readers still open. Sizing is `inline-em-v1`: a glyph is placed as an inline
+element measured in em from its own viewBox, advance and metrics, so the host
+lays the line out exactly as it lays out text today. Paragraph layout and
+`host.text.layoutRuns` are not part of this.
+The pack a shell mounts now lives once for every brand, which is a resolver and
+shell change rather than a HostV1 one: `profiles.json` takes an optional `assets`
+list of shared asset roots, and `packages/node-shell/src/content-roots.ts`
+resolves them through `contentRoots().assetRoots`, a `packs/<name>/<rel>` argument
+to `catalogFile` behind the profile-independent url `/catalog/packs/<name>/<file>`,
+`readAssetIndex()` (the brand's entries plus every mounted root's, in root order)
+and `materializeInto`, which copies the roots and writes the merged index into a
+build output. An asset id claimed by two roots is refused rather than resolved by
+order. What is registered there is the COMPLETE Twemoji Color 17.0.3 set, all
+3,953 canonical glyphs in one on-demand bundle of 15,710,132 bytes under
+`community/emoji-packs/`, so `suse` and `lolly-start` serve the same file and the
+171-glyph starter subset that used to sit in one brand catalog is gone. The web
+picker draws from it too: `drawPackArtwork` walks the `unicode-emoji-picker`
+component's open shadow root with the runtime's own untracked pass, so each grid
+cell and each tab glyph is the chosen set's artwork instead of the machine's
+font. Neither the engine's public surface nor HostV1 changed for any of that.
+
+1.195.0 - Learning module v1: versioned module documents, validation and
+completion rules, compact resumable attempts, and compilation over injected
+media resolution and hashing. No learner storage, LMS APIs or DOM dependencies
+are added to the engine. HostV1 is unchanged.
+
+1.194.0 - Content Credentials for sources that carry no credential of their
+own. `ingredients` now also accepts a `SourceIngredient` (`credential: 'none'`,
+defined in the SDK): the engine writes a `c2pa.ingredient.v3` assertion with no
+`activeManifest` and no `validationResults`, binds the original bytes through
+the ingredient's external hashed URI when a public locator exists, and records
+the source's rights (creator, licence, attribution, source, revision,
+modifications, source and used hashes) in a `tools.lolly.rights` assertion
+bound to that ingredient. Nothing is fabricated on the upstream author's
+behalf, and the composition's own `dc:rights` is untouched. Two writer repairs
+that plans 252 and 253 asked for: the action now follows the relationship
+(a `componentOf` ingredient is `c2pa.placed` after the head step; `parentOf`
+stays `c2pa.opened` first, byte-identical for existing callers), and a manifest
+with more than one `parentOf` ingredient is refused (`manifest.multipleParents`)
+- `collectIngredients` marks an SVG's nested rasters `componentOf`. The reader
+gains `collectIngredientRecords` and `C2paReport.ingredients`: every ingredient
+any manifest recorded, credentialed or plain source, with its bound rights.
+`emojiSourceIngredients` / `emojiCreditsText` turn a compiled emoji line's
+source census into those ingredients and readable credits; the line census now
+carries each glyph's label, asset id and set names. The internal static emoji
+SVG subset (not on the barrel) now admits clipPath with use references, clip-rule,
+paint-order, CSS colour keywords and display:none, and omits (recording each)
+the inert enable-background, class, color and overflow declarations Illustrator
+emits, which takes the four pinned families from 75 to 99 percent admitted with
+every admitted glyph pixel-identical to its source in the reference rasteriser.
+
+1.193.0 - Conditional visibility grows two shapes, both visibility overlays only
+(URL params, hooks and validation see every input and option as before). An
+input's `showIf` may be a list of maps, any one sufficient, for the conditions
+an ANDed map could not say ("vector bar, or a 3-D bar scene"). A select option
+may carry its own `showIf`, so a choice the current mode cannot honour is not
+offered; the selected option always stays offered, marked not applicable, so a
+saved session or a link never changes meaning. `matchesShowIf` is the one
+predicate, exported for shells. Chart is the first tool to use both.
+
+1.192.0 - `host.text.toPath` accepts optional `preserveWhitespaceAdvance` for
+mixed text and emoji layout. Web and Node hosts shape whitespace-only runs when
+requested, retaining their measured advance with an empty outline and null ink
+bounds. Existing callers keep the previous blank-run behavior. Internal emoji
+experiments add pinned Unicode 17 grapheme segmentation, strict static SVG
+admission and an outlined LTR line specimen; these are not a tool-facing emoji
+capability or a completed creative-rights export workflow.
+
+1.191.0 - Portable text operations. Optional `host.textTools.operations/run/highlight` lists and
+runs on-device text work - the Edit / Inspect / Convert / Generate groups, each operation
+declaring its own options - and returns the new text plus notes and optional observations
+(never a claim of authorship or a cause). Optional `host.text.characters` reports the real
+Unicode coverage of one font file with no fallback chain applied, so a caller can decide
+which characters to offer in a font browser. `AssetPickerOpts.types` lets a picker
+accept text and data together. The optional manifest `render.urlSync: false`
+keeps live edits out of the address bar while explicit URL inputs keep working.
+These additions preserve older HostV1 implementations.
+
+(2026-09-11, no version change) `inflateRaw` in `src/gzip.ts` is now fflate's streaming
+`Inflate` behind this engine's own output cap, replacing ~200 lines of hand-written bit
+reader, canonical-Huffman decoder and block loop (gzip.ts 435 -> 254 lines). fflate was
+already a direct engine dependency. Decoded bytes were measured identical over 147
+round-trips: an ascii / pseudo-random / all-zero / source-file corpus compressed at every
+`node:zlib` level 0/1/6/9 crossed with every strategy 0-4, plus a no-size-hint pass. The
+cap did not move to fflate: fflate never grows a caller-supplied buffer and never says it
+overran one, so the compressed input is pushed through its streaming decoder and each
+decoded chunk is appended to the existing `OutBuffer`, which still throws on the first byte
+past the declared size. The push size is what holds the memory bound, because fflate
+decodes an entire push before it calls back: each push is sized to the output headroom that
+is left divided by DEFLATE's worst-case 1032:1 expansion (capped at 64 KB, floored at
+1 KB), so peak transient allocation tracks the declared size instead of whatever a lying
+one would unlock. A 65 KB bomb declaring 10 bytes costs ~1.5 MB rather than the ~187 MB a
+fixed 64 KB slab cost. One behaviour did change: fflate
+skips a stored block's NLEN check and accepts some incomplete Huffman tables, so a corrupt
+stream can now return short data where the old decoder threw. Both engine callers
+(`gunzip`, `readZip`) verify CRC-32 against the recovered bytes, so neither returns short
+data. Nothing encodes through fflate: `deflateRaw`, `zlibCompress`, `gzip` and `storeZip`
+all stay in-house, measured to differ from fflate byte for byte (fixed vs dynamic Huffman,
+wall-clock gzip MTIME, different zip header fields) - see those modules' headers.
+
+(2026-09-09, no version change) The barrel `engine/src/index.ts` dropped 180 names that no
+shell, script, service or test referenced; each stays exported from its own module. The
+exact export list is pinned by `tests/engine-barrel.test.ts`, so the next change to the
+barrel is a deliberate edit of that pin. New modules: `clamp.ts` (the one numeric clamp,
+replacing 27 local copies) and `xml-escape.ts` (the EPUB/ODT/AppStream escaper).
+
+1.190.0 - Visual comparison. Optional `host.compare.visual` compares bounded decoded
+image/page previews with explicit alignment, noise threshold, page differences,
+byte equality and fidelity. Web providers resolve exact catalog versions and reuse
+PDF page rendering, now reporting display rotation and fixed fidelity notices.
+Local files, catalog pairs and saved asset versions share the same comparison UI.
+
+1.189.0 - Shared comparison. Optional `host.compare.run` compares supplied text or
+structured snapshots with bounded work/results, explicit fidelity and equality,
+source locations, line/word options and ordered or stable-ID array matching.
+Web jobs are cancellable workers; CLI/TUI hosts expose the same engine result.
+The utility and History share controls. No comparison writes source state or logs
+content; summary reports exclude source names, paths and values by default.
+
+1.188.0 - Prepare for sharing. Optional `host.prepare.inspect/apply` provides a
+source-bound local inspection and replacement contract for text, JSON, YAML, HAR
+and bounded ZIP jobs. Private maps stay transient; shareable reports contain
+counts, scope IDs, hashes and limitations. Existing metadata removers can join
+the operation with per-file recovery. Web, CLI and TUI offer optional review,
+consistent mappings and payload-free recipes without introducing policy blocks.
+
+1.187.0 - Templates the person makes (plans/226). The core `Profile` gains
+`UserTemplateRecord` and four optional fields: `userTemplates` (saved starting
+points per tool), `hiddenTemplates` + `hiddenTemplatesSeeded` (the per-user hide
+overlay for SHIPPED templates, seeded from a brand's `defaultHiddenTemplates` in
+the catalog asset index), and `templateStart` (per-tool "Start with": `blank` or a
+template ref, applied to the interactive blank open only - URL mode, the CLI and
+MCP keep rendering the manifest default). The runtime leaves `userTemplates` out of
+the `bindToProfile` lookup. `tools/<id>/templates/*.json` join the signed catalog
+envelope (`CATALOG_SIGNED_TEMPLATE_FILE`, beside the i18n sidecar pattern), so a
+starter's `values` are verified like its manifest once the catalogs are re-signed.
+Additive within HostV1.
+
+1.186.0 - Flat block inputs can opt into the shared table editor with
+`tableColumns` (field ids in display order). Input objects, row identifiers and
+the existing positional URL encoding remain unchanged; unsupported complex
+block schemas keep the block editor. Shells without this presentation can
+continue editing the same data as blocks. No HostV1 methods changed.
+
+1.185.0 - Explicit asset-version dependencies. `AssetRef.pin` requests an exact
+version/format on reopen, distinct from the existing resolved `version` metadata.
+URL mode carries pins through the reserved `#lolly-version=` asset-value suffix,
+including block fields; legacy ids and the device-local user-id sharing policy
+are unchanged. Runtime resolution rejects a host's latest-version substitution
+and preserves an unavailable pinned ref with an empty URL for later recovery.
+The web bridge reads retained versions without fetching current bytes into an
+old cache key; the CLI refuses unavailable versions. Additive within HostV1.
+
+1.184.0 - `.penpot` writer carries applied-token bindings, native components and
+the effective theme (plans/222). `PenpotIrShapeBase.appliedTokens` binds a native
+Penpot property (`fill`, `strokeColor`, `r1`-`r4`, `fontSize`, `fontFamily`, plus
+additive `strokeWidth`/`rotation`/`opacity`/`fontWeight`/`letterSpacing`) to a
+token NAME, so editing that token in Penpot re-paints the shape; a top-level board
+may declare `component` to become a reusable main component (the engine owns the
+component id and main-instance references, by id, never by layer name).
+`penpotTokensJson(doc, selection?)` and `PenpotDoc.themeSelection` preserve the
+render's active theme selection - `$metadata.activeThemes`/`activeSets` now follow
+the theme the canvas was rendered with, not whichever theme is listed first (gap
+\#3). New `engine/src/penpot-bindings.ts` (`PENPOT_BINDABLE`, `buildTokenTypeIndex`,
+`sanitizeAppliedTokens`, `penpotTokenClosure`) drops any binding onto a token
+Penpot's DTCG reader discards, so a stale/mistyped binding degrades to the painted
+value rather than a refused import. Additive; the SDK gains an optional
+`tokens.snapshot?()` read for the effective render context. No bridge signature change.
+
 1.183.0 - `host.assets.bytes(ref | url)` (optional): the bytes behind an
 AssetRef, so a hook no longer reaches for the global `fetch(ref.url)` - which
 works in a page, is refused by a strict Worker and does not exist headless. The

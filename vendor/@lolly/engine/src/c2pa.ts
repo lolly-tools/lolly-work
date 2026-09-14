@@ -56,6 +56,7 @@
  * from video-meta.js (same package), which owns those two formats.
  */
 
+import type { SourceIngredient, RightsRecord } from '@lolly-tools/core/host-v1';
 import { asDate, generateSigner } from './x509.ts';
 import { concatBytes, asBufferSource, sha256, bytesToHex } from './bytes.ts';
 // Container-specific byte-splicing (PDF/png/jpeg/gif/svg/tiff/webp/mp4/webm) and
@@ -139,17 +140,121 @@ export interface C2paActionInput { action: string; digitalSourceType?: string; d
 // last) are carried into the new store ahead of the active manifest, so the
 // ingredient's own signatures and full provenance chain stay intact and
 // independently verifiable; the active manifest gains a c2pa.ingredient
-// assertion referencing `activeLabel` and a c2pa.opened action that propagates
-// `digitalSourceType` (so an AI origin is never laundered away). Produce one
-// with the read side's prepareC2paIngredient(). Structurally identical to
-// C2paIngredientData in c2pa-verify.ts (kept separate to avoid an import cycle).
-interface C2paIngredient {
+// assertion referencing `activeLabel` and an opened (parentOf) or placed
+// (componentOf) action that propagates `digitalSourceType` (so an AI origin is
+// never laundered away). Produce one with the read side's
+// prepareC2paIngredient(). Same shape as C2paIngredientData in
+// c2pa-extract.ts (kept separate to avoid an import cycle).
+export interface C2paCredentialedIngredient {
   manifestBoxes: Uint8Array[];
   activeLabel: string;
   title?: string;
   format?: string;
   relationship?: string;
   digitalSourceType?: string;
+}
+
+/**
+ * A creative source used in the asset that carries NO Content Credential of its
+ * own - an upstream SVG, a CC BY illustration, a stock element. The contract
+ * lives in the SDK ({@link SourceIngredient}) so shells and tools share it.
+ * Lolly records what it observed: the work's name, a public locator for the
+ * exact bytes and their hash (the ingredient's `data` external hashed URI),
+ * and the rights it read, bound to the ingredient through the
+ * {@link LOLLY_RIGHTS_ASSERTION} assertion. It never fabricates an upstream
+ * manifest, a validation result or the upstream artist's signature: the
+ * ingredient assertion has no `activeManifest` and no `validationResults`,
+ * which is exactly how section 18.16 says a non-C2PA asset is described.
+ */
+export type C2paSourceIngredient = SourceIngredient;
+export type C2paRightsRecord = RightsRecord;
+/** Either kind of ingredient `buildC2paManifest` accepts. */
+export type C2paIngredientInput = C2paCredentialedIngredient | C2paSourceIngredient;
+
+const isSourceIngredient = (ing: C2paIngredientInput): ing is C2paSourceIngredient => (ing as C2paSourceIngredient).credential === 'none';
+
+// The relationship decides the action (section 18.16.3): a parentOf ingredient is
+// OPENED (the asset derives from it), a componentOf ingredient is PLACED (the
+// asset is composed of it). A credentialed ingredient with no stated
+// relationship keeps its historic parentOf default, so existing callers'
+// manifests are byte-identical.
+function ingredientRelationship(ing: C2paIngredientInput): string {
+  return isSourceIngredient(ing) ? ing.relationship : (ing.relationship || 'parentOf');
+}
+
+const HTTP_URL_MAX = 2048;
+function publicHttpUrl(value: unknown, what: string): string {
+  if (typeof value !== 'string' || !value || value.length > HTTP_URL_MAX || !/^https?:\/\//i.test(value)) {
+    throw new Error(`c2pa: ${what} must be an http(s) URL`);
+  }
+  let url: URL;
+  try { url = new URL(value); } catch { throw new Error(`c2pa: ${what} is not a valid URL`); }
+  if (url.username || url.password) throw new Error(`c2pa: ${what} must not carry credentials`);
+  return value;
+}
+const boundedText = (value: unknown, what: string, max = 4096): string => {
+  if (typeof value !== 'string' || !value.trim() || value.length > max) throw new Error(`c2pa: ${what} must be a non-empty string of at most ${max} characters`);
+  return value;
+};
+const SHA256_TEXT = /^sha256:[0-9a-f]{64}$/;
+
+// The c2pa.ingredient.v3 map for a source with no credential of its own.
+// Key order is fixed here; there is no earlier byte layout to preserve.
+function sourceIngredientAssertion(ing: C2paSourceIngredient): Record<string, unknown> {
+  const title = boundedText(ing.title, 'source ingredient title', 1024);
+  if (ing.relationship !== 'componentOf' && ing.relationship !== 'parentOf') {
+    throw new Error("c2pa: a source ingredient's relationship must be 'componentOf' or 'parentOf'");
+  }
+  let mime: string | undefined;
+  if (ing.format != null) {
+    mime = INGREDIENT_MIME[ing.format] ?? ing.format;
+    if (!/^\w+\/[-+.\w]+$/.test(mime)) throw new Error(`c2pa: source ingredient format '${ing.format}' is neither a known format key nor an IANA media type`);
+  }
+  if ((ing.url == null) !== (ing.hash == null)) throw new Error('c2pa: a source ingredient binds its bytes with url AND hash together, or neither');
+  let data: Record<string, unknown> | undefined;
+  if (ing.url != null) {
+    const url = publicHttpUrl(ing.url, 'source ingredient url');
+    if (!(ing.hash instanceof Uint8Array) || ing.hash.length !== 32) throw new Error('c2pa: source ingredient hash must be the 32-byte sha256 of the bytes at url');
+    data = { url, alg: 'sha256', hash: ing.hash };
+    if (mime) data['dc:format'] = mime;
+    if (ing.size != null) {
+      if (!Number.isInteger(ing.size) || ing.size < 0) throw new Error('c2pa: source ingredient size must be a non-negative integer');
+      data.size = ing.size;
+    }
+  }
+  return {
+    'dc:title': title,
+    ...(mime ? { 'dc:format': mime } : {}),
+    relationship: ing.relationship,
+    ...(ing.instanceId != null ? { instanceID: boundedText(ing.instanceId, 'source ingredient instanceId', 1024) } : {}),
+    ...(data ? { data } : {}),
+    ...(ing.description != null ? { description: boundedText(ing.description, 'source ingredient description') } : {}),
+    ...(ing.informationalUri != null ? { informationalURI: publicHttpUrl(ing.informationalUri, 'source ingredient informationalUri') } : {}),
+    ...(ing.digitalSourceType != null ? { digitalSourceType: boundedText(ing.digitalSourceType, 'source ingredient digitalSourceType', 1024) } : {}),
+  };
+}
+
+// One entry of the tools.lolly.rights assertion: the rights Lolly read for a
+// source, bound to that source's ingredient assertion by hashed URI. Every
+// field is validated because the record travels into a signed credential.
+function rightsSourceEntry(rights: C2paRightsRecord, ingredient: { url: string; alg: string; hash: Uint8Array }): Record<string, unknown> {
+  if (!Array.isArray(rights.modifications) || rights.modifications.some((m) => typeof m !== 'string' || !m.trim())) {
+    throw new Error('c2pa: rights.modifications must be a list of non-empty strings (empty list when unmodified)');
+  }
+  if (!SHA256_TEXT.test(String(rights.sourceHash))) throw new Error("c2pa: rights.sourceHash must be 'sha256:<64 hex>'");
+  if (rights.usedHash != null && !SHA256_TEXT.test(String(rights.usedHash))) throw new Error("c2pa: rights.usedHash must be 'sha256:<64 hex>'");
+  return {
+    ingredient,
+    creator: boundedText(rights.creator, 'rights.creator', 1024),
+    license: boundedText(rights.license, 'rights.license', 256),
+    licenseUrl: publicHttpUrl(rights.licenseUrl, 'rights.licenseUrl'),
+    attribution: boundedText(rights.attribution, 'rights.attribution'),
+    sourceUrl: publicHttpUrl(rights.sourceUrl, 'rights.sourceUrl'),
+    ...(rights.revision != null ? { revision: boundedText(rights.revision, 'rights.revision', 256) } : {}),
+    modifications: rights.modifications.map((m) => boundedText(m, 'rights.modifications entry')),
+    sourceHash: rights.sourceHash,
+    ...(rights.usedHash != null ? { usedHash: rights.usedHash } : {}),
+  };
 }
 
 interface BuildC2paManifestOptions {
@@ -169,8 +274,9 @@ interface BuildC2paManifestOptions {
    * list from an export's transformations with {@link exportActionSteps}.
    */
   actions?: C2paActionInput[];
-  /** Credentialed ingredients to preserve into the store (multi-manifest). */
-  ingredients?: C2paIngredient[];
+  /** Ingredients: credentialed ones are preserved into the store (multi-manifest);
+   *  source ingredients (`credential: 'none'`) are described without one. */
+  ingredients?: C2paIngredientInput[];
   /**
    * section 18.28 machine-readable AI transparency, emitted as a `c2pa.ai-disclosure`
    * CBOR assertion and referenced from `created_assertions` (section 2776 - created
@@ -217,7 +323,7 @@ export interface EmbedOptions {
   /** User-asserted copyright + licence → `dc:rights` in the manifest. */
   rights?: string;
   actions?: C2paActionInput[];
-  ingredients?: C2paIngredient[];
+  ingredients?: C2paIngredientInput[];
   /**
    * section 18.28 AI transparency, forwarded verbatim to {@link buildC2paManifest} by
    * both embedders. An EMBEDDED store is the only place a component that ships
@@ -620,6 +726,17 @@ function captureDescription(cap: { camera?: boolean; microphone?: boolean; scree
 // and validates them only by hashed URI - no allowlist, no penalty.
 export const LOLLY_EXPORT_ASSERTION = 'tools.lolly.export';
 
+/**
+ * Lolly's rights assertion (CBOR, `{ version: 1, sources: [...] }`): for each
+ * source ingredient that supplied a rights record, the creator, licence and
+ * URL, attribution text, source URL and revision, the modifications Lolly made,
+ * and the source/used byte hashes - bound to that ingredient's assertion by a
+ * hashed URI. A supplement to the standard ingredient assertion for what the
+ * standard does not express, never a substitute for it, and never the whole
+ * composition's `dc:rights` (which stays the user's own).
+ */
+export const LOLLY_RIGHTS_ASSERTION = 'tools.lolly.rights';
+
 // The BMFF (mp4) hard-binding assertion label - used here (buildC2paManifest
 // picks it over the byte-range c2pa.hash.data for bmff assets) and by
 // c2pa-containers.ts's BMFF placer/digest, which imports it back from here.
@@ -907,60 +1024,80 @@ export async function buildC2paManifest({
     : [delivered
       ? { action: 'c2pa.published' }
       : { action: 'c2pa.created', digitalSourceType: DIGITAL_SOURCE_TYPE }];
-  // Each preserved ingredient is opened FIRST, and the opened step carries the
+  // Each ingredient gets its own action, and that action carries the
   // ingredient's AI/ML source type, so the new asset's OWN active manifest
-  // declares the AI origin (not only the walked-in ingredient chain). This
+  // declares the AI origin (not only a walked-in ingredient chain). This
   // guarantees the AI origin cannot be hidden: strip the ingredient manifests
   // and the flag still fires from Lolly's signed actions.
   const ingList = ingredients ?? [];
-  // Build each preserved ingredient's c2pa.ingredient.v3 assertion FIRST: the
-  // c2pa.opened action below must reference it via parameters.ingredients (the
-  // spec requires opened/placed/removed actions to name their ingredients), and
-  // the same hash feeds the claim's assertion list. Each assertion carries the
-  // V3-required validationResults - the integrity checks the ingredient's own
-  // manifest passed at ingest (signature + hashes; carried verbatim so they
-  // still hold; trust is reported separately by the reader).
+  const relationships = ingList.map(ingredientRelationship);
+  // section 18.16.3: one parentOf ingredient at most (validation code
+  // manifest.multipleParents). The components of a composition are componentOf.
+  if (relationships.filter((r) => r === 'parentOf').length > 1) {
+    throw new Error('c2pa: a manifest may carry only one parentOf ingredient (manifest.multipleParents) - mark the components componentOf');
+  }
+  // Build each ingredient's c2pa.ingredient.v3 assertion FIRST: the opened or
+  // placed action below must reference it via parameters.ingredients (the spec
+  // requires opened/placed/removed actions to name their ingredients), and the
+  // same hash feeds the claim's assertion list. A credentialed ingredient's
+  // assertion carries the V3-required validationResults - the integrity checks
+  // the ingredient's own manifest passed at ingest (signature + hashes; carried
+  // verbatim so they still hold; trust is reported separately by the reader).
+  // A source ingredient has no manifest, so neither field is written for it.
   const ingredientBoxes: Uint8Array[] = [];
   const ingredientRefs: { url: string; hash: Uint8Array }[] = [];
   const ingredientParamRefs: { url: string; alg: string; hash: Uint8Array }[] = [];
+  const rightsSources: Record<string, unknown>[] = [];
   for (let i = 0; i < ingList.length; i++) {
     const ing = ingList[i]!;
-    const activeBox = ing.manifestBoxes[ing.manifestBoxes.length - 1]!;
-    // Distinct labels when several ingredients are preserved (spec allows the
+    // Distinct labels when several ingredients are carried (spec allows the
     // __N disambiguation suffix on repeated assertion labels).
     const label = ingList.length > 1 ? `c2pa.ingredient.v3__${i + 1}` : 'c2pa.ingredient.v3';
-    const ingAssertion = {
-      'dc:title': ing.title || 'Ingredient',
-      ...(ing.format && INGREDIENT_MIME[ing.format] ? { 'dc:format': INGREDIENT_MIME[ing.format] } : {}),
-      relationship: ing.relationship || 'parentOf',
-      // activeManifest hashed URI covers the referenced manifest superbox payload
-      // (jumd + content, minus the 8-byte header) - Lolly's hashed-URI convention.
-      activeManifest: { url: `self#jumbf=/c2pa/${ing.activeLabel}`, alg: 'sha256', hash: await sha256(activeBox.subarray(8)) },
-      validationResults: {
-        activeManifest: {
-          success: [{ code: 'claimSignature.validated', url: `self#jumbf=/c2pa/${ing.activeLabel}/c2pa.signature` }],
-          informational: [],
-          failure: [],
+    let ingAssertion: Record<string, unknown>;
+    if (isSourceIngredient(ing)) {
+      ingAssertion = sourceIngredientAssertion(ing);
+    } else {
+      const activeBox = ing.manifestBoxes[ing.manifestBoxes.length - 1]!;
+      ingAssertion = {
+        'dc:title': ing.title || 'Ingredient',
+        ...(ing.format && INGREDIENT_MIME[ing.format] ? { 'dc:format': INGREDIENT_MIME[ing.format] } : {}),
+        relationship: relationships[i]!,
+        // activeManifest hashed URI covers the referenced manifest superbox payload
+        // (jumd + content, minus the 8-byte header) - Lolly's hashed-URI convention.
+        activeManifest: { url: `self#jumbf=/c2pa/${ing.activeLabel}`, alg: 'sha256', hash: await sha256(activeBox.subarray(8)) },
+        validationResults: {
+          activeManifest: {
+            success: [{ code: 'claimSignature.validated', url: `self#jumbf=/c2pa/${ing.activeLabel}/c2pa.signature` }],
+            informational: [],
+            failure: [],
+          },
         },
-      },
-    };
+      };
+    }
     const box = jumbfSuperbox(UUID_CBOR_CONTENT, label, isoBox('cbor', encodeCbor(ingAssertion)));
     const hash = await sha256(box.subarray(8));
     ingredientBoxes.push(box);
     ingredientRefs.push({ url: `self#jumbf=c2pa.assertions/${label}`, hash });
     ingredientParamRefs.push({ url: `self#jumbf=c2pa.assertions/${label}`, alg: 'sha256', hash });
+    if (isSourceIngredient(ing) && ing.rights) rightsSources.push(rightsSourceEntry(ing.rights, { url: `self#jumbf=c2pa.assertions/${label}`, alg: 'sha256', hash }));
   }
-  // Each ingredient is opened FIRST - the opened step references its ingredient
-  // assertion AND carries the ingredient's AI/ML source type, so the new asset's
-  // OWN active manifest declares the AI origin (not only the walked-in chain):
-  // strip the ingredient manifests and the flag still fires from Lolly's actions.
-  const openedSteps: C2paActionInput[] = ingList.map((ing, i) => ({
-    action: 'c2pa.opened',
-    ...(ing.digitalSourceType ? { digitalSourceType: ing.digitalSourceType } : {}),
-    ...(ing.title ? { description: `Opened ${ing.title}` } : {}),
-    parameters: { ingredients: [ingredientParamRefs[i]!] },
-  }));
-  const stepList = [...openedSteps, ...baseSteps];
+  // A parentOf ingredient is opened FIRST (the history begins with what was
+  // opened); a componentOf ingredient is placed right after the head step (the
+  // composition exists, then its parts are placed into it). Both reference their
+  // ingredient assertion and carry the ingredient's AI/ML source type: strip
+  // the ingredient manifests and the flag still fires from Lolly's actions.
+  const ingredientSteps: { placed: boolean; step: C2paActionInput }[] = ingList.map((ing, i) => {
+    const placed = relationships[i] === 'componentOf';
+    return { placed, step: {
+      action: placed ? 'c2pa.placed' : 'c2pa.opened',
+      ...(ing.digitalSourceType ? { digitalSourceType: ing.digitalSourceType } : {}),
+      ...(ing.title ? { description: `${placed ? 'Placed' : 'Opened'} ${ing.title}` } : {}),
+      parameters: { ingredients: [ingredientParamRefs[i]!] },
+    } };
+  });
+  const openedSteps = ingredientSteps.filter((s) => !s.placed).map((s) => s.step);
+  const placedSteps = ingredientSteps.filter((s) => s.placed).map((s) => s.step);
+  const stepList = [...openedSteps, ...baseSteps.slice(0, 1), ...placedSteps, ...baseSteps.slice(1)];
   const actions = {
     actions: stepList.map((s) => ({
       action: s.action,
@@ -1052,9 +1189,15 @@ export async function buildC2paManifest({
     storeBoxes.push(aiBox);
   }
   // The ingredient assertions were built up-front (their hashes feed the opened
-  // action's parameters.ingredients); add them to the assertion store here so
-  // they sit after the standard assertions.
+  // and placed actions' parameters.ingredients); add them to the assertion store
+  // here so they sit after the standard assertions.
   for (const box of ingredientBoxes) storeBoxes.push(box);
+  // The rights records for source ingredients, after the assertions they bind to.
+  let rightsBox: Uint8Array | null = null;
+  if (rightsSources.length) {
+    rightsBox = jumbfSuperbox(UUID_CBOR_CONTENT, LOLLY_RIGHTS_ASSERTION, isoBox('cbor', encodeCbor({ version: 1, sources: rightsSources })));
+    storeBoxes.push(rightsBox);
+  }
   const assertionStore = jumbfSuperbox(UUID_ASSERTION_STORE, 'c2pa.assertions', ...storeBoxes);
 
   // JUMBF-box hashed URIs cover the superbox PAYLOAD - the jumd description box
@@ -1069,6 +1212,7 @@ export async function buildC2paManifest({
     ...(metadataBox ? [{ url: `self#jumbf=c2pa.assertions/${METADATA_ASSERTION}`, hash: await sha256(metadataBox.subarray(8)) }] : []),
     ...(aiBox ? [{ url: `self#jumbf=c2pa.assertions/${AI_DISCLOSURE_ASSERTION}`, hash: await sha256(aiBox.subarray(8)) }] : []),
     ...ingredientRefs,
+    ...(rightsBox ? [{ url: `self#jumbf=c2pa.assertions/${LOLLY_RIGHTS_ASSERTION}`, hash: await sha256(rightsBox.subarray(8)) }] : []),
   ];
 
   // v2 claim map (c2pa.claim.v2): no free-text claim_generator, no dc:format; a
@@ -1101,7 +1245,8 @@ export async function buildC2paManifest({
   // manifest - the store's LAST manifest is the active one (C2PA section "active
   // manifest"), and the read side (parseC2paStore / collectActionChain) walks
   // every manifest, so a preserved ingredient's full provenance chain surfaces.
-  const ingredientManifestBoxes = ingList.flatMap((ing) => ing.manifestBoxes);
+  // A source ingredient has no manifest to carry.
+  const ingredientManifestBoxes = ingList.flatMap((ing) => isSourceIngredient(ing) ? [] : ing.manifestBoxes);
   return jumbfSuperbox(UUID_C2PA_STORE, 'c2pa', ...ingredientManifestBoxes, manifest);
 }
 

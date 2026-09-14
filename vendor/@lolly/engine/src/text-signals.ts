@@ -153,7 +153,7 @@ export interface TextSignalReport {
 
 export interface AnalyzeTextSignalsOpts {
   source: TextSignalSource;
-  /** Override the doc-kind detection (a caller that KNOWS it holds code should say so). */
+  /** Override the doc-kind detection (a caller that KNOWS it holds code should state it). */
   docKind?: TextSignalDocKind;
 }
 

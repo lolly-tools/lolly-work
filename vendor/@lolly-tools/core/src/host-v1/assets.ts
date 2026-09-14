@@ -73,8 +73,74 @@ export interface IngredientCredential {
   activeLabel: string;
   title?: string;
   format?: string;
+  /** `parentOf` (the export derives from it, recorded as `c2pa.opened`) or
+   *  `componentOf` (the export is composed of it, recorded as `c2pa.placed`).
+   *  Defaults to `parentOf`; a manifest may carry only one parentOf ingredient. */
   relationship?: string;
   digitalSourceType?: string;
+}
+
+/**
+ * The rights Lolly read for a source it used (v1.194): who made it, under what
+ * licence, how to credit it, where the exact bytes came from and what Lolly
+ * changed. Carried into the export's Content Credentials as Lolly's own
+ * `tools.lolly.rights` assertion, bound to the source's ingredient, and into
+ * readable credits. These are Lolly's observations of the source's notices,
+ * never the upstream author's signature and never the composition's own licence.
+ */
+export interface RightsRecord {
+  /** The creator(s) or attribution party the source designates. */
+  creator: string;
+  /** SPDX-style identifier of the source licence, e.g. `CC-BY-4.0`. */
+  license: string;
+  licenseUrl: string;
+  /** The attribution sentence the source asks for, verbatim. */
+  attribution: string;
+  /** Where the exact source bytes were obtained (a stable public locator). */
+  sourceUrl: string;
+  /** Upstream revision (release tag or commit) when known. */
+  revision?: string;
+  /** Every change made to the source, upstream ones included; empty when unmodified. */
+  modifications: string[];
+  /** `sha256:<hex>` of the source bytes as obtained. */
+  sourceHash: string;
+  /** `sha256:<hex>` of the modified form actually used, when it differs. */
+  usedHash?: string;
+}
+
+/**
+ * A creative source used in an export that carries NO Content Credential of
+ * its own (v1.194): an upstream SVG, a CC BY illustration, a stock element.
+ * Distinguished from {@link IngredientCredential} by `credential: 'none'`. The
+ * engine writes it as a `c2pa.ingredient.v3` assertion without `activeManifest`
+ * or `validationResults` (section 18.16 of C2PA 2.4), binds the bytes through
+ * the ingredient's external hashed URI (`url` + sha256 `hash`) when a public
+ * locator exists, and records `rights` in `tools.lolly.rights`. Lolly asserts
+ * what it observed; it never fabricates an upstream manifest.
+ */
+export interface SourceIngredient {
+  credential: 'none';
+  /** Human-readable name of the work (dc:title). */
+  title: string;
+  /** Format key (`svg`, `png`, ...) or an IANA media type (dc:format). */
+  format?: string;
+  /** `componentOf` records a `c2pa.placed` step; `parentOf` a `c2pa.opened` one. */
+  relationship: 'componentOf' | 'parentOf';
+  /** Public http(s) locator of the exact bytes; give `hash` with it. */
+  url?: string;
+  /** sha256 (32 bytes) of the bytes served at `url`. */
+  hash?: Uint8Array;
+  /** Byte length of those bytes. */
+  size?: number;
+  /** A stable identifier for this instance of the work (instanceID). */
+  instanceId?: string;
+  /** Free text for viewers that read no rights record (attribution sentence, changes). */
+  description?: string;
+  /** A page about the work or its terms (informationalURI). */
+  informationalUri?: string;
+  /** IPTC digital source type of the work, when known. */
+  digitalSourceType?: string;
+  rights?: RightsRecord;
 }
 
 export interface AssetQuery {
@@ -103,6 +169,8 @@ export interface AssetQuery {
 }
 
 export interface AssetPickerOpts extends AssetQuery {
+  /** Optional v1.191: accept several catalog types in one picker. Overrides type. */
+  types?: Array<NonNullable<AssetQuery['type']>>;
   title?: string;
   allowUpload?: boolean;
   /** Pre-select this asset id if present in results. */

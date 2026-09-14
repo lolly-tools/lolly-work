@@ -84,6 +84,92 @@
       "type": "string",
       "description": "e.g. 'internal', 'cc-by-4.0', 'all-rights-reserved'."
     },
+    "meta": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Type-specific facts a shell needs before it downloads the bytes, such as an emoji pack's pin and glyph count. Not validated beyond being an object."
+    },
+    "rights": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["works"],
+      "description": "Structured rights evidence for the work or works this asset carries (plan 253; CreativeWorkRecordV1 in @lolly-tools/core/rights-v1). Additive beside the legacy license and attribution strings, which stay for display. A missing record means not recorded, never permission. A grant's private evidence pointer is deliberately not allowed here.",
+      "properties": {
+        "works": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "creators", "rights"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1, "maxLength": 512 },
+              "title": { "type": "string", "maxLength": 512 },
+              "creators": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["name"],
+                  "properties": {
+                    "name": { "type": "string", "minLength": 1, "maxLength": 256 },
+                    "role": { "type": "string", "maxLength": 64 },
+                    "url": { "type": "string", "maxLength": 2048, "pattern": "^https?://" }
+                  }
+                }
+              },
+              "sourceUrl": { "type": "string", "maxLength": 2048, "pattern": "^https?://" },
+              "revision": { "type": "string", "maxLength": 256 },
+              "sourceHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+              "rights": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 16,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["declaration", "assertedBy", "evidence", "status"],
+                  "properties": {
+                    "declaration": { "type": "string", "minLength": 1, "maxLength": 512 },
+                    "expression": { "type": "string", "maxLength": 512 },
+                    "version": { "type": "string", "maxLength": 64 },
+                    "url": { "type": "string", "maxLength": 2048, "pattern": "^https?://" },
+                    "textHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+                    "copyright": { "type": "string", "maxLength": 1024 },
+                    "notices": { "type": "array", "maxItems": 16, "items": { "type": "string", "maxLength": 65536 } },
+                    "assertedBy": { "enum": ["source", "catalog", "user", "credential", "exporter"] },
+                    "evidence": { "enum": ["manifest", "catalog-entry", "native-metadata", "sidecar", "notice-file", "user-declaration"] },
+                    "capturedAt": { "type": "string", "maxLength": 64 },
+                    "status": { "enum": ["parsed", "unparsed", "missing", "not-applicable"] }
+                  }
+                }
+              },
+              "grants": {
+                "type": "array",
+                "maxItems": 16,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["kind", "scope", "asserted"],
+                  "properties": {
+                    "kind": { "enum": ["public-licence", "dedication", "specific-permission", "own-work"] },
+                    "licence": { "type": "string", "maxLength": 128 },
+                    "scope": { "type": "string", "maxLength": 1024 },
+                    "purposes": { "type": "array", "maxItems": 16, "items": { "type": "string", "maxLength": 128 } },
+                    "recipients": { "type": "array", "maxItems": 16, "items": { "type": "string", "maxLength": 256 } },
+                    "territory": { "type": "string", "maxLength": 128 },
+                    "expires": { "type": "string", "maxLength": 64 },
+                    "asserted": { "type": "boolean" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "attribution": {
       "type": "string",
       "description": "Human-readable credit for a licensed asset that requires attribution (e.g. a CC-BY work). Shown in the catalog asset details view. e.g. 'SUSE · Peter Chamalian'."

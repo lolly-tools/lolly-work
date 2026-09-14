@@ -1,0 +1,409 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lolly.tools/schemas/emoji-pack-v1.schema.json",
+  "title": "emoji-pack-v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "minimumReader",
+    "id",
+    "family",
+    "style",
+    "version",
+    "unicodeVersion",
+    "artwork",
+    "metrics",
+    "source",
+    "notices",
+    "glyphs"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "minimumReader": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 512,
+      "pattern": "^[a-z0-9][a-z0-9-]*(/[a-z0-9][a-z0-9-]*)+$"
+    },
+    "family": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "style": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$"
+    },
+    "unicodeVersion": {
+      "const": "17.0"
+    },
+    "artwork": {
+      "const": "source-svg-v1"
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "unitsPerEm",
+        "advance",
+        "baseline"
+      ],
+      "properties": {
+        "unitsPerEm": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1000000
+        },
+        "advance": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1000000
+        },
+        "baseline": {
+          "type": "number",
+          "minimum": -1000000,
+          "maximum": 1000000
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "creator",
+        "sourceUrl",
+        "revision",
+        "license",
+        "licenseUrl",
+        "attribution",
+        "modifications"
+      ],
+      "properties": {
+        "creator": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "sourceUrl": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^https?://"
+        },
+        "revision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$"
+        },
+        "license": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "licenseUrl": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^https?://"
+        },
+        "attribution": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384
+        },
+        "modifications": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        }
+      }
+    },
+    "notices": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "text"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 262144
+          }
+        }
+      }
+    },
+    "glyphs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "meaning",
+          "label",
+          "asset",
+          "source",
+          "sourceChecksum",
+          "viewBox"
+        ],
+        "properties": {
+          "meaning": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "key"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "unicode"
+                  },
+                  "key": {
+                    "type": "string",
+                    "minLength": 4,
+                    "maxLength": 223,
+                    "pattern": "^[0-9a-f]{4,6}(-[0-9a-f]{4,6})*$"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "id"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "custom"
+                  },
+                  "id": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 512,
+                    "pattern": "^[a-z0-9][a-z0-9-]*(/[a-z0-9][a-z0-9-]*)+$"
+                  }
+                }
+              }
+            ]
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "asset": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "source",
+              "id",
+              "type",
+              "format",
+              "url",
+              "pin",
+              "checksum"
+            ],
+            "properties": {
+              "source": {
+                "enum": [
+                  "library",
+                  "user",
+                  "remote"
+                ]
+              },
+              "id": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 512,
+                "pattern": "^[a-z0-9][a-z0-9-]*(/[a-z0-9][a-z0-9-]*)+$"
+              },
+              "type": {
+                "const": "vector"
+              },
+              "format": {
+                "const": "svg"
+              },
+              "url": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "pin": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "version",
+                  "format"
+                ],
+                "properties": {
+                  "version": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$"
+                  },
+                  "format": {
+                    "const": "svg"
+                  }
+                }
+              },
+              "checksum": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            }
+          },
+          "source": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "creator",
+              "sourceUrl",
+              "revision",
+              "license",
+              "licenseUrl",
+              "attribution",
+              "modifications"
+            ],
+            "properties": {
+              "creator": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "sourceUrl": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096,
+                "pattern": "^https?://"
+              },
+              "revision": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$"
+              },
+              "license": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "licenseUrl": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096,
+                "pattern": "^https?://"
+              },
+              "attribution": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 16384
+              },
+              "modifications": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                }
+              }
+            }
+          },
+          "sourceChecksum": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "viewBox": {
+            "type": "array",
+            "minItems": 4,
+            "maxItems": 4,
+            "prefixItems": [
+              {
+                "type": "number",
+                "minimum": -1000000,
+                "maximum": 1000000
+              },
+              {
+                "type": "number",
+                "minimum": -1000000,
+                "maximum": 1000000
+              },
+              {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 1000000
+              },
+              {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 1000000
+              }
+            ],
+            "items": false
+          },
+          "metrics": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "unitsPerEm",
+              "advance",
+              "baseline"
+            ],
+            "properties": {
+              "unitsPerEm": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 1000000
+              },
+              "advance": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 1000000
+              },
+              "baseline": {
+                "type": "number",
+                "minimum": -1000000,
+                "maximum": 1000000
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+

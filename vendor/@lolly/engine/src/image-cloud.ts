@@ -13,7 +13,7 @@
  * sRGB canvas has already thrown the wide colours away before this function sees
  * a byte. So `space` is REQUIRED from the caller and is echoed back on the
  * result: every number here means "given these bytes are in that space". A
- * caller that guessed has to say so in its own UI - this module never turns a
+ * caller that guessed has to report it in its own UI - this module never turns a
  * guess into a stated fact.
  *
  * Getting the space wrong is not a small error. The same bytes read as
