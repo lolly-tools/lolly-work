@@ -7047,6 +7047,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       if (matched) routeClass = matched;
       else sendError(res, 404, 'NOT_FOUND', `no route for ${req.method} ${req.url}`);
     } catch (err) {
+      if ((err as Error).message === 'collab-active') {
+        if (!res.headersSent) sendError(res, 409, 'COLLAB_ACTIVE', 'This session has a live collaboration room. Close it before saving through this API.');
+        return;
+      }
       const status = (err as { status?: number }).status ?? 500;
       if (!res.headersSent) sendError(res, status, status === 500 ? 'INTERNAL' : 'BAD_REQUEST', (err as Error).message);
     }

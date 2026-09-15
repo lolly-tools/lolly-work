@@ -1065,7 +1065,6 @@ export async function createRuntime(
     applyEmojiToDom: (node, opts) => queueEmoji(() => runEmojiPass(node, opts)),
     revertEmojiDom: (node) => queueEmoji(async () => {
       if (!node || typeof node !== 'object') return 0;
-      emojiNode = node;
       const { revertEmojiDom } = await import('./emoji-dom.ts');
       return revertEmojiDom(node as EmojiDomNode);
     }),

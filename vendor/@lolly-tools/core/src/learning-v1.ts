@@ -23,10 +23,38 @@ export interface LearningSource {
   pageIds?: string[];
   motion?: boolean;
 }
+/** A bounded, semantic subset of the editor document. No HTML or style attributes. */
+export interface LearningRichNode {
+  type:
+    | 'doc'
+    | 'paragraph'
+    | 'heading'
+    | 'bulletList'
+    | 'orderedList'
+    | 'listItem'
+    | 'blockquote'
+    | 'hardBreak'
+    | 'text';
+  text?: string;
+  attrs?: { level?: number; start?: number };
+  marks?: Array<{
+    type: 'bold' | 'italic' | 'underline' | 'code' | 'link';
+    attrs?: { href: string; target?: string | null; rel?: string | null; class?: string | null };
+  }>;
+  content?: LearningRichNode[];
+}
+export interface LearningQuiz {
+  mode: 'single' | 'multiple' | 'true-false';
+  prompt: string;
+  options: Array<{ id: string; text: string; correct: boolean }>;
+  feedback: string;
+}
 export interface LearningBlock {
   id: string;
-  kind: 'text' | 'image' | 'video' | 'audio' | 'resource' | 'slides';
+  kind: 'text' | 'image' | 'video' | 'audio' | 'resource' | 'slides' | 'quiz';
   text?: string;
+  richText?: LearningRichNode;
+  quiz?: LearningQuiz;
   description?: string;
   decorative?: boolean;
   transcript?: string;
@@ -41,7 +69,7 @@ export interface LearningLesson {
   blocks: LearningBlock[];
 }
 export interface LearningModule {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   id: string;
   revision: number;
   title: string;
@@ -80,7 +108,7 @@ export interface LearningPresentation {
   licenses: LearningFile[];
 }
 export interface LearningContent {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   previewOnly?: true;
   presentation?: LearningPresentation;
   moduleId: string;
@@ -99,6 +127,7 @@ export interface LearningAttempt {
   lessonId: string;
   acknowledged: string[];
   completed: boolean;
+  quizAnswers?: Record<string, string[]>;
 }
 export interface LearningFinding {
   severity: 'error' | 'review';

@@ -514,11 +514,12 @@ export interface CanvasDocState {
   boxes: Map<BoxId, BoxRow>;
   /** The reactive/data bus (plans/99 section 3 `params: Y.Map<CanonicalId, ParamValue>`). */
   params: Map<string, ParamValue>;
+  removed?: Set<BoxId>;
   /** v1.1 (plans/100 section 3): per-blocks-input collections - each a boxes-shaped doc
    *  of its own (own order, own rows), keyed by the blocks input id. Absent when
    *  no collection-scoped op has been applied, so a v1.0 op log yields a
    *  v1.0-shaped state. */
-  collections?: Map<string, { order: BoxId[]; boxes: Map<BoxId, BoxRow> }>;
+  collections?: Map<string, { order: BoxId[]; boxes: Map<BoxId, BoxRow>; removed?: Set<BoxId> }>;
 }
 
 /**
@@ -583,7 +584,10 @@ function beats(a: OpOrigin, b: OpOrigin): boolean {
 }
 
 function put<T>(current: Reg<T> | null | undefined, value: T, origin: OpOrigin): Reg<T> {
-  return current && !beats(origin, current.origin) ? current : { value, origin };
+  return current && !beats(origin, current.origin) ? current : {
+    value: value !== null && typeof value === 'object' ? structuredClone(value) : value,
+    origin: { ...origin },
+  };
 }
 
 /**
@@ -592,6 +596,15 @@ function put<T>(current: Reg<T> | null | undefined, value: T, origin: OpOrigin):
  * .test.ts) is parameterized over CanvasSyncAdapter so lolly-work runs the same
  * bytes against `() => new YjsAdapter()`.
  */
+/** Durable register state. Unlike the input projection, this retains tombstones and origins. */
+export interface CanvasCheckpoint {
+  version: 1;
+  clock: number;
+  boxes: [BoxId, { fields: [string, Reg<Scalar>][]; order: Reg<string> | null; alive: Reg<boolean> | null }][];
+  collections: [string, CanvasCheckpoint['boxes']][];
+  params: [string, Reg<ParamValue>][];
+}
+
 export class ReferenceCanvasDoc implements CanvasSyncAdapter {
   /** The default canvas collection's box registers. */
   private readonly boxes = new Map<BoxId, BoxState>();
@@ -607,6 +620,18 @@ export class ReferenceCanvasDoc implements CanvasSyncAdapter {
 
   constructor(clientId: string = 'ref') {
     this.clientId = clientId;
+  }
+
+  /** Stage a transaction without serializing every register. Registers and box
+   * states are immutable once stored; each writer replaces the box it touches.
+   * Both documents can subsequently apply ops or restore independently. */
+  fork(): ReferenceCanvasDoc {
+    const next = new ReferenceCanvasDoc(this.clientId);
+    for (const [id, box] of this.boxes) next.boxes.set(id, box);
+    for (const [id, rows] of this.collections) next.collections.set(id, new Map(rows));
+    for (const [key, reg] of this.params) next.params.set(key, reg);
+    next.clock = this.clock;
+    return next;
   }
 
   onLocalChange(_damage: Damage, rows: Map<BoxId, BoxRow>, col?: string): CanvasOp[] {
@@ -685,19 +710,22 @@ export class ReferenceCanvasDoc implements CanvasSyncAdapter {
     const params = new Map<string, ParamValue>();
     for (const key of [...this.params.keys()].sort()) {
       const reg = this.params.get(key);
-      if (reg !== undefined) params.set(key, reg.value);
+      if (reg !== undefined) params.set(key, typeof reg.value === 'object' && reg.value !== null ? structuredClone(reg.value) : reg.value);
     }
     const state: CanvasDocState = {
       order: this.orderOf(this.boxes),
       boxes: this.snapshot(this.boxes),
       params,
     };
+    const removed = new Set([...this.boxes].filter(([, box]) => box.alive?.value === false).map(([id]) => id));
+    if (removed.size) state.removed = removed;
     if (this.collections.size > 0) {
-      const collections = new Map<string, { order: BoxId[]; boxes: Map<BoxId, BoxRow> }>();
+      const collections: NonNullable<CanvasDocState['collections']> = new Map();
       for (const colId of [...this.collections.keys()].sort()) {
         const store = this.collections.get(colId);
         if (store !== undefined) {
-          collections.set(colId, { order: this.orderOf(store), boxes: this.snapshot(store) });
+          const removed = new Set([...store].filter(([, box]) => box.alive?.value === false).map(([id]) => id));
+          collections.set(colId, { order: this.orderOf(store), boxes: this.snapshot(store), ...(removed.size ? { removed } : {}) });
         }
       }
       state.collections = collections;
@@ -709,6 +737,26 @@ export class ReferenceCanvasDoc implements CanvasSyncAdapter {
    *  (the default canvas collection). The render-hash proxy for the section 8 assertion:
    *  the plans/98 section 11 determinism invariant guarantees identical `boxes` input ⇒
    *  identical render. */
+  checkpoint(): CanvasCheckpoint {
+    const rows = (store: Map<BoxId, BoxState>): CanvasCheckpoint['boxes'] =>
+      [...store].map(([id, box]) => [id, { ...box, fields: [...box.fields] }]);
+    return structuredClone({ version: 1, clock: this.clock, boxes: rows(this.boxes),
+      collections: [...this.collections].map(([id, store]) => [id, rows(store)]), params: [...this.params] });
+  }
+
+  /** Storage-only input: network operations must still pass their normal admission guard. */
+  restore(checkpoint: CanvasCheckpoint): void {
+    if (checkpoint.version !== 1) throw new Error('Unsupported canvas checkpoint');
+    const saved = structuredClone(checkpoint);
+    const rows = (entries: CanvasCheckpoint['boxes']): Map<BoxId, BoxState> =>
+      new Map(entries.map(([id, box]) => [id, { ...box, fields: new Map(box.fields) }]));
+    this.boxes.clear(); this.collections.clear(); this.params.clear();
+    for (const [id, box] of rows(saved.boxes)) this.boxes.set(id, box);
+    for (const [id, entries] of saved.collections) this.collections.set(id, rows(entries));
+    for (const [key, reg] of saved.params) this.params.set(key, reg);
+    this.clock = saved.clock;
+  }
+
   canonicalBoxes(): BoxRow[] {
     return this.orderOf(this.boxes).map((id) => this.rowOf(this.boxes, id));
   }
@@ -727,11 +775,10 @@ export class ReferenceCanvasDoc implements CanvasSyncAdapter {
       }
       store = m;
     }
-    let box = store.get(id);
-    if (box === undefined) {
-      box = { fields: new Map(), order: null, alive: null };
-      store.set(id, box);
-    }
+    const current = store.get(id);
+    const box: BoxState = current ? { ...current, fields: new Map(current.fields) }
+      : { fields: new Map(), order: null, alive: null };
+    store.set(id, box);
     return box;
   }
 

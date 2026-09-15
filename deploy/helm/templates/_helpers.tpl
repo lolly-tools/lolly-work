@@ -164,6 +164,9 @@ Guardrail: in Mode A (no existingSecret, no database.existingSecret) the two
 required signing secrets must be provided, or the deploy is silently insecure.
 */}}
 {{- define "lolly-work.validate" -}}
+{{- if ne (int .Values.replicaCount) 1 -}}
+{{- fail "The combined collab deployment requires replicaCount=1 until room routing is supported." -}}
+{{- end -}}
 {{- if not .Values.existingSecret }}
 {{- if not .Values.secrets.sessionSecret }}
 {{- fail "secrets.sessionSecret is required (or set existingSecret). Generate once: openssl rand -hex 32 — every replica must share it. See values.yaml." }}

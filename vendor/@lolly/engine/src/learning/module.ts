@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
+import { validLearningRichText, validLearningQuiz, learningRichTextPlain } from './authoring.ts';
 import type { LearningModule, LearningFinding } from '@lolly-tools/core/learning-v1';
 
 export const LEARNING_LIMITS = {
@@ -26,7 +27,7 @@ const assetTypes = new Set([
 ]);
 const keys = (value: Record<string, unknown>, allowed: string) =>
   Object.keys(value).every((key) => allowed.split(' ').includes(key));
-const kinds = new Set(['text', 'image', 'video', 'audio', 'resource', 'slides']);
+const kinds = new Set(['text', 'image', 'video', 'audio', 'resource', 'slides', 'quiz']);
 function record(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
 }
@@ -64,7 +65,8 @@ export function parseLearningModule(value: unknown): LearningModule {
   };
   if (
     !record(value) ||
-    value.schemaVersion !== 1 ||
+    ![1, 2].includes(Number(value.schemaVersion)) ||
+    typeof value.schemaVersion !== 'number' ||
     !id(value.id) ||
     !Number.isSafeInteger(value.revision) ||
     Number(value.revision) < 1
@@ -129,8 +131,22 @@ export function parseLearningModule(value: unknown): LearningModule {
         !record(block) ||
         !unique(block.id) ||
         !kinds.has(String(block.kind)) ||
-        !keys(block, 'id kind text description decorative transcript captions source')
+        !keys(block, 'id kind text richText quiz description decorative transcript captions source')
       )
+        return bad();
+      if (
+        value.schemaVersion === 1 &&
+        (block.richText !== undefined || block.quiz !== undefined || block.kind === 'quiz')
+      )
+        return bad();
+      if (
+        block.richText !== undefined &&
+        (block.kind !== 'text' || !validLearningRichText(block.richText))
+      )
+        return bad();
+      if (block.quiz !== undefined && (block.kind !== 'quiz' || !validLearningQuiz(block.quiz)))
+        return bad();
+      if (block.kind === 'quiz' && (block.source !== undefined || block.quiz === undefined))
         return bad();
       for (const key of ['text', 'description', 'transcript', 'captions'])
         if (block[key] !== undefined && !text(block[key])) return bad();
@@ -190,10 +206,30 @@ export function checkLearningModule(module: LearningModule): LearningFinding[] {
     if (!lesson.title.trim()) add('error', 'Give this lesson a title.');
     if (!lesson.blocks.length) add('error', 'Add content to this lesson.');
     for (const block of lesson.blocks) {
-      if (block.kind === 'text' && !block.text?.trim())
+      if (
+        block.kind === 'text' &&
+        !(block.richText ? learningRichTextPlain(block.richText) : block.text)?.trim()
+      )
         add('error', 'Write the lesson text or remove the empty text.', block.id);
-      if (block.kind !== 'text' && !block.source)
+      if (!['text', 'quiz'].includes(block.kind) && !block.source)
         add('error', 'Choose a source for this content.', block.id);
+      if (block.quiz) {
+        const q = block.quiz;
+        if (!q.prompt.trim()) add('error', 'Write the quiz question.', block.id);
+        if (q.options.some((o) => !o.text.trim()))
+          add('error', 'Write every answer option.', block.id);
+        const correct = q.options.filter((o) => o.correct).length;
+        if (!correct || (q.mode !== 'multiple' && correct !== 1))
+          add(
+            'error',
+            q.mode === 'multiple'
+              ? 'Choose at least one correct answer.'
+              : 'Choose one correct answer.',
+            block.id
+          );
+        if (new Set(q.options.map((o) => o.text.trim().toLowerCase())).size !== q.options.length)
+          add('error', 'Give each answer option different text.', block.id);
+      }
       if (
         ['image', 'slides'].includes(block.kind) &&
         !block.description?.trim() &&

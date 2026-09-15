@@ -149,4 +149,4 @@ export type {
   EmojiIssueV1, ResolvedEmojiGlyphV1, EmojiResolutionV1,
 } from './emoji-v1.ts';
 
-export type { LearningProgressEventV1, LearningTarget, LearningSource, LearningBlock, LearningLesson, LearningModule, LearningFile, LearningContentBlock, LearningContent, LearningAttempt, LearningFinding, LearningRelease } from './learning-v1.ts';
+export type { LearningRichNode, LearningQuiz, LearningProgressEventV1, LearningTarget, LearningSource, LearningBlock, LearningLesson, LearningModule, LearningFile, LearningContentBlock, LearningContent, LearningAttempt, LearningFinding, LearningRelease } from './learning-v1.ts';

@@ -14,9 +14,10 @@ import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocket } from 'ws';
 
 import { CANVAS_OP_VERSION } from '@lolly-tools/core/canvas-op-v1';
@@ -574,27 +575,13 @@ test('a project-visibility revocation lands on the next gesture, not the next re
   assert.equal(stored?.inputs['title'], 'while visible', 'the post-revocation op never reached the document');
 });
 
-test('a session tombstoned mid-room stops accepting ops on the next gesture', async () => {
-  // Same capture, other field: `session.deletedAt` was read once in `admit()`.
-  const seed = await makeSession(aliceCookie, projectId, { title: 'doomed' });
+test('REST deletion conflicts with a live room', async () => {
+  const seed = await makeSession(aliceCookie, projectId, { title: 'owned' });
   const alice = new Client(seed, aliceCookie);
-  try {
-    await alice.join();
-    alice.send({ t: 'ops', ops: [param('title', 'while alive', 'a', 2)] });
-    await silentFor(alice, 'error');
-
-    assert.equal((await json(aliceCookie, 'DELETE', `/api/v1/sessions/${seed}`)).status, 200);
-    assert.equal((await json(aliceCookie, 'GET', `/api/v1/sessions/${seed}`)).status, 410);
-
-    alice.send({ t: 'ops', ops: [param('title', 'written after deletion', 'a', 3)] });
-    assert.equal(await alice.closed(), CLOSE.UNAUTHORIZED);
-  } finally {
-    alice.close();
-  }
-  await new Promise((r) => setTimeout(r, 200));
-  const stored = await store.getSession(seed);
-  assert.ok(stored?.deletedAt, 'still tombstoned — a live room cannot resurrect it');
-  assert.notEqual(stored?.inputs['title'], 'written after deletion');
+  await alice.join();
+  assert.equal((await json(aliceCookie, 'DELETE', `/api/v1/sessions/${seed}`)).status, 409);
+  alice.close(); await alice.closed();
+  assert.equal((await json(aliceCookie, 'GET', `/api/v1/sessions/${seed}`)).status, 200);
 });
 
 test('collab.join is enforced at the socket: revoked mid-room it closes, and a fresh upgrade is 403', async () => {
@@ -1241,5 +1228,72 @@ test('a poisoned-clock op is refused at the socket and never lands — a later, 
     alice.close();
     admin.close();
     await Promise.all([alice.closed(), admin.closed()]);
+  }
+});
+
+// Cross-repository contract test: actual shell serializer and receiver against
+// this gateway and its independently packed core contract.
+const providerFile = join(process.env.LOLLY_OSS_DIR ?? fileURLToPath(new URL('../../../lolly/', import.meta.url)), 'shells/web/src/org/collab-provider.ts');
+test('real Lolly provider receives durable receipts and preserves wrapped presence through the work gateway', {
+  skip: !existsSync(providerFile) && 'requires the paired Lolly checkout; set LOLLY_OSS_DIR',
+}, async () => {
+  const providerUrl = pathToFileURL(providerFile).href;
+  const { createWorkCollabProvider } = await import(providerUrl);
+  const seed = await makeSession(aliceCookie, projectId, { title: 'before' });
+  const make = (cookie: string, clientId: string) => createWorkCollabProvider(seed, {
+    clientId, url: `${wsBase}${COLLAB_WS_PREFIX}${seed}`, href: base, reconnect: false,
+    socket: class extends WebSocket { constructor(url: string) { super(url, { headers: { cookie } }); } },
+    store: { load: async () => null, save: async () => {}, clear: async () => {} },
+  });
+  const alice = make(aliceCookie, 'real-a'), bob = make(bobCookie, 'real-b');
+  const until = async (predicate: () => boolean) => {
+    const end = Date.now() + 4000;
+    while (!predicate()) { if (Date.now() > end) throw new Error('provider condition timed out'); await new Promise(r => setTimeout(r, 10)); }
+  };
+  const seen: { from: string; frame: { from: string; epoch: string; state: { cursor?: unknown; name?: string; userId?: string }; away: boolean } }[] = [];
+  bob.on((event: { kind: string; from: string; frame: typeof seen[number]['frame'] }) => { if (event.kind === 'presence') seen.push(event); });
+  try {
+    await Promise.all([alice.connect(), bob.connect()]);
+    await until(() => alice.state().status === 'live' && bob.state().status === 'live');
+    alice.adapter.apply(param('title', 'durably saved', 'real-a', 100));
+    await until(() => alice.outbox().length === 0 && bob.adapter.state().params.get('title') === 'durably saved');
+    assert.equal((await store.getSession(seed))?.inputs.title, 'durably saved');
+    alice.sendPresence({ v: 1, from: 'spoofed-device', epoch: 'fake', seq: 7, away: true,
+      state: { userId: 'spoofed-user', name: 'Fake', color: '#336699', cursor: { x: 0.7, y: 0.3 }, selection: ['shape'], surface: { id: 'board', space: 'unit' } } });
+    await until(() => seen.length === 1);
+    assert.deepEqual(seen[0]!.frame.state.cursor, { x: 0.7, y: 0.3 });
+    assert.equal(seen[0]!.frame.away, true);
+    assert.equal(seen[0]!.frame.from, seen[0]!.from);
+    assert.equal(seen[0]!.frame.epoch, seen[0]!.from);
+    assert.notEqual(seen[0]!.frame.state.userId, 'spoofed-user');
+    assert.notEqual(seen[0]!.frame.state.name, 'Fake');
+  } finally { alice.close(); bob.close(); }
+});
+
+test('demotion broadcasts the new role and durably resolves old and newly rejected delivery IDs', async () => {
+  const cookie = await login('w2@test');
+  const user = (await store.listUsers()).find(user => user.email === 'w2@test')!;
+  const sid = await makeSession(aliceCookie, projectId, { title: 'initial' });
+  const writer = new Client(sid, cookie), peer = new Client(sid, aliceCookie);
+  try {
+    const ack = await writer.join(); await peer.join();
+    const op = param('title', 'accepted', 'delivery-writer', 1);
+    writer.send({ t: 'ops', batchId: 'before', ids: ['accepted-id'], ops: [op] });
+    const receipt = await writer.next('receipt');
+    await store.putGrant({ principal: `user:${user.id}`, action: 'session.edit', resource: '*', effect: 'deny' });
+    writer.send({ t: 'ops', batchId: 'retry', ids: ['accepted-id'], ops: [op] });
+    assert.deepEqual(await writer.next('peer-role'), { t: 'peer-role', id: (ack.you as { id: string }).id, role: 'observer' });
+    assert.equal((await peer.next('peer-role')).role, 'observer');
+    const retried = await writer.next('receipt');
+    assert.deepEqual(retried.acceptedIds, ['accepted-id']);
+    assert.equal(retried.durableRevision, receipt.durableRevision);
+    writer.send({ t: 'ops', batchId: 'after', ids: ['rejected-id'], ops: [param('title', 'forbidden', 'delivery-writer', 2)] });
+    const rejected = await writer.next('receipt');
+    assert.deepEqual(rejected.rejectedIds, ['rejected-id']);
+    assert.ok(rejected.checkpoint);
+    assert.equal((await store.getSession(sid))!.inputs.title, 'accepted');
+  } finally {
+    writer.close(); peer.close();
+    await store.deleteGrant({ principal: `user:${user.id}`, action: 'session.edit', resource: '*', effect: 'deny' });
   }
 });

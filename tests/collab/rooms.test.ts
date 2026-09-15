@@ -99,7 +99,7 @@ test(`a room admits at most ${MAX_COLLECTIONS_PER_ROOM} collections and ${MAX_BO
   assert.equal(room.admits(remove), false, 'so is a remove of an id the document has never seen');
 });
 
-test('the replay filter is bounded, and forgets the oldest client rather than growing', async () => {
+test('receipt dedup survives eviction of clock telemetry', async () => {
   const room = await Room.open(sessionOf());
   const seat = seatOf('m1');
   const peer = seatOf('m2');
@@ -124,8 +124,8 @@ test('the replay filter is bounded, and forgets the oldest client rather than gr
   // of the bound: one re-broadcast, against a map that otherwise never stops growing.
   room.applyOps(seat, [param('k', 'client-0', 5)]);
   assert.equal(
-    peer.sent.filter((f) => f.t === 'ops').length, before + 1,
-    'the evicted client is simply no longer remembered',
+    peer.sent.filter((f) => f.t === 'ops').length, before,
+    'clock telemetry is independent from operation identity',
   );
 });
 

@@ -1,3 +1,4 @@
+import type { CanvasCheckpoint, CanvasOp } from '@lolly-tools/core/canvas-op-v1';
 /**
  * Storage interface - the seam that keeps deploy targets honest (plans/01):
  * memory (dev/tests) now, Postgres next; the Vercel trial and the Helm chart
@@ -239,6 +240,27 @@ export interface SessionRevision {
 /** How many revisions a driver keeps per session (newest wins). Sessions are
  *  bytes-small; this bounds unbounded history growth (plans/08 §2). */
 export const SESSION_REVISION_LIMIT = 20;
+
+export interface CollabReceipt {
+  id: string;
+  digest: string;
+  accepted: boolean;
+  revision: number;
+}
+export interface CollabCommit {
+  sessionId: string;
+  owner: string;
+  principal: string;
+  expectedRev: number;
+  inputs: Record<string, unknown>;
+  /** Required for the first commit after a normal session save; periodic thereafter. */
+  checkpoint?: CanvasCheckpoint;
+  /** Accepted novel operations only. An empty array still advances the recovery chain. */
+  ops: CanvasOp[];
+  receipts: Omit<CollabReceipt, 'revision'>[];
+  actor: string;
+  updatedBy: string;
+}
 
 /**
  * A live collab room's document, mid-flight (plans/14 §6, migrations/0010_collab.sql).
@@ -619,9 +641,15 @@ export interface Store extends RenderStore {
   /** Newest-first, bounded to SESSION_REVISION_LIMIT. */
   listSessionRevisions(sessionId: string): Promise<SessionRevision[]>;
 
-  // live collab rooms (plans/14 §6). At most one snapshot per session; put is an
-  // upsert that REPLACES the previous one (no update log to compact), and the
-  // quiesce that lands the room as a session revision deletes it.
+  // Durable collaboration (0035/0036); the older input-only snapshots follow.
+  claimCollab(sessionId: string, owner: string, ttlMs: number): Promise<boolean>;
+  releaseCollab(sessionId: string, owner: string): Promise<void>;
+  getCollabCheckpoint(sessionId: string): Promise<{ revision: number; headRevision: number; checkpoint: CanvasCheckpoint } | null>;
+  getCollabJournal(sessionId: string, afterRevision: number): Promise<{ revision: number; ops: CanvasOp[] }[]>;
+  getCollabReceipts(sessionId: string, principal: string, ids: string[]): Promise<CollabReceipt[]>;
+  /** Atomically compare owner + revision, save projection, journal/checkpoint and
+   * receipts, and append bounded history. A checkpoint compacts its covered journal. */
+  commitCollab(batch: CollabCommit): Promise<number>;
   putCollabSnapshot(snap: CollabSnapshot): Promise<void>;
   getCollabSnapshot(sessionId: string): Promise<CollabSnapshot | null>;
   /** Unknown id is a no-op. */

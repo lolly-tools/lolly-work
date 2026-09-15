@@ -1,3 +1,4 @@
+import type { CanvasCheckpoint, CanvasOp } from '@lolly-tools/core/canvas-op-v1';
 /**
  * Postgres Store driver - binds the Store seam to migrations/0001_init.sql.
  *
@@ -1284,17 +1285,19 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       return rows.map(projectFromRow);
     },
     async putSession(session) {
-      await pool.query(
+      const result = await pool.query(
         `insert into sessions (id, project_id, tool_id, tool_version, inputs, meta,
            created_by, updated_by, rev, updated_at, deleted_at)
          values ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11)
          on conflict (id) do update set
            inputs = excluded.inputs, meta = excluded.meta, updated_by = excluded.updated_by,
-           rev = excluded.rev, updated_at = excluded.updated_at, deleted_at = excluded.deleted_at`,
+           rev = excluded.rev, updated_at = excluded.updated_at, deleted_at = excluded.deleted_at
+           where sessions.collab_lease_until is null or sessions.collab_lease_until <= clock_timestamp()`,
         [session.id, session.projectId, session.toolId, session.toolVersion,
          JSON.stringify(session.inputs), JSON.stringify(session.meta), session.createdBy,
          session.updatedBy, session.rev, session.updatedAt, session.deletedAt ?? null],
       );
+      if (result.rowCount === 0) throw new Error('collab-active');
     },
     async casSession(next, expectedRev) {
       // One statement, so the compare and the set cannot be separated by anything.
@@ -1303,7 +1306,8 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       const res = await pool.query(
         `update sessions set inputs = $2::jsonb, meta = $3::jsonb, updated_by = $4,
             rev = $5, updated_at = $6
-          where id = $1 and rev = $7 and deleted_at is null`,
+          where id = $1 and rev = $7 and deleted_at is null
+            and (collab_lease_until is null or collab_lease_until <= clock_timestamp())`,
         [next.id, JSON.stringify(next.inputs), JSON.stringify(next.meta), next.updatedBy,
          next.rev, next.updatedAt, expectedRev],
       );
@@ -1354,8 +1358,61 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       })) as SessionRevision[];
     },
 
-    // live collab rooms (migrations/0010_collab.sql). One row per session,
-    // REPLACED on each cadence hit - no update log, so nothing to compact.
+    // Durable room ownership, convergence checkpoints, journal and receipts.
+    async claimCollab(sessionId, owner, ttlMs) {
+      const result = await pool.query(`update sessions set collab_owner=$2,
+        collab_lease_until=clock_timestamp()+($3 * interval '1 millisecond')
+        where id=$1 and deleted_at is null and (collab_owner=$2 or collab_lease_until is null or collab_lease_until<=clock_timestamp())`, [sessionId, owner, ttlMs]);
+      return result.rowCount === 1;
+    },
+    async releaseCollab(sessionId, owner) {
+      await pool.query('update sessions set collab_owner=null, collab_lease_until=null where id=$1 and collab_owner=$2', [sessionId, owner]);
+    },
+    async getCollabCheckpoint(sessionId) {
+      const { rows } = await pool.query('select revision, head_revision, checkpoint from collab_checkpoints where session_id=$1', [sessionId]);
+      return rows[0] ? { revision: Number(rows[0].revision), headRevision: Number(rows[0].head_revision), checkpoint: rows[0].checkpoint as CanvasCheckpoint } : null;
+    },
+    async getCollabJournal(sessionId, afterRevision) {
+      const { rows } = await pool.query('select revision, ops from collab_journal where session_id=$1 and revision>$2 order by revision', [sessionId, afterRevision]);
+      return rows.map(row => ({ revision: Number(row.revision), ops: row.ops as CanvasOp[] }));
+    },
+    async getCollabReceipts(sessionId, principal, ids) {
+      const { rows } = await pool.query('select id, digest, accepted, revision from collab_receipts where session_id=$1 and principal=$2 and id=any($3::text[])', [sessionId, principal, ids]);
+      return rows.map(r => ({ id: r.id as string, digest: r.digest as string, accepted: r.accepted as boolean, revision: Number(r.revision) }));
+    },
+    async commitCollab(batch) {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        const locked = await client.query(`select rev, meta from sessions where id=$1 and rev=$2 and deleted_at is null
+          and collab_owner=$3 and collab_lease_until>clock_timestamp() for update`, [batch.sessionId, batch.expectedRev, batch.owner]);
+        if (!locked.rows[0]) throw new Error('collab-owner-conflict');
+        const rev = batch.expectedRev + 1, at = new Date().toISOString();
+        await client.query('update sessions set inputs=$2::jsonb, rev=$3, updated_at=$4, updated_by=$5 where id=$1',
+          [batch.sessionId, JSON.stringify(batch.inputs), rev, at, batch.updatedBy]);
+        if (batch.checkpoint) {
+          await client.query(`insert into collab_checkpoints(session_id,revision,head_revision,checkpoint) values($1,$2,$2,$3::jsonb)
+            on conflict(session_id) do update set revision=excluded.revision, head_revision=excluded.head_revision, checkpoint=excluded.checkpoint`,
+          [batch.sessionId, rev, JSON.stringify(batch.checkpoint)]);
+          await client.query('delete from collab_journal where session_id=$1 and revision<=$2', [batch.sessionId, rev]);
+        } else {
+          const advanced = await client.query('update collab_checkpoints set head_revision=$2 where session_id=$1 and head_revision=$3',
+            [batch.sessionId, rev, batch.expectedRev]);
+          if (advanced.rowCount !== 1) throw new Error('collab-checkpoint-required');
+          await client.query('insert into collab_journal(session_id,revision,ops) values($1,$2,$3::jsonb)', [batch.sessionId, rev, JSON.stringify(batch.ops)]);
+        }
+        for (const r of batch.receipts) await client.query(`insert into collab_receipts(session_id,principal,id,digest,accepted,revision) values($1,$2,$3,$4,$5,$6)`,
+          [batch.sessionId, batch.principal, r.id, r.digest, r.accepted, rev]);
+        await client.query('insert into session_revisions(session_id,rev,inputs,meta,actor,at) values($1,$2,$3::jsonb,$4::jsonb,$5,$6)',
+          [batch.sessionId, rev, JSON.stringify(batch.inputs), JSON.stringify(locked.rows[0].meta), batch.actor, at]);
+        await client.query(`delete from session_revisions where session_id=$1 and rev not in
+          (select rev from session_revisions where session_id=$1 order by rev desc limit $2)`, [batch.sessionId, SESSION_REVISION_LIMIT]);
+        await client.query('commit');
+        return rev;
+      } catch (error) { await client.query('rollback'); throw error; }
+      finally { client.release(); }
+    },
+
     async putCollabSnapshot(snap) {
       await pool.query(
         `insert into collab_room_snapshots (session_id, inputs, base_rev, ops, updated_at)

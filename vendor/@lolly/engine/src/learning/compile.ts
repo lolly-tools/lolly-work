@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
+import { learningRichTextPlain } from './authoring.ts';
 import type {
   LearningBlock,
   LearningContent,
@@ -106,15 +107,17 @@ export async function compileLearningModule(
       const compiled: LearningContentBlock = {
         id: block.id,
         kind: block.kind,
-        text: block.text,
+        text: block.richText ? learningRichTextPlain(block.richText) : block.text,
+        ...(block.richText ? { richText: structuredClone(block.richText) } : {}),
+        ...(block.quiz ? { quiz: structuredClone(block.quiz) } : {}),
         description: block.description,
         decorative: block.decorative,
         transcript: block.transcript,
       };
-      if (options.preview && block.kind === 'text' && !block.text?.trim())
+      if (options.preview && block.kind === 'text' && !compiled.text?.trim())
         compiled.previewIssue = 'This text block is empty. Add your explanation in the editor.';
       try {
-        if (block.kind !== 'text') {
+        if (!['text', 'quiz'].includes(block.kind)) {
           let parts: LearningBytes[];
           try {
             parts = await resolve(block);
@@ -170,7 +173,7 @@ export async function compileLearningModule(
   }
   return {
     content: {
-      schemaVersion: 1,
+      schemaVersion: module.schemaVersion,
       ...(options.preview ? { previewOnly: true as const } : {}),
       moduleId: module.id,
       releaseId,

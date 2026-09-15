@@ -272,7 +272,9 @@ test('(b3) credential expiry, automation jobs, deliveries and render resources f
   assert.equal(files[at + 4], '0031_automation_leases.sql', 'automation leases follow result digests');
   assert.equal(files[at + 5], '0032_render_resources.sql', 'render resources follow automation leases');
   assert.equal(files[at + 6], '0033_render_batches.sql', 'batch membership follows render resources');
-  assert.equal(files.at(-1), '0034_audit_mac_and_append_guard.sql', 'the keyed audit MAC + append-only guard hold the migration ceiling');
+  assert.equal(files[at + 7], '0034_audit_mac_and_append_guard.sql', 'audit hardening follows render batches');
+  assert.equal(files[at + 8], '0035_collab_receipts.sql', 'durable collab receipts follow audit hardening');
+  assert.equal(files.at(-1), '0036_collab_journal.sql', 'the operation journal follows durable receipts');
   assert.match(await readFile(`${dir}/0027_credential_expiry.sql`, 'utf8'), /add column credential_expires_at/);
   assert.match(await readFile(`${dir}/0028_automation_jobs.sql`, 'utf8'), /create table automation_jobs/);
   assert.match(await readFile(`${dir}/0029_deliveries.sql`, 'utf8'), /create table deliveries/);

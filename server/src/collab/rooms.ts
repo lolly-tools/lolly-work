@@ -1,43 +1,27 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * Collab rooms - the live-session document authority (plans/14 §6, OSS
- * plans/100 §7). One room per session id; the room owns the converged document,
- * the roster, the presence relay, and the per-room edit counters the audit
- * rollup reads on close. The gateway (gateway.ts) owns sockets, auth, and
- * policy; this module owns state.
+ * The per-session document authority, roster and presence relay. The gateway
+ * admits sockets and operations; this module serializes their document writes.
  *
- * DOCUMENT AUTHORITY - `ReferenceCanvasDoc`, from the pinned contract.
- * plans/14 §6 targets single-node rooms ("one node serves the org"), and for a
- * single doc the reference CRDT and the Yjs adapter are conformance-equivalent:
- * both resolve every register by the op's `(clock, client)` Lamport origin, and
- * both pass the SAME `runConvergenceSuite` bytes. The reference has no `yjs`
- * dependency and no update log to compact, so it is the correct v1 authority;
- * `yjs-canvas-adapter.ts` stays the multi-replica path (plans/14 §8 follow-up),
- * untouched by this wave. Both implement `CanvasSyncAdapter`, so the swap is a
- * constructor change here and nothing else.
+ * ReferenceCanvasDoc provides the shared scalar/property LWW model. Durable
+ * rooms commit a session projection, operation journal (or periodic register
+ * checkpoint), receipt IDs and bounded session history in one Store transaction.
+ * Only committed edits are applied, broadcast and acknowledged. Recovery replays
+ * a contiguous journal, including rejection-only revisions. An expiring database
+ * owner excludes other rooms and ordinary HTTP writers; it does not route sockets
+ * or make this a writable multi-replica service (OSS plans/258 and 259).
  *
- * STRUCTURAL RULE (OSS plans/100 §7 item 5, plans/99 §5). This module imports
- * NOTHING from `../policy` or `../rbac`, and the ENTIRE presence path lives
- * inside it. Presence therefore cannot be policy-checked - not by convention or
- * by a reviewer remembering, but because the code that relays it has no way to
- * reach the policy engine. tests/collab/gateway.test.ts asserts the absence of
- * those imports, so re-introducing one is a test failure. Presence likewise
- * never reaches the store: the only copy is the in-memory `presence` map, which
- * dies with the room (it exists so a joiner gets the current set, plans/100 §4.7).
- * This module STILL has no store import after persistence landed - the room is
- * handed a `RoomPersistence` instance and hands it back only `toInputs()`, a
- * seam that can express a document and nothing else.
+ * Presence has no policy/store calls: it remains ephemeral and available to
+ * observers. The module imports neither policy nor RBAC; gateway tests guard
+ * that boundary. Identity comes from the admitted connection.
  *
- * PERSISTENCE (plans/100 §7 items 3 + 4, plans/14 §6) lives in persistence.ts;
- * this module owns the CADENCE and the LIFECYCLE. A room snapshots every
- * SNAPSHOT_EVERY_BATCHES batches or SNAPSHOT_EVERY_OPS ops, whichever lands
- * first; on disposal it quiesces into a normal session revision. Rooms are
- * therefore created and destroyed ASYNCHRONOUSLY (`Room.open`,
- * `RoomRegistry.acquire`/`releaseIfEmpty`), and the registry serializes the two
- * against each other: a room re-acquired while its predecessor is still writing
- * its revision waits for that write, or it would seed from pre-quiesce inputs and
- * silently undo the edit that just landed.
+ * RoomPersistence retains the older input-snapshot/quiesce path for its existing
+ * consumers and conformance tests. Store-backed gateway rooms use the durable
+ * transaction path instead. Registry acquisition waits for disposal to drain.
  */
+import { createHash, randomUUID } from 'node:crypto';
+import { PRESENCE_VERSION, readPresenceFrame, sanitizePresenceState } from '@lolly-tools/core/collab-presence-v1';
+import type { PresenceFrame, PresenceState } from '@lolly-tools/core/collab-presence-v1';
 import {
   DEFAULT_GEOMETRY_FIELDS,
   ReferenceCanvasDoc,
@@ -49,13 +33,13 @@ import type {
   BoxId,
   BoxRow,
   CanvasDocState,
+  CanvasCheckpoint,
   CanvasOp,
   OpOrigin,
   ParamValue,
-  Presence,
   Scalar,
 } from '@lolly-tools/core/canvas-op-v1';
-import type { SessionRecord } from '../store/types.ts';
+import type { SessionRecord, Store } from '../store/types.ts';
 import {
   EMPTY_GRACE_MS, SNAPSHOT_EVERY_BATCHES, SNAPSHOT_EVERY_OPS, docToInputs,
 } from './persistence.ts';
@@ -138,7 +122,8 @@ export interface RosterEntry {
   opVersion: string;
   /** Their last presence frame, when they have sent one. Ephemeral - see the
    *  structural rule above. */
-  presence?: Presence;
+  presence?: PresenceState;
+  presenceVersion?: number;
 }
 
 /** The document as JSON - `CanvasDocState` uses Maps, which JSON cannot carry. */
@@ -152,6 +137,9 @@ export interface WireDocState {
 export type ServerFrame =
   | {
       t: 'join-ack';
+      presenceVersion?: number;
+      receipts?: number;
+      checkpoint?: CanvasCheckpoint;
       roster: RosterEntry[];
       docState: WireDocState;
       serverClock: number;
@@ -165,19 +153,22 @@ export type ServerFrame =
     }
   | { t: 'peer-join'; member: RosterEntry }
   | { t: 'peer-leave'; id: string }
+  | { t: 'peer-role'; id: string; role: MemberRole }
   | { t: 'ops'; ops: CanvasOp[]; from: string }
-  | { t: 'presence'; frame: Presence; from: string }
+  | { t: 'presence'; frame: PresenceFrame | PresenceState; from: string }
+  | { t: 'receipt'; batchId: string; durableRevision: number; acceptedIds: string[]; rejectedIds: string[]; checkpoint?: CanvasCheckpoint; serverClock?: number }
   | { t: 'error'; code: string; message: string; inputs?: string[] };
 
 export interface RoomMember {
   readonly id: string;
   readonly userId: string;
   readonly name: string;
-  readonly role: MemberRole;
+  role: MemberRole;
   /** The client's CANVAS_OP_VERSION, negotiated at join (plans/99 §9). Used
    *  per-peer on broadcast so a v1.0 peer never receives a collection-scoped op
    *  it would mis-route (`isOpSendableTo`). */
   readonly opVersion: string;
+  readonly presenceVersion?: number;
   /** Set when this seat is a GUEST admitted by a guest-edit link (plans/02 §8,
    *  plans/14 §6) rather than a signed-in member, and carrying the link id - 
    *  which IS a guest's principal id (`iam/sessions.ts` `guestActor`).
@@ -193,6 +184,7 @@ export interface RoomMember {
    *  mechanism". */
   readonly guestLinkId?: string;
   readonly send: (frame: ServerFrame) => void;
+  readonly disconnect?: () => void;
 }
 
 /** One seated member, as exposed to admin introspection: display name, role,
@@ -219,6 +211,10 @@ export interface RoomSnapshot {
   members: RoomMemberSnapshot[];
   opsApplied: number;
   startedAt: number;
+  durableRevision?: number;
+  pendingBatches?: number;
+  lastSaveMs?: number;
+  saveFailures?: number;
 }
 
 /**
@@ -364,6 +360,16 @@ export function seedOpsFromInputs(inputs: Record<string, unknown>): SeedResult {
   return { ops, unsynced };
 }
 
+/** An empty blocks input is still authoritative. It emits no add operations,
+ * but must survive checkpoints so a joining editor can clear its default rows. */
+function retainEmptyCollections(doc: ReferenceCanvasDoc, inputs: Record<string, unknown>): void {
+  const empty = Object.keys(inputs).filter(key => isSafeKey(key) && Array.isArray(inputs[key]) && inputs[key].length === 0);
+  if (!empty.length) return;
+  const checkpoint = doc.checkpoint(), existing = new Set(checkpoint.collections.map(([key]) => key));
+  for (const key of empty) if (!existing.has(key)) checkpoint.collections.push([key, []]);
+  doc.restore(checkpoint);
+}
+
 /** An array of plain objects → the collection's rows, in stored order. Anything
  *  else → null (the caller records it as unsynced). */
 function blockRows(inputId: string, value: unknown): Map<BoxId, BoxRow> | null {
@@ -393,75 +399,11 @@ function blockRows(inputId: string, value: unknown): Map<BoxId, BoxRow> | null {
 
 // ── presence sanitation (NO policy - see the structural rule) ─────────────────
 
-function clampString(v: unknown, max: number): string | undefined {
-  if (typeof v !== 'string') return undefined;
-  // Strip C0/C1 controls so a relayed frame cannot smuggle terminal escapes.
-  const clean = v.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').slice(0, max);
-  return clean.length ? clean : undefined;
+/** Legacy state adapter retained for integrations; new traffic uses the shared envelope. */
+export function sanitizePresence(raw: unknown, member: RoomMember): PresenceState {
+  const src = isPlainObject(raw) && Object.hasOwn(raw, 'state') ? raw['state'] : raw;
+  return sanitizePresenceState(src, member);
 }
-
-function finite(v: unknown, fallback: number): number {
-  return typeof v === 'number' && Number.isFinite(v) ? Math.max(-1e6, Math.min(1e6, v)) : fallback;
-}
-
-function idList(v: unknown, max: number): BoxId[] {
-  if (!Array.isArray(v)) return [];
-  const out: BoxId[] = [];
-  for (const item of v) {
-    if (out.length >= max) break;
-    const s = clampString(item, 256);
-    if (s) out.push(s);
-  }
-  return out;
-}
-
-/**
- * Rebuild an untrusted presence frame as a known-shaped `Presence`, stamping the
- * SERVER's identity over whatever the client claimed. A relayed frame is shown to
- * other people, so `userId`/`name` are the authenticated ones or nothing - a peer
- * must not be able to appear as a colleague. Everything else is clamped, never
- * rejected: a dropped cursor frame is invisible, a refused one is a stutter.
- *
- * This is shape hardening, not authorization: it consults no overlay, no grant,
- * no store, and it lives in the module that cannot reach any of them.
- */
-export function sanitizePresence(raw: unknown, member: RoomMember): Presence {
-  const src = isPlainObject(raw) ? raw : {};
-  const cursor = isPlainObject(src['cursor']) ? src['cursor'] : {};
-  const viewport = isPlainObject(src['viewport']) ? src['viewport'] : null;
-  const drag = isPlainObject(src['drag']) ? src['drag'] : null;
-  const frame: {
-    -readonly [K in keyof Presence]: Presence[K];
-  } = {
-    userId: member.userId,
-    name: member.name,
-    color: clampString(src['color'], 32) ?? '',
-    cursor: { x: finite(cursor['x'], 0), y: finite(cursor['y'], 0) },
-    selection: idList(src['selection'], 200),
-  };
-  if (drag) {
-    const dxy = Array.isArray(drag['dxy']) ? drag['dxy'] : [];
-    frame.drag = { ids: idList(drag['ids'], 200), dxy: [finite(dxy[0], 0), finite(dxy[1], 0)] };
-  }
-  const focus = clampString(src['focus'], 256);
-  if (focus) frame.focus = focus;
-  const location = clampString(src['location'], 256);
-  if (location) frame.location = location;
-  const following = clampString(src['following'], 256);
-  if (following) frame.following = following;
-  if (viewport) {
-    frame.viewport = {
-      x: finite(viewport['x'], 0),
-      y: finite(viewport['y'], 0),
-      zoom: finite(viewport['zoom'], 1),
-    };
-  }
-  const chat = clampString(src['chat'], MAX_CHAT_CHARS);
-  if (chat) frame.chat = chat;
-  return frame;
-}
-
-// ── the room ──────────────────────────────────────────────────────────────────
 
 export class Room implements RoomWriteback {
   readonly sessionId: string;
@@ -477,7 +419,7 @@ export class Room implements RoomWriteback {
   /** True when the seed came from a snapshot a crashed process left behind. */
   readonly recovered: boolean;
 
-  private readonly doc: ReferenceCanvasDoc;
+  private doc: ReferenceCanvasDoc;
   private readonly members = new Map<string, RoomMember>();
   /** When each currently-seated member joined - `snapshotForAdmin`'s only use.
    *  Cleared on leave, same as `presenceOf`: an admin snapshot is about who is
@@ -485,7 +427,7 @@ export class Room implements RoomWriteback {
    *  keeping. */
   private readonly joinedAtOf = new Map<string, number>();
   /** Last presence per member id. In-memory only; dies with the room. */
-  private readonly presenceOf = new Map<string, Presence>();
+  private readonly presenceOf = new Map<string, PresenceFrame>();
   private readonly seenUsers = new Set<string>();
   private readonly opsByUser = new Map<string, number>();
   private readonly touchedKeys = new Set<string>();
@@ -516,6 +458,20 @@ export class Room implements RoomWriteback {
    *  chain so a late snapshot cannot rewrite the row quiesce just deleted. */
   private writes: Promise<void> = Promise.resolve();
   private closed = false;
+  private store?: Store;
+  private owner = randomUUID();
+  private durableRevision = 0;
+  private pendingBatches = 0;
+  private pendingBytes = 0;
+  private lastSaveMs = 0;
+  private saveFailures = 0;
+  private leaseTimer?: ReturnType<typeof setInterval>;
+  private readonly seenOps = new Set<string>();
+  private needsCheckpoint = true;
+  private journalBatches = 0;
+  private journalOps = 0;
+  private journalBytes = 0;
+  private checkpointAt = Date.now();
 
   /** Construct through `Room.open` / `RoomRegistry.acquire` - seeding is async
    *  (it may have to recover and commit a crash-lost quiesce first). */
@@ -534,6 +490,7 @@ export class Room implements RoomWriteback {
       this.doc.apply(op);
       this.note(op);
     }
+    retainEmptyCollections(this.doc, hydrated.inputs);
     this.unsynced = seed.unsynced;
   }
 
@@ -543,28 +500,147 @@ export class Room implements RoomWriteback {
    * revision and becomes the seed, so the first joiner after a restart sees the
    * work the crash swallowed rather than the last clean save.
    */
-  static async open(session: SessionRecord, persistence?: RoomPersistence): Promise<Room> {
-    if (!persistence) return Room.create(session);
-    const hydrated = await persistence.hydrate(session);
-    return new Room(session, persistence, hydrated);
+  static async open(session: SessionRecord, persistence?: RoomPersistence, store?: Store): Promise<Room> {
+    const hydrated = persistence ? await persistence.hydrate(session)
+      : { inputs: session.inputs, rev: session.rev, recovered: false };
+    const room = new Room(session, persistence, hydrated);
+    if (!store) return room;
+    if (!await store.claimCollab(session.id, room.owner, 30_000)) throw new Error('collab-room-owned');
+    try {
+      const current = await store.getSession(session.id);
+      if (!current || current.deletedAt) throw new Error('session-gone');
+      const saved = await store.getCollabCheckpoint(session.id);
+      if (saved && saved.headRevision > current.rev) throw new Error('collab-recovery-head-conflict');
+      if (saved?.headRevision === current.rev) {
+        room.doc.restore(saved.checkpoint);
+        const journal = await store.getCollabJournal(session.id, saved.revision);
+        let revision = saved.revision;
+        for (const row of journal) {
+          if (row.revision !== ++revision) throw new Error('collab-recovery-journal-gap');
+          room.doc.applyRemotePatch(row.ops);
+          room.journalBatches++;
+          room.journalOps += row.ops.length;
+          room.journalBytes += Buffer.byteLength(JSON.stringify(row.ops));
+        }
+        if (revision !== saved.headRevision) throw new Error('collab-recovery-journal-gap');
+        room.needsCheckpoint = false;
+      }
+      else {
+        room.doc.restore(new ReferenceCanvasDoc().checkpoint());
+        for (const op of seedOpsFromInputs(current.inputs).ops) room.doc.apply(op);
+      }
+      retainEmptyCollections(room.doc, current.inputs);
+      const checkpoint = room.doc.checkpoint();
+      room.paramKeys.clear(); room.boxIds.clear();
+      for (const [key] of checkpoint.params) room.paramKeys.add(key);
+      for (const [col, boxes] of checkpoint.collections) room.boxIds.set(col, new Set(boxes.map(([id]) => id)));
+      room.serverClock = checkpoint.clock;
+      room.durableRevision = current.rev;
+      room.store = store;
+      room.leaseTimer = setInterval(() => {
+        void store.claimCollab(session.id, room.owner, 30_000).then(ok => {
+          if (room.closed && ok) return store.releaseCollab(session.id, room.owner);
+          if (!ok) room.loseLease();
+        }).catch(() => room.loseLease());
+      }, 10_000);
+      room.leaseTimer.unref();
+      return room;
+    } catch (error) { await store.releaseCollab(session.id, room.owner); throw error; }
+  }
+  private loseLease(): void {
+    this.closed = true;
+    clearInterval(this.leaseTimer);
+    for (const member of this.members.values()) member.disconnect?.();
   }
 
-  /**
-   * A room with NO persistence, seeded synchronously from the session's stored
-   * inputs - `open` minus the hydrate step it only has when there is a store to
-   * hydrate from (the branch this replaces was already synchronous in all but
-   * type). Behaviour is identical; `open` still returns a promise, and is still
-   * the only way to get a persisted room.
-   *
-   * It exists as its own entry point because two callers need a room WITHOUT
-   * awaiting: the `CanvasSyncAdapter` factory the shared conformance suite takes
-   * is synchronous by contract (`() => CanvasSyncAdapter`, plans/99 §8), and
-   * rooms.ts's own in-memory cases have no reason to be async at all.
-   */
+  /** Serialize across ALL connections. Nothing is applied or broadcast until the database commits. */
+  applyBatch(from: RoomMember, batchId: string, ids: string[], ops: CanvasOp[], accepted: ReadonlySet<CanvasOp>): Promise<void> {
+    const bytes = JSON.stringify(ops).length * 2;
+    if (this.pendingBatches >= 32 || this.pendingBytes + bytes > 4 * 1024 * 1024) return Promise.reject(new Error('collab-room-busy'));
+    this.pendingBatches++; this.pendingBytes += bytes;
+    const started = performance.now();
+    const run = this.writes.then(async () => {
+      const store = this.store;
+      if (!store || this.closed) throw new Error('collab-storage-unavailable');
+      const previous = new Map((await store.getCollabReceipts(this.sessionId, from.userId, ids)).map(r => [r.id, r]));
+      if (this.closed) throw new Error('collab-owner-lost');
+      const canonical = (v: unknown): unknown => Array.isArray(v) ? v.map(canonical)
+        : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b)).map(([k, value]) => [k, canonical(value)])) : v;
+      const records = ops.map((op, i) => ({ id: ids[i]!, digest: createHash('sha256').update(JSON.stringify(canonical(op))).digest('hex'), accepted: accepted.has(op) }));
+      for (const record of records) {
+        const prior = previous.get(record.id);
+        if (prior && prior.digest !== record.digest) throw new Error('collab-receipt-conflict');
+      }
+      // Admission was checked before queuing. Reserve capacity again in the
+      // serialized transaction so concurrent batches cannot exceed recovery caps.
+      const params = new Set(this.paramKeys);
+      const boxes = new Map([...this.boxIds].map(([col, ids]) => [col, new Set(ids)]));
+      for (let i = 0; i < ops.length; i++) {
+        const op = ops[i]!, record = records[i]!;
+        if (previous.has(record.id) || !record.accepted) continue;
+        if (op.k === 'param') {
+          if (!params.has(op.key) && params.size >= MAX_PARAMS_PER_ROOM) record.accepted = false;
+          else params.add(op.key);
+        } else if (op.col !== undefined) {
+          let ids = boxes.get(op.col);
+          if (!ids && boxes.size >= MAX_COLLECTIONS_PER_ROOM) { record.accepted = false; continue; }
+          if (!ids) { ids = new Set(); boxes.set(op.col, ids); }
+          if (!ids.has(op.id) && ids.size >= MAX_BOXES_PER_COLLECTION) record.accepted = false;
+          else ids.add(op.id);
+        }
+      }
+      const novel = records.filter(r => !previous.has(r.id));
+      const fresh = ops.filter((_, i) => !previous.has(ids[i]!) && records[i]!.accepted);
+      if (novel.length) {
+        const candidate = this.doc.fork();
+        candidate.applyRemotePatch(fresh);
+        const session = await store.getSession(this.sessionId);
+        if (!session || session.deletedAt) throw new Error('session-gone');
+        const state = candidate.state();
+        const inputs = docToInputs(state, session.inputs, new Set([...state.params.keys(), ...(state.collections?.keys() ?? [])]));
+        const journalBytes = Buffer.byteLength(JSON.stringify(fresh));
+        // Bound the recovery tail by transactions, operations, bytes and active
+        // time. Idle rooms need no timer: the next commit performs compaction.
+        const compact = this.needsCheckpoint || this.journalBatches + 1 >= 128 || this.journalOps + fresh.length >= 4096
+          || this.journalBytes + journalBytes >= 1024 * 1024 || Date.now() - this.checkpointAt >= 30_000;
+        this.durableRevision = await store.commitCollab({ sessionId: this.sessionId, owner: this.owner, principal: from.userId,
+          expectedRev: this.durableRevision, inputs, ...(compact ? { checkpoint: candidate.checkpoint() } : {}), ops: fresh, receipts: novel,
+          actor: from.guestLinkId ? `guest:${from.guestLinkId}` : 'collab', updatedBy: from.guestLinkId ? session.updatedBy : from.userId });
+        if (this.closed) throw new Error('collab-owner-lost');
+        this.doc = candidate;
+        if (compact) {
+          this.needsCheckpoint = false;
+          this.journalBatches = this.journalOps = this.journalBytes = 0;
+          this.checkpointAt = Date.now();
+        } else {
+          this.journalBatches++;
+          this.journalOps += fresh.length;
+          this.journalBytes += journalBytes;
+        }
+        for (const op of fresh) this.recordOp(op, from.userId);
+        for (const peer of this.members.values()) {
+          if (peer.id === from.id) continue;
+          const sendable = fresh.filter(op => isOpSendableTo(op, peer.opVersion));
+          if (sendable.length) peer.send({ t: 'ops', ops: sendable, from: from.id });
+        }
+      }
+      const acceptedIds: string[] = [], rejectedIds: string[] = [];
+      for (const r of records) ((previous.get(r.id)?.accepted ?? r.accepted) ? acceptedIds : rejectedIds).push(r.id);
+      // An accepted retry may predate a later REST save. Its optimistic replay
+      // must reconcile to the current document even though the receipt is accepted.
+      from.send({ t: 'receipt', batchId, durableRevision: this.durableRevision, acceptedIds, rejectedIds,
+        ...(rejectedIds.length || previous.size ? { checkpoint: this.doc.checkpoint(), serverClock: this.serverClock } : {}) });
+    });
+    const settled = run.then(() => { this.lastSaveMs = performance.now() - started; }, error => { this.saveFailures++; throw error; })
+      .finally(() => { this.pendingBatches--; this.pendingBytes -= bytes; });
+    this.writes = settled.catch(() => {});
+    return settled;
+  }
   static create(session: SessionRecord): Room {
     return new Room(session, undefined, { inputs: session.inputs, rev: session.rev, recovered: false });
   }
 
+  get available(): boolean { return !this.closed; }
   get size(): number {
     return this.members.size;
   }
@@ -573,6 +649,12 @@ export class Room implements RoomWriteback {
     let n = 0;
     for (const m of this.members.values()) if (m.role === 'writer') n++;
     return n;
+  }
+
+  demote(member: RoomMember): void {
+    if (this.members.get(member.id) !== member || member.role === 'observer') return;
+    member.role = 'observer';
+    this.broadcast({ t: 'peer-role', id: member.id, role: 'observer' });
   }
 
   /** Writer seats this user already holds - the per-user half of WRITER_CAP. */
@@ -643,6 +725,7 @@ export class Room implements RoomWriteback {
   join(member: RoomMember): {
     roster: RosterEntry[];
     docState: WireDocState;
+    checkpoint: CanvasCheckpoint;
     serverClock: number;
     opVersion: string;
     you: RosterEntry;
@@ -657,6 +740,7 @@ export class Room implements RoomWriteback {
     return {
       roster,
       docState: this.snapshot(),
+      checkpoint: this.doc.checkpoint(),
       serverClock: this.serverClock,
       opVersion: CANVAS_OP_VERSION,
       you,
@@ -693,9 +777,12 @@ export class Room implements RoomWriteback {
    * payload).
    */
   applyOps(from: RoomMember, ops: readonly CanvasOp[]): void {
-    const fresh = ops.filter((op) => {
-      const seen = this.highestClock.get(op.origin.client);
-      return seen === undefined || op.origin.clock > seen;
+    const fresh = ops.filter(op => {
+      const key = JSON.stringify(op);
+      if (this.seenOps.has(key)) return false;
+      this.seenOps.add(key);
+      if (this.seenOps.size > 4096) this.seenOps.delete(this.seenOps.values().next().value!);
+      return true;
     });
     if (!fresh.length) return; // a pure replay: converged already, and nobody needs to hear it again
     for (const op of fresh) this.ingestOp(op, from.userId);
@@ -729,6 +816,10 @@ export class Room implements RoomWriteback {
    */
   ingestOp(op: CanvasOp, userId: string): void {
     this.doc.apply(op);
+    this.recordOp(op, userId);
+  }
+
+  private recordOp(op: CanvasOp, userId: string): void {
     this.note(op);
     const seen = this.highestClock.get(op.origin.client);
     if (seen === undefined || op.origin.clock > seen) this.noteClock(op.origin.client, op.origin.clock);
@@ -747,9 +838,15 @@ export class Room implements RoomWriteback {
    * (plans/100 §7 item 5).
    */
   relayPresence(from: RoomMember, raw: unknown): void {
-    const frame = sanitizePresence(raw, from);
+    const previous = this.presenceOf.get(from.id);
+    const frame = readPresenceFrame(raw, { ...from, from: from.id, epoch: from.id, seq: (previous?.seq ?? 0) + 1 });
+    if (!frame || previous && frame.seq <= previous.seq) return;
     this.presenceOf.set(from.id, frame);
-    this.broadcast({ t: 'presence', frame, from: from.id }, from.id);
+    for (const peer of this.members.values()) {
+      if (peer.id === from.id) continue;
+      if (peer.presenceVersion === PRESENCE_VERSION) peer.send({ t: 'presence', frame, from: from.id });
+      else if (frame.state) peer.send({ t: 'presence', frame: { ...frame.state, cursor: undefined, surface: undefined }, from: from.id });
+    }
   }
 
   /** The converged document as JSON. Every joiner gets the WHOLE thing in its
@@ -782,6 +879,8 @@ export class Room implements RoomWriteback {
    */
   async quiesce(): Promise<QuiesceResult | null> {
     this.closed = true;
+    clearInterval(this.leaseTimer);
+    if (this.store) { await this.writes; await this.store.releaseCollab(this.sessionId, this.owner); return { written: this.opTotal > 0, rev: this.durableRevision }; }
     const persistence = this.persistence;
     if (!persistence) return null;
     // Let any in-flight snapshot land first - otherwise it could rewrite the
@@ -859,6 +958,7 @@ export class Room implements RoomWriteback {
       members,
       opsApplied: this.opTotal,
       startedAt: this.openedAt,
+      durableRevision: this.durableRevision, pendingBatches: this.pendingBatches, lastSaveMs: this.lastSaveMs, saveFailures: this.saveFailures,
     };
   }
 
@@ -899,7 +999,8 @@ export class Room implements RoomWriteback {
       name: m.name,
       role: m.role,
       opVersion: m.opVersion,
-      ...(presence ? { presence } : {}),
+      ...(presence?.state ? { presence: presence.state } : {}),
+      presenceVersion: m.presenceVersion,
     };
   }
 }
@@ -950,7 +1051,9 @@ export class RoomRegistry {
 
   /** The gateway always passes persistence; it stays optional so a room can be
    *  exercised as pure in-memory state. `graceMs` is injectable for tests. */
-  constructor(persistence?: RoomPersistence, graceMs: number = EMPTY_GRACE_MS) {
+  private readonly store?: Store;
+  constructor(persistence?: RoomPersistence, graceMs: number = EMPTY_GRACE_MS, store?: Store) {
+    this.store = store;
     this.persistence = persistence;
     this.graceMs = graceMs;
   }
@@ -960,6 +1063,7 @@ export class RoomRegistry {
     const disposing = this.closing.get(session.id);
     if (disposing) await disposing;
     const existing = this.rooms.get(session.id);
+    if (existing && !existing.available) { await this.dispose(existing); return this.acquire(session); }
     if (existing) {
       this.emptySince.delete(session.id);
       return existing;
@@ -1038,7 +1142,7 @@ export class RoomRegistry {
   }
 
   private async open(session: SessionRecord): Promise<Room> {
-    const room = await Room.open(session, this.persistence);
+    const room = await Room.open(session, this.persistence, this.store);
     this.rooms.set(session.id, room);
     this.emptySince.delete(session.id);
     return room;

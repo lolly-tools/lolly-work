@@ -162,6 +162,9 @@ export type ToolI18nOverlay = Record<string, string>;
  *  scripts/validate-catalog.ts so authoring mistakes are caught at build time,
  *  not silently swallowed at runtime. */
 export function applyManifestI18n(manifest: ToolManifest, overlay: ToolI18nOverlay): void {
+  // Section metadata follows the authored association when its caption changes.
+  // Keep original keys too: a partial overlay can leave other rows untranslated.
+  const sections = new Map(manifest.inputs.map(input => [input.id, input.section]));
   for (const [key, value] of Object.entries(overlay)) {
     if (typeof value !== 'string' || !value) continue;
     if (key === 'name') { manifest.name = value; continue; }
@@ -205,6 +208,19 @@ export function applyManifestI18n(manifest: ToolManifest, overlay: ToolI18nOverl
         const fieldOpt = field.options?.find(o => o.value === fieldOptMatch[1]);
         if (fieldOpt) fieldOpt.label = value;
       }
+    }
+  }
+  const render = manifest.render as ToolRenderSpec & { sectionIcons?: Record<string, string>; denseSections?: string[] };
+  const icons = { ...render?.sectionIcons };
+  const dense = new Set(render?.denseSections ?? []);
+  for (const input of manifest.inputs) {
+    const original = sections.get(input.id);
+    if (!original || !input.section || original === input.section) continue;
+    if (icons[original] && render?.sectionIcons) {
+      render.sectionIcons[input.section] = icons[original];
+    }
+    if (dense.has(original) && render?.denseSections && !render.denseSections.includes(input.section)) {
+      render.denseSections.push(input.section);
     }
   }
 }

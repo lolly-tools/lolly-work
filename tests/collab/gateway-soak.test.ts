@@ -670,8 +670,8 @@ test('a presence storm inside the cap is relayed, costs the store nothing, and d
   for (let i = 0; i < storm; i++) {
     sender.send({ t: 'presence', frame: { cursor: { x: i / storm, y: 0.5 }, selection: [`row-${i}`], chat: MARKER } });
   }
-  await peer.until(() => peer.presenceReceived >= storm, `${storm} relayed presence frames`);
-  assert.equal(peer.presenceReceived, storm, 'every frame inside the cap was relayed, none coalesced away');
+  await peer.until(() => peer.presenceReceived > 0, 'coalesced presence');
+  assert.ok(peer.presenceReceived < storm, 'obsolete samples are coalesced before socket send');
   assert.equal(sender.closeCode, null, 'a storm inside the cap does not disconnect');
   assert.equal(peer.closeCode, null);
 

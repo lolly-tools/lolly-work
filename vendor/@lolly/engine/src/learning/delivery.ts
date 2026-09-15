@@ -70,6 +70,7 @@ export function learningSummary(module: LearningModule) {
     lessons: module.lessons.length,
     required: module.lessons.filter((l) => l.required).length,
     optional: module.lessons.filter((l) => !l.required).length,
+    quizzes: blocks.filter((b) => b.kind === 'quiz').length,
     videos: blocks.filter((b) => b.kind === 'video').length,
     audio: blocks.filter((b) => b.kind === 'audio').length,
     resources: blocks.filter((b) => b.kind === 'resource').length,

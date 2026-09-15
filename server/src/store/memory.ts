@@ -1,3 +1,5 @@
+import type { CanvasCheckpoint, CanvasOp } from '@lolly-tools/core/canvas-op-v1';
+import type { CollabReceipt } from './types.ts';
 /**
  * In-memory Store - dev, tests, and the evaluation container's default.
  * Postgres driver lands beside this (migrations/0001_init.sql is the schema).
@@ -76,6 +78,11 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const projects = new Map<string, ProjectRecord>();
   const sessions = new Map<string, SessionRecord>();
   const sessionRevisions = new Map<string, SessionRevision[]>(); // sessionId -> ascending by rev
+  const collabOwners = new Map<string, { owner: string; until: number }>();
+  const collabCheckpoints = new Map<string, { revision: number; headRevision: number; checkpoint: CanvasCheckpoint }>();
+  const collabJournal = new Map<string, { revision: number; ops: CanvasOp[] }[]>();
+  const collabReceipts = new Map<string, CollabReceipt>();
+  const receiptKey = (session: string, principal: string, id: string): string => JSON.stringify([session, principal, id]);
   const collabSnapshots = new Map<string, CollabSnapshot>(); // sessionId -> the live room's doc
 
   const erasurePreview = (id: string) => ({
@@ -781,11 +788,12 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       return [...projects.values()];
     },
     async putSession(session) {
+      if ((collabOwners.get(session.id)?.until ?? 0) > Date.now()) throw new Error('collab-active');
       sessions.set(session.id, session);
     },
     async casSession(next, expectedRev) {
       const cur = sessions.get(next.id);
-      if (!cur || cur.rev !== expectedRev || cur.deletedAt) return false;
+      if (!cur || cur.rev !== expectedRev || cur.deletedAt || (collabOwners.get(next.id)?.until ?? 0) > Date.now()) return false;
       // `deletedAt` is carried from the STORED row, never from the candidate: a CAS
       // must not be a way to resurrect a tombstone, whatever the caller's copy says.
       sessions.set(next.id, { ...next, ...(cur.deletedAt ? { deletedAt: cur.deletedAt } : {}) });
@@ -813,10 +821,45 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       return [...(sessionRevisions.get(sessionId) ?? [])].sort((a, b) => b.rev - a.rev);
     },
 
-    // live collab rooms (plans/14 §6). Replace-in-place, exactly one row per
-    // session - there is no update log here or in Postgres. `inputs` is cloned so
-    // this driver round-trips like jsonb does: a caller that later mutates the
-    // object it handed us must not reach back into the store.
+    // Durable room ownership, convergence checkpoints, journal and receipts.
+    async claimCollab(sessionId, owner, ttlMs) {
+      const session = sessions.get(sessionId), held = collabOwners.get(sessionId);
+      if (!session || session.deletedAt || held && held.owner !== owner && held.until > Date.now()) return false;
+      collabOwners.set(sessionId, { owner, until: Date.now() + ttlMs }); return true;
+    },
+    async releaseCollab(sessionId, owner) {
+      if (collabOwners.get(sessionId)?.owner === owner) collabOwners.delete(sessionId);
+    },
+    async getCollabCheckpoint(sessionId) { return structuredClone(collabCheckpoints.get(sessionId) ?? null); },
+    async getCollabJournal(sessionId, afterRevision) {
+      return structuredClone((collabJournal.get(sessionId) ?? []).filter(row => row.revision > afterRevision));
+    },
+    async getCollabReceipts(sessionId, principal, ids) {
+      return ids.flatMap(id => { const r = collabReceipts.get(receiptKey(sessionId, principal, id)); return r ? [structuredClone(r)] : []; });
+    },
+    async commitCollab(batch) {
+      const session = sessions.get(batch.sessionId), held = collabOwners.get(batch.sessionId);
+      if (!session || session.deletedAt || session.rev !== batch.expectedRev || held?.owner !== batch.owner || held.until <= Date.now())
+        throw new Error('collab-owner-conflict');
+      for (const r of batch.receipts) if (collabReceipts.has(receiptKey(batch.sessionId, batch.principal, r.id))) throw new Error('collab-receipt-conflict');
+      const rev = session.rev + 1, at = new Date().toISOString();
+      const saved = collabCheckpoints.get(session.id);
+      if (!batch.checkpoint && saved?.headRevision !== batch.expectedRev) throw new Error('collab-checkpoint-required');
+      const inputs = structuredClone(batch.inputs), checkpoint = structuredClone(batch.checkpoint), ops = structuredClone(batch.ops);
+      sessions.set(session.id, { ...session, inputs, rev, updatedAt: at, updatedBy: batch.updatedBy });
+      if (checkpoint) {
+        collabCheckpoints.set(session.id, { revision: rev, headRevision: rev, checkpoint });
+        collabJournal.delete(session.id);
+      } else {
+        collabCheckpoints.set(session.id, { ...saved!, headRevision: rev });
+        collabJournal.set(session.id, [...(collabJournal.get(session.id) ?? []), { revision: rev, ops }]);
+      }
+      for (const r of batch.receipts) collabReceipts.set(receiptKey(session.id, batch.principal, r.id), { ...r, revision: rev });
+      const revisions = sessionRevisions.get(session.id) ?? [];
+      sessionRevisions.set(session.id, [...revisions, { sessionId: session.id, rev, inputs, meta: session.meta, actor: batch.actor, at }].slice(-SESSION_REVISION_LIMIT));
+      return rev;
+    },
+
     async putCollabSnapshot(snap) {
       collabSnapshots.set(snap.sessionId, { ...snap, inputs: structuredClone(snap.inputs) });
     },

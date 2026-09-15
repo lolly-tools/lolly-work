@@ -12,6 +12,7 @@
     "./contract": "./src/contract.ts",
     "./host-v1": "./src/host-v1.ts",
     "./extension-v1": "./src/extension-v1.ts",
+    "./collab-presence-v1": "./src/collab-presence-v1.ts",
     "./canvas-op-v1": "./src/canvas-op-v1.ts",
     "./canvas-op-testkit": "./src/canvas-op-testkit.ts",
     "./preflight": "./src/preflight.ts",
@@ -32,7 +33,8 @@
     "./schema/canvas-op.schema.json": "./schema/canvas-op.schema.json",
     "./schema/chart-v1.schema.json": "./schema/chart-v1.schema.json",
     "./learning-v1": "./src/learning-v1.ts",
-    "./schema/learning-module-v1.schema.json": "./schema/learning-module-v1.schema.json"
+    "./schema/learning-module-v1.schema.json": "./schema/learning-module-v1.schema.json",
+    "./schema/learning-module-v2.schema.json": "./schema/learning-module-v2.schema.json"
   },
   "files": [
     "src",

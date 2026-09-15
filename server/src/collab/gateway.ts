@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
+import { createHash } from 'node:crypto';
 /**
  * The collab WebSocket gateway - `/ws/collab/:sessionId` (OSS plans/100 §7
  * items 1/5/6/7, lolly-work plans/14 §6).
@@ -710,7 +711,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
   const pingIntervalMs = deps.pingIntervalMs ?? PING_INTERVAL_MS;
   // The room owns its document; persistence owns the snapshot cadence, the
   // quiesce→revision write, and crash recovery (persistence.ts, plans/14 §6).
-  const registry = new RoomRegistry(createRoomPersistence({ store }));
+  const registry = new RoomRegistry(createRoomPersistence({ store }), undefined, store);
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES });
   const sockets = new Set<WebSocket>();
   let closing = false;
@@ -934,9 +935,9 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
   };
 
   /**
-   * "May this connection still be in this room at all?" - gates 1–3 of `admit`,
-   * without gate 4 (writer vs observer, which is a per-batch decision) and
-   * without the overlay/manifest reads that only a WRITE needs.
+   * Recheck room access and edit permission. An idle participant can lose
+   * membership or become an observer without sending another gesture.
+   * Overlay/manifest rules remain per-write checks.
    *
    * Driven by the heartbeat, so a seat that never sends anything is still
    * re-authorized. Deliberately the same four store reads `admit` made, in the
@@ -945,17 +946,17 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
    * introduce. A guest observer is re-checked on the same tick and for the same
    * reason: a revoked link must reach the seat that never sends anything.
    */
-  const seatValid = async (ctx: Admitted): Promise<boolean> => {
+  const seatValid = async (ctx: Admitted): Promise<{ mayEdit: boolean } | null> => {
     const { id: sessionId, projectId } = ctx.session;
     if (ctx.identity.kind === 'guest') {
       const { linkId } = ctx.identity;
       const [link, session] = await Promise.all([store.getLink(linkId), store.getSession(sessionId)]);
-      if (!session || session.deletedAt) return false;
+      if (!session || session.deletedAt) return null;
       const seat = liveGuestSeat(ctx.cookie, link, linkId, sessionId);
-      if (!seat) return false;
+      if (!seat) return null;
       // An idle guest observer has no gesture to lose the seat on - the inviter
       // check has to ride the same keepalive the link's own liveness does.
-      return (await guestInviterStanding(seat.link)) !== null;
+      return (await guestInviterStanding(seat.link)) !== null ? { mayEdit: seat.role === 'writer' } : null;
     }
     const [user, grants, session, project] = await Promise.all([
       resolveMember(store, ctx.cookie, sessionVerify),
@@ -963,8 +964,8 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
       store.getSession(sessionId),
       store.getProject(projectId),
     ]);
-    if (!user) return false;
-    return seatAllows(user, session, project, grants);
+    if (!user || !seatAllows(user, session, project, grants)) return null;
+    return { mayEdit: mayEditCollab({ userId: user.id, groups: user.groups, role: user.role as Role }, grants) };
   };
 
   /**
@@ -1334,14 +1335,26 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
     let member: RoomMember | null = null;
     let joinedAt = 0;
 
+    const pendingPresence = new Map<string, Extract<ServerFrame, { t: 'presence' }>>();
+    let presenceTimer: ReturnType<typeof setTimeout> | undefined;
+    const flushPresence = (): void => {
+      presenceTimer = undefined;
+      if (ws.readyState !== WebSocket.OPEN) { pendingPresence.clear(); return; }
+      if (ws.bufferedAmount <= 256 * 1024) {
+        for (const frame of pendingPresence.values()) ws.send(JSON.stringify(frame));
+        pendingPresence.clear();
+      }
+      if (pendingPresence.size) presenceTimer = setTimeout(flushPresence, 50);
+    };
     const send = (frame: ServerFrame): void => {
       if (ws.readyState !== WebSocket.OPEN) return;
-      // A peer that stopped READING is not visible to `close` - the frames simply
-      // pile up in this process. Drop the socket rather than the room's memory.
-      if (ws.bufferedAmount > MAX_BUFFERED_BYTES) {
-        ws.terminate();
+      if (ws.bufferedAmount > MAX_BUFFERED_BYTES) { ws.terminate(); return; }
+      if (frame.t === 'presence') {
+        pendingPresence.set(frame.from, frame);
+        presenceTimer ??= setTimeout(flushPresence, 16);
         return;
       }
+      if (frame.t === 'peer-leave') pendingPresence.delete(frame.id);
       ws.send(JSON.stringify(frame));
     };
 
@@ -1376,8 +1389,9 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
       // room, not what may be written), and it rides a timer that already exists.
       if (member) {
         void seatValid(ctx)
-          .then((ok) => {
-            if (!ok) ws.close(CLOSE.UNAUTHORIZED, 'this session is no longer valid');
+          .then((seat) => {
+            if (!seat) ws.close(CLOSE.UNAUTHORIZED, 'this session is no longer valid');
+            else if (!seat.mayEdit && member) room?.demote(member);
           })
           .catch(onHandlerError);
       }
@@ -1448,15 +1462,17 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
         userId: ctx.identity.principalId,
         name: ctx.identity.name,
         role,
+        presenceVersion: raw['presenceVersion'] === 1 ? 1 : undefined,
         opVersion: compatible ? opVersion : CANVAS_OP_VERSION,
         ...(ctx.identity.kind === 'guest' ? { guestLinkId: ctx.identity.linkId } : {}),
         send,
+        disconnect: () => ws.close(CLOSE.GOING_AWAY, 'room owner lost'),
       };
       const ack = live.join(me);
       room = live;
       member = me;
       joinedAt = Date.now();
-      send({ t: 'join-ack', ...ack, ...(notice ? { notice } : {}) });
+      send({ t: 'join-ack', ...ack, presenceVersion: 1, receipts: 1, ...(notice ? { notice } : {}) });
       await audit(ctx.identity.actor, 'collab.join', `session:${ctx.session.id}`, {
         projectId: ctx.session.projectId, toolId: ctx.session.toolId, role, opVersion: me.opVersion,
         ...guestAudit(ctx.identity),
@@ -1467,9 +1483,6 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
       const live = room;
       const me = member;
       if (!live || !me) return fail(ERR.NOT_JOINED, 'join before sending ops');
-      if (me.role !== 'writer') {
-        return fail(ERR.OBSERVER_READ_ONLY, 'this room seat is read-only');
-      }
       const list = raw['ops'];
       if (!Array.isArray(list)) return fail(ERR.INVALID_OP, 'ops must be an array');
       if (list.length > MAX_OPS_PER_MESSAGE) {
@@ -1499,13 +1512,14 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
       if (!authz) {
         return void ws.close(CLOSE.UNAUTHORIZED, 'this session is no longer valid');
       }
-      if (!authz.mayEdit) {
-        // Demoted mid-room. The roster role stays as joined (a live demotion
-        // broadcast is a shell-side decision, plans/100 wave 3.1); the write is
-        // refused now, which is the part that must not wait.
-        return fail(ERR.OBSERVER_READ_ONLY, 'session.edit was revoked for this room');
+      const writable = authz.mayEdit && me.role === 'writer';
+      if (!writable) {
+        live.demote(me);
+        fail(ERR.OBSERVER_READ_ONLY, 'this room seat is read-only');
       }
-      const { accepted, rejected } = vetoOps(parsed, authz, live);
+      // Retrying a saved outbox may resolve an old acceptance or a new rejection
+      // after demotion. Both need receipts; neither grants the observer a write.
+      const { accepted, rejected } = writable ? vetoOps(parsed, authz, live) : { accepted: [], rejected: [] };
       if (rejected.length) {
         // Sender-only, always. A vetoed op never existed as far as peers are
         // concerned (plans/14 §6, plans/100 §7 item 5).
@@ -1519,7 +1533,13 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
           fail(code, 'this input is not writable in this room', [...new Set(inputs)].sort());
         }
       }
-      if (accepted.length) live.applyOps(me, accepted);
+      const ids = raw['ids'] ?? parsed.map(op => createHash('sha256').update(JSON.stringify(op)).digest('hex'));
+      const batchId = raw['batchId'] ?? `legacy:${Array.isArray(ids) ? ids[0] : ''}`;
+      if (typeof batchId !== 'string' || batchId.length > 128 || !Array.isArray(ids)
+        || ids.length !== parsed.length || ids.some(id => typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,80}$/.test(id))
+        || new Set(ids).size !== ids.length) return fail(ERR.INVALID_OP, 'durable batch identity required');
+      try { await live.applyBatch(me, batchId, ids as string[], parsed, new Set(accepted)); }
+      catch { fail('collab-save-failed', 'Edits remain pending. Reconnect to retry.'); ws.close(CLOSE.GOING_AWAY, 'save unavailable'); }
     };
 
     const doPresence = (raw: Record<string, unknown>): void => {
@@ -1586,6 +1606,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
     ws.on('error', () => ws.terminate());
 
     ws.on('close', () => {
+      clearTimeout(presenceTimer); pendingPresence.clear();
       clearTimeout(joinTimer);
       clearInterval(heartbeat);
       sockets.delete(ws);

@@ -25,32 +25,17 @@
 #     --set-file config=instance.json
 # ============================================================================
 
-# Number of stateless app replicas. Default 2 for HA. The app holds NO local
-# state — sessions/guests/state tokens are HMAC-signed (LW_SESSION_SECRET) and
-# all durable data lives in Postgres — so replicas are freely interchangeable
-# AS LONG AS every replica shares the SAME LW_SESSION_SECRET and LW_LINK_SECRET
-# (see the `secrets:` block below for why generate-if-empty is unsafe here).
-# EXCEPTION: live-collaboration rooms (plans/14 §6, OSS plans/100 §7) hold
-# their Yjs document authority in the process memory of whichever replica
-# accepted that room's WebSocket upgrade — that one room is NOT freely
-# interchangeable across replicas the way HTTP requests are. See the
-# `ingress.annotations` comment below for what multi-replica needs.
-replicaCount: 2
+# The combined HTTP/WebSocket process owns live rooms. A database lease refuses
+# competing owners, but routing/reconnect across replicas is not supported yet.
+replicaCount: 1
 
-# With more than one replica, keep at least one serving through node drains
-# and rollouts (templates/pdb.yaml renders only when replicaCount > 1).
+# Reserved for a future routed multi-replica topology; inactive at replicaCount=1.
 podDisruptionBudget:
   enabled: true
   minAvailable: 1
 
-# Seconds Kubernetes waits after SIGTERM before SIGKILL. The app handles SIGTERM
-# by DRAINING live collab rooms (server/src/main.ts): each room quiesces into an
-# ordinary session revision before the process exits. Without enough grace the
-# pod is killed mid-drain and those rooms fall back to crash recovery — which is
-# bounded at SNAPSHOT_EVERY_OPS (500 ops) and is discarded outright if an
-# ordinary PUT bumps the session rev after the restart. So this is not a tuning
-# knob for tidiness: it is how much collaborative work a rolling deploy keeps.
-# Raise it if rooms are large or the database is slow (one revision write each).
+# Drain sockets and release room leases before replacement. Acknowledged edits
+# already live in Postgres; unacknowledged edits remain in client outboxes.
 terminationGracePeriodSeconds: 60
 
 image:
@@ -388,47 +373,9 @@ ingress:
     # For cert-manager TLS, e.g.:
     # cert-manager.io/cluster-issuer: letsencrypt-prod
     #
-    # ── Sticky rooms for live collaboration (multi-replica only) ────────────
-    # Read this before running replicaCount > 1 with collab enabled. A collab
-    # room (lolly-work/plans/14 §6; OSS lolly/plans/100 §7 item 2) keeps its
-    # Yjs document authority in ONE replica's process memory — whichever pod
-    # accepted that room's `/ws/collab/:sessionId` upgrade. With more than one
-    # replica and no affinity, two collaborators editing the SAME session can
-    # land on TWO DIFFERENT pods, each holding its own independent room state
-    # that never converges — not a crash, just silent divergence until the
-    # next snapshot/reload papers over it. This is NOT the general "replicas
-    # are freely interchangeable" case described at the top of this file (see
-    # the `replicaCount` comment) — it is the one stateful exception to it.
-    #
-    # The fix is ROOM-id affinity at the ingress — every client for a given
-    # session must reach the same pod, regardless of which client connects
-    # first. Ordinary per-client cookie/IP stickiness is NOT enough: it keeps
-    # one reconnecting client pinned, but does nothing to route a SECOND
-    # collaborator's upgrade to the pod that already holds that room. For
-    # ingress-nginx, consistent-hash the upstream by the request path (which
-    # embeds the session id) instead of round-robin, e.g.:
-    #
-    #   nginx.ingress.kubernetes.io/upstream-hash-by: "$request_uri"
-    #
-    # Scope this to the collab path only if your controller supports per-path
-    # annotations or a separate Ingress object for `/ws/collab` — ordinary
-    # HTTP traffic should keep load-balancing normally. Other controllers
-    # expose the same idea under different names (Traefik: a sticky-session
-    # cookie is client-affinity only, not room-affinity — prefer a consistent-
-    # hashing IngressRoute middleware if available; cloud ALBs: consistent-
-    # hash / target-group stickiness keyed on path). This chart passes
-    # `annotations` through verbatim (see `templates/ingress.yaml`), so
-    # whichever mechanism your controller ships works with no chart change.
-    #
-    # This is a stop-gap, not the long-term fix — it works because "one node
-    # serves the org" is still the deployment assumption (lolly-work/plans/14
-    # §6). The real multi-replica answer, for whenever a deployment actually
-    # needs one node PER ROOM to stop being true, is Figma's fenced-lock
-    # journal: a `(lock UUID, file)` conditional-write pattern that lets a
-    # room's authority migrate through a database-arbitrated lock instead of
-    # living wherever a pod's memory happens to be (OSS lolly/plans/100 §7
-    # item 2) — not a pub/sub bus, which the plan explicitly defers until a
-    # real deployment needs one.
+    # Writable collaboration currently requires one combined process. Scaling
+    # needs canonical room routing plus fenced database ownership; cookie/IP
+    # affinity or hashing the full query-bearing URI does not supply that.
   hosts:
     - host: lolly.example.com
       paths:

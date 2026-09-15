@@ -288,8 +288,8 @@ test('the two gates the suite cannot cross, stated', () => {
   for (const op of [log[2]!, log[0]!, log[1]!]) shuffled.applyOps(seat, [op]);
   assert.deepEqual(Object.keys(inOrder.snapshot().params).sort(), ['a', 'b', 'c']);
   assert.deepEqual(
-    Object.keys(shuffled.snapshot().params).sort(), ['c'],
-    'the replay filter drops a lower clock from a client it has already heard — transport dedup, not document semantics',
+    Object.keys(shuffled.snapshot().params).sort(), ['a', 'b', 'c'],
+    'reordering distinct operations preserves all registers',
   );
 
   const door = Room.create(sessionOf());
@@ -318,8 +318,10 @@ test('presence crossed the real relay, and left the document alone', () => {
   assert.equal(JSON.stringify(adapter.room.snapshot()), before, 'presence never touches the document');
   const relayed = peer.sent.filter((f): f is Extract<ServerFrame, { t: 'presence' }> => f.t === 'presence');
   assert.equal(relayed.length, 1, 'the peer got the frame');
-  assert.equal(relayed[0]?.frame.userId, adapter.seat.userId, 'stamped with the authenticated identity');
-  assert.notEqual(relayed[0]?.frame.userId, 'spoofed');
-  assert.equal(relayed[0]?.frame.chat?.length, 64, 'clamped to the contract ceiling');
+  const state = relayed[0]?.frame;
+  assert.ok(state && !('state' in state));
+  assert.equal(state.userId, adapter.seat.userId, 'stamped with the authenticated identity');
+  assert.notEqual(state.userId, 'spoofed');
+  assert.equal(state.chat?.length, 64, 'clamped to the contract ceiling');
   assert.equal(adapter.room.internals().presence, 1, 'remembered for the next joiner, in memory only');
 });

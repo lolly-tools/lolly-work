@@ -12,6 +12,8 @@
  *   node scripts/repin-engine.ts            # report drift, exit 0
  *   node scripts/repin-engine.ts --apply    # actually re-pin (see below)
  *
+ * --apply --force also re-packs uncommitted contract changes at the same HEAD/version.
+ *
  * --apply re-vendors the same way the pin was originally produced (the OSS
  * repo's scripts/pack-engine.ts is the publish half; engine-pin.json is its
  * manifest.json verbatim - see verify-engine-pin.ts):
@@ -175,8 +177,8 @@ function extractTarball(tgz: string, destDir: string): void {
   execFileSync('tar', ['xzf', tgz, '-C', destDir, '--strip-components=1']);
 }
 
-function apply(ossDir: string, drift: Drift): void {
-  if (drift.inSync) {
+function apply(ossDir: string, drift: Drift, force = false): void {
+  if (drift.inSync && !force) {
     console.log('pin already current — nothing to apply.');
     return;
   }
@@ -229,14 +231,15 @@ function apply(ossDir: string, drift: Drift): void {
 
 // ── main ─────────────────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
-if (args.some((a) => a !== '--apply' && a !== '--check')) {
-  console.error('usage: node scripts/repin-engine.ts [--apply | --check]');
+if (args.some((a) => a !== '--apply' && a !== '--check' && a !== '--force')) {
+  console.error('usage: node scripts/repin-engine.ts [--apply [--force] | --check]');
   process.exit(2);
 }
+if (args.includes('--force') && !args.includes('--apply')) { console.error('--force requires --apply'); process.exit(2); }
 const ossDir = resolveOssDir();
 const drift = measureDrift(ossDir);
 report(drift);
-if (args.includes('--apply')) apply(ossDir, drift);
+if (args.includes('--apply')) apply(ossDir, drift, args.includes('--force'));
 // --check: same report, but a drifted pin is a non-zero exit — the CI cadence
 // (engine-drift.yml) turns lock-step from a habit into a signal (plans/23 R5:
 // the 1.112→1.114 gap sat unnoticed until a fidelity audit went looking).
