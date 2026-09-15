@@ -30,7 +30,7 @@
     "update:npm-licenses": "node scripts/update-npm-licenses.ts pnpm-lock.yaml workers/render/pnpm-lock.yaml"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
+    "@types/node": "^26.5.1",
     "@types/pg": "^8.23.1",
     "esbuild": "^0.28.2",
     "typescript": "^5.5.0",
