@@ -30,7 +30,7 @@
   },
   "devDependencies": {
     "@types/css-tree": "^3.2.0",
-    "typescript": "^5.5.0"
+    "typescript": "^7.0.2"
   },
   "//": "The engine has NO direct dependency on a DOM library, framework, or storage backend. Those are provided by the host shell at runtime via the capability bridge.",
   "scripts": {
