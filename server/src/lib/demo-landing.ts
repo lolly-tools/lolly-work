@@ -41,18 +41,18 @@ function esc(s: string): string {
  *  label and one line saying what governance that persona demonstrates. The
  *  blurbs describe the demo seed (scripts/demo.ts overlays + grants); an
  *  instance configured with other groups gets the neutral fallbacks. */
-function personaMeta(groups: string[]): { label: string; blurb: string } {
+function personaMeta(groups: string[]): { label: string; blurb: string; mascot?: { file: string; width: number; height: number } } {
   if (groups.includes('admin')) {
-    return { label: 'Admin', blurb: 'Manages access, tool rules, approvals and usage reporting.' };
+    return { label: 'Admin', blurb: 'Manages access, tool rules, approvals and usage reporting.', mascot: { file: 'platypus.webp', width: 600, height: 372 } };
   }
   if (groups.includes('brand-team')) {
-    return { label: 'Brand team', blurb: 'Manages brand inputs and reviews work awaiting approval.' };
+    return { label: 'Brand team', blurb: 'Manages brand inputs and reviews work awaiting approval.', mascot: { file: 'lorikeet.webp', width: 600, height: 1032 } };
   }
   if (groups.includes('marketing')) {
-    return { label: 'Marketing', blurb: 'Uses approved tools and requests approval when needed.' };
+    return { label: 'Marketing', blurb: 'Uses approved tools and requests approval when needed.', mascot: { file: 'ringtail-possum.webp', width: 800, height: 815 } };
   }
   if (groups.includes('contractors')) {
-    return { label: 'Contractor', blurb: 'Sees the tools and actions available to a contractor.' };
+    return { label: 'Contractor', blurb: 'Sees the tools and actions available to a contractor.', mascot: { file: 'bandicoot.webp', width: 600, height: 567 } };
   }
   if (groups.includes('approver')) return { label: 'Approver', blurb: 'Reviews and clears output waiting on sign-off.' };
   return { label: 'Member', blurb: 'A standard governed member of the org.' };
@@ -85,6 +85,7 @@ export function demoLandingHtml(config: InstanceConfig): string {
     .map(
       (p) => `
       <a class="persona" href="/api/auth/dev?email=${encodeURIComponent(p.email)}&returnTo=/admin">
+        ${p.mascot ? `<img class="persona-mascot" src="/admin/mascots/${esc(p.mascot.file)}" width="${p.mascot.width}" height="${p.mascot.height}" alt="" loading="lazy" decoding="async">` : ''}
         <span class="persona-role">${esc(p.label)}</span>
         ${p.name ? `<span class="persona-name">${esc(p.name)}</span>` : ''}
         <span class="persona-email">${esc(p.email)}</span>

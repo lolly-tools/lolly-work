@@ -215,6 +215,14 @@ button:disabled {
 .persona:hover {
   border-color: var(--accent);
 }
+.persona-mascot {
+  display: block;
+  width: 100%;
+  height: 8rem;
+  object-fit: contain;
+  margin: 0.2rem 0 0.75rem;
+  flex-shrink: 0;
+}
 .persona-role {
   color: var(--accent);
   font-weight: 650;
