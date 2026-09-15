@@ -46,13 +46,12 @@ const text = (id, value) => { document.getElementById(id).textContent = value; }
 function renderDetail() {
   document.querySelectorAll('[data-node]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.node === active.id)));
   document.querySelectorAll('[data-lens]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.lens === lens)));
-  text('arch-detail-label', active.label); text('arch-detail-title', active.title); text('arch-detail-body', active.body);
+  text('arch-detail-title', active.label); text('arch-detail-body', active.body);
   text('arch-detail-view', active[lens]); text('arch-detail-limit', active.limit);
   document.getElementById('arch-detail-link').href = `/admin#/docs?doc=${encodeURIComponent(active.doc)}`;
 }
 function renderScenario() {
   document.querySelectorAll('[data-scenario]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.scenario === scenario.id)));
-  text('arch-scenario-title', scenario.title); text('arch-scenario-body', scenario.body);
   text('arch-flow-down', offline.checked ? 'No connection' : scenario.down);
   text('arch-flow-up', scenario.up);
   document.getElementById('arch-flow-up').hidden = !scenario.up || offline.checked;
@@ -63,10 +62,12 @@ function renderScenario() {
 }
 function renderStep() {
   text('arch-step-label', step < 0 ? 'Follow the work, step by step' : `Step ${step + 1} of ${scenario.steps.length}`);
-  text('arch-step-text', offline.checked ? 'The offline explanation above describes what remains available.' : step < 0 ? 'Start with the inputs and follow them to the result.' : scenario.steps[step].text);
+  document.querySelector('.arch-trace').hidden = offline.checked;
+  document.getElementById('arch-step-text').hidden = step < 0;
+  text('arch-step-text', step < 0 ? '' : scenario.steps[step].text);
   const next = document.getElementById('arch-next');
   next.disabled = offline.checked;
-  next.textContent = step < 0 ? 'Follow this workflow →' : step === scenario.steps.length - 1 ? 'Start again ↻' : 'Next step →';
+  next.textContent = step < 0 ? 'Start →' : step === scenario.steps.length - 1 ? 'Start again ↻' : 'Next step →';
 }
 document.querySelectorAll('[data-scenario]').forEach(button => button.addEventListener('click', () => {
   scenario = data.scenarios.find(item => item.id === button.dataset.scenario); step = -1;

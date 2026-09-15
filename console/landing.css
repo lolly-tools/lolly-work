@@ -393,15 +393,6 @@ footer {
   width: 1.1rem;
   height: 1.1rem;
 }
-.arch-scenario h3 {
-  font-size: 1.05rem;
-  margin-bottom: 0.3rem;
-}
-.arch-scenario p {
-  color: var(--muted);
-  font-size: 1rem;
-  max-width: 75ch;
-}
 .arch-layout {
   display: grid;
   grid-template-columns: 1.05fr 1fr;
@@ -511,7 +502,7 @@ footer {
   letter-spacing: -0.02em;
   margin: 0.5rem 0 0.8rem;
 }
-.arch-detail > p:not(.eyebrow) {
+.arch-detail > p {
   color: var(--muted);
 }
 .arch-lenses {
@@ -537,20 +528,15 @@ footer {
   font-size: 0.9rem;
 }
 .architecture .arch-result {
-  max-width: none;
-  margin-top: 1.25rem;
-  padding: 1rem;
-  border: 1px solid var(--baseline);
-  border-radius: var(--radius-sm);
+  margin: 0.75rem 0;
   color: var(--ink);
-  background: var(--plane);
 }
 .arch-trace {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  margin-top: 1.25rem;
+  margin-top: 0.75rem;
 }
 .arch-trace > div {
   max-width: 75%;
@@ -565,11 +551,6 @@ footer {
 }
 .arch-trace button {
   flex-shrink: 0;
-}
-.architecture .arch-caption {
-  margin-top: 1rem;
-  font-size: 0.8rem;
-  color: var(--muted);
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme='light']) .brand-wordmarks [data-brand-logo='light'] {
