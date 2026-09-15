@@ -58,8 +58,7 @@ input {
 button:focus-visible,
 a:focus-visible,
 select:focus-visible,
-input:focus-visible,
-summary:focus-visible {
+input:focus-visible {
   outline: 3px solid var(--accent);
   outline-offset: 4px;
 }
@@ -248,69 +247,6 @@ button:disabled {
 }
 .features {
   grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-.tool {
-  padding: 1.3rem 0;
-  border-bottom: 1px solid var(--grid);
-}
-.tool-head {
-  display: flex;
-  align-items: baseline;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-}
-.tool-id {
-  font-weight: 650;
-  color: var(--ink);
-}
-.tool-blurb {
-  font-size: 0.9rem;
-  color: var(--muted);
-}
-ul {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-.links li {
-  display: grid;
-  grid-template-columns: minmax(12rem, auto) 1fr;
-  gap: 0.4rem 0.75rem;
-  padding: 0.75rem 0;
-}
-.links a {
-  font-weight: 600;
-}
-.params {
-  color: var(--muted);
-  font: 0.8rem/1.6 var(--font-mono, var(--font-mono-sys));
-}
-code {
-  font: 0.8rem/1.6 var(--font-mono, var(--font-mono-sys));
-  overflow-wrap: anywhere;
-}
-.links code {
-  grid-column: 1/-1;
-  background: var(--surface);
-  border: 1px solid var(--grid);
-  padding: 0.4rem 0.6rem;
-  border-radius: var(--radius-sm);
-  color: var(--muted);
-}
-details.examples {
-  margin-top: 2.5rem;
-  border: 1px solid var(--grid);
-  border-radius: var(--radius);
-  padding: 1.25rem;
-}
-details.examples summary {
-  cursor: pointer;
-  font-size: 1.2rem;
-  font-weight: 650;
-}
-details.examples > p {
-  margin: 1rem 0;
-  color: var(--muted);
 }
 footer {
   border-top: 1px solid var(--grid);
@@ -639,12 +575,6 @@ footer {
   }
   .arch-lenses button {
     flex: 1;
-  }
-  .links li {
-    grid-template-columns: 1fr;
-  }
-  .params {
-    grid-column: 1;
   }
   .zone-label {
     flex-wrap: wrap;

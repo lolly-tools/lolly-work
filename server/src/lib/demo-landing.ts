@@ -4,23 +4,13 @@
  * mounted (`instance.shellDir` unset) but the passwordless dev provider is on
  * (`dev.enabled`). That combination is exactly the hosted testing sandbox
  * (deploy/vercel - lolly.work): there is no 1.9 GB governed web shell to serve,
- * so `/` is instead the front door - persona sign-in, the docs, a short pitch,
- * and the live render endpoint.
+ * so `/` is instead the front door for persona sign-in, docs and the
+ * interactive architecture overview.
  *
  * Its styles and interactive overview are served from /admin/. Shared theme
  * code reads /api/brand, so the page follows the mounted brand and the console’s
  * theme preference. All assets are same-origin; the Lolly icon retains its seal. It renders only the personas actually configured in `dev.users` -
  * so what you can click is exactly what the instance will accept at `/api/auth/dev`.
- *
- * RENDER EXAMPLES MUST PASS ANONYMOUS POLICY. The demo overlays
- * (scripts/demo.ts) lock qr-code's `color` and hide its `background` for every
- * group but brand-team, so an example naming either dies as a 422 for the
- * anonymous visitor this page exists for. tests/demo-landing.test.ts checks
- * every example against those overlays and each tool's manifest - keep it green.
- *
- * The `origin` argument is the request's own scheme://host (derived and
- * validated by the route in api/app.ts), so the printed example URLs carry the
- * hostname the visitor is actually on; `instance.baseUrl` is the fallback.
  *
  * SECURITY: this page exposes passwordless sign-in on a public origin. It only
  * ever appears when `dev.enabled` is true, which a real IdP-backed deployment
@@ -68,46 +58,6 @@ function personaMeta(groups: string[]): { label: string; blurb: string } {
   return { label: 'Member', blurb: 'A standard governed member of the org.' };
 }
 
-/** Live-render examples, grouped by tool, each with tryable params so a visitor
- *  can see how the same GET reshapes the output. Params are real inputs from each
- *  tool's manifest (packs/demo) AND allowed for the anonymous caller under the
- *  demo overlays - qr-code's color/background are deliberately absent (locked /
- *  hidden: that policy is part of the demo). These are Tier-A (SVG + resvg PNG,
- *  no Chromium). Enforced by tests/demo-landing.test.ts. */
-export interface Example { label: string; href: string; note: string }
-export const RENDER_GROUPS: Array<{ tool: string; blurb: string; examples: Example[] }> = [
-  {
-    tool: 'qr-code',
-    blurb: 'A real QR to any URL, with governance you can watch working: policy locks the module colour to SUSE green for visitors and hides the background input entirely. Sign in as the Brand team persona and the same endpoint hands both back.',
-    examples: [
-      { label: 'Scan me', href: '/render/qr-code.svg?url=https://lolly.work', note: 'url' },
-      { label: 'High error-correction, wide quiet zone', href: '/render/qr-code.svg?url=https://www.suse.com&ecl=H&padding=6', note: 'ecl=H, padding' },
-      { label: 'Separate modules', href: '/render/qr-code.svg?url=https://lolly.tools/info&join=false&ecl=Q', note: 'join=false, ecl' },
-      { label: 'PNG', href: '/render/qr-code.png?url=https://lolly.work', note: '.png' },
-    ],
-  },
-  {
-    tool: 'mesh-gradient',
-    blurb: 'A vector mesh of real <radialGradient> stops.',
-    examples: [
-      { label: 'Default (5 stops)', href: '/render/mesh-gradient.svg', note: '—' },
-      { label: 'SUSE spectrum, 7 stops, screen', href: '/render/mesh-gradient.svg?count=7&blend=screen&color1=%2330ba78&color2=%232453ff&color3=%2390ebcd', note: 'count, blend, color1..3' },
-      { label: 'Persimmon → midnight', href: '/render/mesh-gradient.svg?count=4&color1=%23fe7c3f&color2=%23192072&blend=hard-light', note: 'colours, blend' },
-      { label: 'PNG @ 800', href: '/render/mesh-gradient.png?width=800&count=6&color1=%2330ba78&color2=%2300bda7', note: '.png, width' },
-    ],
-  },
-  {
-    tool: 'color-palette',
-    blurb: 'A brand palette generated from a seed colour.',
-    examples: [
-      { label: 'Default', href: '/render/color-palette.svg', note: '—' },
-      { label: 'Jungle seed, triad, 9 steps', href: '/render/color-palette.svg?seed=%2330ba78&harmony=triad-3&steps=9', note: 'seed, harmony, steps' },
-      { label: 'Persimmon, complementary, OKLab', href: '/render/color-palette.svg?seed=%23fe7c3f&harmony=complement&steps=7&mode=oklab', note: 'seed, harmony, mode' },
-      { label: 'Waterhole, analogous', href: '/render/color-palette.svg?seed=%232453ff&harmony=analogous&steps=8&neutrals=false', note: 'seed, harmony, neutrals' },
-    ],
-  },
-];
-
 /** What the control plane adds for an organization - the pitch, kept honest:
  *  every card names a feature this deploy actually demonstrates. */
 const FEATURES: Array<{ title: string; body: string }> = [
@@ -119,11 +69,8 @@ const FEATURES: Array<{ title: string; body: string }> = [
   { title: 'Open source', body: 'Lolly and Lolly Work use the MPL-2.0 licence. Read the code, host the service, and follow the documented paths to move your data.' },
 ];
 
-export function demoLandingHtml(config: InstanceConfig, origin?: string): string {
+export function demoLandingHtml(config: InstanceConfig): string {
   const name = esc(config.instance.name || 'Lolly Work');
-  // The origin printed in front of every example path. The route derives it from
-  // the request's validated Host header; baseUrl covers direct calls and tests.
-  const base = (origin || config.instance.baseUrl || '').replace(/\/+$/, '');
   const personas = (config.dev.users ?? []).map((u) => {
     const groups = u.groups ?? [];
     return {
@@ -149,18 +96,6 @@ export function demoLandingHtml(config: InstanceConfig, origin?: string): string
 
   const featureCards = FEATURES.map((f) => `
     <div class="feature"><h3>${esc(f.title)}</h3><p>${esc(f.body)}</p></div>`).join('');
-
-  const renderGroups = RENDER_GROUPS.map((g) => `
-    <div class="tool">
-      <div class="tool-head"><code class="tool-id">${esc(g.tool)}</code><span class="tool-blurb">${esc(g.blurb)}</span></div>
-      <ul class="links">
-        ${g.examples.map((e) => `<li>
-          <a href="${esc(e.href)}">${esc(e.label)}</a>
-          <span class="params">${esc(e.note)}</span>
-          <code>${esc(base + e.href)}</code>
-        </li>`).join('')}
-      </ul>
-    </div>`).join('');
 
   return `<!doctype html>
 <html lang="en">
@@ -207,11 +142,6 @@ export function demoLandingHtml(config: InstanceConfig, origin?: string): string
   <h2>What the control plane does</h2>
   <p class="lede tight">Choose the controls and services your teams need:</p>
   <div class="features">${featureCards}</div>
-
-  <details class="examples"><summary>Try a server render</summary>
-  <p class="lede tight">These examples send inputs to this server and return an image. The URL has this form: <code style="grid-column:auto">GET ${esc(base)}/render/&lt;tool&gt;.&lt;format&gt;?params</code>. The server checks the same rules used by the console. Open an example and change its inputs:</p>
-  ${renderGroups}
-  </details>
 
   <footer>
     <a class="founded founded--footer" href="${SUSE_URL}" target="_blank" rel="noopener">${FOUNDED_BY_SUSE_SVG}</a>
