@@ -120,7 +120,8 @@ const KINDS = new Set<string>(DESIGN_LAYER_KINDS);
 const REQUIRES_MOUNT = ['text-overflow', 'computed-contrast', 'resolved-fonts'] as const;
 
 function finite(value: unknown, fallback = 0): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+  const n = typeof value === 'string' && value.trim() !== '' ? Number(value) : value;
+  return typeof n === 'number' && Number.isFinite(n) ? n : fallback;
 }
 
 function text(value: unknown): string {

@@ -4,29 +4,30 @@
   "core": {
     "version": "1.0.0",
     "tarball": "lolly-tools-core-1.0.0.tgz",
-    "tarballSha256": "2a2f3ff880174ae3ba35fe9f95ba4c61c27f7653c09d1cd38bf40f703ce3474b",
-    "contentHash": "45cde90b0d2a20a325e5ecbbb4abbe8295279fc3dbe99e6ae39bbb484371d83d"
+    "tarballSha256": "f0b02a216333d7e6e809b1757059ceff8039955638e7e707a310ce169c091813",
+    "contentHash": "fcddcd5ccde51e5e46d2e080f3042521911506dfe64217c92c8432b90a404500"
   },
   "engine": {
-    "version": "1.197.0",
-    "tarball": "lolly-engine-1.197.0.tgz",
-    "tarballSha256": "1c96c8ca0819d01d7cb6ffc1346c7edeee8b6ce8a2574f64845c5ff3761105da",
-    "contentHash": "3fd404999fd299605a7290e53f07e23cd587e429d32e45a0c17b8dda370255f0"
+    "version": "1.199.0",
+    "tarball": "lolly-engine-1.199.0.tgz",
+    "tarballSha256": "da8e8c469ad4f9a0defd960117b7808028076ee490c16e69460586641b9925c4",
+    "contentHash": "561882c2533031f22e7bb4929fde5e4038e38ed66d7cce2fab099d87f2fded1d"
   },
   "schemas": {
     "asset-ref.schema.json": "7a9de36f6c25ab8fea81987f8705cf2e1f509b1520b5ea1d8bbcb8e4c268c3a5",
     "asset.schema.json": "c34f9bf7ee977501fb28de6826ec0a6a161dad2de23d31b7dc1f5d863e5c9c08",
     "blocks-wire-order.json": "51339094c7de0548937f04ae71a8fe3e8456e2113179954934a9de9e3d040a42",
     "canonical-aliases.json": "3b008b3d5c2936cd68246d736b0de877e98d5a37939645928ef55380aff7cc29",
-    "canonical-inputs.json": "1b3120fbc35a6e1266badbc94cce118469df784adfd30c1a206720b28b043df1",
+    "canonical-inputs.json": "8747d7dea7721ae0a6a0fce9e58ce188dd86faab94c44a15304fc70042095e22",
     "canvas-op.schema.json": "e1acaf0c98b875012104b49582994bf5b5bdb9aa3fc3e210a0d9e3c527f9453d",
     "chart-v1.schema.json": "7bc73ce09be779f9ba04ad7c2a0f872f5c663dc39558c81a74bf8295b272e822",
+    "design-tool-v1.schema.json": "a05cf387d4256e257d4a8c35bd50ba6ccdf0ffcc1054434b8f396dc08f4ba727",
     "emoji-pack-v1.schema.json": "48b5dbaaddd8269f242544157cf542519f76b50384745bee5bf0aa45bb92de89",
     "emoji-style-v1.schema.json": "940b007355b2b2fe2d985b238499f4cb4b02211a1471682bde0b8b77bc1494e1",
     "file-operation-report-v1.schema.json": "f95969fd3f0f5099ef642679e079de1eec7432b73275dfc1772e25a79b0447d7",
     "file-operation-request-v1.schema.json": "20ca45779c17949e4d5a8482209106fd9be768ff89ee71127624860d8d2c13e2",
     "ratecard.schema.json": "e164d8ce234279c04877511cb9673cc721d0118647cdae0401246c8f35d0b777",
     "tokens.schema.json": "be8a2f388d451f778aeaf334c903556689e3897e7523e6c31b7c428040673384",
-    "tool.schema.json": "656483337f5825f8f0749121ac515669e675bba7e34c861b48a413fcfd1cf44d"
+    "tool.schema.json": "ee6b34ec30b3a8f6a89f44c1bbdafef8091df0678347d8387a7ba035da8af703"
   }
 }

@@ -82,6 +82,7 @@ export function registerRenderBatchRoutes(router: Pick<ReturnType<typeof createR
     const batch = await store.cancelRenderBatch(ctx.params.id!, principal);
     if (!batch) throw new RenderResourceError('NOT_FOUND', 404, 'render batch not found');
     if (!batchProgress(batch).progress.cancelled) throw new RenderResourceError('BATCH_TERMINAL', 409, 'completed batch history is retained');
+    for (const row of batch.rows) if (row.render.state === 'cancelled') deps.cancel?.(row.render.id);
     await deps.audit(principal, 'render.batch.cancel', batch.id, {});
     sendJson(res, 200, batchWire(batch));
   });

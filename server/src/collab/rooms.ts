@@ -387,7 +387,7 @@ function blockRows(inputId: string, value: unknown): Map<BoxId, BoxRow> | null {
     const row: BoxRow = {};
     let fields = 0;
     for (const [key, v] of Object.entries(raw)) {
-      if (!isSafeKey(key) || !isScalar(v)) continue;
+      if (key === 'id' || !isSafeKey(key) || !isScalar(v)) continue;
       if (typeof v === 'string' && v.length > MAX_SCALAR_CHARS) continue;
       if (++fields > MAX_ROW_FIELDS) break;
       row[key] = v;

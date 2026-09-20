@@ -197,6 +197,7 @@ export interface EngineApi {
   loadTool(toolId: string, fetchFile: (p: string) => Promise<string>, opts?: { lang?: string }): Promise<LoadedTool>;
   createRuntime(tool: LoadedTool, host: unknown, initialState?: Record<string, unknown>, opts?: { hookExecutor?: (tool: LoadedTool, host: unknown) => Promise<unknown> }): Promise<Runtime>;
   parseUrlState(query: string, manifest: unknown): UrlState;
+  packQuery(query: string): Promise<string | null>;
   expandQuery(query: string): Promise<string>;
   parseDimension(input: string | number | null | undefined, defaultUnit?: string): unknown;
   toPixels(dim: unknown, dpi: number): number;

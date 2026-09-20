@@ -4,30 +4,20 @@
  * mounted (`instance.shellDir` unset) but the passwordless dev provider is on
  * (`dev.enabled`). That combination is exactly the hosted testing sandbox
  * (deploy/vercel - lolly.work): there is no 1.9 GB governed web shell to serve,
- * so `/` is instead the front door - persona sign-in, the docs, a short pitch,
- * and the live render endpoint.
+ * so `/` is instead the front door for persona sign-in, docs and the
+ * interactive architecture overview.
  *
- * Its chrome is near self-contained (inline CSS; the SUSE mark inlined below) -
- * the only fetched asset is the Lolly icon, served same-origin from
- * /admin/icon.svg with its C2PA seal intact, so the page stays CDN-free and
- * CSP-clean. It renders only the personas actually configured in `dev.users` -
+ * Its styles and interactive overview are served from /admin/. Shared theme
+ * code reads /api/brand, so the page follows the mounted brand and the console’s
+ * theme preference. All assets are same-origin; the Lolly icon retains its seal. It renders only the personas actually configured in `dev.users` -
  * so what you can click is exactly what the instance will accept at `/api/auth/dev`.
- *
- * RENDER EXAMPLES MUST PASS ANONYMOUS POLICY. The demo overlays
- * (scripts/demo.ts) lock qr-code's `color` and hide its `background` for every
- * group but brand-team, so an example naming either dies as a 422 for the
- * anonymous visitor this page exists for. tests/demo-landing.test.ts checks
- * every example against those overlays and each tool's manifest - keep it green.
- *
- * The `origin` argument is the request's own scheme://host (derived and
- * validated by the route in api/app.ts), so the printed example URLs carry the
- * hostname the visitor is actually on; `instance.baseUrl` is the fallback.
  *
  * SECURITY: this page exposes passwordless sign-in on a public origin. It only
  * ever appears when `dev.enabled` is true, which a real IdP-backed deployment
  * never sets. The banner says so plainly - it is a sandbox, not a product page.
  */
 import type { InstanceConfig } from '../config/instance.ts';
+import { securityOverviewHtml } from './security-overview.ts';
 
 // Repo + upstream links surfaced on the public landing.
 const REPO_URL = 'https://github.com/lolly-tools/lolly-work';
@@ -51,79 +41,36 @@ function esc(s: string): string {
  *  label and one line saying what governance that persona demonstrates. The
  *  blurbs describe the demo seed (scripts/demo.ts overlays + grants); an
  *  instance configured with other groups gets the neutral fallbacks. */
-function personaMeta(groups: string[]): { label: string; blurb: string } {
+function personaMeta(groups: string[]): { label: string; blurb: string; mascot?: { file: string; width: number; height: number } } {
   if (groups.includes('admin')) {
-    return { label: 'Admin', blurb: 'Runs the deploy: policy overlays, grants, approval chains, telemetry.' };
+    return { label: 'Admin', blurb: 'Manages access, tool rules, approvals and usage reporting.', mascot: { file: 'platypus.webp', width: 600, height: 372 } };
   }
   if (groups.includes('brand-team')) {
-    return { label: 'Brand team', blurb: 'Edits the inputs policy locks for everyone else, and clears brand approvals.' };
+    return { label: 'Brand team', blurb: 'Manages brand inputs and reviews work awaiting approval.', mascot: { file: 'lorikeet.webp', width: 600, height: 1032 } };
   }
   if (groups.includes('marketing')) {
-    return { label: 'Marketing', blurb: 'A governed member: locked brand inputs, approval requests on gated output.' };
+    return { label: 'Marketing', blurb: 'Uses approved tools and requests approval when needed.', mascot: { file: 'ringtail-possum.webp', width: 800, height: 815 } };
   }
   if (groups.includes('contractors')) {
-    return { label: 'Contractor', blurb: 'The narrowest view. Tools hidden by policy never even appear.' };
+    return { label: 'Contractor', blurb: 'Sees the tools and actions available to a contractor.', mascot: { file: 'bandicoot.webp', width: 600, height: 567 } };
   }
   if (groups.includes('approver')) return { label: 'Approver', blurb: 'Reviews and clears output waiting on sign-off.' };
   return { label: 'Member', blurb: 'A standard governed member of the org.' };
 }
 
-/** Live-render examples, grouped by tool, each with tryable params so a visitor
- *  can see how the same GET reshapes the output. Params are real inputs from each
- *  tool's manifest (packs/demo) AND allowed for the anonymous caller under the
- *  demo overlays - qr-code's color/background are deliberately absent (locked /
- *  hidden: that policy is part of the demo). These are Tier-A (SVG + resvg PNG,
- *  no Chromium). Enforced by tests/demo-landing.test.ts. */
-export interface Example { label: string; href: string; note: string }
-export const RENDER_GROUPS: Array<{ tool: string; blurb: string; examples: Example[] }> = [
-  {
-    tool: 'qr-code',
-    blurb: 'A real QR to any URL, with governance you can watch working: policy locks the module colour to SUSE green for visitors and hides the background input entirely. Sign in as the Brand team persona and the same endpoint hands both back.',
-    examples: [
-      { label: 'Scan me', href: '/render/qr-code.svg?url=https://lolly.work', note: 'url' },
-      { label: 'High error-correction, wide quiet zone', href: '/render/qr-code.svg?url=https://www.suse.com&ecl=H&padding=6', note: 'ecl=H, padding' },
-      { label: 'Separate modules', href: '/render/qr-code.svg?url=https://lolly.tools/info&join=false&ecl=Q', note: 'join=false, ecl' },
-      { label: 'PNG', href: '/render/qr-code.png?url=https://lolly.work', note: '.png' },
-    ],
-  },
-  {
-    tool: 'mesh-gradient',
-    blurb: 'A vector mesh of real <radialGradient> stops.',
-    examples: [
-      { label: 'Default (5 stops)', href: '/render/mesh-gradient.svg', note: '—' },
-      { label: 'SUSE spectrum, 7 stops, screen', href: '/render/mesh-gradient.svg?count=7&blend=screen&color1=%2330ba78&color2=%232453ff&color3=%2390ebcd', note: 'count, blend, color1..3' },
-      { label: 'Persimmon → midnight', href: '/render/mesh-gradient.svg?count=4&color1=%23fe7c3f&color2=%23192072&blend=hard-light', note: 'colours, blend' },
-      { label: 'PNG @ 800', href: '/render/mesh-gradient.png?width=800&count=6&color1=%2330ba78&color2=%2300bda7', note: '.png, width' },
-    ],
-  },
-  {
-    tool: 'color-palette',
-    blurb: 'A brand palette generated from a seed colour.',
-    examples: [
-      { label: 'Default', href: '/render/color-palette.svg', note: '—' },
-      { label: 'Jungle seed, triad, 9 steps', href: '/render/color-palette.svg?seed=%2330ba78&harmony=triad-3&steps=9', note: 'seed, harmony, steps' },
-      { label: 'Persimmon, complementary, OKLab', href: '/render/color-palette.svg?seed=%23fe7c3f&harmony=complement&steps=7&mode=oklab', note: 'seed, harmony, mode' },
-      { label: 'Waterhole, analogous', href: '/render/color-palette.svg?seed=%232453ff&harmony=analogous&steps=8&neutrals=false', note: 'seed, harmony, neutrals' },
-    ],
-  },
-];
-
 /** What the control plane adds for an organization - the pitch, kept honest:
  *  every card names a feature this deploy actually demonstrates. */
 const FEATURES: Array<{ title: string; body: string }> = [
-  { title: 'One governed catalog', body: 'Every team renders from the same vetted tools and templates. Visibility is per group: a tool hidden from contractors does not exist for them.' },
-  { title: 'Policy enforced at render time', body: 'Inputs can be locked to brand values, limited to a choice, or hidden per group, and the API refuses what the console never offered. The QR tool below is live proof.' },
-  { title: 'Approvals and watermarks', body: 'Output can escalate through brand and legal chains, and previews carry a watermark until sign-off clears.' },
-  { title: 'Provenance and audit', body: 'Server renders are C2PA-signed, the audit log is hash-chained and append-only, and telemetry rolls up for dashboards and your SIEM.' },
-  { title: 'Your identity, your infrastructure', body: 'OIDC against the IdP you already run, roles plus fine-grained grants. Deploy with Compose, systemd, or Kubernetes/Helm; the sovereign SUSE stack is the reference path.' },
-  { title: 'Open and exit-friendly', body: 'MPL-2.0 open source. Rendering happens on-device, existing DAM libraries federate in, and moving off a platform is a documented path, not a fight.' },
+  { title: 'Approved tools', body: 'Give each team access to the tools and assets it needs. Control who can change the catalog.' },
+  { title: 'Rules for inputs', body: 'Lock an input to a brand value, offer a fixed set of choices, or hide it. The server checks these rules before it renders.' },
+  { title: 'Review and approval', body: 'Set up review steps and decide who can approve work. Review the approval guide for the enforcement available in your workflow.' },
+  { title: 'Records you can inspect', body: 'Record governed actions in a tamper-evident audit log. Choose what usage labels are collected and whether they identify people.' },
+  { title: 'Your identity and infrastructure', body: 'Connect your identity provider, manage roles and permissions, and run Work on infrastructure your organisation operates.' },
+  { title: 'Open source', body: 'Lolly and Lolly Work use the MPL-2.0 licence. Read the code, host the service, and follow the documented paths to move your data.' },
 ];
 
-export function demoLandingHtml(config: InstanceConfig, origin?: string): string {
+export function demoLandingHtml(config: InstanceConfig): string {
   const name = esc(config.instance.name || 'Lolly Work');
-  // The origin printed in front of every example path. The route derives it from
-  // the request's validated Host header; baseUrl covers direct calls and tests.
-  const base = (origin || config.instance.baseUrl || '').replace(/\/+$/, '');
   const personas = (config.dev.users ?? []).map((u) => {
     const groups = u.groups ?? [];
     return {
@@ -138,6 +85,7 @@ export function demoLandingHtml(config: InstanceConfig, origin?: string): string
     .map(
       (p) => `
       <a class="persona" href="/api/auth/dev?email=${encodeURIComponent(p.email)}&returnTo=/admin">
+        ${p.mascot ? `<img class="persona-mascot" src="/admin/mascots/${esc(p.mascot.file)}" width="${p.mascot.width}" height="${p.mascot.height}" alt="" loading="lazy" decoding="async">` : ''}
         <span class="persona-role">${esc(p.label)}</span>
         ${p.name ? `<span class="persona-name">${esc(p.name)}</span>` : ''}
         <span class="persona-email">${esc(p.email)}</span>
@@ -150,18 +98,6 @@ export function demoLandingHtml(config: InstanceConfig, origin?: string): string
   const featureCards = FEATURES.map((f) => `
     <div class="feature"><h3>${esc(f.title)}</h3><p>${esc(f.body)}</p></div>`).join('');
 
-  const renderGroups = RENDER_GROUPS.map((g) => `
-    <div class="tool">
-      <div class="tool-head"><code class="tool-id">${esc(g.tool)}</code><span class="tool-blurb">${esc(g.blurb)}</span></div>
-      <ul class="links">
-        ${g.examples.map((e) => `<li>
-          <a href="${esc(e.href)}">${esc(e.label)}</a>
-          <span class="params">${esc(e.note)}</span>
-          <code>${esc(base + e.href)}</code>
-        </li>`).join('')}
-      </ul>
-    </div>`).join('');
-
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -170,74 +106,16 @@ export function demoLandingHtml(config: InstanceConfig, origin?: string): string
 <meta name="robots" content="noindex, nofollow">
 <link rel="icon" type="image/svg+xml" href="/admin/icon.svg">
 <title>${name} · demo sandbox</title>
-<style>
-  /* SUSE brand fonts, served from the pack (same-origin) via /api/brand/font. */
-  @font-face { font-family:'SUSE'; src:url('/api/brand/font/SUSE-Variable.woff2') format('woff2'); font-weight:100 800; font-display:swap; }
-  @font-face { font-family:'SUSE Mono'; src:url('/api/brand/font/SUSEMono-Variable.woff2') format('woff2'); font-weight:100 800; font-display:swap; }
-  /* SUSE palette (brand.json): pine / jungle / mint / persimmon / waterhole / fog. */
-  :root {
-    color-scheme: dark;
-    --pine:#0c322c; --jungle:#30ba78; --mint:#90ebcd; --persimmon:#fe7c3f; --waterhole:#2453ff;
-    --bg:#071f1a; --card:#0c322c; --line:#134b40; --fg:#eafaf4; --muted:#83e1be;
-    --accent:#30ba78; --accent-fg:#04140c; --warn:#fcb244;
-  }
-  * { box-sizing: border-box; }
-  body { margin:0; background:
-      radial-gradient(1200px 500px at 80% -10%, rgba(48,186,120,.14), transparent 60%),
-      radial-gradient(900px 500px at -10% 10%, rgba(36,83,255,.10), transparent 55%),
-      var(--bg);
-    color:var(--fg); font:15px/1.55 'SUSE',-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif; }
-  .wrap { max-width: 900px; margin: 0 auto; padding: 44px 20px 72px; }
-  .brand { display:flex; align-items:center; gap:10px; font-weight:800; letter-spacing:-.01em; font-size:15px; color:var(--fg); }
-  .brand-icon { width:24px; height:24px; display:block; }
-  .topbar { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:24px; }
-  .founded { display:inline-flex; opacity:.92; transition:opacity .15s; }
-  .founded:hover { opacity:1; }
-  .founded svg { height:20px; width:auto; display:block; }
-  .sandbox { display:flex; gap:10px; align-items:flex-start; background:rgba(252,178,68,.1); border:1px solid rgba(252,178,68,.35); color:#ffdca0; border-radius:12px; padding:12px 14px; font-size:13.5px; margin-bottom:28px; }
-  .sandbox strong { color:var(--warn); }
-  h1 { font-size:30px; font-weight:800; margin:0 0 6px; letter-spacing:-.02em; }
-  .lede { color:var(--muted); margin:0 0 28px; max-width:64ch; }
-  .lede.tight { margin-bottom:10px; }
-  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.1em; color:var(--mint); margin:34px 0 12px; font-weight:700; }
-  .personas { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:12px; }
-  .persona { display:flex; flex-direction:column; gap:2px; text-decoration:none; color:var(--fg); background:var(--card); border:1px solid var(--line); border-radius:12px; padding:15px; transition:border-color .15s, transform .05s, background .15s; }
-  .persona:hover { border-color:var(--jungle); background:#0e3a32; }
-  .persona:active { transform:translateY(1px); }
-  .persona-role { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--jungle); font-weight:800; }
-  .persona-name { font-weight:700; margin-top:2px; }
-  .persona-email { color:var(--fg); font-size:12.5px; font-weight:600; font-family:'SUSE Mono',ui-monospace,monospace; margin-top:2px; }
-  .persona-blurb { color:var(--muted); font-size:12px; margin-top:6px; line-height:1.45; }
-  .persona-groups { color:var(--muted); font-size:11px; margin-top:6px; opacity:.7; font-family:'SUSE Mono',ui-monospace,monospace; }
-  .features { display:grid; grid-template-columns:repeat(auto-fill,minmax(270px,1fr)); gap:12px; }
-  .feature { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:15px; }
-  .feature h3 { margin:0 0 4px; font-size:14px; font-weight:700; color:var(--fg); }
-  .feature p { margin:0; color:var(--muted); font-size:13px; line-height:1.5; }
-  .tool { margin:14px 0 8px; }
-  .tool-head { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:2px; }
-  .tool-id { background:transparent; border:0; color:var(--jungle); font-weight:700; font-size:14px; padding:0; }
-  .tool-blurb { color:var(--muted); font-size:13px; max-width:72ch; }
-  ul { list-style:none; padding:0; margin:0; }
-  .links li { display:grid; grid-template-columns:minmax(180px,auto) 1fr; align-items:center; gap:8px 12px; padding:8px 0; border-bottom:1px solid var(--line); }
-  .links a { color:var(--fg); text-decoration:none; font-weight:600; }
-  .links a:hover { color:var(--jungle); text-decoration:underline; }
-  .params { color:var(--persimmon); font-size:11.5px; font-family:'SUSE Mono',ui-monospace,monospace; }
-  code { background:#06231d; border:1px solid var(--line); border-radius:6px; padding:2px 7px; font-size:11.5px; color:var(--mint); font-family:'SUSE Mono',ui-monospace,monospace; grid-column:1 / -1; overflow-x:auto; }
-  .row { display:flex; gap:12px; flex-wrap:wrap; margin-top:6px; }
-  .btn { display:inline-block; background:var(--jungle); color:var(--accent-fg); font-weight:700; text-decoration:none; padding:10px 18px; border-radius:9px; }
-  .btn:hover { background:#42d29f; }
-  .btn.secondary { background:transparent; color:var(--fg); border:1px solid var(--line); }
-  footer { margin-top:44px; color:var(--muted); font-size:12.5px; display:flex; flex-direction:column; gap:14px; align-items:flex-start; }
-  .founded--footer svg { height:22px; }
-  .footer-links { margin:0; opacity:.8; }
-  a { color:var(--jungle); }
-</style>
+<link rel="stylesheet" href="/admin/landing.css">
+<script type="module" src="/admin/landing.js"></script>
 </head>
 <body>
-<div class="wrap">
+<a class="skip" href="#main">Skip to content</a>
+<main class="wrap" id="main">
   <div class="topbar">
-    <div class="brand"><img class="brand-icon" src="/admin/icon.svg" alt="" width="24" height="24" decoding="async"> Lolly · SUSE control plane</div>
-    <a class="founded" href="${SUSE_URL}" target="_blank" rel="noopener">${FOUNDED_BY_SUSE_SVG}</a>
+    <div class="brand"><img class="brand-icon" src="/admin/icon.svg" alt="" width="24" height="24" decoding="async"> Lolly Work</div>
+    <span class="brand-wordmarks" aria-label="Loaded brand"><img data-brand-logo="light" alt="Organisation logo" hidden><img data-brand-logo="dark" alt="Organisation logo" hidden></span>
+    <label class="theme-picker" for="landing-theme">Theme <select id="landing-theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option><option value="brand">Brand</option></select></label>
   </div>
   <div class="sandbox">
     <span>⚠️</span>
@@ -245,33 +123,32 @@ export function demoLandingHtml(config: InstanceConfig, origin?: string): string
   </div>
 
   <h1>${name}</h1>
-  <p class="lede">The open-source control plane for Lolly, SUSE's on-brand content tooling: the layer an organization hosts so thousands of people can use creative tools without a brand, legal, or compliance incident. Everything on this page is the real product running with demo data.</p>
+  <p class="lede">Lolly helps people make files on their own devices. Lolly Work adds your organisation’s sign-in, approved tools, rules and shared services. This sandbox lets you explore them with demo data.</p>
 
-  <h2>Start here</h2>
+  <p class="eyebrow">Explore Lolly Work</p>
   <div class="row">
-    <a class="btn" href="/admin#/docs">Read the docs →</a>
+    <a class="btn" href="#security-platform">Explore the architecture ↓</a>
+    <a class="btn secondary" href="/admin#/docs">Read the docs</a>
     <a class="btn secondary" href="/admin">Open the admin console</a>
     <a class="btn secondary" href="${REPO_URL}" target="_blank" rel="noopener">View on GitHub ↗</a>
   </div>
-  <p class="lede tight" style="margin-top:10px">The full operator docs (install, config, governance, API and CLI references) are readable right here, no sign-in needed.</p>
+  <p class="lede tight">Read the setup and operator guides without signing in.</p>
+
+  ${securityOverviewHtml()}
 
   <h2>Sign in as a demo persona</h2>
   <p class="lede tight">One click, no password. Each persona opens the same console with different governance applied, so pick two and compare what they can see and change.</p>
   <div class="personas">${personaCards || '<p class="lede">No dev personas configured.</p>'}</div>
 
   <h2>What the control plane does</h2>
-  <p class="lede tight">Lolly's tools are free and render on-device for anyone. The control plane is what makes them safe to hand to an entire enterprise:</p>
+  <p class="lede tight">Choose the controls and services your teams need:</p>
   <div class="features">${featureCards}</div>
-
-  <h2>Live renders, over a plain GET</h2>
-  <p class="lede tight">Every catalog tool renders from a URL an agent, a pipeline, or an <code style="grid-column:auto">&lt;img&gt;</code> tag can hit: <code style="grid-column:auto">GET ${esc(base)}/render/&lt;tool&gt;.&lt;format&gt;?params</code> - governed by the same policy as the console. Click an example, then change the params:</p>
-  ${renderGroups}
 
   <footer>
     <a class="founded founded--footer" href="${SUSE_URL}" target="_blank" rel="noopener">${FOUNDED_BY_SUSE_SVG}</a>
     <p class="footer-links">Powered by the Lolly engine · <a href="/admin#/docs">docs</a> · <a href="${REPO_URL}" target="_blank" rel="noopener">source</a> · <a href="/admin">console</a></p>
   </footer>
-</div>
+</main>
 </body>
 </html>`;
 }

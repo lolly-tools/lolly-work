@@ -98,7 +98,7 @@
       "enum": [
         "on-device"
       ],
-      "description": "Marks an on-device utility - a tool that processes the user's OWN content (file in → transformed file out) entirely on the device, with nothing uploaded. The host shows a 'Runs on your device - nothing is uploaded' badge. Enforced conventions (validated): status must not be 'experimental' (no watermark on the user's own file) and the tool must not embed provenance metadata into the output. This is the marker for the privacy-flagship utility category (EXIF strip, redact, compress, convert) that replaces content exfiltration to single-purpose SaaS."
+      "description": "Marks an on-device utility - a tool that processes the user's OWN content (file in \u2192 transformed file out) entirely on the device, with nothing uploaded. The host shows a 'Runs on your device - nothing is uploaded' badge. Enforced conventions (validated): status must not be 'experimental' (no watermark on the user's own file) and the tool must not embed provenance metadata into the output. This is the marker for the privacy-flagship utility category (EXIF strip, redact, compress, convert) that replaces content exfiltration to single-purpose SaaS."
     },
     "tags": {
       "type": "array",
@@ -513,17 +513,17 @@
           "required": [
             "message"
           ],
-          "description": "Editor-only guard for tools whose layout only suits a certain orientation (e.g. a portrait-only document). Shows a prominent warning beside the dimension controls when the current page aspect ratio (width ÷ height) falls outside [min, max]. Never affects - or appears in - the rendered/exported output.",
+          "description": "Editor-only guard for tools whose layout only suits a certain orientation (e.g. a portrait-only document). Shows a prominent warning beside the dimension controls when the current page aspect ratio (width \u00f7 height) falls outside [min, max]. Never affects - or appears in - the rendered/exported output.",
           "properties": {
             "min": {
               "type": "number",
               "exclusiveMinimum": 0,
-              "description": "Minimum acceptable aspect ratio (width ÷ height). Below this, the warning shows. Omit to leave the low end unbounded."
+              "description": "Minimum acceptable aspect ratio (width \u00f7 height). Below this, the warning shows. Omit to leave the low end unbounded."
             },
             "max": {
               "type": "number",
               "exclusiveMinimum": 0,
-              "description": "Maximum acceptable aspect ratio (width ÷ height). Above this, the warning shows. Omit to leave the high end unbounded."
+              "description": "Maximum acceptable aspect ratio (width \u00f7 height). Above this, the warning shows. Omit to leave the high end unbounded."
             },
             "message": {
               "type": "string",
@@ -602,7 +602,7 @@
           "emoji"
         ]
       },
-      "description": "Optional HostV1 APIs (`host.text`, `host.pdf`, …) this tool calls WITHOUT feature-detecting them. The runtime refuses to mount the tool on a shell that lacks one, before any hook runs, and the gallery greys it out there. An API the hooks guard (`if (host.text)`, `host.text?.`) is NOT required and must not be listed. `scripts/tool-requires.ts` computes this from hooks.js and can rewrite it (`--write`); `validate:catalog` warns when the two disagree. Distinct from `capabilities`, which names device abilities (camera, microphone, screen, …) rather than bridge APIs."
+      "description": "Optional HostV1 APIs (`host.text`, `host.pdf`, \u2026) this tool calls WITHOUT feature-detecting them. The runtime refuses to mount the tool on a shell that lacks one, before any hook runs, and the gallery greys it out there. An API the hooks guard (`if (host.text)`, `host.text?.`) is NOT required and must not be listed. `scripts/tool-requires.ts` computes this from hooks.js and can rewrite it (`--write`); `validate:catalog` warns when the two disagree. Distinct from `capabilities`, which names device abilities (camera, microphone, screen, \u2026) rather than bridge APIs."
     },
     "network": {
       "type": "object",
@@ -705,7 +705,7 @@
               "id": {
                 "type": "string",
                 "pattern": "^[a-z0-9-]+$",
-                "description": "Stable key for this track - the i18n sidecar path (`guide.tracks.<id>.…`) is built from it, so treat it like an input id."
+                "description": "Stable key for this track - the i18n sidecar path (`guide.tracks.<id>.\u2026`) is built from it, so treat it like an input id."
               },
               "label": {
                 "type": "string",
@@ -756,7 +756,7 @@
         },
         "exportFile": {
           "type": "boolean",
-          "description": "The tool produces output via the transform path (file in → transformed file out) rather than rasterising the DOM. The hook reads the picked file's bytes (input.value.bytes) and returns a { bytes, mime, filename } record; the host wraps it in a Blob and delivers it via host.export.file (no watermark, no embedded provenance). A batch tool (a `multiple` file input) may instead return an ARRAY of such records - one per file - which the host delivers as a single zip. Used by on-device utilities."
+          "description": "The tool produces output via the transform path (file in \u2192 transformed file out) rather than rasterising the DOM. The hook reads the picked file's bytes (input.value.bytes) and returns a { bytes, mime, filename } record; the host wraps it in a Blob and delivers it via host.export.file (no watermark, no embedded provenance). A batch tool (a `multiple` file input) may instead return an ARRAY of such records - one per file - which the host delivers as a single zip. Used by on-device utilities."
         },
         "exportStill": {
           "type": "boolean",
@@ -767,6 +767,420 @@
     "isolate": {
       "type": "boolean",
       "description": "Request Worker execution for a verified built-in tool's hooks (engine 1.105+, plans/86-worker-isolation-hooks.md M2). The receiving shell assigns trust independently: sideloaded or remote hook code is forced into strict isolation and fails closed when it cannot be isolated, regardless of this manifest hint."
+    },
+    "designTool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "presentation",
+        "inputs",
+        "choices",
+        "variants",
+        "defaultVariant",
+        "formats"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "presentation": {
+          "enum": [
+            "sidebar",
+            "on-canvas"
+          ]
+        },
+        "inputs": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "input",
+              "targets"
+            ],
+            "properties": {
+              "input": {
+                "$ref": "#/$defs/input"
+              },
+              "targets": {
+                "type": "array",
+                "maxItems": 1000,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "variantId",
+                    "layerId",
+                    "property"
+                  ],
+                  "properties": {
+                    "variantId": {
+                      "type": "string",
+                      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$"
+                    },
+                    "layerId": {
+                      "type": "string",
+                      "maxLength": 2000
+                    },
+                    "property": {
+                      "enum": [
+                        "text",
+                        "image",
+                        "fontSize",
+                        "font",
+                        "weight",
+                        "fg",
+                        "fill",
+                        "fit",
+                        "imageFraming"
+                      ]
+                    },
+                    "text": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "mode",
+                        "min",
+                        "max",
+                        "wrap"
+                      ],
+                      "properties": {
+                        "mode": {
+                          "enum": [
+                            "fixed",
+                            "shrink"
+                          ]
+                        },
+                        "min": {
+                          "type": "number",
+                          "exclusiveMinimum": 0
+                        },
+                        "max": {
+                          "type": "number",
+                          "exclusiveMinimum": 0
+                        },
+                        "maxLines": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 100
+                        },
+                        "wrap": {
+                          "type": "boolean"
+                        },
+                        "sharedSize": {
+                          "type": "boolean"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "common": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "key",
+                  "subject",
+                  "source"
+                ],
+                "properties": {
+                  "key": {
+                    "enum": [
+                      "firstname",
+                      "lastname",
+                      "email",
+                      "heading",
+                      "subheading",
+                      "body",
+                      "eventName",
+                      "organization",
+                      "headshot"
+                    ]
+                  },
+                  "subject": {
+                    "enum": [
+                      "person",
+                      "event",
+                      "content",
+                      "recipient",
+                      "presenter"
+                    ]
+                  },
+                  "source": {
+                    "enum": [
+                      "brief",
+                      "profile"
+                    ]
+                  }
+                }
+              },
+              "text": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "mode",
+                  "min",
+                  "max",
+                  "wrap"
+                ],
+                "properties": {
+                  "mode": {
+                    "enum": [
+                      "fixed",
+                      "shrink"
+                    ]
+                  },
+                  "min": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "max": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "maxLines": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100
+                  },
+                  "wrap": {
+                    "type": "boolean"
+                  },
+                  "sharedSize": {
+                    "type": "boolean"
+                  }
+                }
+              },
+              "approved": {
+                "type": "array",
+                "maxItems": 1000,
+                "items": {
+                  "type": "string",
+                  "maxLength": 2000
+                }
+              },
+              "image": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "minWidth": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 32768
+                  },
+                  "minHeight": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 32768
+                  },
+                  "formats": {
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "items": {
+                      "enum": [
+                        "png",
+                        "jpeg",
+                        "webp",
+                        "avif",
+                        "svg"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "choices": {
+          "type": "array",
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "inputId",
+              "options"
+            ],
+            "properties": {
+              "inputId": {
+                "type": "string",
+                "pattern": "^[a-zA-Z][a-zA-Z0-9_-]{0,63}$"
+              },
+              "options": {
+                "type": "array",
+                "maxItems": 24,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "value",
+                    "label",
+                    "writes"
+                  ],
+                  "properties": {
+                    "value": {
+                      "type": "string",
+                      "maxLength": 2000
+                    },
+                    "label": {
+                      "type": "string",
+                      "maxLength": 2000
+                    },
+                    "variantId": {
+                      "type": "string",
+                      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$"
+                    },
+                    "thumbnail": {
+                      "type": "string",
+                      "maxLength": 1048576
+                    },
+                    "writes": {
+                      "type": "array",
+                      "maxItems": 1000,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "variantId",
+                          "layerId",
+                          "property",
+                          "value"
+                        ],
+                        "properties": {
+                          "variantId": {
+                            "type": "string",
+                            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$"
+                          },
+                          "layerId": {
+                            "type": "string",
+                            "maxLength": 2000
+                          },
+                          "property": {
+                            "enum": [
+                              "text",
+                              "image",
+                              "fontSize",
+                              "font",
+                              "weight",
+                              "fg",
+                              "fill",
+                              "fit",
+                              "imageFraming"
+                            ]
+                          },
+                          "value": {},
+                          "text": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "mode",
+                              "min",
+                              "max",
+                              "wrap"
+                            ],
+                            "properties": {
+                              "mode": {
+                                "enum": [
+                                  "fixed",
+                                  "shrink"
+                                ]
+                              },
+                              "min": {
+                                "type": "number",
+                                "exclusiveMinimum": 0
+                              },
+                              "max": {
+                                "type": "number",
+                                "exclusiveMinimum": 0
+                              },
+                              "maxLines": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 100
+                              },
+                              "wrap": {
+                                "type": "boolean"
+                              },
+                              "sharedSize": {
+                                "type": "boolean"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "defaults": {
+                      "type": "object",
+                      "maxProperties": 64
+                    },
+                    "fixedInputs": {
+                      "type": "array",
+                      "maxItems": 64,
+                      "items": {
+                        "type": "string",
+                        "pattern": "^[a-zA-Z][a-zA-Z0-9_-]{0,63}$"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "variants": {
+          "type": "array",
+          "maxItems": 24,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "label",
+              "width",
+              "height"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$"
+              },
+              "label": {
+                "type": "string",
+                "maxLength": 2000
+              },
+              "width": {
+                "type": "number",
+                "minimum": 1,
+                "maximum": 16384
+              },
+              "height": {
+                "type": "number",
+                "minimum": 1,
+                "maximum": 16384
+              }
+            }
+          }
+        },
+        "defaultVariant": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$"
+        },
+        "formats": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "png",
+              "svg",
+              "pdf"
+            ]
+          }
+        }
+      }
     }
   },
   "$defs": {
@@ -1054,7 +1468,7 @@
                   "segmented"
                 ],
                 "default": "select",
-                "description": "'icon-toggle' renders the select as ONE compact button that cycles its options, showing the current option's `icon` instead of a dropdown. Intended for 2-state modifiers (with attachTo); a longer option list still cycles, but a dropdown reads better past ~3. 'segmented' renders the options as a row of side-by-side tabs (a radiogroup) instead of a dropdown - for a small, mutually-exclusive mode switch (2–4 options) like Hue/Saturation/Luminance; past ~4 a dropdown reads better."
+                "description": "'icon-toggle' renders the select as ONE compact button that cycles its options, showing the current option's `icon` instead of a dropdown. Intended for 2-state modifiers (with attachTo); a longer option list still cycles, but a dropdown reads better past ~3. 'segmented' renders the options as a row of side-by-side tabs (a radiogroup) instead of a dropdown - for a small, mutually-exclusive mode switch (2\u20134 options) like Hue/Saturation/Luminance; past ~4 a dropdown reads better."
               },
               "options": {
                 "type": "array",
@@ -1503,7 +1917,7 @@
               "mdPaste": {
                 "type": "boolean",
                 "default": false,
-                "description": "Adds a 'Paste Markdown' button to the blocks toolbar. It reads the clipboard, splits the Markdown into one block per heading (the heading line → the block's `heading` field, the section beneath it → its `body` field, kept as Markdown for the tool's {{markdown}} render), and appends the blocks - so a whole document lands as editable, page-flowing blocks. A block gets kind:'text' when the input has a `kind` discriminator; other fields start at their defaults."
+                "description": "Adds a 'Paste Markdown' button to the blocks toolbar. It reads the clipboard, splits the Markdown into one block per heading (the heading line \u2192 the block's `heading` field, the section beneath it \u2192 its `body` field, kept as Markdown for the tool's {{markdown}} render), and appends the blocks - so a whole document lands as editable, page-flowing blocks. A block gets kind:'text' when the input has a `kind` discriminator; other fields start at their defaults."
               },
               "importData": {
                 "type": "object",
@@ -1535,7 +1949,7 @@
                     "additionalProperties": {
                       "type": "string"
                     },
-                    "description": "Explicit fieldId → source column/key overrides. Omit to auto-map by header (field id, then label). e.g. { \"value\": \"Amount\" }."
+                    "description": "Explicit fieldId \u2192 source column/key overrides. Omit to auto-map by header (field id, then label). e.g. { \"value\": \"Amount\" }."
                   }
                 }
               },
@@ -1586,7 +2000,7 @@
                   },
                   "opacityField": {
                     "type": "string",
-                    "description": "Number sub-field: box opacity 0–100."
+                    "description": "Number sub-field: box opacity 0\u2013100."
                   },
                   "imageField": {
                     "type": "string",
@@ -1690,7 +2104,7 @@
                   },
                   "headStartField": {
                     "type": "string",
-                    "description": "Select sub-field: the decoration drawn at the path's FIRST point, along that end's own tangent - none · triangle · open · circle · diamond · bar. Same vocabulary as the connector heads, because a spline, a line and a connector are one primitive carrying one decoration set. Default 'headStart'."
+                    "description": "Select sub-field: the decoration drawn at the path's FIRST point, along that end's own tangent - none \u00b7 triangle \u00b7 open \u00b7 circle \u00b7 diamond \u00b7 bar. Same vocabulary as the connector heads, because a spline, a line and a connector are one primitive carrying one decoration set. Default 'headStart'."
                   },
                   "headEndField": {
                     "type": "string",
@@ -1726,7 +2140,7 @@
                   },
                   "shadowField": {
                     "type": "string",
-                    "description": "SELECT sub-field (not a Boolean - a shadow has a target, and the value names it): 'none' · 'box' (the frame's own silhouette, a box-shadow) · 'text' (the type only, a text-shadow) · 'content' (the artwork's alpha silhouette, a filter: drop-shadow). The vocabulary is additive: a depth-capable tool may extend it with 'depth', whose offset/blur are DERIVED from the box's `zField` rather than authored. Whatever the value, the x/y/blur/colour sub-fields below supply the geometry."
+                    "description": "SELECT sub-field (not a Boolean - a shadow has a target, and the value names it): 'none' \u00b7 'box' (the frame's own silhouette, a box-shadow) \u00b7 'text' (the type only, a text-shadow) \u00b7 'content' (the artwork's alpha silhouette, a filter: drop-shadow). The vocabulary is additive: a depth-capable tool may extend it with 'depth', whose offset/blur are DERIVED from the box's `zField` rather than authored. Whatever the value, the x/y/blur/colour sub-fields below supply the geometry."
                   },
                   "shadowColorField": {
                     "type": "string",
@@ -1746,7 +2160,7 @@
                   },
                   "zField": {
                     "type": "string",
-                    "description": "Number sub-field: the box's DEPTH - how far it sits in front of (positive) or behind (negative) the stage plane, in canvas px. Layers stay parallel to the screen, so a camera turns z into a per-layer uniform scale + translate (parallax, push-in, depth-of-field) and the render stays affine end-to-end. Absent field or 0 = the flat, unlifted board; the authored slider runs 0–300 and the value clamps to −300…900."
+                    "description": "Number sub-field: the box's DEPTH - how far it sits in front of (positive) or behind (negative) the stage plane, in canvas px. Layers stay parallel to the screen, so a camera turns z into a per-layer uniform scale + translate (parallax, push-in, depth-of-field) and the render stays affine end-to-end. Absent field or 0 = the flat, unlifted board; the authored slider runs 0\u2013300 and the value clamps to \u2212300\u2026900."
                   },
                   "rxField": {
                     "type": "string",
@@ -1754,7 +2168,7 @@
                   },
                   "ryField": {
                     "type": "string",
-                    "description": "Number sub-field: the box's own YAW in degrees, the companion to rxField. Applied BEFORE the pitch (R = Ry·Rx, the pan/tilt-head order the camera channels already use), so a box wearing both angles never acquires roll - a third channel the wire does not have."
+                    "description": "Number sub-field: the box's own YAW in degrees, the companion to rxField. Applied BEFORE the pitch (R = Ry\u00b7Rx, the pan/tilt-head order the camera channels already use), so a box wearing both angles never acquires roll - a third channel the wire does not have."
                   },
                   "startField": {
                     "type": "string",
@@ -1968,7 +2382,7 @@
                       },
                       "styleField": {
                         "type": "string",
-                        "description": "Edge sub-field: route style (elbow, straight, curved …)."
+                        "description": "Edge sub-field: route style (elbow, straight, curved \u2026)."
                       },
                       "arrowField": {
                         "type": "string",
@@ -2145,7 +2559,7 @@
         },
         "thumb": {
           "type": "string",
-          "description": "Optional thumbnail: a tool-relative asset path or data URI. Absent → the chooser draws a glyph tile."
+          "description": "Optional thumbnail: a tool-relative asset path or data URI. Absent \u2192 the chooser draws a glyph tile."
         },
         "motion": {
           "type": "object",

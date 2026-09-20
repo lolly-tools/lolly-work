@@ -15,6 +15,25 @@ const okSvg = '<svg xmlns="http://www.w3.org/2000/svg"><text>ok</text></svg>';
 const res = (status: number, body: unknown, headers: Record<string, string> = {}): Response =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } });
 
+test('worker cancellation and timeout cover the response body after headers arrive', async () => {
+  for (const kind of ['cancel', 'timeout'] as const) {
+    const controller = new AbortController();
+    let headers!: () => void;
+    const received = new Promise<void>(resolve => { headers = resolve; });
+    const fetchImpl: typeof fetch = async (_url, init) => new Response(new ReadableStream({
+      start(stream) {
+        init!.signal!.addEventListener('abort', () => stream.error(init!.signal!.reason), { once: true });
+        headers();
+      },
+    }));
+    const request = renderViaWorker({ ...CFG, timeoutMs: kind === 'timeout' ? 20 : 5000 }, JOB, { signal: controller.signal, fetchImpl });
+    const rejected = assert.rejects(request, kind === 'cancel' ? { name: 'AbortError' } : WorkerError);
+    await received;
+    if (kind === 'cancel') controller.abort();
+    await rejected;
+  }
+});
+
 test('signBody/verifyBody round-trip; a tampered body is rejected', () => {
   const sig = signBody('{"a":1}', SECRET);
   assert.ok(verifyBody('{"a":1}', SECRET, sig));

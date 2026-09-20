@@ -244,13 +244,16 @@ const shutdown = async (signal: string): Promise<void> => {
   shuttingDown = true;
   console.log(`[lolly-work] ${signal} — draining ${collab.rooms()} live collab room(s)`);
   server.close(); // stop accepting; in-flight requests finish
-  await renderRunner?.stop();
-  try {
-    await collab.drain();
-  } catch (err) {
-    console.error('[lolly-work] collab drain failed:', (err as Error)?.message ?? err);
-  }
-  collab.close(); // sockets + sweeper; the rooms are already gone
+  // Save live rooms while render resources drain, including uninterruptible work.
+  await Promise.all([renderRunner?.stop(), (async () => {
+    try {
+      await collab.drain();
+    } catch (err) {
+      console.error('[lolly-work] collab drain failed:', (err as Error)?.message ?? err);
+    } finally {
+      collab.close();
+    }
+  })()]);
   console.log('[lolly-work] drained');
   process.exit(0);
 };

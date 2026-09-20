@@ -331,6 +331,7 @@ export interface InputModelItem extends InputSpec {
 
 /** The manifest slice this module reads. */
 export interface InputManifest {
+  designTool?: import('@lolly-tools/core/design-tool-v1').DesignToolPolicyV1;
   inputs?: InputSpec[];
   render?: {
     transparentBg?: boolean;
@@ -412,6 +413,7 @@ function isObjectValue(v: InputValue | null | undefined): v is { [key: string]: 
  * exactly the bug this centralises away.
  */
 export function syntheticInputs(manifest: InputManifest): InputSpec[] {
+  if (manifest.designTool) return [];
   const declared = manifest.inputs ?? [];
   const synthetic: InputSpec[] = [];
   if (

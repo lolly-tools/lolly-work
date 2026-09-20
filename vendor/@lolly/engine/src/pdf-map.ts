@@ -57,6 +57,7 @@ export interface PdfNode {
    *  line i's baseline at `y + 0.8·size + i·lineHeight·size`; absent, they fall
    *  back to the historical 1.4 estimate. */
   lineHeight?: number;
+  tracking?: number;
   text?: string;
   fit?: string;
   group?: string;
@@ -301,6 +302,9 @@ export interface PdfFontInfo {
   family?: string;
   /** A weight hint parsed from the font descriptor / name. */
   weight?: number | string;
+  /** Character-code advances in thousandths of an em, before text spacing. */
+  widths?: Record<number, number>;
+  defaultWidth?: number;
   /** Present for Type3 fonts - text is drawn by executing these glyph procedures
    *  instead of emitting a font-dependent `<text>`. */
   type3?: Type3Font;
@@ -672,6 +676,10 @@ interface GState {
   font: string;
   fontSize: number;
   leading: number;
+  charSpacing: number;
+  wordSpacing: number;
+  horizontalScale: number;
+  rise: number;
   /** Active clip stack. COPY-ON-WRITE - cloneState shares the array, so append
    *  via `s.clips = [...s.clips, c]`, never mutate in place. */
   clips: ClipPath[];
@@ -809,6 +817,8 @@ export function interpretPdfPage(page: PdfPageInput): PdfNode[] {
   const flip: Mat = { a: 1, b: 0, c: 0, d: -1, e: -(page.originX || 0), f: (page.originY || 0) + (page.height || 0) };
   let gseq = 0;   // unique id generator for q…Q + form-XObject group frames (shared across runs)
   const onWarn = page.onWarn ?? ((): void => {});
+  let colourWarning = false;
+  const warnCmyk = (): void => { if (!colourWarning) { colourWarning = true; onWarn('color.cmyk.approximated'); } };
   const pageSink: Sink = { nodes, count: 0, max: PDF_MAP_MAX_PAGE_NODES };
 
   // Tiling-pattern collapse budgets. A page can name the same pattern dozens of
@@ -911,12 +921,12 @@ export function interpretPdfPage(page: PdfPageInput): PdfNode[] {
       ? {
         ...inherit, ctm: baseCtm, clips: baseClips,
         ...(baseFill ? { fill: baseFill } : {}),
-        font: '', fontSize: 0, leading: 0,
+        font: '', fontSize: 0, leading: 0, charSpacing: 0, wordSpacing: 0, horizontalScale: 1, rise: 0,
       }
       : {
         ctm: baseCtm, fill: baseFill, stroke: '', fillAlpha: 1, strokeAlpha: 1,
         softMask: null, softMaskOpaque: false, lineWidth: 1,
-        font: '', fontSize: 0, leading: 0, clips: baseClips, fillGradient: null, fillMask: null, fillTileNodes: null, fillScale: 1, lineCap: 0, lineJoin: 0,
+        font: '', fontSize: 0, leading: 0, charSpacing: 0, wordSpacing: 0, horizontalScale: 1, rise: 0, clips: baseClips, fillGradient: null, fillMask: null, fillTileNodes: null, fillScale: 1, lineCap: 0, lineJoin: 0,
         strokePatternUnsupported: '',
       };
     const stack: GState[] = [];
@@ -962,6 +972,8 @@ export function interpretPdfPage(page: PdfPageInput): PdfNode[] {
     let originSet = false;
     let origin = { x: 0, y: 0 };
     let textSize = 0, textRot = 0, textFill = '', textFont = '';
+    let textWidth = 0, textTracking = 0;
+    let textEnd = { x: 0, y: 0 };
     let lastLineY = 0;
     /** Device-space x of the CURRENT LINE'S START - a next-line move is only a
      *  line break in this node when it returns close to it. */
@@ -1013,12 +1025,15 @@ export function interpretPdfPage(page: PdfPageInput): PdfNode[] {
 
     const onTextMove = (): void => {
       const trm = matMul(s.ctm, tm);
-      const p = apply(trm, 0, 0);
+      const p = apply(trm, 0, s.rise);
       if (!originSet) {
         origin = p; originSet = true;
         textSize = Math.max(1, (s.fontSize || 1) * scaleMag(matMul(s.ctm, { ...tm, e: 0, f: 0 })));
         textRot = rotationOf(trm);
         textFill = s.fill; textFont = s.font;
+        textWidth = 0;
+        textTracking = s.charSpacing * scaleMag(trm) * s.horizontalScale;
+        textEnd = p;
         // Innermost open MCID, or -1 when this run is untagged.
         textMcid = mcstack.length ? mcstack[mcstack.length - 1]! : -1;
         // 'raw', not 'fill': a text run is never a box-shadow plate (so no shadow-drop
@@ -1054,7 +1069,9 @@ export function interpretPdfPage(page: PdfPageInput): PdfNode[] {
         if (Math.abs(dy) <= textSize * 0.35) {
           // Same baseline. Small forward positioning (kerning, word placement)
           // keeps accumulating; a leftward move or a tab/column jump is a new run.
-          if (dx < -textSize * 0.35 || dx > textSize * 3) { flushText(); onTextMove(); return; }
+          const gap = p.x - textEnd.x;
+          if (gap < -textSize * 0.35 || gap > textSize * 3) { flushText(); onTextMove(); return; }
+          if (gap > textSize * 0.18 && !/\s$/.test(textBuf)) textBuf += ' ';
         } else if (dy > textSize * 0.35 && dy <= textSize * 2.1 && Math.abs(dx) <= textSize * 2) {
           // Next line: downward, near the line start, at a plausible leading.
           if (textBuf && !textBuf.endsWith('\n')) { textBuf += '\n'; leadSum += dy / textSize; leadCount++; }
@@ -1106,9 +1123,22 @@ export function interpretPdfPage(page: PdfPageInput): PdfNode[] {
       if (!codes || !codes.length) return;
       const fi = res.fonts && res.fonts[s.font];
       if (fi?.type3) { drawType3(codes, fi.type3); return; }
+      // A PDF text object may change face or paint between adjacent spans.
+      if (textBuf && (textFont !== s.font || textFill !== s.fill
+        || Math.abs(textSize - (s.fontSize || 1) * scaleMag(matMul(s.ctm, tm))) > 0.01
+        || Math.abs(textTracking - s.charSpacing * scaleMag(matMul(s.ctm, tm)) * s.horizontalScale) > 0.01)) flushText();
       if (!originSet) onTextMove();
       latchMcid();
       textBuf += decodeStr(codes, s.font);
+      let advance = 0;
+      for (let i = 0; i < codes.length; i += fi?.twoByte ? 2 : 1) {
+        const code = fi?.twoByte ? (codes[i]! << 8) | (codes[i + 1] ?? 0) : codes[i]!;
+        advance += ((fi?.widths?.[code] ?? fi?.defaultWidth ?? 550) / 1000 * (s.fontSize || 0)
+          + s.charSpacing + (!fi?.twoByte && code === 32 ? s.wordSpacing : 0)) * s.horizontalScale;
+      }
+      tm = matMul(tm, { a: 1, b: 0, c: 0, d: 1, e: advance, f: 0 });
+      textEnd = apply(matMul(s.ctm, tm), 0, s.rise);
+      textWidth = Math.max(textWidth, Math.hypot(textEnd.x - lastLineX, textEnd.y - lastLineY));
     };
     const showTJ = (arr: Tok[] | null): void => {
       if (!Array.isArray(arr)) return;
@@ -1122,11 +1152,13 @@ export function interpretPdfPage(page: PdfPageInput): PdfNode[] {
         }
         return;
       }
-      if (!originSet) onTextMove();
-      latchMcid();
       for (const el of arr) {
-        if (el.t === 'str') textBuf += decodeStr(el.v, s.font);
-        else if (el.t === 'num' && el.v <= -180) textBuf += ' ';
+        if (el.t === 'str') showString(el.v);
+        else if (el.t === 'num') {
+          tm = matMul(tm, { a: 1, b: 0, c: 0, d: 1, e: -(el.v / 1000) * (s.fontSize || 0) * s.horizontalScale, f: 0 });
+          if (el.v <= -180 && textBuf && !/\s$/.test(textBuf)) textBuf += ' ';
+          textEnd = apply(matMul(s.ctm, tm), 0, s.rise);
+        }
       }
     };
     const flushText = (): void => {
@@ -1140,7 +1172,8 @@ export function interpretPdfPage(page: PdfPageInput): PdfNode[] {
         sink.nodes.push({
           kind: 'text',
           x: origin.x, y: origin.y - size * 0.8,
-          w: Math.max(4, txt.replace(/\n.*/s, '').length * size * 0.55, size * 2), h: size * (lead || 1.4) * (txt.split('\n').length),
+          w: Math.max(1, textWidth), h: size * (lead || 1.4) * (txt.split('\n').length),
+          ...(textTracking ? { tracking: textTracking } : {}),
           ...(lead ? { lineHeight: lead } : {}),
           rot: Math.abs(textRot) < 0.5 ? 0 : textRot,
           fg: safeColor(textFill, '#000000') || '#000000',
@@ -1264,7 +1297,7 @@ export function interpretPdfPage(page: PdfPageInput): PdfNode[] {
       // fill (empty `fill`, `_gradient` set) still takes them - a hero gradient
       // is almost always a plain rect.
       const subpaths = segs.reduce((c2, sg) => c2 + (sg.op === 'm' ? 1 : 0), 0);
-      if ((fillCol || grad) && mode !== 'stroke' && subpaths === 1) {
+      if ((fillCol || grad) && mode !== 'stroke' && !strokeCol && subpaths === 1) {
         const rect = asRectangle(segs);
         if (rect) {
           sink.nodes.push({ kind: 'box', x: rect.x, y: rect.y, w: rect.w, h: rect.h, rot: rect.rot,
@@ -1542,8 +1575,8 @@ export function interpretPdfPage(page: PdfPageInput): PdfNode[] {
         case 'RG': s.stroke = rgbHex(args[0]!, args[1]!, args[2]!); s.strokePatternUnsupported = ''; break;
         case 'g': s.fill = rgbHex(args[0]!, args[0]!, args[0]!); s.fillGradient = null; s.fillMask = null; s.fillScale = 1; s.fillTileNodes = null; break;
         case 'G': s.stroke = rgbHex(args[0]!, args[0]!, args[0]!); s.strokePatternUnsupported = ''; break;
-        case 'k': s.fill = cmykHex(args); s.fillGradient = null; s.fillMask = null; s.fillScale = 1; s.fillTileNodes = null; break;
-        case 'K': s.stroke = cmykHex(args); s.strokePatternUnsupported = ''; break;
+        case 'k': warnCmyk(); s.fill = cmykHex(args); s.fillGradient = null; s.fillMask = null; s.fillScale = 1; s.fillTileNodes = null; break;
+        case 'K': warnCmyk(); s.stroke = cmykHex(args); s.strokePatternUnsupported = ''; break;
         // sc/scn: numeric operands → a real colour; a pattern NAME → `applyPattern`
         // (see its comment for the fidelity ladder). A name we have NO pattern
         // resource for still CLEARS the paint rather than letting it inherit the
@@ -1552,6 +1585,7 @@ export function interpretPdfPage(page: PdfPageInput): PdfNode[] {
         // the common one. An uncoloured pattern (PaintType 2) carries its tint in
         // the numeric operands, which scColor resolves.
         case 'sc': case 'scn': {
+          if (args.length >= 4) warnCmyk();
           const pat = nameArg && res.patterns ? res.patterns[nameArg] : undefined;
           if (pat) {
             applyPattern(pat, nameArg, scColor(args));
@@ -1569,6 +1603,7 @@ export function interpretPdfPage(page: PdfPageInput): PdfNode[] {
         // 78 benign Chromium "set stroke to the fill's pattern, then only fill"
         // selections stop burying real signal in the warning census.
         case 'SC': case 'SCN': {
+          if (args.length >= 4) warnCmyk();
           const col = scColor(args);
           if (col) { s.stroke = col; s.strokePatternUnsupported = ''; break; }
           if (!nameArg) break;
@@ -1647,6 +1682,10 @@ export function interpretPdfPage(page: PdfPageInput): PdfNode[] {
         case 'BT': tm = IDENTITY; tlm = IDENTITY; textBuf = ''; originSet = false; break;
         case 'ET': flushText(); break;
         case 'TL': s.leading = args[0] ?? 0; break;
+        case 'Tc': s.charSpacing = args[0] ?? 0; break;
+        case 'Tw': s.wordSpacing = args[0] ?? 0; break;
+        case 'Tz': s.horizontalScale = (args[0] ?? 100) / 100; break;
+        case 'Ts': s.rise = args[0] ?? 0; break;
         case 'Tf': s.font = nameArg; s.fontSize = args[0] ?? s.fontSize; break;
         case 'Td': tlm = matMul(tlm, { a: 1, b: 0, c: 0, d: 1, e: args[0] ?? 0, f: args[1] ?? 0 }); tm = tlm; onTextMove(); break;
         case 'TD': s.leading = -(args[1] ?? 0); tlm = matMul(tlm, { a: 1, b: 0, c: 0, d: 1, e: args[0] ?? 0, f: args[1] ?? 0 }); tm = tlm; onTextMove(); break;
@@ -1654,7 +1693,7 @@ export function interpretPdfPage(page: PdfPageInput): PdfNode[] {
         case 'T*': tlm = matMul(tlm, { a: 1, b: 0, c: 0, d: 1, e: 0, f: -s.leading }); tm = tlm; onTextMove(); break;
         case 'Tj': showString(strArg); break;
         case "'": tlm = matMul(tlm, { a: 1, b: 0, c: 0, d: 1, e: 0, f: -s.leading }); tm = tlm; onTextMove(); showString(strArg); break;
-        case '"': tlm = matMul(tlm, { a: 1, b: 0, c: 0, d: 1, e: 0, f: -s.leading }); tm = tlm; onTextMove(); showString(strArg); break;
+        case '"': s.wordSpacing = args[0] ?? 0; s.charSpacing = args[1] ?? 0; tlm = matMul(tlm, { a: 1, b: 0, c: 0, d: 1, e: 0, f: -s.leading }); tm = tlm; onTextMove(); showString(strArg); break;
         case 'TJ': showTJ(arrArg); break;
 
         case 'Do': {

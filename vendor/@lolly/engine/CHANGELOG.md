@@ -6,6 +6,16 @@ minors, never removed or signature-changed without a major bump.
 
 Moved verbatim from the comment block that used to live in `src/index.ts`.
 
+## 1.199.0
+
+- Locked Design tools carry optional shared text fitting and image limits, person roles and bounded framing targets.
+
+## 1.198.0
+
+- Compile fixed Design artwork and declared inputs into a portable tool using the shared renderer.
+- Enforce generated-tool input, artboard and export rules at runtime.
+- Add optional `host.export.checkLayout` for bounded text fitting and browser export checks.
+
 1.197.0 - An export says what attribution it promised, and a host says what it
 delivered. The new optional `rights` export option carries the attribution plan
 one frozen evaluation produced, plus the callback a host reports its receipt
@@ -2872,6 +2882,7 @@ the quieter version of the same mistake.
 The finding claims only "present but not visible", never intent; the cause could
 be a botched redaction or ordinary sloppy layering, and callers should keep that
 wording. No v1 bridge method changed.
+
 
 ## 1.77.0 - a brand colour's faces, and the sRGB one wins at export
 

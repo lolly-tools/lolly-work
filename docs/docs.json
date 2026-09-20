@@ -21,12 +21,24 @@
         {
           "slug": "install",
           "title": "Installing",
-          "summary": "Nothing → a running, configured, governed instance: local demo, first config, sign-in, Postgres, secrets, Compose, systemd, Helm."
+          "summary": "Nothing \u2192 a running, configured, governed instance: local demo, first config, sign-in, Postgres, secrets, Compose, systemd, Helm."
         },
         {
           "slug": "deployment",
           "title": "Deployment shapes",
           "summary": "Helm/Rancher, Compose, Vercel, air-gap: what each path carries and what it doesn't."
+        }
+      ]
+    },
+    {
+      "id": "security-platform",
+      "icon": "instance",
+      "title": "Security and platform",
+      "docs": [
+        {
+          "slug": "security-platform",
+          "title": "Security and platform overview",
+          "summary": "Local work, connected services and the boundaries operators control."
         }
       ]
     },

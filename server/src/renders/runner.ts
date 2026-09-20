@@ -20,7 +20,7 @@ export interface RenderRunnerOptions {
 /** Polls durable requests. At-least-once execution, fenced immutable publication. */
 export class RenderRunner {
   private readonly active = new Set<Promise<void>>();
-  private readonly controllers = new Set<AbortController>();
+  private readonly controllers = new Map<string, AbortController>();
   private timer?: ReturnType<typeof setInterval>;
   private claiming = false;
   private claimFinished?: Promise<void>;
@@ -70,14 +70,23 @@ export class RenderRunner {
     } finally { this.claiming = false; finishClaim(); }
   }
 
-  /** Stop claims/heartbeats and fence physical work that cannot be interrupted. */
+  /** Stop claims, abort execution, and wait for physical work to release its resources. */
   async stop(): Promise<void> {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
-    for (const controller of this.controllers) controller.abort(new RenderResourceError('WORKER_STOPPED', 503, 'worker stopped'));
+    for (const controller of this.controllers.values()) controller.abort(new RenderResourceError('WORKER_STOPPED', 503, 'worker stopped'));
     await this.claimFinished;
     await Promise.all([...this.active]);
+  }
+
+  /** Call only after the store has committed the caller-authorized cancellation. */
+  cancel(id: string): void {
+    this.controllers.get(id)?.abort(new RenderResourceError('RENDER_CANCELLED', 409, 'render cancelled'));
+  }
+
+  stats(): { active: number; concurrency: number } {
+    return { active: this.active.size, concurrency: this.concurrency };
   }
 
   private report(error: unknown): void {
@@ -88,7 +97,7 @@ export class RenderRunner {
   private async run(record: RenderRecord): Promise<void> {
     const { store, blobs } = this.options;
     const token = record.leaseToken!;
-    const controller = new AbortController(); this.controllers.add(controller);
+    const controller = new AbortController(); this.controllers.set(record.id, controller);
     const { signal } = controller;
     // An old worker never writes the replacement worker's blob, even if it
     // finishes after its lease expires or cancellation has been committed.
@@ -138,8 +147,9 @@ export class RenderRunner {
         if (!mayHavePublished) await blobs.delete(ref).catch((error) => this.report(error));
       }
     };
+    const physicalWork = work();
     try {
-      await Promise.race([work(), aborted]);
+      await Promise.race([physicalWork, aborted]);
     } catch (error) {
       const e = error as { code?: unknown; status?: unknown; message?: unknown } | null;
       const code = typeof e?.code === 'string' ? e.code : 'RENDER_FAILED';
@@ -153,7 +163,9 @@ export class RenderRunner {
     } finally {
       clearTimeout(timer); clearInterval(heartbeat);
       signal.removeEventListener('abort', abortListener);
-      this.controllers.delete(controller);
+      // Cancellation fences publication immediately, but capacity follows physical completion.
+      await physicalWork.catch(() => {});
+      this.controllers.delete(record.id);
     }
   }
 }

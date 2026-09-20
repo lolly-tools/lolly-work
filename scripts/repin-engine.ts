@@ -153,14 +153,14 @@ const BACKED_UP = ['vendor', 'engine-pin.json', 'pnpm-lock.yaml'] as const;
 
 function backup(): string {
   const dir = mkdtempSync(join(tmpdir(), 'repin-engine-backup-'));
-  for (const entry of BACKED_UP) cpSync(join(ROOT, entry), join(dir, entry), { recursive: true });
+  for (const entry of BACKED_UP) cpSync(join(ROOT, entry), join(dir, entry), { recursive: true, verbatimSymlinks: true });
   return dir;
 }
 
 function restore(backupDir: string): void {
   for (const entry of BACKED_UP) {
     rmSync(join(ROOT, entry), { recursive: true, force: true });
-    cpSync(join(backupDir, entry), join(ROOT, entry), { recursive: true });
+    cpSync(join(backupDir, entry), join(ROOT, entry), { recursive: true, verbatimSymlinks: true });
   }
 }
 

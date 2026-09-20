@@ -5922,7 +5922,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       signal.throwIfAborted();
       const result = await renderTool({ config, captureEvidence: true, resolveProvenance, instanceCatalogVersion, worker: renderWorker,
         signer: await getC2paSigner(), hostedResolver: hostedAssetResolverFor(caller.groups) }, {
-        toolId: record.request.toolId, format: record.request.format, query: queryFromInputs(record.request.inputs),
+        signal, toolId: record.request.toolId, format: record.request.format, query: queryFromInputs(record.request.inputs),
         principal: { groups: caller.groups }, profile: caller.profile, overlays: await store.listOverlays(),
       });
       signal.throwIfAborted();
@@ -5938,7 +5938,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     },
     authorize: async (principal, request) => { await currentRenderCaller(principal, request); },
     validate: validateRenderRequest,
-    ...(deps.onRenderRunner ? { kick: () => durableRenders.kick() } : {}),
+    ...(deps.onRenderRunner ? { kick: () => durableRenders.kick(), cancel: (id: string) => durableRenders.cancel(id) } : {}),
     audit: async (principal, action, id, facts) => { await audit(principal, action, `${id.startsWith('rbt_') ? 'render-batch' : 'render'}:${id}`, facts); },
   });
   deps.onRenderRunner?.(durableRenders);
@@ -6946,28 +6946,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       void serveShell(res, p);
     });
   } else if (config.dev.enabled) {
-    // No web shell mounted but the passwordless dev provider is on → this is the
-    // hosted testing sandbox (deploy/vercel, lolly.work). Serve a demo landing at
-    // `/` that fronts the governed console + the render endpoint with one-click
-    // persona sign-in. Never appears on a real IdP-backed deploy (dev.enabled is
-    // false there). Registered LAST, so every real route still wins.
-    //
-    // Rendered per request (a cheap string build) so the example URLs the page
-    // prints carry the hostname the visitor actually reached - lolly.work vs
-    // www.lolly.work vs a preview deploy. The Host header is attacker-supplied,
-    // so it is shape-validated and only ever used for DISPLAY; on any doubt the
-    // page falls back to instance.baseUrl inside demoLandingHtml.
-    router.add('GET', '/', (req, res) => {
-      const fwdHost = req.headers['x-forwarded-host'];
-      const host = ((typeof fwdHost === 'string' && fwdHost) || req.headers.host || '').split(',')[0]!.trim();
-      const fwdProto = req.headers['x-forwarded-proto'];
-      const proto = (typeof fwdProto === 'string' && fwdProto.split(',')[0]!.trim()) ||
-        (/^(localhost|127\.)/.test(host) ? 'http' : 'https');
-      const origin = /^[a-z0-9][a-z0-9.-]*(:\d+)?$/i.test(host) && /^https?$/.test(proto)
-        ? `${proto}://${host}`
-        : undefined;
+    // The passwordless testing sandbox serves persona sign-in, docs and the
+    // architecture overview when no web shell is mounted. Register this last
+    // so every other route still wins.
+    router.add('GET', '/', (_req, res) => {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' });
-      res.end(demoLandingHtml(config, origin));
+      res.end(demoLandingHtml(config));
     });
   }
 

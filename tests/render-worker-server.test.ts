@@ -58,6 +58,75 @@ function rasterJob(): string {
   return JSON.stringify({ svg: '<svg xmlns="http://www.w3.org/2000/svg"></svg>', format: 'png', ts: Date.now() });
 }
 
+test('disconnect closes the Chromium context and retains the permit until close completes', async (t) => {
+  let opened!: () => void, closing!: () => void, releaseClose!: () => void, rejectDownload!: (error: Error) => void;
+  const openGate = new Promise<void>(resolve => { opened = resolve; });
+  const closeStarted = new Promise<void>(resolve => { closing = resolve; });
+  const closeGate = new Promise<void>(resolve => { releaseClose = resolve; });
+  setBrowserGetter(async () => ({ newContext: async () => {
+    opened();
+    return {
+      addInitScript: async () => {}, route: async () => {},
+      newPage: async () => ({
+        goto: async () => {},
+        waitForEvent: () => new Promise((_, reject) => { rejectDownload = reject; }),
+      }),
+      close: async () => { closing(); rejectDownload?.(new Error('context closed')); await closeGate; },
+    };
+  } }));
+  t.after(() => { releaseClose(); setBrowserGetter(null); });
+  const controller = new AbortController(), body = renderJob('cancel-me');
+  const response = fetch(`${base}/render`, { method: 'POST', headers: sign(body), body, signal: controller.signal });
+  const rejected = assert.rejects(response, { name: 'AbortError' });
+  await openGate; controller.abort(); await rejected; await closeStarted;
+  const closingState = await fetch(`${base}/readyz`);
+  assert.equal(closingState.status, 503, 'the closing context still owns capacity');
+  assert.deepEqual(await closingState.json(), { ok: false, active: 1, capacity: 1 });
+  releaseClose();
+  for (let n = 0; n < 50; n++) {
+    const ready = await fetch(`${base}/readyz`);
+    if (ready.status === 200) {
+      assert.deepEqual(await ready.json(), { ok: true, active: 0, capacity: 1 });
+      return;
+    }
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.fail('context cleanup did not return the permit');
+});
+
+for (const path of ['/render', '/rasterise']) test(`${path}: cancellation releases a closed context even when newPage stays pending`, async t => {
+  let opening!: () => void, closing!: () => void, releaseClose!: () => void, releasePage!: () => void;
+  const pageStarted = new Promise<void>(resolve => { opening = resolve; });
+  const closeStarted = new Promise<void>(resolve => { closing = resolve; });
+  const closeGate = new Promise<void>(resolve => { releaseClose = resolve; });
+  let lateCalls = 0;
+  const page = { goto: async () => { lateCalls++; }, waitForEvent: async () => { lateCalls++; }, setContent: async () => { lateCalls++; } };
+  const pageGate = new Promise<typeof page>(resolve => { releasePage = () => resolve(page); });
+  setBrowserGetter(async () => ({ newContext: async () => ({
+    addInitScript: async () => {}, route: async () => {},
+    newPage: () => { opening(); return pageGate; },
+    close: async () => { closing(); await closeGate; },
+  }) }));
+  t.after(() => { releaseClose(); releasePage(); setBrowserGetter(null); });
+  const controller = new AbortController(), body = path === '/render' ? renderJob('cancel-opening') : rasterJob();
+  const request = fetch(`${base}${path}`, { method: 'POST', headers: sign(body), body, signal: controller.signal });
+  const rejected = assert.rejects(request, { name: 'AbortError' });
+  await pageStarted;
+  controller.abort(); await rejected; await closeStarted;
+  assert.deepEqual(await (await fetch(`${base}/readyz`)).json(), { ok: false, active: 1, capacity: 1 });
+  releaseClose();
+  let released = false;
+  for (let n = 0; n < 50; n++) {
+    const ready = await (await fetch(`${base}/readyz`)).json() as { active: number };
+    if (ready.active === 0) { released = true; break; }
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.ok(released, 'confirmed context closure releases capacity without waiting for newPage');
+  releasePage();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(lateCalls, 0, 'a late page must not start navigation or rendering after cancellation');
+});
+
 /** A stub Chromium for /render: `onContextOpen` fires the instant
  *  newContext() is called - i.e. the instant the caller holds the semaphore
  *  permit and has entered the ctx-open→close span - so a test can await it
@@ -173,7 +242,7 @@ test('GET /readyz flips 200 → 503 → 200 across a saturating request, and nee
   // No x-lw-render-sig header anywhere in this test - /readyz must not require one.
   const readyBefore = await fetch(`${base}/readyz`);
   assert.equal(readyBefore.status, 200);
-  assert.deepEqual(await readyBefore.json(), { ok: true });
+  assert.deepEqual(await readyBefore.json(), { ok: true, active: 0, capacity: 1 });
 
   const body = renderJob('hooky-c');
   const inFlight = fetch(`${base}/render`, { method: 'POST', headers: sign(body), body });
@@ -181,14 +250,14 @@ test('GET /readyz flips 200 → 503 → 200 across a saturating request, and nee
 
   const readyDuring = await fetch(`${base}/readyz`);
   assert.equal(readyDuring.status, 503, 'saturated ⇒ not ready, so k8s stops routing new work here');
-  assert.deepEqual(await readyDuring.json(), { ok: false });
+  assert.deepEqual(await readyDuring.json(), { ok: false, active: 1, capacity: 1 });
 
   releaseHold();
   await inFlight;
 
   const readyAfter = await fetch(`${base}/readyz`);
   assert.equal(readyAfter.status, 200, 'capacity freed ⇒ ready again');
-  assert.deepEqual(await readyAfter.json(), { ok: true });
+  assert.deepEqual(await readyAfter.json(), { ok: true, active: 0, capacity: 1 });
 
   setBrowserGetter(null);
 });

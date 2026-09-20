@@ -1,5 +1,8 @@
 # Documentation - Lolly control plane
 
+Start with the [security and platform overview](security-platform.md) to understand local work, connected services and operator responsibilities.
+
+
 Operator and administrator documentation for a **deploy** of the Lolly control plane. These
 pages describe what is *built*.
 

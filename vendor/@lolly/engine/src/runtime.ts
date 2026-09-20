@@ -25,6 +25,7 @@
  *   being declared as user-facing inputs in the manifest.
  */
 
+import { assertDesignValues, designExportSize } from './design-tool/policy.ts';
 import { missingRequires, type HostApiName } from '@lolly-tools/core';
 import type { EmojiStyleV1 } from '@lolly-tools/core';
 import type { EmojiSetInfoV1 } from '@lolly-tools/core/emoji-v1';
@@ -486,6 +487,12 @@ export async function createRuntime(
   const { userTemplates: _templates, emoji: _emojiPref, ...profileValues } = profile;
   void _templates;
   void _emojiPref;
+  const pendingDesignIssues = new Map<string, string>();
+  if (tool.manifest.designTool) {
+    const bound: Record<string, unknown> = {};
+    for (const input of tool.manifest.inputs) if (input.bindToProfile && Object.hasOwn(profileValues,input.bindToProfile)) bound[input.id] = profileValues[input.bindToProfile as keyof typeof profileValues];
+    assertDesignValues(tool.manifest.designTool, {...bound,...initialState});
+  }
   let model = buildInputModel(tool.manifest, { profile: profileValues, initial: initialState });
 
   // The set of declared input ids is fixed for the life of the runtime (only
@@ -503,6 +510,7 @@ export async function createRuntime(
   // collected so the shell can tell the user the field was left blank.
   const droppedAssets: DroppedAsset[] = [];
   model = await resolveAssetRefs(model, host, droppedAssets, composeStack, tool.manifest.id);
+  if (tool.manifest.designTool) assertDesignValues(tool.manifest.designTool, modelToValues(model));
 
   // Resolve token-referenced colour values (from URL mode or a saved session)
   // against the live token set, refreshing each cached hex so a token edit
@@ -1131,6 +1139,11 @@ export async function createRuntime(
     resumeLive() { livePaused = false; },
 
     async setInput(id, value) {
+      if (tool.manifest.designTool) {
+        if (!tool.manifest.inputs.some(i => i.id === id)) throw new Error('This property is fixed by the designer.');
+        try { assertDesignValues(tool.manifest.designTool, { ...modelToValues(model), [id]: value }); pendingDesignIssues.delete(id); }
+        catch (error) { pendingDesignIssues.set(id, (error as Error).message); throw error; }
+      }
       // Swapping the image SOURCE retires any live-camera capture flag - the render
       // no longer shows camera essence. Scalar tweaks keep it (while live, the next
       // onFrame re-sets it within a frame). Recorded takes stay sticky: a recorder
@@ -1207,6 +1220,11 @@ export async function createRuntime(
      * keystroke path only.
      */
     async applyPatch(values) {
+      if (tool.manifest.designTool) {
+        if (Object.keys(values).some(id => !tool.manifest.inputs.some(i => i.id === id))) throw new Error('This property is fixed by the designer.');
+        try { assertDesignValues(tool.manifest.designTool, { ...modelToValues(model), ...values }); for (const id of Object.keys(values)) pendingDesignIssues.delete(id); }
+        catch (error) { for (const id of Object.keys(values)) pendingDesignIssues.set(id, (error as Error).message); throw error; }
+      }
       const applied: { id: string; value: InputValue }[] = [];
       for (const [id, value] of Object.entries(values ?? {})) {
         const before = model.find(i => i.id === id);
@@ -1500,6 +1518,15 @@ export async function createRuntime(
     },
 
     async export(renderedNode, format, opts = {}) {
+      if (tool.manifest.designTool) {
+        if (pendingDesignIssues.size) throw new Error([...pendingDesignIssues.values()].join('\n'));
+        const size = designExportSize(tool.manifest.designTool, modelToValues(model), format, opts.width === undefined ? undefined : Number(opts.width), opts.height === undefined ? undefined : Number(opts.height));
+        opts = { ...opts, ...size };
+        if (!host.export.checkLayout) throw Object.assign(new Error('This tool needs a browser for text layout checks before export.'), { code: 'NEEDS_BROWSER' });
+        const check = await host.export.checkLayout(renderedNode as Element);
+        if (!check.ok) throw new Error(check.issues.join('\n'));
+        if (hookErrors.length) throw new Error('The tool could not render. Resolve its reported errors before export.');
+      }
       const beforeExport = hooks?.beforeExport;
       if (beforeExport) {
         // Time-boxed via HOOK_BUDGET_MS, but errors (including the timeout)
@@ -2030,16 +2057,12 @@ async function resolveTokenRefs(model: InputModelItem[], host: HostV1): Promise<
 // whatever the tool defined (or null). Untrusted until narrowed in loadHooks.
 type HookFactory = (host: HostV1) => Record<string, unknown>;
 
-// Compiled hook factories, memoised by tool id@version. `new Function(...)`
-// re-parses the whole hooks.js source (chart-creator is ~525 lines) - but the
-// source is identical for a given tool version, and the factory is host-agnostic
-// (it only takes `host` as an argument), so the compiled factory is safe to reuse
-// across every mount/re-mount of that version.
-const hookFactoryCache = new Map<string, HookFactory>();
+// A loaded definition owns its compiled factory. Authoring previews can have the
+// same id/version with different draft source; they must never reuse stale hooks.
+const hookFactoryCache = new WeakMap<LoadedTool, HookFactory>();
 
 function getHookFactory(tool: LoadedTool): HookFactory {
-  const key = `${tool.manifest.id}@${tool.manifest.version}`;
-  let factory = hookFactoryCache.get(key);
+  let factory = hookFactoryCache.get(tool);
   if (!factory) {
     // Hooks run in a Function() scope with the host bridge injected as the
     // sole argument - the intended path for anything a tool needs. This is
@@ -2066,7 +2089,7 @@ function getHookFactory(tool: LoadedTool): HookFactory {
       `exportStill:  typeof exportStill  !== 'undefined' ? exportStill  : null` +
       `};`,
     ) as HookFactory;
-    hookFactoryCache.set(key, factory);
+    hookFactoryCache.set(tool, factory);
   }
   return factory;
 }

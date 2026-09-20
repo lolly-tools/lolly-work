@@ -73,7 +73,9 @@ do not replace it with Playwright's glibc browser download in this musl image.
 Run as the unprivileged `node` user with a read-only root filesystem, dropped
 capabilities, no-new-privileges and writable ephemeral `/tmp`. Chromium's user-data
 directory, XDG configuration and cache use that temporary mount. Health is HTTP
-`/healthz`; `/readyz` reports available request capacity. Supply the approved
+`/healthz`; `/readyz` reports `{ ok, active, capacity }` with HTTP 503 when full.
+`active` includes cancelled requests until their Chromium contexts finish closing.
+Supply the approved
 `LW_RENDER_WORKER_SECRET` and `LOLLY_WEB_BASE` using deployment configuration and
 secret references. The browser sandbox setting and pod isolation are described
 in the chart; prefer the approved stronger runtime isolation where available.

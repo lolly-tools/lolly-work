@@ -13,7 +13,7 @@
  *                    when LW_RENDER_MAX_CONCURRENT contexts are already open
  *   POST /rasterise  same envelope/backpressure; body: { svg, format, width?, ts }
  *   GET  /healthz  → 200 { ok } - liveness, independent of load
- *   GET  /readyz   → 200 { ok:true } below capacity, 503 { ok:false } at
+ *   GET  /readyz   → { ok, active, capacity }, HTTP 200 below capacity, 503 at
  *                    capacity - readiness, so k8s pulls a saturated pod from
  *                    the Service instead of routing new work to it (plans/22
  *                    §5). Unauthenticated by design (no HMAC on a probe path).
@@ -27,7 +27,7 @@
  */
 import { createServer } from 'node:http';
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import type { Browser } from 'playwright-core';
+import type { Browser, BrowserContext, BrowserContextOptions } from 'playwright-core';
 import { createSemaphore } from './semaphore.ts';
 
 const PORT = Number(process.env.PORT ?? 8791);
@@ -93,36 +93,63 @@ function exportUrl(toolId: string, query: string, overrides: Record<string, unkn
   return `${WEB_BASE}/t/${encodeURIComponent(toolId)}?${params.toString()}`;
 }
 
-async function renderSvg(job: { toolId: string; query: string; overrides: Record<string, unknown> }): Promise<string> {
+async function withContext<T>(signal: AbortSignal, options: BrowserContextOptions, run: (ctx: BrowserContext) => Promise<T>): Promise<T> {
+  signal.throwIfAborted();
   const browser = await getBrowser();
-  const ctx = await browser.newContext({ serviceWorkers: 'block', acceptDownloads: true });
+  signal.throwIfAborted();
+  const ctx = await browser.newContext(options);
+  let closing: Promise<void> | undefined;
+  const close = () => closing ??= ctx.close();
+  let rejectStopped!: (error: unknown) => void;
+  const stopped = new Promise<never>((_, reject) => { rejectStopped = reject; });
+  // A context can close while newPage remains pending. Cancellation settles
+  // only after close resolves, even when that browser operation never settles.
+  const abort = () => { void close().then(() => rejectStopped(signal.reason), rejectStopped); };
+  signal.addEventListener('abort', abort, { once: true });
   try {
+    const work = Promise.resolve().then(() => { signal.throwIfAborted(); return run(ctx); });
+    const result = Promise.race([work, stopped]);
+    if (signal.aborted) abort();
+    return await result;
+  } finally {
+    signal.removeEventListener('abort', abort);
+    await close();
+  }
+}
+
+async function renderSvg(job: { toolId: string; query: string; overrides: Record<string, unknown> }, signal: AbortSignal): Promise<string> {
+  return withContext(signal, { serviceWorkers: 'block', acceptDownloads: true }, async ctx => {
     // Server exports have no member AI lease. Keep their supported shell AI
     // paths off even if WEB_BASE points at a standalone build. Also refuse
     // model assets on the worker's network path (fresh context, no SW cache).
     await ctx.addInitScript(() => {
       Object.defineProperty(globalThis, '__LOLLY_AI_DISABLED__', { value: true, writable: false, configurable: false });
     });
+    signal.throwIfAborted();
     await ctx.route('**/*', (route) => {
       const path = new URL(route.request().url()).pathname;
       return /\/models\/|\.(onnx|gguf|safetensors)$/i.test(path) ? route.abort('blockedbyclient') : route.continue();
     });
+    signal.throwIfAborted();
     const page = await ctx.newPage();
+    signal.throwIfAborted();
     const downloadP = page.waitForEvent('download', { timeout: EXPORT_TIMEOUT_MS });
+    void downloadP.catch(() => {});
     // 'commit' returns once navigation starts; the export fires later, after the
     // tool mounts and its hooks settle. The download event is the real gate.
     await page.goto(exportUrl(job.toolId, job.query, job.overrides), { waitUntil: 'commit', timeout: NAV_TIMEOUT_MS });
+    signal.throwIfAborted();
     const download = await downloadP;
+    signal.throwIfAborted();
     const stream = await download.createReadStream();
+    signal.throwIfAborted();
     const chunks: Buffer[] = [];
     for await (const c of stream) chunks.push(c as Buffer);
     await download.delete().catch(() => {});
     const svg = Buffer.concat(chunks).toString('utf8');
     if (!/<svg[\s>]/i.test(svg)) throw new Error('export did not produce an <svg>');
     return svg;
-  } finally {
-    await ctx.close();
-  }
+  });
 }
 
 // Rasterise a FINISHED svg (already watermarked + provenance-islanded by the plane)
@@ -155,18 +182,18 @@ export function pinPdfDates(pdf: Buffer): Buffer {
   return out;
 }
 
-async function rasterise(job: { svg: string; format: string; width?: number }): Promise<{ bytes: Buffer; mime: string }> {
+async function rasterise(job: { svg: string; format: string; width?: number }, signal: AbortSignal): Promise<{ bytes: Buffer; mime: string }> {
   const fmt = job.format.toLowerCase();
-  const browser = await getBrowser();
   // This path receives a finished SVG, not an application: embedded scripts
   // must not execute, and model URLs must not acquire weights through markup.
-  const ctx = await browser.newContext({ serviceWorkers: 'block', deviceScaleFactor: 1, javaScriptEnabled: false });
-  try {
+  return withContext(signal, { serviceWorkers: 'block', deviceScaleFactor: 1, javaScriptEnabled: false }, async ctx => {
     await ctx.route('**/*', (route) => {
       const path = new URL(route.request().url()).pathname;
       return /\/models\/|\.(onnx|gguf|safetensors)$/i.test(path) ? route.abort('blockedbyclient') : route.continue();
     });
+    signal.throwIfAborted();
     const page = await ctx.newPage();
+    signal.throwIfAborted();
     const w = job.width && job.width > 0 ? Math.min(Math.round(job.width), RASTER_MAX_EDGE) : 0;
     // Lay the SVG out at the requested width (height follows its aspect). Transparent
     // ground so PNG keeps alpha; the SVG's own background rect (if any) still paints.
@@ -174,23 +201,24 @@ async function rasterise(job: { svg: string; format: string; width?: number }): 
       + `<style>*{margin:0;padding:0}html,body{background:transparent}`
       + `svg{display:block;${w ? `width:${w}px;height:auto;` : ''}}</style>${job.svg}`;
     await page.setContent(html, { waitUntil: 'networkidle', timeout: EXPORT_TIMEOUT_MS });
+    signal.throwIfAborted();
     if (fmt === 'pdf') {
       const pdf = await page.pdf({ printBackground: true });
       return { bytes: pinPdfDates(Buffer.from(pdf)), mime: 'application/pdf' };
     }
     const el = await page.$('svg');
+    signal.throwIfAborted();
     if (!el) throw new Error('no <svg> in raster payload');
     // Playwright screenshot emits png/jpeg only; jpg→jpeg, everything else→png.
     const type = fmt === 'jpg' || fmt === 'jpeg' ? 'jpeg' as const : 'png' as const;
     const buf = await el.screenshot({ type, ...(type === 'png' ? { omitBackground: true } : {}) });
     return { bytes: Buffer.from(buf), mime: type === 'jpeg' ? 'image/jpeg' : 'image/png' };
-  } finally {
-    await ctx.close();
-  }
+  });
 }
 
 // ── HTTP ──────────────────────────────────────────────────────────────────────
 const sendJson = (res: import('node:http').ServerResponse, status: number, body: unknown): void => {
+  if (res.destroyed) return;
   const data = JSON.stringify(body);
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
   res.end(data);
@@ -215,7 +243,7 @@ export const server = createServer((req, res) => {
     // drains, without killing it. Deliberately unauthenticated (no HMAC) - a
     // probe endpoint that required signing the request wouldn't be a usable
     // probe endpoint.
-    if (req.method === 'GET' && req.url === '/readyz') return sendJson(res, sem.atCapacity ? 503 : 200, { ok: !sem.atCapacity });
+    if (req.method === 'GET' && req.url === '/readyz') return sendJson(res, sem.atCapacity ? 503 : 200, { ok: !sem.atCapacity, active: sem.inUse, capacity: sem.limit });
     const path = (req.url ?? '').split('?')[0];
     if (req.method !== 'POST' || (path !== '/render' && path !== '/rasterise')) {
       return fail(res, 404, 'NOT_FOUND', `no route for ${req.method} ${req.url}`);
@@ -241,6 +269,10 @@ export const server = createServer((req, res) => {
       return fail(res, 401, 'STALE', 'request timestamp outside the accepted window');
     }
 
+    const controller = new AbortController();
+    const disconnected = () => { if (!res.writableFinished) controller.abort(new Error('render client disconnected')); };
+    res.once('close', disconnected);
+
     // /rasterise - a finished SVG → format bytes (the single-rasteriser path).
     if (path === '/rasterise') {
       if (typeof job.svg !== 'string' || !/<svg[\s>]/i.test(job.svg) || typeof job.format !== 'string') {
@@ -251,11 +283,12 @@ export const server = createServer((req, res) => {
       const release = sem.tryAcquire();
       if (!release) return busy(res);
       try {
-        const { bytes, mime } = await rasterise({ svg: job.svg, format: job.format, width });
+        const { bytes, mime } = await rasterise({ svg: job.svg, format: job.format, width }, controller.signal);
         return sendJson(res, 200, { bytesB64: bytes.toString('base64'), mime });
       } catch (e) {
         return fail(res, 502, 'RASTER_FAILED', `Chromium raster failed: ${(e as Error).message}`);
       } finally {
+        res.removeListener('close', disconnected);
         release(); // always, including on the catch above - a failed raster must not leak capacity
       }
     }
@@ -269,11 +302,12 @@ export const server = createServer((req, res) => {
     const release = sem.tryAcquire();
     if (!release) return busy(res);
     try {
-      const svg = await renderSvg({ toolId: job.toolId, query: job.query, overrides });
+      const svg = await renderSvg({ toolId: job.toolId, query: job.query, overrides }, controller.signal);
       return sendJson(res, 200, { svg });
     } catch (e) {
       return fail(res, 502, 'RENDER_FAILED', `Chromium render failed: ${(e as Error).message}`);
     } finally {
+      res.removeListener('close', disconnected);
       release(); // always, including on the catch above - a failed render must not leak capacity
     }
   })().catch((e) => {

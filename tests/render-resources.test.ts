@@ -14,6 +14,29 @@ import { evidenceFixture } from './render-evidence-fixture.ts';
 const spec = parseRenderSpec({ toolId: 'card', format: 'svg', inputs: { title: 'Hello' } });
 const result = { bytes: Buffer.from('<svg/>'), mime: 'image/svg+xml', cacheKey: 'render-key', evidence: evidenceFixture(Buffer.from('<svg/>')) };
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test('a cancelled uncooperative executor retains capacity until physical completion', async (t) => {
+  const store = createMemoryStore(), blobs = createMemoryBlobStore();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let executions = 0;
+  const first = (await store.insertRender(newRender('user:a', spec))).record;
+  const runner = new RenderRunner({ store, blobs, concurrency: 1, execute: async () => {
+    executions++; await gate; return result;
+  } });
+  t.after(async () => { release(); await runner.stop(); });
+  await runner.tick();
+  await store.cancelRender(first.id, first.principal); runner.cancel(first.id);
+  await store.insertRender(newRender('user:b', spec));
+  await delay(10); await runner.tick();
+  assert.equal(executions, 1);
+  assert.equal(runner.stats().active, 1);
+  release();
+  await until(async () => runner.stats().active === 0);
+  await runner.tick();
+  assert.equal(executions, 2);
+  assert.equal((await store.getRender(first.id, first.principal))!.output, undefined);
+});
 async function until(predicate: () => Promise<boolean>): Promise<void> {
   for (let n = 0; n < 200; n++) { if (await predicate()) return; await delay(10); }
   assert.fail('render did not settle');
@@ -78,9 +101,9 @@ test('transient failures retry, permanent policy failures stop, timeouts consume
     let attempts = 0;
     const r = (await store.insertRender(newRender('user:a', { ...spec, maxAttempts: 2 }))).record;
     const runner = new RenderRunner({ store, blobs, timeoutMs: kind === 'timeout' ? 20 : 1_000, pollMs: 10, retryDelayMs: 1,
-      execute: async () => {
+      execute: async (_record, signal) => {
         attempts++;
-        if (kind === 'timeout') await new Promise(() => {});
+        if (kind === 'timeout') await new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
         if (kind === 'permanent') throw new RenderResourceError('FORBIDDEN', 403, 'policy changed');
         if (attempts === 1) throw new Error('temporary failure');
         return result;

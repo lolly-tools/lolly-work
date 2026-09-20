@@ -297,6 +297,7 @@ export interface TemplateVariant {
  * same). `id` is a permanent contract: never rename or reuse it.
  */
 export interface ToolManifest {
+  designTool?: import('./design-tool-v1.ts').DesignToolPolicyV1;
   id: string;
   name: string;
   version: string;

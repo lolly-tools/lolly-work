@@ -15,6 +15,7 @@ export interface RoutesDeps {
   validate(principal: string, request: RenderSpec): Promise<void>;
   /** Absent in function-only hosts, where no background execution is guaranteed. */
   kick?: () => void;
+  cancel?: (id: string) => void;
   audit(principal: string, action: string, id: string, facts: Record<string, unknown>): Promise<void>;
 }
 
@@ -119,6 +120,7 @@ export function registerRenderRoutes(router: Pick<ReturnType<typeof createRouter
     const r = await store.cancelRender(ctx.params.id!, principal);
     if (!r) throw new RenderResourceError('NOT_FOUND', 404, 'render not found');
     if (r.state !== 'cancelled') throw new RenderResourceError('RENDER_TERMINAL', 409, 'completed render history is retained');
+    deps.cancel?.(r.id);
     await deps.audit(principal, 'render.cancel', r.id, {});
     sendJson(res, 200, renderWire(r));
   });

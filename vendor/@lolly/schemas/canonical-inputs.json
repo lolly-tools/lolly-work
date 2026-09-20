@@ -2,6 +2,8 @@
   "_README": "Canonical input registry. New tools SHOULD reuse these input `id`s and constraints verbatim. Two tools that share an id collapse into a single column in the /pro batch grid; if they also share type + constraints (number min/max/step, select options, color palette), that column becomes bulk-writable - one value fills every row. The catalog validator (scripts/validate-catalog.ts) emits a WARNING (never an error) when a tool uses one of these ids with a divergent type or constraints, so drift is visible without blocking. Labels here are advisory: a tool may show its own label (the /pro header uses the first non-empty one). Adding a new shared input? Add it here first, then adopt it. This is deliberately data, not docs - the authoring guide will link here.",
 
   "inputs": {
+    "firstname": { "type": "text", "label": "First name", "description": "A person’s first name. Use an explicit subject context for shared values." },
+    "lastname": { "type": "text", "label": "Last name", "description": "A person’s last name. Keep the raw shared value and validate each asset separately." },
     "heading":     { "type": "text",     "label": "Heading",         "description": "Primary headline / title text." },
     "subheading":  { "type": "text",     "label": "Subheading",      "description": "Secondary line beneath the heading." },
     "body":        { "type": "longtext", "label": "Body",            "description": "Main body copy (markdown where the tool renders it)." },

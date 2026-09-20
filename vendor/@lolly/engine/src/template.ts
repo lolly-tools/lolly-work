@@ -554,7 +554,14 @@ export function resolvePaintBindings(html: string, bindings: Record<string, stri
 // key is always first. Re-inserting on hit marks it most-recent, and we evict
 // from the front once over capacity.
 const COMPILE_CACHE_MAX = 50;
-const compileCache = new Map<string, Handlebars.TemplateDelegate>();
+const COMPILE_CACHE_SOURCE_BYTES = 4 * 1024 * 1024;
+const compileCache = new Map<string, { compiled: Handlebars.TemplateDelegate; bytes: number }>();
+let compileCacheBytes = 0;
+
+/** Retained UTF-16 source/key allowance; excludes the compiler's AST and JS heap overhead. */
+export function templateCacheStats() {
+  return { entries: compileCache.size, sourceBytes: compileCacheBytes, maxEntries: COMPILE_CACHE_MAX, maxSourceBytes: COMPILE_CACHE_SOURCE_BYTES };
+}
 
 /**
  * @param templateSource the Handlebars template text
@@ -569,19 +576,26 @@ export function hydrate(
   values: Record<string, unknown>,
   { raw = false }: { raw?: boolean } = {},
 ): string {
-  const key = raw ? ' raw ' + templateSource : templateSource;
-  let compiled = compileCache.get(key);
-  if (compiled) {
+  const key = (raw ? 'r:' : 'h:') + templateSource;
+  const cached = compileCache.get(key);
+  if (cached) {
     // Mark most-recently-used: delete + re-insert moves it to the end.
     compileCache.delete(key);
-    compileCache.set(key, compiled);
-  } else {
-    compiled = Handlebars.compile(templateSource, { noEscape: raw });
-    compileCache.set(key, compiled);
-    if (compileCache.size > COMPILE_CACHE_MAX) {
-      const oldest = compileCache.keys().next().value; // evict oldest
-      if (oldest !== undefined) compileCache.delete(oldest);
-    }
+    compileCache.set(key, cached);
+    return cached.compiled(values);
   }
-  return compiled(values);
+  const compiled = Handlebars.compile(templateSource, { noEscape: raw });
+  // Compilation is lazy; a malformed template must not occupy retained capacity.
+  const output = compiled(values);
+  const bytes = (key.length + templateSource.length) * 2;
+  if (bytes <= COMPILE_CACHE_SOURCE_BYTES) {
+    while (compileCache.size && (compileCache.size >= COMPILE_CACHE_MAX || compileCacheBytes + bytes > COMPILE_CACHE_SOURCE_BYTES)) {
+      const oldest = compileCache.keys().next().value!;
+      compileCacheBytes -= compileCache.get(oldest)!.bytes;
+      compileCache.delete(oldest);
+    }
+    compileCache.set(key, { compiled, bytes });
+    compileCacheBytes += bytes;
+  }
+  return output;
 }

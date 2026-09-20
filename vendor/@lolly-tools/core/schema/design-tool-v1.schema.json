@@ -1,0 +1,2102 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "presentation",
+    "inputs",
+    "choices",
+    "variants",
+    "defaultVariant",
+    "formats",
+    "id",
+    "name",
+    "version",
+    "recipes"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "presentation": {
+      "enum": [
+        "sidebar",
+        "on-canvas"
+      ]
+    },
+    "inputs": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "input",
+          "targets"
+        ],
+        "properties": {
+          "input": {
+            "$ref": "#/$defs/input"
+          },
+          "targets": {
+            "type": "array",
+            "maxItems": 1000,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "variantId",
+                "layerId",
+                "property"
+              ],
+              "properties": {
+                "variantId": {
+                  "type": "string",
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$"
+                },
+                "layerId": {
+                  "type": "string",
+                  "maxLength": 2000
+                },
+                "property": {
+                  "enum": [
+                    "text",
+                    "image",
+                    "fontSize",
+                    "font",
+                    "weight",
+                    "fg",
+                    "fill",
+                    "fit",
+                    "imageFraming"
+                  ]
+                },
+                "text": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "mode",
+                    "min",
+                    "max",
+                    "wrap"
+                  ],
+                  "properties": {
+                    "mode": {
+                      "enum": [
+                        "fixed",
+                        "shrink"
+                      ]
+                    },
+                    "min": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    "max": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    "maxLines": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 100
+                    },
+                    "wrap": {
+                      "type": "boolean"
+                    },
+                    "sharedSize": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "common": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "key",
+              "subject",
+              "source"
+            ],
+            "properties": {
+              "key": {
+                "enum": [
+                  "firstname",
+                  "lastname",
+                  "email",
+                  "heading",
+                  "subheading",
+                  "body",
+                  "eventName",
+                  "organization",
+                  "headshot"
+                ]
+              },
+              "subject": {
+                "enum": [
+                  "person",
+                  "event",
+                  "content",
+                  "recipient",
+                  "presenter"
+                ]
+              },
+              "source": {
+                "enum": [
+                  "brief",
+                  "profile"
+                ]
+              }
+            }
+          },
+          "text": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "mode",
+              "min",
+              "max",
+              "wrap"
+            ],
+            "properties": {
+              "mode": {
+                "enum": [
+                  "fixed",
+                  "shrink"
+                ]
+              },
+              "min": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "max": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "maxLines": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100
+              },
+              "wrap": {
+                "type": "boolean"
+              },
+              "sharedSize": {
+                "type": "boolean"
+              }
+            }
+          },
+          "approved": {
+            "type": "array",
+            "maxItems": 1000,
+            "items": {
+              "type": "string",
+              "maxLength": 2000
+            }
+          },
+          "image": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "minWidth": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 32768
+              },
+              "minHeight": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 32768
+              },
+              "formats": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "enum": [
+                    "png",
+                    "jpeg",
+                    "webp",
+                    "avif",
+                    "svg"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "choices": {
+      "type": "array",
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "inputId",
+          "options"
+        ],
+        "properties": {
+          "inputId": {
+            "type": "string",
+            "pattern": "^[a-zA-Z][a-zA-Z0-9_-]{0,63}$"
+          },
+          "options": {
+            "type": "array",
+            "maxItems": 24,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "value",
+                "label",
+                "writes"
+              ],
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "maxLength": 2000
+                },
+                "label": {
+                  "type": "string",
+                  "maxLength": 2000
+                },
+                "variantId": {
+                  "type": "string",
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$"
+                },
+                "thumbnail": {
+                  "type": "string",
+                  "maxLength": 1048576
+                },
+                "writes": {
+                  "type": "array",
+                  "maxItems": 1000,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "variantId",
+                      "layerId",
+                      "property",
+                      "value"
+                    ],
+                    "properties": {
+                      "variantId": {
+                        "type": "string",
+                        "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$"
+                      },
+                      "layerId": {
+                        "type": "string",
+                        "maxLength": 2000
+                      },
+                      "property": {
+                        "enum": [
+                          "text",
+                          "image",
+                          "fontSize",
+                          "font",
+                          "weight",
+                          "fg",
+                          "fill",
+                          "fit",
+                          "imageFraming"
+                        ]
+                      },
+                      "value": {},
+                      "text": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "mode",
+                          "min",
+                          "max",
+                          "wrap"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "enum": [
+                              "fixed",
+                              "shrink"
+                            ]
+                          },
+                          "min": {
+                            "type": "number",
+                            "exclusiveMinimum": 0
+                          },
+                          "max": {
+                            "type": "number",
+                            "exclusiveMinimum": 0
+                          },
+                          "maxLines": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100
+                          },
+                          "wrap": {
+                            "type": "boolean"
+                          },
+                          "sharedSize": {
+                            "type": "boolean"
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "defaults": {
+                  "type": "object",
+                  "maxProperties": 64
+                },
+                "fixedInputs": {
+                  "type": "array",
+                  "maxItems": 64,
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z][a-zA-Z0-9_-]{0,63}$"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "variants": {
+      "type": "array",
+      "maxItems": 24,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "label",
+          "width",
+          "height",
+          "background",
+          "boxes"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$"
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "width": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 16384
+          },
+          "height": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 16384
+          },
+          "background": {
+            "type": "string"
+          },
+          "boxes": {
+            "type": "array",
+            "maxItems": 1000,
+            "items": {
+              "type": "object",
+              "required": [
+                "id"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": true
+            }
+          }
+        }
+      }
+    },
+    "defaultVariant": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$"
+    },
+    "formats": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "png",
+          "svg",
+          "pdf"
+        ]
+      }
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{2,95}$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "recipes": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "target",
+          "parts"
+        ],
+        "properties": {
+          "target": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "variantId",
+              "layerId",
+              "property"
+            ],
+            "properties": {
+              "variantId": {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$"
+              },
+              "layerId": {
+                "type": "string",
+                "maxLength": 2000
+              },
+              "property": {
+                "enum": [
+                  "text",
+                  "image",
+                  "fontSize",
+                  "font",
+                  "weight",
+                  "fg",
+                  "fill",
+                  "fit",
+                  "imageFraming"
+                ]
+              },
+              "text": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "mode",
+                  "min",
+                  "max",
+                  "wrap"
+                ],
+                "properties": {
+                  "mode": {
+                    "enum": [
+                      "fixed",
+                      "shrink"
+                    ]
+                  },
+                  "min": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "max": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "maxLines": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100
+                  },
+                  "wrap": {
+                    "type": "boolean"
+                  },
+                  "sharedSize": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          },
+          "parts": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "inputId"
+                  ],
+                  "properties": {
+                    "inputId": {
+                      "type": "string"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "literal"
+                  ],
+                  "properties": {
+                    "literal": {
+                      "type": "string",
+                      "maxLength": 2000
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "text": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "mode",
+              "min",
+              "max",
+              "wrap"
+            ],
+            "properties": {
+              "mode": {
+                "enum": [
+                  "fixed",
+                  "shrink"
+                ]
+              },
+              "min": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "max": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "maxLines": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100
+              },
+              "wrap": {
+                "type": "boolean"
+              },
+              "sharedSize": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      }
+    },
+    "compilerVersion": {
+      "const": 1
+    },
+    "rendererDigest": {
+      "type": "string"
+    },
+    "css": {
+      "type": "string",
+      "maxLength": 4000000
+    },
+    "dependencies": {
+      "type": "array",
+      "maxItems": 2000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "digest"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "pattern": "^assets/[a-zA-Z0-9./_-]+$"
+          },
+          "digest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "credit": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://lolly.tools/schemas/design-tool-v1.json",
+  "title": "Design tool authoring document v1",
+  "$defs": {
+    "input": {
+      "type": "object",
+      "required": [
+        "id",
+        "type"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z][a-zA-Z0-9_]*$",
+          "description": "Referenced in the template as {{id}}. Also becomes a URL param."
+        },
+        "urlKey": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*$",
+          "maxLength": 16,
+          "description": "Short URL-param alias for compact links (e.g. textColor -> tc). A WIRE CONTRACT once shipped: links carry it forever, so never rename or reuse one. Lowercase alphanumeric; must be unique within the tool across all input ids and urlKeys, must not be a reserved URL param, and must not start with _ (the reserved namespace) - validate-catalog enforces all three."
+        },
+        "label": {
+          "type": "string"
+        },
+        "help": {
+          "type": "string"
+        },
+        "notice": {
+          "type": "string",
+          "description": "Always-visible fine print rendered above the control (unlike help, which sits behind an info button). For what the user should read before typing - e.g. the consent disclosure on an input whose value triggers a network lookup."
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "text",
+            "longtext",
+            "number",
+            "boolean",
+            "color",
+            "select",
+            "asset",
+            "date",
+            "time",
+            "datetime-local",
+            "url",
+            "blocks",
+            "vector",
+            "file",
+            "table"
+          ]
+        },
+        "required": {
+          "type": "boolean",
+          "default": false
+        },
+        "default": {
+          "description": "Type-appropriate default value."
+        },
+        "bindToProfile": {
+          "type": "string",
+          "description": "If set, pre-fills from the user profile field of this name (e.g. 'firstname', 'headshot'). User can override."
+        },
+        "bindToMeta": {
+          "type": "string",
+          "enum": [
+            "author",
+            "contact",
+            "description",
+            "copyright",
+            "license"
+          ],
+          "description": "If set, this input's value is embedded into the export's provenance metadata (EXIF/XMP/PNG text + the C2PA manifest) under this field, overriding the profile-derived default. 'copyright' and 'license' are user-asserted IP fields with no profile source (see the claim tool)."
+        },
+        "matchExportFormat": {
+          "type": "boolean",
+          "description": "For an asset/file input: the default export format follows this input's uploaded format (a dropped JPEG defaults the export to jpg) until the user picks a format. The uploaded format must be one the tool's render.formats offers, else the first format is used."
+        },
+        "group": {
+          "type": "string",
+          "description": "Optional grouping tag. The reserved value 'export' moves an input out of the sidebar into the export panel; the engine injects its own export-group toggles (transparentBg, convertPaths). Any other value is a free-form label for related controls."
+        },
+        "showIf": {
+          "description": "Conditional visibility: the input renders in the sidebar only while the current model matches. One object is every { otherInputId: value } pair required, where a value may be a list of accepted values (e.g. { \"vectorize\": true } or { \"chartType\": [\"bar\", \"line\"] }); an array of such objects renders when ANY of them matches, for conditions an ANDed map cannot say (\"vector bar, or a 3-D bar scene\"). A visibility overlay only: URL params, hooks and validation see the input either way.",
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": true
+            },
+            {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          ]
+        },
+        "attachTo": {
+          "type": "string",
+          "description": "Id of a sibling input. Renders THIS input's control inside that input's control row (leading) instead of on its own labelled row - for a compact modifier belonging to another control, e.g. a fit toggle on an asset slot. It stays an ordinary input everywhere else (URL params, hooks, state, undo); only its placement changes. Pair with display:'icon-toggle' to keep it to one button. Ignored if the target id does not exist."
+        },
+        "framingFor": {
+          "type": "string",
+          "description": "On a `vector` input holding image framing ({ zoom, x, y, rotate? }): the id of the asset input whose content it frames. Declares the input as THE framing control for that image, which is what lets the shell mount its generic on-canvas pan/zoom/rotate overlay, bound zoom against the image's real aspect ratio, and offer 'Use as a new image' (bake the framing into a new library asset). Reuse the canonical `imageFraming` field set (schemas/canonical-inputs.json) so the values stay bulk-writable in /batch. Ignored if the target id does not exist or is not an asset input. See plans/148."
+        },
+        "tableColumns": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          },
+          "description": "On flat scalar blocks, edit rows using the shared table in this field-id order; unlisted fields follow in declaration order. Stored block objects and URL field order are unchanged. Fixed headings, spreadsheet paste, copy, and pop-out are available. Complex/nested blocks keep the block editor."
+        },
+        "columnEditors": {
+          "type": "array",
+          "description": "On a `table` input: which editor each COLUMN uses, matched to the table columns by position. A column with no entry (or 'text') edits as a plain text cell. 'url' keeps the text cell but asks the device for a URL keyboard and turns autocapitalise, autocorrect and spellcheck off. 'emoji' turns that column's cells into buttons that open the emoji picker, and the chosen emoji becomes the whole cell value. Presentation only: columns and rows are still user data, the stored value is the same TableValue of strings either way, and URL mode plus the CLI are unaffected.",
+          "items": {
+            "type": "string",
+            "enum": [
+              "text",
+              "url",
+              "emoji"
+            ]
+          }
+        },
+        "dataSource": {
+          "type": "object",
+          "description": "Adds a unified 'Add data' affordance to this input: the user picks a file (csv/json/txt/md/xlsx) or a catalog text/boilerplate asset, and its content fills the field. For a text/longtext input the content is applied as text (an .xlsx is serialised to CSV, first sheet). Replaces per-tool paste buttons / 'paste your CSV here' instructions. See plan 87.",
+          "additionalProperties": false,
+          "properties": {
+            "tags": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Catalog text-asset tags to offer from the library, AND-matched. Default [\"boilerplate\"]."
+            },
+            "accept": {
+              "type": "string",
+              "description": "Override the file-input accept filter (default covers csv/json/txt/md/xlsx)."
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "text"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "maxLength": {
+                "type": "integer"
+              },
+              "minLength": {
+                "type": "integer"
+              },
+              "pattern": {
+                "type": "string",
+                "description": "Regex."
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "longtext"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "maxLength": {
+                "type": "integer"
+              },
+              "rows": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "number"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "min": {
+                "type": "number"
+              },
+              "max": {
+                "type": "number"
+              },
+              "step": {
+                "type": "number"
+              },
+              "display": {
+                "type": "string",
+                "enum": [
+                  "input",
+                  "slider"
+                ],
+                "default": "input"
+              },
+              "rangeWhen": {
+                "type": "array",
+                "description": "Conditional slider bounds: the first entry whose `when` map matches the current model overrides min/max/step (e.g. per-mode limits). Drives the web slider UI only - a tool that must enforce the bound elsewhere (URL/CLI values are not auto-clamped) does so in a hook.",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "when"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "when": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "min": {
+                      "type": "number"
+                    },
+                    "max": {
+                      "type": "number"
+                    },
+                    "step": {
+                      "type": "number"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "color"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "palette": {
+                "type": "string",
+                "description": "Asset ID of a palette asset to constrain choices. If omitted, free color picker."
+              },
+              "swatchesOnly": {
+                "type": "boolean",
+                "description": "Restrict to brand palette swatches only - hides the hex entry, native picker and alpha. Default false (full picker)."
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "select"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "options"
+            ],
+            "properties": {
+              "display": {
+                "type": "string",
+                "enum": [
+                  "select",
+                  "icon-toggle",
+                  "segmented"
+                ],
+                "default": "select",
+                "description": "'icon-toggle' renders the select as ONE compact button that cycles its options, showing the current option's `icon` instead of a dropdown. Intended for 2-state modifiers (with attachTo); a longer option list still cycles, but a dropdown reads better past ~3. 'segmented' renders the options as a row of side-by-side tabs (a radiogroup) instead of a dropdown - for a small, mutually-exclusive mode switch (2\u20134 options) like Hue/Saturation/Luminance; past ~4 a dropdown reads better."
+              },
+              "options": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "value"
+                  ],
+                  "properties": {
+                    "value": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "showIf": {
+                      "description": "Offer this option only while the current model matches, with exactly the shape and semantics of an input's showIf (one object, every pair required, or an array of objects, any one sufficient). A visibility overlay: the option that is currently selected stays offered and marked not applicable, so a saved session or a link never changes meaning, and validation still runs against the whole option set.",
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "additionalProperties": true
+                        },
+                        {
+                          "type": "array",
+                          "minItems": 1,
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": true
+                          }
+                        }
+                      ]
+                    },
+                    "icon": {
+                      "type": "string",
+                      "description": "Icon name from the web shell's registry (shells/web/src/lib/icons.ts), shown instead of the label when display is 'icon-toggle'. Falls back to the label if the name is unknown."
+                    },
+                    "badge": {
+                      "type": "string",
+                      "description": "Short pill shown beside this option's label. If ANY option carries a badge, the web shell renders the select as a badged picker (a radiogroup of labelled pills) instead of a native dropdown - so the badge is visible while choosing, not only after. For discovery/evaluation hints, e.g. 'vector' / 'raster' on a filter-effect picker. Keep it to one short word."
+                    },
+                    "formats": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Export formats to offer while THIS option is selected - a subset of render.formats. Lets one select (e.g. an effect picker) drive the export format bar so each choice offers only the formats it produces well, while render.formats stays the union. Intersected with the tool's render.formats and the device's capability filter. Ignored unless the shell wires the option to the format bar."
+                    },
+                    "width": {
+                      "type": "number",
+                      "exclusiveMinimum": 0,
+                      "description": "Export width this option implies, in `unit`. With `height`, selecting the option sets the export dimensions (so a 'size' select drives the printed page size). The shell applies it to the export bar; the user can still override."
+                    },
+                    "height": {
+                      "type": "number",
+                      "exclusiveMinimum": 0,
+                      "description": "Export height this option implies, in `unit`."
+                    },
+                    "unit": {
+                      "type": "string",
+                      "enum": [
+                        "px",
+                        "mm",
+                        "cm",
+                        "in",
+                        "pt"
+                      ],
+                      "description": "Unit for this option's width/height. Defaults to 'mm' when width/height are present."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "asset"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "assetType": {
+                "type": "string",
+                "enum": [
+                  "vector",
+                  "raster",
+                  "image",
+                  "video",
+                  "audio",
+                  "lottie",
+                  "any"
+                ]
+              },
+              "filter": {
+                "type": "object",
+                "description": "Constraints passed to host.assets.query(). Limits the picker.",
+                "properties": {
+                  "tags": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "namespace": {
+                    "type": "string"
+                  }
+                }
+              },
+              "allowUpload": {
+                "type": "boolean",
+                "default": false,
+                "description": "If true, picker offers user upload alongside library."
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "file"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "accept": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Allowlist of accepted file types - MIME types and/or extensions (e.g. [\"image/jpeg\", \"image/png\", \".heic\"]). Used as the file picker's `accept` attribute. Empty/omitted accepts any file. This is a UX hint, not a security boundary - the hook should still validate bytes."
+              },
+              "maxSize": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Maximum accepted file size in bytes. The host rejects larger files at pick time. Omit for no limit."
+              },
+              "multiple": {
+                "type": "boolean",
+                "description": "Accept MANY files at once (batch tools). The input's value becomes an array of loaded files instead of a single one, the web file-picker sets the `multiple` attribute, and the CLI collects repeated --<id>=path occurrences. An `exportFile` hook may then return one { bytes, mime, filename } record per file (the host delivers them as a single zip). See the embed-track tool."
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "blocks"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "addMenu": {
+                "type": "object",
+                "description": "Turns the '+ Add' button into a typed menu. Each option of the named discriminator sub-field becomes a menu entry; an entry already used is disabled unless its option sets repeatable:true. The discriminator is fixed at creation and shown as the block's label rather than an editable control.",
+                "required": [
+                  "field"
+                ],
+                "properties": {
+                  "field": {
+                    "type": "string",
+                    "description": "id of the select sub-field whose options drive the menu."
+                  },
+                  "label": {
+                    "type": "string",
+                    "description": "Menu button label (default 'Add')."
+                  }
+                }
+              },
+              "labelledFields": {
+                "type": "boolean",
+                "default": false,
+                "description": "Show a text label above each sub-field (the layout typed/addMenu blocks always use). Turn on for untyped blocks whose controls aren't self-evident, or that carry several optional fields."
+              },
+              "rowActions": {
+                "type": "boolean",
+                "default": false,
+                "description": "Add copy / paste / clear buttons to each block's header (next to collapse + remove): copy a row's values, paste them onto another row to make the two match, or clear a row to its field defaults. Useful when rows are many-field states people want to duplicate (e.g. flythrough poses)."
+              },
+              "fields": {
+                "type": "array",
+                "description": "Sub-fields for each repeatable block entry. A field may declare a `type` (text|color|select|asset|number|boolean); text is the default. `showFor` limits a field to blocks whose discriminator value is listed; `showIf` limits it by sibling-field and/or top-level input values.",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "id"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "urlKey": {
+                      "type": "string",
+                      "pattern": "^[a-z][a-z0-9]*$",
+                      "maxLength": 16,
+                      "description": "Short alias for this sub-field in the compact blocks URL form. Same wire-contract rules as an input urlKey: permanent once shipped, unique within the blocks input, never a reserved param, never _-prefixed."
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "placeholder": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "text",
+                        "color",
+                        "select",
+                        "asset",
+                        "number",
+                        "boolean"
+                      ],
+                      "default": "text"
+                    },
+                    "default": {
+                      "description": "Value a newly-added block's field starts at."
+                    },
+                    "help": {
+                      "type": "string",
+                      "description": "Short hint shown under the sub-field (labelledFields blocks only)."
+                    },
+                    "showFor": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Render this field only when the block's discriminator value is one of these."
+                    },
+                    "showIf": {
+                      "type": "object",
+                      "description": "Render this field only when the named values all match. Keys are looked up first among sibling fields of the same block, then among top-level input ids (e.g. { \"vectorize\": true, \"tune\": true })."
+                    },
+                    "multilineFor": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Render a text field as a multi-line textarea (rather than a single-line input) when the block's discriminator value is one of these."
+                    },
+                    "rows": {
+                      "type": "integer",
+                      "description": "Visible rows for a multi-line text field (see multilineFor). Default 3."
+                    },
+                    "options": {
+                      "type": "array",
+                      "description": "Choices for a select sub-field. An option's repeatable:true lets the add-menu offer it more than once.",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "value"
+                        ],
+                        "properties": {
+                          "value": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "repeatable": {
+                            "type": "boolean"
+                          }
+                        }
+                      }
+                    },
+                    "min": {
+                      "type": "number"
+                    },
+                    "max": {
+                      "type": "number"
+                    },
+                    "step": {
+                      "type": "number"
+                    },
+                    "display": {
+                      "type": "string",
+                      "enum": [
+                        "input",
+                        "slider"
+                      ],
+                      "default": "input"
+                    },
+                    "assetType": {
+                      "type": "string",
+                      "enum": [
+                        "vector",
+                        "raster",
+                        "image",
+                        "video",
+                        "audio",
+                        "lottie",
+                        "any"
+                      ]
+                    },
+                    "allowUpload": {
+                      "type": "boolean",
+                      "default": false
+                    },
+                    "framingFor": {
+                      "type": "string",
+                      "description": "On an ASSET sub-field: the shared PREFIX of the row's framing numbers - <prefix>Zoom / <prefix>X / <prefix>Y / <prefix>Rotate / <prefix>Pitch / <prefix>Yaw - declaring that those sibling values frame THIS image (plans/148). Normally the asset field's own id; name a different prefix only where the numbers already ship under one (color-block's bgImage + bgX/bgY/bgZoom), since those ids are permanent URL contracts. A block sub-field cannot be a `vector`, so a row spells the values out; this is what lets the shell's generic framing overlay bind a block row. Render with the {{framing}} helper's block mode."
+                    },
+                    "filter": {
+                      "type": "object",
+                      "properties": {
+                        "tags": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "namespace": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "optionsFrom": {
+                      "type": "object",
+                      "description": "Render this sub-field as a reference picker whose choices are the rows of another blocks input (or several). The stored value is each target row's derived id (slug of its key field, else its label, else an ordinal) - the same id a tool's hook resolves - so it replaces hand-typed ID cross-references with a dropdown. A stored value matching no current row is surfaced as an '(unknown)' option rather than silently dropped.",
+                      "properties": {
+                        "input": {
+                          "type": "string",
+                          "description": "id of the blocks input to draw rows from (single-source form)."
+                        },
+                        "value": {
+                          "type": "string",
+                          "default": "nodeId",
+                          "description": "Source-row sub-field used as the stored id (slugged + de-duplicated to match the tool's resolution)."
+                        },
+                        "label": {
+                          "type": "string",
+                          "default": "label",
+                          "description": "Source-row sub-field shown to the user (falls back to the derived id)."
+                        },
+                        "prefix": {
+                          "type": "string",
+                          "default": "node-",
+                          "description": "Ordinal id prefix for rows with neither key nor label."
+                        },
+                        "sources": {
+                          "type": "array",
+                          "description": "Several source inputs merged into one option list (e.g. cards AND layers). De-duplicated by value, first wins.",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "input"
+                            ],
+                            "properties": {
+                              "input": {
+                                "type": "string"
+                              },
+                              "value": {
+                                "type": "string",
+                                "default": "nodeId"
+                              },
+                              "label": {
+                                "type": "string",
+                                "default": "label"
+                              },
+                              "prefix": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        },
+                        "freeText": {
+                          "type": "boolean",
+                          "default": false,
+                          "description": "Render as a combobox (datalist) that also accepts a typed value not in the list - e.g. a kanban column invented on the spot."
+                        },
+                        "excludeSelf": {
+                          "type": "boolean",
+                          "default": false,
+                          "description": "Omit the current row from its own options (a card can't be its own parent)."
+                        },
+                        "excludeDescendants": {
+                          "type": "boolean",
+                          "default": false,
+                          "description": "Omit the current row's descendants (requires the input's `nesting`) so a node can't reparent into its own subtree."
+                        },
+                        "emptyLabel": {
+                          "type": "string",
+                          "description": "Label for the blank/none option (default '- none -')."
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "nesting": {
+                "type": "object",
+                "description": "Treat this blocks array as an editable TREE: the sidebar renders it as an indented outline and the header drag lets a card be dropped above, below, or INSIDE another, updating the dragged card's parent reference (its whole subtree travels with it). The data stays a flat reference-by-id array - only the presentation is tree-shaped - so it serialises and renders exactly as before.",
+                "required": [
+                  "parentField"
+                ],
+                "properties": {
+                  "parentField": {
+                    "type": "string",
+                    "description": "Sub-field holding each row's parent reference (the id of another row)."
+                  },
+                  "keyField": {
+                    "type": "string",
+                    "default": "nodeId",
+                    "description": "Sub-field used as a row's id (what parentField points at)."
+                  },
+                  "labelField": {
+                    "type": "string",
+                    "default": "label",
+                    "description": "Fallback id source when keyField is blank, and the human label for indentation."
+                  },
+                  "prefix": {
+                    "type": "string",
+                    "default": "node-",
+                    "description": "Ordinal id prefix for rows with neither key nor label."
+                  },
+                  "activeWhen": {
+                    "type": "object",
+                    "description": "Only treat the input as a tree when these top-level input values match (an array value matches by membership), e.g. { \"diagramType\": [\"org\", \"mindmap\"] }. Omit to always nest.",
+                    "additionalProperties": true
+                  }
+                }
+              },
+              "dropToAdd": {
+                "type": "object",
+                "description": "Turns the blocks list into a drop zone: dragging or selecting several image files at once creates one block per file, each with the file uploaded into the named asset sub-field. Every other field of a new block starts at its declared default.",
+                "required": [
+                  "field"
+                ],
+                "properties": {
+                  "field": {
+                    "type": "string",
+                    "description": "id of the block's `asset` sub-field that each dropped file is uploaded into."
+                  },
+                  "accept": {
+                    "type": "string",
+                    "description": "MIME accept filter for dropped files (default \"image/*\"). A trailing /* matches a whole type group."
+                  }
+                }
+              },
+              "mdPaste": {
+                "type": "boolean",
+                "default": false,
+                "description": "Adds a 'Paste Markdown' button to the blocks toolbar. It reads the clipboard, splits the Markdown into one block per heading (the heading line \u2192 the block's `heading` field, the section beneath it \u2192 its `body` field, kept as Markdown for the tool's {{markdown}} render), and appends the blocks - so a whole document lands as editable, page-flowing blocks. A block gets kind:'text' when the input has a `kind` discriminator; other fields start at their defaults."
+              },
+              "importData": {
+                "type": "object",
+                "description": "Lets the user populate the whole list from a CSV or JSON file (the ingest counterpart to CSV/JSON export). The shell offers an 'Import data' control; the engine (parseDataRows) maps columns onto these fields - by explicit `columns` map, else by matching each column header/key case-insensitively to a field's id then its label - and sets the input value. Data stays flat and serialises exactly like hand-entered blocks.",
+                "additionalProperties": false,
+                "properties": {
+                  "formats": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "csv",
+                        "json"
+                      ]
+                    },
+                    "description": "Accepted data formats. Defaults to both csv and json."
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "replace",
+                      "append"
+                    ],
+                    "default": "replace",
+                    "description": "Whether an import replaces the current rows or appends to them. Default replace."
+                  },
+                  "columns": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "description": "Explicit fieldId \u2192 source column/key overrides. Omit to auto-map by header (field id, then label). e.g. { \"value\": \"Amount\" }."
+                  }
+                }
+              },
+              "canvas": {
+                "type": "object",
+                "description": "Marks this blocks array as a free-form WYSIWYG canvas of positioned 'boxes' (requires render.layout:'editor'). The web shell mounts a direct-manipulation overlay - select, drag, resize, rotate, re-stack (z-order = array order, later rows paint on top), align and distribute - that reads and writes this flat array through the normal input path. The fields named below give the overlay the geometry to manipulate; every field remains an ordinary block sub-field, so the layout stays flat, URL-expressible, and renders identically headless (CLI/URL) with no overlay. Field ORDER in `fields` is the compact-URL wire format - never reorder or remove once shipped. CLOSED SET: unknown keys are rejected, because a typo'd `*Field` name is silently inert at runtime (the overlay reads a field nothing writes) - so the schema, not a bug report, has to catch it. Every `*Field` value must also name a real sub-field id in the SIBLING `fields` array; scripts/validate-catalog.ts enforces that half. Adding a key here is therefore a BREAKING change for older shells: the same schema is what engine/src/loader.ts validates a manifest against at load time, so a manifest carrying a key an older engine's copy does not list is refused whole, not partially ignored. Ship a new canvas key together with an `engineVersion` floor that names the engine which introduced it - the loader checks that range BEFORE validating, so an old shell reports the version, not a schema error.",
+                "additionalProperties": false,
+                "properties": {
+                  "idField": {
+                    "type": "string",
+                    "description": "Sub-field holding each box's stable id (used to track selection across re-stacking). Default 'id'."
+                  },
+                  "xField": {
+                    "type": "string",
+                    "description": "Number sub-field: box left, in canvas (native render) pixels. Default 'x'."
+                  },
+                  "yField": {
+                    "type": "string",
+                    "description": "Number sub-field: box top, in canvas pixels. Default 'y'."
+                  },
+                  "wField": {
+                    "type": "string",
+                    "description": "Number sub-field: box width, in canvas pixels. Default 'w'."
+                  },
+                  "hField": {
+                    "type": "string",
+                    "description": "Number sub-field: box height, in canvas pixels. Default 'h'."
+                  },
+                  "rotationField": {
+                    "type": "string",
+                    "description": "Number sub-field: clockwise rotation in degrees about the box centre. Default 'rot'."
+                  },
+                  "shapeField": {
+                    "type": "string",
+                    "description": "Select sub-field: box shape (e.g. rectangle/rounded/ellipse)."
+                  },
+                  "radiusField": {
+                    "type": "string",
+                    "description": "Number sub-field: corner radius in px (used when shape is rounded)."
+                  },
+                  "fillField": {
+                    "type": "string",
+                    "description": "Color sub-field: box background fill (empty = transparent)."
+                  },
+                  "gradField": {
+                    "type": "string",
+                    "description": "Text sub-field: a gradient fill as a Lolly gradient spec (kind_angle_colour-pos_colour-pos, e.g. lin_90_30ba78-0_efefef-100). Painted OVER the flat fill, so a translucent stop composites onto it; empty = no gradient. The hook lowers it through host.color.gradientCss, so an engine that predates that primitive degrades to the flat fill."
+                  },
+                  "opacityField": {
+                    "type": "string",
+                    "description": "Number sub-field: box opacity 0\u2013100."
+                  },
+                  "imageField": {
+                    "type": "string",
+                    "description": "Asset sub-field: image drawn inside the box."
+                  },
+                  "fitField": {
+                    "type": "string",
+                    "description": "Select sub-field: how the image fills the box (object-fit: cover/contain/fill)."
+                  },
+                  "imgPosField": {
+                    "type": "string",
+                    "description": "Select sub-field: CSS object-position anchor (which edge/corner a contained image sits against, or which part of a cover-cropped image stays in frame). Honoured in raster + SVG (preserveAspectRatio) + PDF export."
+                  },
+                  "blendField": {
+                    "type": "string",
+                    "description": "Select sub-field: CSS mix-blend-mode for the whole box (faithful in raster export; flattened in vector)."
+                  },
+                  "textField": {
+                    "type": "string",
+                    "description": "Text sub-field: text drawn inside the box."
+                  },
+                  "textColorField": {
+                    "type": "string",
+                    "description": "Color sub-field: text colour."
+                  },
+                  "fontSizeField": {
+                    "type": "string",
+                    "description": "Number sub-field: text size in px."
+                  },
+                  "alignField": {
+                    "type": "string",
+                    "description": "Select sub-field: horizontal text alignment (left/center/right)."
+                  },
+                  "valignField": {
+                    "type": "string",
+                    "description": "Select sub-field: vertical text alignment (top/middle/bottom)."
+                  },
+                  "weightField": {
+                    "type": "string",
+                    "description": "Select sub-field: text weight."
+                  },
+                  "fontField": {
+                    "type": "string",
+                    "description": "Select sub-field: text font family."
+                  },
+                  "lineHeightField": {
+                    "type": "string",
+                    "description": "Number sub-field: text line-height (unitless multiplier)."
+                  },
+                  "padField": {
+                    "type": "string",
+                    "description": "Number sub-field: inner padding in px between the box edge and its text."
+                  },
+                  "fitTextField": {
+                    "type": "string",
+                    "description": "Boolean sub-field: shrink the text until it fits inside the box (shrink-ONLY - never larger than the authored size). Off = the box is expected to grow to its text instead."
+                  },
+                  "groupField": {
+                    "type": "string",
+                    "description": "Text sub-field: id of the group this box belongs to (empty = ungrouped). Boxes sharing a group id move / scale / rotate together; purely an editor concept (no render effect)."
+                  },
+                  "clipField": {
+                    "type": "string",
+                    "description": "Text sub-field: id of another box whose shape clips this one (a clip-path mask). Faithful in raster + SVG export; flattened in PDF/EMF."
+                  },
+                  "pathField": {
+                    "type": "string",
+                    "description": "Text sub-field holding a VECTOR path box's authored path - the pen tool's own form (nodes + handles + spline kind), encoded as one delimiter-safe value by host.geom.encodeAuthored. Node coordinates are NORMALISED to the box frame (fractions of w/h, values outside 0..1 legal), so the ordinary move / resize / rotate gestures act on a path box through x/y/w/h/rot without rewriting a single node. Machine-written and machine-read only: the field carries showFor:[] so it never renders as a sidebar control. The tool's hook lowers it via host.geom.fromNodes and emits an inline <svg><path>, which vector-exports with no extra export code."
+                  },
+                  "strokeField": {
+                    "type": "string",
+                    "description": "Color sub-field: stroke paint for a path/box/image outline (empty = no stroke). Defaults to 'stroke' when the canvas omits it, so the overlay and the vector operations read the same sub-field."
+                  },
+                  "strokeWField": {
+                    "type": "string",
+                    "description": "Number sub-field: stroke width in canvas px. Default 'strokeW'."
+                  },
+                  "fillRuleField": {
+                    "type": "string",
+                    "description": "Select sub-field: a path's fill rule - nonzero or evenodd. Default 'fillRule'."
+                  },
+                  "strokeDashField": {
+                    "type": "string",
+                    "description": "Select sub-field: dash STYLE as a keyword ('' solid / dashed / dotted). The pattern is derived from the stroke width so it keeps its proportions when the width changes; an authored `strokeDashArrayField` wins over it. Default 'strokeDash'."
+                  },
+                  "strokeCapField": {
+                    "type": "string",
+                    "description": "Select sub-field: line cap - round, butt or square. Default 'strokeCap'."
+                  },
+                  "strokeJoinField": {
+                    "type": "string",
+                    "description": "Select sub-field: line join - round, miter or bevel. Default 'strokeJoin'."
+                  },
+                  "strokeDashArrayField": {
+                    "type": "string",
+                    "description": "Text sub-field: an AUTHORED dash pattern as SPACE-separated numbers in stroke-width units (\"6 4\" = a 6-long dash, a 4-long gap). A string, not a list, and space-separated rather than comma-separated, because one block sub-field is one scalar and a comma would split the compact blocks URL row. Set, it wins over the `strokeDashField` keyword. Default 'strokeDashArray'."
+                  },
+                  "dashFitField": {
+                    "type": "string",
+                    "description": "Boolean sub-field: stretch the authored dash pattern slightly so a whole number of dashes fits between each corner and each end of the path (Illustrator's corner-aligned dashes) instead of a half dash landing on a corner. Applied by the tool's hook. Default 'dashFit'."
+                  },
+                  "headStartField": {
+                    "type": "string",
+                    "description": "Select sub-field: the decoration drawn at the path's FIRST point, along that end's own tangent - none \u00b7 triangle \u00b7 open \u00b7 circle \u00b7 diamond \u00b7 bar. Same vocabulary as the connector heads, because a spline, a line and a connector are one primitive carrying one decoration set. Default 'headStart'."
+                  },
+                  "headEndField": {
+                    "type": "string",
+                    "description": "Select sub-field: the same decoration at the path's LAST point. Default 'headEnd'."
+                  },
+                  "bindStartField": {
+                    "type": "string",
+                    "description": "Text sub-field: the id of the box this path's FIRST point is attached to, '' for a free end. Machine-written by the bind gesture (carries showFor:[]), never typed; a bound end is what hands the path to connector routing. Default 'bindStart'."
+                  },
+                  "bindEndField": {
+                    "type": "string",
+                    "description": "Text sub-field: the same binding for the path's LAST point. Default 'bindEnd'."
+                  },
+                  "routeField": {
+                    "type": "string",
+                    "description": "Select sub-field: how a path with a BOUND end routes between its boxes (straight, elbow-*, curved-*, arc-*). '' = auto, read off the path's own spline kind - the explicit value exists because six spline kinds cannot name the engine's thirteen routes. Default 'route'."
+                  },
+                  "pathLayerClass": {
+                    "type": "string",
+                    "description": "Class the tool's hook puts on its committed BOUND-PATH <svg> layer. The overlay hides that layer for the duration of a drag so the live preview doesn't double up with the stale committed one - only the manifest knows what its own hook emits. Default 'lolly-connectors'."
+                  },
+                  "trackingField": {
+                    "type": "string",
+                    "description": "Number sub-field: letter-spacing in px."
+                  },
+                  "ligaturesField": {
+                    "type": "string",
+                    "description": "Boolean sub-field: enable common ligatures."
+                  },
+                  "alternatesField": {
+                    "type": "string",
+                    "description": "Boolean/select sub-field: stylistic alternates."
+                  },
+                  "shadowField": {
+                    "type": "string",
+                    "description": "SELECT sub-field (not a Boolean - a shadow has a target, and the value names it): 'none' \u00b7 'box' (the frame's own silhouette, a box-shadow) \u00b7 'text' (the type only, a text-shadow) \u00b7 'content' (the artwork's alpha silhouette, a filter: drop-shadow). The vocabulary is additive: a depth-capable tool may extend it with 'depth', whose offset/blur are DERIVED from the box's `zField` rather than authored. Whatever the value, the x/y/blur/colour sub-fields below supply the geometry."
+                  },
+                  "shadowColorField": {
+                    "type": "string",
+                    "description": "Color sub-field: drop-shadow colour."
+                  },
+                  "shadowXField": {
+                    "type": "string",
+                    "description": "Number sub-field: drop-shadow x offset in px."
+                  },
+                  "shadowYField": {
+                    "type": "string",
+                    "description": "Number sub-field: drop-shadow y offset in px."
+                  },
+                  "shadowBlurField": {
+                    "type": "string",
+                    "description": "Number sub-field: drop-shadow blur radius in px."
+                  },
+                  "zField": {
+                    "type": "string",
+                    "description": "Number sub-field: the box's DEPTH - how far it sits in front of (positive) or behind (negative) the stage plane, in canvas px. Layers stay parallel to the screen, so a camera turns z into a per-layer uniform scale + translate (parallax, push-in, depth-of-field) and the render stays affine end-to-end. Absent field or 0 = the flat, unlifted board; the authored slider runs 0\u2013300 and the value clamps to \u2212300\u2026900."
+                  },
+                  "rxField": {
+                    "type": "string",
+                    "description": "Number sub-field: the box's own PITCH in degrees - it leans out of the stage plane about its own horizontal axis, pivoting on its centre. Unlike zField (which keeps every layer parallel to the screen and stays affine), a tilt is projective: the box gets its own vanishing point at the scene perspective, and it composes with a tilted camera as a product of homographies, not as a world-space rotation of the plate. Absent field or 0 = flat, and the whole render path stays byte-identical to the untilted one."
+                  },
+                  "ryField": {
+                    "type": "string",
+                    "description": "Number sub-field: the box's own YAW in degrees, the companion to rxField. Applied BEFORE the pitch (R = Ry\u00b7Rx, the pan/tilt-head order the camera channels already use), so a box wearing both angles never acquires roll - a third channel the wire does not have."
+                  },
+                  "startField": {
+                    "type": "string",
+                    "description": "Number sub-field: when this box appears, in SECONDS from the start of the sequence. Empty = the box is 'scenery' (always visible). Timing is inert unless a shell mounts a timeline panel; static exports ignore it."
+                  },
+                  "durField": {
+                    "type": "string",
+                    "description": "Number sub-field: how long the box stays visible, in SECONDS. Empty = runs to the end of the sequence."
+                  },
+                  "clipInField": {
+                    "type": "string",
+                    "description": "Number sub-field: trim in-point WITHIN the box's own media (video/lottie/audio), in SECONDS from the media's start. Ignored for non-media boxes."
+                  },
+                  "speedField": {
+                    "type": "string",
+                    "description": "Number sub-field: media playback rate multiplier (1 = normal). Affects how much source media a given timeline duration consumes."
+                  },
+                  "enterField": {
+                    "type": "string",
+                    "description": "Select sub-field: named animate-in preset played at the box's start (e.g. fade, rise, pop; 'none' disables). Presets are shell-rendered; no keyframes are authored."
+                  },
+                  "exitField": {
+                    "type": "string",
+                    "description": "Select sub-field: named animate-out preset played at the box's end (e.g. fade, rise, pop; 'none' disables). Presets are shell-rendered; no keyframes are authored."
+                  },
+                  "enterMsField": {
+                    "type": "string",
+                    "description": "Number sub-field: duration of the enter preset, in MILLISECONDS."
+                  },
+                  "exitMsField": {
+                    "type": "string",
+                    "description": "Number sub-field: duration of the exit preset, in MILLISECONDS."
+                  },
+                  "enterEaseField": {
+                    "type": "string",
+                    "description": "String sub-field: the timing curve the enter preset's GEOMETRY follows - a preset name (linear, ease-out, ease-in, ease-in-out, overshoot, anticipate) or a CSS cubic-bezier(a,b,c,d). Empty = the preset's own built-in curve. Opacity is deliberately not governed by it: a fade that tracks a slow curve turns to mud under video compression, so alpha keeps its fixed ramp."
+                  },
+                  "exitEaseField": {
+                    "type": "string",
+                    "description": "String sub-field: the same curve control for the exit preset. Same wire format, same geometry-only reach."
+                  },
+                  "muteField": {
+                    "type": "string",
+                    "description": "Boolean sub-field: silence this box's own audio track when the sequence is mixed."
+                  },
+                  "gainField": {
+                    "type": "string",
+                    "description": "Number sub-field: this box's audio level when the sequence is mixed (1 = as recorded, 0 = silent, up to 2 = boosted). Machine-written by the timeline inspector, so the sub-field carries showFor:[]. Absent or empty reads as unity gain."
+                  },
+                  "panField": {
+                    "type": "string",
+                    "description": "Number sub-field: this box's stereo position when the sequence is mixed (-1 = left, 0 = centred, 1 = right; equal-power). Machine-written by the timeline inspector's Pan row, so the sub-field carries showFor:[]. Absent or empty reads as centred."
+                  },
+                  "duckField": {
+                    "type": "string",
+                    "description": "Number sub-field: the level 0..1 this audio box drops to while any other clip's audio plays (clip-presence ducking; 1 or empty = no duck). Machine-written by the timeline inspector, so the sub-field carries showFor:[]."
+                  },
+                  "pitchField": {
+                    "type": "string",
+                    "description": "Number sub-field: transpose this clip's audio in semitones (-12..12, formants preserved; 0 or empty = as recorded). Works at any speed. Machine-written by the timeline inspector's Pitch row, so the sub-field carries showFor:[]."
+                  },
+                  "varispeedField": {
+                    "type": "string",
+                    "description": "Boolean sub-field: when true a speed-changed clip plays tape-style (pitch follows speed) instead of pitch-preserved. Absent or empty = preserve pitch, the editor default. Machine-written by the timeline inspector, so the sub-field carries showFor:[]."
+                  },
+                  "fxField": {
+                    "type": "string",
+                    "description": "Text sub-field: this clip's audio effect chain in the engine's append-only fx grammar (dot-joined name(params) entries, e.g. hp(90).rv(20-35); unknown entries skipped, never an error; empty = none). The inspector's Effect presets write the EXPANDED chain, so a later preset re-tune never changes a shared link's sound. Machine-written, so the sub-field carries showFor:[]."
+                  },
+                  "ignoredField": {
+                    "type": "string",
+                    "description": "Boolean sub-field: the reversible-cut / strikethrough flag (transcript-driven editing, plans/174). A true value keeps the box's media and its place on the timeline but skips it on playback and drops it from export - the dual of a hard delete. Machine-written by the transcript panel, so the sub-field carries showFor:[]. Absent reads as not-ignored."
+                  },
+                  "linkField": {
+                    "type": "string",
+                    "description": "String sub-field: the id of the box this one is A/V-linked to (written on BOTH sides when audio is detached from a video). Absent or naming a missing box reads as unlinked."
+                  },
+                  "labelField": {
+                    "type": "string",
+                    "description": "Text sub-field: the user's own name for this box on the timeline - shown on its clip bar in place of the derived text/media label. Machine-written by the timeline (double-click or context-menu rename), so the sub-field carries showFor:[]. Absent or empty falls back to the derived label."
+                  },
+                  "laneField": {
+                    "type": "string",
+                    "description": "Select sub-field: '' places the box on a free overlay lane; 'seq' places it on the magnetic main sequence row, where clips are kept gapless and edits ripple."
+                  },
+                  "kfField": {
+                    "type": "string",
+                    "description": "Text sub-field: the box's KEYFRAME TRACK - its whole authored animation as one compact, delimiter-safe string (times in ms, per-channel values at the pinned quanta, per-segment easing). Machine-written by the timeline, so the sub-field carries showFor:[] and never renders as a sidebar control. Absent or empty = the box is not keyframed and every keyframe path is inert for it."
+                  },
+                  "splitField": {
+                    "type": "string",
+                    "description": "Select sub-field: the text-animation SPLIT TIER ('' whole text, 'word', 'line', 'letter') - the box's Animate in/out runs per unit with a stagger instead of as one block (plans/175 WP-A). Absent = the tool offers no text animation and every split path is inert."
+                  },
+                  "staggerField": {
+                    "type": "string",
+                    "description": "Number sub-field: the start-to-start gap between text units, ms (0-2000). Only read when splitField names a tier."
+                  },
+                  "splitOrderField": {
+                    "type": "string",
+                    "description": "Select sub-field: the order text units animate in ('' first-to-last, 'reverse', 'center', 'random'). Random deals from a seed hashed off the box id so preview, export and shared URLs shuffle identically."
+                  },
+                  "holdField": {
+                    "type": "string",
+                    "description": "Select sub-field: the HOLD effect ('' still, 'pulse', 'bob', 'sway', 'flicker') - a small deterministic looping motion while the box is on screen (plans/175 WP-B). Absent = the tool offers no hold effect and every hold path is inert."
+                  },
+                  "holdRateField": {
+                    "type": "string",
+                    "description": "Number sub-field: the hold motion's rate, cycles per second (0.2-4). Only read when holdField names an effect."
+                  },
+                  "frameField": {
+                    "type": "string",
+                    "description": "Text sub-field: the id of the FRAME (page/artboard container) box this box belongs to; '' = it sits on the open board. Declaring it turns on the frame primitive - the overlay drives gestures in frame-local space via each frame's DOM offset, and re-buckets a moved/created/resized box into whichever frame its centre lands in on drop. Absent leaves every frame-aware path dead (byte-identical to a frameless editor)."
+                  },
+                  "frameKind": {
+                    "type": "string",
+                    "description": "NOT a field name: the literal `kind` VALUE that marks a box as a frame rather than ordinary content (e.g. 'frame'). Frames render as free-placed [data-pdf-page] pages at their authored x/y."
+                  },
+                  "orderField": {
+                    "type": "string",
+                    "description": "Number sub-field on a FRAME box: its page order in a multi-page export. Read by the tool's hook; the overlay's frame-reorder control writes it. Absent = no reorder affordance."
+                  },
+                  "clipChildrenField": {
+                    "type": "string",
+                    "description": "Boolean sub-field on a FRAME box: whether content overflowing the frame is clipped to it. Absent = the overlay offers no clip toggle."
+                  },
+                  "hiddenField": {
+                    "type": "string",
+                    "description": "Boolean sub-field on ANY box: the layer is hidden - not drawn and not exported. The tool's hook skips a hidden row everywhere it walks the boxes; the overlay refuses to hit-test one. Absent = no hide affordance."
+                  },
+                  "lockedField": {
+                    "type": "string",
+                    "description": "Boolean sub-field on ANY box: the layer is locked - the overlay refuses to select or move it on the canvas. Editor-only: it changes no rendered pixel and no export. Absent = no lock affordance."
+                  },
+                  "frameTransitionField": {
+                    "type": "string",
+                    "description": "Select sub-field on a FRAME box: how THIS slide changes into the next one, overriding the document's own transition. Empty follows the document. Absent = every slide uses the document transition."
+                  },
+                  "minSize": {
+                    "type": "number",
+                    "description": "Smallest box width/height the overlay will create or resize to, in canvas px. Default 8."
+                  },
+                  "addKinds": {
+                    "type": "array",
+                    "description": "The kinds of box the 'add' tool offers. Each entry seeds a new box's fields (id excluded - the shell assigns it).",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "id"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "Kind id (also the default select value of the shape/kind field if present)."
+                        },
+                        "label": {
+                          "type": "string",
+                          "description": "Menu label."
+                        },
+                        "icon": {
+                          "type": "string",
+                          "description": "Optional inline SVG or glyph for the menu entry."
+                        },
+                        "seed": {
+                          "type": "object",
+                          "description": "Field values a newly-added box of this kind starts at (merged over the block's declared defaults).",
+                          "additionalProperties": true
+                        }
+                      }
+                    }
+                  },
+                  "import": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "Opt into design-file IMPORT on this canvas: the editor's Lolly menu gains an 'Import a design' entry that maps an imported file's frames/shapes onto boxes of THIS array, using the tool's own font-select values and addKinds seed colours so the result is indistinguishable from natively-authored boxes. Absent (Design's historical state) = no import control at all.",
+                    "properties": {
+                      "formats": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "The design formats this canvas advertises accepting (today: svg, penpot, pdf, ai, idml). Documents intent for the import panel; the engine's importer is the authority on what it can actually parse."
+                      },
+                      "mode": {
+                        "type": "string",
+                        "enum": [
+                          "scenes"
+                        ],
+                        "description": "'scenes' (Sequence Studio): an imported design's frames land as timed clips APPENDED to the main sequence instead of replacing the canvas. Requires the full time model to be mapped; omit for editors whose import replaces the board."
+                      }
+                    }
+                  },
+                  "connect": {
+                    "type": "object",
+                    "required": [
+                      "input"
+                    ],
+                    "additionalProperties": false,
+                    "description": "Opt into connector authoring (Org Chart): a SECOND blocks input holding {from,to} edges between boxes, plus a 'Connect' rail mode to author them (click a source card, then targets). The overlay reads/writes that array and draws a live preview; the tool's hooks.js owns the real routed geometry. Absent = the editor's toolbar and gestures are unchanged.",
+                    "properties": {
+                      "input": {
+                        "type": "string",
+                        "description": "id of the blocks input storing the connector edges. Its sub-fields - not this canvas's `fields` - are what the *Field names below refer to."
+                      },
+                      "fromField": {
+                        "type": "string",
+                        "description": "Edge sub-field holding the SOURCE box id. Default 'from'."
+                      },
+                      "toField": {
+                        "type": "string",
+                        "description": "Edge sub-field holding the TARGET box id. Default 'to'."
+                      },
+                      "styleField": {
+                        "type": "string",
+                        "description": "Edge sub-field: route style (elbow, straight, curved \u2026)."
+                      },
+                      "arrowField": {
+                        "type": "string",
+                        "description": "Edge sub-field: which ENDS carry an arrowhead (none/end/both)."
+                      },
+                      "headField": {
+                        "type": "string",
+                        "description": "Edge sub-field: arrowhead SHAPE (triangle/open/circle/diamond/bar) - same vocabulary as the path decorations."
+                      },
+                      "colorField": {
+                        "type": "string",
+                        "description": "Edge sub-field: line colour."
+                      },
+                      "dashField": {
+                        "type": "string",
+                        "description": "Edge sub-field: dash style keyword."
+                      },
+                      "widthField": {
+                        "type": "string",
+                        "description": "Edge sub-field: line width in canvas px."
+                      },
+                      "layerClass": {
+                        "type": "string",
+                        "description": "Class of the tool's rendered connector <svg>, hidden mid-drag so the live preview doesn't double up with the committed one. Default 'oc-connectors'."
+                      },
+                      "defaultStyle": {
+                        "type": "string",
+                        "description": "Route style a newly-authored edge starts at. Default 'elbow'."
+                      },
+                      "defaultArrow": {
+                        "type": "string",
+                        "description": "Arrow ends a newly-authored edge starts at. Default 'end'."
+                      },
+                      "defaultHead": {
+                        "type": "string",
+                        "description": "Arrowhead shape a newly-authored edge starts at. Default 'triangle'."
+                      },
+                      "defaultColor": {
+                        "type": "string",
+                        "description": "Line colour a newly-authored edge starts at. Default '#94a3b8'."
+                      },
+                      "defaultWidth": {
+                        "type": "number",
+                        "description": "Line width a newly-authored edge starts at. Default 2.5."
+                      }
+                    }
+                  },
+                  "grid": {
+                    "type": "object",
+                    "description": "Opt into snap-to-grid: the overlay rounds drag/resize to this lattice (per-axis alignment smart-guides still win; Alt disables).",
+                    "properties": {
+                      "size": {
+                        "type": "number",
+                        "description": "Grid step in canvas px."
+                      },
+                      "default": {
+                        "type": "boolean",
+                        "description": "Whether snap-to-grid starts on."
+                      }
+                    }
+                  },
+                  "fixedCanvas": {
+                    "type": "boolean",
+                    "description": "Lock the canvas to render.width/height: the shell withholds setCanvasSize and ignores reserved ?width/?height, so box coordinates stay 1:1 with the render size (required when a hook draws into a fixed-viewBox overlay, e.g. connectors)."
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "vector"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "fields"
+            ],
+            "properties": {
+              "fields": {
+                "type": "array",
+                "minItems": 1,
+                "description": "Numeric sub-fields, each a labelled Figma-style scrubber. Stored as one compound value { fieldId: number } and rendered as a single control / column.",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "id"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "symbol": {
+                      "type": "string",
+                      "description": "Single character shown inside the field as its scrub handle (e.g. \"+\" for zoom). Defaults to the first letter of the label."
+                    },
+                    "min": {
+                      "type": "number"
+                    },
+                    "max": {
+                      "type": "number"
+                    },
+                    "step": {
+                      "type": "number"
+                    },
+                    "default": {
+                      "type": "number"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "exampleVariant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "values"
+      ],
+      "description": "One example look: a set of input values (and optionally the UI theme it suits) rendered live to demonstrate the tool.",
+      "properties": {
+        "label": {
+          "type": "string",
+          "description": "Short human label for this look (not shown to end users; documents the intent)."
+        },
+        "theme": {
+          "type": "string",
+          "enum": [
+            "light",
+            "dark"
+          ],
+          "description": "Which UI theme this look suits - set only on looks that render ink on a TRANSPARENT background (e.g. a reverse/white logo). 'dark' looks show on the dark/SUSE themes, 'light' looks on the light theme; the clashing look is filtered out so it's never near-invisible on the tile. Omit for looks that bake their own background (shown on any theme)."
+        },
+        "values": {
+          "type": "object",
+          "description": "Map of input id -> value seeded into the render - the same shape URL params resolve to. Scalar inputs (select/color/text/number/boolean/url) plus block arrays (e.g. chart data, badge tracks - an array of field objects) are supported; rely on the tool's default for asset inputs unless referencing a catalog asset id."
+        }
+      }
+    },
+    "templateVariant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name"
+      ],
+      "description": "One named starting point in the \"New from template\" chooser: an id, a display name, and (in the external per-template file) a full input seed. Two shapes validate against this def: the EXTERNAL file tools/<id>/templates/<tid>.json, which carries `values`; and the METADATA-ONLY entry the synced index carries, which strips `values` (hence `values` is optional). Like an exampleVariant's `values` but read directly into a fresh session rather than rendered as an illustrative preview.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable id, unique within this tool's `templates[]`. Addressable via the reserved `?template=<id>` param, so treat it as a permanent contract like a tool/asset id."
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name shown on the chooser tile."
+        },
+        "description": {
+          "type": "string",
+          "description": "Optional one-line description shown under the name on the tile."
+        },
+        "category": {
+          "type": "string",
+          "description": "Optional grouping label; tiles sharing a category are grouped together in the chooser."
+        },
+        "thumb": {
+          "type": "string",
+          "description": "Optional thumbnail: a tool-relative asset path or data URI. Absent \u2192 the chooser draws a glyph tile."
+        },
+        "motion": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "collection",
+            "recipe",
+            "durationMs",
+            "posterMs",
+            "beats"
+          ],
+          "properties": {
+            "collection": {
+              "type": "string",
+              "minLength": 1
+            },
+            "recipe": {
+              "type": "string",
+              "minLength": 1
+            },
+            "durationMs": {
+              "type": "number",
+              "minimum": 800,
+              "maximum": 30000
+            },
+            "posterMs": {
+              "type": "number",
+              "minimum": 0
+            },
+            "beats": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 160
+              }
+            }
+          }
+        },
+        "values": {
+          "type": "object",
+          "description": "Map of input id -> value read directly into the fresh session - the same shape URL params resolve to, and the same shape a `default` composition uses. Authored in the EXTERNAL per-template file tools/<id>/templates/<tid>.json (not the synced index, which carries metadata only). Any size (a free-canvas `boxes` array can be many KB), because it is fetched on demand and seeded in-process, never serialised into a URL."
+        },
+        "presets": {
+          "type": "array",
+          "description": "Curated variants INSIDE this template - each one a values overlay merged over the template's base `values` (shallow, per input id, the preset wins). Deep-linked as `?template=<tid>&preset=<pid>`. Same two shapes as the template itself: the external file carries each overlay's `values`, the synced index carries id/name/description only.",
+          "items": {
+            "$ref": "#/$defs/templatePreset"
+          }
+        }
+      }
+    },
+    "templatePreset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name"
+      ],
+      "description": "One curated variant of a template: a values overlay merged over the template base.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable id, unique within this template's `presets[]`. Addressable via the reserved `?preset=<id>` param, so treat it as a permanent contract."
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name shown on the preset chip."
+        },
+        "description": {
+          "type": "string",
+          "description": "Optional one-line description shown beside the name."
+        },
+        "values": {
+          "type": "object",
+          "description": "The overlay merged over the template's base `values` - only the input ids this variant changes, each carrying a FULL replacement value (a blocks array is replaced whole, never merged element-wise). Lives in the external template file; the synced index strips it."
+        }
+      }
+    }
+  }
+}

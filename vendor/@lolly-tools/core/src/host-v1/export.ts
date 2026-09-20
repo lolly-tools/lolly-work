@@ -44,6 +44,8 @@ export interface ExportPackSpec {
 }
 
 export interface ExportAPI {
+  /** Measure declared text layout before export. Unavailable hosts must report it. */
+  checkLayout?(node: Element): Promise<{ ok: boolean; issues: string[] }>;
   /**
    * Export a DOM node (the tool's render target) to a format.
    * The host owns the renderer (html-to-image, dom-to-svg, pdf-lib, etc.) so

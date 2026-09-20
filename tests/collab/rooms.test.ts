@@ -192,3 +192,13 @@ test('a departed member drops out of the admin snapshot immediately', async () =
   room.leave(seat.id);
   assert.equal(room.snapshotForAdmin().memberCount, 0);
 });
+
+
+test('seeded row identity is a collection key, not a mutable field', async () => {
+  const room = await Room.open(sessionOf({ boxes: [{ id: 'shape', x: 10, label: 'kept' }] }));
+  const row = room.snapshot().collections?.boxes?.boxes?.shape;
+  assert.ok(row);
+  assert.equal(Object.hasOwn(row, 'id'), false);
+  assert.equal(row.x, 10);
+  assert.equal(row.label, 'kept');
+});

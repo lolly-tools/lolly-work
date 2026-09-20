@@ -198,6 +198,7 @@ function textEl(n: PdfNode): string {
     ? ` font-family="${escapeXml(family)}, sans-serif"`
     : ` font-family="sans-serif"`;
   const weight = n.fontWeight != null && n.fontWeight !== '' ? ` font-weight="${escapeXml(String(n.fontWeight))}"` : '';
+  const tracking = n.tracking ? ` letter-spacing="${r(n.tracking)}"` : '';
   // Text rotates about its PDF anchor (the first line's origin), not the box centre.
   const rot = n.rot ? ` transform="rotate(${r(n.rot)} ${r(n.x)} ${r(baseline0)})"` : '';
   const spans = text.split('\n').map((line, i) =>
@@ -205,7 +206,7 @@ function textEl(n: PdfNode): string {
   // `opacityAttr` like every other element builder: text was the ONE that omitted it,
   // so a muted or secondary label (PDF `/ca`, or a soft mask folded to a constant)
   // rendered at full strength, which reads as the wrong colour, not as slightly off.
-  return `<text xml:space="preserve" fill="${safeAttrColor(n.fg, '#000000')}" font-size="${r(size)}"${familyAttr}${weight}${opacityAttr(n)}${rot}>${spans}</text>`;
+  return `<text xml:space="preserve" fill="${safeAttrColor(n.fg, '#000000')}" font-size="${r(size)}"${familyAttr}${weight}${tracking}${opacityAttr(n)}${rot}>${spans}</text>`;
 }
 
 // Gradient coords/matrix carry more meaningful precision than the 2-dp `r` used

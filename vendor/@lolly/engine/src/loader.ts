@@ -81,6 +81,7 @@ export type ToolTrustClass =
 
 /** A normalised, loaded tool: everything the runtime needs to mount it. */
 export interface LoadedTool {
+  artifactDigest?: string;
   /** Host-assigned execution class; always populated by {@link loadTool}. */
   trustClass: ToolTrustClass;
   manifest: ToolManifest;
@@ -393,7 +394,7 @@ export async function loadTool(toolId: string, fetchFile: ToolFetchFile, opts: L
   // left unexpanded on purpose (see engine/src/derived-formats.ts). After schema
   // validation, so the added ids never have to be in the schema's formats enum.
   if (manifest.render?.formats) {
-    manifest.render.formats = expandDerivedFormats(manifest.render.formats);
+    manifest.render.formats = manifest.designTool ? [...manifest.designTool.formats] : expandDerivedFormats(manifest.render.formats);
   }
   const declared = manifest.render?.formats ?? [];
   // Sibling text templates for data formats (template.ics / .vcf / .csv / .srt /

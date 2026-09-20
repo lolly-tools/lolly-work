@@ -113,6 +113,7 @@ export interface RenderDeps {
 }
 
 export interface RenderRequest {
+  signal?: AbortSignal;
   toolId: string;
   format: string;
   /** URL-mode query string (no leading '?'), the shared param contract. */
@@ -166,6 +167,7 @@ function queryFromValues(values: Record<string, unknown>): string {
 }
 
 export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<RenderOutput> {
+  req.signal?.throwIfAborted();
   // 'jpeg' is the same format as 'jpg' everywhere downstream (the worker
   // normalises too) - fold it before the gate so both spellings behave alike.
   const format = req.format.toLowerCase() === 'jpeg' ? 'jpg' : req.format.toLowerCase();
@@ -180,6 +182,7 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
   }
 
   const engine = await loadEngine();
+  req.signal?.throwIfAborted();
   const pack = deps.config.instance.pack;
   const observer = deps.captureEvidence ? createAssetObserver() : undefined;
   const resolvedProviders = new Map<string, Promise<HostedAssetResult | null>>();
@@ -298,13 +301,22 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
         `LW_RENDER_WORKER_SECRET for the Chromium worker - see docs/configuration.md)`);
     }
     try {
+      const readable = queryFromValues(bakedValues);
+      const packed = readable.length > 4096 ? await engine.packQuery(readable) : null;
+      const query = packed && packed.length + 2 < readable.length ? `z=${packed}` : readable;
+      // The worker navigates through ordinary HTTP servers/proxies. Bound the
+      // navigation before handing it off, including an incompressible document.
+      if (Buffer.byteLength(query) > 8 * 1024) {
+        throw new RenderError('RENDER_INPUT_TOO_LARGE', 413, 'document exceeds the browser navigation budget after packing');
+      }
+      req.signal?.throwIfAborted();
       svgStr = await renderViaWorker(deps.worker, {
         toolId: req.toolId,
-        query: queryFromValues(bakedValues),
+        query,
         overrides: {},
         format: 'svg',
         profile: req.profile,
-      });
+      }, { signal: req.signal });
     } catch (e) {
       if (e instanceof WorkerError) throw renderErrorFromWorker(e);
       throw e;
@@ -313,6 +325,7 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
     svgStr = await withRenderHost({ pack, profile: req.profile, hostedResolver,
       ...(observer ? { observeCatalogAsset: (asset, bytes) => observer.observe('catalog', asset, bytes) } : {}),
     }, async (dom, host) => {
+      req.signal?.throwIfAborted();
       // Manifest `requires` (engine 1.183): the optional host.* APIs the hooks
       // call unguarded. The engine refuses the mount when one is absent; say so
       // as a 501 with the API named, like the hooked-tool refusal, instead of a
@@ -387,7 +400,7 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
     let raster: { bytes: Uint8Array; mime: string };
     if (deps.worker && !LEGACY_RESVG) {
       try {
-        raster = await rasteriseViaWorker(deps.worker, { svg: svgStr, format, ...(pxW ? { width: pxW } : {}) });
+        raster = await rasteriseViaWorker(deps.worker, { svg: svgStr, format, ...(pxW ? { width: pxW } : {}) }, { signal: req.signal });
       } catch (e) {
         if (e instanceof WorkerError) throw renderErrorFromWorker(e);
         throw e;

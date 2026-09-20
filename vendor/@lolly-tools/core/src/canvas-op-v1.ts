@@ -375,7 +375,8 @@ export function damageToOps(
     }
     // A field removed from the row reads as clearing it to null (content lane).
     for (const field of Object.keys(prevRow)) {
-      if (seen.has(field)) continue;
+      // A previous clear leaves a null register; omitting it again is no edit.
+      if (seen.has(field) || prevRow[field] === null) continue;
       if (laneForField(field, geomFields) === 'geometry') {
         geom[field as GeometryField] = Number(prevRow[field]);
         geomChanged = true;

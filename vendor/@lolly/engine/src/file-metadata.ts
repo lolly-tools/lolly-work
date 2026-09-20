@@ -2,7 +2,7 @@
 // ─── Embedded-metadata reader ────────────────────────────────────────────────
 //
 // Reads the metadata a file *carries* - EXIF, GPS, XMP, PNG text chunks, SVG
-// authoring data - straight from its bytes, with no DOM and no dependencies.
+// authoring data - straight from its bytes, with no DOM.
 // This extracts the hidden data a file discloses about the device, person,
 // place, and software that created it. The /verify view shows this to a
 // viewer so they see exactly what they would be sharing.
@@ -18,6 +18,9 @@
 
 import { aiKind } from './ai-kind.ts';
 import { JPEG_APP_IDS, scanJpegSegments } from './jpeg-segments.ts';
+import { unzlibSync } from 'fflate';
+import { xmlProvenanceFields } from './software-origin.ts';
+import { auxiliaryMetadata, type AuxiliaryMetadata } from './auxiliary-metadata.ts';
 
 export type MetaGroup =
   | 'location'
@@ -43,6 +46,10 @@ export interface MetaField {
   group: MetaGroup;
   /** Personally identifying (GPS, serials, author names) - flagged for the viewer. */
   sensitive?: boolean;
+  /** The metadata field or container marker that supplied this value. */
+  source?: string;
+  /** A comment or editor marker is a hint, rather than an explicit software field. */
+  signal?: 'hint';
 }
 
 export interface FileMetadata {
@@ -83,7 +90,7 @@ export interface FileMetadata {
    * case" from `kind`, which is how the verify view's warning pip and this
    * module's `sensitive` flag drifted apart.
    */
-  appended?: { bytes: number; kind: string; offset: number; declared?: boolean };
+  appended?: { bytes: number; kind: string; offset: number; declared?: boolean; metadata?: AuxiliaryMetadata };
   /**
    * LSB steganalysis verdict - populated by pixel-capable SHELLS (the analysis
    * is pixel-domain, engine/src/steganalysis.ts; this byte reader can't decode
@@ -140,6 +147,7 @@ function sniff(b: Uint8Array): string {
       (b[0] === 0x4d && b[1] === 0x4d && b[2] === 0x00 && b[3] === 0x2a)) return 'TIFF';
   if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
       b.length >= 12 && b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return 'WebP';
+  if (b.length >= 12 && matchAscii(b, 0, 'RIFF') && matchAscii(b, 8, 'WAVE')) return 'WAV';
   // ISO BMFF - an ftyp box first. HEIF-family stills (HEIC, AVIF) are told
   // apart by brand: their metadata lives in `meta` box ITEMS, not a moov tree.
   if (b.length >= 12 && matchAscii(b, 4, 'ftyp')) {
@@ -360,17 +368,13 @@ function readXmp(text: string, out: FileMetadata): void {
     const t = clip((m[1] || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim());
     return t || null;
   };
-  const tool = grab(/xmp:CreatorTool>\s*([\s\S]*?)<\/xmp:CreatorTool>/i)
-    || grab(/xmp:CreatorTool=["']([^"']+)["']/i);
-  if (tool && !out.fields.some((f) => f.group === 'software' && f.value === tool)) {
-    out.fields.push({ label: 'Created with', value: tool, group: 'software' });
-  }
+  out.fields.push(...xmlProvenanceFields(text));
   const creator = grab(/<dc:creator>[\s\S]*?<rdf:li[^>]*>([\s\S]*?)<\/rdf:li>/i)
     || grab(/<dc:creator>([\s\S]*?)<\/dc:creator>/i);
-  if (creator) out.fields.push({ label: 'Creator', value: creator, group: 'authorship', sensitive: true });
+  if (creator && !out.fields.some((f) => f.label === 'Creator')) out.fields.push({ label: 'Creator', value: creator, group: 'authorship', sensitive: true });
   const rights = grab(/<dc:rights>[\s\S]*?<rdf:li[^>]*>([\s\S]*?)<\/rdf:li>/i)
     || grab(/<dc:rights>([\s\S]*?)<\/dc:rights>/i);
-  if (rights) out.fields.push({ label: 'Rights', value: rights, group: 'authorship' });
+  if (rights && !out.fields.some((f) => f.label === 'Rights')) out.fields.push({ label: 'Rights', value: rights, group: 'authorship' });
 
   // dc:subject keywords - the DAM payoff (plans/144 Wave 5): a photo's own
   // embedded keywords, later folded into catalog search.
@@ -673,13 +677,17 @@ function fmtBytes(n: number): string {
  * it. `null` means "nothing in the file accounts for these bytes" - which is the
  * condition that earns the `sensitive` flag, not the mere presence of a trailer.
  */
-function describeDeclaredImage(bytes: Uint8Array, off: number): { kind: string; gainMap: boolean } | null {
+function describeDeclaredImage(bytes: Uint8Array, off: number): { kind: string; gainMap: boolean; metadata?: AuxiliaryMetadata } | null {
   const idx = readMpfIndex(bytes);
   if (!idx) return null;
-  if (!idx.images.some((im, i) => i > 0 && im.start === off)) return null;
-  return idx.gainMap
-    ? { kind: 'HDR gain map (ISO 21496-1 / Ultra HDR)', gainMap: true }
-    : { kind: 'second image (MPF multi-picture)', gainMap: false };
+  const image = idx.images.find((im, i) => i > 0 && im.start === off);
+  if (!image) return null;
+  const packet = extractXmpPacket(bytes.subarray(image.start, image.start + image.length));
+  return {
+    kind: idx.gainMap ? 'HDR gain map (ISO 21496-1 / Ultra HDR)' : 'second image (MPF multi-picture)',
+    gainMap: idx.gainMap,
+    ...(packet ? { metadata: auxiliaryMetadata(packet, idx.gainMap) } : {}),
+  };
 }
 
 // Record a trailing payload of `len` bytes starting at `off`.
@@ -688,7 +696,7 @@ function noteAppended(bytes: Uint8Array, off: number, out: FileMetadata): void {
   if (len <= 0) return;
   const declared = describeDeclaredImage(bytes, off);
   const kind = declared ? declared.kind : sniffAppended(bytes, off);
-  out.appended = { bytes: len, kind, offset: off, declared: !!declared };
+  out.appended = { bytes: len, kind, offset: off, declared: !!declared, ...(declared?.metadata ? { metadata: declared.metadata } : {}) };
   if (declared?.gainMap) {
     out.fields.push({
       label: 'HDR gain map',
@@ -810,7 +818,7 @@ const PNG_KEYWORD_GROUP: Record<string, { group: MetaGroup; sensitive?: boolean 
   'Creation Time': { group: 'timestamps' },
 };
 
-function pngText(bytes: Uint8Array, start: number, len: number, kind: 'tEXt' | 'iTXt', out: FileMetadata): void {
+function pngText(bytes: Uint8Array, start: number, len: number, kind: 'tEXt' | 'iTXt' | 'zTXt', out: FileMetadata): void {
   // keyword \0 [flags/lang for iTXt] text
   let nul = start;
   const end = start + len;
@@ -818,27 +826,38 @@ function pngText(bytes: Uint8Array, start: number, len: number, kind: 'tEXt' | '
   if (nul >= end) return;
   const keyword = new TextDecoder('latin1').decode(bytes.subarray(start, nul));
   let textStart = nul + 1;
+  let compressed = kind === 'zTXt';
+  if (kind === 'zTXt' && bytes[textStart++] !== 0) return;
   if (kind === 'iTXt') {
     // compressionFlag(1) compressionMethod(1) langTag \0 translatedKeyword \0 text
-    const compressed = bytes[textStart] === 1;
+    if (bytes[textStart]! > 1 || bytes[textStart + 1] !== 0) return;
+    compressed = bytes[textStart] === 1;
     textStart += 2;
     let z = textStart; while (z < end && bytes[z] !== 0) z++; textStart = z + 1; // langTag
     z = textStart; while (z < end && bytes[z] !== 0) z++; textStart = z + 1;      // translatedKeyword
-    if (compressed) { out.fields.push({ label: keyword || 'Text', value: 'compressed text chunk', group: 'description' }); return; }
   }
   if (textStart >= end) return;
+  let payload = bytes.subarray(textStart, Math.min(end, textStart + 1024 * 1024));
+  if (compressed) {
+    try {
+      // A fixed output buffer bounds expansion; oversized packets are omitted.
+      if (end - textStart > 1024 * 1024) return;
+      payload = unzlibSync(payload, { out: new Uint8Array(1024 * 1024 + 1) });
+      if (payload.length > 1024 * 1024) return;
+    } catch { return; }
+  }
   // An XMP packet rides in an iTXt chunk under this reserved keyword (XMP spec
   // part 3) - PNG is where Midjourney/Google AI outputs carry their AI
   // declaration. Parse it as XMP instead of dumping the raw packet as prose.
   if (keyword === 'XML:com.adobe.xmp') {
-    const packetEnd = Math.min(end, textStart + MAX_TEXT_SCAN);
-    readXmp(new TextDecoder('utf-8').decode(bytes.subarray(textStart, packetEnd)), out);
+    readXmp(new TextDecoder('utf-8').decode(payload), out);
     return;
   }
-  const value = clip(new TextDecoder(kind === 'iTXt' ? 'utf-8' : 'latin1').decode(bytes.subarray(textStart, Math.min(end, textStart + MAX_VALUE_CHARS * 4))).trim());
+  const value = clip(new TextDecoder(kind === 'iTXt' ? 'utf-8' : 'latin1').decode(payload.subarray(0, MAX_VALUE_CHARS * 4)).trim());
   if (!value) return;
-  const m = PNG_KEYWORD_GROUP[keyword] ?? { group: 'description' as MetaGroup };
-  out.fields.push({ label: keyword || 'Text', value, group: m.group, sensitive: m.sensitive });
+  const canonical = Object.keys(PNG_KEYWORD_GROUP).find((key) => key.toLowerCase() === keyword.toLowerCase());
+  const m = PNG_KEYWORD_GROUP[canonical ?? keyword] ?? { group: 'description' as MetaGroup };
+  out.fields.push({ label: (canonical ?? keyword) || 'Text', value, group: m.group, sensitive: m.sensitive, source: `PNG ${kind} ${keyword}` });
 }
 
 function readPng(bytes: Uint8Array, out: FileMetadata): void {
@@ -852,7 +871,7 @@ function readPng(bytes: Uint8Array, out: FileMetadata): void {
     if (type === 'eXIf') readExif(bytes, dataStart, len, out);
     else if (type === 'tEXt') pngText(bytes, dataStart, len, 'tEXt', out);
     else if (type === 'iTXt') pngText(bytes, dataStart, len, 'iTXt', out);
-    else if (type === 'zTXt') out.fields.push({ label: 'Compressed text', value: 'zTXt chunk', group: 'description' });
+    else if (type === 'zTXt') pngText(bytes, dataStart, len, 'zTXt', out);
     else if (type === 'tIME') out.fields.push({ label: 'Last modified', value: 'embedded timestamp', group: 'timestamps' });
     p = end + 4;
     if (type === 'IEND') { noteAppended(bytes, p, out); break; }
@@ -919,6 +938,15 @@ function readGif(bytes: Uint8Array, out: FileMetadata): void {
       if (p + 2 > bytes.length) return;
       const end = gifSubBlocksEnd(bytes, p + 2);
       if (end == null) return;
+      if (bytes[p + 1] === 0xfe && out.fields.length < MAX_FIELDS) {
+        const data: number[] = [];
+        for (let q = p + 2; q < end && bytes[q] && data.length < MAX_VALUE_CHARS; ) {
+          const size = bytes[q++]!;
+          for (let j = 0; j < size && data.length < MAX_VALUE_CHARS; j++) data.push(bytes[q + j]!);
+          q += size;
+        }
+        out.fields.push({ label: 'Comment', value: new TextDecoder().decode(new Uint8Array(data)), group: 'description', source: 'GIF comment' });
+      }
       p = end;
       continue;
     }
@@ -927,6 +955,33 @@ function readGif(bytes: Uint8Array, out: FileMetadata): void {
 }
 
 // ── WebP (RIFF) ──────────────────────────────────────────────────────────────────
+
+function readWav(bytes: Uint8Array, out: FileMetadata): void {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const limit = Math.min(bytes.length, view.getUint32(4, true) + 8);
+  const tags: Record<string, [string, MetaGroup]> = {
+    ISFT: ['Software', 'software'], IART: ['Artist', 'authorship'], ICOP: ['Copyright', 'authorship'],
+    INAM: ['Title', 'description'], ICMT: ['Comment', 'description'], ICRD: ['Created', 'timestamps'],
+  };
+  for (let p = 12; p + 8 <= limit && out.fields.length < MAX_FIELDS; ) {
+    const length = view.getUint32(p + 4, true), end = p + 8 + length;
+    if (end > limit) break;
+    if (length >= 4 && matchAscii(bytes, p, 'LIST') && matchAscii(bytes, p + 8, 'INFO')) {
+      for (let q = p + 12; q + 8 <= end && out.fields.length < MAX_FIELDS; ) {
+        const size = view.getUint32(q + 4, true);
+        if (q + 8 + size > end) break;
+        const id = String.fromCharCode(...bytes.subarray(q, q + 4));
+        const tag = tags[id];
+        if (tag) {
+          const value = new TextDecoder().decode(bytes.subarray(q + 8, Math.min(q + 8 + size, q + 8 + MAX_VALUE_CHARS))).split('\0')[0]!.trim();
+          if (value) out.fields.push({ label: tag[0], value, group: tag[1], source: `WAV INFO ${id}`, ...(id === 'IART' ? { sensitive: true } : {}) });
+        }
+        q += 8 + size + (size & 1);
+      }
+    }
+    p = end + (length & 1);
+  }
+}
 
 function readWebp(bytes: Uint8Array, out: FileMetadata): void {
   let p = 12; // past "RIFF"<size>"WEBP"
@@ -1466,14 +1521,19 @@ function readSvg(bytes: Uint8Array, out: FileMetadata): void {
   const text = new TextDecoder('utf-8').decode(bytes.length > MAX_TEXT_SCAN ? bytes.subarray(0, MAX_TEXT_SCAN) : bytes);
   const clean = (s: string | undefined): string | null => s ? clip(s.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()) || null : null;
 
-  let editor: string | null = null;
-  const gen = /<!--[^>]*Generator:\s*([^\n]*?)(?:-->|SVG (?:Export|Version))/i.exec(text);
-  if (gen) editor = clean(gen[1])?.replace(/[,;]\s*$/, '') ?? null;
-  const ink = /inkscape:version=["']([^"']+)["']/i.exec(text);
-  if (!editor && ink) editor = `Inkscape ${(ink[1] || '').split(' ')[0]}`;
-  if (!editor && /xmlns:sketch=/i.test(text)) editor = 'Sketch';
-  if (!editor && /xmlns:figma=/i.test(text)) editor = 'Figma';
-  if (editor) out.fields.push({ label: 'Created with', value: editor, group: 'software', sensitive: true });
+  for (const comment of text.matchAll(/<!--[\s\S]*?-->/g)) {
+    if (out.fields.length >= MAX_FIELDS) break;
+    const value = clean(comment[0].slice(4, -3));
+    if (!value) continue;
+    const generator = /^\s*Generator:\s*(.+?)(?:[,;]?\s*SVG (?:Export|Version)|$)/i.exec(value);
+    out.fields.push({ label: generator ? 'Generator comment' : 'Comment', value: generator?.[1] ?? value, group: generator ? 'software' : 'description', source: 'SVG comment', signal: 'hint' });
+  }
+  const root = /<svg\b[^>]*>/i.exec(text)?.[0] ?? '';
+  const ink = /\binkscape:version\s*=\s*["']([^"']+)["']/i.exec(root);
+  if (ink) out.fields.push({ label: 'Created with', value: `Inkscape ${ink[1]}`, group: 'software', source: 'SVG inkscape:version', signal: 'hint' });
+  for (const [name, marker] of [['Inkscape', 'http://www.inkscape.org/namespaces/inkscape'], ['Sketch', 'http://www.bohemiancoding.com/sketch/ns'], ['Figma', 'http://www.figma.com/figma/ns']] as const) {
+    if (root.includes(marker) && !(name === 'Inkscape' && ink)) out.fields.push({ label: 'Software marker', value: name, group: 'software', source: 'SVG editor namespace', signal: 'hint' });
+  }
 
   const doc = /sodipodi:docname=["']([^"']+)["']/i.exec(text);
   if (doc) out.fields.push({ label: 'Original filename', value: doc[1]!, group: 'description', sensitive: true });
@@ -1507,6 +1567,7 @@ export function extractFileMetadata(bytes: Uint8Array): FileMetadata {
       case 'PNG': readPng(bytes, out); break;
       case 'GIF': readGif(bytes, out); break;
       case 'WebP': readWebp(bytes, out); break;
+      case 'WAV': readWav(bytes, out); break;
       case 'TIFF': readExif(bytes, 0, bytes.length, out); break;
       case 'SVG': readSvg(bytes, out); break;
       case 'HEIC': case 'AVIF': readHeif(bytes, out); break;
@@ -1514,6 +1575,7 @@ export function extractFileMetadata(bytes: Uint8Array): FileMetadata {
       // Other formats carry little structured metadata worth surfacing.
     }
   } catch { /* best-effort: return whatever was gathered before the fault */ }
+  out.fields = out.fields.slice(0, MAX_FIELDS).map((f) => ({ ...f, value: clip(f.value), source: f.source ?? `${out.format} ${f.label === 'Software' && ['JPEG', 'TIFF', 'WebP', 'PNG', 'HEIC', 'AVIF'].includes(out.format) ? 'EXIF Software' : f.label}` }));
   return out;
 }
 

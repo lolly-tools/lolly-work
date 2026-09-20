@@ -92,8 +92,9 @@ function parseRetryAfter(res: Response): number | undefined {
 export async function renderViaWorker(
   cfg: WorkerConfig,
   job: WorkerJob,
-  opts: { now?: number; fetchImpl?: typeof fetch } = {},
+  opts: { now?: number; fetchImpl?: typeof fetch; signal?: AbortSignal } = {},
 ): Promise<string> {
+  opts.signal?.throwIfAborted();
   const now = opts.now ?? Date.now();
   const fetchImpl = opts.fetchImpl ?? fetch;
   const payload = canonicalJson({ ...job, ts: now });
@@ -107,39 +108,43 @@ export async function renderViaWorker(
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-lw-render-sig': sig },
       body: payload,
-      signal: ctrl.signal,
+      signal: opts.signal ? AbortSignal.any([opts.signal, ctrl.signal]) : ctrl.signal,
     });
+
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const body = await res.json() as { error?: { message?: string } };
+        if (body.error?.message) detail = body.error.message;
+      } catch { /* non-JSON error body */ }
+      // The worker answers capacity saturation with 503 + Retry-After - surface
+      // it as its own code/status rather than folding it into the generic 502
+      // below, so callers can tell "busy, try again" apart from a real failure.
+      if (res.status === 503) {
+        throw new WorkerError(`render worker at capacity: ${detail}`, 503, {
+          code: 'RENDER_BUSY',
+          retryAfter: parseRetryAfter(res),
+        });
+      }
+      // Surface the worker's own status where sensible; other 5xx stays a plane 502.
+      const status = res.status === 422 || res.status === 400 ? res.status : 502;
+      throw new WorkerError(`render worker rejected the job (${res.status}): ${detail}`, status);
+    }
+
+    const out = await res.json().catch(() => null) as { svg?: unknown } | null;
+    opts.signal?.throwIfAborted();
+    ctrl.signal.throwIfAborted();
+    if (!out || typeof out.svg !== 'string' || !/<svg[\s>]/i.test(out.svg)) {
+      throw new WorkerError('render worker returned no SVG', 502);
+    }
+    return out.svg;
   } catch (e) {
+    opts.signal?.throwIfAborted();
+    if (e instanceof WorkerError) throw e;
     throw new WorkerError(`render worker unreachable: ${(e as Error).message}`, 502);
   } finally {
     clearTimeout(timer);
   }
-
-  if (!res.ok) {
-    let detail = res.statusText;
-    try {
-      const body = await res.json() as { error?: { message?: string } };
-      if (body.error?.message) detail = body.error.message;
-    } catch { /* non-JSON error body */ }
-    // The worker answers capacity saturation with 503 + Retry-After - surface
-    // it as its own code/status rather than folding it into the generic 502
-    // below, so callers can tell "busy, try again" apart from a real failure.
-    if (res.status === 503) {
-      throw new WorkerError(`render worker at capacity: ${detail}`, 503, {
-        code: 'RENDER_BUSY',
-        retryAfter: parseRetryAfter(res),
-      });
-    }
-    // Surface the worker's own status where sensible; other 5xx stays a plane 502.
-    const status = res.status === 422 || res.status === 400 ? res.status : 502;
-    throw new WorkerError(`render worker rejected the job (${res.status}): ${detail}`, status);
-  }
-
-  const out = await res.json().catch(() => null) as { svg?: unknown } | null;
-  if (!out || typeof out.svg !== 'string' || !/<svg[\s>]/i.test(out.svg)) {
-    throw new WorkerError('render worker returned no SVG', 502);
-  }
-  return out.svg;
 }
 
 /**
@@ -151,8 +156,9 @@ export async function renderViaWorker(
 export async function rasteriseViaWorker(
   cfg: WorkerConfig,
   job: RasterJob,
-  opts: { now?: number; fetchImpl?: typeof fetch } = {},
+  opts: { now?: number; fetchImpl?: typeof fetch; signal?: AbortSignal } = {},
 ): Promise<RasterResult> {
+  opts.signal?.throwIfAborted();
   const now = opts.now ?? Date.now();
   const fetchImpl = opts.fetchImpl ?? fetch;
   const payload = canonicalJson({ ...job, ts: now });
@@ -166,34 +172,38 @@ export async function rasteriseViaWorker(
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-lw-render-sig': sig },
       body: payload,
-      signal: ctrl.signal,
+      signal: opts.signal ? AbortSignal.any([opts.signal, ctrl.signal]) : ctrl.signal,
     });
+
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const body = await res.json() as { error?: { message?: string } };
+        if (body.error?.message) detail = body.error.message;
+      } catch { /* non-JSON error body */ }
+      // Same RENDER_BUSY special-case as renderViaWorker above.
+      if (res.status === 503) {
+        throw new WorkerError(`render worker at capacity: ${detail}`, 503, {
+          code: 'RENDER_BUSY',
+          retryAfter: parseRetryAfter(res),
+        });
+      }
+      const status = res.status === 422 || res.status === 400 ? res.status : 502;
+      throw new WorkerError(`render worker rejected the raster job (${res.status}): ${detail}`, status);
+    }
+
+    const out = await res.json().catch(() => null) as { bytesB64?: unknown; mime?: unknown } | null;
+    opts.signal?.throwIfAborted();
+    ctrl.signal.throwIfAborted();
+    if (!out || typeof out.bytesB64 !== 'string' || typeof out.mime !== 'string') {
+      throw new WorkerError('render worker returned no raster bytes', 502);
+    }
+    return { bytes: new Uint8Array(Buffer.from(out.bytesB64, 'base64')), mime: out.mime };
   } catch (e) {
+    opts.signal?.throwIfAborted();
+    if (e instanceof WorkerError) throw e;
     throw new WorkerError(`render worker unreachable: ${(e as Error).message}`, 502);
   } finally {
     clearTimeout(timer);
   }
-
-  if (!res.ok) {
-    let detail = res.statusText;
-    try {
-      const body = await res.json() as { error?: { message?: string } };
-      if (body.error?.message) detail = body.error.message;
-    } catch { /* non-JSON error body */ }
-    // Same RENDER_BUSY special-case as renderViaWorker above.
-    if (res.status === 503) {
-      throw new WorkerError(`render worker at capacity: ${detail}`, 503, {
-        code: 'RENDER_BUSY',
-        retryAfter: parseRetryAfter(res),
-      });
-    }
-    const status = res.status === 422 || res.status === 400 ? res.status : 502;
-    throw new WorkerError(`render worker rejected the raster job (${res.status}): ${detail}`, status);
-  }
-
-  const out = await res.json().catch(() => null) as { bytesB64?: unknown; mime?: unknown } | null;
-  if (!out || typeof out.bytesB64 !== 'string' || typeof out.mime !== 'string') {
-    throw new WorkerError('render worker returned no raster bytes', 502);
-  }
-  return { bytes: new Uint8Array(Buffer.from(out.bytesB64, 'base64')), mime: out.mime };
 }

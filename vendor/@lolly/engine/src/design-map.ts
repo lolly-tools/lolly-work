@@ -48,6 +48,8 @@ interface ColorRun { text: string; color?: string; }
  * defaults (DEFAULT_FONTS below).
  */
 export interface DesignMapFonts {
+  /** Keep source family names for workflows that preserve the original design. */
+  preserveSource?: boolean;
   /** Family every non-monospace import maps to. */
   defaultFamily?: string;
   /** Family monospace family names map to. */
@@ -82,7 +84,7 @@ export interface DesignMapOptions {
 
 // Neutral defaults - mirror brands/lolly-start/tools/design (the blank
 // brand's font select values and addKinds seed colours), NOT any real brand's.
-const DEFAULT_FONTS: Required<Omit<DesignMapFonts, 'knownFamilies'>> = {
+const DEFAULT_FONTS: Required<Omit<DesignMapFonts, 'knownFamilies' | 'preserveSource'>> = {
   defaultFamily: 'sans',
   monoFamily: 'mono',
   monoMaxWeight: 800,
@@ -104,7 +106,7 @@ interface PenpotContentInfo {
  * Penpot/Figma parsers below emit, and the sole input to `nodeToBox`. Every field is
  * optional and loosely typed because it comes from parsed design-file JSON.
  */
-interface DesignNode {
+export interface DesignNode {
   kind?: unknown;
   x?: unknown;
   y?: unknown;
@@ -121,6 +123,7 @@ interface DesignNode {
   textAlign?: unknown;
   fontSize?: unknown;
   lineHeight?: unknown;
+  tracking?: unknown;
   text?: unknown;
   fg?: unknown;
   image?: unknown;
@@ -178,6 +181,7 @@ interface Box {
   weight: string;
   font: string;
   lineHeight: number;
+  tracking?: number;
   group: string;
   clip: string;
   pad: number;
@@ -308,6 +312,7 @@ export function mapFontFamily(family: unknown, fonts?: DesignMapFonts): string {
   const fam = String(family == null ? '' : family).trim();
   const hit = fonts?.knownFamilies?.find((k) => k.toLowerCase() === fam.toLowerCase());
   if (hit) return hit;
+  if (fonts?.preserveSource && fam) return fam;
   return /mono|consol|courier|menlo|code/i.test(String(family == null ? '' : family))
     ? ((fonts && fonts.monoFamily) ?? DEFAULT_FONTS.monoFamily)
     : ((fonts && fonts.defaultFamily) ?? DEFAULT_FONTS.defaultFamily);
@@ -462,6 +467,7 @@ export function nodeToBox(
     weight,
     font,
     lineHeight,
+    ...(n.tracking != null ? { tracking: round2(num(n.tracking, 0)) } : {}),
     group: n.group != null && n.group !== '' ? String(n.group) : '',
     clip: '',
     pad: Math.max(0, Math.round(num(n.pad, 8))),

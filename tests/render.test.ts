@@ -290,7 +290,8 @@ test('(f) hooked tool dispatches to a configured Chromium worker; HMAC-signed', 
   const { createHmac } = await import('node:crypto');
   const SECRET = 'worker-shared-key';
   let sawSig = false;
-  let sawToolId = '';
+  let sawToolId = '', sawQuery = '';
+  let calls = 0;
   const worker = createServer((req, res) => {
     void (async () => {
       if (req.url === '/healthz') { res.writeHead(200); res.end('{}'); return; }
@@ -299,8 +300,8 @@ test('(f) hooked tool dispatches to a configured Chromium worker; HMAC-signed', 
       const raw = Buffer.concat(chunks).toString('utf8');
       const expect = createHmac('sha256', SECRET).update(raw).digest('base64url');
       sawSig = req.headers['x-lw-render-sig'] === expect;
-      const job = JSON.parse(raw) as { toolId: string; overrides: Record<string, unknown> };
-      sawToolId = job.toolId;
+      const job = JSON.parse(raw) as { toolId: string; query: string; overrides: Record<string, unknown> };
+      sawToolId = job.toolId; sawQuery = job.query; calls++;
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 200"><text>WORKER_RENDER</text></svg>' }));
     })().catch(() => { res.writeHead(500); res.end(); });
@@ -321,6 +322,22 @@ test('(f) hooked tool dispatches to a configured Chromium worker; HMAC-signed', 
   assert.ok(svg.includes('WORKER_RENDER'), 'served the SVG the worker returned');
   assert.ok(sawSig, 'worker received a valid HMAC signature');
   assert.equal(sawToolId, 'hooky');
+  const title = 'A large scene row '.repeat(1500);
+  const packedResponse = await fetch(`${srv.base}/api/v1/render`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ toolId: 'hooky', format: 'svg', inputs: { title } }) });
+  assert.equal(packedResponse.status, 200, await packedResponse.text());
+  assert.ok(sawQuery.startsWith('z='));
+  assert.ok(sawQuery.length < 8192);
+  const { loadEngine } = await import('../server/src/render/contract.ts');
+  const decoded = new URLSearchParams(await (await loadEngine()).expandQuery(sawQuery));
+  assert.equal(decoded.get('title'), title, 'packed worker navigation preserves complete typed input');
+  const { randomBytes } = await import('node:crypto');
+  const priorCalls = calls;
+  const refused = await fetch(`${srv.base}/api/v1/render`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ toolId: 'hooky', format: 'svg', inputs: { title: randomBytes(12000).toString('hex') } }) });
+  assert.equal(refused.status, 413);
+  assert.equal((await refused.json() as { error: { code: string } }).error.code, 'RENDER_INPUT_TOO_LARGE');
+  assert.equal(calls, priorCalls, 'oversize navigation is refused before allocating a browser');
   worker.close();
 });
 
