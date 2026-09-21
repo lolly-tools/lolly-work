@@ -5,7 +5,7 @@
 # signed+attested release image is reproducible and the tag can't shift under a
 # rebuild. Dependabot's docker updater (/.github/dependabot.yml, dir
 # /deploy/compose) keeps the pin moving as node:24-alpine is rebuilt.
-FROM node:26-alpine@sha256:ef24c5053d50fdc3e4e56eb4e7ddb7861874ab0fdc797046ba897581deb8e868
+FROM node:26-alpine@sha256:dbaa92e5758cbbcf85d65d5403fdb530fe3442cbe8c6dbfb7ef23365450d5070
 WORKDIR /app
 
 # The pinned Node image predates these Alpine OpenSSL fixes. Keep the reviewed
