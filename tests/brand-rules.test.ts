@@ -169,7 +169,7 @@ test('format scope is checked per render and never projected as a global restric
 test('Postgres mappings and their audit survive a fresh replica', { skip: !process.env.LW_TEST_DATABASE_URL && 'set LW_TEST_DATABASE_URL to run' }, async () => {
   await withFreshPostgres(process.env.LW_TEST_DATABASE_URL!, async store => {
     const start = runners.length;
-    let replica: Store | undefined;
+    let replica: Awaited<ReturnType<typeof createPostgresStore>> | undefined;
     try {
       const f = await fixture(brand(), undefined, store); await f.configure();
       replica = await createPostgresStore(process.env.LW_TEST_DATABASE_URL!);
