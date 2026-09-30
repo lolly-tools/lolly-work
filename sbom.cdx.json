@@ -1,7 +1,7 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:a4a0f22f-6781-4928-8cbd-08a7d1425502",
+  "serialNumber": "urn:uuid:394fd9a8-0038-4d70-8dde-af1b4a1aca49",
   "version": 1,
   "metadata": {
     "tools": [
@@ -213,6 +213,48 @@
         {
           "alg": "SHA-512",
           "content": "43150b1c09bb70dbbbdb0f7b25434204538315a5e96c383e74ff1bfe8585019d8c4d1a69037534d18d8bd47a9a4b827ac81ab1c1afd8de73016b154a6c1fcdb0"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40cto.af/linebreak@4.0.3",
+      "name": "@cto.af/linebreak",
+      "version": "4.0.3",
+      "purl": "pkg:npm/%40cto.af/linebreak@4.0.3",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "1a2c9ea58b4640ca382c3ca7ba1c85af4fe1046bf44853552a73e31ee84532792c78204220c79c68290a2fc57772ef6645ab35763a525b39f18a0c3f8ab5792f"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40cto.af/unicode-trie-runtime@3.2.9",
+      "name": "@cto.af/unicode-trie-runtime",
+      "version": "3.2.9",
+      "purl": "pkg:npm/%40cto.af/unicode-trie-runtime@3.2.9",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "1f8147b6f21e7fff0d954f8db10a2570bf522aef9f6083cc648fbe87aad070cd4837b0bf030882b3d2fc5917dff8ee210cc6a692c004bb00637add92f6e3ede3"
         }
       ]
     },
@@ -1302,6 +1344,27 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:npm/bidi-shaper@0.1.2",
+      "name": "bidi-shaper",
+      "version": "0.1.2",
+      "purl": "pkg:npm/bidi-shaper@0.1.2",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "24144a0c9e6522ed0311425d3552e65c254b7b4d64dd8e403b72a85babc1d4c3e3f72734bb9ef4b896382eb33526eb0fd7465bafbd02948755436243fa0e91d6"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:npm/buffer-from@1.1.2",
       "name": "buffer-from",
       "version": "1.1.2",
@@ -2079,10 +2142,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/prettier@3.9.6",
+      "bom-ref": "pkg:npm/prettier@3.9.9",
       "name": "prettier",
-      "version": "3.9.6",
-      "purl": "pkg:npm/prettier@3.9.6",
+      "version": "3.9.9",
+      "purl": "pkg:npm/prettier@3.9.9",
       "scope": "required",
       "licenses": [
         {
@@ -2094,7 +2157,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "3a9374cf355d89a880871a6eba3e5e7e9212e2c63d8fb6d8eae4799a78f9c8fcc691d92334a4897944e13dbeb4270dbd42e019800e28fbf881e3d90589a057ea"
+          "content": "67f0891c891dba33bf3ad37b9d75228b445fdd54f9491ba18c103cd97beed978415205f79e13faed3d0b1dc7817502dec7b38e1464e8c7e439620f09936422be"
         }
       ]
     },
@@ -2268,10 +2331,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/smol-toml@1.8.0",
+      "bom-ref": "pkg:npm/smol-toml@1.9.0",
       "name": "smol-toml",
-      "version": "1.8.0",
-      "purl": "pkg:npm/smol-toml@1.8.0",
+      "version": "1.9.0",
+      "purl": "pkg:npm/smol-toml@1.9.0",
       "scope": "required",
       "licenses": [
         {
@@ -2283,7 +2346,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "90266bd95ddc87d8b4d31f335d186350d55c8c6f628c44b9743b9d917bd45424f942524d416125489759ab23de99f7c7a0b35463039ca2ed05cbea23374b8749"
+          "content": "86977e1cb38dec77595ea61c84c33ff8b6934db74ad00537367808278295c966d8f5b7d0a9d2fd703fb8c9fe9d528536029e15b14d099108ba171008d41da65d"
         }
       ]
     },
@@ -2373,10 +2436,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/sql-formatter@15.8.2",
+      "bom-ref": "pkg:npm/sql-formatter@15.9.0",
       "name": "sql-formatter",
-      "version": "15.8.2",
-      "purl": "pkg:npm/sql-formatter@15.8.2",
+      "version": "15.9.0",
+      "purl": "pkg:npm/sql-formatter@15.9.0",
       "scope": "required",
       "licenses": [
         {
@@ -2388,7 +2451,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "91361183914872fb03b58506d909fda584fac4ac222c93794d322f73932eafa848838a527dda47bbc632bb96ea1122c79d5337997cc3e38e9c6f6fae11a2995e"
+          "content": "dc0fcdfaffa6039fcf0d4f8594ee2e4c51342ff32683addcfcdcb5eb542fd9bd4cc69f485fc59aafe2cb9aad7b2c0fca82ee0a5c047b8aeb4ad8968758930cb7"
         }
       ]
     },
@@ -2807,10 +2870,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/yaml@2.9.0",
+      "bom-ref": "pkg:npm/yaml@2.9.1",
       "name": "yaml",
-      "version": "2.9.0",
-      "purl": "pkg:npm/yaml@2.9.0",
+      "version": "2.9.1",
+      "purl": "pkg:npm/yaml@2.9.1",
       "scope": "required",
       "licenses": [
         {
@@ -2822,7 +2885,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "d80be1357de66fccdde99cbb20d4ed4a9975175e475ba5a7aa3d2cad696428b729625fe03083098b2b86ab629e236605c543e376507edcb735d2c78c2ed2f870"
+          "content": "dcdc4df3eefc39dcdb4fb0bf5a31acc9f3c0b4968ddc5343b16c6fed8ee6703b13fe83a6816f01a72410145067bd91378fd63649dcf550b14b7b32fb11bdb217"
         }
       ]
     },
