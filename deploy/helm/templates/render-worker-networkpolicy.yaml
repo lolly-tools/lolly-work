@@ -1,0 +1,82 @@
+{{- /*
+Render worker NetworkPolicy (plans/58 WP0). The worker runs the least-trusted content
+there is: tool hooks, a Sandbox pen, any page a render asks for. Its in-process egress
+rule (workers/render/src/egress.ts) already refuses private, loopback, link-local and
+metadata addresses, but Chromium resolves a name again when it connects, so this policy
+closes the same door at the network: ingress only from the control plane on the worker
+port; egress only to cluster DNS, to public addresses on 80/443, and to the destinations
+you list in renderWorker.networkPolicy.extraEgress.
+
+Off by default, like the app's own policy, because it has to know where the shell lives.
+With renderWorker.webBase on a public address (https://lolly.tools, or your instance's
+public URL) the defaults work. A shell on a private address (an in-cluster Service, an
+internal load balancer) needs an extraEgress rule for it, and so does any origin you
+list in LW_RENDER_ALLOWED_ORIGINS.
+*/ -}}
+{{- if and .Values.renderWorker.enabled .Values.renderWorker.networkPolicy.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "lolly-work.fullname" . }}-render-worker
+  labels:
+    {{- include "lolly-work.labels" . | nindent 4 }}
+    app.kubernetes.io/component: render-worker
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "lolly-work.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: render-worker
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Only the control plane's own pods (this release, no component label) dispatch renders.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "lolly-work.selectorLabels" . | nindent 14 }}
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: DoesNotExist
+      ports:
+        - protocol: TCP
+          port: {{ .Values.renderWorker.service.port }}
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.renderWorker.networkPolicy.dnsPodLabels | nindent 14 }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Public addresses only: the private, shared-address, loopback, link-local (cloud
+    # metadata) and unspecified ranges are carved out, the same set egress.ts refuses.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 0.0.0.0/8
+              - 10.0.0.0/8
+              - 100.64.0.0/10
+              - 127.0.0.0/8
+              - 169.254.0.0/16
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+        - ipBlock:
+            cidr: ::/0
+            except:
+              - ::1/128
+              - fc00::/7
+              - fe80::/10
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
+    {{- with .Values.renderWorker.networkPolicy.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

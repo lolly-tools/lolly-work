@@ -31,6 +31,7 @@ import { createServer } from 'node:http';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type { Browser, BrowserContext, BrowserContextOptions } from 'playwright-core';
 import { createSemaphore } from './semaphore.ts';
+import { declaredOrigins, egressChecker } from './egress.ts';
 
 const PORT = Number(process.env.PORT ?? 8791);
 const SECRET = process.env.LW_RENDER_WORKER_SECRET ?? '';
@@ -42,6 +43,20 @@ const MAX_CONCURRENT = Number(process.env.LW_RENDER_MAX_CONCURRENT ?? 4);
 
 if (!SECRET) { console.error('[render-worker] LW_RENDER_WORKER_SECRET is required'); process.exit(1); }
 if (!WEB_BASE) { console.error('[render-worker] LOLLY_WEB_BASE is required (a served Lolly web shell)'); process.exit(1); }
+// What a rendered page may reach (plans/58 WP0, ./egress.ts): the shell, the operator's
+// declared origins, and otherwise public addresses only. A malformed entry stops the
+// worker here rather than failing every render later.
+let DECLARED_ORIGINS: Set<string>;
+try { DECLARED_ORIGINS = declaredOrigins(WEB_BASE, process.env.LW_RENDER_ALLOWED_ORIGINS ?? ''); }
+catch (err) { console.error(`[render-worker] ${(err as Error).message}`); process.exit(1); }
+
+/** Refuse a request the egress rule does not allow. Logs the origin and the reason, never
+ *  the full URL, which can carry a member's input values. */
+function refused(url: string, reason: string): void {
+  let origin = 'unparseable';
+  try { origin = new URL(url).origin; } catch { /* keep the placeholder */ }
+  console.warn(`[render-worker] egress refused (${reason}): ${origin}`);
+}
 
 // Caps concurrent Chromium contexts (plans/22 §5, plans/23 §3.C): one browser,
 // unboundedly many `browser.newContext()`s per request was the exposure - a
@@ -75,7 +90,8 @@ async function getBrowser(): Promise<Browser> {
     browserP = (async () => {
       const { chromium } = await import('playwright-core');
       return chromium.launch({
-        args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+        // WebRTC can open UDP paths the request router never sees; allow only proxied ones.
+        args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--force-webrtc-ip-handling-policy=disable_non_proxied_udp'],
         ...(process.env.LOLLY_BROWSER_PATH ? { executablePath: process.env.LOLLY_BROWSER_PATH } : {}),
         ...(process.env.LOLLY_BROWSER_CHANNEL ? { channel: process.env.LOLLY_BROWSER_CHANNEL } : {}),
       });
@@ -109,7 +125,13 @@ async function withContext<T>(signal: AbortSignal, options: BrowserContextOption
   const abort = () => { void close().then(() => rejectStopped(signal.reason), rejectStopped); };
   signal.addEventListener('abort', abort, { once: true });
   try {
-    const work = Promise.resolve().then(() => { signal.throwIfAborted(); return run(ctx); });
+    const work = Promise.resolve().then(async () => {
+      signal.throwIfAborted();
+      // A rendered page has no reason to hold a WebSocket, and the request router in
+      // run() does not see them, so every one is refused (never connected to a server).
+      await ctx.routeWebSocket?.('**', (ws) => { void ws.close({ code: 1008, reason: 'refused by the render worker' }); });
+      return run(ctx);
+    });
     const result = Promise.race([work, stopped]);
     if (signal.aborted) abort();
     return await result;
@@ -132,9 +154,12 @@ async function renderSvg(job: { toolId: string; query: string; overrides: Record
     let rejectBrand!: (error: Error) => void;
     const mismatchedBrand = new Promise<never>((_, reject) => { rejectBrand = reject; });
     void mismatchedBrand.catch(() => {});
+    const egress = egressChecker(DECLARED_ORIGINS);
     await ctx.route('**/*', async route => {
-      const url = new URL(route.request().url());
-      if (/\/models\/|\.(onnx|gguf|safetensors)$/i.test(url.pathname)) return route.abort('blockedbyclient');
+      const raw = route.request().url();
+      const verdict = await egress(raw);
+      if (!verdict.allow) { refused(raw, verdict.reason); return route.abort('blockedbyclient'); }
+      const url = new URL(raw);
       if (!job.brandRevision || url.origin !== new URL(WEB_BASE).origin || !/^\/(catalog|tools|api\/brand)(\/|$)/.test(url.pathname)) return route.continue();
       try {
         const response = await route.fetch({ headers: { ...route.request().headers(), 'x-lolly-brand-revision': job.brandRevision } });
@@ -212,9 +237,12 @@ async function rasterise(job: { svg: string; format: string; width?: number }, s
   // This path receives a finished SVG, not an application: embedded scripts
   // must not execute, and model URLs must not acquire weights through markup.
   return withContext(signal, { serviceWorkers: 'block', deviceScaleFactor: 1, javaScriptEnabled: false }, async ctx => {
-    await ctx.route('**/*', (route) => {
-      const path = new URL(route.request().url()).pathname;
-      return /\/models\/|\.(onnx|gguf|safetensors)$/i.test(path) ? route.abort('blockedbyclient') : route.continue();
+    const egress = egressChecker(DECLARED_ORIGINS);
+    await ctx.route('**/*', async (route) => {
+      const raw = route.request().url();
+      const verdict = await egress(raw);
+      if (!verdict.allow) { refused(raw, verdict.reason); return route.abort('blockedbyclient'); }
+      return route.continue();
     });
     signal.throwIfAborted();
     const page = await ctx.newPage();

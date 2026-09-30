@@ -55,6 +55,11 @@ spec:
               value: {{ .Values.renderWorker.service.port | quote }}
             - name: LOLLY_WEB_BASE
               value: {{ .Values.renderWorker.webBase | quote }}
+            {{- with .Values.renderWorker.allowedOrigins }}
+            # Origins a rendered page may reach even on a private address (plans/58 WP0).
+            - name: LW_RENDER_ALLOWED_ORIGINS
+              value: {{ join "," . | quote }}
+            {{- end }}
             - name: LW_RENDER_MAX_CONCURRENT
               value: {{ .Values.renderWorker.maxConcurrent | quote }}
             - name: LW_RENDER_WORKER_SECRET

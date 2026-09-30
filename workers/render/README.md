@@ -36,6 +36,7 @@ The signature covers the exact request bytes; `ts` must be within ±5 min
 |---|---|---|
 | `LW_RENDER_WORKER_SECRET` | ✅ | shared HMAC key (identical value on the control plane) |
 | `LOLLY_WEB_BASE` | ✅ | a served Lolly web shell the worker drives (e.g. the OSS web deployment) |
+| `LW_RENDER_ALLOWED_ORIGINS` | | comma-separated origins a rendered page may reach even on a private address (an internal asset host); plain origins, no paths |
 | `PORT` | | listen port (default 8791) |
 | `LW_RENDER_NAV_TIMEOUT_MS` / `LW_RENDER_EXPORT_TIMEOUT_MS` | | per-render timeouts |
 | `LOLLY_BROWSER_PATH` / `LOLLY_BROWSER_CHANNEL` | | pin a specific Chromium instead of the bundled one |
@@ -61,6 +62,20 @@ substitutes for Chromium's own sandbox, which needs privileges we don't grant).
 In production run it under a sandboxed runtimeClass (gVisor / Kata) and a strict
 NetworkPolicy - it only needs to reach `LOLLY_WEB_BASE`, and only the control
 plane needs to reach it.
+
+**Egress rule (plans/58 WP0, `src/egress.ts`).** Every request a rendered page makes,
+in both `/render` and `/rasterise`, goes through one rule:
+- `blob:`, `data:` and `about:` are allowed; other non-HTTP schemes and model weights are refused.
+- `LOLLY_WEB_BASE` and `LW_RENDER_ALLOWED_ORIGINS` are allowed as declared.
+- Everything else must be a public address: every DNS answer must be public, and an unresolved name is refused.
+
+WebSockets are refused outright, and Chromium runs with non-proxied WebRTC disabled.
+A refusal is logged with its origin and reason, never the full URL.
+
+Chromium resolves a name again when it connects, so a DNS-rebinding host can slip past
+the in-process check. The chart's opt-in `renderWorker.networkPolicy` closes that at
+the network: control-plane ingress only, and egress to cluster DNS, public addresses and
+the `extraEgress` rules you add for a private shell or allowed origin.
 
 ## Packaged browser and verification
 

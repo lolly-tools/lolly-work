@@ -48,6 +48,11 @@ blind" line was validated without a cluster; day one is the short list after it.
      # runtimeClassName: gvisor       # prefer a sandboxed class if the cluster
                                       # offers one — this tier runs the least-
                                       # trusted content
+     networkPolicy:
+       enabled: true                  # plans/58 WP0: control-plane ingress only;
+                                      # egress to DNS + public addresses. A shell on
+                                      # a private address needs an extraEgress rule
+     # allowedOrigins: []             # private origins a render may reach
    config:
      render:
        worker:

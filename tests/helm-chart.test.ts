@@ -129,3 +129,39 @@ test('worker + HPA: the Deployment drops static replicas and the HPA targets it'
   assert.ok(hpa, 'HPA renders');
   assert.match(hpa!, /scaleTargetRef:[\s\S]*?name: \S*render-worker/, 'the HPA targets the worker Deployment');
 });
+
+// plans/58 WP0: the render worker's NetworkPolicy, and the app policy no longer covering it.
+const policyNamed = (out: string, suffix: string): string | undefined =>
+  docsOf(out).find((d) => /kind: NetworkPolicy/.test(d) && new RegExp(`name: \\S*${suffix}\\s`).test(d));
+
+test('worker NetworkPolicy is opt-in and off by default', { skip: noHelm }, () => {
+  const r = render([...SECRETS, ...WORKER]);
+  assert.ok(r.ok, r.err);
+  assert.ok(!policyNamed(r.out, 'render-worker'), 'no worker policy unless renderWorker.networkPolicy.enabled');
+});
+
+test('worker NetworkPolicy: control-plane ingress only, egress to DNS and public addresses, extraEgress templated', { skip: noHelm }, () => {
+  const r = render([...SECRETS, ...WORKER,
+    '--set', 'renderWorker.networkPolicy.enabled=true',
+    '--set-json', 'renderWorker.networkPolicy.extraEgress=[{"to":[{"podSelector":{"matchLabels":{"app":"lolly-web"}}}],"ports":[{"protocol":"TCP","port":8080}]}]',
+  ]);
+  assert.ok(r.ok, r.err);
+  const np = policyNamed(r.out, 'render-worker');
+  assert.ok(np, 'worker policy renders when enabled');
+  assert.match(np!, /podSelector:\s*matchLabels:[\s\S]*?app\.kubernetes\.io\/component: render-worker/, 'selects the worker pods');
+  assert.match(np!, /policyTypes:\s*- Ingress\s*- Egress/, 'restricts both directions');
+  assert.match(np!, /key: app\.kubernetes\.io\/component\s*operator: DoesNotExist[\s\S]*?port: 8791/, 'ingress only from control-plane pods, on the worker port');
+  for (const cidr of ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16', '127.0.0.0/8', '100.64.0.0/10', 'fc00::/7', 'fe80::/10']) {
+    assert.ok(np!.includes(`- ${cidr}`), `${cidr} carved out of public egress`);
+  }
+  assert.match(np!, /k8s-app: kube-dns[\s\S]*?port: 53/, 'cluster DNS is reachable');
+  assert.match(np!, /port: 8080[\s\S]*?app: lolly-web|app: lolly-web[\s\S]*?port: 8080/, 'extraEgress reaches the policy (toYaml sorts its keys)');
+});
+
+test('the app NetworkPolicy does not select the render worker pods', { skip: noHelm }, () => {
+  const r = render([...SECRETS, ...WORKER, '--set', 'networkPolicy.enabled=true']);
+  assert.ok(r.ok, r.err);
+  const app = docsOf(r.out).find((d) => /kind: NetworkPolicy/.test(d) && !/component: render-worker\n/.test(d.split('spec:')[0]!));
+  assert.ok(app, 'app policy renders');
+  assert.match(app!, /key: app\.kubernetes\.io\/component\s*operator: NotIn\s*values: \[render-worker\]/, 'its open egress cannot add to the worker\'s policy');
+});

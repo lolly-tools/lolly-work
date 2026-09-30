@@ -130,6 +130,7 @@ import {
   stepOf, validateNominees, withdraw,
   type Approval, type SubjectType,
 } from '../approvals/engine.ts';
+import { SHELL_SECURITY_HEADERS } from './shell-headers.ts';
 
 const STATE_COOKIE = 'lw_state';
 const LINK_KINDS: LinkKind[] = ['share', 'embed', 'download', 'guest-edit'];
@@ -6740,6 +6741,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       try {
         const bytes = await readFile(join(shellDir, target));
         res.writeHead(200, {
+          ...SHELL_SECURITY_HEADERS,
           'content-type': contentType(target),
           'cache-control': target === 'index.html' ? 'no-cache' : 'public, max-age=300',
         });

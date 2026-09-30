@@ -10,9 +10,16 @@ metadata:
   labels:
     {{- include "lolly-work.labels" . | nindent 4 }}
 spec:
+  # The render worker shares the release's selector labels, so it is excluded by
+  # component: this policy's open egress would otherwise add to (and so undo) the
+  # worker's own policy, and its ingress rule does not list the worker's port.
   podSelector:
     matchLabels:
       {{- include "lolly-work.selectorLabels" . | nindent 6 }}
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: NotIn
+        values: [render-worker]
   policyTypes:
     - Ingress
     {{- if not .Values.networkPolicy.allowAllEgress }}
