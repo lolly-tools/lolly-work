@@ -288,7 +288,7 @@ test('nginx: the shell header set is the open-source package\'s, when that check
   const oss = join(ROOT, '..', 'lolly', 'deploy', 'yunohost', 'conf', 'security-headers.inc');
   if (!existsSync(oss)) return t.skip('no ../lolly checkout beside this repo to compare against');
   const lines = (s: string): string[] => s.split('\n').filter((l) => l.startsWith('more_set_headers'));
-  assert.deepEqual(lines(read('conf/shell-headers.inc')), lines(readFileSync(oss, 'utf8')));
+  assert.deepEqual(lines(read('conf/shell-headers.inc')), lines(readFileSync(oss, 'utf8').replaceAll('__LOLLY_CSP_EXTRA_CONNECT_SRC__', '')));
 });
 
 test('systemd: runs the server as the app user on the resource-provided Node, hardened', () => {

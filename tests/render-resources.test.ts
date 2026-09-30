@@ -15,6 +15,18 @@ const spec = parseRenderSpec({ toolId: 'card', format: 'svg', inputs: { title: '
 const result = { bytes: Buffer.from('<svg/>'), mime: 'image/svg+xml', cacheKey: 'render-key', evidence: evidenceFixture(Buffer.from('<svg/>')) };
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+test('the motion engine profile does not imply a governed Work video capability', async () => {
+  const { parseProductionRequest } = await import('../server/src/render/production.ts');
+  const { collectWorkProduction } = await import('../server/src/render/production-collect.ts');
+  const contract = { profile: 'lolly/production-motion-v1' as const, id: 'movie', revision: '1', format: 'webm' as const, width: 320, height: 320, requirements: [],
+    motion: { seconds: 1, secondsTolerance: .01, fps: 24, fpsTolerance: .1, frameCount: 24, timestampTolerance: .01, audio: false } };
+  assert.throws(() => parseProductionRequest({ contract }), /Invalid production contract/);
+  assert.throws(() => parseRenderSpec({ toolId: 'design', format: 'webm', production: { contract } }));
+  const facts = await collectWorkProduction(new Uint8Array(), contract);
+  assert.equal(facts.readable, undefined);
+  assert.deepEqual(facts.limitations, ['production-profile-unavailable-in-work']);
+});
+
 test('a cancelled uncooperative executor retains capacity until physical completion', async (t) => {
   const store = createMemoryStore(), blobs = createMemoryBlobStore();
   let release!: () => void;
@@ -210,4 +222,81 @@ test('shutdown waits for an in-flight claim and releases it without executing', 
   release(); await Promise.all([tick, stop]);
   assert.equal(executed, false);
   assert.equal((await store.getRender(r.id, r.principal))!.state, 'queued');
+});
+
+test('verification is included in request identity and survives batch expansion and retry', async () => {
+  const { newRenderBatch, parseRenderBatchSpec } = await import('../server/src/renders/batch.ts');
+  const verified = parseRenderSpec({ ...spec, verification: 'output-v1' });
+  assert.notEqual(newRender('user:a', verified).requestHash, newRender('user:a', spec).requestHash);
+  assert.throws(() => parseRenderSpec({ ...spec, verification: 'anything' }), RenderResourceError);
+  const batch = newRenderBatch('user:a', parseRenderBatchSpec({ ...verified, rows: [{ key: 'a', inputs: {} }] }));
+  assert.equal(batch.rows[0]!.render.request.verification?.profile, 'output-v1');
+  batch.rows[0]!.render.state = 'failed';
+  const retried = newRenderBatch('user:a', batch.request, undefined, batch);
+  assert.equal(retried.rows[0]!.render.request.verification?.profile, 'output-v1');
+  assert.equal(retried.rows[0]!.render.retryOf, batch.rows[0]!.render.id);
+});
+
+test('durable publication cannot bypass required inspection and stores bounded failure diagnostics', async (t) => {
+  const { inspectOutput } = await import('../server/src/render/output-inspection.ts');
+  const bytes = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>');
+  const inspection = await inspectOutput(bytes, 'image/svg+xml', { format: 'svg', widthPx: null, heightPx: null });
+  for (const variant of ['valid', 'no-receipt', 'no-inspection', 'missing-check', 'unchecked', 'wrong-digest', 'wrong-target'] as const) {
+    const store = createMemoryStore(); const blobs = createMemoryBlobStore();
+    let puts = 0;
+    const originalPut = blobs.put.bind(blobs);
+    blobs.put = async (...args) => { puts++; return originalPut(...args); };
+    const receipt = evidenceFixture(bytes);
+    if (variant !== 'no-inspection') receipt.inspection = structuredClone(inspection);
+    if (variant === 'missing-check') receipt.inspection!.checks.pop();
+    if (variant === 'unchecked') receipt.inspection!.checks[0]!.state = 'undetermined';
+    if (variant === 'wrong-digest') receipt.inspection!.outputSha256 = 'other';
+    if (variant === 'wrong-target') receipt.inspection!.target.format = 'png';
+    const { id: _id, ...body } = receipt;
+    const { evidenceHash } = await import('../server/src/render/evidence.ts');
+    receipt.id = evidenceHash(body);
+    const record = newRender('user:a', parseRenderSpec({ ...spec, verification: 'output-v1', maxAttempts: 1 }));
+    await store.insertRender(record);
+    const runner = new RenderRunner({ store, blobs, execute: async () => ({ bytes, mime: 'image/svg+xml', cacheKey: 'checked',
+      ...(variant !== 'no-receipt' ? { evidence: receipt } : {}) }) });
+    t.after(() => runner.stop()); await runner.tick();
+    await until(async () => ['succeeded', 'failed'].includes((await store.getRender(record.id, record.principal))!.state));
+    const saved = (await store.getRender(record.id, record.principal))!;
+    assert.equal(saved.state, variant === 'valid' ? 'succeeded' : 'failed', variant);
+    assert.equal(puts, variant === 'valid' ? 1 : 0, variant);
+    if (variant !== 'valid') {
+      assert.equal(saved.error?.code, 'OUTPUT_VERIFICATION_FAILED', variant);
+      assert.equal(saved.output, undefined);
+      assert.equal(saved.attempt, 1);
+      if (!['no-receipt', 'no-inspection'].includes(variant)) assert.ok(saved.error?.inspection);
+    }
+    await runner.stop();
+  }
+});
+
+test('production publication reconstructs required coverage and fails closed on tampering', async t => {
+  const { inspectWorkProduction } = await import('../server/src/render/production.ts');
+  const { evidenceHash } = await import('../server/src/render/evidence.ts');
+  const bytes = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><text id="legal">125</text></svg>');
+  const production = { contract: { profile: 'lolly/production-still-v1' as const, id: 'card', revision: '1', format: 'svg' as const, width: 10, height: 10, pages: 1, alpha: 'any' as const, requirements: [{ id: 'legal', kind: 'text' as const, location: 'legal', expected: '125' }] } };
+  const report = await inspectWorkProduction(bytes, production, {});
+  for (const variant of ['valid', 'missing', 'coverage', 'measurement', 'policy', 'bytes'] as const) {
+    const store = createMemoryStore(), blobs = createMemoryBlobStore(); let puts = 0;
+    const put = blobs.put.bind(blobs); blobs.put = async (...args) => { puts++; return put(...args); };
+    const receipt = evidenceFixture(bytes);
+    if (variant !== 'missing') receipt.production = structuredClone(report);
+    if (variant === 'coverage') receipt.production!.checks.pop();
+    if (variant === 'measurement') receipt.production!.checks.at(-1)!.actual = '12';
+    if (variant === 'policy') receipt.production!.contractSha256 = '0'.repeat(64);
+    if (variant === 'bytes') receipt.production!.artifactSha256 = '0'.repeat(64);
+    if (receipt.production) { const { reportSha256: _, ...body } = receipt.production; receipt.production.reportSha256 = evidenceHash(body); }
+    const { id: _, ...body } = receipt; receipt.id = evidenceHash(body);
+    const record = newRender('user:a', parseRenderSpec({ ...spec, production, maxAttempts: 1 })); await store.insertRender(record);
+    const runner = new RenderRunner({ store, blobs, execute: async () => ({ bytes, mime: 'image/svg+xml', cacheKey: 'checked', evidence: receipt }) }); t.after(() => runner.stop());
+    await runner.tick(); await until(async () => ['succeeded', 'failed'].includes((await store.getRender(record.id, record.principal))!.state));
+    const saved = (await store.getRender(record.id, record.principal))!;
+    assert.equal(saved.state, variant === 'valid' ? 'succeeded' : 'failed', variant); assert.equal(puts, variant === 'valid' ? 1 : 0, variant);
+    if (variant !== 'valid') assert.equal(saved.error!.code, 'PRODUCTION_VERIFICATION_FAILED');
+    await runner.stop();
+  }
 });

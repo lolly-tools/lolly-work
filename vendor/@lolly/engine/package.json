@@ -1,6 +1,6 @@
 {
   "name": "@lolly/engine",
-  "version": "1.199.0",
+  "version": "1.235.0",
   "//version": "Tracks ENGINE_VERSION in src/version.ts - the published package version IS the engine version. scripts/pack-engine.ts asserts they match before packing.",
   "description": "Platform-agnostic engine for Lolly. Loads tool manifests, renders inputs, hydrates templates, drives exports through the capability bridge.",
   "license": "MPL-2.0",
@@ -14,19 +14,24 @@
   "main": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./bridge/v1": "./src/bridge/host-v1.ts"
+    "./bridge/v1": "./src/bridge/host-v1.ts",
+    "./brand-policy": "./src/brand-policy.ts",
+    "./production": "./src/production.ts",
+    "./production/types": "./src/production/types.ts"
   },
   "dependencies": {
+    "@cto.af/linebreak": "4.0.3",
     "@lolly-tools/core": "1.0.0",
     "ajv": "^8.17.1",
+    "bidi-shaper": "0.1.2",
     "css-tree": "^3.2.1",
     "fflate": "^0.8.3",
     "handlebars": "^4.7.8",
-    "prettier": "^3.9.6",
-    "smol-toml": "^1.8.0",
-    "sql-formatter": "^15.8.2",
+    "prettier": "^3.9.9",
+    "smol-toml": "^1.9.0",
+    "sql-formatter": "^15.9.0",
     "terser": "^5.51.2",
-    "yaml": "2.9.0"
+    "yaml": "2.9.1"
   },
   "devDependencies": {
     "@types/css-tree": "^3.2.0",

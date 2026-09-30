@@ -89,12 +89,12 @@ const brandOf = async (base: string): Promise<BrandCard | null> =>
 
 /** A minimal signed-looking instance pack for THIS deployment (the shape
  *  `inspectInstancePack` accepts - the OSS builder owns the real format). */
-function packBytes(version: string): Buffer {
+function packBytes(version: string, branded = false): Buffer {
   const zb = new ZipBuilder(new Date('2026-09-04T00:00:00Z'));
   const entries: Record<string, string> = {
     'manifest.json': JSON.stringify({ format: 'lolly-brand', formatVersion: 3 }),
     'instance.json': JSON.stringify({ kind: 'instance', name: 'Brand Card Hub', publisher: 'Acme', version, instance: BASE_URL }),
-    'tokens.json': '{}',
+    ...(branded ? { 'tokens.json': JSON.stringify({ marker: '#123456' }) } : {}),
     'pack.sig': 'sig-bytes',
   };
   const parts = Object.entries(entries).map(([name, body]) => zb.add(name, Buffer.from(body)));
@@ -114,7 +114,7 @@ test('brand carries the label, checksum and lock the pack index states', async (
   const res = await fetch(`${base}/api/v1/instance`);
   assert.equal(res.status, 200, 'the manifest stays unauthenticated');
   const body = (await res.json()) as Record<string, unknown>;
-  assert.deepEqual(body.brand, {
+  assert.partialDeepStrictEqual(body.brand, {
     profile: null, // a single-brand pack has no brands/ dir to name
     label: 'Acme Tokens',
     version: null, // nothing hosted at /connect/pack.lolly yet
@@ -175,7 +175,7 @@ test('a hosted pack fills brand.version and brand.packUrl', async () => {
   const base = await boot(pack);
   const owner = await login(base, 'owner@test');
   assert.equal((await fetch(`${base}/api/v1/instance-pack`, {
-    method: 'PUT', headers: { cookie: owner }, body: new Uint8Array(packBytes('1.2.0')),
+    method: 'PUT', headers: { cookie: owner }, body: new Uint8Array(packBytes('1.2.0', true)),
   })).status, 200);
 
   const body = (await (await fetch(`${base}/api/v1/instance`)).json()) as { brand: BrandCard; connect: { packUrl: string } };

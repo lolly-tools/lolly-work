@@ -81,6 +81,8 @@ export type ToolTrustClass =
 
 /** A normalised, loaded tool: everything the runtime needs to mount it. */
 export interface LoadedTool {
+  /** Host-selected language for hook copy and portable output. */
+  lang?: Lang;
   artifactDigest?: string;
   /** Host-assigned execution class; always populated by {@link loadTool}. */
   trustClass: ToolTrustClass;
@@ -93,6 +95,8 @@ export interface LoadedTool {
   hooksSource: string | null;
   /** Importable URL for module hooks (hooks.module), or null for classic hooks. */
   hooksUrl: string | null;
+  /** Declared portable browser runtime; never inferred from rendered scripts. */
+  presentationSource?: string | null;
   /**
    * Sibling text templates (template.ics/.vcf/.csv) keyed by extension.
    * Only extensions the manifest declares appear; null marks a failed fetch.
@@ -193,6 +197,13 @@ export function applyManifestI18n(manifest: ToolManifest, overlay: ToolI18nOverl
     }
     if (rest === 'addMenu.label') {
       if (input.addMenu) input.addMenu.label = value;
+      continue;
+    }
+    if (rest === 'tableEditor.title' && input.tableEditor) { input.tableEditor.title = value; continue; }
+    const tableFieldMatch = /^tableEditor\.fields\.([^.]+)\.label$/.exec(rest);
+    if (tableFieldMatch) {
+      const field = input.tableEditor?.fields.find(f => f.key === tableFieldMatch[1]);
+      if (field) { field.aliases = [...(field.aliases ?? []), field.label]; field.label = value; }
       continue;
     }
     const fieldMatch = /^fields\.([^.]+)\.(.+)$/.exec(rest);
@@ -432,16 +443,20 @@ export async function loadTool(toolId: string, fetchFile: ToolFetchFile, opts: L
     ? opts.resolveModuleUrl(`${toolId}/hooks.js`)
     : null;
 
-  const [[template, styles, hooksSource], textResults] = await Promise.all([
+  const [[template, styles, hooksSource, presentationSource], textResults] = await Promise.all([
     Promise.all([
       fetchFile(`${toolId}/template.html`),                                  // required
       tryFetch(fetchFile, `${toolId}/styles.css`),                           // optional → null
       manifest.hooks && !wantsModuleHooks ? tryFetch(fetchFile, `${toolId}/hooks.js`) : Promise.resolve(null),
+      manifest.render.portable ? fetchFile(`${toolId}/presentation.js`) : Promise.resolve(null),
     ]),
     // Text templates capture their failure reason (vs. a plain null) so the runtime
     // can tell a transient load failure apart from a genuinely-absent template.
     Promise.all(textExts.map(ext => fetchText(fetchFile, `${toolId}/template.${ext}`))),
   ]);
+  if (presentationSource && new TextEncoder().encode(presentationSource).length > 1_000_000) {
+    throw new ToolLoadError('Portable presentation exceeds the 1 MB limit', []);
+  }
 
   const textTemplates: Record<string, string | null> = {};
   const textTemplateErrors: Record<string, string> = {};
@@ -459,6 +474,7 @@ export async function loadTool(toolId: string, fetchFile: ToolFetchFile, opts: L
   if (integrity) {
     await assertFileIntegrity(integrity, toolId, 'template.html', template);
     await assertFileIntegrity(integrity, toolId, 'styles.css', styles);
+    if (manifest.render.portable) await assertFileIntegrity(integrity, toolId, 'presentation.js', presentationSource);
     if (manifest.hooks && !wantsModuleHooks) {
       await assertFileIntegrity(integrity, toolId, 'hooks.js', hooksSource);
     }
@@ -468,12 +484,14 @@ export async function loadTool(toolId: string, fetchFile: ToolFetchFile, opts: L
   }
 
   return {
+    ...(opts.lang ? { lang: opts.lang } : {}),
     trustClass,
     manifest,
     template,
     styles,
     hooksSource,
     hooksUrl,
+    presentationSource,
     textTemplates,
     textTemplateErrors,
   };

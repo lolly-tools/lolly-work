@@ -1,5 +1,7 @@
+import { parseProductionRequest, type ProductionRequest } from '../render/production.ts';
 import { canonicalJson, randomId, sha256Hex } from '../lib/crypto.ts';
 import { RenderResourceError, type RenderRecord, type RenderSpec } from './types.ts';
+import { parseOutputVerification, type OutputVerification } from '../render/output-inspection.ts';
 
 function invalid(message: string): never {
   throw new RenderResourceError('INVALID_INPUT', 400, message);
@@ -25,7 +27,7 @@ export function parseRenderSpec(value: unknown): RenderSpec {
   if (!value || typeof value !== 'object' || Array.isArray(value)) invalid('JSON object required');
   const body = value as Record<string, unknown>;
   for (const key of Object.keys(body)) {
-    if (!['toolId', 'format', 'inputs', 'priority', 'maxAttempts'].includes(key)) invalid(`unknown render field: ${key}`);
+    if (!['toolId', 'format', 'inputs', 'priority', 'maxAttempts', 'verification', 'production'].includes(key)) invalid(`unknown render field: ${key}`);
   }
   if (typeof body.toolId !== 'string' || !/^[a-z0-9][a-z0-9-]{0,127}$/.test(body.toolId)) invalid('valid toolId required');
   if (typeof body.format !== 'string') invalid('format required');
@@ -38,7 +40,14 @@ export function parseRenderSpec(value: unknown): RenderSpec {
   const maxAttempts = body.maxAttempts ?? 3;
   if (typeof priority !== 'number' || !Number.isInteger(priority) || priority < 0 || priority > 9) invalid('priority must be an integer from 0 to 9');
   if (typeof maxAttempts !== 'number' || !Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 5) invalid('maxAttempts must be an integer from 1 to 5');
-  const request = { toolId: body.toolId, format, inputs: structuredClone(inputs) as Record<string, unknown>, priority, maxAttempts };
+  let verification: OutputVerification | undefined;
+  try { verification = parseOutputVerification(body.verification); }
+  catch (error) { invalid((error as Error).message); }
+  let production: ProductionRequest | undefined;
+  try { production = parseProductionRequest(body.production); } catch (error) { invalid((error as Error).message); }
+  if (production && production.contract.format !== format) invalid('production format differs from render format');
+  const request: RenderSpec = { toolId: body.toolId, format, inputs: structuredClone(inputs) as Record<string, unknown>, priority, maxAttempts,
+    ...(verification ? { verification } : {}), ...(production ? { production } : {}) };
   if (Buffer.byteLength(canonicalJson(request)) > 1_000_000) invalid('render request exceeds 1 MB');
   return request;
 }
@@ -60,7 +69,7 @@ export function renderWire(record: RenderRecord): Record<string, unknown> {
     ...rest,
     statusUrl: `/api/v1/renders/${record.id}`,
     ...(output ? { output: { name: output.name, mime: output.mime, size: output.size, sha256: output.sha256, cacheKey: output.cacheKey,
-      ...(output.evidence ? { evidence: { id: output.evidence.id, coverage: output.evidence.coverage, url: `/api/v1/renders/${record.id}/evidence` } } : {}),
+      ...(output.evidence ? { evidence: { id: output.evidence.id, coverage: output.evidence.coverage, url: `/api/v1/renders/${record.id}/evidence` }, ...(output.evidence.brandRules ? { brandRules: { disposition: output.evidence.brandRules.disposition, scope: output.evidence.brandRules.scope, revision: output.evidence.brandRules.revision } } : {}) } : {}),
       url: `/api/v1/renders/${record.id}/output/default` } } : {}),
   };
 }

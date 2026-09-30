@@ -102,9 +102,9 @@ export interface Profile {
   };
   /**
    * Which emoji set and brand treatment new work starts from (plans/252).
-   * Additive and optional: absent means no set has been chosen, and a surface
-   * with no set draws the engine's neutral placeholder rather than the machine's
-   * own emoji font.
+   * Additive and optional: absent leaves the brand or platform default in force.
+   * An explicitly cleared document choice draws the engine's neutral placeholder
+   * rather than the machine's own emoji font.
    *
    * A SEED, not a restyle. A document or a saved session that already carries its
    * own choice keeps it; this only decides what a fresh open starts with. The

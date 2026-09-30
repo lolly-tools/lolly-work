@@ -30,7 +30,7 @@ import { displayName, resolveMember } from '../iam/member.ts';
 import { resolveProxyIdentity } from '../iam/proxy-auth.ts';
 import { createDeviceAuth, normalizeUserCode } from '../iam/device-auth.ts';
 import { activateDoneHtml, activateFormHtml, activateSignedOutHtml, idpChooserHtml } from '../iam/activate-page.ts';
-import { PACK_BLOB_ID, PACK_META_BLOB_ID, PACK_MAX_BYTES, inspectInstancePack, type InstancePackMeta } from '../catalog/instance-pack.ts';
+import { PACK_MAX_BYTES, type InstancePackMeta } from '../catalog/instance-pack.ts';
 import { readBlobBody } from '../blobs/types.ts';
 import { createNotifier } from '../notify/notify.ts';
 import { SERVICE_TOKEN_PREFIX, TOKEN_ROLES, hashServiceSecret, mintServiceSecret, serviceAccountFor } from '../iam/service-tokens.ts';
@@ -75,7 +75,11 @@ import {
 } from '../catalog/collections.ts';
 import { materializeProvider, materializeAsset, cutoverProvider, pinAsset } from '../catalog/materialize.ts';
 import { verifyLollyExport, extractProvenance } from '../catalog/publish.ts';
-import { listBrandProfiles, switchBrandProfile } from '../brand/profiles.ts';
+import { createBrandService, BrandError } from '../brand/service.ts';
+import { createBrandRuleService } from '../brand/rule-service.ts';
+import { managedRuleContext, sourceRules, hash as brandPolicyHash } from '../brand/rules.ts';
+import { registerBrandRoutes } from '../brand/routes.ts';
+import { createBrandChrome } from '../brand/chrome.ts';
 import { createMemoryBlobStore } from '../blobs/memory.ts';
 import type { BlobStore } from '../blobs/types.ts';
 import { createDeliveryProvider } from '../delivery/registry.ts';
@@ -97,7 +101,7 @@ import { readToolInputs } from '../policy/tool-inputs.ts';
 import { checkLink, linkPath, linkResourceSelectors, DEFAULT_TTL_SEC, type LinkKind, type LinkRecord } from '../links/sign.ts';
 import { accentFromTokens, collectionPageHtml, isPreviewableFormat, type CollectionPageItem } from '../links/collection-page.ts';
 import { safeEntryName, ZipBuilder } from '../links/zip.ts';
-import { renderTool, RenderError, invalidateRenderByTool } from '../render/pipeline.ts';
+import { renderTool as renderToolUnscoped, RenderError, invalidateRenderByTool } from '../render/pipeline.ts';
 import { compileVerb, diffVerb, documentVerb, packageVerb, queryFromInputs, schemaVerb, validateVerb } from '../automation/verbs.ts';
 import { AutomationQueue, jobWire, type AutomationJob } from '../automation/jobs.ts';
 import { RenderRunner } from '../renders/runner.ts';
@@ -186,8 +190,23 @@ export interface AppDeps {
 }
 
 export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
-  const { config, store, secrets, listCollabRooms, nearby } = deps;
+  const { config: deploymentConfig, store, secrets, listCollabRooms, nearby } = deps;
   const blobs = deps.blobs ?? createMemoryBlobStore();
+  const brand = createBrandService(deploymentConfig, store, blobs);
+  const brandRules = createBrandRuleService(brand, store, deploymentConfig.dev.enabled);
+  const config = { ...deploymentConfig, instance: { ...deploymentConfig.instance, get pack() { return brand.root(); } } };
+  const renderTool = (...args: Parameters<typeof renderToolUnscoped>) => {
+    const run = async () => {
+      const snap = brand.current()!;
+      const policyHash = brandPolicyHash([...args[1].overlays]);
+      const managedRules = await managedRuleContext(snap, args[1].toolId, args[1].format === 'jpeg' ? 'jpg' : args[1].format);
+      const out = await renderToolUnscoped({ ...args[0], brandRevision: snap.revision, managedRules }, args[1]);
+      if ((await brand.snapshot()).revision !== snap.revision || brandPolicyHash([...await store.listOverlays()]) !== policyHash) throw new BrandError('Brand or organisation policy changed during rendering. Retry with the current revision.', 409, 'BRAND_REVISION_CHANGED');
+      if (managedRules) await sourceRules(snap);
+      return out;
+    };
+    return brand.current() ? run() : brand.run(run);
+  };
   const fetchImpl = deps.fetchImpl ?? fetch;
   const secure = config.instance.baseUrl.startsWith('https:');
   const sessionTtlSec = config.policy.sessionTtlHours * 3600;
@@ -293,7 +312,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (instanceCatalogVersionMemo === null) {
       instanceCatalogVersionMemo = sha256Hex(instanceAssetsFingerprint(await store.listInstanceAssets())).slice(0, 16);
     }
-    return instanceCatalogVersionMemo;
+    return `${instanceCatalogVersionMemo}/${(brand.current() ?? await brand.snapshot()).revision}`;
   };
   const bustInstanceCatalog = (): void => {
     instanceCatalogVersionMemo = null;
@@ -552,7 +571,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   router.add('GET', '/api/v1/instance', async (_req, res) => {
     allowCrossOriginRead(res);
     await ensureConnectPack();
-    const packHosted = await blobs.head(PACK_BLOB_ID);
+    const packHosted = await offeredPack();
     const packUrl = packHosted ? `${config.instance.baseUrl}/connect/pack.lolly` : null;
     sendJson(res, 200, {
       name: config.instance.name,
@@ -570,6 +589,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       // client last looked (OSS plans/186 section 7). Always present, null when
       // the pack ships no tokens asset.
       brand: await brandCard(packUrl),
+      branding: { revision: brand.current()!.revision, sourceId: brand.current()!.source.id },
       // Present only while a pack is hosted (plans/34 wave 2). The URL itself
       // may still ask for a session on a gated instance.
       ...(packUrl ? { connect: { packUrl } } : {}),
@@ -861,7 +881,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // preview-as-group tool - so a preview can never drift from what a member
   // actually receives (the projection is the same function, same store reads).
   const buildOrgConfigFor = async (subject: UserRecord) => {
-    const overlays = await store.listOverlays();
+    const overlays = await brandRules.project(brand.current() ?? await brand.snapshot(), subject.groups);
     const acked = await store.acksFor(subject.id);
     const unread = targetedMessages(await store.listMessages(), { groups: subject.groups, userId: subject.id }, acked).length;
     const grants = await store.listGrants();
@@ -888,12 +908,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     metrics.orgConfigPoll(); // the fleet heartbeat - counts 200 and 304
     let payload;
     try {
-      payload = await buildOrgConfigFor(user);
+      payload = { ...await buildOrgConfigFor(user), branding: { revision: brand.current()!.revision, sourceId: brand.current()!.source.id } };
     } catch (err) {
       metrics.orgConfigError();
       throw err;
     }
-    const etag = `"oc-${payload.policyVersion}-${payload.inboxUnread}"`;
+    const etag = `"oc-${payload.policyVersion}-${payload.inboxUnread}-${payload.branding.revision}"`;
     if (req.headers['if-none-match'] === etag) {
       res.writeHead(304, { etag });
       res.end();
@@ -1915,38 +1935,17 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // An uploaded pack always wins (the seed only fills an empty store), and a
   // file naming a different instance base is refused loudly, exactly as the
   // upload would refuse it.
-  let connectPackSeeded: Promise<void> | null = null;
-  const ensureConnectPack = (): Promise<void> => {
-    connectPackSeeded ??= (async () => {
-      const rel = config.instance.connectPack;
-      if (!rel) return;
-      if (await blobs.head(PACK_BLOB_ID)) return;
-      const file = isAbsolute(rel) ? rel : join(config.instance.pack, rel);
-      const bytes = await readFile(file);
-      const inspected = inspectInstancePack(Buffer.from(bytes), config.instance.baseUrl);
-      const stat = await blobs.put(PACK_BLOB_ID, bytes, 'application/octet-stream');
-      const meta: InstancePackMeta = {
-        ...inspected, size: stat.size, checksum: stat.checksum,
-        uploadedAt: new Date().toISOString(), uploadedBy: 'system',
-      };
-      await blobs.put(PACK_META_BLOB_ID, Buffer.from(JSON.stringify(meta)), 'application/json');
-      console.log(`[lolly-work] hosting the configured connect pack (${inspected.signed ? 'signed' : 'UNSIGNED - dev only'}, ${stat.size} bytes)`);
-    })().catch((e: Error) => {
-      console.error(`[lolly-work] connect pack not hosted: ${e.message}`);
-    });
-    return connectPackSeeded;
+  const ensureConnectPack = async (): Promise<void> => {
+    await brand.ensureDownload().catch(error => console.error('Connect download unavailable:', (error as Error).message));
   };
-
-  const readPackMeta = async (): Promise<InstancePackMeta | null> => {
+  const offeredPack = async () => {
     await ensureConnectPack();
-    const meta = await blobs.get(PACK_META_BLOB_ID);
-    if (!meta) return null;
-    try {
-      return JSON.parse((await readBlobBody(meta.body)).toString('utf8')) as InstancePackMeta;
-    } catch {
-      return null;
-    }
+    const snap = await brand.snapshot();
+    const request = brand.current();
+    return (!request || request.source.id === snap.source.id && request.source.revision === snap.source.revision)
+      && brand.downloadVisible(snap) ? snap.state.download : null;
   };
+  const readPackMeta = async (): Promise<InstancePackMeta | null> => (await offeredPack())?.meta ?? null;
 
   router.add('GET', '/api/v1/instance-pack', async (req, res) => {
     if (!(await requireAction(req, res, 'fleet.view'))) return;
@@ -1962,34 +1961,22 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     } catch {
       return sendError(res, 413, 'PAYLOAD_TOO_LARGE', `a pack is at most ${PACK_MAX_BYTES} bytes (the OSS builder's own budget)`);
     }
-    let inspected;
+    if (store.brandPersistence !== 'durable' && !config.dev.enabled) return sendError(res, 409, 'READ_ONLY', 'Durable storage is required to change the connect download.');
     try {
-      inspected = inspectInstancePack(bytes, config.instance.baseUrl);
-    } catch (e) {
-      return sendError(res, 400, 'INVALID_PACK', (e as Error).message);
+      const meta = await brand.publishDownload(bytes, `user:${actor.id}`, await brand.snapshot());
+      sendJson(res, 200, { pack: meta });
+    } catch (error) {
+      if (error instanceof BrandError) throw error;
+      sendError(res, 400, 'INVALID_PACK', (error as Error).message);
     }
-    const stat = await blobs.put(PACK_BLOB_ID, bytes, 'application/octet-stream');
-    const meta: InstancePackMeta = {
-      ...inspected,
-      size: stat.size,
-      checksum: stat.checksum,
-      uploadedAt: new Date().toISOString(),
-      uploadedBy: actor.id,
-    };
-    await blobs.put(PACK_META_BLOB_ID, Buffer.from(JSON.stringify(meta)), 'application/json');
-    await audit(`user:${actor.id}`, 'instance.pack.update', 'instance', {
-      signed: inspected.signed, size: stat.size, ...(inspected.version ? { version: inspected.version } : {}),
-    });
-    sendJson(res, 200, { pack: meta });
   });
 
   router.add('DELETE', '/api/v1/instance-pack', async (req, res) => {
     const actor = await requireAction(req, res, 'instance.config');
     if (!actor) return;
-    await blobs.delete(PACK_BLOB_ID);
-    await blobs.delete(PACK_META_BLOB_ID);
-    await audit(`user:${actor.id}`, 'instance.pack.remove', 'instance');
-    sendJson(res, 200, { ok: true });
+    const change = { action: 'stop-download' as const, sourceId: 'download' };
+    const review = await brand.preview(actor, change);
+    sendJson(res, 200, await brand.apply(actor, change, review.revision, review.reviewToken));
   });
 
   router.add('GET', '/connect/pack.lolly', async (req, res) => {
@@ -2017,7 +2004,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // tag by itself. `no-cache` rather than `no-store`: a browser may keep the
     // copy, it just may not serve it without asking us first. The tag is read
     // AFTER the access gate above, so a gated instance never leaks it.
-    const head = await blobs.head(PACK_BLOB_ID);
+    const offer = await offeredPack();
+    const head = offer?.blobId ? await blobs.head(offer.blobId) : null;
     if (!head) return sendError(res, 404, 'NOT_FOUND', 'no instance pack is hosted here');
     const etag = `"${head.checksum}"`;
     if (ifNoneMatchHits(req.headers['if-none-match'], etag)) {
@@ -2025,7 +2013,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       res.end();
       return;
     }
-    const blob = await blobs.get(PACK_BLOB_ID);
+    const blob = offer?.blobId ? await blobs.get(offer.blobId) : null;
     if (!blob) return sendError(res, 404, 'NOT_FOUND', 'no instance pack is hosted here');
     res.writeHead(200, {
       'content-type': 'application/octet-stream',
@@ -2817,7 +2805,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     } catch {
       return sendError(res, 404, 'NOT_FOUND', 'no such tool file');
     }
-    res.writeHead(200, { 'content-type': contentType(rel), 'cache-control': 'private, max-age=300' });
+    res.writeHead(200, { 'content-type': contentType(rel), 'cache-control': 'private, no-cache' });
     res.end(bytes);
   });
 
@@ -2974,7 +2962,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       try {
         const index = JSON.parse(bytes.toString('utf8')) as { tools?: Array<{ id: string }> };
         if (Array.isArray(index.tools)) index.tools = filterToolIndex(index.tools, overlays, groups);
-        return sendJson(res, 200, index, { 'cache-control': 'private, max-age=60' });
+        return sendJson(res, 200, index, { 'cache-control': 'private, no-cache' });
       } catch {
         /* not the expected shape — serve raw below */
       }
@@ -3006,7 +2994,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         const withCollections = composeCollections(
           applyCredentialsToIndex(gated, creds), await store.listCollections(), user?.groups ?? [],
         );
-        return sendJson(res, 200, withCollections, { 'cache-control': 'private, max-age=60' });
+        return sendJson(res, 200, withCollections, { 'cache-control': 'private, no-cache' });
       } catch {
         /* not the expected shape — serve raw below */
       }
@@ -3023,7 +3011,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         }
       }
     }
-    res.writeHead(200, { 'content-type': contentType(rel), 'cache-control': 'private, max-age=300' });
+    res.writeHead(200, { 'content-type': contentType(rel), 'cache-control': 'private, no-cache' });
     res.end(bytes);
   });
 
@@ -3338,7 +3326,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
    *  logo/font/token sources the sign-in gate inherits, resolved server-side so
    *  the page needs no script and makes no request off this origin. */
   const bearerBrand = async (): Promise<Parameters<typeof collectionPageHtml>[0]['brand']> => {
-    const chrome = await loadBrandChrome();
+    const chrome = await brandChrome.public();
     const accent = chrome ? accentFromTokens(chrome.tokens) : undefined;
     const font = await brandFontFile();
     return {
@@ -5916,19 +5904,21 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   };
   const durableRenders = new RenderRunner({
     store, blobs,
-    execute: async (record, signal) => {
+    execute: async (record, signal) => brand.run(async () => {
       const caller = await currentRenderCaller(record.principal, record.request);
       await validateRenderRequest(record.principal, record.request);
       signal.throwIfAborted();
       const result = await renderTool({ config, captureEvidence: true, resolveProvenance, instanceCatalogVersion, worker: renderWorker,
         signer: await getC2paSigner(), hostedResolver: hostedAssetResolverFor(caller.groups) }, {
         signal, toolId: record.request.toolId, format: record.request.format, query: queryFromInputs(record.request.inputs),
+        verification: record.request.verification,
+        production: record.request.production,
         principal: { groups: caller.groups }, profile: caller.profile, overlays: await store.listOverlays(),
       });
       signal.throwIfAborted();
       await currentRenderCaller(record.principal, record.request);
       return result;
-    },
+    }),
   });
   registerRenderRoutes(router, {
     store, blobs,
@@ -6161,7 +6151,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
     try {
       const result = await execute();
-      res.writeHead(200, { 'content-type': result.mime, 'x-lolly-cache-key': result.cacheKey });
+      res.writeHead(200, { 'content-type': result.mime, 'x-lolly-cache-key': result.cacheKey, 'x-lolly-brand-check': result.evidence?.brandRules?.disposition ?? 'not-requested' });
       res.end(Buffer.from(result.bytes));
     } catch (e) { if (e instanceof RenderError) return sendError(res, e.status, e.code, e.message); throw e; }
   });
@@ -6280,7 +6270,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         return;
       }
       res.writeHead(200, {
-        'content-type': result.mime, etag, 'cache-control': 'private, max-age=60',
+        'content-type': result.mime, etag, 'cache-control': result.evidence?.brandRules ? 'private, no-store' : 'private, max-age=60',
+        'x-lolly-brand-check': result.evidence?.brandRules?.disposition ?? 'not-requested',
         ...provenanceHeader(result.provenance),
       });
       res.end(Buffer.from(result.bytes));
@@ -6495,193 +6486,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // (the governed catalog is auth-gated, but a horizontal wordmark is the same
   // non-sensitive identity a public site shows). Abs file paths are kept here,
   // keyed by theme, and only reachable via the validated /api/brand/logo route.
-  const brandLogoFiles: { light?: string; dark?: string } = {};
-  let brandChrome:
-    | { name: string; tokens: unknown; fontsBase: string; logos: { light: string | null; dark: string | null } }
-    | null
-    | undefined;
-  /**
-   * The tokens asset's identity as the pack's own index states it, filled by the
-   * SAME pass that builds the chrome so the public manifest and /api/brand can
-   * never describe different brands. A client that keeps this design system on
-   * the device compares the checksum to answer one question cheaply: has the
-   * brand here changed since I copied it (OSS plans/186 section 7). `null` means
-   * the pack ships no tokens asset at all.
-   */
-  let brandFacts: { label: string | null; checksum: string | null; locked: boolean } | null | undefined;
-  const loadBrandChrome = async (): Promise<typeof brandChrome> => {
-    if (brandChrome !== undefined && brandFacts !== undefined) return brandChrome;
-    brandFacts = null;
-    try {
-      const idx = JSON.parse(await readFile(join(config.instance.pack, 'catalog', 'assets', 'index.json'), 'utf8')) as {
-        assets?: Array<{
-          type?: string; name?: string; checksum?: string; brandLock?: boolean;
-          tags?: string[]; formats?: Array<{ format?: string; url?: string; checksum?: string }>;
-        }>;
-      };
-      const assets = idx.assets ?? [];
-      const tok = assets.find((a) => a?.type === 'tokens');
-      const fmt = tok?.formats?.find((f) => f.format === 'json') ?? tok?.formats?.[0];
-      if (tok) {
-        brandFacts = {
-          label: typeof tok.name === 'string' ? tok.name : null,
-          // The OSS catalog build (scripts/checksum-assets.ts) writes an
-          // SRI-format checksum per format FILE, so that is the honest change
-          // detector; an asset-level one wins if a pack carries it.
-          checksum: typeof tok.checksum === 'string' ? tok.checksum
-            : typeof fmt?.checksum === 'string' ? fmt.checksum : null,
-          locked: tok.brandLock === true,
-        };
-      }
-      if (!fmt?.url) return (brandChrome = null);
-      const abs = (url: string) => join(config.instance.pack, 'catalog', normalize(url.replace(/^\/?catalog\//, '')));
-      const tokens = JSON.parse(await readFile(abs(fmt.url), 'utf8'));
-      const lightUrl = pickBrandLogoUrl(assets, 'light');
-      const darkUrl = pickBrandLogoUrl(assets, 'dark');
-      if (lightUrl) brandLogoFiles.light = abs(lightUrl);
-      if (darkUrl) brandLogoFiles.dark = abs(darkUrl);
-      brandChrome = {
-        name: config.instance.name,
-        tokens,
-        fontsBase: '/api/brand/font/',
-        logos: {
-          light: brandLogoFiles.light ? '/api/brand/logo/light' : null,
-          dark: brandLogoFiles.dark ? '/api/brand/logo/dark' : null,
-        },
-      };
-    } catch {
-      brandChrome = null;
-    }
-    return brandChrome;
-  };
-  /**
-   * The manifest's `brand` block (OSS plans/186 section 7). A client that adds a
-   * hosted design system by URL keeps it on the device for offline use, then
-   * asks now and then whether the host's brand moved; this answers that in one
-   * unauthenticated read, without shipping the tokens themselves. `checksum` is
-   * the comparison, `locked` says the brand is authoritative (a client must not
-   * offer to customise it), `profile` names the active brand profile on a
-   * profile-aware pack, `version` is the hosted pack's own version, and
-   * `packUrl` repeats `connect.packUrl` so one block answers "what is here and
-   * where do I get it". Null when the pack ships no tokens asset.
-   */
-  const brandCard = async (packUrl: string | null): Promise<{
-    profile: string | null; label: string | null; version: string | null;
-    checksum: string | null; locked: boolean; packUrl: string | null;
-  } | null> => {
-    await loadBrandChrome();
-    const facts = brandFacts;
-    if (!facts) return null;
-    const profiles = await listBrandProfiles(config.instance.pack);
-    return {
-      profile: profiles.available ? profiles.active : null,
-      label: facts.label,
-      version: packUrl ? (await readPackMeta())?.version ?? null : null,
-      checksum: facts.checksum,
-      locked: facts.locked,
-      packUrl,
-    };
-  };
-  /**
-   * The pack's own webfont, for a page the server renders itself (the
-   * collection bearer page, plans/31 §5) rather than for the shell.
-   *
-   * The shell reads `/api/brand` and picks a family from the tokens; a
-   * server-rendered page has no such machinery and no script, so it needs one
-   * concrete `@font-face`. Variable faces are preferred - one file covers every
-   * weight, which is the whole point of shipping one - and a pack with no
-   * webfonts simply gets the system stack. Memoised: the pack is immutable for
-   * a process.
-   */
-  let brandFont: { family: string; file: string } | null | undefined;
-  const brandFontFile = async (): Promise<typeof brandFont> => {
-    if (brandFont !== undefined) return brandFont;
-    try {
-      const names = (await readdir(join(config.instance.pack, 'catalog', 'fonts', 'webfonts')))
-        .filter((n) => n.toLowerCase().endsWith('.woff2') && !/mono/i.test(n))
-        .sort();
-      const file = names.find((n) => /variable/i.test(n)) ?? names[0];
-      brandFont = file ? { family: (file.split(/[-.]/)[0] as string) || 'Brand', file } : null;
-    } catch {
-      brandFont = null;
-    }
-    return brandFont;
-  };
-
-  router.add('GET', '/api/brand', async (_req, res) => {
-    const c = await loadBrandChrome();
-    if (!c) return sendError(res, 404, 'NO_BRAND', 'this pack ships no design tokens');
-    sendJson(res, 200, c, { 'cache-control': 'public, max-age=300' });
-  });
-  router.add('GET', '/api/brand/logo/:variant', async (_req, res, ctx) => {
-    await loadBrandChrome();
-    const variant = ctx.params.variant === 'dark' ? 'dark' : ctx.params.variant === 'light' ? 'light' : null;
-    const file = variant ? brandLogoFiles[variant] : undefined;
-    if (!file) return sendError(res, 404, 'NOT_FOUND', 'this pack ships no brand logo');
-    try {
-      const bytes = await readFile(file);
-      res.writeHead(200, { 'content-type': 'image/svg+xml', 'cache-control': 'public, max-age=86400' });
-      res.end(bytes);
-    } catch {
-      sendError(res, 404, 'NOT_FOUND', 'no such logo');
-    }
-  });
-  router.add('GET', '/api/brand/font/:file', async (_req, res, ctx) => {
-    const file = ctx.params.file ?? '';
-    if (!/^[A-Za-z0-9._[\]-]+\.woff2$/.test(file)) return sendError(res, 400, 'INVALID_INPUT', 'bad font name');
-    try {
-      const bytes = await readFile(join(config.instance.pack, 'catalog', 'fonts', 'webfonts', file));
-      res.writeHead(200, { 'content-type': 'font/woff2', 'cache-control': 'public, max-age=86400' });
-      res.end(bytes);
-    } catch {
-      sendError(res, 404, 'NOT_FOUND', 'no such font');
-    }
-  });
-
-  // ── brand profiles (plans/29): a profile-aware pack carries multiple brands
-  // under <pack>/brands/<name>/, one active via the catalog symlink + the
-  // .lolly-profile marker. Reading which is active is member-visible (the
-  // console's Design system tab); switching is owner/admin, audited, and
-  // re-points the pack so the new brand themes the console, sign-in and tools.
-  router.add('GET', '/api/v1/brand/profiles', async (req, res) => {
-    const user = await memberOf(req);
-    const p = principalOf(req);
-    if (config.policy.defaultAccessMode === 'gated' && !user && p?.kind !== 'guest') {
-      return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
-    }
-    sendJson(res, 200, await listBrandProfiles(config.instance.pack), { 'cache-control': 'no-store' });
-  });
-
-  router.add('PUT', '/api/v1/brand/profile', async (req, res) => {
-    const user = await requireAction(req, res, 'brand.switch');
-    if (!user) return;
-    const body = (await readJson(req)) as { name?: string } | null;
-    const name = typeof body?.name === 'string' ? body.name : '';
-    if (!name) return sendError(res, 400, 'INVALID_INPUT', 'name required');
-    const before = await listBrandProfiles(config.instance.pack);
-    if (!before.available) return sendError(res, 409, 'NOT_PROFILE_AWARE', 'this deployment’s pack has no brand profiles');
-    if (!before.profiles.some((pr) => pr.name === name)) return sendError(res, 404, 'NOT_FOUND', `no such brand profile: ${name}`);
-    if (before.active === name) return sendJson(res, 200, { ok: true, unchanged: true, ...before });
-    try {
-      await switchBrandProfile(config.instance.pack, name);
-    } catch (err) {
-      return sendError(res, 409, 'PROFILE_SWITCH_FAILED', (err as Error).message);
-    }
-    // The pack pointer moved - drop every cache derived from it so the new brand
-    // serves immediately. brandChrome is memoized forever; the asset caches are
-    // mtime-gated, but a symlink swap can share an mtime, so clear them too.
-    // brandFacts is the manifest's copy of the same index and goes with it: a
-    // client polling the public manifest must see the new brand, not the old
-    // checksum.
-    brandChrome = undefined;
-    brandFacts = undefined;
-    delete brandLogoFiles.light;
-    delete brandLogoFiles.dark;
-    assetByIdCache.delete(config.instance.pack);
-    assetPathMapCache.delete(config.instance.pack);
-    await audit(`user:${user.id}`, 'brand.profile.switch', `brand:${name}`, { profile: name, from: before.active ?? null });
-    sendJson(res, 200, { ok: true, ...(await listBrandProfiles(config.instance.pack)) });
-  });
+  const brandChrome = createBrandChrome(config.instance.name, brand);
+  const brandFontFile = () => brandChrome.font();
+  const brandCard = async (packUrl: string | null) => brandChrome.card(packUrl, await readPackMeta());
+  brandChrome.register(router);
+  registerBrandRoutes(router, { brand, rules: brandRules, member: async req => (await memberOf(req)) ?? (await serviceAccountOf(req)) });
 
   // ── SCIM provisioning (plans/31 §8) ───────────────────────────────────────
   // Two surfaces. The ADMIN half (/api/v1/scim/tokens) mints and revokes the
@@ -7027,7 +6836,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       }
     }
     try {
-      const matched = await router.dispatch(req, res);
+      const matched = await brand.run(async () => {
+        res.setHeader('x-lolly-brand-revision', brand.current()!.revision);
+        const expected = req.headers['x-lolly-brand-revision'];
+        if (expected && expected !== brand.current()!.revision) throw new BrandError('The design system changed during rendering. Retry with the current revision.', 409, 'BRAND_REVISION_CHANGED');
+        return router.dispatch(req, res);
+      });
       if (matched) routeClass = matched;
       else sendError(res, 404, 'NOT_FOUND', `no route for ${req.method} ${req.url}`);
     } catch (err) {
@@ -7036,16 +6850,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         return;
       }
       const status = (err as { status?: number }).status ?? 500;
-      if (!res.headersSent) sendError(res, status, status === 500 ? 'INTERNAL' : 'BAD_REQUEST', (err as Error).message);
+      if (!res.headersSent) sendError(res, status, err instanceof BrandError ? err.code : status === 500 ? 'INTERNAL' : 'BAD_REQUEST', (err as Error).message);
     }
   };
 }
 
-/** Pick a horizontal brand wordmark for a theme from a pack's catalog index and
- *  return its catalog-relative URL. Prefers the on-theme variant (on-light for
- *  light, on-dark for dark) and, within that, the brand-colour face for light and
- *  the white mono face for dark; degrades gracefully to any 'logo' vector. Chrome
- *  only - the caller serves it through the narrow /api/brand/logo passthrough. */
 /** Let a browser on any origin read this response. Used by the two routes a
  *  client fetches cross-origin when someone adds a hosted design system by URL
  *  (OSS plans/186 section 3.6) - the unauthenticated manifest, and the pack
@@ -7090,30 +6899,7 @@ function ifNoneMatchHits(header: string | string[] | undefined, etag: string): b
   });
 }
 
-function pickBrandLogoUrl(
-  assets: Array<{ type?: string; tags?: string[]; formats?: Array<{ format?: string; url?: string }> }>,
-  theme: 'light' | 'dark',
-): string | undefined {
-  const has = (a: { tags?: string[] }, t: string) => Array.isArray(a.tags) && a.tags.includes(t);
-  const logos = assets.filter((a) => a?.type === 'vector' && has(a, 'logo'));
-  if (!logos.length) return undefined;
-  const horizontal = logos.filter((a) => has(a, 'horizontal'));
-  const shaped = horizontal.length ? horizontal : logos;
-  const themed = shaped.filter((a) => has(a, theme === 'dark' ? 'on-dark' : 'on-light'));
-  const pool = themed.length ? themed : shaped;
-  let pick = pool[0];
-  if (!pick) return undefined;
-  const prefer = theme === 'dark' ? ['white', 'green'] : ['green', 'black'];
-  for (const p of prefer) {
-    const m = pool.find((a) => has(a, p));
-    if (m) {
-      pick = m;
-      break;
-    }
-  }
-  const fmt = pick.formats?.find((f) => f.format === 'svg') ?? pick.formats?.[0];
-  return fmt?.url;
-}
+
 
 type ActorInfo = { name: string; email: string };
 

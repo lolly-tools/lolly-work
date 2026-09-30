@@ -25,6 +25,9 @@ export interface AssetRef {
     | 'data';
   format: string;
   url: string;
+  /** Original encoded file when url is a prepared display image. Disposable
+   * host URLs are resolved again from id/version after reopening. */
+  original?: { url: string; format: string };
   width?: number;
   height?: number;
   version?: string;

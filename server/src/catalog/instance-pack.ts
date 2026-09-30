@@ -22,6 +22,8 @@
  * pack exactly as signed: this service must never flatten, filter, rename or
  * independently interpret application-token references while hosting it.
  */
+import { createHash } from 'node:crypto';
+import { canonicalJson } from '../lib/crypto.ts';
 import { inflateRawSync } from 'node:zlib';
 
 export const PACK_BLOB_ID = 'instance-pack.lolly';
@@ -63,6 +65,7 @@ function centralEntries(bytes: Buffer): Entry[] {
   let at = bytes.readUInt32LE(eocd + 16);
   if (count === 0xffff || at === 0xffffffff) throw new Error('zip64 archive - not an instance pack');
   const out: Entry[] = [];
+  const seen = new Set<string>();
   for (let i = 0; i < count; i++) {
     if (at + 46 > bytes.length || bytes.readUInt32LE(at) !== CENTRAL_SIG) throw new Error('malformed zip central directory');
     const method = bytes.readUInt16LE(at + 10);
@@ -71,7 +74,10 @@ function centralEntries(bytes: Buffer): Entry[] {
     const extraLen = bytes.readUInt16LE(at + 30);
     const commentLen = bytes.readUInt16LE(at + 32);
     const localOffset = bytes.readUInt32LE(at + 42);
+    if (at + 46 + nameLen + extraLen + commentLen > eocd) throw new Error('malformed zip entry');
     const name = bytes.subarray(at + 46, at + 46 + nameLen).toString('utf8');
+    if (seen.has(name)) throw new Error('duplicate zip entry');
+    seen.add(name);
     out.push({ name, method, compressedSize, localOffset });
     at += 46 + nameLen + extraLen + commentLen;
   }
@@ -79,13 +85,15 @@ function centralEntries(bytes: Buffer): Entry[] {
 }
 
 function entryBytes(bytes: Buffer, e: Entry): Buffer {
+  if (e.localOffset + 30 > bytes.length) throw new Error('malformed zip local header');
   if (bytes.readUInt32LE(e.localOffset) !== LOCAL_SIG) throw new Error(`malformed zip local header for ${e.name}`);
   const nameLen = bytes.readUInt16LE(e.localOffset + 26);
   const extraLen = bytes.readUInt16LE(e.localOffset + 28);
   const start = e.localOffset + 30 + nameLen + extraLen;
+  if (start + e.compressedSize > bytes.length || e.compressedSize > PACK_MAX_BYTES) throw new Error('pack entry exceeds its bounds');
   const raw = bytes.subarray(start, start + e.compressedSize);
   if (e.method === 0) return Buffer.from(raw);
-  if (e.method === 8) return inflateRawSync(raw);
+  if (e.method === 8) return inflateRawSync(raw, { maxOutputLength: PACK_MAX_BYTES });
   throw new Error(`unsupported zip compression method ${e.method} for ${e.name}`);
 }
 
@@ -129,4 +137,11 @@ export function inspectInstancePack(bytes: Buffer, expectedBase: string): PackIn
     signed: names.has('pack.sig'),
     entryCount: entries.length,
   };
+}
+
+/** Compare the opaque tokens document without changing signed archive bytes. */
+export function instancePackTokensChecksum(bytes: Buffer): string | null {
+  const entry = centralEntries(bytes).find(e => e.name === 'tokens.json');
+  if (!entry) return null;
+  return createHash('sha256').update(canonicalJson(JSON.parse(entryBytes(bytes, entry).toString('utf8')))).digest('hex');
 }

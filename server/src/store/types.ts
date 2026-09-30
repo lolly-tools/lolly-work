@@ -300,6 +300,11 @@ export interface SubmitQuotaRow {
 }
 
 export interface Store extends RenderStore {
+  readonly brandPersistence: 'durable' | 'ephemeral';
+  getBrandState(): Promise<import('../brand/state.ts').BrandState>;
+  /** Commit state and its audit event together, or return null on a stale revision. */
+  casBrandState(expected: number, next: Omit<import('../brand/state.ts').BrandState, 'revision'>,
+    audit: AuditEventBody): Promise<import('../brand/state.ts').BrandState | null>;
   // users
   upsertUserBySub(user: UserUpsert): Promise<UserRecord>;
   getUserBySub(sub: string): Promise<UserRecord | null>;

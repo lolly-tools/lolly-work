@@ -120,6 +120,8 @@ export interface TokenEntry {
 }
 
 export interface ColorSwatch {
+  /** Canonical CSS colour before sRGB fallback mapping. */
+  css?: string;
   ref: string; // canonical reference, e.g. '{color.brand.jungle}'
   path: string;
   name: string; // display label ($description, or prettified leaf)

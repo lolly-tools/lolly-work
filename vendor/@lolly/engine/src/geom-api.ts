@@ -47,6 +47,7 @@ import { type AuthoredPath, type Node as SplineNode, enforceContinuity, toCubics
 import { decodeAuthoredPathsResult, encodeAuthoredPaths } from './geom/authored-url.ts';
 import { simplifyCubics } from './geom/fit.ts';
 import { parseSvgPath } from './svg-path.ts';
+import { renderVectorPaint } from './vector-paint.ts';
 
 // ── ceilings ──────────────────────────────────────────────────────────────────
 // Sized above any real authored path and below where the superlinear kernel passes
@@ -435,6 +436,10 @@ export function makeGeomApi(): GeomAPI {
   };
 
   return {
+    paintAuthored: (path, paint, width, height, prefix) => {
+      try { return ok(renderVectorPaint(path,paint,width,height,prefix)); }
+      catch (error) { return fail('invalid-argument',error instanceof Error ? error.message : String(error)); }
+    },
     union: (paths, opts) => boolOp(paths, (a, b, o) => unionPath(a, b, o), opts),
     intersect: (paths, opts) => boolOp(paths, (a, b, o) => intersectPath(a, b, o), opts),
     difference: (paths, opts) => boolOp(paths, (a, b, o) => differencePath(a, b, o), opts),

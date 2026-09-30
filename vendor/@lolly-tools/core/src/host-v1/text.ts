@@ -1,8 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
+import type { TextFontInfoV1, TextFontResourceV1, TextLayoutRequestV1, TextLayoutV1, TextShapeRunRequestV1, TextShapedRunV1 } from '../text-v1.ts';
 
 // ─── Text-to-path ───────────────────────────────────────────────────────────
 
 export interface TextAPI {
+  /** Content-pinned face metadata for authored text composition. */
+  fontInfo?(font: TextFontResourceV1): Promise<TextFontInfoV1>;
+  /** Explicit script, direction, language and source-cluster shaping. */
+  shapeRun?(request: TextShapeRunRequestV1): Promise<TextShapedRunV1>;
+  /** Shared paragraph composition; source and fonts must already be pinned. */
+  layoutRuns?(request: TextLayoutRequestV1): Promise<TextLayoutV1>;
   /** Actual Unicode character map of a font file, without fallback (v1.191). */
   characters?(fontUrl: string): Promise<number[]>;
   /**

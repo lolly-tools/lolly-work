@@ -2,7 +2,7 @@
   "api/_lib/bootstrap.ts": 1,
   "scripts/check-docs-vernacular.ts": 12,
   "scripts/demo.ts": 2,
-  "server/src/api/app.ts": 7,
+  "server/src/api/app.ts": 6,
   "server/src/catalog/lifecycle.ts": 1,
   "server/src/catalog/materialize.ts": 1,
   "server/src/catalog/providers/shape.ts": 2,

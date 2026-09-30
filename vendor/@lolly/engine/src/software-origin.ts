@@ -151,6 +151,12 @@ export function xmlProvenanceFields(input: string): MetaField[] {
     ['dc', 'http://purl.org/dc/elements/1.1/', 'relation', 'description', 'Related resource'],
     ['cc', 'http://creativecommons.org/ns#', 'attributionURL', 'authorship', 'Attribution URL'],
     ['dc', 'http://purl.org/dc/elements/1.1/', 'creator', 'authorship', 'Creator'],
+    ['Iptc4xmpCore', 'http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/', 'CiEmailWork', 'authorship', 'Contact email'],
+    ['Iptc4xmpCore', 'http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/', 'CiTelWork', 'authorship', 'Contact phone'],
+    ['Iptc4xmpCore', 'http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/', 'CiUrlWork', 'authorship', 'Contact website'],
+    ['Iptc4xmpCore', 'http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/', 'CiAdrExtadr', 'authorship', 'Contact address'],
+    ['Iptc4xmpCore', 'http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/', 'CiAdrCity', 'authorship', 'Contact city'],
+    ['Iptc4xmpCore', 'http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/', 'CiAdrCtry', 'authorship', 'Contact country'],
     ['xmp', 'http://ns.adobe.com/xap/1.0/', 'CreateDate', 'timestamps', 'Created'],
     ['xmp', 'http://ns.adobe.com/xap/1.0/', 'ModifyDate', 'timestamps', 'Modified'],
   ];

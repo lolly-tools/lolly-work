@@ -50,8 +50,8 @@ export interface ImageInfo {
 }
 
 /** Encodings host.images can emit. Deliberately narrower than what it can
- *  READ (HEIC/AVIF/TIFF decode in, but only web-safe formats out). */
-export type ImageEncodeFormat = 'webp' | 'jpeg' | 'png';
+ *  READ. JPEG XL output uses rendered 8-bit sRGB samples; lossless refers to those samples. */
+export type ImageEncodeFormat = 'webp' | 'jpeg' | 'png' | 'jxl' | 'jxl-lossless';
 
 export interface ImageResizeOpts {
   /** Longest-edge cap in px (aspect preserved). */

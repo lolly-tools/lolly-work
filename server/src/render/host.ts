@@ -72,7 +72,7 @@ async function buildAssets(pack: string, hostedResolver?: (ref: HostedProviderRe
   const byId = new Map<string, CatalogAsset>();
   try {
     const raw = await readFile(join(catalogDir, 'assets', 'index.json'), 'utf8');
-    const index = JSON.parse(raw) as { assets?: CatalogAsset[] };
+    const index = JSON.parse(raw) as { assets?: CatalogAsset[]; brandTokens?: string | null };
     for (const a of index.assets ?? []) byId.set(a.id, a);
   } catch {
     /* no asset catalog in this pack — leave the map empty */
@@ -142,8 +142,9 @@ async function buildTokens(pack: string, engine: EngineApi): Promise<WorkHost['t
   const catalogDir = join(pack, 'catalog');
   let doc: unknown = null;
   try {
-    const index = JSON.parse(await readFile(join(catalogDir, 'assets', 'index.json'), 'utf8')) as { assets?: CatalogAsset[] };
-    const asset = (index.assets ?? []).find((a) => a.type === 'tokens' && a.formats[0]?.url);
+    const index = JSON.parse(await readFile(join(catalogDir, 'assets', 'index.json'), 'utf8')) as { assets?: CatalogAsset[]; brandTokens?: string | null };
+    const tokens = (index.assets ?? []).filter(a => a.type === 'tokens' && a.formats[0]?.url);
+    const asset = 'brandTokens' in index ? tokens.find(a => a.id === index.brandTokens) : tokens.length === 1 ? tokens[0] : undefined;
     // Index urls are catalog-rooted (`/catalog/assets/…`) or pack-relative; both resolve under catalogDir.
     if (asset) doc = JSON.parse(await readFile(join(catalogDir, asset.formats[0]!.url.replace(/^\/?(?:catalog\/)?/, '')), 'utf8'));
   } catch {

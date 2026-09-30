@@ -3,21 +3,29 @@
 import type { EmojiMeaningV1 } from '@lolly-tools/core';
 import { sha256Hex } from './bytes.ts';
 import { escapeXml } from './xml-escape.ts';
-import { findEmojiGlyph, verifyEmojiArtwork } from './emoji-pack.ts';
+import { findEmojiGlyph, matchesEmojiPack, verifyEmojiArtwork } from './emoji-pack.ts';
 import type { VerifiedEmojiPack } from './emoji-pack.ts';
 import { svgNumberList, svgPath, svgScalar, svgTransform } from './emoji-svg-syntax.ts';
-import { NAMED_COLORS } from './css-color.ts';
+import { NAMED_COLORS, parseColor, formatColor } from './css-color.ts';
 
 export const EMOJI_SVG_VERSION = 'static-svg-v1';
 /** What {@link recolorPreparedEmojiSvg} stamps: the same subset, with paints rewritten by the treatment recipe. */
 export const EMOJI_TREATED_SVG_VERSION = 'static-svg-v1+emoji-treatment-v1';
-/** What {@link inkPreparedEmojiSvg} stamps: the same subset, with black paints bound to the text colour. */
+/** What {@link inkPreparedEmojiSvg} stamps: the same subset, with foreground ink bound to the text colour. */
 export const EMOJI_INK_SVG_VERSION = 'static-svg-v1+emoji-ink-v1';
 export type EmojiXmlParser = (source: string) => Document;
 export interface PreparedEmojiSvg { readonly checksum: string; readonly sourceChecksum: string; readonly normalizer: typeof EMOJI_SVG_VERSION | typeof EMOJI_TREATED_SVG_VERSION | typeof EMOJI_INK_SVG_VERSION }
 interface SvgNode { tag: string; attributes: Record<string, string>; children: SvgNode[] }
-interface SvgRecord { tree: SvgNode; changes: string[] }
+interface SvgRecord { tree: SvgNode; changes: string[]; textInk?: readonly string[] }
 const prepared = new WeakMap<PreparedEmojiSvg, SvgRecord>();
+// This admitted Fluent release uses dark greys as foreground ink. Pin the
+// exception so other artwork, including Fluent Flat, keeps its authored greys.
+const FLUENT_HIGH_CONTRAST = {
+  id: 'community/emoji/fluent/high-contrast',
+  pin: { version: '2026.8.24' },
+  checksum: 'sha256:0428cfd8a440aef92a1ea1d227c1b601c79d747144d26159336ed0c3230dbd7e',
+};
+const FLUENT_HIGH_CONTRAST_INK = ['#212121', '#1c1c1c'] as const;
 const namespace = 'http://www.w3.org/2000/svg';
 const idPattern = /^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/;
 const tags: Record<string, string[]> = {
@@ -29,7 +37,7 @@ const tags: Record<string, string[]> = {
   radialGradient: ['cx', 'cy', 'r', 'fx', 'fy', 'fr', 'gradientUnits', 'gradientTransform', 'spreadMethod'],
   stop: ['offset'],
   clipPath: ['clipPathUnits'],
-  // Only inside clipPath, pointing at a local shape: the idiom Illustrator emits.
+  // References are limited to local shapes, so they cannot recurse.
   use: ['href', 'x', 'y', 'width', 'height'],
 };
 const xlinkNamespace = 'http://www.w3.org/1999/xlink';
@@ -59,7 +67,7 @@ const referenceTargets: Record<string, string[]> = { fill: ['linearGradient', 'r
 const localId = (name: string, value: string): string | null =>
   (name === 'href' ? /^#([A-Za-z_][A-Za-z0-9_.-]{0,127})$/ : /^url\(#([A-Za-z_][A-Za-z0-9_.-]{0,127})\)$/).exec(value)?.[1] ?? null;
 
-function attribute(name: string, value: string, tag: string): string {
+export function staticSvgAttribute(name: string, value: string, tag: string, authoredPaint = false): string {
   value = value.trim();
   if (name === 'id') { if (!idPattern.test(value)) throw new Error('Unsupported SVG id.'); return value; }
   if (name === 'd') return svgPath(value);
@@ -76,6 +84,9 @@ function attribute(name: string, value: string, tag: string): string {
     return parts.join(' ');
   }
   if (['fill', 'stroke', 'stop-color'].includes(name)) {
+    if (authoredPaint && value.length <= 256) { const parsed = parseColor(value); if (parsed) return /^#[a-f0-9]{6}$/i.test(value) ? value.toLowerCase() : formatColor(parsed); }
+    const rgb = /^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$/.exec(value);
+    if (rgb?.slice(1).every(channel => Number(channel) <= 255)) return `#${rgb.slice(1).map(channel => Number(channel).toString(16).padStart(2, '0')).join('')}`;
     if (/^#(?:[a-f0-9]{3}|[a-f0-9]{6})$/i.test(value)) return value.toLowerCase();
     // A CSS colour keyword is an explicit colour; canonicalize it to hex.
     const named = NAMED_COLORS[value.toLowerCase()];
@@ -106,19 +117,26 @@ function attribute(name: string, value: string, tag: string): string {
   if (name.endsWith('opacity') || name === 'opacity') return svgScalar(value, 0, 1);
   if (name === 'offset') return value.endsWith('%') ? `${svgScalar(value.slice(0, -1), 0, 100)}%` : svgScalar(value, 0, 1);
   if (units.has(name) || ['stroke-width', 'stroke-miterlimit', 'stroke-dashoffset'].includes(name)) {
+    if ((units.has(name) || ['stroke-width', 'stroke-dashoffset'].includes(name)) && value.endsWith('px')) value = value.slice(0, -2);
     if (tag.endsWith('Gradient') && value.endsWith('%')) return `${svgScalar(value.slice(0, -1), nonnegative.has(name) ? 0 : undefined)}%`;
     return svgScalar(value, nonnegative.has(name) ? 0 : name === 'stroke-miterlimit' ? 1 : undefined);
   }
   throw new Error(`Unsupported SVG attribute ${name}.`);
 }
 
-function normalize(source: string, viewBox: readonly number[], parseXml: EmojiXmlParser): SvgRecord {
-  const body = source.replace(/^\uFEFF?\s*<\?xml\s+version=["']1\.0["'](?:\s+encoding=["']utf-8["'])?\s*\?>/i, '');
+function normalize(source: string, viewBox: readonly number[] | null, parseXml: EmojiXmlParser, authoredPaint = false): SvgRecord {
+  let body = source.replace(/^\uFEFF?\s*<\?xml\s+version=["']1\.0["'](?:\s+encoding=["']utf-8["'])?(?:\s+standalone=["'](?:yes|no)["'])?\s*\?>/i, '');
+  // Remove only this exact inert declaration before invoking the host parser.
+  // Internal subsets, entities and every other doctype remain refused.
+  const withoutDoctype = body.replace(/^\s*<!DOCTYPE svg PUBLIC "-\/\/W3C\/\/DTD SVG 1\.1\/\/EN" "http:\/\/www\.w3\.org\/Graphics\/SVG\/1\.1\/DTD\/svg11\.dtd">/, '');
+  const omittedDoctype = withoutDoctype !== body;
+  body = withoutDoctype;
   if (/<!DOCTYPE|<!ENTITY|<\?/i.test(body)) throw new Error('SVG declarations and processing instructions are unsupported.');
   const doc = parseXml(body);
   if (!doc.documentElement || doc.getElementsByTagName('parsererror').length) throw new Error('Invalid SVG XML.');
   const ids = new Map<string, string>(), references: { id: string; targets: string[] }[] = [];
   const changes = new Set(['Canonicalized SVG syntax and inline presentation styles.', 'Prefixed local SVG ids and paint references for placement.']);
+  if (omittedDoctype) changes.add('Omitted the standard SVG 1.1 doctype without loading its external subset.');
   let nodes = 0, totalArguments = 0;
   // One declaration, from an attribute or an inline style. Returns false when
   // the declaration is inert and was omitted (recorded as a change), true when
@@ -137,7 +155,7 @@ function normalize(source: string, viewBox: readonly number[], parseXml: EmojiXm
       return;
     }
     if (name !== 'id' && name !== 'transform' && !presentation.has(name) && !tags[tag]!.includes(name)) throw new Error(`Unsupported SVG attribute ${name}.`);
-    attributes[name] = attribute(name, value, tag);
+    attributes[name] = staticSvgAttribute(name, value, tag, authoredPaint);
   }
   function walk(element: Element, depth: number): SvgNode | null {
     if (++nodes > 4096 || depth > 32) throw new Error('SVG exceeds the supported element or depth limit.');
@@ -158,6 +176,8 @@ function normalize(source: string, viewBox: readonly number[], parseXml: EmojiXm
         if (depth > 0) changes.add('Omitted a redundant xmlns on a child element.');
         continue;
       }
+      if (depth === 0 && name === 'xmlns:serif' && value === 'http://www.serif.com/') { changes.add('Omitted the unused Affinity namespace declaration.'); continue; }
+      if (depth === 0 && ['width', 'height'].includes(name) && value === '100%') { changes.add('Resolved the root percentage viewport to the pinned viewBox.'); continue; }
       if (depth === 0 && ((name === 'xmlns:xlink' && value === xlinkNamespace) || (name === 'xml:space' && value === 'preserve') || (name === 'version' && value === '1.1') || (['x', 'y'].includes(name) && /^0(?:px)?$/.test(value)))) { changes.add(`Omitted inert root ${name}.`); continue; }
       // The legacy xlink form of a use reference canonicalizes to plain href.
       if (tag === 'use' && name === 'xlink:href' && attr.namespaceURI === xlinkNamespace) { name = 'href'; changes.add('Canonicalized xlink:href to href.'); }
@@ -192,7 +212,7 @@ function normalize(source: string, viewBox: readonly number[], parseXml: EmojiXm
     }
     const childrenAllowed = tag.endsWith('Gradient') ? children.every(child => child.tag === 'stop')
       : tag === 'clipPath' ? children.every(child => shapes.has(child.tag) || child.tag === 'use')
-        : (['svg', 'g', 'defs'].includes(tag) && children.every(child => child.tag !== 'use')) || !children.length;
+        : ['svg', 'g', 'defs'].includes(tag) || !children.length;
     if (!childrenAllowed) throw new Error('Unsupported SVG child structure.');
     if (!hidden.value) return { tag, attributes, children };
     // A hidden element renders nothing, but the paint servers and clip paths it
@@ -204,6 +224,13 @@ function normalize(source: string, viewBox: readonly number[], parseXml: EmojiXm
   }
   for (const child of Array.from(doc.childNodes)) if (child !== doc.documentElement && child.nodeType !== 8 && (child.nodeType !== 3 || child.textContent?.trim())) throw new Error('Unsupported SVG document node.');
   const tree = walk(doc.documentElement, 0)!;
+  viewBox ??= tree.attributes.viewBox?.split(' ').map(Number) ?? [0, 0, Number(tree.attributes.width), Number(tree.attributes.height)];
+  if (viewBox.length !== 4 || !viewBox.every(Number.isFinite) || viewBox[2]! <= 0 || viewBox[3]! <= 0) throw new Error('SVG needs a finite positive viewport.');
+  if (tree.attributes.viewBox === undefined && viewBox[0] === 0 && viewBox[1] === 0
+    && tree.attributes.width === String(viewBox[2]) && tree.attributes.height === String(viewBox[3])) {
+    tree.attributes.viewBox = viewBox.join(' ');
+    changes.add('Made the fixed root viewport explicit as a viewBox.');
+  }
   if (tree.attributes.viewBox !== viewBox.map(String).join(' ')) throw new Error('SVG viewBox differs from its manifest.');
   for (const [index, name] of ['width', 'height'].entries()) {
     const expected = String(viewBox[index + 2]);
@@ -229,6 +256,12 @@ function serialize(node: SvgNode, prefix: string): string {
   return `<${node.tag}${attrs}>${node.children.map(child => serialize(child, prefix)).join('')}</${node.tag}>`;
 }
 
+/** Admit authored inline artwork through the same bounded static subset as emoji. */
+export function admitTextInlineSvg(source: string, parseXml: EmojiXmlParser, prefix: string): string {
+  if (typeof source !== 'string' || new TextEncoder().encode(source).byteLength > 2 * 1024 * 1024 || !idPattern.test(prefix)) throw new Error('Invalid inline SVG size or placement prefix.');
+  return serialize(normalize(source, null, parseXml, true).tree, prefix);
+}
+
 /** The host parser must parse XML without network access. DTDs are rejected before it runs. */
 export async function prepareEmojiSvg(pack: VerifiedEmojiPack, meaning: EmojiMeaningV1, bytes: Uint8Array, parseXml: EmojiXmlParser): Promise<
   { ok: true; svg: PreparedEmojiSvg } | { ok: false; message: string }
@@ -239,6 +272,7 @@ export async function prepareEmojiSvg(pack: VerifiedEmojiPack, meaning: EmojiMea
   try {
     const source = new TextDecoder('utf-8', { fatal: true }).decode(verified.bytes);
     const record = normalize(source, entry.glyph.viewBox, parseXml);
+    if (matchesEmojiPack(pack, FLUENT_HIGH_CONTRAST)) record.textInk = FLUENT_HIGH_CONTRAST_INK;
     const checksum = `sha256:${await sha256Hex(new TextEncoder().encode(serialize(record.tree, 'emoji')))}`;
     const svg = Object.freeze({ checksum, sourceChecksum: entry.glyph.asset.checksum, normalizer: EMOJI_SVG_VERSION });
     prepared.set(svg, record);
@@ -305,38 +339,38 @@ const BLACK_PAINT = /^#(?:000|000000)$/i;
 const WHITE_PAINT = /^#(?:fff|ffffff)$/i;
 
 /**
- * Whether every paint in this node and its children is `none`, black or white.
+ * Whether every paint is `none`, white, black or the pack's pinned foreground ink.
  * A gradient, a `url(#…)` reference or any other colour makes it false, and so
  * does `currentColor`, which is what makes the rewrite below idempotent.
  */
-function singleInk(node: SvgNode): boolean {
+function singleInk(node: SvgNode, textInk: readonly string[] = []): boolean {
   for (const name of paintNames) {
     const value = node.attributes[name];
     if (value === undefined || value === 'none') continue;
-    if (!BLACK_PAINT.test(value) && !WHITE_PAINT.test(value)) return false;
+    if (!BLACK_PAINT.test(value) && !WHITE_PAINT.test(value) && !textInk.includes(value)) return false;
   }
-  return node.children.every(singleInk);
+  return node.children.every(child => singleInk(child, textInk));
 }
 
-/** Black paints become `currentColor`; white and `none` stay as they are. */
-function inkTree(node: SvgNode, counted: { value: number }): SvgNode {
+/** Foreground ink becomes `currentColor`; white and `none` stay as they are. */
+function inkTree(node: SvgNode, counted: { value: number }, textInk: readonly string[] = []): SvgNode {
   const attributes: Record<string, string> = { ...node.attributes };
   for (const name of paintNames) {
     const value = attributes[name];
-    if (value !== undefined && BLACK_PAINT.test(value)) { attributes[name] = 'currentColor'; counted.value += 1; }
+    if (value !== undefined && (BLACK_PAINT.test(value) || textInk.includes(value))) { attributes[name] = 'currentColor'; counted.value += 1; }
   }
-  return { tag: node.tag, attributes, children: node.children.map(child => inkTree(child, counted)) };
+  return { tag: node.tag, attributes, children: node.children.map(child => inkTree(child, counted, textInk)) };
 }
 
-/** Whether an admitted tree is line art drawn in nothing but black, white and `none`. */
+/** Whether an admitted tree uses only foreground ink, white and `none`. */
 export function isSingleInkEmojiSvg(svg: PreparedEmojiSvg): boolean {
   const record = prepared.get(svg);
   if (!record) throw new Error('SVG has not been admitted.');
-  return singleInk(record.tree);
+  return singleInk(record.tree, record.textInk);
 }
 
 /**
- * Bind a single-ink glyph's black paints to the surrounding text colour, so a
+ * Bind a single-ink glyph's foreground paints to the surrounding text colour, so a
  * monochrome set draws the way the same artwork draws when it ships as a font.
  * An inline `<svg>` inherits CSS `color`, so `currentColor` is the whole
  * mechanism and no caller has to style the placement.
@@ -349,9 +383,9 @@ export function isSingleInkEmojiSvg(svg: PreparedEmojiSvg): boolean {
 export async function inkPreparedEmojiSvg(svg: PreparedEmojiSvg): Promise<PreparedEmojiSvg> {
   const record = prepared.get(svg);
   if (!record) throw new Error('SVG has not been admitted.');
-  if (!singleInk(record.tree)) return svg;
+  if (!singleInk(record.tree, record.textInk)) return svg;
   const counted = { value: 0 };
-  const tree = inkTree(record.tree, counted);
+  const tree = inkTree(record.tree, counted, record.textInk);
   if (!counted.value) return svg;
   const changes = [...new Set([...record.changes, EMOJI_SINGLE_INK_CHANGE])];
   const checksum = `sha256:${await sha256Hex(new TextEncoder().encode(serialize(tree, 'emoji')))}`;

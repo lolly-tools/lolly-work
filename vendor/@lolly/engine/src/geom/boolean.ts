@@ -221,20 +221,38 @@ export function booleanPath(a: GeomPath, b: GeomPath, op: BooleanOp, opts: Boole
   const splitsB: number[][] = idxB.curves.map(() => []);
   crossSplits(idxA.curves, idxB.curves, splitsA, splitsB, tol, weld, budget);
 
+  const srcA: number[] = [], srcB: number[] = [];
+  const rangesA: [number, number][] = [], rangesB: [number, number][] = [];
   const edges: Cubic[] = [
-    ...splitIntoEdges(idxA.curves, splitsA, weld),
-    ...splitIntoEdges(idxB.curves, splitsB, weld),
+    ...splitIntoEdges(idxA.curves, splitsA, weld, srcA, rangesA),
+    ...splitIntoEdges(idxB.curves, splitsB, weld, srcB, rangesB),
   ];
+  const nA = srcA.length;
+  const twins = findTwins(edges, weld, budget);
+  const bundleOf = (i: number, ofA: boolean): Bundle | null => {
+    if (!twins[i]!.length) return null;
+    const map: Bundle = new Map();
+    for (const j of twins[i]!) {
+      const inA = j < nA;
+      if (inA !== ofA) continue;
+      const ci = inA ? srcA[j]! : srcB[j - nA]!, range = inA ? rangesA[j]! : rangesB[j - nA]!;
+      const list = map.get(ci);
+      if (list) list.push(range); else map.set(ci, [range]);
+    }
+    return map.size ? map : null;
+  };
 
   const kept: Cubic[] = [];
-  for (const e of edges) {
-    const m = evalCubic(e, 0.5);
-    const ref = midTangent(e);
+  for (let i = 0; i < edges.length; i++) {
+    const e = edges[i]!;
+    const tm = decideAt(e);
+    const m = evalCubic(e, tm);
+    const ref = midTangent(e, tm);
     // Always A then B, never "own then other": difference is the one operator that
     // cares which operand is which, and a piece of B classified as if it were a piece
     // of A turns A−B silently into a union.
-    const wa = sideWindings(idxA, m.x, m.y, ref.x, ref.y, near, budget);
-    const wb = sideWindings(idxB, m.x, m.y, ref.x, ref.y, near, budget);
+    const wa = sideWindings(idxA, m.x, m.y, ref.x, ref.y, near, budget, bundleOf(i, true));
+    const wb = sideWindings(idxB, m.x, m.y, ref.x, ref.y, near, budget, bundleOf(i, false));
     // Both operands are canonical after `selfUnion`, so their interiors are described
     // by the nonzero rule whatever rule the caller's raw input needed.
     const left = combine(wa.left !== 0, wb.left !== 0, op);
@@ -247,7 +265,7 @@ export function booleanPath(a: GeomPath, b: GeomPath, op: BooleanOp, opts: Boole
   // chaining those together is confetti - a worse answer than not having attempted the
   // operation.
   if (budget.work <= 0) return abandon(A, B, op, 'the work budget ran out mid-classification');
-  return compactPath(walkLoops(dedupeEdges(kept, weld), weld));
+  return compactPath(walkLoops(dedupeEdges(kept, weld, budget), weld));
 }
 
 export function unionPath(a: GeomPath, b: GeomPath, opts?: BooleanOptions): GeomPath {
@@ -314,17 +332,34 @@ export function selfUnion(p: GeomPath, opts: BooleanOptions = {}): GeomPath {
   if (path.length === 1 && !splits.some((s) => s.length) && !selfTouching(path[0]!, weld)) {
     const only = path[0]!;
     const probe = only.curves[0]!;
-    const m = evalCubic(probe, 0.5);
-    const ref = midTangent(probe);
+    // Decided where the curve has a direction, as every piece is: probed at its midpoint,
+    // a contour whose first curve is a cusp was asked at the apex, where the tangent is
+    // zero, every line through the point touches the curve rather than crossing it, and the
+    // side test had nothing to count the curve's own passage with. One orientation was
+    // then a coin toss, and a union with that operand came back as a fifth of itself.
+    const tm = decideAt(probe);
+    const m = evalCubic(probe, tm);
+    const ref = midTangent(probe, tm);
     const w = sideWindings(idx, m.x, m.y, ref.x, ref.y, near, budget);
     return [filled(w.left, rule) ? only : reverseContour(only)];
   }
 
   const kept: Cubic[] = [];
-  for (const c of splitIntoEdges(idx.curves, splits, weld)) {
-    const m = evalCubic(c, 0.5);
-    const ref = midTangent(c);
-    const w = sideWindings(idx, m.x, m.y, ref.x, ref.y, near, budget);
+  const src: number[] = [];
+  const ranges: [number, number][] = [];
+  const pieces = splitIntoEdges(idx.curves, splits, weld, src, ranges);
+  const twins = findTwins(pieces, weld, budget);
+  for (let i = 0; i < pieces.length; i++) {
+    const c = pieces[i]!;
+    const tm = decideAt(c);
+    const m = evalCubic(c, tm);
+    const ref = midTangent(c, tm);
+    let bundle: Bundle | null = null;
+    if (twins[i]!.length) {
+      bundle = new Map();
+      for (const j of twins[i]!) { const list = bundle.get(src[j]!); if (list) list.push(ranges[j]!); else bundle.set(src[j]!, [ranges[j]!]); }
+    }
+    const w = sideWindings(idx, m.x, m.y, ref.x, ref.y, near, budget, bundle);
     const left = filled(w.left, rule), right = filled(w.right, rule);
     if (left === right) continue;
     kept.push(left ? c : reverseCubic(c));
@@ -333,7 +368,7 @@ export function selfUnion(p: GeomPath, opts: BooleanOptions = {}): GeomPath {
   // unresolved path fills nearly the region its resolved form would under the nonzero rule,
   // which is what a caller self-unioning an offset or a stroke outline started from.
   if (budget.work <= 0) return path;
-  return compactPath(walkLoops(dedupeEdges(kept, weld), weld));
+  return compactPath(walkLoops(dedupeEdges(kept, weld, budget), weld));
 }
 
 /**
@@ -511,12 +546,40 @@ const reverseCubic = (k: Cubic): Cubic => [k[6], k[7], k[4], k[5], k[2], k[3], k
 /** Direction at the midpoint, falling back to the chord - a cubic's derivative
  *  vanishes at a cusp, and a zero reference vector would make every side test
  *  meaningless rather than merely imprecise. */
-function midTangent(c: Cubic): { x: number; y: number } {
-  const t = tangentAt(c, 0.5);
+function midTangent(c: Cubic, at = 0.5): { x: number; y: number } {
+  const t = tangentAt(c, at);
   if (Math.hypot(t.x, t.y) > 1e-12) return t;
   const dx = c[6] - c[0], dy = c[7] - c[1];
   if (Math.hypot(dx, dy) > 1e-12) return { x: dx, y: dy };
   return { x: 1, y: 0 };
+}
+
+/** Parameters tried for a piece's decision point, in order of preference. */
+const DECIDE_TS = [0.5, 0.25, 0.75, 0.375, 0.625];
+/** The speed at the midpoint, as a share of the piece's extent, below which the midpoint is
+ *  treated as stationary and the decision point moves. A cubic's speed is of the order of its
+ *  extent away from a cusp; at a cusp it is zero, and a piece with a cusp or a very tight turn
+ *  at its midpoint has no direction there for the side test to use, while the other branch of
+ *  the cusp passes within the weld radius of the point and reads as a curve through it. */
+const DECIDE_SPEED = 0.1;
+
+/**
+ * Where along a piece its side is decided: the midpoint, unless the piece is nearly
+ * stationary there, in which case the parameter with the most speed among a few
+ * candidates. A whole cusp curve (its tangent vanishes at exactly t = 0.5 for the symmetric
+ * cusp) reached the side test as one piece once the intersector stopped scattering hits along
+ * it, and its two copies were decided differently at the apex.
+ */
+function decideAt(c: Cubic): number {
+  const ext = extent(c);
+  let bestT = 0.5, bestS = -1;
+  for (const t of DECIDE_TS) {
+    const d = tangentAt(c, t);
+    const sp = Math.hypot(d.x, d.y);
+    if (t === 0.5 && sp >= DECIDE_SPEED * ext) return 0.5;
+    if (sp > bestS) { bestS = sp; bestT = t; }
+  }
+  return bestT;
 }
 
 // ── splitting ─────────────────────────────────────────────────────────────────
@@ -710,9 +773,13 @@ function pairSplits(ci: Cubic, cj: Cubic, tol: number, weld: number, budget: Bud
       a0 = Math.min(a0, h.t1); a1 = Math.max(a1, h.t1);
       b0 = Math.min(b0, h.t2); b1 = Math.max(b1, h.t2);
     }
-    // Two cubics meet at most nine times, so more hits than that is a scatter whatever
-    // the sub-ranges say.
-    if (hits.length > 9 || continuesAsSameCurve(ci, a0, a1, cj, b0, b1, weld) !== 0) {
+    // The intersector reports one point per contact and the two ends of every long run of
+    // contact, so a pair can legitimately carry more than nine points: two curves crossing
+    // twice a hair apart carry two crossings and four run ends. The old "more than nine is a
+    // scatter" rule threw all of them away for the pair's end projections, and a loop
+    // against a copy of itself lost the cuts at its crossings. What a scatter is, is decided
+    // by the sub-ranges below, which is a proof rather than a count.
+    if (continuesAsSameCurve(ci, a0, a1, cj, b0, b1, weld) !== 0) {
       return overlapSplits(ci, cj, weld, budget);
     }
   }
@@ -762,8 +829,70 @@ function overlapRun(ci: Cubic, cj: Cubic, weld: number, budget: Budget): { a: nu
   }
   const sa = subCubic(ci, a0, a1), sb = subCubic(cj, b0, b1);
   if (extent(sa) <= weld || extent(sb) <= weld) return null;
-  if (coincidence(sa, sb, weld) === 0) return null;
+  if (coincidence(sa, sb, weld) === 0 && !sameTrace(sa, sb, weld, budget)) return null;
   return { a: [a0, a1], b: [b0, b1] };
+}
+
+/** Points measured along each piece by `sameTrace`. */
+const TRACE_SAMPLES = 7;
+
+/**
+ * Do two pieces trace the same curve to within `weld`, whatever their parametrisations?
+ *
+ * `coincidence` compares the pieces at equal parameters, which proves identity when it
+ * passes and says nothing when it fails: two Bezier fits of one arc cut at different places,
+ * or the outlines of two strokes of the same shape, lie on each other to far below the weld
+ * radius and agree at no parameter at all. Those pairs used to reach the intersector, which
+ * reported their true crossings, a handful at angles far below anything the weld can
+ * resolve, and the pieces between the cuts were then decided by a coin toss. So the pieces
+ * are compared as point sets: each is sampled and every sample projected onto the other,
+ * both ways, because one piece can lie along part of the other without the reverse holding.
+ * A measurement at six points a side, not a proof; a pair that crosses twice inside one
+ * sample gap while staying within the weld radius is a shared run at the weld's resolution.
+ *
+ * ## The ends are NOT sampled, and that is a measured choice
+ *
+ * Sampling the ends as well makes the test stricter: a piece that overhangs another at one
+ * end fails it, so neither is deleted as a duplicate. Which is right depends on the pair, and
+ * both settings were run against this build, the interior-only one and the one that adds
+ * t = 0 and t = 1 (and a third with twice as many interior points, which measured exactly as
+ * the ends-included one did, so the density is not what decides it).
+ *
+ * Interior only is better or equal on everything measured here:
+ *
+ * - A fan of copies of one blob rotated about a point, 42 rows over two scales, three fan
+ *   angles and seven copy counts: 0 wrong grid points with the interior only, 154 with the
+ *   ends. The 154 is two rows, both at a fan step of 1e-8 with 30 copies, where including the
+ *   ends leaves two contours where the shape has one.
+ * - The CUTS family, which exists for exactly this question (the same boundary presented
+ *   twice, cut at different parameters, at offsets that straddle the weld radius, the pieces
+ *   deliberately of unequal length): 2,016 cases, 46 wrong with the interior only, 52 with
+ *   the ends, and nothing wrong only in one of them.
+ * - Thirty copies of one blob, exact and perturbed ten ways, self-unioned and stroked at
+ *   scale 100: 2,222 wrong with the interior only, 2,299 with the ends, the difference being
+ *   the same fan row.
+ *
+ * The case the ends were added for, a stroke of thirty jittered copies coming back as
+ * fourteen contours, does not arise in this build: with the clip budget in place that row
+ * gives two contours and no wrong points either way. If that case comes back, this is the
+ * knob, and the evidence above is what it costs to turn it.
+ */
+function sameTrace(a: Cubic, b: Cubic, weld: number, budget: Budget): boolean {
+  // Charged sample by sample, not in one lump up front. Most pairs this is asked about are
+  // not the same trace at all and fail at the first sample, and charging all twelve
+  // projections for one spent the operation's budget on work it did not do: a lattice of 72
+  // bars against 72 bars refused with code 'limit' where charging as it goes answers it
+  // exactly, and 104 bars against 104 now come back as all 10,816 squares where the
+  // committed build returns 9,314 of them.
+  for (let k = 1; k < TRACE_SAMPLES; k++) {
+    budget.work -= 32 * 2;
+    const t = k / TRACE_SAMPLES;
+    const p = evalCubic(a, t);
+    if (nearestOnCubic(b, p.x, p.y).distance > weld) return false;
+    const q = evalCubic(b, t);
+    if (nearestOnCubic(a, q.x, q.y).distance > weld) return false;
+  }
+  return true;
 }
 
 /** Is the point inside a box grown by `pad`? A cheap reject before a projection. */
@@ -917,17 +1046,79 @@ function overlapSplits(ci: Cubic, cj: Cubic, weld: number, budget: Budget): { a:
   return { a, b };
 }
 
+/** Pairs of (split point, curve) considered by `alignSplits` at most, so that a path with
+ *  thousands of curves and thousands of cuts is not charged a quadratic pass. */
+const MAX_ALIGN_PAIRS = 2_000_000;
+
+/**
+ * Cut every curve wherever another curve within the weld radius of it was cut.
+ *
+ * Two boundaries that run along each other closer than the weld radius are one boundary at
+ * this resolution, and the walk that joins the kept pieces needs them cut at the same
+ * places: a piece of one that straddles a cut of the other has its midpoint decided on one
+ * side of that cut while the other's two pieces are decided on both, and the two copies then
+ * disagree about where the boundary turns. Ten copies of a blob rotated about a point by a
+ * tenth of a microradian each, crossing one another near the far side, lost a quarter of
+ * their union that way. So each cut point is projected onto every curve whose box comes
+ * within the weld radius of it, and the curve is cut at the foot when the foot is that close.
+ * A cut landing at a curve's end, or opening a piece shorter than the weld radius, is
+ * dropped downstream as any other cut is.
+ */
+function alignSplits(groups: { curves: IndexedCurve[]; splits: number[][] }[], weld: number, budget: Budget): void {
+  const points: { x: number; y: number }[] = [];
+  for (const g of groups) {
+    for (let i = 0; i < g.curves.length; i++) {
+      for (const t of g.splits[i]!) { const p = evalCubic(g.curves[i]!.c, t); points.push(p); }
+    }
+  }
+  if (!points.length) return;
+  let curveCount = 0;
+  for (const g of groups) curveCount += g.curves.length;
+  if (points.length * curveCount > MAX_ALIGN_PAIRS) return;
+  for (const g of groups) {
+    for (let j = 0; j < g.curves.length; j++) {
+      const ic = g.curves[j]!;
+      for (const p of points) {
+        if (!inflated(ic.box, p.x, p.y, weld)) continue;
+        if (budget.work <= 0) return;
+        budget.work -= 32;
+        const n = nearestOnCubic(ic.c, p.x, p.y);
+        if (n.distance <= weld) addSplit(g.splits, j, n.t, budget);
+      }
+    }
+  }
+}
+
 function selfSplits(curves: IndexedCurve[], splits: number[][], tol: number, weld: number, budget: Budget): void {
+  // Repeated authored curves need the same cuts at each occurrence. Reuse exact
+  // ordered pairs within this operation; tolerance and weld are fixed here.
+  // Keep every occurrence for winding and charge its splits and sweep work.
+  const identities = new Map<string, number>();
+  const ids = curves.map(({ c }) => {
+    const key = c.join(',');
+    if (!identities.has(key)) identities.set(key, identities.size);
+    return identities.get(key)!;
+  });
+  const cache = identities.size < curves.length
+    ? new Map<string, ReturnType<typeof pairSplits>>() : null;
   for (let i = 0; i < curves.length; i++) {
     const loop = selfIntersectCubic(curves[i]!.c);
     if (loop) { addSplit(splits, i, loop[0], budget); addSplit(splits, i, loop[1], budget); }
   }
   sweepPairs(curves, curves, true, budget, (i, j) => {
-    const found = pairSplits(curves[i]!.c, curves[j]!.c, tol, weld, budget);
+    const key = cache ? `${ids[i]},${ids[j]}` : '';
+    let found = cache?.get(key);
+    if (found === undefined) {
+      found = pairSplits(curves[i]!.c, curves[j]!.c, tol, weld, budget);
+      // An exhausted search may be partial. Never reuse it, or retain an
+      // unbounded number of pairs from an untrusted path.
+      if (cache && budget.work > 0 && cache.size < 1024) cache.set(key, found);
+    }
     if (!found) return;
     for (const t of found.a) addSplit(splits, i, t, budget);
     for (const t of found.b) addSplit(splits, j, t, budget);
   });
+  alignSplits([{ curves, splits }], weld, budget);
 }
 
 function crossSplits(
@@ -940,6 +1131,7 @@ function crossSplits(
     for (const t of found.a) addSplit(splitsA, i, t, budget);
     for (const t of found.b) addSplit(splitsB, j, t, budget);
   });
+  alignSplits([{ curves: a, splits: splitsA }, { curves: b, splits: splitsB }], weld, budget);
 }
 
 /**
@@ -961,12 +1153,12 @@ function crossSplits(
  * dangling chains. The piece between those parameters is a whole lobe: its endpoints
  * coincide and its extent is large, which is exactly the distinction this test makes.
  */
-function splitIntoEdges(curves: IndexedCurve[], splits: number[][], weld: number): Cubic[] {
+function splitIntoEdges(curves: IndexedCurve[], splits: number[][], weld: number, src?: number[], ranges?: [number, number][]): Cubic[] {
   const out: Cubic[] = [];
   for (let i = 0; i < curves.length; i++) {
     const ts = splits[i]!;
     const c = curves[i]!.c;
-    if (!ts.length) { if (extent(c) > weld) out.push(c); continue; }
+    if (!ts.length) { if (extent(c) > weld) { out.push(c); src?.push(i); ranges?.push([0, 1]); } continue; }
     const cuts: number[] = [0];
     for (const t of ts.slice().sort((p, q) => p - q)) {
       const prev = cuts[cuts.length - 1]!;
@@ -979,10 +1171,93 @@ function splitIntoEdges(curves: IndexedCurve[], splits: number[][], weld: number
     else cuts[cuts.length - 1] = 1;
     for (let k = 1; k < cuts.length; k++) {
       const piece = subCubic(c, cuts[k - 1]!, cuts[k]!);
-      if (extent(piece) > weld) out.push(piece);
+      if (extent(piece) > weld) { out.push(piece); src?.push(i); ranges?.push([cuts[k - 1]!, cuts[k]!]); }
     }
   }
   return out;
+}
+
+/** Is the hit at parameter `t` of curve `ci` on one of the bundled ranges? A little slack
+ *  in parameter, because a cut placed on a twin falls near, not at, the corresponding point. */
+function inBundle(bundle: Bundle, ci: number, t: number): boolean {
+  const ranges = bundle.get(ci);
+  if (!ranges) return false;
+  for (const [t0, t1] of ranges) if (t >= t0 - 1e-6 && t <= t1 + 1e-6) return true;
+  return false;
+}
+
+/**
+ * For every piece, the pieces that run along it within the weld radius: its twins.
+ *
+ * Two pieces within the weld radius of each other over their whole length are one boundary
+ * at this resolution, whichever operands they came from and however their cuts were placed.
+ * The side test decides each piece at its midpoint by casting rays, and a twin passing a
+ * hair from that midpoint is counted as a curve through the point when it lies inside the
+ * bundle radius and as a crossing further along the ray when it lies outside it. Two pieces
+ * a little more or less than that radius apart were therefore decided by different rules,
+ * one as interior and the other as boundary, and the walk lost whatever lay past them: a
+ * curve against a copy nudged by a hundredth of the weld radius lost half its union. So the
+ * twins are found first, geometrically, and each piece is decided with its twins counted as
+ * curves through its midpoint, so that every member of a twin set gets the same verdict.
+ * `dedupeEdges` then keeps one of them. The relation is symmetric because `sameTrace` is
+ * measured both ways.
+ */
+function findTwins(edges: Cubic[], weld: number, budget: Budget): number[][] {
+  const twins: number[][] = edges.map(() => []);
+  const spans = edges.map(extent);
+  nearPieces(edges, weld, (i, j) => {
+    if (spans[i]! <= 2 * weld || spans[j]! <= 2 * weld) return true;
+    if (budget.work <= 0) return false;
+    if (coincidence(edges[i]!, edges[j]!, weld) !== 0 || sameTrace(edges[i]!, edges[j]!, weld, budget)) {
+      twins[i]!.push(j); twins[j]!.push(i);
+    }
+    return true;
+  });
+  return twins;
+}
+
+/**
+ * Every pair of pieces that could be the same boundary, visited once, by a spatial hash of
+ * each piece's start, midpoint and end in cells of four weld radii.
+ *
+ * The midpoint alone is not enough. Two copies of a curve cut at parameters a millionth
+ * apart have their cut points within the weld radius of each other (the intersector placed
+ * them there), but the midpoints of the pieces they open are that millionth times the speed
+ * apart, which on a piece of a cusp of size 100 is a hundred weld radii; bucketed by
+ * midpoint the two copies were never compared, both survived, and one of them came back as
+ * a contour of its own. Twins cut at the same places share their end cells; twins cut at
+ * different places still meet through the midpoint. `visit` returns false to stop.
+ */
+function nearPieces(edges: Cubic[], weld: number, visit: (i: number, j: number) => boolean): void {
+  const cell = Math.max(weld * 4, 1e-12);
+  const buckets = new Map<string, number[]>();
+  const put = (x: number, y: number, i: number) => {
+    const key = `${Math.round(x / cell)},${Math.round(y / cell)}`;
+    const bucket = buckets.get(key);
+    if (bucket) { if (bucket[bucket.length - 1] !== i) bucket.push(i); } else buckets.set(key, [i]);
+  };
+  const mids = edges.map((e) => evalCubic(e, 0.5));
+  for (let i = 0; i < edges.length; i++) {
+    const e = edges[i]!;
+    put(e[0], e[1], i); put(mids[i]!.x, mids[i]!.y, i); put(e[6], e[7], i);
+  }
+  const seen = new Set<number>();
+  for (let i = 0; i < edges.length; i++) {
+    const e = edges[i]!;
+    seen.clear();
+    for (const [x, y] of [[e[0], e[1]], [mids[i]!.x, mids[i]!.y], [e[6], e[7]]] as const) {
+      const cx = Math.round(x / cell), cy = Math.round(y / cell);
+      for (let ox = -1; ox <= 1; ox++) {
+        for (let oy = -1; oy <= 1; oy++) {
+          for (const j of buckets.get(`${cx + ox},${cy + oy}`) ?? []) {
+            if (j <= i || seen.has(j)) continue;
+            seen.add(j);
+            if (!visit(i, j)) return;
+          }
+        }
+      }
+    }
+  }
 }
 
 // ── winding by ray cast ───────────────────────────────────────────────────────
@@ -1037,11 +1312,13 @@ function reachFrom(idx: CurveIndex, px: number, py: number): number {
 function castRay(
   idx: CurveIndex, px: number, py: number, ux: number, uy: number,
   ref: { x: number; y: number } | null, near: number, budget: Budget, complete = false,
+  bundle: Bundle | null = null,
 ): Cast {
+  // The radius at which a curve running alongside the query point's own is the same
+  // boundary: the weld radius, which is what `dedupeEdges` will merge the two at.
+  const twin = near * 100;
   const reach = reachFrom(idx, px, py);
   const qx = px + ux * reach, qy = py + uy * reach;
-  const rx0 = Math.min(px, qx) - near, rx1 = Math.max(px, qx) + near;
-  const ry0 = Math.min(py, qy) - near, ry1 = Math.max(py, qy) + near;
   const nx = -uy, ny = ux;
   // The ray's own origin sits ON the curve being classified, so its hit lands at exactly
   // u = 0 - and lands a couple of ULPS the wrong side of it once the coordinates are large.
@@ -1055,9 +1332,16 @@ function castRay(
     near,
     64 * Number.EPSILON * Math.max(Math.abs(px), Math.abs(py), Math.abs(qx), Math.abs(qy), 1),
   );
+  // How far behind its origin the ray looks (see the hit loop), which is also how far the
+  // box test must reach: a twin a hair behind the origin was culled by a box padded only
+  // by the bundle radius before the ray could see it.
+  const look = Math.max(hitTol, 4 * twin, near * 32);
+  const rx0 = Math.min(px, qx) - look, rx1 = Math.max(px, qx) + look;
+  const ry0 = Math.min(py, qy) - look, ry1 = Math.max(py, qy) + look;
   let far = 0, net = 0, ok = true;
 
-  for (const ic of idx.curves) {
+  for (let ci = 0; ci < idx.curves.length; ci++) {
+    const ic = idx.curves[ci]!;
     if (budget.work <= 0) return { far, net, ok: false };
     budget.work -= 1;
     const b = ic.box;
@@ -1076,28 +1360,68 @@ function castRay(
     }
 
     budget.work -= 8;
-    for (const hit of intersectLineCubic(px, py, qx, qy, c, hitTol)) {
+    // The ray also looks BEHIND its origin, as far as `look`, so that a twin of the query
+    // point's own curve is seen whichever side of it the twin runs on; a hit behind the
+    // origin that is not a twin is skipped below.
+    // The whole line, not just the ray, so that a hit behind the origin is seen as well.
+    // The count and the directions of the roots are the solver's to get right: it isolates
+    // them between the derivative's zeros and reports a repeated root once, with the
+    // direction the curve crosses in. A check here that the count's parity matched the
+    // two ends' sides was tried before that, and was unsound, because a tangency is a
+    // genuine even root; with every direction refused by it, the completing pass counted
+    // whatever it had, and a union lost most of one operand.
+    const hits = intersectLineCubic(px - ux * reach, py - uy * reach, qx, qy, c, hitTol, false);
+    for (const hit of hits) {
       const t = hit.t2;
-      const s = hit.t1 * reach;
+      const s = (hit.t1 * 2 - 1) * reach;
+      if (s < -look) continue;
       const tg = tangentAt(c, t);
-      if (s <= near && ref) {
-        // Through the query point. Which side it lands on is decided later from the
-        // sign of (ray × reference); here only its direction relative to the reference
-        // matters, which is the sign of the dot product - continuous in the angle, so a
-        // bundle member that is merely SKEW to the reference (a split this operation
-        // failed to make) still lands on the side it mostly lies on. Answering 0 there
-        // would drop a real boundary through the query point, making both sides agree
-        // and deleting the edge.
+      // The distance of the hit from the origin along the ray, whichever side of the origin
+      // it lies. The ray is intersected one retry band BEHIND its origin as well as ahead,
+      // and a hit behind is judged by the same rule as one ahead: within the bundle radius
+      // it is a curve through the point, within the retry band it is a degeneracy another
+      // direction may avoid, and beyond that it is skipped, since neither side's own ray
+      // crosses it. Looking only ahead, the two copies of a shared edge, one on each
+      // operand, were decided differently: from one the other lay a hair ahead, from the
+      // other it lay a hair behind and was never seen.
+      const off = Math.abs(s);
+      // A twin of the piece being decided: the same boundary at this resolution, so it is
+      // counted as passing through the point wherever within the weld radius it lies. Along
+      // the ray that is at most four radii, since the ray leaves the piece's tangent at a
+      // sine of at least a quarter.
+      if (bundle && ref && off <= 4 * twin && inBundle(bundle, ci, t)) {
         net += Math.sign(tg.x * ref.x + tg.y * ref.y);
         continue;
       }
-      const mag = Math.hypot(tg.x, tg.y);
-      const cr = ux * tg.y - uy * tg.x;
+      // Through the query point. Which side it lands on is decided later from the sign of
+      // (ray × reference); here only its direction relative to the reference matters, which
+      // is the sign of the dot product, continuous in the angle, so a bundle member that is
+      // merely SKEW to the reference (a split this operation failed to make) still lands on
+      // the side it mostly lies on. Answering 0 there would drop a real boundary through the
+      // query point, making both sides agree and deleting the edge.
+      if (ref && off <= near) {
+        net += Math.sign(tg.x * ref.x + tg.y * ref.y);
+        continue;
+      }
+      // Which way the curve crosses the ray's line, read from the sign change of its distance
+      // to the line at the root rather than from the tangent there: at the apex of a cusp
+      // the tangent is a rounding-sized vector pointing anywhere, and a ray through the apex
+      // (the bottom of a cusp shape, probed at its midpoint) counted that crossing with a
+      // sign of its own, so the bottom read as filled on both sides and was deleted.
+      const cr = hit.dir ?? Math.sign(ux * tg.y - uy * tg.x);
+      if (s < 0) {
+        // Behind the origin by more than the bundle radius: crossed by the forward ray of
+        // neither side, so it counts for neither. Within the retry band it is the same
+        // uncertainty as a hit just ahead, and another direction is tried, so that the two
+        // sides of a twin pair are decided by the same rule whichever is queried.
+        if (off <= near * 32 && !complete) { ok = false; return { far, net, ok }; }
+        continue;
+      }
       // Three degeneracies a rotated ray does avoid: a hit at a curve end would be counted
       // once per adjoining curve, a tangential graze has no side at all, and a hit just
       // outside the bundle radius cannot be told from one inside it.
-      const sideless = mag < 1e-12 || Math.abs(cr) < 1e-6 * mag;
-      if (sideless || t < T_GUARD || t > 1 - T_GUARD || (ref !== null && s <= near * 32)) {
+      const sideless = cr === 0;
+      if (sideless || t < T_GUARD || t > 1 - T_GUARD || (ref !== null && off <= near * 32)) {
         ok = false;
         if (!complete) return { far, net, ok };
         // A completing pass has no retry left, so each hit is counted on the only evidence
@@ -1122,8 +1446,13 @@ function castRay(
  * sign. The two sides therefore always differ by the bundle's net direction count,
  * which is the exact statement of "crossing a boundary changes the winding by one".
  */
+/** The twins of the piece being decided, by source curve index: the parameter ranges on that
+ *  curve that are twins. A hit on the curve outside those ranges (the other branch of a cusp,
+ *  which passes within the weld radius of the apex) is not a twin. */
+type Bundle = Map<number, [number, number][]>;
+
 function sideWindings(
-  idx: CurveIndex, px: number, py: number, rx: number, ry: number, near: number, budget: Budget,
+  idx: CurveIndex, px: number, py: number, rx: number, ry: number, near: number, budget: Budget, bundle: Bundle | null = null,
 ): { left: number; right: number } {
   const dirs = rayDirections(rx, ry);
   const sidesOf = (d: readonly [number, number], cast: Cast) => {
@@ -1134,7 +1463,7 @@ function sideWindings(
   };
   let last: { left: number; right: number } | null = null;
   for (const d of dirs) {
-    const cast = castRay(idx, px, py, d[0], d[1], { x: rx, y: ry }, near, budget);
+    const cast = castRay(idx, px, py, d[0], d[1], { x: rx, y: ry }, near, budget, false, bundle);
     if (cast.ok) return sidesOf(d, cast);
     last = sidesOf(d, cast);
     if (budget.work <= 0) return last;
@@ -1145,7 +1474,7 @@ function sideWindings(
   // point deep inside a shape comes back outside it. One more cast then, forbidden to bail,
   // so the count is at least taken over the whole path.
   const d = dirs[0]!;
-  const cast = castRay(idx, px, py, d[0], d[1], { x: rx, y: ry }, near, budget, true);
+  const cast = castRay(idx, px, py, d[0], d[1], { x: rx, y: ry }, near, budget, true, bundle);
   return cast.ok || budget.work > 0 ? sidesOf(d, cast) : last ?? { left: 0, right: 0 };
 }
 
@@ -1257,38 +1586,34 @@ function continuesAsSameCurve(
  * the way out is to notice when the evidence is vacuous rather than to tighten or loosen the
  * tolerance. The bar is two weld radii because an edge carries that uncertainty once at each
  * end; nothing here is being asked to resolve finer than the operands were given.
+ *
+ * The trace comparison is metered against the operation's own budget, which is what every
+ * other projection in this file is metered against, and is skipped once that budget is
+ * spent. It used to be handed a budget of its own with a work allowance of 1e9, so a path
+ * with thousands of weld-scale edges could pay for unbounded sampling here after the rest of
+ * the operation had been capped. Skipping it keeps a duplicate rather than deleting one,
+ * which is the safe way to be wrong for the reasons above.
  */
-function dedupeEdges(edges: Cubic[], weld: number): Cubic[] {
-  const cell = Math.max(weld * 4, 1e-12);
-  const buckets = new Map<string, number[]>();
-  const mids = edges.map((e) => evalCubic(e, 0.5));
-  // Precomputed because the guard below sits in the innermost loop, which is quadratic in a
+function dedupeEdges(edges: Cubic[], weld: number, budget: Budget): Cubic[] {
+  // Precomputed because the guard below is in the innermost loop, which is quadratic in a
   // bucket's occupancy.
   const spans = edges.map(extent);
   const dead = new Uint8Array(edges.length);
-  for (let i = 0; i < edges.length; i++) {
-    const m = mids[i]!;
-    const key = `${Math.round(m.x / cell)},${Math.round(m.y / cell)}`;
-    const bucket = buckets.get(key);
-    if (bucket) bucket.push(i); else buckets.set(key, [i]);
-  }
-  for (let i = 0; i < edges.length; i++) {
-    if (dead[i]) continue;
-    const m = mids[i]!;
-    const cx = Math.round(m.x / cell), cy = Math.round(m.y / cell);
-    for (let ox = -1; ox <= 1 && !dead[i]; ox++) {
-      for (let oy = -1; oy <= 1 && !dead[i]; oy++) {
-        for (const j of buckets.get(`${cx + ox},${cy + oy}`) ?? []) {
-          if (j <= i || dead[j]) continue;
-          if (spans[i]! <= 2 * weld || spans[j]! <= 2 * weld) continue;
-          const rel = coincidence(edges[i]!, edges[j]!, weld);
-          if (rel === 0) continue;
-          dead[j] = 1;
-          if (rel === -1) { dead[i] = 1; break; }
-        }
-      }
+  nearPieces(edges, weld, (i, j) => {
+    if (dead[i] || dead[j]) return true;
+    if (spans[i]! <= 2 * weld || spans[j]! <= 2 * weld) return true;
+    let rel = coincidence(edges[i]!, edges[j]!, weld);
+    if (rel === 0 && budget.work > 0 && sameTrace(edges[i]!, edges[j]!, weld, budget)) {
+      // The same boundary, parametrised differently: two fits of one arc cut at
+      // different places. Its direction is read from the tangents at the midpoints.
+      const ti = midTangent(edges[i]!), tj = midTangent(edges[j]!);
+      rel = ti.x * tj.x + ti.y * tj.y >= 0 ? 1 : -1;
     }
-  }
+    if (rel === 0) return true;
+    dead[j] = 1;
+    if (rel === -1) dead[i] = 1;
+    return true;
+  });
   return edges.filter((_, i) => !dead[i]);
 }
 
@@ -1319,7 +1644,24 @@ function walkLoops(edges: Cubic[], weld: number): GeomPath {
   const used = new Uint8Array(edges.length);
   const out: GeomPath = [];
 
-  const candidatesAt = (x: number, y: number): number[] => {
+  const nearestStart = (x: number, y: number, radius: number): number => {
+    const cx = Math.round(x / cell), cy = Math.round(y / cell);
+    const span = Math.ceil(radius / cell) + 1;
+    let best = -1, bestD = radius;
+    for (let ox = -span; ox <= span; ox++) {
+      for (let oy = -span; oy <= span; oy++) {
+        for (const i of buckets.get(`${cx + ox},${cy + oy}`) ?? []) {
+          if (used[i]) continue;
+          const e = edges[i]!;
+          const d = Math.hypot(e[0] - x, e[1] - y);
+          if (d <= bestD) { bestD = d; best = i; }
+        }
+      }
+    }
+    return best;
+  };
+
+  const candidatesAt = (x: number, y: number, radius: number): number[] => {
     const cx = Math.round(x / cell), cy = Math.round(y / cell);
     const found: number[] = [];
     for (let ox = -1; ox <= 1; ox++) {
@@ -1327,7 +1669,7 @@ function walkLoops(edges: Cubic[], weld: number): GeomPath {
         for (const i of buckets.get(`${cx + ox},${cy + oy}`) ?? []) {
           if (used[i]) continue;
           const e = edges[i]!;
-          if (Math.hypot(e[0] - x, e[1] - y) <= weld) found.push(i);
+          if (Math.hypot(e[0] - x, e[1] - y) <= radius) found.push(i);
         }
       }
     }
@@ -1341,14 +1683,46 @@ function walkLoops(edges: Cubic[], weld: number): GeomPath {
     const sx = start[0], sy = start[1];
     let cur = seed;
     let joined = false;
+    // Set once any join in the chain was wider than the weld radius (the slack join, the
+    // hop, or the slack close). Such a chain may be the same piece chained to a stray
+    // neighbour, so it is emitted only when it bounds area.
+    let slack = false;
     for (let guard = 0; guard <= edges.length; guard++) {
       used[cur] = 1;
-      const e = edges[cur]!;
+      let e = edges[cur]!;
+      // The pieces of a contour must meet exactly: every consumer reads the output as a
+      // chain, and the walk joins ends up to a few weld radii apart. The piece's start is
+      // moved onto the end it continues from, which changes the piece by at most the join
+      // radius at one end.
+      if (curves.length) {
+        const prev = curves[curves.length - 1]!;
+        if (e[0] !== prev[6] || e[1] !== prev[7]) e = [prev[6], prev[7], e[2], e[3], e[4], e[5], e[6], e[7]];
+      }
       curves.push(e);
       const ex = e[6], ey = e[7];
       if (Math.hypot(ex - sx, ey - sy) <= weld) { joined = true; break; }   // loop complete
-      const options = candidatesAt(ex, ey);
-      if (!options.length) break;                            // dead end: nothing continues
+      // Every end in the edge set was placed to within the weld radius, so two ends that
+      // belong together can be up to twice that apart, and a pair built to sit at exactly
+      // one radius falls on either side of it by rounding. The radius the walk joins at is
+      // therefore wider than the one the ends were placed at; the tight radius is tried
+      // first so that a vertex where several strands meet within it is still resolved by
+      // the turn rule among those strands alone.
+      let options = candidatesAt(ex, ey, weld);
+      if (!options.length) { options = candidatesAt(ex, ey, WALK_SLACK * weld); if (options.length) slack = true; }
+      if (!options.length) {
+        // Nothing continues within the join radius. A chain that stops here is closed with
+        // a hairline and everything past the stop is lost, so the nearest unused start
+        // within a bounded reach is taken instead: the defect is then one hop of at most
+        // that length. Such a stop arises where the boundary passed through a feature
+        // narrower than the decision radius, a cusp's tip, and the pieces inside it were
+        // decided as nothing on both sides while the pieces either side of it were kept.
+        const hop = nearestStart(ex, ey, WALK_HOP * weld);
+        if (hop >= 0) { options = [hop]; slack = true; }
+      }
+      if (!options.length) {
+        if (Math.hypot(ex - sx, ey - sy) <= WALK_SLACK * weld) slack = true;
+        break;                                               // dead end: nothing continues
+      }
       cur = options.length === 1 ? options[0]! : pickTurn(edges, e, options);
     }
     if (!curves.length) continue;
@@ -1366,11 +1740,26 @@ function walkLoops(edges: Cubic[], weld: number): GeomPath {
     // at, not on the operands - one stroked wiggle came back as 1 contour at one tolerance
     // and 21 at a finer one, the outline plus one sliver per input curve. Output complexity
     // has to follow the input's.
-    if (!joined && Math.abs(contourArea({ curves, closed: true })) <= weld * chainSpan(curves)) continue;
+    // A chain that closed at the weld radius is a region whatever its area: a band two weld
+    // radii thick is real geometry that came back to its start. Only a chain that did not
+    // close, or that the slack join closed after a dead end, is tested for area.
+    if ((!joined || slack) && Math.abs(contourArea({ curves, closed: true })) <= weld * chainSpan(curves)) continue;
+    // A closed chain ends where it started; the last piece's end is moved onto the start.
+    if (joined || slack) {
+      const last = curves[curves.length - 1]!, first = curves[0]!;
+      if (last[6] !== first[0] || last[7] !== first[1]) curves[curves.length - 1] = [last[0], last[1], last[2], last[3], last[4], last[5], first[0], first[1]];
+    }
     out.push({ curves, closed: true });
   }
   return out;
 }
+
+/** How many weld radii apart two ends may be for the walk to join them when nothing lies
+ *  within one. */
+const WALK_SLACK = 4;
+/** The furthest, in weld radii, the walk reaches for the nearest unused start when nothing
+ *  lies within `WALK_SLACK` radii. */
+const WALK_HOP = 64;
 
 /** A length proxy for a chain: enough to turn the weld radius into an area, so the test
  *  that uses it scales with the geometry instead of fixing an absolute floor. */
@@ -1389,13 +1778,26 @@ function pickTurn(edges: Cubic[], incoming: Cubic, options: number[]): number {
     const d = startTangent(edges[i]!);
     let delta = back - Math.atan2(d.y, d.x);
     delta -= Math.floor(delta / (Math.PI * 2)) * (Math.PI * 2);
-    // Zero means turning straight back the way we came; that is a spur and is only
-    // taken when nothing else is on offer.
-    if (delta <= 1e-12) delta = Math.PI * 2;
+    // Turning straight back the way we came is a spur, and is only taken when nothing else
+    // is on offer. "Straight back" is read at the angle two directions at a vertex are the
+    // same to, not at 1e-12: a tangency cut a few ulps short of exact leaves the departing
+    // strand tilted by 4e-10, which at 1e-12 turned straight back into the first turn
+    // clockwise and merged two arches touching at their peaks into one contour.
+    //
+    // Nothing further is read from the angle at a tie. A curvature tie-break was tried here,
+    // to tell apart two strands that leave along one tangent, and it was wrong on the case
+    // it fires on most: where the two candidates are the same boundary twice (a curve and a
+    // near-copy of it, cut at a contact), their curvatures agree to six figures as well, so
+    // the choice fell to noise in the ninth decimal and a union lost a whole lobe. Two
+    // strands really leaving along one tangent are told apart by the spur rule above.
+    if (delta <= TURN_TIE || delta >= Math.PI * 2 - TURN_TIE) delta = Math.PI * 2;
     if (delta < bestDelta) { bestDelta = delta; best = i; }
   }
   return best;
 }
+
+/** Angle within which two directions at a vertex count as the same direction. */
+const TURN_TIE = 1e-6;
 
 function startTangent(c: Cubic): { x: number; y: number } {
   const t = tangentAt(c, 0);

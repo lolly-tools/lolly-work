@@ -24,6 +24,23 @@
       "type": "string",
       "description": "An object URL or data URL the template can use directly in <img src>, <use href>, etc. The host manages its lifecycle."
     },
+    "original": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "url",
+        "format"
+      ],
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "format": {
+          "type": "string"
+        }
+      },
+      "description": "Original encoded file when url is a prepared display image. The host resolves these disposable URLs again from the asset identity."
+    },
     "width": { "type": "integer" },
     "height": { "type": "integer" },
     "version": {

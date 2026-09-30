@@ -40,7 +40,7 @@ export function readXmpFields(input: string, specs: readonly XmpFieldSpec[]): Me
           }
         }
         const value = xmlValue(raw ?? '');
-        if (value && !out.some((f) => f.label === label && f.value === value)) out.push({ label, value, group, source: `XMP/RDF ${tag}`, ...(label === 'Creator' ? { sensitive: true } : {}) });
+        if (value && !out.some((f) => f.label === label && f.value === value)) out.push({ label, value, group, source: `XMP/RDF ${tag}`, ...(label === 'Creator' || label.startsWith('Contact ') ? { sensitive: true } : {}) });
       }
     }
   }

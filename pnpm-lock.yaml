@@ -61,12 +61,18 @@ importers:
 
   vendor/@lolly/engine:
     dependencies:
+      '@cto.af/linebreak':
+        specifier: 4.0.3
+        version: 4.0.3
       '@lolly-tools/core':
         specifier: 1.0.0
         version: link:../../@lolly-tools/core
       ajv:
         specifier: ^8.17.1
         version: 8.20.0
+      bidi-shaper:
+        specifier: 0.1.2
+        version: 0.1.2
       css-tree:
         specifier: ^3.2.1
         version: 3.2.1
@@ -77,20 +83,20 @@ importers:
         specifier: ^4.7.8
         version: 4.7.9
       prettier:
-        specifier: ^3.9.6
-        version: 3.9.6
+        specifier: ^3.9.9
+        version: 3.9.9
       smol-toml:
-        specifier: ^1.8.0
-        version: 1.8.0
+        specifier: ^1.9.0
+        version: 1.9.0
       sql-formatter:
-        specifier: ^15.8.2
-        version: 15.8.2
+        specifier: ^15.9.0
+        version: 15.9.0
       terser:
         specifier: ^5.51.2
         version: 5.51.2
       yaml:
-        specifier: 2.9.0
-        version: 2.9.0
+        specifier: 2.9.1
+        version: 2.9.1
     devDependencies:
       '@types/css-tree':
         specifier: ^3.2.0
@@ -148,6 +154,14 @@ packages:
   '@csstools/css-tokenizer@4.0.0':
     resolution: {integrity: sha512-QxULHAm7cNu72w97JUNCBFODFaXpbDg+dP8b/oWFAZ2MTRppA3U00Y2L1HqaS4J6yBqxwa/Y3nMBaxVKbB/NsA==}
     engines: {node: '>=20.19.0'}
+
+  '@cto.af/linebreak@4.0.3':
+    resolution: {integrity: sha512-GiyepYtGQMo4LDynuhyFr0/hBGv0SFNVKnPjHuhFMnkseCBCIMecaCkKL8V3cu9mRas1djpSWznxigw/irV5Lw==}
+    engines: {node: '>=20'}
+
+  '@cto.af/unicode-trie-runtime@3.2.9':
+    resolution: {integrity: sha512-H4FHtvIef/8NlU+NsQolcL9SKu+fYIPMZI++h6rQcM1IN7C/AwiCs9L8WRff+O4hDMamksAEuwBjet2S9uPt4w==}
+    engines: {node: '>=20'}
 
   '@emnapi/runtime@1.11.3':
     resolution: {integrity: sha512-Xz4Tpyki7XyrpbUK1jR1AhdAdaXyhhY4lZ3neLodmhpuWfy2PAQN5B46sAiU4liOXGLkHypn/qU+jvfWSCYYLA==}
@@ -598,6 +612,10 @@ packages:
   bidi-js@1.1.0:
     resolution: {integrity: sha512-fX1Onk0tdVPC7obPWB5EbJ1z7NVhLq4m2xZLq2YXBkxzMXIGRpNMU88n0EPgWseKl12J7zXs7qrDxPK4sRs2fg==}
 
+  bidi-shaper@0.1.2:
+    resolution: {integrity: sha512-JBRKDJ5lIu0DEUJdNVLmXCVLe01k3Y5AO3KoW6vB1MPj9yc0u570uJY4LrM1JusP10Zbr70ClIdVQ2JD+g6R1g==}
+    engines: {node: '>=18'}
+
   buffer-from@1.1.2:
     resolution: {integrity: sha512-E+XQCRwSbaaiChtv6k6Dwgc+bx+Bs6vuKJHHl5kox/BaKbhiXzqQOwK4cO22yElGp2OCmjwVhT3HmxgyPGnJfQ==}
 
@@ -745,8 +763,8 @@ packages:
     resolution: {integrity: sha512-9ZhXKM/rw350N1ovuWHbGxnGh/SNJ4cnxHiM0rxE4VN41wsg8P8zWn9hv/buK00RP4WvlOyr/RBDiptyxVbkZQ==}
     engines: {node: '>=0.10.0'}
 
-  prettier@3.9.6:
-    resolution: {integrity: sha512-OpN0zzVdiaiAhxpuuj5efpIS4sY9j7bY6uR5mnj5yPzGkdkjNKSJeUThPb60Jw29QuAZgA4o+/iB49kFiaBX6g==}
+  prettier@3.9.9:
+    resolution: {integrity: sha512-Z/CJHIkdujO/OtN7nXUii0Rf3VT5SRuhjBA82Xvu2XhBUgX3nhP67T0LHceBdQLex7OOFGTox+Q5Yg8Jk2Qivg==}
     engines: {node: '>=14'}
     hasBin: true
 
@@ -787,8 +805,8 @@ packages:
       '@types/node':
         optional: true
 
-  smol-toml@1.8.0:
-    resolution: {integrity: sha512-kCZr2V3ch9i00x8zXRhjUNVcjG9ijES5dDudkXvUVCT5QlJNQWElSJdZqyPemffHoLNUYwOcou0Fy+ojN0uHSQ==}
+  smol-toml@1.9.0:
+    resolution: {integrity: sha512-hpd+HLON7HdZXqYchMM/+LaTTbdK0AU3NngIJ4KVyWbY9bfQqdL9cD+4yf6dUoU2Ap4VsU0JkQi6FxAI1B2mXQ==}
     engines: {node: '>= 18'}
 
   source-map-js@1.2.1:
@@ -806,8 +824,8 @@ packages:
     resolution: {integrity: sha512-UcjcJOWknrNkF6PLX83qcHM6KHgVKNkV62Y8a5uYDVv9ydGQVwAHMKqHdJje1VTWpljG0WYpCDhrCdAOYH4TWg==}
     engines: {node: '>= 10.x'}
 
-  sql-formatter@15.8.2:
-    resolution: {integrity: sha512-kTYRg5FIcvsDtYUG2Qn9pYT6xKwiLJN5TTIvc5Mur6hIg4pSfdpHu8Yyu5bqESLHnVM3mXzD446cb2+uEaKZXg==}
+  sql-formatter@15.9.0:
+    resolution: {integrity: sha512-3A/N+v+mA5/PDU+FlO4uTFE0L/Mmg63c/Ny161Qv2b1Mxp9IX8War+LLmq17LA/Kgu4KXAR7iutK2JaHWJMMtw==}
     hasBin: true
 
   symbol-tree@3.2.4:
@@ -904,6 +922,11 @@ packages:
     engines: {node: '>= 14.6'}
     hasBin: true
 
+  yaml@2.9.1:
+    resolution: {integrity: sha512-3NxN8+78OdzbT7C/WjGsyfPAtJaN3FNDsWxv7Y7mcDsT/oOmgW8BpyQQFFBnvZE3j9Y2Sdz1ULFLezL7Eb2yFw==}
+    engines: {node: '>= 14.6'}
+    hasBin: true
+
   yjs@13.6.32:
     resolution: {integrity: sha512-lfiJIIC4Xayt5ItynE407ehlE03pCjeOc4hkR4yxxvvNJ4kuiN25B0g+Qp8XagYz361LLL7DCzR5bvFJ81QKtQ==}
     engines: {node: '>=16.0.0', npm: '>=8.0.0'}
@@ -952,6 +975,14 @@ snapshots:
       css-tree: 3.2.1
 
   '@csstools/css-tokenizer@4.0.0': {}
+
+  '@cto.af/linebreak@4.0.3':
+    dependencies:
+      '@cto.af/unicode-trie-runtime': 3.2.9
+
+  '@cto.af/unicode-trie-runtime@3.2.9':
+    dependencies:
+      fflate: 0.8.3
 
   '@emnapi/runtime@1.11.3':
     dependencies:
@@ -1241,6 +1272,8 @@ snapshots:
     dependencies:
       require-from-string: 2.0.2
 
+  bidi-shaper@0.1.2: {}
+
   buffer-from@1.1.2: {}
 
   commander@2.20.3: {}
@@ -1417,7 +1450,7 @@ snapshots:
     dependencies:
       xtend: 4.0.2
 
-  prettier@3.9.6: {}
+  prettier@3.9.9: {}
 
   punycode@2.3.1: {}
 
@@ -1471,7 +1504,7 @@ snapshots:
       '@img/sharp-win32-x64': 0.35.4
       '@types/node': 24.13.3
 
-  smol-toml@1.8.0: {}
+  smol-toml@1.9.0: {}
 
   source-map-js@1.2.1: {}
 
@@ -1484,7 +1517,7 @@ snapshots:
 
   split2@4.2.0: {}
 
-  sql-formatter@15.8.2:
+  sql-formatter@15.9.0:
     dependencies:
       argparse: 2.0.1
       nearley: 2.20.1
@@ -1559,6 +1592,8 @@ snapshots:
   xtend@4.0.2: {}
 
   yaml@2.9.0: {}
+
+  yaml@2.9.1: {}
 
   yjs@13.6.32:
     dependencies:

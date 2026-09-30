@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 /** Portable rules for a Design document published as one ordinary tool. */
+import type { TextDocumentV1 } from './text-v1.ts';
+import { writeDesignText } from './design-tool-text.ts';
 import type { InputSpec } from './manifest.ts';
 
 export type DesignPropertyV1 = 'text' | 'image' | 'fontSize' | 'font' | 'weight' | 'fg' | 'fill' | 'fit' | 'imageFraming';
@@ -58,11 +60,15 @@ export interface ArtboardVariantV1 {
   height: number;
   background: string;
   boxes: Array<Record<string, unknown>>;
+  textDocument?: TextDocumentV1;
 }
+/** A captured tool renderer, with public fields mapped to its original inputs. */
+export interface DesignSourceToolV1 { id: string; version: string; inputs: Record<string, string> }
 export interface DesignToolDraftV1 {
   schemaVersion: 1;
   id: string;
   name: string;
+  description?: string;
   version: string;
   presentation: 'sidebar' | 'on-canvas';
   formats: Array<'png' | 'svg' | 'pdf'>;
@@ -71,6 +77,7 @@ export interface DesignToolDraftV1 {
   defaultVariant: string;
   choices: DesignChoiceV1[];
   recipes: DesignTextRecipeV1[];
+  sourceTool?: DesignSourceToolV1;
 }
 export interface DesignToolDefinitionV1 extends DesignToolDraftV1 {
   compilerVersion: 1;
@@ -91,9 +98,10 @@ export interface DesignToolPolicyV1 {
   presentation: 'sidebar' | 'on-canvas';
   inputs: DesignInputV1[];
   choices: DesignChoiceV1[];
-  variants: Array<Omit<ArtboardVariantV1, 'boxes' | 'background'>>;
+  variants: Array<Omit<ArtboardVariantV1, 'boxes' | 'background' | 'textDocument'>>;
   defaultVariant: string;
   formats: Array<'png' | 'svg' | 'pdf'>;
+  sourceTool?: DesignSourceToolV1;
 }
 
 const propertyTypes: Record<DesignPropertyV1, string[]> = {
@@ -102,7 +110,7 @@ const propertyTypes: Record<DesignPropertyV1, string[]> = {
   fit: ['select'], imageFraming: ['vector'],
 };
 const badKeys = new Set(['__proto__', 'prototype', 'constructor']);
-const internal = new Set(['boxes', 'customCss', 'background', 'transparentBg', 'font', 'fontSize', 'boxStyle', 'textStyle', 'mediaHtml', 'textHtml', 'designRows', 'designWidth', 'designHeight', 'designBackground', 'designIssues']);
+const internal = new Set(['boxes', 'textDocument', 'exportVisibleText', 'customCss', 'background', 'transparentBg', 'font', 'fontSize', 'boxStyle', 'textStyle', 'mediaHtml', 'textHtml', 'designRows', 'designWidth', 'designHeight', 'designBackground', 'designIssues']);
 const idPattern = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 const own = (o: object, k: string): boolean => Object.hasOwn(o, k);
 const keyOf = (t: DesignTargetV1): string => `${t.variantId}/${t.layerId}/${t.property}`;
@@ -112,6 +120,7 @@ export function designToolPolicy(d: DesignToolDraftV1): DesignToolPolicyV1 {
     schemaVersion: 1, presentation: d.presentation, inputs: d.inputs, choices: d.choices,
     variants: d.variants.map(({ id, label, width, height }) => ({ id, label, width, height })),
     defaultVariant: d.defaultVariant, formats: d.formats,
+    ...(d.sourceTool ? {sourceTool:d.sourceTool} : {}),
   };
 }
 
@@ -121,6 +130,7 @@ export function validateDesignTool(d: DesignToolDraftV1, reserved: readonly stri
   if (d.schemaVersion !== 1) add('version', 'This rules version is not supported.');
   if (!/^[a-z0-9][a-z0-9-]{2,95}$/.test(d.id)) add('identity', 'Use a valid permanent tool id.');
   if (!d.name.trim() || !/^\d+\.\d+\.\d+$/.test(d.version)) add('identity', 'Add a name and a three-part version.');
+  if (d.description !== undefined && (typeof d.description !== 'string' || d.description.length > 2000)) add('description', 'Keep the instructions within 2000 characters.');
   if (!['sidebar', 'on-canvas'].includes(d.presentation)) add('presentation', 'Choose Sidebar or On-canvas.');
   if (!d.formats.length || d.formats.some(f => !['png', 'svg', 'pdf'].includes(f))) add('formats', 'Choose PNG, SVG or PDF.');
   if (!d.variants.length || d.variants.length > 24 || d.inputs.length > 64 || d.choices.length > 4 || d.recipes.length > 64) add('limits', 'Use up to 24 artboards, 64 inputs and four choices.');
@@ -148,7 +158,7 @@ export function validateDesignTool(d: DesignToolDraftV1, reserved: readonly stri
   for (const f of d.inputs) {
     const i = f.input;
     if (!idPattern.test(i.id) || badKeys.has(i.id) || internal.has(i.id) || reserved.includes(i.id) || i.id.startsWith('__')) add('input-id', 'Use a unique input id that is not a reserved setting.', i.id);
-    if (!['text', 'longtext', 'number', 'select', 'color', 'asset', 'vector'].includes(i.type)) add('input-type', 'This input type is not supported in a locked tool.', i.id);
+    if (!['text', 'longtext', 'number', 'select', 'color', 'asset', 'vector', ...(d.sourceTool ? ['boolean','url','date','time','datetime-local'] : [])].includes(i.type)) add('input-type', 'This input type is not supported in a locked tool.', i.id);
     if (i.type === 'select' && (!i.options?.length || i.options.some(o => !o.value || !o.label) || new Set(i.options.map(o => o.value)).size !== i.options.length)) add('options', 'Give each option a label and a unique value.', i.id);
     if (i.type === 'number' && (![i.min, i.max, i.step, i.default].every(n => typeof n === 'number' && Number.isFinite(n)) || Number(i.min) > Number(i.max) || Number(i.step) <= 0)) add('range', 'Set a finite minimum, maximum, default and positive step.', i.id);
     if (i.type === 'asset' && i.assetType !== 'image') add('media', 'Editable images must use the image asset type.', i.id);
@@ -156,7 +166,7 @@ export function validateDesignTool(d: DesignToolDraftV1, reserved: readonly stri
       const axes = i.fields as Array<{ id: string; min: number; max: number; step: number }> | undefined;
       if (!axes?.length || axes.length > 3 || new Set(axes.map(a => a.id)).size !== axes.length || axes.some(a => !['x', 'y', 'zoom'].includes(a.id) || ![a.min, a.max, a.step].every(Number.isFinite) || a.min > a.max || a.step <= 0 || a.min < (a.id === 'zoom' ? 1 : 0) || a.max > (a.id === 'zoom' ? 1000 : 100))) add('framing-range', 'Set valid X/Y percentages and a bounded zoom range.', i.id);
     }
-    if (!f.targets.length && !choiceIds.has(i.id) && !d.recipes.some(r => r.parts.some(p => 'inputId' in p && p.inputId === i.id))) add('unlinked', 'Link this input to an object.', i.id);
+    if (!f.targets.length && !d.sourceTool?.inputs[i.id] && !choiceIds.has(i.id) && !d.recipes.some(r => r.parts.some(p => 'inputId' in p && p.inputId === i.id))) add('unlinked', 'Link this input to an object.', i.id);
     if (f.common && (f.common.key === 'headshot' ? i.type !== 'asset' : !['text', 'longtext'].includes(i.type))) add('common-type', 'Use an image for a headshot and text for other common fields.', i.id);
     if (f.image && (i.type !== 'asset' || [f.image.minWidth, f.image.minHeight].some(n => n !== undefined && (!Number.isInteger(n) || n < 1 || n > 32768)) || f.image.formats && (!f.image.formats.length || f.image.formats.some(format => !['png','jpeg','webp','avif','svg'].includes(format))))) add('image-rule', 'Choose image formats and positive minimum pixel dimensions.', i.id);
     if (f.common?.source === 'profile' && (!['person', 'recipient', 'presenter'].includes(f.common.subject) || !['firstname', 'lastname', 'email'].includes(f.common.key))) add('profile', 'Profile prefill is only available for a person’s name or email.', i.id);
@@ -165,6 +175,11 @@ export function validateDesignTool(d: DesignToolDraftV1, reserved: readonly stri
       if (target.text && (!(target.text.min > 0) || !Number.isFinite(target.text.max) || target.text.max < target.text.min)) add('text-fit','Review this object’s font-size range.',i.id,target.layerId);
     }
     if (f.text && (!(f.text.min > 0) || !Number.isFinite(f.text.max) || f.text.min > f.text.max || (f.text.maxLines !== undefined && (!Number.isInteger(f.text.maxLines) || f.text.maxLines < 1)))) add('text-fit', 'Set a valid font-size range and line limit.', i.id);
+  }
+  if(d.sourceTool) {
+    const entries=Object.entries(d.sourceTool.inputs);
+    if(!d.sourceTool.id || !d.sourceTool.version || entries.length!==d.inputs.length || new Set(entries.map(([,id])=>id)).size!==entries.length || entries.some(([id,source])=>!fields.has(id)||!source||badKeys.has(source)||source.startsWith('__')))
+      add('source-inputs','Choose distinct inputs from the source tool.');
   }
   let combinations = 1;
   let artboardSelectors = 0;
@@ -238,9 +253,10 @@ export function validateDesignValues(p: DesignToolPolicyV1, values: Record<strin
     const v = own(values, i.id) ? values[i.id] : own(selection.defaults, i.id) ? selection.defaults[i.id] : i.default;
     const bad = (message: string): void => { result.push({ code: 'value', message: `${i.label || i.id}: ${message}`, inputId: i.id }); };
     if (v === undefined || v === null || v === '') { if (required && i.required) bad('add a value.'); continue; }
-    if (i.type === 'text' || i.type === 'longtext') {
+    if (['text','longtext','url','date','time','datetime-local'].includes(i.type)) {
       if (typeof v !== 'string') bad('enter text.');
       else if (i.maxLength !== undefined && v.length > i.maxLength) bad(`use up to ${i.maxLength} characters. The full value has been kept.`);
+    } else if(i.type === 'boolean') { if(typeof v!=='boolean') bad('choose on or off.');
     } else if (i.type === 'number') {
       const n = Number(v);
       if (!Number.isFinite(n) || n < Number(i.min) || n > Number(i.max) || Math.abs((n - Number(i.min)) / Number(i.step) - Math.round((n - Number(i.min)) / Number(i.step))) > 1e-7) bad(`use ${i.min} to ${i.max}, in steps of ${i.step}.`);
@@ -279,6 +295,7 @@ export function evaluateDesignTool(d: DesignToolDraftV1, supplied: Record<string
     if (target.variantId !== variant.id) return;
     const box = variant.boxes.find(b => b.id === target.layerId);
     if (box && own(propertyTypes, target.property)) {
+      if(box.textStory&&variant.textDocument&&writeDesignText(variant.textDocument,box,target.property,value))return;
       box[target.property] = value;
       if (target.property === 'text') box.plainText = true;
     }
@@ -314,6 +331,7 @@ export function evaluateDesignTool(d: DesignToolDraftV1, supplied: Record<string
   for (const box of variant.boxes) {
     const rule = textRules[String(box.id)];
     box.fitText = false;
+    if(box.textStory&&variant.textDocument&&rule){const frame=JSON.parse(String(box.textFrame));if(rule.mode==='shrink'){const story=variant.textDocument.stories.find(story=>story.id===box.textStory)!;if(story.frameIds.length!==1)throw new Error('A linked story cannot shrink to fit. Use a fixed text rule.');frame.shrink={minSize:rule.min};}else delete frame.shrink;box.textFrame=JSON.stringify(frame);continue;}
     if (rule) box.fontSize = Math.min(rule.max, Math.max(rule.min, Number(box.fontSize) || rule.max));
   }
   return { variant, values, findings, textRules, inputMap, framingMap, fitGroups, imageRules };

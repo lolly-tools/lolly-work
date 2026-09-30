@@ -291,6 +291,12 @@ because a stale shell would serve employees without the session gate and locked-
 while the deploy looks governed. `LW_ALLOW_STALE_SHELL=1` downgrades it to a loud warning - 
 use it knowingly, briefly.
 
+## Changing the deployment design system
+
+Use the console or `lw brand` to preview selection, retirement and download changes. Apply migration 0037 before enabling mutations. Decisions and their audit records commit atomically in Postgres, and every replica reads the shared revision. All replicas need the same mounted source contents and blob store. Read-only production deployments expose inventory and the operator path.
+
+[Design-system administration](design-system-administration.md) covers restart behaviour, missing-source recovery, reference impact and reversible rollback. A stopped download remains suppressed after restart; a mismatched download is withdrawn after a source change. Update source files by validating and redeploying, never by deleting them through a local Lolly Remove action.
+
 ## Connecting apps to this instance
 
 A Lolly client arrives as a neutral download - the app-store shell, a desktop

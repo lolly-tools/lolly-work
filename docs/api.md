@@ -125,8 +125,11 @@ in on the instance and export the pack, or connect from the desktop app.
 | `PUT /api/v1/catalog/lifecycle/*` | `catalog.expire` | set/merge a row; `revoke: true` revokes |
 | `POST /api/v1/catalog/scan/*` | `catalog.scan` | record a C2PA scan result for one asset ([c2pa](c2pa.md)) |
 | `GET/POST /api/v1/injectables`, `DELETE …/:id` | `catalog.injectable.manage` | the assets/tools injected into member shells |
-| `GET /api/v1/brand/profiles`, `PUT /api/v1/brand/profile` | member / `brand.switch` | list brand profiles; switch the active one |
+| `GET /api/v1/brand/profiles`, `PUT /api/v1/brand/profile` | member + `catalog.read` / `brand.switch` | inspect sources; compatible profile selection |
+| `POST /api/v1/brand/changes/preview`, `POST /api/v1/brand/changes` | `brand.switch` or `instance.config`, action dependent | preview impact; apply against the reviewed revision |
 | `GET /api/brand`, `/api/brand/logo/:variant`, `/api/brand/font/:file` | public | brand chrome only (tokens, wordmark, woff2) so the sign-in screen is on-brand |
+
+The [design-system administration contract](design-system-administration.md#review-and-apply) describes additive inventory fields, action permissions, replacement requirements and `409 STALE_PREVIEW`. The public instance descriptor adds `branding: { revision, sourceId }` even when `brand` is null; authenticated org configuration carries the same pair. `X-Lolly-Brand-Revision` reports the request snapshot. A request carrying a different revision is rejected with `409 BRAND_REVISION_CHANGED` so a render cannot combine source revisions.
 
 ## Catalog submit
 
@@ -266,6 +269,12 @@ New durable outputs expose a partial execution receipt at
 `GET /api/v1/renders/:id/evidence`. It records loaded source hashes, prepared
 context, observed asset byte digests and the output digest under the same lease.
 The receipt describes its coverage gaps; it is not a complete dependency lock.
+
+Render and batch requests accept `verification: "output-v1"`, or
+`verification: { profile: "output-v1", widthPx: 1200, heightPx: 630 }`.
+These assertions require final-file readback before publication. Failed required
+checks retain `error.inspection` and publish no output. The [verification profile](renders.md#verify-the-produced-file)
+lists supported formats and measurement limits; this is not design approval.
 
 `POST /api/v1/render-batches` creates a parent and up to 200 independent child
 renders atomically. Read its ordered rows and output receipts, download a JSON
@@ -446,3 +455,25 @@ provider `source`; `/package` accepts either a compiled `document` or
 These routes use the configurable `rateLimit.automation` bucket. It is technical
 admission control, not printer-rate pricing; durable per-principal quotas and
 usage accounting are specified in plan 45.
+
+Durable render and batch requests accept `production: { contract,
+referenceBase64?, repair? }` for the engine's `lolly/production-still-v1` profile.
+The `lolly/production-motion-v1` profile is not accepted by Work's render API.
+The contract and repair choices are included in request identity and retries.
+Contracts can protect runtime input identities with `kind: "input"`, a declared
+input id in `location` and a canonical JSON SHA-256 in `expected`. Required input
+checks need observed runtime values; file-only inspection cannot reconstruct them.
+The retained evidence contains `production` and optional `productionAttempts`;
+failed required checks return no artifact and retain `PRODUCTION_VERIFICATION_FAILED`
+diagnostics on the render record. See [Production still checks](renders.md#production-still-checks-and-permitted-repairs)
+for fields, collector limits and worker compatibility.
+
+## Managed rule mappings
+
+| Route | Action | Notes |
+|---|---|---|
+| `GET /api/v1/brand/rules` | `catalog.read` | Published guide and source-specific mappings; compatible input inventory is visible to policy editors |
+| `POST /api/v1/brand/rules/preview` | `policy.edit` | Validate `{ mappings }`, inspect format coverage, return revision and review token |
+| `POST /api/v1/brand/rules` | `policy.edit` | Apply the reviewed mappings with `revision` and `reviewToken`; audited, stale-safe and durable outside development |
+
+See [managed production rules](design-system-administration.md#managed-production-rules) for scope and draft handling. Render input checks do not certify output appearance. Durable output metadata includes `brandRules` with disposition, scope and revision; synchronous and durable downloads expose `x-lolly-brand-check`.

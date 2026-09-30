@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 /** Replace emoji in a rendered tree with pinned pack artwork, over a minimal node interface. */
 import type { EmojiStyleV1 } from '@lolly-tools/core';
+import { revertEmojiSvgText } from './emoji-svg-text.ts';
 import { escapeXml } from './xml-escape.ts';
 import { emojiPackPinKey } from './emoji-pack.ts';
 import type { VerifiedEmojiPack } from './emoji-pack.ts';
@@ -89,17 +90,7 @@ const HIDDEN_TEXT_STYLE = 'position:absolute;width:1px;height:1px;margin:-1px;pa
  */
 const ARTWORK_ATTRIBUTES = ' aria-hidden="true" focusable="false" style="display:block;width:100%;height:100%"';
 
-/**
- * Elements whose text is markup, a control's value or vector artwork already.
- *
- * A KNOWN GAP, stated here because the headline promise does not cover it: an
- * `<svg>` subtree is skipped whole, so text inside an SVG `<text>` element keeps
- * whatever the machine draws it with. SVG has no way to put a picture inside a
- * text run, so a cluster there cannot become a nested placement the way it does
- * in HTML, and the honest options are a different geometry path or a refusal.
- * Neither is built. The tools this reaches are the ones whose template root is
- * an `<svg>`; engine/emoji.md lists them.
- */
+/** SVG text uses the shaped vector pass; form controls use their editing overlays. */
 const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'TEXTAREA', 'INPUT', 'SELECT', 'OPTION', 'SVG', 'CANVAS', 'NOSCRIPT']);
 
 /**
@@ -358,6 +349,7 @@ export async function applyEmojiToDom(
  * caret, selection and input composition all work on plain text.
  */
 export function revertEmojiDom(root: EmojiDomNode): number {
+  revertEmojiSvgText(root);
   const doc = documentFor(root);
   if (!doc) return 0;
   let reverted = 0;

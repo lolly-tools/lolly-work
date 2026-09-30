@@ -11,6 +11,9 @@
 
 export const DESIGN_DOCUMENT_VERSION = 1 as const;
 
+// Extended, never reordered: the wire value of each entry is a permanent contract
+// (`3d` joined it in plan 265 milestone 3). A reader older than that release marks a
+// document holding a 3D scene box invalid, which the release note for it says.
 export const DESIGN_LAYER_KINDS = [
   'box',
   'text',
@@ -19,6 +22,7 @@ export const DESIGN_LAYER_KINDS = [
   'audio',
   'camera',
   'frame',
+  '3d',
 ] as const;
 
 export type DesignLayerKindV1 = (typeof DESIGN_LAYER_KINDS)[number];
@@ -51,6 +55,9 @@ export interface DesignLayerInspectionV1 {
   locked: boolean;
   text?: string;
   assetId?: string;
+  /** A `3d` layer's scene: the 3D Studio's own settings as its link query, defaults
+   *  left out. Absent when the layer is another kind or its scene is empty. */
+  scene?: string;
   timing?: DesignTimingV1;
 }
 
@@ -257,6 +264,10 @@ export function inspectDesignV1(
       ...(['image', 'audio', 'camera'].includes(kind) && assetId(row.image)
         ? { assetId: assetId(row.image) }
         : {}),
+      // A 3D scene box reads its `scene` field and raises nothing: an empty scene is
+      // a new, unedited box, not a fault, and the assets it references live inside
+      // the query rather than in `image` (engine/src/design-scene.ts reads them out).
+      ...(kind === '3d' && text(row.scene) ? { scene: text(row.scene) } : {}),
       ...(timed
         ? {
             timing: {
@@ -269,7 +280,10 @@ export function inspectDesignV1(
         : {}),
     };
     layers.push(layer);
-    if (kind === 'text' && !text(row.text).trim()) {
+    // A composed text box keeps its words in the named story (`textStory`), and its
+    // own `text` field must stay empty, so an empty field is only a fault on a
+    // plain text box.
+    if (kind === 'text' && !text(row.text).trim() && !text(row.textStory)) {
       finding(
         findings,
         'design.text.empty',

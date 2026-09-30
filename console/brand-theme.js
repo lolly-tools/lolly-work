@@ -151,6 +151,7 @@ function findFontFamily(maps, leaf) {
   return null;
 }
 
+const packFaces = new Set();
 async function loadPackFont(family, cssVar, fontUrlFor) {
   if (!family || typeof document.fonts?.add !== 'function' || typeof FontFace !== 'function') return;
   const base = family.replace(/\s+/g, '');
@@ -166,6 +167,7 @@ async function loadPackFont(family, cssVar, fontUrlFor) {
       const face = new FontFace(family, await res.arrayBuffer(), { weight: c.weight, style: 'normal', display: 'swap' });
       await face.load();
       document.fonts.add(face);
+      packFaces.add(face);
       const fallback = cssVar === '--font-mono' ? 'var(--font-mono-sys)' : 'var(--font-sys)';
       document.documentElement.style.setProperty(cssVar, `"${family}", ${fallback}`);
       return;
@@ -185,6 +187,11 @@ async function applyPackFonts(maps, fontUrlFor) {
 // authenticated catalog path vs the unauthenticated /api/brand path used by the
 // sign-in gate), but the parsing, contrast guard, and mapping are identical.
 async function themeFromTokens(tokens, fontUrlFor) {
+  for (const face of packFaces) document.fonts?.delete(face);
+  packFaces.clear();
+  for (const property of ['--font-sans', '--font-mono', '--pack-accent-light', '--pack-on-accent-light', '--pack-accent-dark', '--pack-on-accent-dark', '--pack-plane-light', '--pack-surface-light', '--pack-plane-dark', '--pack-surface-dark']) {
+    document.documentElement.style.removeProperty(property);
+  }
   if (!tokens || typeof tokens !== 'object') return;
   let maps;
   try { maps = buildThemeMaps(tokens); } catch { return; }

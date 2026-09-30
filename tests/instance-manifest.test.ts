@@ -44,7 +44,7 @@ test('the manifest answers without a session and carries exactly the declared ke
   const res = await fetch(`${base}/api/v1/instance`);
   assert.equal(res.status, 200);
   const body = (await res.json()) as Record<string, unknown>;
-  assert.deepEqual(Object.keys(body).sort(), ['accessMode', 'brand', 'capabilities', 'engineVersion', 'loginPath', 'name', 'provider', 'providerName', 'providers'].sort());
+  assert.deepEqual(Object.keys(body).sort(), ['accessMode', 'brand', 'branding', 'capabilities', 'engineVersion', 'loginPath', 'name', 'provider', 'providerName', 'providers'].sort());
   assert.equal(body.name, 'Manifest Hub');
   // This fixture's pack ships no tokens asset, so there is no brand to describe.
   // The block itself is pinned in tests/instance-brand.test.ts.

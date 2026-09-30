@@ -29,10 +29,12 @@ import { assertDesignValues, designExportSize } from './design-tool/policy.ts';
 import { missingRequires, type HostApiName } from '@lolly-tools/core';
 import type { EmojiStyleV1 } from '@lolly-tools/core';
 import type { EmojiSetInfoV1 } from '@lolly-tools/core/emoji-v1';
-import { emojiSourceIngredients, emojiWorksAndUses } from './emoji-rights.ts';
+import { defaultEmojiStyle } from './emoji-default.ts';
+import { emojiSourceIngredients, emojiWorksAndUses, emojiCreditsText } from './emoji-rights.ts';
 import { sourceIngredientsFor } from './rights-attribution.ts';
 import type { SourceDetailV1 } from './rights-attribution.ts';
 import { evaluateCreativeUses } from './rights-evaluate.ts';
+import { outputLicenceId, outputLicenceNotice } from './rights-profiles.ts';
 import { buildInputModel, updateInput, modelToValues, modelForHooks, flattenValue, summarizeInputs, normalizeTableValue, tokenBindingsOf } from './inputs.ts';
 import { hydrate, resolvePaintBindings } from './template.ts';
 import { buildExportMeta } from './metadata.ts';
@@ -79,6 +81,10 @@ export interface HookError {
 export interface RuntimeEmojiState {
   /** The host offers `host.emoji`. False on a shell with no pack storage. */
   present: boolean;
+  /** Pinned pack assets carried by saves, templates and portable files. */
+  assets?: import('@lolly-tools/core/host-v1').AssetRef[];
+  /** Artwork used by the render, excluding the picker and other untracked chrome. */
+  sources?: Array<Pick<EmojiLineSource, 'pack' | 'assetId'>>;
   /** Glyphs drawn from the chosen set in the last pass. */
   replaced: number;
   /** Clusters the last pass left as the neutral placeholder. */
@@ -170,7 +176,8 @@ export interface ExportFileResult {
  * and declines every other format. The runtime just wraps the bytes with `mime`.
  */
 export interface ExportStillResult {
-  bytes: Uint8Array | ArrayBuffer;
+  frame?: import('@lolly-tools/core/host-v1').CodecFrame;
+  bytes?: Uint8Array | ArrayBuffer;
   mime?: string;
 }
 
@@ -222,12 +229,30 @@ export const HOOK_BUDGET_MS = {
   exportStill: 10000,
 };
 
+/** Options for an intermediate patch (v1.228). */
+export interface HookReportOpts {
+  /**
+   * The document can be shown as it now stands: a view created with
+   * `progressiveInit` stops waiting for onInit here and mounts, and the hook's final
+   * result applies when it arrives. Only onInit's reports carry it; anywhere else,
+   * and without the option, it is an ordinary report.
+   */
+  ready?: boolean;
+}
+/** Publish an intermediate onInit/onInput patch. Ignored after a newer run. */
+export type HookReport = (patch: Record<string, unknown>, opts?: HookReportOpts) => void;
+
 /** The lifecycle context every hook receives. */
 interface HookContext {
+  lang?: string;
   model: InputModelItem[];
   host: HostV1;
   /** Publish an intermediate onInit/onInput patch. Ignored after a newer run. */
-  report?: (patch: Record<string, unknown>) => void;
+  report?: HookReport;
+  /** onInit only (v1.228): this view shows reported patches as they arrive and opens on
+   *  a `ready` one (createRuntime's `progressiveInit`). Without it nobody is watching,
+   *  so a partial render is wasted work. */
+  progressive?: boolean;
 }
 
 type OnInitHook = (ctx: HookContext) => unknown;
@@ -235,7 +260,7 @@ type OnInputHook = (ctx: HookContext & { id: string; value: InputValue }) => unk
 type OnFrameHook = (ctx: HookContext & { frame: MediaFrame }) => unknown;
 type OnLevelHook = (ctx: HookContext & { level: AudioLevel }) => unknown;
 type ExportLifecycleHook =
-  (ctx: { node: unknown; format: string; opts: RuntimeExportOpts; host: HostV1 }) => unknown;
+  (ctx: { lang?: string; model: InputModelItem[]; node: unknown; format: string; opts: RuntimeExportOpts; host: HostV1 }) => unknown;
 type ExportFileHook = (ctx: HookContext & { opts: Record<string, unknown> }) => unknown;
 type ExportStillHook = ExportLifecycleHook; // same ctx as beforeExport; returns ExportStillResult | null
 
@@ -304,6 +329,11 @@ export interface Runtime {
    * stamps the credential itself (the CLI does, in buildExportC2paOpts).
    */
   emojiIngredients(): C2paSourceIngredient[];
+  emojiCredits(): string;
+  /** The document-scoped composer shares its selected emoji pins with tool hooks. */
+  layoutText(request: import('@lolly-tools/core').TextLayoutRequestV1): Promise<import('@lolly-tools/core').TextLayoutV1>;
+  /** A synchronous receipt exists only for the exact settled source, geometry and emoji pins. */
+  peekTextLayout(request: import('@lolly-tools/core').TextLayoutRequestV1): import('./text-layout-cache.ts').TextLayoutReceipt | null;
   /**
    * What the recorded sources in this render ask of the person delivering it
    * (plan 253): the reviewed licence rules applied to the works this render
@@ -328,6 +358,15 @@ export interface Runtime {
   rightsDecisions(): RightsDecisionV1[];
   /** Restore decisions from a saved session. Replaces whatever is held. */
   setRightsDecisions(decisions: readonly RightsDecisionV1[]): void;
+  /**
+   * The licence the person declared for their own export (an id from
+   * `OUTPUT_LICENCE_CHOICES`), or null for no declaration. Every later
+   * evaluation reads it as `outputLicence` unless a context names its own, and
+   * an export writes its notice into the file's licence field when the tool's
+   * own inputs did not already supply one. An unknown id clears it.
+   */
+  setOutputLicence(id: string | null): void;
+  outputLicence(): string | null;
   /**
    * What the last export actually delivered, as the host measured it by reading
    * the written bytes back. Null until a host reports one: an unread export is
@@ -364,6 +403,16 @@ export interface Runtime {
    */
   resolveRefs(): Promise<void>;
   subscribe(fn: (state: RuntimeState) => void): () => void;
+  /**
+   * Resolves once the newest onInit/onInput run is done: its patch applied (within its
+   * budget or late), the run failed, or a newer run superseded it and that one is done.
+   * Resolves on the next task when nothing is outstanding, and at destroy(). (v1.226)
+   *
+   * A run raced out past HOOK_BUDGET_MS keeps computing and may still apply, and that
+   * late patch reaches subscribers with no other signal. A shell opening a large
+   * document waits here to know the document it shows is laid out.
+   */
+  whenSettled(): Promise<void>;
   /** Re-notify subscribers with the CURRENT model - no value change. */
   refresh(): void;
   /** True when this tool declares an `onFrame` hook. */
@@ -447,13 +496,27 @@ export interface Runtime {
 // Raster formats that carry an alpha channel - the ones a transparent background is
 // meaningful for. SVG keeps its transparency through a fill:none bg rect, so it needs no
 // help here; JPEG has no alpha at all.
-const ALPHA_EXPORT_FORMATS = new Set(['png', 'webp', 'avif', 'apng', 'webp-anim', 'gif']);
+const ALPHA_EXPORT_FORMATS = new Set(['jxl', 'jxl-lossless', 'png', 'webp', 'avif', 'apng', 'webp-anim', 'gif']);
 
 export async function createRuntime(
   tool: LoadedTool,
   host: HostV1,
   initialState: Record<string, InputValue> = {},
-  opts: { composeStack?: readonly string[]; hookExecutor?: HookExecutor } = {},
+  opts: {
+    composeStack?: readonly string[];
+    hookExecutor?: HookExecutor;
+    /** Let onInit end its own wait (v1.228): a `report(patch, { ready: true })` mounts
+     *  the view with the document as far as it has got, and the rest applies as it
+     *  arrives. For an interactive view only. A render, an export or a script must
+     *  leave it off, or it would deliver half a document. */
+    progressiveInit?: boolean;
+    /** The emoji style to compose with from the first render (v1.227), in place of the
+     *  default. A shell that already knows the document's style passes it here, so
+     *  onInit lays text out once with the right glyphs instead of composing everything
+     *  again when the style arrives through setEmojiStyle. `null` means no set. An
+     *  invalid style is logged and the default kept. */
+    emojiStyle?: EmojiStyleV1 | null;
+  } = {},
 ): Promise<Runtime> {
   if (host.version !== '1') {
     throw new Error(`Tool requires host bridge v1, got v${host.version}`);
@@ -468,6 +531,34 @@ export async function createRuntime(
       `${unmetApis.length === 1 ? 'it' : 'them'}`,
     );
   }
+  // Seed before onInit so tool-owned text rendering uses the same default as the
+  // DOM pass. The listing is metadata only; artwork stays on demand.
+  let emojiSets: EmojiSetInfoV1[] | undefined = host.emoji ? await host.emoji.sets().catch(() => []) : undefined;
+  let emojiStyle: EmojiStyleV1 | null = defaultEmojiStyle(emojiSets ?? []);
+  if (opts.emojiStyle !== undefined) {
+    const issue = opts.emojiStyle ? (await import('./emoji-pack.ts')).validateEmojiStyle(opts.emojiStyle) : null;
+    if (issue) host.log('warn', `emojiStyle ${issue.message}`, { toolId: tool.manifest.id });
+    else emojiStyle = opts.emojiStyle ? structuredClone(opts.emojiStyle) : null;
+  }
+  type ToolEmoji = ReturnType<typeof import('./emoji-tool-text.ts')['createEmojiToolText']>;
+  let toolEmoji: ToolEmoji | null = null;
+  const emojiApi = host.emoji, textApi = host.text;
+  let toolEmojiPending: Promise<ToolEmoji> | undefined;
+  const toolEmojiService = () => toolEmojiPending ??= import('./emoji-tool-text.ts').then(mod => {
+    toolEmoji = mod.createEmojiToolText(emojiApi!,textApi,() => emojiStyle); return toolEmoji;
+  });
+  if (emojiApi) host = { ...host, emoji: { ...emojiApi,
+    renderText: async value => (await toolEmojiService()).renderText(value),
+    renderSvg: async value => (await toolEmojiService()).renderSvg(value),
+  } };
+  if (textApi?.layoutRuns && emojiApi) host = { ...host, text: { ...textApi, layoutRuns: async request => (await toolEmojiService()).layoutRuns(request) } };
+  let textLayoutCache: ReturnType<typeof import('./text-layout-cache.ts')['createTextLayoutCache']> | undefined;
+  const scopedLayout = host.text?.layoutRuns;
+  if (scopedLayout) host = { ...host,text:{...host.text!,layoutRuns:async request => {
+    const cache = await import('./text-layout-cache.ts'); textLayoutCache ??= cache.createTextLayoutCache();
+    const key = cache.textLayoutKey(request), dependency = JSON.stringify(emojiStyle);
+    const result = await scopedLayout(request); textLayoutCache.remember(key,dependency,result); return result;
+  }} };
   const composeStack = opts.composeStack ?? [];
   // Per-runtime memo so resolveNestedRenders skips re-rendering a child whose
   // bound inputs are unchanged across keystrokes.
@@ -477,6 +568,7 @@ export async function createRuntime(
   let setInputSeq = 0;
 
   const profile = await host.profile.get();
+  const hookLang = tool.lang || profile.lang || 'en';
   // buildInputModel reads the profile as a string-keyed lookup (bindToProfile);
   // Profile is an interface (no implicit index signature), so hand it over as a
   // fresh ProfileValues object. Read-only downstream, so the copy is a no-op.
@@ -536,10 +628,26 @@ export async function createRuntime(
   // the work resolves, while a superseding keystroke still wins. Export hooks
   // never late-apply: a budget overrun there fails that export visibly.
   let hookRunSeq = 0;
+  // whenSettled (v1.226): the hookRunSeq of the newest onInit/onInput run still out,
+  // or 0. A superseded run's landing is ignored; only the newest one counts.
+  let outstandingSeq = 0;
+  const settleWaiters: Array<() => void> = [];
+  const flushSettled = (): void => { for (const resolve of settleWaiters.splice(0)) resolve(); };
+  const noteLanded = (seq: number): void => {
+    if (seq !== outstandingSeq) return;
+    outstandingSeq = 0;
+    // One task later: the caller's merge and emit (or the late apply) run in the
+    // microtasks behind the hook's promise, and a waiter must hear "settled" once the
+    // repaint is done. A run started in between keeps the waiters waiting.
+    setTimeout(() => { if (!outstandingSeq) flushSettled(); }, 0);
+  };
   function runHook(
     name: keyof typeof HOOK_BUDGET_MS,
-    invoke: (report?: (patch: Record<string, unknown>) => void) => unknown,
+    invoke: (report?: HookReport) => unknown,
     onLate?: (patch: unknown) => void,
+    // v1.228: a `ready` report ends the wait (see HookReportOpts). onInit only, and
+    // only for a runtime created with `progressiveInit`.
+    honourReady = false,
   ): Promise<unknown> {
     const budget = HOOK_BUDGET_MS[name];
     const started = Date.now();
@@ -548,30 +656,53 @@ export async function createRuntime(
     // async result land on top of it.
     const seq = onLate ? ++hookRunSeq : 0;
     let finished = false;
-    const report = onLate ? (patch: Record<string, unknown>) => {
-      if (!finished && seq === hookRunSeq) onLate(patch);
+    let markReady: (() => void) | undefined;
+    const ready = new Promise<'ready'>((resolve) => { markReady = () => resolve('ready'); });
+    const report: HookReport | undefined = onLate ? (patch, opts) => {
+      if (finished || seq !== hookRunSeq) return;
+      onLate(patch);
+      if (opts?.ready && honourReady) markReady?.();
     } : undefined;
-    const out = invoke(report);
+    if (onLate) outstandingSeq = seq;
+    let out: unknown;
+    try {
+      out = invoke(report);
+    } catch (error) {
+      if (onLate) noteLanded(seq);
+      throw error;
+    }
     if (out == null || typeof (out as { then?: unknown }).then !== 'function') {
       const elapsed = Date.now() - started;
       if (elapsed > budget) {
         host.log('warn', `${name} ran ${elapsed}ms synchronously (budget ${budget}ms - sync hooks can't be preempted)`, { toolId: tool.manifest.id });
       }
+      if (onLate) noteLanded(seq);
       return Promise.resolve(out);
     }
     const p = Promise.resolve(out).then(patch => {
       finished = true;
       return onLate && seq !== hookRunSeq ? null : patch;
     }, error => { finished = true; throw error; });
+    if (onLate) void p.then(() => noteLanded(seq), () => noteLanded(seq));
     if (!onLate) return withTimeout(p, budget, tool.manifest.id);
-    return withTimeout(p, budget, tool.manifest.id).catch((err: unknown) => {
-      // Timed out (a hook REJECTION reaches this catch too, but then the late .then
-      // below never fires). Keep listening for the real result.
+    // Keep listening for the real result once the caller has stopped waiting.
+    const applyWhenDone = (): void => {
       p.then((patch) => {
         if (seq !== hookRunSeq || !patch) return;
         host.log('info', `${name} finished ${Date.now() - started}ms in (budget ${budget}ms) - applying late, still the newest run`, { toolId: tool.manifest.id });
         onLate(patch);
       }, () => { /* the timeout already told the story */ });
+    };
+    return Promise.race([withTimeout(p, budget, tool.manifest.id), ready]).then((patch) => {
+      // Ready before done: what the hook reported is already merged, and the rest
+      // arrives through the same late path a budget overrun takes, without the error.
+      if (patch !== 'ready') return patch;
+      applyWhenDone();
+      return null;
+    }, (err: unknown) => {
+      // Timed out (a hook REJECTION reaches this catch too, but then the late .then
+      // never fires).
+      applyWhenDone();
       throw err;
     });
   }
@@ -604,7 +735,8 @@ export async function createRuntime(
     const onInit = hooks.onInit;
     if (onInit) {
       try {
-        const patch = await runHook('onInit', report => onInit({ model: modelForHooks(model), host, report }), applyLatePatch);
+        const progressive = opts.progressiveInit === true;
+        const patch = await runHook('onInit', report => onInit({ model: modelForHooks(model), lang: hookLang, host, report, ...(progressive ? { progressive } : {}) }), applyLatePatch, progressive);
         if (patch) ({ model, extras } = mergePatch(model, extras, patch, inputIds));
       } catch (e) {
         // Record the failure (not just log it) so the shell can show a canvas-error
@@ -722,7 +854,7 @@ export async function createRuntime(
     return source.subscribe((level) => {
       if (pending || generation !== levelGeneration || destroyed) return;
       pending = true;
-      Promise.resolve(onLevel({ level, model: modelForHooks(model), host }))
+      Promise.resolve(onLevel({ level, model: modelForHooks(model), lang: hookLang, host }))
         .then((patch) => {
           if (patch && meterUnsub && generation === levelGeneration && !destroyed) {
             ({ model, extras } = mergePatch(model, extras, patch, inputIds)); emit();
@@ -793,8 +925,10 @@ export async function createRuntime(
 
   function getHydrated(): string {
     const pag = tool.manifest.render?.paginate;
-    if (pag?.source) return hydratePaginated(pag.source);
-    return bindPaint(hydrate(tool.template, templateContext()));
+    const html = pag?.source ? hydratePaginated(pag.source) : bindPaint(hydrate(tool.template, templateContext()));
+    return tool.presentationSource && tool.trustClass !== 'remote-untrusted' && tool.trustClass !== 'sideloaded-consented'
+      ? html + '<script data-tool-presentation>' + tool.presentationSource.replace(/<\/script/gi, '<\\/script') + '</script>'
+      : html;
   }
 
   // Engine-driven pagination (render.paginate): hydrate the template once per
@@ -854,12 +988,12 @@ export async function createRuntime(
   // paint (a live canvas) and export() calls it again on the node it is about to
   // render, so a mount site that forgot the live call still exports artwork
   // rather than whatever font the machine happened to have.
-  let emojiStyle: EmojiStyleV1 | null = null;
+
   let emojiCensus: EmojiLineSource[] = [];
-  let emojiSets: EmojiSetInfoV1[] | undefined;
   let emojiReplaced = 0, emojiUnresolved = 0;
   // The last tree the pass ran on, so changing the set re-draws what is on screen.
   let emojiNode: unknown = null;
+  let emojiCensusKnown = false;
   // Prepared plus treated artwork, keyed by pack pin, meaning and treatment, so a
   // glyph used a hundred times is prepared once and a repaint prepares nothing.
   const emojiArtwork: EmojiArtworkCache = new Map();
@@ -878,7 +1012,15 @@ export async function createRuntime(
    */
   const EMOJI_MAYBE = /[\u00A9-\uFFFF]/;
 
+  let emojiAssets: import('@lolly-tools/core/host-v1').AssetRef[] = [];
+  let emojiStyleGeneration = 0;
+  // The generation whose change has finished, and the style `emojiAssets` was resolved
+  // for. Together they let setEmojiStyle tell "already in force" from "on its way".
+  let emojiStyleSettled = 0;
+  let emojiAssetsFor: string | null = null;
   const emojiSnapshot = (): RuntimeEmojiState => ({
+    assets: structuredClone(emojiAssets),
+    sources: emojiCensusKnown ? emojiCensus.map(({ pack, assetId }) => ({ pack: structuredClone(pack), assetId })) : undefined,
     present: Boolean(host.emoji),
     replaced: emojiReplaced,
     unresolved: emojiUnresolved,
@@ -950,12 +1092,15 @@ export async function createRuntime(
     node: unknown, opts: RuntimeEmojiPassOpts = {},
   ): Promise<RuntimeEmojiResult> {
     const api = host.emoji;
-    if (!api) return { present: false, replaced: 0, unresolved: 0, census: [] };
     // A pass queued before the shell unmounted must not run now, and above all
     // must not take a fresh reference to a tree destroy() just let go of.
     if (destroyed) return { present: true, replaced: 0, unresolved: 0, census: [] };
     const root = node as { textContent?: string | null } | null | undefined;
     if (!root || typeof root !== 'object') return { present: true, replaced: 0, unresolved: 0, census: [] };
+    const portableNodes=(root as {querySelectorAll?:(selector:string)=>ArrayLike<{getAttribute(name:string):string|null;closest?:(selector:string)=>unknown}>}).querySelectorAll?.('[data-emoji-vector-sources]');
+    let portable:EmojiLineSource[]=[];
+    if(portableNodes?.length){const {readEmojiSourceRecords,mergeEmojiSourceRecords}=await import('./emoji-source-records.ts');portable=mergeEmojiSourceRecords(Array.from(portableNodes).filter(element=>!element.closest?.('[data-export-hide]')).flatMap(element=>readEmojiSourceRecords(element.getAttribute('data-emoji-vector-sources'))));}
+    if(!api){if(opts.track!==false)emojiCensus=portable;return {present:false,replaced:0,unresolved:0,census:portable};}
     // A tracked pass IS the render. An untracked one (chrome drawing its own
     // emoji) draws artwork, reports what it drew and records nothing: it neither
     // becomes the tree a set change redraws nor rewrites the counts the Emoji
@@ -964,14 +1109,20 @@ export async function createRuntime(
     const track = opts.track !== false;
     const nothing: EmojiDomResult = { replaced: 0, unresolved: 0, census: [] };
     const record = (result: EmojiDomResult): void => {
+      const geometrySources=(root as {querySelectorAll?:(selector:string)=>ArrayLike<{getAttribute(name:string):string|null;closest?:(selector:string)=>unknown}>}).querySelectorAll?.('[data-emoji-tool-source]');
+      const combined=[...result.census,...portable,...(toolEmoji?.censusFor(Array.from(geometrySources??[]).filter(element=>!element.closest?.('[data-export-hide]')).map(element=>element.getAttribute('data-emoji-tool-source')??''))??[])];
+      const distinct=new Map<string,EmojiLineSource>();for(const source of combined){const key=`${source.pack.checksum}:${source.assetId}:${source.canonicalChecksum}`;if(!distinct.has(key))distinct.set(key,source);}
+      result.census=[...distinct.values()];
       if (!track) return;
       emojiReplaced = result.replaced;
-      emojiUnresolved = result.unresolved;
+      const missingParagraph = (root as {querySelectorAll?: (selector:string) => ArrayLike<{getAttribute(name:string):string|null}>}).querySelectorAll?.('[data-text-emoji-missing]');
+      emojiUnresolved = result.unresolved + Array.from(missingParagraph ?? []).reduce((count, el) => count + Math.max(0, Number(el.getAttribute('data-text-emoji-missing')) || 0), 0);
       emojiCensus = result.census;
+      emojiCensusKnown = true;
       notifyEmoji();
     };
-    if (track) emojiNode = root;
-    if (!EMOJI_MAYBE.test(root.textContent ?? '')) {
+    if (track) { emojiNode = root; emojiCensusKnown = false; }
+    if (!EMOJI_MAYBE.test(root.textContent ?? '') && !(root as {querySelector?: (selector:string) => unknown}).querySelector?.('[data-emoji-tool-source]')) {
       record(nothing);
       return { present: true, ...nothing };
     }
@@ -1008,6 +1159,13 @@ export async function createRuntime(
     const result = await applyEmojiToDom(
       root as EmojiDomNode, style, packs, io, { cache: emojiArtwork, idScope: opts.idScope },
     );
+    const { applyEmojiToSvgText } = await import('./emoji-svg-text.ts');
+    const svg = await applyEmojiToSvgText(root, style, packs, io, host.text, { cache: emojiArtwork, idScope: opts.idScope });
+    result.replaced += svg.replaced; result.unresolved += svg.unresolved;
+    for (const source of svg.census) {
+      const prior = result.census.find(item => item.pack.checksum === source.pack.checksum && item.assetId === source.assetId && item.canonicalChecksum === source.canonicalChecksum);
+      if (prior) prior.occurrences.push(...source.occurrences); else result.census.push(source);
+    }
     record(result);
     // Only list the sets once this render has shown it cares - a set was chosen,
     // or the text carries emoji somebody may want to choose a set for.
@@ -1022,6 +1180,7 @@ export async function createRuntime(
   // reads no clock and no file, and the decisions a person made live here for
   // the life of the mount so a session can save them.
   let rightsChoices: RightsDecisionV1[] = [];
+  let declaredLicence: string | null = null;
   let lastRightsReceipt: AttributionReceiptV1 | null = null;
 
   /** The delivery a context describes, with this tool's own defaults underneath. */
@@ -1032,21 +1191,22 @@ export async function createRuntime(
     // is why this asks the tool's own provenance default rather than a list of
     // formats: promising an ingredient a route never carries is the one thing
     // section 4.3 forbids. The receipt measures the truth afterwards either way.
-    const carriesCredential = given.canCarryCredential ?? (tool.manifest.render?.c2pa !== false && tool.manifest.privacy !== 'on-device');
-    const route: DeliveryRouteV1 = given.route ?? (carriesCredential ? 'file-with-c2pa' : 'file-without-c2pa');
+    const carriesCredential = !['lottie', 'jxl', 'jxl-lossless'].includes(format) && (given.canCarryCredential ?? (tool.manifest.render?.c2pa !== false && tool.manifest.privacy !== 'on-device'));
+    const route: DeliveryRouteV1 = given.route ?? (format === 'lottie' ? 'package' : carriesCredential ? 'file-with-c2pa' : 'file-without-c2pa');
     return {
       operation: context?.operation ?? 'render',
       delivery: {
         format,
         route,
-        canCarryCredential: given.canCarryCredential ?? (route === 'file-with-c2pa' || route === 'package'),
+        canCarryCredential: !['lottie', 'jxl', 'jxl-lossless'].includes(format) && (given.canCarryCredential ?? (route === 'file-with-c2pa' || route === 'package')),
         // A clipboard carries pixels and nothing beside them; every other route
         // here has somewhere a reader can find the credit.
-        canCarryReadableCredit: given.canCarryReadableCredit ?? route !== 'clipboard',
+        canCarryReadableCredit: !['jxl', 'jxl-lossless'].includes(format) && (given.canCarryReadableCredit ?? route !== 'clipboard'),
       },
       audience: context?.audience ?? 'unknown',
       ...(context?.commercial !== undefined ? { commercial: context.commercial } : {}),
-      ...(context?.outputLicence !== undefined ? { outputLicence: context.outputLicence } : {}),
+      ...(context?.outputLicence !== undefined ? { outputLicence: context.outputLicence }
+        : declaredLicence ? { outputLicence: declaredLicence } : {}),
       ...(context?.evaluatedAt !== undefined ? { evaluatedAt: context.evaluatedAt } : {}),
     };
   }
@@ -1077,7 +1237,47 @@ export async function createRuntime(
       return revertEmojiDom(node as EmojiDomNode);
     }),
     async setEmojiStyle(style) {
-      emojiStyle = style ? structuredClone(style) : null;
+      if (style) { const issue = (await import('./emoji-pack.ts')).validateEmojiStyle(style); if (issue) throw new Error(issue.message); }
+      const next = style ? structuredClone(style) : null;
+      const key = JSON.stringify(next);
+      const dependencies = async (): Promise<import('@lolly-tools/core/host-v1').AssetRef[]> =>
+        next && host.emoji?.dependencies ? host.emoji.dependencies([next.primary, ...next.fallbacks]) : [];
+      // The style already in force, with no other change on its way (v1.227): a shell
+      // applying the style the runtime was created with, or a picker choosing the
+      // current set again. No glyph changes, so the tool's onInput does not run: on a
+      // large text document that run is a second full composition. The assets are
+      // still resolved once, because a save carries them.
+      if (key === JSON.stringify(emojiStyle) && emojiStyleSettled === emojiStyleGeneration) {
+        if (emojiAssetsFor !== key) {
+          const generation = emojiStyleGeneration;
+          const assets = await dependencies();
+          if (generation === emojiStyleGeneration && emojiAssetsFor !== key) { emojiAssets = assets; emojiAssetsFor = key; notifyEmoji(); }
+        }
+        return;
+      }
+      const generation = ++emojiStyleGeneration;
+      const assets = await dependencies();
+      if (generation !== emojiStyleGeneration) return;
+      emojiAssets = assets;
+      emojiAssetsFor = key;
+      emojiStyle = next;
+      emojiStyleSettled = generation; // in force now; its onInput below covers any repeat
+      if (toolEmoji?.used && hooks?.onInput) {
+        const seq = setInputSeq;
+        // Caught like every other onInput run: a slow hook (a large document's first
+        // composition) is logged and its late patch is still applied, instead of the
+        // rejection escaping into the shell and failing the view's mount.
+        let patch: unknown;
+        try {
+          patch = await runHook('onInput', report => hooks!.onInput!({id:'__emoji', value:null, model:modelForHooks(model), host, report}), late => {
+            if (generation === emojiStyleGeneration && seq === setInputSeq) applyLatePatch(late);
+          });
+        } catch (e) {
+          host.log('warn', `onInput ${(e as Error).message}`, { toolId: tool.manifest.id });
+        }
+        if (generation !== emojiStyleGeneration || seq !== setInputSeq) return;
+        if (patch) { ({model, extras} = mergePatch(model,extras,patch,inputIds)); emit(); }
+      }
       // The prepared-artwork cache is keyed by pin, meaning and treatment, so the
       // old style's entries stay valid and switching back costs nothing.
       if (emojiNode) await queueEmoji(() => runEmojiPass(emojiNode));
@@ -1089,6 +1289,10 @@ export async function createRuntime(
       return () => { emojiListeners.delete(fn); };
     },
     emojiIngredients: () => emojiSourceIngredients(emojiCensus),
+    emojiCredits: () => emojiCreditsText(emojiCensus),
+    async layoutText(request) { if (!host.text?.layoutRuns) throw new Error('This host cannot compose text paragraphs.'); return host.text.layoutRuns(request); },
+
+    peekTextLayout: request => textLayoutCache?.peek(request,JSON.stringify(emojiStyle)) ?? null,
 
     rights: (context) => evaluateRights(emojiCensus, context).evaluation,
     setRightsDecision(decision) {
@@ -1098,6 +1302,8 @@ export async function createRuntime(
       ];
     },
     rightsDecisions: () => rightsChoices.map((decision) => ({ ...decision })),
+    setOutputLicence(id) { declaredLicence = outputLicenceId(id); },
+    outputLicence: () => declaredLicence,
     setRightsDecisions(decisions) {
       // Deduped by work and kind, keeping the last, exactly as setRightsDecision
       // does. A restored list that named one work twice would otherwise let the
@@ -1127,7 +1333,7 @@ export async function createRuntime(
       const onFrame = hooks?.onFrame;
       if (!onFrame) return null;
       try {
-        const patch = await onFrame({ frame, model: modelForHooks(model), host });
+        const patch = await onFrame({ frame, model: modelForHooks(model), lang: hookLang, host });
         if (patch) ({ model, extras } = mergePatch(model, extras, patch, inputIds));
         return getHydrated();
       } catch (e) {
@@ -1166,7 +1372,7 @@ export async function createRuntime(
       const onInput = hooks?.onInput;
       if (onInput) {
         try {
-          const patch = await runHook('onInput', report => onInput({ id, value: flattenValue(value), model: modelForHooks(model), host, report }), applyLatePatch);
+          const patch = await runHook('onInput', report => onInput({ id, value: flattenValue(value), model: modelForHooks(model), lang: hookLang, host, report }), applyLatePatch);
           if (patch) {
             ({ model, extras } = mergePatch(model, extras, patch, inputIds));
             emit(); // re-emit with the hook's patch so the final state is correct
@@ -1251,7 +1457,7 @@ export async function createRuntime(
       if (onInput) {
         for (const { id, value } of applied) {
           try {
-            const patch = await runHook('onInput', report => onInput({ id, value, model: modelForHooks(model), host, report }), applyLatePatch);
+            const patch = await runHook('onInput', report => onInput({ id, value, model: modelForHooks(model), lang: hookLang, host, report }), applyLatePatch);
             if (patch) ({ model, extras } = mergePatch(model, extras, patch, inputIds));
           } catch (e) {
             host.log('warn', `onInput ${(e as Error).message}`, { toolId: tool.manifest.id });
@@ -1275,6 +1481,13 @@ export async function createRuntime(
       listeners.add(fn);
       fn({ model, hydrated: getHydrated() });
       return () => listeners.delete(fn);
+    },
+
+    whenSettled() {
+      return new Promise<void>((resolve) => {
+        if (outstandingSeq && !destroyed) settleWaiters.push(resolve);
+        else setTimeout(resolve, 0);
+      });
     },
 
     // Re-notify subscribers with the CURRENT model - no value change. For shell
@@ -1349,7 +1562,7 @@ export async function createRuntime(
       const subscribeLive = () => media.subscribe((frame) => {
         if (framePending || livePaused) return; // busy, or an export drive owns the canvas → drop
         framePending = true;
-        Promise.resolve(onFrame({ frame, model: modelForHooks(model), host }))
+        Promise.resolve(onFrame({ frame, model: modelForHooks(model), lang: hookLang, host }))
           .then((patch) => {
             // Guard liveUnsub so a frame in flight when stopLive() ran can't repaint.
             // A SENSOR frame drove the render → its essence is now a live camera
@@ -1500,8 +1713,10 @@ export async function createRuntime(
       // Errors (including a HOOK_BUDGET_MS timeout) propagate - the shell shows
       // the transform's failure to the user; there's no degraded fallback here.
       const out = await runHook('exportFile',
-        () => exportFileHook({ model: modelForHooks(model), host, opts }),
+        () => exportFileHook({ model: modelForHooks(model), lang: hookLang, host, opts }),
       ) as ExportFileResult | ExportFileResult[] | null | undefined;
+      const placed = toolEmoji?.census;
+      if (placed?.length) emojiCensus = [...emojiCensus.filter(source => !placed.some(next => next.pack.checksum === source.pack.checksum && next.assetId === source.assetId)), ...placed];
       // Batch tools (a `multiple` file input) may return one result per input file;
       // single-file tools return one record. Both are validated for bytes presence.
       if (Array.isArray(out)) {
@@ -1518,11 +1733,35 @@ export async function createRuntime(
     },
 
     async export(renderedNode, format, opts = {}) {
+      const composedSource = model.some(item => item.id === 'textDocument' && item.value) || !!extras.__lollyTextPreflight;
+      const exportRevision = composedSource ? JSON.stringify([modelToValues(model), emojiStyle]) : null;
+      const checkTextRevision = (): void => {
+        if (exportRevision !== null && exportRevision !== JSON.stringify([modelToValues(model), emojiStyle]))
+          throw new Error('The text changed while its export was prepared. Wait for layout, then export again.');
+      };
+      if ((format === 'html' || format === 'zip') && tool.manifest.render.portable) {
+        if (!tool.presentationSource) throw new Error('The portable presentation runtime is missing. Reload the tool before exporting.');
+        if (tool.trustClass === 'remote-untrusted' || tool.trustClass === 'sideloaded-consented') throw new Error('Interactive HTML export requires a trusted installed tool.');
+        opts = { ...opts, portableDocument: {
+          markup: bindPaint(hydrate(tool.template, templateContext())), styles: tool.styles ?? '',
+          script: tool.presentationSource, title: String(model.find(i => i.id === 'title')?.value || tool.manifest.name), lang: hookLang,
+        } };
+      }
+      if (format === 'lottie' || format === 'html' && tool.manifest.id === 'design') opts = { ...opts, width: opts.width ?? tool.manifest.render?.width, height: opts.height ?? tool.manifest.render?.height, sourceDocument: { toolId: tool.manifest.id, values: structuredClone(modelToValues(model)) } };
       if (tool.manifest.designTool) {
+        if (tool.manifest.designTool.sourceTool && extras.__lollySourceError) throw new Error(String(extras.__lollySourceError));
+        if (tool.manifest.designTool.sourceTool) {
+          const captured = (extras.__lollySourceExportOptions as Record<string,{background?:string}> | undefined)?.[format];
+          if(captured?.background!==undefined)opts={...opts,background:captured.background};
+        }
         if (pendingDesignIssues.size) throw new Error([...pendingDesignIssues.values()].join('\n'));
         const size = designExportSize(tool.manifest.designTool, modelToValues(model), format, opts.width === undefined ? undefined : Number(opts.width), opts.height === undefined ? undefined : Number(opts.height));
         opts = { ...opts, ...size };
         if (!host.export.checkLayout) throw Object.assign(new Error('This tool needs a browser for text layout checks before export.'), { code: 'NEEDS_BROWSER' });
+        if (extras.__lollyTextPreflight) {
+          const { checkDesignTextReceipt } = await import('./design-tool/text-preflight.ts');
+          checkDesignTextReceipt(extras.__lollyTextPreflight, modelToValues(model), renderedNode);
+        }
         const check = await host.export.checkLayout(renderedNode as Element);
         if (!check.ok) throw new Error(check.issues.join('\n'));
         if (hookErrors.length) throw new Error('The tool could not render. Resolve its reported errors before export.');
@@ -1533,13 +1772,14 @@ export async function createRuntime(
         // PROPAGATE and fail this export visibly - beforeExport is where tools
         // raise user-facing preconditions (e.g. url-shot's "enter a URL"), and
         // exporting an unstaged canvas silently would be worse than failing.
-        await runHook('beforeExport', () => beforeExport({ node: renderedNode, format, opts, host }));
+        await runHook('beforeExport', () => beforeExport({ model: modelForHooks(model), lang: hookLang, node: renderedNode, format, opts, host }));
       }
       // Emoji, after the tool has finished staging the node and before anything
       // reads it. Running it here rather than only at each mount site is what
       // makes the promise hold on every shell: an export sees pinned artwork even
       // where the live canvas never ran the pass. Idempotent, so a canvas the
       // shell already drew is walked and left alone.
+      checkTextRevision();
       const emojiPass = await queueEmoji(() => runEmojiPass(renderedNode));
       // Central transparent-background default - the counterpart to a tool's own beforeExport.
       // A tool whose synthesised `transparentBg` input is ON wants a transparent backdrop, but
@@ -1573,7 +1813,7 @@ export async function createRuntime(
           const afterExport = hooks?.afterExport;
           if (!afterExport) return;
           try {
-            await runHook('afterExport', () => afterExport({ node: renderedNode, format, opts, host }));
+            await runHook('afterExport', () => afterExport({ model: modelForHooks(model), lang: hookLang, node: renderedNode, format, opts, host }));
           } catch (e) {
             host.log('warn', `afterExport ${(e as Error).message}`, { toolId: tool.manifest.id });
           }
@@ -1581,12 +1821,17 @@ export async function createRuntime(
         let still: ExportStillResult | null | undefined;
         try {
           still = await runHook('exportStill',
-            () => exportStill({ node: renderedNode, format, opts, host })) as ExportStillResult | null | undefined;
+            () => exportStill({ model: modelForHooks(model), lang: hookLang, node: renderedNode, format, opts, host })) as ExportStillResult | null | undefined;
         } catch (e) {
           await runAfterExport();
           throw e;
         }
-        if (still && still.bytes) {
+        if (still?.frame) {
+          const { validateDeepFrame } = await import('./deep-image.ts');
+          validateDeepFrame({ ...still.frame, space: still.frame.space ?? 'srgb-linear' });
+          opts = { ...opts, deepFrame: still.frame };
+        }
+        if (still && still.bytes && !still.frame) {
           const bytes = (still.bytes instanceof Uint8Array ? still.bytes : new Uint8Array(still.bytes)) as BlobPart;
           await runAfterExport();
           return new Blob([bytes], { type: still.mime || 'application/octet-stream' });
@@ -1617,6 +1862,10 @@ export async function createRuntime(
         // Pass the input model so bindToMeta inputs (the artist's author/copyright/
         // licence declaration) merge over the profile-derived provenance.
         meta = await buildExportMeta(host, tool.manifest, profile, model);
+        // The licence the person picked in the export panel. A tool input bound to
+        // the licence field is the more specific declaration, so it wins.
+        const notice = outputLicenceNotice(declaredLicence);
+        if (meta && notice && !meta.license) meta = { ...meta, license: notice };
       }
       // Data/text formats are produced from the input model (and optional sibling
       // text templates), not the rendered DOM. The engine hydrates the text here
@@ -1760,6 +2009,7 @@ export async function createRuntime(
       const c2paAiIngredients = stampProvenance ? (await import('./c2pa.ts')).collectAiIngredientDeclarations(model) : [];
       let blob;
       try {
+        checkTextRevision();
         blob = await host.export.render(renderedNode as Element, format as ExportFormat, {
           ...opts,
           watermark: opts.watermark ?? (isExperimental && !isOnDevice),
@@ -1796,7 +2046,7 @@ export async function createRuntime(
         const afterExport = hooks?.afterExport;
         if (afterExport) {
           try {
-            await runHook('afterExport', () => afterExport({ node: renderedNode, format, opts, host }));
+            await runHook('afterExport', () => afterExport({ model: modelForHooks(model), lang: hookLang, node: renderedNode, format, opts, host }));
           } catch (e) {
             host.log('warn', `afterExport ${(e as Error).message}`, { toolId: tool.manifest.id });
           }
@@ -1815,6 +2065,8 @@ export async function createRuntime(
       stopMeterLoop();
       cancelRecording();
       ++hookRunSeq; // Ignore late reports/results from a tool that is no longer mounted.
+      outstandingSeq = 0;
+      flushSettled(); // nothing that runs from here on can land, so nobody waits for it
       // Let the tree the emoji pass last walked go. An offscreen export stage is
       // removed from the document right after its render, and holding the node
       // here would keep the whole detached stage alive for nothing.
@@ -2040,13 +2292,16 @@ async function resolveTokenRefs(model: InputModelItem[], host: HostV1): Promise<
   if (!needs) return model;
   let set: TokenSet;
   try { set = await host.tokens.get(); } catch { return model; }
+  const { swatchFace } = await import('./color-face.ts');
+  const swatches = new Map((set.colors?.() ?? []).map(swatch => [swatch.ref, swatch]));
+  const target = model.some(input => input.id === 'editingRange' && input.value === 'hdr') ? 'rec2020' : 'srgb';
   return model.map(input => {
     if (input.type !== 'color') return input;
     const v = input.value;
     const ref = isTokenValue(v) ? v.ref : (isAlias(v) ? v : null);
     if (!ref) return input;
     const resolved = set.resolve(ref);
-    if (resolved !== undefined) return { ...input, value: { ref, value: colorToHex(resolved) } };
+    if (resolved !== undefined) return { ...input, value: { ref, value: swatches.has(ref) ? swatchFace(swatches.get(ref)!,target) : colorToHex(resolved) } };
     // Unresolved here: keep the cached value if we had one; otherwise mark it
     // resolved-to-nothing so modelToValues yields '' rather than the raw alias.
     return { ...input, value: isTokenValue(v) ? v : { ref, value: undefined } };

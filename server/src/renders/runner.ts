@@ -1,7 +1,9 @@
+import { parseProductionRequest, verifyProductionReport, ProductionError } from '../render/production.ts';
 import type { BlobStore } from '../blobs/types.ts';
 import { sha256Hex } from '../lib/crypto.ts';
 import { RenderResourceError, type RenderRecord, type RenderStore } from './types.ts';
 import { evidenceHash, type RenderEvidence } from '../render/evidence.ts';
+import { outputVerificationProblems, OutputVerificationError, verificationTarget, parseOutputVerification } from '../render/output-inspection.ts';
 
 export interface RenderExecution { bytes: Uint8Array; mime: string; cacheKey: string; evidence?: RenderEvidence }
 export interface RenderRunnerOptions {
@@ -129,6 +131,24 @@ export class RenderRunner {
           throw new RenderResourceError('RENDER_EVIDENCE_MISMATCH', 500, 'execution evidence does not identify these output bytes');
         }
       }
+      if (record.request.verification) {
+        let verification;
+        try { verification = parseOutputVerification(record.request.verification); }
+        catch { throw new OutputVerificationError(['unsupported-verification-request']); }
+        const receipt = output.evidence;
+        if (!receipt || receipt.context.format !== record.request.format || receipt.tool.id !== record.request.toolId) {
+          throw new OutputVerificationError(['execution-evidence-missing-or-mismatched']);
+        }
+        const problems = outputVerificationProblems(receipt.inspection, output.bytes, output.mime, verificationTarget({
+          format: record.request.format, widthPx: receipt.context.widthPx, heightPx: receipt.context.heightPx,
+        }, verification));
+        if (problems.length) throw new OutputVerificationError(problems, receipt.inspection);
+      }
+      if (record.request.production) {
+        const production = parseProductionRequest(record.request.production)!;
+        if (!output.evidence || output.evidence.tool.id !== record.request.toolId || output.evidence.context.format !== record.request.format || production.contract.format !== record.request.format) throw new ProductionError(['execution-evidence-missing-or-mismatched']);
+        await verifyProductionReport(output.evidence.production, output.bytes, production);
+      }
       let mayHavePublished = false;
       try {
         await blobs.put(ref, output.bytes, output.mime);
@@ -157,7 +177,9 @@ export class RenderRunner {
       const transient = status === 408 || status === 429 || (status >= 500 && status !== 501);
       await store.settleRender(record.id, token, {
         state: 'failed',
-        error: { code, message: typeof e?.message === 'string' ? e.message.slice(0, 500) : 'render failed' },
+        error: { code, message: typeof e?.message === 'string' ? e.message.slice(0, 500) : 'render failed',
+          ...(error instanceof OutputVerificationError && error.inspection ? { inspection: error.inspection } : {}),
+          ...(error instanceof ProductionError && error.production ? { production: error.production, ...(error.attempts ? { productionAttempts: error.attempts } : {}) } : {}) },
         ...(transient ? { retryAfterMs: Math.min(30_000, (this.options.retryDelayMs ?? 1_000) * 2 ** (record.attempt - 1)) } : {}),
       });
     } finally {

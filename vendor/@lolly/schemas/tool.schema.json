@@ -35,6 +35,14 @@
       "type": "string",
       "description": "Shown in the tool gallery."
     },
+    "galleryArt": {
+      "type": "string",
+      "enum": [
+        "render",
+        "icon"
+      ],
+      "description": "Gallery first impression. Default render uses editable templates or tool defaults. Use icon when a tool needs personal media or an explicit capture before it has a useful output."
+    },
     "a11yLabel": {
       "type": "string",
       "description": "Optional Handlebars template for the canvas's accessible label (the preview is exposed to screen readers as role=img). Hydrated live with input values, e.g. \"QR code linking to {{url}}\". Defaults to \"<name> preview\" when omitted."
@@ -98,7 +106,7 @@
       "enum": [
         "on-device"
       ],
-      "description": "Marks an on-device utility - a tool that processes the user's OWN content (file in \u2192 transformed file out) entirely on the device, with nothing uploaded. The host shows a 'Runs on your device - nothing is uploaded' badge. Enforced conventions (validated): status must not be 'experimental' (no watermark on the user's own file) and the tool must not embed provenance metadata into the output. This is the marker for the privacy-flagship utility category (EXIF strip, redact, compress, convert) that replaces content exfiltration to single-purpose SaaS."
+      "description": "Marks an on-device utility - a tool that processes the user's OWN content (file in → transformed file out) entirely on the device, with nothing uploaded. The host shows a 'Runs on your device - nothing is uploaded' badge. Enforced conventions (validated): status must not be 'experimental' (no watermark on the user's own file) and the tool must not embed provenance metadata into the output. This is the marker for the privacy-flagship utility category (EXIF strip, redact, compress, convert) that replaces content exfiltration to single-purpose SaaS."
     },
     "tags": {
       "type": "array",
@@ -153,6 +161,10 @@
       "additionalProperties": false,
       "description": "Defines the template render area and supported export formats.",
       "properties": {
+        "portable": {
+          "type": "boolean",
+          "description": "Load the signed presentation.js browser runtime and include it in interactive HTML exports."
+        },
         "width": {
           "type": "integer",
           "minimum": 1
@@ -204,6 +216,8 @@
               "webp",
               "webp-anim",
               "avif",
+              "jxl",
+              "jxl-lossless",
               "webm",
               "mp4",
               "gif",
@@ -214,7 +228,8 @@
               "opus",
               "ttf",
               "otf",
-              "woff"
+              "woff",
+              "lottie"
             ]
           },
           "minItems": 1,
@@ -513,17 +528,17 @@
           "required": [
             "message"
           ],
-          "description": "Editor-only guard for tools whose layout only suits a certain orientation (e.g. a portrait-only document). Shows a prominent warning beside the dimension controls when the current page aspect ratio (width \u00f7 height) falls outside [min, max]. Never affects - or appears in - the rendered/exported output.",
+          "description": "Editor-only guard for tools whose layout only suits a certain orientation (e.g. a portrait-only document). Shows a prominent warning beside the dimension controls when the current page aspect ratio (width ÷ height) falls outside [min, max]. Never affects - or appears in - the rendered/exported output.",
           "properties": {
             "min": {
               "type": "number",
               "exclusiveMinimum": 0,
-              "description": "Minimum acceptable aspect ratio (width \u00f7 height). Below this, the warning shows. Omit to leave the low end unbounded."
+              "description": "Minimum acceptable aspect ratio (width ÷ height). Below this, the warning shows. Omit to leave the low end unbounded."
             },
             "max": {
               "type": "number",
               "exclusiveMinimum": 0,
-              "description": "Maximum acceptable aspect ratio (width \u00f7 height). Above this, the warning shows. Omit to leave the high end unbounded."
+              "description": "Maximum acceptable aspect ratio (width ÷ height). Above this, the warning shows. Omit to leave the high end unbounded."
             },
             "message": {
               "type": "string",
@@ -602,7 +617,7 @@
           "emoji"
         ]
       },
-      "description": "Optional HostV1 APIs (`host.text`, `host.pdf`, \u2026) this tool calls WITHOUT feature-detecting them. The runtime refuses to mount the tool on a shell that lacks one, before any hook runs, and the gallery greys it out there. An API the hooks guard (`if (host.text)`, `host.text?.`) is NOT required and must not be listed. `scripts/tool-requires.ts` computes this from hooks.js and can rewrite it (`--write`); `validate:catalog` warns when the two disagree. Distinct from `capabilities`, which names device abilities (camera, microphone, screen, \u2026) rather than bridge APIs."
+      "description": "Optional HostV1 APIs (`host.text`, `host.pdf`, …) this tool calls WITHOUT feature-detecting them. The runtime refuses to mount the tool on a shell that lacks one, before any hook runs, and the gallery greys it out there. An API the hooks guard (`if (host.text)`, `host.text?.`) is NOT required and must not be listed. `scripts/tool-requires.ts` computes this from hooks.js and can rewrite it (`--write`); `validate:catalog` warns when the two disagree. Distinct from `capabilities`, which names device abilities (camera, microphone, screen, …) rather than bridge APIs."
     },
     "network": {
       "type": "object",
@@ -705,7 +720,7 @@
               "id": {
                 "type": "string",
                 "pattern": "^[a-z0-9-]+$",
-                "description": "Stable key for this track - the i18n sidecar path (`guide.tracks.<id>.\u2026`) is built from it, so treat it like an input id."
+                "description": "Stable key for this track - the i18n sidecar path (`guide.tracks.<id>.…`) is built from it, so treat it like an input id."
               },
               "label": {
                 "type": "string",
@@ -756,7 +771,7 @@
         },
         "exportFile": {
           "type": "boolean",
-          "description": "The tool produces output via the transform path (file in \u2192 transformed file out) rather than rasterising the DOM. The hook reads the picked file's bytes (input.value.bytes) and returns a { bytes, mime, filename } record; the host wraps it in a Blob and delivers it via host.export.file (no watermark, no embedded provenance). A batch tool (a `multiple` file input) may instead return an ARRAY of such records - one per file - which the host delivers as a single zip. Used by on-device utilities."
+          "description": "The tool produces output via the transform path (file in → transformed file out) rather than rasterising the DOM. The hook reads the picked file's bytes (input.value.bytes) and returns a { bytes, mime, filename } record; the host wraps it in a Blob and delivers it via host.export.file (no watermark, no embedded provenance). A batch tool (a `multiple` file input) may instead return an ARRAY of such records - one per file - which the host delivers as a single zip. Used by on-device utilities."
         },
         "exportStill": {
           "type": "boolean",
@@ -1179,6 +1194,33 @@
               "pdf"
             ]
           }
+        },
+        "sourceTool": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "version",
+            "inputs"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1
+            },
+            "inputs": {
+              "type": "object",
+              "maxProperties": 64,
+              "additionalProperties": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
         }
       }
     }
@@ -1325,6 +1367,99 @@
               "description": "Override the file-input accept filter (default covers csv/json/txt/md/xlsx)."
             }
           }
+        },
+        "tableEditor": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "title",
+            "fields"
+          ],
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "diagnostics": {
+              "type": "string"
+            },
+            "preview": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "date",
+                "time",
+                "input"
+              ],
+              "properties": {
+                "date": {
+                  "type": "string"
+                },
+                "time": {
+                  "type": "string"
+                },
+                "input": {
+                  "type": "string"
+                }
+              }
+            },
+            "fields": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 100,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "key",
+                  "label"
+                ],
+                "properties": {
+                  "key": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "aliases": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "editor": {
+                    "enum": [
+                      "text",
+                      "date",
+                      "time",
+                      "choice",
+                      "url"
+                    ]
+                  },
+                  "choices": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "primary": {
+                    "type": "boolean"
+                  },
+                  "required": {
+                    "type": "boolean"
+                  },
+                  "identity": {
+                    "type": "boolean"
+                  },
+                  "dateField": {
+                    "type": "string"
+                  },
+                  "column": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
         }
       },
       "allOf": [
@@ -1468,7 +1603,7 @@
                   "segmented"
                 ],
                 "default": "select",
-                "description": "'icon-toggle' renders the select as ONE compact button that cycles its options, showing the current option's `icon` instead of a dropdown. Intended for 2-state modifiers (with attachTo); a longer option list still cycles, but a dropdown reads better past ~3. 'segmented' renders the options as a row of side-by-side tabs (a radiogroup) instead of a dropdown - for a small, mutually-exclusive mode switch (2\u20134 options) like Hue/Saturation/Luminance; past ~4 a dropdown reads better."
+                "description": "'icon-toggle' renders the select as ONE compact button that cycles its options, showing the current option's `icon` instead of a dropdown. Intended for 2-state modifiers (with attachTo); a longer option list still cycles, but a dropdown reads better past ~3. 'segmented' renders the options as a row of side-by-side tabs (a radiogroup) instead of a dropdown - for a small, mutually-exclusive mode switch (2–4 options) like Hue/Saturation/Luminance; past ~4 a dropdown reads better."
               },
               "options": {
                 "type": "array",
@@ -1917,7 +2052,7 @@
               "mdPaste": {
                 "type": "boolean",
                 "default": false,
-                "description": "Adds a 'Paste Markdown' button to the blocks toolbar. It reads the clipboard, splits the Markdown into one block per heading (the heading line \u2192 the block's `heading` field, the section beneath it \u2192 its `body` field, kept as Markdown for the tool's {{markdown}} render), and appends the blocks - so a whole document lands as editable, page-flowing blocks. A block gets kind:'text' when the input has a `kind` discriminator; other fields start at their defaults."
+                "description": "Adds a 'Paste Markdown' button to the blocks toolbar. It reads the clipboard, splits the Markdown into one block per heading (the heading line → the block's `heading` field, the section beneath it → its `body` field, kept as Markdown for the tool's {{markdown}} render), and appends the blocks - so a whole document lands as editable, page-flowing blocks. A block gets kind:'text' when the input has a `kind` discriminator; other fields start at their defaults."
               },
               "importData": {
                 "type": "object",
@@ -1949,7 +2084,7 @@
                     "additionalProperties": {
                       "type": "string"
                     },
-                    "description": "Explicit fieldId \u2192 source column/key overrides. Omit to auto-map by header (field id, then label). e.g. { \"value\": \"Amount\" }."
+                    "description": "Explicit fieldId → source column/key overrides. Omit to auto-map by header (field id, then label). e.g. { \"value\": \"Amount\" }."
                   }
                 }
               },
@@ -2000,7 +2135,7 @@
                   },
                   "opacityField": {
                     "type": "string",
-                    "description": "Number sub-field: box opacity 0\u2013100."
+                    "description": "Number sub-field: box opacity 0–100."
                   },
                   "imageField": {
                     "type": "string",
@@ -2104,7 +2239,7 @@
                   },
                   "headStartField": {
                     "type": "string",
-                    "description": "Select sub-field: the decoration drawn at the path's FIRST point, along that end's own tangent - none \u00b7 triangle \u00b7 open \u00b7 circle \u00b7 diamond \u00b7 bar. Same vocabulary as the connector heads, because a spline, a line and a connector are one primitive carrying one decoration set. Default 'headStart'."
+                    "description": "Select sub-field: the decoration drawn at the path's FIRST point, along that end's own tangent - none · triangle · open · circle · diamond · bar. Same vocabulary as the connector heads, because a spline, a line and a connector are one primitive carrying one decoration set. Default 'headStart'."
                   },
                   "headEndField": {
                     "type": "string",
@@ -2140,7 +2275,7 @@
                   },
                   "shadowField": {
                     "type": "string",
-                    "description": "SELECT sub-field (not a Boolean - a shadow has a target, and the value names it): 'none' \u00b7 'box' (the frame's own silhouette, a box-shadow) \u00b7 'text' (the type only, a text-shadow) \u00b7 'content' (the artwork's alpha silhouette, a filter: drop-shadow). The vocabulary is additive: a depth-capable tool may extend it with 'depth', whose offset/blur are DERIVED from the box's `zField` rather than authored. Whatever the value, the x/y/blur/colour sub-fields below supply the geometry."
+                    "description": "SELECT sub-field (not a Boolean - a shadow has a target, and the value names it): 'none' · 'box' (the frame's own silhouette, a box-shadow) · 'text' (the type only, a text-shadow) · 'content' (the artwork's alpha silhouette, a filter: drop-shadow). The vocabulary is additive: a depth-capable tool may extend it with 'depth', whose offset/blur are DERIVED from the box's `zField` rather than authored. Whatever the value, the x/y/blur/colour sub-fields below supply the geometry."
                   },
                   "shadowColorField": {
                     "type": "string",
@@ -2160,7 +2295,7 @@
                   },
                   "zField": {
                     "type": "string",
-                    "description": "Number sub-field: the box's DEPTH - how far it sits in front of (positive) or behind (negative) the stage plane, in canvas px. Layers stay parallel to the screen, so a camera turns z into a per-layer uniform scale + translate (parallax, push-in, depth-of-field) and the render stays affine end-to-end. Absent field or 0 = the flat, unlifted board; the authored slider runs 0\u2013300 and the value clamps to \u2212300\u2026900."
+                    "description": "Number sub-field: the box's DEPTH - how far it sits in front of (positive) or behind (negative) the stage plane, in canvas px. Layers stay parallel to the screen, so a camera turns z into a per-layer uniform scale + translate (parallax, push-in, depth-of-field) and the render stays affine end-to-end. Absent field or 0 = the flat, unlifted board; the authored slider runs 0–300 and the value clamps to −300…900."
                   },
                   "rxField": {
                     "type": "string",
@@ -2168,7 +2303,7 @@
                   },
                   "ryField": {
                     "type": "string",
-                    "description": "Number sub-field: the box's own YAW in degrees, the companion to rxField. Applied BEFORE the pitch (R = Ry\u00b7Rx, the pan/tilt-head order the camera channels already use), so a box wearing both angles never acquires roll - a third channel the wire does not have."
+                    "description": "Number sub-field: the box's own YAW in degrees, the companion to rxField. Applied BEFORE the pitch (R = Ry·Rx, the pan/tilt-head order the camera channels already use), so a box wearing both angles never acquires roll - a third channel the wire does not have."
                   },
                   "startField": {
                     "type": "string",
@@ -2382,7 +2517,7 @@
                       },
                       "styleField": {
                         "type": "string",
-                        "description": "Edge sub-field: route style (elbow, straight, curved \u2026)."
+                        "description": "Edge sub-field: route style (elbow, straight, curved …)."
                       },
                       "arrowField": {
                         "type": "string",
@@ -2447,6 +2582,18 @@
                   "fixedCanvas": {
                     "type": "boolean",
                     "description": "Lock the canvas to render.width/height: the shell withholds setCanvasSize and ignores reserved ?width/?height, so box coordinates stay 1:1 with the render size (required when a hook draws into a fixed-viewBox overlay, e.g. connectors)."
+                  },
+                  "textDocumentInput": {
+                    "type": "string",
+                    "description": "Input containing the canonical authored text document."
+                  },
+                  "textStoryField": {
+                    "type": "string",
+                    "description": "Box field naming the story that owns this text frame."
+                  },
+                  "textFrameField": {
+                    "type": "string",
+                    "description": "Box field containing authored text frame settings."
                   }
                 }
               }
@@ -2541,6 +2688,18 @@
       ],
       "description": "One named starting point in the \"New from template\" chooser: an id, a display name, and (in the external per-template file) a full input seed. Two shapes validate against this def: the EXTERNAL file tools/<id>/templates/<tid>.json, which carries `values`; and the METADATA-ONLY entry the synced index carries, which strips `values` (hence `values` is optional). Like an exampleVariant's `values` but read directly into a fresh session rather than rendered as an illustrative preview.",
       "properties": {
+        "galleryTheme": {
+          "type": "string",
+          "enum": [
+            "light",
+            "dark"
+          ],
+          "description": "Gallery theme this transparent artwork suits; dark also serves the brand theme. Omit for artwork that suits either theme."
+        },
+        "galleryCover": {
+          "type": "boolean",
+          "description": "Use this editable template as the first gallery preview. At most one cover per theme."
+        },
         "id": {
           "type": "string",
           "description": "Stable id, unique within this tool's `templates[]`. Addressable via the reserved `?template=<id>` param, so treat it as a permanent contract like a tool/asset id."
@@ -2559,7 +2718,7 @@
         },
         "thumb": {
           "type": "string",
-          "description": "Optional thumbnail: a tool-relative asset path or data URI. Absent \u2192 the chooser draws a glyph tile."
+          "description": "Optional thumbnail: a tool-relative asset path or data URI. Absent → the chooser draws a glyph tile."
         },
         "motion": {
           "type": "object",

@@ -300,10 +300,10 @@ test('(f) hooked tool dispatches to a configured Chromium worker; HMAC-signed', 
       const raw = Buffer.concat(chunks).toString('utf8');
       const expect = createHmac('sha256', SECRET).update(raw).digest('base64url');
       sawSig = req.headers['x-lw-render-sig'] === expect;
-      const job = JSON.parse(raw) as { toolId: string; query: string; overrides: Record<string, unknown> };
+      const job = JSON.parse(raw) as { toolId: string; query: string; overrides: Record<string, unknown>; brandRevision: string };
       sawToolId = job.toolId; sawQuery = job.query; calls++;
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 200"><text>WORKER_RENDER</text></svg>' }));
+      res.end(JSON.stringify({ svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 200"><text>WORKER_RENDER</text></svg>', brandRevision: job.brandRevision }));
     })().catch(() => { res.writeHead(500); res.end(); });
   });
   await new Promise<void>((r) => worker.listen(0, () => r()));

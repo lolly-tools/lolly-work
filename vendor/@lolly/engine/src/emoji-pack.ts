@@ -108,6 +108,11 @@ export function inspectEmojiPack(pack: VerifiedEmojiPack): EmojiPackManifestV1 |
   return record ? clone(record.manifest) : null;
 }
 
+/** Notice text copied from the admitted pack, without cloning its artwork inventory. */
+export function emojiPackNotices(pack: VerifiedEmojiPack): { name: string; text: string }[] {
+  return clone(admitted.get(pack)?.manifest.notices ?? []);
+}
+
 /** Family and style names for records and display; identity fields repeat the admitted manifest. */
 export function describeEmojiPack(pack: VerifiedEmojiPack): { id: string; version: string; family: string; style: string } | null {
   const record = admitted.get(pack);

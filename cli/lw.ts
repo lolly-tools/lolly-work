@@ -63,6 +63,7 @@ const OPTIONS = {
     asset: { type: 'string' },
     note: { type: 'string' },
     'replaced-by': { type: 'string' },
+    replacement: { type: 'string' },
     destination: { type: 'string' },
     format: { type: 'string' },
     'idempotency-key': { type: 'string' },
@@ -410,6 +411,25 @@ switch (cmd) {
     break;
   }
 
+  case 'brand': {
+    if (sub === 'preview') {
+      const action = positionals[2] ?? fail('usage: lw brand preview <select|retire|restore|stop-download|enable-download> <source-id> [--replacement <source-id>]');
+      const sourceId = positionals[3] ?? fail('source-id required');
+      const result = await call('/api/v1/brand/changes/preview', { method: 'POST', body: { action, sourceId, ...(values.replacement ? { replacementId: values.replacement } : {}) } });
+      console.log(JSON.stringify(result, null, 2));
+      break;
+    }
+    if (sub === 'apply') {
+      const file = positionals[2] ?? fail('usage: lw brand apply <reviewed-preview.json>');
+      const reviewed = JSON.parse(readFileSync(file, 'utf8')) as { change: Record<string, unknown>; revision: number; reviewToken: string };
+      const result = await call('/api/v1/brand/changes', { method: 'POST', body: { ...reviewed.change, revision: reviewed.revision, reviewToken: reviewed.reviewToken } });
+      console.log(JSON.stringify(result, null, 2));
+      break;
+    }
+    console.log(JSON.stringify(await call('/api/v1/brand/profiles'), null, 2));
+    break;
+  }
+
   case 'instance': {
     // The connect surface (plans/34 wave 2): read the public manifest, or host
     // the `.lolly` pack the OSS builder cut for this deployment (owner).
@@ -432,7 +452,7 @@ switch (cmd) {
     }
     if (sub === 'pack-rm') {
       await call('/api/v1/instance-pack', { method: 'DELETE' });
-      console.log('instance pack removed');
+      console.log('connect download stopped; mounted catalogue and source files retained');
       break;
     }
     const m = await call('/api/v1/instance') as {
@@ -1341,6 +1361,9 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   retention run              apply the stated retention policy now (also runs daily on the long-lived server)
   users erase-preview <id>   read-only reference counts and account-erasure scope (owner)
   users erase <id>           atomic account-row removal + telemetry de-attribution (owner; retained references block it)
+  brand                      inspect design-system sources and permissions
+  brand preview <action> <source-id> [--replacement <id>]  review an impact as JSON
+  brand apply <preview.json> apply that reviewed revision
   instance                   the public instance manifest (what a fresh app reads)
   instance pack <file.lolly> host the signed instance pack cut by the OSS builder (owner)
   instance pack-rm           stop hosting the pack

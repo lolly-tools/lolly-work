@@ -57,6 +57,29 @@ export interface SelectOption {
  * type-specific members are validated by the schema and accepted via the index
  * signature.
  */
+export interface TableFieldSpec {
+  key: string;
+  label: string;
+  /** Stable stored column heading, independent of the translated label. */
+  column?: string;
+  aliases?: string[];
+  editor?: 'text' | 'date' | 'time' | 'choice' | 'url';
+  choices?: string[];
+  primary?: boolean;
+  required?: boolean;
+  identity?: boolean;
+  /** Key of the date field paired with this time for bulk shifting. */
+  dateField?: string;
+}
+
+export interface TableEditorSpec {
+  title: string;
+  fields: TableFieldSpec[];
+  /** A tool-computed list of row/message diagnostics. */
+  diagnostics?: string;
+  preview?: { date: string; time: string; input: string };
+}
+
 export interface InputSpec {
   id: string;
   type: InputType;
@@ -88,9 +111,11 @@ export interface InputSpec {
   min?: number;
   max?: number;
   step?: number;
-  display?: 'input' | 'slider';
+  display?: 'input' | 'slider' | 'select' | 'icon-toggle' | 'pill' | 'segmented';
   unit?: string;
   suffix?: string;
+  /** Named columns and optional form controls for a string-valued table. */
+  tableEditor?: TableEditorSpec;
   // color
   palette?: string;
   swatchesOnly?: boolean;
@@ -112,6 +137,8 @@ export interface InputSpec {
  * `formats` entries are validated against the schema's format enum.
  */
 export interface RenderSpec {
+  /** Load presentation.js as the tool's portable browser runtime. */
+  portable?: boolean;
   width: number;
   height: number;
   formats: string[];
@@ -275,6 +302,10 @@ export interface TemplatePreset {
  * preset's) so templates cost nothing at rest however large a seed grows.
  */
 export interface TemplateVariant {
+  /** Lead the tools gallery with this editable template. At most one per theme. */
+  galleryCover?: boolean;
+  /** Choose suitable ink for transparent artwork; dark also serves the brand theme. */
+  galleryTheme?: 'light' | 'dark';
   /** Stable id, equal to the file basename. The `?template=<id>` address. */
   id: string;
   /** Display name shown on the chooser tile. */
@@ -323,6 +354,8 @@ export interface ToolManifest {
   category?: string;
   new?: boolean;
   listed?: boolean;
+  /** Use an icon when personal media or a capture is needed before a useful output exists. */
+  galleryArt?: 'render' | 'icon';
   /** The tool assumes it is the ONLY instance on the page - it parks a mutable handle
    *  on `window` and disposes the previous instance when a new one mounts, and/or holds
    *  a WebGL context (capped ~16/tab), so N live copies can't coexist. Multi-edit renders

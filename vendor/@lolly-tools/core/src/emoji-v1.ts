@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
+/** A lazy bundle includes source SVGs as well as its smaller manifest. */
+export const EMOJI_BUNDLE_MAX_BYTES = 64 * 1024 * 1024;
+
 /** Portable emoji pack and explicit artwork-selection records. No renderer or host defaults. */
 import type { AssetRef } from './host-v1/asset-ref.ts';
 
@@ -109,9 +112,10 @@ export interface EmojiStyleV1 {
 
 /**
  * A pack as one file: the exact manifest text (its sha256 is the pin checksum)
- * plus every glyph's source SVG text keyed by the manifest's `asset.url`. A
- * catalog registers one bundle as one asset, so a set is one lazy download
- * with one integrity check, cached like any other asset.
+ * plus source SVG text keyed by the manifest's `asset.url`. Catalog bundles and
+ * set installs contain every declared glyph. Portable documents may carry only
+ * used artwork, retaining the exact manifest and its pin. Missing artwork in a
+ * document subset is unavailable unless another source holds that exact pin.
  */
 export interface EmojiPackBundleV1 {
   schemaVersion: 1;
@@ -178,3 +182,21 @@ export type EmojiResolutionV1 =
   | { status: 'text'; text: string }
   | { status: 'unresolved'; issue: EmojiIssueV1 }
   | { status: 'resolved'; value: ResolvedEmojiGlyphV1 };
+
+/** Recorded source identity retained when emoji artwork becomes editable vectors. */
+export interface EmojiSourceRecordV1 {
+  pack: EmojiPackPinV1;
+  family: string;
+  style: string;
+  meaning: EmojiMeaningV1;
+  label: string;
+  assetId: string;
+  source: EmojiSourceV1;
+  notices?: Array<{name:string;text:string}>;
+  sourceChecksum: string;
+  artworkChecksum: string;
+  canonicalChecksum: string;
+  normalizer: string;
+  changes: string[];
+  occurrences: Array<{start:number;end:number}>;
+}

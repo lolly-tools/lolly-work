@@ -49,7 +49,8 @@ const GOOD = (instance: string) => ({
 async function boot(accessMode: 'open' | 'gated'): Promise<string> {
   const pack = await mkdtemp(join(tmpdir(), 'lw-pack-'));
   await mkdir(join(pack, 'catalog', 'assets'), { recursive: true });
-  await writeFile(join(pack, 'catalog', 'assets', 'index.json'), JSON.stringify({ version: 1, assets: [] }));
+  await writeFile(join(pack, 'catalog', 'assets', 'index.json'), JSON.stringify({ version: 1, assets: [{ id: 'acme/tokens', type: 'tokens', formats: [{ format: 'json', url: '/catalog/assets/tokens.json' }] }] }));
+  await writeFile(join(pack, 'catalog', 'assets', 'tokens.json'), GOOD('http://packs.example')['tokens.json']);
   const config = parseConfig(JSON.stringify({
     instance: { name: 'Pack Hub', baseUrl: 'http://packs.example', pack },
     rateLimit: { enabled: false },
@@ -145,7 +146,8 @@ test('a configured connectPack seeds the empty store on first read - and a wrong
   // beside the pack, no owner ever runs the PUT.
   const packDir = await mkdtemp(join(tmpdir(), 'lw-seed-'));
   await mkdir(join(packDir, 'catalog', 'assets'), { recursive: true });
-  await writeFile(join(packDir, 'catalog', 'assets', 'index.json'), JSON.stringify({ version: 1, assets: [] }));
+  await writeFile(join(packDir, 'catalog', 'assets', 'index.json'), JSON.stringify({ version: 1, assets: [{ id: 'acme/tokens', type: 'tokens', formats: [{ format: 'json', url: '/catalog/assets/tokens.json' }] }] }));
+  await writeFile(join(packDir, 'catalog', 'assets', 'tokens.json'), GOOD('http://packs.example')['tokens.json']);
   const bytes = packBytes(GOOD('http://packs.example'));
   await writeFile(join(packDir, 'connect.lolly'), new Uint8Array(bytes));
   const config = parseConfig(JSON.stringify({

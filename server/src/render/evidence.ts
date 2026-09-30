@@ -1,5 +1,8 @@
+import type { WorkerEvidence } from './worker-client.ts';
+import type { ProductionReport } from './production.ts';
 import { canonicalJson, sha256Hex } from '../lib/crypto.ts';
 import type { AssetRef } from './contract.ts';
+import type { OutputInspection } from './output-inspection.ts';
 
 export interface ObservedAsset {
   source: 'catalog' | 'provider';
@@ -12,6 +15,7 @@ export interface ObservedAsset {
 
 /** Work's execution receipt. This is not the engine's future dependency graph or lockfile. */
 export interface RenderEvidence {
+  brandRules?: import('../brand/rules.ts').ManagedRuleReport;
   apiVersion: '1.0.0';
   id: string;
   coverage: 'partial';
@@ -33,6 +37,11 @@ export interface RenderEvidence {
   assets: ObservedAsset[];
   limitations: string[];
   outputSha256: string;
+  /** Final-byte measurements; absent on receipts made before output inspection. */
+  inspection?: OutputInspection;
+  production?: ProductionReport;
+  productionAttempts?: ProductionReport[];
+  worker?: WorkerEvidence;
 }
 
 export const evidenceHash = (value: unknown): string => sha256Hex(canonicalJson(value));

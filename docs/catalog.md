@@ -27,6 +27,10 @@ chrome only, never the governed catalog.
 
 A pack is immutable for a process: publish a new pack and restart (or roll) to pick it up.
 
+## Design-system sources
+
+The deployment default and the downloadable connect pack are separate choices. In **This Deploy > Design system**, inspect source details, preview a replacement or retirement, and apply the reviewed revision. Stopping a connect download preserves the mounted catalogue. Selection, retirement and suppression persist in Postgres without modifying mounted files. See [Design-system administration](design-system-administration.md) for source layouts, permissions, reference impact and rollback.
+
 ## Access modes
 
 `policy.defaultAccessMode` decides who may read the catalog at all:

@@ -87,7 +87,7 @@ test('(b) switching is owner/admin only — a member is refused', async () => {
   assert.equal(res.status, 403);
 });
 
-test('(c) an admin switch re-points the pack, invalidates brand chrome, and is audited', async () => {
+test('(c) an admin switch persists selection without changing mounted files and is audited', async () => {
   const admin = await login('admin@test');
   const res = await fetch(`${base}/api/v1/brand/profile`, {
     method: 'PUT', headers: { cookie: admin, 'content-type': 'application/json' }, body: JSON.stringify({ name: 'lolly-start' }),
@@ -95,13 +95,13 @@ test('(c) an admin switch re-points the pack, invalidates brand chrome, and is a
   assert.equal(res.status, 200);
   assert.equal((await res.json() as { active: string }).active, 'lolly-start');
 
-  // The marker file moved, and /api/brand now serves the NEW brand (cache cleared).
-  assert.equal((await readFile(join(pack, '.lolly-profile'), 'utf8')).trim(), 'lolly-start');
+  // The mounted marker stays intact; the durable selection serves the new brand.
+  assert.equal((await readFile(join(pack, '.lolly-profile'), 'utf8')).trim(), 'suse');
   assert.equal(await brandMarker(admin), '#7c3aed', 'brand chrome reflects the switch immediately');
   const profiles = await (await fetch(`${base}/api/v1/brand/profiles`, { headers: { cookie: admin } })).json() as { active: string };
   assert.equal(profiles.active, 'lolly-start');
 
-  assert.ok((await store.listAudit()).some((e) => e.action === 'brand.profile.switch' && e.subject === 'brand:lolly-start'));
+  assert.ok((await store.listAudit()).some((e) => e.action === 'brand.select' && e.subject === 'profile:lolly-start'));
 });
 
 test('(d) unknown profile 404s; switching to the already-active one is a no-op', async () => {

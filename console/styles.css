@@ -160,6 +160,9 @@ h2 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacin
   background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--radius);
 }
 .act-bar .field { margin: 0; }
+.brand-rule-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); gap: 16px; }
+.brand-rule-grid .field { min-width: 0; }
+.brand-rule-grid select, .brand-rule-grid input { width: 100%; }
 .act-bar input[type="search"] { min-width: 180px; }
 .act-bar-clear { align-self: end; }
 .act-host .act-list { list-style: none; margin: 0; padding: 0; }
@@ -1141,3 +1144,9 @@ td.url-cell { max-width: 240px; }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+/* Source facts stay readable beside the explicit review controls. */
+.brand-source-row { display: grid; justify-items: start; border-top: 1px solid var(--grid); padding-top: 16px; gap: 6px; }
+.brand-source-row .mono, .brand-source-row code { overflow-wrap: anywhere; }
+.brand-source-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.brand-source-actions select { max-width: 28rem; }

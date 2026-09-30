@@ -56,6 +56,8 @@
  * or tells you it didn't.
  */
 export interface GeomAPI {
+  /** Paint admitted contour metadata using the authored path field as its only geometry. */
+  paintAuthored?(path: string, paint: string, width: number, height: number, prefix: string): GeomResult<string>;
   // ── boolean operations ──────────────────────────────────────────────────────
   /** Union of two or more paths - everything any operand covers. */
   union(paths: string[], opts?: GeomBooleanOpts): GeomPathResult;

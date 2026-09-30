@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import type { RasterSource, RasterFrame } from './raster.ts';
+
 /**
  * A deep image frame handed to `host.codec` - the tool-facing mirror of the
  * engine's `DeepFrame` (tools cannot import the engine, so the shape is restated
@@ -24,6 +26,14 @@ export interface CodecFrame {
  * its sibling - the maths is the engine's, not the shell's.
  */
 export interface CodecAPI {
+  /** Decode ORIGINAL bytes into linear float pixels. Never reads an AssetRef preview. */
+  decode?(source: RasterSource): Promise<CodecFrame>;
+  /** SDR display transform only; the original frame stays untouched. */
+  preview?(frame: CodecFrame, exposure?: number): Promise<RasterFrame>;
+  /** Linear compositing. Matrices map source pixel edges into output pixel edges. */
+  compose?(width: number, height: number, layers: readonly CodecLayer[]): Promise<CodecFrame>;
+  /** Check dimensions, working space, finite samples and allocation limits. */
+  validate?(frame: CodecFrame): Promise<void>;
   /** 16-bit sRGB PNG - real per-channel precision, no HDR. Smooth where 8-bit bands. */
   png16(frame: CodecFrame, opts?: { dpi?: number; channels?: 3 | 4 }): Promise<Uint8Array>;
   /** OpenEXR master. `'half'` (default) or `'float'` samples. */
@@ -35,4 +45,13 @@ export interface CodecAPI {
   radiance(frame: CodecFrame, opts?: { exposure?: number }): Promise<Uint8Array>;
   /** Error-diffused (Floyd–Steinberg) 8-bit sRGB PNG from a deep source - smooth 8-bit. */
   dither8(frame: CodecFrame, opts?: { dpi?: number; channels?: 3 | 4 }): Promise<Uint8Array>;
+}
+
+export interface CodecLayer {
+  frame: CodecFrame;
+  matrix?: readonly [number, number, number, number, number, number];
+  opacity?: number;
+  blend?: string;
+  /** Optional output-sized coverage mask, one byte per pixel. */
+  mask?: Uint8ClampedArray;
 }

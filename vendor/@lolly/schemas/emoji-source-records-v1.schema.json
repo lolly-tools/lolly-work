@@ -1,0 +1,246 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://lolly.tools/schemas/emoji-source-records-v1.schema.json",
+  "title": "Recorded emoji sources",
+  "type": "array",
+  "maxItems": 2048,
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "pack",
+      "family",
+      "style",
+      "meaning",
+      "label",
+      "assetId",
+      "source",
+      "normalizer",
+      "changes",
+      "occurrences",
+      "sourceChecksum",
+      "artworkChecksum",
+      "canonicalChecksum"
+    ],
+    "properties": {
+      "pack": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "pin",
+          "checksum"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 512,
+            "pattern": "^[a-z0-9][a-z0-9-]*(/[a-z0-9][a-z0-9-]*)+$"
+          },
+          "pin": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "version"
+            ],
+            "properties": {
+              "version": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$"
+              }
+            }
+          },
+          "checksum": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        }
+      },
+      "family": {
+        "type": "string",
+        "maxLength": 256
+      },
+      "style": {
+        "type": "string",
+        "maxLength": 256
+      },
+      "meaning": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "key"
+            ],
+            "properties": {
+              "kind": {
+                "const": "unicode"
+              },
+              "key": {
+                "type": "string",
+                "maxLength": 256,
+                "pattern": "^[0-9a-f]+(-[0-9a-f]+)*$"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "id"
+            ],
+            "properties": {
+              "kind": {
+                "const": "custom"
+              },
+              "id": {
+                "type": "string",
+                "maxLength": 512
+              }
+            }
+          }
+        ]
+      },
+      "label": {
+        "type": "string",
+        "maxLength": 1024
+      },
+      "assetId": {
+        "type": "string",
+        "maxLength": 1024
+      },
+      "source": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "creator",
+          "sourceUrl",
+          "revision",
+          "license",
+          "licenseUrl",
+          "attribution",
+          "modifications"
+        ],
+        "properties": {
+          "creator": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "sourceUrl": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^https?://"
+          },
+          "revision": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$"
+          },
+          "license": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "licenseUrl": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^https?://"
+          },
+          "attribution": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16384
+          },
+          "modifications": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          }
+        }
+      },
+      "notices": {
+        "type": "array",
+        "maxItems": 64,
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "text"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "text": {
+              "type": "string",
+              "maxLength": 65536
+            }
+          }
+        }
+      },
+      "normalizer": {
+        "type": "string",
+        "maxLength": 256
+      },
+      "changes": {
+        "type": "array",
+        "maxItems": 64,
+        "items": {
+          "type": "string",
+          "maxLength": 4096
+        }
+      },
+      "occurrences": {
+        "type": "array",
+        "maxItems": 65536,
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "start",
+            "end"
+          ],
+          "properties": {
+            "start": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65536
+            },
+            "end": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65536
+            }
+          }
+        }
+      },
+      "sourceChecksum": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      },
+      "artworkChecksum": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      },
+      "canonicalChecksum": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      }
+    }
+  }
+}

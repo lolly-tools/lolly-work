@@ -246,7 +246,7 @@ export interface InputSpec {
    *  `pill` is a boolean variant rendered as an inline chip toggle (the web shell
    *  flows consecutive pill booleans into one wrapped chip bar); `segmented`
    *  renders a select as labelled tabs (a radiogroup of pills). */
-  display?: 'input' | 'slider' | 'icon-toggle' | 'pill' | 'segmented';
+  display?: 'input' | 'slider' | 'select' | 'icon-toggle' | 'pill' | 'segmented';
   // color
   palette?: string;
   swatchesOnly?: boolean;
@@ -297,6 +297,7 @@ export interface InputSpec {
    *  it - the stored TableValue is the same strings whichever editor wrote them, so
    *  URL mode and the CLI are unaffected. See schema `columnEditors`. */
   columnEditors?: TableColumnEditor[];
+  tableEditor?: import('@lolly-tools/core').TableEditorSpec;
   /** On flat scalar `blocks`: edit rows in the shared table, in this field order.
    * Unlisted fields follow in declaration order. Stored objects and URL field order
    * stay unchanged; shells without the presentation can keep their block editor. */

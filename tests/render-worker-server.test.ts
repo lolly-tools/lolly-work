@@ -311,3 +311,39 @@ test('pinPdfDates: two PDFs differing only in Chromium wall-clock dates become b
   const odd = Buffer.from(`%PDF-1.4 /CreationDate (D:2026)`, 'latin1');
   assert.equal(pinPdfDates(odd).toString('latin1'), `%PDF-1.4 /CreationDate (D:1970)`, 'shorter stamps pin to a valid prefix, same length');
 });
+
+test('PDF rasterisation uses the SVG viewport instead of the browser default paper size', async t => {
+  let options: Record<string, unknown> | undefined;
+  setBrowserGetter(async () => ({ newContext: async () => ({
+    route: async () => {}, close: async () => {},
+    newPage: async () => ({ setContent: async () => {}, $: async () => ({ boundingBox: async () => ({ x: 0, y: 0, width: 200, height: 100 }) }), pdf: async (opts: Record<string, unknown>) => { options = opts; return Buffer.from('%PDF-1.7\n'); } }),
+  }) }));
+  t.after(() => setBrowserGetter(null));
+  const body = JSON.stringify({ svg: '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"/>', format: 'pdf', ts: Date.now() });
+  const response = await fetch(`${base}/rasterise`, { method: 'POST', headers: sign(body), body });
+  assert.equal(response.status, 200);
+  assert.equal(options!.width, '200px'); assert.equal(options!.height, '100px'); assert.equal(options!.pageRanges, '1');
+});
+
+test('worker response signs observed resource bytes and the dispatched request', async t => {
+  const { createHash } = await import('node:crypto');
+  const { verifyBody } = await import('../server/src/render/worker-client.ts');
+  const source = Buffer.from('<svg/>'), svg = '<svg xmlns="http://www.w3.org/2000/svg"/>';
+  let listener: ((response: unknown) => void) | undefined;
+  setBrowserGetter(async () => ({ newContext: async () => ({
+    route: async () => {}, close: async () => {}, addInitScript: async () => {},
+    newPage: async () => ({
+      on: (_event: string, fn: (response: unknown) => void) => { listener = fn; }, off: () => {},
+      goto: async () => { listener?.({ headers: () => ({ 'content-length': String(source.length) }), body: async () => source, url: () => 'http://web.test/tools/card/template.html' }); },
+      waitForEvent: async () => ({ createReadStream: async () => (async function* () { yield Buffer.from(svg); })(), delete: async () => {} }),
+    }),
+  }) }));
+  t.after(() => setBrowserGetter(null));
+  const body = JSON.stringify({ toolId: 'card', query: '', overrides: {}, format: 'svg', evidence: true, ts: Date.now() });
+  const response = await fetch(`${base}/render`, { method: 'POST', headers: sign(body), body }); const raw = await response.text();
+  assert.equal(response.status, 200); assert.ok(verifyBody(raw, SECRET, response.headers.get('x-lw-output-sig')!));
+  const out = JSON.parse(raw);
+  assert.equal(out.evidence.requestSha256, createHash('sha256').update(body).digest('hex'));
+  assert.equal(out.evidence.resources[0].sha256, createHash('sha256').update(source).digest('hex'));
+  assert.equal(out.evidence.outputSha256, createHash('sha256').update(svg).digest('hex'));
+});

@@ -196,6 +196,61 @@ can be inspected even if retained output bytes later become unavailable; the
 output download endpoint separately checks availability and byte integrity.
 Reads use the same ownership and current-grant checks as the render itself.
 
+## Verify the produced file
+
+Add `"verification": "output-v1"` to a render or batch request to require file
+inspection before publication. To require particular dimensions, use an object:
+
+```json
+{
+  "toolId": "card",
+  "format": "png",
+  "inputs": {},
+  "verification": {
+    "profile": "output-v1",
+    "widthPx": 1200,
+    "heightPx": 630
+  }
+}
+```
+
+Use a tool that produces those dimensions. These numbers are assertions about
+the delivered file; they do not resize the artwork. Each dimension is optional.
+The string form and `{ "profile": "output-v1" }` identify the same request.
+Submit through `lw renders submit` or `lw render-batches submit` as usual.
+
+The `work/output-v1` profile checks the actual format, MIME type, readability
+and requested dimensions after watermarking, provenance and signing. SVG is
+parsed as XML without executing scripts or loading linked resources. PNG and
+JPEG are fully decoded with sharp. The receipt's `inspection` names each check,
+its result, the measured dimensions, the final SHA-256 and the detector version.
+A completed decoder does not establish that the design looks correct.
+
+| Output | Evidence | Limit |
+|---|---|---|
+| SVG | XML root and namespace; explicit absolute viewport dimensions, with CSS units converted at 96 px/in | 2 MiB; DTDs unsupported; no rendering, linked-resource inspection or visibility check; percentages and viewBox-only dimensions remain unknown |
+| PNG, JPEG | Recognised container and complete pixel decode; pixel dimensions | 32 MiB and 16 million pixels; one frame; decoder processing limited to 10 seconds |
+| PDF | Container signature | No independent PDF decoder in the control plane; readability and dimensions remain undetermined |
+
+A required check must return `pass`. Missing, failed and undetermined checks
+stop a verified render with `OUTPUT_VERIFICATION_FAILED`; the failed record
+retains `error.inspection`, and no output is published. A mismatch stops after
+one attempt. Manual retry keeps the original requirements and creates a new
+record. Batch children have the same checks and keep individual outcomes.
+
+Draft requests without `verification` retain ordinary export behavior, including
+PDF export where a worker is configured. New durable draft receipts also carry
+inspection results, which may show failed or undetermined checks. Historical
+receipts without `inspection` have unknown output-check coverage. A verified
+request always observes a fresh execution and cannot reuse a draft cache entry.
+
+This profile establishes file integrity within the checks listed above. It does
+not establish brand compliance, protected copy or chart preservation, correct
+fonts, matching appearance, accessibility, print readiness or publication
+approval. Receipt coverage stays `partial`; dependency locking and worker
+attestation gaps remain visible. The profile is separate from the proposed
+`still-2d/1` visual conformance suite and from C2PA signing.
+
 ## Hosting and recovery
 
 The standalone server starts the runner automatically. Apply
@@ -240,3 +295,113 @@ collection-wide approval/promotion follow this foundation. Organization delivery
 currently accepts legacy `/jobs` outputs; delivery by the new render-resource
 reference is a subsequent integration. A successful render alone does not
 publish anything to a destination.
+
+## Production still checks and permitted repairs
+
+A durable request can include `production` alongside the existing `verification`.
+`output-v1` retains its compatibility contract. The additional
+`lolly/production-still-v1` engine profile checks explicit final-file requirements.
+
+The engine also exposes `lolly/production-motion-v1` to Lolly's CLI and MCP.
+Work's governed renderer continues to accept only the still profile; a motion
+contract is refused when parsing the request. Updating the engine pin does not
+add a video-render capability to Work.
+
+```json
+{
+  "toolId": "card",
+  "format": "svg",
+  "inputs": { "legalCopy": "Legal 125", "layout": "short" },
+  "production": {
+    "contract": {
+      "profile": "lolly/production-still-v1",
+      "id": "campaign-card",
+      "revision": "1",
+      "format": "svg",
+      "width": 200,
+      "height": 100,
+      "pages": 1,
+      "alpha": "any",
+      "requirements": [
+        { "id": "legal", "kind": "text", "location": "legal", "expected": "Legal 125" }
+      ]
+    },
+    "repair": {
+      "protected": ["legalCopy"],
+      "permitted": { "layout": ["short", "long"] },
+      "maxAttempts": 2,
+      "when": [{ "findingId": "requirement.legal", "input": "layout" }]
+    }
+  }
+}
+```
+
+The tool must actually declare these inputs and supply those alternatives. No
+layout, legal copy or new input is invented. Each candidate runs through normal
+Work policy enforcement. Repairs bind exact input snapshots, reports and finding
+fingerprints, stop on a passing check regressing or no progress, and never exceed
+eight attempts. The existing
+`lw renders submit` command accepts this JSON unchanged. Batch expansion and
+retry retain the same contract and repair choices.
+
+`evidence.production` contains final-byte measurements and their artifact,
+contract and report digests. `productionAttempts` retains repair reports.
+Required failures or undetermined checks raise `PRODUCTION_VERIFICATION_FAILED`
+with bounded diagnostics on the durable record and publish no output. The
+publication runner repeats digest, coverage and measurement validation even if
+an alternate executor bypasses the normal render pipeline.
+
+SVG inspection parses XML without executing scripts or fetching linked resources.
+Text requirements address exact SVG ids; links compare href values; node
+requirements compare a serialized XML element digest. Text presence does not
+prove visible placement. PNG/JPEG use bounded sharp decoding. Optional
+`pdfinfo`, `pdftotext` and `pdftoppm` enable PDF page geometry, full extracted page
+text (`page:1`, etc.) and one-page pixels at 96 dpi. Missing programs yield unknown
+coverage. PDF colour, overprint and press conformance are outside this profile.
+
+An `input` requirement uses a declared input id as its location and a canonical
+JSON SHA-256 as its expected value (`productionDigest(value)` in the engine).
+Local renders collect requested values from the exporting runtime. Chromium
+observations are matched to the downloaded SVG and included in the signed worker
+response; the client checks that every observed id was requested. Conflicting
+observations, missing collectors and older web shells stay undetermined.
+The report retains hashes, with a 1 MiB combined JSON observation budget.
+
+For Chart, protect the exact CSV `data`, field mappings, number format, units in
+axis titles, `yScaleType`, `yZero` and `yMax` that the approved brief requires.
+Reusable Design tools use their declared copy and data inputs. JSON types and
+array order are preserved. A contract-protected input cannot become a repair
+target even if a repair plan lists that input. These checks establish source
+identity; visible labels, chart geometry and clipping need independent output
+checks. Shell observations are not attestation against hostile tool code.
+
+An optional contract `comparison` takes `referenceSha256`, `channelTolerance`,
+`maxChangedFraction` and `regions` with `id`, `x`, `y`, `width`, `height`,
+`minSsim` and `maxInkDelta`. Put exact reference bytes in
+`production.referenceBase64`; the request's existing 1 MB cap still applies.
+The reference digest is validated on admission and inspection. Comparison uses
+native decoded 8-bit sRGB pixels, whole-image RGBA differences and region
+luminance/ink measurements. It never resizes a reference or borrows a preview
+comparison's success. Explicit artifact text requirements remain independent.
+
+Optional source/context digest requirements and `resource` requirements use
+actual execution observations. Local source hashes follow `evidence.tool.sourceHash`;
+context hashes use the canonical `evidence.context` object. Resource locations
+are observed asset ids or worker response URLs. Conflicting digests under one
+resource id are unresolved. A required unavailable old identity cannot silently
+resolve to the catalogue's latest content.
+
+Production browser renders require an upgraded worker: its signed response binds
+the request and SVG digests and includes bounded actual network observations.
+Profile-bound inputs are resolved into its render URL. These observations remain
+partial: font shaping, resource use, runtime profile API reads and a complete
+browser dependency graph are not attested. Ordinary worker requests remain
+compatible with existing deployments. Worker PDF export uses the actual SVG
+viewport instead of Chromium's default paper size.
+
+A successful measurement is not a human approval, permission to deliver or a
+claim of complete reproducibility. Local review files cannot grant Work
+permissions. Existing destination approval chains, current grants and delivery
+integrity checks keep their authority. Exact bytes and the contract can be
+rechecked offline; a partial execution receipt is not an immutable render
+lockfile. No new storage migration is required.

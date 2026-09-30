@@ -191,6 +191,7 @@ export interface TokenSetLike {
 }
 
 export interface EngineApi {
+  buildInputModel(manifest: unknown, options: { profile: Record<string, unknown>; initial: Record<string, unknown> }): { id: string; value: unknown; bindToProfile?: string }[];
   createTokenSet(doc: unknown, opts?: { theme?: string }): TokenSetLike;
   makeColorApi(): Record<string, unknown>;
   ENGINE_VERSION: string;

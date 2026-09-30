@@ -508,7 +508,7 @@ export { c2paDefaultOn, imprintDefaultOn, isImprintFormat, IMPRINT_FORMATS } fro
 // and arithmetic - no clock, no network, no filesystem. The runtime imports
 // them at export time, not at mount, so a render with no recorded source never
 // loads them.
-export { RIGHTS_RULES_VERSION, licenceDisplayName, licenceProfile, licenceProfiles, normaliseLicence, publicLocator, readLicenceExpression, roleObligation } from './rights-profiles.ts';
+export { OUTPUT_LICENCE_CHOICES, RIGHTS_RULES_VERSION, licenceDisplayName, licenceProfile, licenceProfiles, normaliseLicence, outputLicenceId, outputLicenceNotice, publicLocator, readLicenceExpression, roleObligation } from './rights-profiles.ts';
 export type { AttributionPartsV1, CompatibleOutputLicenceV1, LicenceExpressionV1, LicenceLimitV1, LicenceOperatorV1, LicenceProfileV1, NormalisedLicenceV1, RoleObligationV1 } from './rights-profiles.ts';
 export { evaluateCreativeUses } from './rights-evaluate.ts';
 export type { RightsEvaluationInputV1 } from './rights-evaluate.ts';
@@ -595,6 +595,9 @@ export type {
   PenpotShapesByPage, PenpotComponent, PenpotComponentVariant, PenpotComponentSlot,
   PenpotComponentCollection, PenpotExternalCensus, PenpotExternalComponent,
 } from './design-components.ts';
+// The Design scene grammar: what a `kind:'3d'` box's `scene` field holds (plan 265 m3).
+export { designSceneEncode, designSceneDecode, designSceneAssetIds } from './design-scene.ts';
+export type { DesignSceneValues } from './design-scene.ts';
 export {
   interpretPdfPage, parseToUnicode, toUnicodeDecoder,
   PDF_MAP_MAX_ARRAY_DEPTH, PDF_MAP_MAX_BF_RANGE, PDF_MAP_MAX_RUN_DEPTH,
@@ -873,4 +876,197 @@ export type { LearningExportSettings } from './learning/preflight.ts';
 
 export { compileDesignTool } from './design-tool/compiler.ts';
 export type { CompiledDesignTool } from './design-tool/compiler.ts';
+export { compileSessionTool } from './design-tool/session-compiler.ts';
+export type { SessionToolSource } from './design-tool/session-compiler.ts';
 export { designExportSize, assertDesignValues } from './design-tool/policy.ts';
+export { buildStudioScene, studioFinish, STUDIO_FINISHES, studioTime, studioAnimated, studioLightMotion } from './studio3d.ts';
+export { studioActiveIndex, studioActiveValues, studioCameraEdit, studioFocusEdit, studioCollectionRows, studioCollectionSize, studioSubjectIds, studioSubjectEdit, studioSheetSize, STUDIO_COLLECTION_LIMIT, STUDIO_SHEET_PIXELS } from './studio3d-collection.ts';
+export { studioCameraPose, studioRestPose, studioCameraTravels, studioCameraKeyFromView, studioAddCameraKey, studioCameraFromKey, STUDIO_CAMERA_KEY_LIMIT } from './studio3d-camera-path.ts';
+export { studioOrbitLight, studioScaleLightDistance, studioPlaceableLights, studioLightEdit, STUDIO_LIGHT_TARGET, STUDIO_LIGHT_RANGE, STUDIO_PRESET_LIGHT_POSITIONS, STUDIO_KEY_CARD_OFFSET } from './studio3d-lights.ts';
+export { studioSceneObjects, studioObjectEdit, studioObjectSelect, studioActiveObject, studioArrangementRows, studioObjectId, studioObjectName, studioOverlaps, studioArrangementPivot, STUDIO_ARRANGEMENT_LIMIT, STUDIO_ARRANGEMENT_EXTENT } from './studio3d-arrangement.ts';
+export { studioLookOf, studioApplyLook, studioKeyInput, studioKeyField, studioParseRef, studioFormatRef, studioParseOverrides, studioFormatOverrides, studioRecordOverride, STUDIO_LOOK_KEYS, STUDIO_INSTANCE_KEYS, STUDIO_LOOK_INPUT_IDS } from './studio3d-look.ts';
+export type { StudioLookValues, StudioRef } from './studio3d-look.ts';
+export { studioObjectPose, STUDIO_MOTION_KINDS, STUDIO_ONE_SHOT_KINDS, STUDIO_POSE_REST, STUDIO_POSE_MAX_LIFT } from './studio3d-motion.ts';
+export type { StudioPoseV1 } from './studio3d-motion.ts';
+
+export { brandContext, contextTokens } from './brand-context.ts';
+export { checkBrandDesign, applyBrandFix } from './brand-check.ts';
+export type { BrandFinding, BrandFix } from './brand-check.ts';
+export { BRAND_STYLE_PROPERTIES, summarizeBrandStyles, readBrandStyleEvidence } from './brand-evidence.ts';
+export type { BrandStyleProperty, BrandStyleValue, BrandStyleEvidence } from './brand-evidence.ts';
+
+export { parseTextDocument, serializeTextDocument, createTextStory, TEXT_DOCUMENT_MAX_BYTES } from './text-story-document.ts';
+export { assertTextRange, snapTextRange, textBoundaries, sourceBreaks, paragraphRanges, deletionRange, TextSourceError, TEXT_SOURCE_MAX_UNITS } from './text-source.ts';
+export { replaceStoryRange, formatStoryRange, formatStoryParagraphs, storyParagraphIds, normalizeTextSpans } from './text-edits.ts';
+export type { TextInsertion, StoryEditOptions, StoryEditResult, TextSpanPatch } from './text-edits.ts';
+export { sliceTextDocument, importTextFragment } from './text-fragment.ts';
+export { resizeDesignTextFrames } from './text-design.ts';
+export { composeText, TEXT_LAYOUT_ALGORITHM } from './text-layout.ts';
+export { prepareTextParagraph } from './text-paragraph.ts';
+export type { TextParagraphPiece, ShapedTextLine } from './text-paragraph.ts';
+export { textStyleResolver, mergeTextCharacter } from './text-styles.ts';
+export { styleTextRange, defineTextStyle, nextParagraphStyle } from './text-style-commands.ts';
+export type { TextStyleCommand } from './text-style-commands.ts';
+export { removeTextFrames, deleteTextStory, linkTextFrames, splitTextThread, detachTextFrame, duplicateTextFrames, placeTextStory, insertTextFrame } from './text-thread-commands.ts';
+export type { TextThreadSnapshot } from './text-thread-commands.ts';
+export { textHyphenationLanguage } from './text-hyphenation.ts';
+export { previewTextCleanup, applyTextCleanup } from './text-cleanup.ts';
+export type { TextCleanupEdit, TextCleanupPreview, TextCleanupOptions } from './text-cleanup.ts';
+
+export { textLayoutSvg } from './text-layout-svg.ts';
+export { parseTextFrame } from './text-frame.ts';
+export { readDesignText, designTextFrame, upgradeDesignText, defaultTextFrameSettings } from './text-design.ts';
+export type { DesignTextBox, TextFrameSettingsV1 } from './text-design.ts';
+
+export { captureTextFrames, pasteTextFrames } from './text-frame-clipboard.ts';
+export type { TextLayoutReceipt } from './text-layout-cache.ts';
+
+export { textRecipe, type TextRecipe } from './text-recipes.ts';
+
+export { emojiTextPath as textGuideGeometry } from './emoji-text-path.ts';
+export { transformTextPath } from './text-spacing.ts';
+export { importVectorPaint } from './vector-paint-import.ts';
+export { renderVectorPaint, parseVectorPaint, transformVectorPaintPaths, vectorPaintMatrices, vectorMatrix, inverseVectorMatrix, multiplyVectorMatrix } from './vector-paint.ts';
+export type { VectorPaintV1, VectorPaintNode, VectorMatrix } from './vector-paint.ts';
+
+export { designTextWrap } from './text-design-wrap.ts';
+export { scaleTextStory, scaleTextFrame } from './text-scale.ts';
+
+export { textSemanticSource } from './text-semantic.ts';
+
+// Slide masters as design-system data (plan 274 section 3.4): seeding a Design frame
+// from an archetype, re-laying role-bound layers, and which logo a background wants.
+export { seedFrame, applyArchetype, resetFrame, masterBoxToPx, pxToMasterFraction, archetypePlaceholders } from './slide-master.ts';
+export { slideLayoutRecipe, slideLayoutName, slideContentGroups, slideLayoutChoices, withSlideLayoutComponents } from './slide-layout-components.ts';
+export type { SlideLayoutRecipe } from './slide-layout-components.ts';
+export type { SeedFrameOptsV1, SeededFrameV1, SeededCellV1, RelayoutOptsV1, TokenResolver } from './slide-master.ts';
+export { slideStructureLibrary, findStructure, expandStructure, expandRepeat, structureOf, archetypeForStructure, darkVariantOf, searchTokens, structureSearchIndex, searchStructures } from './slide-structures.ts';
+export type { StructureGridV1, StructureBandV1, StructureSlotV1, SlideStructureV1, SlideStructureSectionV1, SlideStructureLibraryV1, ExpandedStructureV1, StructureSearchEntryV1 } from './slide-structures.ts';
+export { bgIsDark, pickLogoVariant, parseBackgroundRgb, BACKGROUND_DARK_THRESHOLD } from './logo-variant.ts';
+export type {
+  LogoSetV1, LogoVariantNameV1, LogoVariantRequestV1, LogoVariantChoiceV1,
+  BackgroundInputV1, BackgroundValueV1, BackgroundGradientV1, BackgroundStopV1,
+} from './logo-variant.ts';
+
+// Renovation stage 5 and its report (plan 274 sections 3.4 and 9): the faithful
+// compile from a read source deck to Design's authored values, and the report that
+// accounts for every source object exactly once.
+export { compileFaithful, DECK_COMPILE_VERSION } from './deck-compile.ts';
+export type { CompileFaithfulOptsV1 } from './deck-compile.ts';
+export { emptyReport, addEntry, setSlideCounts, finalizeReport, reportMessage } from './rebrand-report.ts';
+export type { ReportEntryInputV1, SlideCountsV1 } from './rebrand-report.ts';
+
+// Renovation stage 2 (plan 274 section 3.2): the census, its class rules and the
+// small hashes that generate candidate groups. A census measures and says what it
+// found; the action a person or a preset takes belongs to the plan stage.
+export { censusDeck, DEFAULT_JITTER_TOLERANCE, ACCENT_CHROMA_FLOOR } from './deck-census.ts';
+export type { CensusOptsV1, KnownLogoV1 } from './deck-census.ts';
+export { classifyObject, CENSUS_RULES } from './deck-census-rules.ts';
+export type { ObjectFeaturesV1 } from './deck-census-rules.ts';
+export { censusHash, dhashFromGrey, hammingDistance, pathHash, digitNormalise } from './deck-census-hash.ts';
+
+// Renovation stages 3 and 4 (plan 274 section 3.3): the automatic first pass and
+// the four rule modules it calls. A proposal is not a decision, so nothing here
+// writes one except a carry-forward from a previous revision.
+export { firstPass, layoutFindings, archetypeHints, chartToolOffer, PLAN_RULES } from './rebrand-plan.ts';
+export type { RenovationPresetV1, FirstPassInputV1, FirstPassDesignSystemV1 } from './rebrand-plan.ts';
+export { assignColors, COLOR_RULES, DEFAULT_MIN_SEPARATION } from './rebrand-colors.ts';
+export type { AssignColorsInputV1, BrandSwatchV1, LockedColorV1 } from './rebrand-colors.ts';
+export { mapFonts, FONT_ALIASES, FONT_RULES } from './rebrand-fonts.ts';
+export type { MapFontsInputV1, BrandFacesV1 } from './rebrand-fonts.ts';
+export { scoreArchetypes, pickArchetype, ARCHETYPE_RULES, ARCHETYPE_MIN_GAP } from './rebrand-archetype.ts';
+export type { ArchetypeHintsV1, ArchetypeScoreV1, ArchetypePickV1, PickArchetypeOptsV1 } from './rebrand-archetype.ts';
+export { carryForward, applyDecision, DECISION_RULES } from './rebrand-decisions.ts';
+export type { CarryForwardResultV1, CarriedDecisionV1 } from './rebrand-decisions.ts';
+
+// Renovation stage 5, the renovate mode (plan 274 section 3.4): an accepted plan
+// compiled onto the design system's slide master, and the pure SVG preview that
+// draws the same rows the compile wrote, so a review and Design agree.
+export { compileRenovated, DECK_RENOVATE_VERSION, AVERAGE_GLYPH_EM, ESTIMATE_LINE_HEIGHT, MAX_CONTINUATION_FRAMES } from './deck-compile.ts';
+export type { CompileRenovatedInputV1, CompileRenovatedOptsV1, RenovateDesignSystemV1 } from './deck-compile.ts';
+export { framePreviewSvg, wrapByAverageWidth } from './frame-preview-svg.ts';
+export type { FramePreviewOptsV1 } from './frame-preview-svg.ts';
+
+// Plan 274 work package 4 follow-ups: the cover-slide test the first pass reads
+// a title slide by, and the hint options a caller narrows the hints with.
+export { isCoverSlide } from './rebrand-plan.ts';
+export type { ArchetypeHintsOptsV1 } from './rebrand-plan.ts';
+
+// Plan 274 milestone 3: the design-system resolver every renovation surface
+// shares, the review model the queue and the footer render, and the pure plan
+// edits the view, the CLI and the MCP tool apply.
+export { resolveRebrandDesignSystem, swatchesFromColors, themeSlotsFromColors, neutralSlideMaster, colorTokenHash, THEME_SLOTS, THEME_SLOT_TOKENS, THEME_SLOT_ALIASES, FALLBACK_BRAND_FACE } from './rebrand-design-system.ts';
+export type { RebrandDesignSystemInputV1, RebrandDesignSystemV1, ThemeSlotV1, ThemeSlotAliasV1 } from './rebrand-design-system.ts';
+export { reviewQueue, objectStates, slideStates, planSummary, pendingSuggestionIds, reviewMessage, effectiveAction, effectiveReplacement, effectiveSlideOrder, reviewFidelity, isCorrected, REVIEW_MESSAGES, REVIEW_NOUNS, REVIEW_FIDELITIES, QUEUE_SECTIONS } from './rebrand-review.ts';
+export type { ReviewMessageV1, ReviewMessageCodeV1, ReviewNounKeyV1, ReviewFidelityV1, QueueSectionV1, QueueItemV1, ObjectStateV1, SlideStateV1, PlanSummaryV1 } from './rebrand-review.ts';
+export { decideObjects, acceptSuggestions, setSlidesIncluded, moveSlide, moveSlides, resetSlideDecisions, setObjectText, setSlidesLayout, slidesSharingSourceLayout, setColorTarget, setFontTarget, capturePlanRows, restorePlanRows } from './rebrand-edit.ts';
+export type { PlanEditResultV1, PlanEditSkipReasonV1, DecideObjectsInputV1, AcceptSuggestionsOptsV1, ResetSlidesOptsV1, PlanRowsSnapshotV1, PlanRowsTouchedV1 } from './rebrand-edit.ts';
+export { markAppliedUnreviewed } from './rebrand-report.ts';
+export { evidenceMessage } from './rebrand-review.ts';
+export type { EvidenceContextV1 } from './rebrand-review.ts';
+export { archetypeCoverage, COVERAGE_ROLES } from './rebrand-archetype.ts';
+export type { CoverageRoleV1 } from './rebrand-archetype.ts';
+
+// Plan 274 milestone 4: the one rule for the rows that still wait for an answer
+// (no decision, unreviewed or needs attention, not locked, on an included slide),
+// which the web view, the CLI, the MCP tool and the TUI gate on and count, and
+// the picture grid a slot of several kept pictures is laid out with.
+export { openPendingIds, openPendingCounts } from './rebrand-review.ts';
+export { pictureGrid, MAX_GRID_PICTURES, GRID_GUTTER_SHARE } from './deck-compile.ts';
+export { designTextOf, designTextFromPlain, parseDesignText, parseDesignLine, plainOfDesignText, hasDesignMarkup, escapeMarkup, hugMarkers } from './design-text.ts';
+export type { DesignTextOptsV1, DesignTextResultV1, DesignTextRunV1, DesignTextLineV1 } from './design-text.ts';
+export { archetypeIdFor, framePosition, FRAMES_PER_ROW, PICTURE_BOX_MIN_SHARE } from './deck-compile.ts';
+export { PPTX_FORMATTING_READER_SINCE, PPTX_READER_SINCE } from './pptx-read.ts';
+// Plan 275 review: where each layer of a frame goes on Apply layout, so Design rebuilds
+// the frame around the slots the layers fill and reports only what kept its place.
+export { archetypeSlots } from './slide-master.ts';
+export type { ArchetypeSlotsV1 } from './slide-master.ts';
+export type { GridCellV1 } from './deck-compile.ts';
+// Flattened slides (plan 274 milestone 5): regions of a slide picture and the typesetting
+// recovered from OCR lines, both pure, so the node pipeline and the web stage share them.
+export { findSlideRegions, groundOfRegion, cropRgba, inkCoverage, inkBounds, inkColourOf, inkMaskOf } from './slide-regions.ts';
+export type { RgbaImageV1, RegionBoxV1, SlideRegionKindV1, SlideRegionReasonV1, SlideRegionEvidenceV1, SlideRegionV1, SlideRegionsV1, SlideRegionOptsV1, InkGroundV1 } from './slide-regions.ts';
+export { typesetOcrLines, readingOrderOf, glyphSetOf, lineSizeEstimate } from './ocr-typeset.ts';
+export type { OcrLineInputV1, GlyphSetV1, TypesetOptsV1, TypesetLineV1, BulletEvidenceV1, TypesetParagraphV1, TypesetBlockV1 } from './ocr-typeset.ts';
+// One word-break rule for the PDF interpreter, pdf-text and the rebrand PDF adapter.
+export { pdfWordBreak, PDF_WORD_GAP_EM, PDF_RUN_WORD_GAP_EM, PDF_UNSPACED_GAP_EM, PDF_MIXED_GAP_EM } from './pdf-map.ts';
+// The noun a review row names its object by, so a shell reads the engine's word.
+export { nounFor } from './rebrand-review.ts';
+// Plan 275 deck themes: the theme laid over the design system, the plan edits with their undo, and the solve per ground group.
+export { systemForPlan, masterForPlan, themedColors, themeSourceOf } from './rebrand-design-system.ts';
+export type { ThemeSourceV1, DeckLookV1, ThemeNoteV1, ThemedColorsV1, SystemForPlanOptsV1 } from './rebrand-design-system.ts';
+export { buildDeckTheme, deckThemeChoices, deckGround, slideGroundPlan, slideGroundHex, solveThemeColors, themePreview, setDeckTheme, setSlideGround, captureThemeRows, restoreThemeRows, THEME_ROW_ID } from './rebrand-theme.ts';
+export type { DeckThemeChoiceV1, ThemeSwatchesV1, SlideGroundPlanV1, ThemeSolveContextV1, ThemeSolveV1, ThemePreviewV1, ThemeEditResultV1, ThemeEditOptsV1, ThemeRowsSnapshotV1 } from './rebrand-theme.ts';
+export { assignColorsByGround } from './rebrand-colors.ts';
+export type { GroundGroupV1, ColorGroundIssueV1 } from './rebrand-colors.ts';
+// Plan 275 WP2: the structure matcher and Auto-match (decision 28), one plan edit every surface calls.
+export { autoMatchLayouts, autoMatchCount, autoMatchPreview, autoMatchedCounts, autoMatchReportEntries, withAutoMatchEntries, matchSlideLayout, readSlideStructure, archetypeForRead, slotCapacity, layoutNamePrior, structureName, STRUCTURE_RULES, AUTO_MATCH_BANDS } from './rebrand-structure.ts';
+export type { AutoMatchBandsV1, AutoMatchOptsV1, AutoMatchSlideV1, AutoMatchSkipV1, StructureReadV1, SlideStructureReadV1, SlideLayoutMatchV1, ReadStructureOptsV1, MatchSlideLayoutOptsV1 } from './rebrand-structure.ts';
+export type { ReviewQueueOptsV1 } from './rebrand-review.ts';
+// Plan 275 decision 32: a drawing read as bounded items, and those items as Design rows and as clean SVG.
+export { svgItemsOf, custGeomItems, vectorItemsToRows, vectorItemsSvg, vectorItemsDocument, MAX_VECTOR_ROWS_PER_OBJECT, MAX_VECTOR_ROWS_PER_FRAME, VECTOR_ITEM_MAX_NODES, VECTOR_ITEM_MAX_ENCODED, VECTOR_ROW_KIND_WORDS } from './svg-items.ts';
+export type { SvgItemsOptsV1, SvgItemsXmlParser, CustGeomPaintV1, VectorRowsOptsV1, VectorPlacementV1, VectorRowsResultV1 } from './svg-items.ts';
+// A document's budget of drawn path data, a drawing row's name taken apart, and a picture's crop applied to its drawing.
+export { MAX_VECTOR_PATH_CHARS_PER_DOCUMENT, vectorRowsPathChars, vectorRowNameParts, cropVectorItems, cropViewBox } from './svg-items.ts';
+export type { VectorCropV1 } from './svg-items.ts';
+export { vectorFeatures, vectorColourUses, vectorChartEvidence, VECTOR_CHART_CONFIDENCE } from './deck-census-vector.ts';
+export type { VectorFeatureFactsV1, VectorColourUseV1, VectorChartEvidenceV1 } from './deck-census-vector.ts';
+// Plan 275 WP7: the Brand ground a stored theme names, and the ground distance that makes two theme tiles two choices.
+export { brandGroundPath, THEME_DISTINCT_GROUND } from './rebrand-theme.ts';
+export type { DeckGroundOptsV1 } from './rebrand-theme.ts';
+export { themeSwatches } from './rebrand-theme.ts';
+// Plan 275 section 4: a slide kept in its original arrangement or as a picture, one plan edit and the furniture it sits under.
+export { setSlidesArrangement } from './rebrand-edit.ts';
+export { ARRANGED_ARCHETYPE } from './deck-compile.ts';
+// Plan 275 close-out: one text layout for the compile, the preview and the words-cut count, the document's path budget, and the compile options a design-system input carries.
+export { designTextFit, layoutDesignText, DESIGN_LINE_HEIGHT, DOCUMENT_PATH_CHARS, compileSystemOpts } from './deck-compile.ts';
+export type { DesignTextFitV1, DesignTextLayoutV1 } from './deck-compile.ts';
+
+export { validateSampleTimes, parseSampleTimes, assertSampleRequest, sampleOutputFormat, sequenceSampleTimes, motionReviewTimes } from './sequence-samples.ts';
+
+export { assertMotionRequest, validateMotionBlur, validateMotionRange, parseMotionParams, serializeMotionParams, blurEnabled, shutterTimes, ShutterAccumulator, type MotionBlur, type MotionRange } from './motion-sampling.ts';
+
+export { parseMotionTiming, resolveCues, compileMotionCues, type MotionTiming, type MotionCue, type CueBinding } from './motion-cues.ts';
+
+export { motionReport, type MotionReport, type MotionCheck, type MotionFacts, type MotionTarget } from './motion-report.ts';
+export * from './production.ts';

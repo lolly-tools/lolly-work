@@ -1,0 +1,203 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://lolly.tools/schemas/text-frame-v1.schema.json",
+  "title": "Authored text frame v1",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "storyId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "width": {
+      "type": "number",
+      "minimum": 0.001,
+      "maximum": 100000
+    },
+    "height": {
+      "type": "number",
+      "minimum": 0.001,
+      "maximum": 100000
+    },
+    "mode": {
+      "enum": [
+        "auto-width",
+        "auto-height",
+        "fixed",
+        "path"
+      ]
+    },
+    "inset": {
+      "type": "object",
+      "properties": {
+        "top": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "right": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "bottom": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "left": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100000
+        }
+      },
+      "required": [
+        "top",
+        "right",
+        "bottom",
+        "left"
+      ],
+      "additionalProperties": false
+    },
+    "columns": {
+      "type": "object",
+      "properties": {
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32
+        },
+        "gutter": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "balance": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "count",
+        "gutter",
+        "balance"
+      ],
+      "additionalProperties": false
+    },
+    "verticalAlign": {
+      "enum": [
+        "top",
+        "center",
+        "bottom"
+      ]
+    },
+    "firstBaseline": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100000
+    },
+    "grid": {
+      "type": "object",
+      "properties": {
+        "step": {
+          "type": "number",
+          "minimum": 0.001,
+          "maximum": 100000
+        },
+        "offset": {
+          "type": "number",
+          "minimum": -100000,
+          "maximum": 100000
+        }
+      },
+      "required": [
+        "step",
+        "offset"
+      ],
+      "additionalProperties": false
+    },
+    "honorWrap": {
+      "type": "boolean"
+    },
+    "hidden": {
+      "type": "boolean"
+    },
+    "locked": {
+      "type": "boolean"
+    },
+    "shrink": {
+      "type": "object",
+      "properties": {
+        "minSize": {
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 10000
+        }
+      },
+      "required": [
+        "minSize"
+      ],
+      "additionalProperties": false
+    },
+    "path": {
+      "type": "object",
+      "properties": {
+        "d": {
+          "type": "string",
+          "maxLength": 1000000
+        },
+        "start": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 10000000
+        },
+        "end": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 10000000
+        },
+        "baseline": {
+          "type": "number",
+          "minimum": -100000,
+          "maximum": 100000
+        },
+        "flip": {
+          "type": "boolean"
+        },
+        "reverse": {
+          "type": "boolean"
+        },
+        "fit": {
+          "type": "boolean"
+        },
+        "guide": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "d",
+        "start",
+        "end",
+        "baseline",
+        "flip",
+        "reverse",
+        "fit",
+        "guide"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "id",
+    "storyId",
+    "width",
+    "height",
+    "mode",
+    "inset",
+    "columns",
+    "verticalAlign"
+  ],
+  "additionalProperties": false
+}

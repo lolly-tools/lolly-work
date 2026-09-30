@@ -119,7 +119,8 @@ import { displayName, resolveMember } from '../iam/member.ts';
 import { guestActor, readPrincipal, type GuestSession } from '../iam/sessions.ts';
 import { linkResourceSelectors, type LinkRecord } from '../links/sign.ts';
 import { canSeeProject } from '../rbac/project-access.ts';
-import { listBrandProfiles } from '../brand/profiles.ts';
+import { createBrandService } from '../brand/service.ts';
+import { createMemoryBlobStore } from '../blobs/memory.ts';
 import { mayCreateGuestLinks, mayEditCollab, mayJoinCollab, type Grant, type Role } from '../rbac/evaluate.ts';
 import { resolveInputAccess, type ResolvedAccess, type ToolOverlay, inputIsGoverned } from '../policy/overlay.ts';
 import { readToolInputs } from '../policy/tool-inputs.ts';
@@ -706,6 +707,7 @@ interface SeatCommon {
 
 export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
   const { config, store, secrets } = deps;
+  const brand = createBrandService(config, store, createMemoryBlobStore());
   // Dual-key rotation (plans/35 wave 4): verification takes the key list.
   const sessionVerify = sessionKeys(secrets);
   const pingIntervalMs = deps.pingIntervalMs ?? PING_INTERVAL_MS;
@@ -822,7 +824,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
       resolveMember(store, ctx.cookie, sessionVerify),
       store.listOverlays(),
       store.listGrants(),
-      readToolInputs(config.instance.pack, toolId),
+      brand.snapshot().then(snap => readToolInputs(snap.source.root, toolId)),
       store.getSession(sessionId),
       store.getProject(projectId),
     ]);
@@ -861,7 +863,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
     const [link, overlays, inputs, session] = await Promise.all([
       store.getLink(linkId),
       store.listOverlays(),
-      readToolInputs(config.instance.pack, toolId),
+      brand.snapshot().then(snap => readToolInputs(snap.source.root, toolId)),
       store.getSession(sessionId),
     ]);
     const seat = liveGuestSeat(ctx.cookie, link, linkId, sessionId);
@@ -1109,8 +1111,9 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
     // profile can be switched while the server runs (brand/profiles.ts), so it
     // is read per upgrade rather than cached - the same thing the HTTP brand
     // routes do.
-    const profiles = await listBrandProfiles(config.instance.pack);
-    const active = profiles.available ? profiles.active : null;
+    const snap = await brand.snapshot();
+    if (snap.source.diagnostics.length) return 'The instance design system is unavailable. Ask an administrator to select a replacement.';
+    const active = snap.source.kind === 'profile' ? snap.source.name : null;
     const instanceOk = claim.instance === null
       || sameInstanceBase(claim.instance, config.instance.baseUrl);
     const idOk = claim.id === null || active === null || claim.id === active;

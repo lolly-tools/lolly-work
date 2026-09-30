@@ -146,7 +146,7 @@ export interface InputFile {
 }
 
 export type ExportFormat =
-  | 'png'
+  | 'jxl' | 'jxl-lossless' | 'png'
   | 'apng'
   | 'gif'
   | 'jpg'
@@ -160,6 +160,7 @@ export type ExportFormat =
   | 'html'
   | 'webm'
   | 'mp4'
+  | 'lottie'
   // Audio-only exports. 'opus' is Opus in a WebM container (audio/webm); 'ogg' is
   // Opus-in-Ogg (the honest voice-memo shape) and 'aac' is bare ADTS - both written
   // through mediabunny's Ogg/Adts output formats. 'flac' is lossless, via
@@ -173,6 +174,20 @@ export type ExportFormat =
   | 'flac';
 
 export interface ExportOpts {
+  /** Uniform timeline still count. One retains the current playhead. */
+  cuts?: number;
+  /** Exact authored timeline seconds. One returns a still; several return a ZIP or paged PDF. */
+  sampleTimes?: readonly number[];
+  /** Centred temporal exposure; absent preserves the ordinary frame. */
+  motionBlur?: { samples: 1 | 4 | 8 | 16; shutterAngle: number };
+  /** Temporary authored range in seconds, without changing saved in/out marks. */
+  sequenceRange?: { from: number; to: number };
+  /** Authored portable document, supplied by the runtime from declared tool files. */
+  portableDocument?: { markup: string; styles: string; script: string; title: string; lang: string };
+  /** Linear float render supplied by a tool. Encoded through the normal metadata/credential path. */
+  deepFrame?: import('@lolly-tools/core/host-v1').CodecFrame;
+  /** Frozen authored values for structural exports, captured by the runtime. */
+  sourceDocument?: { toolId: string; values: Record<string, unknown> };
   scale?: number; // raster scale (1, 2, 3) - used when width/height absent
   quality?: number; // jpg quality 0-1
   background?: string; // override transparent

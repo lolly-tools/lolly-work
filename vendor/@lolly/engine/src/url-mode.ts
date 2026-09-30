@@ -31,6 +31,9 @@
  *                  only; ignored by the CLI.
  *   - `output` - output filename (CLI only)
  *   - `filename` - download filename (web shell)
+ *   - `licence` - the licence declared for the export, an id from
+ *                  OUTPUT_LICENCE_CHOICES (`licence=CC-BY-4.0`). Written into the
+ *                  file's licence metadata; absent means no declaration.
  *   - `_v` - tool version pinning (optional). The `_` PREFIX as a whole is a
  *                  reserved namespace: any param starting with `_` is skipped before
  *                  input matching (and the schema/validator refuse `_`-prefixed
@@ -102,6 +105,8 @@
  *                  (the shell's own default), never an error. Named to collide
  *                  with no input id in any pack: `duration` and `quality` ARE
  *                  input ids (3d, flythrough, convert-image), hence `seconds`/`vq`.
+ *   - `sampletimes` - explicit, increasing timeline seconds for still export.
+ *                  One returns a still; several return a ZIP or paged PDF.
  *   - `cuts` - CONTACT SHEET for a still export (`png`/`jpg`/`webp`/`svg`/`pdf`)
  *                  of a TIMED composition (a stage carrying `data-sequence`).
  *                  An integer, default `1`. `cuts=1` renders the frame at the
@@ -119,7 +124,9 @@
  *                  is unreadable and the render/zip cost stops being worth it. Any
  *                  junk value (non-numeric, 0, negative, NaN, Infinity, 1e9) falls
  *                  back to 1 rather than erroring. Ignored for non-still formats and
- *                  for stages with no sequence. See plans/51-fable-timeline-editing.md section 4.6.
+ *                  by the ordinary web export; CLI/MCP refuse unsupported formats.
+ *                  A still sampling request needs a timed composition.
+ *                  See plans/51-fable-timeline-editing.md section 4.6.
  *   - `lang` - UI/content language as a canonical short code (the full set
  *                  is engine/src/lang.ts's LANGS). Informal
  *                  aliases (`cn`, `jp`) are accepted on parse and normalized to
@@ -218,6 +225,8 @@
  * (one readable value per param; no single-param form).
  */
 
+import { parseSampleTimes, validateSampleTimes } from './sequence-samples.ts';
+import { parseMotionParams, serializeMotionParams, type MotionBlur, type MotionRange } from './motion-sampling.ts';
 import { isUnit } from './units.ts';
 import type { Unit } from './units.ts';
 import { isTokenValue, isAlias } from './tokens.ts';
@@ -369,6 +378,10 @@ export interface UrlState {
    *  single playhead frame - the WYSIWYG contract. See the header for the midpoint
    *  sampling rule. */
   cuts: number;
+  /** Exact authored timeline seconds for still export, from `sampletimes`. */
+  sampleTimes?: number[];
+  motionBlur?: MotionBlur;
+  sequenceRange?: MotionRange;
   /** UI/content language (the `lang` param), alias-normalized. null ⇒ absent or
    *  unrecognized - caller falls back to profile/localStorage/browser default. */
   lang: Lang | null;
@@ -399,6 +412,10 @@ export interface UrlState {
    *  suffix. Resolved against the brand's palette by `parseEmojiParams`, which is the
    *  only place that knows the colours. null ⇒ absent. */
   emojiFx: string | null;
+  emojiStyle?: string | null;
+  /** The declared export licence (the `licence` param), verbatim; the runtime
+   *  keeps it only when it names a known choice. null ⇒ absent. */
+  licence?: string | null;
 }
 
 /** The slice of an input model item serializeUrlState reads. */
@@ -454,6 +471,9 @@ export interface SerializeUrlOpts {
   /** Contact-sheet frame count (the `cuts` param). Clamped like the parser; only
    *  a value > 1 writes the param - 1 is the default and would be link noise. */
   cuts?: number | null;
+  sampleTimes?: readonly number[];
+  motionBlur?: MotionBlur;
+  sequenceRange?: MotionRange;
   /** UI/content language to stamp on a share link (see `lang` in the header
    *  comment). Omitted for English - the implicit default. */
   lang?: string | null;
@@ -462,6 +482,9 @@ export interface SerializeUrlOpts {
    *  emoji a document draws belong to the document, not to the device. */
   emoji?: string | null;
   emojiFx?: string | null;
+  emojiStyle?: string | null;
+  /** The declared export licence (the `licence` param), written when set. */
+  licence?: string | null;
   /** Keep device-local `user/…` asset ids in the serialised state (plan 171).
    *  Default FALSE - the engine-enforced product contract is that a device-local
    *  id never leaves the device (docs/url-mode.md), so a top-level `user/` asset
@@ -473,7 +496,7 @@ export interface SerializeUrlOpts {
 // Param names that are NOT tool inputs (export/render controls). Exported so the
 // engine contract test can assert it stays in lock-step with the documented list
 // (the header comment above + docs/url-mode.md) and nothing drifts silently.
-export const RESERVED = new Set(['format', 'export', 'copy', 'slot', 'output', 'filename', '_v', 'width', 'height', 'w', 'h', 'unit', 'dpi', 'profile', 'password', 'bleed', 'marks', 'c2pa', 'imprint', 'durable', 'meta', 'hdr', 'depth', 'cuts', 'lang', 'designv', 'ds', 'full', 'options', 'nostage', 'template', 'preset', 'present', 's', 'kiosk', 'z', 'zx', 'fps', 'seconds', 'wait', 'codec', 'vq', 'emoji', 'emojifx']);
+export const RESERVED = new Set(['format', 'export', 'copy', 'slot', 'output', 'filename', '_v', 'width', 'height', 'w', 'h', 'unit', 'dpi', 'profile', 'password', 'bleed', 'marks', 'c2pa', 'imprint', 'durable', 'meta', 'hdr', 'depth', 'cuts', 'sampletimes', 'motionblur', 'seqrange', 'lang', 'designv', 'ds', 'full', 'options', 'nostage', 'template', 'preset', 'present', 's', 'kiosk', 'z', 'zx', 'fps', 'seconds', 'wait', 'codec', 'vq', 'emoji', 'emojifx', 'emojistyle', 'licence']);
 // NOTE on the presentation-mode kiosk flag: it was the unreserved `loop` until
 // 2026-08-28 (plan 171 executed the rename inside the id-break window). `loop` is a
 // live *input* id in several tools (deck-builder, 3d, flythrough, digi-ad,
@@ -713,6 +736,8 @@ export function parseUrlState(searchParams: string | URLSearchParams, manifest: 
     // Contact-sheet frame count for a still export of a timed composition (see
     // header). Always 1…CUTS_MAX; 1 ⇒ the single playhead frame.
     cuts:     parseCuts(params.get('cuts')),
+    ...(params.has('sampletimes') ? { sampleTimes: parseSampleTimes(params.get('sampletimes')) } : {}),
+    ...parseMotionParams(params),
     // UI/content language, alias-normalized (see header). null ⇒ absent/unrecognized.
     lang:     normalizeLang(params.get('lang')),
     // Design-system version override (see header). Verbatim, never validated here:
@@ -729,6 +754,8 @@ export function parseUrlState(searchParams: string | URLSearchParams, manifest: 
     // pins them against the sets the host actually holds and the brand's palette.
     emoji: params.get('emoji') || null,
     emojiFx: params.get('emojifx') || null,
+    emojiStyle: params.get('emojistyle') || null,
+    licence: params.get('licence') || null,
   };
 }
 
@@ -803,12 +830,17 @@ export function serializeUrlState(model: UrlSerializableInput[], opts: Serialize
   }
   // Default (1 = the playhead frame) writes nothing; anything else goes through the
   // same clamp as the parser so a serialised link can't carry a value parse rejects.
+  if (opts.sampleTimes !== undefined) params.set('sampletimes', validateSampleTimes(opts.sampleTimes).join(','));
+  serializeMotionParams(params, opts);
   if (opts.cuts != null && parseCuts(String(opts.cuts)) > 1) params.set('cuts', String(parseCuts(String(opts.cuts))));
   if (opts.lang && opts.lang !== 'en') params.set('lang', opts.lang);
   // Unlike `ds` and `designv`, these two are written: a link whose emoji set did not
   // travel would draw placeholders for the recipient.
   if (opts.emoji?.trim()) params.set('emoji', opts.emoji.trim());
   if (opts.emojiFx?.trim()) params.set('emojifx', opts.emojiFx.trim());
+  if (opts.emojiStyle?.trim()) params.set('emojistyle', opts.emojiStyle.trim());
+  // Written, like the emoji set: a licence declared for a document belongs to it.
+  if (opts.licence?.trim()) params.set('licence', opts.licence.trim());
   return params.toString();
 }
 

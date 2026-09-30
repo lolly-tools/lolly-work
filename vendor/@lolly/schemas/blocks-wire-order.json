@@ -1,6 +1,11 @@
 {
   "$comment": "Plan 171 (2026-08-28, the freeze): the compact blocks URL form is POSITIONAL, so a blocks input's field ORDER is a permanent wire contract - reordering, renaming or removing a field scrambles every link ever shared. This file pins every blocks input's field-id list; validate-catalog fails on any change that is not a pure append, and an append must ratchet this file forward in the same change. Never edit a pinned prefix.",
   "inputs": {
+    "snippet:steps": [
+      "action",
+      "text",
+      "seconds"
+    ],
     "annotate:annotations": [
       "kind",
       "x",
@@ -135,7 +140,20 @@
       "hidden",
       "locked",
       "slideTransition",
-      "plainText"
+      "plainText",
+      "scene",
+      "animationId",
+      "animationEdits",
+      "textStory",
+      "textFrame",
+      "pathPaint",
+      "vectorSource",
+      "textWrap",
+      "master",
+      "role",
+      "furniture",
+      "archetype",
+      "textDirection"
     ],
     "diagram-builder:nodes": [
       "shape",
@@ -151,7 +169,8 @@
       "ganttLen",
       "startDate",
       "endDate",
-      "milestone"
+      "milestone",
+      "emphasis"
     ],
     "diagram-builder:layers": [
       "kind",
@@ -166,7 +185,8 @@
       "style",
       "head",
       "width",
-      "color"
+      "color",
+      "route"
     ],
     "filter:pz_colors": [
       "color"
@@ -330,7 +350,8 @@
       "text4",
       "notes",
       "mode",
-      "boxes"
+      "boxes",
+      "arrangement"
     ],
     "digi-ad:scenes": [
       "kind",
@@ -425,6 +446,81 @@
       "spread",
       "longitude",
       "latitude"
+    ],
+    "3d-studio:lights": [
+      "kind",
+      "color",
+      "x",
+      "y",
+      "z",
+      "intensity",
+      "size",
+      "shadows"
+    ],
+    "3d-studio:materials": [
+      "slot",
+      "color",
+      "roughness",
+      "metalness",
+      "clearcoat",
+      "finish"
+    ],
+    "3d-studio:subjects": [
+      "name",
+      "kind",
+      "asset",
+      "primitive",
+      "modelFormat",
+      "ownFraming",
+      "azimuth",
+      "elevation",
+      "fov",
+      "zoom",
+      "roleA",
+      "roleB",
+      "panX",
+      "panY",
+      "panZ",
+      "ownFocus",
+      "focusDistance",
+      "scale",
+      "offsetX",
+      "offsetY",
+      "id",
+      "text",
+      "font"
+    ],
+    "3d-studio:objects": [
+      "name",
+      "kind",
+      "asset",
+      "primitive",
+      "modelFormat",
+      "x",
+      "y",
+      "z",
+      "rotX",
+      "rotY",
+      "rotZ",
+      "scale",
+      "grounded",
+      "visible",
+      "roleA",
+      "roleB",
+      "id",
+      "text"
+    ],
+    "3d-studio:cameraKeys": [
+      "at",
+      "azimuth",
+      "elevation",
+      "fov",
+      "zoom",
+      "panX",
+      "panY",
+      "panZ",
+      "focusDistance",
+      "name"
     ]
   }
 }

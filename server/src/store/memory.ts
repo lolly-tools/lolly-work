@@ -1,4 +1,5 @@
 import type { CanvasCheckpoint, CanvasOp } from '@lolly-tools/core/canvas-op-v1';
+import { initialBrandState } from '../brand/state.ts';
 import type { CollabReceipt } from './types.ts';
 /**
  * In-memory Store - dev, tests, and the evaluation container's default.
@@ -35,6 +36,7 @@ const sameGrant = (a: Grant, b: Grant): boolean =>
   a.principal === b.principal && a.action === b.action && a.resource === b.resource && a.effect === b.effect;
 
 export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOverlay[]; messages?: Message[]; flagGovernance?: FlagGovernance[]; injectables?: InjectableRecord[] }): Store {
+  let brandState = initialBrandState();
   const users = new Map<string, UserRecord>(); // by sub
   const localGroups = new Map<string, LocalGroupRecord>(); // registry, by name
   const scimTokens = new Map<string, ScimTokenRecord>(); // SCIM provisioning bearers, by id
@@ -98,6 +100,16 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
 
   return {
     ...createMemoryRenderStore(),
+    brandPersistence: 'ephemeral',
+    async getBrandState() { return structuredClone(brandState); },
+    async casBrandState(expected, next, body) {
+      if (brandState.revision !== expected) return null;
+      const updated = structuredClone({ ...next, revision: expected + 1 });
+      const event = nextEvent(audit[audit.length - 1] ?? null, body, auditMacKey);
+      audit.push(event);
+      brandState = updated;
+      return structuredClone(brandState);
+    },
     async upsertUserBySub(user) {
       const now = new Date().toISOString();
       const existing = users.get(user.sub);

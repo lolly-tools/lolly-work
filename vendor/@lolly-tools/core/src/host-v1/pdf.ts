@@ -218,6 +218,8 @@ export interface PdfRedactOpts {
   label?: string;
   /** Label colour as a 6-digit hex (v1.90), validated like `color`. Default white. */
   labelColor?: string;
+  /** Prepared label pixels, including selected emoji artwork. Painted over the opaque bar. */
+  labelImage?: import('./raster.ts').RasterFrame;
 }
 
 export interface PdfRedactResult {

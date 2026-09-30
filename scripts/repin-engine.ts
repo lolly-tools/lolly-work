@@ -149,7 +149,7 @@ function report(d: Drift): void {
 }
 
 // ── apply ────────────────────────────────────────────────────────────────────
-const BACKED_UP = ['vendor', 'engine-pin.json', 'pnpm-lock.yaml'] as const;
+const BACKED_UP = ['vendor/@lolly/engine', 'vendor/@lolly-tools/core', 'vendor/@lolly/schemas', 'engine-pin.json', 'pnpm-lock.yaml'] as const;
 
 function backup(): string {
   const dir = mkdtempSync(join(tmpdir(), 'repin-engine-backup-'));
@@ -214,7 +214,9 @@ function apply(ossDir: string, drift: Drift, force = false): void {
     console.log('\n▶ pnpm run verify:engine-pin');
     run('pnpm', ['run', 'verify:engine-pin'], ROOT);
     console.log('\n▶ pnpm test');
-    run('pnpm', ['test'], ROOT);
+    const concurrency = process.env.LOLLY_REPIN_TEST_CONCURRENCY;
+    if (concurrency !== undefined && !/^[1-9]\d?$/.test(concurrency)) throw new Error('LOLLY_REPIN_TEST_CONCURRENCY must be between 1 and 99');
+    run('pnpm', ['test', ...(concurrency ? [`--test-concurrency=${concurrency}`] : [])], ROOT);
   } catch (err) {
     console.error(`\n✗ re-pin failed — restoring previous vendor/ + pin from ${backupDir}`);
     restore(backupDir);

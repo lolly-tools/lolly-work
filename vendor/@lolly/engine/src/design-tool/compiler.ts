@@ -2,6 +2,7 @@
 import type { DesignToolDefinitionV1 } from '@lolly-tools/core/design-tool-v1';
 import { designToolPolicy, validateDesignTool } from '@lolly-tools/core/design-tool-v1';
 import type { ToolManifest } from '../loader.ts';
+import { parseTextDocument } from '../text-story-document.ts';
 import { RESERVED } from '../url-mode.ts';
 
 export interface CompiledDesignTool {
@@ -15,6 +16,8 @@ export function compileDesignTool(
   renderer: { source: string; styles: string },
   assets: Record<string, Uint8Array> = {},
 ): CompiledDesignTool {
+  for(const variant of definition.variants)if(variant.textDocument)parseTextDocument(variant.textDocument);
+  const composed=definition.variants.some(variant=>variant.textDocument?.stories.length);
   const findings = validateDesignTool(definition, [...RESERVED]);
   if (findings.length) throw new Error(findings.map(f => f.message).join('\n'));
   for (const dep of definition.dependencies) if (!assets[dep.path]) throw new Error(`Missing dependency: ${dep.path}`);
@@ -23,11 +26,11 @@ export function compileDesignTool(
   const policy = designToolPolicy(definition);
   const manifest = {
     id: definition.id, name: definition.name, version: definition.version,
-    engineVersion: '^1.199.0', description: 'Share your design with your rules.',
+    engineVersion: composed?'^1.217.0':'^1.199.0', description: definition.description || 'Share your design with your rules.',
     category: 'designer', tags: ['design', 'template'], status: 'community', isolate: true,
     render: { width: first.width, height: first.height, formats: definition.formats, dims: false, units: false },
     designTool: policy,
-    inputs: definition.inputs.map(f => ({ ...f.input, ...(f.common?.source === 'profile' ? { bindToProfile: f.common.key } : {}) })),
+    inputs: [...definition.inputs].sort((a, b) => Number(a.input.section === 'More options') - Number(b.input.section === 'More options')).map(f => ({ ...f.input, ...(f.common?.source === 'profile' ? { bindToProfile: f.common.key } : {}) })),
     hooks: { onInit: true, onInput: true },
   } as ToolManifest;
   const json = JSON.stringify(definition).replace(/</g, '\\u003c');
@@ -44,22 +47,24 @@ export function compileDesignTool(
 }
 
 const CONSUMER_HOOKS = `
-function renderLocked(ctx) {
+async function renderLocked(ctx) {
   var supplied = inputsFrom(ctx.model.filter(function(i) { return i.isDirty || i.bindToProfile; }));
   var result = LollyDesignRules.evaluateDesignTool(lockedDefinition, supplied);
   var v = result.variant;
-  var computed = compute([{id:'boxes',value:v.boxes},{id:'background',value:v.background}]);
+  var model = [{id:'boxes',value:v.boxes},{id:'background',value:v.background},{id:'textDocument',value:v.textDocument?JSON.stringify(v.textDocument):''}];
+  var computed = await compute(model);
   var rows = v.boxes.map(function(b,i) {
     var rule = result.textRules[b.id];
     var imageRule = result.imageRules[b.id] || {};
     return {id:b.id, framingId:result.framingMap[b.id] || '', fitGroup:result.fitGroups[b.id] || '', imageMinWidth:imageRule.minWidth || 0, imageMinHeight:imageRule.minHeight || 0, imageFormats:(imageRule.formats || []).join(','), input:result.inputMap[b.id] || '', hidden:computed.boxHide[i],
       style:computed.boxStyle[i], textStyle:computed.textStyle[i], text:computed.textHtml[i],
       mediaMarkup:computed.mediaHtml[i], path:computed.pathHtml[i],
-      fit:rule ? rule.mode : '', min:rule ? rule.min : 0, max:rule ? Math.min(rule.max, Number(b.fontSize) || rule.max) : 0,
+      fit:rule && !b.textStory ? rule.mode : '', min:rule ? rule.min : 0, max:rule ? Math.min(rule.max, Number(b.fontSize) || rule.max) : 0,
       lines:rule ? rule.maxLines || 0 : 0, wrap:rule && !rule.wrap ? 'nowrap' : 'normal'};
   });
   return Object.assign({}, result.values, {designRows:rows, designWidth:v.width, designHeight:v.height,
-    designBackground:v.background, designIssues:result.findings, connectorSvg:computed.connectorSvg});
+    designBackground:v.background, designIssues:result.findings, connectorSvg:computed.connectorSvg,
+    __lollyTextPreflight:computed.textPreflight ? { values:Object.keys(result.values).sort().map(function(id){return [id,result.values[id]];}), frames:computed.textPreflight.frames, issues:computed.textPreflight.issues } : null});
 }
 function onInit(ctx) { return renderLocked(ctx); }
 function onInput(ctx) { return renderLocked(ctx); }

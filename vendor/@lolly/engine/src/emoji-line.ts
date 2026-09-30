@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 /** Experimental single LTR line master. Paragraph layout and export rights delivery are separate gates. */
-import type { EmojiGlyphV1, EmojiSourceV1, EmojiStyleV1, EmojiPackPinV1, EmojiMeaningV1 } from '@lolly-tools/core';
+import type { EmojiGlyphV1, EmojiStyleV1 } from '@lolly-tools/core';
 import type { TextAPI } from '@lolly-tools/core/host-v1';
 import { bytesToBin, sha256Hex } from './bytes.ts';
 import { escapeXml } from './xml-escape.ts';
-import { describeEmojiPack, matchesEmojiPack, validateEmojiStyle } from './emoji-pack.ts';
+import { emojiPackNotices, describeEmojiPack, matchesEmojiPack, validateEmojiStyle } from './emoji-pack.ts';
 import type { VerifiedEmojiPack } from './emoji-pack.ts';
 import { resolveEmoji } from './emoji-resolve.ts';
 import { segmentEmojiText, requiresEmojiBidiLayout } from './emoji-segment.ts';
@@ -23,23 +23,7 @@ export interface EmojiLineHost {
   parseXml: EmojiXmlParser;
   loadArtwork(asset: EmojiGlyphV1['asset']): Promise<Uint8Array>;
 }
-export interface EmojiLineSource {
-  pack: EmojiPackPinV1;
-  /** Family and style names of the admitted pack, for credits and ingredient titles. */
-  family: string;
-  style: string;
-  meaning: EmojiMeaningV1;
-  /** The glyph's readable name and its pinned asset id in the pack. */
-  label: string;
-  assetId: string;
-  source: EmojiSourceV1;
-  sourceChecksum: string;
-  artworkChecksum: string;
-  canonicalChecksum: string;
-  normalizer: string;
-  changes: string[];
-  occurrences: { start: number; end: number }[];
-}
+export type EmojiLineSource = import('@lolly-tools/core').EmojiSourceRecordV1;
 export interface EmojiLineRun { kind: 'text' | 'emoji'; start: number; end: number; x: number; advance: number }
 export interface EmojiLineMaster {
   svg: string;
@@ -137,7 +121,7 @@ export async function compileEmojiLine(input: EmojiLineInput, packs: readonly Ve
           if (!prepared.ok) return fail('unsupported-artwork', prepared.message, span);
           const source: EmojiLineSource = {
             pack: value.pack, family: described.family, style: described.style, meaning: value.meaning,
-            label: value.glyph.label, assetId: value.glyph.asset.id, source: value.glyph.source,
+            label: value.glyph.label, assetId: value.glyph.asset.id, source: value.glyph.source, notices: emojiPackNotices(pack),
             sourceChecksum: value.glyph.sourceChecksum, artworkChecksum: value.glyph.asset.checksum,
             canonicalChecksum: prepared.svg.checksum, normalizer: prepared.svg.normalizer,
             changes: emojiSvgChanges(prepared.svg), occurrences: [],

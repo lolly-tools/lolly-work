@@ -127,6 +127,7 @@ export function emojiWorksAndUses(sources: readonly EmojiLineSource[]): EmojiRig
       sourceHash: source.sourceChecksum,
       rights: [{
         declaration: source.source.license,
+        ...(source.notices?.length ? { notices: source.notices.map(notice => notice.text) } : {}),
         url: source.source.licenseUrl,
         // The pack publisher recorded this, and the artwork carries no
         // credential of its own. Saying which is the whole point of the field.

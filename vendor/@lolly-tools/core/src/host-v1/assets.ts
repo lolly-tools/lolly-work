@@ -47,6 +47,8 @@ export interface AssetsAPI {
    * Node); an http(s) url goes through the tool's `host.net` allowlist, never
    * an open fetch. Optional and additive: a hook feature-detects it and may
    * keep `fetch` as its fallback.
+   * For a prepared image, bytes(ref) reads ref.original; bytes(ref.url)
+   * reads the derived display image.
    */
   bytes?(target: AssetRef | string): Promise<Uint8Array>;
 

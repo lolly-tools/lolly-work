@@ -29,6 +29,7 @@
 
 import type { TokenSet, TokenEntry, ColorSwatch, SpotColor } from './bridge/host-v1.ts';
 import { parseOklch, oklchToHex } from './brand-derive.ts';
+import { colorCss } from './color-face.ts';
 import { parseColor, colorToHexString } from './css-color.ts';
 import { readFaces } from './color-faces.ts';
 
@@ -292,6 +293,11 @@ function resolveAliases(map: Map<string, MutableEntry>): Map<string, MutableEntr
         const tv = resolve(target);
         if (tv !== undefined) {
           e.value = tv;
+          const inherited = map.get(target)?.extensions?.[TOKEN_EXT];
+          const own = e.extensions?.[TOKEN_EXT];
+          if (isRecord(inherited) && inherited.faces && (!isRecord(own) || !own.faces)) {
+            e.extensions = { ...e.extensions, [TOKEN_EXT]: { ...(isRecord(own) ? own : {}), faces: inherited.faces } };
+          }
           if (e.type == null) { const te = map.get(target); if (te) e.type = te.type; }
         }
       }
@@ -397,6 +403,7 @@ function toSwatch(e: TokenEntry): ColorSwatch {
     // what it was authored to carry; `faces` below carries those untouched for a
     // consumer that can use them.
     value: srgbFace(ext) ?? colorToHex(e.value) ?? '',
+    ...(colorCss(e.value) ? { css: colorCss(e.value)! } : {}),
     description: e.description ?? null,
     cmyk: ext && isNumberArray(ext.cmyk) ? ext.cmyk : null,
     spot: ext ? readSpotColor(ext.spot) : null,
@@ -495,6 +502,7 @@ export function typographyFamilies(value: unknown): string[] {
 export function colorToHex(value: unknown): string | null | undefined {
   if (value == null) return value as null | undefined;
   if (isRecord(value)) {
+    if (typeof value.colorSpace === 'string' && value.colorSpace !== 'srgb') { const css = colorCss(value); const parsed = css && parseColor(css); return parsed ? colorToHexString(parsed) : null; }
     if (typeof value.hex === 'string') return normHex(value.hex);
     if (Array.isArray(value.components)) {
       const [r, g, b] = value.components; // srgb components, 0–1

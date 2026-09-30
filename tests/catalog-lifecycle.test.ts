@@ -76,11 +76,11 @@ async function login(email: string): Promise<string> {
   return cookie.split(';')[0] as string;
 }
 
-test('(a) no lifecycle rows: feed is byte-equivalent to the raw index; blob 200', async () => {
+test('(a) no lifecycle rows: feed preserves raw assets and advertises the selected tokens head; blob 200', async () => {
   const cookie = await login('admin@test');
   const res = await fetch(`${base}/catalog/assets/index.json`, { headers: { cookie } });
   assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), RAW_INDEX);
+  assert.deepEqual(await res.json(), { ...RAW_INDEX, brandTokens: null });
 
   const blob = await fetch(`${base}/catalog/assets/acme/logo/primary.svg`, { headers: { cookie } });
   assert.equal(blob.status, 200);

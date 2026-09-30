@@ -16,6 +16,8 @@
 // expose via host.pdf.analyze); this covers the raster + vector formats, plus
 // the XMP packet in MP4/QuickTime video (the AI-declaration carrier there).
 
+import { isJxl } from './jxl.ts';
+import { jxlXmp } from './jxl-container.ts';
 import { aiKind } from './ai-kind.ts';
 import { JPEG_APP_IDS, scanJpegSegments } from './jpeg-segments.ts';
 import { unzlibSync } from 'fflate';
@@ -139,6 +141,7 @@ export const META_GROUP_LABEL: Record<MetaGroup, string> = {
 // ── Format sniff ──────────────────────────────────────────────────────────────
 
 function sniff(b: Uint8Array): string {
+  if (isJxl(b)) return 'JXL';
   if (b.length < 4) return '';
   if (b[0] === 0xff && b[1] === 0xd8) return 'JPEG';
   if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'PNG';
@@ -1563,6 +1566,7 @@ export function extractFileMetadata(bytes: Uint8Array): FileMetadata {
   try {
     out.format = sniff(bytes);
     switch (out.format) {
+      case 'JXL': { const xmp = jxlXmp(bytes); if (xmp) readXmp(xmp, out); break; }
       case 'JPEG': readJpeg(bytes, out); break;
       case 'PNG': readPng(bytes, out); break;
       case 'GIF': readGif(bytes, out); break;
@@ -1597,6 +1601,7 @@ export function extractXmpPacket(bytes: Uint8Array): string | null {
   try {
     const dec = new TextDecoder('utf-8');
     switch (sniff(bytes)) {
+      case 'JXL': return jxlXmp(bytes);
       case 'JPEG': {
         const scan = scanJpegSegments(bytes);
         if (!scan) return null;

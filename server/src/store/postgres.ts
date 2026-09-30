@@ -162,6 +162,33 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
   const { default: pg } = await import('pg');
   const pool: PgPool = new pg.Pool({ connectionString: databaseUrl }) as unknown as PgPool;
 
+  const appendAuditInTransaction = async (client: PgClient, body: AuditEventBody): Promise<AuditEvent> => {
+    await client.query('select pg_advisory_xact_lock($1)', [AUDIT_LOCK_KEY]);
+    const { rows } = await client.query('select * from audit_log order by seq desc limit 1');
+    const tailRow = rows[0];
+    const tail: AuditEvent | null = tailRow
+      ? {
+          seq: Number(tailRow.seq),
+          at: new Date(tailRow.at as string).toISOString(),
+          actor: tailRow.actor as string,
+          action: tailRow.action as string,
+          subject: tailRow.subject as string,
+          ...(tailRow.payload ? { payload: tailRow.payload as Record<string, unknown> } : {}),
+          prevHash: tailRow.prev_hash as string,
+          hash: tailRow.hash as string,
+          ...(tailRow.mac ? { mac: tailRow.mac as string } : {}),
+        }
+      : null;
+    const evt = nextEvent(tail, body, auditMacKey);
+    await client.query(
+      `insert into audit_log (seq, at, actor, action, subject, payload, prev_hash, hash, mac)
+       values ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)`,
+      [evt.seq, evt.at, evt.actor, evt.action, evt.subject,
+       evt.payload ? JSON.stringify(evt.payload) : null, evt.prevHash, evt.hash, evt.mac ?? null],
+    );
+    return evt;
+  };
+
   const userFromRow = (r: Record<string, unknown>): UserRecord => {
     const groups = (r.groups as string[]) ?? [];
     return {
@@ -294,6 +321,27 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
 
   return {
     ...createPostgresRenderStore(pool),
+    brandPersistence: 'durable',
+    async getBrandState() {
+      const { rows } = await pool.query('select revision, state from brand_state where singleton = true');
+      if (!rows[0]) throw new Error('Brand state is missing; run database migrations');
+      return { ...(rows[0].state as Omit<import('../brand/state.ts').BrandState, 'revision'>), revision: Number(rows[0].revision) };
+    },
+    async casBrandState(expected, next, body) {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        const { rows } = await client.query(
+          'update brand_state set revision = revision + 1, state = $2::jsonb where singleton = true and revision = $1 returning revision',
+          [expected, JSON.stringify(next)],
+        );
+        if (!rows[0]) { await client.query('rollback'); return null; }
+        await appendAuditInTransaction(client, body);
+        await client.query('commit');
+        return { ...structuredClone(next), revision: Number(rows[0].revision) };
+      } catch (error) { await client.query('rollback'); throw error; }
+      finally { client.release(); }
+    },
     async upsertUserBySub(user) {
       // Incoming groups are IdP-authoritative; preserve any stored localGroups
       // and derive the effective union + role in JS (mirrors the memory driver).
@@ -665,29 +713,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       const client = await pool.connect();
       try {
         await client.query('begin');
-        await client.query('select pg_advisory_xact_lock($1)', [AUDIT_LOCK_KEY]);
-        const { rows } = await client.query('select * from audit_log order by seq desc limit 1');
-        const tailRow = rows[0];
-        const tail: AuditEvent | null = tailRow
-          ? {
-              seq: Number(tailRow.seq),
-              at: new Date(tailRow.at as string).toISOString(),
-              actor: tailRow.actor as string,
-              action: tailRow.action as string,
-              subject: tailRow.subject as string,
-              ...(tailRow.payload ? { payload: tailRow.payload as Record<string, unknown> } : {}),
-              prevHash: tailRow.prev_hash as string,
-              hash: tailRow.hash as string,
-              ...(tailRow.mac ? { mac: tailRow.mac as string } : {}),
-            }
-          : null;
-        const evt = nextEvent(tail, body, auditMacKey);
-        await client.query(
-          `insert into audit_log (seq, at, actor, action, subject, payload, prev_hash, hash, mac)
-           values ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)`,
-          [evt.seq, evt.at, evt.actor, evt.action, evt.subject,
-           evt.payload ? JSON.stringify(evt.payload) : null, evt.prevHash, evt.hash, evt.mac ?? null],
-        );
+        const evt = await appendAuditInTransaction(client, body);
         await client.query('commit');
         return evt;
       } catch (err) {

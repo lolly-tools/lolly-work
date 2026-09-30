@@ -54,12 +54,16 @@ export async function encodeToTargetBytes<T extends { size: number }>(encode: (q
 
 export function conversionFindings(kind: string, target: string): FileOperationFindingV1[] {
   const warning = (code: string, message: string): FileOperationFindingV1 => ({ code, severity: 'warning', message });
+  if (target === 'jxl-recompress') return [warning('jpeg-reconstruction', 'The complete original JPEG, including metadata, is retained. Restoration is checked byte for byte before the copy is saved. Compression savings are not guaranteed.')];
+  if (target === 'jpeg-original') return [warning('jpeg-restored', 'Restores the original encoded JPEG and its metadata without rendering new pixels.')];
+  if (kind === 'jxl') return [warning('jxl-sdr-view', 'This conversion uses the oriented 8-bit sRGB view of the JPEG XL source. The original file remains unchanged.'), ...conversionFindings('raster', target)];
   if (target === 'pdf-clean') return [warning('pdf-descriptive-metadata', 'Removes descriptive Info/XMP metadata, not attachments, comments, form values, scripts or hidden content. This is not redaction.'), warning('pdf-rewrite', 'Rewrites the PDF without rasterizing pages. Signed and password-protected PDFs are refused.')];
   if (target === 'pdf-optimize') return [warning('pdf-structural-only', 'Structural compression only: images are not downsampled. Keeps the original bytes if the rewrite is larger; savings are not guaranteed.'), warning('pdf-rewrite', 'Signed and password-protected PDFs are refused. Check the finished document before delivery.')];
   if (kind === 'raster' || (['svg', 'svgz'].includes(kind) && !['svg', 'svgz'].includes(target))) {
     const findings = [warning('metadata-not-carried', 'Image re-encoding does not carry over source metadata or content credentials.'),
       warning('colour-not-verified', 'Renderer-converted colour. CMYK, spot colours, HDR and print fidelity are not verified.')];
     if (kind !== 'raster') findings.push(warning('vector-rasterized', 'The SVG becomes pixels. Text and shapes will no longer be editable vectors.'));
+    if (target === 'jxl' || target === 'jxl-lossless') findings.push(warning('sdr-render', target === 'jxl-lossless' ? 'Lossless encoding of the rendered 8-bit sRGB pixels. Resizing, colour conversion and canvas rendering can change source samples.' : 'Lossy encoding of the rendered 8-bit sRGB pixels. Alpha is encoded losslessly.'));
     if (target === 'jpeg') findings.push(warning('alpha-flattened', 'JPEG cannot keep transparency. Transparent areas use your chosen background colour.'));
     if (target === 'pdf') findings.push(warning('image-pdf', 'One image on one PDF page; not editable vector artwork. One pixel becomes one PDF point.'));
     if (target === 'ico') findings.push(warning('icon-size', 'The icon is reduced to at most 256 × 256 pixels.'));

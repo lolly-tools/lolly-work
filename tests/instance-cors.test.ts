@@ -70,7 +70,6 @@ function packBytes(): Buffer {
   const entries: Record<string, string> = {
     'manifest.json': JSON.stringify({ format: 'lolly-brand', formatVersion: 3 }),
     'instance.json': JSON.stringify({ kind: 'instance', name: 'CORS Hub', publisher: 'Acme', version: '1.0.0', instance: BASE_URL }),
-    'tokens.json': '{}',
     'pack.sig': 'sig-bytes',
   };
   const parts = Object.entries(entries).map(([name, body]) => zb.add(name, Buffer.from(body)));

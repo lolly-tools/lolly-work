@@ -10,3 +10,4 @@
  */
 export type * from './host-v1.ts';
 export type * from './manifest.ts';
+export type * from './text-v1.ts';

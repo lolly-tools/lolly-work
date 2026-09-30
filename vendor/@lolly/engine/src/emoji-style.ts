@@ -55,9 +55,12 @@ export interface EmojiSetPin { pin: EmojiPackPinV1 }
 export interface EmojiParamValues {
   emoji?: string | null;
   emojifx?: string | null;
+  emojistyle?: string | null;
 }
 
 export interface ParsedEmojiParams {
+  /** Exact document style, including checksums, ordered fallbacks and palette. */
+  style?: EmojiStyleV1;
   /** The named set, pinned from the host's listing. Absent when the param named nothing. */
   pin?: EmojiPackPinV1;
   /** The treatment, with the caller's palette already pinned into it. */
@@ -179,19 +182,27 @@ function parseTreatment(raw: string, palette: readonly EmojiPaletteEntry[], issu
   return undefined;
 }
 
-/**
- * Read the reserved `emoji` and `emojifx` params into a pinned set and a
- * treatment. The URL never carries a set's checksum or a brand's colours: the
- * pin comes from the host's own listing and the palette from the caller, so a
- * link can name what to draw but can never describe the bytes it is drawn from.
- */
+/** Read an exact document style, or resolve the short params for newly authored work. */
 export function parseEmojiParams(
   params: EmojiParamValues,
   sets: readonly EmojiSetPin[] = [],
   palette: readonly EmojiPaletteEntry[] = [],
 ): ParsedEmojiParams {
   const issues: EmojiIssueV1[] = [];
+  if (params?.emojistyle) {
+    try {
+      if (params.emojistyle.length > 32768) throw new Error('Emoji style exceeds 32 KiB.');
+      const style: unknown = JSON.parse(params.emojistyle);
+      const invalid = validateEmojiStyle(style);
+      if (invalid) return { issues: [invalid] };
+      const saved = structuredClone(style as EmojiStyleV1);
+      return { style: saved, pin: saved.primary, treatment: saved.treatment, issues };
+    } catch {
+      return { issues: [issue('The saved emoji style is invalid.')] };
+    }
+  }
   const setRaw = typeof params?.emoji === 'string' ? params.emoji.trim() : '';
+  if (setRaw === 'none') return { issues };
   const fxRaw = typeof params?.emojifx === 'string' ? params.emojifx.trim() : '';
   const pin = setRaw ? parseSet(setRaw, sets, issues) : undefined;
   const treatment = fxRaw ? parseTreatment(fxRaw.toLowerCase(), palette, issues) : undefined;
@@ -200,12 +211,12 @@ export function parseEmojiParams(
 
 /** Write a saved style back as the two params. The full set id is always written:
  *  the short form is a convenience for a person typing one, not a wire format. */
-export function emojiParams(style: EmojiStyleV1): { emoji: string; emojifx: string } {
+export function emojiParams(style: EmojiStyleV1): { emoji: string; emojifx: string; emojistyle: string } {
   const treatment = style.treatment;
   const base = treatment.mode === 'influence' ? `influence:${treatment.strengthBps}` : treatment.mode;
   const protect = 'protect' in treatment ? treatment.protect : undefined;
   // The URL form is all or nothing. A part-protected treatment keeps its
   // protection rather than losing the flags it cannot spell.
   const unprotected = protect && !protect.skinTones && !protect.flags && !protect.custom;
-  return { emoji: `${style.primary.id}@${style.primary.pin.version}`, emojifx: unprotected ? `${base},unprotected` : base };
+  return { emoji: `${style.primary.id}@${style.primary.pin.version}`, emojifx: unprotected ? `${base},unprotected` : base, emojistyle: JSON.stringify(style) };
 }

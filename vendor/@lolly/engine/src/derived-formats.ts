@@ -27,6 +27,8 @@ const DERIVED: ReadonlyArray<readonly [string, string]> = [
   ['svg', 'svgz'],
   ['emf', 'wmf'],
   ['png', 'bmp'],
+  ['png', 'jxl'],
+  ['png', 'jxl-lossless'],
   ['tiff', 'bmp'],
 ];
 

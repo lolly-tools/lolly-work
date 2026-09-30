@@ -327,7 +327,7 @@ test('CLI submits, inspects, downloads, cancels and retries over the real API', 
   const token = mintServiceSecret();
   await h.store.putApiToken({ id: 'cli-ci', label: 'CLI', role: 'admin', tokenHash: token.tokenHash, createdBy: 'system', createdAt: new Date().toISOString() });
   const dir = await mkdtemp(join(tmpdir(), 'lw-render-cli-')); t.after(() => rm(dir, { recursive: true, force: true }));
-  const requestFile = join(dir, 'request.json'); await writeFile(requestFile, JSON.stringify(render));
+  const requestFile = join(dir, 'request.json'); await writeFile(requestFile, JSON.stringify({ ...render, verification: 'output-v1', production: { contract: { profile: 'lolly/production-still-v1', id: 'card', revision: '1', format: 'svg', width: 100, height: 100, pages: 1, alpha: 'any', requirements: [] } } }));
   const cliCommand = (command: string, ...args: string[]) => new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
     const child = spawn(process.execPath, [fileURLToPath(new URL('../cli/lw.ts', import.meta.url)), command, ...args, '--base', h.base, '--token', token.secret, '--json'], { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = ''; let stderr = '';
@@ -350,6 +350,10 @@ test('CLI submits, inspects, downloads, cancels and retries over the real API', 
   assert.equal(evidenceDownload.code, 0, evidenceDownload.stderr);
   const receipt = JSON.parse(await readFile(evidenceFile, 'utf8')) as { renderId: string; evidence: RenderEvidence };
   assert.equal(receipt.renderId, r.id); assert.equal(receipt.evidence.outputSha256, sha256Hex(await readFile(out)));
+  assert.equal(receipt.evidence.inspection?.checks.find(c => c.id === 'readability')?.state, 'pass');
+  assert.equal(r.request.verification?.profile, 'output-v1');
+  assert.ok(receipt.evidence.production?.checks.every(c => c.state === 'pass'));
+  assert.equal(r.request.production?.contract.profile, 'lolly/production-still-v1');
   const queued = JSON.parse((await cli('submit', requestFile)).stdout) as RenderRecord;
   assert.equal(JSON.parse((await cli('cancel', queued.id)).stdout).state, 'cancelled');
   assert.equal(JSON.parse((await cli('retry', queued.id)).stdout).retryOf, queued.id);
@@ -479,4 +483,34 @@ test('standalone process recovers Postgres renders and unfinished batch rows; a 
       }
     }
   });
+});
+
+test('HTTP verification retains final-byte evidence, rejects dimension mismatch and preserves draft export', async (t) => {
+  const h = await harness(); t.after(() => h.close());
+  for (const widthPx of [100, 101]) {
+    const response = await h.request('/api/v1/renders', 'POST', { ...render,
+      verification: { profile: 'output-v1', widthPx, heightPx: 100 } });
+    assert.equal(response.status, 202, await response.clone().text());
+    const queued = await response.json() as RenderRecord;
+    const done = await h.settle(queued.id);
+    if (widthPx === 100) {
+      assert.equal(done.state, 'succeeded', JSON.stringify(done));
+      const receipt = await (await h.request(`/api/v1/renders/${done.id}/evidence`)).json() as { evidence: RenderEvidence };
+      assert.ok(receipt.evidence.inspection?.checks.every(c => c.state === 'pass'));
+      assert.equal(receipt.evidence.inspection?.outputSha256, done.output?.sha256);
+    } else {
+      assert.equal(done.state, 'failed', JSON.stringify(done));
+      assert.equal(done.attempt, 1, 'a measured mismatch does not consume automatic retries');
+      assert.equal(done.error?.code, 'OUTPUT_VERIFICATION_FAILED');
+      assert.equal(done.error?.inspection?.checks.find(c => c.id === 'width')?.state, 'fail');
+      assert.equal((await h.request(`/api/v1/renders/${done.id}/output/default`)).status, 409);
+      const retried = await (await h.request(`/api/v1/renders/${done.id}/retry`, 'POST')).json() as RenderRecord;
+      assert.deepEqual(retried.request.verification, done.request.verification);
+    }
+  }
+  const draft = await (await h.request('/api/v1/renders', 'POST', render)).json() as RenderRecord;
+  assert.equal((await h.settle(draft.id)).state, 'succeeded');
+  for (const verification of ['unknown', { profile: 'output-v1', widthPx: -1 }, { profile: 'output-v1', skip: ['readability'] }]) {
+    assert.equal((await h.request('/api/v1/renders', 'POST', { ...render, verification })).status, 400);
+  }
 });

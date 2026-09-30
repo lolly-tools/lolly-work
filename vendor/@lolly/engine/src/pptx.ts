@@ -226,7 +226,17 @@ export interface PptxSlideTransition {
  *  `layout` is a 0-based index into PptxBuildOpts.layouts (clamped; absent = 0).
  *  `transition` is how the deck moves ONTO this slide (absent = a cut).
  *  `audio` is the slide's narration clip (absent = no audio parts at all). */
-export interface PptxSlide { shapes: PptxShape[]; media: PptxMedia[]; notes?: string; layout?: number; transition?: PptxSlideTransition; audio?: PptxAudio; }
+export interface PptxVideo {
+  bytes: Uint8Array;
+  ext: 'mp4';
+  poster: Uint8Array;
+  autoplay?: boolean;
+  loop?: boolean;
+  muted?: boolean;
+  durationMs: number;
+  name?: string;
+}
+export interface PptxSlide { video?: PptxVideo; advanceAfterMs?: number; shapes: PptxShape[]; media: PptxMedia[]; notes?: string; layout?: number; transition?: PptxSlideTransition; audio?: PptxAudio; }
 
 // ─── slide layouts (the branded layout gallery) ────────────────────────────────
 /** Placeholder types this builder emits. The template convention: `title`/`ctrTitle`
@@ -825,10 +835,16 @@ export function timingXml(slide: PptxSlide): string {
   });
   const audio = audioOf(slide);
   const wantAudio = !!(audio && audio.autoplay);
-  if (!rows.length && !wantAudio) return '';
+  const wantVideo = !!slide.video?.autoplay;
+  if (!rows.length && !wantAudio && !wantVideo) return '';
   const embedRid = wantAudio
     ? audioRids(slide.media.length, (slide.notes ?? '').trim() !== '').embed
     : '';
+  const videoSpid = slide.shapes.length + 2 + (audio ? 1 : 0);
+  if (!rows.length && !wantAudio && wantVideo) {
+    return '<p:timing><p:tnLst><p:par><p:cTn id="1" dur="indefinite" restart="never" nodeType="tmRoot"><p:childTnLst>' +
+      videoNodeXml(2, videoSpid, slide.video!) + '</p:childTnLst></p:cTn></p:par></p:tnLst></p:timing>';
+  }
   let n = 2; // ids 1 (root) and 2 (main seq) are taken below
   const nextId = (): number => ++n;
   const clickSet = new Set(rows.map((r) => r.click));
@@ -863,6 +879,7 @@ export function timingXml(slide: PptxSlide): string {
     `<p:seq concurrent="1" nextAc="seek"><p:cTn id="2" dur="indefinite" nodeType="mainSeq"><p:childTnLst>${groups}</p:childTnLst></p:cTn>` +
     `<p:prevCondLst><p:cond evt="onPrev" delay="0"><p:tgtEl><p:sldTgt/></p:tgtEl></p:cond></p:prevCondLst>` +
     `<p:nextCondLst><p:cond evt="onNext" delay="0"><p:tgtEl><p:sldTgt/></p:tgtEl></p:cond></p:nextCondLst></p:seq>` +
+    (wantVideo ? videoNodeXml(nextId(), videoSpid, slide.video!) : '') +
     `</p:childTnLst></p:cTn></p:par></p:tnLst>${bld}</p:timing>`;
 }
 
@@ -888,7 +905,7 @@ export function timingXml(slide: PptxSlide): string {
 function transitionXml(slide: PptxSlide): string {
   const tr = slide.transition;
   const kind = tr && tr.kind !== 'cut' ? tr.kind : null;
-  const rawAdv = audioOf(slide)?.advanceAfterMs;
+  const rawAdv = slide.advanceAfterMs ?? audioOf(slide)?.advanceAfterMs;
   const advTm = Number.isFinite(rawAdv as number) && (rawAdv as number) > 0
     ? clampInt(rawAdv as number, 1, MAX_ADV_TM_MS)
     : null;
@@ -919,7 +936,7 @@ function slideXml(slide: PptxSlide, emuW: number, emuH: number): string {
     `<p:cSld><p:spTree>` +
     `<p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>` +
     `<p:grpSpPr/>` +
-    shapes + audio +
+    shapes + audio + (slide.video ? videoPicXml(slide.video, ++id, emuW, emuH, videoRids(slide.media.length, !!(slide.notes || '').trim(), !!clip, collectLinkTargets(slide).length)) : '') +
     `</p:spTree></p:cSld><p:clrMapOvr><a:overrideClrMapping bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/></p:clrMapOvr>` +
     // CT_Slide's child order is cSld, clrMapOvr, transition, timing, extLst - so the
     // slide transition (plans/179 M4) goes here, and the timing tree (plans/175 WP-E)
@@ -928,6 +945,23 @@ function slideXml(slide: PptxSlide, emuW: number, emuH: number): string {
     timingXml(slide) +
     `</p:sld>`
   );
+}
+
+// Video relationships follow images, notes, narration and internal slide links.
+function videoRids(mediaCount: number, notes: boolean, audio: boolean, links: number): {link: string; embed: string; poster: string} {
+  const base = linkRidBase(mediaCount, notes, audio) + links;
+  return {link: `rId${base}`, embed: `rId${base + 1}`, poster: `rId${base + 2}`};
+}
+function videoPicXml(video: PptxVideo, id: number, cx: number, cy: number, rids: {link: string; embed: string; poster: string}): string {
+  return `<p:pic><p:nvPicPr><p:cNvPr id="${id}" name="${xmlEsc(video.name || 'Programme video')}"><a:hlinkClick r:id="" action="ppaction://media"/></p:cNvPr>` +
+    `<p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr><p:nvPr><a:videoFile r:link="${rids.link}"/>` +
+    `<p:extLst><p:ext uri="${P14_MEDIA_EXT_URI}"><p14:media xmlns:p14="${P14_NS}" r:embed="${rids.embed}"/></p:ext></p:extLst></p:nvPr></p:nvPicPr>` +
+    `<p:blipFill><a:blip r:embed="${rids.poster}"/><a:stretch><a:fillRect/></a:stretch></p:blipFill>` +
+    `<p:spPr>${xfrmXml({x:0,y:0,cx,cy})}<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>`;
+}
+function videoNodeXml(id: number, spid: number, video: PptxVideo): string {
+  return `<p:video><p:cMediaNode vol="${video.muted ? 0 : 100000}"><p:cTn id="${id}" fill="hold" display="0"${video.loop ? ' repeatCount="indefinite"' : ''}>` +
+    `<p:stCondLst><p:cond delay="0"/></p:stCondLst></p:cTn><p:tgtEl><p:spTgt spid="${spid}"/></p:tgtEl></p:cMediaNode></p:video>`;
 }
 
 // Media file names are unique across the whole deck (slide#_media#) to avoid
@@ -961,7 +995,7 @@ function collectLinkTargets(slide: PptxSlide): number[] {
 // only when the slide carries a note, the notesSlide, then the audio clip's three (only
 // when the slide is narrated), then any slide-jump links (past all the above). A
 // slide→slide relationship targets `slideM.xml` in the same folder.
-function slideRelsXml(slideIdx: number, media: PptxMedia[], hasNotes = false, linkTargets: readonly number[] = [], layoutIdx = 0, audio?: PptxAudio): string {
+function slideRelsXml(slideIdx: number, media: PptxMedia[], hasNotes = false, linkTargets: readonly number[] = [], layoutIdx = 0, audio?: PptxAudio, video?: PptxVideo): string {
   let rels = `<Relationship Id="rId1" Type="${REL}/slideLayout" Target="../slideLayouts/slideLayout${layoutIdx + 1}.xml"/>`;
   media.forEach((m, i) => { rels += `<Relationship Id="${mediaRid(i)}" Type="${REL}/image" Target="../media/${mediaName(slideIdx, i, m.ext)}"/>`; });
   if (hasNotes) rels += `<Relationship Id="rId${media.length + 2}" Type="${REL}/notesSlide" Target="../notesSlides/notesSlide${slideIdx + 1}.xml"/>`;
@@ -972,6 +1006,12 @@ function slideRelsXml(slideIdx: number, media: PptxMedia[], hasNotes = false, li
     rels += `<Relationship Id="${rid.link}" Type="${REL}/audio" Target="${target}"/>`;
     rels += `<Relationship Id="${rid.embed}" Type="${REL}/media" Target="${target}"/>`;
     rels += `<Relationship Id="${rid.icon}" Type="${REL}/image" Target="../media/${AUDIO_ICON_NAME}"/>`;
+  }
+  if (video) {
+    const rids = videoRids(media.length, hasNotes, !!audio, linkTargets.length);
+    rels += `<Relationship Id="${rids.link}" Type="${REL}/video" Target="../media/video${slideIdx + 1}.mp4"/>`;
+    rels += `<Relationship Id="${rids.embed}" Type="http://schemas.microsoft.com/office/2007/relationships/media" Target="../media/video${slideIdx + 1}.mp4"/>`;
+    rels += `<Relationship Id="${rids.poster}" Type="${REL}/image" Target="../media/video${slideIdx + 1}.png"/>`;
   }
   const base = linkRidBase(media.length, hasNotes, !!audio);
   linkTargets.forEach((t, k) => { rels += `<Relationship Id="rId${base + k}" Type="${REL}/slide" Target="slide${t + 1}.xml"/>`; });
@@ -1265,14 +1305,16 @@ export function buildPptxParts(slides: PptxSlide[], opts: PptxBuildOpts = {}): R
   const audioExts = new Set<string>();
   for (const s of slides) { const a = audioOf(s); if (a) audioExts.add(a.ext); }
   const hasAnyAudio = audioExts.size > 0;
-  if (hasAnyAudio) exts.add('png');
+  const hasAnyVideo = slides.some(s => !!s.video);
+  if (hasAnyAudio || hasAnyVideo) exts.add('png');
+  for (const s of slides) if (s.video && (s.video.ext !== 'mp4' || !s.video.bytes.length || !s.video.poster.length || !Number.isFinite(s.video.durationMs) || s.video.durationMs <= 0)) throw new Error('PowerPoint video requires MP4 bytes, a PNG poster and a positive duration.');
   const now = opts.now ?? '2026-01-01T00:00:00Z';
   // Slide indices that actually carry a note. This drives every notes part below.
   const noted = slides.map((s, i) => ({ i, notes: (s.notes ?? '').trim() })).filter(x => x.notes !== '');
   const hasAnyNotes = noted.length > 0;
 
   const parts: Record<string, string | Uint8Array> = {
-    '[Content_Types].xml': contentTypesXml(n, exts, noted.map(x => x.i), nLayouts, audioExts),
+    '[Content_Types].xml': contentTypesXml(n, exts, noted.map(x => x.i), nLayouts, audioExts).replace('<Override ', (hasAnyVideo ? '<Default Extension="mp4" ContentType="video/mp4"/>' : '') + '<Override '),
     '_rels/.rels': ROOT_RELS,
     'ppt/presentation.xml': presentationXml(n, emuW, emuH, hasAnyNotes),
     'ppt/_rels/presentation.xml.rels': presentationRelsXml(n, hasAnyNotes),
@@ -1309,8 +1351,12 @@ export function buildPptxParts(slides: PptxSlide[], opts: PptxBuildOpts = {}): R
     const layoutIdx = clampInt(finInt(slide.layout ?? 0), 0, nLayouts - 1);
     parts[`ppt/slides/slide${i + 1}.xml`] = slideXml(slide, emuW, emuH);
     slideLinkRid = null;
-    parts[`ppt/slides/_rels/slide${i + 1}.xml.rels`] = slideRelsXml(i, slide.media, hasNotes, targets, layoutIdx, clip);
+    parts[`ppt/slides/_rels/slide${i + 1}.xml.rels`] = slideRelsXml(i, slide.media, hasNotes, targets, layoutIdx, clip, slide.video);
     slide.media.forEach((m, j) => { parts[`ppt/media/${mediaName(i, j, m.ext)}`] = m.bytes; });
+    if (slide.video) {
+      parts[`ppt/media/video${i + 1}.mp4`] = slide.video.bytes;
+      parts[`ppt/media/video${i + 1}.png`] = slide.video.poster;
+    }
     // The narration bytes go in exactly as supplied - never re-encoded, because the
     // synthetic-voice credential lives inside them (plans/180 section 7).
     if (clip) parts[`ppt/media/${audioName(i, clip.ext)}`] = clip.bytes;

@@ -58,6 +58,7 @@ export const SESSION_READER_VERSION = 4;
 export interface SessionEmojiStamp {
   emoji: string;
   emojifx: string;
+  emojistyle?: string;
 }
 
 export interface SessionVersionStamp {
@@ -126,9 +127,9 @@ export function sessionRightsDecisions(record: StoredSessionRecord | null | unde
 export function sessionEmojiStamp(record: StoredSessionRecord | null | undefined): SessionEmojiStamp | null {
   const stamp = record?.emoji;
   if (!stamp || typeof stamp !== 'object') return null;
-  const { emoji, emojifx } = stamp as { emoji?: unknown; emojifx?: unknown };
+  const { emoji, emojifx, emojistyle } = stamp as { emoji?: unknown; emojifx?: unknown; emojistyle?: unknown };
   if (typeof emoji !== 'string' || !emoji.trim()) return null;
-  return { emoji: emoji.trim(), emojifx: typeof emojifx === 'string' ? emojifx.trim() : '' };
+  return { emoji: emoji.trim(), emojifx: typeof emojifx === 'string' ? emojifx.trim() : '', ...(typeof emojistyle === 'string' ? { emojistyle } : {}) };
 }
 
 export type SessionLogger = (

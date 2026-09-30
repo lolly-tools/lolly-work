@@ -1,3 +1,4 @@
+import { parseProductionRequest, inspectWorkProduction, verifyProductionReport, ProductionError, productionApi, type ProductionRequest } from './production.ts';
 /**
  * The render pipeline - the fourth HostV1 shell's core (plans/07).
  *
@@ -14,6 +15,7 @@
  * watermark, host). A boot that never renders stays instant.
  */
 import { readFile, stat } from 'node:fs/promises';
+import { governedInputs, requireGovernedInputs, requireRuleValues, projectRuleOverlay, finishRuleReport, markBrandDraft, type ManagedRuleContext } from '../brand/rules.ts';
 import { join } from 'node:path';
 
 import type { InstanceConfig } from '../config/instance.ts';
@@ -27,6 +29,7 @@ import type { LoadedSigner } from './c2pa-signer.ts';
 import { renderCacheKey } from './cache-key.ts';
 import { sha256Hex } from '../lib/crypto.ts';
 import { createAssetObserver, evidenceHash, finishRenderEvidence, type RenderEvidence } from './evidence.ts';
+import { inspectOutput, outputVerificationProblems, OutputVerificationError, parseOutputVerification, verificationTarget, type OutputVerification } from './output-inspection.ts';
 import { applyPreviewWatermark } from './watermark.ts';
 import { withRenderHost } from './host.ts';
 import { createVmHookExecutor } from './vm-hooks.ts';
@@ -81,6 +84,8 @@ function renderErrorFromWorker(e: WorkerError): RenderError {
 }
 
 export interface RenderDeps {
+  managedRules?: ManagedRuleContext;
+  brandRevision?: string;
   config: InstanceConfig;
   /** Durable attempts collect fresh observations; cached bytes cannot attest a new attempt. */
   captureEvidence?: boolean;
@@ -113,6 +118,8 @@ export interface RenderDeps {
 }
 
 export interface RenderRequest {
+  production?: ProductionRequest;
+  verification?: 'output-v1' | OutputVerification;
   signal?: AbortSignal;
   toolId: string;
   format: string;
@@ -167,6 +174,37 @@ function queryFromValues(values: Record<string, unknown>): string {
 }
 
 export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<RenderOutput> {
+  const production = parseProductionRequest(req.production);
+  if (!production?.repair) {
+    const out = await renderCandidate(deps, req);
+    if (production) await verifyProductionReport(out.evidence?.production, out.bytes, production);
+    return out;
+  }
+  const engine = await loadEngine(), plan = production.repair;
+  const tool = await engine.loadTool(req.toolId, path => readFile(join(deps.config.instance.pack, 'tools', path), 'utf8'));
+  const expanded = await engine.expandQuery(req.query), state = engine.parseUrlState(expanded, tool.manifest);
+  const declared = new Set((tool.manifest.inputs as { id: string }[]).map(input => input.id));
+  if (Object.keys(plan.permitted).some(key => !declared.has(key))) throw new ProductionError(['repair-input-not-declared']);
+  const inputs = Object.fromEntries(engine.buildInputModel(tool.manifest, { profile: { ...req.profile }, initial: state.values }).filter(i => declared.has(i.id)).map(i => [i.id, i.value]));
+  const run = await productionApi.runProductionRepairs(inputs, plan, {
+    render: async values => {
+      const query = new URLSearchParams(expanded);
+      for (const key of Object.keys(plan.permitted)) query.set(key, typeof values[key] === 'string' ? values[key] as string : JSON.stringify(values[key]));
+      const out = await renderCandidate(deps, { ...req, query: query.toString() });
+      if (!out.evidence?.production) throw new ProductionError(['production-report-missing']);
+      return { ...out, report: out.evidence.production, contract: production.contract };
+    },
+    propose: (values, report) => productionApi.proposeProductionPatch(values, report, plan),
+  }, req.signal);
+  const last = run.attempts.at(-1)!;
+  try { await verifyProductionReport(last.report, last.bytes, production); }
+  catch (error) { if (error instanceof ProductionError) error.attempts = run.attempts.map(a => a.report); throw error; }
+  const { id: _id, apiVersion: _api, coverage: _coverage, outputSha256: _sha, ...body } = last.evidence!;
+  const evidence = finishRenderEvidence({ ...body, productionAttempts: run.attempts.map(a => a.report) }, last.bytes);
+  return { bytes: last.bytes, mime: last.mime, cacheKey: last.cacheKey, ...(last.provenance ? { provenance: last.provenance } : {}), evidence };
+}
+
+async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<RenderOutput> {
   req.signal?.throwIfAborted();
   // 'jpeg' is the same format as 'jpg' everywhere downstream (the worker
   // normalises too) - fold it before the gate so both spellings behave alike.
@@ -184,7 +222,13 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
   const engine = await loadEngine();
   req.signal?.throwIfAborted();
   const pack = deps.config.instance.pack;
-  const observer = deps.captureEvidence ? createAssetObserver() : undefined;
+  let verification: OutputVerification | undefined;
+  try { verification = parseOutputVerification(req.verification); }
+  catch { throw new RenderError('INVALID_VERIFICATION', 400, 'Unsupported output verification profile or dimensions.'); }
+  const production = parseProductionRequest(req.production);
+  if (production && production.contract.format !== format) throw new RenderError('INVALID_PRODUCTION', 400, 'Production format differs from the render request.');
+  const observer = deps.captureEvidence || verification || production || deps.managedRules ? createAssetObserver() : undefined;
+  const inputIds = [...new Set([...(production?.contract.requirements.filter(r => r.kind === 'input').map(r => r.location) ?? []), ...Object.values(deps.managedRules?.mapping?.fields ?? {})])];
   const resolvedProviders = new Map<string, Promise<HostedAssetResult | null>>();
   const hostedResolver: RenderDeps['hostedResolver'] = deps.hostedResolver ? async (ref) => {
     let pending = resolvedProviders.get(ref.raw);
@@ -230,8 +274,8 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
   // Policy BEFORE render. A caller that supplies a locked/hidden/not-allowed
   // param is refused (422); then the overlay's locked values are baked over the
   // caller's - so a locked input renders its policy value regardless of input.
-  const overlay = req.overlays.get(req.toolId);
   const groups = req.principal?.groups ?? [];
+  const overlay = deps.managedRules ? projectRuleOverlay(req.overlays.get(req.toolId), deps.managedRules, groups) : req.overlays.get(req.toolId);
   // Per-tool format policy (overlay enforce.formats - plans/23 §3.A): a format
   // the deployment CAN produce may still be disallowed for this tool. A policy
   // 403, deliberately distinct from the capability 400 at the top: absent (400)
@@ -250,6 +294,12 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
   const bakedValues = await resolveHostedValues(
     { ...st.values, ...lockedValues(overlay, groups) }, hostedResolver,
   ) as Record<string, unknown>;
+  const initialValues = Object.fromEntries(engine.buildInputModel(tool.manifest, { profile: { ...req.profile }, initial: bakedValues }).map(i => [i.id, i.value]));
+  requireRuleValues(deps.managedRules, { ...initialValues, ...bakedValues });
+  const governed = deps.managedRules ? governedInputs(req.overlays.get(req.toolId), groups, Object.keys(initialValues)) : [];
+  requireGovernedInputs(governed, Object.fromEntries(Object.entries(initialValues).map(([id, value]) => [id, evidenceHash(value)])));
+  inputIds.push(...governed.map(c => c.id).filter(id => !inputIds.includes(id)));
+  if (inputIds.length > 128) throw new RenderError('INPUT_OBSERVATION_LIMIT', 422, 'Too many input checks for one render.');
 
   // Cache key: tool + version + engine + catalog + policy + format + baked params.
   // The catalog half is the pack's index version AND the instance-owned assets'
@@ -277,22 +327,24 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
     policyVersion,
     format,
     params: bakedValues,
-    context: { ...context, sourceHash, pack: evidenceHash(pack), instance: evidenceHash(deps.config.instance.baseUrl),
+    context: { ...context, sourceHash, brand: deps.managedRules ?? null, pack: evidenceHash(pack), instance: evidenceHash(deps.config.instance.baseUrl),
       worker: deps.worker ? evidenceHash(deps.worker.url) : null,
       signer: deps.signer ? evidenceHash({ chain: deps.signer.chain.map((cert) => sha256Hex(cert)), claimGenerator: deps.signer.claimGenerator }) : null },
   });
 
   // Hooks can read mutable state outside this host. Durable receipts always
   // observe a fresh attempt, even when a previous output has the same request key.
-  const cacheable = !deps.captureEvidence && !tool.manifest.hooks;
+  const cacheable = !observer && !tool.manifest.hooks;
   const cached = cacheable ? cacheGet(cacheKey) : undefined;
   if (cached) return { bytes: cached.bytes, mime: cached.mime, cacheKey, ...(cached.provenance ? { provenance: cached.provenance } : {}) };
 
   // Render path: hooked tool → Chromium worker (or 501 when none); otherwise the
   // in-process jsdom fast path. Both converge on an SVG string post-processed
   // identically below (watermark → provenance → raster).
+  let workerEvidence: import('./worker-client.ts').WorkerEvidence | undefined;
   let svgStr: string;
   let runtimeEvidence: RenderEvidence['runtime'];
+  let productionInputs: Record<string, string> | undefined;
   if (hooked) {
     if (!deps.worker) {
       throw new RenderError('HOOKED_TOOL_NEEDS_CHROMIUM', 501,
@@ -301,7 +353,9 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
         `LW_RENDER_WORKER_SECRET for the Chromium worker - see docs/configuration.md)`);
     }
     try {
-      const readable = queryFromValues(bakedValues);
+      const boundValues = Object.fromEntries(engine.buildInputModel(tool.manifest, { profile: { ...req.profile }, initial: bakedValues })
+        .filter(input => input.bindToProfile).map(input => [input.id, input.value]));
+      const readable = queryFromValues({ ...boundValues, ...bakedValues });
       const packed = readable.length > 4096 ? await engine.packQuery(readable) : null;
       const query = packed && packed.length + 2 < readable.length ? `z=${packed}` : readable;
       // The worker navigates through ordinary HTTP servers/proxies. Bound the
@@ -311,12 +365,14 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
       }
       req.signal?.throwIfAborted();
       svgStr = await renderViaWorker(deps.worker, {
+        ...(deps.brandRevision ? { brandRevision: deps.brandRevision } : {}),
+        ...(production || deps.managedRules ? { evidence: true, inputIds } : {}),
         toolId: req.toolId,
         query,
         overrides: {},
         format: 'svg',
         profile: req.profile,
-      }, { signal: req.signal });
+      }, { signal: req.signal, onEvidence: value => { workerEvidence = value; productionInputs = value.inputs; } });
     } catch (e) {
       if (e instanceof WorkerError) throw renderErrorFromWorker(e);
       throw e;
@@ -345,6 +401,13 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
       // server's realm - no process.env, no ambient fetch, no require.
       const runtime = await engine.createRuntime(tool, host, bakedValues,
         tool.hooksSource ? { hookExecutor: createVmHookExecutor(dom) } : undefined);
+      if (inputIds.length) {
+        const render = host.export.render.bind(host.export);
+        host.export.render = async (...args) => {
+          const inputs = productionApi.productionInputFacts(runtime.getModel(), { requirements: inputIds.map(id => ({ id, kind: 'input', location: id, expected: '' })) });
+          const result = await render(...args); productionInputs = await inputs; return result;
+        };
+      }
       try {
         const canvas = dom.window.document.getElementById('canvas');
         if (!canvas) throw new RenderError('RENDER_FAILED', 500, 'render canvas missing');
@@ -358,6 +421,7 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
         if (pxH) opts.height = pxH;
         const blob = await runtime.export(canvas, 'svg', opts);
         const text = new TextDecoder().decode(new Uint8Array(await blob.arrayBuffer()));
+        if (runtimeEvidence) { runtimeEvidence.hookErrors = runtime.hookErrors.length; runtimeEvidence.droppedAssets = runtime.droppedAssets.length; runtimeEvidence.hydratedHash = sha256Hex(runtime.getHydrated()); }
         // Honest failure: a lifecycle hook threw AND the output is blank ⇒ the bytes
         // aren't a real render. (A hookless tool has no hookErrors; a trivial {} hook
         // doesn't error.)
@@ -370,7 +434,13 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
     });
   }
 
+  const sourceObserved = !hooked || files.every(file => workerEvidence?.resources.some(r => {
+    try { return new URL(r.url).pathname.endsWith(`/tools/${file.path}`) && r.sha256 === file.sha256; } catch { return false; }
+  }));
+  requireGovernedInputs(governed, sourceObserved ? productionInputs ?? {} : {});
+  const brandReport = await finishRuleReport(deps.managedRules, initialValues, sourceObserved ? productionInputs ?? {} : {});
   if (watermark) svgStr = applyPreviewWatermark(svgStr);
+  if (brandReport?.disposition === 'draft') svgStr = markBrandDraft(svgStr);
 
   // Provenance: whatever catalog assets this render referenced (baked params or
   // the SVG itself) become ingredients, embedded in the bytes so attribution
@@ -434,14 +504,37 @@ export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<
     }
   }
 
+  req.signal?.throwIfAborted();
+  const target = verificationTarget({ format, widthPx: pxW, heightPx: pxH }, verification);
+  const inspection = observer ? await inspectOutput(out.bytes, out.mime, target) : undefined;
+  req.signal?.throwIfAborted();
+  if (req.verification) {
+    const problems = outputVerificationProblems(inspection, out.bytes, out.mime, target);
+    if (problems.length) throw new OutputVerificationError(problems, inspection);
+  }
   if (cacheable) cachePut(cacheKey, out, req.toolId);
   const observation = observer?.finish();
+  const resourceDigests = new Map<string, Set<string>>();
+  for (const item of [...(observation?.assets ?? []).map(a => ({ key: a.id, sha256: a.sha256 })), ...(workerEvidence?.resources ?? []).map(r => ({ key: r.url, sha256: r.sha256 }))]) {
+    const hashes = resourceDigests.get(item.key) ?? new Set<string>(); hashes.add(item.sha256); resourceDigests.set(item.key, hashes);
+  }
+  if (production && inspection?.checks.find(c => c.id === 'mime')?.state !== 'pass') throw new ProductionError(['output-mime-mismatch']);
+  const productionReport = production ? await inspectWorkProduction(out.bytes, production, {
+    ...(sourceObserved ? { sourceSha256: sourceHash } : {}),
+    ...(hooked ? {} : { contextSha256: evidenceHash(context) }),
+    ...(productionInputs ? { inputs: productionInputs } : {}),
+    resources: Object.fromEntries([...resourceDigests].filter(([, hashes]) => hashes.size === 1).map(([key, hashes]) => [key, [...hashes][0]!])),
+  }, req.signal) : undefined;
   const evidence = observation ? finishRenderEvidence({
     engine: { version: engine.ENGINE_VERSION, documentApiVersion: engine.DOCUMENT_API_VERSION, scope: 'control-plane' },
     tool: { id: req.toolId, version: tool.manifest.version, sourceHash, files, scope: hooked ? 'control-plane-validation' : 'local-runtime' },
     context, ...(runtimeEvidence ? { runtime: runtimeEvidence } : {}), assets: observation.assets,
+    ...(inspection ? { inspection } : {}),
+    ...(productionReport ? { production: productionReport } : {}),
+    ...(brandReport ? { brandRules: brandReport } : {}),
+    ...(workerEvidence ? { worker: workerEvidence } : {}),
     limitations: ['engine-dependency-graph-unavailable', 'dependencies-not-locked', 'unobserved-template-and-global-resources',
-      ...(hooked ? ['worker-tool-and-assets-unattested', 'worker-profile-and-inputs-unattested'] : []),
+      ...(hooked ? workerEvidence ? ['worker-runtime-profile-api-unattested', ...workerEvidence.limitations] : ['worker-tool-and-assets-unattested', 'worker-profile-and-inputs-unattested'] : []),
       ...(tool.manifest.hooks ? ['hooks-not-isolated'] : []),
       ...(format !== 'svg' ? ['rasterizer-fonts-unattested'] : []),
       ...observation.limitations].sort(),

@@ -116,6 +116,8 @@ export interface InstanceConfig {
      *  inspection as the upload applies: a file naming a different instance
      *  base is refused, loudly, at seed time. */
     connectPack?: string;
+    /** Explicit tokens asset per source id when a catalogue carries multiple token sets. */
+    brandTokens?: Record<string, string>;
   };
   idp: {
     issuer: string;
@@ -506,6 +508,11 @@ export function parseConfig(json: string): InstanceConfig {
     }
   }
   const cfg = merge(DEFAULTS as unknown as Record<string, unknown>, raw as Record<string, unknown>) as unknown as InstanceConfig;
+  if (cfg.instance.brandTokens !== undefined && (cfg.instance.brandTokens === null || Array.isArray(cfg.instance.brandTokens)
+    || typeof cfg.instance.brandTokens !== 'object' || Object.entries(cfg.instance.brandTokens).some(([key, value]) =>
+      !/^(mounted|profile:[a-z0-9][a-z0-9-]*)$/.test(key) || typeof value !== 'string' || !value.trim()))) {
+    throw new Error('instance.brandTokens must map mounted or profile:<name> source ids to tokens asset ids');
+  }
   const mode = cfg.policy.defaultAccessMode;
   validateAiConfig(cfg.policy.ai);
   if (!['open', 'gated', 'per-tool'].includes(mode)) throw new Error(`invalid defaultAccessMode: ${mode}`);

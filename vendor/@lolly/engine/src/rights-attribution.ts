@@ -27,7 +27,7 @@ export function attributionCredits(plan: AttributionPlanV1): string {
   const blocks: string[] = [];
   const required = plan.required.map((notice) => notice.credit).filter(Boolean);
   if (required.length) blocks.push(required.join('\n'));
-  const notices = plan.required.map((notice) => notice.noticeText).filter((text): text is string => Boolean(text));
+  const notices = [...new Set(plan.required.map((notice) => notice.noticeText).filter((text): text is string => Boolean(text)))];
   if (notices.length) blocks.push(`Notices that travel with this work\n${notices.join('\n\n')}`);
   const optional = plan.optional.map((notice) => notice.credit).filter(Boolean);
   if (optional.length) blocks.push(`Credits offered as a courtesy\n${optional.join('\n')}`);

@@ -65,6 +65,9 @@ for (const [name, expect] of Object.entries(pin.schemas)) {
 // a re-vendor that dropped or renamed them fails HERE - with a pointer to the
 // wrapper - instead of at runtime when the first scan loads the engine.
 const REQUIRED_ENGINE_EXPORTS: Array<{ file: string; symbols: string[]; usedBy: string }> = [
+  { file: join('src', 'brand-policy.ts'), symbols: ['parseBrandPolicyMappings', 'resolveBrandPolicy', 'checkBrandPolicyValues', 'checkBrandPolicyDigests'], usedBy: 'server/src/brand/rules.ts' },
+  { file: join('src', 'production', 'report.ts'), symbols: ['inspectProduction', 'productionProblems'], usedBy: 'server/src/render/production.ts' },
+  { file: join('src', 'production', 'repair.ts'), symbols: ['runProductionRepairs', 'proposeProductionPatch', 'parseProductionRepair'], usedBy: 'server/src/render/production.ts' },
   { file: join('src', 'c2pa-extract.ts'), symbols: ['extractC2paStore', 'sniffFormat'], usedBy: 'server/src/catalog/credentials.ts' },
 ];
 for (const req of REQUIRED_ENGINE_EXPORTS) {
@@ -91,3 +94,6 @@ if (problems.length) {
   process.exit(1);
 }
 console.log(`✓ engine pin verified — @lolly/engine@${pin.engine.version}, @lolly-tools/core@${pin.core.version}, ${Object.keys(pin.schemas).length} schemas, unmodified.`);
+
+// The deployment adapter consumes this canonical Node resolver unchanged.
+await import('./vendor-content-resolver.ts');

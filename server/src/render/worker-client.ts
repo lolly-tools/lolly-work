@@ -9,11 +9,16 @@
  * Chromium and returns SVG, which the plane then watermarks / provenances /
  * rasterises exactly like an in-process render (policy stays in the plane).
  */
-import { hmac, macEquals, canonicalJson } from '../lib/crypto.ts';
+import { hmac, macEquals, canonicalJson, sha256Hex } from '../lib/crypto.ts';
 
 export interface WorkerConfig { url: string; secret: string; timeoutMs: number }
 
+export interface WorkerEvidence { inputs?: Record<string, string>; version: 1; requestSha256: string; outputSha256: string; resources: { url: string; sha256: string; size: number }[]; limitations: string[] }
 export interface WorkerJob {
+  evidence?: boolean;
+  inputIds?: string[];
+  /** The catalogue revision every browser request must observe. */
+  brandRevision?: string;
   toolId: string;
   /** The original (possibly packed) URL-mode query - the shared param contract. */
   query: string;
@@ -92,7 +97,7 @@ function parseRetryAfter(res: Response): number | undefined {
 export async function renderViaWorker(
   cfg: WorkerConfig,
   job: WorkerJob,
-  opts: { now?: number; fetchImpl?: typeof fetch; signal?: AbortSignal } = {},
+  opts: { now?: number; fetchImpl?: typeof fetch; signal?: AbortSignal; onEvidence?: (evidence: WorkerEvidence) => void } = {},
 ): Promise<string> {
   opts.signal?.throwIfAborted();
   const now = opts.now ?? Date.now();
@@ -131,11 +136,24 @@ export async function renderViaWorker(
       throw new WorkerError(`render worker rejected the job (${res.status}): ${detail}`, status);
     }
 
-    const out = await res.json().catch(() => null) as { svg?: unknown } | null;
+    const responseText = await boundedWorkerText(res);
+    if (Buffer.byteLength(responseText) > 40 * 1024 * 1024) throw new WorkerError('Worker response exceeds its byte budget', 502);
+    if (job.evidence && !verifyBody(responseText, cfg.secret, res.headers.get('x-lw-output-sig') ?? '')) throw new WorkerError('Worker evidence signature is missing or invalid', 502);
+    const out = JSON.parse(responseText) as { svg?: unknown; brandRevision?: unknown; evidence?: WorkerEvidence } | null;
     opts.signal?.throwIfAborted();
     ctrl.signal.throwIfAborted();
     if (!out || typeof out.svg !== 'string' || !/<svg[\s>]/i.test(out.svg)) {
       throw new WorkerError('render worker returned no SVG', 502);
+    }
+    if (job.brandRevision && out.brandRevision !== job.brandRevision) throw new WorkerError('The render worker did not confirm the selected design-system revision. Upgrade the worker and point it at this instance.', 502);
+    if (job.evidence) {
+      const e = out.evidence;
+      if (!e || e.version !== 1 || e.requestSha256 !== sha256Hex(payload) || e.outputSha256 !== sha256Hex(out.svg)
+        || !Array.isArray(e.resources) || e.resources.length > 256 || !Array.isArray(e.limitations)
+        || e.resources.some(r => typeof r.url !== 'string' || !/^[a-f0-9]{64}$/.test(r.sha256) || !Number.isSafeInteger(r.size) || r.size < 0)) throw new WorkerError('Worker evidence does not bind this request and output', 502);
+      if (e.inputs !== undefined && (!e.inputs || typeof e.inputs !== 'object' || Array.isArray(e.inputs)
+        || Object.keys(e.inputs).length > 128 || Object.entries(e.inputs).some(([id, hash]) => !job.inputIds?.includes(id) || typeof hash !== 'string' || !/^[a-f0-9]{64}$/.test(hash)))) throw new WorkerError('Worker input observations are invalid', 502);
+      opts.onEvidence?.(e);
     }
     return out.svg;
   } catch (e) {
@@ -206,4 +224,19 @@ export async function rasteriseViaWorker(
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function boundedWorkerText(response: Response): Promise<string> {
+  const limit = 40 * 1024 * 1024, reader = response.body?.getReader();
+  if (!reader) throw new WorkerError('Worker response body is missing', 502);
+  const chunks: Uint8Array[] = []; let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read(); if (done) break;
+      size += value.byteLength;
+      if (size > limit) { await reader.cancel(); throw new WorkerError('Worker response exceeds its byte budget', 502); }
+      chunks.push(value);
+    }
+    return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks));
+  } finally { reader.releaseLock(); }
 }

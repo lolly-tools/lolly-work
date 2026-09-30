@@ -1,33 +1,45 @@
 {
-  "generatedFrom": "f2fca96cc9e29dbebfc4b45b5f617a4ff2362736",
+  "generatedFrom": "d47a620b1053bca887314b63bc47b93cefffa69c",
   "note": "Pin manifest - a consumer verifies vendored content against contentHash. tarballSha256 is informational (gzip is not reproducible).",
   "core": {
     "version": "1.0.0",
     "tarball": "lolly-tools-core-1.0.0.tgz",
-    "tarballSha256": "f0b02a216333d7e6e809b1757059ceff8039955638e7e707a310ce169c091813",
-    "contentHash": "fcddcd5ccde51e5e46d2e080f3042521911506dfe64217c92c8432b90a404500"
+    "tarballSha256": "a84135730baa8f877c3064868f5128eac5aa2af00387e796ab855f2df6148537",
+    "contentHash": "bd951597ee7a1a567b23fef72356d930dc31347cff9473a0d37d70b398bc4095"
   },
   "engine": {
-    "version": "1.199.0",
-    "tarball": "lolly-engine-1.199.0.tgz",
-    "tarballSha256": "da8e8c469ad4f9a0defd960117b7808028076ee490c16e69460586641b9925c4",
-    "contentHash": "561882c2533031f22e7bb4929fde5e4038e38ed66d7cce2fab099d87f2fded1d"
+    "version": "1.235.0",
+    "tarball": "lolly-engine-1.235.0.tgz",
+    "tarballSha256": "7c51e737d7f1cd23380548d0140a826ab41c687b2c5bae427979818004fa55af",
+    "contentHash": "658ee412450c30935e0eb92eef1a32eb2a857f651393d9db1805bc0cebe4a600"
   },
   "schemas": {
-    "asset-ref.schema.json": "7a9de36f6c25ab8fea81987f8705cf2e1f509b1520b5ea1d8bbcb8e4c268c3a5",
+    "asset-ref.schema.json": "e07d85d6db6c3a7c88190c86a4779707e2b073ce17dbaa9bb355ed2c015fcdae",
     "asset.schema.json": "c34f9bf7ee977501fb28de6826ec0a6a161dad2de23d31b7dc1f5d863e5c9c08",
-    "blocks-wire-order.json": "51339094c7de0548937f04ae71a8fe3e8456e2113179954934a9de9e3d040a42",
+    "blocks-wire-order.json": "29a9b8fc873d5cd2695d6cbefca6802e76f78eaae1d9f19ad14a063e63c6f852",
+    "brand-system-v1.schema.json": "19f653283b83e99ecdc4ea98014828dcb5e660633f86cb0772387a02d89378ca",
     "canonical-aliases.json": "3b008b3d5c2936cd68246d736b0de877e98d5a37939645928ef55380aff7cc29",
     "canonical-inputs.json": "8747d7dea7721ae0a6a0fce9e58ce188dd86faab94c44a15304fc70042095e22",
     "canvas-op.schema.json": "e1acaf0c98b875012104b49582994bf5b5bdb9aa3fc3e210a0d9e3c527f9453d",
     "chart-v1.schema.json": "7bc73ce09be779f9ba04ad7c2a0f872f5c663dc39558c81a74bf8295b272e822",
-    "design-tool-v1.schema.json": "a05cf387d4256e257d4a8c35bd50ba6ccdf0ffcc1054434b8f396dc08f4ba727",
+    "design-tool-v1.schema.json": "5a1d4217569e09b113f11905fb8127e8d5666cc0ee2d1b6cc8f7a0e1b61662e4",
     "emoji-pack-v1.schema.json": "48b5dbaaddd8269f242544157cf542519f76b50384745bee5bf0aa45bb92de89",
+    "emoji-source-records-v1.schema.json": "fa7a2f9bbf0433ad901d832bbf5f817bf6142fb433a7c5be8a418ce426911c30",
     "emoji-style-v1.schema.json": "940b007355b2b2fe2d985b238499f4cb4b02211a1471682bde0b8b77bc1494e1",
     "file-operation-report-v1.schema.json": "f95969fd3f0f5099ef642679e079de1eec7432b73275dfc1772e25a79b0447d7",
     "file-operation-request-v1.schema.json": "20ca45779c17949e4d5a8482209106fd9be768ff89ee71127624860d8d2c13e2",
     "ratecard.schema.json": "e164d8ce234279c04877511cb9673cc721d0118647cdae0401246c8f35d0b777",
+    "rebrand-census-v1.schema.json": "00808d89ef1a1015936b932cc3eb9153bbd1f95465225d15ce4f3b394c684b94",
+    "rebrand-compiled-v1.schema.json": "b931daa79f5c03f5d256371afef07f467da6416991bbf62704c935cf9018d6e5",
+    "rebrand-plan-v1.schema.json": "381b0cccffc71b408fdc706dbee683d3c67a3d9b894146338270575f351a8a3a",
+    "rebrand-project-v1.schema.json": "3dbbc694449834b69887ec0963cc4423ec3cb2c5bd94d2093cafebebcb7e437f",
+    "rebrand-report-v1.schema.json": "4b6edd27fe17a91eed3e5fd3fb8e2701192998192462acfa14e6501ff17dc002",
+    "rebrand-source-v1.schema.json": "6a9eff67be049eba68c4951097a5dc079d8b2d34b08a75eda850881e6fe49a91",
+    "section-vocabulary.json": "0c0cc7684863166daba64b5f744ff6c583765880e18aeece8465ea20efd475ba",
+    "slide-master-v1.schema.json": "b925b7fb859a33dd8be573d1fae54d1ae88c60e4e713b77233c8bd9f4bddd30b",
+    "text-document-v1.schema.json": "660b2108ee2dcd5a3e15ada040205a930b58faa0b101a23341892d59bf4ceeff",
+    "text-frame-v1.schema.json": "4da9745015da8dfd75e60f7e15300604eeedd4902bca7a049d063a396455f069",
     "tokens.schema.json": "be8a2f388d451f778aeaf334c903556689e3897e7523e6c31b7c428040673384",
-    "tool.schema.json": "ee6b34ec30b3a8f6a89f44c1bbdafef8091df0678347d8387a7ba035da8af703"
+    "tool.schema.json": "79d5f28567492f5974f3f9f35775c56e7d083624854e2a31f61bdceaf707a72a"
   }
 }

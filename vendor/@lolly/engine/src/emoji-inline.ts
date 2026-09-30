@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 /** inline-em-v1 sizing, and prepared plus treated emoji artwork for one run of text. */
 import type { EmojiGlyphV1, EmojiMetricsV1, EmojiPackPinV1, EmojiStyleV1 } from '@lolly-tools/core';
-import { describeEmojiPack, emojiPackPinKey, matchesEmojiPack } from './emoji-pack.ts';
+import { emojiPackNotices, describeEmojiPack, emojiPackPinKey, matchesEmojiPack } from './emoji-pack.ts';
 import type { VerifiedEmojiPack } from './emoji-pack.ts';
 import { resolveEmoji } from './emoji-resolve.ts';
 import { segmentEmojiText } from './emoji-segment.ts';
@@ -188,7 +188,7 @@ async function artworkFor(
     base: {
       pack: structuredClone(value.pack), family: described.family, style: described.style,
       meaning: structuredClone(value.meaning), label: value.glyph.label, assetId: value.glyph.asset.id,
-      source: structuredClone(value.glyph.source), sourceChecksum: value.glyph.sourceChecksum,
+      source: structuredClone(value.glyph.source), notices: emojiPackNotices(pack), sourceChecksum: value.glyph.sourceChecksum,
       artworkChecksum: value.glyph.asset.checksum, canonicalChecksum: svg.checksum,
       normalizer: svg.normalizer, changes: emojiSvgChanges(svg),
     },

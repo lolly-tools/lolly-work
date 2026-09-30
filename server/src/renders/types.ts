@@ -1,7 +1,11 @@
+import type { ProductionRequest, ProductionReport } from '../render/production.ts';
 import type { RenderEvidence } from '../render/evidence.ts';
+import type { OutputInspection, OutputVerification } from '../render/output-inspection.ts';
 
 /** Recoverable single-tool requests. Full dependency locking is plan 40's next slice. */
 export interface RenderSpec {
+  production?: ProductionRequest;
+  verification?: OutputVerification;
   toolId: string;
   format: string;
   inputs: Record<string, unknown>;
@@ -21,7 +25,7 @@ export interface RenderResult {
   evidence?: RenderEvidence;
 }
 
-export interface RenderFailure { code: string; message: string }
+export interface RenderFailure { code: string; message: string; inspection?: OutputInspection; production?: ProductionReport; productionAttempts?: ProductionReport[] }
 export interface RenderRecord {
   id: string;
   principal: string;

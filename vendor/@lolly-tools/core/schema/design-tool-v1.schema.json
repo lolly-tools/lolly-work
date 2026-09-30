@@ -15,6 +15,7 @@
     "recipes"
   ],
   "properties": {
+    "description": { "type": "string", "maxLength": 2000 },
     "schemaVersion": {
       "const": 1
     },
@@ -636,6 +637,33 @@
           }
         }
       }
+    },
+    "sourceTool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version",
+        "inputs"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "inputs": {
+          "type": "object",
+          "maxProperties": 64,
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#",
@@ -926,7 +954,7 @@
                   "segmented"
                 ],
                 "default": "select",
-                "description": "'icon-toggle' renders the select as ONE compact button that cycles its options, showing the current option's `icon` instead of a dropdown. Intended for 2-state modifiers (with attachTo); a longer option list still cycles, but a dropdown reads better past ~3. 'segmented' renders the options as a row of side-by-side tabs (a radiogroup) instead of a dropdown - for a small, mutually-exclusive mode switch (2\u20134 options) like Hue/Saturation/Luminance; past ~4 a dropdown reads better."
+                "description": "'icon-toggle' renders the select as ONE compact button that cycles its options, showing the current option's `icon` instead of a dropdown. Intended for 2-state modifiers (with attachTo); a longer option list still cycles, but a dropdown reads better past ~3. 'segmented' renders the options as a row of side-by-side tabs (a radiogroup) instead of a dropdown - for a small, mutually-exclusive mode switch (2–4 options) like Hue/Saturation/Luminance; past ~4 a dropdown reads better."
               },
               "options": {
                 "type": "array",
@@ -1375,7 +1403,7 @@
               "mdPaste": {
                 "type": "boolean",
                 "default": false,
-                "description": "Adds a 'Paste Markdown' button to the blocks toolbar. It reads the clipboard, splits the Markdown into one block per heading (the heading line \u2192 the block's `heading` field, the section beneath it \u2192 its `body` field, kept as Markdown for the tool's {{markdown}} render), and appends the blocks - so a whole document lands as editable, page-flowing blocks. A block gets kind:'text' when the input has a `kind` discriminator; other fields start at their defaults."
+                "description": "Adds a 'Paste Markdown' button to the blocks toolbar. It reads the clipboard, splits the Markdown into one block per heading (the heading line → the block's `heading` field, the section beneath it → its `body` field, kept as Markdown for the tool's {{markdown}} render), and appends the blocks - so a whole document lands as editable, page-flowing blocks. A block gets kind:'text' when the input has a `kind` discriminator; other fields start at their defaults."
               },
               "importData": {
                 "type": "object",
@@ -1407,7 +1435,7 @@
                     "additionalProperties": {
                       "type": "string"
                     },
-                    "description": "Explicit fieldId \u2192 source column/key overrides. Omit to auto-map by header (field id, then label). e.g. { \"value\": \"Amount\" }."
+                    "description": "Explicit fieldId → source column/key overrides. Omit to auto-map by header (field id, then label). e.g. { \"value\": \"Amount\" }."
                   }
                 }
               },
@@ -1458,7 +1486,7 @@
                   },
                   "opacityField": {
                     "type": "string",
-                    "description": "Number sub-field: box opacity 0\u2013100."
+                    "description": "Number sub-field: box opacity 0–100."
                   },
                   "imageField": {
                     "type": "string",
@@ -1562,7 +1590,7 @@
                   },
                   "headStartField": {
                     "type": "string",
-                    "description": "Select sub-field: the decoration drawn at the path's FIRST point, along that end's own tangent - none \u00b7 triangle \u00b7 open \u00b7 circle \u00b7 diamond \u00b7 bar. Same vocabulary as the connector heads, because a spline, a line and a connector are one primitive carrying one decoration set. Default 'headStart'."
+                    "description": "Select sub-field: the decoration drawn at the path's FIRST point, along that end's own tangent - none · triangle · open · circle · diamond · bar. Same vocabulary as the connector heads, because a spline, a line and a connector are one primitive carrying one decoration set. Default 'headStart'."
                   },
                   "headEndField": {
                     "type": "string",
@@ -1598,7 +1626,7 @@
                   },
                   "shadowField": {
                     "type": "string",
-                    "description": "SELECT sub-field (not a Boolean - a shadow has a target, and the value names it): 'none' \u00b7 'box' (the frame's own silhouette, a box-shadow) \u00b7 'text' (the type only, a text-shadow) \u00b7 'content' (the artwork's alpha silhouette, a filter: drop-shadow). The vocabulary is additive: a depth-capable tool may extend it with 'depth', whose offset/blur are DERIVED from the box's `zField` rather than authored. Whatever the value, the x/y/blur/colour sub-fields below supply the geometry."
+                    "description": "SELECT sub-field (not a Boolean - a shadow has a target, and the value names it): 'none' · 'box' (the frame's own silhouette, a box-shadow) · 'text' (the type only, a text-shadow) · 'content' (the artwork's alpha silhouette, a filter: drop-shadow). The vocabulary is additive: a depth-capable tool may extend it with 'depth', whose offset/blur are DERIVED from the box's `zField` rather than authored. Whatever the value, the x/y/blur/colour sub-fields below supply the geometry."
                   },
                   "shadowColorField": {
                     "type": "string",
@@ -1618,7 +1646,7 @@
                   },
                   "zField": {
                     "type": "string",
-                    "description": "Number sub-field: the box's DEPTH - how far it sits in front of (positive) or behind (negative) the stage plane, in canvas px. Layers stay parallel to the screen, so a camera turns z into a per-layer uniform scale + translate (parallax, push-in, depth-of-field) and the render stays affine end-to-end. Absent field or 0 = the flat, unlifted board; the authored slider runs 0\u2013300 and the value clamps to \u2212300\u2026900."
+                    "description": "Number sub-field: the box's DEPTH - how far it sits in front of (positive) or behind (negative) the stage plane, in canvas px. Layers stay parallel to the screen, so a camera turns z into a per-layer uniform scale + translate (parallax, push-in, depth-of-field) and the render stays affine end-to-end. Absent field or 0 = the flat, unlifted board; the authored slider runs 0–300 and the value clamps to −300…900."
                   },
                   "rxField": {
                     "type": "string",
@@ -1626,7 +1654,7 @@
                   },
                   "ryField": {
                     "type": "string",
-                    "description": "Number sub-field: the box's own YAW in degrees, the companion to rxField. Applied BEFORE the pitch (R = Ry\u00b7Rx, the pan/tilt-head order the camera channels already use), so a box wearing both angles never acquires roll - a third channel the wire does not have."
+                    "description": "Number sub-field: the box's own YAW in degrees, the companion to rxField. Applied BEFORE the pitch (R = Ry·Rx, the pan/tilt-head order the camera channels already use), so a box wearing both angles never acquires roll - a third channel the wire does not have."
                   },
                   "startField": {
                     "type": "string",
@@ -1840,7 +1868,7 @@
                       },
                       "styleField": {
                         "type": "string",
-                        "description": "Edge sub-field: route style (elbow, straight, curved \u2026)."
+                        "description": "Edge sub-field: route style (elbow, straight, curved …)."
                       },
                       "arrowField": {
                         "type": "string",
@@ -2017,7 +2045,7 @@
         },
         "thumb": {
           "type": "string",
-          "description": "Optional thumbnail: a tool-relative asset path or data URI. Absent \u2192 the chooser draws a glyph tile."
+          "description": "Optional thumbnail: a tool-relative asset path or data URI. Absent → the chooser draws a glyph tile."
         },
         "motion": {
           "type": "object",

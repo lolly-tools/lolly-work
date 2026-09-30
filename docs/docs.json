@@ -56,6 +56,11 @@
           "slug": "identity",
           "title": "Identity and sessions",
           "summary": "OIDC SSO, group mapping, member and guest sessions, the dev provider."
+        },
+        {
+          "slug": "design-system-administration",
+          "title": "Design-system administration",
+          "summary": "Inspect sources, review replacements and retirement, and manage durable connect downloads."
         }
       ]
     },

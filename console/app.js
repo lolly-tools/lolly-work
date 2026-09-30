@@ -9,6 +9,8 @@
  * every chart (the contrast-relief obligation for light-mode aqua).
  */
 
+import { brandSourcesCard, catalogTokensAsset } from './brand-admin.js';
+import { brandRulesCard } from './brand-rules.js';
 import { compareValues } from './table-sort.js';
 import { buildThemeMaps, themeFromTokens, resolveCssColor } from './brand-theme.js';
 
@@ -565,9 +567,9 @@ async function applyPackTheme() {
     if (!res.ok) return; // 401/404/no pack mounted — stay neutral
     index = await res.json();
   } catch { return; }
-  const asset = Array.isArray(index?.assets) ? index.assets.find((a) => a?.type === 'tokens') : null;
+  const asset = catalogTokensAsset(index);
   const fmtEntry = asset?.formats?.find((f) => f.format === 'json') ?? asset?.formats?.[0];
-  if (!fmtEntry?.url) return;
+  if (!fmtEntry?.url) { brandLogos = { light: null, dark: null }; await themeFromTokens({}, () => ''); return; }
   let tokens;
   try {
     const url = fmtEntry.url.startsWith('/') ? fmtEntry.url : `/catalog/${fmtEntry.url}`;
@@ -577,7 +579,7 @@ async function applyPackTheme() {
   } catch { return; }
   const light = pickLogoFromIndex(index, 'light');
   const dark = pickLogoFromIndex(index, 'dark');
-  if (light || dark) brandLogos = { light: light ?? dark, dark: dark ?? light };
+  brandLogos = { light: light ?? dark, dark: dark ?? light };
   await themeFromTokens(tokens, (file) => `/catalog/fonts/webfonts/${encodeURIComponent(file)}`);
 }
 
@@ -593,7 +595,7 @@ async function loadBrandTokenMaps() {
     if (!res.ok) return null;
     index = await res.json();
   } catch { return null; }
-  const asset = Array.isArray(index?.assets) ? index.assets.find((a) => a?.type === 'tokens') : null;
+  const asset = catalogTokensAsset(index);
   const fmtEntry = asset?.formats?.find((f) => f.format === 'json') ?? asset?.formats?.[0];
   if (!fmtEntry?.url) return null;
   let tokens;
@@ -1211,36 +1213,8 @@ async function viewDesignSystem(main) {
   // Token sets federated live from connected sources (Penpot). Surfaced read-only so
   // /design inherits from the connected design system (plans/30 §5).
   const sources = await loadSourceTokenSets().catch(() => []);
-  const profileCard = profiles?.available && profiles.profiles.length ? (() => {
-    const rows = profiles.profiles.map((p) => {
-      let action = null;
-      if (unlocked && !p.active) {
-        // Fleet-wide and immediate, so it arms first like every other
-        // consequential action in this console (revoke, forget, deny, remove).
-        const btn = armConfirmButton({ class: 'btn' }, `Switch everyone to ${p.name}`,
-          'Re-theme for everyone?', async (disarm) => {
-            btn.disabled = true;
-            try {
-              await api('/api/v1/brand/profile', { method: 'PUT', body: { name: p.name } });
-              toast(`Design system switched to ${p.name}`);
-              await applyPackTheme(); // re-theme the console chrome from the new pack
-              route();                // re-render: new active badge, new tokens
-            } catch (e) { toast(e.message); btn.disabled = false; disarm(); }
-          });
-        action = btn;
-      }
-      return el('div', { class: 'ds-profile-row' },
-        el('span', { class: 'ds-profile-name' }, p.name),
-        p.active ? el('span', { class: 'badge' }, 'active') : null,
-        action);
-    });
-    return el('div', { class: 'card stack' },
-      el('h2', { class: 'flush' }, 'Brand profile'),
-      el('p', { class: 'sub' }, unlocked
-        ? 'This deployment carries multiple brand profiles. Switching re-themes the console, the sign-in screen and the tools — immediately, for everyone.'
-        : `This deployment’s brand is centrally managed. Active profile: ${profiles.active ?? '—'}.`),
-      ...rows);
-  })() : null;
+  const profileCard = brandSourcesCard(profiles, { el, api, toast, changed: async () => { await applyPackTheme(); route(); } });
+  const managedRulesCard = brandRulesCard(await api('/api/v1/brand/rules').catch(() => null), { el, api, toast, changed: route });
   const sourceCard = sources.length ? el('div', { class: 'card stack' },
     el('h2', { class: 'flush' }, 'Design tokens from connected sources'),
     el('p', { class: 'sub' }, 'Token sets federated live from your connected design sources (e.g. Penpot). They inherit into this design system read-only — the active brand still comes from the mounted pack. To pin a set as an instance-owned snapshot, use Search & import on the Sources tab.'),
@@ -1272,7 +1246,7 @@ async function viewDesignSystem(main) {
         el('div', { class: 'list-bar' },
           el('h2', { class: 'flush' }, 'Brand editor'),
           el('a', { class: 'btn', href: lollyHref('/#/start'), target: '_blank', rel: 'noopener' }, 'Open in Lolly ↗')),
-        el('p', { class: 'sub flush' }, 'Open the design system editor in Lolly to change palette, type and tokens. Changes apply to the pack this deployment serves.'))
+        el('p', { class: 'sub flush' }, 'Open the design system editor in Lolly to change palette, type and tokens. Edits stay in your local Lolly copy. To publish them here, an operator must update the mounted source, validate it and redeploy. Hosting a connect pack changes the download only.'))
     : el('div', { class: 'card' },
         el('h2', {}, 'Brand editor'),
         el('p', { class: 'sub flush' }, 'Editing is disabled for this managed brand. An owner can change the deployment brand.'));
@@ -1290,6 +1264,7 @@ async function viewDesignSystem(main) {
       el('h1', {}, 'Design system'),
       el('p', { class: 'sub' }, 'No design tokens are readable here, so what follows is the console’s own colour and type rather than the deployment design system. A pack that carries a tokens file fills this in.'),
       ...(profileCard ? [profileCard] : []),
+      ...(managedRulesCard ? [managedRulesCard] : []),
       el('div', { class: 'card' }, el('h2', {}, 'Chrome palette'),
         el('div', { class: 'ds-grid' }, ...chrome.map(([n, v]) => dsSwatch(n, v)))),
       typographyCard,
@@ -1337,6 +1312,7 @@ async function viewDesignSystem(main) {
       ? 'The active brand’s design tokens, read from the mounted pack — the same tokens the tools consume. Edit them in the Lolly brand editor below.'
       : 'The active brand’s design tokens, read from the mounted pack — the same tokens the tools consume. This deployment’s brand is centrally managed.'),
     ...(profileCard ? [profileCard] : []),
+    ...(managedRulesCard ? [managedRulesCard] : []),
     ...cards,
     ...(sourceCard ? [sourceCard] : []),
     editorCard);
@@ -1666,9 +1642,9 @@ async function viewFleet(main) {
         route();
       } catch (e) { err.textContent = e.message; uploadBtn.disabled = false; }
     } }, pack ? 'Replace pack' : 'Host pack');
-    const removeBtn = pack ? armConfirmButton({ class: 'danger' }, 'Remove', 'Really remove?', async (disarm) => {
+    const removeBtn = pack ? armConfirmButton({ class: 'danger' }, 'Stop offering download', 'Stop this download?', async (disarm) => {
       removeBtn.disabled = true;
-      try { await api('/api/v1/instance-pack', { method: 'DELETE' }); toast('Pack removed'); route(); }
+      try { await api('/api/v1/instance-pack', { method: 'DELETE' }); toast('Connect download stopped; mounted catalogue retained'); route(); }
       catch (e) { err.textContent = e.message; removeBtn.disabled = false; disarm(); }
     }) : null;
     return el('div', { class: 'card stack' },
@@ -1676,6 +1652,7 @@ async function viewFleet(main) {
       el('p', { class: 'muted', style: 'margin-top:-4px' },
         'A Lolly app connects by importing the signed instance pack (zero typing), or by entering this deployment’s URL on the first-run instance sheet. The manifest below is what a fresh app reads first.'),
       manifestRow,
+      el('p', { class: 'sub' }, 'Stopping this download persists across restart. The mounted catalogue, saved work and previously downloaded copies remain.'),
       pack
         ? el('p', {},
             el('span', { class: pack.signed ? 'status live' : 'status revoked' }, pack.signed ? 'signed' : 'not signed'),
@@ -3775,7 +3752,7 @@ async function viewUsers(main, params) {
       const grantRows = toolGrants.map((g) => {
         const toolId = g.resource.replace(/^tool:/, '');
         const tool = tools.find((t) => t.id === toolId);
-        const rm = armConfirmButton({ class: 'danger' }, 'Remove', 'Really remove?', async (disarm) => {
+        const rm = armConfirmButton({ class: 'danger' }, 'Stop offering download', 'Stop this download?', async (disarm) => {
           err.textContent = '';
           rm.disabled = true;
           try {

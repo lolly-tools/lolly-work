@@ -20,6 +20,9 @@
     "./design-v1": "./src/design-v1.ts",
     "./emoji-v1": "./src/emoji-v1.ts",
     "./rights-v1": "./src/rights-v1.ts",
+    "./rebrand-v1": "./src/rebrand-v1.ts",
+    "./slide-master-v1": "./src/slide-master-v1.ts",
+    "./mock-host": "./src/mock-host.ts",
     "./schema/emoji-pack-v1.schema.json": "./schema/emoji-pack-v1.schema.json",
     "./schema/emoji-style-v1.schema.json": "./schema/emoji-style-v1.schema.json",
     "./file-v1": "./src/file-v1.ts",
@@ -35,7 +38,13 @@
     "./learning-v1": "./src/learning-v1.ts",
     "./schema/learning-module-v1.schema.json": "./schema/learning-module-v1.schema.json",
     "./schema/learning-module-v2.schema.json": "./schema/learning-module-v2.schema.json",
-    "./design-tool-v1": "./src/design-tool-v1.ts"
+    "./design-tool-v1": "./src/design-tool-v1.ts",
+    "./studio3d-v1": "./src/studio3d-v1.ts",
+    "./text-v1": "./src/text-v1.ts",
+    "./schema/text-document-v1.schema.json": "./schema/text-document-v1.schema.json",
+    "./schema/text-frame-v1.schema.json": "./schema/text-frame-v1.schema.json",
+    "./brand-system-v1": "./src/brand-system-v1.ts",
+    "./schema/brand-system-v1.schema.json": "./schema/brand-system-v1.schema.json"
   },
   "files": [
     "src",

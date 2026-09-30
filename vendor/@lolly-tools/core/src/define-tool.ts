@@ -21,6 +21,8 @@ export interface HookModelItem {
 
 /** The lifecycle context every hook receives (mirrors the engine runtime). */
 export interface HookContext {
+  /** Effective tool language, including a per-render language override. */
+  lang?: string;
   /** The current input model - one entry per declared input. */
   model: HookModelItem[];
   /** The capability bridge - the supported, portable API surface for hooks. */
@@ -36,6 +38,10 @@ export type HookResult = Record<string, unknown> | void;
 
 /** Context for the export-lifecycle hooks (`beforeExport` / `afterExport`). */
 export interface ExportHookContext {
+  /** Effective tool language, including a per-render language override. */
+  lang?: string;
+  /** Current inputs, added in engine 1.216 for validation without DOM reads. */
+  model: HookModelItem[];
   /** The render target (a DOM node in shells that have one). */
   node: unknown;
   format: string;

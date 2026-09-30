@@ -114,6 +114,8 @@ export interface ReadZipOptions {
 
 /** Options for {@link storeZip}. */
 export interface StoreZipOptions extends DeflateOptions {
+  /** Formats such as dotLottie require DEFLATE even when a member grows. */
+  forceDeflate?: boolean;
   /**
    * OCF mode (EPUB/ODT): the first entry named exactly `mimetype` is written
    * FIRST and STORED uncompressed, with no extra fields - the container magic a
@@ -350,7 +352,7 @@ export function storeZip(entries: ZipStoreEntry[], opts: StoreZipOptions = {}): 
     if (!e.forceStored) {
       const deflated = deflateRaw(src, opts);
       // STORED wins ties: no expansion, and one fewer thing for a reader to do.
-      if (deflated.length < src.length) {
+      if (opts.forceDeflate || deflated.length < src.length) {
         method = METHOD_DEFLATE;
         data = deflated;
       }

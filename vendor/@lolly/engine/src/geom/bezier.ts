@@ -91,8 +91,16 @@ export function subCubic(c: Cubic, t0: number, t1: number): Cubic {
  *  zeros, which is where a curve's extrema are. */
 function quadRoots01(a: number, b: number, c: number): number[] {
   const out: number[] = [];
-  if (Math.abs(a) < 1e-12) {
-    if (Math.abs(b) > 1e-12) {
+  // Degeneracy is judged against the coefficients' size, and the roots come from the
+  // cancellation-free form of the formula. With an absolute 1e-12 and the textbook form,
+  // an arc symmetric to within rounding at coordinates near 3e4 (its leading coefficient
+  // 1e-11 where the others are 4e4) was solved as a quadratic, its one root came out as
+  // 0 over 2e-11, and the arc's bounding box was its chord: a boolean's ray cast then
+  // skipped the arc as out of reach and deleted the region under it.
+  const scale = Math.max(Math.abs(a), Math.abs(b), Math.abs(c));
+  if (!(scale > 0)) return out;
+  if (Math.abs(a) <= 1e-14 * scale) {
+    if (Math.abs(b) > 1e-14 * scale) {
       const t = -c / b;
       if (t > 0 && t < 1) out.push(t);
     }
@@ -101,7 +109,10 @@ function quadRoots01(a: number, b: number, c: number): number[] {
   const disc = b * b - 4 * a * c;
   if (disc < 0) return out;
   const s = Math.sqrt(disc);
-  for (const t of [(-b + s) / (2 * a), (-b - s) / (2 * a)]) if (t > 0 && t < 1) out.push(t);
+  const q = -0.5 * (b + (b < 0 ? -s : s));
+  const r1 = q / a, r2 = q !== 0 ? c / q : r1;
+  if (r1 > 0 && r1 < 1) out.push(r1);
+  if (r2 !== r1 && r2 > 0 && r2 < 1) out.push(r2);
   return out;
 }
 

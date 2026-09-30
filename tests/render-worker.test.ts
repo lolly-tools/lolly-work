@@ -113,3 +113,43 @@ test('rasteriseViaWorker maps a worker 503 to RENDER_BUSY the same way renderVia
 test('the accepted timestamp skew is bounded', () => {
   assert.equal(WORKER_TS_SKEW_MS, 5 * 60 * 1000);
 });
+
+
+test('a revision-bound render requires acknowledgement from a compatible worker', async () => {
+  const job = { ...JOB, brandRevision: '5:abc' };
+  const fetchImpl: typeof fetch = async () => new Response(JSON.stringify({ svg: '<svg></svg>' }));
+  await assert.rejects(renderViaWorker(CFG, job, { fetchImpl }), /did not confirm/);
+  const confirmed: typeof fetch = async () => new Response(JSON.stringify({ svg: '<svg></svg>', brandRevision: job.brandRevision }));
+  assert.equal(await renderViaWorker(CFG, job, { fetchImpl: confirmed }), '<svg></svg>');
+});
+
+test('worker observations require a signed response bound to both request and SVG', async () => {
+  const { sha256Hex } = await import('../server/src/lib/crypto.ts');
+  let observed = false;
+  const fetchImpl: typeof fetch = async (_url, init) => {
+    const body = { svg: okSvg, evidence: { version: 1, requestSha256: sha256Hex(String(init!.body)), outputSha256: sha256Hex(okSvg), resources: [{ url: 'https://web.test/tools/card/template.html', sha256: '1'.repeat(64), size: 123 }], limitations: [] } };
+    const raw = JSON.stringify(body); return new Response(raw, { headers: { 'x-lw-output-sig': signBody(raw, SECRET) } });
+  };
+  assert.equal(await renderViaWorker(CFG, { ...JOB, evidence: true }, { fetchImpl, onEvidence: e => { observed = e.resources.length === 1; } }), okSvg);
+  assert.ok(observed);
+  await assert.rejects(renderViaWorker(CFG, { ...JOB, evidence: true }, { fetchImpl: async () => res(200, { svg: okSvg }) }), /signature/);
+  await assert.rejects(renderViaWorker(CFG, { ...JOB, evidence: true }, { fetchImpl: async () => {
+    const raw = JSON.stringify({ svg: okSvg, evidence: { version: 1, requestSha256: '0'.repeat(64), outputSha256: sha256Hex(okSvg), resources: [], limitations: [] } });
+    return new Response(raw, { headers: { 'x-lw-output-sig': signBody(raw, SECRET) } });
+  } }), /does not bind/);
+});
+
+test('signed worker input hashes must be bounded and requested by this job', async () => {
+  const { sha256Hex } = await import('../server/src/lib/crypto.ts');
+  const job = { ...JOB, evidence: true, inputIds: ['data'] };
+  const response = (inputs: unknown): typeof fetch => async (_url, init) => {
+    const raw = JSON.stringify({ svg: okSvg, evidence: { version: 1, requestSha256: sha256Hex(String(init!.body)), outputSha256: sha256Hex(okSvg), resources: [], limitations: [], inputs } });
+    return new Response(raw, { headers: { 'x-lw-output-sig': signBody(raw, SECRET) } });
+  };
+  let observed: unknown;
+  await renderViaWorker(CFG, job, { fetchImpl: response({ data: 'a'.repeat(64) }), onEvidence: e => { observed = e.inputs; } });
+  assert.deepEqual(observed, { data: 'a'.repeat(64) });
+  for (const inputs of [{ data: 'invalid' }, { title: 'a'.repeat(64) }, [], null]) {
+    await assert.rejects(renderViaWorker(CFG, job, { fetchImpl: response(inputs) }), /input observations are invalid/);
+  }
+});

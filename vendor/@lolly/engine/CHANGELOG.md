@@ -6,6 +6,254 @@ minors, never removed or signature-changed without a major bump.
 
 Moved verbatim from the comment block that used to live in `src/index.ts`.
 
+## 1.235.0
+
+- Add the `@lolly/engine/brand-policy` entry point for bounded, reviewed mappings from brand roles to managed tool inputs. Local and managed paths share rule resolution and predicates; final runtime input digests establish only their declared scope.
+- Required failures block, missing facts remain draft, and fixed-artwork appearance stays unknown on adapters that only observe inputs. Legacy token documents without rule records retain their existing behaviour.
+
+## 1.234.0
+
+- Add `lolly/production-motion-v1` for bounded MP4/WebM delivery checks: authored timing, frame counts, decoded audio requirements and timestamped native reference comparisons. Reports bind the final bytes and retain decoder versions, review observations and unsampled appearance limits.
+- `parseProductionSpec` admits either still or motion requirements. The still-only `parseProductionContract` retains its existing contract. Missing motion collectors remain unresolved.
+
+## 1.233.0
+
+- Production requirements can protect canonical runtime input values by digest, collected at the actual rendering boundary. These source checks remain distinct from final-file semantics and cannot be waived or targeted by repairs.
+- Production repairs stop immediately when a previously passing check regresses, even when the total failure count falls.
+
+## 1.232.0
+
+- Production still checks bind explicit requirements and native RGBA comparisons to final artifacts. Reports retain unknown coverage and support revision-bound, permitted input repairs and separately recorded authority decisions. The profile does not claim general print or motion conformance.
+- Preflight reports include execution coverage and preserve detector failures as unresolved findings.
+
+## 1.231.0
+
+- Sequence export adds optional temporal motion blur with 4/8/16 shutter samples, linear-light premultiplied accumulation, cut clipping and fixed output/audio clocks. SDR flat compositor exports support worker and main-thread rendering; HDR and tilted scenes report capability errors.
+- Exact raster samples use the movie compositor for video, Lottie, animated SVG and 3D source clocks. Movie `sequenceRange` overrides authored in/out marks temporarily; URL/CLI `seqrange` and `motionblur` preserve the options.
+- Versioned beat and cue timing compiles to ordinary editable layer fields. Delivered-file reports distinguish measured targets, review candidates and unchecked capabilities. Design adds explicit paragraph direction.
+
+## 1.230.0
+
+- Still exports accept explicit authored timeline seconds through `ExportOpts.sampleTimes`, the `sampletimes` URL/CLI parameter and MCP `sampleTimes`. One time returns one still; multiple times produce a ZIP or paged PDF. Invalid times and unsupported sources fail explicitly. Uniform contact sheets also reach the browser renderer from CLI and MCP.
+
+## 1.229.0
+
+- Rebrand can compile bounded `flow-cards-N-C` and `flow-columns-N-C` layout recipes. The number of content groups determines capacity and geometry; headings stay with their bullets. Recipes inherit the brand master's title, typography, colours and furniture, and replay through the same web and CLI compiler. Recommendations still require a single-slide compile and content/fit audit.
+- The Original comparison can keep stored vector artwork intact while recognised labels remain editable in the proposed slide (`compileFaithful` option `originalArtwork`).
+
+## 1.228.0
+
+- Chromium export waits follow actual progress. Motion formats allow ten minutes without progress and keep rendering while frames advance, replacing the three-minute total cap. `LOLLY_EXPORT_IDLE_TIMEOUT` sets the inactivity allowance in seconds; stalled, closed or crashed pages still fail. The ordinary, screenshot and portable-tool browser paths share this policy.
+- Design and Snippet offer standalone HTML playback through a shared player. Design uses the existing sequence evaluator and audio mixer; Snippet declares its presentation runtime and supplies its scene clock. Native Design layers, soundtracks and timed artboard scenes are supported, with scene navigation and separate cameras. Scene moves carry child timing without changing local keys, and scene audio is clipped to its owner. Embedded video, Lottie and 3D fail explicitly until their playback adapters are available. The CLI uses the browser tier for these files.
+- Portable `.lolly` export drops unused emoji dependencies and carries only referenced glyph artwork, deduplicated across saved sessions and templates. Exact source manifests and notices remain compressed inside the archive. A tracked runtime glyph census covers fixed template content; complete set installation still verifies every declared glyph.
+
+- Pages appear as they finish. A hook's `report(patch, opts)` takes `{ ready: true }` (`HookReportOpts`, `HookReport`): the document can be shown as it now stands. A runtime created with `progressiveInit` stops waiting for onInit at that report and mounts; the hook's result applies when it arrives through the same late path a budget overrun takes, without the error, and `whenSettled()` resolves after it. onInit's context carries `progressive: true` for such a runtime, so a tool reports partial renders only when a view is watching. Without the option `ready` is an ordinary report and creation waits for the whole result, so renders, exports and scripts never deliver half a document. The flag crosses the hook-worker boundary (`HookReportMsg.ready`).
+- Design (1.38.0) uses it: stories are laid out in reading order and each finished page is reported, the first as ready; the result is assembled in document order, so it is the same bytes a single pass gives. On the 19-page document the editor opens with the first page's text at about 2 s instead of 6 s, and the rest fills in.
+
+## 1.227.0
+
+- Large text documents open with one composition, not two. `createRuntime` takes the document's emoji style (`opts.emojiStyle`, validated, `null` for no set) so onInit lays text out with the right glyphs, and `setEmojiStyle` given the style already in force runs no onInput (it still resolves the style's pack assets once, because a save carries them). The web shell used to seed the style after creation, which made Design compose every story again: on a 19-page document that second pass was 6.8 s.
+- Text composition does less work for the same bytes. `translateTextPath` shifts a glyph outline in the composer's own form without the general SVG parser (`translateOutlinePath`, falling back to `translateParsedPath` for anything else); line breaking reads shaped lines from the workspace without copying them and copies only the lines it returns (`shape.shared` on the workspace accessors; a wrapper that replaces `shape` drops it); each break candidate's trimmed end is found once; the break search keys its frontier by number; and `parseTextDocument` skips the UTF-8 encode when the string is provably inside the size budget. On the same document the composer's CPU time fell by about a fifth, and the rendered output hashes the same.
+
+## 1.226.0
+
+- `runtime.whenSettled()` resolves once the newest onInit/onInput run is done: applied within its budget, applied late, failed, or superseded by a newer run that is done. It resolves on the next task when nothing is outstanding and at `destroy()`. A run that outran `HOOK_BUDGET_MS` keeps computing and its late patch reaches subscribers with no other signal, so the web shell's open-document modal waits here: a 19-page Design document runs `onInit` past its 5 s budget and composes its text with a 6.8 s `onInput` whose patch arrives 13 s after the click.
+
+## 1.225.0
+
+- Rebrand close-out, engine half: the renovated compile fits text before it calls it cut (a text shrinks to the master's smallest size for its role, then its box grows into free room below, and only then `text.overflow` names the words the box clips), and `designTextFit` and `layoutDesignText` share that layout with the preview, which now clips a text box the way Design draws it. Every renovated text row carries no family (the design system's face) or `mono` for code when the design system has a mono face; no source typeface reaches a renovated frame.
+- Deck themes finished: `compileRenovated` resolves the theme through `systemForPlan` and `masterForPlan`, uses each layer's `byGround` target on a moved ground, keeps a hero dark under Dark and Brand colour, draws the mono mark on a Brand colour ground and keeps a locked colour's hex; `compileSystemOpts` gives the web worker, the CLI and MCP one set of compile options, so a themed plan compiles the same bytes on all three.
+- Chart labels as text: `svg-items.ts` marks outlined glyph runs and `engine/src/vector-text.ts` turns a run and its reading (with the chart's own category names and value axis as hints) into a text item, so a chart's labels arrive as editable text in the design system's face; a label's width is measured by glyph class. `DOCUMENT_PATH_CHARS` (8M) replaces the 2.5M cap now that Design stores history snapshots compressed, so no chart on a 31-chart deck stays a picture for size.
+- Picture decks and census: OCR keeps question marks and emphasis colour, card labels fill the label slot, a source page number in a page-number slot gives way to the master's, one logo is one group with every card counting from the same set, and a rebuilt picture deck opens with one "Rebuilt from pictures" card. `frame-preview-svg.ts` gains a thumbnail detail rung (a 31-chart deck's frames drop from 4.18 MB to 63.5 KB) and draws empty placeholders only where asked.
+- Rule versions: `census-rules-2026-09-25.1`, `structure-2026-09-25.1`, `renovate-2026-09-25.1`.
+
+## 1.224.0
+
+- Layout matcher and Auto-match (plan 275 WP2): `engine/src/rebrand-structure.ts` reads a slide's units and containers (`LayoutFeaturesV1.units`, `containers`) as a library structure with a band (clear, likely or none), counts slot capacity in content boxes, and gives its reasons as plain sentences with the figures in `params`. `autoMatchLayouts` is one plan edit that never touches a layout a person or a preset chose, a locked slide or a slide left out; `autoMatchCount`, `autoMatchPreview` and `withAutoMatchEntries` feed the web, CLI (`--auto-match`), MCP and TUI. The census reads a column of short markers beside rows as row numbering (the MEDDPICC letters stay), the first pass stores `layoutMatch` and `layoutReasons`, presets honour `byStructure` and `bySourceLayoutName`, and the review groups slides by layout and collapses repeated cards (MEDDPICC opens with 8).
+- Vectors stay vectors (plan 275 WP11): the pptx reader reads `asvg:svgBlip` pictures and `a:custGeom` paths (arcs in quarter turns, fills and strokes kept, colour alpha read), `engine/src/svg-items.ts` turns an SVG into bounded, paint-ordered items with transforms composed and invisible parts dropped, `vectorItemsToRows` writes them as one group of box, path and text rows, and `engine/src/deck-census-vector.ts` gives the census a vector's colour uses (series kept apart) and chart evidence. Both compiles place a chart as editable shapes; a colour mapping reaches only the rows that hold its source colour; the preview draws path rows.
+- Slide arrangements: `setSlidesArrangement` and the renovated compile's `original` (source places, restyled) and `picture` (the recovery picture, or the untouched source objects as one group) branches, each under the master's title-only furniture and reported as `slide.original-arrangement` or `slide.kept-as-picture`.
+- Deck themes (plan 275 WP7, first half): `engine/src/rebrand-theme.ts` builds Light, Dark (the pack's dark mode), Brand colour and look themes from the design system, with `setDeckTheme` and `setSlideGround` as plan edits and `themePreview` stating contrast before applying; `systemForPlan` applies the theme where token paths resolve without moving the token hash; `assignColors` can solve once per ground group and write `ColorMappingV1.byGround`.
+- Picture decks (plan 275 WP10 part B): per-glyph ink (`lineGlyphsOf`) for emphasis colour and bold inside a line, typographic quotes and dashes restored only on pixel evidence, text painted out of a full-bleed photo (`paintOutBoxes`) rather than cropping it, angled text kept in the picture (`inkAngleOf`), frosted cards read as panels.
+
+## 1.223.0
+
+- Slide layout library (plan 275 phase 1): archetype ids are open strings (`StructureIdV1`, `KNOWN_ARCHETYPE_IDS` keeps the first nine), and `engine/src/slide-structures.ts` reads 73 whitelabel structures from `community/slide-structures/library.json` (titles, text, boxes, pictures, data, closing) with `expandStructure`, `archetypeForStructure`, `darkVariantOf` and `searchStructures`, so "4 boxes" or "two content" finds the structures a person means. `scripts/build-slide-masters.ts` writes `slide-structures-data.ts` and 39 archetypes into every pack's slide masters, and runs first in `build:catalog`.
+- Formatted text reaches Design (plan 275 section 7.2): `engine/src/design-text.ts` writes source runs into Design's text subset (bold, italic, one attribute run for colour, weight, mono, underline and strike, `- ` and `N. ` list items with levels) and reads it back for previews and the pptx lowerings. `deck-md.ts` shares its escape helpers. The pptx reader resolves bullets, numbering, alignment, spacing, strike, baseline and letter case through the placeholder cascade; `PPTX_FORMATTING_READER_SINCE` (1.223.0) tells a stored project to read its source again.
+- Any placeholder takes any content: role is a preference when the renovate compile pours objects into a layout, so a picture can fill a text box and a chart a picture box (`archetypeSlots`, `archetypeIdFor`, `framePosition`).
+- Plan edits for the slide sorter and text corrections: `moveSlides` moves a block of slides, `resetSlideDecisions` returns slides to the first pass, and `setObjectText` records a corrected text in the append-only `ObjectPlanV1.textOverride` (report code `text.corrected`). `layoutSource` gains `auto` and the report gains `layout.auto-matched` for the Auto-match action that follows.
+- Picture decks (plan 275 WP10 part A): OCR reads the whole slide first, text is masked out before `findSlideRegions` (new `mask` option), panels and outlined boxes become containers, icon-over-label units become cards and icon rows become rows; `ocrTextBlocks` and per-line ink and ground colours feed typesetting, and the census removes a generator's corner mark by its place on the page.
+
+## 1.222.0
+
+- PDF text keeps its word breaks. Content streams decoded as windows-1252 turned CID bytes 0x80 to 0x9F into other glyph codes, which dropped letters, commas and the space glyph ("Why Sovereignty" read "hySovereignty"); the tokenizer now maps those characters back to their bytes (`streamByte`), whichever decoder a caller used. Runs are joined against measured ink: a `PdfNode` carries `lineInk` (each line's width from the font's own widths) and `spaceAfter`, and one exported rule, `pdfWordBreak`, decides a word break from the gap in em (`PDF_WORD_GAP_EM` 0.15 between nodes, `PDF_RUN_WORD_GAP_EM` 0.18 inside one, `PDF_UNSPACED_GAP_EM` 1 between CJK, `PDF_MIXED_GAP_EM` 0.2 at a CJK or Thai boundary); TJ gaps are scaled by Tz. On two real office PDFs glued words went from about 90 to 0. `pdf-text` finds columns region by region from those measured edges, so a title spanning the width no longer hides the gutters under it; `TextBlock.column` is now per row and `PageText.columns` is the most columns in one row.
+- Flattened slides (plan 274 milestone 5): `findSlideRegions` splits a slide picture into text, picture, rule and panel regions over a bounded ink mask (about 24 ms for a 1376 by 768 slide), and `typesetOcrLines` recovers lines, paragraphs, bullets (a bullet read as o or e counts only with support), nesting, a reading order over a column graph and a size estimate from OCR boxes, stated as an estimate. Both are pure; the node pipeline rebuilds a picture-only slide with them when an OCR runner is supplied, keeping each region as text or as a picture, never both, and the whole-slide picture as the recovery option.
+
+## 1.221.0
+
+- Rebrand census tuned on a hand-labelled corpus: a small repeated mark placed by a layout or master is a logo candidate even when drawn as shapes, a lone large letter is not a title and title size ranks only multi-word text, a picture inherited from a layout or master is template furniture, freeform icon and diagram parts are diagrams, objects that share a fill are split by position and size before a group is verified. Pooled over three labelled decks, title precision went from 0.57 to 1.00, logo-candidate recall from 0.21 to 0.90 and decoration precision from 0.21 to 0.97. Evidence sentences come only from the `REVIEW_MESSAGES` table.
+- Renovate compile and masters: a colour slot is the first candidate the solver may move rather than a pin, so theme slots reach the first pass again; several kept pictures share the visual slot as a grid (`pictureGrid`, up to `MAX_GRID_PICTURES`) instead of one continuation slide each; the continuation rollback leaves no dangling lineage. Both masters move to 1.1.0 with inks that pass contrast on every ground (a footer and page number of their own on dark panels, big-number inks fixed), pinned by a test over every placeholder and furniture ink.
+- Shared review rules: `openPendingIds` and `openPendingCounts` (unanswered rows on included slides, locked rows excluded) and an `includedOnly` option on `acceptSuggestions`, so the web view, the CLI, the MCP tool and the TUI count and answer the same rows. `nounFor` names a row's object in the engine's words.
+
+## 1.220.0
+
+- Review model and plan edits (plan 274 milestone 3), shared by the web view, the CLI, the MCP tool and the TUI: `engine/src/rebrand-review.ts` turns a plan into the review queue (`reviewQueue`: a verified census group, a cross-slide repeat, or the rows of one class and proposal on one slide become one item, each with a title and an evidence sentence as `{ code, params, text }` from the one `REVIEW_MESSAGES` table so a shell translates by code), per-object and per-slide states (`objectStates`, `slideStates`: inclusion, review and fidelity kept apart) and the counts a footer or report shows (`planSummary`). `engine/src/rebrand-edit.ts` holds every edit a person or an agent makes (`decideObjects` for one object or a group with locked and hand-changed members skipped unless named, `acceptSuggestions` over unreviewed or every waiting row, `setSlidesIncluded`, `moveSlide`, `setSlidesLayout`, `setColorTarget`, `setFontTarget`) and `capturePlanRows` / `restorePlanRows`, which invert any edit exactly for undo. `markAppliedUnreviewed` records rows a preset or `--accept-suggestions` answered.
+- Design-system resolution: `engine/src/rebrand-design-system.ts` `resolveRebrandDesignSystem` builds the first-pass and compile shapes from plain JSON (master, colour tokens, logos, faces) with a content-hashed snapshot; `swatchesFromColors` reads a role from the token name and the measured colour (an `on-<x>` token is ink for that surface, not generic ink); `neutralSlideMaster` is the fallback master as engine data; `THEME_SLOT_TOKENS` moved here from the Design PPTX lowering.
+- Renovate compile keeps every slide readable: text in a master slot keeps the master's ink (a source colour mapping reaches only what the master does not colour, contrast-checked against the ground it sits on); kept content fills its slot, joins a compatible slot, or moves to a labelled continuation slide before it ever reaches the tray, and every tray entry names its reason; the archetype choice weighs whether its roles cover the slide's content before its aesthetic score; `opts.applyNeedsAttention` shows flagged proposals as proposed, for a preview. The first pass now leaves a rule's proposal unreviewed (only a person or a preset accepts), and census evidence is coded and short.
+
+## 1.219.0
+
+- Deck census (plan 274 stage 2): `engine/src/deck-census.ts` `censusDeck` takes a `SourceDeckV1` into a `DeckCensusV1`: cross-slide fingerprint families verified into `ObjectGroupV1` groups against the family's median box within a positional tolerance (3% of the slide by default; members that fail verification are listed as `unverified` and never acted on), a class hypothesis per object with `EvidenceV1` rows that carry a signal, a value, a weight and one plain sentence, a colour census keyed by use (`<objectId>:<fill|stroke|text|series:n>`, role by dominance, theme slot provenance kept beside the resolved hex, chart series as a distinction set, contrast pairs measured on the actual pair), a font census with provenance and role counts, per-slide `LayoutFeaturesV1` and the flattened slide ids. The census proposes no action. `engine/src/deck-census-rules.ts` holds the class rules as one pure `classifyObject` with every threshold a named export; `engine/src/deck-census-hash.ts` adds the candidate generators `dhashFromGrey`, `hammingDistance`, `pathHash` and `digitNormalise`. Storage identity stays the exact content hash.
+- Renovation first pass (plan 274 stage 3): `engine/src/rebrand-plan.ts` `firstPass` turns a source deck and its census into a `RenovationPlanV1` with a proposal and a review state per object, an archetype per slide, a colour assignment by use, a font assignment and the logo policy. A proposal is never a decision. `engine/src/rebrand-colors.ts` `assignColors` maps theme slots slot to slot first, takes candidates from `nearestBrandColor`, and solves distinction sets and contrast pairs by bounded backtracking; a palette that cannot answer a distinction set returns `palette-too-small` rather than collapsing, and every mapping returns with a target or a reason. `engine/src/rebrand-fonts.ts` `mapFonts` carries the substitution table. `engine/src/rebrand-archetype.ts` `scoreArchetypes` and `pickArchetype` fit a slide's features against the archetypes a slide master declares and fall back to the content archetype when the gap is under `ARCHETYPE_MIN_GAP`. `engine/src/rebrand-decisions.ts` `carryForward` moves decisions onto a new reading of the same deck by exact id, then fingerprint and slide lineage, then verified group; `applyDecision` records one decision. `layoutFindings` reports estimated text overflow and unreadable sizes before aesthetics, and says they are estimates.
+- Renovate compile (plan 274 stage 5): `compileRenovated` joins `compileFaithful` in `engine/src/deck-compile.ts`. An accepted plan is seeded onto a `SlideMasterV1` with `seedFrame`, kept content is assigned to the archetype's role slots at the archetype's own type scale, colour and font mappings reach editable objects only and never an image layer, surplus content goes to a continuation frame when it fits one and to the unplaced-content tray otherwise, unresolved objects become authored placeholder layers, lineage is written both ways, and the report accounts for every object exactly once. `applyUnreviewed` releases only `unreviewed` proposals, never `needs-attention`. `engine/src/frame-preview-svg.ts` `framePreviewSvg` draws one compiled frame as a plain SVG from the same rows Design opens.
+- Tests: `tests/rebrand-pipeline.test.ts` runs census, first pass, renovate compile and frame preview end to end over the synthetic fixtures, validating each stage against its schema, and over the private deck corpus when `LOLLY_REBRAND_FIXTURES` names it. `scripts/rebrand-eval.ts` (`pnpm run eval:rebrand`) reports the pipeline over a directory of decks for threshold tuning.
+
+## 1.218.0
+
+- Rebrand renovation contracts (plan 274): `@lolly-tools/core` gains `rebrand-v1` - a source deck with a fidelity fact per object (`editable`, `raster-preserved`, `approximate`, `unavailable`) and its origin (slide, layout, master, pdf artifact, raster region), a census with use-keyed colours and evidence, a renovation plan that keeps a proposal apart from a decision and carries a review state, a compiled deck in Design's own box rows with lineage in both directions, a report that accounts for every source object, the renovation project record and store contract, stage envelopes and decode budgets. `schemas/rebrand-*-v1.schema.json` mirror them and `tests/rebrand-contract.test.ts` pins the two copies together.
+- `readPptx` composes a group's `off`, `ext`, `chOff` and `chExt`, rotation and flips into every child, so a grouped shape reports true slide coordinates. Each node carries `groupPath`, `flipH`/`flipV`, and a full affine `transform` when the axis-aligned box is an approximation. Runs carry `href` from `a:hlinkClick`. `a:gradFill` resolves to its lowest stop with `gradient: true`; `lumMod`, `lumOff`, `tint` and `shade` fold into the resolved hex with `modified: true` and the theme slot kept. Shapes, pictures and graphic frames carry `alt`. A graphic frame the reader does not model surfaces `fallbackMedia` from an `mc:AlternateContent` fallback picture or a chart's own image relationship, and a native chart surfaces `chartData` (plot type, `barDir`, categories, series names and cached values). `readPptx` returns `warnings` for every cap that used to drop content in silence.
+- Slide masters as design-system data: `engine/src/slide-master.ts` seeds a Design frame from a brand pack's slide master (`seedFrame`, `applyArchetype`, `resetFrame`), with placeholder roles and furniture as ordinary layers, and `engine/src/logo-variant.ts` carries `bgIsDark` and `pickLogoVariant`, the background-to-mark decision the two deck tools each held a copy of. Two masters ship as catalog assets, `lolly/slides/masters` and `suse/slides/masters`. Design's `boxes` input gains four appended hidden fields, `master`, `role`, `furniture` and `archetype`, and the Design tool offers New slide from archetype, Apply archetype and Reset slide.
+- Native PPTX from Design: the deck-model lowering moved to `@lolly-tools/node-shell/pptx-deck`, and `@lolly-tools/node-shell/design-pptx` lowers a Design document straight from its authored rows. Frames bound to a slide master export as real PowerPoint layouts with placeholder-bound text, so Outline view and Reset Slide work on a Lolly deck; `pptx` is no longer a browser-only format on the CLI for a Design document.
+- `engine/src/deck-compile.ts` `compileFaithful` lowers a `SourceDeckV1` into Design's authored values, one frame per slide, an authored placeholder layer for every object whose fidelity is `unavailable`, lineage both ways and a report that accounts for each object exactly once. `engine/src/rebrand-report.ts` holds the report helpers; `finalizeReport` throws when an object has no disposition or more than one. `@lolly-tools/node-shell/rebrand` reads a pptx into a `SourceDeckV1` with fidelity states and content-addressed media. Synthetic fixtures under `tests/fixtures/rebrand` are built reproducibly by `scripts/build-rebrand-fixtures.ts`.
+
+## 1.217.0
+
+- Adds bounded authored text stories with literal source, typed breaks, styles, inline objects and content-pinned font resources. Legacy text keeps its existing renderer until an explicit upgrade.
+- Optional `host.text.fontInfo`, `shapeRun` and `layoutRuns` share Unicode 17 source mappings, HarfBuzz shaping and settled paragraph geometry across web and Node. Font identity and missing glyph failures remain explicit.
+
+## 1.216.0
+
+- Hooks and portable documents receive the effective tool language, including URL and CLI overrides, without rewriting the saved profile.
+
+- Export lifecycle hooks receive the current input model, so validation works without reading the DOM or relying on state shared with a worker.
+
+- Table inputs can declare semantic named fields, date/time/choice editors, stable column names and a preview target. The input model carries these hints to a shared programme editor with mapped import, row operations, undo/redo and bulk time shifts. Existing table values and URL encoding stay compatible.
+- Trusted portable presentations can produce bounded event ZIP bundles through the normal export path, with self-contained screen variants, a contact sheet, PDF, poster, calendar and optional video.
+- Agenda adds event-scoped calendar identities, explicit overnight dates, session status and imagery, intermission/closing recipes, scene coverage reporting and translated authoring and audience controls.
+
+## 1.215.0
+
+- Tools can declare `render.portable` and ship a signed `presentation.js`. The normal runtime loads that browser presentation, and trusted installed tools can export it as self-contained HTML with embedded fonts and images. Untrusted tools cannot export executable documents through this path.
+- PowerPoint slides can carry an embedded MP4, a poster and autoplay/loop timing. `advanceAfterMs` also works on a silent slide independently of narration.
+- Agenda gains responsive screen scenes, a separate event clock and presentation clock, measured title travel, brand backgrounds, portable session search and calendar downloads. Printable exports use full-text pages. Calendar identities can be persisted in the session table, and invalid dates or ambiguous daylight-saving times are reported.
+- Shared table navigation separates cell selection from text editing, including the virtual grid. Arrow keys, rectangular paste/copy, range clearing, Enter, Escape and multiline edits use the same key model.
+
+## 1.214.0
+
+- New work defaults to the pinned Fluent High Contrast set with the original treatment across shells. Explicit document, link, brand and personal choices keep precedence; explicit clearing still draws neutral placeholders. The default downloads artwork only when used.
+- Fluent High Contrast follows the surrounding text colour under the original treatment, including its catalog specimens. Its pinned dark grey foreground paints become `currentColor`; white details remain white, as in OpenMoji Black.
+- Exact emoji style snapshots now retain pack checksums, ordered fallbacks, treatment palettes and protection in links, sessions and portable files. The optional emoji bridge installs validated custom bundles and materializes their dependencies. Runtime-scoped `renderText` and `renderSvg` provide selected artwork to canvas, shape and file-transform tools; SVG text supports bounded curved baselines. Design supports artwork during text editing; simple SVG text uses shaped outlines. The picker can create, import and export sets and download glyph credits. Brand defaults seed every shell.
+- Added bounded original-byte float image decode, composition, preview and still export through optional `host.codec` methods. `exportStill` can hand the host a `CodecFrame`, retaining normal export metadata and credentials. PNG16, classic TIFF, scanline OpenEXR, Radiance and JPEG XL retain precision; JPEG XL can encode PQ Rec.2020 at 16 bits.
+- Design and Darkroom offer optional wide colour / HDR editing. Brand colour references retain authored sRGB and wider faces. Sequence's float compositor reads original decoded video planes and emits real 10-bit PQ video; unavailable encoders and unsupported float effects fail explicitly. Standard editing stays the default. See `hdr-editing.md` for limits and tested paths.
+
+## 1.213.0
+
+- Added portable libjxl 0.12.0 still decoding and lossy/lossless 8-bit sRGB output in web and Node workers. `host.images` accepts `jxl` and `jxl-lossless`; PNG-capable tools derive both export choices. Animation, auxiliary channels and unsupported deep render requests fail explicitly.
+- Added `AssetRef.original` for preserved encoded sources whose `url` is a prepared display image. `assets.bytes(ref)` reads original bytes; history and portable transfers retain the durable source identity and discard temporary URLs.
+- Convert adds verified reversible JPEG compression and original JPEG restoration. Verification compares the complete restored bytes before accepting recompression. Generated JXL carries descriptive XMP and pixel marks, but no signed Content Credentials.
+
+## 1.212.0
+
+- Added source-bound, instance-local Lottie revisions for layer names, visibility and intervals, numeric transform keys and per-axis easing, and static fill/stroke properties. Inserting a numeric key subdivides its temporal curve; existing spatial tangents remain intact. Preview and web/CLI dotLottie export apply the same bounded revision to an immutable source copy.
+- Design appends `animationEdits` to its box wire format. Revisions survive ordinary history, saved sessions, compact document state and portable `.lolly` files without creating hidden asset dependencies. The Sequence timeline exposes nested source layers and property controls alongside its existing transport.
+- Structural export separates independently eased position axes without changing their motion. Independent anchor/scale axis curves fail by layer name with matching-curve or movie-export guidance because they differ across players.
+
+## 1.211.0
+
+- Added portable `brandContext` and `contextTokens`: resolved colours, font families, asset IDs, recorded source coverage and explicit rules travel with a token document. No font availability, rights or subjective quality verdict is inferred.
+- Added `checkBrandDesign` and `applyBrandFix`: authored Design colours, references, fonts and assets can be compared with a chosen system. Custom values are review items, missing evidence is unknown, and a suggested change checks the original value, layer identity and lock before writing. Rendered contrast and layout remain mounted checks.
+- Added bounded style observations through `summarizeBrandStyles` and `readBrandStyleEvidence`, distinguishing declared values from measured browser samples. The schema records missing fields and capture viewport conditions without carrying selectors or page text.
+
+- Expanded the shared emoji catalog with Fluent Flat, Fluent High Contrast, Noto Color and Blobmoji Color. Bundles have a shared 64 MiB reader ceiling; manifests retain their 32 MiB ceiling. Static SVG admission accepts bounded local shape instances, fixed pixel viewports and integer RGB paints. Source notices now reach export attribution without repeated licence text for each glyph.
+- Added bounded raw Lottie JSON and dotLottie v1/v2 readers, a deterministic v2 writer and a whole-clip sequence compiler. The compiler preserves supported source precompositions, adapts frame-domain timing, namespaces dependencies, packages raster resources and translates supported outer pose keys. Unsupported content fails before delivery.
+- `ExportFormat` adds `lottie`; `ExportOpts.sourceDocument` carries a frozen authored model to structural exporters. Design's web and CLI paths compile the same snapshot. Original package assets retain all animations, and the append-only `animationId` box field records each instance's choice.
+
+## 1.210.0
+
+- Added `studio3d-motion.ts`: `STUDIO_MOTION_KINDS` names the ten loops the subject can run, `studioObjectPose(scene, time, clipSeconds)` answers where one of them puts the subject at a moment as a change from the rest pose, `STUDIO_POSE_REST` is that rest pose and `STUDIO_POSE_MAX_LIFT` the height no loop passes. The easings (`smoothstep`, `bump`, `backOut`, `anticipate`, `bounceOut`) are exported from the module for the tests. Pure, closed form in the phase, with no clock and no random number, so two hosts asked for the same moment return the same numbers, and at phase 0 every kind gives the rest pose, which keeps a poster and a contact sheet what they were.
+- `StudioSceneV1.motion` gains `amount` (0.25 to 2, from the manifest's Motion amount) and `rest` (0 to 0.6 of the loop, from Rest between loops), and `kind` accepts the eight new loops beside `still` and `turntable`. Additive: the defaults evaluate to the output 1.209.0 drew, and `still` and `turntable` are unchanged to the last bit. `StudioMotionKind` and `StudioPoseV1` are in the SDK (`packages/core/src/studio3d-v1.ts`).
+- `studio3d-camera-path.ts` gains the camera moves made from the live view: `STUDIO_CAMERA_PRESETS` (`sweep`, `pushin`, `dolly`, `reveal`, `crane`), `studioCameraPreset(kind, camera, amount)` synthesising their rows, `studioIsCameraPreset`, `studioCameraApparentSize`, and `studioCameraPresetRows`/`studioCameraPresetEdit` behind Convert to keys, which hands the rows to the author as one edit. `StudioSceneV1.cameraMotion.kind` accepts those five beside `still` and `keys`, with `amount` scaling the travel; the rows are written into `keys` when the recipe is built, so `studioCameraPose` draws every move through the one evaluator. An orthographic camera has no lens to change, so a dolly zoom under one makes no keys and the camera holds still.
+
+## 1.209.0
+
+- `DESIGN_LAYER_KINDS` gains `'3d'`, appended, so a Design document can hold 3D scene boxes. The list is extended and never reordered, so every existing wire value is unchanged; a reader from before this minor marks a document holding a 3D box invalid.
+- `inspectDesignV1` reports a `3d` layer's `scene`: the 3D Studio settings that box carries, as the studio's own link query. Absent for every other kind and for an empty scene, and no new issue is raised.
+- Added `design-scene.ts`, the one place the scene grammar lives: `designSceneEncode(values, manifest)` writes the query with everything at a manifest default left out and user upload ids kept, `designSceneDecode(query, manifest)` expands it back to a full value bag, `designSceneAssetIds(query, manifest)` reads the catalog and upload ids a scene references, and `designSceneTime(sourceMs, seconds)` converts a timeline source time to the normalised position a studio renderer takes. All pure and DOM-free; the manifest comes from the caller.
+- `StudioSourceInfo.bounds` records what a model file itself measures, before the studio scales its longest side to 3.25 studio units. Additive, and absent for artwork, words and the built-in shapes, which have no size of their own.
+- `StudioCameraKeyV1` gains `name`, appended, so a saved camera key can carry a name of its own; `studioCameraFromKey` accepts a name as well as a position, and `studioCameraKeyLabel` reads a key's number and its name. A key with no name evaluates exactly as before.
+
+## 1.208.0
+
+- Added `studio3d-look.ts`: `STUDIO_LOOK_KEYS` and `STUDIO_INSTANCE_KEYS` name the studio and document halves of a 3D Studio document, with `studioLookOf`, `studioApplyLook`, `studioParseRef`/`studioFormatRef`, `studioParseOverrides`/`studioFormatOverrides` and `studioRecordOverride`. All pure, all additive.
+- Add `shape.detail` to `StudioSceneV1`: `count` keeps the fixed curve count 0.5.1 used, `auto` lets the host choose the count from the output size, at or under a quarter of a pixel of chord error at the fitted framing and inside the one-million-triangle budget. Additive, with the default reproducing 0.5.1 exactly.
+- `studio3d-collection`: stable subject ids and id-addressed overrides (`studioSubjectIds`, `studioSubjectEdit`), per-item `scale`/`offsetX`/`offsetY` corrections, `kind: 'text'` subjects, and `studioSheetSize`/`STUDIO_SHEET_PIXELS` for the contact sheet. Additive: a collection at the defaults evaluates to the same values as before.
+- The web shell's studio renderer splits its update. A camera or light edit re-instantiates nothing and applies no material; the lights are their own rebuild, so an orbit leaves them standing. A colour or finish edit writes materials onto the objects already placed, and only an extrusion edit re-reads an outline. `sourceLoads` counts completed loads, with aborted ones under `sourceAborts`.
+- Batch rows and contact sheets take renderers from a pool of two contexts beside the interactive mount; a returned renderer keeps its environment, backdrop and the sources a caller asked it to retain, so a twelve-item sheet reads each source once.
+- A capture flag that an abandoned export never lowered clears itself after 30 seconds, with the reason logged and the next frame checked. The empty-frame check reads pixels for a cut-out surface (`alphaTest`, an alpha map, an alpha-carrying colour map or a nearly clear opacity) instead of trusting a ray hit.
+- The TIFF, BMP and CMYK TIFF still renderers run the export frame clock like PNG and JPEG, so a clocked tool draws its frame at the size that was asked for.
+- An animated GIF keeps a one-bit transparency: a frame holding pixels under half alpha is quantised in RGBA and written with a transparent index, and a frame with none keeps the palette it has always had, byte for byte.
+- A tool render placed inside another tool's output takes export quality and the box's real pixel size; a picker preview stays a thumbnail.
+- The legacy `3d` and `flythrough` bundles publish themselves as `LollyThreeGpu` and `LollyThreeGl`, each template takes a global only when it carries the renderer class it needs, and both bundles are rebuilt from the pinned three 0.186.0. Every error path in both dispatches `tool:failed`, which `waitForQuiescence` now rejects on, so an error panel cannot be delivered as a finished export.
+
+## 1.207.0
+
+- Add `stage.fill` to `StudioSceneV1`: the hemisphere fill the web shell already drew (colour A from above, the stage background from below, intensity 0.12), now written by `buildStudioScene` and read by the stage, so the tie between the background and the fill light is part of the recipe. No input, option or URL parameter changes.
+- The web shell's bevel check follows the inset three.js draws (`lib/studio3d/inset.ts`): the contracted outline and holes are tested for reversed edges, collapse and crossings at every bevel step, so shapes with curved holes keep their full bevel and a reduction happens only where a fold is real. Artwork whose bevelled mesh would pass one million triangles keeps its plain extrusion, as before.
+- The web export frame clock moved to `bridge/frame-clock.ts`. Between the start and end of a capture it reuses a clip's length and pixel size for the static-chrome probe and the repaint, so the first frame of a video or GIF uses the requested size and the clip sample count. Tools that read the clip length get it on those calls too.
+- The studio holds its frame during a capture: preview renders, gestures and input updates wait until the capture ends. A frame that fails to render fails the export on the editor and batch paths; an object frame that comes out empty fails that export only, and the next export draws again.
+- The studio marker adds a `cancelled` state for a mount destroyed while loading, and a lost WebGL context reports an error. `inspectToolStudio` returns the renderer's update, load, build, frame, capture and memory counters.
+- The web shell names its retained renderer contract, `StudioSceneHost` in `lib/studio3d/scene-host.ts`, which `StudioRenderer` implements. It stays in the web shell until 3D in Design uses it.
+- Colour A edits reach words and STL models when materials are applied, without reloading the source. A bevel edit no longer re-reads GLB or STL bytes.
+- The web shell makes the area-light lookup tables once instead of on every stage build, so camera, light and colour edits no longer leave two GPU textures behind each time.
+
+## 1.206.0
+
+- Add a glow halo: a bright-pass and blur in the capture, added at output with `materials.glow`, drawn only when a self-lit finish is in use; a cutout keeps the halo as alpha.
+
+## 1.205.0
+
+- Add 3D studio arrangements: several SVG, GLB, STL or sample objects photographed in one scene, each with a stable id, pose, ground contact, visibility and material slot bindings.
+- Add `studio3d-arrangement.ts`: selection, numerical object edits, overlap guidance and the footprint pivot a group turntable turns about.
+- The web shell shares loaded sources between objects, drags and nudges the selected object, and reports the visible triangle budget.
+- Add saved key, fill and rim light positions to preset rigs; `studio3d-lights.ts` orbits a light about the subject and routes a moved light to its rig's field. The web shell's Move lights mode drags handles in the preview only.
+- The web export frame clock passes the export's pixel size as an additive third argument so a canvas tool can resample; the studio renders at that size within its capture limits.
+- Add camera paths: keys captured from the live view, sampled deterministically over the loop with per-leg easing, a flowing spline or constant speed, and an optional closed loop (`studio3d-camera-path.ts`).
+- Add six generated environments (photo studio, white gallery, warehouse, main stage, desert chrome, synthwave chrome): painted panoramas plus bright light panels prefiltered on device, tinted by the brand colours, and showable crisp behind a scene image at zero blur.
+- Add finishes: chrome, clay, velvet (sheen), glow and neon (emissive), glass and frosted (transmission), pearl and iridescent; `studioFinish` returns the full physical description and a material override may name a finish. Transparent outputs show glass as solid crystal with a note.
+- Video and GIF frames take their own sample count (`clipSamples`, from `videoSamples`, default 16): an eight-second backdrop export fell from 50 s to 19 s on an M4 at the same 1280 px, 24 fps.
+- Words face the camera by default (`wordPose`), and the bevel note for letters is one calm line.
+- The content resolver rescans its tool plan when a pack directory changes, so a long-running dev server serves a tool or overlay created after it started (its stale plan is why SUSE studio templates once fell through to the app page).
+- Add words as a studio source: text set in a brand role or any host font, outlined on the host and extruded like artwork; arrangements take text rows with shared type settings.
+- Depth forms can be copies of the subject (sharing its geometry and materials) or spheres, with a depth spread and count; the seeded arrangement reproduces exactly and stays out of transparent outputs.
+- Add lighting environments to the studio recipe: generated room, soft box and window studios, or an imported equirectangular radiance map (.hdr/.exr) with rotation, brightness and an optional blurred visible background. Display images are refused by content.
+
+## 1.204.0
+
+- Add independent face, bevel and side finishes within each SVG paint region.
+- Preserve camera target offsets and per-item focus through studio collections and URL mode.
+- The shell checks bevel topology, fits subjects and records camera actions in normal history.
+
+## 1.203.0
+
+- Add shared 3D studio collections with per-item framing and explicit material roles.
+- Add deterministic orbiting and breathing light rigs using the scene loop timing.
+
+## 1.202.0
+
+- Add the versioned 3D studio scene recipe, bounded input normalization and deterministic turntable sampling.
+- The web shell mounts studio markers with retained rendering resources, source-region materials and linear float capture.
+
+## 1.201.0
+
+- Compile captured still-tool sessions into portable tools with selected public inputs and fixed source settings.
+- Add optional source-tool provenance to the rules policy and enforce source-render failures during export.
+
+## 1.200.0
+
+- PDF text imports use character-code advances, kerning and text spacing to preserve compatible runs and separate styles.
+- Design mapping carries imported tracking; SVG output preserves it. Filled shapes with borders retain both paints.
+- Four-curve artwork stays as a vector path unless its geometry matches an ellipse.
+- PDF interpretation reports approximate CMYK colour conversion for source review.
+
 ## 1.199.0
 
 - Locked Design tools carry optional shared text fitting and image limits, person roles and bounded framing targets.
@@ -2765,7 +3013,7 @@ isn't staged falls back to a brand-native preset and a credit line naming an art
 whose work is not on screen is worse than none.
 
 The reason this lands as a contract rather than a shell feature is 1.71's opt-in
-`samples`: MilkDrop's renderer takes injected time-domain bytes (`render({ audioLevels })`)
+`sampletimes`: MilkDrop's renderer takes injected time-domain bytes (`render({ audioLevels })`)
 and only reads its own AnalyserNode when given none. So the visual becomes a function
 of (preset, palette, frame index) instead of of what the speakers are doing, and a
 video export matches the audio track rather than the render machine's frame rate.

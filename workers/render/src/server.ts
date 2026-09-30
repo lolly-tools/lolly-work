@@ -1,3 +1,5 @@
+import { observeProductionInputs } from './production-inputs.ts';
+import { observeWorkerResources } from './evidence.ts';
 /**
  * Chromium render worker (plans/07/11) - the isolated browser tier the control
  * plane dispatches hooked / HTML-heavy tools to. It runs the LEAST-TRUSTED
@@ -26,7 +28,7 @@
  * Zero framework: node:http + node:crypto + playwright-core.
  */
 import { createServer } from 'node:http';
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type { Browser, BrowserContext, BrowserContextOptions } from 'playwright-core';
 import { createSemaphore } from './semaphore.ts';
 
@@ -117,7 +119,7 @@ async function withContext<T>(signal: AbortSignal, options: BrowserContextOption
   }
 }
 
-async function renderSvg(job: { toolId: string; query: string; overrides: Record<string, unknown> }, signal: AbortSignal): Promise<string> {
+async function renderSvg(job: { toolId: string; query: string; overrides: Record<string, unknown>; brandRevision?: string; evidence?: boolean; inputIds?: string[]; requestSha256?: string }, signal: AbortSignal) {
   return withContext(signal, { serviceWorkers: 'block', acceptDownloads: true }, async ctx => {
     // Server exports have no member AI lease. Keep their supported shell AI
     // paths off even if WEB_BASE points at a standalone build. Also refuse
@@ -126,29 +128,52 @@ async function renderSvg(job: { toolId: string; query: string; overrides: Record
       Object.defineProperty(globalThis, '__LOLLY_AI_DISABLED__', { value: true, writable: false, configurable: false });
     });
     signal.throwIfAborted();
-    await ctx.route('**/*', (route) => {
-      const path = new URL(route.request().url()).pathname;
-      return /\/models\/|\.(onnx|gguf|safetensors)$/i.test(path) ? route.abort('blockedbyclient') : route.continue();
+    let confirmedBrand = false;
+    let rejectBrand!: (error: Error) => void;
+    const mismatchedBrand = new Promise<never>((_, reject) => { rejectBrand = reject; });
+    void mismatchedBrand.catch(() => {});
+    await ctx.route('**/*', async route => {
+      const url = new URL(route.request().url());
+      if (/\/models\/|\.(onnx|gguf|safetensors)$/i.test(url.pathname)) return route.abort('blockedbyclient');
+      if (!job.brandRevision || url.origin !== new URL(WEB_BASE).origin || !/^\/(catalog|tools|api\/brand)(\/|$)/.test(url.pathname)) return route.continue();
+      try {
+        const response = await route.fetch({ headers: { ...route.request().headers(), 'x-lolly-brand-revision': job.brandRevision } });
+        if (response.headers()['x-lolly-brand-revision'] !== job.brandRevision || response.status() === 409) {
+          rejectBrand(new Error('The catalogue revision changed or the worker is not connected to this instance. Retry after refreshing.'));
+          return route.abort('failed');
+        }
+        confirmedBrand = true;
+        return route.fulfill({ response });
+      } catch (error) { rejectBrand(error as Error); return route.abort('failed'); }
     });
     signal.throwIfAborted();
     const page = await ctx.newPage();
     signal.throwIfAborted();
+    const observedInputs = await observeProductionInputs(page, job.toolId, job.evidence ? job.inputIds ?? [] : []);
+    const finishEvidence = job.evidence ? observeWorkerResources(page) : undefined;
     const downloadP = page.waitForEvent('download', { timeout: EXPORT_TIMEOUT_MS });
     void downloadP.catch(() => {});
     // 'commit' returns once navigation starts; the export fires later, after the
     // tool mounts and its hooks settle. The download event is the real gate.
     await page.goto(exportUrl(job.toolId, job.query, job.overrides), { waitUntil: 'commit', timeout: NAV_TIMEOUT_MS });
     signal.throwIfAborted();
-    const download = await downloadP;
+    const download = await Promise.race([downloadP, mismatchedBrand]);
+    if (job.brandRevision && !confirmedBrand) throw new Error('The worker could not verify the selected catalogue revision.');
     signal.throwIfAborted();
     const stream = await download.createReadStream();
     signal.throwIfAborted();
     const chunks: Buffer[] = [];
-    for await (const c of stream) chunks.push(c as Buffer);
+    let size = 0;
+    for await (const c of stream) {
+      size += (c as Buffer).length;
+      if (size > 32 * 1024 * 1024) throw new Error('SVG export exceeds 32 MiB.');
+      chunks.push(c as Buffer);
+    }
     await download.delete().catch(() => {});
     const svg = Buffer.concat(chunks).toString('utf8');
     if (!/<svg[\s>]/i.test(svg)) throw new Error('export did not produce an <svg>');
-    return svg;
+    const inputs = observedInputs(new TextEncoder().encode(svg));
+    return { svg, ...(finishEvidence ? { evidence: { ...await finishEvidence(svg, job.requestSha256!), ...(inputs ? { inputs } : {}) } } : {}) };
   });
 }
 
@@ -203,7 +228,9 @@ async function rasterise(job: { svg: string; format: string; width?: number }, s
     await page.setContent(html, { waitUntil: 'networkidle', timeout: EXPORT_TIMEOUT_MS });
     signal.throwIfAborted();
     if (fmt === 'pdf') {
-      const pdf = await page.pdf({ printBackground: true });
+      const svg = await page.$('svg'), box = await svg?.boundingBox();
+      if (!box || box.width <= 0 || box.height <= 0 || box.width > RASTER_MAX_EDGE || box.height > RASTER_MAX_EDGE || box.width * box.height > 16_000_000) throw new Error('PDF viewport is missing or exceeds the production budget.');
+      const pdf = await page.pdf({ printBackground: true, width: `${box.width}px`, height: `${box.height}px`, margin: { top: 0, right: 0, bottom: 0, left: 0 }, pageRanges: '1' });
       return { bytes: pinPdfDates(Buffer.from(pdf)), mime: 'application/pdf' };
     }
     const el = await page.$('svg');
@@ -217,10 +244,10 @@ async function rasterise(job: { svg: string; format: string; width?: number }, s
 }
 
 // ── HTTP ──────────────────────────────────────────────────────────────────────
-const sendJson = (res: import('node:http').ServerResponse, status: number, body: unknown): void => {
+const sendJson = (res: import('node:http').ServerResponse, status: number, body: unknown, signed = false): void => {
   if (res.destroyed) return;
   const data = JSON.stringify(body);
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...(signed ? { 'x-lw-output-sig': hmac(data) } : {}) });
   res.end(data);
 };
 const fail = (res: import('node:http').ServerResponse, status: number, code: string, message: string): void =>
@@ -263,7 +290,7 @@ export const server = createServer((req, res) => {
     if (typeof sig !== 'string' || !macEquals(sig, hmac(raw))) {
       return fail(res, 401, 'BAD_SIGNATURE', 'invalid or missing render signature');
     }
-    let job: { toolId?: unknown; query?: unknown; overrides?: unknown; format?: unknown; ts?: unknown; svg?: unknown; width?: unknown };
+    let job: { toolId?: unknown; query?: unknown; overrides?: unknown; format?: unknown; ts?: unknown; evidence?: unknown; inputIds?: unknown; brandRevision?: unknown; svg?: unknown; width?: unknown };
     try { job = JSON.parse(raw); } catch { return fail(res, 400, 'BAD_JSON', 'invalid JSON body'); }
     if (typeof job.ts !== 'number' || Math.abs(Date.now() - job.ts) > TS_SKEW_MS) {
       return fail(res, 401, 'STALE', 'request timestamp outside the accepted window');
@@ -297,13 +324,15 @@ export const server = createServer((req, res) => {
     if (typeof job.toolId !== 'string' || typeof job.query !== 'string' || job.format !== 'svg') {
       return fail(res, 400, 'BAD_REQUEST', 'expected { toolId, query, format:"svg", overrides }');
     }
+    if (job.inputIds !== undefined && (!Array.isArray(job.inputIds) || job.inputIds.length > 128 || job.inputIds.some(id => typeof id !== 'string' || !id || id.length > 4096))) return fail(res, 400, 'BAD_REQUEST', 'invalid production input ids');
     const overrides = (job.overrides && typeof job.overrides === 'object') ? job.overrides as Record<string, unknown> : {};
 
     const release = sem.tryAcquire();
     if (!release) return busy(res);
     try {
-      const svg = await renderSvg({ toolId: job.toolId, query: job.query, overrides }, controller.signal);
-      return sendJson(res, 200, { svg });
+      const brandRevision = typeof job.brandRevision === 'string' ? job.brandRevision : undefined;
+      const output = await renderSvg({ toolId: job.toolId, query: job.query, overrides, brandRevision, evidence: job.evidence === true, inputIds: job.inputIds as string[] | undefined, requestSha256: createHash('sha256').update(raw).digest('hex') }, controller.signal);
+      return sendJson(res, 200, { ...output, ...(brandRevision ? { brandRevision } : {}) }, true);
     } catch (e) {
       return fail(res, 502, 'RENDER_FAILED', `Chromium render failed: ${(e as Error).message}`);
     } finally {

@@ -51,6 +51,16 @@ test('cache keys preserve JSON types, nested values and array order while normal
   assert.equal(normalizeParams({ b: 1, a: { z: true } }), '{"a":{"z":true},"b":1}');
 });
 
+test('production checks bind protected runtime inputs without disclosing their values', async t => {
+  const f = await fixture(t);
+  const rows = [{ label: 'Revenue GBP 125' }];
+  const contract = { profile: 'lolly/production-still-v1' as const, id: 'protected-data', revision: '1', format: 'svg' as const, width: 100, height: 100, pages: 1, alpha: 'any' as const, requirements: [{ id: 'rows', kind: 'input' as const, location: 'rows', expected: evidenceHash(rows) }] };
+  const result = await f.render({ query: queryFromInputs({ rows }), production: { contract } });
+  assert.equal(result.evidence!.production!.checks.at(-1)!.state, 'pass');
+  assert.doesNotMatch(JSON.stringify(result.evidence!.production), /Revenue GBP/);
+  await assert.rejects(f.render({ query: queryFromInputs({ rows: [{ label: 'Revenue GBP 12' }] }), production: { contract } }), /requirement.rows:fail/);
+});
+
 test('real rendering never shares cached profile-bound values or different block rows', async (t) => {
   const f = await fixture(t);
   const ada = await f.render({ profile: { firstname: 'Ada', useDetails: true } });
@@ -163,4 +173,101 @@ test('asset observations are canonical, bounded and honest about missing bytes',
   assert.deepEqual(a.finish(), b.finish());
   a.observe('provider', asset, logo('black'));
   assert.equal(a.finish().assets.length, 2, 'late hook reads cannot change a finalized receipt');
+});
+
+test('opt-in output verification reads final bytes and never reuses a draft cache entry', async (t) => {
+  const f = await fixture(t);
+  const draft = await f.render();
+  assert.equal(draft.evidence, undefined);
+  const verified = await f.render({ verification: 'output-v1', watermarkPreview: true, query: 'width=100&height=100' });
+  assert.ok(verified.evidence?.inspection);
+  assert.equal(verified.evidence.inspection.outputSha256, sha256Hex(verified.bytes));
+  assert.ok(verified.evidence.inspection.checks.every(check => check.state === 'pass'));
+  assert.match(Buffer.from(verified.bytes).toString(), /lw-preview-watermark/);
+  const { id, ...body } = verified.evidence;
+  assert.equal(id, evidenceHash(body));
+  const png = await f.render({ format: 'png', verification: 'output-v1' });
+  assert.equal(png.evidence?.inspection?.measured.format, 'png');
+  assert.equal(png.evidence?.inspection?.method, 'pixel-decoder');
+});
+
+test('draft worker bytes remain exportable while verified format substitutions are refused', async (t) => {
+  const f = await fixture(t);
+  const worker = createServer((req, res) => {
+    req.resume(); res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ bytesB64: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>').toString('base64'), mime: 'image/png' }));
+  });
+  t.after(() => new Promise<void>(resolve => worker.close(() => resolve())));
+  await new Promise<void>(resolve => worker.listen(0, '127.0.0.1', resolve));
+  const address = worker.address(); assert.ok(address && typeof address === 'object');
+  const deps = { worker: { url: `http://127.0.0.1:${address.port}`, secret: 'test', timeoutMs: 1_000 } };
+  const draft = await f.render({ format: 'png' }, deps);
+  assert.equal(draft.mime, 'image/png');
+  await assert.rejects(f.render({ format: 'png', verification: 'output-v1' }, deps),
+    (error: unknown) => {
+      const e = error as { code: string; status: number; inspection: { checks: { id: string; state: string }[] } };
+      assert.equal(e.code, 'OUTPUT_VERIFICATION_FAILED'); assert.equal(e.status, 422);
+      assert.equal(e.inspection.checks.find(c => c.id === 'format')?.state, 'fail');
+      return true;
+    });
+});
+
+test('production contracts check final copy, source locks and declared resources without draft-cache reuse', async t => {
+  const f = await fixture(t);
+  await writeFile(join(f.pack, 'tools', 'receipt-card', 'template.html'), template.replace('<text>', '<text id="title">'));
+  const contract = { profile: 'lolly/production-still-v1' as const, id: 'receipt-card', revision: '1', format: 'svg' as const, width: 100, height: 100, pages: 1, alpha: 'any' as const,
+    requirements: [{ id: 'copy', kind: 'text' as const, location: 'title', expected: 'Legal 125' }, { id: 'logo', kind: 'resource' as const, location: 'brand/logo', expected: sha256Hex(logo('red')) }] };
+  const query = queryFromInputs({ title: 'Legal 125', logo: 'brand/logo' });
+  const out = await f.render({ query, production: { contract } });
+  assert.ok(out.evidence?.production?.checks.every(c => c.state === 'pass'));
+  assert.equal(out.evidence?.production?.artifactSha256, sha256Hex(out.bytes));
+  await assert.rejects(f.render({ query: queryFromInputs({ title: 'Legal 12', logo: 'brand/logo' }), production: { contract } }), (e: unknown) => {
+    const error = e as { code: string; production: { checks: { id: string; state: string }[] } };
+    return error.code === 'PRODUCTION_VERIFICATION_FAILED' && error.production.checks.some(c => c.id === 'requirement.copy' && c.state === 'fail');
+  });
+  await writeFile(join(f.pack, 'catalog', 'assets', 'logo.svg'), logo('blue'));
+  await assert.rejects(f.render({ query, production: { contract } }), /requirement.logo:fail/);
+  await assert.rejects(f.render({ query, production: { contract: { ...contract, requirements: [], sourceSha256: '0'.repeat(64) } } }), /source/);
+});
+
+test('production repair selects only a permitted layout and preserves each report', async t => {
+  const f = await fixture(t);
+  await writeFile(join(f.pack, 'tools', 'receipt-card', 'tool.json'), JSON.stringify({ ...f.manifest, inputs: [...f.manifest.inputs, { id: 'layout', type: 'text', label: 'Layout', default: 'short' }] }));
+  await writeFile(join(f.pack, 'tools', 'receipt-card', 'template.html'), '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">{{#if (eq layout "long")}}<text id="title">{{title}}</text>{{/if}}</svg>');
+  const contract = { profile: 'lolly/production-still-v1' as const, id: 'card', revision: '1', format: 'svg' as const, width: 100, height: 100, pages: 1, alpha: 'any' as const, requirements: [{ id: 'copy', kind: 'text' as const, location: 'title', expected: 'Legal 125' }] };
+  const repair = { protected: ['title'], permitted: { layout: ['short', 'long'] }, maxAttempts: 2, when: [{ findingId: 'requirement.copy', input: 'layout' }] };
+  const out = await f.render({ query: queryFromInputs({ title: 'Legal 125', layout: 'short' }), production: { contract, repair } });
+  assert.match(Buffer.from(out.bytes).toString(), /Legal 125/);
+  assert.equal(out.evidence!.productionAttempts!.length, 2);
+  assert.equal(out.evidence!.productionAttempts![0]!.checks.at(-1)!.state, 'fail');
+  assert.equal(out.evidence!.productionAttempts![1]!.checks.at(-1)!.state, 'pass');
+  await assert.rejects(f.render({ query: queryFromInputs({ title: 'Legal 12', layout: 'short' }), production: { contract, repair } }), /requirement.copy:fail/);
+});
+
+test('the render pipeline uses signed worker inputs and cannot infer missing evidence from the query', async t => {
+  const { signBody } = await import('../server/src/render/worker-client.ts');
+  const f = await fixture(t), rows = [{ label: 'Protected 125' }], secret = 'local-evidence-test';
+  await writeFile(join(f.pack, 'tools', 'receipt-card', 'tool.json'), JSON.stringify({ ...f.manifest, hooks: { onInit: true } }));
+  await writeFile(join(f.pack, 'tools', 'receipt-card', 'hooks.js'), 'function onInit() { return {}; }');
+  let observed = true;
+  const worker = createServer((req, res) => {
+    void (async () => {
+      const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      const request = Buffer.concat(chunks).toString();
+      assert.deepEqual(JSON.parse(request).inputIds, ['rows']);
+      const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><text>Protected 125</text></svg>';
+      const body = JSON.stringify({ svg, evidence: { version: 1, requestSha256: sha256Hex(request), outputSha256: sha256Hex(svg), resources: [], limitations: [], ...(observed ? { inputs: { rows: evidenceHash(rows) } } : {}) } });
+      res.writeHead(200, { 'content-type': 'application/json', 'x-lw-output-sig': signBody(body, secret) }); res.end(body);
+    })().catch(error => { res.writeHead(500); res.end(String(error)); });
+  });
+  t.after(() => new Promise<void>(resolve => worker.close(() => resolve())));
+  await new Promise<void>(resolve => worker.listen(0, '127.0.0.1', resolve));
+  const address = worker.address(); assert.ok(address && typeof address === 'object');
+  const deps = { worker: { url: `http://127.0.0.1:${address.port}`, secret, timeoutMs: 5_000 } };
+  const contract = { profile: 'lolly/production-still-v1' as const, id: 'worker-rows', revision: '1', format: 'svg' as const, width: 100, height: 100, pages: 1, alpha: 'any' as const, requirements: [{ id: 'rows', kind: 'input' as const, location: 'rows', expected: evidenceHash(rows) }] };
+  const request = { query: queryFromInputs({ rows }), production: { contract } };
+  const result = await f.render(request, deps);
+  assert.equal(result.evidence!.production!.checks.at(-1)!.state, 'pass');
+  observed = false;
+  await assert.rejects(f.render(request, deps), /requirement.rows:undetermined/);
 });
