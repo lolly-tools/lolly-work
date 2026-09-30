@@ -294,10 +294,10 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
   const bakedValues = await resolveHostedValues(
     { ...st.values, ...lockedValues(overlay, groups) }, hostedResolver,
   ) as Record<string, unknown>;
-  const initialValues = Object.fromEntries(engine.buildInputModel(tool.manifest, { profile: { ...req.profile }, initial: bakedValues }).map(i => [i.id, i.value]));
+  const initialValues = deps.managedRules ? Object.fromEntries(engine.buildInputModel(tool.manifest, { profile: { ...req.profile }, initial: bakedValues }).map(i => [i.id, i.value])) : {};
   requireRuleValues(deps.managedRules, { ...initialValues, ...bakedValues });
   const governed = deps.managedRules ? governedInputs(req.overlays.get(req.toolId), groups, Object.keys(initialValues)) : [];
-  requireGovernedInputs(governed, Object.fromEntries(Object.entries(initialValues).map(([id, value]) => [id, evidenceHash(value)])));
+  requireGovernedInputs(governed, Object.fromEntries(governed.flatMap(({ id }) => initialValues[id] === undefined ? [] : [[id, evidenceHash(initialValues[id])]])));
   inputIds.push(...governed.map(c => c.id).filter(id => !inputIds.includes(id)));
   if (inputIds.length > 128) throw new RenderError('INPUT_OBSERVATION_LIMIT', 422, 'Too many input checks for one render.');
 

@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Store, UserRecord } from '../store/types.ts';
+import { loadEngine } from '../render/contract.ts';
 import { BrandError, type BrandService, type BrandSnapshot } from './service.ts';
 import { hash, managedRuleContext, projectRuleOverlay, ruleApi, sourceRules } from './rules.ts';
 
@@ -11,16 +12,17 @@ export function createBrandRuleService(brand: BrandService, store: Store, develo
     if (!mutable) throw new BrandError('Durable storage is required outside development mode.');
   };
   const manifest = async (snap: BrandSnapshot, toolId: string) => JSON.parse(await readFile(join(snap.source.root, 'tools', toolId, 'tool.json'), 'utf8'));
+  const modes = async (doc: unknown) => [...new Set(['Default', ...(await loadEngine()).createTokenSet(doc).themes().map(theme => theme.name)])];
   const inspect = async (actor: UserRecord) => {
     if (!await brand.allowed(actor, 'catalog.read')) throw new BrandError('catalog.read required', 403, 'FORBIDDEN');
-    const snap = await brand.snapshot(), { system, present } = await sourceRules(snap);
+    const snap = await brand.snapshot(), { system, present, doc } = await sourceRules(snap);
     const editable = mutable && await brand.allowed(actor, 'policy.edit');
     const tools = editable ? await Promise.all(snap.source.toolIds.map(async id => {
       const tool = await manifest(snap, id);
       return { id, name: tool.name ?? id, inputs: (tool.inputs ?? []).filter((i: { type: string }) => ['color', 'select', 'text', 'longtext', 'asset'].includes(i.type)).map((i: { id: string; label: string; type: string }) => ({ id: i.id, label: i.label, type: i.type })) };
     })) : [];
     return { revision: snap.state.revision, contentRevision: snap.revision, editable, system, unsupported: present && !system,
-      mappings: snap.state.rulePolicies?.[snap.source.id]?.mappings ?? [], tools,
+      mappings: snap.state.rulePolicies?.[snap.source.id]?.mappings ?? [], tools, modes: system ? await modes(doc) : [],
       coverage: 'Runtime input choices and lengths; output appearance needs separate production checks.' };
   };
   const preview = async (actor: UserRecord, raw: unknown) => {
@@ -29,8 +31,10 @@ export function createBrandRuleService(brand: BrandService, store: Store, develo
     try { mappings = ruleApi.parseBrandPolicyMappings(raw); } catch (e) { throw new BrandError((e as Error).message, 400, 'INVALID_INPUT'); }
     const snap = await brand.snapshot(), { system, doc } = await sourceRules(snap);
     if (!system) throw new BrandError('Publish a supported guide in the mounted design system first.');
+    const publishedModes = await modes(doc);
     const manifests: Record<string, string> = {};
     for (const m of mappings) {
+      if (!publishedModes.includes(m.mode)) throw new BrandError('Choose a published token mode.', 400, 'INVALID_INPUT');
       if (!snap.source.toolIds.includes(m.toolId)) throw new BrandError('Choose an installed tool.', 400, 'INVALID_INPUT');
       const tool = await manifest(snap, m.toolId); manifests[m.toolId] = hash(tool);
       for (const [slot, id] of Object.entries(m.fields)) {

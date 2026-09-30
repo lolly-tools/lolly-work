@@ -1223,16 +1223,17 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         principal: null, profile: {}, overlays: await store.listOverlays(),
       });
       const etag = `"r-${result.cacheKey.slice(0, 16)}"`;
-      if (req.headers['if-none-match'] === etag) {
+      if (!result.evidence?.brandRules && req.headers['if-none-match'] === etag) {
         res.writeHead(304, { etag });
         res.end();
         return;
       }
       const headers: Record<string, string> = {
-        'content-type': result.mime, etag, 'cache-control': 'public, max-age=300',
+        'content-type': result.mime, etag, 'cache-control': result.evidence?.brandRules ? 'private, no-store' : 'public, max-age=300',
+        'x-lolly-brand-check': result.evidence?.brandRules?.disposition ?? 'not-requested',
         ...provenanceHeader(result.provenance),
       };
-      if (link.kind === 'download') headers['content-disposition'] = `attachment; filename="${toolId}.${fmt}"`;
+      if (link.kind === 'download') headers['content-disposition'] = `attachment; filename="${toolId}${result.evidence?.brandRules?.disposition === 'draft' ? '-DRAFT' : ''}.${fmt}"`;
       res.writeHead(200, headers);
       res.end(Buffer.from(result.bytes));
     } catch (err) {
@@ -6264,7 +6265,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         overlays,
       });
       const etag = `"r-${result.cacheKey.slice(0, 16)}"`;
-      if (req.headers['if-none-match'] === etag) {
+      if (!result.evidence?.brandRules && req.headers['if-none-match'] === etag) {
         res.writeHead(304, { etag });
         res.end();
         return;

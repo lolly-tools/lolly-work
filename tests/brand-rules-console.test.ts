@@ -17,7 +17,7 @@ test('managed mapping editor uses labelled styled controls and invalidates an ed
     return node;
   };
   const writes: any[] = [];
-  const data = { editable: true, coverage: 'Runtime inputs', system: { label: '<Studio>', rules: [] }, mappings: [], tools: [{ id: 'campaign', name: 'Campaign', inputs: [{ id: 'ink', type: 'color', label: 'Ink' }] }] };
+  const data = { editable: true, coverage: 'Runtime inputs', system: { label: '<Studio>', rules: [] }, mappings: [], modes: ['Default', 'Night'], tools: [{ id: 'campaign', name: 'Campaign', inputs: [{ id: 'ink', type: 'color', label: 'Ink' }] }] };
   const card = brandRulesCard(data, { el, toast: () => {}, changed: () => {}, api: async (path: string, options: any) => {
     writes.push({ path, ...options.body }); return { revision: 1, reviewToken: 'review', coverage: [{ toolId: 'campaign', outputs: [{ format: 'svg', rules: [] }] }] };
   } });
@@ -32,7 +32,9 @@ test('managed mapping editor uses labelled styled controls and invalidates an ed
   button('Review mappings').click(); await new Promise(resolve => setImmediate(resolve));
   assert.ok(button('Apply reviewed mappings'));
   assert.deepEqual(writes[0].mappings[0].fields, { accent: 'ink' });
-  const mode = card.querySelector('input'); mode.value = 'Night'; mode.dispatchEvent(new dom.window.Event('input'));
+  const mode = [...inputs].find((i: any) => i.closest('label').textContent.startsWith('Token mode')) as any;
+  assert.deepEqual([...mode.options].map((o: any) => o.value), ['Default', 'Night']);
+  mode.value = 'Night'; mode.dispatchEvent(new dom.window.Event('change'));
   assert.equal(button('Apply reviewed mappings'), undefined);
   assert.equal(card.querySelector('studio'), null);
   const readonly = brandRulesCard({ ...data, editable: false }, { el });

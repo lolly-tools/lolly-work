@@ -24,7 +24,9 @@ export function brandRulesCard(data, { el, api, changed, toast }) {
       const tool = data.tools.find(t => t.id === mapping.toolId);
       const field = (label, control) => el('label', { class: 'field' }, el('span', {}, label), control);
       const example = el('select', { onchange: () => { mapping.example = example.value; invalidate(); } }, ...examples.map(([id, label]) => el('option', { value: id, ...(mapping.example === id ? { selected: '' } : {}) }, label)));
-      const mode = el('input', { value: mapping.mode, maxlength: '200', oninput: () => { mapping.mode = mode.value; invalidate(); } });
+      const mode = el('select', { onchange: () => { mapping.mode = mode.value; invalidate(); } },
+        ...(!data.modes.includes(mapping.mode) ? [el('option', { value: mapping.mode, selected: '', disabled: '' }, `${mapping.mode} (unavailable)`)] : []),
+        ...data.modes.map(name => el('option', { value: name, ...(mapping.mode === name ? { selected: '' } : {}) }, name)));
       const row = el('div', { class: 'stack brand-source-row' }, el('strong', {}, tool?.name || mapping.toolId),
         el('div', { class: 'brand-rule-grid' }, field('Example roles to map', example), field('Token mode', mode)));
       const fields = el('div', { class: 'brand-rule-grid' });

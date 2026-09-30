@@ -95,6 +95,16 @@ test('HTTP and direct durable execution share required input constraints and out
   assert.equal(out.evidence?.brandRules?.revision, snap.revision);
   assert.ok(out.evidence?.outputSha256);
 });
+test('mapping review rejects unpublished modes without changing policy', async () => {
+  const f = await fixture();
+  const before = await f.store.getBrandState();
+  const view = await (await fetch(f.base + '/api/v1/brand/rules', { headers: { cookie: f.cookie } })).json() as any;
+  assert.deepEqual(view.modes, ['Default']);
+  const result = await f.post('/api/v1/brand/rules/preview', { mappings: [{ ...mappings[0], mode: 'Typo' }] });
+  assert.equal(result.status, 400);
+  assert.equal(result.data.error.code, 'INVALID_INPUT');
+  assert.deepEqual(await f.store.getBrandState(), before);
+});
 test('existing organisation locks cannot be weakened by brand mappings', async () => {
   const f = await fixture(); await f.configure();
   await f.store.putOverlay({ toolId: 'campaign', version: 1, inputAccess: { ink: [{ groups: ['*'], level: 'locked', value: '#ff0000' }] } });
@@ -182,4 +192,13 @@ test('Postgres mappings and their audit survive a fresh replica', { skip: !proce
       assert.equal(res.status, 422);
     } finally { await Promise.all(runners.slice(start).map(r => r.stop())); await replica?.close(); }
   });
+});
+
+test('managed render replies carry fresh observations even with a matching request ETag', async () => {
+  const f = await fixture(); await f.configure();
+  const first = await fetch(f.base + '/render/campaign.svg', { headers: { cookie: f.cookie } });
+  const again = await fetch(f.base + '/render/campaign.svg', { headers: { cookie: f.cookie, 'if-none-match': first.headers.get('etag')! } });
+  assert.equal(again.status, 200);
+  assert.equal(again.headers.get('cache-control'), 'private, no-store');
+  assert.equal(again.headers.get('x-lolly-brand-check'), 'checked');
 });
