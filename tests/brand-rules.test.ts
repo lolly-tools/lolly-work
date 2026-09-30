@@ -6,6 +6,9 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { buildApp } from '../server/src/api/app.ts';
 import { parseConfig } from '../server/src/config/instance.ts';
+import type { Store } from '../server/src/store/types.ts';
+import { createPostgresStore } from '../server/src/store/postgres.ts';
+import { withFreshPostgres } from './pg-test-schema.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
 import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import { createBrandService } from '../server/src/brand/service.ts';
@@ -18,7 +21,7 @@ after(async () => { await Promise.all(runners.map(r => r.stop())); await Promise
 const rule = (kind: string, slot: string, parameters: object = {}) => ({ id: kind, label: kind, kind, roleIds: kind === 'color-choices' ? ['beacon'] : [], parameters: { slot, ...parameters }, requirement: 'required' as const, origin: { kind: 'manual' as const, author: 'Studio' }, review: { state: 'approved' as const, authority: 'Studio' } });
 const brand = (): BrandSystemV1 => ({ schemaVersion: 1, id: 'sample', label: 'Our system', roles: [{ id: 'beacon', label: 'Beacon', resources: [{ type: 'token', path: 'color.beacon' }] }], bindings: [{ id: 'accent', roleId: 'beacon', consumer: { tool: 'brand-poster', slot: 'accent' } }], rules: [rule('color-choices', 'accent'), rule('text-length', 'heading', { max: 10 })] });
 const mappings = [{ toolId: 'campaign', example: 'brand-poster', mode: 'Default', fields: { accent: 'ink', heading: 'title' } }];
-async function fixture(system: unknown = brand(), hooks?: string) {
+async function fixture(system: unknown = brand(), hooks?: string, store: Store = createMemoryStore()) {
   const pack = await mkdtemp(join(tmpdir(), 'lw-rules-')); dirs.push(pack);
   for (const path of ['catalog/assets', 'catalog/tools', 'tools/campaign']) await mkdir(join(pack, path), { recursive: true });
   const manifest = { id: 'campaign', name: 'Campaign', version: '1.0.0', engineVersion: '^1.0.0', description: 'Managed rule fixture', status: 'community',
@@ -31,9 +34,9 @@ async function fixture(system: unknown = brand(), hooks?: string) {
   await writeFile(join(pack, 'catalog/assets/index.json'), JSON.stringify({ assets: [{ id: 'sample/tokens', type: 'tokens', formats: [{ format: 'json', url: '/catalog/assets/tokens.json' }] }] }));
   await writeFile(join(pack, 'catalog/assets/tokens.json'), JSON.stringify({ color: { beacon: { $type: 'color', $value: '#ffcc00' } }, ...(system === null ? {} : { $extensions: { 'com.suse.lolly': { brandSystem: system } } }) }));
   const config = parseConfig(JSON.stringify({ instance: { name: 'Test', baseUrl: 'http://rules.example', pack }, rateLimit: { enabled: false }, render: { allowHooksInFastPath: true }, dev: { enabled: true, users: [{ email: 'owner@test', groups: ['owner'] }, { email: 'member@test', groups: ['member'] }] } }));
-  const store = createMemoryStore(), blobs = createMemoryBlobStore();
-  const boot = async () => {
-    const app = buildApp({ config, store, blobs, secrets: { session: 'rules-session', link: 'rules-link' }, onRenderRunner: r => { runners.push(r); r.start(); } });
+  const blobs = createMemoryBlobStore();
+  const boot = async (replica: Store = store) => {
+    const app = buildApp({ config, store: replica, blobs, secrets: { session: 'rules-session', link: 'rules-link' }, onRenderRunner: r => { runners.push(r); r.start(); } });
     const server = createServer((req, res) => void app(req, res)); servers.push(server);
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
     return `http://127.0.0.1:${(server.address() as { port: number }).port}`;
@@ -161,4 +164,22 @@ test('format scope is checked per render and never projected as a global restric
   assert.equal(svg.headers.get('x-lolly-brand-check'), 'not-applicable');
   const png = await fetch(f.base + '/render/campaign.png?ink=%23ff0000', { headers: { cookie: f.cookie } });
   assert.equal(png.status, 422, await png.clone().text());
+});
+
+test('Postgres mappings and their audit survive a fresh replica', { skip: !process.env.LW_TEST_DATABASE_URL && 'set LW_TEST_DATABASE_URL to run' }, async () => {
+  await withFreshPostgres(process.env.LW_TEST_DATABASE_URL!, async store => {
+    const start = runners.length;
+    let replica: Store | undefined;
+    try {
+      const f = await fixture(brand(), undefined, store); await f.configure();
+      replica = await createPostgresStore(process.env.LW_TEST_DATABASE_URL!);
+      const base = await f.boot(replica);
+      const result = await fetch(base + '/api/v1/brand/rules', { headers: { cookie: f.cookie } });
+      assert.equal(result.status, 200);
+      assert.deepEqual((await result.json() as any).mappings, mappings);
+      assert.ok((await replica.listAudit()).some(e => e.action === 'brand.rules.update'));
+      const res = await fetch(base + '/render/campaign.svg?title=This%20is%20far%20too%20long', { headers: { cookie: f.cookie } });
+      assert.equal(res.status, 422);
+    } finally { await Promise.all(runners.slice(start).map(r => r.stop())); await replica?.close(); }
+  });
 });
