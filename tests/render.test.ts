@@ -8,7 +8,7 @@
  */
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer, type Server } from 'node:http';
+import { createServer, type RequestListener, type Server } from 'node:http';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -22,6 +22,18 @@ interface Harness { server: Server; base: string; store: ReturnType<typeof creat
 
 let pack = '';
 const harnesses: Harness[] = [];
+const mockServers: Server[] = [];
+function mockServer(handler: RequestListener): Server {
+  const server = createServer(handler);
+  mockServers.push(server);
+  return server;
+}
+async function closeServer(server: Server): Promise<void> {
+  // A closed listener can retain an active pooled socket while its port is
+  // reused by the next harness. Destroy those sockets and await teardown.
+  server.closeAllConnections();
+  if (server.listening) await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+}
 
 /** A minimal, valid, hook-less card manifest - text `title` + color `bg`, svg+png. */
 function cardManifest(id: string): object {
@@ -145,7 +157,7 @@ before(async () => {
   hooksAllowed = await makeServer({ render: { allowHooksInFastPath: true } });
 });
 
-after(() => { for (const h of harnesses) h.server.close(); });
+after(async () => { await Promise.all([...harnesses.map(h => h.server), ...mockServers].map(closeServer)); });
 
 test('(a) SVG render: 200 with the title in the bytes, ETag, then 304 on If-None-Match', async () => {
   const cookie = await login(main.base, 'admin@test');
@@ -292,7 +304,7 @@ test('(f) hooked tool dispatches to a configured Chromium worker; HMAC-signed', 
   let sawSig = false;
   let sawToolId = '', sawQuery = '';
   let calls = 0;
-  const worker = createServer((req, res) => {
+  const worker = mockServer((req, res) => {
     void (async () => {
       if (req.url === '/healthz') { res.writeHead(200); res.end('{}'); return; }
       const chunks: Buffer[] = [];
@@ -338,7 +350,7 @@ test('(f) hooked tool dispatches to a configured Chromium worker; HMAC-signed', 
   assert.equal(refused.status, 413);
   assert.equal((await refused.json() as { error: { code: string } }).error.code, 'RENDER_INPUT_TOO_LARGE');
   assert.equal(calls, priorCalls, 'oversize navigation is refused before allocating a browser');
-  worker.close();
+  await closeServer(worker);
 });
 
 test('(n) automation document verbs and durable async render share the engine contract', async () => {
@@ -441,7 +453,7 @@ test('(i) raster delegates to the worker /rasterise when configured (single-rast
   const SECRET = 'raster-shared-key';
   const PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
   let sawSig = false, sawSvg = false, sawFormat = '', sawPath = '';
-  const worker = createServer((req, res) => {
+  const worker = mockServer((req, res) => {
     void (async () => {
       if (req.url === '/healthz') { res.writeHead(200); res.end('{}'); return; }
       sawPath = (req.url ?? '').split('?')[0] ?? '';
@@ -477,7 +489,7 @@ test('(i) raster delegates to the worker /rasterise when configured (single-rast
   assert.ok(sawSig, 'raster job carried a valid HMAC signature');
   assert.ok(sawSvg, 'worker received the finished SVG to rasterise');
   assert.equal(sawFormat, 'png');
-  worker.close();
+  await closeServer(worker);
 });
 
 // ── (h) C2PA signing (plans/17 §16) ───────────────────────────────────────────
@@ -568,7 +580,7 @@ test('(l) a saturated worker propagates: 503 RENDER_BUSY reaches the client with
   // The worker's capacity answer (plans/23 §3.C) must survive BOTH wraps - 
   // WorkerError → RenderError → HTTP - code and back-off included, so a client
   // can distinguish "come back in 2s" from a worker fault.
-  const busy = createServer((_req, res) => {
+  const busy = mockServer((_req, res) => {
     res.writeHead(503, { 'content-type': 'application/json', 'retry-after': '2' });
     res.end(JSON.stringify({ error: 'RENDER_BUSY' }));
   });
@@ -586,7 +598,7 @@ test('(l) a saturated worker propagates: 503 RENDER_BUSY reaches the client with
   assert.equal(res.status, 503);
   assert.equal((await res.json() as { error: { code: string } }).error.code, 'RENDER_BUSY');
   assert.equal(res.headers.get('retry-after'), '2', 'the back-off reaches the client');
-  busy.close();
+  await closeServer(busy);
 });
 
 test('(m) a worker widens the format tier: jpg + pdf render via /rasterise, jpeg aliases jpg, and a workerless deploy still 400s', async () => {
@@ -595,7 +607,7 @@ test('(m) a worker widens the format tier: jpg + pdf render via /rasterise, jpeg
   const JPG_B64 = Buffer.from([0xff, 0xd8, 0xff, 0xdb, 0x00, 0x43, 0x00]).toString('base64');
   const PDF_B64 = Buffer.from('%PDF-1.4 stub').toString('base64');
   const served: string[] = [];
-  const worker = createServer((req, res) => {
+  const worker = mockServer((req, res) => {
     void (async () => {
       const chunks: Buffer[] = [];
       for await (const c of req) chunks.push(c as Buffer);
@@ -642,5 +654,5 @@ test('(m) a worker widens the format tier: jpg + pdf render via /rasterise, jpeg
   const refused = await fetch(`${main.base}/render/test-card.jpg?title=W`, { headers: { cookie: await login(main.base, 'admin@test') } });
   assert.equal(refused.status, 400);
   assert.equal((await refused.json() as { error: { code: string } }).error.code, 'UNSUPPORTED_FORMAT');
-  worker.close();
+  await closeServer(worker);
 });
