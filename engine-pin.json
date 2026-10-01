@@ -1,22 +1,22 @@
 {
-  "generatedFrom": "d47a620b1053bca887314b63bc47b93cefffa69c",
+  "generatedFrom": "563cdb9fbf79dc9bf2e9d28059504adf96c52f28",
   "note": "Pin manifest - a consumer verifies vendored content against contentHash. tarballSha256 is informational (gzip is not reproducible).",
   "core": {
     "version": "1.0.0",
     "tarball": "lolly-tools-core-1.0.0.tgz",
-    "tarballSha256": "a84135730baa8f877c3064868f5128eac5aa2af00387e796ab855f2df6148537",
-    "contentHash": "bd951597ee7a1a567b23fef72356d930dc31347cff9473a0d37d70b398bc4095"
+    "tarballSha256": "d680b07e49d46f1dc6880377a1243383cac7f731fdd43b0a682cc33f1d0268ea",
+    "contentHash": "1de7271447a1f22d12cccfe5a296e06a82a830ecf6d668760b024eac65db853c"
   },
   "engine": {
-    "version": "1.235.0",
-    "tarball": "lolly-engine-1.235.0.tgz",
-    "tarballSha256": "7c51e737d7f1cd23380548d0140a826ab41c687b2c5bae427979818004fa55af",
-    "contentHash": "658ee412450c30935e0eb92eef1a32eb2a857f651393d9db1805bc0cebe4a600"
+    "version": "1.239.0",
+    "tarball": "lolly-engine-1.239.0.tgz",
+    "tarballSha256": "89db87a15a458973dd283d61c81015afb94cb0529952120638979be0953255d9",
+    "contentHash": "ee4ed0f08e6b9ba441e7867f5339f6fb5d165b569b8b9d72bb26422aec227f2b"
   },
   "schemas": {
     "asset-ref.schema.json": "e07d85d6db6c3a7c88190c86a4779707e2b073ce17dbaa9bb355ed2c015fcdae",
     "asset.schema.json": "c34f9bf7ee977501fb28de6826ec0a6a161dad2de23d31b7dc1f5d863e5c9c08",
-    "blocks-wire-order.json": "29a9b8fc873d5cd2695d6cbefca6802e76f78eaae1d9f19ad14a063e63c6f852",
+    "blocks-wire-order.json": "196b7e748e998afd8b085dd3a106a8a8a27f4b04c3a285c0f48946475bb976b7",
     "brand-system-v1.schema.json": "19f653283b83e99ecdc4ea98014828dcb5e660633f86cb0772387a02d89378ca",
     "canonical-aliases.json": "3b008b3d5c2936cd68246d736b0de877e98d5a37939645928ef55380aff7cc29",
     "canonical-inputs.json": "8747d7dea7721ae0a6a0fce9e58ce188dd86faab94c44a15304fc70042095e22",
@@ -40,6 +40,6 @@
     "text-document-v1.schema.json": "660b2108ee2dcd5a3e15ada040205a930b58faa0b101a23341892d59bf4ceeff",
     "text-frame-v1.schema.json": "4da9745015da8dfd75e60f7e15300604eeedd4902bca7a049d063a396455f069",
     "tokens.schema.json": "be8a2f388d451f778aeaf334c903556689e3897e7523e6c31b7c428040673384",
-    "tool.schema.json": "79d5f28567492f5974f3f9f35775c56e7d083624854e2a31f61bdceaf707a72a"
+    "tool.schema.json": "0d1bf16e694d390c4d0382ea66b0359a0622ca4e6d9ffc3433b5adeb4120633d"
   }
 }
