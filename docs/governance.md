@@ -18,6 +18,22 @@ One overlay per tool, versioned. `PUT /api/v1/policy/overlays/:toolId` under `po
 holding the admin role). Saving audits before/after and busts the render cache for exactly
 the affected renders.
 
+The console preserves saved format restrictions and input defaults when you edit
+inputs, visibility or watermarking. An unchanged preset or choice keeps its saved
+type, including strings that look like numbers. Enter a JSON array for choices
+containing commas or typed values, for example `["blue, green", "42", 42]`.
+Comma-separated simple choices remain supported. An explicitly edited blank preset
+locks to an empty string. Remove a rule with **Remove**; clearing its groups is an
+error rather than an implicit deletion.
+Group names containing commas can be entered as a JSON array, for example
+`["Sales, EMEA", "brand"]`; unchanged group lists are preserved.
+
+Use **Move up** and **Move down** to order an input's rules. New exceptions are
+inserted before the first rule for everyone, and the editor warns when an earlier
+rule covers the same groups. Closing, switching tools or navigating away with a
+draft offers **Keep editing** or **Discard changes**. Leaving the page also invokes
+the browser's unsaved-changes warning. A failed save retains the draft.
+
 ### Visibility
 
 ```json
@@ -71,10 +87,19 @@ an unnamed overlay attributes nothing, exactly as before.
 | `formats` | e.g. `["svg","png"]` | restrict output formats |
 | `watermark` | `always` \| `until-approved` \| `never` | preview watermarking ([sharing](sharing.md)); only `always` is enforced today ([approvals](approvals.md)) |
 
-`defaults` seeds initial input values without locking them. Two more keys (`c2pa`,
+`defaults` is accepted and stored, but is not applied to initial tool inputs by
+the current org-config or render paths. Locked presets do enforce values today.
+Two more keys (`c2pa`,
 `escalation`) are declared in the overlay type but the write paths do not accept them
 yet - C2PA signing is instance-wide via `render.c2pa` ([c2pa](c2pa.md)), and chain
 binding works as [approvals](approvals.md) describes. See [status](status.md).
+
+The console offers **Always watermark**, **Never watermark** and **No rule** for
+new edits. An existing `until-approved` setting is retained with a warning that
+it is not enforced. Stored fields the policy writer cannot preserve, such as
+`enforce.escalation`, block a console save with an explanation rather than being
+silently removed. This form does not protect against a concurrent administrator
+replacing the same policy; the API remains a full replacement.
 
 ## Profile governance
 

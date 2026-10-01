@@ -1,4 +1,5 @@
 {
+  "deployment": { "mode": "evaluation", "application": "api", "requireServerRendering": false },
   "instance": {
     "name": "SUSE Content Automation",
     "baseUrl": "http://localhost:8787",

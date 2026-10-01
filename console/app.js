@@ -11,6 +11,10 @@
 
 import { brandSourcesCard, catalogTokensAsset } from './brand-admin.js';
 import { brandRulesCard } from './brand-rules.js';
+import { createToolPolicyEditor } from './tool-policy-editor.js';
+import { setupView, tokensView } from './setup.js';
+import { createChainEditor } from './chains.js';
+import { createProviderSetup } from './provider-setup.js';
 import { compareValues } from './table-sort.js';
 import { buildThemeMaps, themeFromTokens, resolveCssColor } from './brand-theme.js';
 
@@ -60,7 +64,7 @@ async function api(path, opts = {}) {
   });
   if (res.status === 204) return null;
   const data = await res.json().catch(() => null);
-  if (!res.ok) throw Object.assign(new Error(data?.error?.message ?? res.statusText), { status: res.status, code: data?.error?.code });
+  if (!res.ok) throw Object.assign(new Error(data?.error?.message ?? res.statusText), { status: res.status, code: data?.error?.code, field: data?.error?.field });
   return data;
 }
 
@@ -1091,8 +1095,12 @@ const INSTANCE_TABS = [
   { key: 'injectables', label: 'Injectables', icon: 'injectables', render: (h) => viewInjectables(h) },
 ];
 async function viewInstance(main, params) {
+  const tabs = INSTANCE_TABS.filter(tab => canView(tab.key));
+  if (!tabs.length || (params?.get?.('tab') && !tabs.some(tab => tab.key === params.get('tab')))) {
+    main.append(el('h1', {}, 'This deployment'), el('p', {}, 'This section needs a permission your account does not have.')); return;
+  }
   let active = params?.get?.('tab');
-  if (!INSTANCE_TABS.some((t) => t.key === active)) active = 'tools';
+  if (!tabs.some((t) => t.key === active)) active = tabs[0].key;
   const panel = el('div', { class: 'inst-panel', id: 'inst-panel', role: 'tabpanel', tabindex: '0' });
   const tabbar = el('div', { class: 'tabbar', role: 'tablist', 'aria-label': 'This Deploy sections' });
   const buttons = new Map();
@@ -1100,6 +1108,11 @@ async function viewInstance(main, params) {
   const tabId = (key) => `inst-tab-${key}`;
 
   async function select(key) {
+    if (activeToolPolicyEditor) {
+      const proceed = () => { activeToolPolicyEditor?.dispose(); activeToolPolicyEditor = null; void select(key); };
+      if (activeToolPolicyEditor.isDirty() || activeToolPolicyEditor.isBusy()) { activeToolPolicyEditor.requestDiscard(proceed); return; }
+      activeToolPolicyEditor.dispose(); activeToolPolicyEditor = null;
+    }
     active = key;
     // Complete the WAI-ARIA tabs pattern: selected + roving tabindex, and the
     // panel is labelled by (and only focusably reached from) its active tab.
@@ -1111,7 +1124,8 @@ async function viewInstance(main, params) {
     panel.setAttribute('aria-labelledby', tabId(key));
     // Deep-linkable without a full re-route (replaceState fires no hashchange).
     try { history.replaceState(null, '', `#/instance?tab=${key}`); } catch { /* ignore */ }
-    const tab = INSTANCE_TABS.find((t) => t.key === key);
+    renderedRouteHash = location.hash;
+    const tab = tabs.find((t) => t.key === key);
     const run = ++selectSeq;
     panel.replaceChildren(loadingCard(tab.label));
     // Each tab renderer appends into the host it is given, so a slower earlier
@@ -1132,7 +1146,7 @@ async function viewInstance(main, params) {
   }
 
   // Arrow-key roving between tabs (WAI-ARIA tabs keyboard model).
-  const keys = INSTANCE_TABS.map((t) => t.key);
+  const keys = tabs.map((t) => t.key);
   tabbar.addEventListener('keydown', (e) => {
     const i = keys.indexOf(active);
     let next = -1;
@@ -1147,7 +1161,7 @@ async function viewInstance(main, params) {
     buttons.get(key).focus();
   });
 
-  for (const t of INSTANCE_TABS) {
+  for (const t of tabs) {
     const b = el('button', { class: 'tab', role: 'tab', type: 'button', id: tabId(t.key),
       'aria-controls': 'inst-panel',
       'aria-selected': t.key === active ? 'true' : 'false',
@@ -1204,7 +1218,7 @@ function tokenColorRows(map) {
 // the Lolly shell's design view. Falls back to the console's own chrome tokens
 // only when no pack tokens are mounted. Owner/admin also gets the /start editor.
 async function viewDesignSystem(main) {
-  const unlocked = ['owner', 'admin'].includes(session?.user?.role);
+  const unlocked = canAction('brand.switch');
   const brand = await loadBrandTokenMaps().catch(() => null);
   // Brand profiles (plans/29): a profile-aware pack carries several brands, one
   // active via the catalog symlink. Show which is active; owner/admin can switch
@@ -2599,17 +2613,6 @@ async function viewCatalog(main) {
 // restriction. Gated on policy.edit — admins by default, brand teams via a
 // group grant — so the brand team can steward inputs without the admin role.
 
-/** "green, #0C322C, 42" → typed values (JSON where it parses, string else). */
-function parseValueList(text) {
-  return text.split(',').map((s) => s.trim()).filter(Boolean).map((s) => {
-    try { return JSON.parse(s); } catch { return s; }
-  });
-}
-function parseValue(text) {
-  const t = text.trim();
-  if (!t) return undefined;
-  try { return JSON.parse(t); } catch { return t; }
-}
 const showValue = (v) => v === undefined ? '' : typeof v === 'string' ? v : JSON.stringify(v);
 
 /** One tool's governance summary row + expandable editor. */
@@ -2642,130 +2645,24 @@ function toolPolicyRow(tool, expandHost) {
     el('td', {}, el('button', { onclick: () => renderToolPolicyEditor(tool, expandHost) }, 'Edit')));
 }
 
+let activeToolPolicyEditor = null;
+let renderedRouteHash = '';
+
 function renderToolPolicyEditor(tool, host) {
-  // Working model: inputId → [{groups: 'a,b', level, value, allow}] — mutated
-  // in place by the row controls, serialized on save.
-  const model = {};
-  for (const [inputId, rules] of Object.entries(tool.overlay?.inputAccess ?? {})) {
-    model[inputId] = rules.map((r) => ({
-      groups: r.groups.join(', '), level: r.level,
-      value: showValue(r.value), allow: (r.allow ?? []).map(showValue).join(', '),
-      reason: r.reason ?? '',
-    }));
-  }
-  const declared = (tool.inputs ?? []).map((i) => i.id);
-  const err = errSpan();
-
-  // What a member sees beside a locked control ("Set by Brand guardrails").
-  // Unnamed is fine and stays the default: the shell then attributes nothing.
-  const nameInput = el('input', {
-    placeholder: 'e.g. Brand guardrails',
-    value: tool.overlay?.name ?? '',
-  });
-  const visibilityInput = el('input', {
-    placeholder: 'everyone (or: brand, marketing)',
-    value: tool.overlay?.visibility?.groups?.join(', ') ?? '',
-  });
-  const WATERMARK_LABELS = { '': 'No rule', never: 'Never watermark', 'until-approved': 'Watermark until approved', always: 'Always watermark' };
-  const watermarkSel = el('select', {},
-    ...['', 'never', 'until-approved', 'always'].map((w) =>
-      el('option', { value: w, selected: (tool.overlay?.enforce?.watermark ?? '') === w ? 'selected' : null }, WATERMARK_LABELS[w])));
-
-  const rulesHost = el('div', {});
-  const renderRules = () => {
-    const inputIds = [...new Set([...declared, ...Object.keys(model)])];
-    rulesHost.replaceChildren(...inputIds.map((inputId) => {
-      const decl = (tool.inputs ?? []).find((i) => i.id === inputId);
-      const rows = (model[inputId] ?? []).map((rule, idx) => {
-        const groupsIn = el('input', { value: rule.groups, placeholder: '*', oninput: (e) => { rule.groups = e.target.value; } });
-        const levelSel = el('select', { onchange: (e) => { rule.level = e.target.value; renderRules(); } },
-          ...['editable', 'choice', 'locked', 'hidden'].map((l) =>
-            el('option', { value: l, selected: rule.level === l ? 'selected' : null }, l)));
-        const detail = rule.level === 'locked'
-          ? el('input', { value: rule.value, placeholder: 'preset value', oninput: (e) => { rule.value = e.target.value; } })
-          : rule.level === 'choice'
-            ? el('input', { value: rule.allow, placeholder: 'allowed: a, b, c', oninput: (e) => { rule.allow = e.target.value; } })
-            : el('span', { class: 'muted' }, rule.level === 'hidden' ? 'Hidden from these groups' : 'These groups can edit it freely');
-        const reasonIn = el('input', {
-          value: rule.reason, placeholder: 'why (shown to the member)',
-          oninput: (e) => { rule.reason = e.target.value; },
-        });
-        return el('div', { class: 'formrow' },
-          field('groups', groupsIn),
-          field('access', levelSel),
-          field('detail', detail),
-          field('reason', reasonIn),
-          el('div', {}, el('label', {}, ' '),
-            el('button', { onclick: () => { model[inputId].splice(idx, 1); renderRules(); } }, 'Remove')));
-      });
-      const hint = decl?.options ? ` · options: ${(decl.options ?? []).map(showValue).join(', ')}` : '';
-      return el('div', { style: 'margin-top:10px' },
-        el('div', {},
-          el('span', { class: 'mono' }, inputId === '*' ? '* (default for all inputs)' : inputId),
-          el('span', { class: 'muted' }, `${decl?.type ? ` ${decl.type}` : ''}${hint}`),
-          ' ',
-          el('button', { onclick: () => {
-            (model[inputId] ??= []).push({ groups: '*', level: 'locked', value: showValue(decl?.default), allow: '', reason: '' });
-            renderRules();
-          } }, rows.length ? '+ rule' : 'Govern')),
-        ...rows);
-    }),
-    el('p', {}, el('button', { onclick: () => { model['*'] ??= []; model['*'].push({ groups: '*', level: 'editable', value: '', allow: '', reason: '' }); renderRules(); } },
-      '+ default rule for all inputs (*)')));
+  const open = () => {
+    activeToolPolicyEditor?.dispose();
+    const close = () => { activeToolPolicyEditor?.dispose(); activeToolPolicyEditor = null; host.replaceChildren(); };
+    activeToolPolicyEditor = createToolPolicyEditor(tool, { el, field, api, announce,
+      onClose: close,
+      onSaved: () => { close(); toast(`Policy saved for ${tool.name}`); void route(); },
+    });
+    host.replaceChildren(activeToolPolicyEditor.element);
+    scrollIntoViewMotionSafe(host);
+    const heading = host.querySelector('h2');
+    if (heading) { heading.tabIndex = -1; heading.focus({ preventScroll: true }); }
   };
-  renderRules();
-
-  const saveBtn = el('button', { class: 'primary', onclick: async () => {
-    err.textContent = '';
-    saveBtn.disabled = true;
-    const inputAccess = {};
-    for (const [inputId, rules] of Object.entries(model)) {
-      const clean = rules.map((r) => ({
-        groups: r.groups.split(',').map((s) => s.trim()).filter(Boolean),
-        level: r.level,
-        ...(r.level === 'locked' && r.value.trim() !== '' ? { value: parseValue(r.value) } : {}),
-        ...(r.level === 'choice' ? { allow: parseValueList(r.allow) } : {}),
-        ...(r.reason.trim() ? { reason: r.reason.trim() } : {}),
-      })).filter((r) => r.groups.length);
-      if (clean.length) inputAccess[inputId] = clean;
-    }
-    const visGroups = visibilityInput.value.split(',').map((s) => s.trim()).filter(Boolean);
-    const body = {
-      ...(nameInput.value.trim() ? { name: nameInput.value.trim() } : {}),
-      ...(Object.keys(inputAccess).length ? { inputAccess } : {}),
-      ...(visGroups.length ? { visibility: { groups: visGroups } } : {}),
-      ...(watermarkSel.value ? { enforce: { watermark: watermarkSel.value } } : {}),
-    };
-    try {
-      await api(`/api/v1/policy/overlays/${tool.id}`, { method: 'PUT', body });
-      toast(`Policy saved for ${tool.name}`);
-      route();
-    } catch (e) { err.textContent = e.message; saveBtn.disabled = false; }
-  } }, 'Save policy');
-
-  host.replaceChildren(el('div', { class: 'card stack' },
-    el('h2', {}, `Policy — ${tool.name}`),
-    el('p', { class: 'sub' }, 'Rules are ordered per input; the first rule matching a member’s groups wins, and members with no matching rule keep free input. Locked presets are baked at render time — a caller supplying their own value is refused. Hidden inputs disappear from the tool entirely.'),
-    el('div', { class: 'formrow' },
-      field('Policy name (shown to members)', nameInput),
-      field('Visible to groups (empty = everyone)', visibilityInput),
-      field('Watermark', watermarkSel)),
-    tool.inputs === null
-      ? el('p', { class: 'empty' }, 'This tool’s input list is unavailable, so its inputs cannot be listed here. Rules already in this policy stay editable, and the default (*) rule below applies to every input.')
-      : null,
-    rulesHost,
-    el('p', {}, saveBtn, ' ', el('button', { onclick: () => host.replaceChildren() }, 'Close'), ' ',
-      el('a', { href: '#/preview', class: 'link-btn' }, 'Preview what a group sees'), ' ',
-      el('a', { href: '#/docs?doc=governance', class: 'link-btn' }, 'How rules are ordered')),
-    err));
-  // The editor renders below a paged table; bring it into view and hand it
-  // focus, so Edit on row 3 of 33 does not look like nothing happened.
-  const card = host.firstElementChild;
-  if (card) {
-    card.scrollIntoView({ block: 'start', behavior: 'smooth' });
-    const h2 = card.querySelector('h2');
-    if (h2) { h2.tabIndex = -1; h2.focus({ preventScroll: true }); }
-  }
+  if (activeToolPolicyEditor) activeToolPolicyEditor.requestDiscard(open);
+  else open();
 }
 
 async function viewTools(main) {
@@ -2836,7 +2733,10 @@ function providerRow(p, panels) {
         : null),
     el('td', {}, managed
       ? el('span', { class: 'muted' }, 'via instance.json')
-      : el('div', { class: 'lc-actions' }, syncBtn, keyBtn, toggleBtn, delBtn), err));
+      : el('div', { class: 'lc-actions' },
+          canAction('catalog.provider.manage') ? syncBtn : null,
+          canAction('catalog.provider.credential') ? [keyBtn, toggleBtn] : null,
+          canAction('catalog.provider.manage') ? delBtn : null), err));
 }
 
 // The supported integrations, rendered as connect cards. `kind` is the exact
@@ -2864,11 +2764,15 @@ const PROVIDER_INTEGRATIONS = [
 ];
 
 async function viewProviders(main) {
-  const { providers } = await api('/api/v1/catalog/providers');
+  const [{ providers }, setup] = await Promise.all([api('/api/v1/catalog/providers'), api('/api/v1/catalog/providers/setup')]);
   const panelHost = el('div', {});
+  const openPanel = (render) => {
+    const open = () => { activeToolPolicyEditor?.dispose(); activeToolPolicyEditor = null; render(); };
+    if (activeToolPolicyEditor) activeToolPolicyEditor.requestDiscard(open); else open();
+  };
 
   // Write-only credential panel: secret in, fingerprint + health out.
-  const showCredential = (p) => {
+  const showCredential = (p) => openPanel(() => {
     const secretInput = el('input', { type: 'password', autocomplete: 'off', placeholder: 'API key / token' });
     // Operator-stated expiry (plans/36 §2) — the vendor's schedule, optional.
     const expiresInput = el('input', { type: 'date', 'aria-label': 'Credential expiry (optional)' });
@@ -2896,13 +2800,25 @@ async function viewProviders(main) {
       status));
     secretInput.focus();
     scrollIntoViewMotionSafe(panelHost);
-  };
+  });
   const panels = { showCredential };
 
   // Configure → test (dry-run preview, nothing persisted) → create, prefilled
   // for the integration the admin picked. This is exactly the old add-form logic
   // — the only change is the kind is fixed by the card, not chosen in a dropdown.
-  const showConnect = (integration) => {
+  const showConnect = (integration) => openPanel(() => {
+    const descriptor = setup.providers.find(provider => provider.kind === integration.kind);
+    if (descriptor) {
+      const close = () => { activeToolPolicyEditor?.dispose(); activeToolPolicyEditor = null; panelHost.replaceChildren(); void route(); };
+      activeToolPolicyEditor = createProviderSetup(descriptor, { el, field, api,
+        canStoreCredentials: canAction('catalog.provider.credential'), credentialStorageAvailable: setup.credentialStorageAvailable,
+        onClose: close, onSaved: () => toast('Source synced and enabled'),
+      });
+      panelHost.replaceChildren(activeToolPolicyEditor.element);
+      scrollIntoViewMotionSafe(panelHost);
+      panelHost.querySelector('h2').focus({ preventScroll: true });
+      return;
+    }
     const idInput = el('input', { placeholder: 'brand-dam (lowercase slug)' });
     const labelInput = el('input', { value: integration.name, placeholder: integration.name });
     const optionsInput = el('textarea', { rows: 2, placeholder: integration.options });
@@ -2979,7 +2895,7 @@ async function viewProviders(main) {
       testResult));
     idInput.focus();
     scrollIntoViewMotionSafe(panelHost);
-  };
+  });
 
   const connectGrid = el('div', { class: 'grid connect-grid' },
     ...PROVIDER_INTEGRATIONS.map((intg) => el('div', { class: 'card connect-card' },
@@ -2987,7 +2903,7 @@ async function viewProviders(main) {
         el('div', { class: 'connect-name' }, intg.name),
         el('div', { class: 'connect-kind mono' }, intg.kind),
         el('p', { class: 'connect-blurb' }, intg.blurb)),
-      el('button', { onclick: () => showConnect(intg) }, 'Connect'))));
+      canAction('catalog.provider.manage') ? el('button', { onclick: () => showConnect(intg) }, setup.providers.some(provider => provider.kind === intg.kind) ? 'Guided connection' : 'Connect') : null)));
 
   // Search-and-import (plans/30 §3.1): live-search the enabled sources and import a
   // single result into the catalog as an instance-owned snapshot. The curation gate —
@@ -3039,9 +2955,9 @@ async function viewProviders(main) {
     { key: 'a', label: 'Config changes', match: ['catalog.provider.create', 'catalog.provider.update', 'catalog.provider.delete', 'catalog.provider.enable', 'catalog.provider.disable', 'catalog.provider.credential'] },
     { key: 'b', label: 'Syncs', match: ['catalog.provider.sync', 'catalog.provider.preview'] },
   ]);
-  main.append(
+  main.append(...[
     el('h1', {}, 'Providers'),
-    el('p', { class: 'sub' }, 'Federated catalog sources. The external system stays the source of truth: Lolly consumes it read-only, and exposure rules decide which slice your members see. Pick an integration below to connect one. New sources start disabled, so configure it, set a key, then enable it.'),
+    el('p', { class: 'sub' }, 'Federated catalog sources. The external system stays the source of truth: Lolly consumes it read-only, and exposure rules decide which slice your members see. WebDAV / Nextcloud offers guided configuration, file testing and activation. Other integrations use their existing advanced forms and setup guides.'),
     ...(hdr ? [hdr] : []),
     providers.length
       ? el('div', { class: 'grid tiles' },
@@ -3062,7 +2978,7 @@ async function viewProviders(main) {
             ['Provider', 'Kind', { label: 'Status', sort: false }, { label: 'Assets', num: true }, { label: 'Last sync', sort: false }, { label: 'Credential', sort: false }, { label: 'Actions', w: '300px', sort: false }],
             providers.map((p) => providerRow(p, panels)), { sortable: true })
         : el('p', { class: 'empty' }, 'No sources connected yet. Pick an integration above to federate an external DAM, bucket, or repo into the catalog.')),
-  );
+  ].filter(node => node !== null));
 }
 
 // ── approvals ─────────────────────────────────────────────────────────────
@@ -3373,11 +3289,27 @@ async function viewMessages(main) {
 
 async function viewAudit(main, params) {
   const before = Number(params?.get?.('before') ?? 0) || 0;
-  const { chain, total, events, nextBefore } = await api(`/api/v1/audit?limit=60${before ? `&before=${before}` : ''}`);
+  const filters = new URLSearchParams();
+  for (const key of ['actor', 'action', 'subject', 'since', 'until']) if (params?.get?.(key)) filters.set(key, params.get(key));
+  const query = new URLSearchParams(filters); query.set('limit', '60'); if (before) query.set('before', String(before));
+  const { chain, total, matched, events, nextBefore } = await api(`/api/v1/audit?${query}`);
+  const href = before => { const query = new URLSearchParams(filters); if (before) query.set('before', String(before)); return `#/audit?${query}`; };
+  const controls = Object.fromEntries(['actor', 'action', 'subject', 'since', 'until'].map(key => [key,
+    el('input', { name: key, type: key === 'since' || key === 'until' ? 'date' : 'text',
+      value: key === 'since' || key === 'until' ? (filters.get(key) ?? '').slice(0, 10) : filters.get(key) ?? '' })]));
+  const search = el('form', { class: 'card', onsubmit: event => {
+    event.preventDefault(); const query = new URLSearchParams();
+    for (const [key, input] of Object.entries(controls)) if (input.value.trim()) query.set(key,
+      key === 'since' ? `${input.value}T00:00:00.000Z` : key === 'until' ? `${input.value}T23:59:59.999Z` : input.value.trim());
+    location.hash = `#/audit?${query}`;
+  } }, el('h2', {}, 'Search the full audit history'), el('div', { class: 'formrow' },
+    field('Actor ID (exact)', controls.actor), field('Action (exact)', controls.action), field('Subject (exact)', controls.subject),
+    field('From (UTC)', controls.since), field('Through (UTC)', controls.until)),
+    el('p', {}, el('button', { type: 'submit', class: 'primary' }, 'Search'), ' ', el('a', { href: '#/audit' }, 'Clear filters')));
   const pager = el('p', { class: 'sub' },
-    before ? el('a', { href: '#/audit' }, '← Newest') : null,
+    before ? el('a', { href: href(0) }, '← Newest') : null,
     before && nextBefore ? ' · ' : null,
-    nextBefore ? el('a', { href: `#/audit?before=${nextBefore}` }, 'Older events →') : null);
+    nextBefore ? el('a', { href: href(nextBefore) }, 'Older events →') : null);
   const strip = el('div', { class: 'chain', role: 'img', 'aria-label': `audit chain, ${total} events, ${chain.ok ? 'intact' : `broken at ${chain.badSeq}`}` },
     ...events.map((evt) => el('div', {
       class: `seg${chain.ok === false && evt.seq >= (chain.badSeq ?? 0) ? ' bad' : ''}`,
@@ -3389,6 +3321,8 @@ async function viewAudit(main, params) {
   ]);
   main.append(
     el('h1', {}, 'Audit'),
+    search,
+    el('p', { class: 'sub' }, `${matched ?? total} matching events across the full history. ${events.length} on this page.`),
     el('p', { class: 'sub' }, 'A tamper-evident record of every governed action on this deployment — sign-ins, grant and policy edits, approvals, link mints and revocations, catalog changes. It is append-only: entries are never edited or deleted, only added.'),
     ...(hdr ? [hdr] : []),
     el('div', { class: 'card' },
@@ -3412,7 +3346,7 @@ async function viewAudit(main, params) {
           el('td', {}, evt.actor),
           el('td', {}, evt.action),
           el('td', {}, evt.subject),
-          el('td', { class: 'mono', title: evt.hash }, evt.hash.slice(0, 12)))), { sortable: true, filter: true })),
+          el('td', { class: 'mono', title: evt.hash }, evt.hash.slice(0, 12)))), { sortable: true, filter: false })),
   );
 }
 
@@ -4094,7 +4028,7 @@ async function renderProjectList(main) {
     el('h1', {}, 'Projects'),
     el('p', { class: 'sub' }, 'Folders for saved tool sessions. A team project lists the groups that can see it, and a private project is yours alone. Open a project to see its sessions and change a field across all of them at once.'),
     ...(hdr ? [hdr] : []),
-    form,
+    canAction('project.create') ? form : null,
     el('div', { class: 'card stack' },
       projects.length
         ? dataTable(
@@ -4464,7 +4398,7 @@ function mdLink(label, href) {
   if (/^https?:\/\//i.test(href)) return el('a', { href, target: '_blank', rel: 'noopener' }, ...kids);
   const rel = /^([^#\s]+\.md)(#.*)?$/.exec(href);
   const slug = rel ? docPathToSlug.get(resolveDocPath(docCurrentDir, rel[1])) : undefined;
-  if (slug) return el('a', { href: `#/docs?doc=${slug}` }, ...kids);
+  if (slug) return el('a', { href: `#/docs?doc=${slug}${rel[2] ? `&anchor=${encodeURIComponent(rel[2].slice(1))}` : ''}` }, ...kids);
   return el('span', {}, ...kids);
 }
 
@@ -4709,6 +4643,12 @@ async function viewDocs(main, params) {
   );
   try {
     prose.replaceChildren(...mdToNodes(await apiText(`/api/v1/docs/${current.slug}`)));
+    const anchor = params?.get?.('anchor');
+    if (anchor) {
+      const heading = [...prose.querySelectorAll('h1,h2,h3,h4')].find(node =>
+        node.textContent.toLowerCase().replace(/[^a-z0-9\s-]/g, '').trim().replace(/\s+/g, '-') === anchor);
+      if (heading) heading.setAttribute('data-doc-anchor', '');
+    }
   } catch (e) {
     prose.replaceChildren(el('p', { class: 'empty' }, `Couldn’t load this page: ${e.message}`));
   }
@@ -4767,7 +4707,7 @@ function navIcon(id) {
   s.setAttribute('stroke-linecap', 'round');
   s.setAttribute('stroke-linejoin', 'round');
   s.setAttribute('aria-hidden', 'true');
-  s.innerHTML = NAV_ICONS[id] ?? '';
+  s.innerHTML = NAV_ICONS[{ setup: 'instance', tokens: 'grants', chains: 'approvals' }[id] ?? id] ?? '';
   return s;
 }
 
@@ -4875,6 +4815,29 @@ async function viewVerify(main, params) {
 }
 
 const VIEWS = {
+  setup: { title: 'Customer setup', render: async main => {
+    const editor = await setupView(main, { el, field, api });
+    if (main.isConnected) activeToolPolicyEditor = editor; else editor.dispose();
+  } },
+  tokens: { title: 'Tokens', render: main => tokensView(main, { el, field, api, can: action => session?.console?.actions.includes(action), refresh: route }) },
+  chains: { title: 'Approval chains', render: async main => {
+    const { chains } = await api('/api/v1/chains');
+    const host = el('div');
+    const edit = chain => {
+      const open = () => {
+        activeToolPolicyEditor?.dispose();
+        const close = () => { activeToolPolicyEditor?.dispose(); activeToolPolicyEditor = null; host.replaceChildren(); };
+        activeToolPolicyEditor = createChainEditor(chain, { el, field, api, onClose: close, onSaved: () => { close(); toast('Approval chain saved'); void route(); } });
+        host.replaceChildren(activeToolPolicyEditor.element); scrollIntoViewMotionSafe(host);
+        host.querySelector('input')?.focus();
+      };
+      if (activeToolPolicyEditor) activeToolPolicyEditor.requestDiscard(open); else open();
+    };
+    main.append(el('h1', {}, 'Approval chains'), el('p', { class: 'sub' }, 'Configure ordered reviewers, then preview which steps can complete.'),
+      el('p', {}, el('button', { class: 'primary', onclick: () => edit(null) }, 'New chain')),
+      ...chains.map(chain => el('div', { class: 'card' }, el('h2', {}, chain.name), el('p', {}, `${chain.steps.length} steps. Version ${chain.version ?? 0}.`),
+        el('button', { onclick: () => edit(chain) }, 'Edit chain'))), host);
+  } },
   overview: { title: 'Overview', render: viewOverview },
   activity: { title: 'Activity', render: viewActivity },
   instance: { title: 'This deployment', render: viewInstance },
@@ -4901,6 +4864,8 @@ const VIEWS = {
 };
 
 let session = null;
+const canView = id => session?.console?.views?.[id] ?? true;
+const canAction = action => session?.console?.actions?.includes(action) ?? true;
 let instanceName = 'Lolly Work';
 // GET /api/auth/config, cached at boot (provider, providerName, publicDocs).
 let authConfig = null;
@@ -4946,7 +4911,7 @@ function shell(current, content) {
       el('a', { class: 'back', href: lollyHref('/') }, 'Open Lolly →'),
       railToggleBtn(),
       el('nav', { id: 'rail-nav', 'aria-label': 'Console sections' },
-        ...Object.entries(VIEWS).filter(([, v]) => !v.hidden).map(([id, v]) =>
+        ...Object.entries(VIEWS).filter(([id, v]) => !v.hidden && canView(id)).map(([id, v]) =>
           el('a', { href: `#/${id}`, 'aria-current': id === current ? 'page' : null, title: v.title }, navIcon(id), el('span', {}, v.title)))),
       el('div', { class: 'session' },
         el('div', { class: 'who', title: session?.user?.email ?? '' }, session?.user?.email ?? ''),
@@ -5043,6 +5008,25 @@ async function signInGate() {
 }
 
 async function route() {
+  if (activeToolPolicyEditor) {
+    const targetHash = location.hash;
+    const proceed = () => {
+      activeToolPolicyEditor?.dispose(); activeToolPolicyEditor = null;
+      history.replaceState(null, '', `${location.pathname}${location.search}${targetHash}`);
+      void route();
+    };
+    if (activeToolPolicyEditor.isDirty() || activeToolPolicyEditor.isBusy()) {
+      history.replaceState(null, '', `${location.pathname}${location.search}${renderedRouteHash}`);
+      activeToolPolicyEditor.requestDiscard(proceed);
+      return;
+    }
+    activeToolPolicyEditor.dispose(); activeToolPolicyEditor = null;
+  }
+  renderedRouteHash = location.hash;
+  if (session?.console) {
+    try { session = await api('/api/auth/session'); }
+    catch (failure) { if (failure.status === 401) { await signInGate(); return; } }
+  }
   // Hash is '#/<view>' with an optional '?query' (deep links: #/users?focus=<id>,
   // #/overview?day=<date>). Split the two; params reach the view as a 2nd arg.
   const raw = location.hash.replace(/^#\/?/, '');
@@ -5059,8 +5043,9 @@ async function route() {
   // history, so Back does not bounce through it again.
   const LANDING = { approver: 'approvals', author: 'projects', member: 'projects' };
   const home = LANDING[session?.user?.role ?? ''];
-  if (id === 'overview' && home && !location.hash.includes('overview')) {
-    try { history.replaceState(null, '', `#/${home}`); } catch { /* ignore */ }
+  if (id === 'overview' && !location.hash.includes('overview') && (home || !canView('overview'))) {
+    const landing = [home, 'projects', 'tools', 'approvals', 'docs'].find(id => id && canView(id));
+    try { history.replaceState(null, '', `#/${landing}`); } catch { /* ignore */ }
     return route();
   }
   const view = VIEWS[id] ?? VIEWS.overview;
@@ -5091,8 +5076,11 @@ async function route() {
   loading.remove();
   // Focus the view heading and announce it, so keyboard/SR users re-orient after
   // a navigation (or a mutation-triggered re-render) instead of losing focus.
-  const h1 = main.querySelector('h1');
-  if (h1) { h1.setAttribute('tabindex', '-1'); h1.focus(); }
+  const focusHeading = main.querySelector('[data-doc-anchor]') ?? main.querySelector('h1');
+  if (focusHeading) {
+    focusHeading.setAttribute('tabindex', '-1'); focusHeading.focus();
+    if (focusHeading.hasAttribute('data-doc-anchor')) focusHeading.scrollIntoView({ block: 'start' });
+  }
   announce(`${view.title} loaded`);
 }
 

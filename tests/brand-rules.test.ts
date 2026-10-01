@@ -73,6 +73,10 @@ test('mapping review is permission gated, stale safe, audited and visible across
   assert.deepEqual(view.mappings, mappings);
   const org = await (await fetch(second + '/api/v1/org-config', { headers: { cookie: f.cookie } })).json() as any;
   assert.deepEqual(org.tools.campaign.inputs.find((i: any) => i.id === 'ink').access.allow, ['#ffcc00']);
+  const sample = await (await fetch(second + '/api/v1/system/setup/tools/campaign?format=svg', { headers: { cookie: f.cookie } })).json() as any;
+  assert.equal(sample.inputs.find((i: any) => i.id === 'ink').access, 'choice');
+  assert.deepEqual(sample.inputs.find((i: any) => i.id === 'ink').allow, ['#ffcc00']);
+  assert.equal((await fetch(second + '/api/v1/system/setup/tools/campaign?format=pdf', { headers: { cookie: f.cookie } })).status, 422);
   assert.ok((await f.store.listAudit()).some(e => e.action === 'brand.rules.update'));
   const next = await f.preview();
   await f.store.putGrant({ principal: 'group:owner', action: 'policy.edit', resource: '*', effect: 'deny' });

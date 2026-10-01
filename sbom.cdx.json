@@ -1,7 +1,7 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:394fd9a8-0038-4d70-8dde-af1b4a1aca49",
+  "serialNumber": "urn:uuid:eaeadea2-a9bc-4d53-81cc-b121531ff48b",
   "version": 1,
   "metadata": {
     "tools": [
@@ -1554,10 +1554,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/fast-uri@3.1.7",
+      "bom-ref": "pkg:npm/fast-uri@3.1.8",
       "name": "fast-uri",
-      "version": "3.1.7",
-      "purl": "pkg:npm/fast-uri@3.1.7",
+      "version": "3.1.8",
+      "purl": "pkg:npm/fast-uri@3.1.8",
       "scope": "required",
       "licenses": [
         {
@@ -1569,7 +1569,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "74ebd95738dd65dcfba6177dbfa8c26f0c6b056ddf2ba9fc45cd02b5d98ce1bba6ccc9f1cb005886ea61e89f35f51470fe4bbeacb6de9707ccba792dbb35551e"
+          "content": "19932d6544cd4693952040a85f02cd652e7150613e99535b4c1f21ffb4708764c559c05088fcd3832662d39045f543192a42c9bfc5c14494e553bce0f3e65f32"
         }
       ]
     },
@@ -2756,6 +2756,13 @@
       "version": "17.1.0",
       "purl": "pkg:npm/whatwg-url@17.1.0",
       "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
       "hashes": [
         {
           "alg": "SHA-512",

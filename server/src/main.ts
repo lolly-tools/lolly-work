@@ -24,12 +24,20 @@ import { expiringCredentials } from './catalog/credential-expiry.ts';
 import { auditHead } from './audit/head.ts';
 import { deriveAuditMacKey } from './audit/chain.ts';
 import { checkShellDist } from './lib/shell-dist.ts';
+import { assessSetup } from './setup/checks.ts';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { validateConfigDocument, buildConfigDocument, diffConfigDocument, commitConfigApply, canonicalHash, diffSummary } from './policy/config-doc.ts';
 
 const config = loadConfig();
 const secrets = loadSecrets(process.env, config);
+const setup = await assessSetup(config, secrets, !!process.env.DATABASE_URL?.trim());
+if (!setup.ready) {
+  for (const check of setup.checks.filter(check => check.status === 'fail')) console.error(`[lolly-work] ${check.id}: ${check.message}`);
+  for (const tool of setup.pack.tools.filter(tool => !tool.valid)) console.error(`[lolly-work] tool ${tool.id}: ${tool.diagnostics.join(' ')}`);
+  throw new Error('Production setup validation failed. Correct the reported settings before starting.');
+}
+console.log(`[lolly-work] deployment mode=${setup.mode}; storage=${process.env.DATABASE_URL ? 'postgres' : 'memory'}${setup.mode === 'evaluation' && !process.env.DATABASE_URL ? ' (lost on restart)' : ''}`);
 
 // The pack is read lazily per request, so a wrong path used to boot cleanly and
 // then serve an empty catalog with no signal anywhere. Say it once at boot. The

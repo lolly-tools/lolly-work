@@ -46,7 +46,7 @@ import {
   buildInviteMessage, eligibleInvitees, mayJoinSession, normalizeQuery, sessionLabel,
   INVITEE_LIMIT, MAX_LABEL_CHARS,
 } from '../collab/invites.ts';
-import { filterToolIndex, normalizeOverlay, toolVisibleTo } from '../policy/overlay.ts';
+import { filterToolIndex, normalizeOverlay, toolVisibleTo, resolveInputAccess } from '../policy/overlay.ts';
 import {
   applyLifecycleToIndex, assetState, buildPathMap, combinedState, entryWindow,
   type AssetFormatEntry, type AssetIndex, type AssetIndexEntry, type AssetState, type LifecycleRow,
@@ -77,7 +77,7 @@ import { materializeProvider, materializeAsset, cutoverProvider, pinAsset } from
 import { verifyLollyExport, extractProvenance } from '../catalog/publish.ts';
 import { createBrandService, BrandError } from '../brand/service.ts';
 import { createBrandRuleService } from '../brand/rule-service.ts';
-import { managedRuleContext, sourceRules, hash as brandPolicyHash } from '../brand/rules.ts';
+import { managedRuleContext, projectRuleOverlay, sourceRules, hash as brandPolicyHash } from '../brand/rules.ts';
 import { registerBrandRoutes } from '../brand/routes.ts';
 import { createBrandChrome } from '../brand/chrome.ts';
 import { createMemoryBlobStore } from '../blobs/memory.ts';
@@ -87,11 +87,20 @@ import { deliveryContentType, destinationAvailableTo, destinationDescriptor, des
 import type { ConfigDeliveryDestination, DeliveryRecord } from '../delivery/types.ts';
 import { EXT_PREFIX, extAssetId, PROVIDER_KINDS, type CatalogProvider, type ProviderAssetRef, type ProviderKind, type ProviderRecord } from '../catalog/providers/types.ts';
 import { createProvider } from '../catalog/providers/registry.ts';
+import { WEBDAV_SETUP, validateGuidedProvider } from '../catalog/providers/setup.ts';
+import { previewGuidedProvider } from '../catalog/providers/setup-preview.ts';
 import { noDetailShapeLine, noShapeLine, renderShapeReport, type ProviderShapeReport } from '../catalog/providers/shape.ts';
 import { invalidateAccessTokens } from '../catalog/providers/oauth.ts';
 import { assembleOrgConfig } from '../policy/org-config.ts';
 import { resolveAiPolicy } from '../policy/ai.ts';
 import { renderCapabilities } from '../render/capabilities.ts';
+import { assessSetup, productionMode, type SetupReport } from '../setup/checks.ts';
+import { inspectPack } from '../setup/pack.ts';
+import { consoleAccess } from '../setup/console-access.ts';
+import { registerSetupRoutes } from '../setup/routes.ts';
+import { identitySettingsHash } from '../setup/configuration.ts';
+import { loadEngine } from '../render/contract.ts';
+import type { AuditFilter } from '../audit/filter.ts';
 import { flagGovernanceCatalog, normalizeFlagGovernance } from '../policy/feature-flags.ts';
 import { validatePublish, factsFor } from '../injectables/registry.ts';
 import { KIND_HANDLERS } from '../injectables/kinds.ts';
@@ -192,8 +201,16 @@ export interface AppDeps {
 
 export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   const { config: deploymentConfig, store, secrets, listCollabRooms, nearby } = deps;
+  store.configureRoleGroups(deploymentConfig.idp.roleGroups);
   const blobs = deps.blobs ?? createMemoryBlobStore();
-  const brand = createBrandService(deploymentConfig, store, blobs);
+  const brand = createBrandService(deploymentConfig, store, blobs, {
+    ...(productionMode(deploymentConfig) ? { inspectSource: async (source: string) => {
+      const report = await inspectPack(deploymentConfig.instance.pack, { source,
+        workerConfigured: !!deploymentConfig.render.worker.url && !!secrets.renderWorker,
+        requireServerRendering: deploymentConfig.deployment.requireServerRendering });
+      return report.compatible ? [] : ['The replacement pack is incompatible with this deployment. Run inspect:pack for tool diagnostics.'];
+    } } : {}),
+  });
   const brandRules = createBrandRuleService(brand, store, deploymentConfig.dev.enabled);
   const config = { ...deploymentConfig, instance: { ...deploymentConfig.instance, get pack() { return brand.root(); } } };
   const renderTool = (...args: Parameters<typeof renderToolUnscoped>) => {
@@ -444,11 +461,28 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   const LINK_PASSWORD_MISSES = 10;
   const LINK_PASSWORD_LOCK_MS = 15 * 60 * 1000;
 
+  let setupMemo: { revision: string; expires: number; report: Promise<SetupReport> } | undefined;
+  const setupReport = async () => {
+    const snapshot = await brand.snapshot();
+    const revision = `${productionMode(config) ? 'production' : 'evaluation'}:${snapshot.revision}`;
+    if (!setupMemo || setupMemo.revision !== revision || setupMemo.expires <= Date.now()) {
+      setupMemo = { revision, expires: Date.now() + 60_000,
+        report: assessSetup(config, secrets, store.storageKind === 'postgres') };
+      const current = setupMemo;
+      void current.report.catch(() => { if (setupMemo === current) setupMemo = undefined; });
+    }
+    return setupMemo.report;
+  };
+
   // Readiness, distinct from liveness: a pod whose store cannot answer must
   // leave the Service until it can. Unauthenticated and cheap (`select 1`).
   router.add('GET', '/readyz', async (_req, res) => {
-    const ok = await store.ping().catch(() => false);
-    sendJson(res, ok ? 200 : 503, { ok, store: process.env.DATABASE_URL ? 'postgres' : 'memory' });
+    const storeOk = await store.ping().catch(() => false);
+    const configured = !productionMode(config) || (storeOk
+      && await store.pendingMigrations().then(pending => pending.length === 0).catch(() => false)
+      && await setupReport().then(report => report.ready).catch(() => false));
+    const ok = storeOk && configured;
+    sendJson(res, ok ? 200 : 503, { ok, store: store.storageKind });
   });
   // ── health + metrics ──────────────────────────────────────────────────────
   router.add('GET', '/healthz', (_req, res) => {
@@ -680,12 +714,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const identity = mapClaims(claims, idp.claimMap, idp.groupsClaim);
     // The namespace prefix (empty for primary) keeps two issuers' subs apart.
     identity.sub = `${idp.subPrefix}${identity.sub}`;
-    const user = await store.upsertUserBySub({ ...identity, role: roleFromGroups(identity.groups) });
+    const user = await store.upsertUserBySub({ ...identity, role: roleFromGroups(identity.groups, config.idp.roleGroups) });
     const sessionUser: SessionUser = {
       sub: user.sub, email: user.email, groups: user.groups, role: user.role,
       name: displayName(user), epoch: user.sessionEpoch,
     };
-    await audit(`user:${user.id}`, 'auth.login', 'session', { provider: 'oidc', idp: idp.id });
+    await audit(`user:${user.id}`, 'auth.login', 'session', { provider: 'oidc', idp: idp.id, setupFingerprint: identitySettingsHash(config) });
     res.writeHead(302, {
       location: box.returnTo,
       'set-cookie': [
@@ -705,7 +739,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const groups = devUser.groups ?? [];
     const user = await store.upsertUserBySub({
       sub: `dev:${devUser.email}`, email: devUser.email, groups,
-      role: roleFromGroups(groups),
+      role: roleFromGroups(groups, config.idp.roleGroups),
       ...(devUser.name ? { firstname: devUser.name } : {}),
     });
     const sessionUser: SessionUser = {
@@ -736,7 +770,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const id = resolved.identity;
     const user = await store.upsertUserBySub({
       sub: `proxy:${id.user}`, email: id.email, groups: id.groups,
-      role: roleFromGroups(id.groups),
+      role: roleFromGroups(id.groups, config.idp.roleGroups),
       ...(id.firstname ? { firstname: id.firstname } : {}),
       ...(id.lastname ? { lastname: id.lastname } : {}),
     });
@@ -744,7 +778,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       sub: user.sub, email: user.email, groups: user.groups, role: user.role,
       name: displayName(user), epoch: user.sessionEpoch,
     };
-    await audit(`user:${user.id}`, 'auth.login', 'session', { provider: 'proxy', directory: id.sources.directory });
+    await audit(`user:${user.id}`, 'auth.login', 'session', { provider: 'proxy', directory: id.sources.directory, setupFingerprint: identitySettingsHash(config) });
     res.writeHead(302, {
       location: returnToSafe(ctx.url.searchParams.get('returnTo')),
       'set-cookie': mintSessionCookie(sessionUser, secrets.session, secure, sessionTtlSec),
@@ -760,7 +794,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'session user unknown or disabled');
-    return sendJson(res, 200, { kind: 'member', user: { sub: user.sub, email: user.email, groups: user.groups, role: user.role } });
+    const access = consoleAccess({ userId: user.id, groups: user.groups, role: user.role as Role }, await store.listGrants());
+    return sendJson(res, 200, { kind: 'member', user: { sub: user.sub, email: user.email, groups: user.groups, role: user.role }, console: access }, { 'cache-control': 'no-store' });
   });
 
   router.add('POST', '/api/auth/logout', (_req, res) => {
@@ -944,7 +979,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       idpGroups: groups,
       localGroups: [],
       groups,
-      role: roleFromGroups(groups),
+      role: roleFromGroups(groups, config.idp.roleGroups),
       sessionEpoch: 0,
       createdAt: now,
       lastSeenAt: now,
@@ -1856,7 +1891,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     await store.putApiToken(rec);
     await audit(`user:${actor.id}`, 'token.create', `token:${rec.id}`, { label, role: body.role });
     // The one and only time the secret exists in a response.
-    sendJson(res, 201, { ...tokenWire(rec), token: secret });
+    sendJson(res, 201, { ...tokenWire(rec), token: secret }, { 'cache-control': 'no-store' });
   });
 
   router.add('GET', '/api/v1/tokens', async (req, res) => {
@@ -2050,6 +2085,21 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     sendJson(res, 200, { pending, current: pending.length === 0 });
   });
 
+  router.add('GET', '/api/v1/system/setup', async (req, res) => {
+    if (!(await requireAction(req, res, 'instance.config'))) return;
+    const report = await setupReport();
+    const [reachable, pending] = await Promise.all([store.ping().catch(() => false), store.pendingMigrations().catch(() => null)]);
+    const checks = [...report.checks,
+      { id: 'database-live', status: reachable ? 'pass' : 'fail', message: reachable ? 'The store answered this check.' : 'The store cannot answer. Check database availability.' },
+      { id: 'schema', status: pending === null || pending.length ? 'fail' : 'pass', message: pending === null
+        ? 'The schema check is unavailable. Check database availability.' : pending.length ? 'Apply pending migrations before acceptance.' : 'No pending migrations.' },
+    ];
+    sendJson(res, 200, { ...report, checkedAt: new Date().toISOString(), ready: !checks.some(check => check.status === 'fail'), checks }, { 'cache-control': 'no-store' });
+  });
+
+  registerSetupRoutes(router, { config: deploymentConfig, store, secrets, fetchImpl, audit,
+    owner: (req, res) => requireAction(req, res, 'instance.config') });
+
   router.add('GET', '/api/v1/telemetry/summary', async (req, res) => {
     if (!(await requireAction(req, res, 'telemetry.view'))) return;
     sendJson(res, 200, summarize(await store.listEvents()));
@@ -2099,13 +2149,20 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!(await requireAction(req, res, 'audit.export'))) return;
     const limit = Math.min(Math.max(1, Number(ctx.url.searchParams.get('limit') ?? 200) || 200), 1000);
     const before = Math.max(0, Number(ctx.url.searchParams.get('before') ?? 0) || 0);
-    const [events, total, chain, anchor] = await Promise.all([
-      store.listAuditBefore(before, limit), store.countAudit(), auditVerdict(), store.getAuditAnchor(),
+    const filter: AuditFilter = {};
+    for (const key of ['actor', 'action', 'subject', 'since', 'until'] as const) {
+      const value = ctx.url.searchParams.get(key);
+      if (!value) continue;
+      if (value.length > 300 || (['since', 'until'].includes(key) && !Number.isFinite(Date.parse(value)))) return sendError(res, 400, 'INVALID_INPUT', 'Audit filters need bounded values and valid dates.');
+      filter[key] = key === 'since' || key === 'until' ? new Date(value).toISOString() : value;
+    }
+    if (filter.since && filter.until && filter.since > filter.until) return sendError(res, 400, 'INVALID_INPUT', 'The audit start date must precede the end date.');
+    const [page, total, matched, chain] = await Promise.all([
+      store.listAuditBefore(before, limit + 1, filter), store.countAudit(), store.countAudit(filter), auditVerdict(),
     ]);
-    const floor = (anchor?.seq ?? 0) + 1;
-    const oldest = events[0]?.seq;
-    const nextBefore = oldest !== undefined && oldest > floor ? oldest : null;
-    sendJson(res, 200, { chain, total, events, nextBefore });
+    const events = page.slice(Math.max(0, page.length - limit));
+    const nextBefore = page.length > limit ? events[0]!.seq : null;
+    sendJson(res, 200, { chain, total, matched, events, nextBefore });
   });
 
   // The chain head alone (seq + hash + intact flag) - small enough to record
@@ -2416,9 +2473,28 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!user) return;
     const chain = normalizeChain(ctx.params.id as string, await readJson(req));
     if (!chain) return sendError(res, 400, 'INVALID_INPUT', 'a chain needs at least one step, each with approver groups and a valid rule');
+    chain.version = ((await store.getChain(chain.id))?.version ?? 0) + 1;
     await store.putChain(chain);
     await audit(`user:${user.id}`, 'chain.edit', `chain:${chain.id}`, { steps: chain.steps.length });
     sendJson(res, 200, chain);
+  });
+
+  router.add('POST', '/api/v1/chains/preview', async (req, res) => {
+    const actor = await requireAction(req, res, 'policy.edit');
+    if (!actor) return;
+    const body = await readJson(req) as { id?: string } | null;
+    const chain = normalizeChain(typeof body?.id === 'string' ? body.id : 'preview', body);
+    if (!chain) return sendError(res, 400, 'INVALID_INPUT', 'Enter a valid chain before previewing.');
+    const [users, grants] = await Promise.all([store.listUsers(), store.listGrants()]);
+    const steps = chain.steps.map(step => {
+      const eligible = users.filter(user => !user.disabledAt && isEligible(step, user.groups)
+        && evaluate({ userId: user.id, role: user.role as Role, groups: user.groups }, 'approval.act', [`chain:${chain.id}`, '*'], grants));
+      const required = typeof step.rule === 'object' ? step.rule.quorum : 1;
+      const otherEligibleCount = eligible.filter(user => user.id !== actor.id).length;
+      return { name: step.name, eligibleCount: eligible.length, otherEligibleCount,
+        required, viable: otherEligibleCount >= required };
+    });
+    sendJson(res, 200, { steps, viable: steps.every(step => step.viable) }, { 'cache-control': 'no-store' });
   });
 
   // Nominatable approvers for a chain step - what the shell's "Request approval"
@@ -2435,8 +2511,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const stepIndex = Math.max(0, Number(ctx.url.searchParams.get('step') ?? 0) || 0);
     const step = stepOf(chain, stepIndex);
     if (!step) return sendError(res, 404, 'NOT_FOUND', 'no such step');
+    const grants = await store.listGrants();
+    const subjectRef = ctx.url.searchParams.get('subjectRef') ?? '';
     const approvers = (await store.listUsers())
-      .filter((u) => !u.disabledAt && u.id !== user.id && isEligible(step, u.groups)) // exclude self: separation of duties
+      .filter((u) => !u.disabledAt && u.id !== user.id && isEligible(step, u.groups)
+        && evaluate({ userId: u.id, role: u.role as Role, groups: u.groups }, 'approval.act', [`chain:${chain.id}`, subjectRef, '*'], grants))
       .map((u) => ({ id: u.id, name: displayName(u) }));
     sendJson(res, 200, { chainId, step: stepIndex, stepName: step.name, groups: step.approvers.groups, approvers });
   });
@@ -2456,13 +2535,23 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!body?.chainId || typeof body.chainId !== 'string') return sendError(res, 400, 'INVALID_INPUT', 'chainId required');
     const chain = await store.getChain(body.chainId);
     if (!chain) return sendError(res, 404, 'NOT_FOUND', 'no such chain');
+    if (body.nominees !== undefined && (!Array.isArray(body.nominees) || body.nominees.some(id => typeof id !== 'string' || !id))) {
+      return sendError(res, 400, 'INVALID_INPUT', 'nominees must be an array of user IDs');
+    }
     const nominees = Array.isArray(body.nominees) ? body.nominees.filter((n): n is string => typeof n === 'string') : [];
     const check = validateNominees(chain, 0, nominees, await userGroupsMap());
     if (!check.ok) return sendError(res, 400, 'NOMINEE_NOT_ELIGIBLE', `not eligible for the first step: ${check.ineligible.join(', ')}`);
+    const [users, grants] = await Promise.all([store.listUsers(), store.listGrants()]);
+    const subjectRef = typeof body.subjectRef === 'string' ? body.subjectRef.slice(0, 300) : '';
+    const canReview = (candidate: typeof user) => !candidate.disabledAt && candidate.id !== user.id
+      && evaluate({ userId: candidate.id, groups: candidate.groups, role: candidate.role as Role }, 'approval.act', [`chain:${chain.id}`, subjectRef, '*'], grants);
+    if (nominees.some(id => !users.some(candidate => candidate.id === id && canReview(candidate)))) {
+      return sendError(res, 400, 'NOMINEE_NOT_ELIGIBLE', 'Nominees must be active reviewers with approval.act permission and cannot include the requester.');
+    }
     const approval = createApproval({
       id: `apr_${randomId(8)}`,
       subjectType: body.subjectType as SubjectType,
-      subjectRef: typeof body.subjectRef === 'string' ? body.subjectRef.slice(0, 300) : '',
+      subjectRef,
       title: body.title.slice(0, 200),
       chain, nominees, createdBy: user.id, now: new Date().toISOString(),
     });
@@ -2483,8 +2572,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // nominees, minus the requester - the same audience the inbox targets,
     // reached where they actually are.
     const step0 = currentStep(approval);
-    const reviewers = (await store.listUsers()).filter((u) =>
-      !u.disabledAt && u.id !== user.id && (nominees.includes(u.id) || (step0 ? isEligible(step0, u.groups) : false)));
+    const reviewers = users.filter((u) => canReview(u) && (nominees.includes(u.id) || (step0 ? isEligible(step0, u.groups) : false)));
     notifier.email(reviewers.map((u) => u.email), `Approval requested: ${approval.title}`,
       `${user.email} asked for review on the “${step0?.name ?? 'first'}” step.\n\nReview it: ${config.instance.baseUrl}/admin#/approvals`);
     notifier.event('approval.requested', { id: approval.id, title: approval.title, chainId: chain.id, by: user.email });
@@ -2505,8 +2593,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       for (const a of await store.listApprovals({ createdBy: user.id })) out.set(a.id, serializeApproval(a, user.id, 'mine', actors));
     }
     if (wantInbox || both) {
+      const grants = await store.listGrants();
       for (const a of await store.listApprovals({ eligibleGroups: user.groups })) {
         if (a.createdBy === user.id) continue; // separation of duties - never review your own
+        if (!evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'approval.act', [`approval:${a.id}`, `chain:${a.chainId}`, a.subjectRef, '*'], grants)) continue;
         out.set(a.id, serializeApproval(a, user.id, 'inbox', actors));
       }
     }
@@ -2520,6 +2610,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const approval = await store.getApproval(ctx.params.id as string);
     if (!approval) return sendError(res, 404, 'NOT_FOUND', 'no such approval');
+    if (approval.createdBy === user.id) return sendError(res, 403, 'SEPARATION_OF_DUTIES', 'A requester cannot act on their own approval.');
+    if (!(await requireAction(req, res, 'approval.act', [`approval:${approval.id}`, `chain:${approval.chainId}`, approval.subjectRef, '*']))) return;
     const body = (await readJson(req)) as { action?: string; comment?: string } | null;
     if (body?.action !== 'approve' && body?.action !== 'reject') return sendError(res, 400, 'INVALID_INPUT', 'action must be approve or reject');
     const comment = typeof body.comment === 'string' && body.comment.trim() ? body.comment.slice(0, 2000) : undefined;
@@ -4520,6 +4612,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!approvalId) return sendError(res, 409, 'NO_CHAIN', 'this submission is not under review');
     const approval = await store.getApproval(approvalId);
     if (!approval) return sendError(res, 404, 'NOT_FOUND', 'the approval for this submission is gone');
+    if (approval.createdBy === user.id) return sendError(res, 403, 'SEPARATION_OF_DUTIES', 'A requester cannot act on their own approval.');
+    if (!(await requireAction(req, res, 'approval.act', [`approval:${approval.id}`, `chain:${approval.chainId}`, approval.subjectRef, '*']))) return;
     const body = (await readJson(req)) as { action?: string; comment?: string } | null;
     if (body?.action !== 'approve' && body?.action !== 'reject') return sendError(res, 400, 'INVALID_INPUT', 'action must be approve or reject');
     const comment = typeof body.comment === 'string' && body.comment.trim() ? body.comment.slice(0, 2000) : undefined;
@@ -4862,6 +4956,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     sendJson(res, 200, { providers: (await store.listProviders()).map(providerWire) });
   });
 
+  router.add('GET', '/api/v1/catalog/providers/setup', async (req, res) => {
+    if (!(await requireAction(req, res, 'catalog.provider.read'))) return;
+    sendJson(res, 200, { version: 1, providers: [WEBDAV_SETUP], credentialStorageAvailable: Boolean(secrets.credential) }, { 'cache-control': 'no-store' });
+  });
+
   router.add('POST', '/api/v1/catalog/providers', async (req, res) => {
     const user = await requireAction(req, res, 'catalog.provider.manage');
     if (!user) return;
@@ -4873,6 +4972,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const cfg = readProviderConfigBody(body);
     if ('error' in cfg) return sendError(res, 400, 'INVALID_INPUT', cfg.error);
     if (!cfg.kind || !cfg.label) return sendError(res, 400, 'INVALID_INPUT', 'kind and label required');
+    if (body?.setupVersion !== undefined) {
+      const problem = body.setupVersion !== 1 ? 'unsupported setup version' : validateGuidedProvider(cfg);
+      if (problem) return sendError(res, 400, 'INVALID_INPUT', problem);
+    }
     await providersReady;
     if (await store.getProvider(id)) return sendError(res, 409, 'CONFLICT', 'a provider with this id already exists');
     const now = new Date().toISOString();
@@ -4897,6 +5000,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const cfg = readProviderConfigBody(body);
     if ('error' in cfg) return sendError(res, 400, 'INVALID_INPUT', cfg.error);
     if (!cfg.kind) return sendError(res, 400, 'INVALID_INPUT', 'kind required');
+    if (body?.setupVersion !== undefined) {
+      const problem = body.setupVersion !== 1 ? 'unsupported setup version' : validateGuidedProvider(cfg);
+      if (problem) return sendError(res, 400, 'INVALID_INPUT', problem);
+    }
     const secret = typeof body?.secret === 'string' ? body.secret : undefined;
     const now = new Date().toISOString();
     const rec: ProviderRecord = {
@@ -4905,6 +5012,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       createdAt: now, updatedAt: now, state: { assetCount: 0 },
     };
     await audit(`user:${user.id}`, 'catalog.provider.preview', `provider-kind:${cfg.kind}`);
+    if (body?.setupVersion === 1 && body.shape !== true) {
+      return sendJson(res, 200, await previewGuidedProvider(rec, secret, deps.fetchImpl), { 'cache-control': 'no-store' });
+    }
     // --shape (plans/33 §3): the live-verify multiplier. Structure only - key
     // names and value types, never a value - so it answers "what is this field
     // actually called upstream" in one call. Rendered here rather than in the
@@ -5875,6 +5985,35 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!toolVisibleTo(overlay, caller.groups) && decision !== 'allow') return false;
     return evaluate(principal, 'tool.use', [`tool:${toolId}`, '*'], grants);
   };
+  router.add('GET', '/api/v1/system/setup/tools/:id', async (req, res, ctx) => {
+    const user = await requireAction(req, res, 'instance.config'); if (!user) return;
+    const toolId = ctx.params.id!;
+    const report = await setupReport();
+    if (!report.pack.tools.some(tool => tool.id === toolId && tool.valid)) return sendError(res, 404, 'TOOL_UNAVAILABLE', 'Choose a compatible tool from the installed pack.');
+    const caller = { user, principal: `user:${user.id}`, groups: user.groups, profile: renderProfileOf(user) };
+    if (!(await automationMayRender(caller, toolId))) return sendError(res, 403, 'FORBIDDEN', 'tool.use and export.server are required for this sample.');
+    const engine = await loadEngine();
+    const tool = await engine.loadTool(toolId, file => readFile(join(config.instance.pack, 'tools', file), 'utf8'));
+    const original = (await store.listOverlays()).get(toolId);
+    const formats = report.pack.tools.find(tool => tool.id === toolId)!.serverFormats.filter(format =>
+      ['svg', 'png', 'jpg'].includes(format) && (!original?.enforce?.formats || original.enforce.formats.some(value => (value === 'jpeg' ? 'jpg' : value) === format)));
+    const format = ctx.url.searchParams.get('format') ?? formats[0] ?? 'svg';
+    if (ctx.url.searchParams.has('format') && !formats.includes(format)) return sendError(res, 422, 'FORMAT_UNAVAILABLE', 'Choose a governed checked format for this tool.');
+    const rules = await managedRuleContext(brand.current()!, toolId, format);
+    const overlay = rules ? projectRuleOverlay(original, rules, user.groups) : original;
+    const values = engine.buildInputModel(tool.manifest, { profile: caller.profile, initial: {} });
+    const inputs = (await readToolManifestInputs(toolId) ?? []).flatMap(input => {
+      const access = resolveInputAccess(overlay, String(input.id), user.groups);
+      if (access.level === 'hidden') return [];
+      return [{ ...input, value: access.level === 'locked' ? access.value : values.find(value => value.id === input.id)?.value,
+        access: access.level, ...(access.allow ? { allow: access.allow } : {}), ...(access.reason ? { reason: access.reason } : {}) }];
+    });
+    const declared = tool.manifest.render as { width?: number; height?: number; unit?: string };
+    const expectedDimensions = !declared.unit || declared.unit === 'px' ? {
+      widthPx: declared.width ?? null, heightPx: declared.height ?? null,
+    } : { widthPx: null, heightPx: null };
+    sendJson(res, 200, { toolId, inputs, formats, format, expectedDimensions }, { 'cache-control': 'no-store' });
+  });
   // Durable resources store identity references, never a session/token or a
   // captured permission decision. Each attempt resolves the current account.
   const currentRenderCaller = async (principal: string, request: RenderSpec) => {

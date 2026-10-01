@@ -93,7 +93,7 @@ export function assess(text: string, format: 'config' | 'manifests'): Report {
     check('config.secret-material', !hasEmbeddedSecret(raw), 'Instance configuration must contain references rather than embedded credentials or private keys.');
     // The parser can warn with unknown input keys. Do not call it on unknown
     // top-level keys: untrusted configuration must never be echoed to logs.
-    const known = new Set(['instance', 'idp', 'policy', 'render', 'audit', 'rateLimit', 'dev', 'proxyAuth', 'catalogProviders', 'delivery', 'blobs', 'notify', 'siem', 'submit']);
+    const known = new Set(['deployment', 'instance', 'idp', 'policy', 'render', 'audit', 'rateLimit', 'dev', 'proxyAuth', 'catalogProviders', 'delivery', 'blobs', 'notify', 'siem', 'submit']);
     const knownKeys = Object.keys(object(raw)).every(key => known.has(key) || key.startsWith('_') || key.startsWith('$'));
     try {
       if (!knownKeys) throw new Error();

@@ -18,6 +18,7 @@ import { validateAiConfig } from '../policy/ai.ts';
 import { PROVIDER_KINDS, type ProviderExposure, type ProviderKind, type ProviderMapping, type ProviderSyncConfig } from '../catalog/providers/types.ts';
 import { DELIVERY_DESTINATION_KINDS, type ConfigDeliveryDestination } from '../delivery/types.ts';
 import type { ClaimMap } from '../iam/oidc.ts';
+import type { RoleGroups } from '../rbac/evaluate.ts';
 
 /** A deploy-time (GitOps/air-gap) provider entry - upserted at boot with
  *  managedBy:'config' and read-only in the control-plane API (plans/17 §4).
@@ -91,6 +92,11 @@ export interface SubmitScanHook {
 }
 
 export interface InstanceConfig {
+  deployment: {
+    mode: 'auto' | 'evaluation' | 'production';
+    application: 'api' | 'web';
+    requireServerRendering: boolean;
+  };
   instance: {
     name: string;
     baseUrl: string;
@@ -123,6 +129,7 @@ export interface InstanceConfig {
     issuer: string;
     clientId: string;
     groupsClaim: string;
+    roleGroups: RoleGroups;
     claimMap: ClaimMap;
     /** Human name for the sign-in button and "managed by …" copy - e.g.
      *  "Keycloak", "SUSE ID", "ZITADEL". Any OIDC issuer works (open and
@@ -378,6 +385,7 @@ export interface Secrets {
 }
 
 const DEFAULTS: InstanceConfig = {
+  deployment: { mode: 'auto', application: 'api', requireServerRendering: false },
   // The default pack is the small demo pack committed at packs/demo, so an
   // unconfigured instance serves a real catalog instead of an empty one.
   instance: { name: 'Lolly Work', baseUrl: 'http://localhost:8787', pack: './packs/demo' },
@@ -385,6 +393,7 @@ const DEFAULTS: InstanceConfig = {
     issuer: '',
     clientId: '',
     groupsClaim: 'groups',
+    roleGroups: {},
     claimMap: { firstname: 'given_name', lastname: 'family_name', email: 'email', title: 'title' },
     displayName: '',
     additional: [],
@@ -500,6 +509,14 @@ function validateProxyAuth(pa: ProxyAuthConfig): void {
 
 export function parseConfig(json: string): InstanceConfig {
   const raw = JSON.parse(json) as Partial<InstanceConfig>;
+  // Check mapping keys before merging can turn a JSON __proto__ key into inheritance.
+  if (raw.idp && Object.hasOwn(raw.idp, 'roleGroups')) {
+    const input = raw.idp.roleGroups;
+    if (!input || typeof input !== 'object' || Array.isArray(input)
+      || Object.keys(input).some(role => !['owner', 'admin', 'approver', 'author', 'member', 'viewer'].includes(role))) {
+      throw new Error('idp.roleGroups must map supported roles to group arrays');
+    }
+  }
   // A key the schema does not know is almost always a typo that silently
   // leaves a default in force (`render.allowHooksInFastpath`). Say so once.
   for (const key of Object.keys(raw as Record<string, unknown>)) {
@@ -508,12 +525,27 @@ export function parseConfig(json: string): InstanceConfig {
     }
   }
   const cfg = merge(DEFAULTS as unknown as Record<string, unknown>, raw as Record<string, unknown>) as unknown as InstanceConfig;
+  if (!['auto', 'evaluation', 'production'].includes(cfg.deployment?.mode)
+    || !['api', 'web'].includes(cfg.deployment?.application)
+    || typeof cfg.deployment?.requireServerRendering !== 'boolean') {
+    throw new Error('deployment requires mode (auto/evaluation/production), application (api/web) and boolean requireServerRendering');
+  }
   if (cfg.instance.brandTokens !== undefined && (cfg.instance.brandTokens === null || Array.isArray(cfg.instance.brandTokens)
     || typeof cfg.instance.brandTokens !== 'object' || Object.entries(cfg.instance.brandTokens).some(([key, value]) =>
       !/^(mounted|profile:[a-z0-9][a-z0-9-]*)$/.test(key) || typeof value !== 'string' || !value.trim()))) {
     throw new Error('instance.brandTokens must map mounted or profile:<name> source ids to tokens asset ids');
   }
   const mode = cfg.policy.defaultAccessMode;
+  const roles = ['owner', 'admin', 'approver', 'author', 'member', 'viewer'];
+  const mapping = cfg.idp.roleGroups;
+  if (!mapping || typeof mapping !== 'object' || Array.isArray(mapping)
+    || Object.entries(mapping).some(([role, groups]) => !roles.includes(role) || !Array.isArray(groups) || groups.length > 100
+      || groups.some(group => typeof group !== 'string' || !group.trim() || group !== group.trim() || group.length > 300 || group === '*' || /[\u0000-\u001f]/.test(group)))) {
+    throw new Error('idp.roleGroups must map supported roles to arrays of exact non-empty group names');
+  }
+  const assignedGroups = (['owner', 'admin', 'approver', 'author', 'member', 'viewer'] as const)
+    .flatMap(role => mapping[role] ?? (['owner', 'admin', 'approver', 'author'].includes(role) ? [role] : []));
+  if (new Set(assignedGroups).size !== assignedGroups.length) throw new Error('idp.roleGroups cannot assign a group more than once');
   validateAiConfig(cfg.policy.ai);
   if (!['open', 'gated', 'per-tool'].includes(mode)) throw new Error(`invalid defaultAccessMode: ${mode}`);
   if (!['off', 'aggregate', 'standard'].includes(cfg.policy.telemetry)) {
@@ -723,8 +755,8 @@ export function linkKeys(s: Secrets): readonly string[] {
   return s.linkPrevious ? [s.link, s.linkPrevious] : [s.link];
 }
 
-export function loadSecrets(env = process.env, cfg?: Pick<InstanceConfig, 'proxyAuth'>): Secrets {
-  const prod = env.NODE_ENV === 'production';
+export function loadSecrets(env = process.env, cfg?: Pick<InstanceConfig, 'proxyAuth'> & Partial<Pick<InstanceConfig, 'deployment'>>): Secrets {
+  const prod = cfg?.deployment?.mode === 'production' || (cfg?.deployment?.mode !== 'evaluation' && env.NODE_ENV === 'production');
   const need = (name: string): string => {
     const v = env[name];
     if (v) return v;

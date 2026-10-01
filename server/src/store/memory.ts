@@ -1,4 +1,5 @@
 import type { CanvasCheckpoint, CanvasOp } from '@lolly-tools/core/canvas-op-v1';
+import { matchesAudit } from '../audit/filter.ts';
 import { initialBrandState } from '../brand/state.ts';
 import type { CollabReceipt } from './types.ts';
 /**
@@ -9,7 +10,7 @@ import { randomId } from '../lib/crypto.ts';
 import { nextEvent, type AuditAnchor, type AuditEvent, type AuditEventBody } from '../audit/chain.ts';
 import { clientBucket, type ClientInfo } from '../fleet/client-header.ts';
 import { eligibleForCurrentStep, type Approval, type Chain } from '../approvals/engine.ts';
-import { roleFromGroups, type Grant } from '../rbac/evaluate.ts';
+import { roleFromGroups, type Grant, type RoleGroups } from '../rbac/evaluate.ts';
 import type { ToolOverlay } from '../policy/overlay.ts';
 import type { FlagGovernance } from '../policy/feature-flags.ts';
 import type { InjectableRecord } from '../injectables/types.ts';
@@ -36,6 +37,8 @@ const sameGrant = (a: Grant, b: Grant): boolean =>
   a.principal === b.principal && a.action === b.action && a.resource === b.resource && a.effect === b.effect;
 
 export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOverlay[]; messages?: Message[]; flagGovernance?: FlagGovernance[]; injectables?: InjectableRecord[] }): Store {
+  let roleGroups: RoleGroups = {};
+  const mapped = (user: UserRecord): UserRecord => ({ ...user, role: roleFromGroups(user.groups, roleGroups) });
   let brandState = initialBrandState();
   const users = new Map<string, UserRecord>(); // by sub
   const localGroups = new Map<string, LocalGroupRecord>(); // registry, by name
@@ -99,6 +102,8 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   });
 
   return {
+    configureRoleGroups(mapping) { roleGroups = structuredClone(mapping); },
+    storageKind: 'memory',
     ...createMemoryRenderStore(),
     brandPersistence: 'ephemeral',
     async getBrandState() { return structuredClone(brandState); },
@@ -117,7 +122,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       const idpGroups = [...new Set(user.groups.filter(Boolean))];
       const local = existing?.localGroups ?? [];
       const groups = effectiveGroups(idpGroups, local);
-      const role = roleFromGroups(groups); // derived on the effective union
+      const role = roleFromGroups(groups, roleGroups); // derived on the effective union
       const next: UserRecord = existing
         ? { ...existing, ...user, idpGroups, localGroups: local, groups, role, lastSeenAt: now }
         : { ...user, id: randomId(8), idpGroups, localGroups: local, groups, role, sessionEpoch: 0, createdAt: now, lastSeenAt: now };
@@ -125,10 +130,10 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       return next;
     },
     async getUserBySub(sub) {
-      return users.get(sub) ?? null;
+      const user = users.get(sub); return user ? mapped(user) : null;
     },
     async getUser(id) {
-      for (const u of users.values()) if (u.id === id) return u;
+      for (const u of users.values()) if (u.id === id) return mapped(u);
       return null;
     },
     async setTelemetryConsent(userId, consent) {
@@ -137,10 +142,10 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       }
     },
     async listUsers() {
-      return [...users.values()];
+      return [...users.values()].map(mapped);
     },
     async listUsersPage(opts) {
-      let rows = [...users.values()];
+      let rows = [...users.values()].map(mapped);
       const q = opts.q?.trim().toLowerCase();
       if (q) {
         rows = rows.filter((u) =>
@@ -181,7 +186,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
         if (u.id !== userId) continue;
         const localGroupsNext = [...new Set(local.filter(Boolean))];
         const groups = effectiveGroups(u.idpGroups, localGroupsNext);
-        const next: UserRecord = { ...u, localGroups: localGroupsNext, groups, role: roleFromGroups(groups) };
+        const next: UserRecord = { ...u, localGroups: localGroupsNext, groups, role: roleFromGroups(groups, roleGroups) };
         users.set(u.sub, next);
         return next;
       }
@@ -195,7 +200,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
         if (disabledAt) { next.disabledAt = disabledAt; next.sessionEpoch = u.sessionEpoch + 1; }
         else delete next.disabledAt;
         users.set(u.sub, next);
-        return next;
+        return mapped(next);
       }
       return null;
     },
@@ -204,7 +209,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
         if (u.id !== userId) continue;
         const next: UserRecord = { ...u, sessionEpoch: u.sessionEpoch + 1 };
         users.set(u.sub, next);
-        return next;
+        return mapped(next);
       }
       return null;
     },
@@ -221,7 +226,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
         if (!u.localGroups.includes(name)) continue;
         const local = u.localGroups.filter((g) => g !== name);
         const groups = effectiveGroups(u.idpGroups, local);
-        users.set(u.sub, { ...u, localGroups: local, groups, role: roleFromGroups(groups) });
+        users.set(u.sub, { ...u, localGroups: local, groups, role: roleFromGroups(groups, roleGroups) });
       }
     },
 
@@ -424,12 +429,12 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     async listAudit() {
       return [...audit];
     },
-    async listAuditBefore(before, limit) {
-      const upto = before > 0 ? audit.filter((e) => e.seq < before) : audit;
+    async listAuditBefore(before, limit, filter) {
+      const upto = audit.filter(event => (before <= 0 || event.seq < before) && matchesAudit(event, filter));
       return upto.slice(Math.max(0, upto.length - limit));
     },
-    async countAudit() {
-      return audit.length;
+    async countAudit(filter) {
+      return filter ? audit.filter(event => matchesAudit(event, filter)).length : audit.length;
     },
     async ping() {
       return true;

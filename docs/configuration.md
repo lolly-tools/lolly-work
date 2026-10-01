@@ -11,6 +11,26 @@ starting point, and `server/src/config/instance.ts` is the authority.
 **Secrets are never in the config file.** Config is safe to keep in git; secrets come from
 the environment.
 
+## `deployment`
+
+| Key | Default | What it does |
+|---|---|---|
+| `mode` | `auto` | `production` enforces production checks regardless of NODE_ENV. `evaluation` deliberately permits memory storage and ephemeral secrets, including inside a production container. `auto` inherits production from NODE_ENV for existing installations. |
+| `application` | `api` | `api` serves the console and API without requiring an employee shell. `web` requires a governed shellDir or external appUrl. A configured shellDir is checked in either profile. |
+| `requireServerRendering` | `false` | Require every advertised tool to have at least one configured server format. Hooked tools need a worker URL and secret. This checks configuration, not a successful worker render. |
+
+Production refuses memory storage, development login, open access, missing identity,
+an unsafe public base URL, signing secrets shorter than 32 bytes, inconsistent worker
+or signer configuration, and an incompatible active pack. Helm defaults to production;
+the evaluation overlay and example JSON explicitly select evaluation. An old shell cannot
+bypass production validation with `LW_ALLOW_STALE_SHELL`.
+
+Run `pnpm run check:setup` with the deployment's config and environment to read the same
+local checks as startup. It exits 1 for failed production checks and 0 otherwise; a zero
+exit does not turn `not-tested` integrations into acceptance evidence. It neither connects
+to the database nor calls identity, renderer or asset providers. The owner console's
+**Customer setup** page additionally checks the running store and pending migrations.
+
 ## `instance`
 
 | Key | Default | What it does |
@@ -26,7 +46,10 @@ the environment.
 `pack` supports materialized trees, modern `profiles.json` roots and legacy brand layouts. Selection lives in the Store; mounted files are never rewritten. See [Design-system administration](design-system-administration.md) for persistence requirements and explicit tokens selection.
 
 Under a non-`open` access mode, a `shellDir` that is missing or predates the `org/`
-governance module **stops boot**. `LW_ALLOW_STALE_SHELL=1` downgrades it to a warning.
+governance module **stops boot**. In evaluation, `LW_ALLOW_STALE_SHELL=1` downgrades
+the legacy shell guard to a warning; production validation still refuses it.
+
+For generated deployment files and a staged owner cutover, use [Customer setup](customer-setup.md).
 
 ## `idp`
 
@@ -37,6 +60,7 @@ governance module **stops boot**. `LW_ALLOW_STALE_SHELL=1` downgrades it to a wa
 | `displayName` | `""` | human name on the sign-in button ("Keycloak", "SUSE ID", "ZITADEL"). Empty ⇒ "SSO" |
 | `groupsClaim` | `groups` | the claim carrying group membership |
 | `claimMap` | `given_name` / `family_name` / `email` / `title` | which claims fill firstname, lastname, email, title |
+| `roleGroups` | `{}` | exact groups for owner/admin/approver/author/member/viewer. Highest match wins; unmatched accounts are members. Omitted high roles retain literal legacy names; omitted member/viewer have no mapping. An explicit empty array disables that role mapping. Each group can appear once. Applies to IdP and local groups, including existing accounts after restart. |
 | `additional` | `[]` | further IdPs beside the primary - each `{ id, issuer, clientId, displayName, groupsClaim?, claimMap?, clientSecretRef? }`. Unset claims inherit the primary's; the secret rides the env var `clientSecretRef` names; subs store namespaced `<id>:<sub>`. With several houses, plain `/api/auth/login` serves a chooser. See [identity](identity.md#more-than-one-idp) |
 
 Gated access needs `idp.issuer` - or `dev.enabled` for local work. The server refuses to

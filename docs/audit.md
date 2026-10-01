@@ -88,6 +88,21 @@ is the authoritative record with chain verification; Activity is the humane merg
 (audit + attributed telemetry) with actor and category facets. `audit.export` gates the raw
 API.
 
+The console filters **the full retained history**, before pagination, by exact actor ID,
+action and subject plus an inclusive UTC date range. The API accepts `actor`, `action`,
+`subject`, `since`, `until`, `limit` (up to 1000), and `before` (sequence cursor):
+
+```
+GET /api/v1/audit?action=approval.submit&limit=50
+```
+
+Responses include `total` for the retained log, `matched` for the full filtered history,
+and `nextBefore` for an older matching page. Keep the filters when following that cursor.
+Rows within each page remain in ascending sequence order. Invalid or reversed date ranges
+are rejected. The chain verdict covers the complete retained chain, not the filtered rows;
+filtered rows alone cannot prove chain continuity. Actor filtering currently uses stored
+IDs rather than a broader identity-directory lookup.
+
 ## Related
 
 - What else is recorded, and what deliberately is not: [telemetry](telemetry.md)

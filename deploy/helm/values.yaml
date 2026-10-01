@@ -77,6 +77,10 @@ fullnameOverride: ""
 # `instance.pack` MUST match where the pack is mounted (see `pack:` below); with
 # pack.type=none catalog serving is degraded until you mount one.
 config:
+  deployment:
+    mode: production
+    application: api
+    requireServerRendering: false
   instance:
     name: "Lolly Work"
     baseUrl: "https://lolly.example.com"

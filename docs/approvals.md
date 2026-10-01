@@ -80,6 +80,20 @@ the console's Approvals view) shows what needs them. The console's overview surf
 
 ## Watermarking preview output
 
+The **Approval chains** console page edits ordered groups and any/quorum/all rules, moves
+steps, and previews aggregate reviewer counts. Editing requires `policy.edit`. Preview
+excludes disabled accounts, applies `approval.act` grants and denies, and reports counts
+excluding the operator because a requester cannot review their own work. It is a chain
+preview, not a guarantee for every subject-specific grant or later nomination. Chain saves
+advance the version; existing requests keep their submitted snapshot.
+
+Both generic and catalog review actions require `approval.act` as well as group
+eligibility and separation of duties. Nomination choices, new nominations, notifications
+and the generic inbox also respect effective permissions. A custom reviewer group whose
+members have the member role needs an explicit allow grant, for example `approval.act`
+on `chain:brand-review`. A deny still wins. Review-chain configuration does not bind
+ordinary tool exports to reviewed final bytes; that export workflow remains pending.
+
 An overlay can set `enforce.watermark: 'until-approved'`, which is the intended pairing with
 a chain: previews carry the diagonal PREVIEW brick pattern while the work is unapproved.
 Today the compositor knows only "watermark now" vs "don't": `always` is enforced, the

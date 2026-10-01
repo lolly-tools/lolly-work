@@ -4,6 +4,9 @@ From nothing to a **running, configured, governed instance** - on a workstation 
 openSUSE Leap / macOS), a single VM, or Kubernetes. Every command here is meant to be
 copy-pasted as written.
 
+After the first owner can sign in, use [Guided customer setup](customer-setup.md) or
+**Customer setup** in the console for configuration files, identity checks and a checked sample.
+
 | I want to... | Go to | Time |
 |---|---|---|
 | Just look, install nothing | [Hosted demo](#0-hosted-demo-zero-install) | 0 min |
@@ -71,7 +74,7 @@ the above:
 git clone https://github.com/lolly-tools/lolly-work.git
 cd lolly-work
 # Install the pinned package manager once (or use Corepack).
-npm install --global pnpm@11.1.2
+npm install --global pnpm@11.26.0
 pnpm install
 pnpm run demo            # http://localhost:8787   (PORT=8788 for another port)
 ```
@@ -193,7 +196,8 @@ resolves the live user record, so the same cookie gains and loses powers immedia
 
 Under a non-`open` access mode the server **refuses to start** if `shellDir` points at a
 missing or pre-governance dist, rather than silently serving an un-governed shell.
-`LW_ALLOW_STALE_SHELL=1` downgrades that to a loud warning.
+In evaluation, `LW_ALLOW_STALE_SHELL=1` downgrades that to a loud warning. Production
+validation still refuses a stale local shell.
 
 Full key reference: [configuration](configuration.md).
 
@@ -205,13 +209,39 @@ passwordless bypass until you say so. Before any instance is reachable by anyone
 1. `"dev": { "enabled": false }` in `instance.json`. The server warns at boot if a real
    issuer and the dev provider are both configured.
 2. `instance.baseUrl` set to the real URL.
-3. Both secrets set, and `NODE_ENV=production` so their absence is fatal (section 4).
+3. `"deployment": { "mode": "production", "application": "web" }`, a durable
+   DATABASE_URL, and both stable signing secrets set (section 4). Use `application: "api"`
+   for a deliberate console/API-only installation.
 4. Behind a reverse proxy or ingress, `rateLimit.trustedProxyHops: 1`, or per-IP limits
    only ever see the proxy.
 5. A database password you chose. The Compose file defaults it to the literal `lolly`,
    so any instance that started without one is still using it. Set `PG_PASSWORD` in
    `.env` ([section 5](#5-container-compose)); after first boot the `pgdata` volume keeps
    the old one, so changing it also needs `alter role`.
+
+### Validate the selected pack and deployment
+
+```bash
+pnpm run inspect:pack /path/to/customer-pack
+LW_CONFIG=./instance.json pnpm run check:setup
+```
+
+The pack inspector uses Work's installed engine and canonical source resolver. It loads
+every advertised tool, checks required files and local catalog assets, and reports
+configured server formats separately from other declared formats. It never executes hooks
+or fetches remote assets. An optional second argument selects a source ID. With LW_CONFIG
+set, the command also uses that deployment's worker and server-rendering requirements.
+
+Work now consumes engine 1.239.0 from committed upstream source, which accepts Design's
+`^1.238.0` requirement. A configured worker or a shell containing the governance marker
+does not prove an exact matched client release. Validate that release and representative
+renders before acceptance; signed release bundles and capability handshakes remain pending.
+
+Production startup refuses missing durable storage, development sign-in and invalid active
+packs. `/readyz` reports the actual store and removes production readiness when its checks
+fail; `/healthz` remains liveness. Owners can inspect **Customer setup** in the console.
+Its `not-tested` results identify integrations that still need verification. Pack checks
+are cached for at most 60 seconds, so probes do not run a full inspection on every request.
 
 ## 3. Persistence
 
@@ -261,9 +291,10 @@ as a job. The Helm chart does this for you; see [operations](operations.md).
 
 ## 4. Secrets
 
-Secrets never live in the config file. Two are required in production, and `NODE_ENV`
-is what makes "required" mean anything - without it, absence silently falls back to a
-random key per process, so every restart logs everyone out and voids every issued link.
+Secrets never live in the config file. Production requires two stable random signing
+secrets of at least 32 bytes. Set `deployment.mode: "production"` explicitly; existing
+configs using `auto` inherit this from NODE_ENV. Explicit evaluation permits random keys
+per process, so every restart logs everyone out and voids every issued link.
 
 ```bash
 export NODE_ENV=production
@@ -393,7 +424,7 @@ ReadWritePaths=/opt/lolly-work
 WantedBy=multi-user.target
 ```
 
-`NODE_ENV=production` is what makes the missing-secret check fatal, and `PrivateTmp=yes` is
+Production mode makes the missing-secret check fatal, and `PrivateTmp=yes` is
 what gives the service a writable `/tmp` under `ProtectSystem=strict`.
 
 ```bash

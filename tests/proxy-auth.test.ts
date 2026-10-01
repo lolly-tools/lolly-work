@@ -130,7 +130,9 @@ test('headers alone sign a member in: sub proxy:<user>, name split, member role,
   assert.equal(row?.firstname, 'Alice');
   assert.equal(row?.lastname, 'Liddell');
   const login = (await store.listAudit()).find((e) => e.action === 'auth.login');
-  assert.deepEqual(login?.payload, { provider: 'proxy', directory: 'off' });
+  const { setupFingerprint, ...facts } = login?.payload ?? {};
+  assert.deepEqual(facts, { provider: 'proxy', directory: 'off' });
+  assert.match(String(setupFingerprint), /^[a-f0-9]{64}$/);
 
   const offsite = await signIn(base, YUNOHOST_HEADERS, '?returnTo=https%3A%2F%2Fevil.example%2F');
   assert.equal(offsite.headers.get('location'), '/', 'an off-site returnTo is not followed');
@@ -182,7 +184,9 @@ test('the directory read (YunoHost shape): memberOf and app permissions become g
   });
   assert.deepEqual(fake.binds.at(-1), { dn: '', password: '' }, 'anonymous bind by default');
   const login = (await store.listAudit()).filter((e) => e.action === 'auth.login').at(-1);
-  assert.deepEqual(login?.payload, { provider: 'proxy', directory: 'read' });
+  const { setupFingerprint, ...facts } = login?.payload ?? {};
+  assert.deepEqual(facts, { provider: 'proxy', directory: 'read' });
+  assert.match(String(setupFingerprint), /^[a-f0-9]{64}$/);
 
   // Header values win over directory values when both exist.
   const header = await signIn(base, { 'x-lw-proxy-auth': SECRET, ynh_user: 'alice', ynh_user_email: 'alice@header.test' });
@@ -230,4 +234,3 @@ test('the provider is advertised wherever sign-in is described, and a real IdP t
   const cfg2 = await (await fetch(`${proxyOverDev.base}/api/auth/config`)).json() as Record<string, unknown>;
   assert.equal(cfg2.provider, 'proxy', 'the accountable path wins over the dev bypass');
 });
-

@@ -178,10 +178,34 @@ DELETE   /api/v1/groups/:name
 PUT      /api/v1/users/:id/local-groups
 ```
 
-The effective group set is the union (IdP ∪ local), and role is derived from it: the
-highest of `owner`, `admin`, `approver`, `author` present, otherwise `member`. A local
-group named after a role escalates exactly like an IdP one - which is deliberate, and why
-group editing is an admin action and audited.
+The effective group set is the union (IdP ∪ local). With no explicit mapping, the
+highest literal `owner`, `admin`, `approver` or `author` group wins, otherwise `member`.
+Configure customer names without renaming directory groups:
+
+```json
+"idp": {
+  "roleGroups": {
+    "owner": ["Work Owners"],
+    "admin": ["IT Administrators"],
+    "approver": ["Legal, EMEA"],
+    "author": [],
+    "viewer": ["Read Only"]
+  }
+}
+```
+
+The order is owner, admin, approver, author, member, viewer; the highest match wins.
+Unmatched accounts remain members. Omitted high roles keep their literal defaults;
+explicit empty arrays disable that mapping. Names are exact, case sensitive and may
+contain commas. Duplicate assignments and wildcard names are refused. Existing accounts
+resolve roles from the current mapping on authenticated reads, including directory paging.
+Local group editing can grant any mapped role and remains an audited administration action.
+Additional issuers namespace subjects, not groups; choose distinct names when authority differs.
+
+[Customer setup](customer-setup.md) validates mappings, previews the intended owner,
+generates deployment files and requires a real owner sign-in before its preview API removes
+an enabled development login. It also checks installed OIDC discovery and correlates retained
+SCIM creation/sign-in events by durable subject and account ID, without displaying JWTs.
 
 Group membership is also how governance targets people: overlay visibility, approval-chain
 eligibility, provider exposure, and grant principals (`group:<name>`) all read groups.
@@ -219,6 +243,13 @@ tokens. **SAML is not implemented**, and does not need to be: Keycloak (which id
 runs) bridges a SAML-only IdP to the OIDC this already speaks.
 
 ## Service tokens
+
+The console's **Provisioning and service tokens** page provides create, metadata list
+and revoke actions through the existing APIs. SCIM requires `scim.manage`; service
+tokens require `token.manage`. A new secret displays once and is cleared when acknowledged;
+it is not placed in the URL, localStorage or token metadata. Record it before leaving.
+Last-use metadata helps identify unused credentials. Scopes and expiry are not implemented;
+service tokens currently carry the selected role and can be revoked.
 
 Automation identity (plans/35): CI running `lw export`/`lw apply`, a
 governance-drift check, an audit poller - no more session cookies in secret

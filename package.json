@@ -2,7 +2,7 @@
   "name": "lolly-work",
   "private": true,
   "version": "0.2.0",
-  "description": "Lolly control plane \u2014 identity, provisioning, governance, serving, telemetry. MPL-2.0.",
+  "description": "Lolly control plane — identity, provisioning, governance, serving, telemetry. MPL-2.0.",
   "type": "module",
   "license": "MPL-2.0",
   "bin": {
@@ -20,6 +20,8 @@
     "verify:engine-pin": "node scripts/verify-engine-pin.ts",
     "repin-engine": "node scripts/repin-engine.ts",
     "readiness": "node scripts/production-readiness.ts",
+    "inspect:pack": "node scripts/inspect-pack.ts",
+    "check:setup": "node scripts/check-setup.ts",
     "sbom": "node scripts/build-sbom.ts",
     "release:yunohost": "node scripts/yunohost-release.ts",
     "pretest": "node scripts/verify-engine-pin.ts",
@@ -27,7 +29,8 @@
     "typecheck": "tsc --noEmit",
     "check:docs-vernacular": "node scripts/check-docs-vernacular.ts",
     "check:code-comments": "node scripts/check-code-comment-vernacular.ts",
-    "update:npm-licenses": "node scripts/update-npm-licenses.ts pnpm-lock.yaml workers/render/pnpm-lock.yaml"
+    "update:npm-licenses": "node scripts/update-npm-licenses.ts pnpm-lock.yaml workers/render/pnpm-lock.yaml",
+    "setup:apply": "node scripts/apply-setup.ts"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

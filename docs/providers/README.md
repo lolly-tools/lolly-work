@@ -8,6 +8,11 @@ The lolly side of providers (exposure, lifecycle, the exit, publish-out) lives i
 [catalog.md](../catalog.md); who may do what is in [permissions.md](../permissions.md);
 leaving one of these platforms is [offboarding.md](../offboarding.md).
 
+The app offers a [guided WebDAV / Nextcloud connection](webdav.md#guided-connection-in-the-app)
+with typed configuration, a paged exposure preview, one original-file checksum, sealed
+credential storage and reviewed activation. The other kinds currently use their advanced
+forms or CLI consent flows below.
+
 Open and sovereign sources lead the table: a server you run yourself is the first thing to reach
 for, and the vendor platforms below it are mostly sources you are federating in order to leave.
 

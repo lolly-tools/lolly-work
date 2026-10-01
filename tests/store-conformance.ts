@@ -27,6 +27,23 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.deepEqual(await store.getUser(u1.id), await store.getUserBySub('s1'));
   assert.equal(await store.getUser('usr_nope'), null);
 
+  // A deployed role mapping applies to existing identities and paged directory queries.
+  store.configureRoleGroups({ owner: ['g1'], viewer: ['g2'] });
+  assert.equal((await store.getUser(u1.id))?.role, 'owner');
+  assert.equal((await store.getUserBySub('s1'))?.role, 'owner');
+  const mappedPage = await store.listUsersPage({ role: 'owner', sort: 'role', dir: 'asc', limit: 10, offset: 0 });
+  assert.equal(mappedPage.total, 1); assert.equal(mappedPage.rows[0]?.id, u1.id);
+  await store.upsertUserBySub({ sub: 's1', email: 'a@x', groups: ['g2'], role: 'member', title: 'Designer' });
+  assert.equal((await store.getUser(u1.id))?.role, 'viewer');
+  assert.equal((await store.listUsersPage({ role: 'owner', limit: 10, offset: 0 })).total, 0);
+  await store.putLocalGroup({ name: 'g1', createdAt: new Date().toISOString() });
+  await store.setLocalGroups(u1.id, ['g1']);
+  assert.equal((await store.getUser(u1.id))?.role, 'owner');
+  await store.deleteLocalGroup('g1');
+  assert.equal((await store.getUser(u1.id))?.role, 'viewer');
+  store.configureRoleGroups({});
+  await store.upsertUserBySub({ sub: 's1', email: 'a@x', groups: ['g1', 'g2'], role: 'member', title: 'Designer' });
+
   await store.setTelemetryConsent(u1.id, true);
   assert.equal((await store.getUserBySub('s1'))?.telemetryConsent, true);
 
@@ -88,6 +105,13 @@ export async function runStoreConformance(store: Store): Promise<void> {
   const audit = await store.listAudit();
   assert.ok(audit.length >= 2);
   assert.deepEqual(verifyChain(audit), { ok: true });
+  // Filters apply across the stored history before the page limit, in both drivers.
+  const filteredAudit = await store.listAuditBefore(0, 1, { action: 'a.one', actor: `user:${u1.id}` });
+  assert.equal(filteredAudit.length, 1);
+  assert.equal(filteredAudit[0]?.action, 'a.one');
+  assert.equal(await store.countAudit({ action: 'a.one', subject: 's' }), 1);
+  assert.equal((await store.listAuditBefore(filteredAudit[0]!.seq, 10, { action: 'a.one' })).length, 0);
+  assert.equal(await store.countAudit({ since: '2999-01-01T00:00:00.000Z' }), 0);
 
   // telemetry
   await store.putEvents([

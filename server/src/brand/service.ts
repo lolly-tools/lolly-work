@@ -32,7 +32,8 @@ export function parseBrandChange(value: unknown): BrandChange {
 }
 
 /** One service owns compatibility routes, previews, mutations and request snapshots. */
-export function createBrandService(config: InstanceConfig, store: Store, blobs: BlobStore) {
+export function createBrandService(config: InstanceConfig, store: Store, blobs: BlobStore,
+  options: { inspectSource?: (sourceId: string) => Promise<string[]> } = {}) {
   const adapter = createBrandSources(config.instance.pack, config.instance.brandTokens);
   const context = new AsyncLocalStorage<BrandSnapshot>();
   const mutable = store.brandPersistence === 'durable' || config.dev.enabled;
@@ -102,6 +103,7 @@ export function createBrandService(config: InstanceConfig, store: Store, blobs: 
     if (replacement && replacement.id !== snap.source.id) {
       if (snap.state.retired.includes(replacement.id)) blockers.push('The replacement is retired. Restore it before selecting it.');
       blockers.push(...replacement.diagnostics);
+      if (options.inspectSource) blockers.push(...await options.inspectSource(replacement.id));
     }
     if (change.action === 'select' && source && snap.state.retired.includes(source.id)) blockers.push('Restore this source before selecting it.');
     if (change.action === 'enable-download') {

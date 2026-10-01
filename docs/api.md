@@ -153,12 +153,23 @@ published asset's lifecycle stops it, like every other surface that hands out by
 
 | Route | Action |
 |---|---|
-| `GET /api/v1/catalog/providers`, `GET …/:id`, `GET …/:id/health`, `GET …/:id/drift` | `catalog.provider.read` |
+| `GET /api/v1/catalog/providers`, `GET …/setup`, `GET …/:id`, `GET …/:id/health`, `GET …/:id/drift` | `catalog.provider.read` |
 | `POST /api/v1/catalog/providers`, `PUT …/:id`, `DELETE …/:id`, `POST …/preview`, `POST …/:id/sync`, `POST …/:id/materialize`, `POST …/:id/import` (one asset) | `catalog.provider.manage` |
 | `PUT/DELETE …/:id/credential`, `POST …/:id/enable`, `POST …/:id/disable`, `POST …/:id/cutover` | `catalog.provider.credential` (**owner**) |
 | `POST …/:id/publish` | `catalog.provider.publish` (**owner**) |
 
 Config-managed providers reject mutations with `409 CONFIG_MANAGED`.
+
+`GET …/setup` returns versioned public typed-form descriptors (currently WebDAV) and whether
+credential sealing is configured, with no secrets. `POST …/preview` with `setupVersion: 1`
+validates that guided configuration and tests a bounded paged listing plus one streamed
+original. The response includes `pages`, `scanned`, `sampleTotal`, `truncated`, exposure and
+availability exclusions, mapper notes and `original: {ok,bytes?,sha256?,contentType?,detail?}`.
+No source, file or credential is persisted. The guided WebDAV limits are five pages, 1,000
+distinct files, 2 MiB per XML response, 32 MiB per original and 30 seconds overall. Legacy
+preview and exclusive `shape: true` diagnostics retain their existing contracts.
+`POST /api/v1/catalog/providers` also accepts `setupVersion: 1` to validate the guided subset;
+creation, credential storage, sync and enabling retain their separate audited permissions.
 
 ## Outbound delivery
 
@@ -360,6 +371,12 @@ param joins as before; sending one of the two checks only that one.
 | `GET /api/v1/fleet/installs` | `fleet.view` - registered installs, newest activity first |
 | `PATCH /api/v1/fleet/installs/:id` | `fleet.manage` - set or clear the operator name |
 | `DELETE /api/v1/fleet/installs/:id` | `fleet.manage` - forget the row (bookkeeping; the device is untouched) |
+| `GET /api/v1/system/setup` | `instance.config`: safe running checks, pack, store and schema |
+| `GET /api/v1/system/setup/configuration` | `instance.config`: non-secret settings, callback, environment presence and retained account/test evidence |
+| `POST /api/v1/system/setup/configuration` | `instance.config`: validate a setup draft and return deployment/Helm files; never saves live deployment settings |
+| `POST /api/v1/system/setup/identity-test` | `instance.config`: bounded installed-issuer discovery, audited result |
+| `POST /api/v1/system/setup/account-test` | `instance.config`: exact `{sub}` lookup and retained SCIM/sign-in correlation; no email merge |
+| `GET /api/v1/system/setup/tools/:id` | `instance.config` plus current tool use/export permission: sample input metadata and governed checked formats |
 | `GET /api/v1/system/migrations` | `instance.config` (**owner**) |
 | `GET /api/v1/docs`, `GET /api/v1/docs/:slug` | member - this documentation set |
 

@@ -122,7 +122,7 @@ async function boot(notify?: Record<string, unknown>, env: Record<string, string
       { email: 'boss@test', groups: ['admin'] },
     ] },
   }));
-  const store = createMemoryStore();
+  const store = createMemoryStore({ grants: [{ principal: 'group:review', action: 'approval.act', resource: 'chain:brand', effect: 'allow' }] });
   await store.putChain({ id: 'brand', name: 'Brand', steps: [{ name: 'Review', approvers: { groups: ['review'] }, rule: 'any' }], onReject: 'return-to-submitter' });
   const secrets = { ...loadSecrets({ NODE_ENV: 'test', ...env }), session: 'sN', link: 'lN' };
   const app = buildApp({ config, store, blobs: createMemoryBlobStore(), secrets });

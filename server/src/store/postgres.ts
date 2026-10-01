@@ -1,4 +1,5 @@
 import type { CanvasCheckpoint, CanvasOp } from '@lolly-tools/core/canvas-op-v1';
+import { auditWhere } from '../audit/filter.ts';
 /**
  * Postgres Store driver - binds the Store seam to migrations/0001_init.sql.
  *
@@ -11,7 +12,7 @@ import { randomId } from '../lib/crypto.ts';
 import { nextEvent, type AuditAnchor, type AuditEvent, type AuditEventBody } from '../audit/chain.ts';
 import { clientBucket, type ClientInfo } from '../fleet/client-header.ts';
 import { eligibleForCurrentStep, type Approval, type Chain } from '../approvals/engine.ts';
-import { roleFromGroups, type Grant } from '../rbac/evaluate.ts';
+import { roleFromGroups, type Grant, type RoleGroups } from '../rbac/evaluate.ts';
 import type { ToolOverlay } from '../policy/overlay.ts';
 import type { FlagGovernance } from '../policy/feature-flags.ts';
 import type { InjectableRecord } from '../injectables/types.ts';
@@ -158,6 +159,7 @@ const addClause = (clauses: string[], values: unknown[], column: string, value: 
 };
 
 export async function createPostgresStore(databaseUrl: string): Promise<Store & { close(): Promise<void> }> {
+  let roleGroups: RoleGroups = {};
   let auditMacKey: string | undefined;
   const { default: pg } = await import('pg');
   const pool: PgPool = new pg.Pool({ connectionString: databaseUrl }) as unknown as PgPool;
@@ -202,7 +204,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       idpGroups: (r.idp_groups as string[]) ?? groups,
       localGroups: (r.local_groups as string[]) ?? [],
       groups,
-      role: r.role as string,
+      role: roleFromGroups(groups, roleGroups),
       ...(r.telemetry_consent !== null && r.telemetry_consent !== undefined ? { telemetryConsent: r.telemetry_consent as boolean } : {}),
       ...(r.disabled_at ? { disabledAt: new Date(r.disabled_at as string).toISOString() } : {}),
       // A row predating the epoch column reads as 0 - matches the migration default.
@@ -320,7 +322,9 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
   });
 
   return {
+    configureRoleGroups(mapping) { roleGroups = structuredClone(mapping); },
     ...createPostgresRenderStore(pool),
+    storageKind: 'postgres',
     brandPersistence: 'durable',
     async getBrandState() {
       const { rows } = await pool.query('select revision, state from brand_state where singleton = true');
@@ -349,7 +353,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       const { rows: existing } = await pool.query('select local_groups from users where sub = $1', [user.sub]);
       const local = (existing[0]?.local_groups as string[]) ?? [];
       const groups = effectiveGroups(idpGroups, local);
-      const role = roleFromGroups(groups);
+      const role = roleFromGroups(groups, roleGroups);
       const { rows } = await pool.query(
         `insert into users (id, sub, email, firstname, lastname, title, idp_groups, local_groups, groups, role)
          values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10)
@@ -382,6 +386,11 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       const clauses: string[] = [];
       const values: unknown[] = [];
       const bind = (v: unknown): string => { values.push(v); return `$${values.length}`; };
+      const roleExpr = 'case ' + (['owner', 'admin', 'approver', 'author', 'member', 'viewer'] as const).map(role => {
+        const names = roleGroups[role] ?? (['owner', 'admin', 'approver', 'author'].includes(role) ? [role] : []);
+        return `when jsonb_exists_any(groups, ${bind(names)}::text[]) then '${role}'`;
+      }).join(' ') + " else 'member' end";
+      const source = `(select *, ${roleExpr} as effective_role from users) mapped_users`;
       // name = first + last + email, concatenated once for both filter and sort.
       const nameExpr = `lower(coalesce(firstname, '') || ' ' || coalesce(lastname, '') || ' ' || email)`;
       if (opts.q?.trim()) clauses.push(`${nameExpr} like ${bind('%' + opts.q.trim().toLowerCase() + '%')}`);
@@ -389,22 +398,22 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       // firstname would otherwise lead with the concatenation's space).
       if (opts.prefix === '#') clauses.push(`ltrim(${nameExpr}) !~ '^[a-z]'`);
       else if (opts.prefix) clauses.push(`ltrim(${nameExpr}) like ${bind(opts.prefix + '%')}`);
-      if (opts.role) clauses.push(`role = ${bind(opts.role)}`);
+      if (opts.role) clauses.push(`effective_role = ${bind(opts.role)}`);
       if (opts.group) clauses.push(`jsonb_exists(groups, ${bind(opts.group)})`);
       if (opts.status === 'active') clauses.push('disabled_at is null');
       else if (opts.status === 'disabled') clauses.push('disabled_at is not null');
       const where = clauses.length ? `where ${clauses.join(' and ')}` : '';
       const sortExpr = opts.sort === 'email' ? 'lower(email)'
-        : opts.sort === 'role' ? 'role'
+        : opts.sort === 'role' ? 'effective_role'
         : opts.sort === 'lastSeen' ? 'last_seen_at'
         : nameExpr;
       const dir = opts.dir === 'desc' ? 'desc' : 'asc';
-      const { rows: countRows } = await pool.query(`select count(*)::int as n from users ${where}`, values);
+      const { rows: countRows } = await pool.query(`select count(*)::int as n from ${source} ${where}`, values);
       const total = Number(countRows[0]?.n ?? 0);
       const limit = bind(opts.limit);
       const offset = bind(opts.offset);
       const { rows } = await pool.query(
-        `select * from users ${where} order by ${sortExpr} ${dir}, id asc limit ${limit} offset ${offset}`,
+        `select * from ${source} ${where} order by ${sortExpr} ${dir}, id asc limit ${limit} offset ${offset}`,
         values,
       );
       return { rows: rows.map(userFromRow), total };
@@ -417,7 +426,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       const groups = effectiveGroups(idpGroups, local);
       const { rows } = await pool.query(
         'update users set local_groups = $2::jsonb, groups = $3::jsonb, role = $4 where id = $1 returning *',
-        [userId, JSON.stringify(local), JSON.stringify(groups), roleFromGroups(groups)],
+        [userId, JSON.stringify(local), JSON.stringify(groups), roleFromGroups(groups, roleGroups)],
       );
       return rows[0] ? userFromRow(rows[0]) : null;
     },
@@ -459,7 +468,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         const groups = effectiveGroups((r.idp_groups as string[]) ?? [], local);
         await pool.query(
           'update users set local_groups = $2::jsonb, groups = $3::jsonb, role = $4 where id = $1',
-          [r.id as string, JSON.stringify(local), JSON.stringify(groups), roleFromGroups(groups)],
+          [r.id as string, JSON.stringify(local), JSON.stringify(groups), roleFromGroups(groups, roleGroups)],
         );
       }
     },
@@ -865,10 +874,10 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       );
       return rows.map(deviceCodeFromRow);
     },
-    async listAuditBefore(before, limit) {
-      const { rows } = before > 0
-        ? await pool.query('select * from (select * from audit_log where seq < $1 order by seq desc limit $2) p order by seq asc', [before, limit])
-        : await pool.query('select * from (select * from audit_log order by seq desc limit $1) p order by seq asc', [limit]);
+    async listAuditBefore(before, limit, filter) {
+      const { sql, values } = auditWhere(before, filter);
+      values.push(limit);
+      const { rows } = await pool.query(`select * from (select * from audit_log ${sql} order by seq desc limit $${values.length}) p order by seq asc`, values);
       return rows.map((r) => ({
         seq: Number(r.seq),
         at: new Date(r.at as string).toISOString(),
@@ -881,8 +890,9 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         ...(r.mac ? { mac: r.mac as string } : {}),
       }));
     },
-    async countAudit() {
-      const { rows } = await pool.query('select count(*)::int as n from audit_log');
+    async countAudit(filter) {
+      const { sql, values } = auditWhere(0, filter);
+      const { rows } = await pool.query(`select count(*)::int as n from audit_log ${sql}`, values);
       return Number(rows[0]?.n ?? 0);
     },
     async ping() {

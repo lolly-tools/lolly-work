@@ -9,6 +9,47 @@ server ride the same kind through `flavor: "generic"`.
 Zero-dep, like every driver here: HTTP Basic (or a bearer token) over `fetch`, and the 207
 multistatus body is read by a small parser written for that one layout. No SDK, no XML library.
 
+## Guided connection in the app
+
+Open **Instance → Providers** at `/admin#/providers` and choose **Guided connection** on
+the WebDAV storage card. Enter the server type and URL, the folder to expose, catalog mapping
+and member groups. Group and section fields accept one exact name per line; a comma stays
+part of the name. An empty folder exposes the entire files root, and empty groups expose the
+slice to all members, so review both before saving.
+
+Enter the read-only account's username and app password in their separate controls, or choose
+bearer token. With a Nextcloud bearer token, also enter **Files login** so the app can construct
+the files URL. Credentials are used only for the test until you save; they are cleared when
+sealed, discarded or the panel closes. No credentials or connection drafts go into browser
+storage.
+
+Choose **Test files and original**. The read-only preview follows up to five directory pages
+and inspects at most 1,000 distinct files. It reports exposure exclusions, unavailable files,
+mapping omissions and whether more directories remain. It reads one currently available
+original up to 32 MiB and displays its byte count, content type and SHA-256. Compare that digest
+with a known source original. A partial response, empty original, size mismatch or refused GET
+fails the check. Each XML listing is capped at 2 MiB and the whole preview has a 30-second
+deadline. This sample does not verify every file, future access or a complete tenant contract.
+
+After a successful preview, an owner can choose **Save source and seal credential**. This
+creates a disabled source and verifies the credential again before sealing it. Set
+`LW_CREDENTIAL_SECRET` in the server environment first. If credential storage fails, the
+panel keeps the same disabled source and offers **Retry credential**. Closing leaves the
+saved source disabled; continue from its source row. After a lost response or reload, inspect
+that row before retrying creation with the same id.
+
+Choose **Sync and enable source** when the folder and groups are correct. The app runs a full
+sync first and leaves the source disabled if listing fails or finds no exposed files. It then
+checks health again and enables it. Disabling from the source row stops future federation.
+Admins with configuration access can save a disabled source and hand credential storage and
+activation to an owner. Config-managed sources stay read-only here: change their deployment
+source and redeploy. Other provider kinds retain their advanced forms and documented consent
+flows.
+
+WebDAV does not provide approval status; use a folder curated to contain approved files.
+Availability controls apply only to custom DAV properties your server actually returns.
+Complete the [live-verify runbook](webdav-live-verify.md) for customer acceptance.
+
 ## What you need from the server
 
 ### Nextcloud (the primary path)

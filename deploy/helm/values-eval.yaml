@@ -49,6 +49,8 @@ migrate:
   enabled: false
 
 config:
+  deployment:
+    mode: evaluation
   instance:
     name: "Lolly Work - evaluation"
     # MUST match the URL a browser actually reaches this install on, because the

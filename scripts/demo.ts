@@ -30,6 +30,7 @@ import { join } from 'node:path';
 
 import { parseConfig, loadSecrets, type InstanceConfig } from '../server/src/config/instance.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
+import type { RenderRunner } from '../server/src/renders/runner.ts';
 import { buildApp, roleFromGroups } from '../server/src/api/app.ts';
 import { randomId, hashPassword } from '../server/src/lib/crypto.ts';
 import type { Store, UserRecord } from '../server/src/store/types.ts';
@@ -1039,7 +1040,11 @@ async function main(): Promise<void> {
   // Mock live collab rooms for the console's Rooms panel. The local demo boots
   // buildApp directly (no ws gateway, same as serverless), so without this the
   // panel is empty; demoRooms() stands in for the gateway's live-room registry.
-  const app = buildApp({ config, store, secrets, listCollabRooms: () => demoRooms(seeded) });
+  let demoRenderRunner: RenderRunner | undefined;
+  const app = buildApp({ config, store, secrets, listCollabRooms: () => demoRooms(seeded),
+    onRenderRunner: runner => { demoRenderRunner = runner; runner.start(); } });
+  const stopDemo = () => { void demoRenderRunner?.stop().finally(() => process.exit(0)); };
+  process.once('SIGINT', stopDemo); process.once('SIGTERM', stopDemo);
   const server = createServer((req, res) => void app(req, res));
   await new Promise<void>((resolve, reject) => {
     server.once('error', (err: NodeJS.ErrnoException) => {

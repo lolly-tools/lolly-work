@@ -5,12 +5,13 @@ import type { CanvasCheckpoint, CanvasOp } from '@lolly-tools/core/canvas-op-v1'
  * must run the same code against different drivers. Everything async so the
  * Postgres driver slots in without touching callers.
  */
-import type { Grant } from '../rbac/evaluate.ts';
+import type { Grant, RoleGroups } from '../rbac/evaluate.ts';
 import type { ToolOverlay } from '../policy/overlay.ts';
 import type { FlagGovernance } from '../policy/feature-flags.ts';
 import type { InjectableRecord } from '../injectables/types.ts';
 import type { LinkRecord } from '../links/sign.ts';
 import type { AuditAnchor, AuditEvent, AuditEventBody } from '../audit/chain.ts';
+import type { AuditFilter } from '../audit/filter.ts';
 import type { StoredEvent } from '../telemetry/ingest.ts';
 import type { Message } from '../inbox/target.ts';
 import type { ClientInfo } from '../fleet/client-header.ts';
@@ -300,6 +301,8 @@ export interface SubmitQuotaRow {
 }
 
 export interface Store extends RenderStore {
+  configureRoleGroups(mapping: RoleGroups): void;
+  readonly storageKind: 'memory' | 'postgres';
   readonly brandPersistence: 'durable' | 'ephemeral';
   getBrandState(): Promise<import('../brand/state.ts').BrandState>;
   /** Commit state and its audit event together, or return null on a stale revision. */
@@ -423,8 +426,8 @@ export interface Store extends RenderStore {
   setAuditMacKey?(key: string): void;
   listAudit(): Promise<AuditEvent[]>;
   /** The `limit` newest events with seq < before (before <= 0 ⇒ the newest page), ascending - the console's audit pager. */
-  listAuditBefore(before: number, limit: number): Promise<AuditEvent[]>;
-  countAudit(): Promise<number>;
+  listAuditBefore(before: number, limit: number, filter?: AuditFilter): Promise<AuditEvent[]>;
+  countAudit(filter?: AuditFilter): Promise<number>;
   /** Readiness: can the store answer right now? Memory always can; Postgres runs `select 1`. */
   ping(): Promise<boolean>;
   /** Events with seq > after, ascending, at most limit - the SIEM forwarder's

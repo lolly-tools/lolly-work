@@ -100,9 +100,11 @@ export function roleAllows(role: Role, action: string): boolean {
  *  §4). Runs on the effective union (idp ∪ local), so a local group named after
  *  a role escalates exactly like an IdP one. Lives here so the store can derive
  *  role on upsert without importing the HTTP app. */
-export function roleFromGroups(groups: string[]): Role {
-  for (const role of ['owner', 'admin', 'approver', 'author'] as const) {
-    if (groups.includes(role)) return role;
+export type RoleGroups = Partial<Record<Exclude<Role, 'guest'>, string[]>>;
+export function roleFromGroups(groups: string[], mapping: RoleGroups = {}): Role {
+  for (const role of ['owner', 'admin', 'approver', 'author', 'member', 'viewer'] as const) {
+    const names = mapping[role] ?? (['owner', 'admin', 'approver', 'author'].includes(role) ? [role] : []);
+    if (names.some(name => groups.includes(name))) return role;
   }
   return 'member';
 }

@@ -614,6 +614,20 @@ label { display: block; font-size: 11px; font-weight: 600; text-transform: upper
    everywhere a form or row action reports its result, not just approvals. */
 .form-err { color: var(--critical); font-size: 12px; flex-basis: 100%; margin-top: 6px; }
 .form-err:empty { display: none; }
+
+/* Tool rules keep their order visible beside the move and remove controls. */
+.policy-fields { border: 0; padding: 0; min-width: 0; margin: 0; }
+.policy-input { margin-block: 20px; }
+.policy-rule { margin-block: 14px; padding-bottom: 14px; border-bottom: 1px solid var(--grid); }
+.policy-rule-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.policy-rule .policy-rule-actions { margin-top: 10px; }
+.policy-warning { font-size: 13px; color: var(--ink); }
+.policy-discard { padding: 14px; background: var(--plane); border-radius: var(--radius); }
+.policy-discard:empty { display: none; }
+.tool-policy-editor input { min-width: 0; }
+@media (max-width: 560px) {
+  .tool-policy-editor .formrow { grid-template-columns: minmax(0, 1fr); }
+}
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* Programmatic focus targets (the router focuses each view's h1, detail panels
    focus their heading) are announcement plumbing, not controls — no ring.
@@ -834,6 +848,10 @@ tr.row-click { cursor: pointer; }
    button that opens the (unchanged) configure→test→create flow prefilled for
    that kind. Nested cards sit on the plane so they separate from the host card. */
 .connect-grid { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+.provider-setup .formrow { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 1rem; }
+.provider-setup legend { font-weight: 600; margin-bottom: .75rem; }
+.provider-setup .stack { min-width: 0; }
+.provider-digest { overflow-wrap: anywhere; }
 .connect-card { display: flex; flex-direction: column; gap: 10px; background: var(--plane); }
 .connect-card-body { flex: 1 1 auto; }
 .connect-name { font-weight: 600; }
@@ -1150,3 +1168,31 @@ td.url-cell { max-width: 240px; }
 .brand-source-row .mono, .brand-source-row code { overflow-wrap: anywhere; }
 .brand-source-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .brand-source-actions select { max-width: 28rem; }
+
+/* Customer setup uses the console's existing cards, fields and focus styles. */
+.setup-wizard { max-width: 1080px; }
+.setup-wizard [hidden] { display: none !important; }
+.setup-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .5rem; margin: 1.25rem 0; }
+.setup-steps button { text-align: left; white-space: normal; min-height: 44px; }
+.setup-steps [aria-current="step"] { border-color: var(--accent); background: color-mix(in oklab, var(--accent) 14%, var(--surface)); font-weight: 650; }
+.setup-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.setup-wizard section > h2 { margin: 1.25rem 0; }
+.setup-field input:not([type="checkbox"]), .setup-field select, .setup-grid textarea { width: 100%; box-sizing: border-box; }
+.setup-field .sub { margin-top: .4rem; }
+.setup-wizard .card { margin-bottom: 1rem; }
+.setup-wizard code, .setup-account, .setup-sample-result { overflow-wrap: anywhere; }
+.setup-artifacts textarea { width: 100%; box-sizing: border-box; font-family: monospace; }
+.setup-artifacts pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.setup-check { padding: .5rem 0; border-bottom: 1px solid var(--hairline); }
+.setup-check:last-child { border-bottom: 0; }
+.setup-status:empty, .setup-discard:empty, .setup-artifacts:empty { display: none; }
+@media (max-width: 640px) {
+  .setup-grid { grid-template-columns: 1fr; }
+  .setup-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .setup-wizard .policy-rule-actions { flex-wrap: wrap; }
+}
+.setup-checkbox-row { display: flex; align-items: center; gap: .65rem; min-height: 44px; }
+.setup-checkbox-row label { order: 1; flex: 1; margin: 0; cursor: pointer; }
+.setup-checkbox-row input[type="checkbox"] { order: 0; width: 18px; height: 18px; padding: 0; box-shadow: none; flex: 0 0 auto; }
+.setup-wizard a { color: var(--accent); }
+.setup-wizard a.btn.primary { color: var(--on-accent); }

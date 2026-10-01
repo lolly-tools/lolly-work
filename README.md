@@ -90,8 +90,10 @@ curl -i 'http://localhost:8787/api/auth/dev?email=owner@example.test'   # → se
 curl -s http://localhost:8787/healthz
 ```
 
+After signing in, open **Customer setup** at `/admin#/setup` for [guided configuration, identity and a checked sample](docs/customer-setup.md).
+
 The example config ships an `owner` and an `admin` persona: role is derived from group
-membership, so only a user whose groups contain `owner` can reach `instance.config` or
+membership (literal defaults or `idp.roleGroups` mappings), so only an owner can reach `instance.config` or
 store a catalog-provider credential. Full walkthrough and verification steps:
 [`docs/install.md`](docs/install.md).
 

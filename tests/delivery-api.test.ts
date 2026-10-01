@@ -113,7 +113,7 @@ before(async () => {
     }
     return new Response(null, { status: 500 });
   };
-  store = createMemoryStore();
+  store = createMemoryStore({ grants: [{ principal: 'group:delivery-reviewers', action: 'approval.act', resource: '*', effect: 'allow' }] });
   await store.putChain({
     id: 'delivery-review', name: 'Delivery review', onReject: 'return-to-submitter',
     steps: [{ name: 'Brand sign-off', approvers: { groups: ['delivery-reviewers'] }, rule: 'any' }],

@@ -21,7 +21,12 @@
         {
           "slug": "install",
           "title": "Installing",
-          "summary": "Nothing \u2192 a running, configured, governed instance: local demo, first config, sign-in, Postgres, secrets, Compose, systemd, Helm."
+          "summary": "Nothing → a running, configured, governed instance: local demo, first config, sign-in, Postgres, secrets, Compose, systemd, Helm."
+        },
+        {
+          "slug": "customer-setup",
+          "title": "Guided customer setup",
+          "summary": "Configure deployment and identity, establish a real owner, connect SCIM and download a checked sample."
         },
         {
           "slug": "deployment",

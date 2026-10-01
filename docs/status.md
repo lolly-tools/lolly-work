@@ -5,6 +5,24 @@ gaps are named, not smoothed over. Verified against the repository on **2026-09-
 
 ![The client fleet - which shell and engine versions are talking to this deployment](shots/client-fleet.svg)
 
+## Guided setup update, 2026-10-01
+
+The new [Customer setup](customer-setup.md) journey provides six guided steps, validated
+non-secret deployment files, a backed-up source-config apply command, applied-settings
+checks after restart, exact customer group mappings, bounded installed OIDC discovery,
+observed owner sign-in, SCIM subject correlation and a checked downloadable sample.
+SCIM role changes affect existing sessions; disable revokes access. Tokens, policy, source
+administration and chain editing remain on their existing governed screens.
+
+Verified with signed-JWT OIDC/SCIM HTTP fixtures, current permission denial, output digest
+and evidence checks, memory/Postgres conformance and Chromium desktop/phone light/dark.
+Live customer tenants and released client/worker artifacts still need their selected
+integration tests. WebDAV / Nextcloud now has typed source setup, a bounded paged listing
+and original checksum, credential retry and sync-before-enable. Other provider forms and
+browser OAuth consent, token scopes/expiry, coordinated editable defaults and exact release
+contracts remain deferred. The health snapshot below is the
+earlier 2026-09-06 baseline.
+
 ## Health
 
 | | Control plane (this repo) | Lolly OSS |
