@@ -32,7 +32,7 @@ async function readChecked(body: ReadableStream<Uint8Array>, maxBytes: number, s
   }
 }
 
-/** WebDAV-only opt-in evidence; no persisted source, fragment, file or secret. */
+/** Opt-in evidence; no persisted fragment or file, and no returned secret. */
 export async function previewGuidedProvider(rec: ProviderRecord, secret: string | undefined, fetchImpl: typeof fetch = fetch) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(new Error('Preview timed out after 30 seconds. Narrow the folder or retry.')), SETUP_PREVIEW_LIMITS.timeoutMs);
@@ -50,16 +50,17 @@ export async function previewGuidedProvider(rec: ProviderRecord, secret: string 
   const boundedFetch: typeof fetch = async (input, init) => {
     signal.throwIfAborted();
     const response = await fetchImpl(input, { ...init, signal });
-    if (init?.method === 'GET' && response.status === 206) {
+    if (response.status === 206) {
       await response.body?.cancel();
-      throw new Error('Server returned a partial original without a range request. Check the DAV mount.');
+      throw new Error('Server returned a partial original without a range request. Check the source.');
     }
-    if (response.status !== 207 || !response.body) return response;
+    const googleJson = rec.kind === 'gdrive' && new URL(typeof input === 'object' && 'url' in input ? input.url : String(input)).searchParams.get('alt') !== 'media';
+    if ((response.status !== 207 && !googleJson) || !response.body) return response;
     const reader = response.body.getReader();
     let bytes = 0;
     const abort = () => { void reader.cancel().catch(() => {}); };
     signal.addEventListener('abort', abort, { once: true });
-    // PROPFIND XML is consumed by the existing driver; enforce its cap here.
+    // Bound both DAV XML and OAuth/Drive JSON consumed by existing drivers.
     const body = new ReadableStream<Uint8Array>({
       async pull(stream) {
         try {

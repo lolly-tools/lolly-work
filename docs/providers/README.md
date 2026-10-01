@@ -9,9 +9,10 @@ The lolly side of providers (exposure, lifecycle, the exit, publish-out) lives i
 leaving one of these platforms is [offboarding.md](../offboarding.md).
 
 The app offers a [guided WebDAV / Nextcloud connection](webdav.md#guided-connection-in-the-app)
-with typed configuration, a paged exposure preview, one original-file checksum, sealed
-credential storage and reviewed activation. The other kinds currently use their advanced
-forms or CLI consent flows below.
+and [guided Google Drive connection](gdrive.md#guided-connection-in-the-app), with typed
+configuration, a paged preview, one original-file checksum, sealed credential storage and
+reviewed activation. Google Drive captures consent in the browser using your registered web
+client. The other kinds currently use their advanced forms or CLI consent flows below.
 
 Open and sovereign sources lead the table: a server you run yourself is the first thing to reach
 for, and the vendor platforms below it are mostly sources you are federating in order to leave.
@@ -74,6 +75,10 @@ ship in this repo - and the sealed credential is the same one JSON blob either w
 What differs is only **how that blob is captured**, and that splits the kinds in two.
 
 ### Kinds with a registered consent flow (dropbox, gdrive, o365)
+
+Google Drive also supports the [browser journey](gdrive.md#guided-connection-in-the-app)
+for DB-managed sources with guided settings. Its web-client redirect URI is shown in the
+app; the CLI's loopback registration below remains a separate route.
 
 `lw providers auth` runs the whole capture for these three:
 

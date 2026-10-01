@@ -15,6 +15,7 @@ import { createToolPolicyEditor } from './tool-policy-editor.js';
 import { setupView, tokensView } from './setup.js';
 import { createChainEditor } from './chains.js';
 import { createProviderSetup } from './provider-setup.js';
+import { createOAuthProviderSetup } from './provider-oauth-setup.js';
 import { compareValues } from './table-sort.js';
 import { buildThemeMaps, themeFromTokens, resolveCssColor } from './brand-theme.js';
 
@@ -2696,6 +2697,7 @@ function providerStatusChip(p) {
 }
 
 function providerRow(p, panels) {
+  const guidedOAuth = p.kind === 'gdrive' && p.guidedSetupAvailable;
   const err = errSpan();
   const busy = (btn, fn, done) => async () => {
     err.textContent = '';
@@ -2735,7 +2737,8 @@ function providerRow(p, panels) {
       ? el('span', { class: 'muted' }, 'via instance.json')
       : el('div', { class: 'lc-actions' },
           canAction('catalog.provider.manage') ? syncBtn : null,
-          canAction('catalog.provider.credential') ? [keyBtn, toggleBtn] : null,
+          guidedOAuth && canAction('catalog.provider.manage') ? el('button', { onclick: () => panels.showGuided(p) }, p.enabled ? 'Review setup' : 'Continue setup') : null,
+          canAction('catalog.provider.credential') ? (guidedOAuth ? (p.enabled ? toggleBtn : null) : [keyBtn, toggleBtn]) : null,
           canAction('catalog.provider.manage') ? delBtn : null), err));
 }
 
@@ -2763,7 +2766,7 @@ const PROVIDER_INTEGRATIONS = [
   { kind: 'mock', name: 'Mock (dev)', blurb: 'A synthetic in-memory source for local development.', options: '{}' },
 ];
 
-async function viewProviders(main) {
+async function viewProviders(main, params = new URLSearchParams()) {
   const [{ providers }, setup] = await Promise.all([api('/api/v1/catalog/providers'), api('/api/v1/catalog/providers/setup')]);
   const panelHost = el('div', {});
   const openPanel = (render) => {
@@ -2801,12 +2804,29 @@ async function viewProviders(main) {
     secretInput.focus();
     scrollIntoViewMotionSafe(panelHost);
   });
-  const panels = { showCredential };
+  const showGuided = (p, outcome) => openPanel(() => {
+    const descriptor = setup.providers.find(provider => provider.kind === p.kind);
+    if (!descriptor || descriptor.authKind !== 'oauth') return;
+    const close = () => {
+      activeToolPolicyEditor?.dispose(); activeToolPolicyEditor = null; panelHost.replaceChildren();
+      history.replaceState(null, '', '#/providers'); void route();
+    };
+    activeToolPolicyEditor = createOAuthProviderSetup(descriptor, { el, field, api, existing: p.id ? p : undefined,
+      oauth: setup.oauth, outcome, canStoreCredentials: canAction('catalog.provider.credential'), credentialStorageAvailable: setup.credentialStorageAvailable,
+      onClose: close, onSaved: () => toast('Source synced and enabled'),
+    });
+    panelHost.replaceChildren(activeToolPolicyEditor.element);
+    scrollIntoViewMotionSafe(panelHost);
+    panelHost.querySelector('h2').focus({ preventScroll: true });
+  });
+  const panels = { showCredential, showGuided };
 
   // Configure → test (dry-run preview, nothing persisted) → create, prefilled
   // for the integration the admin picked. This is exactly the old add-form logic
   // — the only change is the kind is fixed by the card, not chosen in a dropdown.
-  const showConnect = (integration) => openPanel(() => {
+  const showConnect = (integration) => {
+    if (setup.providers.find(provider => provider.kind === integration.kind)?.authKind === 'oauth') return showGuided(integration);
+    openPanel(() => {
     const descriptor = setup.providers.find(provider => provider.kind === integration.kind);
     if (descriptor) {
       const close = () => { activeToolPolicyEditor?.dispose(); activeToolPolicyEditor = null; panelHost.replaceChildren(); void route(); };
@@ -2895,7 +2915,8 @@ async function viewProviders(main) {
       testResult));
     idInput.focus();
     scrollIntoViewMotionSafe(panelHost);
-  });
+    });
+  };
 
   const connectGrid = el('div', { class: 'grid connect-grid' },
     ...PROVIDER_INTEGRATIONS.map((intg) => el('div', { class: 'card connect-card' },
@@ -2957,7 +2978,7 @@ async function viewProviders(main) {
   ]);
   main.append(...[
     el('h1', {}, 'Providers'),
-    el('p', { class: 'sub' }, 'Federated catalog sources. The external system stays the source of truth: Lolly consumes it read-only, and exposure rules decide which slice your members see. WebDAV / Nextcloud offers guided configuration, file testing and activation. Other integrations use their existing advanced forms and setup guides.'),
+    el('p', { class: 'sub' }, 'Federated catalog sources. The external system stays the source of truth: Lolly consumes it read-only, and exposure rules decide which slice your members see. WebDAV / Nextcloud and Google Drive offer guided configuration, file testing and activation. Other integrations use their existing advanced forms and setup guides.'),
     ...(hdr ? [hdr] : []),
     providers.length
       ? el('div', { class: 'grid tiles' },
@@ -2979,6 +3000,9 @@ async function viewProviders(main) {
             providers.map((p) => providerRow(p, panels)), { sortable: true })
         : el('p', { class: 'empty' }, 'No sources connected yet. Pick an integration above to federate an external DAM, bucket, or repo into the catalog.')),
   ].filter(node => node !== null));
+  const resumed = providers.find(provider => provider.id === params.get('setup'));
+  if (resumed?.kind === 'gdrive' && resumed.guidedSetupAvailable && canAction('catalog.provider.manage')) showGuided(resumed, params.get('oauth'));
+  else if (params.has('oauth')) panelHost.replaceChildren(el('p', { role: 'status' }, 'Provider consent was not completed. Sign in as the connecting owner and continue setup from the saved source row.'));
 }
 
 // ── approvals ─────────────────────────────────────────────────────────────

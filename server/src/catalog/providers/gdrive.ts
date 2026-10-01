@@ -41,7 +41,7 @@ export function createGdriveProvider(
     getAccessToken({ providerId: id, cred: parseOAuthCredential(secret), tokenUrl: TOKEN_URL, fetchImpl });
 
   const api = async <T>(path: string): Promise<T> => {
-    const res = await fetchImpl(`${API}${path}`, { headers: { authorization: `Bearer ${await token()}` } });
+    const res = await fetchImpl(`${API}${path}`, { headers: { authorization: `Bearer ${await token()}` }, redirect: 'error' });
     if (!res.ok) throw new Error(`gdrive api ${res.status}`);
     return (await res.json()) as T;
   };
@@ -63,7 +63,7 @@ export function createGdriveProvider(
 
   const listQuery = (extra: string, pageToken?: string): string => {
     const q = `'${options.folderId.replace(/'/g, "\\'")}' in parents and trashed=false${extra}`;
-    const p = new URLSearchParams({ q, fields: FIELDS, pageSize: String(PAGE) });
+    const p = new URLSearchParams({ q, fields: FIELDS, pageSize: String(PAGE), supportsAllDrives: 'true', includeItemsFromAllDrives: 'true' });
     if (pageToken) p.set('pageToken', pageToken);
     return `/files?${p}`;
   };
@@ -75,8 +75,11 @@ export function createGdriveProvider(
 
     async listAssets(cursor) {
       const doc = await api<{ files: DriveFile[]; nextPageToken?: string }>(listQuery('', cursor));
+      const assets = (doc.files ?? []).map(toAsset).filter((a): a is ProviderAssetRef => a !== null);
+      const skipped = (doc.files ?? []).length - assets.length;
       return {
-        assets: doc.files.map(toAsset).filter((a): a is ProviderAssetRef => a !== null),
+        assets,
+        ...(skipped ? { skipped, notes: ['Subfolders and native Google documents are skipped; only ordinary files in this folder are exposed.'] } : {}),
         ...(doc.nextPageToken ? { next: doc.nextPageToken } : {}),
       };
     },
@@ -90,8 +93,9 @@ export function createGdriveProvider(
     async resolveBlob(remoteId, formatRef): Promise<ResolvedBlob> {
       if (formatRef !== 'media') throw new Error('gdrive assets have a single media format');
       if (!/^[A-Za-z0-9_-]+$/.test(remoteId)) throw new Error('bad drive file id');
-      const res = await fetchImpl(`${API}/files/${remoteId}?alt=media`, {
+      const res = await fetchImpl(`${API}/files/${remoteId}?alt=media&supportsAllDrives=true`, {
         headers: { authorization: `Bearer ${await token()}` },
+        redirect: 'error',
       });
       if (!res.ok || !res.body) throw new Error(`gdrive download ${res.status}`);
       return {

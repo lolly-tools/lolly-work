@@ -154,22 +154,44 @@ published asset's lifecycle stops it, like every other surface that hands out by
 | Route | Action |
 |---|---|
 | `GET /api/v1/catalog/providers`, `GET …/setup`, `GET …/:id`, `GET …/:id/health`, `GET …/:id/drift` | `catalog.provider.read` |
-| `POST /api/v1/catalog/providers`, `PUT …/:id`, `DELETE …/:id`, `POST …/preview`, `POST …/:id/sync`, `POST …/:id/materialize`, `POST …/:id/import` (one asset) | `catalog.provider.manage` |
-| `PUT/DELETE …/:id/credential`, `POST …/:id/enable`, `POST …/:id/disable`, `POST …/:id/cutover` | `catalog.provider.credential` (**owner**) |
+| `POST /api/v1/catalog/providers`, `PUT …/:id`, `DELETE …/:id`, `POST …/preview`, `POST …/:id/setup-preview`, `POST …/:id/sync`, `POST …/:id/materialize`, `POST …/:id/import` (one asset) | `catalog.provider.manage` |
+| `PUT/DELETE …/:id/credential`, `POST …/:id/oauth/start`, `POST …/:id/enable`, `POST …/:id/disable`, `POST …/:id/cutover` | `catalog.provider.credential` (**owner**) |
 | `POST …/:id/publish` | `catalog.provider.publish` (**owner**) |
 
 Config-managed providers reject mutations with `409 CONFIG_MANAGED`.
 
-`GET …/setup` returns versioned public typed-form descriptors (currently WebDAV) and whether
-credential sealing is configured, with no secrets. `POST …/preview` with `setupVersion: 1`
+`GET …/setup` returns versioned public typed-form descriptors (WebDAV and Google Drive),
+credential sealing availability and the installed browser-consent redirect URI/scope,
+with no secrets. Provider wire records include `guidedSetupAvailable`; advanced settings
+outside the guided subset do not receive the guided resume action. `POST …/preview` with `setupVersion: 1`
 validates that guided configuration and tests a bounded paged listing plus one streamed
 original. The response includes `pages`, `scanned`, `sampleTotal`, `truncated`, exposure and
 availability exclusions, mapper notes and `original: {ok,bytes?,sha256?,contentType?,detail?}`.
-No source, file or credential is persisted. The guided WebDAV limits are five pages, 1,000
-distinct files, 2 MiB per XML response, 32 MiB per original and 30 seconds overall. Legacy
+No source, file or credential is persisted. The guided limits are five pages, 1,000
+distinct files, 2 MiB per XML/Drive metadata response, 32 MiB per original and 30 seconds overall. Legacy
 preview and exclusive `shape: true` diagnostics retain their existing contracts.
-`POST /api/v1/catalog/providers` also accepts `setupVersion: 1` to validate the guided subset;
+Creation and `PUT …/:id` accept `setupVersion: 1` to validate the guided subset; guided
+updates require a disabled source. `POST …/:id/setup-preview` tests a guided DB-managed
+Google Drive source using its sealed credential, without returning it. Its response adds
+`revision`, a digest of the configuration and credential identity. `POST …/:id/enable`
+accepts `{setupRevision}` and refuses `409 SETUP_CHANGED` if it no longer matches, including
+changes during the health check. This optional guard preserves advanced activation contracts;
 creation, credential storage, sync and enabling retain their separate audited permissions.
+
+`POST …/:id/oauth/start` accepts `{clientId,clientSecret}` for a disabled, guided DB-managed
+Google Drive source. It requires an owner browser session, credential sealing and a suitable
+instance URL. It returns `{authorizeUrl}` plus an encrypted HttpOnly/SameSite state cookie
+with a ten-minute lifetime, bound to the member session and source revision. Its client
+secret and PKCE verifier are sealed with a separate credential-key context; refresh tokens
+are never put in browser cookies or responses. Only the latest consent in a browser is pending.
+`GET /api/auth/provider-oauth/callback` checks state, session, current permission and source
+revision, exchanges the code on Google's fixed endpoint with PKCE, checks offline read-only
+scope and folder access, then seals the credential. JSON replies are capped at 64 KiB with
+a 20-second aggregate exchange deadline. Failed/declined consent preserves the old grant.
+The callback clears the state cookie and redirects to `/admin#/providers?setup=<id>&oauth=…`
+with a safe outcome (`connected`, `denied`, `expired`, `changed`, `failed`); codes, vendor
+error descriptions and credentials are not reflected. Reconnecting requires a disabled
+source. Google Drive is the only browser-consent kind in this version.
 
 ## Outbound delivery
 

@@ -44,10 +44,31 @@ export const WEBDAV_SETUP = {
   ] satisfies ProviderSetupField[],
 } as const;
 
+export const GDRIVE_SETUP = {
+  version: 1,
+  kind: 'gdrive',
+  name: 'Google Drive',
+  authKind: 'oauth',
+  guide: 'provider-gdrive',
+  limits: [
+    'Expose one curated folder of approved files. Subfolders and native Google Docs, Sheets and Slides are skipped.',
+    'Google Drive supplies no approval status or availability dates to this driver.',
+    'Read-only consent can access the connected account’s Drive. The catalog exposes only the configured folder; use an account with suitably limited access.',
+    'Fixture coverage is not customer acceptance. Complete the live-verify runbook against your Google Workspace.',
+  ],
+  fields: [
+    { path: 'options.folderId', label: 'Folder id', type: 'text', required: true, help: 'Copy the id after /folders/ in the Drive folder URL, not the entire share link. My Drive and shared drive folders are supported.' },
+    ...WEBDAV_SETUP.fields.filter(field => ['mapping.defaultType', 'exposure.groups', 'exposure.tier', 'sync.ttlSeconds'].includes(field.path)),
+  ] satisfies ProviderSetupField[],
+} as const;
+
+export const PROVIDER_SETUPS = [WEBDAV_SETUP, GDRIVE_SETUP];
+
 /** Validate the guided subset without changing advanced provider contracts. */
 export function validateGuidedProvider(cfg: Partial<ProviderRecord>): string | null {
-  if (cfg.kind !== 'webdav') return 'guided setup is currently available for webdav';
-  const fields = WEBDAV_SETUP.fields as ProviderSetupField[];
+  const descriptor = PROVIDER_SETUPS.find(setup => setup.kind === cfg.kind);
+  if (!descriptor) return 'guided setup is currently available for webdav and gdrive';
+  const fields = descriptor.fields as ProviderSetupField[];
   for (const section of ['options', 'mapping', 'exposure', 'sync'] as const) {
     const value = cfg[section];
     if (value === undefined) continue;
@@ -69,7 +90,9 @@ export function validateGuidedProvider(cfg: Partial<ProviderRecord>): string | n
     if (field.type === 'lines' && (!Array.isArray(value) || value.length > 100 || value.some(v => typeof v !== 'string' || !v || v.length > 300 || /[\r\n\x00-\x1f]/.test(v)))) return `${field.label} must contain at most 100 exact names`;
     if (['text', 'url', 'select'].includes(field.type) && (typeof value !== 'string' || value.length > 2000 || /[\x00-\x1f]/.test(value))) return `${field.label} must be text without control characters`;
     if (field.choices && !field.choices.includes(value as string)) return `${field.label} must be one of ${field.choices.join(', ')}`;
+    if (field.required && value === '') return `${field.label} is required`;
   }
+  if (cfg.kind === 'gdrive') return /^[A-Za-z0-9_-]{1,200}$/.test(cfg.options?.folderId as string) ? null : 'Folder id must be the Drive id, without a URL or path';
   try {
     const url = new URL(cfg.options?.baseUrl as string);
     const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);

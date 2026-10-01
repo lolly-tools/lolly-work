@@ -87,8 +87,9 @@ import { deliveryContentType, destinationAvailableTo, destinationDescriptor, des
 import type { ConfigDeliveryDestination, DeliveryRecord } from '../delivery/types.ts';
 import { EXT_PREFIX, extAssetId, PROVIDER_KINDS, type CatalogProvider, type ProviderAssetRef, type ProviderKind, type ProviderRecord } from '../catalog/providers/types.ts';
 import { createProvider } from '../catalog/providers/registry.ts';
-import { WEBDAV_SETUP, validateGuidedProvider } from '../catalog/providers/setup.ts';
+import { PROVIDER_SETUPS, validateGuidedProvider } from '../catalog/providers/setup.ts';
 import { previewGuidedProvider } from '../catalog/providers/setup-preview.ts';
+import { providerOAuthInfo, providerSetupRevision, registerProviderOAuth } from '../catalog/providers/setup-oauth.ts';
 import { noDetailShapeLine, noShapeLine, renderShapeReport, type ProviderShapeReport } from '../catalog/providers/shape.ts';
 import { invalidateAccessTokens } from '../catalog/providers/oauth.ts';
 import { assembleOrgConfig } from '../policy/org-config.ts';
@@ -4896,6 +4897,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   const providerWire = (rec: ProviderRecord) => ({
     id: rec.id, kind: rec.kind, label: rec.label, managedBy: rec.managedBy, enabled: rec.enabled,
     options: rec.options, mapping: rec.mapping, exposure: rec.exposure, sync: rec.sync,
+    guidedSetupAvailable: rec.managedBy === 'db' && !validateGuidedProvider(rec),
     credential: rec.credentialFingerprint
       ? {
           fingerprint: rec.credentialFingerprint,
@@ -4958,7 +4960,16 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
 
   router.add('GET', '/api/v1/catalog/providers/setup', async (req, res) => {
     if (!(await requireAction(req, res, 'catalog.provider.read'))) return;
-    sendJson(res, 200, { version: 1, providers: [WEBDAV_SETUP], credentialStorageAvailable: Boolean(secrets.credential) }, { 'cache-control': 'no-store' });
+    sendJson(res, 200, { version: 1, providers: PROVIDER_SETUPS, credentialStorageAvailable: Boolean(secrets.credential), oauth: providerOAuthInfo(config.instance.baseUrl) }, { 'cache-control': 'no-store' });
+  });
+
+  const providerSetupActor = async (req: IncomingMessage, action: string) => {
+    const user = await memberOf(req);
+    return user && evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, action, ['*'], await store.listGrants()) ? user : null;
+  };
+  registerProviderOAuth(router, { store, baseUrl: config.instance.baseUrl, credentialSecret: secrets.credential,
+    fetchImpl: deps.fetchImpl, ready: providersReady, invalidate: id => federation.invalidate(id), audit,
+    owner: req => providerSetupActor(req, 'catalog.provider.credential'), manager: req => providerSetupActor(req, 'catalog.provider.manage'),
   });
 
   router.add('POST', '/api/v1/catalog/providers', async (req, res) => {
@@ -5108,7 +5119,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!user) return;
     const rec = await dbManagedProvider(res, ctx.params.id as string);
     if (!rec) return;
-    const cfg = readProviderConfigBody((await readJson(req)) as Record<string, unknown> | null);
+    const body = (await readJson(req)) as Record<string, unknown> | null;
+    const cfg = readProviderConfigBody(body);
     if ('error' in cfg) return sendError(res, 400, 'INVALID_INPUT', cfg.error);
     const next: ProviderRecord = {
       ...rec,
@@ -5119,6 +5131,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       ...(cfg.sync ? { sync: cfg.sync } : {}),
       updatedAt: new Date().toISOString(),
     };
+    if (body?.setupVersion !== undefined) {
+      if (rec.enabled) return sendError(res, 409, 'PROVIDER_ENABLED', 'Disable the source before changing guided settings.');
+      const problem = body.setupVersion !== 1 ? 'unsupported setup version' : validateGuidedProvider(next);
+      if (problem) return sendError(res, 400, 'INVALID_INPUT', problem);
+    }
     await store.putProvider(next);
     federation.invalidate(rec.id); // mapping/exposure changes re-map on next compose
     await audit(`user:${user.id}`, 'catalog.provider.update', `provider:${rec.id}`, {
@@ -5209,6 +5226,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const rec = await store.getProvider(ctx.params.id as string);
     if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such provider');
     if (rec.managedBy === 'config') return sendError(res, 409, 'CONFIG_MANAGED', 'set enabled in instance.json for config-managed providers');
+    const body = (await readJson(req)) as { setupRevision?: unknown } | null;
+    if (body?.setupRevision !== undefined && (typeof body.setupRevision !== 'string' || body.setupRevision !== providerSetupRevision(rec))) return sendError(res, 409, 'SETUP_CHANGED', 'Source settings or credential changed. Test the saved source again before enabling.');
     let health: { ok: boolean; detail?: string };
     try {
       health = await federation.instantiate(rec).healthCheck();
@@ -5216,7 +5235,14 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       health = { ok: false, detail: (err as Error).message };
     }
     if (!health.ok) return sendError(res, 409, 'PROVIDER_UNHEALTHY', `cannot enable: ${health.detail ?? 'health check failed'}`);
-    await store.putProvider({ ...rec, enabled: true, updatedAt: new Date().toISOString() });
+    let toEnable = rec;
+    if (body?.setupRevision !== undefined) {
+      const current = await store.getProvider(rec.id);
+      if (!current || providerSetupRevision(current) !== body.setupRevision) return sendError(res, 409, 'SETUP_CHANGED', 'Source changed during the health check. Test it again.');
+      if (!(await providerSetupActor(req, 'catalog.provider.credential'))) return sendError(res, 403, 'FORBIDDEN', 'Your permission changed during activation.');
+      toEnable = current;
+    }
+    await store.putProvider({ ...toEnable, enabled: true, updatedAt: new Date().toISOString() });
     await audit(`user:${user.id}`, 'catalog.provider.enable', `provider:${rec.id}`);
     sendJson(res, 200, { ok: true, enabled: true });
   });

@@ -5,7 +5,7 @@ gaps are named, not smoothed over. Verified against the repository on **2026-09-
 
 ![The client fleet - which shell and engine versions are talking to this deployment](shots/client-fleet.svg)
 
-## Guided setup update, 2026-10-01
+## Guided setup update, 2026-10-02
 
 The new [Customer setup](customer-setup.md) journey provides six guided steps, validated
 non-secret deployment files, a backed-up source-config apply command, applied-settings
@@ -18,10 +18,23 @@ Verified with signed-JWT OIDC/SCIM HTTP fixtures, current permission denial, out
 and evidence checks, memory/Postgres conformance and Chromium desktop/phone light/dark.
 Live customer tenants and released client/worker artifacts still need their selected
 integration tests. WebDAV / Nextcloud now has typed source setup, a bounded paged listing
-and original checksum, credential retry and sync-before-enable. Other provider forms and
-browser OAuth consent, token scopes/expiry, coordinated editable defaults and exact release
-contracts remain deferred. The health snapshot below is the
+and original checksum, credential retry and sync-before-enable. Google Drive now has typed
+folder/group configuration, registered browser consent, sealed refresh-token capture,
+recoverable saved-source previews and activation guarded against changed settings or
+credentials. Shared drive flags and skipped native-document diagnostics are included.
+The guide and app explain exact redirect registration, consent audience and testing-token
+expiry. Other provider forms/browser consent, application service-token scopes/expiry,
+coordinated editable defaults and exact release contracts remain deferred. Live Google
+Workspace/customer acceptance remains outstanding. The health snapshot below is the
 earlier 2026-09-06 baseline.
+
+Current local verification: 1,142 tests, 1,123 passed, zero failures and 19 conditional
+skips; isolated Postgres conformance/rollback passed separately. Twenty new Google setup
+checks cover consent/session revocation, stale settings, bounded reads and console recovery.
+Chromium rehearsed Google consent fixtures across an app restart, original-file checks,
+group access, disable/resume and desktop/phone light/dark. WebDAV's HTTP/browser rehearsal
+also passed after sharing the typed fields. Typecheck, documentation/comments, engine pin,
+SBOM freshness and both production dependency audits passed.
 
 ## Health
 

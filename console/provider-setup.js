@@ -1,38 +1,34 @@
 // SPDX-License-Identifier: MPL-2.0
 
-/** Configure → read-only test → save disabled → review and enable. */
-export function createProviderSetup(descriptor, { el, field, api, canStoreCredentials, credentialStorageAvailable, onClose, onSaved }) {
-  let busy = false, disposed = false, receipt = null, created = false, stored = false, enabled = false;
+/** Shared typed fields for credential and consent-based source setup. */
+export function createProviderFields(descriptor, { el, field }, values = {}) {
   const controls = new Map();
-  const status = el('p', { role: 'status', 'aria-live': 'polite' });
-  const result = el('div', { class: 'stack' });
-  const discard = el('div', { class: 'policy-discard', hidden: '' });
-  const id = el('input', { placeholder: 'brand-assets', 'data-provider-id': '', autocomplete: 'off' });
-  const label = el('input', { value: descriptor.name, 'data-provider-label': '' });
-  const auth = el('select', { 'data-provider-auth': '' }, el('option', { value: 'basic' }, 'Username and app password'), el('option', { value: 'bearer' }, 'Bearer token'));
-  const username = el('input', { autocomplete: 'off', 'data-credential-user': '' });
-  const password = el('input', { type: 'password', autocomplete: 'new-password', 'data-credential-secret': '' });
-  const expiry = el('input', { type: 'date', 'data-credential-expiry': '' });
-  const credentialUser = field('Credential username', username);
-  const credentialSecret = field('App password', password);
   const invalid = (message, control) => { throw Object.assign(new Error(message), { control }); };
-  const secretOf = () => {
-    if (!password.value) invalid('Enter an app password or bearer token.', password);
-    if (auth.value === 'bearer') return `bearer:${password.value}`;
-    if (!username.value || username.value.includes(':') || username.value.toLowerCase() === 'bearer') invalid('Enter the Basic credential username without a colon.', username);
-    const secret = `${username.value}:${password.value}`;
-    if (secret.length < 8) invalid('The combined credential must contain at least eight characters.', password);
-    return secret;
-  };
   const setPath = (body, path, value) => {
     const keys = path.split('.'); let target = body;
     for (const key of keys.slice(0, -1)) target = target[key] ??= {};
     target[keys.at(-1)] = value;
   };
-  const bodyOf = () => {
-    if (!/^[a-z0-9][a-z0-9-]*$/.test(id.value)) invalid('Source id must be a lowercase slug, for example brand-assets.', id);
-    if (!label.value.trim()) invalid('Enter a source label.', label);
-    const body = { id: id.value, kind: descriptor.kind, label: label.value, setupVersion: descriptor.version, options: {}, mapping: {}, exposure: {}, sync: {} };
+  const element = el('div', { class: 'stack' }, ...['options', 'mapping', 'exposure', 'sync'].map(section => {
+      const fields = descriptor.fields.filter(spec => spec.path.startsWith(section + '.')).map(spec => {
+        let input;
+        if (spec.type === 'select') input = el('select', {}, ...spec.choices.map(choice => el('option', { value: choice }, choice)));
+        else if (spec.type === 'lines') input = el('textarea', { rows: 3 });
+        else input = el('input', { type: spec.type === 'boolean' ? 'checkbox' : spec.type === 'number' ? 'number' : spec.type === 'url' ? 'url' : 'text', ...(spec.min !== undefined ? { min: spec.min, max: spec.max } : {}) });
+        input.dataset.providerField = spec.path;
+        const value = spec.path.split('.').reduce((target, key) => target?.[key], values) ?? spec.default;
+        if (spec.type === 'boolean') input.checked = value ?? false;
+        else input.value = Array.isArray(value) ? value.join('\n') : value ?? '';
+        controls.set(spec.path, input);
+        const wrapper = field(spec.label, input, spec.type === 'boolean' ? { class: 'setup-checkbox-row' } : {});
+        const help = el('p', { id: `provider-help-${controls.size}`, class: 'sub' }, spec.help);
+        input.setAttribute('aria-describedby', help.id);
+        return el('div', { class: 'stack' }, wrapper, help);
+      });
+      return el('div', { class: 'stack' }, el('h3', {}, { options: 'Location', mapping: 'Catalog mapping', exposure: 'Access and exposure', sync: 'Refresh' }[section]), el('div', { class: 'formrow' }, ...fields));
+    }));
+  return { element, controls, read() {
+    const body = { options: {}, mapping: {}, exposure: {}, sync: {} };
     for (const spec of descriptor.fields) {
       const input = controls.get(spec.path);
       let value = spec.type === 'boolean' ? input.checked : input.value;
@@ -53,6 +49,39 @@ export function createProviderSetup(descriptor, { el, field, api, canStoreCreden
       if (value === '' || (Array.isArray(value) && !value.length)) continue;
       setPath(body, spec.path, value);
     }
+    return body;
+  } };
+}
+
+/** Configure → read-only test → save disabled → review and enable. */
+export function createProviderSetup(descriptor, { el, field, api, canStoreCredentials, credentialStorageAvailable, onClose, onSaved }) {
+  let busy = false, disposed = false, receipt = null, created = false, stored = false, enabled = false;
+  const form = createProviderFields(descriptor, { el, field }), controls = form.controls;
+  const status = el('p', { role: 'status', 'aria-live': 'polite' });
+  const result = el('div', { class: 'stack' });
+  const discard = el('div', { class: 'policy-discard', hidden: '' });
+  const id = el('input', { placeholder: 'brand-assets', 'data-provider-id': '', autocomplete: 'off' });
+  const label = el('input', { value: descriptor.name, 'data-provider-label': '' });
+  const auth = el('select', { 'data-provider-auth': '' }, el('option', { value: 'basic' }, 'Username and app password'), el('option', { value: 'bearer' }, 'Bearer token'));
+  const username = el('input', { autocomplete: 'off', 'data-credential-user': '' });
+  const password = el('input', { type: 'password', autocomplete: 'new-password', 'data-credential-secret': '' });
+  const expiry = el('input', { type: 'date', 'data-credential-expiry': '' });
+  const credentialUser = field('Credential username', username);
+  const credentialSecret = field('App password', password);
+  const invalid = (message, control) => { throw Object.assign(new Error(message), { control }); };
+  const secretOf = () => {
+    if (!password.value) invalid('Enter an app password or bearer token.', password);
+    if (auth.value === 'bearer') return `bearer:${password.value}`;
+    if (!username.value || username.value.includes(':') || username.value.toLowerCase() === 'bearer') invalid('Enter the Basic credential username without a colon.', username);
+    const secret = `${username.value}:${password.value}`;
+    if (secret.length < 8) invalid('The combined credential must contain at least eight characters.', password);
+    return secret;
+  };
+  const bodyOf = () => {
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(id.value)) invalid('Source id must be a lowercase slug, for example brand-assets.', id);
+    if (!label.value.trim()) invalid('Enter a source label.', label);
+    const body = { id: id.value, kind: descriptor.kind, label: label.value, setupVersion: descriptor.version, options: {}, mapping: {}, exposure: {}, sync: {} };
+    Object.assign(body, form.read());
     if (body.options.root?.split('/').some(part => part === '.' || part === '..' || part.includes('\\'))) invalid('Folder must be a relative path without traversal segments.', controls.get('options.root'));
     if (body.options.flavor === 'nextcloud' && auth.value === 'bearer' && !body.options.username) invalid('Enter the Nextcloud files login when using a bearer token.', controls.get('options.username'));
     return body;
@@ -148,23 +177,7 @@ export function createProviderSetup(descriptor, { el, field, api, canStoreCreden
   const settings = el('fieldset', { class: 'policy-fields stack' },
     el('legend', {}, '1. Configure the source'),
     el('div', { class: 'formrow' }, field('Source id', id), field('Source label', label)),
-    ...['options', 'mapping', 'exposure', 'sync'].map(section => {
-      const fields = descriptor.fields.filter(spec => spec.path.startsWith(section + '.')).map(spec => {
-        let input;
-        if (spec.type === 'select') input = el('select', {}, ...spec.choices.map(choice => el('option', { value: choice }, choice)));
-        else if (spec.type === 'lines') input = el('textarea', { rows: 3 });
-        else input = el('input', { type: spec.type === 'boolean' ? 'checkbox' : spec.type === 'number' ? 'number' : spec.type === 'url' ? 'url' : 'text', ...(spec.min !== undefined ? { min: spec.min, max: spec.max } : {}) });
-        input.dataset.providerField = spec.path;
-        if (spec.type === 'boolean') input.checked = spec.default ?? false;
-        else input.value = spec.default ?? '';
-        controls.set(spec.path, input);
-        const wrapper = field(spec.label, input, spec.type === 'boolean' ? { class: 'setup-checkbox-row' } : {});
-        const help = el('p', { id: `provider-help-${controls.size}`, class: 'sub' }, spec.help);
-        input.setAttribute('aria-describedby', help.id);
-        return el('div', { class: 'stack' }, wrapper, help);
-      });
-      return el('div', { class: 'stack' }, el('h3', {}, { options: 'Location', mapping: 'Catalog mapping', exposure: 'Access and exposure', sync: 'Refresh' }[section]), el('div', { class: 'formrow' }, ...fields));
-    }));
+    form.element);
   const credentials = el('fieldset', { class: 'policy-fields stack' },
     el('legend', {}, '2. Test with a read-only credential'),
     el('p', { class: 'sub' }, 'Nextcloud requires an app password from Settings → Security. Credentials stay in this form until sealed or discarded; the test does not save them.'),
