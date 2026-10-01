@@ -5,12 +5,12 @@
 # signed+attested release image is reproducible and the tag can't shift under a
 # rebuild. Dependabot's docker updater (/.github/dependabot.yml, dir
 # /deploy/compose) keeps the pin moving as node:24-alpine is rebuilt.
-FROM node:26-alpine@sha256:ef24c5053d50fdc3e4e56eb4e7ddb7861874ab0fdc797046ba897581deb8e868
+FROM node:24-alpine3.24@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1
 WORKDIR /app
 
-# The pinned Node image predates these Alpine OpenSSL fixes. Keep the reviewed
-# package versions explicit until a refreshed base already includes them.
-RUN apk add --no-cache libcrypto3=3.5.8-r0 libssl3=3.5.8-r0
+# Keep the reviewed security floor while accepting newer patched revisions.
+# Alpine mirrors replace old APK revisions, so an exact removed pin cannot build.
+RUN apk add --no-cache 'libcrypto3>=3.5.8-r0' 'libssl3>=3.5.8-r0'
 
 # vendor/ must land BEFORE pnpm install --frozen-lockfile: package.json's @lolly/engine and
 # @lolly-tools/core are workspace links pointing there, and pnpm install --frozen-lockfile both reads them

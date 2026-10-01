@@ -10,8 +10,8 @@
 #                only on a dependabot[bot] PR, which cannot carry the
 #                regenerated file; sbom-refresh.yml repairs main after the
 #                merge).
-#   package    — the server container image must build (deploy/compose/
-#                Dockerfile); nothing is pushed here, release.yml does that.
+#   package    — server and render-worker container images must build;
+#                nothing is pushed here, release.yml does that.
 # After all four gates pass on a push to main (never on a PR), `deploy` ships the
 # committed state to Vercel production (aliases www.lolly.work). It no-ops with a
 # warning until the VERCEL_TOKEN repo secret is set.
@@ -170,16 +170,26 @@ jobs:
           echo "::error title=SBOM drift::sbom.cdx.json is stale. Run pnpm run sbom and commit the result."
           exit 1
 
-  # Packaging gate — the image release.yml ships must at least build on every
-  # change. Build only, no registry login, nothing pushed.
+  # Packaging gate — both deployment tiers must build on every change.
+  # Build only, no registry login, nothing pushed.
   package:
-    name: container image builds
+    name: container image builds (${{ matrix.image }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: server
+            dockerfile: deploy/compose/Dockerfile
+            context: .
+          - image: render-worker
+            dockerfile: workers/render/Dockerfile
+            context: workers/render
     steps:
       - uses: actions/checkout@v7
 
-      - name: Build the server image (no push)
-        run: docker build -f deploy/compose/Dockerfile .
+      - name: Build the image (no push)
+        run: docker build -f ${{ matrix.dockerfile }} ${{ matrix.context }}
 
   # Deploy — only after every gate above passes, and only on a push to main (PRs
   # never deploy). Remote build: Vercel runs the vercel.json buildCommand, exactly

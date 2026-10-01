@@ -9,7 +9,7 @@
 # rebuild. Dependabot's docker updater (/.github/dependabot.yml, dir
 # /workers/render) keeps the base pin moving. Update the browser package pin
 # alongside the application and exercise real render/raster requests.
-FROM node:24-alpine@sha256:50c8e8ca1d27439048670df5883f32d57cf81cff6233222c893fd0d9884cbd81
+FROM node:24-alpine3.24@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1
 WORKDIR /app
 
 ENV NODE_ENV=production
@@ -20,7 +20,9 @@ ENV LOLLY_BROWSER_PATH=/usr/bin/chromium-browser
 # the pod uses readOnlyRootFilesystem. Its user-data directory already uses /tmp.
 ENV XDG_CONFIG_HOME=/tmp/chromium-config
 ENV XDG_CACHE_HOME=/tmp/chromium-cache
-RUN apk add --no-cache libcrypto3=3.5.8-r0 libssl3=3.5.8-r0 \
+# Mirrors replace older OpenSSL revisions; retain the security floor rather
+# than requiring a removed APK. Browser/font pins match this Alpine branch.
+RUN apk add --no-cache 'libcrypto3>=3.5.8-r0' 'libssl3>=3.5.8-r0' \
     chromium=152.0.7977.82-r0 font-noto=2026.06.01-r0
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
