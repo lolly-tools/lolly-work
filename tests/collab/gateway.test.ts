@@ -838,47 +838,55 @@ test('presence is relayed unauthorized, identity-stamped, and never stored', asy
 
   const alice = new Client(seed, aliceCookie);
   const bob = new Client(seed, bobCookie);
-  await alice.join();
-  await bob.join();
-  await alice.next('peer-join');
+  let late: Client | undefined;
+  try {
+    await alice.join();
+    await bob.join();
+    await alice.next('peer-join');
 
-  // Focus on the input alice may NOT write. Presence must still relay - the
-  // lane is structurally unauthorized.
-  alice.send({
-    t: 'presence',
-    frame: {
-      userId: 'spoofed', name: 'Someone Else', color: '#30ba78',
-      cursor: { x: 0.4, y: 0.6 }, selection: ['row-a'], focus: 'headline',
-      chat: 'x'.repeat(200),
-    },
-  });
-  const relayed = await bob.next('presence');
-  const frame = relayed.frame as Record<string, unknown>;
-  assert.equal(frame['focus'], 'headline', 'presence on a locked input is relayed, not vetoed');
-  assert.equal(frame['name'], 'Alice Eng', 'the server stamps the authenticated name over the claim');
-  assert.notEqual(frame['userId'], 'spoofed', 'a peer cannot present as somebody else');
-  assert.equal(String(frame['chat']).length, 64, 'cursor chat is clamped to the contract ceiling');
+    // Focus on the input alice may NOT write. Presence must still relay - the
+    // lane is structurally unauthorized.
+    alice.send({
+      t: 'presence',
+      frame: {
+        userId: 'spoofed', name: 'Someone Else', color: '#30ba78',
+        cursor: { x: 0.4, y: 0.6 }, selection: ['row-a'], focus: 'headline',
+        chat: 'x'.repeat(200),
+      },
+    });
+    const relayed = await bob.next('presence');
+    const frame = relayed.frame as Record<string, unknown>;
+    assert.equal(frame['focus'], 'headline', 'presence on a locked input is relayed, not vetoed');
+    assert.equal(frame['name'], 'Alice Eng', 'the server stamps the authenticated name over the claim');
+    assert.notEqual(frame['userId'], 'spoofed', 'a peer cannot present as somebody else');
+    assert.equal(String(frame['chat']).length, 64, 'cursor chat is clamped to the contract ceiling');
 
-  // Nothing about that frame reached the store.
-  const auditAfter = await store.listAudit();
-  const added = auditAfter.slice(auditBefore);
-  assert.ok(added.every((e) => e.action !== 'collab.presence'), 'presence is never an audit event');
-  assert.ok(!JSON.stringify(added).includes('0.4'), 'no presence payload in the audit log');
-  const stored = await store.getSession(seed);
-  assert.deepEqual(stored?.inputs, { title: 'presence' }, 'presence never touches the session record');
+    // Check payloads, not timestamps that can coincidentally contain "0.4".
+    const added = (await store.listAudit()).slice(auditBefore);
+    assert.ok(added.every((e) => e.action !== 'collab.presence'), 'presence is never an audit event');
+    const events = added.filter((e) => e.subject === `session:${seed}`);
+    assert.equal(events.length, 2, 'only the two joins reached the audit log');
+    for (const event of events) {
+      assert.equal(event.action, 'collab.join');
+      assert.deepEqual(event.payload, {
+        projectId, toolId: TOOL_ID, role: 'writer', opVersion: CANVAS_OP_VERSION,
+      }, 'the audit payload contains join metadata without presence');
+    }
+    const stored = await store.getSession(seed);
+    assert.deepEqual(stored?.inputs, { title: 'presence' }, 'presence never touches the session record');
 
-  // A late joiner gets the current presence set with its own entry absent.
-  const late = new Client(seed, bobCookie);
-  const ack = await late.join();
-  const roster = ack.roster as Array<{ id: string; presence?: unknown }>;
-  assert.ok(roster.some((r) => r.presence), 'the joiner receives the live presence set');
-  assert.ok(!roster.some((r) => r.id === (ack.you as { id: string }).id), '…minus its own entry');
-
-  alice.close();
-  bob.close();
-  late.close();
-  await Promise.all([alice.closed(), bob.closed(), late.closed()]);
-  await store.deleteOverlay(TOOL_ID);
+    // A late joiner gets the current presence set with its own entry absent.
+    late = new Client(seed, bobCookie);
+    const ack = await late.join();
+    const roster = ack.roster as Array<{ id: string; presence?: unknown }>;
+    assert.ok(roster.some((r) => r.presence), 'the joiner receives the live presence set');
+    assert.ok(!roster.some((r) => r.id === (ack.you as { id: string }).id), '…minus its own entry');
+  } finally {
+    const clients = [alice, bob, ...(late ? [late] : [])];
+    for (const client of clients) client.close();
+    await Promise.all(clients.map((client) => client.closed()));
+    await store.deleteOverlay(TOOL_ID);
+  }
 });
 
 test('the presence path cannot reach the policy engine (structural, not remembered)', async () => {
