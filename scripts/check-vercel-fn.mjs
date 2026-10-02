@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 /** Exercise the packaged function, not workspace imports, before deployment.
- *  Build on the test platform first; native packages are platform-specific. */
+ *  Build on the test platform first; native packages are platform-specific.
+ *  Run via check:vercel so require(ESM) is disabled as in the hosted runtime. */
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
@@ -9,6 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+assert.equal(process.features.require_module, false, 'Run pnpm run check:vercel to exercise the hosted require(ESM) restriction');
 const func = join(root, '.vercel/output/functions/api/index.func');
 const original = JSON.parse(readFileSync(join(root, 'vendor/@lolly/engine/package.json'), 'utf8'));
 const shipped = JSON.parse(readFileSync(join(func, 'node_modules/@lolly/engine/package.json'), 'utf8'));
@@ -22,6 +24,16 @@ for (const subpath of Object.keys(original.exports)) {
   const name = '@lolly/engine' + (subpath === '.' ? '' : subpath.slice(1));
   await import(pathToFileURL(require.resolve(name)).href);
 }
+// Exercise the converted jsdom dependency paths, including encoding/entities,
+// the selector engine and CSS colour computation, without workspace resolution.
+const { JSDOM } = require('jsdom');
+const dom = new JSDOM(Buffer.from('<meta charset=utf-8><style>.swatch { color: rgb(12 34 56) }</style><main><span class=swatch>Café &amp; tea</span></main>'));
+try {
+  const swatch = dom.window.document.querySelector('main > .swatch:is(span)');
+  assert.ok(swatch);
+  assert.equal(swatch.textContent, 'Café & tea');
+  assert.equal(dom.window.getComputedStyle(swatch).color, 'rgb(12, 34, 56)');
+} finally { dom.window.close(); }
 
 // This command owns an isolated process. Never inherit a database or instance
 // credential from the operator's environment into the fixture bootstrap.
@@ -64,7 +76,7 @@ try {
   const render = await request('/render/qr-code.svg?url=https%3A%2F%2Ffixture.test', { headers: { cookie } });
   assert.equal(render.status, 200, await render.clone().text());
   assert.match(render.headers.get('content-type'), /image\/svg\+xml/); assert.match(await render.text(), /<svg[\s>]/);
-  console.log('✓ Packaged Vercel function: all engine exports, boot, console modules, owner session, provider setup, org-config and SVG rendering');
+  console.log('✓ Packaged Vercel function: restricted require(ESM), all engine exports, jsdom parsing/styles, boot, console modules, owner session, provider setup, org-config and SVG rendering');
 } finally {
   server.closeAllConnections();
   await new Promise(resolve => server.close(resolve));

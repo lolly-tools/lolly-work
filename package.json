@@ -32,7 +32,7 @@
     "update:npm-licenses": "node scripts/update-npm-licenses.ts pnpm-lock.yaml workers/render/pnpm-lock.yaml",
     "setup:apply": "node scripts/apply-setup.ts",
     "build:vercel": "node scripts/build-vercel-fn.mjs",
-    "check:vercel": "node scripts/check-vercel-fn.mjs"
+    "check:vercel": "node --no-experimental-require-module scripts/check-vercel-fn.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

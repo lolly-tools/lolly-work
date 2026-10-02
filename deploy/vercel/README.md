@@ -26,9 +26,13 @@ zero-config function detector ignores it and only the Build Output API applies);
 
 The function runtime is pinned to Node 24, matching the server's requirement. CI runs
 `pnpm run build:vercel` then `pnpm run check:vercel` on Linux before deployment. The check
-loads every engine export from the generated package, boots the bundled function, checks
-console modules and setup/organization configuration, and renders an SVG through the real
-engine. It uses an isolated evaluation fixture with no inherited database or instance
+disables `require(ESM)` to match the hosted runtime, loads every engine export from the
+generated package, exercises jsdom parsing/selectors/styles, boots the bundled function,
+checks console modules and setup/organization configuration, and renders an SVG through
+the real engine. The build converts jsdom's ESM-only dependencies to compatible CommonJS
+entries in the output package; jsdom's worker/data files and dependency license files
+remain included. The installed packages and vendored engine remain untouched.
+The check uses an isolated evaluation fixture with no inherited database or instance
 credentials. A local macOS build can run this check locally; only the Linux build is
 suitable for uploading to Vercel.
 

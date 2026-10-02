@@ -7,14 +7,14 @@
  * transpiles each `.ts` file to `.js` but leaves the `.ts` import specifiers, so the
  * deployed function can't resolve them (ERR_MODULE_NOT_FOUND), and Node refuses to
  * type-strip the vendored engine under node_modules. The fix is to esbuild-bundle the
- * whole graph (function + vendored engine + jsdom + pg) into plain JS, leaving only the
- * native @resvg/resvg-js external, and ship it as an explicit Build Output API function.
+ * function + vendored engine + pg into plain JS, copy jsdom and native dependencies,
+ * and ship it as an explicit Build Output API function.
  *
  * MUST run on the deploy platform (Linux on Vercel), NOT be prebuilt on a Mac: it copies
  * the platform-specific @resvg/resvg-js binary from node_modules, which is not portable.
  * Vercel invokes it as the project's buildCommand (vercel.json).
  */
-import { build } from 'esbuild';
+import { build, buildSync, transformSync } from 'esbuild';
 import { mkdirSync, rmSync, cpSync, writeFileSync, readFileSync, readdirSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -103,6 +103,40 @@ function copyPkgClosure(rootName) {
       // trees would only duplicate them (and collide, e.g. xmlchars via jsdom+saxes).
       filter: (s) => !s.slice(src.length + 1).split(/[/\\]/).includes('node_modules'),
     });
+    // Lambda disables require(ESM). jsdom's CJS files require these ESM-only
+    // packages, so compile their copied JS to CJS while retaining file paths
+    // and package metadata. Keep jsdom itself intact for its worker/data files.
+    if (['@exodus/bytes', 'parse5', 'entities'].includes(name)) {
+      const compile = dir => {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          const path = join(dir, entry.name);
+          if (entry.isDirectory()) compile(path);
+          else if (entry.name.endsWith('.js')) writeFileSync(path, transformSync(readFileSync(path, 'utf8'), {
+            loader: 'js', format: 'cjs', target: 'node24', legalComments: 'inline',
+          }).code);
+        }
+      };
+      compile(dest);
+      const pkg = JSON.parse(readFileSync(join(dest, 'package.json'), 'utf8'));
+      writeFileSync(join(dest, 'package.json'), JSON.stringify({ ...pkg, type: 'commonjs' }, null, 2));
+    }
+    // These two jsdom dependencies expose a single ESM-only entry and import
+    // further ESM-only CSS helpers. Bundle that closure into a CJS entry instead
+    // of rewriting its .mjs imports; preserve licenses and the package's files.
+    if (['@asamuzakjp/css-color', '@asamuzakjp/dom-selector'].includes(name)) {
+      const pkg = JSON.parse(readFileSync(join(dest, 'package.json'), 'utf8'));
+      const entry = pkg.exports?.['.']?.default;
+      if (typeof entry !== 'string' || !entry.startsWith('./')) throw new Error(`Unsupported jsdom dependency entry ${name}`);
+      buildSync({
+        entryPoints: [join(src, entry)], outfile: join(dest, 'lolly-require.cjs'),
+        bundle: true, platform: 'node', format: 'cjs', target: 'node24',
+        // css-tree already has a CJS entry and reads data by its own file path.
+        legalComments: 'inline', logLevel: 'warning', external: [...NATIVE, 'css-tree'],
+      });
+      pkg.exports['.'].default = './lolly-require.cjs';
+      pkg.main = './lolly-require.cjs';
+      writeFileSync(join(dest, 'package.json'), JSON.stringify(pkg, null, 2));
+    }
     try {
       const pj = JSON.parse(readFileSync(join(src, 'package.json'), 'utf8'));
       for (const dep of Object.keys(pj.dependencies ?? {})) queue.push(dep);
