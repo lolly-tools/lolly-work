@@ -968,7 +968,7 @@ td.url-cell { max-width: 240px; }
 .doc-prose ul, .doc-prose ol { margin: 0 0 12px; padding-left: 20px; }
 .doc-prose li { margin-bottom: 4px; }
 .doc-prose a { color: var(--accent); }
-.doc-prose code { font-family: var(--font-mono, var(--font-mono-sys)); font-size: 12.5px; background: color-mix(in oklab, var(--ink) 6%, transparent); padding: 1px 5px; border-radius: 4px; }
+.doc-prose code { font-family: var(--font-mono, var(--font-mono-sys)); font-size: 12.5px; background: color-mix(in oklab, var(--ink) 6%, transparent); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
 .doc-prose pre {
   background: color-mix(in oklab, var(--ink) 5%, transparent);
   border: 1px solid var(--hairline); border-radius: var(--radius-sm);
@@ -1195,4 +1195,5 @@ td.url-cell { max-width: 240px; }
 .setup-checkbox-row label { order: 1; flex: 1; margin: 0; cursor: pointer; }
 .setup-checkbox-row input[type="checkbox"] { order: 0; width: 18px; height: 18px; padding: 0; box-shadow: none; flex: 0 0 auto; }
 .setup-wizard a { color: var(--accent); }
+.setup-wizard a.btn { display: inline-block; }
 .setup-wizard a.btn.primary { color: var(--on-accent); }

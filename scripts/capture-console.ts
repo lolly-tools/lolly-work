@@ -11,9 +11,9 @@
  * signed VECTOR SVG, the way the OSS /info shots are made.
  *
  * Pipeline, per shot:
- *   1. boot a richly-seeded demo deployment (scripts/demo.ts, in-memory) so the
+ *   1. boot the real app with the demo seed and a capture-only owner, in memory,
  *      console has real governance data to show;
- *   2. drive a headless browser to each `/admin#/…` screen, signed in as admin;
+ *   2. drive a headless browser to each `/admin#/…` screen, signed in as owner;
  *   3. inject the capture-time walker bundle (scripts/lib/walker-bundle.js - the
  *      web shell's renderSvgFromHtml, built by scripts/build-walker-bundle.ts)
  *      and call window.__lollyWalkerShot(cropSelector) → a real SVG document of
@@ -38,16 +38,20 @@
  * console needs none of this - it only ever loads the finished .svg files.
  *
  *     node scripts/capture-console.ts                 # capture all shots
- *     node scripts/capture-console.ts overview audit  # just these slugs
+ *     node scripts/capture-console.ts overview-dashboard audit-chain
  *     LOLLY_OSS_DIR=/path/to/lolly PORT=8799 node scripts/capture-console.ts
  */
-import { spawn } from 'node:child_process';
+import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { webcrypto } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildDemoConfig, seedStore, seedActivity, demoGrants, demoRooms } from './demo.ts';
+import { buildApp } from '../server/src/api/app.ts';
+import { createMemoryStore } from '../server/src/store/memory.ts';
+import type { RenderRunner } from '../server/src/renders/runner.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -83,7 +87,7 @@ const BASE = `http://localhost:${PORT}`;
 const OUT_DIR = join(ROOT, 'docs', 'shots');
 const WALKER_BUNDLE = join(ROOT, 'scripts', 'lib', 'walker-bundle.js');
 const VIEWPORT = { width: 1440, height: 900 };
-const ADMIN_PERSONA = 'admin@suse.example';
+const ADMIN_PERSONA = 'docs-owner@example.invalid';
 const THEMES = ['light', 'dark'] as const;
 
 // ── the shot recipes ──────────────────────────────────────────────────────────
@@ -97,6 +101,7 @@ interface Recipe {
   cropSelector: string;   // '#main' for full views, '#inst-panel' for This-Deploy tabs
   page: string;           // docs/*.md this illustrates
   theme?: 'light' | 'dark';
+  prepare?: (page: any, theme: 'light' | 'dark') => Promise<void>;
 }
 const RECIPES: Recipe[] = [
   { slug: 'overview-dashboard', route: 'overview', cropSelector: '#main', page: 'overview.md' },
@@ -106,14 +111,58 @@ const RECIPES: Recipe[] = [
   { slug: 'approvals-inbox', route: 'approvals', cropSelector: '#main', page: 'approvals.md' },
   { slug: 'audit-chain', route: 'audit', cropSelector: '#main', page: 'audit.md' },
   { slug: 'catalog-assets', route: 'instance?tab=catalog', cropSelector: '#inst-panel', page: 'catalog.md' },
-  { slug: 'catalog-providers', route: 'instance?tab=providers', cropSelector: '#inst-panel', page: 'catalog.md' },
+  { slug: 'catalog-providers', route: 'providers', cropSelector: '#main', page: 'catalog.md' },
   { slug: 'feature-flags', route: 'instance?tab=flags', cropSelector: '#inst-panel', page: 'configuration.md' },
   { slug: 'share-links', route: 'links', cropSelector: '#main', page: 'sharing.md' },
   { slug: 'broadcast-messages', route: 'messages', cropSelector: '#main', page: 'operations.md' },
   { slug: 'preview-as-group', route: 'preview', cropSelector: '#main', page: 'governance.md' },
   { slug: 'client-fleet', route: 'fleet', cropSelector: '#main', page: 'status.md' },
   { slug: 'activity-timeline', route: 'activity', cropSelector: '#main', page: 'telemetry.md' },
+  { slug: 'customer-setup-deployment', route: 'setup', cropSelector: '.setup-wizard', page: 'customer-setup.md' },
+  { slug: 'customer-setup-identity', route: 'setup', cropSelector: '.setup-wizard [data-step="1"]', page: 'customer-setup.md', prepare: async page => {
+    await page.getByRole('button', { name: '2. Identity and owner', exact: true }).click();
+    await page.getByLabel('Sign-in method', { exact: true }).selectOption('oidc');
+    await page.getByLabel('Sign-in button name', { exact: true }).fill('Company sign-in');
+    await page.getByLabel('OIDC issuer URL', { exact: true }).fill('https://login.example.invalid/realms/brand');
+    await page.getByLabel('Registered client ID', { exact: true }).fill('lolly-work');
+    await page.getByLabel('Owner groups', { exact: true }).fill('Brand platform owners\nowner');
+    await page.getByLabel('Admin groups', { exact: true }).fill('Brand platform admins');
+    await page.getByLabel('Exact groups for the intended first owner', { exact: true }).fill('Brand platform owners');
+  } },
+  { slug: 'customer-setup-sample', route: 'setup', cropSelector: '.setup-wizard [data-step="4"]', page: 'customer-setup.md', prepare: async page => {
+    await page.getByRole('button', { name: '5. Sample output', exact: true }).click();
+    await page.getByLabel('Sample tool', { exact: true }).selectOption('color-palette');
+    await page.getByLabel('Sample format', { exact: true }).selectOption('svg');
+    await page.getByRole('button', { name: 'Create checked sample', exact: true }).click();
+    await page.getByRole('link', { name: 'Download sample', exact: true }).waitFor({ timeout: 30000 });
+  } },
+  { slug: 'provider-webdav-setup', route: 'providers', cropSelector: '.provider-setup > fieldset:first-of-type', page: 'providers/webdav.md', prepare: async page => {
+    await openProvider(page, 'WebDAV');
+    await page.getByLabel('Source id', { exact: true }).fill('brand-nextcloud');
+    await page.getByLabel('Server URL', { exact: true }).fill('https://cloud.example.invalid');
+    await page.getByLabel('Folder to expose', { exact: true }).fill('Approved brand assets');
+    await page.getByLabel('Member groups', { exact: true }).fill('Brand designers\nMarketing, EMEA');
+  } },
+  { slug: 'provider-gdrive-setup', route: 'providers', cropSelector: '.provider-setup > fieldset:first-of-type', page: 'providers/gdrive.md', prepare: async page => {
+    await openProvider(page, 'Google Drive');
+    await page.getByLabel('Source id', { exact: true }).fill('brand-drive');
+    await page.getByLabel('Folder id', { exact: true }).fill('1ExampleFolderId');
+    await page.getByLabel('Member groups', { exact: true }).fill('Brand designers\nMarketing, EMEA');
+  } },
+  { slug: 'provider-gdrive-consent', route: 'providers', cropSelector: '.provider-setup > fieldset:nth-of-type(2)', page: 'providers/gdrive.md', prepare: async (page, theme) => {
+    await openProvider(page, 'Google Drive');
+    await page.getByLabel('Source id', { exact: true }).fill(`brand-drive-${theme}`);
+    await page.getByLabel('Folder id', { exact: true }).fill('1ExampleFolderId');
+    await page.getByLabel('Member groups', { exact: true }).fill('Brand designers\nMarketing, EMEA');
+    await page.getByRole('button', { name: 'Save disabled source', exact: true }).click();
+    await page.getByText('Source saved disabled. An owner can now connect its Google account.', { exact: true }).waitFor();
+  } },
 ];
+
+async function openProvider(page: any, name: string): Promise<void> {
+  await page.locator('.connect-card').filter({ has: page.locator('.connect-name', { hasText: name }) })
+    .getByRole('button', { name: 'Guided connection', exact: true }).click();
+}
 
 // ── resolve Playwright + the engine from where they actually live ──────────────
 function resolveOssDir(): string {
@@ -156,10 +205,11 @@ function rootDims(svg: string): { w: number; h: number } {
 /** Reject if `p` doesn't settle within `ms` - bounds Playwright evaluate() calls,
  *  which otherwise hang forever on a stuck page. */
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
   return Promise.race([
     p,
-    new Promise<T>((_, rej) => setTimeout(() => rej(new Error(`${label} timed out after ${ms}ms`)), ms)),
-  ]);
+    new Promise<T>((_, rej) => { timer = setTimeout(() => rej(new Error(`${label} timed out after ${ms}ms`)), ms); }),
+  ]).finally(() => clearTimeout(timer));
 }
 
 // ── mint (or load) the signing identity ────────────────────────────────────────
@@ -230,25 +280,26 @@ async function signSvg(svg: string, recipe: Recipe, dims: { w: number; h: number
 }
 
 // ── boot the demo deployment ────────────────────────────────────────────────────
-function bootDemo(): { kill: () => void; ready: Promise<void> } {
-  const child = spawn('node', ['scripts/demo.ts'], {
-    cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), HOST: 'localhost' },
-    stdio: ['ignore', 'pipe', 'inherit'],
+async function bootDemo(): Promise<{ close: () => Promise<void> }> {
+  // Capture-only evaluation fixture: use the real app and demo seed, with an
+  // owner for setup screens. Never inherit an operator's database or secrets.
+  const config = buildDemoConfig({ baseUrl: BASE, accessMode: 'open', pack: join(ROOT, 'packs/demo') });
+  config.dev.users.push({ email: ADMIN_PERSONA, groups: ['owner'] });
+  config.render.allowHooksInFastPath = true; // only the curated local demo pack
+  const store = createMemoryStore({ grants: demoGrants() });
+  const seeded = await seedStore(store);
+  await seedActivity(store, seeded);
+  let runner: RenderRunner | undefined;
+  const app = buildApp({ config, store,
+    secrets: { session: 'docs-fixture-session-key'.repeat(3), link: 'docs-fixture-link-key'.repeat(3), credential: 'docs-fixture-credential-key'.repeat(3) },
+    listCollabRooms: () => demoRooms(seeded), onRenderRunner: value => { runner = value; value.start(); },
   });
-  child.stdout?.on('data', () => {}); // drain
-  const ready = (async () => {
-    const deadline = Date.now() + 30_000;
-    while (Date.now() < deadline) {
-      try {
-        const r = await fetch(`${BASE}/healthz`);
-        if (r.ok) { const j = await r.json().catch(() => null); if (j?.ok) return; }
-      } catch { /* not up yet */ }
-      await new Promise((res) => setTimeout(res, 300));
-    }
-    throw new Error(`demo server did not become healthy on ${BASE} within 30s`);
-  })();
-  return { kill: () => child.kill('SIGTERM'), ready };
+  const server = createServer((req, res) => void app(req, res));
+  await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(PORT, 'localhost', resolve); });
+  return { close: async () => {
+    await runner?.stop(); server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  } };
 }
 
 // ── main ─────────────────────────────────────────────────────────────────────
@@ -266,11 +317,11 @@ async function main(): Promise<void> {
   // Write the signing root next to the shots so a curious operator can pin it and
   // the console's #/verify can read "trusted" for this run's own credentials.
   const engine = await loadEngine();
-  writeFileSync(join(OUT_DIR, 'signing-root.pem'), engine.derToPem(signer.rootDer, 'CERTIFICATE'));
+  const rootPem = engine.derToPem(signer.rootDer, 'CERTIFICATE');
+  if (!only.size) writeFileSync(join(OUT_DIR, 'signing-root.pem'), rootPem);
 
-  const demo = bootDemo();
   console.log(`▶ booting demo deployment on ${BASE} …`);
-  await demo.ready;
+  const demo = await bootDemo();
   console.log('✓ demo healthy');
 
   const pw = await loadPlaywright();
@@ -284,7 +335,7 @@ async function main(): Promise<void> {
   const failures: string[] = [];
   try {
     const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 2, serviceWorkers: 'block' });
-    // Sign in as admin once (plants the lw_session cookie for the whole context).
+    // Sign in as the capture owner once (plants lw_session for the whole context).
     const auth = await context.newPage();
     await auth.goto(`${BASE}/api/auth/dev?email=${encodeURIComponent(ADMIN_PERSONA)}&returnTo=/admin`, { waitUntil: 'domcontentloaded' });
     await auth.close();
@@ -298,13 +349,14 @@ async function main(): Promise<void> {
       page.setDefaultTimeout(20_000);
       try {
         await page.addInitScript((t) => {
-          try { localStorage.setItem('lw-theme', t); } catch { /* ignore */ }
+          try { localStorage.setItem('lw-theme', t); localStorage.removeItem('lw.setup.progress.v1'); } catch { /* ignore */ }
         }, theme);
         // The control plane long-polls org-config, so 'networkidle' never fires;
         // gate on concrete DOM signals instead. 'load' + boot-placeholder gone +
         // the view's container visible + fonts ready is a reliable settle.
         await page.goto(`${BASE}/admin#/${recipe.route}`, { waitUntil: 'load' });
         await page.waitForFunction(() => !document.querySelector('.boot'), null, { timeout: 15_000 }).catch(() => {});
+        await recipe.prepare?.(page, theme);
         await page.waitForSelector(`${recipe.cropSelector}`, { state: 'visible', timeout: 15_000 });
         await withTimeout(page.evaluate(() => (document as unknown as { fonts: { ready: Promise<unknown> } }).fonts.ready), 8_000, 'fonts.ready');
         // Views fetch their data async, so the crop element starts near-empty and
@@ -328,13 +380,23 @@ async function main(): Promise<void> {
         // its body via the UA closed-state, which the walker doesn't honor - it
         // would draw the table on top of the chart. Hide the body explicitly so the
         // walker skips it and the shot matches what a reader actually sees.
-        await page.evaluate(() => {
+        await page.evaluate((sel) => {
           document.querySelectorAll('details:not([open])').forEach((d) => {
             d.querySelectorAll(':scope > *:not(summary)').forEach((c) => {
               (c as HTMLElement).style.display = 'none';
             });
           });
-        });
+          // A subtree crop omits its ancestors' paint. Carry the visible backdrop
+          // onto the crop root before walking so standalone dark SVGs retain it.
+          const crop = document.querySelector(sel) as HTMLElement;
+          for (let ancestor: Element | null = crop; ancestor; ancestor = ancestor.parentElement) {
+            const color = getComputedStyle(ancestor).backgroundColor;
+            if (color && color !== 'transparent' && !/rgba\([^)]*,\s*0\)$/.test(color)) {
+              crop.style.backgroundColor = color;
+              break;
+            }
+          }
+        }, recipe.cropSelector);
 
         await page.addScriptTag({ content: walkerSrc });
         const result = await withTimeout(page.evaluate(async (sel) => {
@@ -350,6 +412,8 @@ async function main(): Promise<void> {
         const suffix = theme === 'dark' ? '.dark' : '';
         const file = join(OUT_DIR, `${recipe.slug}${suffix}.svg`);
         writeFileSync(file, signed);
+        // A partial recapture must not replace the root for untouched shots.
+        writeFileSync(join(OUT_DIR, `${recipe.slug}.root.pem`), rootPem);
         const kb = Math.round(signed.length / 1024);
         const els = (svg.replace(/<metadata\b[\s\S]*?<\/metadata>/gi, '').match(/<[a-z][a-z0-9:-]*[\s/>]/gi) ?? []).length;
         console.log(`  ✓ ${`${recipe.slug} (${theme})`.padEnd(30)} ${dims.w}×${dims.h}  ${els} elements  ${kb} KB  signed`);
@@ -364,7 +428,7 @@ async function main(): Promise<void> {
     }
   } finally {
     await browser.close();
-    demo.kill();
+    await demo.close();
   }
 
   console.log(`\n${ok}/${recipes.length * THEMES.length} shots captured → docs/shots/`);

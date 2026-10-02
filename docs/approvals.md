@@ -54,8 +54,9 @@ The chain is **snapshotted at submit**: an approval is judged by the rules it wa
 under, so editing a chain never rewrites decisions already in flight.
 
 States: `in_review` → `approved` | `rejected` | `withdrawn` (a stepless chain approves at
-once). Acting needs no separate permission: any signed-in member of a step's approver
-groups can act, minus the separation-of-duties rules below.
+once). Acting requires `approval.act` and membership of the step's approver groups,
+subject to the separation-of-duties rules below. A custom reviewer group does not
+automatically receive that permission; assign the approver role or an explicit grant.
 
 ## Invariants the engine enforces
 

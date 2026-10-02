@@ -17,6 +17,10 @@ and member groups. Group and section fields accept one exact name per line; a co
 part of the name. An empty folder exposes the entire files root, and empty groups expose the
 slice to all members, so review both before saving.
 
+![Guided Nextcloud location, catalog mapping, exact member groups and refresh settings](../shots/provider-webdav-setup.svg)
+
+The example exposes one curated folder to two exact groups. `Marketing, EMEA` is one group name. Enter your own server URL and folder; credentials are entered in the next part of the form.
+
 Enter the read-only account's username and app password in their separate controls, or choose
 bearer token. With a Nextcloud bearer token, also enter **Files login** so the app can construct
 the files URL. Credentials are used only for the test until you save; they are cleared when
@@ -44,7 +48,7 @@ checks health again and enables it. Disabling from the source row stops future f
 Admins with configuration access can save a disabled source and hand credential storage and
 activation to an owner. Config-managed sources stay read-only here: change their deployment
 source and redeploy. Other provider kinds retain their advanced forms and documented consent
-flows.
+flows; [Google Drive](gdrive.md#guided-connection-in-the-app) also has a guided browser journey.
 
 WebDAV does not provide approval status; use a folder curated to contain approved files.
 Availability controls apply only to custom DAV properties your server actually returns.

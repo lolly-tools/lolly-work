@@ -4,6 +4,10 @@ Use **Customer setup** at `/admin#/setup` to configure an instance, establish a 
 
 A generated file is a proposal. The app does not overwrite a mounted configuration file. After you apply it and restart, the screen compares the generated settings with the running instance. Discovery, sign-in and sample results remain separate from configuration readiness.
 
+![Customer setup deployment settings and secret presence checks](shots/customer-setup-deployment.svg)
+
+Screenshots show a local evaluation instance with example data. Copy URLs and settings from your own running app; the images do not record customer acceptance.
+
 ## Start with a reachable owner
 
 Follow [Installing](install.md) for your deployment shape. For first setup, use restricted **evaluation** with a development owner, or configure OIDC and the owner mapping before the first production boot. Keep evaluation on a private host or behind an access boundary: development sign-in has no password.
@@ -40,6 +44,10 @@ Select OIDC, enter the provider issuer, registered client ID, sign-in button nam
 Map your customer groups to roles. Enter **one exact group name per line**; a comma is part of the name. The role order is owner, admin, approver, author, member, viewer. The highest matching role wins. Unmatched accounts remain members. An empty role mapping disables that role's literal legacy group; omitted roles in hand-written configuration retain the documented legacy defaults.
 
 Local groups and provider groups share the mapping. Additional issuers namespace subjects, but **do not namespace group names**. Choose distinct provider group names if two issuers should carry different authority. Explicit deny grants continue to override a mapped role.
+
+![OIDC configuration and exact customer group mappings in Customer setup](shots/customer-setup-identity.svg)
+
+This example prepares OIDC settings while retaining development login and its bootstrap `owner` group. The installed sign-in evidence below the form stays separate from the draft.
 
 Enter the exact groups expected for the first real owner. Generation refuses a preview that does not produce owner, duplicate group assignments or removal of every existing development owner while development login is retained. A preview tests entered strings; it cannot prove the provider will send them.
 
@@ -89,6 +97,10 @@ Confirm **Expected width (px)** and **Expected height (px)**. Declared pixel siz
 Choose **Create checked sample**. It submits an ordinary durable render with `output-v1` verification. Successful output includes format, MIME, readability and dimension checks, a SHA-256 receipt, **Download sample** and **Download evidence**. A failed render remains a failure with its remedy. PDF is excluded from this checked setup sample because its current inspection cannot establish full readability.
 
 Download and visually inspect the design. The checks do not establish visual brand approval, complete dependency attestation, every employee-client path or every worker format. A successful worker sample proves that request through the current renderer; the exact-release worker canary remains separately marked not tested.
+
+![A completed checked sample with format and dimension results and download links](shots/customer-setup-sample.svg)
+
+The example uses the bundled colour-palette tool and the real local renderer. **Download sample** retrieves the output; **Download evidence** retrieves its checks and receipt.
 
 The screen resumes the last step and sample request in this browser. It stores only step, configuration/context hashes and a render ID, never draft settings, endpoints or tokens. Results are reread from the authorized server. Changed deployment, inspected pack files or governance requires a fresh sample; changing accounts also changes the setup context. Polling stops after two minutes; refresh to resume a long-running retained request.
 
@@ -142,6 +154,8 @@ The guided milestone is complete when the applied deployment is configured, a re
 | Login returns to an error | Compare the registered callback with the exact generated URL. Confirm client ID, groups claim and ID token group array. |
 | SCIM and sign-in show different accounts | Correct the exact externalId/subject contract. Do not merge using email. |
 | No available sample format | Fix pack compatibility, worker credentials or tool format policy. Refresh after deployment. SVG without hooks can use the built-in renderer. |
+| Provider consent or credential setup is unavailable | Set stable `LW_CREDENTIAL_SECRET`, restart and sign in as an owner. For Google Drive, use HTTPS and register the provider callback shown in its guided form. |
+| Google connection returns without an offline credential | Check the registered web client, consent audience, Drive read-only permission and folder access, then reconnect from the saved disabled source. See the [Google Drive guide](providers/gdrive.md). |
 | Sample cannot be queued | Use the long-lived server; function-only hosts cannot own durable background renders. |
 | Sample fails or output cannot be downloaded | Read its error, confirm current access and inspect worker/asset availability. Retained output downloads recheck permissions and integrity. |
 | A previous sample no longer appears | Configuration, pack, governance or account changed; create a new sample. Retention may also remove its bytes. |

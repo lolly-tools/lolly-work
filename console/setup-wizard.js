@@ -171,7 +171,7 @@ export async function createSetupWizard({ el, field, api }) {
         else if (!options?.length || [...control.options].some(option => option.value === edited)) control.value = edited;
       }
       sampleInputs.push({ spec, control, choices: !!options?.length, initial });
-      return field(spec.label ?? spec.id, control);
+      return field(spec.label ?? spec.id, control, control.type === 'checkbox' ? { class: 'setup-checkbox-row' } : {});
     }));
   }
   toolSelect.addEventListener('change', () => run(loadTool));

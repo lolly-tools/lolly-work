@@ -26,7 +26,7 @@
         {
           "slug": "customer-setup",
           "title": "Guided customer setup",
-          "summary": "Configure deployment and identity, establish a real owner, connect SCIM and download a checked sample."
+          "summary": "An illustrated six-step journey through deployment, owner identity, SCIM, assets and a checked sample, with configuration apply and recovery."
         },
         {
           "slug": "deployment",
@@ -147,7 +147,7 @@
           "slug": "provider-webdav",
           "path": "providers/webdav.md",
           "title": "WebDAV / Nextcloud",
-          "summary": "The open, self-hostable source: any RFC 4918 server federated read-only, with Nextcloud as the documented flavor."
+          "summary": "Guided Nextcloud or generic WebDAV setup: exact groups, an original checksum, credential sealing and sync before activation."
         },
         {
           "slug": "provider-s3",
@@ -213,7 +213,7 @@
           "slug": "provider-gdrive",
           "path": "providers/gdrive.md",
           "title": "Google Drive",
-          "summary": "A Drive folder federated read-only over the registered PKCE consent flow."
+          "summary": "Guided folder/group configuration, registered browser consent, saved-file testing, activation and connection recovery."
         },
         {
           "slug": "provider-o365",

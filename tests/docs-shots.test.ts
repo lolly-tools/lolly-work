@@ -17,6 +17,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 
 const SHOTS_DIR = fileURLToPath(new URL('../docs/shots/', import.meta.url));
 const DOCS_DIR = fileURLToPath(new URL('../docs/', import.meta.url));
@@ -45,18 +46,23 @@ test('every committed shot is a vector SVG unless allowlisted (fails both ways)'
   }
 });
 
-test('every shot referenced in the docs resolves to a committed file', () => {
-  const md = readdirSync(DOCS_DIR).filter((f) => f.endsWith('.md'));
+test('every shot referenced in the docs resolves to committed light and dark files', () => {
+  const markdownFiles = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(entry =>
+    entry.isDirectory() ? markdownFiles(join(dir, entry.name)) : entry.name.endsWith('.md') ? [join(dir, entry.name)] : []);
   const refs = new Set<string>();
-  for (const f of md) {
-    const text = readFileSync(`${DOCS_DIR}${f}`, 'utf8');
-    for (const m of text.matchAll(/!\[[^\]]*\]\(shots\/([a-z0-9][a-z0-9.-]*\.(?:svg|png))\)/gi)) {
+  for (const file of markdownFiles(DOCS_DIR)) {
+    const text = readFileSync(file, 'utf8');
+    for (const m of text.matchAll(/!\[[^\]]*\]\((?:\.\.\/)*shots\/([a-z0-9][a-z0-9.-]*\.(?:svg|png))\)/gi)) {
       refs.add(m[1]!);
     }
   }
   assert.ok(refs.size > 0, 'no docs page references a shot');
   for (const ref of refs) {
     assert.ok(existsSync(`${SHOTS_DIR}${ref}`), `docs reference shots/${ref} but that file is not committed`);
+    if (ref.endsWith('.svg') && !ref.endsWith('.dark.svg')) {
+      const dark = ref.replace(/\.svg$/, '.dark.svg');
+      assert.ok(existsSync(`${SHOTS_DIR}${dark}`), `docs reference shots/${ref} but its dark counterpart is missing`);
+    }
   }
 });
 

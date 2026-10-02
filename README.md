@@ -155,32 +155,39 @@ mount (e.g. the OSS repo) so the Design-system tab and console theming show the 
 brand tokens instead of the neutral fallback. Cross-origin means no shared session
 cookie - the in-shell governance UX won't activate here; use `pnpm run demo` for that.
 
-## What's implemented vs pending
+## What is available
 
-| Done (tested) | Pending (planned, in order) |
-|---|---|
-| Deployment config + secrets, OIDC login (discovery/PKCE/JWKS-verified), dev provider, member+guest sessions with domain-separated tokens | ✓ **Chromium worker tier shipped** - deployable `workers/render` image, built + cosign-signed in `release.yml`; the fast path still refuses hooked/HTML-heavy tools by default (`render.allowHooksInFastPath` is the curated-pack interim), and the tier is not wired on the Vercel demo |
-| **Render plane v1** - fourth HostV1 shell: real engine via file:-linked `@lolly/engine` (interim until the publish pipeline), jsdom fast path, svg+png (resvg), policy-checked (`INPUT_LOCKED`, locked values baked), LRU + ETag, share/embed/download links serve bytes, brick-pattern PREVIEW watermark. The host carries the required surface plus `tokens` (the pack's DTCG document through the engine resolver), `color` and `export.imprint`; hooked tools run in a `node:vm` context on the curated fast path | Engine publish pipeline in the OSS repo (replaces the file: links) |
-| RBAC evaluator (roles + grants, deny-wins), tool overlays (editable/choice/locked/hidden, hidden = absent), org-config payload with ETag + SUSE profile-lock defaults | Catalog channels (staged distribution) - lifecycle/expiry sweeps have shipped |
-| Links: mint/verify/expire/revoke, passwords (scrypt), guest-edit admission flow with TTL caps | ✓ **Sessions/projects sync shipped** (`migrations/0004`) |
-| Catalog serving from the pack mount, per-caller visibility filtering | ✓ **Vercel demo live** at www.lolly.work (v0.2.0) - `GET /render/<toolId>.<format>` serves real SVG/PNG; memory-only, no Chromium tier, so pilot-grade not production |
-| **Approvals engine** - chains (any/quorum/all), approver nomination from the eligible team, separation of duties, per-user inbox notifications, console Approvals view (`migrations/0002`) | |
-| Telemetry ingest (closed attr allowlist, opt-in attribution enforced at ingest), rollups + dashboard summary | SAML (deliberately deferred to Keycloak's SAML→OIDC bridge) - **SCIM and the collab gateway have shipped** |
-| Inbox targeting (groups × shell × engine-version), fleet registry from `X-Lolly-Client` | ✓ **CLI device-code login shipped** (store-backed device codes over OIDC); org-scoped MCP endpoint still outstanding |
-| **Postgres store driver** + migrations runner (shared conformance suite; PG run gated on `LW_TEST_DATABASE_URL`) | |
-| **Org-config + preview-as-group** - the one polled document (`GET /api/v1/org-config`), plus `GET /api/v1/org-config/preview?groups=…`, console `#/preview`, and `lw preview`: an admin/brand author sees the exact role, permissions, tool/input governance, and profile policy a member in any group set would receive - computed through the same assembler the live client polls, so it can't drift | |
-| **Grants editor** - console `#/grants` + `lw grants` + `GET/POST/DELETE /api/v1/grants` under `grant.edit` (admin), with the owner-only escalation guard (grants touching `instance.config`/`catalog.provider.credential` need the owner role); deny-wins effects live on the next request; audited | |
-| **Tool policy control plane** - console `#/tools` view + `GET /api/v1/policy/tools` / `PUT /api/v1/policy/overlays/:toolId`: visibility groups, per-input rules (lock to preset / restrict to choices / hide), watermark enforcement; `policy.edit` grantable to brand groups; audited with before/after, render cache busted on save | |
-| **Admin console** at `/admin` - overview dashboards, fleet, links (revoke), messages (compose + reach), audit chain view, people | |
-| **Admin CLI** `lw` - login/whoami/summary/fleet/links/msg/audit-verify over the same API | |
-| **Catalog providers** - federate DAMs and storage read-only into the catalog: 13 kinds (WebDAV, S3, git, Brandfolder, Image Relay, Canto, Acquia DAM / Widen, IntelligenceBank, Optimizely CMP, Penpot, Dropbox, Google Drive, O365), sealed write-only credentials, exposure governance, live search fan-out, C2PA-shaped export provenance, off-boarding via materialize → cutover ([docs/catalog.md](docs/catalog.md) + [the per-kind guides](docs/providers/README.md)) | ✓ **Real C2PA signing shipped** (genuine signature when an identity is configured); provider fragment hashes → render cache keys still pending |
+[Customer setup](docs/customer-setup.md) at `/admin#/setup` guides an owner through
+six steps: deployment, identity, provisioning, brand/assets, sample output and finish.
+It generates validated non-secret configuration, checks the settings after restart,
+records observed owner sign-in and creates a checked downloadable sample.
 
-Also shipped since this table was first drawn (plans/34-36), and not to be read as pending:
-store-backed device-code sign-in, multi-IdP + the signed release image, ownership transfer +
-credential-expiry surfacing, service tokens + **SIEM forwarding**, dual-key secret rotation,
-retention + erasure, and SMTP/webhook approval egress. The authoritative, dated status lives
-in [`docs/status.md`](docs/status.md) (served at `/admin#/docs`); treat it as the source of
-truth if this table and it ever disagree.
+![Customer setup in a local evaluation instance](docs/shots/customer-setup-deployment.svg)
+
+For external originals, open **Providers** at `/admin#/providers`.
+[WebDAV / Nextcloud](docs/providers/webdav.md) and [Google Drive](docs/providers/gdrive.md)
+have typed configuration, exact member groups, original-file testing and sync before
+activation. Google Drive also captures registered browser consent and seals the refresh
+token. The other provider kinds retain their advanced forms and documented consent flows.
+
+The control plane also provides:
+
+- OIDC/proxy identity, SCIM provisioning, member/guest sessions, current role mappings,
+  deny-wins grants, service-token revocation and owner-only credential administration.
+- Tool and input governance, managed brand sources, approval chains, signed links,
+  catalog lifecycle, collections, versions and thirteen read-only provider kinds.
+- Recoverable renders and batches, retained output/evidence downloads, fixed organization
+  delivery targets and automation output references. Rendering uses the pinned, unmodified
+  engine; available formats depend on the installed pack and worker.
+- Telemetry, fleet and activity views, hash-chained audit, SIEM forwarding, migrations,
+  retention and erasure, with memory evaluation and durable Postgres deployment paths.
+- Compose, systemd and Helm deployment, a separate Chromium worker, API and CLI access,
+  and operator documentation served inside the console.
+
+The [status and roadmap](docs/status.md) records verified behavior and remaining acceptance
+work. Real customer identity/source tests, matched employee-client and worker releases,
+service-token scopes/expiry, editable-default precedence and approval-bound ordinary
+exports remain separate work. A passing local example does not complete customer acceptance.
 
 ### Third-party provider terms
 

@@ -37,6 +37,14 @@ remains available for advanced and config-managed sources.
    activation evidence; test the saved source again. A bounded sample is not a full inventory.
 7. Finish the live verification below before accepting the customer installation.
 
+![Google Drive guided folder, catalog mapping, exact member groups and refresh settings](../shots/provider-gdrive-setup.svg)
+
+The folder id is an example. Copy the actual id from your Drive folder URL and enter each member group on its own line. `Marketing, EMEA` remains one exact group.
+
+![Google web client registration, exact provider callback and empty credential fields](../shots/provider-gdrive-consent.svg)
+
+This registration screen follows **Save disabled source**. Register the callback shown by your own instance, then enter its web client credentials. The pictured loopback callback belongs to the local evaluation example; production uses your HTTPS origin. No Google account or live grant was used for these screenshots.
+
 Consent requires an owner browser session, `LW_CREDENTIAL_SECRET` and an HTTPS instance URL
 (loopback HTTP is accepted for evaluation). The latest consent started in that browser
 replaces any earlier pending consent; finish it within ten minutes in the same signed-in
@@ -53,6 +61,22 @@ See Google's [OAuth app states](https://developers.google.com/identity/protocols
 and [refresh-token expiration rules](https://developers.google.com/identity/protocols/oauth2#expiration).
 The app requests account-wide read-only Drive scope; its folder setting limits catalog
 exposure, not Google's grant. Connect an account with suitably limited source access.
+
+## Recover a saved connection
+
+Open the saved source row and choose **Continue setup**. An admin can save the disabled folder settings and hand this row to an owner for consent. After a closed panel, cancelled consent or a server restart, continue with that source rather than adding a duplicate id. A previously stored grant is retained when a new consent attempt fails.
+
+Disable an enabled source before editing its folder, groups or credential. Save the changed settings, reconnect when needed, test the saved original again and choose **Sync and enable source**. A changed configuration or credential invalidates the earlier activation check. Failed syncs and empty exposed folders remain disabled.
+
+| Symptom | What to check |
+|---|---|
+| Consent controls are unavailable | Sign in as an owner; set stable `LW_CREDENTIAL_SECRET` and restart. Use an HTTPS instance URL, or loopback HTTP for evaluation. |
+| Google rejects the redirect | Register a **Web application** client with the exact callback shown, including scheme, host, port and path. The provider callback differs from employee SSO. |
+| Connection was declined or expired | Start again in the same signed-in browser session and finish within ten minutes. A newer consent attempt replaces the earlier pending attempt. |
+| Connection was not completed | Check consent audience/test users, the enabled Drive API, read-only/offline permission and access to the selected folder. |
+| Settings changed during consent or activation | Review the current source, save disabled and repeat consent or the original-file test as appropriate. |
+| Preview or full sync finds no files | Put supported ordinary originals directly in the selected folder and review group/type exposure. Native Google documents and subfolders are skipped. |
+| A working Testing grant stops after seven days | Complete the appropriate production consent setup and reconnect; external Testing refresh tokens have a limited lifetime. |
 
 ## Live verification before acceptance
 

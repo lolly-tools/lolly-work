@@ -1,7 +1,8 @@
 # Status and roadmap
 
-The honest state of this deploy. Written to be safe to hand to an auditor or a CIO: the
-gaps are named, not smoothed over. Verified against the repository on **2026-09-06**.
+Implementation status and the work still needed for customer acceptance. The guided setup
+milestone and deployment checks below were verified on **2026-10-02**. Configuration checks,
+local integration fixtures and live customer acceptance are recorded separately.
 
 ![The client fleet - which shell and engine versions are talking to this deployment](shots/client-fleet.svg)
 
@@ -25,16 +26,20 @@ credentials. Shared drive flags and skipped native-document diagnostics are incl
 The guide and app explain exact redirect registration, consent audience and testing-token
 expiry. Other provider forms/browser consent, application service-token scopes/expiry,
 coordinated editable defaults and exact release contracts remain deferred. Live Google
-Workspace/customer acceptance remains outstanding. The health snapshot below is the
-earlier 2026-09-06 baseline.
+Workspace/customer acceptance remains outstanding.
 
-Current local verification: 1,142 tests, 1,123 passed, zero failures and 19 conditional
+Setup milestone local verification: 1,142 tests, 1,123 passed, zero failures and 19 conditional
 skips; isolated Postgres conformance/rollback passed separately. Twenty new Google setup
 checks cover consent/session revocation, stale settings, bounded reads and console recovery.
 Chromium rehearsed Google consent fixtures across an app restart, original-file checks,
 group access, disable/resume and desktop/phone light/dark. WebDAV's HTTP/browser rehearsal
 also passed after sharing the typed fields. Typecheck, documentation/comments, engine pin,
 SBOM freshness and both production dependency audits passed.
+
+The latest verified implementation [passed CI](https://github.com/lolly-tools/lolly-work/actions/runs/36947720080)
+with Postgres enabled: 1,159 tests, 1,153 passed, zero failures and six conditional skips.
+Both deployment container images built successfully. The public demo's health endpoint,
+guided provider module and a real SVG render also passed live checks.
 
 Deployment verification also exposed missing engine subpaths, a source-relative runtime
 import and jsdom dependencies incompatible with the hosted `require(ESM)` restriction.
@@ -43,14 +48,28 @@ helper, runs on Node 24 and converts the affected dependency entries in the outp
 CI exercises jsdom parsing/selectors/styles, boots the packaged function, checks console/setup
 routes and renders a real SVG with `require(ESM)` disabled before permitting deployment.
 
-## Health
+## Verification and packaging
 
-| | Control plane (this repo) | Lolly OSS |
-|---|---|---|
-| Tests | 913 cases (896 pass, 14 conditional skips; the YunoHost package cases wait on its config template, still being built) | 5,800+ (see the OSS `pnpm test`) |
-| CI | 4 blocking gates: test (with a real Postgres service), typecheck, audit (npm audit + SBOM freshness), package (image build) | 7 blocking gates incl. SBOM drift + license checks |
-| Runtime deps | 8 (2 vendored: the pinned engine and core SDK); `npm audit`: 0 findings | 1 npm (+ Rust for desktop shells) |
-| Compliance artefacts | `SECURITY.md`, CycloneDX `sbom.cdx.json` (CI-checked for drift) | SBOM (CI-gated), SECURITY.md with threat model, third-party notices |
+| Area | Verified state |
+|---|---|
+| Setup milestone local tests | 1,142 tests; 1,123 passed, zero failures, 19 conditional skips. Postgres checks also passed in an isolated local database. |
+| CI tests | 1,159 tests; 1,153 passed, zero failures, six conditional skips with Postgres enabled. |
+| Deployment gates | Full tests and packaged function rendering, typecheck, root/worker production dependency audits, SBOM freshness, server and render-worker image builds. |
+| Engine consumption | Pinned, unmodified engine `1.239.0` and core `1.0.0`, verified before tests. Pack inspection checks manifests, required files and available server formats. |
+| Documentation images | SVG captures of the real local console, with embedded fonts, paired light/dark variants and signed screen-capture credentials. Examples contain evaluation data. |
+| Release qualification | Passing app CI does not select or certify a matched employee-client, worker and deployment-image release for a customer. |
+
+## Remaining customer acceptance work
+
+| Work | Current boundary and reopening condition |
+|---|---|
+| Customer identity and source | Verify the selected tenant's registered callbacks, real owner groups, SCIM subject correlation, known original checksum, denied groups, revocation and source disable. Follow [Customer setup](customer-setup.md) and the selected [provider guide](providers/README.md). |
+| Other guided provider forms | WebDAV / Nextcloud and Google Drive are implemented. Other kinds retain advanced configuration and documented CLI consent where available; add the selected customer's next provider when its contract is known. |
+| Service-token scopes and expiry | Role assignment, last use and revocation are implemented. Narrow scopes and expiry require credential and authorization changes. See [Identity](identity.md). |
+| Editable defaults | Manifest defaults and governed locked values are available. Editable overlay defaults still need one agreed precedence across clients, collaboration, automation and server renders. |
+| Matched releases and delivery | Qualify the actual employee clients, worker formats, deployment images and mounted shell/pack. Current setup and pack inspection do not certify those artifacts. |
+| Approval-bound ordinary exports | Reviewer permission, chain editing and separation of duties are implemented. Binding an ordinary export to reviewed final bytes and `until-approved` watermarking remains separate work. |
+| Publication and availability | Trusted central pack publication, HA and unattended delivery recovery need their selected deployment contracts and acceptance checks when required. |
 
 ## What is built and tested
 
@@ -130,15 +149,14 @@ delete path. A database superuser can still bypass the trigger or truncate the t
 Operators must collect heads in an independently retained external sink and verify
 receipt; local stdout alone is not an external anchor. See [audit](audit.md).
 
-### 3. Container image: shipped and signed; tag lag + package visibility
-The first tagged release (**v0.2.0**, 2026-08-14) built and pushed both images (server,
-render-worker) to GHCR on a `v*` tag, multi-arch, with SBOM + provenance attestations and a
-keyless cosign signature over each manifest digest (verify recipe in
-[deployment](deployment.md#verifying-the-images)). Two things remain before a third party can
-`helm install` unattended: (a) `main` has since moved past v0.2.0 with no version bump, so the
-tag needs refreshing before launch, and (b) the GHCR packages are currently **private** (an
-anonymous pull returns 401) - either make the `lolly-tools` packages public or ship an
-`imagePullSecrets` bootstrap snippet. Until then `image.repository`/`tag` must be set deliberately.
+### 3. Deployment image qualification
+The release workflow builds server and render-worker images on a `v*` tag with signatures,
+SBOM and provenance attestations; see [image verification](deployment.md#verifying-the-images).
+The package version remains `0.2.0`, while `main` includes the new setup work. Current CI
+builds both images but does not publish a new customer release. Select and verify the intended
+image digests, client and worker versions before installation. Confirm registry access in the
+target environment and configure `imagePullSecrets` if required; historical package visibility
+is not a current pull test.
 
 ### 4. Shell delivery on Kubernetes
 Serving the web shell needs a built dist on a volume you populate; brand-pack delivery is
@@ -147,12 +165,12 @@ wrong path now fails loudly instead of quietly un-governing employees, which is 
 improvement - not a substitute for a delivery pipeline.
 
 ### 5. Engine pin drift (a recurring risk, currently closed)
-The vendored engine is pinned and pin-verified (`engine-pin.json`, `@lolly/engine@1.197.0`
-as of 2026-09-14), which matches OSS HEAD today. It has lagged before: at 1.146 the render
-plane refused four shipped tools whose manifests demanded `>=1.150.0`, while the shell still
-rendered them on-device. The pin is re-verified as `pretest` and `engine-drift.yml` watches the
-OSS repo, but there is no automated re-pin cadence and no pack engine-range preflight yet, so
-the same drift can reopen between releases.
+The vendored engine is pinned and pin-verified (`engine-pin.json`, `@lolly/engine@1.239.0`
+on 2026-10-02). The pin is re-verified as `pretest`; `engine-drift.yml` reports upstream drift
+weekly and `repin-engine` applies a reviewed snapshot. `inspect:pack` and Customer setup now
+load manifests through the installed engine and report incompatible requirements, missing
+files and unsupported server formats. A matched release still needs its client and worker
+contracts checked; a green pin check alone does not establish them.
 
 ### 6. Postgres leg depends on CI
 The Postgres driver only runs under `LW_TEST_DATABASE_URL`. CI now provides one, so this is
@@ -167,32 +185,26 @@ Set `always` if you need the guarantee today.
 The hosted demo renders for real - `GET /render/<toolId>.<format>` serves live SVG/PNG bytes
 off the jsdom fast path (verified against www.lolly.work). What makes it a pilot, not
 production: it runs **memory-only** (no `DATABASE_URL`, so seeded/created state resets), there
-is **no Chromium worker tier** (hooked / HTML-heavy tools are refused on the fast path), and
+is **no Chromium worker tier** (only curated demo hooks opt into in-process rendering), and
 pack delivery is demo-scoped. Fine for a trial, not for production.
 
-### 9. OSS license clearance (open-source side, external)
-Two distinct issues, often conflated. **(a) Manifest drift, mechanical:** the desktop/mobile
-`Cargo.lock`s have outrun the committed license map, so `check:cargo-licenses` and the SBOM
-freshness gate both fail - ~93 crates are present in the lock but absent from
-`cargo-licenses.json`. (The "580 crates report unknown" figure was a miscount: all 580 mapped
-crates carry a valid SPDX expression; the fault is coverage drift, not unknown licenses.) Fix
-is `pnpm run build:cargo-licenses && pnpm run build:sbom` on a Rust toolchain, then commit.
-**(b) Copyleft review, needs counsel:** the hosted web product is close to clear (the two
-LGPL-3.0 web deps carry source offers; formal relink analysis open); wide distribution of
-downloadable desktop/mobile binaries is not, and remains the likeliest external-review
-blocker.
+### 9. Employee client distribution
+The Work repository's audits, SBOM and notices cover its own deployment. They do not clear
+the exact employee desktop/mobile binaries, their third-party notices or the client's
+distribution terms. Review those artifacts in the Lolly release being delivered. Earlier
+upstream license-map counts are not evidence about the current customer release.
 
 ### 10. Bus factor
 One person commits to both repos. The plans directory and honest inline documentation are the
 mitigation; they are not a substitute for a second maintainer.
 
-### 11. Two documented-then-corrected policy seams
-The overlay `enforce` keys `c2pa` and `escalation` are declared in the type but the write
-paths (`PUT /api/v1/policy/overlays/:toolId`, `lw apply`) do not accept them, and no route
-evaluates an `approval.act` RBAC action - approval eligibility is step-group membership plus
-separation of duties. The docs now say so ([governance](governance.md),
-[approvals](approvals.md)); wire the keys and the action check, or delete them from the
-type, before an org expects either lever to exist.
+### 11. Approval permission and policy limits
+Approval actions, reviewer selection, nomination and notifications now evaluate `approval.act`
+alongside step-group eligibility and separation of duties. Custom reviewer groups may need an
+explicit allow grant. The overlay `enforce` keys `c2pa` and `escalation` remain declared but
+unsupported by write paths; `until-approved` does not yet bind an ordinary export to an
+approval. The console identifies unsupported settings. See [governance](governance.md) and
+[approvals](approvals.md).
 
 ## Roadmap shape
 
@@ -204,17 +216,16 @@ The plan sequences phases so each is independently useful:
 | 1 (MVP) | SSO + catalog + render/links + fleet + audit core | done |
 | 2 | roles/grants, overlays, profile governance, org-config, message bridge | done; org-scoped MCP endpoint outstanding |
 | 3 | approvals, watermarking, lifecycle, C2PA assertions | largely done (see gap 7) |
-| 4 | shared workspaces, collab presence, telemetry dashboards | projects/sessions and dashboards done; server collab substrate **done single-node** (ws gateway + rooms + persistence + guest join, `server/src/collab/`) - client presence UI is OSS-side and open |
+| 4 | shared workspaces, collab presence, telemetry dashboards | projects/sessions and dashboards done; server collab substrate **done single-node** (ws gateway + rooms + persistence + guest join, `server/src/collab/`); employee-client release and rollout acceptance remain separate |
 | 5 | SAML/SCIM, SIEM streaming, live co-editing, air-gap hardening | **SCIM done** (`/scim/v2`: Users create/patch/`active=false`, Group membership, per-IdP bearer tokens - plans/31 section 8); SAML deliberately deferred to Keycloak's SAML→OIDC bridge; live co-editing server side done but **rollout stays adoption-gated** (the conflict counter on the console Overview is the gate's instrument); SIEM forwarding **done** (plans/35: batched, cursor-tracked, `lw_siem_lag` gauge - see [operations](operations.md#siem-forwarding)) |
 
 The community gate is worth restating, because it is the test of the brand-agnostic claim:
 **someone who is not us stands a deploy up from the Helm chart.**
 
-## Next three things worth doing
+## Next work towards a customer launch
 
-1. **Cut a tag past v0.2.0 and make the GHCR packages public** (or ship an
-   `imagePullSecrets` snippet), then pin the images in the chart - the last step between
-   "signed" and "third-party installable" (gap 3).
-2. **Make audit-head anchoring routine** (a scheduled commit or sink) so the truncation
-   defence is real and not merely available.
-3. **Automate the engine re-pin** cadence, with the bridge-contract version check as the gate.
+1. Select the customer's identity/source and qualify the real integration using the setup and provider guides.
+2. Qualify and publish matched deployment, worker and employee-client artifacts, then rehearse installation with their digests and registry access.
+3. Narrow service-token authority and expiry, then agree editable-default precedence across the selected clients and render paths.
+
+Audit anchoring, HA, central publication and recovery stay conditional on the deployment's requirements. The table above records the application's deliberate deferrals; the setup screen shows which configured integrations have actually been observed.
