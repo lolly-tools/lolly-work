@@ -4,6 +4,7 @@
 #                gated store conformance run (tests/store-postgres.test.ts)
 #                actually executes instead of skipping. `pretest` re-verifies
 #                the vendored engine pin (MPL "consumed unmodified" check).
+#                The packaged Vercel function also boots and renders in CI.
 #   typecheck  — tsc --noEmit across the repo.
 #   audit      — npm audit on production deps (blocks on HIGH/CRITICAL) + SBOM
 #                freshness (regenerate sbom.cdx.json, fail on drift - advisory
@@ -72,6 +73,11 @@ jobs:
           # it the conformance run skips silently and the gate is not real.
           LW_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/lollywork_test
         run: pnpm test
+
+      - name: Build and exercise the packaged Vercel function
+        run: |
+          pnpm run build:vercel
+          pnpm run check:vercel
 
   typecheck:
     name: typecheck

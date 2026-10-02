@@ -41,7 +41,7 @@ export function createBrandSources(pack: string, tokensHeads: Record<string, str
   const mounted = resolve(pack);
   let inventory: Promise<SourceInventory> | undefined;
   const discover = async (): Promise<SourceInventory> => {
-    const versionModule: string = '../../../vendor/@lolly/engine/src/design-version.ts';
+    const versionModule: string = '@lolly/engine';
     const { isVersionAssetId } = await import(versionModule) as { isVersionAssetId(id: string, head: string): boolean };
     const modern = await json(join(mounted, 'profiles.json'));
     const legacy = modern ? null : await listBrandProfiles(mounted);

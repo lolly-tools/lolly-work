@@ -36,7 +36,7 @@ const RUNTIME_DYNAMIC = ['@lolly/engine', 'jsdom'];
 // supported" the moment that CJS code calls require() (e.g. require('path')). Define one
 // from the module's own URL in every bundle's banner.
 const REQUIRE_SHIM = "import { createRequire as __lwCreateRequire } from 'node:module'; const require = __lwCreateRequire(import.meta.url);";
-const common = { bundle: true, platform: 'node', format: 'esm', target: 'node22', logLevel: 'warning' };
+const common = { bundle: true, platform: 'node', format: 'esm', target: 'node24', logLevel: 'warning' };
 
 console.log('▶ clean', OUT);
 rmSync(OUT, { recursive: true, force: true });
@@ -58,22 +58,29 @@ await build({
 });
 
 // 2. Each runtime-dynamic dep → its own self-contained bundle in the func node_modules.
-async function bundleDep(name, stdinContents) {
+async function bundleDep(name, pkg, sourceDir) {
   const dir = join(NM, name);
   mkdirSync(dir, { recursive: true });
   console.log(`▶ bundle dep → node_modules/${name}`);
-  await build({
-    ...common,
-    stdin: { contents: stdinContents, resolveDir: ROOT, sourcefile: `${name}-entry.mjs` },
-    outfile: join(dir, 'index.mjs'),
-    banner: { js: REQUIRE_SHIM },
-    external: NATIVE,
-  });
-  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name, version: '0.0.0', type: 'module', main: 'index.mjs' }, null, 2));
+  const exports = {};
+  // Non-literal engine imports include public subpaths, including top-level
+  // brand-policy and production imports. Ship the pinned package's full map.
+  for (const [subpath, source] of Object.entries(pkg.exports)) {
+    if (typeof source !== 'string' || !subpath.startsWith('.') || !source.startsWith('./')) throw new Error(`Unsupported export ${name}:${subpath}`);
+    const output = subpath === '.' ? 'index.mjs' : `${subpath.slice(2)}.mjs`;
+    await build({
+      ...common,
+      stdin: { contents: `export * from ${JSON.stringify(join(sourceDir, source))};`, resolveDir: ROOT, sourcefile: `${name}${subpath}-entry.mjs` },
+      outfile: join(dir, output), banner: { js: REQUIRE_SHIM }, external: NATIVE,
+    });
+    exports[subpath] = `./${output}`;
+  }
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name, version: pkg.version, license: pkg.license, type: 'module', main: 'index.mjs', exports }, null, 2));
 }
 // The engine is consumed as its whole namespace via `await import('@lolly/engine')` and
 // bundles cleanly (pure TS/JS + the require shim covers its CJS deps).
-await bundleDep('@lolly/engine', `export * from ${JSON.stringify(join(ROOT, 'vendor/@lolly/engine/src/index.ts'))};`);
+const engineDir = join(ROOT, 'vendor/@lolly/engine');
+await bundleDep('@lolly/engine', JSON.parse(readFileSync(join(engineDir, 'package.json'), 'utf8')), engineDir);
 
 // jsdom does NOT survive bundling — it dynamic-requires sibling files (xhr-sync-worker.js)
 // and spawns a worker by path. Ship the real package + its runtime dependency closure
@@ -152,7 +159,7 @@ if (existsSync(join(demoPack, 'brands'))) {
 
 // 5. Function + platform config (Build Output API v3).
 writeFileSync(join(FUNC, '.vc-config.json'), JSON.stringify({
-  runtime: 'nodejs22.x',
+  runtime: 'nodejs24.x',
   handler: 'index.mjs',
   launcherType: 'Nodejs',
   shouldAddHelpers: false,

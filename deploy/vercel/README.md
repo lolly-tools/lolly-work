@@ -13,15 +13,24 @@ a second product. Trial-grade: EU data region, opt-in telemetry attribution.
 > a sovereignty customer never touches it.
 
 **How it builds:** `vercel.json` sets one `buildCommand` → `scripts/build-vercel-fn.mjs`,
-which esbuild-bundles the app + the vendored engine into a single plain-JS function and
+which esbuild-bundles the app into a plain-JS function, packages the pinned engine's public
+exports (including brand policy and production checks), and
 emits it via Vercel's **Build Output API** (`.vercel/output/`). This is required, not
 cosmetic: the repo runs `.ts` natively (every import carries a `.ts` extension) and Vercel's
 zero-config transpile leaves those specifiers dangling, and Node refuses to type-strip the
 engine under `node_modules` — so the whole graph must be bundled to JS. The build runs on
-Vercel (Linux) so the one native module, `@resvg/resvg-js`, gets the right binary; it can't
+Vercel (Linux) so native modules (`@resvg/resvg-js` and `sharp`) get the right binaries; it can't
 be prebuilt from macOS. The entry is `api/_index.ts` (underscore-prefixed so Vercel's
 zero-config function detector ignores it and only the Build Output API applies);
 `api/_lib/bootstrap.ts` builds the app. This file is the operational runbook.
+
+The function runtime is pinned to Node 24, matching the server's requirement. CI runs
+`pnpm run build:vercel` then `pnpm run check:vercel` on Linux before deployment. The check
+loads every engine export from the generated package, boots the bundled function, checks
+console modules and setup/organization configuration, and renders an SVG through the real
+engine. It uses an isolated evaluation fixture with no inherited database or instance
+credentials. A local macOS build can run this check locally; only the Linux build is
+suitable for uploading to Vercel.
 
 **Deploy:** `vercel deploy --prod` from a linked checkout — it uploads the working tree and
 runs the buildCommand on Vercel. (Git-connected auto-deploy works too, but only once the

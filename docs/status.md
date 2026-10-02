@@ -36,6 +36,11 @@ group access, disable/resume and desktop/phone light/dark. WebDAV's HTTP/browser
 also passed after sharing the typed fields. Typecheck, documentation/comments, engine pin,
 SBOM freshness and both production dependency audits passed.
 
+Deployment verification also exposed missing engine subpaths and a source-relative runtime
+import in the Vercel bundle. The build now packages the pinned engine's full public export
+map, uses its public version helper and runs on Node 24. CI boots the packaged function,
+checks console/setup routes and renders a real SVG before permitting deployment.
+
 ## Health
 
 | | Control plane (this repo) | Lolly OSS |
