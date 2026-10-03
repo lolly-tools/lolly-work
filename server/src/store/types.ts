@@ -26,6 +26,7 @@ import type { ProviderRecord, ProviderState } from '../catalog/providers/types.t
 import type { DeliveryRecord } from '../delivery/types.ts';
 import type { RenderStore } from '../renders/types.ts';
 import type { ProjectFileLimits, ProjectFileRecord, ProjectFileReservation } from '../projects/files.ts';
+import type { ProjectAccess } from '../rbac/project-access.ts';
 
 export interface UserRecord {
   id: string;
@@ -83,11 +84,25 @@ export interface InvitationRecord {
    *  admits and groups. */
   projects?: InvitationProject[];
   /** Which route wrote the row (migration 0040): 'console' (the console and
-   *  `lw invite add`, the default) or 'project' (an in-app project invite).
-   *  Only a project-made invitation is withdrawn when its last project is
-   *  taken off it; a console invitation stays for an admin to revoke. */
-  createdVia?: 'console' | 'project';
+   *  `lw invite add`, the default), 'project' (an in-app project invite) or
+   *  'request' (an approved join or switch request, migration 0043). Only a
+   *  project-made invitation is withdrawn when its last project is taken off
+   *  it; a console invitation stays for an admin to revoke. */
+  createdVia?: 'console' | 'project' | 'request';
+  /** Signed into every invite link for this row (migration 0043; 1 on a new
+   *  row). "New link" raises it, which ends every link copied before. */
+  linkVersion: number;
+  /** The first time someone started a sign-in from the invite page. A GET of
+   *  the page never sets it, so a link preview does not count. */
+  openedAt?: string;
+  /** The invite page may set a password for the address, once, while it has
+   *  none. Absent means false. */
+  passwordSetup?: boolean;
 }
+
+/** What `createInvitation` takes: the store starts every row at link
+ *  version 1, not yet opened. */
+export type NewInvitationRecord = Omit<InvitationRecord, 'linkVersion' | 'openedAt'>;
 
 /** One project an invitation carries, and the role the person gets on it. */
 export interface InvitationProject {
@@ -167,6 +182,104 @@ export interface PasswordLinkRecord {
   createdAt: string;
   expiresAt: string;
   usedAt?: string;
+}
+
+/** What an access request asks for (migration 0044): a project (also "ask to
+ *  edit" from a viewer), to join the workspace, or to use the signed-in
+ *  account for someone else's invitation. 'invite' is reserved (a manager
+ *  asking an admin to invite an address). */
+export type AccessRequestKind = 'project' | 'join' | 'switch' | 'invite';
+export type AccessRequestStatus = 'open' | 'approved' | 'declined' | 'withdrawn' | 'superseded' | 'expired';
+/** Every status but 'open': how a request was answered or closed. */
+export type AccessRequestOutcome = Exclude<AccessRequestStatus, 'open'>;
+
+/** One "ask" (plans/75 G13; migration 0044). The email always comes from a
+ *  sign-in the server just verified, never from a form field. One open row
+ *  per (kind, email, project, invitation). */
+export interface AccessRequestRecord {
+  /** 'req_' + randomId(10). */
+  id: string;
+  kind: AccessRequestKind;
+  status: AccessRequestStatus;
+  /** Verified, lowercased. */
+  email: string;
+  /** The requester's account, when they have one. */
+  userId?: string;
+  /** join and switch: the namespaced IdP subject that proved the email. */
+  identitySub?: string;
+  /** The idp id ('primary', 'github', 'email', ...). */
+  idp?: string;
+  /** Display name from the sign-in, at most 120 characters. */
+  name?: string;
+  projectId?: string;
+  /** The session link the request came from. */
+  viaSessionId?: string;
+  /** switch: the invitation whose link was used. */
+  invitationId?: string;
+  /** What was asked for. */
+  role?: ProjectMemberRole;
+  /** project: the requester's access when they asked. */
+  currentRole?: ProjectAccess;
+  /** At most 280 characters, stored raw, always rendered as text. */
+  note?: string;
+  /** Kind 'invite' only: 'user:<id>' of the member who typed the address. */
+  requestedBy?: string;
+  createdAt: string;
+  /** createdAt + policy.requests.ttlDays. */
+  expiresAt: string;
+  answeredAt?: string;
+  /** 'user:<id>', or the principal that closed it. */
+  answeredBy?: string;
+  answerRole?: ProjectMemberRole;
+  resultInvitationId?: string;
+}
+
+/** `listAccessRequests`. 'open' is status open and unexpired at `now`, oldest
+ *  first. 'answered' is every other row, an open one past its expiry
+ *  included (read back as 'expired'), newest answer first. */
+export interface AccessRequestQuery {
+  status: 'open' | 'answered';
+  now: string;
+  kinds?: AccessRequestKind[];
+  projectIds?: string[];
+  userId?: string;
+  email?: string;
+  invitationId?: string;
+  /** 'answered' only: `coalesce(answeredAt, expiresAt) >= answeredSince`. */
+  answeredSince?: string;
+  /** Default 200. */
+  limit?: number;
+}
+
+/** How `answerAccessRequest` and `closeAccessRequests` close a row. */
+export interface AccessRequestAnswer {
+  status: AccessRequestOutcome;
+  at: string;
+  by?: string;
+  role?: ProjectMemberRole;
+  resultInvitationId?: string;
+}
+
+/** Which live open rows `closeAccessRequests` closes. `roleAtMost` keeps
+ *  only rows asking for that role or less. */
+export interface AccessRequestMatch {
+  kind?: AccessRequestKind;
+  projectId?: string;
+  userId?: string;
+  email?: string;
+  invitationId?: string;
+  roleAtMost?: ProjectMemberRole;
+}
+
+/** `countAccessRequests`, which feeds the caps. Counts rows of the kind
+ *  created at or after `since`; `openOnly` counts only live open rows. */
+export interface AccessRequestCount {
+  kind: AccessRequestKind;
+  email?: string;
+  invitationId?: string;
+  since?: string;
+  openOnly?: boolean;
+  now: string;
 }
 
 /** A SCIM provisioning bearer token (plans/31 §8). One per IdP connector; the
@@ -510,7 +623,7 @@ export interface Store extends RenderStore {
    *  that one is returned with `created: false`. A pending one that has expired
    *  by `rec.createdAt` is revoked at that instant first, so a fresh invitation
    *  can replace it. */
-  createInvitation(rec: InvitationRecord): Promise<{ invitation: InvitationRecord; created: boolean }>;
+  createInvitation(rec: NewInvitationRecord): Promise<{ invitation: InvitationRecord; created: boolean }>;
   /** Every invitation, newest first, revoked ones included. */
   listInvitations(): Promise<InvitationRecord[]>;
   getInvitation(id: string): Promise<InvitationRecord | null>;
@@ -540,6 +653,42 @@ export interface Store extends RenderStore {
    *  revoked), or null when no pending invitation with this id carries the
    *  project. */
   dropInvitationProject(id: string, projectId: string, at: string, opts?: { revokeWhenEmpty?: boolean }): Promise<InvitationRecord | null>;
+  /** "New link" (migration 0043): raise `linkVersion` by one and clear
+   *  `openedAt` on an active (unrevoked), unaccepted row, so every link
+   *  copied before stops working. Returns the new row, or null. */
+  rotateInvitationLink(id: string): Promise<InvitationRecord | null>;
+  /** Set `openedAt` once, on an unrevoked row: true only for the call that
+   *  set it, so the first start from the invite page is audited once. */
+  markInvitationOpened(id: string, at: string): Promise<boolean>;
+  /** Turn the one-link password setup on or off for an active, unaccepted
+   *  row. Returns the updated row, or null. */
+  setInvitationPasswordSetup(id: string, on: boolean): Promise<InvitationRecord | null>;
+  /** The invitations a project's people panel lists: not revoked, not
+   *  accepted, carrying the project, and either pending at `now` (no expiry,
+   *  or one after `now`) or expired after `expiredSince`. Newest first.
+   *  `listOpenInvitationsForProject` stays for its own callers. */
+  listProjectInvitations(projectId: string, q: { now: string; expiredSince: string }): Promise<InvitationRecord[]>;
+  /** The newest unrevoked invitation this account accepted, or null. */
+  findInvitationAcceptedBy(userId: string): Promise<InvitationRecord | null>;
+
+  // Access requests (plans/75 G13; migration 0044). One open row per
+  // (kind, email, project, invitation); a row past its expiry reads as
+  // expired and is never answered.
+  /** File a request. In one step, an open row for the same key whose expiry
+   *  has passed by `now` is marked 'expired', then the row is inserted unless
+   *  a live open one exists. Returns the live open row either way; `created`
+   *  is true only when this call inserted it. */
+  createAccessRequest(rec: AccessRequestRecord, now: string): Promise<{ request: AccessRequestRecord; created: boolean }>;
+  getAccessRequest(id: string): Promise<AccessRequestRecord | null>;
+  listAccessRequests(q: AccessRequestQuery): Promise<AccessRequestRecord[]>;
+  /** Answer one live open request (open and unexpired at `now`). Exactly one
+   *  of two racing calls gets the row; the other gets null, as does a row
+   *  that is already answered or expired. */
+  answerAccessRequest(id: string, a: AccessRequestAnswer, now: string): Promise<AccessRequestRecord | null>;
+  /** Close every live open request that matches (used for 'superseded'),
+   *  returning the rows as written. */
+  closeAccessRequests(q: AccessRequestMatch, a: AccessRequestAnswer, now: string): Promise<AccessRequestRecord[]>;
+  countAccessRequests(q: AccessRequestCount): Promise<number>;
 
   // Linked sign-ins (plans/74, "One person, many sign-ins"; migration 0039).
   /** The user this sign-in is linked to, or null. */
@@ -703,7 +852,9 @@ export interface Store extends RenderStore {
    * The email's invitations, password credential and password links go with
    * the account unless another account still carries that email. The
    * credentials the account's own password sign-ins name go with it
-   * whatever their address, with their addresses' unused links. */
+   * whatever their address, with their addresses' unused links. So do the
+   * account's access requests, and the requests for the email when no other
+   * account carries it. */
   eraseUserAccount(id: string): Promise<{ status: 'erased'; scrubbed: number } | { status: 'referenced' } | { status: 'not-found' }>;
 
   // Device sign-in codes (plans/35 wave 5) - store-backed so any replica can

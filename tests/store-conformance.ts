@@ -346,6 +346,66 @@ export async function runStoreConformance(store: Store): Promise<void> {
     'an accepted invitation keeps its projects');
   assert.deepEqual((await store.getInvitation('inv_13'))?.projects, [{ projectId: 'prj_a', role: 'viewer' }]);
 
+  // Invitation links (migration 0043): a new row starts at link version 1,
+  // not opened, with password setup only when asked. Older rows read the
+  // same way. "New link" raises the version and clears Opened, and only an
+  // active, unaccepted row takes it.
+  const linkAt = '2026-10-07T00:00:00.000Z';
+  const linkRow = await store.createInvitation({
+    id: 'inv_14', email: 'iy@example.com', groups: [], invitedBy: 'user:u1', createdAt: linkAt, expiresAt: '2026-10-10T00:00:00.000Z',
+    projects: [{ projectId: 'prj_l', role: 'editor' }], createdVia: 'request', passwordSetup: true,
+  });
+  assert.equal(linkRow.invitation.linkVersion, 1);
+  assert.equal(linkRow.invitation.openedAt, undefined);
+  assert.equal(linkRow.invitation.passwordSetup, true);
+  assert.equal((await store.getInvitation('inv_14'))?.createdVia, 'request');
+  assert.equal((await store.getInvitation('inv_1'))?.linkVersion, 1, 'an earlier row reads as version 1');
+  assert.equal((await store.getInvitation('inv_1'))?.passwordSetup, undefined, 'absent means off');
+  assert.equal((await store.createInvitation({ id: 'inv_14b', email: 'iz@example.com', groups: [], invitedBy: 'user:u1', createdAt: linkAt, passwordSetup: false }))
+    .invitation.passwordSetup, undefined, 'false is stored as off');
+  assert.equal(await store.markInvitationOpened('inv_14', '2026-10-07T01:00:00.000Z'), true, 'the first start sets Opened');
+  assert.equal(await store.markInvitationOpened('inv_14', '2026-10-07T02:00:00.000Z'), false, 'later starts do not');
+  assert.equal((await store.getInvitation('inv_14'))?.openedAt, '2026-10-07T01:00:00.000Z');
+  assert.equal(await store.markInvitationOpened('inv_6', '2026-10-07T01:00:00.000Z'), false, 'a revoked row is never opened');
+  assert.equal(await store.markInvitationOpened('inv_nope', '2026-10-07T01:00:00.000Z'), false);
+  const rotated = await store.rotateInvitationLink('inv_14');
+  assert.equal(rotated?.linkVersion, 2);
+  assert.equal(rotated?.openedAt, undefined, 'a new link has not been opened');
+  assert.equal(rotated?.passwordSetup, true, 'the rest of the row is kept');
+  assert.deepEqual(rotated?.projects, [{ projectId: 'prj_l', role: 'editor' }]);
+  assert.equal((await store.rotateInvitationLink('inv_14'))?.linkVersion, 3);
+  assert.equal(await store.rotateInvitationLink('inv_1'), null, 'an accepted invitation keeps its link');
+  assert.equal(await store.rotateInvitationLink('inv_6'), null, 'a revoked invitation has no link');
+  assert.equal(await store.rotateInvitationLink('inv_nope'), null);
+  assert.equal((await store.setInvitationPasswordSetup('inv_14', false))?.passwordSetup, undefined);
+  assert.equal((await store.setInvitationPasswordSetup('inv_14', true))?.passwordSetup, true);
+  assert.equal((await store.getInvitation('inv_14'))?.linkVersion, 3, 'the toggle leaves the link alone');
+  assert.equal(await store.setInvitationPasswordSetup('inv_1', true), null, 'not on an accepted invitation');
+  assert.equal(await store.setInvitationPasswordSetup('inv_6', true), null, 'not on a revoked invitation');
+
+  // The project panel's list: pending, plus those that expired inside the
+  // window; never an older expired one, an accepted one or a revoked one.
+  const panelEntry = { projectId: 'prj_l', role: 'viewer' as const };
+  await store.createInvitation({ id: 'inv_15', email: 'jy@example.com', groups: [], invitedBy: 'user:u1', createdAt: '2026-10-01T00:00:00.000Z', expiresAt: '2026-10-05T00:00:00.000Z', projects: [panelEntry] });
+  await store.createInvitation({ id: 'inv_16', email: 'ky@example.com', groups: [], invitedBy: 'user:u1', createdAt: '2026-10-01T00:00:00.000Z', expiresAt: '2026-10-02T00:00:00.000Z', projects: [panelEntry] });
+  await store.createInvitation({ id: 'inv_17', email: 'ly@example.com', groups: [], invitedBy: 'user:u1', createdAt: '2026-10-01T00:00:00.000Z', projects: [panelEntry] });
+  await store.acceptInvitation('inv_17', 'usr_ly', '2026-10-02T00:00:00.000Z');
+  await store.createInvitation({ id: 'inv_18', email: 'my@example.com', groups: [], invitedBy: 'user:u1', createdAt: '2026-10-01T00:00:00.000Z', projects: [panelEntry] });
+  await store.revokeInvitation('inv_18', '2026-10-02T00:00:00.000Z');
+  await store.createInvitation({ id: 'inv_19', email: 'ny@example.com', groups: [], invitedBy: 'user:u1', createdAt: '2026-10-06T00:00:00.000Z', projects: [panelEntry] });
+  const panel = async (now: string, expiredSince: string) => (await store.listProjectInvitations('prj_l', { now, expiredSince })).map((i) => i.id);
+  assert.deepEqual(await panel('2026-10-08T00:00:00.000Z', '2026-10-04T00:00:00.000Z'), ['inv_14', 'inv_19', 'inv_15'], 'newest first');
+  assert.deepEqual(await panel('2026-10-08T00:00:00.000Z', '2026-10-06T00:00:00.000Z'), ['inv_14', 'inv_19'], 'expired before the window');
+  assert.deepEqual(await panel('2026-10-11T00:00:00.000Z', '2026-10-11T00:00:00.000Z'), ['inv_19'], 'only the one with no end');
+  assert.deepEqual((await store.listProjectInvitations('prj_none', { now: linkAt, expiredSince: '2026-01-01T00:00:00.000Z' })), []);
+
+  // The invitation an account accepted, newest first; never a revoked one.
+  assert.equal((await store.findInvitationAcceptedBy('usr_ana'))?.id, 'inv_1');
+  assert.equal((await store.findInvitationAcceptedBy('usr_ly'))?.id, 'inv_17');
+  await store.revokeInvitation('inv_17', '2026-10-03T00:00:00.000Z');
+  assert.equal(await store.findInvitationAcceptedBy('usr_ly'), null, 'a revoked acceptance no longer counts');
+  assert.equal(await store.findInvitationAcceptedBy('usr_nobody'), null);
+
   // Linked sign-ins (plans/74, migration 0039): one person, many sign-ins.
   // A link is refreshed in place for its own user, refused for anyone else's
   // (a link row or that user's own users.sub), and only verified rows answer
@@ -1198,5 +1258,102 @@ export async function runStoreConformance(store: Store): Promise<void> {
   // prefix composes with the other filters
   assert.equal((await store.listUsersPage({ group: PG, prefix: 'w', status: 'disabled', limit: 10, offset: 0 })).total, 1);
   assert.equal((await store.listUsersPage({ group: PG, prefix: 'v', status: 'disabled', limit: 10, offset: 0 })).total, 0);
+  // Access requests (migration 0044): one open row per (kind, email,
+  // project, invitation); a row past its expiry reads as expired, is never
+  // answered, and makes way for a new one; of two racing answers one wins.
+  const reqAt = '2026-10-07T00:00:00.000Z';
+  const reqDay = (n: number): string => new Date(Date.parse(reqAt) + n * 86_400_000).toISOString();
+  const asker = await store.upsertUserBySub({ sub: 'req-asker', email: 'Asker@Example.com', groups: [], role: 'member' });
+  const asker2 = await store.upsertUserBySub({ sub: 'req-asker-2', email: 'asker2@example.com', groups: [], role: 'member' });
+  const ask = {
+    kind: 'project' as const, status: 'open' as const, email: 'Asker@Example.com', userId: asker.id, name: 'Asker A',
+    projectId: 'prj_p', viaSessionId: 'ses_x', role: 'editor' as const, currentRole: 'viewer' as const, note: 'please <b>',
+    createdAt: reqAt, expiresAt: reqDay(14),
+  };
+  const filed = await store.createAccessRequest({ ...ask, id: 'req_1' }, reqAt);
+  assert.equal(filed.created, true);
+  assert.deepEqual(filed.request, { ...ask, id: 'req_1', email: 'asker@example.com' }, 'every field round-trips, lowercased email');
+  assert.deepEqual(await store.getAccessRequest('req_1'), filed.request);
+  assert.equal(await store.getAccessRequest('req_nope'), null);
+  const again2 = await store.createAccessRequest({ ...ask, id: 'req_2', role: 'viewer', createdAt: reqDay(1), expiresAt: reqDay(15) }, reqDay(1));
+  assert.equal(again2.created, false, 'one open request per key');
+  assert.equal(again2.request.id, 'req_1');
+  assert.equal(again2.request.role, 'editor', 'the open row is returned unchanged');
+  assert.equal(await store.getAccessRequest('req_2'), null, 'no second row was written');
+  assert.equal((await store.createAccessRequest({ ...ask, id: 'req_3', projectId: 'prj_t' }, reqAt)).created, true, 'another project is another key');
+  await store.createAccessRequest({ ...ask, id: 'req_4', email: 'asker2@example.com', userId: asker2.id, role: 'viewer', note: undefined, viaSessionId: undefined }, reqAt);
+  assert.equal((await store.getAccessRequest('req_4'))?.note, undefined, 'an absent note reads as absent');
+
+  const openIds = async (q: Omit<Parameters<Store['listAccessRequests']>[0], 'status' | 'now'>, now = reqDay(1)) =>
+    (await store.listAccessRequests({ status: 'open', now, ...q })).map((r) => r.id);
+  assert.deepEqual(await openIds({}), ['req_1', 'req_3', 'req_4'], 'oldest first');
+  assert.deepEqual(await openIds({ projectIds: ['prj_t'] }), ['req_3']);
+  assert.deepEqual(await openIds({ email: ' ASKER@example.com ' }), ['req_1', 'req_3']);
+  assert.deepEqual(await openIds({ userId: asker2.id }), ['req_4']);
+  assert.deepEqual(await openIds({ kinds: ['join'] }), []);
+  assert.deepEqual(await openIds({ limit: 1 }), ['req_1']);
+
+  const [won1, won2] = await Promise.all([
+    store.answerAccessRequest('req_3', { status: 'approved', at: reqDay(1), by: 'user:u1', role: 'viewer' }, reqDay(1)),
+    store.answerAccessRequest('req_3', { status: 'declined', at: reqDay(1), by: 'user:u2' }, reqDay(1)),
+  ]);
+  assert.equal([won1, won2].filter(Boolean).length, 1, 'exactly one of two racing answers wins');
+  const answered = (won1 ?? won2)!;
+  assert.equal((await store.getAccessRequest('req_3'))?.status, answered.status);
+  if (answered.status === 'approved') assert.equal(answered.answerRole, 'viewer');
+  assert.equal(answered.answeredAt, reqDay(1));
+  assert.equal(await store.answerAccessRequest('req_3', { status: 'withdrawn', at: reqDay(2) }, reqDay(2)), null, 'an answered request stays answered');
+  assert.equal(await store.answerAccessRequest('req_nope', { status: 'withdrawn', at: reqDay(2) }, reqDay(2)), null);
+  assert.deepEqual(await openIds({}), ['req_1', 'req_4']);
+
+  // Past its expiry an open row is refused, reported as expired, and makes
+  // way for a new request with the same key.
+  assert.equal(await store.answerAccessRequest('req_1', { status: 'approved', at: reqDay(14), by: 'user:u1' }, reqDay(14)), null, 'an expired request is never answered');
+  assert.deepEqual(await openIds({}, reqDay(14)), [], 'expired at its expiry instant');
+  const answeredRows = await store.listAccessRequests({ status: 'answered', now: reqDay(14), kinds: ['project'] });
+  assert.deepEqual(answeredRows.map((r) => [r.id, r.status]), [['req_4', 'expired'], ['req_1', 'expired'], ['req_3', answered.status]],
+    'newest answer or expiry first (then id), expired rows reported as expired');
+  assert.deepEqual((await store.listAccessRequests({ status: 'answered', now: reqDay(14), answeredSince: reqDay(2) })).map((r) => r.id).sort(), ['req_1', 'req_4']);
+  const renewed = await store.createAccessRequest({ ...ask, id: 'req_5', createdAt: reqDay(15), expiresAt: reqDay(29) }, reqDay(15));
+  assert.equal(renewed.created, true, 'an expired open row makes way');
+  assert.equal((await store.getAccessRequest('req_1'))?.status, 'expired', 'and is marked expired');
+  assert.equal((await store.getAccessRequest('req_4'))?.status, 'open', 'another key is left as it was');
+
+  // Supersede: closes only live open rows that match, honouring roleAtMost.
+  await store.createAccessRequest({ ...ask, id: 'req_6', email: 'asker2@example.com', userId: asker2.id, role: 'viewer', createdAt: reqDay(15), expiresAt: reqDay(29) }, reqDay(15));
+  const superseded = { status: 'superseded' as const, at: reqDay(16), by: 'user:u1' };
+  assert.deepEqual((await store.closeAccessRequests({ kind: 'project', projectId: 'prj_p', roleAtMost: 'viewer' }, superseded, reqDay(16))).map((r) => r.id), ['req_6'],
+    'an editor request outranks a viewer grant');
+  assert.equal((await store.getAccessRequest('req_6'))?.answeredBy, 'user:u1');
+  assert.equal((await store.getAccessRequest('req_5'))?.status, 'open');
+  const closedAll = await store.closeAccessRequests({ projectId: 'prj_p', userId: asker.id, roleAtMost: 'editor' }, superseded, reqDay(16));
+  assert.deepEqual(closedAll.map((r) => [r.id, r.status]), [['req_5', 'superseded']]);
+  assert.deepEqual(await store.closeAccessRequests({ projectId: 'prj_p' }, superseded, reqDay(16)), [], 'nothing open is left');
+
+  // Join and switch requests carry the sign-in that proved the address;
+  // the caps count by kind, address, invitation and time.
+  const join = {
+    kind: 'join' as const, status: 'open' as const, email: 'joiner@example.com', identitySub: 'github:42', idp: 'github', name: 'Jo',
+    createdAt: reqAt, expiresAt: reqDay(14),
+  };
+  await store.createAccessRequest({ ...join, id: 'req_j1' }, reqAt);
+  assert.equal((await store.getAccessRequest('req_j1'))?.identitySub, 'github:42');
+  assert.equal(await store.countAccessRequests({ kind: 'join', email: 'joiner@example.com', now: reqAt }), 1);
+  assert.equal(await store.countAccessRequests({ kind: 'join', openOnly: true, now: reqAt }), 1);
+  await store.answerAccessRequest('req_j1', { status: 'withdrawn', at: reqDay(1) }, reqDay(1));
+  assert.equal(await store.countAccessRequests({ kind: 'join', openOnly: true, now: reqDay(1) }), 0);
+  assert.equal((await store.createAccessRequest({ ...join, id: 'req_j2', createdAt: reqDay(2), expiresAt: reqDay(16) }, reqDay(2))).created, true,
+    'a withdrawn request does not block a new one');
+  assert.equal(await store.countAccessRequests({ kind: 'join', email: 'JOINER@example.com', now: reqDay(2) }), 2);
+  assert.equal(await store.countAccessRequests({ kind: 'join', email: 'joiner@example.com', since: reqDay(1), now: reqDay(2) }), 1);
+  assert.equal(await store.countAccessRequests({ kind: 'project', email: 'joiner@example.com', now: reqDay(2) }), 0);
+  const switchAsk = { ...join, kind: 'switch' as const, invitationId: 'inv_14', projectId: 'prj_p' };
+  await store.createAccessRequest({ ...switchAsk, id: 'req_s1' }, reqAt);
+  assert.equal((await store.createAccessRequest({ ...switchAsk, id: 'req_s2', email: 'someone@example.com' }, reqAt)).created, true);
+  assert.equal(await store.countAccessRequests({ kind: 'switch', invitationId: 'inv_14', now: reqAt }), 2);
+  assert.equal(await store.countAccessRequests({ kind: 'switch', invitationId: 'inv_15', now: reqAt }), 0);
+  assert.deepEqual((await store.closeAccessRequests({ kind: 'switch', invitationId: 'inv_14', email: 'joiner@example.com' },
+    { status: 'superseded', at: reqDay(1), by: 'user:u1' }, reqDay(1))).map((r) => r.id), ['req_s1']);
+
   await runErasureConformance(store);
 }

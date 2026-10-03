@@ -30,9 +30,11 @@ import { sortCollections, type CollectionRecord } from '../catalog/collections.t
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderFragment, ProviderKind, ProviderRecord } from '../catalog/providers/types.ts';
 import type { DeliveryRecord } from '../delivery/types.ts';
+import type { ProjectAccess } from '../rbac/project-access.ts';
 import { createPostgresRenderStore } from '../renders/postgres.ts';
 import {
   SESSION_REVISION_LIMIT, effectiveGroups,
+  type AccessRequestMatch, type AccessRequestRecord, type ProjectMemberRole,
   type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type ListUsersPageOpts, type LocalGroupRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type UserIdentityRecord,
   type ScimTokenRecord, type SessionRecord, type SessionRevision, type Store, type SubmitQuotaRow, type UserRecord,
 } from './types.ts';
@@ -71,8 +73,59 @@ function invitationFromRow(r: Record<string, unknown>): InvitationRecord {
     ...(r.revoked_at ? { revokedAt: iso(r.revoked_at) } : {}),
     projects: Array.isArray(r.projects) ? (r.projects as NonNullable<InvitationRecord['projects']>) : [],
     // Only the non-default is carried, so a console row reads the same from both drivers.
-    ...(r.created_via === 'project' ? { createdVia: 'project' as const } : {}),
+    ...(r.created_via === 'project' || r.created_via === 'request' ? { createdVia: r.created_via } : {}),
+    linkVersion: Number(r.link_version ?? 1),
+    ...(r.opened_at ? { openedAt: iso(r.opened_at) } : {}),
+    ...(r.password_setup ? { passwordSetup: true } : {}),
   };
+}
+
+/** One access_requests row -> record (migration 0044). Empty columns are
+ *  left off, so both drivers read a row the same way. */
+function accessRequestFromRow(r: Record<string, unknown>): AccessRequestRecord {
+  const iso = (v: unknown): string => new Date(v as string).toISOString();
+  return {
+    id: r.id as string,
+    kind: r.kind as AccessRequestRecord['kind'],
+    status: r.status as AccessRequestRecord['status'],
+    email: r.email as string,
+    ...(r.user_id ? { userId: r.user_id as string } : {}),
+    ...(r.identity_sub ? { identitySub: r.identity_sub as string } : {}),
+    ...(r.idp ? { idp: r.idp as string } : {}),
+    ...(r.name ? { name: r.name as string } : {}),
+    ...(r.project_id ? { projectId: r.project_id as string } : {}),
+    ...(r.via_session_id ? { viaSessionId: r.via_session_id as string } : {}),
+    ...(r.invitation_id ? { invitationId: r.invitation_id as string } : {}),
+    ...(r.role ? { role: r.role as ProjectMemberRole } : {}),
+    ...(r.current_access ? { currentRole: r.current_access as ProjectAccess } : {}),
+    ...(r.note ? { note: r.note as string } : {}),
+    ...(r.requested_by ? { requestedBy: r.requested_by as string } : {}),
+    createdAt: iso(r.created_at),
+    expiresAt: iso(r.expires_at),
+    ...(r.answered_at ? { answeredAt: iso(r.answered_at) } : {}),
+    ...(r.answered_by ? { answeredBy: r.answered_by as string } : {}),
+    ...(r.answer_role ? { answerRole: r.answer_role as ProjectMemberRole } : {}),
+    ...(r.result_invitation_id ? { resultInvitationId: r.result_invitation_id as string } : {}),
+  };
+}
+
+const REQUEST_ROLES_AT_MOST: Record<ProjectMemberRole, ProjectMemberRole[]> = {
+  viewer: ['viewer'], editor: ['viewer', 'editor'], manager: ['viewer', 'editor', 'manager'],
+};
+
+/** The WHERE clause for `closeAccessRequests`: live open rows matching every
+ *  given field. Values start at `$first`. */
+function requestMatchSql(q: AccessRequestMatch, first: number): { sql: string; values: unknown[] } {
+  const parts: string[] = [];
+  const values: unknown[] = [];
+  const add = (expr: (n: string) => string, v: unknown): void => { values.push(v); parts.push(expr(`$${first + values.length - 1}`)); };
+  if (q.kind) add((n) => `kind = ${n}`, q.kind);
+  if (q.projectId) add((n) => `project_id = ${n}`, q.projectId);
+  if (q.userId) add((n) => `user_id = ${n}`, q.userId);
+  if (q.email) add((n) => `email = ${n}`, q.email.trim().toLowerCase());
+  if (q.invitationId) add((n) => `invitation_id = ${n}`, q.invitationId);
+  if (q.roleAtMost) add((n) => `role = any(${n}::text[])`, REQUEST_ROLES_AT_MOST[q.roleAtMost]);
+  return { sql: parts.length ? ` and ${parts.join(' and ')}` : '', values };
 }
 
 function automationJobFromRow(r: Record<string, unknown>): AutomationJobRecord {
@@ -642,12 +695,12 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         // that caller's row is then the active one, and this call returns
         // that row with created false.
         const { rows } = await client.query(
-          `insert into invitations (id, email, groups, invited_by, created_at, expires_at, projects, created_via)
-           values ($1, $2, $3::jsonb, $4, $5, $6, $7::jsonb, $8)
+          `insert into invitations (id, email, groups, invited_by, created_at, expires_at, projects, created_via, password_setup)
+           values ($1, $2, $3::jsonb, $4, $5, $6, $7::jsonb, $8, $9)
            on conflict (email) where revoked_at is null do nothing
            returning *`,
           [rec.id, email, groups, rec.invitedBy, rec.createdAt, rec.expiresAt ?? null, JSON.stringify(invitationProjectsJson(rec.projects ?? [])),
-            rec.createdVia ?? 'console'],
+            rec.createdVia ?? 'console', !!rec.passwordSetup],
         );
         if (rows[0]) {
           await client.query('commit');
@@ -698,6 +751,52 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       );
       return rows.map(invitationFromRow);
     },
+    async listProjectInvitations(projectId, q) {
+      // The same GIN containment as listOpenInvitationsForProject; expired
+      // rows inside the window are kept so the panel can offer Invite again.
+      const { rows } = await pool.query(
+        `select * from invitations
+         where revoked_at is null and accepted_at is null
+           and (expires_at is null or expires_at > $2 or expires_at > $3)
+           and projects @> jsonb_build_array(jsonb_build_object('projectId', $1::text))
+         order by created_at desc, id desc`,
+        [projectId, q.now, q.expiredSince],
+      );
+      return rows.map(invitationFromRow);
+    },
+    async findInvitationAcceptedBy(userId) {
+      const { rows } = await pool.query(
+        `select * from invitations where accepted_user_id = $1 and revoked_at is null
+         order by accepted_at desc, created_at desc, id desc limit 1`,
+        [userId],
+      );
+      return rows[0] ? invitationFromRow(rows[0]) : null;
+    },
+    async rotateInvitationLink(id) {
+      const { rows } = await pool.query(
+        `update invitations set link_version = link_version + 1, opened_at = null
+         where id = $1 and revoked_at is null and accepted_at is null
+         returning *`,
+        [id],
+      );
+      return rows[0] ? invitationFromRow(rows[0]) : null;
+    },
+    async markInvitationOpened(id, at) {
+      const { rowCount } = await pool.query(
+        'update invitations set opened_at = $2 where id = $1 and opened_at is null and revoked_at is null',
+        [id, at],
+      );
+      return (rowCount ?? 0) > 0;
+    },
+    async setInvitationPasswordSetup(id, on) {
+      const { rows } = await pool.query(
+        `update invitations set password_setup = $2
+         where id = $1 and revoked_at is null and accepted_at is null
+         returning *`,
+        [id, on],
+      );
+      return rows[0] ? invitationFromRow(rows[0]) : null;
+    },
     async acceptInvitation(id, userId, at) {
       const { rows } = await pool.query(
         `update invitations set accepted_at = $3, accepted_user_id = $2
@@ -734,6 +833,107 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         [id, projectId, at, !!opts?.revokeWhenEmpty],
       );
       return rows[0] ? invitationFromRow(rows[0]) : null;
+    },
+
+    // Access requests (migration 0044). The partial unique index is the
+    // one-open-per-key rule; createAccessRequest only decides whether an
+    // expired open row makes way first.
+    async createAccessRequest(rec, now) {
+      const email = rec.email.trim().toLowerCase();
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        await client.query(
+          `update access_requests set status = 'expired'
+           where kind = $1 and email = $2 and coalesce(project_id, '') = $3 and coalesce(invitation_id, '') = $4
+             and status = 'open' and expires_at <= $5`,
+          [rec.kind, email, rec.projectId ?? '', rec.invitationId ?? '', now],
+        );
+        // A concurrent insert for the same key conflicts on the partial index;
+        // that caller's row is then the open one, and this call returns it.
+        const { rows } = await client.query(
+          `insert into access_requests (id, kind, status, email, user_id, identity_sub, idp, name, project_id,
+             via_session_id, invitation_id, role, current_access, note, requested_by, created_at, expires_at)
+           values ($1, $2, 'open', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+           on conflict (kind, email, (coalesce(project_id, '')), (coalesce(invitation_id, ''))) where status = 'open' do nothing
+           returning *`,
+          [rec.id, rec.kind, email, rec.userId ?? null, rec.identitySub ?? null, rec.idp ?? null, rec.name ?? null,
+            rec.projectId ?? null, rec.viaSessionId ?? null, rec.invitationId ?? null, rec.role ?? null,
+            rec.currentRole ?? null, rec.note ?? null, rec.requestedBy ?? null, rec.createdAt, rec.expiresAt],
+        );
+        if (rows[0]) {
+          await client.query('commit');
+          return { request: accessRequestFromRow(rows[0]), created: true };
+        }
+        const { rows: open } = await client.query(
+          `select * from access_requests
+           where kind = $1 and email = $2 and coalesce(project_id, '') = $3 and coalesce(invitation_id, '') = $4
+             and status = 'open'`,
+          [rec.kind, email, rec.projectId ?? '', rec.invitationId ?? ''],
+        );
+        await client.query('commit');
+        if (!open[0]) throw new Error('access request insert conflicted but no open row was found');
+        return { request: accessRequestFromRow(open[0]), created: false };
+      } catch (err) {
+        await client.query('rollback');
+        throw err;
+      } finally {
+        client.release();
+      }
+    },
+    async getAccessRequest(id) {
+      const { rows } = await pool.query('select * from access_requests where id = $1', [id]);
+      return rows[0] ? accessRequestFromRow(rows[0]) : null;
+    },
+    async listAccessRequests(q) {
+      const values: unknown[] = [q.now];
+      const where: string[] = [q.status === 'open'
+        ? "status = 'open' and expires_at > $1"
+        : "(status <> 'open' or expires_at <= $1)"];
+      const add = (expr: (n: string) => string, v: unknown): void => { values.push(v); where.push(expr(`$${values.length}`)); };
+      if (q.kinds) add((n) => `kind = any(${n}::text[])`, q.kinds);
+      if (q.projectIds) add((n) => `project_id = any(${n}::text[])`, q.projectIds);
+      if (q.userId) add((n) => `user_id = ${n}`, q.userId);
+      if (q.email) add((n) => `email = ${n}`, q.email.trim().toLowerCase());
+      if (q.invitationId) add((n) => `invitation_id = ${n}`, q.invitationId);
+      if (q.status === 'answered' && q.answeredSince) add((n) => `coalesce(answered_at, expires_at) >= ${n}`, q.answeredSince);
+      values.push(q.limit ?? 200);
+      const order = q.status === 'open' ? 'created_at asc, id asc' : 'coalesce(answered_at, expires_at) desc, id desc';
+      const { rows } = await pool.query(
+        `select * from access_requests where ${where.join(' and ')} order by ${order} limit $${values.length}`, values,
+      );
+      // An open row past its expiry is reported as what it now is.
+      return rows.map(accessRequestFromRow).map((r) => (r.status === 'open' && q.status === 'answered' ? { ...r, status: 'expired' as const } : r));
+    },
+    async answerAccessRequest(id, a, now) {
+      const { rows } = await pool.query(
+        `update access_requests set status = $2, answered_at = $3, answered_by = $4, answer_role = $5, result_invitation_id = $6
+         where id = $1 and status = 'open' and expires_at > $7
+         returning *`,
+        [id, a.status, a.at, a.by ?? null, a.role ?? null, a.resultInvitationId ?? null, now],
+      );
+      return rows[0] ? accessRequestFromRow(rows[0]) : null;
+    },
+    async closeAccessRequests(q, a, now) {
+      const match = requestMatchSql(q, 7);
+      const { rows } = await pool.query(
+        `update access_requests set status = $1, answered_at = $2, answered_by = $3, answer_role = $4, result_invitation_id = $5
+         where status = 'open' and expires_at > $6${match.sql}
+         returning *`,
+        [a.status, a.at, a.by ?? null, a.role ?? null, a.resultInvitationId ?? null, now, ...match.values],
+      );
+      return rows.map(accessRequestFromRow);
+    },
+    async countAccessRequests(q) {
+      const values: unknown[] = [q.kind];
+      const where = ['kind = $1'];
+      const add = (expr: (n: string) => string, v: unknown): void => { values.push(v); where.push(expr(`$${values.length}`)); };
+      if (q.email) add((n) => `email = ${n}`, q.email.trim().toLowerCase());
+      if (q.invitationId) add((n) => `invitation_id = ${n}`, q.invitationId);
+      if (q.since) add((n) => `created_at >= ${n}`, q.since);
+      if (q.openOnly) add((n) => `status = 'open' and expires_at > ${n}`, q.now);
+      const { rows } = await pool.query(`select count(*) as n from access_requests where ${where.join(' and ')}`, values);
+      return Number(rows[0]?.n ?? 0);
     },
 
     // Linked sign-ins (migration 0039).
@@ -1237,6 +1437,13 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
           `delete from invitations where accepted_user_id = $1
              or (email = $2 and not exists (select 1 from users where lower(trim(email)) = $2))`,
           [id, erasedEmail],
+        );
+        // The account's own access requests went with its row (the foreign key
+        // cascades), and so did those on the invitations just removed. The
+        // ones its address filed before it had an account go too.
+        await client.query(
+          'delete from access_requests where email = $1 and not exists (select 1 from users where lower(trim(email)) = $1)',
+          [erasedEmail],
         );
         // A password for the address would sign the person straight back in,
         // and so would one the account's own password sign-ins name under

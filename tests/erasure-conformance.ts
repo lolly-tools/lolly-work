@@ -76,6 +76,26 @@ export async function runErasureConformance(store: Store): Promise<void> {
   assert.equal(await store.findActiveInvitation(invited.email), null, 'nothing admits the erased address any more');
   assert.ok(await store.getInvitation('inv_keep'), "another account's invitation is untouched");
 
+  // Access requests (migration 0044) name the account or its address, so
+  // they go with it: its own, the ones its address filed before it had an
+  // account, and those on an invitation erasure removed. Another person's
+  // request is left alone.
+  const asker = await user('erasure-asker');
+  const later = new Date(Date.now() + 86_400_000).toISOString();
+  const request = (id: string, over: Record<string, unknown>) => store.createAccessRequest({
+    id, kind: 'project', status: 'open', email: asker.email, createdAt: now, expiresAt: later, ...over,
+  } as Parameters<Store['createAccessRequest']>[0], now);
+  await request('req_erase_own', { userId: asker.id, projectId: project.id, role: 'editor', currentRole: 'none' });
+  await request('req_erase_join', { kind: 'join', identitySub: 'gh:asker', idp: 'gh' });
+  await store.createInvitation({ id: 'inv_erase_switch', email: asker.email, groups: [], invitedBy: `user:${keeper.id}`, createdAt: now });
+  await request('req_erase_switch', { kind: 'switch', email: 'someone-else@example.invalid', invitationId: 'inv_erase_switch' });
+  await request('req_keep', { email: keeper.email, userId: keeper.id, projectId: project.id, role: 'viewer', currentRole: 'none' });
+  assert.deepEqual(await store.eraseUserAccount(asker.id), { status: 'erased', scrubbed: 0 });
+  for (const id of ['req_erase_own', 'req_erase_join', 'req_erase_switch']) {
+    assert.equal(await store.getAccessRequest(id), null, `${id} went with the account`);
+  }
+  assert.ok(await store.getAccessRequest('req_keep'), "another person's request is untouched");
+
   // Linked sign-ins (migration 0039) are the person's own mapping and go with
   // the account, so the identity is free to sign in as someone new.
   const linked = await user('erasure-linked');

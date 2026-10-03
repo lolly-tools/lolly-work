@@ -29,7 +29,8 @@ import type { DeliveryRecord } from '../delivery/types.ts';
 import { createMemoryRenderStore } from '../renders/memory.ts';
 import {
   SESSION_REVISION_LIMIT, effectiveGroups,
-  type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type LocalGroupRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ScimTokenRecord, type UserIdentityRecord,
+  type AccessRequestAnswer, type AccessRequestMatch, type AccessRequestRecord,
+  type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type LocalGroupRecord, type NewInvitationRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ScimTokenRecord, type UserIdentityRecord,
   type SessionRecord, type SessionRevision, type Store, type SubmitQuotaRow, type UserRecord,
 } from './types.ts';
 
@@ -49,6 +50,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const identities = new Map<string, UserIdentityRecord>(); // plans/74 linked sign-ins, by identitySub
   const passwordCredentials = new Map<string, PasswordCredentialRecord>(); // plans/74, by lowercased email
   const passwordLinks = new Map<string, PasswordLinkRecord>(); // plans/74, by token hash
+  const accessRequests = new Map<string, AccessRequestRecord>(); // plans/75 G13, by id
   const userById = (id: string): UserRecord | undefined => {
     for (const u of users.values()) if (u.id === id) return u;
     return undefined;
@@ -60,6 +62,35 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     const e = email.trim().toLowerCase();
     for (const r of invitations.values()) if (r.email === e && !r.revokedAt) return r;
     return undefined;
+  };
+  const newestFirst = (a: InvitationRecord, b: InvitationRecord): number =>
+    (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : a.id < b.id ? 1 : -1);
+  // Access requests (migration 0044). A row is "live open" while its status
+  // is open and its expiry is after `now`; the key is the partial unique
+  // index's (kind, email, project, invitation).
+  const REQUEST_ROLE_RANK: Record<string, number> = { viewer: 1, editor: 2, manager: 3 };
+  const liveOpen = (r: AccessRequestRecord, now: string): boolean =>
+    r.status === 'open' && Date.parse(r.expiresAt) > Date.parse(now);
+  const requestKey = (r: Pick<AccessRequestRecord, 'kind' | 'email' | 'projectId' | 'invitationId'>): string =>
+    `${r.kind}\n${r.email}\n${r.projectId ?? ''}\n${r.invitationId ?? ''}`;
+  const requestMatches = (r: AccessRequestRecord, q: AccessRequestMatch): boolean =>
+    (!q.kind || r.kind === q.kind) && (!q.projectId || r.projectId === q.projectId)
+    && (!q.userId || r.userId === q.userId) && (!q.email || r.email === q.email.trim().toLowerCase())
+    && (!q.invitationId || r.invitationId === q.invitationId)
+    && (!q.roleAtMost || (!!r.role && REQUEST_ROLE_RANK[r.role]! <= REQUEST_ROLE_RANK[q.roleAtMost]!));
+  const copyRequest = (r: AccessRequestRecord): AccessRequestRecord => ({ ...r });
+  const answerRequest = (r: AccessRequestRecord, a: AccessRequestAnswer): AccessRequestRecord => {
+    const next: AccessRequestRecord = {
+      ...r, status: a.status, answeredAt: a.at,
+      ...(a.by ? { answeredBy: a.by } : {}), ...(a.role ? { answerRole: a.role } : {}),
+      ...(a.resultInvitationId ? { resultInvitationId: a.resultInvitationId } : {}),
+    };
+    accessRequests.set(r.id, next);
+    return copyRequest(next);
+  };
+  /** Postgres cascades a request away with its user, project or invitation. */
+  const dropRequestsWhere = (gone: (r: AccessRequestRecord) => boolean): void => {
+    for (const [k, r] of accessRequests) if (gone(r)) accessRequests.delete(k);
   };
   const automationJobs = new Map<string, AutomationJobRecord>();
   const deliveries = new Map<string, DeliveryRecord>();
@@ -310,7 +341,12 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
         if (!lapsed) return { invitation: copyInvitation(existing), created: false };
         invitations.set(existing.id, { ...existing, revokedAt: rec.createdAt });
       }
-      const row: InvitationRecord = { ...rec, email, groups: [...new Set(rec.groups)], projects: (rec.projects ?? []).map((p) => ({ ...p })) };
+      // A new row starts at link version 1, not opened, whatever the caller held.
+      const { passwordSetup, openedAt: _opened, linkVersion: _version, ...rest } = rec as NewInvitationRecord & Partial<InvitationRecord>;
+      const row: InvitationRecord = {
+        ...rest, email, groups: [...new Set(rec.groups)], projects: (rec.projects ?? []).map((p) => ({ ...p })),
+        linkVersion: 1, ...(passwordSetup ? { passwordSetup: true } : {}),
+      };
       invitations.set(row.id, row);
       return { invitation: copyInvitation(row), created: true };
     },
@@ -339,8 +375,49 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       return [...invitations.values()]
         .filter((r) => !r.revokedAt && !r.acceptedAt && !(r.expiresAt && Date.parse(r.expiresAt) <= t)
           && (r.projects ?? []).some((p) => p.projectId === projectId))
-        .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : a.id < b.id ? 1 : -1))
+        .sort(newestFirst)
         .map(copyInvitation);
+    },
+    async listProjectInvitations(projectId, q) {
+      const now = Date.parse(q.now);
+      const since = Date.parse(q.expiredSince);
+      return [...invitations.values()]
+        .filter((r) => {
+          if (r.revokedAt || r.acceptedAt || !(r.projects ?? []).some((p) => p.projectId === projectId)) return false;
+          if (!r.expiresAt) return true;
+          const end = Date.parse(r.expiresAt);
+          return end > now || end > since;
+        })
+        .sort(newestFirst)
+        .map(copyInvitation);
+    },
+    async findInvitationAcceptedBy(userId) {
+      const rows = [...invitations.values()]
+        .filter((r) => !r.revokedAt && r.acceptedUserId === userId)
+        .sort((a, b) => (a.acceptedAt! < b.acceptedAt! ? 1 : a.acceptedAt! > b.acceptedAt! ? -1 : newestFirst(a, b)));
+      return rows[0] ? copyInvitation(rows[0]) : null;
+    },
+    async rotateInvitationLink(id) {
+      const r = invitations.get(id);
+      if (!r || r.revokedAt || r.acceptedAt) return null;
+      const { openedAt: _cleared, ...rest } = r;
+      const next: InvitationRecord = { ...rest, linkVersion: r.linkVersion + 1 };
+      invitations.set(id, next);
+      return copyInvitation(next);
+    },
+    async markInvitationOpened(id, at) {
+      const r = invitations.get(id);
+      if (!r || r.revokedAt || r.openedAt) return false;
+      invitations.set(id, { ...r, openedAt: at });
+      return true;
+    },
+    async setInvitationPasswordSetup(id, on) {
+      const r = invitations.get(id);
+      if (!r || r.revokedAt || r.acceptedAt) return null;
+      const { passwordSetup: _old, ...rest } = r;
+      const next: InvitationRecord = { ...rest, ...(on ? { passwordSetup: true } : {}) };
+      invitations.set(id, next);
+      return copyInvitation(next);
     },
     async acceptInvitation(id, userId, at) {
       const r = invitations.get(id);
@@ -365,6 +442,65 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       const next: InvitationRecord = { ...r, projects, ...(revoke ? { revokedAt: at } : {}) };
       invitations.set(id, next);
       return copyInvitation(next);
+    },
+
+    // Access requests (migration 0044).
+    async createAccessRequest(rec, now) {
+      const email = rec.email.trim().toLowerCase();
+      const key = requestKey({ ...rec, email });
+      for (const [k, r] of accessRequests) {
+        if (requestKey(r) !== key || r.status !== 'open') continue;
+        if (liveOpen(r, now)) return { request: copyRequest(r), created: false };
+        accessRequests.set(k, { ...r, status: 'expired' });
+      }
+      // Empty optional fields are left off, as the Postgres driver reads them.
+      const given = Object.fromEntries(Object.entries(rec).filter(([, v]) => v !== undefined && v !== null && v !== ''));
+      const row: AccessRequestRecord = { ...(given as unknown as AccessRequestRecord), email, status: 'open' };
+      accessRequests.set(row.id, row);
+      return { request: copyRequest(row), created: true };
+    },
+    async getAccessRequest(id) {
+      const r = accessRequests.get(id);
+      return r ? copyRequest(r) : null;
+    },
+    async listAccessRequests(q) {
+      const email = q.email?.trim().toLowerCase();
+      const rows = [...accessRequests.values()].filter((r) =>
+        (!q.kinds || q.kinds.includes(r.kind)) && (!q.projectIds || (!!r.projectId && q.projectIds.includes(r.projectId)))
+        && (!q.userId || r.userId === q.userId) && (!email || r.email === email)
+        && (!q.invitationId || r.invitationId === q.invitationId));
+      const limit = q.limit ?? 200;
+      if (q.status === 'open') {
+        return rows.filter((r) => liveOpen(r, q.now))
+          .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.id < b.id ? -1 : 1))
+          .slice(0, limit).map(copyRequest);
+      }
+      const closedAt = (r: AccessRequestRecord): string => r.answeredAt ?? r.expiresAt;
+      return rows.filter((r) => !liveOpen(r, q.now))
+        .filter((r) => !q.answeredSince || Date.parse(closedAt(r)) >= Date.parse(q.answeredSince))
+        .sort((a, b) => (closedAt(a) < closedAt(b) ? 1 : closedAt(a) > closedAt(b) ? -1 : a.id < b.id ? 1 : -1))
+        .slice(0, limit)
+        .map((r) => (r.status === 'open' ? { ...r, status: 'expired' as const } : copyRequest(r)));
+    },
+    async answerAccessRequest(id, a, now) {
+      const r = accessRequests.get(id);
+      return r && liveOpen(r, now) ? answerRequest(r, a) : null;
+    },
+    async closeAccessRequests(q, a, now) {
+      return [...accessRequests.values()]
+        .filter((r) => liveOpen(r, now) && requestMatches(r, q))
+        .map((r) => answerRequest(r, a));
+    },
+    async countAccessRequests(q) {
+      const email = q.email?.trim().toLowerCase();
+      let n = 0;
+      for (const r of accessRequests.values()) {
+        if (r.kind !== q.kind || (email && r.email !== email) || (q.invitationId && r.invitationId !== q.invitationId)) continue;
+        if (q.since && Date.parse(r.createdAt) < Date.parse(q.since)) continue;
+        if (q.openOnly && !liveOpen(r, q.now)) continue;
+        n++;
+      }
+      return n;
     },
 
     async getUserByIdentity(identitySub) {
@@ -702,6 +838,8 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
           for (const [k, m] of projectMembers) if (m.userId === id) projectMembers.delete(k);
           // migration 0039: so do its linked sign-ins.
           for (const [k, r] of identities) if (r.userId === id) identities.delete(k);
+          // migration 0044: and its access requests.
+          dropRequestsWhere((r) => r.userId === id);
           return true;
         }
       }
@@ -729,9 +867,14 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       // go too unless another account still carries that email.
       const email = user.email.trim().toLowerCase();
       const emailStillUsed = [...users.values()].some((u) => u.email.trim().toLowerCase() === email);
+      const goneInvitations = new Set<string>();
       for (const [invId, inv] of invitations) {
-        if (inv.acceptedUserId === id || (!emailStillUsed && inv.email === email)) invitations.delete(invId);
+        if (inv.acceptedUserId === id || (!emailStillUsed && inv.email === email)) { invitations.delete(invId); goneInvitations.add(invId); }
       }
+      // Access requests name the account or its address; a request on an
+      // erased invitation goes with it (the foreign key cascades in Postgres).
+      dropRequestsWhere((r) => r.userId === id || (!emailStillUsed && r.email === email)
+        || (!!r.invitationId && goneInvitations.has(r.invitationId)));
       // A password for the address would sign the person straight back in,
       // and so would one the account's own password sign-ins name under
       // another address.
