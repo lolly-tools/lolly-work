@@ -85,6 +85,7 @@ test('the invited account goes to the project: accepted, shared, welcomed, and t
   assert.deepEqual(welcome.audience.users, [an.id]);
   assert.equal(welcome.title, 'Welcome to lolly.ing');
   assert.equal(welcome.body, 'Andy Fitz invited you. You can open Brand refresh as an Editor.');
+  assert.ok(!messages.some((m) => m.data?.kind === 'project-share'), 'the welcome replaces the share message');
   const accepted = messages.find((m) => m.data?.kind === 'invite-accepted')!;
   assert.deepEqual(accepted.audience.users, [env.admin.id]);
   assert.equal(accepted.title, 'An Fitzsimon accepted your invitation');

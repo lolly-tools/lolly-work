@@ -67,7 +67,7 @@ import { accessAtLeast, effectiveProjectAccess, type ProjectAccess } from '../rb
 import { registerProjectFileRoutes } from '../projects/file-routes.ts';
 import { projectFilesEnabled, removeUploadsBy } from '../projects/files.ts';
 import { buildShareMessage, createWindowQuota, mergeInvitationProject, nameWithoutEmail, roleAbove } from '../projects/sharing.ts';
-import { approversFor, closeRequestsForEmail, closeRequestsOnAccess } from '../access/requests.ts';
+import { approversFor, closeRequestsOnAccess } from '../access/requests.ts';
 import type { ProjectRequestWire } from '../access/types.ts';
 import { inviteDomainAllowed, mayInviteNewPeople, resolveInvitePolicy } from '../policy/invites.ts';
 import { PROJECT_MEMBER_ROLES, type InvitationProject } from '../store/types.ts';
@@ -842,12 +842,6 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       const policy = resolveInvitePolicy(config.policy.invites);
       const inviters = new Map<string, UserRecord | null>();
       const skipped: Array<{ projectId: string; reason: string }> = [];
-      // The welcome notice names the project, so the share sends no message
-      // of its own (`opts.message`, invite spec 2.9).
-      const quietShare: (
-        project: ProjectRecord, target: UserRecord, role: ProjectMemberRole,
-        actor: { principal: string; name: string; userId: string | null }, via: 'invitation', opts: { message: boolean },
-      ) => Promise<'added' | 'already'> = shareProjectWith;
       for (const entry of accepted.projects) {
         const by = entry.invitedBy ?? accepted.invitedBy;
         const inviterId = by.startsWith('user:') ? by.slice(5) : null;
@@ -866,7 +860,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
           continue;
         }
         const actor = { principal: `user:${inviter.id}`, name: displayName(inviter), userId: inviter.id };
-        await quietShare(project, next, entry.role, actor, 'invitation', { message: false });
+        // The welcome notice names the project, so the share sends no message
+        // of its own (invite spec 2.9).
+        await shareProjectWith(project, next, entry.role, actor, 'invitation', { message: false });
         shared.push({ project, role: entry.role, inviterId: inviter.id });
       }
       if (skipped.length) {
