@@ -275,6 +275,78 @@ test('mapGitHubUser: the email rule and the subject rule', () => {
   assert.equal(skipNoreply.email, 'real@b.example', 'a verified mailbox beats the noreply address');
 });
 
+test('mapGitHubUser: other verified addresses ride along for invitations only (invite spec M5)', () => {
+  const id = mapGitHubUser({ id: 5, login: 'sam' }, [
+    { email: 'Sam.K@gmail.com', primary: true, verified: true },
+    { email: 'Sam@Work.example', primary: false, verified: true },
+    { email: 'sam@work.example', primary: false, verified: true },
+    { email: 'unproven@work.example', primary: false, verified: false },
+    { email: '5+sam@users.noreply.github.com', primary: false, verified: true },
+  ]);
+  assert.equal(id.email, 'Sam.K@gmail.com', 'the identity email stays the primary');
+  assert.deepEqual(id.invitationEmails, ['sam@work.example'], 'verified, lowercased, once; never unverified, noreply or the primary');
+  assert.equal(mapGitHubUser({ id: 6, login: 'one' }, [{ email: 'one@b.example', primary: true, verified: true }]).invitationEmails, undefined);
+  const many = mapGitHubUser({ id: 7, login: 'many' }, [
+    { email: 'p@b.example', primary: true, verified: true },
+    ...Array.from({ length: 14 }, (_, i) => ({ email: `a${i}@b.example`, primary: false, verified: true })),
+  ]);
+  assert.equal(many.invitationEmails?.length, 10, 'at most ten');
+});
+
+test('a secondary verified address matches an invitation; it never meets a listed domain; the account keeps the primary', async () => {
+  const emails = [
+    { email: 'sam.k@gmail.com', primary: true, verified: true },
+    { email: 'sam@work.example', primary: false, verified: true },
+    { email: '42+sam@users.noreply.github.com', primary: false, verified: true },
+  ];
+  const script = { user: { id: 42, login: 'sam', name: 'Sam Kay' }, emails };
+
+  // Invited at the work address: admitted, accepted by this account, and the
+  // account's address is still the GitHub primary.
+  const invited = await boot({ admission: {} }, githubFetch(script, { apiCalls: [] }));
+  await invited.store.createInvitation({ id: 'inv_sam', email: 'sam@work.example', groups: [], invitedBy: 'user:x', createdAt: new Date().toISOString() });
+  const first = await signIn(invited.base);
+  assert.equal(first.done.status, 302, await first.done.clone().text());
+  const sam = await invited.store.getUserBySub('github:42');
+  assert.equal(sam?.email, 'sam.k@gmail.com');
+  assert.equal((await invited.store.getInvitation('inv_sam'))?.acceptedUserId, sam?.id);
+  assert.ok(!JSON.stringify(sam).includes('invitationEmails'), 'the other addresses are never stored on the account');
+  // The accepted invitation keeps admitting this account on the next sign-in.
+  assert.equal((await signIn(invited.base)).done.status, 302);
+  // A device-code sign-in asks admission again; the accepted invitation
+  // through the other address still stands (stillAdmitted).
+  const started = await (await fetch(`${invited.base}/api/v1/auth/device`, { method: 'POST' })).json() as { deviceCode: string; userCode: string };
+  const approve = await fetch(`${invited.base}/activate`, {
+    method: 'POST', headers: { cookie: first.session as string, 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ code: started.userCode, decision: 'approve' }).toString(),
+  });
+  assert.equal(approve.status, 200);
+  const polled = await fetch(`${invited.base}/api/v1/auth/device/token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ deviceCode: started.deviceCode }) });
+  assert.equal(((await polled.json()) as { status: string }).status, 'approved');
+  // Revoked, it no longer does.
+  await invited.store.revokeInvitation('inv_sam', new Date().toISOString());
+  assert.equal((await signIn(invited.base)).done.status, 403);
+
+  // The work domain is listed, but the GitHub account's own address is
+  // personal: a second address never borrows a listed domain.
+  const listed = await boot({ admission: { domains: ['work.example'] } }, githubFetch(script, { apiCalls: [] }));
+  const refused = await signIn(listed.base);
+  assert.equal(refused.done.status, 403);
+  assert.equal((await listed.store.listUsers()).length, 0);
+
+  // GitHub's noreply address never stands in for an invited one.
+  const noreply = await boot({ admission: {} }, githubFetch(script, { apiCalls: [] }));
+  await noreply.store.createInvitation({ id: 'inv_nr', email: '42+sam@users.noreply.github.com', groups: [], invitedBy: 'user:x', createdAt: new Date().toISOString() });
+  assert.equal((await signIn(noreply.base)).done.status, 403);
+
+  // An invitation a disabled account holds the address of admits nobody through a second address.
+  const off = await boot({ admission: {} }, githubFetch(script, { apiCalls: [] }));
+  await off.store.createInvitation({ id: 'inv_off', email: 'sam@work.example', groups: [], invitedBy: 'user:x', createdAt: new Date().toISOString() });
+  const old = await off.store.upsertUserBySub({ sub: 'old-sam', email: 'sam@work.example', groups: [], role: 'member' });
+  await off.store.setUserDisabled(old.id, new Date().toISOString());
+  assert.equal((await signIn(off.base)).done.status, 403);
+});
+
 test('config: kind github takes no issuer, needs a secret ref, and linkByEmail defaults by emailVerification', () => {
   const base = { instance: { name: 'X', baseUrl: 'http://localhost', pack: '/tmp' }, dev: { enabled: true } };
   const withIdp = (gh: Record<string, unknown>) => JSON.stringify({

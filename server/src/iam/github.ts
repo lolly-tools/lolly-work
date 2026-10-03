@@ -16,8 +16,12 @@
  * by someone else. The email is the primary address if GitHub has verified
  * it, else the first verified address (a noreply address only as a last
  * resort). An account with no verified address is refused (`no-email`), so
- * `emailVerified` is always true here. GitHub has no groups, so an identity
- * from here carries none.
+ * `emailVerified` is always true here. Every other verified address, except
+ * GitHub's noreply ones, rides along as `invitationEmails`: an invitation
+ * sent to a work address the person added to their GitHub account then
+ * matches (plans/74 invite spec M5), while the admission lists, linking by
+ * email and the stored email keep using the one address above. GitHub has
+ * no groups, so an identity from here carries none.
  *
  * Every failure is a `GitHubSignInError` with a short public reason. The
  * caller turns it into the phone-friendly HTML page; GitHub's own error text
@@ -31,6 +35,8 @@ export const GITHUB_API_URL = 'https://api.github.com';
 /** `read:user` for the profile, `user:email` for private and verified addresses. */
 export const GITHUB_SCOPE = 'read:user user:email';
 const USER_AGENT = 'lolly-work-sign-in';
+/** Most secondary addresses an identity carries for invitation matching. */
+export const INVITATION_EMAILS_MAX = 10;
 
 export type GitHubFailure = 'token' | 'profile' | 'no-email';
 
@@ -170,6 +176,10 @@ export function mapGitHubUser(user: unknown, emails: unknown): MappedIdentity {
   if (!verified) throw new GitHubSignInError('no-email', 'GitHub returned no verified email address for this account');
 
   const identity: MappedIdentity = { sub: id, email: verified.email, groups: [], emailVerified: true };
+  const own = verified.email.toLowerCase();
+  const others = [...new Set(list.filter((e) => e.verified && !noreply(e)).map((e) => e.email.toLowerCase()))]
+    .filter((e) => e !== own).slice(0, INVITATION_EMAILS_MAX);
+  if (others.length) identity.invitationEmails = others;
   const full = str(u.name) ?? str(u.login);
   if (full) {
     const space = full.indexOf(' ');

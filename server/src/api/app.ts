@@ -30,8 +30,8 @@ import { displayName, resolveMember } from '../iam/member.ts';
 import { resolveProxyIdentity } from '../iam/proxy-auth.ts';
 import { createDeviceAuth, normalizeUserCode } from '../iam/device-auth.ts';
 import {
-  activateDoneHtml, activateFormHtml, activateSignedOutHtml, admissionRefusedHtml, idpChooserHtml, passwordLinkDeadHtml,
-  passwordLoginHtml, passwordSetHtml, signInErrorHtml,
+  ACCOUNT_NAME_MAX, activateDoneHtml, activateFormHtml, activateSignedOutHtml, admissionRefusedHtml, idpChooserHtml, passwordLinkDeadHtml,
+  passwordLoginHtml, passwordSetHtml, signInErrorHtml, type JoinAsk,
 } from '../iam/activate-page.ts';
 import {
   OPERATOR_LINK_ISSUER, PASSWORD_LINK_TTL_MS, PASSWORD_MIN_LENGTH, checkPasswordRules, hashPassword as hashSignInPassword, normaliseEmail,
@@ -49,6 +49,12 @@ import { createNotifier } from '../notify/notify.ts';
 import { createPeopleNotifier } from '../notify/people.ts';
 import { invitePageUrl, mintInviteToken } from '../access/invite-token.ts';
 import type { RequestDeps } from '../access/types.ts';
+import type { AskIdentity, AskTokenPayload } from '../access/types.ts';
+import { registerInviteRoutes, type InviteRef } from '../access/invite-routes.ts';
+import { relativeTime, utcDay } from '../access/pages.ts';
+import { DECLINE_SHOWN_DAYS, closeRequestsForEmail, requestStateFor } from '../access/requests.ts';
+import { acceptedNotice, noticeContext, skippedNotice, welcomeNotice } from '../access/messages.ts';
+import { maskEmail, maskEmailSpoken } from '../access/mask.ts';
 import { SERVICE_TOKEN_PREFIX, TOKEN_ROLES, hashServiceSecret, mintServiceSecret, serviceAccountFor } from '../iam/service-tokens.ts';
 import { runRetention } from '../audit/retention.ts';
 import { bearerFromHeader, hashScimSecret, mintScimSecret } from '../scim/tokens.ts';
@@ -613,6 +619,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       // own buttons renders these; one that follows loginPath arrives at the
       // chooser when several exist, which needs no client change at all.
       providers: idpProviders(),
+      // The sign-in gate's words (plans/74 invite spec M18): the workspace
+      // name, whether only invited people get in, and whether someone who
+      // is not can ask to join from the refusal page.
+      instanceName: config.instance.name,
+      inviteOnly: !!config.idp.admission,
+      joinRequests: !!config.idp.admission && config.policy.requests.join,
     });
   });
 
@@ -688,14 +700,40 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   /** How long one sign-in's groups and standing carry over to the person's
    *  other sign-ins (iam/identities.ts `LINKED_STANDING_DAYS`). */
   const linkedStandingMs = (config.idp.linkedStandingDays ?? LINKED_STANDING_DAYS) * 86_400_000;
-  const admissionInputs = async (sub: string, email: string, linkedUser?: UserRecord | null) => {
+  /**
+   * The invitation a sign-in's other verified addresses carry (GitHub's
+   * secondary ones, plans/74 invite spec M5), for when its own address has
+   * none that still admits. Only a pending one, or one this same account
+   * already accepted, and never one whose address belongs to a disabled
+   * account: a second address must not walk a turned-off person back in.
+   */
+  const invitationForOtherAddress = async (
+    addresses: readonly string[], email: string, accountIds: Array<string | undefined>,
+  ): Promise<InvitationRecord | null> => {
+    const own = email.trim().toLowerCase();
+    for (const address of addresses) {
+      if (address === own) continue;
+      const inv = await store.findActiveInvitation(address);
+      if (!inv || (inv.acceptedAt && !accountIds.includes(inv.acceptedUserId))) continue;
+      if ((await store.findUsersByEmail(address)).some((u) => !!u.disabledAt)) continue;
+      return inv;
+    }
+    return null;
+  };
+  const admissionInputs = async (sub: string, email: string, linkedUser?: UserRecord | null, invitationEmails: readonly string[] = []) => {
     const existing = await store.getUserBySub(sub);
     const sameEmail = email.trim() ? await store.findUsersByEmail(email) : [];
     // A sign-in linked to a disabled person is refused like that person's own.
     const disabled = !!existing?.disabledAt || !!linkedUser?.disabledAt || sameEmail.some((u) => !!u.disabledAt);
-    const invitation = config.idp.admission?.invitations === false || !email.trim()
+    const own = config.idp.admission?.invitations === false || !email.trim()
       ? null
       : await store.findActiveInvitation(email);
+    // The sign-in's own address first; another verified address only when
+    // that one has no invitation that admits (none, or one past its end).
+    const ownAdmits = !!own && (!!own.acceptedAt || !own.expiresAt || Date.parse(own.expiresAt) > Date.now());
+    const invitation = ownAdmits || config.idp.admission?.invitations === false || !invitationEmails.length
+      ? own
+      : (await invitationForOtherAddress(invitationEmails, email, [existing?.id, linkedUser?.id])) ?? own;
     const invitationView = invitation
       ? { email: invitation.email, expiresAt: invitation.acceptedAt ? null : invitation.expiresAt ?? null, revokedAt: invitation.revokedAt ?? null }
       : null;
@@ -705,7 +743,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     identity: AdmissionIdentity & { sub: string }, idp: AdmissionIdp, resolution?: SignInResolution,
   ): Promise<SignInAdmission> => {
     const linkedUser = resolution && resolution.via !== 'new' ? resolution.user : null;
-    const { disabled, invitation, invitationView } = await admissionInputs(identity.sub, identity.email, linkedUser);
+    const { disabled, invitation, invitationView } = await admissionInputs(identity.sub, identity.email, linkedUser, identity.invitationEmails);
     const decision = decideAdmission({ ...identity, disabled }, idp, config.idp.admission, invitationView);
     // A sign-in already linked to a member (a link row, or a verified-email
     // match) is admitted on that member's standing when only the lists refuse
@@ -730,25 +768,37 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
    * original sign-in and the per-IdP pins were checked then, so only the
    * lists, the invitation and the disabled state are asked again. A dev
    * sign-in never passed admission, so its rows are not judged by it.
+   * When the lists refuse, an invitation this account accepted still admits
+   * it until revoked: that covers a person who got in through an invitation
+   * sent to another of their addresses (invite spec M5).
    */
   const stillAdmitted = async (user: UserRecord): Promise<boolean> => {
     if (user.sub.startsWith('dev:')) return !user.disabledAt;
     const { disabled, invitationView } = await admissionInputs(user.sub, user.email);
-    return decideAdmission({ email: user.email, emailVerified: true, disabled }, { emailVerification: 'trusted' },
-      config.idp.admission, invitationView).ok;
+    if (decideAdmission({ email: user.email, emailVerified: true, disabled }, { emailVerification: 'trusted' },
+      config.idp.admission, invitationView).ok) return true;
+    if (disabled || !config.idp.admission || config.idp.admission.invitations === false) return false;
+    return !!(await store.findInvitationAcceptedBy(user.id));
   };
   /**
-   * After the user row exists: a pending invitation for this verified email is
-   * accepted exactly once, its groups join the person's local groups, and any
-   * of those groups not yet in the local registry are created. This also runs
-   * on an open instance (no admission block), where the invitation did not
-   * decide entry but still carries its groups. Returns the user as it stands.
+   * Accept a pending invitation for an account that holds its address, once
+   * (plans/74 W-ID-2; invite spec 2.9). Three ways get here: a sign-in that
+   * proves the address (`acceptInvitationAtSignIn`), Join on the invite page
+   * for a signed-in holder, and a linked sign-in that proves it
+   * (`finishLink`); `meta.via` says which. The caller has made sure the
+   * account holds the address. The invitation's groups join the person's
+   * local groups (any not yet in the local registry are created), its
+   * projects are shared, and then the notices go out: a welcome to the
+   * invitee, "accepted" to each person who invited them, and one notice
+   * per project that could not be applied. The invitee's open join request,
+   * and every switch request on this invitation, are moot now and close.
+   * Returns the user as it stands.
    */
-  const acceptInvitationAtSignIn = async (
-    user: UserRecord, admitted: SignInAdmission, meta: { provider: 'oidc' | 'github' | 'password' | 'proxy'; idp?: string },
+  const acceptInvitationFor = async (
+    user: UserRecord, pending: InvitationRecord,
+    meta: { via: 'sign-in' | 'join' | 'link'; provider?: 'oidc' | 'github' | 'password' | 'proxy'; idp?: string },
   ): Promise<UserRecord> => {
-    const pending = admitted.invitation;
-    if (!admitted.ok || !admitted.emailVerified || !pending || pending.acceptedAt || pending.revokedAt) return user;
+    if (pending.acceptedAt || pending.revokedAt) return user;
     const at = new Date().toISOString();
     const accepted = await store.acceptInvitation(pending.id, user.id, at);
     if (!accepted) return user; // expired, revoked or accepted by a racing sign-in
@@ -770,7 +820,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const joined = applied.filter((g) => !user.localGroups.includes(g));
     const next = joined.length ? (await store.setLocalGroups(user.id, [...user.localGroups, ...joined])) ?? user : user;
     await audit(`user:${user.id}`, 'invite.accept', `invitation:${accepted.id}`, {
-      provider: meta.provider, ...(meta.idp ? { idp: meta.idp } : {}), email: accepted.email,
+      via: meta.via, ...(meta.provider ? { provider: meta.provider } : {}), ...(meta.idp ? { idp: meta.idp } : {}), email: accepted.email,
       groups: accepted.groups, ...(createdGroups.length ? { createdGroups } : {}),
       ...(!regroupable && accepted.groups.length ? { groupsNotApplied: 'existing-account' } : {}),
       ...(accepted.projects?.length ? { projects: accepted.projects } : {}),
@@ -783,11 +833,19 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // the policy gives. Otherwise a pending invitation would keep a removed
     // or offboarded manager's access alive until it expired. A project
     // archived or gone since is skipped too; every skip is audited.
+    const shared: Array<{ project: ProjectRecord; role: ProjectMemberRole; inviterId: string }> = [];
+    const skippedProjects: ProjectRecord[] = [];
     if (accepted.projects?.length) {
       const grants = await store.listGrants();
       const policy = resolveInvitePolicy(config.policy.invites);
       const inviters = new Map<string, UserRecord | null>();
       const skipped: Array<{ projectId: string; reason: string }> = [];
+      // The welcome notice names the project, so the share sends no message
+      // of its own (`opts.message`, invite spec 2.9).
+      const quietShare: (
+        project: ProjectRecord, target: UserRecord, role: ProjectMemberRole,
+        actor: { principal: string; name: string; userId: string | null }, via: 'invitation', opts: { message: boolean },
+      ) => Promise<'added' | 'already'> = shareProjectWith;
       for (const entry of accepted.projects) {
         const by = entry.invitedBy ?? accepted.invitedBy;
         const inviterId = by.startsWith('user:') ? by.slice(5) : null;
@@ -800,36 +858,150 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
               : !mayInviteNewPeople(inviter, grants, policy) ? 'inviter-may-not-invite'
                 : !accessAtLeast(await projectAccessOf(inviter, project, grants), 'manager') ? 'inviter-not-manager'
                   : null;
-        if (reason || !project || !inviter) { skipped.push({ projectId: entry.projectId, reason: reason ?? 'inviter-unavailable' }); continue; }
+        if (reason || !project || !inviter) {
+          skipped.push({ projectId: entry.projectId, reason: reason ?? 'inviter-unavailable' });
+          if (project) skippedProjects.push(project);
+          continue;
+        }
         const actor = { principal: `user:${inviter.id}`, name: displayName(inviter), userId: inviter.id };
-        await shareProjectWith(project, next, entry.role, actor, 'invitation');
+        await quietShare(project, next, entry.role, actor, 'invitation', { message: false });
+        shared.push({ project, role: entry.role, inviterId: inviter.id });
       }
       if (skipped.length) {
         await audit(`user:${user.id}`, 'invite.project.skip', `invitation:${accepted.id}`, { email: accepted.email, skipped });
       }
     }
+    await tellAccepted(next, accepted, shared, skippedProjects);
+    const by = `user:${user.id}`;
+    await closeRequestsForEmail(accessDeps, { email: accepted.email, invitationId: accepted.id }, by);
+    if (next.email.trim().toLowerCase() !== accepted.email) await closeRequestsForEmail(accessDeps, { email: next.email }, by);
     return next;
   };
-  /** The phone-friendly 403 page, plus the `auth.denied` audit row. The
-   *  account is named on the page (the person needs to see which one they
-   *  used) and in the audit row (an owner needs it to send an invitation).
-   *  `json` answers an API caller (the password route) with the error instead. */
-  const refuseSignIn = async (
-    res: ServerResponse, email: string, reason: Extract<AdmissionDecision, { ok: false }>['reason'],
-    meta: { provider: 'oidc' | 'github' | 'password' | 'proxy'; idp?: string; switchHref: string; json?: boolean },
+  /** The notices an acceptance sends (invite spec 2.10): the welcome to the
+   *  invitee, naming the first project shared; "accepted" to each distinct
+   *  person who invited them (accounts only, never the invitee, at most 5),
+   *  with the project they added or, for a console invitation, the console;
+   *  and a notice for each project that could not be applied. */
+  const ACCEPTED_NOTICES_MAX = 5;
+  const tellAccepted = async (
+    invitee: UserRecord, inv: InvitationRecord,
+    shared: Array<{ project: ProjectRecord; role: ProjectMemberRole; inviterId: string }>, skipped: ProjectRecord[],
   ): Promise<void> => {
+    const ctx = noticeContext(config, Date.now());
+    const accountOf = async (principal: string): Promise<UserRecord | null> =>
+      principal.startsWith('user:') ? store.getUser(principal.slice(5)) : null;
+    const first = shared[0];
+    const welcomer = first ? await store.getUser(first.inviterId) : await accountOf(inv.invitedBy);
+    await people.tell({
+      message: welcomeNotice({
+        invitationId: inv.id, inviteeId: invitee.id, inviter: welcomer,
+        ...(first ? { project: { id: first.project.id, name: first.project.name, role: first.role } } : {}),
+      }, ctx),
+      kind: 'accepted',
+    });
+    const principals = [inv.invitedBy, ...(inv.projects ?? []).map((e) => e.invitedBy ?? inv.invitedBy)];
+    const inviterIds = [...new Set(principals.filter((p) => p.startsWith('user:')).map((p) => p.slice(5)))]
+      .filter((id) => id !== invitee.id).slice(0, ACCEPTED_NOTICES_MAX);
+    for (const inviterId of inviterIds) {
+      const inviter = await store.getUser(inviterId);
+      if (!inviter || inviter.disabledAt) continue;
+      const theirs = shared.find((s) => s.inviterId === inviterId);
+      await people.tell({
+        message: acceptedNotice({
+          invitationId: inv.id, inviterId, invitee,
+          ...(theirs ? { project: { id: theirs.project.id, name: theirs.project.name } } : { console: inv.createdVia !== 'project' }),
+        }, ctx),
+        kind: 'accepted',
+      });
+    }
+    for (const project of skipped) {
+      await people.tell({ message: skippedNotice({ invitationId: inv.id, inviteeId: invitee.id, project }, ctx), kind: 'accepted' });
+    }
+  };
+  /**
+   * After the user row exists: a pending invitation for this verified email
+   * (or another verified address of the sign-in) is accepted. This also runs
+   * on an open instance (no admission block), where the invitation did not
+   * decide entry but still carries its groups and projects.
+   */
+  const acceptInvitationAtSignIn = async (
+    user: UserRecord, admitted: SignInAdmission, meta: { provider: 'oidc' | 'github' | 'password' | 'proxy'; idp?: string },
+  ): Promise<UserRecord> => {
+    const pending = admitted.invitation;
+    if (!admitted.ok || !admitted.emailVerified || !pending || pending.acceptedAt || pending.revokedAt) return user;
+    return acceptInvitationFor(user, pending, { ...meta, via: 'sign-in' });
+  };
+  /** How long the ask forms on a refusal page stay good (`lw/ask`). */
+  const ASK_TTL_SEC = 1800;
+  const mintAsk = (payload: AskTokenPayload): string => mintToken('lw/ask', payload, secrets.session, ASK_TTL_SEC);
+  /** An `lw/ask` token's payload, or null for one that is forged, expired or malformed. */
+  const readAsk = (token: string): AskTokenPayload | null => {
+    const p = token ? verifyToken<AskTokenPayload>('lw/ask', token, sessionVerify) : null;
+    return p && typeof p.e === 'string' && typeof p.idp === 'string' && typeof p.sub === 'string' ? p : null;
+  };
+  /** The "Ask to join" part of a refusal for someone not invited (invite
+   *  spec 3.6), and the form cookie it needs. */
+  const joinAskFor = async (req: IncomingMessage, identity: AskIdentity): Promise<{ join: JoinAsk; cookie?: string }> => {
+    if (!config.policy.requests.join) return { join: { state: 'off' } };
+    const now = Date.now();
+    const state = await requestStateFor(accessDeps, { kind: 'join', email: identity.email });
+    if (!state.open && state.lastDeclined) {
+      const on = Date.parse(state.lastDeclined.answeredAt ?? state.lastDeclined.createdAt);
+      return { join: { state: 'declined', on: utcDay(new Date(on).toISOString(), now), againAfter: utcDay(new Date(on + DECLINE_SHOWN_DAYS * 86_400_000).toISOString(), now) } };
+    }
+    const { nonce, cookie } = formToken(req);
+    const ask = mintAsk({ e: identity.email, idp: identity.idp, sub: identity.sub, ...(identity.name ? { n: identity.name } : {}) });
+    return {
+      join: state.open ? { state: 'open', ask, csrf: nonce, askedAgo: relativeTime(state.open.createdAt, now) } : { state: 'form', ask, csrf: nonce },
+      cookie,
+    };
+  };
+  /** A sign-in started from an invite page, carried to the refusal: the
+   *  invitation it was for and the link it came from. */
+  type InviteCarried = { ref: InviteRef; invitation: InvitationRecord };
+  /**
+   * The phone-friendly 403 page, plus the `auth.denied` audit row. The
+   * account is named on the page (the person needs to see which one they
+   * used) and in the audit row (an admin needs it to send an invitation).
+   * `json` answers an API caller (the password route) with the error
+   * instead. A person who is simply not invited may ask to join from the
+   * page; one who came from an invite link with another account gets the
+   * wrong-account page instead, where they may ask to use this account.
+   * Either way no user row is written.
+   */
+  const refuseSignIn = async (
+    req: IncomingMessage, res: ServerResponse, who: AskIdentity, reason: Extract<AdmissionDecision, { ok: false }>['reason'],
+    meta: { provider: 'oidc' | 'github' | 'password' | 'proxy'; idp?: string; switchHref: string; json?: boolean; invite?: InviteCarried },
+  ): Promise<void> => {
+    const email = who.email.trim().toLowerCase();
     await audit('anonymous', 'auth.denied', 'session', {
-      provider: meta.provider, ...(meta.idp ? { idp: meta.idp } : {}), reason, email: email.trim().toLowerCase(),
+      provider: meta.provider, ...(meta.idp ? { idp: meta.idp } : {}), reason, email,
+      ...(meta.invite ? { invitationId: meta.invite.invitation.id } : {}),
     });
     if (meta.json) return sendError(res, 403, 'NOT_ADMITTED', 'this account may not sign in here', { reason });
+    const clearState = meta.provider !== 'proxy' ? [`${STATE_COOKIE}=; Path=/api/auth; HttpOnly; Max-Age=0`] : [];
+    const provider = meta.idp ? idpLabel(meta.idp) : meta.provider === 'proxy' ? idpLabel('proxy') : null;
+    if (meta.invite && reason === 'not-invited') {
+      await audit('anonymous', 'invite.wrong-account', `invitation:${meta.invite.invitation.id}`, {
+        email, provider: meta.provider, ...(meta.idp ? { idp: meta.idp } : {}), admitted: false,
+      });
+      return invitePages.sendWrongAccount(req, res, {
+        ref: meta.invite.ref, invitation: meta.invite.invitation, identity: { ...who, email },
+        provider: provider ?? 'another sign-in', github: meta.provider === 'github', extraCookies: clearState,
+      });
+    }
+    // Only a sign-in whose address was proven gets here as not-invited
+    // (iam/admission.ts refuses an unverified one first), so the ask
+    // carries an address someone controls.
+    const ask = reason === 'not-invited' && config.idp.admission ? await joinAskFor(req, { ...who, email }) : null;
     res.writeHead(403, {
-      'content-type': 'text/html; charset=utf-8',
-      'cache-control': 'private, no-store',
-      'x-content-type-options': 'nosniff',
-      'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
-      ...(meta.provider !== 'proxy' ? { 'set-cookie': `${STATE_COOKIE}=; Path=/api/auth; HttpOnly; Max-Age=0` } : {}),
+      ...passwordPageHeaders, 'cache-control': 'private, no-store',
+      ...(clearState.length || ask?.cookie ? { 'set-cookie': [...clearState, ...(ask?.cookie ? [ask.cookie] : [])] } : {}),
     });
-    res.end(admissionRefusedHtml(config.instance.name, { email, reason, switchHref: meta.switchHref }));
+    res.end(admissionRefusedHtml(config.instance.name, {
+      email: who.email, reason, switchHref: meta.switchHref, provider, github: meta.provider === 'github',
+      ...(ask ? { join: ask.join } : {}),
+    }));
   };
   /** What /api/auth/config and the manifest advertise - one entry per house.
    *  Config validation lets an additional entry stand without the primary
@@ -936,7 +1108,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   const passwordLoginHref = (returnTo: string): string =>
     `/api/auth/login?${passwordIdp && idpProviders().length > 1 ? `idp=${encodeURIComponent(passwordIdp.id)}&` : ''}returnTo=${encodeURIComponent(returnTo)}`;
   const renderPasswordLogin = (
-    req: IncomingMessage, res: ServerResponse, status: number, opts: { returnTo: string; email?: string; error?: string },
+    req: IncomingMessage, res: ServerResponse, status: number,
+    opts: { returnTo: string; email?: string; error?: string; invitedEmail?: string },
     extraHeaders: Record<string, string> = {},
   ): void => {
     const { nonce, cookie } = formToken(req);
@@ -944,6 +1117,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     res.end(passwordLoginHtml(config.instance.name, {
       returnTo: opts.returnTo, csrf: nonce,
       ...(opts.email ? { email: opts.email } : {}), ...(opts.error ? { error: opts.error } : {}),
+      ...(opts.invitedEmail ? { invitedAddress: { masked: maskEmail(opts.invitedEmail), spoken: maskEmailSpoken(opts.invitedEmail) } } : {}),
       ...(idpProviders().length > 1 ? { otherHref: `/api/auth/login?returnTo=${encodeURIComponent(opts.returnTo)}` } : {}),
     }));
   };
@@ -951,16 +1125,22 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   /** The 302 to an IdP's authorize endpoint, with PKCE and the signed state
    *  cookie. `linkTo` (a user id) marks a self-service link (GET
    *  /api/auth/link): the callback then links the identity instead of
-   *  signing in. */
+   *  signing in. `carry.invite` is the invitation a sign-in started from an
+   *  invite page is for (it rides the signed state, never the IdP), and
+   *  `carry.loginHint` the invited address, which an OIDC provider uses to
+   *  offer the right account first; GitHub takes no hint. */
   const redirectToIdp = async (
     res: ServerResponse, idp: ResolvedIdp, returnTo: string, askedPrompt: 'select_account' | 'login' | null, linkTo?: string,
+    carry: { invite?: InviteRef; loginHint?: string } = {},
   ): Promise<void> => {
     // GitHub (iam/github.ts) has fixed endpoints and nothing to discover.
     const disco = idp.kind === 'github' ? null : await discover(idp.issuer, fetchImpl);
     const { verifier, challenge } = pkcePair();
     const nonce = randomId(12);
     const state = randomId(12);
-    const stateToken = mintToken('lw/state', { returnTo, verifier, nonce, state, idp: idp.id, ...(linkTo ? { linkTo } : {}) }, secrets.session, 600);
+    const stateToken = mintToken('lw/state', {
+      returnTo, verifier, nonce, state, idp: idp.id, ...(linkTo ? { linkTo } : {}), ...(carry.invite ? { invite: carry.invite } : {}),
+    }, secrets.session, 600);
     const authorize = !disco
       ? buildGitHubAuthorizeUrl({
         clientId: idp.clientId,
@@ -973,7 +1153,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         redirectUri: `${config.instance.baseUrl}/api/auth/callback`,
         state, nonce, codeChallenge: challenge,
         scope: idp.scope,
-        params: { ...idp.authParams, ...(askedPrompt ? { prompt: askedPrompt } : {}) },
+        params: {
+          ...idp.authParams, ...(askedPrompt ? { prompt: askedPrompt } : {}),
+          ...(carry.loginHint && idp.kind === 'oidc' ? { login_hint: carry.loginHint } : {}),
+        },
       });
     res.writeHead(302, {
       location: authorize,
@@ -1001,7 +1184,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
       });
       res.end(idpChooserHtml(config.instance.name,
-        providers.map((p) => ({ href: `${p.loginPath}${carry}`, label: `Sign in with ${p.kind === 'password' ? inSentence(p.name) : p.name}` }))));
+        providers.map((p) => ({ href: `${p.loginPath}${carry}`, label: `Sign in with ${p.kind === 'password' ? inSentence(p.name) : p.name}` })),
+        { inviteOnly: !!config.idp.admission }));
       return;
     }
     // One house: the primary when there is one, else the only entry (email
@@ -1155,7 +1339,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         { retryHref: `/api/auth/login?returnTo=${encodeURIComponent(box.returnTo)}`, html: true, heading: 'Sign-in not added', retryLabel: 'Sign in' });
     }
     const pins = decideAdmission({ ...identity, disabled: false }, idp.constraints, undefined, null);
-    if (!pins.ok) return refuseSignIn(res, identity.email, pins.reason, { provider: providerOf(idp), idp: idp.id, switchHref: `${again}&prompt=select_account` });
+    if (!pins.ok) {
+      return refuseSignIn(req, res, { email: identity.email, idp: idp.id, sub: identity.sub }, pins.reason,
+        { provider: providerOf(idp), idp: idp.id, switchHref: `${again}&prompt=select_account` });
+    }
     const owner = (await store.getUserByIdentity(identity.sub)) ?? (await store.getUserBySub(identity.sub));
     const at = new Date().toISOString();
     const email = identity.email.trim().toLowerCase();
@@ -1174,6 +1361,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
     if (linked.created) {
       await audit(`user:${me.id}`, 'identity.link', `user:${me.id}`, { via: 'self', idp: idp.id, ...(email ? { email } : {}) });
+      // The sign-in just added proves its address: a pending invitation for
+      // it is accepted now (plans/75 A11), unless this account wrote it.
+      const inv = linkableEmail(identity, idp) && email ? await store.findActiveInvitation(email) : null;
+      if (inv && !inv.acceptedAt && !(inv.expiresAt && Date.parse(inv.expiresAt) <= Date.now()) && inv.invitedBy !== `user:${me.id}`) {
+        await acceptInvitationFor(me, inv, { via: 'link', provider: providerOf(idp), idp: idp.id });
+      }
     }
     res.writeHead(302, { location: box.returnTo, 'set-cookie': clearState });
     res.end();
@@ -1197,9 +1390,18 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
    * proved, so a later sign-in through another provider never joins an
    * account by it. `ownerAllowed: false` (a password not set from an owner's
    * link) refuses the session when the account it reaches is an owner's.
+   * `invite`: the sign-in started from an invite page with an account that
+   * is not the invited one, so a refusal is the wrong-account page.
+   *
+   * A password asserts no name, so a password sign-in keeps the name the
+   * account has, unless the identity brings one: the name typed on the
+   * set-password page, which then replaces the whole name. That reaches the
+   * account the password belongs to; an account that signs in another way
+   * keeps the name that sign-in gives it.
    */
   const completeSignIn = async (
-    res: ServerResponse, idp: ResolvedIdp, identity: MappedIdentity, opts: { switchHref: string; json?: boolean; ownerAllowed?: boolean },
+    req: IncomingMessage, res: ServerResponse, idp: ResolvedIdp, identity: MappedIdentity,
+    opts: { switchHref: string; json?: boolean; ownerAllowed?: boolean; invite?: InviteCarried },
   ): Promise<{ user: UserRecord; cookie: string } | null> => {
     const provider = providerOf(idp);
     const verifiedForLinking = linkableEmail(identity, idp);
@@ -1209,10 +1411,23 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     });
     const admitted = await admitSignIn(identity, idp.constraints, resolution);
     if (!admitted.ok) {
-      await refuseSignIn(res, identity.email, admitted.reason, { provider, idp: idp.id, switchHref: opts.switchHref, ...(opts.json ? { json: true } : {}) });
+      const name = [identity.firstname, identity.lastname].filter(Boolean).join(' ');
+      await refuseSignIn(req, res, { email: identity.email, idp: idp.id, sub: identity.sub, ...(name ? { name } : {}) }, admitted.reason, {
+        provider, idp: idp.id, switchHref: opts.switchHref, ...(opts.json ? { json: true } : {}), ...(opts.invite ? { invite: opts.invite } : {}),
+      });
       return null;
     }
-    const { emailVerified: _verified, hd: _hd, tid: _tid, ...profile } = identity;
+    // The other addresses matched an invitation; they are never stored.
+    const { emailVerified: _verified, hd: _hd, tid: _tid, invitationEmails: _others, ...profile } = identity;
+    if (idp.kind === 'password' && resolution.via !== 'new') {
+      const held = resolution.user;
+      if (profile.firstname) profile.lastname = undefined;
+      else {
+        if (held.firstname) profile.firstname = held.firstname;
+        if (held.lastname) profile.lastname = held.lastname;
+      }
+      if (!profile.title && held.title) profile.title = held.title;
+    }
     const ownerGroup = bootstrapOwnerGroup(admitted, identity.email, config.idp.bootstrapOwners, config.idp.roleGroups.owner);
     if (ownerGroup && !profile.groups.includes(ownerGroup)) profile.groups = [...profile.groups, ownerGroup];
     /** The refusal for a password that may not open an owner's account. */
@@ -1262,7 +1477,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const cookies = req.headers.cookie ?? '';
     const stateCookie = /(?:^|;\s*)lw_state=([^;]+)/.exec(cookies)?.[1];
     const box = stateCookie
-      ? verifyToken<{ returnTo: string; verifier: string; nonce: string; state: string; idp?: string; linkTo?: string }>('lw/state', stateCookie, sessionVerify)
+      ? verifyToken<{ returnTo: string; verifier: string; nonce: string; state: string; idp?: string; linkTo?: string; invite?: InviteRef }>('lw/state', stateCookie, sessionVerify)
       : null;
     if (!box || box.state !== ctx.url.searchParams.get('state')) {
       return signInFailed(req, res, 400, 'BAD_STATE', 'This sign-in expired or was started in another browser. Start again from here.', { retryHref: '/api/auth/login' });
@@ -1355,13 +1570,34 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     identity.sub = `${idp.subPrefix}${identity.sub}`;
     // A self-service link (GET /api/auth/link) ends here: no new session.
     if (box.linkTo) return finishLink(req, res, box, idp, identity);
-    const again = `/api/auth/login?${config.idp.additional.length ? '' : `idp=${encodeURIComponent(idp.id)}&`}prompt=select_account&returnTo=${encodeURIComponent(box.returnTo)}`;
-    const done = await completeSignIn(res, idp, identity, { switchHref: again });
+    // Started from an invite page (invite spec 2.9): the invitation as it
+    // stands now. One withdrawn, accepted, ended or replaced meanwhile makes
+    // this a plain sign-in that goes to the app, not to its project.
+    const invitation = box.invite ? await invitePages.liveInvitation(box.invite) : null;
+    const returnTo = box.invite && !invitation ? '/' : box.returnTo;
+    // The invited account proves the invited address: its own, when the IdP
+    // vouches for it, or another verified address of a GitHub account.
+    let carried: InviteCarried | undefined;
+    if (box.invite && invitation) {
+      const proven = [
+        ...(emailIsVerified(identity, idp.constraints) ? [identity.email.trim().toLowerCase()] : []),
+        ...(idp.kind === 'github' ? identity.invitationEmails ?? [] : []),
+      ];
+      if (!proven.includes(invitation.email)) carried = { ref: box.invite, invitation };
+    }
+    const again = `/api/auth/login?${config.idp.additional.length ? '' : `idp=${encodeURIComponent(idp.id)}&`}prompt=select_account&returnTo=${encodeURIComponent(returnTo)}`;
+    const done = await completeSignIn(req, res, idp, identity, { switchHref: again, ...(carried ? { invite: carried } : {}) });
     if (!done) return;
-    res.writeHead(302, {
-      location: box.returnTo,
-      'set-cookie': [done.cookie, `${STATE_COOKIE}=; Path=/api/auth; HttpOnly; Max-Age=0`],
-    });
+    const clearState = `${STATE_COOKIE}=; Path=/api/auth; HttpOnly; Max-Age=0`;
+    if (carried) {
+      // Not the invited account, but one this workspace admits anyway: the
+      // person is signed in, and the page says whose invitation it was.
+      await audit(`user:${done.user.id}`, 'invite.wrong-account', `invitation:${carried.invitation.id}`, {
+        email: identity.email.trim().toLowerCase(), provider: providerOf(idp), idp: idp.id, admitted: true,
+      });
+      return invitePages.sendOtherAccount(req, res, { ref: carried.ref, invitation: carried.invitation, user: done.user, extraCookies: [done.cookie, clearState] });
+    }
+    res.writeHead(302, { location: returnTo, 'set-cookie': [done.cookie, clearState] });
     res.end();
   });
 
@@ -1416,7 +1652,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const proxySub = `proxy:${id.user}`;
     const resolution = await resolveSignIn(store, { sub: proxySub, email: id.email, emailVerified: false, linkByEmail: false });
     const admitted = await admitSignIn({ sub: proxySub, email: id.email }, { emailVerification: 'trusted' }, resolution);
-    if (!admitted.ok) return refuseSignIn(res, id.email, admitted.reason, { provider: 'proxy', switchHref: '' });
+    if (!admitted.ok) {
+      const name = [id.firstname, id.lastname].filter(Boolean).join(' ');
+      return refuseSignIn(req, res, { email: id.email, idp: 'proxy', sub: proxySub, ...(name ? { name } : {}) }, admitted.reason, { provider: 'proxy', switchHref: '' });
+    }
     const ownerGroup = bootstrapOwnerGroup(admitted, id.email, config.idp.bootstrapOwners, config.idp.roleGroups.owner);
     const proxyGroups = ownerGroup && !id.groups.includes(ownerGroup) ? [...id.groups, ownerGroup] : id.groups;
     const upserted = await recordSignIn({
@@ -1550,7 +1789,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       }
     }
     const identity: MappedIdentity = { sub: `${idp.subPrefix}${cred.id}`, email: cred.email, emailVerified: true, groups: [] };
-    const done = await completeSignIn(res, idp, identity, { switchHref: passwordLoginHref(returnTo), json, ownerAllowed: cred.ownerIssued });
+    const done = await completeSignIn(req, res, idp, identity, { switchHref: passwordLoginHref(returnTo), json, ownerAllowed: cred.ownerIssued });
     if (done) sendSignedIn(res, json, done.cookie, returnTo);
   });
 
@@ -1629,7 +1868,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   };
   const renderPasswordSet = (
     req: IncomingMessage, res: ServerResponse, status: number,
-    opts: { token: string; email: string; purpose: 'setup' | 'reset'; error?: string },
+    opts: { token: string; email: string; purpose: 'setup' | 'reset'; error?: string; returnTo?: string; name?: string; nameError?: boolean },
     extraHeaders: Record<string, string> = {},
   ): void => {
     const { nonce, cookie } = formToken(req);
@@ -1675,11 +1914,20 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       return sendLinkDead(res);
     }
     const { link, issuer } = usable;
-    const again = (status: number, error: string, headers: Record<string, string> = {}): void =>
-      renderPasswordSet(req, res, status, { token, email: link.email, purpose: link.purpose, error }, headers);
+    // Where the person goes once signed in: the project an invite link was
+    // for (invite spec 2.9), held to this instance; a link an admin issued
+    // from the console carries none and goes to the app.
+    const returnTo = returnToSafe(body.get('returnTo') || null);
+    const typedName = body.get('name').replace(/\s+/g, ' ').trim();
+    const again = (status: number, error: string, headers: Record<string, string> = {}, nameError = false): void =>
+      renderPasswordSet(req, res, status, {
+        token, email: link.email, purpose: link.purpose, error, returnTo, ...(typedName ? { name: typedName } : {}), ...(nameError ? { nameError } : {}),
+      }, headers);
     if (!formTokenOk(req, body.get('csrf'))) return again(403, 'This form expired. Enter your new password again.');
     // The rules are checked before the link is spent, so a typo does not cost
-    // the person their link.
+    // the person their link. The name is optional and plain text, one line.
+    if (Array.from(typedName).length > ACCOUNT_NAME_MAX) return again(400, `Your name can be at most ${ACCOUNT_NAME_MAX} characters.`, {}, true);
+    if (/[\u0000-\u001f\u007f\u2028\u2029]/.test(typedName)) return again(400, 'Use only ordinary characters in your name.', {}, true);
     const password = body.get('password');
     if (password !== body.get('confirm')) return again(400, 'The two passwords do not match.');
     const rule = checkPasswordRules(password, link.email);
@@ -1707,9 +1955,67 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       provider: 'password', idp: idp.id, email: cred.email, purpose: spent.purpose, ...(spent.createdBy ? { issuedBy: spent.createdBy } : {}),
       ...(holder ? { sessionsRevoked: true } : {}),
     });
-    const identity: MappedIdentity = { sub: `${idp.subPrefix}${cred.id}`, email: cred.email, emailVerified: true, groups: [] };
-    const done = await completeSignIn(res, idp, identity, { switchHref: passwordLoginHref('/'), ownerAllowed: cred.ownerIssued });
-    if (done) sendSignedIn(res, false, done.cookie, '/');
+    const identity: MappedIdentity = {
+      sub: `${idp.subPrefix}${cred.id}`, email: cred.email, emailVerified: true, groups: [], ...(typedName ? { firstname: typedName } : {}),
+    };
+    const done = await completeSignIn(req, res, idp, identity, { switchHref: passwordLoginHref(returnTo), ownerAllowed: cred.ownerIssued });
+    if (done) sendSignedIn(res, false, done.cookie, returnTo);
+  });
+
+  // ── invite links and sign-in requests (plans/74 invite spec R1 to R3) ──
+  // The routes live in access/invite-routes.ts; what they need from the
+  // sign-in code above is handed over here.
+  /**
+   * Who stands behind the invite page's one-link password now (invite spec
+   * 2.9), or null when it may not set one: password sign-in on, the
+   * invitation pending and live with the flag set, no password for the
+   * address yet, and the person who invited (for this project, else the
+   * invitation) still an admin or owner who may issue sign-in links for it.
+   */
+  const passwordSetupIssuer = async (inv: InvitationRecord, projectId: string | null): Promise<'operator' | UserRecord | null> => {
+    if (!passwordIdp || !inv.passwordSetup || inv.acceptedAt || inv.revokedAt) return null;
+    if (inv.expiresAt && Date.parse(inv.expiresAt) <= Date.now()) return null;
+    if (await store.getPasswordCredential(inv.email)) return null;
+    const entry = projectId ? (inv.projects ?? []).find((p) => p.projectId === projectId) : undefined;
+    const issuer = await passwordLinkIssuer(entry?.invitedBy ?? inv.invitedBy);
+    if (!issuer) return null;
+    return (await passwordLinkRefusal(inv.email, issuer)) ? null : issuer;
+  };
+  /** How long the one-time link the invite page makes lasts: only as long
+   *  as the person needs to fill in the form it opens. */
+  const INVITE_PASSWORD_LINK_TTL_MS = 3_600_000;
+  const invitePages = registerInviteRoutes(router, {
+    store, config, accessDeps, audit, linkVerify, linkSecret: secrets.link, mintAsk, readAsk, memberOf, formToken, formTokenOk,
+    readForm: async (req) => {
+      const body = await readSignInBody(req);
+      return body && !body.json ? body : null;
+    },
+    returnToSafe, providers: idpProviders, idpLabel,
+    startSignIn: async (req, res, o) => {
+      const idp = resolveIdp(o.idpId);
+      if (!idp) return sendError(res, 404, 'NO_IDP', `no IdP named "${o.idpId}" is configured`);
+      if (idp.kind === 'password') return renderPasswordLogin(req, res, 200, { returnTo: o.returnTo, invitedEmail: o.email });
+      await redirectToIdp(res, idp, o.returnTo, o.prompt, undefined, { invite: o.invite, loginHint: o.email });
+    },
+    passwordSetupIssuer,
+    renderInvitePasswordSet: async (req, res, o) => {
+      const token = randomId(32);
+      const now = Date.now();
+      const issuedBy = o.issuer === 'operator' ? OPERATOR_LINK_ISSUER : `user:${o.issuer.id}`;
+      await store.createPasswordLink({
+        tokenHash: sha256Hex(token), email: o.invitation.email, purpose: 'setup', createdBy: issuedBy,
+        createdAt: new Date(now).toISOString(), expiresAt: new Date(now + INVITE_PASSWORD_LINK_TTL_MS).toISOString(),
+      });
+      await audit(issuedBy, 'auth.password.link.issue', 'session', {
+        idp: passwordIdp?.id, email: o.invitation.email, purpose: 'setup', via: 'invitation', invitationId: o.invitation.id,
+      });
+      renderPasswordSet(req, res, 200, { token, email: o.invitation.email, purpose: 'setup', returnTo: o.returnTo });
+    },
+    hasPassword: async (email) => !!(await store.getPasswordCredential(email)),
+    acceptInvitationFor: (user, inv, meta) => acceptInvitationFor(user, inv, meta),
+    accountsHoldingEmail: (email) => accountsHoldingEmail(email),
+    projectAccessOf: (user, project) => projectAccessOf(user, project),
+    now: Date.now,
   });
 
   router.add('GET', '/api/auth/session', async (req, res) => {

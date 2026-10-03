@@ -364,7 +364,7 @@ test('bootstrap owner: a listed, verified owner email gets the owner group and r
   await store.setUserDisabled(row!.id, new Date().toISOString());
   const again = await signIn(base, current, { sub: 'g-ana', email: 'ana@example.com', email_verified: true });
   assert.equal(again.done.status, 403);
-  assert.ok((await again.done.text()).includes('has been disabled'));
+  assert.ok((await again.done.text()).includes('This account is turned off on'));
 
   // Not on the bootstrap list: an admitted person stays a member.
   const bo = await signIn(base, current, { sub: 'g-bo', email: 'bo@team.example', email_verified: true });

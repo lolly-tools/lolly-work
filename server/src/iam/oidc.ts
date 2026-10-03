@@ -39,6 +39,11 @@ export interface MappedIdentity {
   hd?: string;
   /** Microsoft Entra tenant id. */
   tid?: string;
+  /** Other verified addresses of this sign-in (GitHub only, iam/github.ts),
+   *  lowercased. They match an invitation and nothing else: never the
+   *  admission lists, linking by email, or the stored email (plans/75 4.8
+   *  rule 7). */
+  invitationEmails?: string[];
 }
 
 /** Authorization request parameters an operator may add per IdP. Anything

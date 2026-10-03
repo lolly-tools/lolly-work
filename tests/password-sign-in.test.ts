@@ -362,6 +362,71 @@ test('set: the link page, then a password, signs the person in once; the link is
   assert.ok(!chain.includes(cred.hash));
 });
 
+/** Open a link's page and post it with extra fields (a name, a returnTo). */
+async function setPasswordWith(base: string, url: string, fields: Record<string, string>, password = PW) {
+  const u = new URL(url);
+  const form = await openForm(base, `${u.pathname}${u.search}`);
+  assert.equal(form.res.status, 200, form.html);
+  return postForm(base, '/api/auth/password/set', { token: u.searchParams.get('token') ?? '', password, confirm: password, csrf: form.csrf, ...fields }, form.cookie);
+}
+
+test('set: the name typed becomes the account name and stays through later sign-ins (invite spec g1)', async () => {
+  const { base, store } = await boot();
+  // Postgres replaces a stored name with what each sign-in asserts, where
+  // the memory store keeps one left out. Hold the memory store to the
+  // Postgres rule, so a password sign-in (which asserts no name) is seen to
+  // keep the name rather than wipe it.
+  const upsert = store.upsertUserBySub.bind(store);
+  store.upsertUserBySub = (u) => upsert({ firstname: undefined, lastname: undefined, title: undefined, ...u });
+  const admin = await devLogin(base, 'admin@test');
+  const url = await linkFor(base, admin, 'nia@partner.example');
+  const u = new URL(url);
+
+  const page = await openForm(base, `${u.pathname}${u.search}`);
+  assert.ok(page.html.includes('Choose a password for <span class="addr">nia@partner.example</span>.'));
+  assert.match(page.html, /<label class="field" for="pw-name">Your name \(optional\)<\/label>/);
+  assert.match(page.html, /name="name"[^>]*maxlength="80"/);
+
+  // Too long, or not one line of text: refused before the link is spent.
+  const long = await setPasswordWith(base, url, { name: 'N'.repeat(81) });
+  assert.equal(long.status, 400);
+  assert.ok((await long.text()).includes('Your name can be at most 80 characters.'));
+  const odd = await setPasswordWith(base, url, { name: 'Nia\u0007' });
+  assert.equal(odd.status, 400);
+  assert.equal((await fetch(`${base}${u.pathname}${u.search}`)).status, 200, 'the link still works');
+
+  const set = await setPasswordWith(base, url, { name: '  Nia   Okafor ' });
+  assert.equal(set.status, 303);
+  const user = async () => (await store.findUsersByEmail('nia@partner.example'))[0]!;
+  assert.equal((await user()).firstname, 'Nia Okafor', 'trimmed, one space between words');
+  assert.equal((await user()).lastname, undefined);
+
+  // A later password sign-in asserts no name; the account keeps its own.
+  assert.equal((await login(base, 'nia@partner.example', PW)).status, 303);
+  assert.equal((await user()).firstname, 'Nia Okafor');
+
+  // A reset with the name left empty keeps it; a name typed replaces it whole.
+  await setPasswordWith(base, await linkFor(base, admin, 'nia@partner.example', 'reset'), {});
+  assert.equal((await user()).firstname, 'Nia Okafor');
+  await store.upsertUserBySub({ ...(await user()), firstname: 'Nia', lastname: 'Okafor' });
+  await setPasswordWith(base, await linkFor(base, admin, 'nia@partner.example', 'reset'), { name: 'Nia O.' });
+  assert.equal((await user()).firstname, 'Nia O.');
+  assert.equal((await user()).lastname, undefined, 'the whole name, not a first name beside an old last one');
+});
+
+test('set: returnTo is held to this instance; a project link is kept', async () => {
+  const { base } = await boot();
+  const admin = await devLogin(base, 'admin@test');
+  const cases: Array<[string, string]> = [
+    ['https://evil.example/x', '/'], ['//evil.example', '/'], ['/#/team/project/x', '/#/team/project/x'], ['', '/'],
+  ];
+  for (const [i, [given, expected]] of cases.entries()) {
+    const set = await setPasswordWith(base, await linkFor(base, admin, `rt${i}@partner.example`), { returnTo: given });
+    assert.equal(set.status, 303, given);
+    assert.equal(set.headers.get('location'), expected, given);
+  }
+});
+
 test('set: a new link revokes the earlier unused one; an expired link fails', async () => {
   const { base, store } = await boot();
   const admin = await devLogin(base, 'admin@test');
@@ -491,7 +556,7 @@ test('admission still applies: a revoked invitation refuses the next password si
   await fetch(`${base}/api/v1/invitations/${invitationId}`, { method: 'DELETE', headers: { cookie: admin } });
   const refused = await login(base, 'ivy@elsewhere.example', PW);
   assert.equal(refused.status, 403);
-  assert.ok((await refused.text()).includes('has not been invited'));
+  assert.ok((await refused.text()).includes('This account is not on Password Team yet'));
   assert.equal(cookieOf(refused, 'lw_session'), undefined);
   assert.deepEqual((await auditOf(store)).filter((e) => e.action === 'auth.denied').at(-1)?.payload,
     { provider: 'password', idp: 'email', reason: 'not-invited', email: 'ivy@elsewhere.example' });
@@ -506,7 +571,7 @@ test('"Disable access" stops password sign-in, and a disabled account gets no ne
   assert.equal(off.status, 200);
   const refused = await login(base, 'jo@partner.example', PW);
   assert.equal(refused.status, 403);
-  assert.ok((await refused.text()).includes('has been disabled'));
+  assert.ok((await refused.text()).includes('This account is turned off on'));
   assert.equal(cookieOf(refused, 'lw_session'), undefined);
   assert.equal((await issueLink(base, admin, 'jo@partner.example', 'reset')).status, 409);
 });
