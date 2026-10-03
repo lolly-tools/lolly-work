@@ -16,6 +16,13 @@
  *      whether an address or domain is listed or invited;
  *   5. then an invitation, a listed email or a listed domain admits.
  *
+ * An invitation matches the sign-in's email or one of its
+ * `invitationEmails`: the other verified addresses a GitHub account carries
+ * (iam/github.ts). Those count for invitations only. The `emails` and
+ * `domains` lists read the sign-in's own email and nothing else (plans/75
+ * 4.8 rule 7), so a second address on a personal account never borrows a
+ * listed company domain.
+ *
  * No I/O, no clock unless passed in: the callback, the proxy route and the
  * tests all ask the same question the same way.
  */
@@ -33,6 +40,9 @@ export interface AdmissionIdentity {
   tid?: string;
   /** The existing account is disabled (console "disable" or SCIM deactivation). */
   disabled?: boolean;
+  /** Other verified addresses of the same sign-in, lowercased, matched
+   *  against the invitation only (GitHub's secondary addresses). */
+  invitationEmails?: string[];
 }
 
 /** The per-IdP part of the rule. */
@@ -99,7 +109,8 @@ export function decideAdmission(
 
   const email = lower(identity.email);
   const domain = emailDomain(email);
-  const invited = policy.invitations !== false && !!invitation && lower(invitation.email) === email && !!email
+  const addresses = new Set([email, ...(identity.invitationEmails ?? []).map(lower)].filter(Boolean));
+  const invited = policy.invitations !== false && !!invitation && addresses.has(lower(invitation.email))
     && !invitation.revokedAt
     && !(invitation.expiresAt && Date.parse(invitation.expiresAt) <= now);
   const listed = !!email && (policy.emails ?? []).some((e) => lower(e) === email);

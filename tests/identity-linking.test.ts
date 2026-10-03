@@ -537,6 +537,31 @@ test('an invitation for a newly linked address is accepted by the existing accou
   assert.equal(inv?.acceptedUserId, user.id);
 });
 
+test('linking a sign-in that proves an invited address accepts the invitation then, once (plans/75 A11)', async () => {
+  const { base, store, script } = await boot();
+  const ana = (await signIn(base, script, 'primary')).session as string;
+  const user = (await store.getUserBySub('g-1'))!;
+  await store.createInvitation({ id: 'inv_home', email: 'ana@home.test', groups: [], invitedBy: 'user:someone', createdAt: new Date().toISOString() });
+  script.github = { id: 910, login: 'ana-home', emails: [{ email: 'ana@home.test', primary: true, verified: true }] };
+  const linked = await linkWhileSignedIn(base, script, 'github', ana);
+  assert.equal(linked.done.status, 302);
+  assert.equal((await store.getInvitation('inv_home'))?.acceptedUserId, user.id, 'accepted when the link is made, not at a later sign-in');
+  const accepts = (await store.listAudit()).filter((e) => e.action === 'invite.accept');
+  assert.equal(accepts.length, 1);
+  assert.equal((accepts[0]!.payload as { via?: string }).via, 'link');
+  // The welcome reaches the account that linked.
+  assert.ok((await store.listMessages()).some((m) => m.id === 'msg_welcome_inv_home' && m.audience.users?.includes(user.id)));
+  // Signing in through the linked GitHub account later accepts nothing more.
+  await signIn(base, script, 'github');
+  assert.equal((await store.listAudit()).filter((e) => e.action === 'invite.accept').length, 1);
+
+  // An invitation this account wrote itself is never accepted by linking.
+  await store.createInvitation({ id: 'inv_mine', email: 'ana@side.test', groups: [], invitedBy: `user:${user.id}`, createdAt: new Date().toISOString() });
+  script.github = { id: 911, login: 'ana-side', emails: [{ email: 'ana@side.test', primary: true, verified: true }] };
+  await linkWhileSignedIn(base, script, 'github', ana);
+  assert.equal((await store.getInvitation('inv_mine'))?.acceptedAt, undefined);
+});
+
 // ── Postgres: the 0039 backfill on a seeded database ─────────────────────────
 
 const pgUrl = process.env.LW_TEST_DATABASE_URL;

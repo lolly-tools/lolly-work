@@ -342,7 +342,7 @@ test('admission by invitation end to end: invited, groups joined and created, ac
   const audit = await store.listAudit();
   const acceptRow = audit.find((e) => e.action === 'invite.accept');
   assert.equal(acceptRow?.subject, `invitation:${inv.id}`);
-  assert.deepEqual(acceptRow?.payload, { provider: 'oidc', idp: 'primary', email: 'bo@partner.example', groups: ['team'] });
+  assert.deepEqual(acceptRow?.payload, { via: 'sign-in', provider: 'oidc', idp: 'primary', email: 'bo@partner.example', groups: ['team'] });
   assert.equal((audit.findLast((e) => e.action === 'auth.login')?.payload as { admittedVia?: string }).admittedVia, 'invitation');
 
   // An owner removes Bo from the group; the next sign-in does not put it back.
@@ -379,7 +379,7 @@ test('an invitation written for an account that already existed is accepted but 
   assert.equal((await store.getInvitation('inv_mal'))?.acceptedUserId, row?.id, 'still recorded as accepted');
   assert.equal((await store.listLocalGroups()).length, 0, 'no group created');
   assert.deepEqual((await store.listAudit()).find((e) => e.action === 'invite.accept')?.payload,
-    { provider: 'oidc', idp: 'primary', email: 'mal@example.com', groups: ['admin'], groupsNotApplied: 'existing-account' });
+    { via: 'sign-in', provider: 'oidc', idp: 'primary', email: 'mal@example.com', groups: ['admin'], groupsNotApplied: 'existing-account' });
 });
 
 test('device sign-in asks admission again: a revoked invitation cannot be renewed from a live session', async () => {
@@ -488,7 +488,7 @@ test('admission by invitation through the reverse proxy', async () => {
   assert.equal(admitted.status, 302);
   assert.deepEqual((await store.getUserBySub('proxy:bo'))?.localGroups, ['team', 'brand']);
   assert.deepEqual((await store.listAudit()).find((e) => e.action === 'invite.accept')?.payload,
-    { provider: 'proxy', email: 'bo@partner.example', groups: ['team', 'brand'], createdGroups: ['team', 'brand'] });
+    { via: 'sign-in', provider: 'proxy', email: 'bo@partner.example', groups: ['team', 'brand'], createdGroups: ['team', 'brand'] });
 });
 
 // ── the CLI drives the same routes ───────────────────────────────────────────

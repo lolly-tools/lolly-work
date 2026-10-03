@@ -69,6 +69,11 @@ export function rateLimitSurface(method: string, pathname: string): Surface | nu
   // Email and password sign-in (plans/74): every guess and every use of a
   // sign-in link costs a token, on top of the per-account lockout.
   if (pathname === '/api/auth/password/login' || pathname === '/api/auth/password/set') return 'auth';
+  // Starting a sign-in from an invite page, and asking to join or to use
+  // another account (plans/74 invite spec R2, R3): unauthenticated form
+  // posts, so they share the bucket too. The invite page itself is under
+  // /l/ and rides the link bucket below.
+  if (pathname === '/api/auth/invite' || pathname === '/api/auth/request') return 'auth';
   // The instance manifest is unauthenticated by design (plans/34 wave 1a) - a
   // first-run shell probes it before anyone signs in - so it shares the auth
   // bucket rather than being free to hammer.

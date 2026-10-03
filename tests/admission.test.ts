@@ -75,6 +75,22 @@ test('invitations: an open one admits a verified email; expired, revoked, other-
   assert.deepEqual(decideAdmission(verified, {}, { emails: ['ana@example.com'] }, inv, NOW), { ok: true, via: 'invitation', emailVerified: true }, 'an invitation is reported first so its groups can apply');
 });
 
+test('invitationEmails: another verified address matches an invitation, never the lists or the domains (invite spec M5)', () => {
+  const personal = { email: 'sam.k@gmail.com', emailVerified: true, invitationEmails: ['sam@work.example'] };
+  // The invitation went to the work address the GitHub account also verified.
+  assert.deepEqual(decideAdmission(personal, {}, {}, { email: 'Sam@Work.example' }, NOW), { ok: true, via: 'invitation', emailVerified: true });
+  // Its end and its revocation still count.
+  assert.deepEqual(decideAdmission(personal, {}, {}, { email: 'sam@work.example', expiresAt: '2026-10-01T00:00:00Z' }, NOW), { ok: false, reason: 'not-invited' });
+  assert.deepEqual(decideAdmission(personal, {}, {}, { email: 'sam@work.example', revokedAt: '2026-10-01T00:00:00Z' }, NOW), { ok: false, reason: 'not-invited' });
+  // A listed domain or email reads the sign-in's own address only.
+  assert.deepEqual(decideAdmission(personal, {}, { domains: ['work.example'] }, null, NOW), { ok: false, reason: 'not-invited' });
+  assert.deepEqual(decideAdmission(personal, {}, { emails: ['sam@work.example'] }, null, NOW), { ok: false, reason: 'not-invited' });
+  // Invitations switched off: nothing matches through any address.
+  assert.deepEqual(decideAdmission(personal, {}, { invitations: false }, { email: 'sam@work.example' }, NOW), { ok: false, reason: 'not-invited' });
+  // An unverified primary is still refused before any list or invitation is read.
+  assert.deepEqual(decideAdmission({ ...personal, emailVerified: false }, {}, {}, { email: 'sam@work.example' }, NOW), { ok: false, reason: 'email-unverified' });
+});
+
 test('an unverified email gets the same refusal whether or not it is listed, so the lists cannot be probed', () => {
   const policy = { emails: ['ceo@corp.example'], domains: ['corp.example'] };
   const listed = decideAdmission({ email: 'ceo@corp.example', emailVerified: false }, {}, policy, null);
