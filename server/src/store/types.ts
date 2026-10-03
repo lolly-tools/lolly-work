@@ -135,11 +135,25 @@ export interface PasswordCredentialRecord {
   createdAt: string;
   /** When the hash last changed (set, reset or rehash). */
   updatedAt: string;
-  /** Wrong passwords since the last success or lock. */
+  /** Sign-in attempts since the last success or lock. An attempt is counted
+   *  before its password is checked (`reservePasswordAttempt`). */
   failedCount: number;
   /** Sign-in is refused until this instant. */
   lockedUntil?: string;
+  /** Whether the hash was set from a link an owner (or the operator, through
+   *  scripts/password-link.ts) issued. A password set from an admin's link
+   *  never signs anyone in as an owner. */
+  ownerIssued: boolean;
 }
+
+/** What `reservePasswordAttempt` found for an address. */
+export type PasswordAttempt =
+  | { status: 'none' }
+  /** Locked at that instant; nothing was counted. */
+  | { status: 'locked'; credential: PasswordCredentialRecord }
+  /** One attempt counted. `locks` is set when this attempt reached the limit
+   *  and locked the credential: if its password is wrong, that is the lockout. */
+  | { status: 'reserved'; credential: PasswordCredentialRecord; locks: boolean };
 
 /** A one-time link that sets a password (plans/74; migration 0042). Only the
  *  sha256 hex of the token is stored; the token itself is shown once. */
@@ -148,7 +162,7 @@ export interface PasswordLinkRecord {
   /** Lowercased. */
   email: string;
   purpose: 'setup' | 'reset';
-  /** 'user:<id>' who issued it. */
+  /** 'user:<id>' who issued it, or 'operator' for scripts/password-link.ts. */
   createdBy?: string;
   createdAt: string;
   expiresAt: string;
@@ -550,18 +564,33 @@ export interface Store extends RenderStore {
   getPasswordCredential(email: string): Promise<PasswordCredentialRecord | null>;
   /** Insert the credential for `rec.email`, or replace the hash of the one
    *  already there (keeping its id and createdAt). Either way the failure
-   *  count and any lock are cleared. Returns the row as stored. */
-  putPasswordCredential(rec: { id: string; email: string; hash: string; at: string }): Promise<PasswordCredentialRecord>;
-  /** Count one wrong password, in one atomic step. The failure that brings
-   *  the count to `maxFailures` locks the credential until `at + lockMs` and
-   *  starts the count again from zero. Returns the row as written, or null
-   *  when there is no credential for the email. */
-  recordPasswordFailure(email: string, at: string, opts: { maxFailures: number; lockMs: number }): Promise<PasswordCredentialRecord | null>;
-  /** Clear the failure count and any lock (a successful sign-in). */
+   *  count and any lock are cleared, and `ownerIssued` is set as given.
+   *  Returns the row as stored. */
+  putPasswordCredential(rec: { id: string; email: string; hash: string; at: string; ownerIssued: boolean }): Promise<PasswordCredentialRecord>;
+  /** Replace the hash only while it is still `oldHash` (a rehash after a
+   *  successful sign-in must not undo a reset made meanwhile). True when it
+   *  was replaced. */
+  rehashPasswordCredential(email: string, oldHash: string, newHash: string, at: string): Promise<boolean>;
+  /**
+   * Count one sign-in attempt BEFORE its password is checked, in one atomic
+   * step, so a burst of parallel guesses cannot all read "not locked". A
+   * locked credential (locked_until after `at`) is left as it is, so guesses
+   * during a lock neither count nor renew it. The attempt that brings the
+   * count to `maxFailures` locks the credential until `at + lockMs` and
+   * starts the count again from zero; that attempt is still checked. A
+   * success clears everything (`clearPasswordFailures`).
+   */
+  reservePasswordAttempt(email: string, at: string, opts: { maxFailures: number; lockMs: number }): Promise<PasswordAttempt>;
+  /** Clear the attempt count and any lock: a successful sign-in, or an admin's unlock. */
   clearPasswordFailures(email: string): Promise<void>;
+  /** Remove a credential by id, with the unused links for its email (removing
+   *  the sign-in, plans/74). Returns the removed row, or null. */
+  deletePasswordCredential(id: string): Promise<PasswordCredentialRecord | null>;
+  /** Remove the unused links for an email ("Disable access"). Returns how many went. */
+  revokePasswordLinks(email: string): Promise<number>;
   /** Store a new link. Earlier unused links for the same email are removed
-   *  in the same step, so only the newest one works; expired rows are
-   *  pruned on the way. */
+   *  in the same step, so only the newest one works, even when two are
+   *  issued at once; expired rows are pruned on the way. */
   createPasswordLink(rec: PasswordLinkRecord): Promise<void>;
   /** The link with this token hash when it is unused and unexpired at `at`, else null. */
   findLivePasswordLink(tokenHash: string, at: string): Promise<PasswordLinkRecord | null>;
@@ -672,7 +701,9 @@ export interface Store extends RenderStore {
   /** Atomic identity deletion + telemetry de-attribution. Referential blocks
    * leave BOTH untouched; callers must never imply shared content was erased.
    * The email's invitations, password credential and password links go with
-   * the account unless another account still carries that email. */
+   * the account unless another account still carries that email. The
+   * credentials the account's own password sign-ins name go with it
+   * whatever their address, with their addresses' unused links. */
   eraseUserAccount(id: string): Promise<{ status: 'erased'; scrubbed: number } | { status: 'referenced' } | { status: 'not-found' }>;
 
   // Device sign-in codes (plans/35 wave 5) - store-backed so any replica can

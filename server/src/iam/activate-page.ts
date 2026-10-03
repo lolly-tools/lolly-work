@@ -35,6 +35,9 @@ const SHELL_STYLE = `
   .err { border: 1px solid color-mix(in srgb, CanvasText 30%, transparent); border-radius: 8px; padding: 8px 12px; }
 `;
 
+/** An action link drawn as a button, 44px tall for a finger. */
+const LINK_STYLE = 'display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:9px 18px;border-radius:8px;border:1px solid color-mix(in srgb, CanvasText 30%, transparent);text-decoration:none';
+
 function page(instanceName: string, body: string, heading = 'Connect a device'): string {
   return `<!doctype html>
 <html lang="en">
@@ -90,8 +93,10 @@ ${known ? `<p class="muted">Asking: <span class="tag">${esc(opts.clientTag ?? 'u
  *  the OSS shell's gate and the console gate get multi-IdP with zero client
  *  changes - their one sign-in link simply arrives here first. */
 export function idpChooserHtml(instanceName: string, entries: Array<{ href: string; label: string }>): string {
+  // Full width of the card up to 20rem, padding included, so a 360px phone
+  // never scrolls sideways; 44px tall like every other action here.
   const buttons = entries.map((e) =>
-    `<p style="margin:.5rem 0"><a href="${esc(e.href)}" style="display:inline-flex;align-items:center;justify-content:center;min-width:16rem;padding:9px 18px;border-radius:8px;border:1px solid color-mix(in srgb, CanvasText 30%, transparent);text-decoration:none">${esc(e.label)}</a></p>`).join('\n');
+    `<p style="margin:.5rem 0"><a href="${esc(e.href)}" style="${LINK_STYLE};box-sizing:border-box;width:100%;max-width:20rem;text-align:center">${esc(e.label)}</a></p>`).join('\n');
   return page(instanceName, `
 <div class="card">
 <p>Choose where you sign in.</p>
@@ -147,8 +152,6 @@ ${opts.retryHref ? `<p style="margin-top:16px"><a href="${esc(opts.retryHref)}" 
 </div>`, opts.heading ?? 'Sign-in did not finish');
 }
 
-const LINK_STYLE = 'display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:9px 18px;border-radius:8px;border:1px solid color-mix(in srgb, CanvasText 30%, transparent);text-decoration:none';
-
 /** The email and password form (plans/74), served by /api/auth/login for a
  *  `kind: "password"` entry. Script-free like the rest of this file. `csrf`
  *  is the value the signed form cookie carries; `otherHref` leads back to
@@ -157,20 +160,23 @@ export function passwordLoginHtml(
   instanceName: string,
   opts: { returnTo: string; csrf: string; email?: string; error?: string; otherHref?: string },
 ): string {
+  // A role=alert that arrives with the page is not reliably read out, so the
+  // field that gets focus points at the error and says it is invalid.
+  const invalid = opts.error ? ' aria-invalid="true" aria-describedby="pw-err"' : '';
   return page(instanceName, `
 <div class="card">
-${opts.error ? `<p class="err" role="alert">${esc(opts.error)}</p>` : ''}
+${opts.error ? `<p class="err" role="alert" id="pw-err">${esc(opts.error)}</p>` : ''}
 <form method="post" action="/api/auth/password/login">
 <input type="hidden" name="csrf" value="${esc(opts.csrf)}">
 <input type="hidden" name="returnTo" value="${esc(opts.returnTo)}">
 <label class="field" for="pw-email">Email</label>
-<input class="field" id="pw-email" type="email" name="email" value="${esc(opts.email ?? '')}" autocomplete="username" required${opts.email ? '' : ' autofocus'}>
+<input class="field" id="pw-email" type="email" name="email" value="${esc(opts.email ?? '')}" autocomplete="username" required${opts.email ? '' : ` autofocus${invalid}`}>
 <label class="field" for="pw-password">Password</label>
-<input class="field" id="pw-password" type="password" name="password" autocomplete="current-password" required${opts.email ? ' autofocus' : ''}>
+<input class="field" id="pw-password" type="password" name="password" autocomplete="current-password" required${opts.email ? ` autofocus${invalid}` : ''}>
 <div class="row"><button class="primary" type="submit">Sign in</button></div>
 </form>
-<p class="muted" style="margin-top:16px">Forgot your password? Ask the person who invited you for a new sign-in link.</p>
-${opts.otherHref ? `<p><a href="${esc(opts.otherHref)}">Other ways to sign in</a></p>` : ''}
+<p class="muted" style="margin-top:16px">No password yet, or forgot it? Ask the person who invited you for a sign-in link.</p>
+${opts.otherHref ? `<p style="margin-top:16px"><a href="${esc(opts.otherHref)}" style="${LINK_STYLE}">Other ways to sign in</a></p>` : ''}
 </div>`, 'Sign in');
 }
 
@@ -181,20 +187,21 @@ export function passwordSetHtml(
   opts: { token: string; csrf: string; email: string; purpose: 'setup' | 'reset'; minLength: number; error?: string },
 ): string {
   const heading = opts.purpose === 'reset' ? 'Choose a new password' : 'Set your password';
+  const err = !!opts.error;
   return page(instanceName, `
 <div class="card">
-<p>${opts.purpose === 'reset' ? 'Choose a new password for this address. It replaces the old one.' : 'Choose a password for this address. You sign in with the two of them from now on.'}</p>
-${opts.error ? `<p class="err" role="alert">${esc(opts.error)}</p>` : ''}
+<p>${opts.purpose === 'reset' ? 'Choose a new password for this address. It replaces the old one.' : 'Choose a password. From now on you sign in with this email address and this password.'}</p>
+${err ? `<p class="err" role="alert" id="pw-err">${esc(opts.error!)}</p>` : ''}
 <form method="post" action="/api/auth/password/set">
 <input type="hidden" name="csrf" value="${esc(opts.csrf)}">
 <input type="hidden" name="token" value="${esc(opts.token)}">
 <label class="field" for="pw-email">Email</label>
 <input class="field" id="pw-email" type="email" name="email" value="${esc(opts.email)}" autocomplete="username" readonly>
 <label class="field" for="pw-new">New password</label>
-<input class="field" id="pw-new" type="password" name="password" autocomplete="new-password" minlength="${opts.minLength}" required autofocus aria-describedby="pw-hint">
+<input class="field" id="pw-new" type="password" name="password" autocomplete="new-password" minlength="${opts.minLength}" required autofocus${err ? ' aria-invalid="true" aria-describedby="pw-err pw-hint"' : ' aria-describedby="pw-hint"'}>
 <p class="muted" id="pw-hint">At least ${opts.minLength} characters. A few words you can remember work well.</p>
 <label class="field" for="pw-confirm">New password again</label>
-<input class="field" id="pw-confirm" type="password" name="confirm" autocomplete="new-password" minlength="${opts.minLength}" required>
+<input class="field" id="pw-confirm" type="password" name="confirm" autocomplete="new-password" minlength="${opts.minLength}" required${err ? ' aria-describedby="pw-err"' : ''}>
 <div class="row"><button class="primary" type="submit">Save password and sign in</button></div>
 </form>
 </div>`, heading);

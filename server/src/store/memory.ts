@@ -29,7 +29,7 @@ import type { DeliveryRecord } from '../delivery/types.ts';
 import { createMemoryRenderStore } from '../renders/memory.ts';
 import {
   SESSION_REVISION_LIMIT, effectiveGroups,
-  type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type LocalGroupRecord, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ScimTokenRecord, type UserIdentityRecord,
+  type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type LocalGroupRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ScimTokenRecord, type UserIdentityRecord,
   type SessionRecord, type SessionRevision, type Store, type SubmitQuotaRow, type UserRecord,
 } from './types.ts';
 
@@ -417,26 +417,48 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       const prev = passwordCredentials.get(email);
       const next: PasswordCredentialRecord = {
         id: prev?.id ?? rec.id, email, hash: rec.hash,
-        createdAt: prev?.createdAt ?? rec.at, updatedAt: rec.at, failedCount: 0,
+        createdAt: prev?.createdAt ?? rec.at, updatedAt: rec.at, failedCount: 0, ownerIssued: rec.ownerIssued,
       };
       passwordCredentials.set(email, next);
       return { ...next };
     },
-    async recordPasswordFailure(email, at, opts) {
+    async rehashPasswordCredential(email, oldHash, newHash, at) {
       const r = passwordCredentials.get(email.trim().toLowerCase());
-      if (!r) return null;
+      if (!r || r.hash !== oldHash) return false;
+      passwordCredentials.set(r.email, { ...r, hash: newHash, updatedAt: at });
+      return true;
+    },
+    async reservePasswordAttempt(email, at, opts): Promise<PasswordAttempt> {
+      const r = passwordCredentials.get(email.trim().toLowerCase());
+      if (!r) return { status: 'none' };
+      if (r.lockedUntil && Date.parse(r.lockedUntil) > Date.parse(at)) return { status: 'locked', credential: { ...r } };
+      const { lockedUntil: _expired, ...rest } = r;
       const count = r.failedCount + 1;
-      const next: PasswordCredentialRecord = count >= opts.maxFailures
-        ? { ...r, failedCount: 0, lockedUntil: new Date(Date.parse(at) + opts.lockMs).toISOString() }
-        : { ...r, failedCount: count };
+      const locks = count >= opts.maxFailures;
+      const next: PasswordCredentialRecord = locks
+        ? { ...rest, failedCount: 0, lockedUntil: new Date(Date.parse(at) + opts.lockMs).toISOString() }
+        : { ...rest, failedCount: count };
       passwordCredentials.set(r.email, next);
-      return { ...next };
+      return { status: 'reserved', credential: { ...next }, locks };
     },
     async clearPasswordFailures(email) {
       const r = passwordCredentials.get(email.trim().toLowerCase());
       if (!r || (!r.failedCount && !r.lockedUntil)) return;
       const { lockedUntil: _cleared, ...rest } = r;
       passwordCredentials.set(r.email, { ...rest, failedCount: 0 });
+    },
+    async deletePasswordCredential(id) {
+      const r = [...passwordCredentials.values()].find((c) => c.id === id);
+      if (!r) return null;
+      passwordCredentials.delete(r.email);
+      for (const [k, l] of passwordLinks) if (l.email === r.email && !l.usedAt) passwordLinks.delete(k);
+      return { ...r };
+    },
+    async revokePasswordLinks(email) {
+      const e = email.trim().toLowerCase();
+      let n = 0;
+      for (const [k, l] of passwordLinks) if (l.email === e && !l.usedAt) { passwordLinks.delete(k); n++; }
+      return n;
     },
     async createPasswordLink(rec) {
       const email = rec.email.trim().toLowerCase();
@@ -710,10 +732,18 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       for (const [invId, inv] of invitations) {
         if (inv.acceptedUserId === id || (!emailStillUsed && inv.email === email)) invitations.delete(invId);
       }
-      // A password for the address would sign the person straight back in.
-      if (!emailStillUsed) {
-        passwordCredentials.delete(email);
-        for (const [k, l] of passwordLinks) if (l.email === email) passwordLinks.delete(k);
+      // A password for the address would sign the person straight back in,
+      // and so would one the account's own password sign-ins name under
+      // another address.
+      const linkedEmails = new Set(!emailStillUsed ? [email] : []);
+      for (const r of identities.values()) {
+        if (r.userId !== id || !r.identitySub.startsWith('password:')) continue;
+        const cred = [...passwordCredentials.values()].find((c) => `password:${c.id}` === r.identitySub);
+        if (cred) linkedEmails.add(cred.email);
+      }
+      for (const e of linkedEmails) {
+        passwordCredentials.delete(e);
+        for (const [k, l] of passwordLinks) if (l.email === e) passwordLinks.delete(k);
       }
       for (const [k, m] of projectMembers) if (m.userId === id) projectMembers.delete(k);
       for (const [k, r] of identities) if (r.userId === id) identities.delete(k);

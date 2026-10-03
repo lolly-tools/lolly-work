@@ -31,6 +31,16 @@ const BOUNDS = { log2N: [10, 17], r: [1, 16], p: [1, 4], keyLen: [16, 64] } as c
 export const PASSWORD_MIN_LENGTH = 12;
 export const PASSWORD_MAX_LENGTH = 256;
 
+/** How long a one-time sign-in link works. */
+export const PASSWORD_LINK_TTL_MS = 7 * 86_400_000;
+/** `created_by` on a link written by scripts/password-link.ts. It stands
+ *  with an owner's authority. */
+export const OPERATOR_LINK_ISSUER = 'operator';
+/** The address a one-time sign-in link opens. */
+export function passwordSetUrl(baseUrl: string, token: string): string {
+  return `${baseUrl}/api/auth/password/set?token=${token}`;
+}
+
 /** The one form an email takes in credentials, links and lookups. */
 export function normaliseEmail(raw: string): string {
   return raw.trim().toLowerCase();

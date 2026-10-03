@@ -19,7 +19,11 @@ export function registerSetupRoutes(router: ReturnType<typeof createRouter>, dep
       store.listAuditBefore(Number.MAX_SAFE_INTEGER, 100, { actor: `user:${user.id}`, action: 'auth.login' }),
       store.listAuditBefore(Number.MAX_SAFE_INTEGER, 1, { subject: `user:${user.id}`, action: 'scim.user.create' }),
     ]);
-    const login = logins.findLast(event => ['oidc', 'proxy'].includes(String(event.payload?.provider)) && event.payload?.setupFingerprint === fingerprint());
+    // A real sign-in under the current identity settings: OIDC, the proxy,
+    // or email and password (plans/74), whose links a dev-login admin can
+    // issue during restricted evaluation, so a password-only instance has a
+    // way to its first real owner.
+    const login = logins.findLast(event => ['oidc', 'proxy', 'password'].includes(String(event.payload?.provider)) && event.payload?.setupFingerprint === fingerprint());
     return { id: user.id, sub: user.sub, email: user.email, role: user.role, groups: user.groups,
       idpGroups: user.idpGroups, localGroups: user.localGroups, active: !user.disabledAt,
       signIn: login ? { at: login.at, provider: login.payload?.provider, idp: login.payload?.idp ?? null } : null,

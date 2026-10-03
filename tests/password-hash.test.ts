@@ -4,7 +4,8 @@
  * here: the stored format and its parameters, a round trip, that a hash made
  * under weaker parameters still verifies and asks to be rehashed, that a
  * missing or malformed hash verifies as false (after a derivation), NFKC
- * normalisation, and the NIST-style rules counted in code points.
+ * normalisation, the NIST-style rules counted in code points, and the
+ * process-wide scrypt cap: two at once, 32 waiting, the rest turned away.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -14,6 +15,7 @@ import {
   PASSWORD_PARAMS, checkPasswordRules, hashPassword, isWeakerThanCurrent, normaliseEmail, parsePasswordHash,
   passwordRuleMessage, verifyPassword,
 } from '../server/src/iam/password.ts';
+import { ScryptBusyError, scryptQueueFull, withScryptSlot } from '../server/src/lib/crypto.ts';
 
 test('a hash is scrypt$15$8$1$salt$key and round-trips', async () => {
   const stored = await hashPassword('correct horse battery staple');
@@ -74,4 +76,27 @@ test('rules: 12 to 256 code points, not the email; no composition rules', () => 
   assert.equal(checkPasswordRules('long.name@example.com', ' Long.Name@Example.COM '), 'is-email');
   assert.match(passwordRuleMessage('too-short'), /at least 12 characters/);
   assert.equal(normaliseEmail('  Ana@Example.COM '), 'ana@example.com');
+});
+
+test('scrypt work runs two at a time, queues 32, and turns the rest away at once', async () => {
+  let running = 0;
+  let most = 0;
+  let open!: () => void;
+  const gate = new Promise<void>((r) => { open = r; });
+  const task = () => withScryptSlot(async () => {
+    running++;
+    most = Math.max(most, running);
+    await gate;
+    await new Promise((r) => setImmediate(r));
+    running--;
+  });
+  const queued = Array.from({ length: 34 }, task);
+  assert.equal(scryptQueueFull(), true);
+  await assert.rejects(task(), (e: unknown) => e instanceof ScryptBusyError && e.status === 503);
+  open();
+  await Promise.all(queued);
+  assert.equal(most, 2, 'a finishing task hands its slot on; nobody slips in beside it');
+  assert.equal(scryptQueueFull(), false);
+  // Free again: a newcomer is not turned away.
+  await withScryptSlot(async () => {});
 });

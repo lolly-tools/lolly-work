@@ -788,9 +788,11 @@ export function parseConfig(json: string): InstanceConfig {
       for (const k of ['issuer', 'clientId', 'clientSecretRef', 'groupsClaim', 'claimMap', 'hostedDomain', 'tenantId', 'scopes', 'authParams'] as const) {
         if (a[k] !== undefined && a[k] !== '') throw new Error(`idp.additional "${a.id}".${k} does not apply to kind password`);
       }
-      // The address is the one an admin issued the sign-in link for, so it
-      // counts as verified; "trusted" would add nothing and would turn off
-      // linking by email.
+      // The address is the one an admin issued the sign-in link for: it may
+      // join the one account that already proves it, but the password's own
+      // row is stored unverified, so it is never a join target itself
+      // (api/app.ts completeSignIn). "trusted" would add nothing and would
+      // turn off linking by email.
       if (a.emailVerification !== undefined && a.emailVerification !== 'claim') {
         throw new Error(`idp.additional "${a.id}" is kind password, whose emailVerification can only be "claim"`);
       }

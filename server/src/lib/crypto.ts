@@ -54,8 +54,29 @@ const SCRYPT_LOG2N = 16;
 const SCRYPT_R = 8;
 const SCRYPT_P = 1;
 const SCRYPT_CONCURRENCY = 2;
+/** How many derivations may wait for a slot. Past this a caller is turned
+ *  away at once (ScryptBusyError, a 503) instead of joining a queue that a
+ *  flood of guesses would otherwise grow without end, with every real
+ *  sign-in waiting behind it. At ~0.1 s a derivation, a full queue clears in
+ *  under two seconds. */
+const SCRYPT_MAX_WAITERS = 32;
 let scryptInflight = 0;
 const scryptWaiters: (() => void)[] = [];
+
+/** Thrown by withScryptSlot when the waiting queue is full. The dispatcher
+ *  answers it with 503 and Retry-After; the password forms say it in words. */
+export class ScryptBusyError extends Error {
+  readonly status = 503;
+  readonly code = 'BUSY';
+  constructor() {
+    super('too many password checks are running right now - try again in a moment');
+  }
+}
+
+/** Whether a new derivation would be turned away now. */
+export function scryptQueueFull(): boolean {
+  return scryptInflight >= SCRYPT_CONCURRENCY && scryptWaiters.length >= SCRYPT_MAX_WAITERS;
+}
 
 function scryptDerive(pw: string, salt: Buffer, log2N: number): Promise<Buffer> {
   const N = 2 ** log2N;
@@ -69,15 +90,22 @@ function scryptDerive(pw: string, salt: Buffer, log2N: number): Promise<Buffer> 
 
 /** Run one scrypt derivation inside the process-wide cap. Shared with sign-in
  *  passwords (iam/password.ts), so link guesses and sign-in guesses together
- *  never run more than SCRYPT_CONCURRENCY derivations at once. */
+ *  never run more than SCRYPT_CONCURRENCY derivations at once, and never
+ *  queue more than SCRYPT_MAX_WAITERS. A finishing derivation hands its slot
+ *  straight to the next waiter, so a newcomer cannot slip in between. */
 export async function withScryptSlot<T>(fn: () => Promise<T>): Promise<T> {
-  if (scryptInflight >= SCRYPT_CONCURRENCY) await new Promise<void>((r) => scryptWaiters.push(r));
-  scryptInflight++;
+  if (scryptInflight >= SCRYPT_CONCURRENCY) {
+    if (scryptWaiters.length >= SCRYPT_MAX_WAITERS) throw new ScryptBusyError();
+    await new Promise<void>((r) => scryptWaiters.push(r));
+  } else {
+    scryptInflight++;
+  }
   try {
     return await fn();
   } finally {
-    scryptInflight--;
-    scryptWaiters.shift()?.();
+    const next = scryptWaiters.shift();
+    if (next) next();
+    else scryptInflight--;
   }
 }
 

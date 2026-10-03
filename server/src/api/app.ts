@@ -15,7 +15,7 @@ import { Readable } from 'node:stream';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import { linkByEmailFor, linkKeys, passwordIdpOf, sessionKeys, type InstanceConfig, type Secrets } from '../config/instance.ts';
-import type { InvitationRecord, ProjectMemberRole, ProjectRecord, ProjectSessionStats, ScimTokenRecord, SessionRecord, SessionSummary, Store, UserRecord } from '../store/types.ts';
+import type { InvitationRecord, PasswordLinkRecord, ProjectMemberRole, ProjectRecord, ProjectSessionStats, ScimTokenRecord, SessionRecord, SessionSummary, Store, UserRecord } from '../store/types.ts';
 import type { RoomSnapshot } from '../collab/rooms.ts';
 import type { NearbyRegistry } from '../collab/nearby.ts';
 import { createRouter, readJson, readRaw, sendError, sendJson, type RouteCtx } from './router.ts';
@@ -34,8 +34,8 @@ import {
   passwordLoginHtml, passwordSetHtml, signInErrorHtml,
 } from '../iam/activate-page.ts';
 import {
-  PASSWORD_MIN_LENGTH, checkPasswordRules, hashPassword as hashSignInPassword, normaliseEmail, passwordRuleMessage,
-  verifyPassword as verifySignInPassword,
+  OPERATOR_LINK_ISSUER, PASSWORD_LINK_TTL_MS, PASSWORD_MIN_LENGTH, checkPasswordRules, hashPassword as hashSignInPassword, normaliseEmail,
+  passwordRuleMessage, passwordSetUrl, verifyPassword as verifySignInPassword,
 } from '../iam/password.ts';
 import { buildGitHubAuthorizeUrl, exchangeGitHubCode, fetchGitHubIdentity, GitHubSignInError } from '../iam/github.ts';
 import { bootstrapOwnerGroup, decideAdmission, emailIsVerified, type AdmissionDecision, type AdmissionIdentity, type AdmissionIdp } from '../iam/admission.ts';
@@ -142,7 +142,7 @@ import { CATALOG_INDEX_REL, CATALOG_SIG_REL, createCatalogSigning, servedToolInd
 import { isToolKeyedCatalogPath, servedToolSidecar } from '../catalog/tool-sidecars.ts';
 import type { ProvenanceDoc, ProvenanceIngredient } from '../render/provenance.ts';
 import type { Profile } from '../render/contract.ts';
-import { hashPassword, randomId, sameString, sealSecret, secretFingerprint, sha256Hex, verifyPassword } from '../lib/crypto.ts';
+import { ScryptBusyError, hashPassword, randomId, sameString, scryptQueueFull, sealSecret, secretFingerprint, sha256Hex, verifyPassword } from '../lib/crypto.ts';
 import { demoLandingHtml } from '../lib/demo-landing.ts';
 import { sanitizeEvent, summarize, type RawEvent } from '../telemetry/ingest.ts';
 import { targetedMessages, type Message } from '../inbox/target.ts';
@@ -572,14 +572,17 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // login link) reads this, so a new provider can never reach one and miss
   // another. Precedence: a real IdP, then the reverse proxy, then the dev
   // provider - the most accountable path wins when several are on. Email and
-  // password alone (no issuer) comes after the proxy: passwords an admin hands
-  // out vouch for less than the organisation's own directory does.
+  // password alone (no issuer) comes after the proxy, and after the dev
+  // provider too: passwords are set from links an admin issues, so on an
+  // instance still in restricted evaluation (dev on) the dev sign-in is the
+  // way to the first admin, and the console gate offers the password form
+  // beside it.
   const passwordIdp = passwordIdpOf(config);
   const authProvider = (): { provider: 'oidc' | 'proxy' | 'password' | 'dev' | null; providerName: string | null; loginPath: string | null } => {
     if (config.idp.issuer) return { provider: 'oidc', providerName: config.idp.displayName || null, loginPath: '/api/auth/login' };
     if (config.proxyAuth.enabled) return { provider: 'proxy', providerName: config.proxyAuth.displayName, loginPath: '/api/auth/proxy' };
-    if (passwordIdp) return { provider: 'password', providerName: passwordIdp.displayName, loginPath: '/api/auth/login' };
     if (config.dev.enabled) return { provider: 'dev', providerName: null, loginPath: '/api/auth/dev' };
+    if (passwordIdp) return { provider: 'password', providerName: passwordIdp.displayName, loginPath: '/api/auth/login' };
     return { provider: null, providerName: null, loginPath: null };
   };
 
@@ -897,23 +900,33 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     return !!box && typeof box.n === 'string' && !!submitted && sameString(box.n, submitted);
   };
   const clearFormCookie = `${FORM_COOKIE}=; Path=/api/auth; HttpOnly; SameSite=Strict; Max-Age=0`;
-  /** Script-free like the chooser, but posts a form: form-action 'self'. The
-   *  set-password page carries a token in its URL, so nothing is cached and
-   *  no Referer leaves the page. */
+  /**
+   * Script-free like the chooser, but posts a form: form-action 'self'. The
+   * set-password page carries a token in its URL, so nothing is cached.
+   *
+   * Referrer-Policy is `strict-origin`, not `no-referrer`: a browser sends
+   * `Origin: null` on a form post from a no-referrer page (Fetch, "append a
+   * request Origin header"), and the dispatch-wide CSRF check (iam/csrf.ts)
+   * refuses an opaque origin on any post that carries a cookie, as these do.
+   * strict-origin keeps the real Origin on the https post and still never
+   * puts the page's path, and so a link's token, in a Referer. The answers
+   * that carry no form (the dead-link page, the 303) keep no-referrer.
+   */
   const passwordPageHeaders = {
     'content-type': 'text/html; charset=utf-8',
     'cache-control': 'no-store',
     'x-content-type-options': 'nosniff',
-    'referrer-policy': 'no-referrer',
+    'referrer-policy': 'strict-origin',
     'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
   };
   const passwordLoginHref = (returnTo: string): string =>
     `/api/auth/login?${passwordIdp && idpProviders().length > 1 ? `idp=${encodeURIComponent(passwordIdp.id)}&` : ''}returnTo=${encodeURIComponent(returnTo)}`;
   const renderPasswordLogin = (
     req: IncomingMessage, res: ServerResponse, status: number, opts: { returnTo: string; email?: string; error?: string },
+    extraHeaders: Record<string, string> = {},
   ): void => {
     const { nonce, cookie } = formToken(req);
-    res.writeHead(status, { ...passwordPageHeaders, 'set-cookie': cookie });
+    res.writeHead(status, { ...passwordPageHeaders, ...extraHeaders, 'set-cookie': cookie });
     res.end(passwordLoginHtml(config.instance.name, {
       returnTo: opts.returnTo, csrf: nonce,
       ...(opts.email ? { email: opts.email } : {}), ...(opts.error ? { error: opts.error } : {}),
@@ -996,17 +1009,22 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // to link to. The account picker is asked for by default, since the
   // browser is often still signed in to the account already linked.
   router.add('GET', '/api/auth/link', async (req, res, ctx) => {
+    const wanted = ctx.url.searchParams.get('idp');
+    // A password sign-in starts from a link an admin issues, never from here.
+    // A profile that draws a "Link" button for every provider in
+    // /api/auth/config (the OSS shell does) sends people here, so the answer
+    // is a page a person can read, with the way back, not JSON.
+    if (passwordIdp && wanted === passwordIdp.id) {
+      return signInFailed(req, res, 400, 'NOT_LINKABLE',
+        `${passwordIdp.displayName} is not added from here. An admin or owner of this workspace issues a one-time sign-in link that sets a password for your address. Ask one of them for a sign-in link.`,
+        { retryHref: returnToSafe(ctx.url.searchParams.get('returnTo')), html: true, heading: 'Sign-in not added', retryLabel: 'Back' });
+    }
     if (!config.idp.issuer) return sendError(res, 404, 'NO_IDP', 'no OIDC issuer configured');
     const me = await memberOf(req);
     if (!me) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
-    const wanted = ctx.url.searchParams.get('idp');
     if (!wanted) return sendError(res, 400, 'INVALID_INPUT', 'idp is required: name the sign-in to add', { field: 'idp' });
     const idp = resolveIdp(wanted);
-    if (!idp) return sendError(res, 404, 'NO_IDP', `no IdP named "${wanted}" is configured`);
-    // A password sign-in starts from a link an admin issues, never from here.
-    if (idp.kind === 'password') {
-      return sendError(res, 400, 'NOT_LINKABLE', 'an email and password sign-in is added from a sign-in link an admin issues', { field: 'idp' });
-    }
+    if (!idp || idp.kind === 'password') return sendError(res, 404, 'NO_IDP', `no IdP named "${wanted}" is configured`);
     await redirectToIdp(res, idp, returnToSafe(ctx.url.searchParams.get('returnTo')),
       loginPrompt(ctx.url.searchParams.get('prompt')) ?? 'select_account', me.id);
   });
@@ -1158,9 +1176,16 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
    * minted session for the account. On a refusal the refusal is sent and
    * the answer is null; otherwise the caller sends `cookie` with its own
    * response (a redirect, or JSON for an API caller).
+   *
+   * A password sign-in may join the one account that already proves its
+   * address, like any sign-in, but its own identity row is stored as
+   * unverified: the address is one an admin typed, not one a mailbox
+   * proved, so a later sign-in through another provider never joins an
+   * account by it. `ownerAllowed: false` (a password not set from an owner's
+   * link) refuses the session when the account it reaches is an owner's.
    */
   const completeSignIn = async (
-    res: ServerResponse, idp: ResolvedIdp, identity: MappedIdentity, opts: { switchHref: string; json?: boolean },
+    res: ServerResponse, idp: ResolvedIdp, identity: MappedIdentity, opts: { switchHref: string; json?: boolean; ownerAllowed?: boolean },
   ): Promise<{ user: UserRecord; cookie: string } | null> => {
     const provider = providerOf(idp);
     const verifiedForLinking = linkableEmail(identity, idp);
@@ -1176,13 +1201,39 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const { emailVerified: _verified, hd: _hd, tid: _tid, ...profile } = identity;
     const ownerGroup = bootstrapOwnerGroup(admitted, identity.email, config.idp.bootstrapOwners, config.idp.roleGroups.owner);
     if (ownerGroup && !profile.groups.includes(ownerGroup)) profile.groups = [...profile.groups, ownerGroup];
+    /** The refusal for a password that may not open an owner's account. */
+    const refuseOwnerSession = async (): Promise<null> => {
+      await audit('anonymous', 'auth.denied', 'session', {
+        provider, idp: idp.id, reason: 'owner-link-required', email: identity.email.trim().toLowerCase(),
+      });
+      const message = 'This account is an owner of this workspace. An owner signs in with a password only when another owner issued the link that set it. Ask an owner for a new sign-in link.';
+      if (opts.json) {
+        sendError(res, 403, 'OWNER_LINK_REQUIRED', message);
+      } else {
+        res.writeHead(403, {
+          'content-type': 'text/html; charset=utf-8', 'cache-control': 'private, no-store', 'x-content-type-options': 'nosniff',
+          'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+        });
+        res.end(signInErrorHtml(config.instance.name, { message, retryHref: '', heading: 'Ask an owner for a new sign-in link' }));
+      }
+      return null;
+    };
+    // Before any write when it is already plain (an owner's account, a
+    // bootstrap owner); again below on the account as it then stands.
+    if (opts.ownerAllowed === false && ((resolution.via !== 'new' && resolution.user.role === 'owner') || ownerGroup)) {
+      return refuseOwnerSession();
+    }
     const upserted = await recordSignIn({
-      resolution, sub: identity.sub, idp: idp.id, email: identity.email, emailVerified: verifiedForLinking,
+      resolution, sub: identity.sub, idp: idp.id, email: identity.email,
+      emailVerified: idp.kind === 'password' ? false : verifiedForLinking,
       profile: { ...profile, role: roleFromGroups(profile.groups, config.idp.roleGroups) },
       provider,
     });
     // The row exists now, so an invitation's groups can be joined to it.
     const user = await acceptInvitationAtSignIn(upserted, admitted, { provider, idp: idp.id });
+    // Whatever else made the account an owner meanwhile (an invitation's
+    // groups) is caught here, before a session exists.
+    if (opts.ownerAllowed === false && user.role === 'owner') return refuseOwnerSession();
     const sessionUser: SessionUser = {
       sub: user.sub, email: user.email, groups: user.groups, role: user.role,
       name: displayName(user), epoch: user.sessionEpoch,
@@ -1385,11 +1436,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // like every other, so admission, linking by email, invitations and
   // "Disable access" apply unchanged. Every route rides the auth rate-limit
   // bucket; on top of it a credential locks for PASSWORD_LOCK_MS after
-  // PASSWORD_MAX_FAILURES wrong passwords in a row. A password, its hash and a
-  // link token are never logged or audited.
+  // PASSWORD_MAX_FAILURES attempts in a row without a success, each counted
+  // before its password is checked. A password, its hash and a link token
+  // are never logged or audited.
   const PASSWORD_MAX_FAILURES = 10;
   const PASSWORD_LOCK_MS = 15 * 60 * 1000;
-  const PASSWORD_LINK_TTL_MS = 7 * 86_400_000;
   const PASSWORD_BODY_MAX = 8 * 1024;
   /** The one answer for an unknown email, a wrong password and a locked
    *  credential, so the form says nothing about which accounts exist. */
@@ -1419,6 +1470,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     res.end();
   };
 
+  /** The busy answer while too many password checks are waiting (lib/crypto.ts). */
+  const BUSY_MESSAGE = 'Too many people are signing in right now. Wait a moment, then try again.';
+
   router.add('POST', '/api/auth/password/login', async (req, res) => {
     const idp = passwordSignIn();
     if (!idp) return sendError(res, 404, 'NO_IDP', 'email and password sign-in is not configured');
@@ -1428,68 +1482,168 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const email = normaliseEmail(body.get('email'));
     const password = body.get('password');
     const returnTo = returnToSafe(body.get('returnTo') || null);
-    const fail = (status: number, code: string, message: string): void => (json
-      ? sendError(res, status, code, message)
-      : renderPasswordLogin(req, res, status, { returnTo, ...(email ? { email } : {}), error: message }));
+    const fail = (status: number, code: string, message: string, headers: Record<string, string> = {}): void => {
+      if (!json) return renderPasswordLogin(req, res, status, { returnTo, ...(email ? { email } : {}), error: message }, headers);
+      for (const [k, v] of Object.entries(headers)) res.setHeader(k, v);
+      sendError(res, status, code, message);
+    };
     // A JSON body needs a preflight from another origin, which this server
     // never grants, so only the form needs the double-submit token.
     if (!json && !formTokenOk(req, body.get('csrf'))) {
       return fail(403, 'FORM_EXPIRED', 'This form expired. Enter your email and password again.');
     }
     if (!email || !password) return fail(400, 'INVALID_INPUT', 'Enter your email and password.');
-    const cred = await store.getPasswordCredential(email);
-    const locked = !!cred?.lockedUntil && Date.parse(cred.lockedUntil) > Date.now();
-    // Always one derivation, against a stand-in when there is no credential,
-    // so the time taken does not say whether the address has one.
-    const check = await verifySignInPassword(password, cred?.hash ?? null);
-    if (!cred || locked || !check.ok) {
-      const at = new Date().toISOString();
-      // Counted for an unknown address too (the update then matches no row),
-      // so both answers cost the same database round trips. Guesses during a
-      // lock count as well: ten more renew it.
-      const after = await store.recordPasswordFailure(email, at, { maxFailures: PASSWORD_MAX_FAILURES, lockMs: PASSWORD_LOCK_MS });
-      if (after?.lockedUntil && after.failedCount === 0 && Date.parse(after.lockedUntil) > Date.parse(at)) {
-        await audit('anonymous', 'auth.password.locked', 'session', { provider: 'password', idp: idp.id, email: after.email, until: after.lockedUntil });
+    // Turned away before anything is counted, so a flood of guesses cannot
+    // spend a real person's attempts while they wait.
+    if (scryptQueueFull()) return fail(503, 'BUSY', BUSY_MESSAGE, { 'retry-after': '2' });
+    // The attempt is counted BEFORE the password is checked, in one atomic
+    // step: a burst of parallel guesses then gets at most PASSWORD_MAX_FAILURES
+    // real checks before the lock, however many arrive at once.
+    const attempt = await store.reservePasswordAttempt(email, new Date().toISOString(), { maxFailures: PASSWORD_MAX_FAILURES, lockMs: PASSWORD_LOCK_MS });
+    const cred = attempt.status === 'reserved' ? attempt.credential : null;
+    // Always one derivation, against a stand-in when there is no credential
+    // or it is locked, so the time taken says neither.
+    let check: { ok: boolean; needsRehash: boolean };
+    try {
+      check = await verifySignInPassword(password, cred?.hash ?? null);
+    } catch (err) {
+      if (err instanceof ScryptBusyError) return fail(503, 'BUSY', BUSY_MESSAGE, { 'retry-after': '2' });
+      throw err;
+    }
+    if (!cred || !check.ok) {
+      if (attempt.status === 'reserved' && attempt.locks) {
+        await audit('anonymous', 'auth.password.locked', 'session', {
+          provider: 'password', idp: idp.id, email: attempt.credential.email, until: attempt.credential.lockedUntil,
+        });
       }
       // An address with no credential is recorded by hash only: anyone can
       // type anything here, and the audit chain is no place for it.
       await audit('anonymous', 'auth.password.fail', 'session', {
-        provider: 'password', idp: idp.id, reason: !cred ? 'unknown-email' : locked ? 'locked' : 'wrong-password',
-        ...(cred ? { email: cred.email } : { emailHash: sha256Hex(email).slice(0, 16) }),
+        provider: 'password', idp: idp.id,
+        reason: attempt.status === 'none' ? 'unknown-email' : attempt.status === 'locked' ? 'locked' : 'wrong-password',
+        ...(attempt.status !== 'none' ? { email: attempt.credential.email } : { emailHash: sha256Hex(email).slice(0, 16) }),
       });
       return fail(400, 'INVALID_CREDENTIALS', PASSWORD_MISMATCH);
     }
-    if (cred.failedCount || cred.lockedUntil) await store.clearPasswordFailures(cred.email);
+    // Cleared as it stands now, not from the row read above: a lock another
+    // attempt set meanwhile goes too, since this one had the password.
+    await store.clearPasswordFailures(cred.email);
     if (check.needsRehash) {
-      await store.putPasswordCredential({ id: cred.id, email: cred.email, hash: await hashSignInPassword(password), at: new Date().toISOString() });
+      try {
+        await store.rehashPasswordCredential(cred.email, cred.hash, await hashSignInPassword(password), new Date().toISOString());
+      } catch (err) {
+        if (!(err instanceof ScryptBusyError)) throw err; // the next sign-in rehashes instead
+      }
     }
     const identity: MappedIdentity = { sub: `${idp.subPrefix}${cred.id}`, email: cred.email, emailVerified: true, groups: [] };
-    const done = await completeSignIn(res, idp, identity, { switchHref: passwordLoginHref(returnTo), json });
+    const done = await completeSignIn(res, idp, identity, { switchHref: passwordLoginHref(returnTo), json, ownerAllowed: cred.ownerIssued });
     if (done) sendSignedIn(res, json, done.cookie, returnTo);
   });
+
+  /**
+   * Who stands behind a password link: the operator (scripts/password-link.ts,
+   * owner-level), or the person who issued it, asked again now rather than
+   * trusted from when they issued it. They must still be an enabled admin or
+   * owner who may invite people; otherwise null, and their links stop
+   * working, as an invitation's projects stop applying for an inviter who
+   * may no longer give them.
+   */
+  const passwordLinkIssuer = async (createdBy: string | undefined): Promise<'operator' | UserRecord | null> => {
+    if (createdBy === OPERATOR_LINK_ISSUER) return 'operator';
+    const id = createdBy?.startsWith('user:') ? createdBy.slice(5) : null;
+    const user = id ? await store.getUser(id) : null;
+    if (!user || user.disabledAt || !['admin', 'owner'].includes(user.role)) return null;
+    const ctx = { userId: user.id, groups: user.groups, role: user.role as Role };
+    return evaluate(ctx, 'user.invite', ['*'], await store.listGrants()) ? user : null;
+  };
+  /**
+   * Why a password link for `email` may not be issued, or used, on
+   * `issuer`'s authority; null when it may. Asked when the link is issued
+   * and again when it is opened and used, so what changed in the seven days
+   * between (a promotion, a disabled account, a sign-in made meanwhile)
+   * counts. Whoever holds the link can sign in as the address, so:
+   *  - never for a disabled account;
+   *  - an address that leads to an owner (an owner's account, a bootstrap
+   *    owner, a pending invitation into an owner group) is owner-only;
+   *  - adding a password to an account that signs in some other way hands
+   *    the link holder that account, so it is owner-only too, unless the
+   *    account is the issuer's own;
+   *  - the sign-in must be one admission lets in now.
+   */
+  const passwordLinkRefusal = async (
+    email: string, issuer: 'operator' | UserRecord,
+  ): Promise<{ status: number; code: string; message: string } | null> => {
+    const asOwner = issuer === 'operator' || issuer.role === 'owner';
+    const [claimed, verified, invitation, cred] = await Promise.all([
+      store.findUsersByEmail(email), store.findUsersByVerifiedEmail(email), store.findActiveInvitation(email), store.getPasswordCredential(email),
+    ]);
+    // The account the address's password already reaches, whatever its own email.
+    const reached = cred ? await store.getUserByIdentity(`password:${cred.id}`) : null;
+    const accounts = [...new Map([...claimed, ...verified, ...(reached ? [reached] : [])].map((u) => [u.id, u])).values()];
+    if (accounts.some((u) => u.disabledAt)) {
+      return { status: 409, code: 'ACCOUNT_DISABLED', message: 'this address belongs to a disabled account; re-enable it first' };
+    }
+    const pendingInvitation = invitation && !invitation.acceptedAt && !invitation.revokedAt ? invitation : null;
+    const leadsToOwner = accounts.some((u) => u.role === 'owner')
+      || config.idp.bootstrapOwners.some((o) => o.trim().toLowerCase() === email)
+      || (!!pendingInvitation && roleFromGroups(pendingInvitation.groups, config.idp.roleGroups) === 'owner');
+    if (leadsToOwner && !asOwner) {
+      return { status: 403, code: 'OWNER_ONLY', message: 'only an owner can issue a sign-in link for an owner' };
+    }
+    if (!asOwner) {
+      for (const u of accounts) {
+        if (u.id === issuer.id) continue; // a password for the issuer's own account
+        const rows = await store.listIdentities(u.id);
+        if (!rows.some((r) => r.identitySub.startsWith('password:') && r.email === email)) {
+          return { status: 403, code: 'OWNER_ONLY', message: 'this address belongs to someone who already signs in another way; only an owner can add a password to their account' };
+        }
+      }
+    }
+    const { disabled, invitationView } = await admissionInputs('', email);
+    const decision = decideAdmission({ email, emailVerified: true, disabled }, { emailVerification: 'claim' }, config.idp.admission, invitationView);
+    if (!decision.ok) {
+      return { status: 409, code: 'NOT_ADMITTED', message: 'this address may not sign in here: invite it first, or add it or its domain to the sign-in rule' };
+    }
+    return null;
+  };
 
   /** A link token as the URL carries it: 32 random bytes, base64url. */
   const LINK_TOKEN = /^[A-Za-z0-9_-]{43}$/;
   const sendLinkDead = (res: ServerResponse): void => {
-    res.writeHead(410, passwordPageHeaders);
+    res.writeHead(410, { ...passwordPageHeaders, 'referrer-policy': 'no-referrer' });
     res.end(passwordLinkDeadHtml(config.instance.name, passwordLoginHref('/')));
   };
   const renderPasswordSet = (
     req: IncomingMessage, res: ServerResponse, status: number,
     opts: { token: string; email: string; purpose: 'setup' | 'reset'; error?: string },
+    extraHeaders: Record<string, string> = {},
   ): void => {
     const { nonce, cookie } = formToken(req);
-    res.writeHead(status, { ...passwordPageHeaders, 'set-cookie': cookie });
+    res.writeHead(status, { ...passwordPageHeaders, ...extraHeaders, 'set-cookie': cookie });
     res.end(passwordSetHtml(config.instance.name, { ...opts, csrf: nonce, minLength: PASSWORD_MIN_LENGTH }));
+  };
+  /** The live link a token names (null when there is none) and whether it
+   *  still stands on its issuer's authority (`refusal` says why not). */
+  const usablePasswordLink = async (tokenHash: string): Promise<
+    | { link: PasswordLinkRecord; refusal: string }
+    | { link: PasswordLinkRecord; refusal: null; issuer: 'operator' | UserRecord }
+    | null
+  > => {
+    const link = tokenHash ? await store.findLivePasswordLink(tokenHash, new Date().toISOString()) : null;
+    if (!link) return null;
+    const issuer = await passwordLinkIssuer(link.createdBy);
+    if (!issuer) return { link, refusal: 'issuer-unavailable' };
+    const refused = await passwordLinkRefusal(link.email, issuer);
+    return refused ? { link, refusal: refused.code } : { link, refusal: null, issuer };
   };
 
   // Opening a link only reads it; the POST below spends it.
   router.add('GET', '/api/auth/password/set', async (req, res, ctx) => {
     if (!passwordSignIn()) return sendError(res, 404, 'NO_IDP', 'email and password sign-in is not configured');
     const token = ctx.url.searchParams.get('token') ?? '';
-    const link = LINK_TOKEN.test(token) ? await store.findLivePasswordLink(sha256Hex(token), new Date().toISOString()) : null;
-    if (!link) return sendLinkDead(res);
-    renderPasswordSet(req, res, 200, { token, email: link.email, purpose: link.purpose });
+    const usable = await usablePasswordLink(LINK_TOKEN.test(token) ? sha256Hex(token) : '');
+    if (!usable || usable.refusal) return sendLinkDead(res);
+    renderPasswordSet(req, res, 200, { token, email: usable.link.email, purpose: usable.link.purpose });
   });
 
   router.add('POST', '/api/auth/password/set', async (req, res) => {
@@ -1499,9 +1653,16 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!body || body.json) return sendError(res, 415, 'UNSUPPORTED_MEDIA_TYPE', 'send the form');
     const token = body.get('token');
     const tokenHash = LINK_TOKEN.test(token) ? sha256Hex(token) : '';
-    const link = tokenHash ? await store.findLivePasswordLink(tokenHash, new Date().toISOString()) : null;
-    if (!link) return sendLinkDead(res);
-    const again = (status: number, error: string): void => renderPasswordSet(req, res, status, { token, email: link.email, purpose: link.purpose, error });
+    const usable = await usablePasswordLink(tokenHash);
+    if (!usable) return sendLinkDead(res);
+    if (usable.refusal !== null) {
+      // Recorded so an owner can see why a link they expected to work did not.
+      await audit('anonymous', 'auth.password.link.refused', 'session', { provider: 'password', idp: idp.id, email: usable.link.email, reason: usable.refusal });
+      return sendLinkDead(res);
+    }
+    const { link, issuer } = usable;
+    const again = (status: number, error: string, headers: Record<string, string> = {}): void =>
+      renderPasswordSet(req, res, status, { token, email: link.email, purpose: link.purpose, error }, headers);
     if (!formTokenOk(req, body.get('csrf'))) return again(403, 'This form expired. Enter your new password again.');
     // The rules are checked before the link is spent, so a typo does not cost
     // the person their link.
@@ -1509,18 +1670,31 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (password !== body.get('confirm')) return again(400, 'The two passwords do not match.');
     const rule = checkPasswordRules(password, link.email);
     if (rule) return again(400, passwordRuleMessage(rule));
-    const hash = await hashSignInPassword(password);
+    let hash: string;
+    try {
+      hash = await hashSignInPassword(password);
+    } catch (err) {
+      if (err instanceof ScryptBusyError) return again(503, BUSY_MESSAGE, { 'retry-after': '2' });
+      throw err;
+    }
     const at = new Date().toISOString();
     // Spent exactly once: of two racing posts, one gets the row back.
     const spent = await store.consumePasswordLink(tokenHash, at);
     if (!spent) return sendLinkDead(res);
     const existing = await store.getPasswordCredential(spent.email);
-    const cred = await store.putPasswordCredential({ id: existing?.id ?? `pwc_${randomId(12)}`, email: spent.email, hash, at });
+    // A new password ends what the old one opened: a reset usually means the
+    // old one got out. The account's sessions end before the new one is
+    // minted, so only this browser stays signed in.
+    const holder = existing ? await store.getUserByIdentity(`password:${existing.id}`) : null;
+    if (holder) await store.bumpSessionEpoch(holder.id);
+    const ownerIssued = issuer === 'operator' || issuer.role === 'owner';
+    const cred = await store.putPasswordCredential({ id: existing?.id ?? `pwc_${randomId(12)}`, email: spent.email, hash, at, ownerIssued });
     await audit('anonymous', 'auth.password.set', 'session', {
       provider: 'password', idp: idp.id, email: cred.email, purpose: spent.purpose, ...(spent.createdBy ? { issuedBy: spent.createdBy } : {}),
+      ...(holder ? { sessionsRevoked: true } : {}),
     });
     const identity: MappedIdentity = { sub: `${idp.subPrefix}${cred.id}`, email: cred.email, emailVerified: true, groups: [] };
-    const done = await completeSignIn(res, idp, identity, { switchHref: passwordLoginHref('/') });
+    const done = await completeSignIn(res, idp, identity, { switchHref: passwordLoginHref('/'), ownerAllowed: cred.ownerIssued });
     if (done) sendSignedIn(res, false, done.cookie, '/');
   });
 
@@ -1552,7 +1726,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     'content-type': 'text/html; charset=utf-8',
     'cache-control': 'private, no-store',
     'x-content-type-options': 'nosniff',
-    'referrer-policy': 'no-referrer',
+    // strict-origin, not no-referrer: the confirm form posts with the session
+    // cookie, and a form post from a no-referrer page carries `Origin: null`,
+    // which the dispatch-wide CSRF check refuses (see passwordPageHeaders).
+    'referrer-policy': 'strict-origin',
     // Script-free page, same posture as the bearer collection page - except
     // form-action 'self', so the confirm form can submit.
     'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
@@ -3143,7 +3320,13 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
     const updated = await store.setUserDisabled(target.id, body.disabled ? new Date().toISOString() : null);
     if (!updated) return sendError(res, 404, 'NOT_FOUND', 'no such user');
-    await audit(`user:${actor.id}`, body.disabled ? 'user.disable' : 'user.enable', `user:${updated.id}`);
+    // Outstanding password links for the person go too, so re-enabling them
+    // later does not bring an old link back to life.
+    let linksRevoked = 0;
+    if (body.disabled && passwordIdp) {
+      for (const email of await passwordEmailsOf(updated)) linksRevoked += await store.revokePasswordLinks(email);
+    }
+    await audit(`user:${actor.id}`, body.disabled ? 'user.disable' : 'user.enable', `user:${updated.id}`, linksRevoked ? { passwordLinksRevoked: linksRevoked } : undefined);
     sendJson(res, 200, userWire(updated));
   });
 
@@ -3169,6 +3352,22 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // anyone from the console. A sign-in is addressed by idp plus subjectHash
   // (iam/identities.ts), so a raw IdP subject never leaves the server. The
   // sign-in an account was created with, and the last one, stay.
+  /** The addresses a person's password could be under: the account's own,
+   *  and those of its password sign-ins. */
+  const passwordEmailsOf = async (user: UserRecord, rows?: Array<{ idp: string; email?: string }>): Promise<string[]> => {
+    const all = rows ?? await store.listIdentities(user.id);
+    return [...new Set([user.email, ...all.filter((r) => r.idp === passwordIdp?.id).map((r) => r.email ?? '')]
+      .map((e) => normaliseEmail(e)).filter(Boolean))];
+  };
+  /** The password this person signs in with (the first address that holds
+   *  one), or null. */
+  const heldPassword = async (user: UserRecord, rows: Array<{ idp: string; email?: string }>) => {
+    for (const e of await passwordEmailsOf(user, rows)) {
+      const cred = await store.getPasswordCredential(e);
+      if (cred) return cred;
+    }
+    return null;
+  };
   const identitiesOf = async (user: UserRecord) => {
     const all = await store.listIdentities(user.id);
     return { all, wire: all.map((r) => identityWire(r, user, all, idpLabel(r.idp))) };
@@ -3206,6 +3405,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     await audit(`user:${actor.id}`, 'identity.unlink', `user:${target.id}`, {
       by, idp: row.idp, ...(row.email ? { email: row.email } : {}), sessionsRevoked: true,
     });
+    // A password sign-in is its credential: removing the row alone would let
+    // the same password link straight back in by email on its next use.
+    if (row.identitySub.startsWith('password:')) {
+      const removed = await store.deletePasswordCredential(row.identitySub.slice('password:'.length));
+      if (removed) await audit(`user:${actor.id}`, 'auth.password.remove', `user:${target.id}`, { by, email: removed.email });
+    }
     return after;
   };
 
@@ -3240,15 +3445,33 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // With email and password sign-in on: whether this person has a password,
     // and the address a new sign-in link would be for (the one holding the
     // password, else the account's own).
-    let password: { set: boolean; email: string } | undefined;
+    let password: { set: boolean; email: string; lockedUntil?: string } | undefined;
     if (passwordIdp) {
-      const emails = [...new Set([target.email, ...all.filter((r) => r.idp === passwordIdp.id).map((r) => r.email ?? '')]
-        .map((e) => normaliseEmail(e)).filter(Boolean))];
-      let held: string | null = null;
-      for (const e of emails) if (!held && await store.getPasswordCredential(e)) held = e;
-      password = { set: !!held, email: held ?? normaliseEmail(target.email) };
+      const held = await heldPassword(target, all);
+      const lockedUntil = held?.lockedUntil && Date.parse(held.lockedUntil) > Date.now() ? held.lockedUntil : undefined;
+      password = { set: !!held, email: held?.email ?? normaliseEmail(target.email), ...(lockedUntil ? { lockedUntil } : {}) };
     }
     sendJson(res, 200, { identities: wire, ...(password ? { password } : {}) }, { 'cache-control': 'no-store' });
+  });
+
+  // Unlock a password that too many wrong guesses locked (plans/74). The
+  // same guard as disable: an owner's is owner-only. Anyone can lock an
+  // address by guessing at it, so this hands the person their way back
+  // without making them choose a new password.
+  router.add('POST', '/api/v1/users/:id/password/unlock', async (req, res, ctx) => {
+    const actor = await requireAction(req, res, 'grant.edit');
+    if (!actor) return;
+    if (!passwordIdp) return sendError(res, 404, 'NO_PASSWORD_SIGN_IN', 'email and password sign-in is not configured on this instance');
+    const target = await store.getUser(ctx.params.id as string);
+    if (!target) return sendError(res, 404, 'NOT_FOUND', 'no such user');
+    if (target.role === 'owner' && actor.role !== 'owner') {
+      return sendError(res, 403, 'OWNER_ONLY', "only an owner can unlock an owner's password");
+    }
+    const held = await heldPassword(target, await store.listIdentities(target.id));
+    if (!held) return sendError(res, 404, 'NO_PASSWORD', 'this person has no password');
+    await store.clearPasswordFailures(held.email);
+    await audit(`user:${actor.id}`, 'auth.password.unlock', `user:${target.id}`, { email: held.email });
+    res.writeHead(204); res.end();
   });
 
   // The same guard as disable: an owner's sign-ins are owner-only to change.
@@ -3520,9 +3743,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // link opens GET /api/auth/password/set. Whoever holds it can set the
   // password for the address and so sign in as that address, which is why
   // this takes a person's session (never a service token), the admin role
-  // and `user.invite`, and why an address that leads to an owner (an owner's
-  // account, a bootstrap owner, a pending invitation into an owner group) is
-  // owner-only, like disabling an owner.
+  // and `user.invite`, and why `passwordLinkRefusal` keeps an address that
+  // leads to an owner, or to an account that signs in some other way,
+  // owner-only. The same rules are asked again when the link is used.
   router.add('POST', '/api/v1/admin/password-links', async (req, res) => {
     const actor = await memberOf(req);
     if (!actor) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
@@ -3540,27 +3763,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (purpose !== 'setup' && purpose !== 'reset') {
       return sendError(res, 400, 'INVALID_INPUT', 'purpose must be "setup" or "reset"', { field: 'purpose' });
     }
-    const [claimed, verified, invitation] = await Promise.all([
-      store.findUsersByEmail(email), store.findUsersByVerifiedEmail(email), store.findActiveInvitation(email),
-    ]);
-    const accounts = [...new Map([...claimed, ...verified].map((u) => [u.id, u])).values()];
-    if (accounts.some((u) => u.disabledAt)) {
-      return sendError(res, 409, 'ACCOUNT_DISABLED', 'this address belongs to a disabled account; re-enable it first');
-    }
-    const pendingInvitation = invitation && !invitation.acceptedAt && !invitation.revokedAt ? invitation : null;
-    const leadsToOwner = accounts.some((u) => u.role === 'owner')
-      || config.idp.bootstrapOwners.some((o) => o.trim().toLowerCase() === email)
-      || (!!pendingInvitation && roleFromGroups(pendingInvitation.groups, config.idp.roleGroups) === 'owner');
-    if (leadsToOwner && actor.role !== 'owner') {
-      return sendError(res, 403, 'OWNER_ONLY', 'only an owner can issue a sign-in link for an owner');
-    }
-    // The sign-in this link leads to must be one admission lets in now: an
-    // open invitation, the admission lists, or an account they still admit.
-    const { disabled, invitationView } = await admissionInputs('', email);
-    const decision = decideAdmission({ email, emailVerified: true, disabled }, { emailVerification: 'claim' }, config.idp.admission, invitationView);
-    if (!decision.ok) {
-      return sendError(res, 409, 'NOT_ADMITTED', 'this address may not sign in here: invite it first, or add it or its domain to the sign-in rule', { field: 'email' });
-    }
+    const refused = await passwordLinkRefusal(email, actor);
+    if (refused) return sendError(res, refused.status, refused.code, refused.message, refused.code === 'NOT_ADMITTED' ? { field: 'email' } : undefined);
     const token = randomId(32);
     const now = Date.now();
     const expiresAt = new Date(now + PASSWORD_LINK_TTL_MS).toISOString();
@@ -3568,7 +3772,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       tokenHash: sha256Hex(token), email, purpose, createdBy: `user:${actor.id}`, createdAt: new Date(now).toISOString(), expiresAt,
     });
     await audit(`user:${actor.id}`, 'auth.password.link.issue', 'session', { idp: passwordIdp.id, email, purpose });
-    sendJson(res, 201, { url: `${config.instance.baseUrl}/api/auth/password/set?token=${token}`, expiresAt }, { 'cache-control': 'no-store' });
+    sendJson(res, 201, { url: passwordSetUrl(config.instance.baseUrl, token), expiresAt }, { 'cache-control': 'no-store' });
   });
 
   router.add('GET', '/api/v1/messages', async (req, res) => {
@@ -8647,12 +8851,34 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // Rate-limit exposed request surfaces (auth, telemetry, links, automation).
     // Automation remains bounded even for authenticated callers; the console's
     // ordinary CRUD/API paths still never map to a bucket.
-    const surface = rateLimitSurface(req.method ?? 'GET', new URL(req.url ?? '/', 'http://local').pathname);
+    const reqUrl = new URL(req.url ?? '/', 'http://local');
+    const pathname = reqUrl.pathname;
+    const surface = rateLimitSurface(req.method ?? 'GET', pathname);
     if (surface) {
       const verdict = limiter.take(surface, clientIp(req, config.rateLimit.trustedProxyHops));
       if (!verdict.ok) {
         routeClass = `ratelimited:${surface}`;
         metrics.rateLimited(surface);
+        // The sign-in pages a person opens in a browser get a page, not JSON:
+        // testers behind one office address share the bucket.
+        if (surface === 'auth' && /^\/api\/auth\/(login|password\/)/.test(pathname) && /\btext\/html\b/.test(String(req.headers.accept ?? ''))) {
+          res.writeHead(429, {
+            'content-type': 'text/html; charset=utf-8', 'cache-control': 'private, no-store', 'x-content-type-options': 'nosniff',
+            'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+            'retry-after': String(verdict.retryAfterSec),
+          });
+          const isGet = (req.method ?? 'GET') === 'GET';
+          res.end(signInErrorHtml(config.instance.name, {
+            message: isGet
+              ? 'Too many sign-in attempts from your network. Wait a minute, then try again.'
+              : 'Too many sign-in attempts from your network. Wait a minute, then go back and send the form again.',
+            // A GET is safe to repeat as it was (a sign-in link keeps its token);
+            // a form post is not, so the way back is the browser's own.
+            retryHref: isGet ? `${pathname}${reqUrl.search}` : '',
+            heading: 'Too many sign-in attempts',
+          }));
+          return;
+        }
         res.writeHead(429, { 'content-type': 'application/json; charset=utf-8', 'retry-after': String(verdict.retryAfterSec) });
         res.end(JSON.stringify({ error: { code: 'RATE_LIMITED', message: 'too many requests — slow down' } }));
         return;
@@ -8670,6 +8896,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     } catch (err) {
       if ((err as Error).message === 'collab-active') {
         if (!res.headersSent) sendCollabActive(res);
+        return;
+      }
+      // Too many password checks waiting (lib/crypto.ts): try again shortly.
+      if (err instanceof ScryptBusyError) {
+        if (!res.headersSent) { res.setHeader('retry-after', '2'); sendError(res, 503, err.code, err.message); }
         return;
       }
       const status = (err as { status?: number }).status ?? 500;
