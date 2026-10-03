@@ -14,24 +14,32 @@ export class DurableAutomationRunner {
   private readonly leaseMs: number;
   private readonly width: number;
   private readonly onComplete?: (job: AutomationJobRecord) => Promise<void>;
+  private readonly onSettled?: () => void;
   private polling = false;
+  private pollAgain = false;
   private stopped = false;
   private readonly running = new Map<string, AbortController>();
-  constructor(store: Pick<Store, 'claimAutomationJob' | 'renewAutomationJob' | 'saveClaimedAutomationJob'>, blobs: BlobStore, executors: Record<string, DurableExecutor>, options: { leaseMs?: number; concurrency?: number; onComplete?: (job: AutomationJobRecord) => Promise<void> } = {}) {
+  constructor(store: Pick<Store, 'claimAutomationJob' | 'renewAutomationJob' | 'saveClaimedAutomationJob'>, blobs: BlobStore, executors: Record<string, DurableExecutor>, options: { leaseMs?: number; concurrency?: number; onComplete?: (job: AutomationJobRecord) => Promise<void>; /** Runs whenever a job frees its slot, however it ended (done, failed, requeued for a retry, lease lost). */ onSettled?: () => void } = {}) {
     this.store = store; this.blobs = blobs; this.executors = executors;
     this.leaseMs = Math.max(30, options.leaseMs ?? 120_000); this.width = Math.max(1, Math.min(16, options.concurrency ?? 4));
-    this.onComplete = options.onComplete;
+    this.onComplete = options.onComplete; this.onSettled = options.onSettled;
   }
   async poll(): Promise<void> {
-    if (this.polling || this.stopped) return;
+    if (this.stopped) return;
+    // A poll asked for during a pass runs again once it ends: that pass's claim
+    // may predate a job committed meanwhile, and without a timer nothing else looks.
+    if (this.polling) { this.pollAgain = true; return; }
     this.polling = true;
     try {
-      while (!this.stopped && this.running.size < this.width) {
-        const job = await this.store.claimAutomationJob(this.owner, Object.keys(this.executors), this.leaseMs);
-        if (!job) break;
-        const controller = new AbortController(); this.running.set(job.id, controller);
-        void this.run(job, controller).catch(() => { /* lease expires; another poll retries */ }).finally(() => { this.running.delete(job.id); });
-      }
+      do {
+        this.pollAgain = false;
+        while (!this.stopped && this.running.size < this.width) {
+          const job = await this.store.claimAutomationJob(this.owner, Object.keys(this.executors), this.leaseMs);
+          if (!job) break;
+          const controller = new AbortController(); this.running.set(job.id, controller);
+          void this.run(job, controller).catch(() => { /* lease expires; another poll retries */ }).finally(() => { this.running.delete(job.id); this.onSettled?.(); });
+        }
+      } while (this.pollAgain && !this.stopped);
     } finally { this.polling = false; }
   }
   stop(): void { this.stopped = true; for (const controller of this.running.values()) controller.abort(); }

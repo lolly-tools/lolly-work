@@ -950,7 +950,7 @@ async function viewOverview(main) {
       el('h2', { class: 'flush' }, 'Nothing here yet'),
       el('p', { class: 'sub' }, 'That is expected on a new deployment. Numbers fill in as people sign in and apps connect. To get going:'),
       el('ul', { class: 'zero-steps' },
-        el('li', {}, 'Invite people (they appear under ', el('a', { href: '#/users' }, 'People'), ' after first sign-in).'),
+        el('li', {}, 'Invite people from ', el('a', { href: '#/users' }, 'People'), ' (they appear in the directory after their first sign-in).'),
         el('li', {}, 'Confirm the mounted brand pack in ', el('a', { href: '#/instance?tab=design' }, 'This Deploy → Design system'), '.'),
         el('li', {}, 'Mint a time-boxed guest link under ', el('a', { href: '#/contractors' }, 'Contractors'), '. Every link this deployment mints, from here or from the apps, is tracked under ', el('a', { href: '#/links' }, 'Links'), '.'))));
   }
@@ -3334,7 +3334,18 @@ async function viewAudit(main, params) {
     before ? el('a', { href: href(0) }, '← Newest') : null,
     before && nextBefore ? ' · ' : null,
     nextBefore ? el('a', { href: href(nextBefore) }, 'Older events →') : null);
-  const strip = el('div', { class: 'chain', role: 'img', 'aria-label': `audit chain, ${total} events, ${chain.ok ? 'intact' : `broken at ${chain.badSeq}`}` },
+  // A retired-key boundary (server/src/audit/retire.ts): the older rows were
+  // MAC'd under a session secret since rotated away. The chain still links
+  // through them, so it reads intact and says how many and up to when.
+  const retiredNote = chain.retiredKeyRows
+    ? ` (${fmt(chain.retiredKeyRows)} ${chain.retiredKeyRows === 1 ? 'row' : 'rows'} signed with a retired key before ${new Date(chain.retiredBefore).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })})`
+    : '';
+  // Rows written before keyed signatures existed carry none. Only leading rows
+  // may (a later one without a signature breaks the chain), but say how many.
+  const unkeyedNote = chain.unkeyed
+    ? ` · ${fmt(chain.unkeyed)} early ${chain.unkeyed === 1 ? 'entry carries' : 'entries carry'} no signature`
+    : '';
+  const strip = el('div', { class: 'chain', role: 'img', 'aria-label': `audit chain, ${total} events, ${chain.ok ? `intact${retiredNote}${unkeyedNote}` : `broken at ${chain.badSeq}`}` },
     ...events.map((evt) => el('div', {
       class: `seg${chain.ok === false && evt.seq >= (chain.badSeq ?? 0) ? ' bad' : ''}`,
       onmousemove: (e) => showTip(e, `<div class="t-title">#${evt.seq} · ${when(evt.at)}</div><div>${evt.actor}</div><div><b>${evt.action}</b> → ${evt.subject}</div>`),
@@ -3351,7 +3362,7 @@ async function viewAudit(main, params) {
     ...(hdr ? [hdr] : []),
     el('div', { class: 'card' },
       el('div', { class: 'chain-badge' },
-        chain.ok ? el('span', { class: 'ok' }, '● Chain intact') : el('span', { class: 'broken' }, `● Chain broken at #${chain.badSeq}`),
+        chain.ok ? el('span', { class: 'ok' }, `● Chain intact${retiredNote}${unkeyedNote}`) : el('span', { class: 'broken' }, `● Chain broken at #${chain.badSeq}`),
         el('span', {}, ` · ${fmt(total)} events, ${before ? `${events.length} older than #${before}` : `latest ${events.length}`} shown`)),
       strip,
       pager,
@@ -3361,7 +3372,8 @@ async function viewAudit(main, params) {
         el('summary', {}, 'What “hash-chained” means'),
         el('p', { class: 'sub flush' }, 'Each entry is stamped with a cryptographic hash (a short fingerprint) computed from its own contents plus the hash of the entry before it. That links every entry to its predecessor, all the way back to a fixed genesis value — a chain.'),
         el('p', { class: 'sub flush' }, 'Because each hash folds in the one before it, changing, deleting, or reordering any past entry changes its hash, which breaks every hash after it. The badge above verifies the whole chain on load: “Chain intact” means no entry has been altered since it was written; “Chain broken at #N” pinpoints the first entry that no longer matches. The strip shows one block per event, oldest on the left — a broken segment turns red from the break onward.'),
-        el('p', { class: 'sub flush' }, 'One limit: hash-chaining detects edits within the log, but someone with direct database access could truncate the newest entries and re-chain. Recording the latest hash (the “head”) somewhere outside this deployment — via GET /api/v1/audit/head or `lw audit head` — closes that gap, because a truncated log won’t match the head you saved.')),
+        el('p', { class: 'sub flush' }, 'One limit: hash-chaining detects edits within the log, but someone with direct database access could truncate the newest entries and re-chain. Recording the latest hash (the “head”) somewhere outside this deployment — via GET /api/v1/audit/head or `lw audit head` — closes that gap, because a truncated log won’t match the head you saved.'),
+        el('p', { class: 'sub flush' }, 'Each entry also carries a keyed signature made with a key derived from the session secret. When that secret is rotated, entries signed under the old one can no longer be checked; an operator then records a retired-key entry, signed with the new key, that pins the hash of the last old entry. The badge then counts the older entries as signed with a retired key: their hashes are still checked, and every entry after the retired-key entry must carry a signature made with the current key. Entries written before signatures were switched on carry none, and the badge counts them; once one entry is signed, an unsigned entry after it breaks the chain.')),
       dataTable(
         [{ label: '#', num: true, w: '1%' }, { label: 'When', sort: 'date' }, 'Actor', 'Action', 'Subject', { label: 'Hash', sort: false }],
         events.slice().reverse().map((evt) => el('tr', {},
@@ -3405,6 +3417,163 @@ function searchSelect(options, { placeholder = 'Search…', value = '', strict =
     onchange(t);                     // free text (value === label, e.g. a group name)
   };
   return { node: el('span', { class: 'search-select' }, input, datalist), input, set: (v) => { input.value = v; } };
+}
+
+// ── invitations (plans/74 W-ID-2) ─────────────────────────────────────────────
+// "Invite people" on the People view: email addresses plus the local groups
+// each person joins at their first sign-in. Nothing is emailed from here, so
+// the card hands over the sign-in address to share. One active invitation per
+// address: inviting someone again keeps the invitation already there.
+const INVITE_EXPIRY_CHOICES = [
+  { value: '7', label: '7 days' },
+  { value: '30', label: '30 days' },
+  { value: '90', label: '90 days' },
+  { value: '', label: 'No expiry' },
+];
+const INVITE_STATUS_CLASS = { pending: 'review', accepted: 'live', expired: 'expired', revoked: 'revoked' };
+
+/** Split pasted text into addresses: commas, semicolons, spaces and new lines
+ *  all separate, and surrounding angle brackets or quotes are dropped. The
+ *  server checks what is left. */
+function parseInviteEmails(text) {
+  return [...new Set(String(text).split(/[\s,;]+/)
+    .map((s) => s.replace(/^[<"']+|[>"']+$/g, '').trim().toLowerCase())
+    .filter(Boolean))];
+}
+
+/** groupOptions: the groups this viewer may invite into, as names or
+ *  {name, source} rows, or null when the viewer may not attach groups at all
+ *  (attaching groups needs grant.edit, like editing a person's groups). An
+ *  owner is also offered IdP groups: on a provider that sends no groups the
+ *  owner group exists only as the first owner's IdP group, and inviting into
+ *  it is how a second owner joins. */
+async function invitationsSection(groupOptions) {
+  let data;
+  try { data = await api('/api/v1/invitations'); }
+  catch (e) { return el('div', { class: 'card' }, el('h2', {}, 'Invite people'), el('p', { class: 'form-err', role: 'status' }, e.message)); }
+  const signInUrl = data.signInUrl;
+  const listHost = el('div', { class: 'stack' });
+
+  // ── the form ──
+  const emailsInput = el('textarea', { rows: '3', autocomplete: 'off', spellcheck: 'false', placeholder: 'ana@example.com, bo@example.com' });
+  const canGroup = Array.isArray(groupOptions);
+  const groupBoxes = (groupOptions ?? []).map((g) => {
+    const name = typeof g === 'string' ? g : g.name;
+    const fromIdp = typeof g === 'object' && g.source === 'idp';
+    const cb = el('input', { type: 'checkbox', value: name });
+    return { name, cb, node: el('label', { class: 'chk' }, cb, el('span', {}, name),
+      ...(fromIdp ? [' ', el('span', { class: 'muted' }, '· from sign-in provider')] : [])) };
+  });
+  const expirySel = el('select', {}, ...INVITE_EXPIRY_CHOICES.map((c) => el('option', { value: c.value, ...(c.value === '30' ? { selected: 'selected' } : {}) }, c.label)));
+  const err = errSpan();
+  const result = el('div', { class: 'stack' });
+  const sendBtn = el('button', { class: 'primary' }, 'Invite');
+
+  const shareBlock = el('div', { class: 'card mint-out' },
+    el('div', { class: 'list-bar' },
+      el('span', {}, 'Sign-in address to share'),
+      copyButton(() => signInUrl)),
+    el('p', { class: 'mono url-line' }, signInUrl),
+    el('p', { class: 'sub flush' }, 'Send this address yourself, by chat or email. An invited person signs in with the same email address you entered here.'));
+
+  const admissionNote = !data.admission?.policy
+    ? el('p', { class: 'sub' }, 'This instance has no sign-in rule yet, so anyone your identity provider signs in is admitted. Invitations still add their groups at the first sign-in.')
+    : data.admission.invitations === false
+      ? el('p', { class: 'form-err', role: 'status' }, 'Invitations are switched off in this instance’s configuration (idp.admission.invitations is false), so an invitation does not let anyone sign in.')
+      : null;
+
+  const form = el('form', { class: 'card stack', onsubmit: async (e) => {
+    e.preventDefault();
+    err.textContent = '';
+    result.replaceChildren();
+    const emails = parseInviteEmails(emailsInput.value);
+    if (!emails.length) { err.textContent = 'Enter at least one email address.'; emailsInput.focus(); return; }
+    const days = expirySel.value ? Number(expirySel.value) : 0;
+    const body = {
+      emails,
+      groups: groupBoxes.filter((g) => g.cb.checked).map((g) => g.name),
+      ...(days ? { expiresAt: new Date(Date.now() + days * 86_400_000).toISOString() } : {}),
+    };
+    sendBtn.disabled = true;
+    try {
+      const r = await api('/api/v1/invitations', { method: 'POST', body });
+      const made = r.invitations.filter((i) => i.created).length;
+      const applied = r.invitations.filter((i) => i.status === 'applied').length;
+      const refused = r.invitations.filter((i) => i.status === 'refused');
+      const kept = r.invitations.length - made - applied - refused.length;
+      emailsInput.value = '';
+      result.replaceChildren(el('p', { class: 'sub flush' },
+        made ? `${made} ${made === 1 ? 'invitation' : 'invitations'} created.` : '',
+        applied ? ` ${applied} already had an account and joined the groups now.` : '',
+        kept ? ` ${kept} already had an invitation, which stays as it was.` : '',
+        refused.length ? ` Not changed: ${refused.map((i) => `${i.email} (${i.reason})`).join(', ')}.` : ''), shareBlock);
+      toast(made ? `Invited ${made} ${made === 1 ? 'person' : 'people'}` : 'Nothing new to invite');
+      refreshList();
+    } catch (e2) { err.textContent = e2.message; }
+    sendBtn.disabled = false;
+  } },
+    el('h2', {}, 'Invite people'),
+    el('p', { class: 'sub' }, 'Add the email addresses of the people who may sign in. Each person joins the groups you tick at their first sign-in. To change an invitation, revoke it and invite again.'),
+    admissionNote,
+    field('Email addresses', emailsInput),
+    el('div', { role: 'group', 'aria-labelledby': 'invite-groups-h' },
+      el('div', { class: 'gr-label', id: 'invite-groups-h' }, 'Groups ', el('span', { class: 'muted' }, '· joined at first sign-in')),
+      !canGroup
+        ? el('p', { class: 'muted' }, 'Inviting into groups needs permission to edit groups. An invitation without groups still lets the person sign in.')
+        : groupBoxes.length
+          ? el('div', { class: 'chk-list' }, ...groupBoxes.map((g) => g.node))
+          : el('p', { class: 'muted' }, 'No local groups yet. Open a person below and create one under Groups, or invite without groups.')),
+    el('div', { class: 'formrow' }, field('Expires after', expirySel)),
+    el('p', {}, sendBtn),
+    err,
+    result);
+
+  // ── the list ──
+  function invitationRow(inv) {
+    const rowErr = errSpan();
+    const revoke = inv.status === 'revoked'
+      ? null
+      : armConfirmButton({ class: 'danger' }, 'Revoke', 'Really revoke?', async (disarm) => {
+          rowErr.textContent = '';
+          revoke.disabled = true;
+          try {
+            await api(`/api/v1/invitations/${encodeURIComponent(inv.id)}`, { method: 'DELETE' });
+            toast(`Invitation for ${inv.email} revoked`);
+            refreshList();
+          } catch (e) { rowErr.textContent = e.message; revoke.disabled = false; disarm(); }
+        });
+    return el('tr', {},
+      el('td', { title: inv.email }, inv.email),
+      el('td', { title: inv.groups.join(', ') }, inv.groups.length ? inv.groups.join(', ') : el('span', { class: 'muted' }, 'none')),
+      el('td', { 'data-sort': inv.status }, el('span', { class: `status ${INVITE_STATUS_CLASS[inv.status] ?? ''}` }, inv.status)),
+      whenCell(inv.createdAt),
+      whenCell(inv.status === 'accepted' ? inv.acceptedAt : inv.expiresAt),
+      el('td', {}, revoke, rowErr));
+  }
+  function renderList(invitations) {
+    const live = invitations.filter((i) => i.status !== 'revoked');
+    const revoked = invitations.filter((i) => i.status === 'revoked');
+    const table = (rows) => dataTable(
+      ['Email', 'Groups', 'Status', { label: 'Invited', sort: 'date' }, { label: 'Expires or accepted', sort: 'date' }, { label: 'Actions', w: '1%', sort: false }],
+      rows.map(invitationRow), { sortable: true });
+    listHost.replaceChildren(el('div', { class: 'card stack' },
+      el('h2', { class: 'flush' }, 'Invitations'),
+      live.length
+        ? table(live)
+        : el('p', { class: 'empty' }, 'No open invitations. Invite someone above.'),
+      revoked.length
+        ? el('details', { class: 'ov-section' },
+            el('summary', {}, el('span', { class: 'detail-h section-h' }, `Revoked (${revoked.length})`)),
+            table(revoked))
+        : null,
+      el('p', { class: 'sub flush' }, 'Revoking a pending invitation stops it being used. Revoking an accepted one blocks that person’s next sign-in unless your sign-in rule lists their email or domain. It does not end a session that is already open: use Disable access on the person for that.')));
+  }
+  async function refreshList() {
+    try { renderList((await api('/api/v1/invitations')).invitations ?? []); }
+    catch { /* keep the current list on a transient error */ }
+  }
+  renderList(data.invitations ?? []);
+  return el('div', { class: 'stack' }, form, listHost);
 }
 
 async function viewUsers(main, params) {
@@ -3587,6 +3756,8 @@ async function viewUsers(main, params) {
   async function openDetail(initialU) {
     let u = initialU;
     let grants = [];
+    // Linked sign-ins (plans/74): null when the server predates them.
+    let identities = null;
     const opener = document.activeElement; // restore focus here on Close
     // Escape closes the sheet. Below 700px .detail-sheet is a fixed overlay and
     // Close scrolls off the top, so Escape is the only reliable dismissal.
@@ -3611,6 +3782,7 @@ async function viewUsers(main, params) {
     scrollIntoViewMotionSafe(detailHost);
     const tools = await loadTools();
     try { grants = (await api('/api/v1/grants')).grants ?? []; } catch { /* grant.edit may be absent */ }
+    try { identities = (await api(`/api/v1/users/${encodeURIComponent(u.id)}/identities`)).identities ?? []; } catch { identities = null; }
     renderDetail(true);
 
     function renderDetail(focusIn) {
@@ -3627,6 +3799,7 @@ async function viewUsers(main, params) {
           heading,
           el('button', { onclick: closeDetail }, 'Close')),
         identityBlock(),
+        ...(identities ? [section(`Sign-ins (${identities.length})`, signInsBlock(), identities.length > 1)] : []),
         section(`Groups (${(u.groups ?? []).length})`, groupsBlock()),
         section(`Individual tool access (${grants.filter((g) => g.principal === `user:${u.id}` && g.action === 'tool.use' && g.effect === 'allow').length})`, toolAccessBlock()),
         lockoutBlock()));
@@ -3642,6 +3815,41 @@ async function viewUsers(main, params) {
           cell('Role', el('span', { class: 'chip' }, u.role)),
           cell('Last seen', when(u.lastSeenAt))),
         el('p', { class: 'sub', style: 'margin:8px 0 0' }, `Name, email, title and role are managed by ${idpName()} — read-only here. Role is derived from group membership.`));
+    }
+
+    // One person, many sign-ins: each IdP account linked to this person, and
+    // a way to remove one. The sign-in the account was created with, and the
+    // last one, cannot be removed (the server says which in unlinkBlocked).
+    function signInsBlock() {
+      const err = errSpan();
+      const rows = identities.map((i) => {
+        let action;
+        if (i.canUnlink) {
+          action = armConfirmButton({ class: 'danger' }, 'Remove', 'Really remove?', async (disarm) => {
+            err.textContent = '';
+            action.disabled = true;
+            try {
+              await api(`/api/v1/users/${encodeURIComponent(u.id)}/identities/${encodeURIComponent(i.idp)}/${encodeURIComponent(i.subjectHash)}`, { method: 'DELETE' });
+              identities = identities.filter((x) => x !== i);
+              announce(`${i.displayName} sign-in removed`);
+              renderDetail();
+            } catch (e) { err.textContent = e.message; action.disabled = false; disarm(); }
+          });
+        } else {
+          action = el('span', { class: 'muted' }, i.unlinkBlocked === 'account' ? 'Created the account' : 'Only sign-in');
+        }
+        return el('tr', {},
+          el('td', {}, i.displayName),
+          el('td', {}, i.email ?? '—', i.email && !i.emailVerified ? el('span', { class: 'muted' }, ' (not verified)') : null),
+          el('td', {}, i.lastLoginAt ? when(i.lastLoginAt) : 'never'),
+          el('td', {}, action));
+      });
+      return el('div', { class: 'stack' },
+        el('p', { class: 'sub' }, 'The accounts this person signs in with. A new sign-in joins this person when its provider confirms the same email address, or when they add it from their own profile. Removing one stops it signing in as this person and signs this person out everywhere, so a session it opened ends too; if its provider confirms a matching email, its next sign-in can link it again.'),
+        identities.length
+          ? dataTable(['Provider', 'Email', 'Last sign-in', { label: 'Actions', w: '1%' }], rows)
+          : el('p', { class: 'empty' }, 'No sign-ins recorded yet. One appears after this person next signs in.'),
+        err);
     }
 
     function groupsBlock() {
@@ -3795,10 +4003,16 @@ async function viewUsers(main, params) {
     { key: 'a', label: 'Sign-ins', match: ['auth.login'] },
     { key: 'b', label: 'Account changes', match: ['user.', 'group.'] },
   ]);
+  // Invitations need user.invite (admin and owner by default, grantable).
+  // Groups need grant.edit too; only an owner is offered IdP groups.
+  const inviteGroups = !canAction('grant.edit') ? null
+    : allGroups.filter((g) => g.source === 'local' || session?.user?.role === 'owner').map((g) => ({ name: g.name, source: g.source }));
+  const invites = canAction('user.invite') ? await invitationsSection(inviteGroups) : null;
   main.replaceChildren(
     el('h1', {}, 'People'),
     el('p', { class: 'sub' }, `Everyone who has signed in — search, filter and sort across the directory. Open a person for their groups, individual tool access and instant lockout. Identity and role follow ${idpName()}; telemetry attribution is each person’s own opt-in choice.`),
     ...(hdr ? [hdr] : []),
+    ...(invites ? [invites] : []),
     filters,
     alphaBar,
     results,
@@ -3979,7 +4193,9 @@ async function viewProjects(main) {
 }
 
 async function renderProjectList(main) {
-  const { projects } = await api('/api/v1/projects');
+  // The list route hides archived projects unless asked; the console is where
+  // an archived project is found again, so it asks for everything.
+  const { projects } = await api('/api/v1/projects?archived=1');
   const err = errSpan();
   const form = el('form', { class: 'card', onsubmit: async (e) => {
     e.preventDefault();
@@ -4032,7 +4248,29 @@ async function renderProjectList(main) {
       holder.replaceChildren(sel, save, cancel);
     } }, 'Transfer');
     holder.append(btn);
-    return el('td', {}, holder, err);
+    return el('td', {}, el('div', { class: 'lc-actions' }, archiveControl(p, err), holder), err);
+  };
+
+  // Archive and restore. Every other project list hides an archived project,
+  // so this view is where one comes back. The server answers per row (owner or
+  // project.manage), like Transfer. Archiving arms first; restoring does not,
+  // since it only puts the project back in everyone's list.
+  const archiveControl = (p, err) => {
+    const patch = async (archived, btn, disarm) => {
+      err.textContent = '';
+      btn.disabled = true;
+      try {
+        await api(`/api/v1/projects/${encodeURIComponent(p.id)}`, { method: 'PATCH', body: { archived } });
+        toast(archived ? `${p.name} archived` : `${p.name} restored`);
+        await renderProjectList(main);
+      } catch (ex) { err.textContent = ex.message; btn.disabled = false; disarm?.(); }
+    };
+    if (p.archivedAt) {
+      const restore = el('button', { type: 'button', onclick: () => patch(false, restore) }, 'Restore');
+      return restore;
+    }
+    const archive = armConfirmButton({}, 'Archive', 'Really archive?', (disarm) => patch(true, archive, disarm));
+    return archive;
   };
 
   const rows = projects.map((p) => el('tr', {},
@@ -4117,6 +4355,21 @@ function multiEditPanel(main, projectId, projectName, toolIds) {
     result);
 }
 
+/** The toast after a multi-edit apply. Two kinds of skip need different next
+ *  steps: a session someone saved since the preview takes the change if you
+ *  apply again now, but one a live collaboration room holds (`reason:
+ *  'collab-active'`) is skipped again until that room closes. */
+function bulkApplyMessage(out) {
+  const skipped = out.skipped ?? [];
+  if (!skipped.length) return `Applied ${out.applied} session${out.applied === 1 ? '' : 's'}`;
+  const live = skipped.filter((s) => s.reason === 'collab-active').length;
+  const edited = skipped.length - live;
+  const parts = [];
+  if (edited) parts.push(`${edited} with concurrent edits (apply again to retry)`);
+  if (live) parts.push(`${live} open in a live collaboration room (apply again after ${live === 1 ? 'it closes' : 'they close'})`);
+  return `Applied ${out.applied}; skipped ${parts.join(' and ')}`;
+}
+
 function renderDiff(main, projectId, projectName, toolId, set, dry) {
   if (!dry.matched) return el('p', { class: 'empty' }, `No “${toolId}” sessions match.`);
   const keys = Object.keys(set);
@@ -4136,10 +4389,8 @@ function renderDiff(main, projectId, projectName, toolId, set, dry) {
     try {
       const out = await api('/api/v1/sessions/bulk', { method: 'POST', body: { filter: { projectId, toolId }, set } });
       // The apply is per-session CAS server-side: a session edited since the
-      // preview is skipped, not stomped — say so, and how to pick it up.
-      toast(out.skipped?.length
-        ? `Applied ${out.applied}; skipped ${out.skipped.length} with concurrent edits — re-run to retry`
-        : `Applied ${out.applied} session${out.applied === 1 ? '' : 's'}`);
+      // preview is skipped, not stomped. Say so, and how to pick it up.
+      toast(bulkApplyMessage(out));
       await renderProjectDetail(main, projectId, projectName);
     } catch (ex) { err.textContent = ex.message; applyBtn.disabled = false; disarm(); }
   });
@@ -4163,7 +4414,7 @@ const KNOWN_ACTIONS = [
   'link.create', 'link.create-guest', 'link.revoke',
   'approval.act', 'approval.assign', 'message.send',
   'telemetry.view', 'fleet.view', 'audit.export',
-  'policy.edit', 'grant.edit', 'instance.config',
+  'policy.edit', 'grant.edit', 'user.invite', 'instance.config',
 ];
 
 function grantRow(g) {

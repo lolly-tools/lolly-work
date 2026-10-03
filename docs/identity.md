@@ -69,6 +69,378 @@ house's subs are stored namespaced (`<id>:<sub>`), so two issuers handing out th
 bare sub can never collide into one row. The primary's subs stay raw: existing rows and
 the SCIM `externalId` linkage are untouched.
 
+## Who may sign in
+
+Completing a sign-in at the IdP proves who a person is. It does not say they belong here.
+`idp.admission` decides that, on every OIDC and reverse-proxy sign-in, after the
+`id_token` is verified and **before** a user row is written. A refused person gets a
+403 page and leaves only an `auth.denied` audit row.
+
+```json
+"idp": {
+  "issuer": "https://accounts.google.com", "clientId": "…", "displayName": "Google",
+  "hostedDomain": "example.com",
+  "admission": { "domains": ["example.com"], "invitations": true },
+  "bootstrapOwners": ["ana@example.com"]
+}
+```
+
+With `hostedDomain` set, only accounts in that Google Workspace get past step 2 below,
+invited people included. To let in people from outside it, use a second Google
+registration without `hostedDomain` (an `idp.additional` entry) and admit those people
+by exact `emails` or by invitation, never by `domains`.
+
+The checks run in this order, and the first that applies decides:
+
+1. A disabled account is refused. This reads every account with the same email, under
+   every IdP, so a person disabled under one IdP cannot sign in through another, or as
+   a fresh account the lists or their invitation would admit. Re-enable each of their
+   accounts to let them back in.
+2. Per-IdP pins: when `hostedDomain` is set, Google's `hd` claim must equal it; when
+   `tenantId` is set, Entra's `tid` claim must equal it. A mismatch, or a missing claim,
+   always refuses, whatever the lists say.
+3. With no `idp.admission` block, every verified sign-in is admitted. This is the
+   behaviour before admission existed, and production setup shows a warning for it.
+4. Otherwise an email the IdP does not vouch for (see below) is refused before the lists
+   are read, so the refusal never says whether an address is listed or invited.
+5. Then one of these admits: an open invitation for the email (while `invitations`
+   is not `false`), the email in `emails`, or its domain in `domains`. Emails compare
+   case-insensitively; the domain is the part after the last `@`, matched exactly
+   (`example.com` does not admit `sub.example.com`). An empty policy (`{}`) admits
+   invitations only.
+
+**Verified email.** Admission by email, domain or invitation needs an address the IdP
+vouches for. Each IdP's `emailVerification` says how:
+
+- `claim` (default): the `id_token` must carry `email_verified: true` (the boolean; the
+  string `"true"` does not count). A missing claim is not verified.
+- `trusted`: every email this IdP sends counts as verified. Use it only for an IdP pinned
+  to your own directory that omits the claim, such as Entra single-tenant with
+  `tenantId` set.
+
+`email_verified` vouches for the `email` claim and nothing else. When `claimMap.email`
+names another claim (`preferred_username`, `upn`), the mapped value counts as verified
+only when it equals the `email` claim. Otherwise the address is unverified under `claim`,
+and you must choose `trusted` on purpose for an IdP whose usernames you control.
+
+A reverse proxy is the authority for the address it sends, so proxy sign-ins count as
+verified. The refusal page names the account the person used, says to ask an owner for an
+invitation, and links to `/api/auth/login?prompt=select_account` so a browser holding
+several accounts can pick another (behind a proxy only the proxy can switch accounts, so
+the link is left out). It never shows which emails or domains are listed. The rule is
+checked at every sign-in: removing someone from the lists blocks their next sign-in, and
+the console's disable ends live sessions at once (see
+[offboarding](#offboarding-disable-and-revocation)). A device sign-in (a code approved
+at `/activate`) mints a session without the IdP, so before minting it the server asks
+the lists, the invitation and the disabled state again, and answers `denied` when the
+person is no longer admitted.
+
+**Invitations.** Admins and owners (the `user.invite` permission) invite people by email
+from **Invite people** on the console's People view, with `lw invite add`, or with
+`POST /api/v1/invitations` (see [the API](api.md#invitations)). An invitation names one
+address, stored lowercased, plus optional local groups and an optional expiry of at most
+366 days. Nothing is emailed: the console shows the sign-in address (`instance.baseUrl`)
+for you to send. An address has at most one active invitation. Inviting the same address
+again returns the existing invitation unchanged, so to change its groups or expiry,
+revoke the invitation and invite again.
+
+At each sign-in, while `invitations` is not `false`, the server looks up the active
+invitation for the email:
+
+- A pending invitation admits a verified email until its expiry. An expired or revoked
+  invitation admits nobody: the reason is `not-invited` unless a list admits the person.
+- On the first admitted sign-in the invitation is marked accepted. Once the user row
+  exists, its groups are added to the person's local groups. An IdP group or role group
+  that an owner named and that is not in the local registry yet is created there. This
+  happens once: if an admin later removes the person from a group, the next sign-in does
+  not add the group back. Local groups survive IdP re-syncs.
+- Groups go only to an account the invitation preceded. An account that already existed
+  when the invitation was written keeps its groups; the acceptance is recorded with
+  `groupsNotApplied: "existing-account"`.
+- An accepted invitation keeps admitting that email until someone revokes the
+  invitation. Revoking blocks the person's next sign-in unless `emails` or `domains`
+  admit them. A session that is already open stays open; disable the person to end
+  their sessions.
+- An unverified email never takes an invitation.
+- With no `idp.admission` block everyone is admitted anyway, and a verified invited email
+  still gets its invitation's groups at the first sign-in.
+- Attaching groups to an invitation assigns groups, so it carries the same controls as
+  editing a person's local groups. The inviter needs `grant.edit` as well as
+  `user.invite`. Each group must be in the local registry. No group may map to a role
+  above the inviter's own, so an owner group is owner-only. A group holding a grant for
+  an owner-only action is owner-only too. An address that already belongs to an account
+  joins the groups at once instead (`status: "applied"`), under the same controls; it is
+  refused for your own account, a disabled one, and an owner's unless an owner is
+  inviting. Only an account that has shown it holds the address counts (a verified or
+  trusted sign-in, or an accepted invitation for it); one whose sign-in only claimed the
+  address gets an invitation, which a verified sign-in has to accept.
+- `policy.invites` ([configuration](configuration.md#policy)) applies here too: its
+  `allow` tier and `domains` list decide which new addresses may be invited.
+- Only an owner may also name an IdP group or a role group that is not in the registry.
+  That is how a second owner joins an instance whose IdP sends no groups: an owner
+  invites them into the owner group, which the console offers to owners.
+- Only an owner may revoke an accepted invitation that belongs to an owner.
+- Erasing an account deletes the invitation it accepted, and any other invitation for
+  that address when no other account carries it, so nothing keeps admitting the erased
+  address.
+
+**Bootstrap owners.** An IdP such as Google sends no groups, so nobody could reach the
+owner role. `idp.bootstrapOwners` lists the emails that get the owner group at sign-in:
+the first name in `roleGroups.owner`, else the literal `owner`. It applies only to an
+admitted person with a verified email, it is re-applied at each sign-in (removing the
+address removes the group at the next one), and each grant writes an
+`auth.bootstrap-owner` audit row. Every bootstrap owner must be admitted by `emails` or
+`domains`, and the server refuses a config where one is not. That check reads the lists
+only: a `hostedDomain` or `tenantId` pin can still refuse the owner's account, so check
+the owner's account passes every pin on the IdP they will use. Once real owner groups
+exist, empty the list.
+
+**Requested scopes and extra parameters.** Per IdP, `scopes` replaces the default
+`openid profile email` (it must include `openid`), and `authParams` adds authorization
+request parameters from a fixed allowlist: `prompt`, `hd`, `domain_hint`, `login_hint`,
+`acr_values`. Nothing else is accepted. `hostedDomain` is also sent as `hd`, so Google's
+account picker offers the right account first. A sign-in link may add
+`prompt=select_account` or `prompt=login`; no other query parameter reaches the IdP.
+
+Audit rows: `auth.denied` (actor `anonymous`; payload `provider`, `idp`, `reason`, the
+lowercased `email`) with reasons `not-invited`, `email-unverified`, `hosted-domain`,
+`tenant` and `disabled`, and provider `device` with reason `not-admitted` when a device
+sign-in is refused; `auth.bootstrap-owner` (payload `idp`, `group`); and
+`auth.login` carries `admittedVia` (`email`, `domain` or `invitation`) whenever a policy
+admitted the person; and `auth.failed` when a GitHub sign-in could not finish (see the
+GitHub recipe below). `provider` is `oidc` for an OpenID Connect IdP, `github` for
+GitHub and `proxy` for the reverse proxy. Invitations write `invite.create` (payload `email`, `groups`,
+`expiresAt`), `invite.revoke` (payload `email`, `was`: the status before revoking) and
+`invite.accept` (actor the new member; payload `provider`, `idp`, `email`, `groups`, and
+`createdGroups` when the sign-in created local groups, or `groupsNotApplied` when the
+account predates the invitation and already carried the invited address, or is the
+inviter's own), each with subject
+`invitation:<id>`.
+
+### Provider recipes
+
+Every recipe uses one redirect URI: `<instance.baseUrl>/api/auth/callback`. Secrets go in
+env vars, never in the config file: `LW_IDP_CLIENT_SECRET` for the primary, the variable
+`clientSecretRef` names for an additional IdP.
+
+**Google.** Google Cloud Console, OAuth consent screen ("Internal" keeps it to one
+Workspace; "External" in "Testing" adds Google's own test-user list), then Credentials,
+OAuth client ID, type Web application, with the redirect URI above.
+
+```json
+{ "issuer": "https://accounts.google.com", "clientId": "….apps.googleusercontent.com",
+  "displayName": "Google", "emailVerification": "claim", "hostedDomain": "example.com" }
+```
+
+Omit `hostedDomain` to accept personal Google accounts as well, and then admit people
+by exact `emails` or by invitation only. Domain admission on Google needs
+`hostedDomain`: Google reports `email_verified: true` for a personal Google account
+registered with a non-Gmail address, and that account outlives the mailbox, so a
+departed employee's personal account for `alex@example.com` would still match
+`domains: ["example.com"]`.
+Google sends no groups, so use `bootstrapOwners` for the first owner and local groups
+after that.
+
+**Microsoft Entra ID (single tenant).** App registrations, New registration, "Accounts in
+this organizational directory only", Web redirect URI as above, then a client secret.
+Add the optional `email` claim, or map the sign-in name as below. For roles, define app
+roles on the registration, assign people or groups to them, and read the `roles` claim.
+
+```json
+{ "id": "microsoft", "displayName": "Microsoft",
+  "issuer": "https://login.microsoftonline.com/<tenant-id>/v2.0",
+  "clientId": "<application id>", "clientSecretRef": "LW_IDP_MICROSOFT_SECRET",
+  "tenantId": "<tenant-id>", "emailVerification": "trusted",
+  "groupsClaim": "roles", "claimMap": { "email": "preferred_username" } }
+```
+
+`trusted` is right here because `tenantId` pins the directory and Entra does not send
+`email_verified`. Personal Microsoft accounts use a separate consumers-only registration
+whose tenant id is `9188040d-6c67-4c5b-b112-36a304b66dad` (issuer
+`https://login.microsoftonline.com/9188040d-6c67-4c5b-b112-36a304b66dad/v2.0`). Anyone can
+create such an account, so keep `emailVerification` at `claim` there and admit by
+`emails`. Multi-tenant issuers (`{tenantid}` templating) and the groups overage claim are
+not supported yet.
+
+**Okta.** Applications, Create App Integration, OIDC, Web Application, client
+authentication "Client secret post" (this server sends the secret in the token request
+body, not in a Basic header), sign-in redirect URI as above. On the authorization
+server, add a `groups` claim to the ID token (filter, for example, "Starts with
+lolly-").
+
+```json
+{ "issuer": "https://<org>.okta.com/oauth2/default", "clientId": "…",
+  "displayName": "Okta", "groupsClaim": "groups" }
+```
+
+**Keycloak.** A confidential OpenID Connect client in your realm with the redirect URI
+above, plus a "Group Membership" mapper (token claim name `groups`, "Full group path"
+off) added to the ID token.
+
+```json
+{ "issuer": "https://id.example.com/realms/<realm>", "clientId": "lolly-work",
+  "displayName": "Keycloak", "groupsClaim": "groups" }
+```
+
+**Auth0.** A Regular Web Application with the callback URL above, and the signing
+algorithm left at RS256 (Advanced settings, OAuth). Auth0 sends no groups by default; add
+them with an Action that sets a namespaced claim, and name that claim in `groupsClaim`.
+
+```json
+{ "issuer": "https://<tenant>.eu.auth0.com/", "clientId": "…", "displayName": "Auth0",
+  "groupsClaim": "https://lolly.example/groups" }
+```
+
+The Auth0 issuer ends in a slash; copy it exactly from the discovery document.
+
+**GitHub.** GitHub sign-in is OAuth 2.0, not OIDC, so it has its own adapter: an
+additional IdP with `kind: "github"`. In GitHub, open Settings, Developer settings, OAuth
+Apps, New OAuth App (for an organisation, the organisation's own Developer settings).
+Set the Homepage URL to `instance.baseUrl` and the Authorization callback URL to
+`<instance.baseUrl>/api/auth/callback`, the same callback every IdP uses. Generate a
+client secret and put it in the env var `clientSecretRef` names. Leave device flow off.
+
+```json
+{ "id": "github", "kind": "github", "displayName": "GitHub",
+  "clientId": "<client id>", "clientSecretRef": "LW_IDP_GITHUB_SECRET" }
+```
+
+A GitHub entry takes no `issuer`, `scopes`, `authParams`, `hostedDomain` or `tenantId`,
+and the server refuses a config that sets one. It always asks for two scopes:
+`read:user` for the profile and `user:email` for the email list. The sign-in uses PKCE
+(S256) and the person may create a GitHub account on the way (`allow_signup`).
+
+The subject is the numeric GitHub user id, stored as `github:<id>` (with the entry's
+`id` as the prefix). The login name is never the identity, because people rename
+accounts and a freed login can be claimed by someone else. The email is the primary
+address when GitHub has verified it, else the first verified address; the
+`@users.noreply.github.com` commit address is used only when nothing else is verified.
+GitHub lets anyone add any address to an account without proving it, so an account
+with no verified address is refused on every instance, open or not, with a page asking
+the person to add and confirm one (`auth.failed`, reason `no-email`). For the same
+reason a GitHub entry accepts only `emailVerification: "claim"` (the default); the
+server refuses `trusted` on it. "Keep my email addresses private" in GitHub does not
+hide the list from this app: `user:email` reads private addresses too, so the address
+shown in Lolly Work may differ from the public profile. GitHub sends no groups: use
+`bootstrapOwners` for the first owner and local groups after that.
+
+A failed exchange (a stale code, GitHub unreachable, a missing or wrong client secret)
+shows the same phone-friendly page with a "Try again" link and writes an `auth.failed`
+audit row (actor `anonymous`; payload `provider: "github"`, `idp`, `reason`: `token`,
+`profile` or `no-email`). GitHub's own error text and the access token never reach the
+page or the audit log; the token is used for two API reads and then dropped.
+
+**SAML.** SAML is a different protocol and does not connect directly. Put a broker in
+front: an Auth0 SAML enterprise connection or a Keycloak SAML identity provider in the
+realm. This instance then talks OIDC to the broker as in the recipes above.
+
+## One person, several sign-ins
+
+A person may sign in with Google one day and GitHub the next. Both sign-ins belong to
+one user: the same projects, groups, inbox and role. Each sign-in is an identity (one
+IdP subject, such as `github:4242`), and `user_identities` (migration 0039) links each
+identity to one user. The session cookie always names the user's own `users.sub`, the
+subject the account was created with, whichever sign-in was used.
+
+**How a sign-in finds its user.** After the IdP proves who the person is, and before
+anything is written, the server looks in this order and stops at the first answer:
+
+1. an identity row for this subject: that user;
+2. a user created with this subject before identities were recorded: that user, and the
+   identity row is written now;
+3. when the IdP links by email and confirmed the address: exactly one user who already
+   holds a confirmed identity with the same address (compared lowercased). The new
+   identity joins that user and the audit log records `identity.link` with
+   `via: "email"`. When two or more users hold that address, nothing is linked: the
+   sign-in gets an account of its own and the log records `identity.link-ambiguous`
+   with the number of candidates, so an owner can sort it out. When every confirmed
+   identity that holds the address came through an IdP pinned to a directory
+   (`hostedDomain` or `tenantId`), only an IdP with the same pin may join it: the pin
+   is what ties the account to the organisation's directory, and GitHub never checks
+   again an address it verified once, so a former holder of a reassigned mailbox could
+   still present it there. Such a sign-in gets an account of its own and the log
+   records `identity.link-held` with `reason: "pinned"`; the person can still add it
+   by hand, as below;
+4. otherwise a new user, created with this subject.
+
+Admission (above) still runs before any write. A sign-in linked to a disabled person is
+refused. When a linked sign-in's own address is not on the admission lists, the person
+is admitted on their own standing: their account's email must pass the lists, the IdP's
+`hostedDomain` and `tenantId` pins still apply, and `auth.login` records
+`admittedVia: "linked"`. A personal GitHub address need not be listed for someone the
+instance already admits. That standing lasts only while the account's own sign-in (the
+one it was created with, which passes the pins and the lists by itself) has been used
+within `idp.linkedStandingDays` (default 30). After that, a person deleted at their
+work IdP can no longer get in through a linked personal sign-in.
+
+A sign-in that is not the account's own leaves the account's name and email alone.
+IdP groups are kept per sign-in: each sign-in records the groups its IdP sent (and any
+bootstrap owner group it earned), and the account carries the groups of every sign-in
+used within `idp.linkedStandingDays`. So a GitHub sign-in neither clears the groups a
+work IdP sent nor keeps them alive: when the work IdP drops a group, the next sign-in
+there removes it for every sign-in, and when the work sign-in has not been used for the
+window, its groups lapse. A work IdP linked to an account that GitHub created grants
+its groups the same way. A sign-in added by hand asserts no groups until its first
+real sign-in.
+
+**Which IdPs link by email.** Per IdP, `linkByEmail` decides. It defaults to `true` when
+`emailVerification` is `claim` (the IdP must say `email_verified: true`) and to `false`
+when it is `trusted`. An identity counts as confirmed, and so as a link target, only
+when its IdP links by email and vouched for the address at that sign-in. An Entra
+organization tenant that can assign any address should stay `trusted` (no link by
+email) unless `tenantId` pins it; the server refuses `linkByEmail: true` on a `trusted`
+IdP that has neither a `hostedDomain` nor a `tenantId` pin. Set `linkByEmail: false` on
+any IdP that should never join an existing user by email; its sign-ins still link by
+hand, as below.
+
+```json
+"additional": [
+  { "id": "github", "kind": "github", "clientId": "Iv1.abc", "displayName": "GitHub",
+    "clientSecretRef": "LW_IDP_GITHUB_SECRET" },
+  { "id": "entra", "issuer": "https://login.microsoftonline.com/<tenant>/v2.0",
+    "clientId": "...", "displayName": "Microsoft", "emailVerification": "trusted",
+    "tenantId": "<tenant>", "linkByEmail": false }
+]
+```
+
+**Adding a sign-in by hand.** A signed-in person opens
+`GET /api/auth/link?idp=<id>&returnTo=<path>`. It runs that IdP (with the account picker,
+since the browser is often still signed in to the account already linked) and links
+the identity it returns to the current user, whatever its email. The session that
+started the link must be the one that finishes; a link never mints a new session. An
+identity that already belongs to someone else is refused with a 409 page and an
+`identity.link-refused` audit row. A new link writes `identity.link` with
+`via: "self"`.
+
+**Seeing and removing sign-ins.** `GET /api/v1/me/identities` lists the person's own:
+`idp`, `displayName`, `email`, `emailVerified`, `linkedAt`, `lastLoginAt`, `canUnlink`,
+and a `subjectHash` (the first 16 hex characters of the SHA-256 of the subject, so a raw
+IdP subject never leaves the server). It also lists the sign-ins the instance offers,
+each with its `linkPath`. `DELETE /api/v1/me/identities/<idp>/<subjectHash>` removes
+one and answers 204. Two are never removed: the sign-in the account was created with
+(409 `ACCOUNT_SIGN_IN`) and the last one (409 `LAST_SIGN_IN`). Admins and owners see
+anyone's sign-ins at `GET /api/v1/users/<id>/identities`, and the console's People view
+shows them in each person's detail; removing one there
+(`DELETE /api/v1/users/<id>/identities/<idp>/<subjectHash>`) needs `grant.edit`, and an
+owner's sign-ins are owner-only. Each removal writes `identity.unlink` with `by: "self"`
+or `"admin"` and `sessionsRevoked: true`. Every session carries the account's own
+subject, so a session opened through the removed sign-in cannot be told apart from the
+others: a removal ends every session of the account, as "sign out everywhere" does. A
+person removing their own sign-in gets a fresh session on the device they used. A removed identity whose IdP links by email and confirms a matching
+address joins the same person again at its next sign-in; to keep one out for good, set
+`linkByEmail: false` on that IdP or disable the account.
+
+**Invitations.** An invitation is accepted by whichever account signs in with the
+invited address, including an existing account that reaches it through a newly linked
+sign-in. Its groups and projects then apply to that account. The inviter's own account
+never takes groups from its own invitation.
+
+**Upgrading.** Migration 0039 writes one identity row per existing user from
+`users.sub` (the IdP is the prefix before the first `:`, or `primary` when there is
+none) with the email marked unconfirmed. Nothing links by email to a backfilled row
+until that person signs in again through the same identity and the IdP confirms the
+address.
+
 ## The dev provider
 
 `dev.enabled: true` plus a `dev.users` list enables `GET /api/auth/dev?email=…`: a

@@ -1,5 +1,6 @@
 import type { CanvasCheckpoint, CanvasOp } from '@lolly-tools/core/canvas-op-v1';
 import { auditWhere } from '../audit/filter.ts';
+import { projectFileAssetId, PROJECT_FILE_OVERHEAD_BYTES, type ProjectFileRecord } from '../projects/files.ts';
 /**
  * Postgres Store driver - binds the Store seam to migrations/0001_init.sql.
  *
@@ -17,6 +18,7 @@ import type { ToolOverlay } from '../policy/overlay.ts';
 import type { FlagGovernance } from '../policy/feature-flags.ts';
 import type { InjectableRecord } from '../injectables/types.ts';
 import { pendingAgainst } from './migrate.ts';
+import { guardPool, pgPoolOptions } from './pg-options.ts';
 import type { LinkRecord } from '../links/sign.ts';
 import type { StoredEvent } from '../telemetry/ingest.ts';
 import type { Message } from '../inbox/target.ts';
@@ -31,7 +33,7 @@ import type { DeliveryRecord } from '../delivery/types.ts';
 import { createPostgresRenderStore } from '../renders/postgres.ts';
 import {
   SESSION_REVISION_LIMIT, effectiveGroups,
-  type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type ListUsersPageOpts, type LocalGroupRecord, type ProjectRecord,
+  type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type ListUsersPageOpts, type LocalGroupRecord, type ProjectMemberRecord, type ProjectRecord, type UserIdentityRecord,
   type ScimTokenRecord, type SessionRecord, type SessionRevision, type Store, type SubmitQuotaRow, type UserRecord,
 } from './types.ts';
 
@@ -46,6 +48,30 @@ function apiTokenFromRow(r: Record<string, unknown>): ApiTokenRecord {
     createdAt: new Date(r.created_at as string).toISOString(),
     ...(r.last_used_at ? { lastUsedAt: new Date(r.last_used_at as string).toISOString() } : {}),
     ...(r.revoked_at ? { revokedAt: new Date(r.revoked_at as string).toISOString() } : {}),
+  };
+}
+
+/** An invitation's projects as stored: only the known keys. */
+function invitationProjectsJson(list: NonNullable<InvitationRecord['projects']>): NonNullable<InvitationRecord['projects']> {
+  return list.map((p) => ({ projectId: p.projectId, role: p.role, ...(p.invitedBy ? { invitedBy: p.invitedBy } : {}) }));
+}
+
+/** One invitations row -> record (plans/74 W-ID-2). */
+function invitationFromRow(r: Record<string, unknown>): InvitationRecord {
+  const iso = (v: unknown): string => new Date(v as string).toISOString();
+  return {
+    id: r.id as string,
+    email: r.email as string,
+    groups: (r.groups as string[]) ?? [],
+    invitedBy: r.invited_by as string,
+    createdAt: iso(r.created_at),
+    ...(r.expires_at ? { expiresAt: iso(r.expires_at) } : {}),
+    ...(r.accepted_at ? { acceptedAt: iso(r.accepted_at) } : {}),
+    ...(r.accepted_user_id ? { acceptedUserId: r.accepted_user_id as string } : {}),
+    ...(r.revoked_at ? { revokedAt: iso(r.revoked_at) } : {}),
+    projects: Array.isArray(r.projects) ? (r.projects as NonNullable<InvitationRecord['projects']>) : [],
+    // Only the non-default is carried, so a console row reads the same from both drivers.
+    ...(r.created_via === 'project' ? { createdVia: 'project' as const } : {}),
   };
 }
 
@@ -150,6 +176,10 @@ interface PgClient {
 }
 
 const AUDIT_LOCK_KEY = 0x1011_0001;
+/** Serializes project-file reservations (plans/74); distinct from the audit
+ *  key above, the test suites' 0x1011_0003, and migrate.ts's 0x1011_0004 (and
+ *  its former 0x1011_0002), so a reservation never waits on a migration. */
+const PROJECT_FILES_LOCK_KEY = 0x1011_0005;
 
 // Appends a `column = $n` clause + its bound value - shared by the two
 // filtered list queries below so the param-numbering logic lives in one place.
@@ -162,7 +192,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
   let roleGroups: RoleGroups = {};
   let auditMacKey: string | undefined;
   const { default: pg } = await import('pg');
-  const pool: PgPool = new pg.Pool({ connectionString: databaseUrl }) as unknown as PgPool;
+  const pool: PgPool = guardPool(new pg.Pool(pgPoolOptions(databaseUrl)), 'store') as unknown as PgPool;
 
   const appendAuditInTransaction = async (client: PgClient, body: AuditEventBody): Promise<AuditEvent> => {
     await client.query('select pg_advisory_xact_lock($1)', [AUDIT_LOCK_KEY]);
@@ -298,6 +328,13 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
   });
 
   // visibility rides as jsonb: the string "private" or a { groups: [...] } object.
+  const projectFileFromRow = (r: Record<string, unknown>): ProjectFileRecord => ({
+    id: r.id as string, projectId: r.project_id as string, name: r.name as string,
+    size: Number(r.size), checksum: r.checksum as string, contentType: r.content_type as string,
+    parts: r.parts as ProjectFileRecord['parts'], asset: r.asset as Record<string, unknown>,
+    createdBy: r.created_by as string, createdAt: new Date(r.created_at as string).toISOString(),
+    expiresAt: new Date(r.expires_at as string).toISOString(), ready: r.ready === true,
+  });
   const projectFromRow = (r: Record<string, unknown>): ProjectRecord => ({
     id: r.id as string,
     name: r.name as string,
@@ -305,6 +342,27 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     ownerId: r.owner_id as string,
     createdAt: new Date(r.created_at as string).toISOString(),
     ...(r.archived_at ? { archivedAt: new Date(r.archived_at as string).toISOString() } : {}),
+    ...(r.updated_at ? { updatedAt: new Date(r.updated_at as string).toISOString() } : {}),
+    ...(r.updated_by ? { updatedBy: r.updated_by as string } : {}),
+  });
+
+  const identityFromRow = (r: Record<string, unknown>): UserIdentityRecord => ({
+    identitySub: r.identity_sub as string,
+    userId: r.user_id as string,
+    idp: r.idp as string,
+    ...(r.email ? { email: r.email as string } : {}),
+    emailVerified: r.email_verified === true,
+    groups: Array.isArray(r.groups) ? (r.groups as string[]) : [],
+    linkedAt: new Date(r.linked_at as string).toISOString(),
+    ...(r.last_login_at ? { lastLoginAt: new Date(r.last_login_at as string).toISOString() } : {}),
+  });
+
+  const projectMemberFromRow = (r: Record<string, unknown>): ProjectMemberRecord => ({
+    projectId: r.project_id as string,
+    userId: r.user_id as string,
+    role: r.role as ProjectMemberRecord['role'],
+    addedBy: r.added_by as string,
+    addedAt: new Date(r.added_at as string).toISOString(),
   });
 
   const sessionFromRow = (r: Record<string, unknown>): SessionRecord => ({
@@ -374,6 +432,12 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     async getUser(id) {
       const { rows } = await pool.query('select * from users where id = $1', [id]);
       return rows[0] ? userFromRow(rows[0]) : null;
+    },
+    async findUsersByEmail(email) {
+      const e = email.trim().toLowerCase();
+      if (!e) return [];
+      const { rows } = await pool.query('select * from users where lower(trim(email)) = $1 order by created_at', [e]);
+      return rows.map(userFromRow);
     },
     async setTelemetryConsent(userId, consent) {
       await pool.query('update users set telemetry_consent = $2 where id = $1', [userId, consent]);
@@ -524,6 +588,179 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         'update api_tokens set revoked_at = $2 where id = $1 and revoked_at is null', [id, at],
       );
       return (rowCount ?? 0) > 0;
+    },
+
+    // Invitations (plans/74 W-ID-2). The partial unique index on email (where
+    // revoked_at is null) is the one-active-per-email rule; the transaction
+    // below only decides whether an expired pending row makes way first.
+    async createInvitation(rec) {
+      const email = rec.email.trim().toLowerCase();
+      const groups = JSON.stringify([...new Set(rec.groups)]);
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        const { rows: active } = await client.query(
+          'select * from invitations where email = $1 and revoked_at is null for update', [email],
+        );
+        const existing = active[0];
+        if (existing) {
+          const lapsed = !existing.accepted_at && existing.expires_at
+            && new Date(existing.expires_at as string).getTime() <= Date.parse(rec.createdAt);
+          if (!lapsed) {
+            await client.query('commit');
+            return { invitation: invitationFromRow(existing), created: false };
+          }
+          await client.query('update invitations set revoked_at = $2 where id = $1', [existing.id, rec.createdAt]);
+        }
+        // A concurrent insert for the same email conflicts on the partial index;
+        // that caller's row is then the active one, and this call returns
+        // that row with created false.
+        const { rows } = await client.query(
+          `insert into invitations (id, email, groups, invited_by, created_at, expires_at, projects, created_via)
+           values ($1, $2, $3::jsonb, $4, $5, $6, $7::jsonb, $8)
+           on conflict (email) where revoked_at is null do nothing
+           returning *`,
+          [rec.id, email, groups, rec.invitedBy, rec.createdAt, rec.expiresAt ?? null, JSON.stringify(invitationProjectsJson(rec.projects ?? [])),
+            rec.createdVia ?? 'console'],
+        );
+        if (rows[0]) {
+          await client.query('commit');
+          return { invitation: invitationFromRow(rows[0]), created: true };
+        }
+        const { rows: raced } = await client.query(
+          'select * from invitations where email = $1 and revoked_at is null', [email],
+        );
+        await client.query('commit');
+        if (!raced[0]) throw new Error('invitation insert conflicted but no active row was found');
+        return { invitation: invitationFromRow(raced[0]), created: false };
+      } catch (err) {
+        await client.query('rollback');
+        throw err;
+      } finally {
+        client.release();
+      }
+    },
+    async listInvitations() {
+      const { rows } = await pool.query('select * from invitations order by created_at desc, id desc');
+      return rows.map(invitationFromRow);
+    },
+    async getInvitation(id) {
+      const { rows } = await pool.query('select * from invitations where id = $1', [id]);
+      return rows[0] ? invitationFromRow(rows[0]) : null;
+    },
+    async findActiveInvitation(email) {
+      const { rows } = await pool.query(
+        'select * from invitations where email = $1 and revoked_at is null', [email.trim().toLowerCase()],
+      );
+      return rows[0] ? invitationFromRow(rows[0]) : null;
+    },
+    async revokeInvitation(id, at, opts) {
+      const { rows } = await pool.query(
+        `update invitations set revoked_at = $2 where id = $1 and revoked_at is null${opts?.pendingOnly ? ' and accepted_at is null' : ''} returning *`,
+        [id, at],
+      );
+      return rows[0] ? invitationFromRow(rows[0]) : null;
+    },
+    async listOpenInvitationsForProject(projectId, now) {
+      // jsonb containment rides the partial GIN index from migration 0040.
+      const { rows } = await pool.query(
+        `select * from invitations
+         where revoked_at is null and accepted_at is null and (expires_at is null or expires_at > $2)
+           and projects @> jsonb_build_array(jsonb_build_object('projectId', $1::text))
+         order by created_at desc, id desc`,
+        [projectId, now],
+      );
+      return rows.map(invitationFromRow);
+    },
+    async acceptInvitation(id, userId, at) {
+      const { rows } = await pool.query(
+        `update invitations set accepted_at = $3, accepted_user_id = $2
+         where id = $1 and revoked_at is null and accepted_at is null and (expires_at is null or expires_at > $3)
+         returning *`,
+        [id, userId, at],
+      );
+      return rows[0] ? invitationFromRow(rows[0]) : null;
+    },
+    async setInvitationProjects(id, list) {
+      const { rows } = await pool.query(
+        `update invitations set projects = $2::jsonb
+         where id = $1 and revoked_at is null and accepted_at is null
+         returning *`,
+        [id, JSON.stringify(invitationProjectsJson(list))],
+      );
+      return rows[0] ? invitationFromRow(rows[0]) : null;
+    },
+    async dropInvitationProject(id, projectId, at, opts) {
+      // One statement over the row's own column, so a project added to the
+      // same invitation meanwhile is kept, never overwritten. SET reads the
+      // row as it was before this update, so both expressions see one list.
+      const { rows } = await pool.query(
+        `update invitations set
+           projects = coalesce((select jsonb_agg(e order by n) from jsonb_array_elements(projects) with ordinality as t(e, n)
+                                where e->>'projectId' <> $2), '[]'::jsonb),
+           revoked_at = case
+             when $4::boolean and groups = '[]'::jsonb
+               and not exists (select 1 from jsonb_array_elements(projects) as e where e->>'projectId' <> $2)
+             then $3::timestamptz else revoked_at end
+         where id = $1 and revoked_at is null and accepted_at is null
+           and projects @> jsonb_build_array(jsonb_build_object('projectId', $2::text))
+         returning *`,
+        [id, projectId, at, !!opts?.revokeWhenEmpty],
+      );
+      return rows[0] ? invitationFromRow(rows[0]) : null;
+    },
+
+    // Linked sign-ins (migration 0039).
+    async getUserByIdentity(identitySub) {
+      const { rows } = await pool.query(
+        'select u.* from user_identities i join users u on u.id = i.user_id where i.identity_sub = $1', [identitySub],
+      );
+      return rows[0] ? userFromRow(rows[0]) : null;
+    },
+    async linkIdentity(rec) {
+      // One statement: the insert happens only for a known user and a sub no
+      // other user was created with, and the update only when the row is
+      // already this user's. Anything else returns no row and writes nothing.
+      const email = rec.email?.trim().toLowerCase() || null;
+      const { rows } = await pool.query(
+        `insert into user_identities (identity_sub, user_id, idp, email, email_verified, linked_at, last_login_at, groups)
+         select $1, $2, $3, $4, $5, $6, $7, coalesce($8::jsonb, '[]'::jsonb)
+         where exists (select 1 from users where id = $2)
+           and not exists (select 1 from users where sub = $1 and id <> $2)
+         on conflict (identity_sub) do update set
+           idp = excluded.idp, email = excluded.email, email_verified = excluded.email_verified,
+           last_login_at = coalesce(excluded.last_login_at, user_identities.last_login_at),
+           groups = coalesce($8::jsonb, user_identities.groups)
+         where user_identities.user_id = excluded.user_id
+         returning *, (xmax = 0) as inserted`,
+        [rec.identitySub, rec.userId, rec.idp, email, rec.emailVerified === true, rec.linkedAt, rec.lastLoginAt ?? null,
+          rec.groups === undefined ? null : JSON.stringify([...new Set(rec.groups.filter(Boolean))])],
+      );
+      const row = rows[0];
+      return row ? { identity: identityFromRow(row), created: row.inserted === true } : null;
+    },
+    async listIdentities(userId) {
+      const { rows } = await pool.query(
+        'select * from user_identities where user_id = $1 order by linked_at, identity_sub', [userId],
+      );
+      return rows.map(identityFromRow);
+    },
+    async unlinkIdentity(userId, identitySub) {
+      const { rowCount } = await pool.query(
+        'delete from user_identities where user_id = $1 and identity_sub = $2', [userId, identitySub],
+      );
+      return (rowCount ?? 0) > 0;
+    },
+    async findUsersByVerifiedEmail(email) {
+      const e = email.trim().toLowerCase();
+      if (!e) return [];
+      const { rows } = await pool.query(
+        `select u.* from users u
+         where exists (select 1 from user_identities i where i.user_id = u.id and i.email_verified and lower(i.email) = $1)
+         order by u.created_at`,
+        [e],
+      );
+      return rows.map(userFromRow);
     },
 
     async claimAutomationJob(owner, verbs, leaseMs) {
@@ -732,6 +969,29 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         client.release();
       }
     },
+    async appendAuditIfTail(expectedTail, body) {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        // The same lock appendAuditInTransaction takes (advisory locks are
+        // re-entrant within a session), held from this read to the insert.
+        await client.query('select pg_advisory_xact_lock($1)', [AUDIT_LOCK_KEY]);
+        const { rows } = await client.query('select seq, hash from audit_log order by seq desc limit 1');
+        const tail = rows[0] ? { seq: Number(rows[0].seq), hash: rows[0].hash as string } : null;
+        if (tail?.seq !== expectedTail?.seq || tail?.hash !== expectedTail?.hash) {
+          await client.query('rollback');
+          return null;
+        }
+        const evt = await appendAuditInTransaction(client, body);
+        await client.query('commit');
+        return evt;
+      } catch (err) {
+        await client.query('rollback');
+        throw err;
+      } finally {
+        client.release();
+      }
+    },
     async listAuditAfter(after, limit) {
       const { rows } = await pool.query('select * from audit_log where seq > $1 order by seq asc limit $2', [after, limit]);
       return rows.map((r) => ({
@@ -805,11 +1065,12 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         (select count(*) from links where created_by = $1) as links,
         (select count(*) from approvals where created_by = $1) as approvals,
         (select count(*) from message_acks where user_id = $1) as acks,
+        (select count(*) from project_files where created_by = $1 and ready) as project_files,
         (select count(*) from telemetry_events where user_id = $1) as telemetry`, [id]);
       const row = rows[0]!;
       return { references: {
         projects: Number(row.projects), sessions: Number(row.sessions), links: Number(row.links),
-        approvals: Number(row.approvals), messageAcks: Number(row.acks),
+        approvals: Number(row.approvals), messageAcks: Number(row.acks), projectFiles: Number(row.project_files),
       }, telemetryEvents: Number(row.telemetry) };
     },
     async eraseUserAccount(id) {
@@ -818,9 +1079,18 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         await client.query('begin');
         // Delete first: FK checks also cover references created concurrently
         // after the preview. Never cascade shared records to make erasure pass.
-        const deleted = await client.query('delete from users where id = $1', [id]);
+        const deleted = await client.query('delete from users where id = $1 returning email', [id]);
         if (!deleted.rowCount) { await client.query('rollback'); return { status: 'not-found' }; }
         const scrubbed = await client.query('update telemetry_events set user_id = null where user_id = $1', [id]);
+        // Invitations hold the email, and an accepted one keeps admitting it:
+        // the rows this account accepted go with it, and other rows for the
+        // address go too unless another account still carries that email.
+        const erasedEmail = String(deleted.rows[0]?.email ?? '').trim().toLowerCase();
+        await client.query(
+          `delete from invitations where accepted_user_id = $1
+             or (email = $2 and not exists (select 1 from users where lower(trim(email)) = $2))`,
+          [id, erasedEmail],
+        );
         await client.query('commit');
         return { status: 'erased', scrubbed: scrubbed.rowCount ?? 0 };
       } catch (error) {
@@ -1303,13 +1573,14 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     // projects + sessions (migrations/0004_sessions.sql)
     async putProject(project) {
       await pool.query(
-        `insert into projects (id, name, visibility, owner_id, created_at, archived_at)
-         values ($1, $2, $3::jsonb, $4, $5, $6)
+        `insert into projects (id, name, visibility, owner_id, created_at, archived_at, updated_at, updated_by)
+         values ($1, $2, $3::jsonb, $4, $5, $6, $7, $8)
          on conflict (id) do update set
            name = excluded.name, visibility = excluded.visibility,
-           owner_id = excluded.owner_id, archived_at = excluded.archived_at`,
+           owner_id = excluded.owner_id, archived_at = excluded.archived_at,
+           updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
         [project.id, project.name, JSON.stringify(project.visibility), project.ownerId,
-         project.createdAt, project.archivedAt ?? null],
+         project.createdAt, project.archivedAt ?? null, project.updatedAt ?? null, project.updatedBy ?? null],
       );
     },
     async getProject(id) {
@@ -1319,6 +1590,126 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     async listProjects() {
       const { rows } = await pool.query('select * from projects order by created_at desc');
       return rows.map(projectFromRow);
+    },
+    // Budgets count ready files and unfinished uploads that have not expired
+    // (`ready or expires_at > now()`), the same rule as the memory store.
+    async reserveProjectFile(file, limits) {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        // One lock for every reservation: the instance budget spans projects,
+        // and a per-project row lock would let two projects both pass it.
+        await client.query('select pg_advisory_xact_lock($1)', [PROJECT_FILES_LOCK_KEY]);
+        const project = await client.query('select id from projects where id = $1', [file.projectId]);
+        if (!project.rows.length) { await client.query('rollback'); return 'refused'; }
+        const { rows } = await client.query(
+          `select coalesce(sum(size + $3) filter (where project_id = $1), 0) as project_used, coalesce(sum(size + $3), 0) as instance_used,
+             count(*) filter (where not ready and created_by = $2) as pending,
+             coalesce(sum(size) filter (where not ready and created_by = $2), 0) as pending_bytes
+           from project_files where ready or expires_at > now()`, [file.projectId, file.createdBy, PROJECT_FILE_OVERHEAD_BYTES]);
+        const row = rows[0]!;
+        const charge = file.size + PROJECT_FILE_OVERHEAD_BYTES;
+        const refusal = Number(row.pending) >= limits.maxPending || Number(row.pending_bytes) + file.size > limits.maxPendingBytes ? 'pending'
+          : Number(row.project_used) + charge > limits.projectBudgetBytes ? 'project-budget'
+          : Number(row.instance_used) + charge > limits.instanceBudgetBytes ? 'instance-budget' : null;
+        if (refusal) { await client.query('rollback'); return refusal; }
+        const inserted = await client.query(
+          `insert into project_files (id, project_id, name, size, checksum, content_type, parts, asset, created_by, created_at, expires_at, ready)
+           values ($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9,$10,$11,false) on conflict (id) do nothing returning id`,
+          [file.id, file.projectId, file.name, file.size, file.checksum, file.contentType,
+           JSON.stringify(file.parts), JSON.stringify(file.asset), file.createdBy, file.createdAt, file.expiresAt]);
+        await client.query('commit');
+        return inserted.rows.length === 1 ? 'reserved' : 'refused';
+      } catch (error) { await client.query('rollback'); throw error; }
+      finally { client.release(); }
+    },
+    async getProjectFile(id) {
+      const { rows } = await pool.query('select * from project_files where id = $1', [id]);
+      return rows[0] ? projectFileFromRow(rows[0]) : null;
+    },
+    async listProjectFiles(projectId) {
+      const { rows } = await pool.query('select * from project_files where project_id = $1 and ready order by created_at desc, id collate "C"', [projectId]);
+      return rows.map(projectFileFromRow);
+    },
+    async listUnfinishedProjectFiles(filter, limit) {
+      const { rows } = await pool.query(
+        `select * from project_files where not ready and ($1::text is null or created_by = $1)
+           and ($2::timestamptz is null or expires_at <= $2) order by expires_at, id collate "C" limit $3`,
+        [filter.createdBy ?? null, filter.expiredBy ?? null, limit]);
+      return rows.map(projectFileFromRow);
+    },
+    async projectFileUsage(projectId) {
+      const { rows } = await pool.query(
+        `select coalesce(sum(size + $2) filter (where project_id = $1), 0) as project_used, coalesce(sum(size + $2), 0) as instance_used
+           from project_files where ready or expires_at > now()`, [projectId, PROJECT_FILE_OVERHEAD_BYTES]);
+      return { projectBytes: Number(rows[0]?.project_used ?? 0), instanceBytes: Number(rows[0]?.instance_used ?? 0) };
+    },
+    async touchProjectFile(id, expiresAt) {
+      const { rows } = await pool.query(
+        `update project_files set expires_at = case when ready then expires_at else greatest(expires_at, $2::timestamptz) end
+           where id = $1 and (ready or expires_at > now()) returning id`, [id, expiresAt]);
+      return rows.length === 1;
+    },
+    async completeProjectFile(id) {
+      const { rows } = await pool.query('update project_files set ready = true where id = $1 and (ready or expires_at > now()) returning id', [id]);
+      return rows.length === 1;
+    },
+    async deleteProjectFile(id) {
+      const { rowCount } = await pool.query('delete from project_files where id = $1', [id]);
+      return (rowCount ?? 0) > 0;
+    },
+    async listSessionsUsingProjectFile(projectId, fileId) {
+      // The match runs in the database, so no session document leaves it.
+      const { rows } = await pool.query(
+        `select id, project_id, tool_id, tool_version, meta, created_by, updated_by, rev, updated_at, deleted_at
+           from sessions where project_id = $1 and deleted_at is null and strpos(inputs::text, $2) > 0 order by updated_at desc, id collate "C"`,
+        [projectId, projectFileAssetId(fileId)]);
+      return rows.map((r) => {
+        const { inputs: _inputs, ...summary } = sessionFromRow(r);
+        return summary;
+      });
+    },
+    async listProjectMembers(projectId) {
+      const { rows } = await pool.query(
+        'select * from project_members where project_id = $1 order by added_at, user_id', [projectId],
+      );
+      return rows.map(projectMemberFromRow);
+    },
+    async getProjectMember(projectId, userId) {
+      const { rows } = await pool.query(
+        'select * from project_members where project_id = $1 and user_id = $2', [projectId, userId],
+      );
+      return rows[0] ? projectMemberFromRow(rows[0]) : null;
+    },
+    async listUserProjectMemberships(userId) {
+      const { rows } = await pool.query('select * from project_members where user_id = $1', [userId]);
+      return rows.map(projectMemberFromRow);
+    },
+    async putProjectMember(rec) {
+      await pool.query(
+        `insert into project_members (project_id, user_id, role, added_by, added_at)
+         values ($1, $2, $3, $4, $5)
+         on conflict (project_id, user_id) do update set role = excluded.role`,
+        [rec.projectId, rec.userId, rec.role, rec.addedBy, rec.addedAt],
+      );
+    },
+    async updateProjectMemberRole(projectId, userId, role) {
+      const { rows } = await pool.query(
+        'update project_members set role = $3 where project_id = $1 and user_id = $2 returning *', [projectId, userId, role],
+      );
+      return rows[0] ? projectMemberFromRow(rows[0]) : null;
+    },
+    async deleteProjectMember(projectId, userId) {
+      const { rowCount } = await pool.query(
+        'delete from project_members where project_id = $1 and user_id = $2', [projectId, userId],
+      );
+      return (rowCount ?? 0) > 0;
+    },
+    async getUsersByIds(ids) {
+      const unique = [...new Set(ids)];
+      if (!unique.length) return [];
+      const { rows } = await pool.query('select * from users where id = any($1::text[])', [unique]);
+      return rows.map(userFromRow);
     },
     async putSession(session) {
       const result = await pool.query(
@@ -1360,6 +1751,33 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       );
       return rows.map(sessionFromRow);
     },
+    async listSessionSummaries(projectId) {
+      // Every column but inputs: a listing must not pull each stored document.
+      const { rows } = await pool.query(
+        `select id, project_id, tool_id, tool_version, meta, created_by, updated_by, rev, updated_at, deleted_at
+           from sessions where project_id = $1 and deleted_at is null order by updated_at desc`,
+        [projectId],
+      );
+      return rows.map((r) => {
+        const { inputs: _inputs, ...summary } = sessionFromRow(r);
+        return summary;
+      });
+    },
+    async projectSessionStats(projectId) {
+      const { rows } = await pool.query(
+        `select project_id, count(*) as count, max(updated_at) as updated_at,
+                (array_agg(updated_by order by updated_at desc, id desc))[1] as updated_by
+           from sessions
+          where deleted_at is null and ($1::text is null or project_id = $1) group by project_id`,
+        [projectId ?? null],
+      );
+      return rows.map((r) => ({
+        projectId: r.project_id as string,
+        count: Number(r.count),
+        updatedAt: new Date(r.updated_at as string).toISOString(),
+        ...(r.updated_by ? { updatedBy: r.updated_by as string } : {}),
+      }));
+    },
     async listSessionsFiltered(filter) {
       const clauses = ['deleted_at is null'];
       const values: unknown[] = [];
@@ -1377,6 +1795,15 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
          values ($1, $2, $3::jsonb, $4::jsonb, $5, $6)
          on conflict (session_id, rev) do nothing`,
         [rev.sessionId, rev.rev, JSON.stringify(rev.inputs), JSON.stringify(rev.meta), rev.actor, rev.at],
+      );
+      // Keep the bound on disk, not only on read: every REST save appends a
+      // whole document, so without this the table grows by one row per PUT
+      // for ever. Same prune as commitCollab. A failed prune leaves extra rows
+      // that the next save removes, so the two statements need no transaction.
+      await pool.query(
+        `delete from session_revisions where session_id = $1 and rev not in
+          (select rev from session_revisions where session_id = $1 order by rev desc limit $2)`,
+        [rev.sessionId, SESSION_REVISION_LIMIT],
       );
     },
     async listSessionRevisions(sessionId) {
@@ -1403,6 +1830,11 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     },
     async releaseCollab(sessionId, owner) {
       await pool.query('update sessions set collab_owner=null, collab_lease_until=null where id=$1 and collab_owner=$2', [sessionId, owner]);
+    },
+    async collabLeaseActive(sessionId) {
+      // The same clock and predicate `casSession` and `putSession` refuse on.
+      const { rows } = await pool.query('select 1 from sessions where id=$1 and collab_lease_until>clock_timestamp()', [sessionId]);
+      return rows.length === 1;
     },
     async getCollabCheckpoint(sessionId) {
       const { rows } = await pool.query('select revision, head_revision, checkpoint from collab_checkpoints where session_id=$1', [sessionId]);
@@ -1445,6 +1877,22 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
           (select rev from session_revisions where session_id=$1 order by rev desc limit $2)`, [batch.sessionId, SESSION_REVISION_LIMIT]);
         await client.query('commit');
         return rev;
+      } catch (error) { await client.query('rollback'); throw error; }
+      finally { client.release(); }
+    },
+    async commitCollabReceipts(batch) {
+      if (batch.receipts.some(r => r.accepted)) throw new Error('collab-accepted-receipt-needs-commit');
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        // The commitCollab fence, holding the row lock until the receipts are in,
+        // and writing nothing to the session row itself.
+        const locked = await client.query(`select 1 from sessions where id=$1 and rev=$2 and deleted_at is null
+          and collab_owner=$3 and collab_lease_until>clock_timestamp() for update`, [batch.sessionId, batch.expectedRev, batch.owner]);
+        if (!locked.rows[0]) throw new Error('collab-owner-conflict');
+        for (const r of batch.receipts) await client.query(`insert into collab_receipts(session_id,principal,id,digest,accepted,revision) values($1,$2,$3,$4,$5,$6)`,
+          [batch.sessionId, batch.principal, r.id, r.digest, r.accepted, batch.expectedRev]);
+        await client.query('commit');
       } catch (error) { await client.query('rollback'); throw error; }
       finally { client.release(); }
     },

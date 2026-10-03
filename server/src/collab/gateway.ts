@@ -118,7 +118,7 @@ import type { ProjectRecord, SessionRecord, Store, UserRecord } from '../store/t
 import { displayName, resolveMember } from '../iam/member.ts';
 import { guestActor, readPrincipal, type GuestSession } from '../iam/sessions.ts';
 import { linkResourceSelectors, type LinkRecord } from '../links/sign.ts';
-import { canSeeProject } from '../rbac/project-access.ts';
+import { accessAtLeast, effectiveProjectAccess, type ProjectMembership } from '../rbac/project-access.ts';
 import { createBrandService } from '../brand/service.ts';
 import { createMemoryBlobStore } from '../blobs/memory.ts';
 import { mayCreateGuestLinks, mayEditCollab, mayJoinCollab, type Grant, type Role } from '../rbac/evaluate.ts';
@@ -133,7 +133,7 @@ import {
 } from './rooms.ts';
 import { createRoomPersistence } from './persistence.ts';
 import {
-  GUEST_GROUP, guestDisplayName, guestSeatOf, resolveInviter, type GuestSeat,
+  GUEST_GROUP, guestDisplayName, guestLinkRole, guestSeatOf, resolveInviter, type GuestSeat,
 } from './guests.ts';
 
 /** Every collab socket lives under this prefix; the rest of the path is the
@@ -666,10 +666,22 @@ function seatAllows(
   session: SessionRecord | null,
   project: ProjectRecord | null,
   grants: Grant[],
+  membership: ProjectMembership,
 ): boolean {
   if (!session || session.deletedAt) return false;
-  if (!project || !canSeeProject(user, project)) return false;
+  if (!project || effectiveProjectAccess(user, project, membership, grants) === 'none') return false;
   return mayJoinCollab({ userId: user.id, groups: user.groups, role: user.role as Role }, grants);
+}
+
+/**
+ * The writer half of gate 4: `mayEditCollab` (the global `session.edit`) AND
+ * editor or higher on the project (plans/74). A viewer member watches; they
+ * never hold a writer seat, exactly as the PUT route refuses their save.
+ */
+function seatMayEdit(user: UserRecord, project: ProjectRecord | null, grants: Grant[], membership: ProjectMembership): boolean {
+  if (!project) return false;
+  return mayEditCollab({ userId: user.id, groups: user.groups, role: user.role as Role }, grants)
+    && accessAtLeast(effectiveProjectAccess(user, project, membership, grants), 'editor');
 }
 
 /**
@@ -820,20 +832,21 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
 
   const authorizeMemberOps = async (ctx: Admitted): Promise<OpsAuthz | null> => {
     const { id: sessionId, projectId, toolId } = ctx.session;
-    const [user, overlays, grants, inputs, session, project] = await Promise.all([
+    const [user, overlays, grants, inputs, session, project, membership] = await Promise.all([
       resolveMember(store, ctx.cookie, sessionVerify),
       store.listOverlays(),
       store.listGrants(),
       brand.snapshot().then(snap => readToolInputs(snap.source.root, toolId)),
       store.getSession(sessionId),
       store.getProject(projectId),
+      store.getProjectMember(projectId, ctx.identity.principalId),
     ]);
     // Gate 1 (a live member) is `resolveMember` answering at all; gates 2–3 are
     // `seatAllows`, the same decision `admit()` and the heartbeat re-check make.
-    if (!user || !seatAllows(user, session, project, grants)) return null;
+    if (!user || !seatAllows(user, session, project, grants, membership)) return null;
     return {
       groups: user.groups,
-      mayEdit: mayEditCollab({ userId: user.id, groups: user.groups, role: user.role as Role }, grants),
+      mayEdit: seatMayEdit(user, project, grants, membership),
       overlay: overlays.get(toolId),
       isGuest: false,
       ...declaredOf(inputs),
@@ -921,18 +934,33 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
    *      link's OWN target satisfies (`linkResourceSelectors` - the identical
    *      selectors `POST /api/v1/links` authorized the mint against, via the
    *      shared `mayCreateGuestLinks`, so a tool-scoped grant cannot silently
-   *      disagree between the mint and the re-check).
+   *      disagree between the mint and the re-check);
+   *   3. the inviter can still reach the bound session's project at the level
+   *      the mint asked for (plans/74): editor for a writer seat, viewer for
+   *      an observer one, through the same `effectiveProjectAccess` the mint
+   *      used. Removing the inviter from the project, demoting them to viewer
+   *      or making the project private then reaches the guests they let in.
    *
    * Returns the inviter's display name on success (so a caller need not
-   * re-derive it) or null on either failure - one more O(users) scan plus one
-   * grants read, on the same per-gesture/per-keepalive cadence a member's own
-   * standing is re-read on, not a new store surface.
+   * re-derive it) or null on any failure - one more O(users) scan, one
+   * grants read and the session, project and membership reads, on the same
+   * per-gesture/per-keepalive cadence a member's own standing is re-read on,
+   * not a new store surface.
    */
   const guestInviterStanding = async (link: LinkRecord): Promise<string | null> => {
     const [inviter, grants] = await Promise.all([resolveInviter(store, link.createdBy), store.listGrants()]);
     if (!inviter) return null;
     const ctx = { userId: inviter.id, groups: inviter.groups, role: inviter.role as Role };
     if (!mayCreateGuestLinks(ctx, linkResourceSelectors(link.target), grants)) return null;
+    const bound = link.target.sessionId;
+    if (bound) {
+      const session = await store.getSession(bound);
+      const project = session ? await store.getProject(session.projectId) : null;
+      if (!project) return null;
+      const membership = await store.getProjectMember(project.id, inviter.id);
+      const min = guestLinkRole(link) === 'writer' ? 'editor' : 'viewer';
+      if (!accessAtLeast(effectiveProjectAccess(inviter, project, membership, grants), min)) return null;
+    }
     return displayName(inviter);
   };
 
@@ -960,14 +988,15 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
       // check has to ride the same keepalive the link's own liveness does.
       return (await guestInviterStanding(seat.link)) !== null ? { mayEdit: seat.role === 'writer' } : null;
     }
-    const [user, grants, session, project] = await Promise.all([
+    const [user, grants, session, project, membership] = await Promise.all([
       resolveMember(store, ctx.cookie, sessionVerify),
       store.listGrants(),
       store.getSession(sessionId),
       store.getProject(projectId),
+      store.getProjectMember(projectId, ctx.identity.principalId),
     ]);
-    if (!user || !seatAllows(user, session, project, grants)) return null;
-    return { mayEdit: mayEditCollab({ userId: user.id, groups: user.groups, role: user.role as Role }, grants) };
+    if (!user || !seatAllows(user, session, project, grants, membership)) return null;
+    return { mayEdit: seatMayEdit(user, project, grants, membership) };
   };
 
   /**
@@ -1178,12 +1207,15 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
     // 2. the read gate, in GET /api/v1/sessions/:id's own order
     const session = await store.getSession(sessionId);
     if (!session) return refuse(socket, 404, 'NOT_FOUND');
-    const project = await store.getProject(session.projectId);
-    if (!project || !canSeeProject(user, project)) return refuse(socket, 403, 'FORBIDDEN');
+    const [project, membership, grants] = await Promise.all([
+      store.getProject(session.projectId),
+      store.getProjectMember(session.projectId, user.id),
+      store.listGrants(),
+    ]);
+    if (!project || effectiveProjectAccess(user, project, membership, grants) === 'none') return refuse(socket, 403, 'FORBIDDEN');
     if (session.deletedAt) return refuse(socket, 410, 'SESSION_DELETED');
 
     const principal = { userId: user.id, groups: user.groups, role: user.role as Role };
-    const grants = await store.listGrants();
 
     // 3. the ROOM gate - `collab.join` itself. It is a real RBAC action with its
     //    own grants (rbac/evaluate.ts), it is offered in the console's grants
@@ -1198,7 +1230,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
     // 4. the write gate - the same `mayEditCollab` the PUT route's session.edit
     //    check and org-config's can['collab.edit'] both call (evaluate.ts). No
     //    grant is not a refusal: the member joins as an observer (plans/14 §6).
-    const mayEdit = mayEditCollab(principal, grants);
+    const mayEdit = seatMayEdit(user, project, grants, membership);
 
     // 5. the DESIGN-SYSTEM gate (OSS plans/186 §3.10). Last of the gates on
     //    purpose: the message names this instance's active brand profile, and
@@ -1435,7 +1467,17 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
       // revision), so the socket may be gone by the time it resolves. Seating a
       // member on a dead socket would leave a roster entry no close handler can
       // ever remove.
-      const live = await registry.acquire(ctx.session);
+      let live: Room;
+      try {
+        live = await registry.acquire(ctx.session);
+      } catch (err) {
+        // Another gateway process holds this session's room lease (a second
+        // replica, or the old process during a restart). Say so now with the
+        // code the shell retries with backoff, rather than leaving the socket
+        // open until JOIN_TIMEOUT_MS; a retry gets in once the lease is free.
+        if ((err as Error)?.message === 'collab-room-owned') return void ws.close(CLOSE.GOING_AWAY, 'room is open on another server');
+        throw err;
+      }
       if (ws.readyState !== WebSocket.OPEN) return;
       let role: MemberRole = 'writer';
       let notice: JoinNotice | undefined;

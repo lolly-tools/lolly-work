@@ -33,7 +33,19 @@ export interface MappedIdentity {
   lastname?: string;
   title?: string;
   groups: string[];
+  /** The raw `email_verified` claim (admission counts only boolean true). */
+  emailVerified?: unknown;
+  /** Google Workspace hosted domain. */
+  hd?: string;
+  /** Microsoft Entra tenant id. */
+  tid?: string;
 }
+
+/** Authorization request parameters an operator may add per IdP. Anything
+ *  else (redirect_uri, response_type, state, PKCE) is ours and never set
+ *  from configuration. */
+export const AUTH_PARAM_ALLOWLIST = ['prompt', 'hd', 'domain_hint', 'login_hint', 'acr_values'] as const;
+export type AuthParam = typeof AUTH_PARAM_ALLOWLIST[number];
 
 const discoveryCache = new Map<string, { at: number; doc: OidcDiscovery }>();
 const DISCOVERY_TTL_MS = 10 * 60 * 1000;
@@ -62,8 +74,13 @@ export function buildAuthorizeUrl(opts: {
   codeChallenge: string;
   nonce: string;
   scope?: string;
+  /** Extra allowlisted parameters (`AUTH_PARAM_ALLOWLIST`); others are dropped. */
+  params?: Partial<Record<string, string>>;
 }): string {
   const u = new URL(opts.authorizationEndpoint);
+  for (const [k, v] of Object.entries(opts.params ?? {})) {
+    if (v && (AUTH_PARAM_ALLOWLIST as readonly string[]).includes(k)) u.searchParams.set(k, v);
+  }
   u.searchParams.set('response_type', 'code');
   u.searchParams.set('client_id', opts.clientId);
   u.searchParams.set('redirect_uri', opts.redirectUri);
@@ -210,6 +227,16 @@ export function mapClaims(
   if (firstname) identity.firstname = firstname;
   if (lastname) identity.lastname = lastname;
   if (title) identity.title = title;
+  // `email_verified` vouches for the `email` claim and nothing else. When
+  // claimMap.email names another claim (preferred_username, upn), the flag
+  // carries over only if that value IS the verified email; otherwise the
+  // address counts as verified only under emailVerification 'trusted'.
+  const vouched = typeof claims.email === 'string' && claims.email.trim().toLowerCase() === email.trim().toLowerCase();
+  if (claims.email_verified !== undefined && vouched) identity.emailVerified = claims.email_verified;
+  const hd = str(claims.hd);
+  const tid = str(claims.tid);
+  if (hd) identity.hd = hd;
+  if (tid) identity.tid = tid;
   return identity;
 }
 

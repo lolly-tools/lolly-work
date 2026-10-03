@@ -14,8 +14,8 @@ import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-import { linkKeys, sessionKeys, type InstanceConfig, type Secrets } from '../config/instance.ts';
-import type { ProjectRecord, ScimTokenRecord, SessionRecord, Store, UserRecord } from '../store/types.ts';
+import { linkByEmailFor, linkKeys, sessionKeys, type InstanceConfig, type Secrets } from '../config/instance.ts';
+import type { InvitationRecord, ProjectMemberRole, ProjectRecord, ProjectSessionStats, ScimTokenRecord, SessionRecord, SessionSummary, Store, UserRecord } from '../store/types.ts';
 import type { RoomSnapshot } from '../collab/rooms.ts';
 import type { NearbyRegistry } from '../collab/nearby.ts';
 import { createRouter, readJson, readRaw, sendError, sendJson, type RouteCtx } from './router.ts';
@@ -25,11 +25,17 @@ import {
   GUEST_COOKIE, SESSION_COOKIE, clearCookie, guestActor, mintGuestCookie, mintSessionCookie, readPrincipal,
   type Principal, type SessionUser,
 } from '../iam/sessions.ts';
-import { buildAuthorizeUrl, discover, exchangeCode, mapClaims, pkcePair, verifyIdToken, fetchJwks, kidOf } from '../iam/oidc.ts';
+import { buildAuthorizeUrl, discover, exchangeCode, mapClaims, pkcePair, verifyIdToken, fetchJwks, kidOf, type MappedIdentity } from '../iam/oidc.ts';
 import { displayName, resolveMember } from '../iam/member.ts';
 import { resolveProxyIdentity } from '../iam/proxy-auth.ts';
 import { createDeviceAuth, normalizeUserCode } from '../iam/device-auth.ts';
-import { activateDoneHtml, activateFormHtml, activateSignedOutHtml, idpChooserHtml } from '../iam/activate-page.ts';
+import { activateDoneHtml, activateFormHtml, activateSignedOutHtml, admissionRefusedHtml, idpChooserHtml, signInErrorHtml } from '../iam/activate-page.ts';
+import { buildGitHubAuthorizeUrl, exchangeGitHubCode, fetchGitHubIdentity, GitHubSignInError } from '../iam/github.ts';
+import { bootstrapOwnerGroup, decideAdmission, emailIsVerified, type AdmissionDecision, type AdmissionIdentity, type AdmissionIdp } from '../iam/admission.ts';
+import {
+  accountSignInSeen, identityWire, idpPin, isAccountSignIn, LINKED_STANDING_DAYS, resolveSignIn, signInUpsert, standingGroups,
+  subjectHash, unlinkBlock, type SignInResolution,
+} from '../iam/identities.ts';
 import { PACK_MAX_BYTES, type InstancePackMeta } from '../catalog/instance-pack.ts';
 import { readBlobBody } from '../blobs/types.ts';
 import { createNotifier } from '../notify/notify.ts';
@@ -41,12 +47,17 @@ import {
   scimErrorBody, scimList, userToScim,
 } from '../scim/resources.ts';
 import { evaluate, grantDecision, denialCode, mayEditCollab, ownerOnlyAction, roleFromGroups, type Grant, type Role, ROLES } from '../rbac/evaluate.ts';
-import { canSeeProject } from '../rbac/project-access.ts';
+import { accessAtLeast, effectiveProjectAccess, type ProjectAccess } from '../rbac/project-access.ts';
+import { registerProjectFileRoutes } from '../projects/file-routes.ts';
+import { projectFilesEnabled, removeUploadsBy } from '../projects/files.ts';
+import { buildShareMessage, createWindowQuota, mergeInvitationProject, nameWithoutEmail, roleAbove } from '../projects/sharing.ts';
+import { inviteDomainAllowed, mayInviteNewPeople, resolveInvitePolicy } from '../policy/invites.ts';
+import { PROJECT_MEMBER_ROLES } from '../store/types.ts';
 import {
   buildInviteMessage, eligibleInvitees, mayJoinSession, normalizeQuery, sessionLabel,
   INVITEE_LIMIT, MAX_LABEL_CHARS,
 } from '../collab/invites.ts';
-import { filterToolIndex, normalizeOverlay, toolVisibleTo, resolveInputAccess } from '../policy/overlay.ts';
+import { normalizeOverlay, toolVisibleTo, resolveInputAccess } from '../policy/overlay.ts';
 import {
   applyLifecycleToIndex, assetState, buildPathMap, combinedState, entryWindow,
   type AssetFormatEntry, type AssetIndex, type AssetIndexEntry, type AssetState, type LifecycleRow,
@@ -120,6 +131,8 @@ import { RenderResourceError, type RenderSpec } from '../renders/types.ts';
 import { createHostedAssetResolver, optimizeHostedAsset, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
 import { resolveBindingRows, type DataBinding } from '../automation/bindings.ts';
 import { resolveC2paSigner } from '../render/c2pa-signer.ts';
+import { CATALOG_INDEX_REL, CATALOG_SIG_REL, createCatalogSigning, servedToolIndexBytes } from '../catalog/signing.ts';
+import { isToolKeyedCatalogPath, servedToolSidecar } from '../catalog/tool-sidecars.ts';
 import type { ProvenanceDoc, ProvenanceIngredient } from '../render/provenance.ts';
 import type { Profile } from '../render/contract.ts';
 import { hashPassword, randomId, sealSecret, secretFingerprint, sha256Hex, verifyPassword } from '../lib/crypto.ts';
@@ -188,6 +201,10 @@ export interface AppDeps {
    *  Vercel, where an in-memory presence registry cannot work across function
    *  instances - the routes answer 501 there rather than a misleading partial list. */
   nearby?: NearbyRegistry;
+  /** False when this process runs no collab gateway (the Vercel function): the
+   *  org-config collab bits then say no, so the shell offers no room that cannot
+   *  connect. main.ts runs the gateway and leaves this unset. */
+  liveCollab?: boolean;
   /** Byte storage for instance-owned catalog assets (plans/26 §2, plans/27 §5).
    *  main.ts builds the configured driver (pg default / s3); tests and the
    *  Vercel path fall back to an in-memory store. */
@@ -198,6 +215,12 @@ export interface AppDeps {
   /** Explicit host ownership: main.ts starts/stops this runner; function hosts
    * omit the callback and cannot accept work they cannot reliably execute. */
   onRenderRunner?: (runner: RenderRunner) => void;
+  /** How often the durable render and automation runners look for queued work
+   *  (main.ts reads LW_BACKGROUND_POLL_MS). Unset keeps their 1 s default; 0
+   *  sets no timer, so work is picked up at boot, on submission and after each
+   *  finished item only. A long-lived host on a database that scales to zero
+   *  needs that: a query every second keeps the database awake all month. */
+  backgroundPollMs?: number;
 }
 
 export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
@@ -245,6 +268,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // URL. Reuse the configured webhook endpoint as the initial allowlist.
     callbackAllowed: (url) => url === config.notify.webhook?.url,
     resultUrl: automationResultUrl,
+    ...(deps.backgroundPollMs !== undefined ? { pollMs: deps.backgroundPollMs } : {}),
   });
   // The Chromium render worker is active only when both the URL and the shared
   // HMAC key are present; otherwise hooked tools keep 501-ing (unchanged).
@@ -262,6 +286,15 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (c2paSignerCache === undefined) c2paSignerCache = await resolveC2paSigner(config, secrets);
     return c2paSignerCache;
   };
+  // Per-caller catalog signing (catalog/signing.ts): only with LW_CATALOG_SIGNING_KEY.
+  // The key is imported now so a malformed one is reported once at boot, by
+  // variable name only; the signature route then answers 503 instead of
+  // serving an envelope a key-pinned shell would reject.
+  const catalogSigning = secrets.catalogSigningKey ? createCatalogSigning(secrets.catalogSigningKey) : null;
+  catalogSigning?.ready.then(
+    ({ keyId }) => console.log(`[lolly-work] catalog signing on (keyId ${keyId})`),
+    (err: Error) => console.error(`[lolly-work] catalog signing unavailable: ${err.message}`),
+  );
   // Memoize the audit-chain gauge so /metrics never runs verifyChain more than
   // ~once/10s regardless of scrape frequency.
   let auditGauge: { at: number; verdict: ReturnType<typeof verifyChain> } | null = null;
@@ -560,35 +593,214 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // secrets ride the env var the ref names - the provider-credentialRef
   // precedent (see the config-managed provider credential resolution below).
   interface ResolvedIdp {
+    /** `oidc` for the primary and any issuer; `github` for the OAuth 2.0 adapter (iam/github.ts). */
+    kind: 'oidc' | 'github';
     id: string; issuer: string; clientId: string; displayName: string;
     groupsClaim: string; claimMap: typeof config.idp.claimMap; clientSecret?: string; subPrefix: string;
+    /** Per-IdP sign-in constraints (plans/74 W-ID-1); never inherited between IdPs. */
+    constraints: AdmissionIdp; scope: string; authParams: Record<string, string>;
+    /** Whether a verified email may link this IdP's sign-in to an existing user (`linkByEmailFor`). */
+    linkByEmail: boolean;
   }
+  /** The authorize-request extras and admission pins one IdP block declares. */
+  const idpExtras = (c: typeof config.idp | (typeof config.idp.additional)[number]) => ({
+    constraints: {
+      ...(c.hostedDomain ? { hostedDomain: c.hostedDomain } : {}),
+      ...(c.tenantId ? { tenantId: c.tenantId } : {}),
+      emailVerification: c.emailVerification ?? 'claim',
+    } satisfies AdmissionIdp,
+    linkByEmail: linkByEmailFor(c),
+    scope: (c.scopes ?? ['openid', 'profile', 'email']).join(' '),
+    // A pinned Google domain is also sent as `hd`, so the account picker
+    // offers the right account first. Configured authParams.hd must agree.
+    authParams: { ...(c.hostedDomain ? { hd: c.hostedDomain } : {}), ...(c.authParams ?? {}) } as Record<string, string>,
+  });
   const resolveIdp = (raw: string | null): ResolvedIdp | null => {
     if (!raw || raw === 'primary') {
       if (!config.idp.issuer) return null;
       return {
-        id: 'primary', issuer: config.idp.issuer, clientId: config.idp.clientId,
+        kind: 'oidc', id: 'primary', issuer: config.idp.issuer, clientId: config.idp.clientId,
         displayName: config.idp.displayName, groupsClaim: config.idp.groupsClaim,
         claimMap: config.idp.claimMap,
         ...(secrets.idpClientSecret ? { clientSecret: secrets.idpClientSecret } : {}),
         subPrefix: '',
+        ...idpExtras(config.idp),
       };
     }
     const extra = config.idp.additional.find((a) => a.id === raw);
     if (!extra) return null;
     const secret = extra.clientSecretRef ? process.env[extra.clientSecretRef] : undefined;
     return {
-      id: extra.id, issuer: extra.issuer, clientId: extra.clientId,
+      kind: extra.kind ?? 'oidc', id: extra.id, issuer: extra.issuer, clientId: extra.clientId,
       displayName: extra.displayName, groupsClaim: extra.groupsClaim, claimMap: extra.claimMap,
       ...(secret ? { clientSecret: secret } : {}),
       subPrefix: `${extra.id}:`,
+      ...idpExtras(extra),
     };
   };
+
+  // ── admission (plans/74 W-ID-1) ───────────────────────────────────────────
+  // Asked after the identity is verified and BEFORE any user row is written,
+  // on every sign-in, so removing someone from the list blocks their next
+  // sign-in. The active invitation for the email (plans/74 W-ID-2) rides
+  // along so the caller can accept it once the user row exists. An accepted
+  // invitation keeps admitting until it is revoked, so its old expiry no
+  // longer applies; a pending one admits only before its expiry.
+  //
+  // "Disabled" is read across every row with the same email, not only this
+  // sub: subs are namespaced per IdP and email is not unique, so a person
+  // disabled under one IdP must not walk back in through another (or as a
+  // fresh row that the lists or their accepted invitation would admit).
+  type SignInAdmission = AdmissionDecision & { invitation: InvitationRecord | null };
+  /** How long one sign-in's groups and standing carry over to the person's
+   *  other sign-ins (iam/identities.ts `LINKED_STANDING_DAYS`). */
+  const linkedStandingMs = (config.idp.linkedStandingDays ?? LINKED_STANDING_DAYS) * 86_400_000;
+  const admissionInputs = async (sub: string, email: string, linkedUser?: UserRecord | null) => {
+    const existing = await store.getUserBySub(sub);
+    const sameEmail = email.trim() ? await store.findUsersByEmail(email) : [];
+    // A sign-in linked to a disabled person is refused like that person's own.
+    const disabled = !!existing?.disabledAt || !!linkedUser?.disabledAt || sameEmail.some((u) => !!u.disabledAt);
+    const invitation = config.idp.admission?.invitations === false || !email.trim()
+      ? null
+      : await store.findActiveInvitation(email);
+    const invitationView = invitation
+      ? { email: invitation.email, expiresAt: invitation.acceptedAt ? null : invitation.expiresAt ?? null, revokedAt: invitation.revokedAt ?? null }
+      : null;
+    return { disabled, invitation, invitationView };
+  };
+  const admitSignIn = async (
+    identity: AdmissionIdentity & { sub: string }, idp: AdmissionIdp, resolution?: SignInResolution,
+  ): Promise<SignInAdmission> => {
+    const linkedUser = resolution && resolution.via !== 'new' ? resolution.user : null;
+    const { disabled, invitation, invitationView } = await admissionInputs(identity.sub, identity.email, linkedUser);
+    const decision = decideAdmission({ ...identity, disabled }, idp, config.idp.admission, invitationView);
+    // A sign-in already linked to a member (a link row, or a verified-email
+    // match) is admitted on that member's standing when only the lists refuse
+    // it: a personal GitHub address need not be listed for a person the
+    // instance already admits. The per-IdP pins and the disabled state are
+    // never bypassed, and the member's own email must still pass the lists.
+    // That standing is only as fresh as the account's own sign-in, which
+    // passes the work IdP's pins and the lists by itself: once it has not
+    // been seen for the window (the work IdP deleted the person, say), a
+    // linked sign-in no longer carries them in.
+    if (!decision.ok && (decision.reason === 'not-invited' || decision.reason === 'email-unverified')
+      && linkedUser && resolution && resolution.via !== 'legacy' && linkedUser.sub !== identity.sub
+      && accountSignInSeen(linkedUser, await store.listIdentities(linkedUser.id), Date.now(), linkedStandingMs)
+      && await stillAdmitted(linkedUser)) {
+      return { ok: true, via: 'linked', emailVerified: emailIsVerified(identity, idp), invitation };
+    }
+    return { ...decision, invitation };
+  };
+  /**
+   * Whether a stored member would still be admitted, for a session minted
+   * without the IdP (the device-code flow). The email was verified at the
+   * original sign-in and the per-IdP pins were checked then, so only the
+   * lists, the invitation and the disabled state are asked again. A dev
+   * sign-in never passed admission, so its rows are not judged by it.
+   */
+  const stillAdmitted = async (user: UserRecord): Promise<boolean> => {
+    if (user.sub.startsWith('dev:')) return !user.disabledAt;
+    const { disabled, invitationView } = await admissionInputs(user.sub, user.email);
+    return decideAdmission({ email: user.email, emailVerified: true, disabled }, { emailVerification: 'trusted' },
+      config.idp.admission, invitationView).ok;
+  };
+  /**
+   * After the user row exists: a pending invitation for this verified email is
+   * accepted exactly once, its groups join the person's local groups, and any
+   * of those groups not yet in the local registry are created. This also runs
+   * on an open instance (no admission block), where the invitation did not
+   * decide entry but still carries its groups. Returns the user as it stands.
+   */
+  const acceptInvitationAtSignIn = async (
+    user: UserRecord, admitted: SignInAdmission, meta: { provider: 'oidc' | 'github' | 'proxy'; idp?: string },
+  ): Promise<UserRecord> => {
+    const pending = admitted.invitation;
+    if (!admitted.ok || !admitted.emailVerified || !pending || pending.acceptedAt || pending.revokedAt) return user;
+    const at = new Date().toISOString();
+    const accepted = await store.acceptInvitation(pending.id, user.id, at);
+    if (!accepted) return user; // expired, revoked or accepted by a racing sign-in
+    // Groups go to an account the invitation preceded. The route gives groups
+    // straight to an account that holds the address (`accountsHoldingEmail`)
+    // and writes an invitation for one that merely claims it, which keeps
+    // its groups here: the invitation was not written for that account. An
+    // older account takes groups only by signing in with a NEW address,
+    // through a sign-in linked to it (plans/74, "One person, many sign-ins"):
+    // the invitation was written for whoever holds that mailbox, and that
+    // person is this account, so its groups apply. The inviter's own account
+    // never takes groups from its own invitation.
+    const regroupable = accepted.invitedBy !== `user:${user.id}`
+      && (Date.parse(user.createdAt) >= Date.parse(accepted.createdAt) || accepted.email !== user.email.trim().toLowerCase());
+    const applied = regroupable ? accepted.groups : [];
+    const registry = new Set((await store.listLocalGroups()).map((g) => g.name));
+    const createdGroups = applied.filter((g) => !registry.has(g));
+    for (const name of createdGroups) await store.putLocalGroup({ name, createdAt: at });
+    const joined = applied.filter((g) => !user.localGroups.includes(g));
+    const next = joined.length ? (await store.setLocalGroups(user.id, [...user.localGroups, ...joined])) ?? user : user;
+    await audit(`user:${user.id}`, 'invite.accept', `invitation:${accepted.id}`, {
+      provider: meta.provider, ...(meta.idp ? { idp: meta.idp } : {}), email: accepted.email,
+      groups: accepted.groups, ...(createdGroups.length ? { createdGroups } : {}),
+      ...(!regroupable && accepted.groups.length ? { groupsNotApplied: 'existing-account' } : {}),
+      ...(accepted.projects?.length ? { projects: accepted.projects } : {}),
+    });
+    // Projects (plans/74) apply to any account, new or not, and a role is
+    // only ever raised. Each entry is applied on the standing of the person
+    // who put it there, asked again now rather than trusted from when they
+    // wrote it: they must still be an enabled account that manages the
+    // project and may still invite people, and the role must still be one
+    // the policy gives. Otherwise a pending invitation would keep a removed
+    // or offboarded manager's access alive until it expired. A project
+    // archived or gone since is skipped too; every skip is audited.
+    if (accepted.projects?.length) {
+      const grants = await store.listGrants();
+      const policy = resolveInvitePolicy(config.policy.invites);
+      const inviters = new Map<string, UserRecord | null>();
+      const skipped: Array<{ projectId: string; reason: string }> = [];
+      for (const entry of accepted.projects) {
+        const by = entry.invitedBy ?? accepted.invitedBy;
+        const inviterId = by.startsWith('user:') ? by.slice(5) : null;
+        if (inviterId && !inviters.has(inviterId)) inviters.set(inviterId, await store.getUser(inviterId));
+        const inviter = inviterId ? inviters.get(inviterId) ?? null : null;
+        const project = await store.getProject(entry.projectId);
+        const reason = !project || project.archivedAt ? 'project-unavailable'
+          : !inviter || inviter.disabledAt ? 'inviter-unavailable'
+            : !policy.projectRoles.includes(entry.role) ? 'role-not-allowed'
+              : !mayInviteNewPeople(inviter, grants, policy) ? 'inviter-may-not-invite'
+                : !accessAtLeast(await projectAccessOf(inviter, project, grants), 'manager') ? 'inviter-not-manager'
+                  : null;
+        if (reason || !project || !inviter) { skipped.push({ projectId: entry.projectId, reason: reason ?? 'inviter-unavailable' }); continue; }
+        const actor = { principal: `user:${inviter.id}`, name: displayName(inviter), userId: inviter.id };
+        await shareProjectWith(project, next, entry.role, actor, 'invitation');
+      }
+      if (skipped.length) {
+        await audit(`user:${user.id}`, 'invite.project.skip', `invitation:${accepted.id}`, { email: accepted.email, skipped });
+      }
+    }
+    return next;
+  };
+  /** The phone-friendly 403 page, plus the `auth.denied` audit row. The
+   *  account is named on the page (the person needs to see which one they
+   *  used) and in the audit row (an owner needs it to send an invitation). */
+  const refuseSignIn = async (
+    res: ServerResponse, email: string, reason: Extract<AdmissionDecision, { ok: false }>['reason'],
+    meta: { provider: 'oidc' | 'github' | 'proxy'; idp?: string; switchHref: string },
+  ): Promise<void> => {
+    await audit('anonymous', 'auth.denied', 'session', {
+      provider: meta.provider, ...(meta.idp ? { idp: meta.idp } : {}), reason, email: email.trim().toLowerCase(),
+    });
+    res.writeHead(403, {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'private, no-store',
+      'x-content-type-options': 'nosniff',
+      'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+      ...(meta.provider !== 'proxy' ? { 'set-cookie': `${STATE_COOKIE}=; Path=/api/auth; HttpOnly; Max-Age=0` } : {}),
+    });
+    res.end(admissionRefusedHtml(config.instance.name, { email, reason, switchHref: meta.switchHref }));
+  };
   /** What /api/auth/config and the manifest advertise - one entry per house. */
-  const idpProviders = (): Array<{ id: string; name: string; loginPath: string }> =>
+  const idpProviders = (): Array<{ id: string; name: string; kind: 'oidc' | 'github'; loginPath: string }> =>
     !config.idp.issuer ? [] : [
-      { id: 'primary', name: config.idp.displayName || 'SSO', loginPath: '/api/auth/login?idp=primary' },
-      ...config.idp.additional.map((a) => ({ id: a.id, name: a.displayName, loginPath: `/api/auth/login?idp=${a.id}` })),
+      { id: 'primary', name: config.idp.displayName || 'SSO', kind: 'oidc', loginPath: '/api/auth/login?idp=primary' },
+      ...config.idp.additional.map((a) => ({ id: a.id, name: a.displayName, kind: a.kind ?? 'oidc', loginPath: `/api/auth/login?idp=${a.id}` })),
     ];
 
   // ── instance manifest (plans/34 wave 1a) ──────────────────────────────────
@@ -637,6 +849,42 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // and one answer for both paths is simpler than two rules.
   router.add('OPTIONS', '/api/v1/instance', (_req, res) => sendReadPreflight(res));
 
+  /** The 302 to an IdP's authorize endpoint, with PKCE and the signed state
+   *  cookie. `linkTo` (a user id) marks a self-service link (GET
+   *  /api/auth/link): the callback then links the identity instead of
+   *  signing in. */
+  const redirectToIdp = async (
+    res: ServerResponse, idp: ResolvedIdp, returnTo: string, askedPrompt: 'select_account' | 'login' | null, linkTo?: string,
+  ): Promise<void> => {
+    // GitHub (iam/github.ts) has fixed endpoints and nothing to discover.
+    const disco = idp.kind === 'github' ? null : await discover(idp.issuer, fetchImpl);
+    const { verifier, challenge } = pkcePair();
+    const nonce = randomId(12);
+    const state = randomId(12);
+    const stateToken = mintToken('lw/state', { returnTo, verifier, nonce, state, idp: idp.id, ...(linkTo ? { linkTo } : {}) }, secrets.session, 600);
+    const authorize = !disco
+      ? buildGitHubAuthorizeUrl({
+        clientId: idp.clientId,
+        redirectUri: `${config.instance.baseUrl}/api/auth/callback`,
+        state, codeChallenge: challenge, prompt: askedPrompt,
+      })
+      : buildAuthorizeUrl({
+        authorizationEndpoint: disco.authorization_endpoint,
+        clientId: idp.clientId,
+        redirectUri: `${config.instance.baseUrl}/api/auth/callback`,
+        state, nonce, codeChallenge: challenge,
+        scope: idp.scope,
+        params: { ...idp.authParams, ...(askedPrompt ? { prompt: askedPrompt } : {}) },
+      });
+    res.writeHead(302, {
+      location: authorize,
+      'set-cookie': `${STATE_COOKIE}=${stateToken}; Path=/api/auth; HttpOnly; SameSite=Lax; Max-Age=600${secure ? '; Secure' : ''}`,
+    });
+    res.end();
+  };
+  /** The prompt values a sign-in link may ask for; anything else is ignored. */
+  const loginPrompt = (raw: string | null): 'select_account' | 'login' | null =>
+    raw === 'select_account' || raw === 'login' ? raw : null;
   router.add('GET', '/api/auth/login', async (_req, res, ctx) => {
     if (!config.idp.issuer) return sendError(res, 404, 'NO_IDP', 'no OIDC issuer configured');
     const wanted = ctx.url.searchParams.get('idp');
@@ -644,7 +892,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // returnTo rides each button, so the choice costs nothing downstream.
     if (!wanted && config.idp.additional.length) {
       const returnTo = ctx.url.searchParams.get('returnTo');
-      const carry = returnTo ? `&returnTo=${encodeURIComponent(returnTo)}` : '';
+      const askedPrompt = loginPrompt(ctx.url.searchParams.get('prompt'));
+      const carry = `${returnTo ? `&returnTo=${encodeURIComponent(returnTo)}` : ''}${askedPrompt ? `&prompt=${askedPrompt}` : ''}`;
       res.writeHead(200, {
         'content-type': 'text/html; charset=utf-8',
         'cache-control': 'private, no-store',
@@ -657,33 +906,174 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
     const idp = resolveIdp(wanted);
     if (!idp) return sendError(res, 404, 'NO_IDP', `no IdP named "${wanted}" is configured`);
-    const disco = await discover(idp.issuer, fetchImpl);
-    const { verifier, challenge } = pkcePair();
-    const nonce = randomId(12);
-    const state = randomId(12);
-    const stateToken = mintToken('lw/state', { returnTo: returnToSafe(ctx.url.searchParams.get('returnTo')), verifier, nonce, state, idp: idp.id }, secrets.session, 600);
-    const authorize = buildAuthorizeUrl({
-      authorizationEndpoint: disco.authorization_endpoint,
-      clientId: idp.clientId,
-      redirectUri: `${config.instance.baseUrl}/api/auth/callback`,
-      state, nonce, codeChallenge: challenge,
-    });
-    res.writeHead(302, {
-      location: authorize,
-      'set-cookie': `${STATE_COOKIE}=${stateToken}; Path=/api/auth; HttpOnly; SameSite=Lax; Max-Age=600${secure ? '; Secure' : ''}`,
-    });
-    res.end();
+    // A person may ask for the account picker or a fresh login (the refusal
+    // page's "use a different account" link does); nothing else from the
+    // query string reaches the IdP.
+    await redirectToIdp(res, idp, returnToSafe(ctx.url.searchParams.get('returnTo')), loginPrompt(ctx.url.searchParams.get('prompt')));
   });
+
+  // Self-service link (plans/74, "One person, many sign-ins"): a signed-in
+  // member runs another IdP and the identity it returns joins their account,
+  // whatever its email. Session cookie only: a service token has no person
+  // to link to. The account picker is asked for by default, since the
+  // browser is often still signed in to the account already linked.
+  router.add('GET', '/api/auth/link', async (req, res, ctx) => {
+    if (!config.idp.issuer) return sendError(res, 404, 'NO_IDP', 'no OIDC issuer configured');
+    const me = await memberOf(req);
+    if (!me) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+    const wanted = ctx.url.searchParams.get('idp');
+    if (!wanted) return sendError(res, 400, 'INVALID_INPUT', 'idp is required: name the sign-in to add', { field: 'idp' });
+    const idp = resolveIdp(wanted);
+    if (!idp) return sendError(res, 404, 'NO_IDP', `no IdP named "${wanted}" is configured`);
+    await redirectToIdp(res, idp, returnToSafe(ctx.url.searchParams.get('returnTo')),
+      loginPrompt(ctx.url.searchParams.get('prompt')) ?? 'select_account', me.id);
+  });
+
+  /** A callback that cannot finish. A browser (Accept: text/html) gets the
+   *  phone-friendly page with a way to start again; an API caller keeps the
+   *  JSON error. `html: true` forces the page (every GitHub failure). The
+   *  state cookie is cleared either way, so a retry starts clean. */
+  const signInFailed = (
+    req: IncomingMessage, res: ServerResponse, status: number, code: string, message: string,
+    opts: { retryHref: string; html?: boolean; heading?: string; retryLabel?: string },
+  ): void => {
+    const clear = `${STATE_COOKIE}=; Path=/api/auth; HttpOnly; Max-Age=0`;
+    if (!opts.html && !/\btext\/html\b/.test(String(req.headers.accept ?? ''))) {
+      return sendError(res, status, code, message, undefined);
+    }
+    res.writeHead(status, {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'private, no-store',
+      'x-content-type-options': 'nosniff',
+      'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+      'set-cookie': clear,
+    });
+    res.end(signInErrorHtml(config.instance.name, {
+      message, retryHref: opts.retryHref,
+      ...(opts.heading ? { heading: opts.heading } : {}), ...(opts.retryLabel ? { retryLabel: opts.retryLabel } : {}),
+    }));
+  };
+
+  // ── linked sign-ins (plans/74, "One person, many sign-ins") ───────────────
+  /** An IdP's display name for a stored identity's `idp` id. */
+  const idpLabel = (idp: string): string => {
+    if (idp === 'primary') return config.idp.displayName || 'SSO';
+    if (idp === 'proxy') return config.proxyAuth.displayName || 'Single sign-on';
+    if (idp === 'dev') return 'Developer sign-in';
+    return config.idp.additional.find((a) => a.id === idp)?.displayName ?? idp;
+  };
+  /** Whether this sign-in's email counts as verified for linking: the IdP
+   *  vouches for it AND takes part in linking by email. A `trusted` IdP that
+   *  has not opted in is never a link target, so an address it merely
+   *  asserts can never pull someone else's sign-in into its account. */
+  const linkableEmail = (identity: AdmissionIdentity, idp: ResolvedIdp): boolean =>
+    idp.linkByEmail && emailIsVerified(identity, idp.constraints);
+  /** The directory pin of a stored identity's IdP (iam/identities.ts
+   *  `idpPin`); undefined when that IdP is no longer configured. */
+  const pinOfIdp = (idpId: string): string | null | undefined => {
+    const r = resolveIdp(idpId);
+    return r ? idpPin(r.constraints) : undefined;
+  };
+  /** The audit `provider` for a sign-in through this IdP: GitHub is OAuth 2.0, not OIDC. */
+  const providerOf = (idp: ResolvedIdp): 'oidc' | 'github' => (idp.kind === 'github' ? 'github' : 'oidc');
+  /**
+   * The writes an admitted sign-in makes: the user row (iam/identities.ts
+   * `signInUpsert`), its identity row, and the audit rows for a link made by
+   * email or held back as ambiguous. Returns the user the session is minted
+   * for, under the row's own `users.sub` whichever sign-in was used.
+   */
+  const recordSignIn = async (args: {
+    resolution: SignInResolution; sub: string; idp: string; email: string; emailVerified: boolean;
+    /** `profile.groups` is what this sign-in asserts: the IdP's groups plus
+     *  any bootstrap owner group it earned. */
+    profile: import('../store/types.ts').UserUpsert; provider: string;
+  }): Promise<UserRecord> => {
+    const { resolution, sub } = args;
+    const now = Date.now();
+    const at = new Date(now).toISOString();
+    // Each sign-in speaks for its own groups; the account carries what its
+    // sign-ins seen within the window asserted (iam/identities.ts).
+    const asserted = [...new Set(args.profile.groups.filter(Boolean))];
+    const prior = resolution.via === 'new' ? [] : await store.listIdentities(resolution.user.id);
+    const groups = standingGroups(asserted, prior, sub, now, linkedStandingMs);
+    const user = await store.upsertUserBySub(signInUpsert(resolution, sub, args.profile, groups));
+    const email = args.email.trim().toLowerCase();
+    const linked = await store.linkIdentity({
+      identitySub: sub, userId: user.id, idp: args.idp, ...(email ? { email } : {}),
+      emailVerified: args.emailVerified, groups: asserted, linkedAt: at, lastLoginAt: at,
+    });
+    if (resolution.via === 'email' && linked?.created) {
+      await audit(`user:${user.id}`, 'identity.link', `user:${user.id}`, { via: 'email', provider: args.provider, idp: args.idp, email });
+    } else if (resolution.via === 'new' && resolution.pinned) {
+      // The one account holding this address was proven only through IdPs
+      // pinned to a directory this sign-in's IdP does not share: it gets an
+      // account of its own, and the person can link by hand from the other.
+      await audit(`user:${user.id}`, 'identity.link-held', `user:${user.id}`, {
+        provider: args.provider, idp: args.idp, email, reason: 'pinned',
+      });
+    } else if (resolution.via === 'new' && resolution.candidates > 1) {
+      // Two accounts already prove this address: guessing would hand one
+      // person's work to the other, so this sign-in gets its own account and
+      // an owner can merge by hand.
+      await audit(`user:${user.id}`, 'identity.link-ambiguous', `user:${user.id}`, {
+        provider: args.provider, idp: args.idp, email, candidates: resolution.candidates,
+      });
+    }
+    return user;
+  };
+  /**
+   * The end of a self-service link (GET /api/auth/link): the verified identity
+   * joins the CURRENT user, with no email match needed, because the person
+   * proved both sides in one browser. The session that started the link must
+   * still be the one finishing it. The IdP's own pins (hosted domain, tenant)
+   * still apply, since a sign-in through it would be refused anyway; the
+   * admission lists do not, because the member is already admitted.
+   */
+  const finishLink = async (
+    req: IncomingMessage, res: ServerResponse, box: { returnTo: string; linkTo?: string },
+    idp: ResolvedIdp, identity: MappedIdentity,
+  ): Promise<void> => {
+    const clearState = `${STATE_COOKIE}=; Path=/api/auth; HttpOnly; Max-Age=0`;
+    const again = `/api/auth/link?idp=${encodeURIComponent(idp.id)}&returnTo=${encodeURIComponent(box.returnTo)}`;
+    const me = await memberOf(req);
+    if (!me || me.id !== box.linkTo) {
+      return signInFailed(req, res, 401, 'LINK_SESSION', 'You were signed out while adding this sign-in. Sign in again, then add it from your profile.',
+        { retryHref: `/api/auth/login?returnTo=${encodeURIComponent(box.returnTo)}`, html: true, heading: 'Sign-in not added', retryLabel: 'Sign in' });
+    }
+    const pins = decideAdmission({ ...identity, disabled: false }, idp.constraints, undefined, null);
+    if (!pins.ok) return refuseSignIn(res, identity.email, pins.reason, { provider: providerOf(idp), idp: idp.id, switchHref: `${again}&prompt=select_account` });
+    const owner = (await store.getUserByIdentity(identity.sub)) ?? (await store.getUserBySub(identity.sub));
+    const at = new Date().toISOString();
+    const email = identity.email.trim().toLowerCase();
+    // A link proves control of the account, not standing in its directory:
+    // the groups its IdP asserts count from its first real sign-in, which
+    // runs admission. Until then the row asserts none.
+    const linked = owner && owner.id !== me.id ? null : await store.linkIdentity({
+      identitySub: identity.sub, userId: me.id, idp: idp.id, ...(email ? { email } : {}),
+      emailVerified: linkableEmail(identity, idp), linkedAt: at, lastLoginAt: at,
+    });
+    if (!linked) {
+      await audit(`user:${me.id}`, 'identity.link-refused', `user:${me.id}`, { idp: idp.id, reason: 'other-user' });
+      return signInFailed(req, res, 409, 'IDENTITY_IN_USE',
+        `That ${idpLabel(idp.id)} account already signs in as someone else here. Sign out of it at ${idpLabel(idp.id)} and try again with another account, or ask an owner to remove it from the other person.`,
+        { retryHref: box.returnTo, html: true, heading: 'This sign-in belongs to someone else', retryLabel: 'Back' });
+    }
+    if (linked.created) {
+      await audit(`user:${me.id}`, 'identity.link', `user:${me.id}`, { via: 'self', idp: idp.id, ...(email ? { email } : {}) });
+    }
+    res.writeHead(302, { location: box.returnTo, 'set-cookie': clearState });
+    res.end();
+  };
 
   router.add('GET', '/api/auth/callback', async (req, res, ctx) => {
     if (!config.idp.issuer) return sendError(res, 404, 'NO_IDP', 'no OIDC issuer configured');
     const cookies = req.headers.cookie ?? '';
     const stateCookie = /(?:^|;\s*)lw_state=([^;]+)/.exec(cookies)?.[1];
     const box = stateCookie
-      ? verifyToken<{ returnTo: string; verifier: string; nonce: string; state: string; idp?: string }>('lw/state', stateCookie, sessionVerify)
+      ? verifyToken<{ returnTo: string; verifier: string; nonce: string; state: string; idp?: string; linkTo?: string }>('lw/state', stateCookie, sessionVerify)
       : null;
     if (!box || box.state !== ctx.url.searchParams.get('state')) {
-      return sendError(res, 400, 'BAD_STATE', 'login state missing or mismatched — restart sign-in');
+      return signInFailed(req, res, 400, 'BAD_STATE', 'This sign-in expired or was started in another browser. Start again from here.', { retryHref: '/api/auth/login' });
     }
     // The SAME house that started the flow finishes it - the id rides the
     // signed state token, so a crafted callback cannot cross issuers. A token
@@ -691,36 +1081,117 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const idp = resolveIdp(box.idp ?? 'primary');
     if (!idp) return sendError(res, 400, 'BAD_STATE', 'the IdP that started this sign-in is no longer configured');
     const code = ctx.url.searchParams.get('code');
-    if (!code) return sendError(res, 400, 'NO_CODE', 'IdP returned no authorization code');
-    const disco = await discover(idp.issuer, fetchImpl);
-    // OIDC Discovery 4.3: the document's issuer must be the one it was fetched
-    // for. Checking it against the CONFIGURED issuer, not against itself, is
-    // what stops a discovery answer from naming a different authority.
-    if (disco.issuer.replace(/\/+$/, '') !== idp.issuer.replace(/\/+$/, '')) {
-      return sendError(res, 502, 'ISSUER_MISMATCH', 'IdP discovery names a different issuer than configured');
+    // "Try again" restarts what was started: during a link, the link. A
+    // fresh sign-in there would replace the person's session, and could
+    // create a second, empty account for the identity they meant to add.
+    const retryHref = box.linkTo
+      ? `/api/auth/link?idp=${encodeURIComponent(idp.id)}&returnTo=${encodeURIComponent(box.returnTo)}`
+      : `/api/auth/login?idp=${encodeURIComponent(idp.id)}&returnTo=${encodeURIComponent(box.returnTo)}`;
+    const failHeading = box.linkTo ? { heading: 'Sign-in not added' } : {};
+    if (!code) {
+      return signInFailed(req, res, 400, 'NO_CODE', `${idp.displayName || 'The identity provider'} did not complete the sign-in. If you cancelled, you can start again.`,
+        { retryHref, html: idp.kind === 'github', ...failHeading });
     }
-    const tokens = await exchangeCode({
-      tokenEndpoint: disco.token_endpoint,
-      code, verifier: box.verifier,
-      clientId: idp.clientId,
-      ...(idp.clientSecret ? { clientSecret: idp.clientSecret } : {}),
-      redirectUri: `${config.instance.baseUrl}/api/auth/callback`,
-      fetchImpl,
-    });
-    if (!tokens.id_token) return sendError(res, 502, 'NO_ID_TOKEN', 'IdP returned no id_token');
-    const jwks = await fetchJwks(disco.jwks_uri, fetchImpl, kidOf(tokens.id_token));
-    const claims = await verifyIdToken(tokens.id_token, jwks, {
-      issuer: disco.issuer, clientId: idp.clientId, nonce: box.nonce,
-    });
-    const identity = mapClaims(claims, idp.claimMap, idp.groupsClaim);
+    let identity: MappedIdentity;
+    if (idp.kind === 'github') {
+      // GitHub is OAuth 2.0 (iam/github.ts): the access token is used for two
+      // API reads and then dropped; it is never stored or logged. Every
+      // failure becomes the HTML page plus an `auth.failed` audit row.
+      try {
+        if (!idp.clientSecret) throw new GitHubSignInError('token', 'the GitHub client secret is not set on this instance');
+        const accessToken = await exchangeGitHubCode({
+          code, verifier: box.verifier, clientId: idp.clientId, clientSecret: idp.clientSecret,
+          redirectUri: `${config.instance.baseUrl}/api/auth/callback`, fetchImpl,
+        });
+        identity = await fetchGitHubIdentity(accessToken, fetchImpl);
+      } catch (err) {
+        const reason = err instanceof GitHubSignInError ? err.reason : 'profile';
+        await audit('anonymous', 'auth.failed', 'session', { provider: 'github', idp: idp.id, reason });
+        const message = reason === 'no-email'
+          ? 'GitHub did not share a verified email address for this account. Add an email address in your GitHub settings, confirm it from the message GitHub sends, then try again.'
+          : 'GitHub did not finish the sign-in. Wait a moment and try again; if it keeps happening, tell an owner of this workspace.';
+        return signInFailed(req, res, reason === 'no-email' ? 403 : 502, reason === 'no-email' ? 'NO_EMAIL' : 'IDP_FAILED', message, { retryHref, html: true, ...failHeading });
+      }
+    } else {
+      // Every step below talks to the IdP or judges what it sent. A failure in
+      // any of them is the HTML page plus an `auth.failed` row naming the step
+      // (a fixed word, never the IdP's own error text), as for GitHub above,
+      // instead of an unhandled 500 carrying raw JSON.
+      let step: 'discovery' | 'issuer-mismatch' | 'token' | 'no-id-token' | 'jwks' | 'id-token' | 'claims' = 'discovery';
+      try {
+        const disco = await discover(idp.issuer, fetchImpl);
+        // OIDC Discovery 4.3: the document's issuer must be the one it was fetched
+        // for. Checking it against the CONFIGURED issuer, not against itself, is
+        // what stops a discovery answer from naming a different authority.
+        if (disco.issuer.replace(/\/+$/, '') !== idp.issuer.replace(/\/+$/, '')) {
+          step = 'issuer-mismatch';
+          throw new Error('IdP discovery names a different issuer than configured');
+        }
+        step = 'token';
+        const tokens = await exchangeCode({
+          tokenEndpoint: disco.token_endpoint,
+          code, verifier: box.verifier,
+          clientId: idp.clientId,
+          ...(idp.clientSecret ? { clientSecret: idp.clientSecret } : {}),
+          redirectUri: `${config.instance.baseUrl}/api/auth/callback`,
+          fetchImpl,
+        });
+        if (!tokens.id_token) {
+          step = 'no-id-token';
+          throw new Error('IdP returned no id_token');
+        }
+        step = 'jwks';
+        const jwks = await fetchJwks(disco.jwks_uri, fetchImpl, kidOf(tokens.id_token));
+        step = 'id-token';
+        const claims = await verifyIdToken(tokens.id_token, jwks, {
+          issuer: disco.issuer, clientId: idp.clientId, nonce: box.nonce,
+        });
+        step = 'claims';
+        identity = mapClaims(claims, idp.claimMap, idp.groupsClaim);
+      } catch (err) {
+        // The library messages name a step and an HTTP status, never a token or secret.
+        console.warn(`[lolly-work] sign-in through ${idp.id} failed at ${step}: ${(err as Error)?.message ?? err}`);
+        await audit('anonymous', 'auth.failed', 'session', { provider: providerOf(idp), idp: idp.id, reason: step });
+        const name = idp.displayName || 'The identity provider';
+        const message = step === 'claims'
+          ? `${name} did not share an email address for this account. This workspace needs one to know who you are. Try again with another account, or tell an owner of this workspace.`
+          : `${name} did not finish the sign-in. Wait a moment and try again; if it keeps happening, tell an owner of this workspace.`;
+        return signInFailed(req, res, step === 'claims' ? 403 : 502, step === 'claims' ? 'NO_EMAIL' : 'IDP_FAILED', message, { retryHref, html: true, ...failHeading });
+      }
+    }
     // The namespace prefix (empty for primary) keeps two issuers' subs apart.
     identity.sub = `${idp.subPrefix}${identity.sub}`;
-    const user = await store.upsertUserBySub({ ...identity, role: roleFromGroups(identity.groups, config.idp.roleGroups) });
+    // A self-service link (GET /api/auth/link) ends here: no new session.
+    if (box.linkTo) return finishLink(req, res, box, idp, identity);
+    // Which user this sign-in belongs to (iam/identities.ts), read before
+    // admission so a sign-in linked to a disabled person is refused.
+    const verifiedForLinking = linkableEmail(identity, idp);
+    const resolution = await resolveSignIn(store, {
+      sub: identity.sub, email: identity.email, emailVerified: verifiedForLinking, linkByEmail: idp.linkByEmail,
+      pin: idpPin(idp.constraints), pinOf: pinOfIdp,
+    });
+    // Admission BEFORE the upsert: a refused person gets no user row.
+    const admitted = await admitSignIn(identity, idp.constraints, resolution);
+    if (!admitted.ok) {
+      const again = `/api/auth/login?${config.idp.additional.length ? '' : `idp=${encodeURIComponent(idp.id)}&`}prompt=select_account&returnTo=${encodeURIComponent(box.returnTo)}`;
+      return refuseSignIn(res, identity.email, admitted.reason, { provider: providerOf(idp), idp: idp.id, switchHref: again });
+    }
+    const { emailVerified: _verified, hd: _hd, tid: _tid, ...profile } = identity;
+    const ownerGroup = bootstrapOwnerGroup(admitted, identity.email, config.idp.bootstrapOwners, config.idp.roleGroups.owner);
+    if (ownerGroup && !profile.groups.includes(ownerGroup)) profile.groups = [...profile.groups, ownerGroup];
+    const upserted = await recordSignIn({
+      resolution, sub: identity.sub, idp: idp.id, email: identity.email, emailVerified: verifiedForLinking,
+      profile: { ...profile, role: roleFromGroups(profile.groups, config.idp.roleGroups) },
+      provider: providerOf(idp),
+    });
+    // The row exists now, so an invitation's groups can be joined to it.
+    const user = await acceptInvitationAtSignIn(upserted, admitted, { provider: providerOf(idp), idp: idp.id });
     const sessionUser: SessionUser = {
       sub: user.sub, email: user.email, groups: user.groups, role: user.role,
       name: displayName(user), epoch: user.sessionEpoch,
     };
-    await audit(`user:${user.id}`, 'auth.login', 'session', { provider: 'oidc', idp: idp.id, setupFingerprint: identitySettingsHash(config) });
+    if (ownerGroup) await audit(`user:${user.id}`, 'auth.bootstrap-owner', `user:${user.id}`, { provider: providerOf(idp), idp: idp.id, group: ownerGroup });
+    await audit(`user:${user.id}`, 'auth.login', 'session', { provider: providerOf(idp), idp: idp.id, ...(admitted.via !== 'open' ? { admittedVia: admitted.via } : {}), setupFingerprint: identitySettingsHash(config) });
     res.writeHead(302, {
       location: box.returnTo,
       'set-cookie': [
@@ -743,6 +1214,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       role: roleFromGroups(groups, config.idp.roleGroups),
       ...(devUser.name ? { firstname: devUser.name } : {}),
     });
+    // Recorded so the profile lists it; a dev address is never verified, so
+    // it never links anything by email.
+    const devAt = new Date().toISOString();
+    await store.linkIdentity({ identitySub: user.sub, userId: user.id, idp: 'dev', email: user.email, emailVerified: false, linkedAt: devAt, lastLoginAt: devAt });
     const sessionUser: SessionUser = {
       sub: user.sub, email: user.email, groups: user.groups, role: user.role, name: devUser.name ?? user.email,
       epoch: user.sessionEpoch,
@@ -769,17 +1244,34 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       return sendError(res, resolved.status, resolved.code, resolved.message);
     }
     const id = resolved.identity;
-    const user = await store.upsertUserBySub({
-      sub: `proxy:${id.user}`, email: id.email, groups: id.groups,
-      role: roleFromGroups(id.groups, config.idp.roleGroups),
-      ...(id.firstname ? { firstname: id.firstname } : {}),
-      ...(id.lastname ? { lastname: id.lastname } : {}),
+    // The same admission rule as OIDC. The proxy is the authority for the
+    // address it sends, so its email counts as verified; only the proxy can
+    // switch accounts, so the refusal page offers no link.
+    // The proxy never links by email (it is `trusted`, and linkByEmail is off
+    // for trusted IdPs), so its sign-ins resolve by identity row, by the
+    // legacy users.sub, or as a new user.
+    const proxySub = `proxy:${id.user}`;
+    const resolution = await resolveSignIn(store, { sub: proxySub, email: id.email, emailVerified: false, linkByEmail: false });
+    const admitted = await admitSignIn({ sub: proxySub, email: id.email }, { emailVerification: 'trusted' }, resolution);
+    if (!admitted.ok) return refuseSignIn(res, id.email, admitted.reason, { provider: 'proxy', switchHref: '' });
+    const ownerGroup = bootstrapOwnerGroup(admitted, id.email, config.idp.bootstrapOwners, config.idp.roleGroups.owner);
+    const proxyGroups = ownerGroup && !id.groups.includes(ownerGroup) ? [...id.groups, ownerGroup] : id.groups;
+    const upserted = await recordSignIn({
+      resolution, sub: proxySub, idp: 'proxy', email: id.email, emailVerified: false, provider: 'proxy',
+      profile: {
+        sub: proxySub, email: id.email, groups: proxyGroups,
+        role: roleFromGroups(proxyGroups, config.idp.roleGroups),
+        ...(id.firstname ? { firstname: id.firstname } : {}),
+        ...(id.lastname ? { lastname: id.lastname } : {}),
+      },
     });
+    const user = await acceptInvitationAtSignIn(upserted, admitted, { provider: 'proxy' });
     const sessionUser: SessionUser = {
       sub: user.sub, email: user.email, groups: user.groups, role: user.role,
       name: displayName(user), epoch: user.sessionEpoch,
     };
-    await audit(`user:${user.id}`, 'auth.login', 'session', { provider: 'proxy', directory: id.sources.directory, setupFingerprint: identitySettingsHash(config) });
+    if (ownerGroup) await audit(`user:${user.id}`, 'auth.bootstrap-owner', `user:${user.id}`, { provider: 'proxy', group: ownerGroup });
+    await audit(`user:${user.id}`, 'auth.login', 'session', { provider: 'proxy', directory: id.sources.directory, ...(admitted.via !== 'open' ? { admittedVia: admitted.via } : {}), setupFingerprint: identitySettingsHash(config) });
     res.writeHead(302, {
       location: returnToSafe(ctx.url.searchParams.get('returnTo')),
       'set-cookie': mintSessionCookie(sessionUser, secrets.session, secure, sessionTtlSec),
@@ -848,6 +1340,13 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // between must still win - re-read the person before minting anything.
     const user = await store.getUserBySub(claim.user.sub);
     if (!user || user.disabledAt || user.sessionEpoch > (claim.user.epoch ?? 0)) {
+      return sendJson(res, 200, { status: 'denied' });
+    }
+    // A device session is a sign-in that skips the IdP, so it asks admission
+    // again: someone taken off the lists, or whose invitation was revoked,
+    // must not renew access by approving codes from a still-live session.
+    if (!(await stillAdmitted(user))) {
+      await audit('anonymous', 'auth.denied', 'session', { provider: 'device', reason: 'not-admitted', email: user.email.trim().toLowerCase() });
       return sendJson(res, 200, { status: 'denied' });
     }
     await audit(`user:${user.id}`, 'auth.login', 'session', { provider: 'device' });
@@ -928,7 +1427,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     for (const toolId of overlays.keys()) {
       toolInputs.set(toolId, await readToolInputs(config.instance.pack, toolId));
     }
-    return assembleOrgConfig({ config, user: subject, overlays, grants, toolInputs, flagGovernance, injectables, render: renderCaps, inboxUnread: unread });
+    return assembleOrgConfig({ config, user: subject, overlays, grants, toolInputs, flagGovernance, injectables, render: renderCaps, inboxUnread: unread, ...(deps.liveCollab === false ? { liveCollab: false } : {}), projectFiles: projectFilesEnabled(config, store) });
   };
 
   // A small, uncached lease renewal. Resolve membership on every request so a
@@ -1100,14 +1599,16 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // cannot themselves see - bypassing `canSeeProject`, `collab.join` and
     // `session.edit` in one HTTP call. Checked with the exact gate
     // `GET /api/v1/sessions/:id` uses, so a mint can never reach further than
-    // a plain read of the same session would.
+    // a plain read of the same session would. A guest-edit link hands out a
+    // writer seat, so it needs what a save needs: editor on the project
+    // (plans/74), never a viewer membership.
     if (body.target.sessionId) {
       const targetSession = await store.getSession(body.target.sessionId);
       if (!targetSession) return sendError(res, 404, 'NOT_FOUND', 'no such session');
       const targetProject = await store.getProject(targetSession.projectId);
-      if (!targetProject || !canSeeProject(user, targetProject)) {
-        return sendError(res, 403, 'FORBIDDEN', 'you cannot see this session');
-      }
+      if (!targetProject) return sendError(res, 403, 'FORBIDDEN', 'you cannot see this session');
+      const access = await projectAccessOf(user, targetProject, grants);
+      if (!projectAllows(res, access, kind === 'guest-edit' ? 'editor' : 'viewer', 'session')) return;
     }
     // Exposure is checked HERE, once, at mint (plans/31 §2 1b): a link is a
     // bearer credential for the bytes the minter could already fetch, never a
@@ -2181,8 +2682,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   router.add('POST', '/api/v1/retention/run', async (req, res) => {
     const actor = await requireAction(req, res, 'instance.config');
     if (!actor) return;
-    const result = await runRetention({ config, store });
-    if (result.telemetryTrimmed || result.auditTrimmed) {
+    const result = await runRetention({ config, store, blobs });
+    if (result.telemetryTrimmed || result.auditTrimmed || result.projectFilesSwept) {
       await audit(`user:${actor.id}`, 'retention.run', 'instance', { ...result });
     }
     sendJson(res, 200, result);
@@ -2222,9 +2723,14 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       return sendError(res, 409, 'ERASE_HAS_PROJECTS',
         `transfer their ${owned.length} active project(s) and inspect erasure-preview for retained references - erasure never silently destroys shared work`);
     }
-    const result = await store.eraseUserAccount(target.id);
-    if (result.status === 'referenced') return sendError(res, 409, 'ERASE_REFERENCED',
+    const refused = () => sendError(res, 409, 'ERASE_REFERENCED',
       'retained records still reference this account; inspect erasure-preview and resolve their approved lifecycle first. Archiving does not remove references. No identity or telemetry was changed.');
+    if (Object.values((await store.previewUserErasure(target.id)).references).some((count) => count > 0)) return refused();
+    // Unfinished uploads are nobody's shared work: they go (parts, then rows)
+    // so their users FK does not block the erasure. Ready files block above.
+    await removeUploadsBy(store, blobs, target.id);
+    const result = await store.eraseUserAccount(target.id);
+    if (result.status === 'referenced') return refused();
     if (result.status === 'not-found') return sendError(res, 404, 'NOT_FOUND', 'no such user');
     const { scrubbed } = result;
     await audit(`user:${actor.id}`, 'user.erase', `user:${target.id}`, { scrubbed });
@@ -2411,6 +2917,342 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!updated) return sendError(res, 404, 'NOT_FOUND', 'no such user');
     await audit(`user:${actor.id}`, 'user.sessions.revoked', `user:${updated.id}`);
     sendJson(res, 200, userWire(updated));
+  });
+
+  // ── linked sign-ins (plans/74, "One person, many sign-ins") ───────────────
+  // A person lists and removes their own; an admin or owner does the same for
+  // anyone from the console. A sign-in is addressed by idp plus subjectHash
+  // (iam/identities.ts), so a raw IdP subject never leaves the server. The
+  // sign-in an account was created with, and the last one, stay.
+  const identitiesOf = async (user: UserRecord) => {
+    const all = await store.listIdentities(user.id);
+    return { all, wire: all.map((r) => identityWire(r, user, all, idpLabel(r.idp))) };
+  };
+  /** A fresh session cookie for a person whose own action just ended every
+   *  session of theirs, so the device they acted from stays signed in. */
+  const stayingSignedIn = (user: UserRecord): string => mintSessionCookie({
+    sub: user.sub, email: user.email, groups: user.groups, role: user.role,
+    name: displayName(user), epoch: user.sessionEpoch,
+  }, secrets.session, secure, sessionTtlSec);
+  /** Removes one sign-in, or answers why not. Returns the account as it
+   *  stands after the removal, or null when an error was sent; the caller
+   *  sends the 204.
+   *
+   *  Every session carries the account's own sub, so one minted through the
+   *  removed sign-in looks like any other. Removing a sign-in is how a wrong
+   *  or compromised one is put out, so the account's session epoch moves
+   *  and every session it holds ends; the self route then hands the person
+   *  a fresh one. */
+  const unlinkFor = async (
+    res: ServerResponse, actor: UserRecord, target: UserRecord, idp: string, hash: string, by: 'self' | 'admin',
+  ): Promise<UserRecord | null> => {
+    const all = await store.listIdentities(target.id);
+    const row = all.find((r) => r.idp === idp && subjectHash(r.identitySub) === hash);
+    if (!row) { sendError(res, 404, 'NOT_FOUND', 'no such sign-in on this account'); return null; }
+    const block = unlinkBlock(row, target, all);
+    if (block === 'account') {
+      sendError(res, 409, 'ACCOUNT_SIGN_IN', 'this is the sign-in the account was created with, so it stays'); return null;
+    }
+    if (block === 'last') { sendError(res, 409, 'LAST_SIGN_IN', 'an account keeps at least one sign-in'); return null; }
+    if (!(await store.unlinkIdentity(target.id, row.identitySub))) {
+      sendError(res, 404, 'NOT_FOUND', 'no such sign-in on this account'); return null;
+    }
+    const after = (await store.bumpSessionEpoch(target.id)) ?? target;
+    await audit(`user:${actor.id}`, 'identity.unlink', `user:${target.id}`, {
+      by, idp: row.idp, ...(row.email ? { email: row.email } : {}), sessionsRevoked: true,
+    });
+    return after;
+  };
+
+  router.add('GET', '/api/v1/me/identities', async (req, res) => {
+    const me = await memberOf(req);
+    if (!me) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+    sendJson(res, 200, {
+      identities: (await identitiesOf(me)).wire,
+      // The sign-ins this instance offers, so a profile can say "Add GitHub".
+      available: idpProviders().map((p) => ({ id: p.id, name: p.name, kind: p.kind, linkPath: `/api/auth/link?idp=${encodeURIComponent(p.id)}` })),
+    }, { 'cache-control': 'no-store' });
+  });
+
+  router.add('DELETE', '/api/v1/me/identities/:idp/:subjectHash', async (req, res, ctx) => {
+    const me = await memberOf(req);
+    if (!me) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+    const after = await unlinkFor(res, me, me, ctx.params.idp as string, ctx.params.subjectHash as string, 'self');
+    if (!after) return;
+    res.writeHead(204, { 'set-cookie': stayingSignedIn(after) });
+    res.end();
+  });
+
+  router.add('GET', '/api/v1/users/:id/identities', async (req, res, ctx) => {
+    const user = await memberOf(req);
+    if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+    if (!['admin', 'owner'].includes(user.role)) return sendError(res, 403, 'FORBIDDEN', 'admin role required');
+    const target = await store.getUser(ctx.params.id as string);
+    if (!target) return sendError(res, 404, 'NOT_FOUND', 'no such user');
+    sendJson(res, 200, { identities: (await identitiesOf(target)).wire }, { 'cache-control': 'no-store' });
+  });
+
+  // The same guard as disable: an owner's sign-ins are owner-only to change.
+  router.add('DELETE', '/api/v1/users/:id/identities/:idp/:subjectHash', async (req, res, ctx) => {
+    const actor = await requireAction(req, res, 'grant.edit');
+    if (!actor) return;
+    const target = await store.getUser(ctx.params.id as string);
+    if (!target) return sendError(res, 404, 'NOT_FOUND', 'no such user');
+    if (target.role === 'owner' && actor.role !== 'owner') {
+      return sendError(res, 403, 'OWNER_ONLY', "only an owner can remove an owner's sign-ins");
+    }
+    const after = await unlinkFor(res, actor, target, ctx.params.idp as string, ctx.params.subjectHash as string, 'admin');
+    if (!after) return;
+    res.writeHead(204, after.id === actor.id ? { 'set-cookie': stayingSignedIn(after) } : {}); res.end();
+  });
+
+  // ── invitations (plans/74 W-ID-2) ─────────────────────────────────────────
+  // Who may sign in, one email address at a time, and the local groups that
+  // person joins on their first admitted sign-in. Nothing is emailed: the
+  // console and the CLI show the sign-in address to share. One active
+  // invitation per email, so inviting an address again is a no-op that
+  // returns the invitation already there.
+  const INVITE_EMAIL = /^[^\s@]+@[^\s@]+$/;
+  const INVITE_BATCH_MAX = 200;
+  const INVITE_GROUPS_MAX = 50;
+  const INVITE_MAX_DAYS = 366;
+  /** Lowest to highest, for "does this group's role outrank the inviter". */
+  const ROLE_RANK: readonly Role[] = ['guest', 'viewer', 'member', 'author', 'approver', 'admin', 'owner'];
+  const invitationStatus = (r: InvitationRecord, now = Date.now()): 'pending' | 'accepted' | 'revoked' | 'expired' =>
+    r.revokedAt ? 'revoked'
+      : r.acceptedAt ? 'accepted'
+        : r.expiresAt && Date.parse(r.expiresAt) <= now ? 'expired' : 'pending';
+  const invitationWire = (r: InvitationRecord) => ({
+    id: r.id, email: r.email, groups: r.groups, invitedBy: r.invitedBy, createdAt: r.createdAt,
+    expiresAt: r.expiresAt ?? null, acceptedAt: r.acceptedAt ?? null, acceptedUserId: r.acceptedUserId ?? null,
+    revokedAt: r.revokedAt ?? null, status: invitationStatus(r),
+    projects: (r.projects ?? []).map((p) => ({ projectId: p.projectId, role: p.role })),
+    createdVia: r.createdVia ?? 'console',
+  });
+  /** What the console needs to describe invitations honestly: the address to
+   *  share, and whether this deployment's admission rule reads invitations. */
+  const invitationContext = () => ({
+    signInUrl: config.instance.baseUrl,
+    admission: {
+      policy: !!config.idp.admission,
+      invitations: config.idp.admission?.invitations !== false,
+    },
+  });
+
+  /**
+   * The accounts that have shown they hold this address, as opposed to every
+   * account whose stored `users.email` merely says so. `users.email` is the
+   * claim from the latest sign-in, verified or not, so an address an attacker
+   * typed into a self-registration IdP would otherwise collect whatever was
+   * shared with the real person. An account holds the address when one of its
+   * sign-ins carries it and either the IdP verified it (the linking flag from
+   * migration 0039) or the source is one the operator vouches for (the
+   * reverse proxy, the dev provider, an IdP set to `emailVerification:
+   * "trusted"`), or when it accepted the address's invitation, which needs a
+   * verified sign-in, or when it has no sign-in yet (provisioned by the
+   * operator). This is the bar an invitation's acceptance sets, so
+   * sharing directly never reaches further than an invitation would.
+   * `claimed` is every account naming the address, for the disabled check.
+   */
+  const trustedEmailSource = (idpId: string): boolean =>
+    idpId === 'proxy' ? config.proxyAuth.enabled
+      : idpId === 'dev' ? config.dev.enabled
+        : resolveIdp(idpId)?.constraints.emailVerification === 'trusted';
+  const accountsHoldingEmail = async (email: string): Promise<{ holders: UserRecord[]; claimed: UserRecord[] }> => {
+    const e = email.trim().toLowerCase();
+    const [claimed, verified, invitation] = await Promise.all([
+      store.findUsersByEmail(e), store.findUsersByVerifiedEmail(e), store.findActiveInvitation(e),
+    ]);
+    const holders = new Map(verified.map((u) => [u.id, u]));
+    if (invitation?.acceptedUserId && !holders.has(invitation.acceptedUserId)) {
+      const accepted = await store.getUser(invitation.acceptedUserId);
+      if (accepted) holders.set(accepted.id, accepted);
+    }
+    for (const u of claimed) {
+      if (holders.has(u.id)) continue;
+      // An account with no sign-in at all was provisioned by the operator
+      // (SCIM, a seed): every sign-in writes an identity row, and migration
+      // 0039 wrote one for every account before it.
+      const signIns = await store.listIdentities(u.id);
+      if (!signIns.length || signIns.some((i) => i.email === e && (i.emailVerified || trustedEmailSource(i.idp)))) holders.set(u.id, u);
+    }
+    return { holders: [...holders.values()], claimed };
+  };
+
+  router.add('GET', '/api/v1/invitations', async (req, res) => {
+    if (!(await requireAction(req, res, 'user.invite'))) return;
+    sendJson(res, 200, { invitations: (await store.listInvitations()).map((r) => invitationWire(r)), ...invitationContext() },
+      { 'cache-control': 'no-store' });
+  });
+
+  router.add('POST', '/api/v1/invitations', async (req, res) => {
+    const actor = await requireAction(req, res, 'user.invite');
+    if (!actor) return;
+    const body = (await readJson(req)) as { emails?: unknown; groups?: unknown; expiresAt?: unknown } | null;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return sendError(res, 400, 'INVALID_INPUT', 'body must be a JSON object');
+
+    if (!Array.isArray(body.emails) || body.emails.length === 0 || !body.emails.every((e): e is string => typeof e === 'string')) {
+      return sendError(res, 400, 'INVALID_INPUT', 'emails must be a non-empty array of email addresses', { field: 'emails' });
+    }
+    const emails = [...new Set(body.emails.map((e) => e.trim().toLowerCase()).filter(Boolean))];
+    if (emails.length === 0) return sendError(res, 400, 'INVALID_INPUT', 'emails must name at least one address', { field: 'emails' });
+    if (emails.length > INVITE_BATCH_MAX) {
+      return sendError(res, 400, 'INVALID_INPUT', `at most ${INVITE_BATCH_MAX} addresses per request`, { field: 'emails' });
+    }
+    const badEmails = emails.filter((e) => e.length > 254 || !INVITE_EMAIL.test(e));
+    if (badEmails.length) {
+      return sendError(res, 400, 'INVALID_INPUT', `not email addresses: ${badEmails.slice(0, 5).join(', ')}`, { field: 'emails' });
+    }
+
+    let groups: string[] = [];
+    if (body.groups !== undefined && body.groups !== null) {
+      if (!Array.isArray(body.groups) || !body.groups.every((g): g is string => typeof g === 'string')) {
+        return sendError(res, 400, 'INVALID_INPUT', 'groups must be an array of local group names', { field: 'groups' });
+      }
+      groups = [...new Set(body.groups.map((g) => g.trim()).filter(Boolean))];
+      if (groups.length > INVITE_GROUPS_MAX) {
+        return sendError(res, 400, 'INVALID_INPUT', `at most ${INVITE_GROUPS_MAX} groups per invitation`, { field: 'groups' });
+      }
+      const badGroups = groups.filter((g) => !LOCAL_GROUP_NAME.test(g));
+      if (badGroups.length) {
+        return sendError(res, 400, 'INVALID_INPUT', `group names must be slugs (letters, digits, . _ -), 64 characters at most: ${badGroups.join(', ')}`, { field: 'groups' });
+      }
+    }
+    // Attaching groups to an invitation assigns groups, so it carries every
+    // control PUT /api/v1/users/:id/local-groups and the grant guard carry:
+    //   - grant.edit, the action that edits a person's local groups;
+    //   - no group whose mapped role outranks the inviter's own role (an
+    //     owner group is owner-only, the grant guard's rule);
+    //   - no group holding a grant for an owner-only action, unless an owner
+    //     is inviting;
+    //   - each group exists in the local registry. An owner may also name an
+    //     IdP group or a role-mapped name: with a groupless IdP the owner group
+    //     exists only as the bootstrap owner's IdP group, and an invitation is
+    //     the console's one way to add a second owner;
+    //   - an email that already belongs to an account gets the groups at
+    //     once (status 'applied') rather than an invitation, never for the
+    //     inviter's own account, a disabled one, or an owner's unless an
+    //     owner is inviting.
+    if (groups.length) {
+      const grants = await store.listGrants();
+      const actorCtx = { userId: actor.id, groups: actor.groups, role: actor.role as Role };
+      if (!evaluate(actorCtx, 'grant.edit', ['*'], grants)) {
+        return sendError(res, 403, 'FORBIDDEN', 'grant.edit required to invite people into groups', { field: 'groups' });
+      }
+      const isOwner = actor.role === 'owner';
+      const ownerGroups = groups.filter((g) => roleFromGroups([g], config.idp.roleGroups) === 'owner');
+      if (ownerGroups.length && !isOwner) {
+        return sendError(res, 403, 'OWNER_ONLY', `only an owner can invite into an owner group: ${ownerGroups.join(', ')}`);
+      }
+      const actorRank = ROLE_RANK.indexOf(actor.role as Role);
+      const above = groups.filter((g) => ROLE_RANK.indexOf(roleFromGroups([g], config.idp.roleGroups)) > actorRank);
+      if (above.length) {
+        return sendError(res, 403, 'ROLE_ESCALATION', `these groups carry a role above yours: ${above.join(', ')}`, { field: 'groups' });
+      }
+      if (!isOwner) {
+        const powered = groups.filter((g) => grants.some((gr) => gr.principal === `group:${g}` && gr.effect === 'allow' && ownerOnlyAction(gr.action)));
+        if (powered.length) {
+          return sendError(res, 403, 'OWNER_ONLY_ACTION', `only an owner can invite into a group holding owner-only grants: ${powered.join(', ')}`, { field: 'groups' });
+        }
+      }
+      const registry = new Set((await store.listLocalGroups()).map((g) => g.name));
+      const ownerNamable = new Set<string>();
+      if (isOwner) {
+        for (const u of await store.listUsers()) for (const g of u.idpGroups) ownerNamable.add(g);
+        for (const role of ['owner', 'admin', 'approver', 'author', 'member', 'viewer'] as const) {
+          const names = config.idp.roleGroups[role] ?? (['owner', 'admin', 'approver', 'author'].includes(role) ? [role] : []);
+          for (const n of names) ownerNamable.add(n);
+        }
+      }
+      const unknown = groups.filter((g) => !registry.has(g) && !ownerNamable.has(g));
+      if (unknown.length) {
+        return sendError(res, 400, 'UNKNOWN_GROUP', `not local groups: ${unknown.join(', ')}`, { field: 'groups' });
+      }
+    }
+
+    const now = new Date();
+    let expiresAt: string | undefined;
+    if (body.expiresAt !== undefined && body.expiresAt !== null && body.expiresAt !== '') {
+      const t = typeof body.expiresAt === 'string' ? Date.parse(body.expiresAt) : Number.NaN;
+      if (!Number.isFinite(t)) return sendError(res, 400, 'INVALID_INPUT', 'expiresAt must be an ISO 8601 date-time', { field: 'expiresAt' });
+      if (t <= now.getTime()) return sendError(res, 400, 'INVALID_INPUT', 'expiresAt must be in the future', { field: 'expiresAt' });
+      if (t > now.getTime() + INVITE_MAX_DAYS * 86_400_000) {
+        return sendError(res, 400, 'INVALID_INPUT', `expiresAt must be within ${INVITE_MAX_DAYS} days`, { field: 'expiresAt' });
+      }
+      expiresAt = new Date(t).toISOString();
+    }
+
+    const createdAt = now.toISOString();
+    type Applied = { email: string; status: 'applied' | 'refused'; reason?: string; userIds: string[]; groups: string[]; created: false };
+    const out: Array<(ReturnType<typeof invitationWire> & { created: boolean }) | Applied> = [];
+    // policy.invites governs every invitation that lets a new person sign in,
+    // this route's included: the `allow` tier and the domain list apply to
+    // each address that gets an invitation. Giving groups to an account that
+    // already exists is not inviting, so they do not apply to that branch.
+    const invitePolicy = resolveInvitePolicy(config.policy.invites);
+    const mayInvite = mayInviteNewPeople(actor, await store.listGrants(), invitePolicy);
+    for (const email of emails) {
+      const refuse = (reason: string): Applied => ({ email, status: 'refused', reason, userIds: [], groups, created: false });
+      // An address that already has an account gets the groups now instead of
+      // an invitation (plans/74), under every check above. Not your own
+      // account, not a disabled one, and an owner's only by an owner, the
+      // same lines the People view's disable and revoke routes hold. Only an
+      // account that has shown it holds the address takes them
+      // (`accountsHoldingEmail`); one that merely claims it gets an
+      // invitation, which a verified sign-in has to accept.
+      const { holders, claimed } = groups.length ? await accountsHoldingEmail(email) : { holders: [], claimed: [] };
+      const named = [...holders, ...claimed];
+      if (holders.length) {
+        if (named.some((a) => a.id === actor.id)) { out.push(refuse('self')); continue; }
+        if (named.some((a) => a.disabledAt)) { out.push(refuse('account-disabled')); continue; }
+        if (actor.role !== 'owner' && named.some((a) => a.role === 'owner')) { out.push(refuse('owner-only')); continue; }
+        const accounts = holders;
+        const registry = new Set((await store.listLocalGroups()).map((g) => g.name));
+        for (const name of groups.filter((g) => !registry.has(g))) await store.putLocalGroup({ name, createdAt });
+        for (const account of accounts) {
+          const joined = groups.filter((g) => !account.localGroups.includes(g));
+          if (!joined.length) continue;
+          const updated = await store.setLocalGroups(account.id, [...account.localGroups, ...joined]);
+          if (updated) {
+            await audit(`user:${actor.id}`, 'user.local-groups', `user:${updated.id}`, { localGroups: updated.localGroups, via: 'invitation' });
+          }
+        }
+        out.push({ email, status: 'applied', userIds: accounts.map((a) => a.id), groups, created: false });
+        continue;
+      }
+      if (!mayInvite) { out.push(refuse('invites-not-allowed')); continue; }
+      if (!inviteDomainAllowed(email, invitePolicy)) { out.push(refuse('domain-not-allowed')); continue; }
+      const { invitation, created } = await store.createInvitation({
+        id: `inv_${randomId(10)}`, email, groups, invitedBy: `user:${actor.id}`, createdAt,
+        ...(expiresAt ? { expiresAt } : {}),
+      });
+      if (created) {
+        await audit(`user:${actor.id}`, 'invite.create', `invitation:${invitation.id}`, {
+          email, groups, ...(expiresAt ? { expiresAt } : {}),
+        });
+      }
+      out.push({ ...invitationWire(invitation), created });
+    }
+    sendJson(res, out.some((r) => r.created) ? 201 : 200, { invitations: out, ...invitationContext() });
+  });
+
+  router.add('DELETE', '/api/v1/invitations/:id', async (req, res, ctx) => {
+    const actor = await requireAction(req, res, 'user.invite');
+    if (!actor) return;
+    const existing = await store.getInvitation(ctx.params.id as string);
+    if (!existing || existing.revokedAt) return sendError(res, 404, 'NOT_FOUND', 'no such active invitation');
+    // Revoking an accepted invitation can block that person's next sign-in, so
+    // an owner's stays owner-only, like disabling an owner.
+    if (existing.acceptedUserId && actor.role !== 'owner') {
+      const invitee = await store.getUser(existing.acceptedUserId);
+      if (invitee?.role === 'owner') return sendError(res, 403, 'OWNER_ONLY', "only an owner can revoke an owner's invitation");
+    }
+    const revoked = await store.revokeInvitation(existing.id, new Date().toISOString());
+    if (!revoked) return sendError(res, 404, 'NOT_FOUND', 'no such active invitation');
+    await audit(`user:${actor.id}`, 'invite.revoke', `invitation:${revoked.id}`, {
+      email: revoked.email, was: invitationStatus(existing),
+    });
+    sendJson(res, 200, invitationWire(revoked));
   });
 
   router.add('GET', '/api/v1/messages', async (req, res) => {
@@ -3044,6 +3886,50 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       }
       return;
     }
+    // The tool index and, when a signing key is configured, its signature come
+    // from ONE producer per caller (catalog/signing.ts), so the envelope's
+    // indexHash is always the hash of the bytes this same caller receives.
+    // Without a key the pack's build-time signature is never served (see below).
+    if (rel === CATALOG_INDEX_REL || (catalogSigning && rel === CATALOG_SIG_REL)) {
+      const served = await servedToolIndexBytes(config.instance.pack, {
+        overlays: await store.listOverlays(), groups: user?.groups ?? [],
+        ...(p?.kind === 'guest' ? { guestToolId: p.guest.toolId } : {}),
+      });
+      if (!served) return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
+      if (rel === CATALOG_SIG_REL && catalogSigning) {
+        let envelope: Buffer;
+        try {
+          envelope = await catalogSigning.envelopeFor(config.instance.pack, served);
+        } catch {
+          return sendError(res, 503, 'CATALOG_SIGNING_UNAVAILABLE', 'the catalog signature could not be produced; see the server log');
+        }
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'private, no-cache' });
+        res.end(envelope);
+        return;
+      }
+      res.writeHead(200, {
+        'content-type': served.json ? 'application/json; charset=utf-8' : contentType(rel),
+        'cache-control': 'private, no-cache',
+      });
+      res.end(served.bytes);
+      return;
+    }
+    // Other files that name tools (the slim index, the pack's build-time
+    // signature, preview art, social cards and their manifests) follow the same
+    // per-caller visibility, so a hidden tool's id never reaches a caller through
+    // them either (catalog/tool-sidecars.ts).
+    if (isToolKeyedCatalogPath(rel)) {
+      const decided = await servedToolSidecar(config.instance.pack, rel, {
+        overlays: await store.listOverlays(), groups: user?.groups ?? [],
+        ...(p?.kind === 'guest' ? { guestToolId: p.guest.toolId } : {}),
+      });
+      if (decided.kind === 'not-found') return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
+      if (decided.kind === 'json') {
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'private, no-cache' });
+        res.end(decided.bytes);
+        return;
+      }
+    }
     const filePath = join(config.instance.pack, 'catalog', rel);
     let bytes: Buffer;
     try {
@@ -3051,17 +3937,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     } catch {
       return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
     }
-    if (rel === 'tools/index.json') {
-      const overlays = await store.listOverlays();
-      const groups = user?.groups ?? [];
-      try {
-        const index = JSON.parse(bytes.toString('utf8')) as { tools?: Array<{ id: string }> };
-        if (Array.isArray(index.tools)) index.tools = filterToolIndex(index.tools, overlays, groups);
-        return sendJson(res, 200, index, { 'cache-control': 'private, no-cache' });
-      } catch {
-        /* not the expected shape — serve raw below */
-      }
-    } else if (rel === 'assets/index.json') {
+    if (rel === 'assets/index.json') {
       try {
         const index = JSON.parse(bytes.toString('utf8')) as AssetIndex;
         await providersReady;
@@ -5539,24 +6415,70 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     return 'private';
   };
 
-  const labelOf = (s: SessionRecord): string | null =>
+  const labelOf = (s: Pick<SessionRecord, 'meta'>): string | null =>
     typeof s.meta?.label === 'string' ? s.meta.label : null;
   const asObject = (v: unknown): Record<string, unknown> =>
     v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
+  // A session body carries a whole tool document (a large Design document runs
+  // past the router's 512 KiB default), so the two routes that write one read
+  // up to 4 MiB. That stays under the 4.5 MB request limit Vercel functions
+  // enforce, so the 413 comes from here with a JSON body rather than from the
+  // platform. Every other route keeps the default.
+  const SESSION_BODY_MAX_BYTES = 4 * 1024 * 1024;
 
-  const projectRow = (p: ProjectRecord, live: SessionRecord[]) => {
-    const mine = live.filter((s) => s.projectId === p.id);
-    const updatedAt = mine.reduce((max, s) => (s.updatedAt > max ? s.updatedAt : max), p.createdAt);
+  // Counts come from `projectSessionStats`, which never reads a session's
+  // inputs: with documents up to 4 MiB each, loading every live session in the
+  // instance to count them made each listing as heavy as all stored work.
+  //
+  // Activity (plans/74 "Collaborate tonight"): a row's `updatedAt` is the
+  // newest of the project's own last change (rename, visibility, archive) and
+  // its newest session save, and `updatedByName` names whoever made it. Names
+  // come from one `getUsersByIds` read per listing (`namesFor`), never one
+  // read per row.
+  const projectActivity = (p: ProjectRecord, stats: ProjectSessionStats[]) => {
+    const mine = stats.find((s) => s.projectId === p.id);
+    const changed = !!p.updatedAt && p.updatedAt > p.createdAt;
+    let updatedAt = changed ? p.updatedAt as string : p.createdAt;
+    let updatedBy: string | null = changed ? p.updatedBy ?? null : null;
+    if (mine && mine.updatedAt > updatedAt) { updatedAt = mine.updatedAt; updatedBy = mine.updatedBy ?? null; }
+    return { mine, updatedAt, updatedBy };
+  };
+  const namesFor = async (ids: Iterable<string | null | undefined>): Promise<Map<string, string>> => {
+    const wanted = [...new Set([...ids].filter((id): id is string => typeof id === 'string' && id.length > 0))];
+    if (!wanted.length) return new Map();
+    // Any viewer of the project reads these, so never a name that falls back to an email.
+    return new Map((await store.getUsersByIds(wanted)).map((u) => [u.id, nameWithoutEmail(u)]));
+  };
+  const projectRow = (p: ProjectRecord, stats: ProjectSessionStats[], myRole?: ProjectAccess, names = new Map<string, string>()) => {
+    const { mine, updatedAt, updatedBy } = projectActivity(p, stats);
     return {
       id: p.id, name: p.name, visibility: p.visibility, ownerId: p.ownerId,
-      sessionCount: mine.length, createdAt: p.createdAt, updatedAt,
+      sessionCount: mine?.count ?? 0, createdAt: p.createdAt, updatedAt,
+      updatedByName: updatedBy ? names.get(updatedBy) ?? null : null,
+      ...(myRole && myRole !== 'none' ? { myRole } : {}),
       ...(p.archivedAt ? { archivedAt: p.archivedAt } : {}),
     };
   };
-  const sessionListRow = (s: SessionRecord) => ({
+  const sessionListRow = (s: SessionSummary, names = new Map<string, string>()) => ({
     id: s.id, toolId: s.toolId, toolVersion: s.toolVersion, label: labelOf(s),
     meta: s.meta, rev: s.rev, updatedBy: s.updatedBy, updatedAt: s.updatedAt,
+    updatedByName: names.get(s.updatedBy) ?? null,
   });
+  /** The caller's level on a project (rbac/project-access.ts): their
+   *  membership row, group visibility, role and the `project.manage` lift.
+   *  Every project and session route asks this one function. */
+  const projectAccessOf = async (user: UserRecord, project: ProjectRecord, grants?: Grant[]): Promise<ProjectAccess> =>
+    effectiveProjectAccess(user, project, await store.getProjectMember(project.id, user.id), grants ?? await store.listGrants());
+  /** 403 for a caller below `min`: one message for "cannot see" (no level at
+   *  all) and a READ_ONLY code for a viewer asked to write, so the shell can
+   *  say which. Returns false having answered. */
+  const projectAllows = (res: ServerResponse, access: ProjectAccess, min: ProjectAccess, what: string): boolean => {
+    if (accessAtLeast(access, min)) return true;
+    if (access === 'none') sendError(res, 403, 'FORBIDDEN', `you cannot see this ${what}`);
+    else if (min === 'editor') sendError(res, 403, 'READ_ONLY', `you can view this ${what} but not change it`);
+    else sendError(res, 403, 'FORBIDDEN', `you need to manage this project to do that`);
+    return false;
+  };
   const sessionFull = (s: SessionRecord) => ({
     id: s.id, projectId: s.projectId, toolId: s.toolId, toolVersion: s.toolVersion,
     inputs: s.inputs, meta: s.meta, label: labelOf(s), rev: s.rev,
@@ -5564,13 +6486,26 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     ...(s.deletedAt ? { deletedAt: s.deletedAt } : {}),
   });
 
+  registerProjectFileRoutes(router, { config, store, blobs, memberOf, requireAction, projectAccessOf, audit });
+
   // GET /projects - projects visible to the caller (own + team by group; admins all).
-  router.add('GET', '/api/v1/projects', async (req, res) => {
+  // Archived projects are left out unless `?archived=1`: the shell's team
+  // projects list and save picker want live work only, while the console's
+  // Projects view asks for everything so an archived project can be found and
+  // restored.
+  router.add('GET', '/api/v1/projects', async (req, res, ctx) => {
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
-    const [all, live] = await Promise.all([store.listProjects(), store.listSessionsFiltered({})]);
-    const visible = all.filter((p) => canSeeProject(user, p));
-    sendJson(res, 200, { projects: visible.map((p) => projectRow(p, live)) });
+    const includeArchived = ctx.url.searchParams.get('archived') === '1';
+    const [all, stats, memberships, grants] = await Promise.all([
+      store.listProjects(), store.projectSessionStats(), store.listUserProjectMemberships(user.id), store.listGrants(),
+    ]);
+    const mine = new Map(memberships.map((m) => [m.projectId, m]));
+    const visible = all
+      .map((p) => ({ p, role: effectiveProjectAccess(user, p, mine.get(p.id) ?? null, grants) }))
+      .filter(({ p, role }) => role !== 'none' && (includeArchived || !p.archivedAt));
+    const names = await namesFor(visible.map(({ p }) => projectActivity(p, stats).updatedBy));
+    sendJson(res, 200, { projects: visible.map(({ p, role }) => projectRow(p, stats, role, names)) });
   });
 
   router.add('POST', '/api/v1/projects', async (req, res) => {
@@ -5589,7 +6524,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     };
     await store.putProject(project);
     await audit(`user:${user.id}`, 'project.create', `project:${project.id}`, { visibility: project.visibility });
-    sendJson(res, 201, projectRow(project, []));
+    sendJson(res, 201, projectRow(project, [], 'owner'));
   });
 
   router.add('PATCH', '/api/v1/projects/:id', async (req, res, ctx) => {
@@ -5598,11 +6533,14 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const project = await store.getProject(ctx.params.id as string);
     if (!project) return sendError(res, 404, 'NOT_FOUND', 'no such project');
     const grants = await store.listGrants();
-    const mayManage = project.ownerId === user.id ||
-      evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'project.manage', ['*'], grants);
-    if (!mayManage) return sendError(res, 403, 'FORBIDDEN', 'owner or project.manage required');
+    // A project manager (membership), the owner, or a holder of project.manage.
+    // project.manage keeps working on a project its holder cannot see, as it
+    // always did here; `effectiveProjectAccess` only lifts visible ones.
+    const holdsManage = evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'project.manage', ['*'], grants);
+    const mayManage = holdsManage || accessAtLeast(await projectAccessOf(user, project, grants), 'manager');
+    if (!mayManage) return sendError(res, 403, 'FORBIDDEN', 'owner, project manager or project.manage required');
     const body = (await readJson(req)) as { name?: string; visibility?: unknown; archived?: boolean; ownerId?: unknown } | null;
-    const next: ProjectRecord = { ...project };
+    const next: ProjectRecord = { ...project, updatedAt: new Date().toISOString(), updatedBy: user.id };
     if (typeof body?.name === 'string' && body.name.trim()) next.name = body.name.slice(0, 200);
     if (body?.visibility !== undefined) next.visibility = normalizeVisibility(body.visibility);
     if (body?.archived === true) next.archivedAt = new Date().toISOString();
@@ -5612,6 +6550,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // account cannot receive work, and a service principal owning a project
     // would put shared work behind an automation credential.
     if (body?.ownerId !== undefined) {
+      // Handing the project to someone else is the owner's call (or an
+      // operator's, through project.manage), not a member manager's.
+      if (project.ownerId !== user.id && !holdsManage) {
+        return sendError(res, 403, 'FORBIDDEN', 'only the owner or a holder of project.manage can transfer a project');
+      }
       if (typeof body.ownerId !== 'string' || !body.ownerId) return sendError(res, 400, 'INVALID_INPUT', 'ownerId must be a user id');
       const target = await store.getUser(body.ownerId);
       if (!target) return sendError(res, 404, 'NOT_FOUND', 'no such user to transfer to');
@@ -5622,10 +6565,17 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       }
     }
     await store.putProject(next);
+    // The new owner is on the project now, so an invitation to it is done.
+    if (next.ownerId !== project.ownerId) {
+      const owner = await store.getUser(next.ownerId);
+      if (owner) await closeMemberInvitations(next, owner, `user:${user.id}`);
+    }
     await audit(`user:${user.id}`, 'project.update', `project:${next.id}`, {
       visibility: next.visibility, archived: Boolean(next.archivedAt),
     });
-    sendJson(res, 200, projectRow(next, await store.listSessions(next.id)));
+    const stats = await store.projectSessionStats(next.id);
+    sendJson(res, 200, projectRow(next, stats, await projectAccessOf(user, next, grants),
+      await namesFor([projectActivity(next, stats).updatedBy])));
   });
 
   // GET a project's sessions - list without inputs (cheap); requires visibility.
@@ -5634,9 +6584,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const project = await store.getProject(ctx.params.id as string);
     if (!project) return sendError(res, 404, 'NOT_FOUND', 'no such project');
-    if (!canSeeProject(user, project)) return sendError(res, 403, 'FORBIDDEN', 'you cannot see this project');
-    const sessions = await store.listSessions(project.id);
-    sendJson(res, 200, { sessions: sessions.map(sessionListRow) });
+    if (!projectAllows(res, await projectAccessOf(user, project), 'viewer', 'project')) return;
+    const sessions = await store.listSessionSummaries(project.id);
+    const names = await namesFor(sessions.map((s) => s.updatedBy));
+    sendJson(res, 200, { sessions: sessions.map((s) => sessionListRow(s, names)) });
   });
 
   router.add('POST', '/api/v1/projects/:id/sessions', async (req, res, ctx) => {
@@ -5644,8 +6595,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!user) return;
     const project = await store.getProject(ctx.params.id as string);
     if (!project) return sendError(res, 404, 'NOT_FOUND', 'no such project');
-    if (!canSeeProject(user, project)) return sendError(res, 403, 'FORBIDDEN', 'you cannot see this project');
-    const body = (await readJson(req)) as {
+    if (!projectAllows(res, await projectAccessOf(user, project), 'editor', 'project')) return;
+    const body = (await readJson(req, SESSION_BODY_MAX_BYTES)) as {
       toolId?: string; toolVersion?: string; inputs?: unknown; meta?: unknown;
     } | null;
     if (!body?.toolId || typeof body.toolId !== 'string') return sendError(res, 400, 'INVALID_INPUT', 'toolId required');
@@ -5675,29 +6626,44 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const session = await store.getSession(ctx.params.id as string);
     if (!session) return sendError(res, 404, 'NOT_FOUND', 'no such session');
     const project = await store.getProject(session.projectId);
-    if (!project || !canSeeProject(user, project)) return sendError(res, 403, 'FORBIDDEN', 'you cannot see this session');
+    if (!project) return sendError(res, 403, 'FORBIDDEN', 'you cannot see this session');
+    if (!projectAllows(res, await projectAccessOf(user, project), 'viewer', 'session')) return;
     if (session.deletedAt) return sendError(res, 410, 'SESSION_DELETED', 'this session was deleted');
     sendJson(res, 200, sessionFull(session));
   });
 
+  /** The newer version a 409 hands back, with the name of whoever saved it, so the
+   *  shell can say "Bea saved a newer version" instead of "Someone". Never an email.
+   *  `updatedByYou` says the newer save is the caller's own (another window or
+   *  device): the shell only knows its sign-in subject, not this user id, so it
+   *  cannot make that comparison itself. */
+  const conflictCurrent = async (s: SessionRecord, callerId: string) => ({
+    ...sessionFull(s),
+    updatedByName: s.updatedBy ? (await namesFor([s.updatedBy])).get(s.updatedBy) ?? null : null,
+    updatedByYou: !!s.updatedBy && s.updatedBy === callerId,
+  });
   // PUT a session - optimistic CAS on rev. A stale rev ⇒ 409 with the current
   // server session so the client keeps its loser as a local revision (plans §3).
+  // While a live room holds the session no rev can be written, so a refusal then
+  // is 409 COLLAB_ACTIVE, not a revision conflict, and is not audited as one.
   router.add('PUT', '/api/v1/sessions/:id', async (req, res, ctx) => {
     const user = await requireAction(req, res, 'session.edit');
     if (!user) return;
     const session = await store.getSession(ctx.params.id as string);
     if (!session) return sendError(res, 404, 'NOT_FOUND', 'no such session');
     const project = await store.getProject(session.projectId);
-    if (!project || !canSeeProject(user, project)) return sendError(res, 403, 'FORBIDDEN', 'you cannot see this session');
+    if (!project) return sendError(res, 403, 'FORBIDDEN', 'you cannot see this session');
+    if (!projectAllows(res, await projectAccessOf(user, project), 'editor', 'session')) return;
     if (session.deletedAt) return sendError(res, 410, 'SESSION_DELETED', 'this session was deleted');
-    const body = (await readJson(req)) as { inputs?: unknown; meta?: unknown; rev?: number } | null;
+    const body = (await readJson(req, SESSION_BODY_MAX_BYTES)) as { inputs?: unknown; meta?: unknown; rev?: number } | null;
     if (typeof body?.rev !== 'number') return sendError(res, 400, 'INVALID_INPUT', 'rev required for optimistic concurrency');
     if (body.rev !== session.rev) {
+      if (await store.collabLeaseActive(session.id)) return sendCollabActive(res);
       // Conflicts are counted, not just refused (plans/23 §3.D): their volume on
       // shared projects is the demand instrument for plans/14 §9's collab gate.
       // Ids and revs only - an audit event never carries input values.
       await audit(`user:${user.id}`, 'session.conflict', `session:${session.id}`, { rev: session.rev, sentRev: body.rev, toolId: session.toolId });
-      return sendJson(res, 409, { error: { code: 'CONFLICT', message: `session is at rev ${session.rev}, you sent ${body.rev}` }, current: sessionFull(session) });
+      return sendJson(res, 409, { error: { code: 'CONFLICT', message: `session is at rev ${session.rev}, you sent ${body.rev}` }, current: await conflictCurrent(session, user.id) });
     }
     const now = new Date().toISOString();
     const inputs = body.inputs !== undefined ? asObject(body.inputs) : session.inputs;
@@ -5709,12 +6675,21 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // second `putSession` would silently discard the first while
     // `session_revisions` (PK `(session_id, rev)`) kept only one of them - the
     // exact hazard `Store.casSession`'s contract names (plans/23 §3.B).
-    if (!(await store.casSession(next, body.rev))) {
+    //
+    // A refused CAS on a session that still exists, undeleted, at the rev the
+    // caller sent was refused by a room's lease, never by a revision conflict.
+    // If the room let go between the CAS and the re-read, the caller's base is
+    // still current, so the save is tried once more. Without that, the answer
+    // would be "session is at rev 5, you sent 5".
+    for (let attempt = 1; !(await store.casSession(next, body.rev)); attempt++) {
       const fresh = await store.getSession(next.id);
       if (!fresh) return sendError(res, 404, 'NOT_FOUND', 'no such session');
       if (fresh.deletedAt) return sendError(res, 410, 'SESSION_DELETED', 'this session was deleted');
+      const live = await store.collabLeaseActive(fresh.id);
+      if (fresh.rev === body.rev && !live && attempt === 1) continue;
+      if (live || fresh.rev === body.rev) return sendCollabActive(res);
       await audit(`user:${user.id}`, 'session.conflict', `session:${fresh.id}`, { rev: fresh.rev, sentRev: body.rev, toolId: fresh.toolId });
-      return sendJson(res, 409, { error: { code: 'CONFLICT', message: `session is at rev ${fresh.rev}, you sent ${body.rev}` }, current: sessionFull(fresh) });
+      return sendJson(res, 409, { error: { code: 'CONFLICT', message: `session is at rev ${fresh.rev}, you sent ${body.rev}` }, current: await conflictCurrent(fresh, user.id) });
     }
     await store.appendSessionRevision({ sessionId: next.id, rev: next.rev, inputs, meta, actor: user.id, at: now });
     await audit(`user:${user.id}`, 'session.update', `session:${next.id}`, { rev: next.rev, projectId: next.projectId, toolId: next.toolId });
@@ -5723,13 +6698,28 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
 
   // DELETE a session - tombstone (never hard-delete) so a stale client can't
   // resurrect it. Idempotent: deleting an already-tombstoned session is a no-op 200.
+  // Seeing a team project lets a member edit its sessions, but removing one is
+  // narrower: the person who created it, the project's owner, or a holder of
+  // project.manage. Without this, anyone in the group could delete a
+  // colleague's work. Admins and owners pass through project.manage, which
+  // their role grants by default, so a deny grant on it holds here exactly as
+  // it does on PATCH project. Checked before the idempotent branch so a
+  // refused caller gets the same 403 whether or not the session is gone.
   router.add('DELETE', '/api/v1/sessions/:id', async (req, res, ctx) => {
     const user = await requireAction(req, res, 'session.delete');
     if (!user) return;
     const session = await store.getSession(ctx.params.id as string);
     if (!session) return sendError(res, 404, 'NOT_FOUND', 'no such session');
     const project = await store.getProject(session.projectId);
-    if (!project || !canSeeProject(user, project)) return sendError(res, 403, 'FORBIDDEN', 'you cannot see this session');
+    if (!project) return sendError(res, 403, 'FORBIDDEN', 'you cannot see this session');
+    const access = await projectAccessOf(user, project);
+    if (!projectAllows(res, access, 'editor', 'session')) return;
+    // Manager covers the project's owner, a manager member and a holder of
+    // project.manage (`effectiveProjectAccess`).
+    const mayDelete = session.createdBy === user.id || accessAtLeast(access, 'manager');
+    if (!mayDelete) {
+      return sendError(res, 403, 'FORBIDDEN', 'only the session creator, the project owner or a holder of project.manage can delete this session');
+    }
     if (session.deletedAt) return sendJson(res, 200, { ok: true, alreadyDeleted: true });
     const now = new Date().toISOString();
     await store.putSession({ ...session, deletedAt: now, updatedBy: user.id, updatedAt: now });
@@ -5743,8 +6733,326 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const session = await store.getSession(ctx.params.id as string);
     if (!session) return sendError(res, 404, 'NOT_FOUND', 'no such session');
     const project = await store.getProject(session.projectId);
-    if (!project || !canSeeProject(user, project)) return sendError(res, 403, 'FORBIDDEN', 'you cannot see this session');
+    if (!project) return sendError(res, 403, 'FORBIDDEN', 'you cannot see this session');
+    if (!projectAllows(res, await projectAccessOf(user, project), 'viewer', 'session')) return;
     sendJson(res, 200, { revisions: await store.listSessionRevisions(session.id) });
+  });
+
+  // ── people on a project (plans/74 "Invite from inside Lolly") ─────────────
+  // A project's owner, its explicit members (project_members) and the open
+  // invitations that carry it. Anyone who can see the project may list the
+  // people; emails and invitations are shown only to managers. Adding,
+  // changing and removing people needs manager (owner, manager member, or
+  // project.manage on a project they can see). Someone who already has an
+  // account becomes a member at once and gets an inbox message; an unknown
+  // address gets an invitation (created or extended) carrying the project,
+  // within `policy.invites` (policy/invites.ts).
+  const PROJECT_INVITE_BATCH_MAX = 50;
+  /** Addresses an hour for a caller without `user.invite` (see the route). */
+  const PROJECT_INVITE_ADDRESSES_PER_HOUR = 100;
+  const projectInviteQuota = createWindowQuota(PROJECT_INVITE_ADDRESSES_PER_HOUR, 3_600_000);
+  const isMemberRole = (v: unknown): v is ProjectMemberRole =>
+    typeof v === 'string' && (PROJECT_MEMBER_ROLES as readonly string[]).includes(v);
+  // Where Lolly itself lives: `appUrl` on a split deploy, else this instance,
+  // which serves the shell same-origin. The share inbox message (cta.url)
+  // follows the same rule, so the link to send and the message never differ.
+  const projectLink = (projectId: string): string =>
+    `${(config.instance.appUrl ?? config.instance.baseUrl).replace(/\/+$/, '')}/#/team/project/${encodeURIComponent(projectId)}`;
+
+  /** Resolve the caller, the project and their level on it, answering
+   *  401/404/403 itself (returns null having answered). */
+  const projectGate = async (req: IncomingMessage, res: ServerResponse, projectId: string, min: ProjectAccess) => {
+    const user = await memberOf(req);
+    if (!user) { sendError(res, 401, 'UNAUTHORIZED', 'sign in first'); return null; }
+    const project = await store.getProject(projectId);
+    if (!project) { sendError(res, 404, 'NOT_FOUND', 'no such project'); return null; }
+    const grants = await store.listGrants();
+    const access = await projectAccessOf(user, project, grants);
+    if (!projectAllows(res, access, min, 'project')) return null;
+    return { user, project, access, grants };
+  };
+
+  /**
+   * Give an existing account a role on the project, or raise the one it has.
+   * Never lowers a role: asking for less than someone already has is
+   * 'already', and lowering is an explicit PATCH.
+   *
+   * The inbox message goes out only when the person was not on the project
+   * (a raise is not news worth a message), and a dismissal is never cleared:
+   * the message id is per (project, person), so removing and re-adding
+   * someone rewrites the one row and leaves it dismissed. Sending inbox
+   * messages is otherwise the admin `message.send` action, so each inviter
+   * also has a daily allowance (`SHARE_MESSAGES_PER_DAY`); past it the
+   * membership is still added and the audit row says the message was held.
+   */
+  const SHARE_MESSAGES_PER_DAY = 200;
+  const shareMessageQuota = createWindowQuota(SHARE_MESSAGES_PER_DAY, 86_400_000);
+  const shareProjectWith = async (
+    project: ProjectRecord, target: UserRecord, role: ProjectMemberRole,
+    actor: { principal: string; name: string; userId: string | null }, via: 'invite' | 'invitation',
+  ): Promise<'added' | 'already'> => {
+    // 'already' closes invitations too, which tidies a row left open before
+    // this rule existed the next time someone shares with the person.
+    if (project.ownerId === target.id) { await closeMemberInvitations(project, target, actor.principal); return 'already'; }
+    const existing = await store.getProjectMember(project.id, target.id);
+    if (existing && !roleAbove(role, existing.role)) { await closeMemberInvitations(project, target, actor.principal); return 'already'; }
+    await store.putProjectMember({ projectId: project.id, userId: target.id, role, addedBy: actor.principal, addedAt: new Date().toISOString() });
+    let messageHeld = false;
+    if (!existing && target.id !== actor.userId) {
+      if (shareMessageQuota.take(actor.principal)) {
+        await store.putMessage(buildShareMessage({
+          projectId: project.id, projectName: project.name, role, inviteeId: target.id,
+          inviterName: actor.name, appBase: config.instance.appUrl ?? '',
+        }));
+      } else {
+        messageHeld = true;
+      }
+    }
+    await audit(actor.principal, 'project.member.add', `project:${project.id}`, {
+      userId: target.id, role, via, ...(existing ? { from: existing.role } : {}), ...(messageHeld ? { message: 'held' } : {}),
+    });
+    await closeMemberInvitations(project, target, actor.principal);
+    return 'added';
+  };
+
+  /**
+   * Someone on the project (its owner or a member) needs no invitation to
+   * it, so this takes the project off any pending invitation for an address
+   * the person holds (`accountsHoldingEmail`, the bar sharing itself uses).
+   * A project-made invitation left with no projects and no groups is revoked
+   * in the same step. Two kinds stay open with nothing left on them instead:
+   * a console invitation, because whether it admits the person is an
+   * admin's call (`DELETE /api/v1/invitations/:id`), and one for an account
+   * with no sign-in yet (provisioned by the operator), which may be how that
+   * person gets in the first time. Each change is audited under `principal`,
+   * whoever put the person on the project.
+   */
+  const closeMemberInvitations = async (project: ProjectRecord, member: UserRecord, principal: string): Promise<void> => {
+    const signIns = await store.listIdentities(member.id);
+    const emails = new Set([member.email, ...signIns.map((i) => i.email ?? '')]
+      .map((e) => e.trim().toLowerCase()).filter(Boolean));
+    for (const email of emails) {
+      const inv = await store.findActiveInvitation(email);
+      if (!inv || inv.acceptedAt || !(inv.projects ?? []).some((p) => p.projectId === project.id)) continue;
+      // An address the person only claims stays invited: the invitation is
+      // for whoever holds the mailbox, who may be someone else.
+      if (!(await accountsHoldingEmail(email)).holders.some((h) => h.id === member.id)) continue;
+      const closed = await store.dropInvitationProject(inv.id, project.id, new Date().toISOString(), {
+        revokeWhenEmpty: inv.createdVia === 'project' && signIns.length > 0,
+      });
+      if (!closed) continue; // accepted, revoked or changed in between
+      const detail = { email: inv.email, projectId: project.id, userId: member.id, via: 'membership' };
+      if (closed.revokedAt) await audit(principal, 'invite.revoke', `invitation:${inv.id}`, { ...detail, was: 'pending' });
+      else await audit(principal, 'invite.project.remove', `invitation:${inv.id}`, detail);
+    }
+  };
+
+  router.add('GET', '/api/v1/projects/:id/members', async (req, res, ctx) => {
+    const gate = await projectGate(req, res, ctx.params.id as string, 'viewer');
+    if (!gate) return;
+    const { user, project, access } = gate;
+    const manager = accessAtLeast(access, 'manager');
+    const rows = (await store.listProjectMembers(project.id)).filter((m) => m.userId !== project.ownerId);
+    const people = new Map((await store.getUsersByIds([project.ownerId, ...rows.map((m) => m.userId)])).map((u) => [u.id, u]));
+    // Emails are for managers only, and so is a name that would fall back to
+    // one: `displayName` returns the address for an account with no name.
+    // `isMe` marks the caller's own row, so Lolly can word leaving the
+    // project, or lowering your own role, as what it is.
+    const person = (userId: string, role: ProjectAccess, addedAt: string) => {
+      const u = people.get(userId);
+      const name = u ? (manager ? displayName(u) : nameWithoutEmail(u)) : userId;
+      return { userId, name, ...(manager && u ? { email: u.email } : {}), role, addedAt, ...(userId === user.id ? { isMe: true } : {}) };
+    };
+    const members = [person(project.ownerId, 'owner', project.createdAt), ...rows.map((m) => person(m.userId, m.role, m.addedAt))];
+    // An invitation for an address someone on the project already holds is
+    // not listed when accepting it would change nothing: that person is in,
+    // and is shown once, as a member. Adding a member closes such
+    // invitations (`closeMemberInvitations`); this covers a row left open
+    // before that rule existed, and an address a member came to hold
+    // without an acceptance (a linked sign-in). An invitation that would
+    // still raise a holder's role stays listed, so a manager can see that
+    // grant and withdraw it: acceptance at sign-in applies it.
+    const standing = new Map<string, ProjectAccess>([
+      ...rows.map((m) => [m.userId, m.role] as [string, ProjectAccess]), [project.ownerId, 'owner'],
+    ]);
+    const open = manager ? await store.listOpenInvitationsForProject(project.id, new Date().toISOString()) : [];
+    const roleOn = (inv: (typeof open)[number]) => (inv.projects ?? []).find((p) => p.projectId === project.id)!.role;
+    const inert = await Promise.all(open.map(async (inv) => {
+      const { holders } = await accountsHoldingEmail(inv.email);
+      return holders.length > 0 && holders.every((h) => accessAtLeast(standing.get(h.id) ?? 'none', roleOn(inv)));
+    }));
+    const invitations = manager
+      ? open.filter((_, i) => !inert[i]).map((inv) => ({
+        id: inv.id, email: inv.email, role: roleOn(inv),
+        createdAt: inv.createdAt, ...(inv.expiresAt ? { expiresAt: inv.expiresAt } : {}),
+      }))
+      : null;
+    sendJson(res, 200, { myRole: access, members, ...(invitations ? { invitations } : {}) }, { 'cache-control': 'no-store' });
+  });
+
+  router.add('POST', '/api/v1/projects/:id/invite', async (req, res, ctx) => {
+    const gate = await projectGate(req, res, ctx.params.id as string, 'manager');
+    if (!gate) return;
+    const { user, project, grants } = gate;
+    if (project.archivedAt) return sendError(res, 409, 'PROJECT_ARCHIVED', 'restore the project before inviting people to it');
+    const body = (await readJson(req)) as { emails?: unknown; role?: unknown } | null;
+    if (!isMemberRole(body?.role)) {
+      return sendError(res, 400, 'INVALID_INPUT', 'role must be viewer, editor or manager', { field: 'role' });
+    }
+    const role = body.role;
+    const policy = resolveInvitePolicy(config.policy.invites);
+    if (!policy.projectRoles.includes(role)) {
+      return sendError(res, 403, 'ROLE_NOT_ALLOWED', `this instance does not allow giving the ${role} role by invitation`, { field: 'role' });
+    }
+    if (!Array.isArray(body.emails) || body.emails.length === 0 || !body.emails.every((e): e is string => typeof e === 'string')) {
+      return sendError(res, 400, 'INVALID_INPUT', 'emails must be a non-empty array of email addresses', { field: 'emails' });
+    }
+    const emails = [...new Set(body.emails.map((e) => e.trim().toLowerCase()).filter(Boolean))];
+    if (emails.length === 0) return sendError(res, 400, 'INVALID_INPUT', 'emails must name at least one address', { field: 'emails' });
+    if (emails.length > PROJECT_INVITE_BATCH_MAX) {
+      return sendError(res, 400, 'INVALID_INPUT', `at most ${PROJECT_INVITE_BATCH_MAX} addresses per request`, { field: 'emails' });
+    }
+    const mayInvite = mayInviteNewPeople(user, grants, policy);
+    // Who already has an account here is directory knowledge: GET
+    // /api/v1/users is for admins, and the collab invite route answers one
+    // code so it cannot be probed. A caller without `user.invite` therefore
+    // never learns from this route that an account is disabled (it is
+    // handled like an unknown address), and spends an hourly allowance of
+    // addresses, so the existing-account answer cannot be run over a list.
+    // What sharing itself shows them (the person appears on the project) is
+    // the residual, described in docs/sharing.md.
+    const seesDirectory = evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'user.invite', ['*'], grants);
+    if (!seesDirectory && !projectInviteQuota.take(user.id, emails.length)) {
+      return sendError(res, 429, 'RATE_LIMITED', `at most ${PROJECT_INVITE_ADDRESSES_PER_HOUR} addresses an hour; try again later`);
+    }
+    // With `idp.admission.invitations: false` sign-in never reads an
+    // invitation, so one written here would never be accepted.
+    const invitationsOff = config.idp.admission?.invitations === false;
+    const now = new Date();
+    const createdAt = now.toISOString();
+    const expiresAt = new Date(now.getTime() + policy.maxTtlHours * 3_600_000).toISOString();
+    type Result = { email: string; status: 'added' | 'invited' | 'already' | 'refused'; reason?: string };
+    const results: Result[] = [];
+    const actor = { principal: `user:${user.id}`, name: displayName(user), userId: user.id };
+    for (const email of emails) {
+      if (email.length > 254 || !INVITE_EMAIL.test(email)) { results.push({ email, status: 'refused', reason: 'invalid-email' }); continue; }
+      // Only an account that has shown it holds the address is shared with
+      // directly (`accountsHoldingEmail`); one that merely claims it in
+      // `users.email` is treated as unknown and gets an invitation, which a
+      // verified sign-in has to accept.
+      const { holders, claimed } = await accountsHoldingEmail(email);
+      // Admission refuses every row of an address when one is disabled, so
+      // sharing with it would add a member who cannot sign in.
+      const disabled = [...holders, ...claimed].some((a) => a.disabledAt);
+      if (disabled && seesDirectory) { results.push({ email, status: 'refused', reason: 'account-disabled' }); continue; }
+      if (holders.length && !disabled) {
+        let added = false;
+        for (const account of holders) if ((await shareProjectWith(project, account, role, actor, 'invite')) === 'added') added = true;
+        results.push({ email, status: added ? 'added' : 'already' });
+        continue;
+      }
+      if (!mayInvite) { results.push({ email, status: 'refused', reason: 'invites-not-allowed' }); continue; }
+      if (!inviteDomainAllowed(email, policy)) { results.push({ email, status: 'refused', reason: 'domain-not-allowed' }); continue; }
+      if (invitationsOff) { results.push({ email, status: 'refused', reason: 'invitations-off' }); continue; }
+      const entry = { projectId: project.id, role, invitedBy: `user:${user.id}` };
+      const { invitation, created } = await store.createInvitation({
+        id: `inv_${randomId(10)}`, email, groups: [], invitedBy: `user:${user.id}`, createdAt, expiresAt, projects: [entry],
+        createdVia: 'project',
+      });
+      if (created) {
+        await audit(`user:${user.id}`, 'invite.create', `invitation:${invitation.id}`, { email, groups: [], projects: [entry], expiresAt, via: 'project' });
+        results.push({ email, status: 'invited' });
+        continue;
+      }
+      // An open invitation for the address already exists: add this project
+      // to it (a higher role replaces a lower one, never the other way). Its
+      // expiry stays as it was, so a project invite cannot prolong an
+      // invitation somebody else wrote. An accepted one has done its work;
+      // the person signs in under another address, so there is nobody to add.
+      // That answer says an account exists, so a caller without `user.invite`
+      // gets the plain 'unavailable' instead.
+      if (invitation.acceptedAt) { results.push({ email, status: 'refused', reason: seesDirectory ? 'invitation-accepted' : 'unavailable' }); continue; }
+      const merged = mergeInvitationProject(invitation.projects ?? [], entry);
+      if (!merged.changed) { results.push({ email, status: 'already' }); continue; }
+      const updated = await store.setInvitationProjects(invitation.id, merged.projects);
+      if (!updated) { results.push({ email, status: 'refused', reason: 'invitation-changed' }); continue; }
+      await audit(`user:${user.id}`, 'invite.extend', `invitation:${invitation.id}`, { email, project: entry });
+      results.push({ email, status: 'invited' });
+    }
+    sendJson(res, 200, { results, link: projectLink(project.id) });
+  });
+
+  router.add('PATCH', '/api/v1/projects/:id/members/:userId', async (req, res, ctx) => {
+    const gate = await projectGate(req, res, ctx.params.id as string, 'manager');
+    if (!gate) return;
+    const { user, project } = gate;
+    const body = (await readJson(req)) as { role?: unknown } | null;
+    if (!isMemberRole(body?.role)) return sendError(res, 400, 'INVALID_INPUT', 'role must be viewer, editor or manager', { field: 'role' });
+    const role = body.role;
+    if (!resolveInvitePolicy(config.policy.invites).projectRoles.includes(role)) {
+      return sendError(res, 403, 'ROLE_NOT_ALLOWED', `this instance does not allow giving the ${role} role`, { field: 'role' });
+    }
+    const targetId = ctx.params.userId as string;
+    if (targetId === project.ownerId) {
+      return sendError(res, 409, 'PROJECT_OWNER', 'the owner has no member role; transfer the project to change its owner');
+    }
+    const existing = await store.getProjectMember(project.id, targetId);
+    if (!existing) return sendError(res, 404, 'NOT_FOUND', 'no such member on this project');
+    if (existing.role !== role) {
+      // Update only: a removal that happens between the read and this write
+      // leaves no row, and the change answers 404 instead of re-adding them.
+      if (!(await store.updateProjectMemberRole(project.id, targetId, role))) {
+        return sendError(res, 404, 'NOT_FOUND', 'no such member on this project');
+      }
+      await audit(`user:${user.id}`, 'project.member.role', `project:${project.id}`, { userId: targetId, from: existing.role, to: role });
+    }
+    const target = await store.getUser(targetId);
+    sendJson(res, 200, {
+      userId: targetId, name: target ? displayName(target) : targetId,
+      ...(target ? { email: target.email } : {}), role, addedAt: existing.addedAt,
+    });
+  });
+
+  // Managers remove anyone but the owner; anyone may remove themselves (leave).
+  router.add('DELETE', '/api/v1/projects/:id/members/:userId', async (req, res, ctx) => {
+    const gate = await projectGate(req, res, ctx.params.id as string, 'viewer');
+    if (!gate) return;
+    const { user, project, access } = gate;
+    const targetId = ctx.params.userId as string;
+    if (targetId !== user.id && !projectAllows(res, access, 'manager', 'project')) return;
+    if (targetId === project.ownerId) {
+      return sendError(res, 409, 'PROJECT_OWNER', 'the owner cannot be removed; transfer the project first');
+    }
+    if (!(await store.deleteProjectMember(project.id, targetId))) return sendError(res, 404, 'NOT_FOUND', 'no such member on this project');
+    await audit(`user:${user.id}`, 'project.member.remove', `project:${project.id}`, { userId: targetId, ...(targetId === user.id ? { self: true } : {}) });
+    res.writeHead(204); res.end();
+  });
+
+  // Take this project off an open invitation. When the invitation was made by
+  // a project invite and this project was all it still carried, it is
+  // revoked too, so the address can no longer sign in through it. A console
+  // invitation (`createdVia: 'console'`) only loses the project: whether it
+  // admits the person is an admin's call (`DELETE /api/v1/invitations/:id`,
+  // `user.invite`), never a project manager's. The revoke only takes a row
+  // that is still pending, so an acceptance that comes first is kept.
+  router.add('DELETE', '/api/v1/projects/:id/invitations/:invitationId', async (req, res, ctx) => {
+    const gate = await projectGate(req, res, ctx.params.id as string, 'manager');
+    if (!gate) return;
+    const { user, project } = gate;
+    const inv = await store.getInvitation(ctx.params.invitationId as string);
+    if (!inv || inv.revokedAt || inv.acceptedAt || !(inv.projects ?? []).some((p) => p.projectId === project.id)) {
+      return sendError(res, 404, 'NOT_FOUND', 'no such open invitation on this project');
+    }
+    const remaining = (inv.projects ?? []).filter((p) => p.projectId !== project.id);
+    if (!remaining.length && !inv.groups.length && inv.createdVia === 'project') {
+      const revoked = await store.revokeInvitation(inv.id, new Date().toISOString(), { pendingOnly: true });
+      if (!revoked) return sendError(res, 404, 'NOT_FOUND', 'no such open invitation on this project');
+      await audit(`user:${user.id}`, 'invite.revoke', `invitation:${inv.id}`, { email: inv.email, was: 'pending', via: 'project', projectId: project.id });
+    } else {
+      if (!(await store.setInvitationProjects(inv.id, remaining))) return sendError(res, 404, 'NOT_FOUND', 'no such open invitation on this project');
+      await audit(`user:${user.id}`, 'invite.project.remove', `invitation:${inv.id}`, { email: inv.email, projectId: project.id });
+    }
+    res.writeHead(204); res.end();
   });
 
   // POST /sessions/bulk - multi-edit: merge `set` by EXACT input id into every
@@ -5773,14 +7081,15 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (typeof body?.filter?.toolId === 'string') filter.toolId = body.filter.toolId;
     const keys = Object.keys(set);
 
-    // Only sessions in projects the caller can see (admins see all).
+    // Only sessions in projects the caller may edit (admins: every project).
     const candidates = await store.listSessionsFiltered(filter);
+    const memberships = new Map((await store.listUserProjectMemberships(user.id)).map((m) => [m.projectId, m]));
     const projectCache = new Map<string, ProjectRecord | null>();
     const matched: SessionRecord[] = [];
     for (const s of candidates) {
       if (!projectCache.has(s.projectId)) projectCache.set(s.projectId, await store.getProject(s.projectId));
       const p = projectCache.get(s.projectId);
-      if (p && canSeeProject(user, p)) matched.push(s);
+      if (p && accessAtLeast(effectiveProjectAccess(user, p, memberships.get(p.id) ?? null, grants), 'editor')) matched.push(s);
     }
 
     if (body?.dryRun) {
@@ -5795,11 +7104,19 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
 
     const now = new Date().toISOString();
     const applied: SessionRecord[] = [];
-    const skipped: Array<{ sessionId: string; rev: number }> = [];
+    const skipped: Array<{ sessionId: string; rev: number; reason?: 'collab-active' }> = [];
     for (const s of matched) {
       const inputs = { ...s.inputs, ...set }; // merge by EXACT input id
       const next: SessionRecord = { ...s, inputs, rev: s.rev + 1, updatedBy: user.id, updatedAt: now };
-      if (!(await store.casSession(next, s.rev))) { skipped.push({ sessionId: s.id, rev: s.rev }); continue; }
+      if (!(await store.casSession(next, s.rev))) {
+        // A session in a live room is skipped too, but it is not a conflict.
+        // A refusal at the snapshot's own rev on a live session was the room's
+        // lease even if the room has let go since (the PUT route's rule).
+        const fresh = await store.getSession(s.id);
+        const live = await store.collabLeaseActive(s.id) || (!!fresh && !fresh.deletedAt && fresh.rev === s.rev);
+        skipped.push({ sessionId: s.id, rev: s.rev, ...(live ? { reason: 'collab-active' as const } : {}) });
+        continue;
+      }
       applied.push(next);
       await store.appendSessionRevision({ sessionId: next.id, rev: next.rev, inputs, meta: next.meta, actor: user.id, at: now });
     }
@@ -5807,9 +7124,13 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // The per-session rev bump also changes any future render key that folds in
     // session state; this by-tool bust drops the render plane's own cached bytes.
     for (const toolId of new Set(applied.map((s) => s.toolId))) invalidateRenderByTool(toolId);
+    // `skipped` in the audit counts revision conflicts only: stats/overview folds
+    // it into conflicts30d.
+    const conflicts = skipped.filter((k) => !k.reason).length;
     await audit(`user:${user.id}`, 'sessions.bulk',
       filter.projectId ? `project:${filter.projectId}` : filter.toolId ? `tool:${filter.toolId}` : 'sessions:all',
-      { matched: matched.length, applied: applied.length, ...(skipped.length ? { skipped: skipped.length } : {}),
+      { matched: matched.length, applied: applied.length, ...(conflicts ? { skipped: conflicts } : {}),
+        ...(conflicts < skipped.length ? { collabActive: skipped.length - conflicts } : {}),
         ...(filter.toolId ? { toolId: filter.toolId } : {}), ...(filter.projectId ? { projectId: filter.projectId } : {}), keys });
     sendJson(res, 200, { applied: applied.length, skipped });
   });
@@ -5827,7 +7148,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
    *  POST can authenticate before it reads a body. Returns null having answered. */
   const collabSessionFor = async (
     res: ServerResponse, user: UserRecord, sessionId: string | null,
-  ): Promise<{ session: SessionRecord; project: ProjectRecord } | null> => {
+  ): Promise<{ session: SessionRecord; project: ProjectRecord; access: ProjectAccess } | null> => {
     if (!sessionId) {
       sendError(res, 400, 'INVALID_INPUT', 'sessionId required');
       return null;
@@ -5838,7 +7159,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       return null;
     }
     const project = await store.getProject(session.projectId);
-    if (!project || !canSeeProject(user, project)) {
+    const access = project ? await projectAccessOf(user, project) : 'none';
+    if (!project || access === 'none') {
       sendError(res, 403, 'FORBIDDEN', 'you cannot see this session');
       return null;
     }
@@ -5846,7 +7168,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       sendError(res, 410, 'SESSION_DELETED', 'this session was deleted');
       return null;
     }
-    return { session, project };
+    return { session, project, access };
   };
 
   // Invite autocomplete. Read-access only - an OBSERVER may look up who else
@@ -5860,9 +7182,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const gate = await collabSessionFor(res, user, ctx.url.searchParams.get('sessionId'));
     if (!gate) return;
     const q = normalizeQuery(ctx.url.searchParams.get('q'));
-    const [users, grants] = await Promise.all([store.listUsers(), store.listGrants()]);
+    const [users, grants, memberships] = await Promise.all([
+      store.listUsers(), store.listGrants(), store.listProjectMembers(gate.project.id),
+    ]);
     const { invitees, truncated } = eligibleInvitees({
-      users, grants, project: gate.project, callerId: user.id, q,
+      users, grants, project: gate.project, memberships, callerId: user.id, q,
     });
     sendJson(res, 200, { sessionId: gate.session.id, q, limit: INVITEE_LIMIT, invitees, truncated });
   });
@@ -5878,17 +7202,21 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const gate = await collabSessionFor(res, user, typeof body?.sessionId === 'string' ? body.sessionId : null);
     if (!gate) return;
     const grants = await store.listGrants();
-    if (!mayEditCollab({ userId: user.id, groups: user.groups, role: user.role as Role }, grants)) {
+    // A viewer on the project watches a room; only an editor may invite, as
+    // only an editor may write (plans/74).
+    if (!mayEditCollab({ userId: user.id, groups: user.groups, role: user.role as Role }, grants)
+      || !accessAtLeast(gate.access, 'editor')) {
       return sendError(res, 403, 'FORBIDDEN', 'collab.edit required to invite');
     }
     if (!body?.userId || typeof body.userId !== 'string') return sendError(res, 400, 'INVALID_INPUT', 'userId required');
     const invitee = (await store.listUsers()).find((u) => u.id === body.userId);
+    const inviteeMembership = invitee ? await store.getProjectMember(gate.project.id, invitee.id) : null;
     // One code for "no such user", "cannot see this project", "not a member of
     // it" and "that's you": an ineligible id must not be a probe that tells you
     // which it was - the autocomplete is the only sanctioned way to learn who
     // exists, and it and this route resolve the SAME `mayJoinSession`, so a
     // 201-vs-400 difference can never answer a question the search hides.
-    if (!invitee || invitee.id === user.id || !mayJoinSession(invitee, gate.project, grants)) {
+    if (!invitee || invitee.id === user.id || !mayJoinSession(invitee, gate.project, grants, inviteeMembership)) {
       return sendError(res, 400, 'INVITEE_NOT_ELIGIBLE', 'that person cannot open this session');
     }
     const msg = buildInviteMessage({
@@ -6071,6 +7399,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   };
   const durableRenders = new RenderRunner({
     store, blobs,
+    ...(deps.backgroundPollMs !== undefined ? { pollMs: deps.backgroundPollMs } : {}),
     execute: async (record, signal) => brand.run(async () => {
       const caller = await currentRenderCaller(record.principal, record.request);
       await validateRenderRequest(record.principal, record.request);
@@ -6749,9 +8078,16 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!(await scimAuth(req, res))) return;
     const filter = parseScimFilter(ctx.url.searchParams.get('filter'));
     const all = await store.listUsers();
-    const rows = filter
+    let rows = filter
       ? all.filter((u) => (filter.attr === 'userName' ? u.email : u.sub) === filter.value)
       : all;
+    // The IdP's subject may reach an account through a linked sign-in
+    // (plans/74, "One person, many sign-ins") rather than users.sub, when the
+    // account was created by another IdP. That account is the person.
+    if (filter && filter.attr !== 'userName' && rows.length === 0) {
+      const linked = await store.getUserByIdentity(filter.value);
+      if (linked) rows = [linked];
+    }
     // Bounded page: the IdP reconciles against this, it does not mirror it.
     scimJson(res, 200, scimList(rows.slice(0, SCIM_PAGE_MAX).map((u) => userToScim(u, scimBase)), rows.length));
   });
@@ -6759,7 +8095,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!(await scimAuth(req, res))) return;
     const parsed = parseUserCreate(await readJson(req));
     if ('error' in parsed) return scimErr(res, 400, parsed.error, 'invalidValue');
-    if (await store.getUserBySub(parsed.sub)) {
+    // A subject linked to an existing account is that person already: a
+    // second row would take the IdP's group pushes while they sign in as
+    // the first.
+    if (await store.getUserBySub(parsed.sub) || await store.getUserByIdentity(parsed.sub)) {
       return scimErr(res, 409, `a user with this ${parsed.sub === parsed.email ? 'userName' : 'externalId'} already exists`, 'uniqueness');
     }
     const created = await store.upsertUserBySub({
@@ -7014,13 +8353,19 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       else sendError(res, 404, 'NOT_FOUND', `no route for ${req.method} ${req.url}`);
     } catch (err) {
       if ((err as Error).message === 'collab-active') {
-        if (!res.headersSent) sendError(res, 409, 'COLLAB_ACTIVE', 'This session has a live collaboration room. Close it before saving through this API.');
+        if (!res.headersSent) sendCollabActive(res);
         return;
       }
       const status = (err as { status?: number }).status ?? 500;
       if (!res.headersSent) sendError(res, status, err instanceof BrandError ? err.code : status === 500 ? 'INTERNAL' : 'BAD_REQUEST', (err as Error).message);
     }
   };
+}
+
+/** A live collaboration room holds the session's lease (`Store.collabLeaseActive`,
+ *  or `putSession` throwing `collab-active`), so REST may not write it yet. */
+function sendCollabActive(res: ServerResponse): void {
+  sendError(res, 409, 'COLLAB_ACTIVE', 'This session has a live collaboration room. Close it before saving through this API.');
 }
 
 /** Let a browser on any origin read this response. Used by the two routes a

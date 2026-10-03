@@ -6,10 +6,12 @@
  * ReferenceCanvasDoc provides the shared scalar/property LWW model. Durable
  * rooms commit a session projection, operation journal (or periodic register
  * checkpoint), receipt IDs and bounded session history in one Store transaction.
- * Only committed edits are applied, broadcast and acknowledged. Recovery replays
- * a contiguous journal, including rejection-only revisions. An expiring database
- * owner excludes other rooms and ordinary HTTP writers; it does not route sockets
- * or make this a writable multi-replica service (OSS plans/258 and 259).
+ * Only committed edits are applied, broadcast and acknowledged. A batch that
+ * accepts nothing stores its receipts at the current revision and adds no
+ * revision, journal row or history. Recovery replays a contiguous journal. An
+ * expiring database owner excludes other rooms and ordinary HTTP writers; it
+ * does not route sockets or make this a writable multi-replica service (OSS
+ * plans/258 and 259).
  *
  * Presence has no policy/store calls: it remains ephemeral and available to
  * observers. The module imports neither policy nor RBAC; gateway tests guard
@@ -591,7 +593,14 @@ export class Room implements RoomWriteback {
       }
       const novel = records.filter(r => !previous.has(r.id));
       const fresh = ops.filter((_, i) => !previous.has(ids[i]!) && records[i]!.accepted);
-      if (novel.length) {
+      if (!fresh.length && novel.length) {
+        // Nothing accepted (an observer's batch, a full veto): the document is
+        // unchanged, so only the receipts are stored. No revision, no history
+        // row, and `updatedBy` stays with the last writer.
+        await store.commitCollabReceipts({ sessionId: this.sessionId, owner: this.owner, principal: from.userId,
+          expectedRev: this.durableRevision, receipts: novel });
+        if (this.closed) throw new Error('collab-owner-lost');
+      } else if (novel.length) {
         const candidate = this.doc.fork();
         candidate.applyRemotePatch(fresh);
         const session = await store.getSession(this.sessionId);

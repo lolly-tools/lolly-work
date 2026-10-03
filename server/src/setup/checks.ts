@@ -23,6 +23,30 @@ export function startupChecks(config: InstanceConfig, secrets: Secrets, durable:
   check('identity', !!(config.idp.issuer && config.idp.clientId) || config.proxyAuth.enabled,
     'An identity provider or authenticating proxy is configured.', 'Configure an identity provider or authenticating proxy.');
   check('access', config.policy.defaultAccessMode !== 'open', 'Access is governed.', 'Use gated or per-tool access for production.');
+  // Not a refusal: an IdP that only ever issues accounts to your own people
+  // (a single-tenant directory) is a policy on its own. A public one is not.
+  if (production && config.idp.issuer) {
+    checks.push(config.idp.admission
+      ? { id: 'admission', status: 'pass', message: 'A sign-in admission policy is configured.' }
+      : { id: 'admission', status: 'warning', message: 'Every account the identity provider accepts can sign in. Configure idp.admission (emails, domains or invitations) unless the provider only issues accounts to your own people.' });
+  }
+  // An unmapped role falls back to its literal name (rbac/evaluate.ts
+  // roleFromGroups), so a group called "owner" or "admin" at ANY configured
+  // IdP, or a proxy header, grants that role. Naming every role closes that.
+  if (production && (config.idp.issuer || config.proxyAuth.enabled)) {
+    const unmapped = (['owner', 'admin', 'approver', 'author'] as const).filter((role) => !Array.isArray(config.idp.roleGroups?.[role]));
+    checks.push(unmapped.length
+      ? { id: 'role-groups', status: 'warning', message: `idp.roleGroups does not map ${unmapped.join(', ')}, so a group with exactly that name from the identity provider grants the role. Map each role to your own group names, or to an empty list to turn it off.` }
+      : { id: 'role-groups', status: 'pass', message: 'Every privileged role is mapped to named groups.' });
+  }
+  // An additional IdP whose secret variable is unset still shows on the sign-in
+  // chooser, and every sign-in through it then fails at the IdP. Named, never read out.
+  if (production) {
+    const missing = config.idp.additional.filter((idp) => idp.clientSecretRef && !env[idp.clientSecretRef]?.trim());
+    if (missing.length) {
+      checks.push({ id: 'idp-secrets', status: 'warning', message: `Sign-in through ${missing.map((idp) => `${idp.displayName || idp.id} (${idp.id})`).join(', ')} will fail: ${missing.map((idp) => idp.clientSecretRef).join(', ')} ${missing.length === 1 ? 'is' : 'are'} not set. Set each in the server environment, or remove that provider from idp.additional.` });
+    }
+  }
   const protectedBase = (() => { try { const url = new URL(config.instance.baseUrl); return url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash; } catch { return false; } })();
   check('transport', protectedBase, 'Public base URL uses HTTPS.', 'Set instance.baseUrl to the public HTTPS URL without credentials, query or fragment.');
   check('session-secret', Buffer.byteLength(secrets.session) >= 32, 'Session signing secret meets the length requirement.', 'Set LW_SESSION_SECRET to a stable random secret of at least 32 bytes.');

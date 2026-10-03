@@ -15,9 +15,12 @@
 import { readFileSync } from 'node:fs';
 import { randomId } from '../lib/crypto.ts';
 import { validateAiConfig } from '../policy/ai.ts';
+import { validateInvitePolicy, type InvitePolicyConfig } from '../policy/invites.ts';
+import { PROJECT_FILE_DEFAULTS, PROJECT_FILE_MAX_BYTES, type ProjectFilePolicy } from '../projects/files.ts';
 import { PROVIDER_KINDS, type ProviderExposure, type ProviderKind, type ProviderMapping, type ProviderSyncConfig } from '../catalog/providers/types.ts';
 import { DELIVERY_DESTINATION_KINDS, type ConfigDeliveryDestination } from '../delivery/types.ts';
-import type { ClaimMap } from '../iam/oidc.ts';
+import { AUTH_PARAM_ALLOWLIST, type ClaimMap } from '../iam/oidc.ts';
+import type { AdmissionPolicy, EmailVerification } from '../iam/admission.ts';
 import type { RoleGroups } from '../rbac/evaluate.ts';
 
 /** A deploy-time (GitOps/air-gap) provider entry - upserted at boot with
@@ -143,7 +146,17 @@ export interface InstanceConfig {
      *  /api/auth/login with no ?idp= serves a script-free chooser - the OSS
      *  gate and the console gate grow multiple buttons with zero client work. */
     additional: AdditionalIdp[];
-  };
+    /** Who may sign in (plans/74 W-ID-1), shared by every IdP and the proxy.
+     *  Absent = every verified sign-in is admitted (and production setup warns). */
+    admission?: AdmissionPolicy;
+    /** Emails that get the owner group at sign-in once admitted with a
+     *  verified address - how a groupless IdP (Google) gets its first owner. */
+    bootstrapOwners: string[];
+    /** Days one sign-in's IdP groups, and the account's own sign-in's
+     *  standing under the admission lists, carry over to the person's other
+     *  linked sign-ins (plans/74). Absent = 30 (iam/identities.ts). */
+    linkedStandingDays?: number;
+  } & IdpConstraints;
   policy: {
     /** Managed AI is off unless both this approval ceiling and the audited
      * operator flag allow it. A personal shell preference cannot enable it. */
@@ -182,6 +195,17 @@ export interface InstanceConfig {
      *  states its policy, the product never assumes one. Audit trims keep the
      *  chain verifiable (the anchor) and never pass the SIEM cursor. */
     retention: { telemetryDays: number; auditDays: number };
+    /** Invites from inside Lolly (plans/74): who may invite new people by
+     *  email, which domains, how long an invitation stays open and which
+     *  project roles may be given. Absent means the defaults in
+     *  policy/invites.ts (`resolveInvitePolicy`): admins, any domain, 720
+     *  hours, every project role. */
+    invites?: InvitePolicyConfig;
+    /** Shared project files (plans/74, projects/files.ts): on by default where
+     *  the store is durable. The per-file cap and the project and instance
+     *  budgets are bytes; unfinished uploads expire after `uploadTtlHours`.
+     *  The defaults fit a small hosted Postgres that also holds the blobs. */
+    projectFiles: ProjectFilePolicy;
   };
   render: {
     /**
@@ -289,8 +313,12 @@ export interface RateLimitConfig {
  *  login URL and the sub namespace carry ('primary' is reserved). The
  *  confidential client secret rides the env var `clientSecretRef` names - the
  *  provider-credentialRef precedent - and is absent for public/PKCE clients. */
-export interface AdditionalIdp {
+export interface AdditionalIdp extends IdpConstraints {
   id: string;
+  /** `oidc` (default): any OpenID Connect issuer. `github`: GitHub's OAuth 2.0
+   *  sign-in (iam/github.ts), which has no issuer and needs `clientSecretRef`. */
+  kind?: IdpKind;
+  /** The OIDC issuer. Empty for `kind: 'github'`, which has none. */
   issuer: string;
   clientId: string;
   /** Required: the chooser button must say which house. */
@@ -298,6 +326,36 @@ export interface AdditionalIdp {
   groupsClaim: string;
   claimMap: ClaimMap;
   clientSecretRef?: string;
+}
+
+export type IdpKind = 'oidc' | 'github';
+export const IDP_KINDS: readonly IdpKind[] = ['oidc', 'github'];
+
+/** Whether a sign-in from this IdP may join an existing person by a matching
+ *  email. Default: yes when the IdP's own verified flag is checked (`claim`),
+ *  no when every address is simply trusted (`trusted`), because a trusted
+ *  address was never proven by the person. `linkByEmail` overrides either way. */
+export function linkByEmailFor(c: Pick<IdpConstraints, 'linkByEmail' | 'emailVerification'>): boolean {
+  return c.linkByEmail ?? (c.emailVerification ?? 'claim') === 'claim';
+}
+
+/** Per-IdP sign-in constraints (plans/74 W-ID-1), on the primary `idp` block
+ *  and on each `idp.additional[]` entry. Never inherited between IdPs. */
+export interface IdpConstraints {
+  /** Google Workspace: the `hd` claim must equal this; also sent as the `hd` auth param. */
+  hostedDomain?: string;
+  /** Microsoft Entra: the `tid` claim must equal this tenant id. */
+  tenantId?: string;
+  /** `claim` (default): email-based admission needs `email_verified === true`.
+   *  `trusted`: the IdP vouches for every email it sends (a tenant-pinned IdP that omits the claim). */
+  emailVerification?: EmailVerification;
+  /** Requested scopes; default `openid profile email`. Must include `openid`. */
+  scopes?: string[];
+  /** Extra authorization request parameters, from `AUTH_PARAM_ALLOWLIST` only. */
+  authParams?: Partial<Record<typeof AUTH_PARAM_ALLOWLIST[number], string>>;
+  /** Link a sign-in to an existing person with the same email. Read through
+   *  `linkByEmailFor`: absent means true under `claim`, false under `trusted`. */
+  linkByEmail?: boolean;
 }
 
 /** Request headers the proxy sets (names lowercased for lookup, so `YNH_USER`
@@ -382,6 +440,10 @@ export interface Secrets {
   renderWorker?: string;
   /** PKCS#8 private-key PEM for the instance C2PA signer. Absent ⇒ unsigned exports. */
   c2paSigningKey?: string;
+  /** ECDSA P-256 private key (PKCS#8 PEM or private JWK JSON) that signs the
+   *  per-caller tool index (catalog/signing.ts). Absent ⇒ the catalog is served
+   *  unsigned, exactly as before. */
+  catalogSigningKey?: string;
 }
 
 const DEFAULTS: InstanceConfig = {
@@ -397,6 +459,7 @@ const DEFAULTS: InstanceConfig = {
     claimMap: { firstname: 'given_name', lastname: 'family_name', email: 'email', title: 'title' },
     displayName: '',
     additional: [],
+    bootstrapOwners: [],
   },
   policy: {
     ai: { enabled: false, capabilities: [] },
@@ -410,6 +473,7 @@ const DEFAULTS: InstanceConfig = {
     catalog: { versionKeep: 0 },
     fleet: {},
     retention: { telemetryDays: 0, auditDays: 0 },
+    projectFiles: { ...PROJECT_FILE_DEFAULTS },
   },
   render: { allowHooksInFastPath: false, worker: { url: '', timeoutMs: 20000 }, c2pa: { certFile: '', claimGenerator: '' } },
   audit: { headLog: { onBoot: true, intervalMinutes: 60 } },
@@ -507,6 +571,108 @@ function validateProxyAuth(pa: ProxyAuthConfig): void {
   pa.directory = d;
 }
 
+const SCOPE_TOKEN = /^[\x21\x23-\x5b\x5d-\x7e]+$/;
+export const DOMAIN_NAME = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+const ENTRA_TENANT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const EMAIL_ADDR = /^[^\s@]+@[^\s@]+$/;
+
+/** Validate (and normalise) one IdP's sign-in constraints in place. A typo
+ *  here would either lock everyone out or let the wrong tenant in, so refuse
+ *  the config rather than guess. */
+function validateIdpConstraints(label: string, c: IdpConstraints): void {
+  if (c.hostedDomain !== undefined) {
+    const d = typeof c.hostedDomain === 'string' ? c.hostedDomain.trim().toLowerCase() : '';
+    if (!DOMAIN_NAME.test(d)) throw new Error(`${label}.hostedDomain must be a domain name such as example.com`);
+    c.hostedDomain = d;
+  }
+  if (c.tenantId !== undefined) {
+    const t = typeof c.tenantId === 'string' ? c.tenantId.trim().toLowerCase() : '';
+    if (!ENTRA_TENANT.test(t)) throw new Error(`${label}.tenantId must be a directory (tenant) id GUID`);
+    c.tenantId = t;
+  }
+  if (c.emailVerification !== undefined && c.emailVerification !== 'claim' && c.emailVerification !== 'trusted') {
+    throw new Error(`${label}.emailVerification must be "claim" or "trusted"`);
+  }
+  if (c.linkByEmail !== undefined && typeof c.linkByEmail !== 'boolean') {
+    throw new Error(`${label}.linkByEmail must be true or false`);
+  }
+  // A trusted IdP's addresses are believed without a verified flag. Unless
+  // the IdP is pinned to one directory, anyone able to create an account
+  // there can set any address, so linking by it would hand them the account
+  // that address belongs to (the nOAuth pattern).
+  if (c.linkByEmail === true && c.emailVerification === 'trusted' && !c.hostedDomain && !c.tenantId) {
+    throw new Error(`${label}.linkByEmail cannot be true for an emailVerification "trusted" IdP that has no hostedDomain or tenantId pin`);
+  }
+  if (c.scopes !== undefined) {
+    const raw: unknown = c.scopes;
+    const list = typeof raw === 'string' ? raw.split(/\s+/).filter(Boolean) : raw;
+    if (!Array.isArray(list) || list.length > 30 || list.some((t) => typeof t !== 'string' || !SCOPE_TOKEN.test(t))) {
+      throw new Error(`${label}.scopes must be a list of scope names`);
+    }
+    if (!list.includes('openid')) throw new Error(`${label}.scopes must include openid`);
+    c.scopes = [...new Set(list as string[])];
+  }
+  if (c.authParams !== undefined) {
+    const p: unknown = c.authParams;
+    if (!p || typeof p !== 'object' || Array.isArray(p)) throw new Error(`${label}.authParams must be an object`);
+    for (const [k, v] of Object.entries(p)) {
+      if (!(AUTH_PARAM_ALLOWLIST as readonly string[]).includes(k)) {
+        throw new Error(`${label}.authParams.${k} is not allowed (allowed: ${AUTH_PARAM_ALLOWLIST.join(', ')})`);
+      }
+      if (typeof v !== 'string' || !v.trim() || v.length > 300 || /[\u0000-\u001f]/.test(v)) {
+        throw new Error(`${label}.authParams.${k} must be a short single-line string`);
+      }
+    }
+    const hd = (p as Record<string, string>).hd;
+    if (hd && c.hostedDomain && hd.toLowerCase() !== c.hostedDomain) {
+      throw new Error(`${label}.authParams.hd differs from ${label}.hostedDomain - set one, or make them equal`);
+    }
+  }
+}
+
+/** Validate (and normalise) idp.admission and idp.bootstrapOwners in place. */
+function validateAdmission(idp: InstanceConfig['idp']): void {
+  const emailList = (key: string, v: unknown): string[] => {
+    if (!Array.isArray(v) || v.length > 10000 || v.some((e) => typeof e !== 'string' || e.length > 320 || !EMAIL_ADDR.test(e.trim()))) {
+      throw new Error(`${key} must be a list of email addresses`);
+    }
+    return [...new Set((v as string[]).map((e) => e.trim().toLowerCase()))];
+  };
+  if (idp.admission !== undefined) {
+    const a: unknown = idp.admission;
+    if (!a || typeof a !== 'object' || Array.isArray(a)) throw new Error('idp.admission must be an object');
+    for (const k of Object.keys(a)) {
+      if (!['emails', 'domains', 'invitations'].includes(k)) throw new Error(`idp.admission.${k} is not a known key (emails, domains, invitations)`);
+    }
+    const adm = a as AdmissionPolicy;
+    if (adm.emails !== undefined) adm.emails = emailList('idp.admission.emails', adm.emails);
+    if (adm.domains !== undefined) {
+      const d: unknown = adm.domains;
+      if (!Array.isArray(d) || d.length > 1000) throw new Error('idp.admission.domains must be a list of domain names');
+      adm.domains = [...new Set(d.map((x) => {
+        const n = typeof x === 'string' ? x.trim().toLowerCase().replace(/^@/, '') : '';
+        if (!DOMAIN_NAME.test(n)) throw new Error(`idp.admission.domains entry is not a domain name: ${String(x)}`);
+        return n;
+      }))];
+    }
+    if (adm.invitations !== undefined && typeof adm.invitations !== 'boolean') throw new Error('idp.admission.invitations must be true or false');
+  }
+  idp.bootstrapOwners = emailList('idp.bootstrapOwners', idp.bootstrapOwners ?? []);
+  if (idp.bootstrapOwners.length && Array.isArray(idp.roleGroups.owner) && idp.roleGroups.owner.length === 0) {
+    throw new Error('idp.bootstrapOwners needs an owner group: idp.roleGroups.owner is an empty list');
+  }
+  // The first owner must be able to get in, or the instance has nobody to invite anyone.
+  const adm = idp.admission;
+  if (adm) {
+    for (const owner of idp.bootstrapOwners) {
+      const domain = owner.slice(owner.lastIndexOf('@') + 1);
+      if (!(adm.emails ?? []).includes(owner) && !(adm.domains ?? []).includes(domain)) {
+        throw new Error(`idp.bootstrapOwners entry ${owner} is not admitted: add it to idp.admission.emails or its domain to idp.admission.domains`);
+      }
+    }
+  }
+}
+
 export function parseConfig(json: string): InstanceConfig {
   const raw = JSON.parse(json) as Partial<InstanceConfig>;
   // Check mapping keys before merging can turn a JSON __proto__ key into inheritance.
@@ -547,6 +713,7 @@ export function parseConfig(json: string): InstanceConfig {
     .flatMap(role => mapping[role] ?? (['owner', 'admin', 'approver', 'author'].includes(role) ? [role] : []));
   if (new Set(assignedGroups).size !== assignedGroups.length) throw new Error('idp.roleGroups cannot assign a group more than once');
   validateAiConfig(cfg.policy.ai);
+  validateInvitePolicy(cfg.policy.invites);
   if (!['open', 'gated', 'per-tool'].includes(mode)) throw new Error(`invalid defaultAccessMode: ${mode}`);
   if (!['off', 'aggregate', 'standard'].includes(cfg.policy.telemetry)) {
     throw new Error(`invalid telemetry level: ${cfg.policy.telemetry}`);
@@ -565,6 +732,17 @@ export function parseConfig(json: string): InstanceConfig {
     const v = cfg.policy.retention[k];
     if (!Number.isInteger(v) || v < 0) throw new Error(`invalid policy.retention.${k}: ${v} (days, 0 = keep forever)`);
   }
+  const files = cfg.policy.projectFiles;
+  if (!files || typeof files !== 'object' || Array.isArray(files)) throw new Error('policy.projectFiles must be an object');
+  if (typeof files.enabled !== 'boolean') throw new Error('policy.projectFiles.enabled must be true or false');
+  for (const k of ['maxFileBytes', 'projectBudgetBytes', 'instanceBudgetBytes', 'uploadTtlHours'] as const) {
+    if (!Number.isSafeInteger(files[k]) || files[k] <= 0) throw new Error(`invalid policy.projectFiles.${k}: ${files[k]} (a whole number above 0)`);
+  }
+  if (files.maxFileBytes > PROJECT_FILE_MAX_BYTES) throw new Error(`policy.projectFiles.maxFileBytes cannot exceed ${PROJECT_FILE_MAX_BYTES} (256 MiB)`);
+  if (files.maxFileBytes > files.projectBudgetBytes || files.projectBudgetBytes > files.instanceBudgetBytes) {
+    throw new Error('policy.projectFiles needs maxFileBytes <= projectBudgetBytes <= instanceBudgetBytes');
+  }
+  if (files.uploadTtlHours > 720) throw new Error(`invalid policy.projectFiles.uploadTtlHours: ${files.uploadTtlHours} (at most 720)`);
   // Additional IdPs (plans/36 §3): defaults applied, then validated hard - a
   // half-described issuer would fail at sign-in, in front of the person.
   if (!Array.isArray(cfg.idp.additional)) throw new Error('idp.additional must be a list');
@@ -575,7 +753,24 @@ export function parseConfig(json: string): InstanceConfig {
     if (idpIds.has(a.id)) throw new Error(`duplicate idp.additional id: ${a.id}`);
     idpIds.add(a.id);
     if (!cfg.idp.issuer) throw new Error('idp.additional needs the primary idp.issuer configured first');
-    if (!a.issuer || typeof a.issuer !== 'string') throw new Error(`idp.additional "${a.id}" needs an issuer`);
+    if (a.kind !== undefined && !IDP_KINDS.includes(a.kind)) {
+      throw new Error(`idp.additional "${a.id}" kind must be one of: ${IDP_KINDS.join(', ')}`);
+    }
+    if (a.kind === 'github') {
+      // GitHub is OAuth 2.0 with fixed endpoints and scopes: nothing to
+      // discover, no claims to pin, and a confidential client is mandatory.
+      if (a.issuer !== undefined && a.issuer !== '') throw new Error(`idp.additional "${a.id}" is kind github, which takes no issuer`);
+      if (!a.clientSecretRef) throw new Error(`idp.additional "${a.id}" is kind github and needs a clientSecretRef (GitHub OAuth Apps always have a client secret)`);
+      for (const k of ['hostedDomain', 'tenantId', 'scopes', 'authParams'] as const) {
+        if (a[k] !== undefined) throw new Error(`idp.additional "${a.id}".${k} does not apply to kind github`);
+      }
+      // GitHub reports verification per address and lets anyone add an
+      // address without proving it, so only its own flag may count.
+      if (a.emailVerification !== undefined && a.emailVerification !== 'claim') {
+        throw new Error(`idp.additional "${a.id}" is kind github, whose emailVerification can only be "claim" (GitHub accepts addresses nobody has proven)`);
+      }
+      a.issuer = '';
+    } else if (!a.issuer || typeof a.issuer !== 'string') throw new Error(`idp.additional "${a.id}" needs an issuer`);
     if (!a.clientId) throw new Error(`idp.additional "${a.id}" needs a clientId`);
     if (!a.displayName) throw new Error(`idp.additional "${a.id}" needs a displayName - the chooser button must say which house`);
     if (a.clientSecretRef !== undefined && !/^[A-Z][A-Z0-9_]*$/.test(a.clientSecretRef)) {
@@ -583,6 +778,13 @@ export function parseConfig(json: string): InstanceConfig {
     }
     a.groupsClaim = a.groupsClaim || cfg.idp.groupsClaim;
     a.claimMap = { ...cfg.idp.claimMap, ...(a.claimMap ?? {}) };
+    validateIdpConstraints(`idp.additional "${a.id}"`, a);
+  }
+  validateIdpConstraints('idp', cfg.idp);
+  validateAdmission(cfg.idp);
+  const lsd: unknown = cfg.idp.linkedStandingDays;
+  if (lsd !== undefined && (typeof lsd !== 'number' || !Number.isInteger(lsd) || lsd < 1 || lsd > 365)) {
+    throw new Error(`invalid idp.linkedStandingDays: ${String(lsd)} (whole days, 1-365)`);
   }
   const smtp = cfg.notify.smtp;
   if (smtp) {
@@ -801,5 +1003,6 @@ export function loadSecrets(env = process.env, cfg?: Pick<InstanceConfig, 'proxy
   if (env.LW_SIEM_SECRET) secrets.siem = env.LW_SIEM_SECRET;
   if (env.LW_RENDER_WORKER_SECRET) secrets.renderWorker = env.LW_RENDER_WORKER_SECRET;
   if (env.LW_C2PA_SIGNING_KEY) secrets.c2paSigningKey = env.LW_C2PA_SIGNING_KEY;
+  if (env.LW_CATALOG_SIGNING_KEY) secrets.catalogSigningKey = env.LW_CATALOG_SIGNING_KEY;
   return secrets;
 }

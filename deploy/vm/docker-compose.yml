@@ -1,0 +1,94 @@
+# lolly.ing on one VM (deploy/vm/README.md): Caddy for TLS and routing in front
+# of the lolly-work server. The database is Neon Postgres (no db service here);
+# blobs live in it too. This file is copied to /opt/lolly-ing/ on the VM by
+# deploy/vm/push.sh, so every path below is relative to that directory, which
+# the deploy user (sles) owns with mode 0700; compose runs through sudo:
+#
+#   /opt/lolly-ing/
+#     docker-compose.yml   this file
+#     .env                 secrets, mode 0600, written by deploy/vm/secrets.sh
+#     caddy.env            LW_CADDY_GLOBAL, written by deploy/vm/push.sh
+#     caddy/Caddyfile      deploy/vm/Caddyfile (scripts/build-caddyfile.ts)
+#     instance.json        deploy/vm/instance.json (from instance.json.example)
+#     packs/lolly-ing/     the instance pack (scripts/build-instance-pack.ts)
+#     src/                 the lolly-work source the image is built from
+#
+# SELinux is enforcing on openSUSE and Docker runs with selinux-enabled, so a
+# bind mount without a label is unreadable in the container. :Z gives a mount
+# a label private to the one container that uses it; :z a shared one, for a
+# directory two containers read at once. Named volumes need neither.
+services:
+  server:
+    build:
+      context: ./src
+      dockerfile: deploy/compose/Dockerfile
+    image: lolly-work:local
+    # Secrets by name only (deploy/vm/.env.example); the file stays on the VM.
+    env_file: .env
+    environment:
+      LW_CONFIG: /app/instance.json
+      # The durable render and automation runners look for queued work only at
+      # boot and when work is submitted (0 = no timer). A poll on a clock keeps
+      # Neon's compute awake around the clock, past the Free plan's 100
+      # CU-hours, and a suspended compute takes the instance down. Override in
+      # .env only with a value well above Neon's 5-minute suspend delay.
+      LW_BACKGROUND_POLL_MS: ${LW_BACKGROUND_POLL_MS:-0}
+    volumes:
+      - ./instance.json:/app/instance.json:ro,Z
+      - ./packs/lolly-ing:/app/packs/lolly-ing:ro,Z
+      # The image does not copy engine-pin.json; /api/v1/instance reads the
+      # engine version from it (engineVersion is null without it).
+      - ./src/engine-pin.json:/app/engine-pin.json:ro,Z
+    # Reachable from the VM itself (curl http://127.0.0.1:8787/healthz) and from
+    # Caddy over the compose network; never from outside. Docker's published
+    # ports bypass firewalld, so this one must stay on 127.0.0.1.
+    ports:
+      - "127.0.0.1:8787:8787"
+    # The image's own check fetches /healthz every 30 s, and every request reads
+    # the design-system state from the database, which would keep Neon awake.
+    # A TCP connect proves the process is listening without a query.
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('node:net').connect(8787, '127.0.0.1').on('connect', () => process.exit(0)).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+    # SIGTERM starts main.ts's drain: live collab rooms are saved as session
+    # revisions before the process exits. Docker waits this long before SIGKILL.
+    stop_grace_period: 60s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  caddy:
+    image: caddy:2
+    depends_on:
+      - server
+    env_file: caddy.env
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      # A directory, not the file: a bind-mounted single file keeps the old copy
+      # after rsync replaces it, and `caddy reload` would read that. Shared (:z):
+      # push.sh validates it in a second caddy container while this one runs,
+      # and a private label would take it away from this one.
+      - ./caddy:/etc/caddy:ro,z
+      # Certificates and the ACME account. Losing /data means new certificates
+      # (and Let's Encrypt rate limits), so it is a named volume.
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  caddy_data:
+  caddy_config:

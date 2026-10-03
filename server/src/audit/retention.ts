@@ -19,23 +19,32 @@
  * `retentionDays: 0` (the default, versionKeep's idiom) keeps everything -
  * an org states its policy; the product never assumes one.
  */
+import type { BlobStore } from '../blobs/types.ts';
 import type { InstanceConfig } from '../config/instance.ts';
+import { sweepExpiredProjectFiles } from '../projects/files.ts';
 import type { Store } from '../store/types.ts';
 import type { AuditEvent } from './chain.ts';
 
 export interface RetentionResult {
   telemetryTrimmed: number;
   auditTrimmed: number;
+  /** Expired unfinished project-file uploads removed (plans/74). Present only
+   *  when the run was given the BlobStore their parts live in. */
+  projectFilesSwept?: number;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SCAN_BATCH = 500;
 
 export async function runRetention(
-  { config, store, now = () => new Date() }: { config: InstanceConfig; store: Store; now?: () => Date },
+  { config, store, blobs, now = () => new Date() }: { config: InstanceConfig; store: Store; blobs?: BlobStore; now?: () => Date },
 ): Promise<RetentionResult> {
   const { telemetryDays, auditDays } = config.policy.retention;
   const result: RetentionResult = { telemetryTrimmed: 0, auditTrimmed: 0 };
+
+  // Not a policy choice: an expired upload is litter whatever the org keeps,
+  // so this runs on every pass (a new reservation also sweeps a batch).
+  if (blobs) result.projectFilesSwept = await sweepExpiredProjectFiles(store, blobs, { now: now().getTime(), limit: 500 });
 
   if (telemetryDays > 0) {
     const cutoff = new Date(now().getTime() - telemetryDays * DAY_MS).toISOString();

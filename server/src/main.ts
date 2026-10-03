@@ -12,17 +12,18 @@ import { createPostgresStore } from './store/postgres.ts';
 import { createMemoryBlobStore } from './blobs/memory.ts';
 import { createPostgresBlobStore } from './blobs/postgres.ts';
 import { createS3BlobStore } from './blobs/s3.ts';
-import { runMigrations, pendingMigrations } from './store/migrate.ts';
+import { runMigrations, pendingMigrations, migrationDatabaseUrl } from './store/migrate.ts';
 import { buildApp } from './api/app.ts';
-import type { RenderRunner } from './renders/runner.ts';
+import { parseBackgroundPollMs, type RenderRunner } from './renders/runner.ts';
 import { createCollabGateway } from './collab/gateway.ts';
 import { createNearbyRegistry } from './collab/nearby.ts';
 import { createSiemForwarder } from './observability/siem.ts';
 import { runRetention } from './audit/retention.ts';
+import { scheduleProjectFileSweep } from './projects/files.ts';
 import { createNotifier } from './notify/notify.ts';
 import { expiringCredentials } from './catalog/credential-expiry.ts';
 import { auditHead } from './audit/head.ts';
-import { deriveAuditMacKey } from './audit/chain.ts';
+import { deriveAuditMacKey, retiredKeyNote } from './audit/chain.ts';
 import { checkShellDist } from './lib/shell-dist.ts';
 import { assessSetup } from './setup/checks.ts';
 import { existsSync, readFileSync } from 'node:fs';
@@ -37,6 +38,9 @@ if (!setup.ready) {
   for (const tool of setup.pack.tools.filter(tool => !tool.valid)) console.error(`[lolly-work] tool ${tool.id}: ${tool.diagnostics.join(' ')}`);
   throw new Error('Production setup validation failed. Correct the reported settings before starting.');
 }
+// A production warning is a setting that boots but deserves a decision (an
+// open sign-in admission policy, today). Say it once at boot.
+if (setup.mode === 'production') for (const check of setup.checks.filter(check => check.status === 'warning')) console.warn(`[lolly-work] WARNING ${check.id}: ${check.message}`);
 console.log(`[lolly-work] deployment mode=${setup.mode}; storage=${process.env.DATABASE_URL ? 'postgres' : 'memory'}${setup.mode === 'evaluation' && !process.env.DATABASE_URL ? ' (lost on restart)' : ''}`);
 
 // The pack is read lazily per request, so a wrong path used to boot cleanly and
@@ -92,14 +96,18 @@ if (config.instance.shellDir && config.policy.defaultAccessMode !== 'open') {
 // keeps the single-node one-command deploy by auto-applying at boot; set it false
 // for HA rollouts, where the server runs no DDL and refuses to start on a pending
 // schema (migrate explicitly with `pnpm run migrate` / `lw migrate` first).
+// Migrations run over DATABASE_URL_UNPOOLED when it is set (Neon documents them
+// as a job for the direct connection; store/migrate.ts migrationDatabaseUrl);
+// the store always uses DATABASE_URL.
 const databaseUrl = process.env.DATABASE_URL;
 const store = databaseUrl
   ? await (async () => {
+      const migrationUrl = migrationDatabaseUrl() ?? databaseUrl;
       if (parseAutoMigrate()) {
-        const applied = await runMigrations(databaseUrl);
+        const applied = await runMigrations(migrationUrl);
         if (applied.length) console.log(`[lolly-work] migrations applied: ${applied.join(', ')}`);
       } else {
-        const pending = await pendingMigrations(databaseUrl);
+        const pending = await pendingMigrations(migrationUrl);
         if (pending.length) {
           console.error(`[lolly-work] REFUSING TO START — ${pending.length} pending migration(s): ${pending.join(', ')}`);
           console.error('[lolly-work] LW_AUTO_MIGRATE is off. Run `pnpm run migrate` (or `lw migrate`) against this database, then restart.');
@@ -154,9 +162,16 @@ const blobs = config.blobs.driver === 's3'
     ? await createPostgresBlobStore(databaseUrl)
     : createMemoryBlobStore();
 
+// LW_BACKGROUND_POLL_MS: how often the durable render and automation runners
+// look for queued work. Unset keeps 1 s; 0 sets no timer (work is still picked
+// up at boot and on submission), which lets a database that scales to zero
+// sleep while nobody uses the instance (deploy/vm/README.md).
+const backgroundPollMs = parseBackgroundPollMs(process.env.LW_BACKGROUND_POLL_MS);
+if (backgroundPollMs !== undefined) console.log(`[lolly-work] background poll ${backgroundPollMs === 0 ? 'off (work runs on submission)' : `every ${backgroundPollMs} ms`}`);
 let renderRunner: RenderRunner | undefined;
 const app = buildApp({ config, store, secrets, blobs, listCollabRooms: () => collab.snapshot(), nearby,
   onRenderRunner: (runner) => { renderRunner = runner; },
+  ...(backgroundPollMs !== undefined ? { backgroundPollMs } : {}),
 });
 // Poll persisted requests at boot as well as after submission. Other replicas
 // may run the same loop: the store owns claims and fencing.
@@ -167,7 +182,9 @@ renderRunner?.start();
 // 0 disables the timer. Unref'd so it never keeps the process alive on shutdown.
 const logAuditHead = async () => {
   const h = await auditHead(store, deriveAuditMacKey(secrets.session));
-  console.log(`[lolly-work] audit head seq=${h.seq} hash=${h.hash} count=${h.count} intact=${h.chainIntact}`);
+  // A retired-key boundary (audit/retire.ts) keeps intact=true and says so:
+  // "intact=true (12 rows signed with a retired key before <ISO time>)".
+  console.log(`[lolly-work] audit head seq=${h.seq} hash=${h.hash} count=${h.count} intact=${h.chainIntact}${retiredKeyNote(h)}`);
 };
 if (config.audit.headLog.onBoot) await logAuditHead();
 if (config.audit.headLog.intervalMinutes > 0) {
@@ -188,6 +205,12 @@ if (config.policy.retention.telemetryDays > 0 || config.policy.retention.auditDa
   await runIt();
   setInterval(() => void runIt().catch((e: Error) => console.error(`[lolly-work] retention failed: ${e.message}`)), 24 * 60 * 60 * 1000).unref();
 }
+
+// Expired project-file uploads (plans/74): boot + daily, whatever the retention
+// policy says. The run above has no BlobStore, so this is the only timed sweep;
+// POST /api/v1/retention/run still sweeps whenever it is called. The boot pass
+// is not awaited: a large backlog must not hold up listening.
+scheduleProjectFileSweep(store, blobs);
 
 // Credential expiry (plans/36 §2): the daily nudge beside the always-on
 // surfaces (provider rows, console chip, the expiry-days gauge). Threshold-
@@ -243,7 +266,8 @@ server.listen(port, () => {
 // so up to 500 ops of collaborative work would go, silently, on a routine deploy.
 //
 // Deployments must give this time to run: set `terminationGracePeriodSeconds`
-// above the worst-case drain (one revision write per live room).
+// (Helm) or `stop_grace_period` (compose, deploy/vm) above the worst-case drain
+// (one revision write per live room).
 let shuttingDown = false;
 const shutdown = async (signal: string): Promise<void> => {
   if (shuttingDown) return;

@@ -1,4 +1,7 @@
 {
+  "deployment": {
+    "mode": "evaluation"
+  },
   "instance": {
     "name": "Lolly Work \u2014 Demo",
     "baseUrl": "https://lolly.work",

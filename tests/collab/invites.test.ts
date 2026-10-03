@@ -24,7 +24,7 @@ import { join } from 'node:path';
 import { parseConfig } from '../../server/src/config/instance.ts';
 import { createMemoryStore } from '../../server/src/store/memory.ts';
 import { buildApp } from '../../server/src/api/app.ts';
-import { INVITEE_LIMIT, MAX_TITLE_CHARS, inviteMessageId } from '../../server/src/collab/invites.ts';
+import { INVITEE_LIMIT, MAX_TITLE_CHARS, buildInviteMessage, inviteMessageId } from '../../server/src/collab/invites.ts';
 
 let server: Server;
 let base = '';
@@ -289,7 +289,10 @@ test('invite delivers one inbox message, to the invitee ONLY', async () => {
   assert.equal(msg?.data?.['sessionId'], sessionId);
   assert.equal(msg?.data?.['toolId'], 'poster');
   assert.equal(msg?.data?.['kind'], 'collab-invite');
-  assert.ok(msg?.cta?.url.startsWith('https://app.example/t/poster?session='), msg?.cta?.url);
+  // The human half is the shell's team-session route: the session id alone,
+  // under the configured app base, so a signed-out invitee returns to it
+  // through the sign-in gate's returnTo.
+  assert.equal(msg?.cta?.url, `https://app.example/#/team/${encodeURIComponent(sessionId)}`);
 
   for (const who of ['carol', 'bella', 'alice']) {
     const theirs = (await inbox(cookies[who] as string)).filter((m) => m.kind === 'collab');
@@ -415,4 +418,15 @@ test('a re-invite after the invitee dismissed the first one is delivered again',
   // Only the invitee's own dismissal is cleared, and only for this message.
   await call(bob, 'POST', `/api/v1/inbox/${id}/ack`);
   assert.deepEqual((await inbox(bob)).filter((m) => m.kind === 'collab'), [], 'and it can be dismissed again');
+});
+
+test('the invite link is the team route: same-origin when no app URL is set, one slash after a trailing-slash base', () => {
+  const base = {
+    sessionId: 'ses_a/b', projectId: 'prj_1', toolId: 'poster', toolVersion: '1',
+    inviteeId: 'u-bob', inviterName: 'Alice', label: 'Badge',
+  };
+  assert.equal(buildInviteMessage({ ...base, appBase: '' }).cta?.url, '/#/team/ses_a%2Fb');
+  assert.equal(buildInviteMessage({ ...base, appBase: 'https://app.example/' }).cta?.url, 'https://app.example/#/team/ses_a%2Fb');
+  // The tool id never reaches the link: the shell takes it from the session record.
+  assert.ok(!buildInviteMessage({ ...base, appBase: '' }).cta?.url.includes('poster'));
 });

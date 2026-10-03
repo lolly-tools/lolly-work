@@ -1,0 +1,44 @@
+{
+  "deployment": { "mode": "production" },
+  "instance": { "name": "Lolly", "baseUrl": "https://lolly.ing", "pack": "packs/lolly-ing" },
+  "idp": {
+    "issuer": "https://accounts.google.com",
+    "clientId": "927099338182-26scslnv41r3g8d7qro5jlmnlof3hp6r.apps.googleusercontent.com",
+    "displayName": "Google",
+    "emailVerification": "claim",
+    "roleGroups": {
+      "owner": ["lolly-owners"],
+      "admin": ["lolly-admins"],
+      "approver": ["lolly-approvers"],
+      "author": ["lolly-authors"]
+    },
+    "admission": { "emails": ["andyfitz@gmail.com"], "domains": [], "invitations": true },
+    "bootstrapOwners": ["andyfitz@gmail.com"],
+    "additional": [
+      {
+        "id": "github",
+        "kind": "github",
+        "displayName": "GitHub",
+        "clientId": "REPLACE-WITH-GITHUB-OAUTH-APP-CLIENT-ID",
+        "clientSecretRef": "LW_IDP_GITHUB_SECRET"
+      }
+    ]
+  },
+  "policy": {
+    "defaultAccessMode": "gated",
+    "guestLinks": { "enabled": false },
+    "nearby": { "enabled": false },
+    "sessionTtlHours": 72,
+    "projectFiles": {
+      "enabled": true,
+      "maxFileBytes": 26214400,
+      "projectBudgetBytes": 134217728,
+      "instanceBudgetBytes": 268435456,
+      "uploadTtlHours": 24
+    }
+  },
+  "rateLimit": { "enabled": true, "trustedProxyHops": 1 },
+  "audit": { "headLog": { "onBoot": true, "intervalMinutes": 0 } },
+  "dev": { "enabled": false },
+  "blobs": { "driver": "pg" }
+}

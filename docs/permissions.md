@@ -21,12 +21,19 @@ anything up: a resource arrives as the set of selectors it satisfies (e.g.
 | `member` | the default for any signed-in user | viewer + `tool.use`, `session.create/edit/delete/share`, `project.create`, `export.download`, `export.request`, `delivery.create`, `link.create` |
 | `author` | group `author` | member + `catalog.submit` |
 | `approver` | group `approver` | member + `approval.act` |
-| `admin` | group `admin` | author ∪ approver + `catalog.publish`, `catalog.expire`, `catalog.hold`, `catalog.scan`, `catalog.edit`, `catalog.collection.manage`, `catalog.provider.read`, `catalog.provider.manage`, `brand.switch`, `catalog.injectable.manage`, `policy.edit`, `grant.edit`, `link.revoke`, `link.create-guest`, `message.send`, `telemetry.view`, `fleet.view`, `fleet.manage`, `audit.export`, `project.manage`, `project.archive`, `approval.assign`, `export.server` |
+| `admin` | group `admin` | author ∪ approver + `catalog.publish`, `catalog.expire`, `catalog.hold`, `catalog.scan`, `catalog.edit`, `catalog.collection.manage`, `catalog.provider.read`, `catalog.provider.manage`, `brand.switch`, `catalog.injectable.manage`, `policy.edit`, `grant.edit`, `link.revoke`, `link.create-guest`, `message.send`, `telemetry.view`, `fleet.view`, `fleet.manage`, `audit.export`, `project.manage`, `project.archive`, `approval.assign`, `export.server`, `user.invite` |
 | `owner` | group `owner` | admin + `instance.config`, `catalog.provider.credential`, `catalog.provider.publish`, `scim.manage`, `token.manage` |
 | `guest` | a guest-edit link | **nothing** - access is entirely link-scoped grants |
 
 Role comes from the effective group set (IdP ∪ local groups): the highest of `owner`,
 `admin`, `approver`, `author`, else `member`. See [identity](identity.md).
+
+Projects add a second, narrower layer: each person has a role on each project they can see
+(owner, manager, editor or viewer), and the project routes ask for both. Saving needs
+`session.edit` and editor on that project; renaming, sharing and inviting need manager. The
+roles and where they come from are in [sharing](sharing.md#people-and-roles). Inviting new
+people from a project follows `policy.invites.allow` rather than `user.invite` alone; see
+[sharing](sharing.md#invite-policy).
 
 Five actions stay **owner-only** on purpose: an admin can shape a catalog provider and even
 materialize its bytes into the instance's own store, but only an owner puts a credential in

@@ -17,8 +17,9 @@ export interface Message {
   id: string;
   /** `announcement`/`upgrade`/`policy` are composed in the console; the rest are
    *  system-generated on the same pipe - `approval`/`expiry` from plans/05/06,
-   *  `collab` from a live-room invite (plans/14 §6, OSS plans/100 §7 item 9). */
-  kind: 'announcement' | 'upgrade' | 'policy' | 'approval' | 'expiry' | 'collab';
+   *  `collab` from a live-room invite (plans/14 §6, OSS plans/100 §7 item 9),
+   *  `share` when someone adds you to a project (plans/74). */
+  kind: 'announcement' | 'upgrade' | 'policy' | 'approval' | 'expiry' | 'collab' | 'share';
   severity: 'info' | 'action' | 'blocking';
   audience: Audience;
   title: string;

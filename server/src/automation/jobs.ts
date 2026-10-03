@@ -22,6 +22,12 @@ export interface AutomationQueueOptions {
   /** Process-local drain width. The durable lease/replica runner is plan 40;
    * this bound prevents one process from stampeding its render worker. */
   maxConcurrent?: number;
+  /** How often the durable runner looks for queued jobs; default 1 s. 0 sets
+   * no timer: it looks when enabled, on each submission and whenever a job
+   * frees its slot (done, failed or requeued for a retry), so an idle host
+   * never queries its database on a clock. A job left behind by a crashed
+   * process, or by a lease this one lost, waits for the next of those. */
+  pollMs?: number;
 }
 
 interface PendingJob { job: AutomationJob; work: (job: AutomationJob) => Promise<JobOutput> }
@@ -42,9 +48,13 @@ export class AutomationQueue {
     if (!this.options.store || !this.options.blobs) throw new Error('Durable execution needs metadata and blob stores.');
     if (this.durable) throw new Error('Durable executors already registered.');
     this.durableVerbs = new Set(Object.keys(executors));
-    this.durable = new DurableAutomationRunner(this.options.store, this.options.blobs, executors, { concurrency: this.options.maxConcurrent, onComplete: job => this.callback(job) });
     const poll = (): void => { void this.durable?.poll().catch(() => {}); };
-    this.durableTimer = setInterval(poll, 1000); this.durableTimer.unref(); poll();
+    // Look again whenever a job frees its slot, however it ended (a retry is
+    // requeued, a lease is lost), so a backlog drains without the timer, or with none.
+    this.durable = new DurableAutomationRunner(this.options.store, this.options.blobs, executors, { concurrency: this.options.maxConcurrent, onComplete: job => this.callback(job), onSettled: poll });
+    const pollMs = this.options.pollMs ?? 1000;
+    if (pollMs > 0) { this.durableTimer = setInterval(poll, pollMs); this.durableTimer.unref(); }
+    poll();
   }
   stop(): void { clearInterval(this.durableTimer); this.durable?.stop(); }
 

@@ -6,16 +6,16 @@
  * tear each other's schema down mid-test. A pg advisory lock makes the whole
  * drop → migrate → run → teardown sequence mutually exclusive, across files and
  * across processes (two developers pointed at the same disposable database).
- * Held on its own session and released by `end()`, exactly like the migration
- * runner's lock.
+ * Held on its own session and released by `end()`. (The migration runner's own
+ * lock is a transaction lock, so it also works over a transaction pooler.)
  */
 import { runMigrations } from '../server/src/store/migrate.ts';
 import { createPostgresStore } from '../server/src/store/postgres.ts';
 import type { Store } from '../server/src/store/types.ts';
 
 /** Distinct from postgres.ts's AUDIT_LOCK_KEY (0x1011_0001) and migrate.ts's
- *  MIGRATE_LOCK_KEY (0x1011_0002), so no suite can deadlock against the code it
- *  is testing. */
+ *  MIGRATE_LOCK_KEY (0x1011_0004, formerly 0x1011_0002), so no suite can
+ *  deadlock against the code it is testing. */
 const SUITE_LOCK_KEY = 0x1011_0003;
 
 /** Run `body` against a freshly migrated Postgres store, alone. */

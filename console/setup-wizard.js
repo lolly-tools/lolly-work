@@ -22,7 +22,7 @@ export async function createSetupWizard({ el, field, api }) {
   const discard = el('div', { class: 'setup-discard' });
   const status = el('p', { role: 'status', class: 'setup-status' });
   const applyStatus = el('div', { class: 'card stack', role: 'status' });
-  const controls = {}, groupControls = {};
+  const controls = {}, groupControls = {}, listControls = {};
   const panels = titles.map((title, index) => el('section', { 'data-step': index, 'aria-labelledby': `setup-title-${index}` },
     el('h2', { id: `setup-title-${index}`, tabindex: '-1' }, `${index + 1}. ${title}`)));
   const root = el('div', { class: 'setup-wizard' }, el('h1', {}, 'Customer setup'),
@@ -32,6 +32,7 @@ export async function createSetupWizard({ el, field, api }) {
     ...Object.fromEntries(Object.entries(controls).map(([key, input]) => [key, input.type === 'checkbox' ? input.checked : input.value])),
     roleGroups: Object.fromEntries(roles.map(role => [role, lines(groupControls[role].value)])),
     ownerTestGroups: lines(ownerGroups.value),
+    ...Object.fromEntries(Object.entries(listControls).map(([key, control]) => [key, lines(control.value)])),
   });
   const lines = text => text.split('\n').map(group => group.trim()).filter(Boolean);
   const input = (key, label, hint, options) => {
@@ -45,6 +46,11 @@ export async function createSetupWizard({ el, field, api }) {
     const control = el('input', { type: 'checkbox', 'data-setting': key });
     control.checked = !!configuration.settings[key]; controls[key] = control; control.addEventListener('change', changed);
     return el('div', { class: 'setup-field' }, field(label, control, { class: 'setup-checkbox-row' }), el('p', { class: 'sub' }, hint));
+  };
+  const list = (key, label) => {
+    const control = el('textarea', { rows: '3', 'data-setting': key, autocomplete: 'off' });
+    control.value = (configuration.settings[key] ?? []).join('\n'); listControls[key] = control; control.addEventListener('input', changed);
+    return field(label, control);
   };
   const ownerGroups = el('textarea', { rows: '3', 'data-setting': 'ownerTestGroups' });
   ownerGroups.value = configuration.settings.ownerTestGroups.join('\n'); ownerGroups.addEventListener('input', changed);
@@ -96,6 +102,10 @@ export async function createSetupWizard({ el, field, api }) {
         groupControls[role] = control; control.addEventListener('input', changed); return field(`${role[0].toUpperCase()}${role.slice(1)} groups`, control);
       })), field('Exact groups for the intended first owner', ownerGroups),
       el('p', { class: 'sub' }, 'Generation refuses a preview that cannot reach owner. This preview does not prove the provider sends those groups. Local and IdP groups use the same mapping; additional issuers do not namespace group names.')),
+    card('Who may sign in', el('p', {}, 'One entry per line. On an instance with no sign-in policy yet, leaving both lists empty admits everyone your identity provider accepts. Once a policy exists, empty lists admit invited people only, and removing the policy is an edit to idp.admission in the configuration file. People not listed or invited are refused at sign-in. A listed address only counts when the provider confirms it.'),
+      el('div', { class: 'setup-grid' }, list('admissionEmails', 'Admitted email addresses'), list('admissionDomains', 'Admitted email domains'),
+        list('bootstrapOwners', 'First owners (email addresses)')),
+      el('p', { class: 'sub' }, 'First owners get the owner role when they sign in, for providers that send no groups. Each must also be admitted above.')),
     card('Test the installed identity',
       el('p', {}, 'Registered callback: ', el('code', {}, configuration.redirectUri ?? 'Generate OIDC settings to see the callback.')),
       button('Test installed OIDC discovery', () => run(async () => {
@@ -289,7 +299,7 @@ export async function createSetupWizard({ el, field, api }) {
     const disabled = allButtons().map(entry => [entry, entry.disabled]); disabled.forEach(([entry]) => { entry.disabled = true; });
     const settingsInputs = [...root.querySelectorAll('input,select,textarea')]; settingsInputs.forEach(entry => { entry.disabled = true; });
     let failedControl;
-    try { await action(); } catch (failure) { if (!disposed) { error.textContent = failure.message; failedControl = controls[failure.field] ?? (failure.field === 'ownerTestGroups' ? ownerGroups : failure.field === 'roleGroups' ? groupControls.owner : null); } }
+    try { await action(); } catch (failure) { if (!disposed) { error.textContent = failure.message; failedControl = controls[failure.field] ?? listControls[failure.field] ?? (failure.field === 'ownerTestGroups' ? ownerGroups : failure.field === 'roleGroups' ? groupControls.owner : null); } }
     finally { busy = false; if (!disposed) { disabled.forEach(([entry, was]) => { entry.disabled = was; }); settingsInputs.forEach(entry => { entry.disabled = false; }); outputButton.disabled = !sampleTools.length || !formatSelect.value || sampleBlocked || ['queued', 'running'].includes(render?.state); selectStep(step); } }
     if (failedControl && !disposed) { selectStep(Number(failedControl.closest('[data-step]').dataset.step)); failedControl.focus(); }
   }

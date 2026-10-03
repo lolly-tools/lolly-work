@@ -102,3 +102,42 @@ export function activateDoneHtml(instanceName: string, outcome: 'approved' | 'de
   }[outcome];
   return page(instanceName, `<div class="card"><p>${copy}</p></div>`);
 }
+
+/** The sign-in refusal (plans/74 W-ID-1): served with a 403 when a verified
+ *  sign-in is not admitted. Names the account so a person who picked the wrong
+ *  one in a browser full of accounts can see it, says what to do, and offers a
+ *  way to pick another account (empty `switchHref`: no link, as behind a
+ *  sign-in proxy only the proxy can switch accounts). Never says which emails or domains are listed. */
+export function admissionRefusedHtml(
+  instanceName: string,
+  opts: { email: string; reason: 'disabled' | 'hosted-domain' | 'tenant' | 'email-unverified' | 'not-invited'; switchHref: string },
+): string {
+  const why = {
+    'not-invited': 'This account has not been invited to this workspace. Ask an owner to invite you, then sign in again.',
+    'email-unverified': 'Your identity provider has not confirmed this email address, so it cannot be used to sign in here. Confirm the address with your provider, or ask an owner to invite you.',
+    'hosted-domain': 'This account does not belong to the organisation this workspace accepts. Sign in with your work account instead.',
+    tenant: 'This account does not belong to the organisation this workspace accepts. Sign in with your work account instead.',
+    disabled: 'This account has been disabled here. Ask an owner if you think this is a mistake.',
+  }[opts.reason];
+  return page(instanceName, `
+<div class="card">
+<p>You signed in as <strong class="tag" style="overflow-wrap:anywhere">${esc(opts.email)}</strong>.</p>
+<p>${esc(why)}</p>
+${opts.switchHref ? `<p style="margin-top:16px"><a href="${esc(opts.switchHref)}" style="display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:9px 18px;border-radius:8px;border:1px solid color-mix(in srgb, CanvasText 30%, transparent);text-decoration:none">Use a different account</a></p>` : ''}
+</div>`, 'You cannot sign in here yet');
+}
+
+/** A sign-in that could not finish for a reason other than admission: the
+ *  provider refused the code, could not be reached, sent no usable email, or
+ *  the sign-in state expired. Same phone-friendly card as the refusal page,
+ *  with one way to start again. The message is ours, never the provider's. */
+export function signInErrorHtml(
+  instanceName: string,
+  opts: { message: string; retryHref: string; heading?: string; retryLabel?: string },
+): string {
+  return page(instanceName, `
+<div class="card">
+<p>${esc(opts.message)}</p>
+${opts.retryHref ? `<p style="margin-top:16px"><a href="${esc(opts.retryHref)}" style="display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:9px 18px;border-radius:8px;border:1px solid color-mix(in srgb, CanvasText 30%, transparent);text-decoration:none">${esc(opts.retryLabel ?? 'Try again')}</a></p>` : ''}
+</div>`, opts.heading ?? 'Sign-in did not finish');
+}

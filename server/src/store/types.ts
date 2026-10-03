@@ -25,6 +25,7 @@ import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderRecord, ProviderState } from '../catalog/providers/types.ts';
 import type { DeliveryRecord } from '../delivery/types.ts';
 import type { RenderStore } from '../renders/types.ts';
+import type { ProjectFileLimits, ProjectFileRecord, ProjectFileReservation } from '../projects/files.ts';
 
 export interface UserRecord {
   id: string;
@@ -57,6 +58,69 @@ export interface LocalGroupRecord {
   name: string;
   description?: string;
   createdAt: string;
+}
+
+/** An invitation (plans/74 W-ID-2): one email address that may sign in while
+ *  `idp.admission` is set, and the local groups that person joins on their
+ *  first admitted sign-in. "Active" means not revoked: pending (no
+ *  `acceptedAt`) or accepted. An accepted invitation keeps admitting its
+ *  email until it is revoked; `expiresAt` bounds acceptance only. */
+export interface InvitationRecord {
+  id: string;
+  /** Lowercased; the store lowercases again on write. */
+  email: string;
+  /** Local group names (the /api/v1/groups slug rule). */
+  groups: string[];
+  /** 'user:<id>' (or a service principal) who invited. */
+  invitedBy: string;
+  createdAt: string;
+  expiresAt?: string;
+  acceptedAt?: string;
+  acceptedUserId?: string;
+  revokedAt?: string;
+  /** Projects this person joins when the invitation is accepted (plans/74,
+   *  "Invite from inside Lolly"). Absent or empty for an invitation that only
+   *  admits and groups. */
+  projects?: InvitationProject[];
+  /** Which route wrote the row (migration 0040): 'console' (the console and
+   *  `lw invite add`, the default) or 'project' (an in-app project invite).
+   *  Only a project-made invitation is withdrawn when its last project is
+   *  taken off it; a console invitation stays for an admin to revoke. */
+  createdVia?: 'console' | 'project';
+}
+
+/** One project an invitation carries, and the role the person gets on it. */
+export interface InvitationProject {
+  projectId: string;
+  role: ProjectMemberRole;
+  /** 'user:<id>' who put this project on the invitation, or last raised its
+   *  role. Acceptance re-checks that person's standing on the project before
+   *  applying the entry. Absent on older rows: the invitation's `invitedBy`. */
+  invitedBy?: string;
+}
+
+/** One sign-in linked to one user (plans/74, "One person, many sign-ins";
+ *  migration 0039). `identitySub` is the namespaced IdP subject the callback
+ *  builds (`<idp id>:<sub>` for an additional IdP, the raw sub for primary,
+ *  `proxy:<user>` for the proxy). A user's own `users.sub` is one of these and
+ *  stays the session cookie's subject whichever sign-in was used. */
+export interface UserIdentityRecord {
+  identitySub: string;
+  userId: string;
+  /** The IdP id: 'primary', an `idp.additional` id, 'proxy' or 'dev'. */
+  idp: string;
+  /** Lowercased; absent when the sign-in carried no address. */
+  email?: string;
+  /** Whether the IdP vouched for `email` at the latest sign-in or link.
+   *  Rows backfilled by the migration start false. */
+  emailVerified: boolean;
+  /** The IdP groups this sign-in asserted at its latest sign-in (with any
+   *  bootstrap owner group it earned). Each IdP speaks only for its own;
+   *  iam/identities.ts `standingGroups` combines them. Absent on a write
+   *  keeps the stored value; a new row starts with none. */
+  groups?: string[];
+  linkedAt: string;
+  lastLoginAt?: string;
 }
 
 /** A SCIM provisioning bearer token (plans/31 §8). One per IdP connector; the
@@ -209,6 +273,24 @@ export interface ProjectRecord {
   ownerId: string;
   createdAt: string;
   archivedAt?: string;
+  /** The last rename, visibility or archive change, and who made it. Absent
+   *  on a project nobody has changed since it was created. */
+  updatedAt?: string;
+  updatedBy?: string;
+}
+
+/** A person's explicit role on one project (plans/74, migration 0040). The
+ *  project's owner never has one. viewer reads, editor also writes sessions,
+ *  manager also renames, shares, archives and manages the people. */
+export type ProjectMemberRole = 'viewer' | 'editor' | 'manager';
+export const PROJECT_MEMBER_ROLES: readonly ProjectMemberRole[] = ['viewer', 'editor', 'manager'];
+export interface ProjectMemberRecord {
+  projectId: string;
+  userId: string;
+  role: ProjectMemberRole;
+  /** 'user:<id>' (or a principal) who added the row. */
+  addedBy: string;
+  addedAt: string;
 }
 
 /** A saved tool session synced to the server: the client's
@@ -242,6 +324,18 @@ export interface SessionRevision {
  *  bytes-small; this bounds unbounded history growth (plans/08 §2). */
 export const SESSION_REVISION_LIMIT = 20;
 
+/** A session as a listing shows it: every field but the document itself. */
+export type SessionSummary = Omit<SessionRecord, 'inputs'>;
+
+/** Live (untombstoned) sessions in one project: how many, and the newest edit. */
+export interface ProjectSessionStats {
+  projectId: string;
+  count: number;
+  updatedAt: string;
+  /** Who made that newest edit (the session's `updatedBy`). */
+  updatedBy?: string;
+}
+
 export interface CollabReceipt {
   id: string;
   digest: string;
@@ -256,12 +350,15 @@ export interface CollabCommit {
   inputs: Record<string, unknown>;
   /** Required for the first commit after a normal session save; periodic thereafter. */
   checkpoint?: CanvasCheckpoint;
-  /** Accepted novel operations only. An empty array still advances the recovery chain. */
+  /** Accepted novel operations only. An empty array still advances the recovery chain;
+   *  the room sends a batch with none through `commitCollabReceipts` instead. */
   ops: CanvasOp[];
   receipts: Omit<CollabReceipt, 'revision'>[];
   actor: string;
   updatedBy: string;
 }
+/** The receipts of a batch whose every operation was refused. */
+export type CollabReceiptCommit = Pick<CollabCommit, 'sessionId' | 'owner' | 'principal' | 'expectedRev' | 'receipts'>;
 
 /**
  * A live collab room's document, mid-flight (plans/14 §6, migrations/0010_collab.sql).
@@ -320,6 +417,11 @@ export interface Store extends RenderStore {
    *  message and every keepalive (`collab/guests.ts` `inviterStanding`), which
    *  over a full users table would be a select-all per keystroke-commit. */
   getUser(id: string): Promise<UserRecord | null>;
+  /** Every user row carrying this email, compared case-insensitively. Subs
+   *  are namespaced per IdP and email is not unique, so one person can hold
+   *  several rows; admission reads them all (plans/74: a disabled row refuses
+   *  every other sign-in with the same address). */
+  findUsersByEmail(email: string): Promise<UserRecord[]>;
   setTelemetryConsent(userId: string, consent: boolean): Promise<void>;
   listUsers(): Promise<UserRecord[]>;
   /** Paginated/filtered/sorted list for the console People view (~2500 users).
@@ -356,6 +458,60 @@ export interface Store extends RenderStore {
   touchScimToken(id: string, at: string): Promise<void>;
   /** Set `revokedAt`; returns false when there is no such live token to revoke. */
   revokeScimToken(id: string, at: string): Promise<boolean>;
+
+  // Invitations (plans/74 W-ID-2). One active (unrevoked) row per email.
+  /** Insert unless the email already has an active invitation, in which case
+   *  that one is returned with `created: false`. A pending one that has expired
+   *  by `rec.createdAt` is revoked at that instant first, so a fresh invitation
+   *  can replace it. */
+  createInvitation(rec: InvitationRecord): Promise<{ invitation: InvitationRecord; created: boolean }>;
+  /** Every invitation, newest first, revoked ones included. */
+  listInvitations(): Promise<InvitationRecord[]>;
+  getInvitation(id: string): Promise<InvitationRecord | null>;
+  /** The active (unrevoked) invitation for this email, pending or accepted,
+   *  expired or not: the caller decides what an expired one means. */
+  findActiveInvitation(email: string): Promise<InvitationRecord | null>;
+  /** Revoke an active invitation; returns the revoked row, or null when there
+   *  was no active one with this id. With `pendingOnly`, an accepted row is
+   *  left alone too (null), so a revoke racing an acceptance never undoes it. */
+  revokeInvitation(id: string, at: string, opts?: { pendingOnly?: boolean }): Promise<InvitationRecord | null>;
+  /** The invitations still waiting for their person (not revoked, not
+   *  accepted, not expired at `now`) that carry this project, newest first.
+   *  One indexed read, never the whole table. */
+  listOpenInvitationsForProject(projectId: string, now: string): Promise<InvitationRecord[]>;
+  /** Mark a pending, unexpired, unrevoked invitation accepted by this user at
+   *  `at`. Exactly once: returns null when another sign-in got there first or
+   *  the row is no longer pending. */
+  acceptInvitation(id: string, userId: string, at: string): Promise<InvitationRecord | null>;
+  /** Replace the projects a PENDING invitation carries (not revoked, not
+   *  accepted). Returns the updated row, or null when there is no such
+   *  pending invitation. The caller merges; the store stores. */
+  setInvitationProjects(id: string, projects: InvitationProject[]): Promise<InvitationRecord | null>;
+  /** Take one project off a PENDING invitation (not revoked, not accepted)
+   *  that carries it, in one atomic step. With `revokeWhenEmpty`, an
+   *  invitation left with no projects and no groups is revoked at `at` in
+   *  the same step. Returns the row as written (`revokedAt` set when it was
+   *  revoked), or null when no pending invitation with this id carries the
+   *  project. */
+  dropInvitationProject(id: string, projectId: string, at: string, opts?: { revokeWhenEmpty?: boolean }): Promise<InvitationRecord | null>;
+
+  // Linked sign-ins (plans/74, "One person, many sign-ins"; migration 0039).
+  /** The user this sign-in is linked to, or null. */
+  getUserByIdentity(identitySub: string): Promise<UserRecord | null>;
+  /** Insert the link, or refresh an existing link to the SAME user (email,
+   *  emailVerified, idp and lastLoginAt are updated; linkedAt is kept).
+   *  Returns null, writing nothing, when the identity belongs to another user
+   *  (a link row, or that user's own `users.sub`) or the user does not exist. */
+  linkIdentity(rec: UserIdentityRecord): Promise<{ identity: UserIdentityRecord; created: boolean } | null>;
+  /** Every sign-in linked to this user, oldest link first. */
+  listIdentities(userId: string): Promise<UserIdentityRecord[]>;
+  /** Remove one link of this user's; false when there was no such row. The
+   *  "never the last one" rule is the caller's. */
+  unlinkIdentity(userId: string, identitySub: string): Promise<boolean>;
+  /** Users holding at least one VERIFIED identity with this email, compared
+   *  lowercased, each user once. Sign-in links by email only when exactly
+   *  one comes back. */
+  findUsersByVerifiedEmail(email: string): Promise<UserRecord[]>;
 
   // Service tokens (plans/35 wave 2) - same contract shapes as the SCIM set.
   putApiToken(rec: ApiTokenRecord): Promise<void>;
@@ -424,6 +580,11 @@ export interface Store extends RenderStore {
    *  row appended from now on carries a `mac`. Optional: a demo or test store
    *  may run unkeyed. */
   setAuditMacKey?(key: string): void;
+  /** Append only while the log still ends at `expectedTail` (null = empty),
+   *  under the same lock as appendAudit; null when another writer came first
+   *  and nothing was written. The retired-key boundary (audit/retire.ts) must
+   *  directly follow the row it names, so a lost race must write no row. */
+  appendAuditIfTail?(expectedTail: { seq: number; hash: string } | null, body: AuditEventBody): Promise<AuditEvent | null>;
   listAudit(): Promise<AuditEvent[]>;
   /** The `limit` newest events with seq < before (before <= 0 ⇒ the newest page), ascending - the console's audit pager. */
   listAuditBefore(before: number, limit: number, filter?: AuditFilter): Promise<AuditEvent[]>;
@@ -451,7 +612,7 @@ export interface Store extends RenderStore {
   deleteUser(id: string): Promise<boolean>;
   /** Counts the relational references that prevent deleting the identity row.
    * This is an account-erasure preview, not a full personal-data inventory. */
-  previewUserErasure(id: string): Promise<{ references: Record<'projects' | 'sessions' | 'links' | 'approvals' | 'messageAcks', number>; telemetryEvents: number }>;
+  previewUserErasure(id: string): Promise<{ references: Record<'projects' | 'sessions' | 'links' | 'approvals' | 'messageAcks' | 'projectFiles', number>; telemetryEvents: number }>;
   /** Atomic identity deletion + telemetry de-attribution. Referential blocks
    * leave BOTH untouched; callers must never imply shared content was erased. */
   eraseUserAccount(id: string): Promise<{ status: 'erased'; scrubbed: number } | { status: 'referenced' } | { status: 'not-found' }>;
@@ -621,6 +782,55 @@ export interface Store extends RenderStore {
   putProject(project: ProjectRecord): Promise<void>;
   getProject(id: string): Promise<ProjectRecord | null>;
   listProjects(): Promise<ProjectRecord[]>;
+
+  // shared project files (plans/74, migration 0041). Budgets and the pending
+  // limits count ready files and unfinished uploads that have not expired; an
+  // expired upload counts for nothing and is swept (projects/files.ts). A
+  // budget counts each file at `projectFileCharge` (its size plus a fixed
+  // overhead); the pending limits count declared sizes.
+  /** Insert an unfinished upload when the project budget, the instance budget
+   *  and the uploader's pending limits all still allow it. Atomic across every
+   *  project, so parallel reservations in two projects cannot both pass the
+   *  instance budget. */
+  reserveProjectFile(file: ProjectFileRecord, limits: ProjectFileLimits): Promise<ProjectFileReservation>;
+  getProjectFile(id: string): Promise<ProjectFileRecord | null>;
+  /** Ready files of one project, newest first (createdAt desc, then id). */
+  listProjectFiles(projectId: string): Promise<ProjectFileRecord[]>;
+  /** Unfinished uploads, earliest expiry first: by one uploader and/or expired
+   *  at or before `expiredBy`. */
+  listUnfinishedProjectFiles(filter: { createdBy?: string; expiredBy?: string }, limit: number): Promise<ProjectFileRecord[]>;
+  /** The bytes the budgets see right now, for one project and the instance. */
+  projectFileUsage(projectId: string): Promise<{ projectBytes: number; instanceBytes: number }>;
+  /** Move an unfinished upload's expiry out to `expiresAt`, never earlier.
+   *  False when the file is gone or its upload has expired; true for a ready
+   *  file, which keeps no expiry. */
+  touchProjectFile(id: string, expiresAt: string): Promise<boolean>;
+  /** Mark ready. False when unknown, or when an unfinished upload has expired. */
+  completeProjectFile(id: string): Promise<boolean>;
+  /** The row only; the caller deletes the parts first. False when unknown. */
+  deleteProjectFile(id: string): Promise<boolean>;
+  /** Live sessions of the project whose inputs mention the file's asset id
+   *  (`user/team/<fileId>`), without their inputs. */
+  listSessionsUsingProjectFile(projectId: string, fileId: string): Promise<SessionSummary[]>;
+
+  // project members (plans/74, migration 0040)
+  /** Every explicit member of one project, oldest first. */
+  listProjectMembers(projectId: string): Promise<ProjectMemberRecord[]>;
+  getProjectMember(projectId: string, userId: string): Promise<ProjectMemberRecord | null>;
+  /** Every project this user is an explicit member of: one read for a list. */
+  listUserProjectMemberships(userId: string): Promise<ProjectMemberRecord[]>;
+  /** Insert, or change the role of an existing row. `addedBy`/`addedAt` of an
+   *  existing row are kept: they record who first added the person. */
+  putProjectMember(rec: ProjectMemberRecord): Promise<void>;
+  /** Change the role of an EXISTING row only; returns the updated row, or
+   *  null (writing nothing) when there is no such row. Never inserts, so a
+   *  role change racing a removal cannot put the person back. */
+  updateProjectMemberRole(projectId: string, userId: string, role: ProjectMemberRole): Promise<ProjectMemberRecord | null>;
+  /** False when there was no such row. */
+  deleteProjectMember(projectId: string, userId: string): Promise<boolean>;
+  /** The users with these ids, in no particular order; unknown ids are
+   *  skipped. One read for a list that names several people. */
+  getUsersByIds(ids: string[]): Promise<UserRecord[]>;
   putSession(session: SessionRecord): Promise<void>;
   /**
    * Compare-and-set on `rev`: writes `next` only if the stored row is still at
@@ -636,6 +846,9 @@ export interface Store extends RenderStore {
    * contract rather than a caller's job: `putSession` writes `deleted_at` from the
    * record it is handed, so a record read BEFORE a DELETE resurrects the session
    * when written after it. A CAS never resurrects and never touches `deleted_at`.
+   *
+   * It is also false while a live room holds the session's collab lease, whatever
+   * the rev. `collabLeaseActive` tells that refusal from a revision conflict.
    */
   casSession(next: SessionRecord, expectedRev: number): Promise<boolean>;
   /** Returns the record even when tombstoned (deletedAt set) so callers choose
@@ -643,6 +856,13 @@ export interface Store extends RenderStore {
   getSession(id: string): Promise<SessionRecord | null>;
   /** Excludes tombstoned sessions. */
   listSessions(projectId: string): Promise<SessionRecord[]>;
+  /** `listSessions` without `inputs`, for listings: a session holds a whole
+   *  tool document (up to 4 MiB), and a list row never shows one. */
+  listSessionSummaries(projectId: string): Promise<SessionSummary[]>;
+  /** Live-session count and newest `updatedAt` per project, computed without
+   *  reading any session's inputs. A project with no live session has no
+   *  entry. `projectId` narrows the answer to that one project. */
+  projectSessionStats(projectId?: string): Promise<ProjectSessionStats[]>;
   /** Excludes tombstoned sessions; both filters optional (none = all). */
   listSessionsFiltered(filter: { projectId?: string; toolId?: string }): Promise<SessionRecord[]>;
   appendSessionRevision(rev: SessionRevision): Promise<void>;
@@ -652,12 +872,20 @@ export interface Store extends RenderStore {
   // Durable collaboration (0035/0036); the older input-only snapshots follow.
   claimCollab(sessionId: string, owner: string, ttlMs: number): Promise<boolean>;
   releaseCollab(sessionId: string, owner: string): Promise<void>;
+  /** True while a room holds the session's collab lease, so `putSession` throws
+   *  `collab-active` and `casSession` refuses. False for an unknown id. */
+  collabLeaseActive(sessionId: string): Promise<boolean>;
   getCollabCheckpoint(sessionId: string): Promise<{ revision: number; headRevision: number; checkpoint: CanvasCheckpoint } | null>;
   getCollabJournal(sessionId: string, afterRevision: number): Promise<{ revision: number; ops: CanvasOp[] }[]>;
   getCollabReceipts(sessionId: string, principal: string, ids: string[]): Promise<CollabReceipt[]>;
   /** Atomically compare owner + revision, save projection, journal/checkpoint and
    * receipts, and append bounded history. A checkpoint compacts its covered journal. */
   commitCollab(batch: CollabCommit): Promise<number>;
+  /** Store the receipts of a batch that accepted nothing, fenced like `commitCollab`
+   * (owner, live lease, `expectedRev`, not deleted). Each receipt records `expectedRev`.
+   * The session row, journal, checkpoint and history are not changed, so a refused
+   * batch adds no revision. Throws when a receipt is marked accepted. */
+  commitCollabReceipts(batch: CollabReceiptCommit): Promise<void>;
   putCollabSnapshot(snap: CollabSnapshot): Promise<void>;
   getCollabSnapshot(sessionId: string): Promise<CollabSnapshot | null>;
   /** Unknown id is a no-op. */

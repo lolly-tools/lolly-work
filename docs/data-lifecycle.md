@@ -10,6 +10,7 @@ the processing record and rights workflow, not a completed privacy assessment.
 | `users`, directory/SCIM and local group membership | Subject/email/name/title, groups, roles, consent and access state | IdP/SCIM is authoritative for managed identity; disable/revoke first. Account erasure removes the local identity row only when references permit. Directory access must also be removed to prevent re-provisioning. |
 | `grants`, API/SCIM tokens, device sign-in codes | Authorization principals, credential digests, short-lived sign-in payloads | Revoke/rotate through the identity/token procedures. Review principal references and directory copies separately. Never include live tokens in an access report. |
 | `projects`, `sessions`, `session_revisions`, `collab_room_snapshots` | Shared work, arbitrary inputs and metadata, authorship and collaboration history | Transfer business ownership where appropriate. Archiving or session tombstoning retains records and references; it is not erasure. Review shared rights, history and holds before deletion. |
+| `project_files` and their parts (`project-file/<id>/<n>` in the blob store) | Files members upload into a team project (often images, possibly personal content and embedded metadata), their names, declared digests, the shell's asset description (kind, format, size in pixels and name) and the uploader | A finished file stays until its uploader or a project manager deletes it; deleting removes the parts, then the row. An unfinished upload expires 15 minutes after its last accepted part, and at the latest after `policy.projectFiles.uploadTtlHours` (24 by default). Once it is an hour past expiry it is removed, parts first, at the next upload or retention run, and by the long-lived server's sweep at boot and daily. A finished file blocks account erasure of its uploader; unfinished uploads are removed by the erasure. Copies already downloaded to members' devices stay there. |
 | Instance assets, versions, metadata, collections, providers and lifecycle records | Uploaded media, possibly personal content and embedded metadata; publication/approval state | Catalog lifecycle and version retention apply. A hold protects retained assets from version pruning. Neither account removal nor version trimming is a complete content-erasure workflow. |
 | `instance_blobs` or configured S3-compatible storage | Asset, render and other stored bytes | Confirm the active blob driver, region, versioning and provider retention. A database-only recovery is insufficient for S3 deployments. Review old object versions and orphaned data. |
 | `links`, `approvals`, messages and acknowledgements | Shared targets, review titles/state, communications and identity references | Revoke access and resolve retained records under their approved lifecycle. These can prevent identity-row deletion. External recipients may retain copies. |
@@ -23,7 +24,8 @@ the processing record and rights workflow, not a completed privacy assessment.
 | Backups, snapshots, restore destinations and exported evidence | Recoverable copies of the preceding stores | Agree access, location, retention, holds and restoration restrictions. Record completed erasures outside the restored dataset and reapply them before a recovered service accepts traffic. |
 
 Source anchors: `migrations/0001_init.sql` through
-`migrations/0034_audit_mac_and_append_guard.sql`, `server/src/store/types.ts`,
+`migrations/0034_audit_mac_and_append_guard.sql`, `migrations/0041_project_files.sql`,
+`server/src/projects/files.ts`, `server/src/store/types.ts`,
 `server/src/store/postgres.ts`, the blob/render/delivery modules, and the matching
 Lolly shell's `src/bridge/db.ts` and `src/lib/offline-manager.ts`.
 
@@ -37,8 +39,8 @@ lw users erase-preview USER_ID --json
 
 This calls `GET /api/v1/users/:id/erasure-preview`. It returns counts for projects
 (including archived ones), sessions (including tombstones), links (including
-expired/revoked ones), approvals and message acknowledgements, plus attributed
-telemetry. It contains no session inputs, messages, prompts, media or credentials.
+expired/revoked ones), approvals, message acknowledgements and finished project files
+(`projectFiles`), plus attributed telemetry. It contains no session inputs, messages, prompts, media or credentials.
 It does not change the account or approve erasure. The response identifies its
 scope as `account-identity-and-telemetry-attribution` and explicitly marks
 `completePersonalDataErasure=false`.
@@ -51,7 +53,9 @@ deletion. The database enforces that block when deletion is attempted.
 `lw users erase USER_ID` removes the identity row and de-attributes telemetry in
 one database transaction. A reference or a failed telemetry update rolls back the
 whole operation. Shared content is never cascaded away to make removal succeed.
-The memory store enforces the same reference rules as PostgreSQL. An archived
+The account's unfinished project-file uploads are removed (parts, then rows)
+before the identity row goes; its finished project files block the removal like
+its sessions do. The memory store enforces the same reference rules as PostgreSQL. An archived
 project still references its owner: transfer the owner or resolve the record's
 approved lifecycle; archiving alone does not unblock erasure.
 
@@ -70,6 +74,7 @@ response as completion of the case. Record remaining exceptions, external recipi
 actions and backup handling, then test recovery without resurrecting erased data
 before closing the request.
 
-No new retention durations or automatic content deletion were introduced. The
+Apart from removing expired unfinished project-file uploads, no new retention
+durations or automatic content deletion were introduced. The
 service owner and Privacy must approve the schedule, processing record, assessment
 outcomes and the treatment of employee data.

@@ -234,3 +234,24 @@ test('the provider is advertised wherever sign-in is described, and a real IdP t
   const cfg2 = await (await fetch(`${proxyOverDev.base}/api/auth/config`)).json() as Record<string, unknown>;
   assert.equal(cfg2.provider, 'proxy', 'the accountable path wins over the dev bypass');
 });
+
+test('admission (plans/74 W-ID-1) applies to proxy sign-in too: unlisted refused before any row, bootstrap owner promoted', async () => {
+  const { base, store } = await boot({
+    proxyAuth: PROXY,
+    idp: { admission: { emails: ['alice@example.test'] }, bootstrapOwners: ['alice@example.test'] },
+  });
+  const stranger = await signIn(base, { ...YUNOHOST_HEADERS, ynh_user: 'bob', ynh_user_email: 'bob@example.test' });
+  assert.equal(stranger.status, 403);
+  assert.equal(sessionCookie(stranger), undefined);
+  const page = await stranger.text();
+  assert.ok(page.includes('bob@example.test') && !page.includes('Use a different account'), 'only the proxy can switch accounts');
+  assert.equal(await store.getUserBySub('proxy:bob'), null, 'no row for a refused person');
+  assert.ok((await store.listAudit()).some((e) => e.action === 'auth.denied' && (e.payload as { provider?: string }).provider === 'proxy'));
+
+  const alice = await signIn(base, YUNOHOST_HEADERS);
+  assert.equal(alice.status, 302);
+  const me = await whoami(base, sessionCookie(alice) as string);
+  assert.equal(me.role, 'owner');
+  assert.ok(me.groups.includes('owner'));
+  assert.ok((await store.listAudit()).some((e) => e.action === 'auth.bootstrap-owner'));
+});

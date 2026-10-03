@@ -6,6 +6,22 @@ import { evidenceHash, type RenderEvidence } from '../render/evidence.ts';
 import { outputVerificationProblems, OutputVerificationError, verificationTarget, parseOutputVerification } from '../render/output-inspection.ts';
 
 export interface RenderExecution { bytes: Uint8Array; mime: string; cacheKey: string; evidence?: RenderEvidence }
+
+/** setInterval/setTimeout fire at once for a delay above this. */
+const MAX_TIMER_MS = 2_147_483_647;
+
+/** `LW_BACKGROUND_POLL_MS`, the interval at which a long-lived host's durable
+ *  render and automation runners look for queued work. Unset or blank keeps
+ *  their 1 s default (undefined); 0 turns the timer off. Throws on anything
+ *  else that is not a whole number of milliseconds a timer can hold. */
+export function parseBackgroundPollMs(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === '') return undefined;
+  const ms = Number(value.trim());
+  if (!Number.isSafeInteger(ms) || ms < 0 || ms > MAX_TIMER_MS) {
+    throw new Error(`LW_BACKGROUND_POLL_MS must be 0 (no timer) or a whole number of milliseconds up to ${MAX_TIMER_MS}`);
+  }
+  return ms;
+}
 export interface RenderRunnerOptions {
   store: RenderStore;
   blobs: BlobStore;
@@ -13,6 +29,11 @@ export interface RenderRunnerOptions {
   concurrency?: number;
   leaseMs?: number;
   timeoutMs?: number;
+  /** How often to look for queued work; default 1 s. 0 sets no timer: claims
+   *  then run at start(), on kick() (a submission), after each finished render
+   *  and once a retry delay has passed, so an idle host never queries its
+   *  database on a clock. A request left behind by a crashed process waits for
+   *  the next of those, or the next start. */
   pollMs?: number;
   retryDelayMs?: number;
   maxOutputBytes?: number;
@@ -24,7 +45,10 @@ export class RenderRunner {
   private readonly active = new Set<Promise<void>>();
   private readonly controllers = new Map<string, AbortController>();
   private timer?: ReturnType<typeof setInterval>;
+  private readonly wakeTimers = new Set<ReturnType<typeof setTimeout>>();
+  private started = false;
   private claiming = false;
+  private kickAgain = false;
   private claimFinished?: Promise<void>;
   private stopped = false;
   readonly concurrency: number;
@@ -41,10 +65,14 @@ export class RenderRunner {
   }
 
   start(): void {
-    if (this.timer) return;
+    if (this.started) return;
+    this.started = true;
     this.stopped = false;
-    this.timer = setInterval(() => this.kick(), this.options.pollMs ?? 1_000);
-    this.timer.unref();
+    const pollMs = this.options.pollMs ?? 1_000;
+    if (pollMs > 0) {
+      this.timer = setInterval(() => this.kick(), pollMs);
+      this.timer.unref();
+    }
     this.kick();
   }
 
@@ -52,8 +80,12 @@ export class RenderRunner {
 
   /** One bounded claim pass, useful to hosts and restart/conformance tests. */
   async tick(): Promise<void> {
-    if (this.claiming || this.stopped) return;
+    if (this.stopped) return;
+    // A kick during a pass is kept, not dropped: that pass's claim may predate
+    // a request committed meanwhile, and without a timer nothing else looks.
+    if (this.claiming) { this.kickAgain = true; return; }
     this.claiming = true;
+    this.kickAgain = false;
     let finishClaim!: () => void;
     this.claimFinished = new Promise<void>((resolve) => { finishClaim = resolve; });
     try {
@@ -66,17 +98,28 @@ export class RenderRunner {
           });
           break;
         }
-        const pending = this.run(record).catch((error) => this.report(error)).finally(() => this.active.delete(pending));
+        const pending = this.run(record).catch((error) => this.report(error)).finally(() => {
+          this.active.delete(pending);
+          // A started runner claims the next queued request as soon as a slot
+          // frees, so a backlog drains without waiting for the timer (or with none).
+          if (this.started && !this.stopped) this.kick();
+        });
         this.active.add(pending);
       }
-    } finally { this.claiming = false; finishClaim(); }
+    } finally {
+      this.claiming = false; finishClaim();
+      if (this.kickAgain && !this.stopped) this.kick();
+    }
   }
 
   /** Stop claims, abort execution, and wait for physical work to release its resources. */
   async stop(): Promise<void> {
     this.stopped = true;
+    this.started = false;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+    for (const wake of this.wakeTimers) clearTimeout(wake);
+    this.wakeTimers.clear();
     for (const controller of this.controllers.values()) controller.abort(new RenderResourceError('WORKER_STOPPED', 503, 'worker stopped'));
     await this.claimFinished;
     await Promise.all([...this.active]);
@@ -89,6 +132,15 @@ export class RenderRunner {
 
   stats(): { active: number; concurrency: number } {
     return { active: this.active.size, concurrency: this.concurrency };
+  }
+
+  /** Claim again once `ms` has passed: a transient failure's retry becomes
+   *  claimable then, which a long or absent poll interval would not notice. */
+  private wakeAfter(ms: number): void {
+    if (!this.started || this.stopped) return;
+    const wake = setTimeout(() => { this.wakeTimers.delete(wake); this.kick(); }, Math.min(ms + 10, MAX_TIMER_MS));
+    wake.unref();
+    this.wakeTimers.add(wake);
   }
 
   private report(error: unknown): void {
@@ -175,13 +227,15 @@ export class RenderRunner {
       const code = typeof e?.code === 'string' ? e.code : 'RENDER_FAILED';
       const status = typeof e?.status === 'number' ? e.status : 500;
       const transient = status === 408 || status === 429 || (status >= 500 && status !== 501);
+      const retryAfterMs = transient ? Math.min(30_000, (this.options.retryDelayMs ?? 1_000) * 2 ** (record.attempt - 1)) : undefined;
       await store.settleRender(record.id, token, {
         state: 'failed',
         error: { code, message: typeof e?.message === 'string' ? e.message.slice(0, 500) : 'render failed',
           ...(error instanceof OutputVerificationError && error.inspection ? { inspection: error.inspection } : {}),
           ...(error instanceof ProductionError && error.production ? { production: error.production, ...(error.attempts ? { productionAttempts: error.attempts } : {}) } : {}) },
-        ...(transient ? { retryAfterMs: Math.min(30_000, (this.options.retryDelayMs ?? 1_000) * 2 ** (record.attempt - 1)) } : {}),
+        ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
       });
+      if (retryAfterMs !== undefined) this.wakeAfter(retryAfterMs);
     } finally {
       clearTimeout(timer); clearInterval(heartbeat);
       signal.removeEventListener('abort', abortListener);

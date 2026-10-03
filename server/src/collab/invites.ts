@@ -53,10 +53,10 @@
  */
 import { sha256Hex } from '../lib/crypto.ts';
 import { displayName } from '../iam/member.ts';
-import { isProjectMember } from '../rbac/project-access.ts';
+import { isProjectMember, type ProjectMembership } from '../rbac/project-access.ts';
 import { mayJoinCollab, type Grant, type Role } from '../rbac/evaluate.ts';
 import type { Message } from '../inbox/target.ts';
-import type { ProjectRecord, SessionRecord, UserRecord } from '../store/types.ts';
+import type { ProjectMemberRecord, ProjectRecord, SessionRecord, UserRecord } from '../store/types.ts';
 
 /** Rows one autocomplete response may carry. The approver search is unbounded
  *  because a chain step's approver groups are small by construction; "everyone
@@ -89,11 +89,14 @@ export interface Invitee {
  * action to a group has switched rooms off for them, and offering them an invite
  * would be offering a door the gateway now refuses (`admit` gate 3).
  */
-export function mayJoinSession(user: UserRecord, project: ProjectRecord, grants: Grant[]): boolean {
+export function mayJoinSession(
+  user: UserRecord, project: ProjectRecord, grants: Grant[], membership?: ProjectMembership,
+): boolean {
   if (user.disabledAt) return false; // resolveMember refuses the cookie outright
   // The admin/owner bypass is excluded ON PURPOSE - see rule 1 in this file's
-  // header, and `isProjectMember`'s own note.
-  if (!isProjectMember(user, project)) return false;
+  // header, and `isProjectMember`'s own note. An explicit project member
+  // (plans/74) is a relationship, so they count.
+  if (!isProjectMember(user, project, membership)) return false;
   return mayJoinCollab({ userId: user.id, groups: user.groups, role: user.role as Role }, grants);
 }
 
@@ -132,6 +135,8 @@ export function eligibleInvitees(opts: {
   project: ProjectRecord;
   /** The instance's grants - `mayJoinSession` needs them for `collab.join`. */
   grants: Grant[];
+  /** The project's explicit members (plans/74); absent reads as none. */
+  memberships?: ProjectMemberRecord[];
   /** Excluded from the results: you are already in the room you are inviting to. */
   callerId: string;
   q?: string;
@@ -139,8 +144,10 @@ export function eligibleInvitees(opts: {
 }): { invitees: Invitee[]; truncated: boolean } {
   const q = normalizeQuery(opts.q);
   const limit = Math.max(1, Math.min(opts.limit ?? INVITEE_LIMIT, INVITEE_LIMIT));
+  const byUser = new Map((opts.memberships ?? []).filter((m) => m.projectId === opts.project.id).map((m) => [m.userId, m]));
   const matched = opts.users
-    .filter((u) => u.id !== opts.callerId && mayJoinSession(u, opts.project, opts.grants))
+    .filter((u) => u.id !== opts.callerId
+      && mayJoinSession(u, opts.project, opts.grants, byUser.get(u.id) ?? null))
     .map((u) => ({ id: u.id, name: displayName(u) }))
     .filter((row) => matchesQuery(row.name, q))
     .sort((a, b) => (a.name.toLowerCase() < b.name.toLowerCase() ? -1
@@ -182,15 +189,19 @@ export function sessionLabel(session: SessionRecord): string {
 /**
  * Build the invite message.
  *
- * `data` carries the machine-readable payload and `cta.url` the human one. The
- * split is deliberate: there is no shell route today that opens a team session
- * by id (the Projects view resolves the session and rewrites the hash to
- * `#/tool/<toolId>?…`), so the SERVER must not pretend to know the deep link.
- * `cta.url` therefore reuses the one session-deep-link shape the product already
- * has - the console's `/t/<toolId>?session=<id>` (console/app.js `actSessionObj`)
- * - and `data.sessionId` is what a collab-aware shell actually joins on, exactly
- * as plans/100 §7 item 9 asks. `toolId`/`toolVersion` ride along so the shell can
- * start loading the tool while the ws handshake completes (§7 item 11).
+ * `data` carries the machine-readable payload and `cta.url` the human one.
+ * `cta.url` is the shell's team-session route, `<appBase>/#/team/<sessionId>`
+ * (lolly plans/74 W-SHARE-UI). The shell resolves that hash itself: it fetches
+ * `GET /api/v1/sessions/:id`, opens the session's tool with its inputs, and
+ * remembers the session id and rev so "Save changes" writes back with a rev
+ * check. Because the route is a hash, the server never sees it, and a
+ * signed-out reader goes through the shell's sign-in gate, which carries the
+ * hash in `returnTo` and returns to the session afterwards. The id is the
+ * only thing in the link; the tool comes from the session record, so a link
+ * cannot name a tool the session does not use. `data.sessionId` is what a
+ * collab-aware shell joins on, as plans/100 section 7 item 9 asks, and
+ * `toolId`/`toolVersion` ride along so the shell can start loading the tool
+ * while the ws handshake completes (section 7 item 11).
  */
 export function buildInviteMessage(opts: {
   sessionId: string;
@@ -203,7 +214,7 @@ export function buildInviteMessage(opts: {
   /** Base URL of the Lolly app: '' when it is served same-origin. */
   appBase: string;
 }): Message {
-  const joinPath = `${opts.appBase}/t/${encodeURIComponent(opts.toolId)}?session=${encodeURIComponent(opts.sessionId)}`;
+  const joinPath = `${opts.appBase.replace(/\/+$/, '')}/#/team/${encodeURIComponent(opts.sessionId)}`;
   return {
     id: inviteMessageId(opts.sessionId, opts.inviteeId),
     kind: 'collab',

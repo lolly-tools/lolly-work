@@ -838,34 +838,37 @@ export function demoRooms(seeded: SeedResult, now = Date.now()): RoomSnapshot[] 
 export interface DistVerdict {
   present: boolean;   // the shell dist directory + index.html exist
   fresh: boolean;     // the built bundle carries the org/ governance marker
-  jsCount: number;    // how many assets/*.js were scanned
+  jsCount: number;    // how many built scripts were scanned
   reason: string;     // human-readable verdict
 }
 
 /**
  * A dist is "fresh" (carries the org/ governance module) when any built
- * assets/*.js references the org-config endpoint. A stale bundle predates the
- * governance UX; an absent one means the shell was never built.
+ * script references the org-config endpoint. Current Lolly builds write their
+ * scripts to `_app/`, older ones to `assets/`, so both are scanned. A stale
+ * bundle predates the governance UX; an absent one means the shell was never built.
  */
 export function detectDist(distDir = SHELL_DIR): DistVerdict {
   const indexPresent = existsSync(join(distDir, 'index.html'));
-  const assetsDir = join(distDir, 'assets');
   if (!indexPresent) {
     return { present: false, fresh: false, jsCount: 0, reason: 'no shell dist found (index.html missing)' };
   }
   let jsCount = 0;
   let fresh = false;
-  try {
-    for (const name of readdirSync(assetsDir)) {
-      if (!name.endsWith('.js')) continue;
-      jsCount++;
-      if (fresh) continue;
-      try {
-        const src = readFileSync(join(assetsDir, name), 'utf8');
-        if (src.includes('/api/v1/org-config') || src.includes('org-config')) fresh = true;
-      } catch { /* unreadable chunk — skip */ }
-    }
-  } catch { /* no assets dir */ }
+  for (const dir of ['_app', 'assets']) {
+    const scriptsDir = join(distDir, dir);
+    try {
+      for (const name of readdirSync(scriptsDir)) {
+        if (!name.endsWith('.js')) continue;
+        jsCount++;
+        if (fresh) continue;
+        try {
+          const src = readFileSync(join(scriptsDir, name), 'utf8');
+          if (src.includes('/api/v1/org-config') || src.includes('org-config')) fresh = true;
+        } catch { /* unreadable chunk: skip */ }
+      }
+    } catch { /* this layout is not used by the build */ }
+  }
   return {
     present: true,
     fresh,

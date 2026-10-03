@@ -11,6 +11,8 @@ Chromium worker are present.
 | Helm (`deploy/helm/`) | Kubernetes / Rancher, HA | pre-install/upgrade Job | volumes you mount |
 | YunoHost (`deploy/yunohost/`) | a self-hosting box, sign-in with its accounts | boot auto-migrate | seeded from the shell into the app's data directory |
 | Vercel (`vercel.json` + `scripts/build-vercel-fn.mjs`) | trial / pilot / public demo | Neon + external migrate | demo pack bundled; shell not served |
+| Single VM with Caddy (`deploy/vm/`) | one small team on its own domain, with live co-editing | boot auto-migrate over the direct URL | pack mounted read-only; a public shell proxied onto the same origin by Caddy. lolly.ing runs this way |
+| Vercel private instance (the same build with `LW_SHELL_ORIGIN`, `LW_PACK_DIR`) | a small, sign-in gated team on its own domain | Neon, migrated at cold start | pack from `scripts/build-instance-pack.ts` bundled; a public shell proxied onto the same origin, catalog signed per caller with `LW_CATALOG_SIGNING_KEY`; no live co-editing. See `deploy/vercel/README.md`, section 6 |
 
 ## Render topologies - the default is Chromium-free
 
@@ -209,6 +211,33 @@ The shell is not mounted by default (console + API only). A commented-out mount 
 `instance.shellDir` at it. The same boot guard as Helm applies - under a non-`open`
 access mode, `instance.shellDir` with a missing or stale dist stops boot
 (`LW_ALLOW_STALE_SHELL=1` to override).
+
+## Single VM with Caddy (lolly.ing)
+
+`deploy/vm/` runs a private instance on one server: Caddy for TLS and routing, the
+lolly-work server built from `deploy/compose/Dockerfile` (it runs the live co-editing gateway
+in process), and a managed Postgres outside the VM (Neon for lolly.ing) holding the records
+and the blobs. Caddy routes the way the Vercel private instance does, from the same router
+scan: the OSS functions and everything that is not a control-plane path go to the public
+shell origin with the session cookie removed, control-plane paths and `/ws/collab/<session>`
+go to the server. `node scripts/build-caddyfile.ts` writes `deploy/vm/Caddyfile`;
+`tests/vercel-routes.test.ts` checks both tables agree on every path but the WebSocket.
+
+The kit: `bootstrap-opensuse.sh` (puts openSUSE Leap 16.0 on an UpCloud server, which has
+no openSUSE template, by way of a Debian one), `provision.sh` (Leap 16 as `sles` through
+sudo: Docker, firewalld, SELinux enforcing with labelled bind mounts, automatic security
+updates, keys-only ssh),
+`secrets.sh` (the env file over ssh, mode 0600, no value printed), `push.sh` (a clean
+source export, the pack and the configuration, then build, restart and reload), and
+`smoke.sh` (checks by IP with `curl --resolve`, before and after the DNS cut). The runbook,
+including the rollback to Vercel, is `deploy/vm/README.md`.
+
+Two settings matter on a database that scales to zero. `LW_BACKGROUND_POLL_MS=0` stops the
+render and automation runners from polling every second (work still runs at boot, on
+submission and after each finished item), and the container health check is a TCP connect,
+because every HTTP request reads from the database. Migrations run over
+`DATABASE_URL_UNPOOLED` when it is set and take a transaction-level lock, so a connection
+pooler cannot keep the lock after the runner leaves.
 
 ## Vercel (trial / public demo)
 

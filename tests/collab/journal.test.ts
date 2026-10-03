@@ -36,17 +36,20 @@ async function exerciseJournal(store: Store) {
     for (let i = 2; i <= 70; i++) await apply(room, peer, i, i !== 3);
     const saved = (await store.getCollabCheckpoint(session.id))!;
     assert.equal(saved.revision, 2, 'ordinary edits do not rewrite convergence checkpoints');
-    assert.equal(saved.headRevision, 71);
+    assert.equal(saved.headRevision, 70, 'the refused batch 3 added no revision');
     const journal = await store.getCollabJournal(session.id, saved.revision);
-    assert.equal(journal.length, 69);
-    assert.deepEqual(journal[1]!.ops, [], 'rejection-only commits retain a contiguous recovery chain');
+    assert.deepEqual(journal.map(row => row.revision), Array.from({ length: 68 }, (_, i) => i + 3), 'the recovery chain stays contiguous');
+    const [refused] = await store.getCollabReceipts(session.id, peer.userId, ['op-3']);
+    assert.equal(refused?.accepted, false, 'the refused batch still has a durable receipt');
+    assert.equal(refused?.revision, 3, 'recorded at the revision it was refused against');
     const before = room.snapshot();
     await room.quiesce();
     room = await Room.open(session, undefined, store);
     assert.deepEqual(room.snapshot(), before, 'checkpoint plus tail recovers exact converged state');
-    for (let i = 71; i <= 130; i++) await apply(room, peer, i);
+    // 68 journal rows replayed plus 60 more commits reach the 128-commit cadence at 130.
+    for (let i = 71; i <= 131; i++) await apply(room, peer, i);
     const compacted = (await store.getCollabCheckpoint(session.id))!;
-    assert.equal(compacted.revision, 130, 'cadence survives restart and includes rejection-only commits');
+    assert.equal(compacted.revision, 130, 'cadence survives restart');
     assert.equal(compacted.headRevision, 131);
     assert.deepEqual((await store.getCollabJournal(session.id, 0)).map(row => row.revision), [131]);
     const history = await store.listSessionRevisions(session.id);

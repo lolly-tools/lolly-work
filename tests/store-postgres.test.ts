@@ -34,3 +34,31 @@ test('account erasure rolls identity deletion back if telemetry scrubbing fails'
     } finally { await admin.end(); }
   });
 });
+
+test('a REST save keeps at most SESSION_REVISION_LIMIT revision rows on disk', { skip: !url && 'set LW_TEST_DATABASE_URL to run' }, async () => {
+  // listSessionRevisions reads with a limit, so the bound has to be checked on
+  // the table itself: without pruning on write, every PUT kept another row.
+  const { SESSION_REVISION_LIMIT } = await import('../server/src/store/types.ts');
+  await withFreshPostgres(url!, async (store) => {
+    const owner = await store.upsertUserBySub({ sub: 'rev-bound', email: 'rev-bound@example.invalid', groups: [], role: 'member' });
+    const at = new Date().toISOString();
+    await store.putProject({ id: 'prj_rev', name: 'Revisions', visibility: 'private', ownerId: owner.id, createdAt: at });
+    await store.putSession({
+      id: 'ses_rev', projectId: 'prj_rev', toolId: 'poster', toolVersion: '1.0.0',
+      inputs: {}, meta: {}, createdBy: owner.id, updatedBy: owner.id, rev: 1, updatedAt: at,
+    });
+    const total = SESSION_REVISION_LIMIT + 7;
+    for (let rev = 2; rev <= total; rev++) {
+      await store.appendSessionRevision({ sessionId: 'ses_rev', rev, inputs: { n: rev }, meta: {}, actor: owner.id, at });
+    }
+    const { default: pg } = await import('pg');
+    const admin = new pg.Client({ connectionString: url });
+    await admin.connect();
+    try {
+      const { rows } = await admin.query('select rev from session_revisions where session_id = $1 order by rev desc', ['ses_rev']);
+      assert.equal(rows.length, SESSION_REVISION_LIMIT, 'older revisions are pruned on write');
+      assert.equal(Number(rows[0].rev), total, 'the newest revision is kept');
+      assert.equal(Number(rows.at(-1).rev), total - SESSION_REVISION_LIMIT + 1);
+    } finally { await admin.end(); }
+  });
+});

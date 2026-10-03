@@ -60,6 +60,9 @@ export function createRateLimiter(cfg: RateLimitConfig, now: () => number = Date
  *  proxy sign-in, because every hit upserts a user and writes an audit row. */
 export function rateLimitSurface(method: string, pathname: string): Surface | null {
   if (pathname === '/api/auth/login' || pathname === '/api/auth/callback') return 'auth';
+  // Linking a sign-in (plans/74) starts the same IdP round trip and may cost
+  // a discovery fetch, so it shares the bucket too.
+  if (pathname === '/api/auth/link') return 'auth';
   // Proxy sign-in is unauthenticated at this layer and may cost a directory
   // round trip, so it rides the auth bucket like the OIDC pair.
   if (pathname === '/api/auth/proxy') return 'auth';

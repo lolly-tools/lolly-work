@@ -8,7 +8,7 @@ import { canonicalJson, sha256Hex } from '../lib/crypto.ts';
 import { resolveAiPolicy, type AiPolicy } from './ai.ts';
 import { renderCapabilities, type RenderCapabilities } from '../render/capabilities.ts';
 import { filterInputs, resolveInputAccess, toolVisibleTo, type ToolOverlay, type ResolvedAccess } from './overlay.ts';
-import { evaluate, grantDecision, mayEditCollab, type Grant, type Role } from '../rbac/evaluate.ts';
+import { evaluate, grantDecision, mayEditCollab, type Grant, type Role, type RoleGroups } from '../rbac/evaluate.ts';
 import { resolveFeatureFlags, flagGovernanceForVersion, type FlagGovernance, type ResolvedFlag } from './feature-flags.ts';
 import { projectInjectables, flagInjectableGovernance, injectablesForVersion } from '../injectables/registry.ts';
 import type { InjectableRecord } from '../injectables/types.ts';
@@ -16,6 +16,8 @@ import type { InstanceConfig } from '../config/instance.ts';
 import type { UserRecord } from '../store/types.ts';
 import { destinationAvailableTo, destinationDescriptor, destinationVersion } from '../delivery/destinations.ts';
 import type { ConfigDeliveryDestination, DeliveryDestinationDescriptor } from '../delivery/types.ts';
+import { invitePolicyForClient, mayInviteNewPeople, resolveInvitePolicy } from './invites.ts';
+import type { ProjectMemberRole } from '../store/types.ts';
 
 /** Actions whose yes/no the shell needs to render honest controls (e.g. the
  *  export button becoming "Save / Request approval"). Evaluated server-side;
@@ -32,7 +34,10 @@ import type { ConfigDeliveryDestination, DeliveryDestinationDescriptor } from '.
 const CLIENT_ACTIONS = [
   'export.download', 'export.request', 'export.server',
   'link.create', 'link.create-guest',
-  'session.create', 'session.share',
+  'session.create', 'session.edit', 'session.share',
+  // The shell's "Save to a team project" offers "New project" only when this
+  // is true; POST /api/v1/projects stays the boundary.
+  'project.create',
   'collab.join', 'collab.edit',
   // plans/31 §3: the shell's "Submit to this instance" affordance on a user's
   // own uploads is dormant by ABSENCE - a public build sees no org-config at
@@ -75,6 +80,18 @@ export interface OrgConfigPayload {
   }>;
   /** Permission bits for this caller (CLIENT_ACTIONS), for honest UI. */
   can: Record<string, boolean>;
+  /** What the shell may offer when this caller creates a team project:
+   *  `groups` are the caller's own effective groups that make sense as a
+   *  project's visibility (see `sharingGroupsOf`), sorted. Empty means the
+   *  caller can only make a private project. UI truth only: the projects
+   *  routes accept any group name and stay the boundary. `projectFiles` says
+   *  whether shared project files (plans/74) are on: policy allows them and
+   *  the store keeps them. When false the file routes answer 404. */
+  sharing: { groups: string[]; projectFiles: boolean };
+  /** The invite limits (plans/74 `policy.invites`), so the shell offers only
+   *  the roles and domains the server accepts and a truthful expiry. Whether
+   *  this caller may invite new people at all is `can['user.invite']`. */
+  invites: { domains: string[]; maxTtlHours: number; projectRoles: ProjectMemberRole[] };
   /** What this deployment can render server-side (plans/23 §3.A) - shells gray
    *  out or hide exports not offered here instead of discovering the limit by
    *  501/400. Deployment-scoped, same for every caller; the render route stays
@@ -112,6 +129,34 @@ export function defaultProfilePolicy(user: UserRecord): Record<string, ProfileFi
   return policy;
 }
 
+/** The roles that see every project (rbac/project-access.ts `canSeeProject`). */
+const VISIBILITY_BYPASS_ROLES = ['owner', 'admin'] as const;
+
+/**
+ * The caller's groups that are usable as a project's visibility: their
+ * effective groups (idp and local) minus every group that grants the admin or
+ * owner role. Admins and owners already see every project, so sharing with
+ * one of their groups adds nobody, and offering it would only put noise in the
+ * picker. Every other role group stays: approvers, authors, members and
+ * viewers see a team project only through its groups, so a project shared
+ * with the author group reaches real people. Which names grant admin or owner
+ * follows `roleFromGroups` (rbac/evaluate.ts): the names listed for the role
+ * in `idp.roleGroups`, or the literal role name when that role is unmapped.
+ * Sorted and de-duplicated so the payload, and the version hash it feeds, are
+ * stable.
+ */
+export function sharingGroupsOf(groups: readonly string[], roleGroups: RoleGroups | undefined): string[] {
+  const excluded = new Set<string>();
+  for (const role of VISIBILITY_BYPASS_ROLES) {
+    for (const name of roleGroups?.[role] ?? [role]) excluded.add(name);
+  }
+  return [...new Set(groups)]
+    // A name with outer whitespace could never match: the projects routes trim
+    // visibility groups, so offering one would share with a group nobody holds.
+    .filter((g) => typeof g === 'string' && g.length > 0 && g === g.trim() && !excluded.has(g))
+    .sort();
+}
+
 export function policyVersionOf(
   overlays: Map<string, ToolOverlay>,
   profilePolicy: Record<string, ProfileFieldPolicy>,
@@ -122,9 +167,23 @@ export function policyVersionOf(
   deliveryDestinations: ConfigDeliveryDestination[] = [],
   grants: Grant[] = [],
   ai: AiPolicy = resolveAiPolicy(undefined, new Map()),
+  member?: { groups: readonly string[]; role: string; sharingGroups: readonly string[] },
+  /** Deployment settings that move `can` bits or payload blocks for every
+   *  caller: the invite policy and whether guest links are on. Absent for
+   *  callers that hash policy only, so their versions are unchanged. */
+  deployment?: { invites: unknown; guestLinks: boolean; liveCollab?: false; projectFiles?: true },
 ): string {
   const doc = {
     ai,
+    ...(deployment ? { deployment } : {}),
+    // The caller's own membership: `session.groups`, `session.role`, `can` and
+    // `sharing.groups` all derive from it, and a local group or SCIM change can
+    // move it without any policy edit, so it must move the hash or the shell
+    // sits on a 304 with stale bits. Absent for callers that hash policy only
+    // (the render cache key), so their versions are unchanged.
+    ...(member ? {
+      member: { groups: [...member.groups].sort(), role: member.role, sharingGroups: [...member.sharingGroups] },
+    } : {}),
     overlays: [...overlays.values()].sort((a, b) => a.toolId.localeCompare(b.toolId)),
     profilePolicy,
     featureFlags: flagGovernance ? flagGovernanceForVersion(flagGovernance) : [],
@@ -180,6 +239,13 @@ export function assembleOrgConfig(opts: {
    *  default (no worker), which is truthful for unit fixtures; the one
    *  production caller always passes the resolved value. */
   render?: RenderCapabilities;
+  /** False when this process runs no collab gateway (a Vercel function), so the
+   *  collab bits say no instead of offering rooms that cannot connect. Absent
+   *  means a gateway runs. */
+  liveCollab?: boolean;
+  /** Whether shared project files are on (projects/files.ts
+   *  `projectFilesEnabled`). Absent means off. */
+  projectFiles?: boolean;
   inboxUnread: number;
 }): OrgConfigPayload {
   const { config, user, overlays, inboxUnread } = opts;
@@ -189,6 +255,7 @@ export function assembleOrgConfig(opts: {
   const grants = opts.grants ?? [];
   const principal = { userId: user.id, groups: user.groups, role: user.role as Role };
   const profilePolicy = defaultProfilePolicy(user);
+  const sharingGroups = sharingGroupsOf(user.groups, config.idp?.roleGroups);
   const tools: OrgConfigPayload['tools'] = {};
   for (const [toolId, overlay] of overlays) {
     // Visibility is overlay OR an explicit per-user/group tool.use ALLOW grant
@@ -243,6 +310,21 @@ export function assembleOrgConfig(opts: {
   // `?? true` mirrors the loaded-config default (parseConfig deep-merges nearby in);
   // hand-built test configs that omit `policy.nearby` get the enabled default.
   can['collab.nearby'] = (config.policy.nearby?.enabled ?? true) && can['collab.join'] === true;
+  // Without a gateway in this process no room can open, whatever the grants say.
+  if (opts.liveCollab === false) {
+    can['collab.join'] = false;
+    can['collab.edit'] = false;
+    can['collab.nearby'] = false;
+  }
+  // A guest link cannot be minted while the deployment has them switched off
+  // (POST /api/v1/links answers GUEST_LINKS_DISABLED), so the bit says so too.
+  if (config.policy.guestLinks?.enabled === false) can['link.create-guest'] = false;
+  // Inviting new people by email follows `policy.invites.allow`, not the bare
+  // action (policy/invites.ts). Project invitations also need manager on the
+  // project, which the route checks.
+  const invitePolicy = resolveInvitePolicy(config.policy.invites);
+  can['user.invite'] = mayInviteNewPeople(user, grants, invitePolicy);
+  const invites = invitePolicyForClient(invitePolicy);
   const destinations = (config.delivery?.destinations ?? [])
     .filter((destination) => destinationAvailableTo(destination, principal, grants))
     .map((destination) => destinationDescriptor(destination, config.delivery?.maxBytes ?? 64 * 1024 * 1024));
@@ -264,6 +346,8 @@ export function assembleOrgConfig(opts: {
     profilePolicy,
     tools,
     can,
+    sharing: { groups: sharingGroups, projectFiles: opts.projectFiles === true },
+    invites,
     render,
     // Flag-kind injectables merge into the flag map, but only where the dedicated
     // feature-flag governance has NO explicit opinion - so the two rails never
@@ -287,6 +371,14 @@ export function assembleOrgConfig(opts: {
       overlays, profilePolicy, flagGovernance, injectables, render,
       config.policy.nearby?.enabled ?? true, config.delivery?.destinations ?? [], grants,
       resolveAiPolicy(config.policy.ai, flagGovernance),
+      { groups: user.groups, role: user.role, sharingGroups },
+      {
+        invites: invitePolicy, guestLinks: config.policy.guestLinks?.enabled !== false,
+        // Only present when off, so deployments with a gateway keep their version.
+        ...(opts.liveCollab === false ? { liveCollab: false } : {}),
+        // Only present when on, so deployments without shared files keep theirs.
+        ...(opts.projectFiles === true ? { projectFiles: true as const } : {}),
+      },
     ),
   };
 }

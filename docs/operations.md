@@ -47,7 +47,7 @@ The render cache is per-process (an in-process LRU). Replicas simply warm indepe
 
 | Secret | Rotation cost |
 |---|---|
-| `LW_SESSION_SECRET` | none inside the window: deploy the new value with `LW_SESSION_SECRET_PREVIOUS=<old>`, then drop PREVIOUS once the longest session TTL has passed. Verification accepts both; every new session signs with current |
+| `LW_SESSION_SECRET` | sign-ins: none inside the window. Deploy the new value with `LW_SESSION_SECRET_PREVIOUS=<old>`, then drop PREVIOUS once the longest session TTL has passed. Verification accepts both; every new session signs with current. The audit log's MACs are keyed from it as well, so every older row stops verifying: run `lw audit retire-key` once after the rotation, while PREVIOUS is still set ([audit](audit.md#rotating-the-session-secret)) |
 | `LW_LINK_SECRET` | none inside the window: same two-step recipe with `LW_LINK_SECRET_PREVIOUS`. Keep PREVIOUS as long as your longest-lived outstanding links (embed links default to 90 days), then drop it - links signed under the old key die at that moment, not before |
 | `LW_CREDENTIAL_SECRET` | stored provider credentials can no longer be unsealed; re-enter them |
 | `LW_METRICS_TOKEN` | update the scraper |
@@ -56,6 +56,26 @@ The render cache is per-process (an in-process LRU). Replicas simply warm indepe
 
 Generate once (`openssl rand -hex 32`), store in your platform's secret manager, rotate
 deliberately.
+
+### When the old value is gone
+
+The PREVIOUS variables need the old value. A platform that stores secrets write-only (a
+Vercel "sensitive" variable, say) cannot give it back, so a rotation there is a clean break:
+
+- **`LW_SESSION_SECRET`**: every signed-in person signs in again, and outstanding guest and
+  state tokens stop verifying. Every audit row written before the rotation fails its MAC
+  until you record a retired-key boundary: `lw audit retire-key --reason "…"`, or in the
+  server container `node scripts/audit-retire-key.ts --reason "…"`. Before the rotation,
+  record the head while the old value still runs (`node scripts/audit-head.ts --json` in the
+  server container) and pass it with `--expect-head <seq>:<hash>`. Run the command after
+  every host that writes to the database runs the new value and you have signed in once, so
+  no row signed under the old value comes after the boundary and one row shows the new key.
+  See [audit](audit.md#rotating-the-session-secret) for what it checks and what it cannot.
+- **`LW_LINK_SECRET`**: every issued share and embed link stops verifying; re-issue the
+  ones still needed.
+
+Set the same new values on every host that serves this database (each replica, and a
+rollback deployment kept on another platform) before any of them takes traffic.
 
 ## Backup and restore
 

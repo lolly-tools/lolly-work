@@ -9,7 +9,13 @@ export async function runErasureConformance(store: Store): Promise<void> {
   const keeper = await user('erasure-keeper');
   const project = { id: 'erasure-shared', name: 'Shared', ownerId: keeper.id, visibility: 'private' as const, createdAt: now };
   await store.putProject(project);
-  for (const kind of ['projects', 'sessions', 'links', 'approvals', 'messageAcks'] as const) {
+  const upload = (id: string, createdBy: string) => ({
+    id, projectId: project.id, name: `${id}.png`, size: 3, checksum: 'b'.repeat(64), contentType: 'image/png',
+    parts: [{ size: 3, checksum: 'b'.repeat(64) }], asset: {}, createdBy, createdAt: now,
+    expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(), ready: false,
+  });
+  const roomy = { projectBudgetBytes: 1e6, instanceBudgetBytes: 1e6, maxPending: 16, maxPendingBytes: 1e6 };
+  for (const kind of ['projects', 'sessions', 'links', 'approvals', 'messageAcks', 'projectFiles'] as const) {
     const target = await user(`erasure-${kind}`);
     await store.putEvents([{ at: now, event: 'tool.open', attrs: {}, userId: target.id }]);
     if (kind === 'projects') await store.putProject({ ...project, id: 'erasure-archived', ownerId: target.id, archivedAt: now });
@@ -19,6 +25,10 @@ export async function runErasureConformance(store: Store): Promise<void> {
     if (kind === 'messageAcks') {
       await store.putMessage({ id: 'erasure-message', title: 'Test', kind: 'announcement', severity: 'info', audience: {} });
       await store.ackMessage('erasure-message', target.id);
+    }
+    if (kind === 'projectFiles') {
+      assert.equal(await store.reserveProjectFile(upload('erasure-file', target.id), roomy), 'reserved');
+      assert.equal(await store.completeProjectFile('erasure-file'), true);
     }
     const preview = await store.previewUserErasure(target.id);
     assert.equal(preview.references[kind], 1, kind);
@@ -34,6 +44,15 @@ export async function runErasureConformance(store: Store): Promise<void> {
   assert.equal((await store.listEvents()).some((e) => e.userId === unreferenced.id), false);
   assert.deepEqual(await store.eraseUserAccount(unreferenced.id), { status: 'not-found' });
 
+  // An unfinished upload is not a shared reference, but its row still names
+  // the account: both drivers refuse until the route has removed it.
+  const uploading = await user('erasure-uploading');
+  assert.equal(await store.reserveProjectFile(upload('erasure-unfinished', uploading.id), roomy), 'reserved');
+  assert.equal((await store.previewUserErasure(uploading.id)).references.projectFiles, 0, 'only ready files are references');
+  assert.deepEqual(await store.eraseUserAccount(uploading.id), { status: 'referenced' });
+  assert.equal(await store.deleteProjectFile('erasure-unfinished'), true);
+  assert.deepEqual(await store.eraseUserAccount(uploading.id), { status: 'erased', scrubbed: 0 });
+
   // Ownership transfer must persist in the database too. Otherwise an API
   // transfer appears successful but the retained project still blocks erasure.
   const departedOwner = await user('erasure-transferred-owner');
@@ -44,4 +63,24 @@ export async function runErasureConformance(store: Store): Promise<void> {
   assert.equal((await store.previewUserErasure(departedOwner.id)).references.projects, 0);
   assert.deepEqual(await store.eraseUserAccount(departedOwner.id), { status: 'erased', scrubbed: 0 });
   assert.deepEqual(await store.getProject(transferredProject.id), { ...transferredProject, ownerId: keeper.id });
+
+  // Invitations (plans/74): an erased account's accepted invitation would keep
+  // admitting the address and keeps the email, so erasure removes it. A row
+  // for an address another account still carries is left alone.
+  const invited = await user('erasure-invited');
+  await store.createInvitation({ id: 'inv_erase', email: invited.email, groups: [], invitedBy: `user:${keeper.id}`, createdAt: now });
+  await store.acceptInvitation('inv_erase', invited.id, now);
+  await store.createInvitation({ id: 'inv_keep', email: keeper.email, groups: [], invitedBy: `user:${keeper.id}`, createdAt: now });
+  assert.deepEqual(await store.eraseUserAccount(invited.id), { status: 'erased', scrubbed: 0 });
+  assert.equal(await store.getInvitation('inv_erase'), null, 'the accepted invitation went with the account');
+  assert.equal(await store.findActiveInvitation(invited.email), null, 'nothing admits the erased address any more');
+  assert.ok(await store.getInvitation('inv_keep'), "another account's invitation is untouched");
+
+  // Linked sign-ins (migration 0039) are the person's own mapping and go with
+  // the account, so the identity is free to sign in as someone new.
+  const linked = await user('erasure-linked');
+  await store.linkIdentity({ identitySub: 'erasure-linked-gh', userId: linked.id, idp: 'gh', email: linked.email, emailVerified: true, linkedAt: now });
+  assert.deepEqual(await store.eraseUserAccount(linked.id), { status: 'erased', scrubbed: 0 });
+  assert.equal(await store.getUserByIdentity('erasure-linked-gh'), null, 'the linked sign-in went with the account');
+  assert.deepEqual(await store.findUsersByVerifiedEmail(linked.email), []);
 }

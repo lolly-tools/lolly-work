@@ -143,6 +143,13 @@ test('CAS: two PUTs with the same stale rev — first wins, second 409 with curr
   assert.equal(conflict.error.code, 'CONFLICT');
   assert.equal(conflict.current.rev, 2, 'conflict carries the current server session');
   assert.equal(conflict.current.inputs.title, 'Final', 'the loser did not overwrite the winner');
+  // Who saved the winner, by display name (null when there is none), so the shell can say so.
+  assert.ok('updatedByName' in conflict.current, 'the 409 carries updatedByName');
+  const named = (conflict.current as { updatedByName?: unknown }).updatedByName;
+  assert.ok(named === null || (typeof named === 'string' && !named.includes('@')), 'a name, never an email');
+  // Alice's own save from another window: the 409 says so, since the shell only knows
+  // its sign-in subject and cannot tell this from a teammate's save itself.
+  assert.equal((conflict.current as { updatedByYou?: unknown }).updatedByYou, true, 'the newer save is the caller\'s own');
 });
 
 test('revisions grow on edit', async () => {
@@ -275,6 +282,7 @@ test('two truly concurrent PUTs at the same rev: exactly one 200, one 409, one r
     const conflict = await loser.json() as { error: { code: string }; current: { rev: number; inputs: Record<string, unknown> } };
     assert.equal(conflict.error.code, 'CONFLICT');
     assert.deepEqual(conflict.current.inputs, won.inputs, 'the 409 carries the winner, so the loser can rebase');
+    assert.equal((conflict.current as { updatedByYou?: unknown }).updatedByYou, false, 'the other writer\'s save is not called the loser\'s own');
 
     const revs = await store.listSessionRevisions(created.id);
     const rev2 = revs.filter((r) => r.rev === 2);
@@ -444,4 +452,295 @@ test('session cookie Max-Age reflects the configured sessionTtlHours', async () 
   const maxAge = /Max-Age=(\d+)/.exec(cookie)?.[1];
   assert.equal(maxAge, String(3 * 3600));
   srv.close();
+});
+
+// ── team sharing on a private instance (plans/74 W-SHARE-SRV) ──────────────────
+
+test('archived projects are hidden from GET /projects unless ?archived=1', async () => {
+  const alice = await login('alice@test');
+  const made = await (await json(alice, 'POST', '/api/v1/projects', { name: 'Old campaign', visibility: { groups: ['team-eng'] } })).json() as { id: string };
+  const ids = async (cookie: string, path: string) =>
+    ((await (await json(cookie, 'GET', path)).json()) as { projects: Array<{ id: string; archivedAt?: string }> }).projects;
+
+  assert.ok((await ids(alice, '/api/v1/projects')).some((p) => p.id === made.id), 'live projects are listed');
+  assert.equal((await json(alice, 'PATCH', `/api/v1/projects/${made.id}`, { archived: true })).status, 200);
+
+  assert.ok(!(await ids(alice, '/api/v1/projects')).some((p) => p.id === made.id), 'archived project left out by default');
+  const bob = await login('bob@test');
+  assert.ok(!(await ids(bob, '/api/v1/projects')).some((p) => p.id === made.id), 'for every member, not just the owner');
+  const withArchived = await ids(alice, '/api/v1/projects?archived=1');
+  const row = withArchived.find((p) => p.id === made.id);
+  assert.ok(row?.archivedAt, 'the console asks with ?archived=1 and still sees the archived row');
+  assert.ok(withArchived.some((p) => p.id === teamProjectId), 'live projects ride along with ?archived=1');
+  // The flag widens the list; it never widens visibility.
+  const carol = await login('carol@test');
+  assert.ok(!(await ids(carol, '/api/v1/projects?archived=1')).some((p) => p.id === made.id));
+
+  // Restoring brings the project back to the default list.
+  assert.equal((await json(alice, 'PATCH', `/api/v1/projects/${made.id}`, { archived: false })).status, 200);
+  assert.ok((await ids(alice, '/api/v1/projects')).some((p) => p.id === made.id));
+});
+
+test('session bodies may be up to 4 MiB on POST and PUT; other routes keep the 512 KiB cap', async () => {
+  const alice = await login('alice@test');
+  // About 2 MiB of document: past the router default, inside the session cap.
+  const big = 'x'.repeat(2 * 1024 * 1024);
+  const created = await json(alice, 'POST', `/api/v1/projects/${teamProjectId}/sessions`, {
+    toolId: 'design', inputs: { doc: big }, meta: { label: 'large design' },
+  });
+  assert.equal(created.status, 201, 'a 2 MiB session saves');
+  const { id, rev } = await created.json() as { id: string; rev: number };
+  const put = await json(alice, 'PUT', `/api/v1/sessions/${id}`, { rev, inputs: { doc: big + 'y' }, meta: { label: 'large design' } });
+  assert.equal(put.status, 200, 'a 2 MiB session update saves');
+  const full = await (await json(alice, 'GET', `/api/v1/sessions/${id}`)).json() as { inputs: { doc: string } };
+  assert.equal(full.inputs.doc.length, big.length + 1, 'the whole document round-trips');
+
+  const tooBig = 'x'.repeat(4 * 1024 * 1024 + 1);
+  assert.equal((await json(alice, 'POST', `/api/v1/projects/${teamProjectId}/sessions`, { toolId: 'design', inputs: { doc: tooBig } })).status, 413);
+  assert.equal((await json(alice, 'PUT', `/api/v1/sessions/${id}`, { rev: 2, inputs: { doc: tooBig } })).status, 413);
+
+  // Every other route still refuses past 512 KiB.
+  const overDefault = 'x'.repeat(600 * 1024);
+  assert.equal((await json(alice, 'POST', '/api/v1/projects', { name: overDefault })).status, 413);
+  assert.equal((await json(alice, 'PATCH', `/api/v1/projects/${teamProjectId}`, { name: overDefault })).status, 413);
+});
+
+test('session DELETE: creator, project owner, admin or project.manage only', async () => {
+  // alice owns the team project; bob is in its group; carol is outside it.
+  const alice = await login('alice@test');
+  const bob = await login('bob@test');
+  const carol = await login('carol@test');
+  const admin = await login('admin@test');
+  const make = async (cookie: string, label: string) =>
+    (await (await json(cookie, 'POST', `/api/v1/projects/${teamProjectId}/sessions`, { toolId: 'poster', inputs: {}, meta: { label } })).json() as { id: string }).id;
+
+  // A group member who can see and edit the session still cannot delete a colleague's work.
+  const alices = await make(alice, 'alice work');
+  const refused = await json(bob, 'DELETE', `/api/v1/sessions/${alices}`);
+  assert.equal(refused.status, 403);
+  assert.equal((await refused.json() as { error: { code: string } }).error.code, 'FORBIDDEN');
+  assert.equal((await json(bob, 'GET', `/api/v1/sessions/${alices}`)).status, 200, 'the session is untouched');
+  assert.equal((await json(carol, 'DELETE', `/api/v1/sessions/${alices}`)).status, 403, 'an outsider is refused as before');
+
+  // The creator may delete their own session.
+  const bobs = await make(bob, 'bob work');
+  assert.equal((await json(bob, 'DELETE', `/api/v1/sessions/${bobs}`)).status, 200);
+
+  // The project owner may delete a session someone else created.
+  const bobs2 = await make(bob, 'bob work 2');
+  assert.equal((await json(alice, 'DELETE', `/api/v1/sessions/${bobs2}`)).status, 200);
+
+  // An admin may delete any session.
+  const bobs3 = await make(bob, 'bob work 3');
+  assert.equal((await json(admin, 'DELETE', `/api/v1/sessions/${bobs3}`)).status, 200);
+
+  // A plain member holding project.manage by grant may too.
+  const alices2 = await make(alice, 'alice work 2');
+  const bobId = (await store.listUsers()).find((u) => u.email === 'bob@test')!.id;
+  const grant = { principal: `user:${bobId}`, action: 'project.manage', resource: '*', effect: 'allow' as const };
+  await store.putGrant(grant);
+  try {
+    assert.equal((await json(bob, 'DELETE', `/api/v1/sessions/${alices2}`)).status, 200);
+  } finally {
+    await store.deleteGrant(grant);
+  }
+
+  // A refused caller gets the same 403 for an already-deleted session, so the
+  // idempotent branch is no probe.
+  assert.equal((await json(alice, 'DELETE', `/api/v1/sessions/${alices}`)).status, 200);
+  assert.equal((await json(bob, 'DELETE', `/api/v1/sessions/${alices}`)).status, 403);
+});
+
+test('org-config: sharing.groups and can[project.create], and a group change moves the ETag', async () => {
+  const alice = await login('alice@test');
+  const first = await fetch(`${base}/api/v1/org-config`, { headers: { cookie: alice } });
+  assert.equal(first.status, 200);
+  const etag = first.headers.get('etag');
+  assert.ok(etag);
+  const oc = await first.json() as { sharing: { groups: string[] }; can: Record<string, boolean> };
+  // Shared project files are off on the memory store (projects/files.ts).
+  assert.deepEqual(oc.sharing, { groups: ['team-eng'], projectFiles: false });
+  assert.equal(oc.can['project.create'], true);
+
+  // A quiet poll stays a 304.
+  assert.equal((await fetch(`${base}/api/v1/org-config`, { headers: { cookie: alice, 'if-none-match': etag } })).status, 304);
+
+  // A local group added in the console changes what she may share with, with
+  // no policy edit and no new sign-in, so the ETag must move.
+  const aliceId = (await store.listUsers()).find((u) => u.email === 'alice@test')!.id;
+  await store.setLocalGroups(aliceId, ['brand']);
+  try {
+    const moved = await fetch(`${base}/api/v1/org-config`, { headers: { cookie: alice, 'if-none-match': etag } });
+    assert.equal(moved.status, 200, 'a membership change is not a 304');
+    assert.notEqual(moved.headers.get('etag'), etag);
+    assert.deepEqual((await moved.json() as { sharing: { groups: string[] } }).sharing.groups, ['brand', 'team-eng']);
+  } finally {
+    await store.setLocalGroups(aliceId, []);
+  }
+
+  // The admin's role group is never offered as a team.
+  const admin = await login('admin@test');
+  const adminOc = await (await fetch(`${base}/api/v1/org-config`, { headers: { cookie: admin } })).json() as { sharing: { groups: string[] } };
+  assert.deepEqual(adminOc.sharing.groups, []);
+});
+
+test('an admin denied project.manage by grant cannot delete a colleague\'s session', async () => {
+  // Deny wins: admins hold project.manage by role default, so the delete rule
+  // must ask evaluate() rather than read the role, or a deny is skipped.
+  const alice = await login('alice@test');
+  const admin = await login('admin@test');
+  const made = await (await json(alice, 'POST', `/api/v1/projects/${teamProjectId}/sessions`, { toolId: 'poster', inputs: {}, meta: { label: 'kept' } })).json() as { id: string };
+  const adminId = (await store.listUsers()).find((u) => u.email === 'admin@test')!.id;
+  const deny = { principal: `user:${adminId}`, action: 'project.manage', resource: '*', effect: 'deny' as const };
+  await store.putGrant(deny);
+  try {
+    assert.equal((await json(admin, 'DELETE', `/api/v1/sessions/${made.id}`)).status, 403, 'the deny is honoured');
+    assert.equal((await json(admin, 'PATCH', `/api/v1/projects/${teamProjectId}`, { name: 'Summit 2026' })).status, 403, 'as PATCH project already does');
+  } finally {
+    await store.deleteGrant(deny);
+  }
+  assert.equal((await json(admin, 'DELETE', `/api/v1/sessions/${made.id}`)).status, 200, 'without the deny the role default admits the admin');
+});
+
+test('project listings count sessions without loading any session document', async () => {
+  // The listings only need counts and timestamps; reading every session's
+  // inputs to get them made each listing as heavy as every stored document.
+  const alice = await login('alice@test');
+  const made = await (await json(alice, 'POST', '/api/v1/projects', { name: 'Counted', visibility: { groups: ['team-eng'] } })).json() as { id: string };
+  for (const label of ['one', 'two', 'three']) {
+    assert.equal((await json(alice, 'POST', `/api/v1/projects/${made.id}/sessions`, { toolId: 'poster', inputs: { label }, meta: { label } })).status, 201);
+  }
+  const gone = await (await json(alice, 'POST', `/api/v1/projects/${made.id}/sessions`, { toolId: 'poster', inputs: {}, meta: {} })).json() as { id: string };
+  assert.equal((await json(alice, 'DELETE', `/api/v1/sessions/${gone.id}`)).status, 200);
+
+  const realFiltered = store.listSessionsFiltered;
+  const realList = store.listSessions;
+  const touched: string[] = [];
+  store.listSessionsFiltered = async (...args) => { touched.push('listSessionsFiltered'); return realFiltered.apply(store, args); };
+  store.listSessions = async (...args) => { touched.push('listSessions'); return realList.apply(store, args); };
+  try {
+    const listed = await (await json(alice, 'GET', '/api/v1/projects')).json() as { projects: Array<{ id: string; sessionCount: number; updatedAt: string; createdAt: string }> };
+    const row = listed.projects.find((p) => p.id === made.id);
+    assert.equal(row?.sessionCount, 3, 'live sessions only');
+    assert.ok(row && row.updatedAt >= row.createdAt);
+    const sessions = await (await json(alice, 'GET', `/api/v1/projects/${made.id}/sessions`)).json() as { sessions: Array<Record<string, unknown>> };
+    assert.equal(sessions.sessions.length, 3);
+    assert.ok(sessions.sessions.every((s) => !('inputs' in s)), 'list rows carry no inputs');
+    assert.deepEqual(sessions.sessions.map((s) => s.label).sort(), ['one', 'three', 'two']);
+    const patched = await (await json(alice, 'PATCH', `/api/v1/projects/${made.id}`, { name: 'Counted again' })).json() as { sessionCount: number };
+    assert.equal(patched.sessionCount, 3);
+    assert.deepEqual(touched, [], 'no listing read whole session records');
+  } finally {
+    store.listSessionsFiltered = realFiltered;
+    store.listSessions = realList;
+  }
+});
+
+test('a live collab room refuses REST writes with 409 COLLAB_ACTIVE, never a revision conflict', async () => {
+  const alice = await login('alice@test');
+  const admin = await login('admin@test');
+  const made = await (await json(alice, 'POST', `/api/v1/projects/${teamProjectId}/sessions`, {
+    toolId: 'live-room', inputs: { title: 'Before the room', date: '2026-01-01' }, meta: {},
+  })).json() as { id: string; rev: number };
+  const conflicts = async () => (await store.listAudit()).filter((e) => e.action === 'session.conflict').length;
+  const conflictsBefore = await conflicts();
+  // A room holds the session the way rooms.ts does: through the store's lease.
+  assert.equal(await store.claimCollab(made.id, 'test-room', 30_000), true);
+  try {
+    // The current rev passes the route's own check and is refused by the CAS;
+    // a stale one is refused by that check. Both are the room, not a conflict.
+    for (const rev of [made.rev, made.rev + 4]) {
+      const put = await json(alice, 'PUT', `/api/v1/sessions/${made.id}`, { rev, inputs: { title: 'Over the room' } });
+      assert.equal(put.status, 409, `rev ${rev}`);
+      const body = await put.json() as { error: { code: string }; current?: unknown };
+      assert.equal(body.error.code, 'COLLAB_ACTIVE', `rev ${rev}`);
+      assert.equal(body.current, undefined, 'no newer version to offer: the room holds it');
+    }
+    const del = await json(alice, 'DELETE', `/api/v1/sessions/${made.id}`);
+    assert.equal(del.status, 409);
+    assert.equal((await del.json() as { error: { code: string } }).error.code, 'COLLAB_ACTIVE');
+
+    const bulk = await json(admin, 'POST', '/api/v1/sessions/bulk', { filter: { toolId: 'live-room' }, set: { date: '2026-12-25' } });
+    assert.equal(bulk.status, 200);
+    assert.deepEqual(await bulk.json(), { applied: 0, skipped: [{ sessionId: made.id, rev: made.rev, reason: 'collab-active' }] });
+    const swept = (await store.listAudit()).filter((e) => e.action === 'sessions.bulk').at(-1);
+    assert.equal(swept?.payload?.skipped, undefined, 'a live-room skip is not folded into conflicts30d');
+    assert.equal(swept?.payload?.collabActive, 1);
+
+    const stored = await store.getSession(made.id);
+    assert.deepEqual([stored?.rev, stored?.inputs.title, stored?.deletedAt], [made.rev, 'Before the room', undefined], 'nothing written');
+    assert.equal(await conflicts(), conflictsBefore, 'no session.conflict audited');
+  } finally {
+    await store.releaseCollab(made.id, 'test-room');
+  }
+  // Once the room is gone a stale rev is a true revision conflict again, and the current rev saves.
+  const stale = await json(alice, 'PUT', `/api/v1/sessions/${made.id}`, { rev: made.rev + 4, inputs: { title: 'Stale' } });
+  assert.equal(stale.status, 409);
+  const staleBody = await stale.json() as { error: { code: string }; current?: { rev: number } };
+  assert.equal(staleBody.error.code, 'CONFLICT');
+  assert.equal(staleBody.current?.rev, made.rev);
+  assert.equal(await conflicts(), conflictsBefore + 1);
+  assert.equal((await json(alice, 'PUT', `/api/v1/sessions/${made.id}`, { rev: made.rev, inputs: { title: 'After the room' } })).status, 200);
+});
+
+test('a room that lets go between a refused CAS and the re-read is never reported as a conflict at the caller\'s own rev', async () => {
+  const alice = await login('alice@test');
+  const admin = await login('admin@test');
+  const conflicts = async () => (await store.listAudit()).filter((e) => e.action === 'session.conflict').length;
+  const conflictsBefore = await conflicts();
+  const make = async (toolId: string) => await (await json(alice, 'POST', `/api/v1/projects/${teamProjectId}/sessions`, {
+    toolId, inputs: { title: 'Before the room', date: '2026-01-01' }, meta: {},
+  })).json() as { id: string; rev: number };
+  const real = store.casSession.bind(store);
+  let calls = 0;
+  try {
+    // The room lets go right after the CAS it caused to refuse. The caller's
+    // base is still current, so the PUT saves on its one retry.
+    const released = await make('room-let-go');
+    assert.equal(await store.claimCollab(released.id, 'test-room', 30_000), true);
+    store.casSession = async (next, expectedRev) => {
+      calls++;
+      const ok = await real(next, expectedRev);
+      if (!ok) await store.releaseCollab(next.id, 'test-room');
+      return ok;
+    };
+    const put = await json(alice, 'PUT', `/api/v1/sessions/${released.id}`, { rev: released.rev, inputs: { title: 'After the room' } });
+    assert.equal(put.status, 200);
+    assert.equal(calls, 2, 'one refusal, one retry');
+    const saved = await store.getSession(released.id);
+    assert.deepEqual([saved?.rev, saved?.inputs.title], [released.rev + 1, 'After the room']);
+    assert.deepEqual((await store.listSessionRevisions(released.id)).map((r) => r.rev), [released.rev + 1], 'one revision for the one save');
+
+    // A room that claims the lease for every try and lets go after each: the
+    // retry is refused too, and the answer is still the room, not a conflict.
+    const flapping = await make('room-flaps');
+    calls = 0;
+    store.casSession = async (next, expectedRev) => {
+      calls++;
+      await store.claimCollab(next.id, 'test-room', 30_000);
+      try { return await real(next, expectedRev); } finally { await store.releaseCollab(next.id, 'test-room'); }
+    };
+    const refused = await json(alice, 'PUT', `/api/v1/sessions/${flapping.id}`, { rev: flapping.rev, inputs: { title: 'Over the room' } });
+    assert.equal(refused.status, 409);
+    const body = await refused.json() as { error: { code: string }; current?: unknown };
+    assert.equal(body.error.code, 'COLLAB_ACTIVE');
+    assert.equal(body.current, undefined);
+    assert.equal(calls, 2, 'retried once, never in a loop');
+    assert.equal((await store.getSession(flapping.id))?.rev, flapping.rev, 'nothing written');
+
+    // Bulk does not retry, but the same refusal is a live-room skip, not a conflict.
+    store.casSession = async (next, expectedRev) => {
+      await store.claimCollab(next.id, 'test-room', 30_000);
+      try { return await real(next, expectedRev); } finally { await store.releaseCollab(next.id, 'test-room'); }
+    };
+    const bulk = await json(admin, 'POST', '/api/v1/sessions/bulk', { filter: { toolId: 'room-flaps' }, set: { date: '2026-12-25' } });
+    assert.equal(bulk.status, 200);
+    assert.deepEqual(await bulk.json(), { applied: 0, skipped: [{ sessionId: flapping.id, rev: flapping.rev, reason: 'collab-active' }] });
+    const swept = (await store.listAudit()).filter((e) => e.action === 'sessions.bulk').at(-1);
+    assert.equal(swept?.payload?.skipped, undefined, 'not folded into conflicts30d');
+    assert.equal(swept?.payload?.collabActive, 1);
+  } finally {
+    store.casSession = real;
+  }
+  assert.equal(await conflicts(), conflictsBefore, 'no session.conflict audited');
 });

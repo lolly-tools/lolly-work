@@ -125,3 +125,86 @@ test('an empty blocks input survives the initial join and checkpoint restart', a
     assert.deepEqual(room.snapshot().collections?.boxes, { order: [], boxes: {} });
   } finally { await room.quiesce(); }
 });
+
+/** A batch that accepts nothing (an observer seat, or a writer's full veto)
+ *  stores its receipts and nothing else: the session keeps its rev, `updatedBy`
+ *  and `updatedAt`, and no revision or journal row is added, so a read-only seat
+ *  cannot push real restore points out of the bounded history. */
+async function refusedBatches(store: Store): Promise<void> {
+  const author = await store.upsertUserBySub({ sub: 'refused-author', email: 'refused-author@example.invalid', groups: [], role: 'member' });
+  const viewer = await store.upsertUserBySub({ sub: 'refused-viewer', email: 'refused-viewer@example.invalid', groups: [], role: 'member' });
+  const now = new Date().toISOString();
+  await store.putProject({ id: 'refused-project', name: 'Refused', visibility: 'private', ownerId: author.id, createdAt: now });
+  const session: SessionRecord = { id: 'refused-session', projectId: 'refused-project', toolId: 'design', toolVersion: '1',
+    inputs: { title: 'start' }, meta: {}, createdBy: author.id, updatedBy: author.id, rev: 1, updatedAt: now };
+  await store.putSession(session);
+  const sent: ServerFrame[] = [];
+  const writer: RoomMember = { id: 'writer', userId: author.id, name: 'Author', role: 'writer', opVersion: '1.1.0', send: f => sent.push(f) };
+  const observer: RoomMember = { id: 'observer', userId: viewer.id, name: 'Viewer', role: 'observer', opVersion: '1.1.0', send: f => sent.push(f) };
+  const lastReceipt = () => { const f = sent.at(-1); assert.ok(f?.t === 'receipt'); return f; };
+  const room = await Room.open(session, undefined, store);
+  try {
+    room.join(writer); room.join(observer);
+    const edit: CanvasOp = { k: 'param', key: 'title', value: 'by author', origin: { client: 'writer', clock: 1 } };
+    await room.applyBatch(writer, 'edit', ['edit'], [edit], new Set([edit]));
+    const before = (await store.getSession(session.id))!;
+    const history = await store.listSessionRevisions(session.id);
+    const head = (await store.getCollabCheckpoint(session.id))!;
+    assert.equal(before.rev, 2);
+    const unchanged = async (why: string) => {
+      const now = (await store.getSession(session.id))!;
+      assert.deepEqual(now, before, `${why}: rev, inputs, updatedBy and updatedAt unchanged`);
+      assert.deepEqual(await store.listSessionRevisions(session.id), history, `${why}: no revision row`);
+      assert.deepEqual(await store.getCollabCheckpoint(session.id), head, `${why}: the recovery head does not move`);
+      assert.deepEqual(await store.getCollabJournal(session.id, 0), [], `${why}: no journal row`);
+    };
+
+    // The gateway hands an observer's batch over with nothing accepted.
+    const attempt: CanvasOp = { k: 'param', key: 'title', value: 'by viewer', origin: { client: 'observer', clock: 1 } };
+    sent.length = 0;
+    await room.applyBatch(observer, 'viewer-batch', ['viewer-op'], [attempt], new Set());
+    const { checkpoint, serverClock: _clock, ...refused } = lastReceipt();
+    assert.deepEqual(refused, { t: 'receipt', batchId: 'viewer-batch', durableRevision: 2, acceptedIds: [], rejectedIds: ['viewer-op'] });
+    assert.ok(checkpoint, 'the sender is reconciled to the document');
+    await unchanged('observer batch');
+    const [stored] = await store.getCollabReceipts(session.id, viewer.id, ['viewer-op']);
+    assert.deepEqual([stored?.accepted, stored?.revision], [false, 2], 'the refusal is durable, at the revision it was refused against');
+
+    // A re-sent batch id answers the stored receipt, even if the seat could now
+    // write: a refusal is as immutable as an acceptance.
+    sent.length = 0;
+    await room.applyBatch(observer, 'viewer-batch', ['viewer-op'], [attempt], new Set([attempt]));
+    assert.deepEqual(lastReceipt().rejectedIds, ['viewer-op']);
+    await unchanged('replayed refusal');
+    await assert.rejects(room.applyBatch(observer, 'viewer-batch', ['viewer-op'], [{ ...attempt, value: 'other' }], new Set()), /receipt-conflict/);
+
+    // A writer's fully vetoed batch is the same case.
+    const vetoed: CanvasOp = { k: 'param', key: 'locked', value: 'no', origin: { client: 'writer', clock: 2 } };
+    await room.applyBatch(writer, 'vetoed', ['vetoed-op'], [vetoed], new Set());
+    assert.deepEqual(lastReceipt().rejectedIds, ['vetoed-op']);
+    await unchanged('vetoed batch');
+
+    // A mixed batch commits one revision, as before.
+    const keep: CanvasOp = { k: 'param', key: 'title', value: 'mixed', origin: { client: 'writer', clock: 3 } };
+    const drop: CanvasOp = { k: 'param', key: 'locked', value: 'still no', origin: { client: 'writer', clock: 3 } };
+    await room.applyBatch(writer, 'mixed', ['keep', 'drop'], [keep, drop], new Set([keep]));
+    const mixed = lastReceipt();
+    assert.deepEqual([mixed.durableRevision, mixed.acceptedIds, mixed.rejectedIds], [3, ['keep'], ['drop']]);
+    const after = (await store.getSession(session.id))!;
+    assert.deepEqual([after.rev, after.inputs.title, after.updatedBy], [3, 'mixed', author.id]);
+    const revisions = await store.listSessionRevisions(session.id);
+    assert.equal(revisions.length, history.length + 1);
+    assert.deepEqual([revisions[0]!.rev, revisions[0]!.actor], [3, 'collab']);
+
+    // The old refusal still replays after the session moved on.
+    await room.applyBatch(observer, 'viewer-batch', ['viewer-op'], [attempt], new Set());
+    assert.deepEqual([lastReceipt().durableRevision, lastReceipt().rejectedIds], [3, ['viewer-op']]);
+  } finally { await room.quiesce(); }
+  const recovered = await Room.open(session, undefined, store);
+  try { assert.equal(recovered.snapshot().params.title, 'mixed', 'the journal stays contiguous across refusals'); }
+  finally { await recovered.quiesce(); }
+}
+
+test('a batch that accepts nothing stores receipts without a session revision (memory)', () => refusedBatches(createMemoryStore()));
+test('a batch that accepts nothing stores receipts without a session revision (Postgres)', { skip: !process.env.LW_TEST_DATABASE_URL },
+  () => withFreshPostgres(process.env.LW_TEST_DATABASE_URL!, refusedBatches));

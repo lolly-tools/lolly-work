@@ -59,9 +59,18 @@ For generated deployment files and a staged owner cutover, use [Customer setup](
 | `clientId` | `""` | the client this deploy authenticates as |
 | `displayName` | `""` | human name on the sign-in button ("Keycloak", "SUSE ID", "ZITADEL"). Empty ⇒ "SSO" |
 | `groupsClaim` | `groups` | the claim carrying group membership |
-| `claimMap` | `given_name` / `family_name` / `email` / `title` | which claims fill firstname, lastname, email, title |
+| `claimMap` | `given_name` / `family_name` / `email` / `title` | which claims fill firstname, lastname, email, title. `email_verified` vouches only for the `email` claim: a remapped email counts as verified only when it equals `email`, otherwise only under `emailVerification: trusted` |
 | `roleGroups` | `{}` | exact groups for owner/admin/approver/author/member/viewer. Highest match wins; unmatched accounts are members. Omitted high roles retain literal legacy names; omitted member/viewer have no mapping. An explicit empty array disables that role mapping. Each group can appear once. Applies to IdP and local groups, including existing accounts after restart. |
-| `additional` | `[]` | further IdPs beside the primary - each `{ id, issuer, clientId, displayName, groupsClaim?, claimMap?, clientSecretRef? }`. Unset claims inherit the primary's; the secret rides the env var `clientSecretRef` names; subs store namespaced `<id>:<sub>`. With several houses, plain `/api/auth/login` serves a chooser. See [identity](identity.md#more-than-one-idp) |
+| `additional` | `[]` | further IdPs beside the primary - each `{ id, kind?, issuer, clientId, displayName, groupsClaim?, claimMap?, clientSecretRef? }`. `kind` is `oidc` (default) or `github`: a GitHub entry takes no `issuer`, needs `clientSecretRef`, refuses `scopes`, `authParams`, `hostedDomain` and `tenantId`, and accepts only `emailVerification: "claim"` (see the [GitHub recipe](identity.md#provider-recipes)). Unset claims inherit the primary's; the secret rides the env var `clientSecretRef` names; subs store namespaced `<id>:<sub>`. With several houses, plain `/api/auth/login` serves a chooser. Each entry may also set the per-IdP keys below (`hostedDomain`, `tenantId`, `emailVerification`, `scopes`, `authParams`); those are never inherited from the primary. See [identity](identity.md#more-than-one-idp) |
+| `admission` | absent | who may sign in, checked on every OIDC and proxy sign-in before a user row is written: `{ emails?: string[], domains?: string[], invitations?: boolean (default true) }`. Absent = every verified sign-in is admitted (production setup warns). `{}` admits invitations only. Admission by email, domain or invitation needs a verified email (see `emailVerification`). See [who may sign in](identity.md#who-may-sign-in) |
+| `linkedStandingDays` | `30` | whole days, 1-365. How long one sign-in's IdP groups, and the account's own sign-in's standing under `admission`, carry over to the person's other linked sign-ins. See [one person, several sign-ins](identity.md#one-person-several-sign-ins) |
+| `bootstrapOwners` | `[]` | emails that get the owner group (first `roleGroups.owner` name, else `owner`) at sign-in once admitted with a verified email. Audited as `auth.bootstrap-owner`. Each must be admitted by `admission.emails` or `admission.domains`; refused when `roleGroups.owner` is `[]` |
+| `hostedDomain` | absent | per IdP. Google Workspace domain: the `hd` claim must equal it (a mismatch or missing claim refuses), and it is sent as the `hd` authorization parameter |
+| `tenantId` | absent | per IdP. Microsoft Entra directory id (GUID): the `tid` claim must equal it |
+| `emailVerification` | `claim` | per IdP. `claim`: email-based admission needs `email_verified: true`. `trusted`: every email this IdP sends counts as verified (tenant-pinned IdPs that omit the claim) |
+| `linkByEmail` | `true` under `claim`, `false` under `trusted` | per IdP. Whether a sign-in from this IdP may join an existing person whose email matches. The default links only when the IdP itself says the address is verified; set `true` to link from a `trusted` IdP (refused unless that IdP has a `hostedDomain` or `tenantId` pin), or `false` to never link from this one |
+| `scopes` | `["openid", "profile", "email"]` | per IdP. Requested scopes, a list or a space-separated string; must include `openid` |
+| `authParams` | `{}` | per IdP. Extra authorization request parameters, allowlisted: `prompt`, `hd`, `domain_hint`, `login_hint`, `acr_values`. Any other key is refused; `hd` must equal `hostedDomain` when both are set |
 
 Gated access needs `idp.issuer` - or `dev.enabled` for local work. The server refuses to
 start otherwise. See [identity](identity.md).
@@ -78,6 +87,10 @@ start otherwise. See [identity](identity.md).
 | `guestLinks.enabled` | `true` | whether guest-edit links may be minted at all |
 | `guestLinks.maxTtlHours` | `168` | hard cap on any guest link's lifetime |
 | `guestLinks.defaultTtlHours` | `72` | the default offered when minting |
+| `invites.allow` | `admins` | who may invite **new** people by email, from inside Lolly or from the console and `lw invite add`: `owners` (instance owners), `admins` (holders of `user.invite`: admins and owners by default) or `members` (any member not denied `user.invite`). Inviting through a project also needs manager on that project |
+| `invites.domains` | `[]` | when not empty, a new address must be at one of these domains (a leading `@` is dropped, matching is case-insensitive) |
+| `invites.maxTtlHours` | `720` | how long an invitation made from a project stays open; at most 8784 (366 days) |
+| `invites.projectRoles` | all three | which project roles may be given by invitation or role change: any of `viewer`, `editor`, `manager` |
 | `nearby.enabled` | `true` | instance-mediated "nearby" presence: the `collab.nearby` capability bit and both `/api/v1/collab/nearby` routes. `false` keeps the whole surface dark fleet-wide |
 | `sessionTtlHours` | `12` | member session lifetime (token `exp` and cookie `Max-Age`); must be > 0 and ≤ 720 |
 | `submit.maxBytes` | `67108864` | per-file cap on a catalog submission (64 MiB, matching publish-out). Over it: `413 PAYLOAD_TOO_LARGE` |
@@ -88,6 +101,40 @@ start otherwise. See [identity](identity.md).
 | `fleet.minEngine` | *unset* | advisory engine version floor (dotted, e.g. `"1.140.0"`): below-floor engines are highlighted in the Fleet view with an upgrade nudge; nothing is blocked or force-upgraded |
 | `retention.telemetryDays` | `0` | delete telemetry events older than this; `0` keeps everything |
 | `retention.auditDays` | `0` | trim audit rows older than this. The chain stays verifiable (the boundary's seq + hash are anchored before anything is deleted, and the head row is never trimmed), and a trim never passes the SIEM delivery cursor - an unreachable receiver pauses audit retention rather than losing events. See [operations](operations.md#retention-and-erasure) |
+| `projectFiles.enabled` | `true` | shared files inside team projects. They also need a durable store: on the memory store they are off whatever this says. See [sharing](sharing.md#shared-files) |
+| `projectFiles.maxFileBytes` | `26214400` | largest single file (25 MiB); at most `268435456` (256 MiB). Over it: `413 PROJECT_FILE_TOO_LARGE` |
+| `projectFiles.projectBudgetBytes` | `134217728` | bytes of files one project may hold (128 MiB). Over it: `413 PROJECT_FILE_BUDGET` |
+| `projectFiles.instanceBudgetBytes` | `268435456` | bytes of files all projects together may hold (256 MiB). Over it: `413 INSTANCE_FILE_BUDGET` |
+| `projectFiles.uploadTtlHours` | `24` | the longest an unfinished upload stays open; at most 720. It expires sooner, 15 minutes after its begin or its last accepted part. An expired upload counts toward no budget; once it is an hour past expiry it is removed at the next upload or retention run |
+
+`policy.invites` is optional; leaving it out keeps the defaults above. Unknown keys and
+values outside the lists are refused at startup. The tier and the domain list govern
+invitations, which let someone new sign in; sharing a project with someone who already has
+an account needs manager on the project and an allowed role only. The console does not edit
+this block (its configuration document covers grants, overlays, chains, providers, flags and
+catalog fields), so change it in the configuration and redeploy. Lolly reads the limits from
+org-config. See [sharing](sharing.md#invite-policy).
+
+```json
+"policy": {
+  "invites": { "allow": "members", "domains": ["example.com"], "maxTtlHours": 168, "projectRoles": ["viewer", "editor"] }
+}
+```
+
+`policy.projectFiles` values are whole numbers above zero, with `maxFileBytes` no larger than
+`projectBudgetBytes` and `projectBudgetBytes` no larger than `instanceBudgetBytes`; anything
+else is refused at startup. Budgets count finished files and unfinished uploads that have not
+expired, each at its size plus 4096 bytes for its database rows, so many tiny files fill a budget
+too. One person's unfinished uploads may declare twice `maxFileBytes` in all, and one person may
+download twice `instanceBudgetBytes` a day (counted per server process). The defaults are sized for a small hosted Postgres that also holds the file bytes (the
+`pg` blob driver); Neon's free plan, for example, has 1 GB of storage in all and stops writes
+past it. Raise them only with the storage to match.
+
+```json
+"policy": {
+  "projectFiles": { "maxFileBytes": 10485760, "projectBudgetBytes": 67108864, "instanceBudgetBytes": 268435456 }
+}
+```
 
 Submit is **open to authors** by default: anyone holding `catalog.submit` submits and the
 asset goes live immediately. Name a `submit.chain` when the org wants review. Quota scopes are
@@ -308,8 +355,8 @@ are startup errors. See [catalog](catalog.md).
 
 | Var | When | What |
 |---|---|---|
-| `LW_SESSION_SECRET` | required in prod | member/guest/state token HMAC key |
-| `LW_SESSION_SECRET_PREVIOUS` | during a rotation | verification accepts it beside the current key; minting never uses it. Drop after the longest session TTL |
+| `LW_SESSION_SECRET` | required in prod | member/guest/state token HMAC key; the audit log's MAC key is derived from it |
+| `LW_SESSION_SECRET_PREVIOUS` | during a rotation | verification accepts it beside the current key; minting never uses it. Drop after the longest session TTL. The audit MAC does not use it: run `lw audit retire-key` after a rotation, with or without the old value ([audit](audit.md#rotating-the-session-secret)) |
 | `LW_LINK_SECRET` | required in prod | link signature key |
 | `LW_LINK_SECRET_PREVIOUS` | during a rotation | same window contract for outstanding signed links |
 | `LW_IDP_CLIENT_SECRET` | if your IdP issues one | OIDC confidential client secret |
@@ -323,6 +370,7 @@ are startup errors. See [catalog](catalog.md).
 | `LW_SIEM_SECRET` | with `siem.url` | HMAC key signing every forwarded audit batch |
 | `LW_RENDER_WORKER_SECRET` | with a render worker | shared HMAC key; must match the worker |
 | `LW_C2PA_SIGNING_KEY` | to sign exports | PKCS#8 private-key PEM |
+| `LW_CATALOG_SIGNING_KEY` | when the shell pins a catalog key | ECDSA P-256 private key (PKCS#8 PEM or private JWK JSON) that signs each caller's tool index and tool file digests at `/catalog/tools/index.sig.json`. Unset: the catalog is served unsigned and that path answers 404, even when the pack carries a build-time signature, because that envelope can never match the index served per caller |
 | `LW_BLOBS_S3_CREDENTIAL` | with `blobs.driver: s3` | `<accessKeyId>:<secretAccessKey>` for the blob bucket |
 | `<credentialRef>` | per config-managed provider or delivery destination | resolved at boot, never persisted |
 

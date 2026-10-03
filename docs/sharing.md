@@ -155,6 +155,272 @@ was used" still travels with the export, honestly labelled.
 With a signing identity configured, exports carry a real, signed C2PA Content Credential
 instead of the unsigned island. That is one command to set up: [c2pa](c2pa.md).
 
+## Team projects and sessions
+
+A **project** is a folder of saved tool sessions. A **session** is one tool with its inputs,
+saved so that colleagues can open the same work. Both live in the instance's store, so a
+session saved on a laptop opens on a phone after sign-in.
+
+### Who sees a project
+
+Each project is either **private** (its owner and the people added to it) or shared with
+one or more **groups**. A member sees a project they own, one they were added to, or one
+shared with any group they belong to. Admins and owners see every project. Group membership
+is the member's effective set: groups from the identity provider plus local groups added in
+the console.
+
+When Lolly offers a visibility choice, it reads the list from `sharing.groups` in
+`GET /api/v1/org-config`. That list holds the member's own groups minus the groups that make
+someone an admin or owner, sorted. Those are the names under `admin` and `owner` in
+`idp.roleGroups`, or the literal `admin` and `owner` when that role has no mapping. Admins and
+owners already see every project, so sharing with their groups adds nobody. Other role groups
+stay in the list: approvers, authors, members and viewers see a team project only through its
+groups, so a project shared with the author group reaches every author. An empty list means
+the member can only make private projects. `can['project.create']` in the same document says whether to offer
+**New project** at all. Both are hints for the interface: the routes below still decide.
+
+Archiving a project hides it from `GET /api/v1/projects`, so it drops out of Lolly's team
+list and save picker. The console's Projects view asks with `?archived=1`, lists archived
+projects with a **Restore** button and live ones with **Archive**. Both send
+`PATCH /api/v1/projects/:id` with `{"archived": false}` or `{"archived": true}`, which needs
+a manager of the project (below). Handing a project to a new owner (`ownerId`) needs the
+current owner or `project.manage`.
+
+### People and roles
+
+Everyone who can see a project has one role on it. The highest of these applies:
+
+| Role | Who has it | What they may do |
+|---|---|---|
+| owner | the person who created the project, or the one it was handed to | everything below, and hand the project on |
+| manager | added as manager; or anyone holding `project.manage` (admins and owners by default) on a project they can see | rename, change visibility, archive, delete anyone's session, add, change and remove people, invite |
+| editor | added as editor; a member of one of the project's groups; any admin or owner | create sessions, save changes, delete their own sessions |
+| viewer | added as viewer | open the project and its sessions, read revisions |
+
+Group sharing works as before: a member of a project's group acts as an editor. Adding
+someone gives them a role even on a private project. The instance role still applies on
+top: an account with the instance `viewer` role cannot save, whatever its project role, and
+a deny grant on `session.edit` or `project.manage` holds here as anywhere else. A viewer who
+tries to save gets `403 READ_ONLY`; someone who cannot see the project gets `403 FORBIDDEN`.
+
+Each row of `GET /api/v1/projects` carries `myRole`, so Lolly can show the right controls.
+`GET /api/v1/projects/:id/members` lists the owner and everyone added, for anyone who can
+see the project. Managers also see each person's email and the open invitations that carry
+the project. For everyone else a person with no first or last name is shown by the part of
+their address before the "@", never the whole address; the same applies to `updatedByName`
+in the project and session lists. Managers change a role with `PATCH /api/v1/projects/:id/members/:userId` and
+remove someone with `DELETE` on the same path. Anyone may remove themselves, which is how to
+leave a project; the caller's own row in the members list carries `isMe: true` for that. The
+owner has no member role and cannot be removed; hand the project on first.
+
+Live editing follows the same roles: a viewer joins a room as an observer, and only an
+editor or higher holds a writer seat or invites others into the room. A guest-edit link to
+a session needs editor on its project, at the mint and again on every gesture and keepalive
+of each guest it let in: removing the person who made the link from the project, demoting
+them to viewer or making the project private ends those guests' seats.
+
+### Inviting people
+
+In Lolly, **People with access** in the Share dialog and the Team projects view lists the
+people on a project, and **Invite by email** adds more. Under the hood that is
+`POST /api/v1/projects/:id/invite` with `{"emails": [...], "role": "viewer" | "editor" |
+"manager"}`, which needs a manager of the project. Each address gets a result:
+
+- `added`: the address belongs to an account, which becomes a member now. The person finds
+  "*name* shared *project* with you" in their inbox, with a link to the project. Only an
+  account that has shown it holds the address counts: one whose IdP verified the address at
+  sign-in, one from a source the operator vouches for (the reverse proxy, an IdP set to
+  `emailVerification: "trusted"`), the account that accepted the address's invitation, or
+  one provisioned with no sign-in yet. An account whose sign-in only claimed the address is
+  treated as if the address had no account.
+- `invited`: the address has no account yet. An invitation carrying the project is created,
+  or the open invitation for that address gains the project. At their first sign-in the
+  person joins every project the invitation names, each only while the person who added it
+  is still an enabled account that manages that project and may still invite people, and
+  the role is still one the policy gives. An entry that fails is skipped and audited
+  (`invite.project.skip`), so removing or offboarding a manager also stops the invitations
+  they had pending.
+- `already`: nothing to do. The person already has this role or a higher one, or owns the
+  project. A role is raised by inviting again with a higher one, and only lowered on purpose
+  through the members route.
+- `refused`, with a `reason`:
+  - `invalid-email`;
+  - `account-disabled` (only to a caller who holds `user.invite`);
+  - `invites-not-allowed` (the invite policy does not let you invite new people);
+  - `domain-not-allowed`;
+  - `invitations-off` (`idp.admission.invitations` is `false`, so sign-in would never read
+    an invitation);
+  - `invitation-accepted` (the address's invitation was already used; only to a caller who
+    holds `user.invite`, everyone else reads `unavailable`);
+  - `invitation-changed` (someone else changed the invitation at the same moment; try
+    again).
+
+Which addresses have an account is directory knowledge, which members do not otherwise
+get. So a caller without `user.invite` is never told that an account is disabled: that
+address is handled as if it had no account. Such a caller may also send at most 100
+addresses an hour (`429 RATE_LIMITED`). Sharing still shows them who already has an
+account, because that person appears on the project; the hourly limit is what keeps this
+from running over a list. The limit is counted per server process.
+
+The inbox message goes out once, when the person is first added. Raising their role sends
+nothing, and removing and re-adding them never puts a message they dismissed back in front
+of them. Each person may send at most 200 of these messages a day; past that the person is
+still added, and the audit row records the message as held.
+
+The response also carries `link`, the address of the project in Lolly
+(`<baseUrl>/#/team/project/<projectId>`, or `<appUrl>/...` when `instance.appUrl` is set, the
+same address the inbox message opens). Nothing is emailed from Lolly Work: copy the link
+and send it yourself. Opening the link signed out goes through sign-in and then opens the
+project. A manager withdraws an invitation from the project with
+`DELETE /api/v1/projects/:id/invitations/:invitationId`. When a project invite created the
+invitation (`createdVia: "project"`) and no project is left on it, the invitation is revoked
+too, so the address can no longer sign in through it. An invitation made in the console only
+loses the project: whether it still admits the person is for an admin to decide in People.
+An invitation accepted in the meantime is never revoked by this route.
+
+Someone who is already on a project is never also listed as invited to it. When a person
+becomes a member or the owner, by an invite, by accepting an invitation for another of
+their addresses, or by a transfer, the project comes off any pending invitation for an
+address they hold, and a project-made invitation left with no projects and no groups is
+revoked. Both are audited (`invite.project.remove`, `invite.revoke`, with `via:
+"membership"`). Two invitations stay open with the project gone instead: one made in the
+console, for the reason above, and one for an account that has not signed in yet, which
+may be how that person gets in the first time.
+
+A person can also come to hold an invited address without accepting anything, for example
+by adding a sign-in for that address from their profile. The members list leaves such an
+invitation out only while accepting it would change nothing. When it names a higher role
+than the person has on the project, it stays listed, because their next sign-in with that
+address raises them to that role. A manager who does not want that withdraws the invitation.
+
+In the console, **Invite people** in People works for the whole instance. An address that
+already belongs to an account joins the ticked groups at once (`status: "applied"`) instead
+of receiving an invitation, under the same rule for which account holds the address as
+above. That never applies to your own account or a disabled one, and only an owner can
+re-group an owner.
+
+### Invite policy
+
+`policy.invites` in the [instance configuration](configuration.md#policy) decides who may
+invite **new** people and on what terms:
+
+- `allow`: `owners` (instance owners only), `admins` (anyone holding `user.invite`, which
+  admins and owners hold by default; the default), or `members` (any member, unless a grant
+  denies them `user.invite`). Inviting through a project also needs manager on that project,
+  whatever the tier.
+- `domains`: when the list is not empty, a new address must be at one of these domains.
+- `maxTtlHours`: how long an invitation made from a project stays open (default 720, 30
+  days). Adding a project to an existing invitation keeps its expiry.
+- `projectRoles`: which roles may be given, by invitation or role change (default all three).
+
+The tier and the domain list apply to invitations, which let a new person in, from a
+project or from the console and `lw invite add` alike. Sharing a project with someone who
+already has an account, or giving their account groups in the console, needs manager on the
+project (or the console's own checks) and an allowed role, and nothing else. `maxTtlHours`
+is for invitations made from a project; the console sets its own expiry. Lolly reads `can['user.invite']` and `invites` (`domains`,
+`maxTtlHours`, `projectRoles`) from `GET /api/v1/org-config` to offer only what the server
+accepts; older servers send neither, and Lolly then hides inviting. The policy is part of the
+instance configuration, so changing it means editing the configuration and redeploying.
+
+### Saving from Lolly
+
+Signed in to an instance, the Share dialog offers a **Team** section:
+
+- **Save to a team project** picks an existing project or creates one with the chosen
+  visibility, then saves the current tool and inputs as a new session
+  (`POST /api/v1/projects/:id/sessions`).
+- **Save changes** writes an opened team session back (`PUT /api/v1/sessions/:id`) with
+  the revision it was opened at.
+- **Copy team link** copies the session's link (below).
+
+A session body may be up to 4 MiB, enough for a large Design document; a larger one is
+refused with `413`. Images uploaded on one device are stored on that device. Where shared
+files are on (below), saving to a team project copies the images a session uses into the
+project's files, so the session opens elsewhere with them. Where they are off, the session
+opens elsewhere without those images, and Lolly warns about this when you save.
+
+Saving needs editor on the project and `session.edit`; creating a session needs editor and
+`session.create`. Deleting a session needs `session.delete`, editor on the project and one
+of: being the person who created the session, or being a manager of the project (its owner,
+a manager member or a holder of `project.manage`). Admins and owners hold `project.manage`
+by default, so a deny grant on it also stops them deleting a colleague's session. Being able
+to see and edit a team project is not enough on its own, so a colleague's session stays put.
+Deletion leaves a tombstone, so a stale copy cannot bring the session back.
+
+### Shared files
+
+A project can hold files: the images and other uploads its sessions use, kept by the
+instance so every member gets the same bytes. A session refers to a file by the asset id
+`user/team/<fileId>`.
+
+Shared files are on when `policy.projectFiles.enabled` is `true` (the default) and the
+instance keeps its data in Postgres. On the memory store they are always off, because an
+upload would vanish with the process. `sharing.projectFiles` in `GET /api/v1/org-config` says
+which, and while files are off every file route answers `404`.
+
+| Who | May |
+|---|---|
+| anyone who can see the project (viewer and up) | list the project's files and download them |
+| editor and up, with `session.create` | upload a file; the project must not be archived. Service tokens cannot |
+| the person who uploaded the file | delete it, or cancel their own unfinished upload |
+| manager and up (owner, manager member, `project.manage`) | delete any file in the project |
+
+An upload is reserved first, then sent in parts of 1 MiB, then finalized. Each part is
+checked against the digest declared at the start, and the whole file is checked before it is
+listed. Only finished files are listed, newest first, and only the uploader can send parts or
+finish an upload. An unfinished upload expires 15 minutes after it starts or after its last
+accepted part, and at the latest 24 hours after it starts (`policy.projectFiles.uploadTtlHours`),
+so an upload a closed tab left behind stops holding room within minutes. After that it cannot
+be finished and counts toward no limit. Once it is an hour past its expiry it is removed with
+its parts, when someone next starts an upload or when retention runs.
+
+The limits come from `policy.projectFiles` (see [configuration](configuration.md#policy)):
+
+- one file: 25 MiB by default (`maxFileBytes`), never more than 256 MiB;
+- one project: 128 MiB of files (`projectBudgetBytes`);
+- the whole instance: 256 MiB of files (`instanceBudgetBytes`);
+- one person: 16 unfinished uploads at a time, declaring twice the largest file in all;
+- one person's downloads: twice the instance budget a day.
+
+Finished files and unfinished uploads that have not expired both count, each at its size plus
+4 KiB for its database rows, so many tiny files fill a budget too. The defaults suit a
+small hosted Postgres, which holds the file bytes as well. The file list reports
+`projectUsedBytes` and `instanceRemainingBytes` so Lolly can say how much room is left.
+
+Deleting a file that a live session in the project still uses is refused with
+`409 FILE_IN_USE`, naming those sessions; that session would otherwise open without it. A
+manager can delete it anyway with `?force=1`. Every finished upload is audited as
+`project.file-upload` and every delete or cancel as `project.file-delete`. A person's
+finished files block erasing their account, like their sessions do; their unfinished
+uploads are removed when the account is erased. The
+[API reference](api.md#project-files) lists the routes.
+
+### Who changed what
+
+Project rows in `GET /api/v1/projects` carry `updatedAt` and `updatedByName`: the newest of
+the last session save and the last rename, visibility or archive change, and the name of the
+person who made it (`null` when nobody has changed the project since it was created). Session
+rows in `GET /api/v1/projects/:id/sessions` carry `updatedByName` beside `updatedBy`. Lolly
+shows these in its lists, so a team working one after another can see who saved last.
+
+### Team links
+
+A team project opens at `<app>/#/team/project/<projectId>`, which shows Lolly's Team projects
+view on that project. A team session opens at `<app>/#/team/<sessionId>`. Lolly loads the session, opens its tool
+with the saved inputs and remembers the revision for the next save. The link carries only
+the session id, and opening one needs the same visibility as reading the session through the
+API. A signed-out reader goes through the sign-in gate first and returns to the session
+afterwards. Collaboration invites in the inbox use this link too.
+
+### When two people save the same session
+
+Session writes are compare-and-set on `rev`. When someone else saved since you opened the
+session, your save answers `409 CONFLICT` with the newer version in `current`, and nothing
+is overwritten. Lolly then offers a choice: open their version, or save yours as a new
+session so both survive. Every refused save is recorded as `session.conflict` in the audit
+log (ids and revisions only, never input values). The [API reference](api.md#projects-and-sessions)
+lists the routes.
+
 ## Related
 
 - Restricting formats and inputs: [governance](governance.md)

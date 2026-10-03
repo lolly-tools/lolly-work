@@ -371,3 +371,21 @@ test('ServiceProviderConfig declares the honest capability set', async () => {
   assert.equal(spc.bulk.supported, false);
   assert.equal(spc.changePassword.supported, false);
 });
+
+test('a subject linked to an account created by another IdP is that account: found by externalId, never duplicated', async () => {
+  const { base, store } = await boot();
+  const token = await mintToken(base, await login(base, 'owner@test'));
+  // Carol's account was created by GitHub; her primary IdP subject reached it
+  // later through an email link (plans/74, "One person, many sign-ins").
+  const carol = await store.upsertUserBySub({ sub: 'github:7', email: 'carol@corp', groups: [], role: 'member' });
+  const at = new Date().toISOString();
+  assert.ok(await store.linkIdentity({ identitySub: '00uX', userId: carol.id, idp: 'primary', email: 'carol@corp', emailVerified: true, linkedAt: at }));
+
+  const found = await (await scim(base, token, 'GET', 'Users?filter=' + encodeURIComponent('externalId eq "00uX"'))).json() as { totalResults: number; Resources: Array<{ id: string }> };
+  assert.equal(found.totalResults, 1, 'the IdP finds the account its subject signs in to');
+  assert.equal(found.Resources[0]!.id, carol.id);
+
+  const dup = await scim(base, token, 'POST', 'Users', { userName: 'carol2@corp', externalId: '00uX' });
+  assert.equal(dup.status, 409, 'no second row to take the group pushes');
+  assert.equal((await store.listUsers()).filter((u) => u.sub === '00uX').length, 0);
+});

@@ -9,6 +9,7 @@ import { verifyChain } from '../server/src/audit/chain.ts';
 import { createApproval, type Chain } from '../server/src/approvals/engine.ts';
 import type { Message } from '../server/src/inbox/target.ts';
 import type { Store } from '../server/src/store/types.ts';
+import { PROJECT_FILE_OVERHEAD_BYTES, type ProjectFileRecord } from '../server/src/projects/files.ts';
 import { runErasureConformance } from './erasure-conformance.ts';
 
 export async function runStoreConformance(store: Store): Promise<void> {
@@ -26,6 +27,12 @@ export async function runStoreConformance(store: Store): Promise<void> {
   // let the collab gateway's per-gesture inviter check disagree with the console.
   assert.deepEqual(await store.getUser(u1.id), await store.getUserBySub('s1'));
   assert.equal(await store.getUser('usr_nope'), null);
+
+  // By email, case-insensitive, every row: one person can hold a row per IdP.
+  const u1other = await store.upsertUserBySub({ sub: 'idp2:s1', email: ' A@X ', groups: [], role: 'member' });
+  assert.deepEqual((await store.findUsersByEmail('a@x')).map((u) => u.id).sort(), [u1.id, u1other.id].sort());
+  assert.deepEqual(await store.findUsersByEmail('nobody@x'), []);
+  assert.deepEqual(await store.findUsersByEmail('  '), []);
 
   // A deployed role mapping applies to existing identities and paged directory queries.
   store.configureRoleGroups({ owner: ['g1'], viewer: ['g2'] });
@@ -210,6 +217,185 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.equal((await store.listApiTokens()).find((t) => t.id === 'tok_1')?.lastUsedAt, '2026-08-24T12:00:00.000Z');
   assert.equal(await store.revokeApiToken('tok_1', '2026-08-24T13:00:00.000Z'), true);
   assert.equal(await store.revokeApiToken('tok_1', '2026-08-24T13:00:00.000Z'), false, 'a revoked token revokes once');
+
+  // invitations (plans/74 W-ID-2): one active row per email, lowercased;
+  // re-inviting returns the active row; an expired pending row makes way;
+  // acceptance happens once and only while pending and unexpired.
+  const invAt = '2026-10-02T10:00:00.000Z';
+  const inv1 = await store.createInvitation({ id: 'inv_1', email: 'Ana@Example.COM', groups: ['team', 'team', 'brand'], invitedBy: 'user:u1', createdAt: invAt });
+  assert.equal(inv1.created, true);
+  assert.equal(inv1.invitation.email, 'ana@example.com', 'stored lowercased');
+  assert.deepEqual(inv1.invitation.groups, ['team', 'brand'], 'groups deduped, order kept');
+  assert.equal(inv1.invitation.acceptedAt, undefined);
+  const again = await store.createInvitation({ id: 'inv_2', email: 'ana@example.com', groups: ['other'], invitedBy: 'user:u2', createdAt: '2026-10-02T11:00:00.000Z' });
+  assert.equal(again.created, false, 'one active invitation per email');
+  assert.equal(again.invitation.id, 'inv_1');
+  assert.deepEqual(again.invitation.groups, ['team', 'brand'], 'the active row is returned unchanged');
+  assert.equal(await store.getInvitation('inv_2'), null, 'no second row was written');
+  assert.equal((await store.findActiveInvitation(' ANA@example.com '))?.id, 'inv_1', 'lookup is case-insensitive');
+  assert.equal(await store.findActiveInvitation('nobody@example.com'), null);
+
+  // Acceptance: once, pending only, never after expiry.
+  const accepted = await store.acceptInvitation('inv_1', 'usr_ana', '2026-10-02T12:00:00.000Z');
+  assert.equal(accepted?.acceptedUserId, 'usr_ana');
+  assert.equal(accepted?.acceptedAt, '2026-10-02T12:00:00.000Z');
+  assert.equal(await store.acceptInvitation('inv_1', 'usr_other', '2026-10-02T12:01:00.000Z'), null, 'accepted exactly once');
+  assert.equal((await store.findActiveInvitation('ana@example.com'))?.acceptedUserId, 'usr_ana', 'an accepted invitation stays active');
+  assert.equal((await store.createInvitation({ id: 'inv_3', email: 'ana@example.com', groups: [], invitedBy: 'user:u1', createdAt: '2027-01-01T00:00:00.000Z' })).created, false,
+    'an accepted invitation is still the active one, whatever its old expiry');
+
+  // Expiry: a lapsed pending row is revoked and replaced by a fresh one.
+  await store.createInvitation({ id: 'inv_4', email: 'bo@example.com', groups: ['team'], invitedBy: 'user:u1', createdAt: invAt, expiresAt: '2026-10-03T00:00:00.000Z' });
+  assert.equal(await store.acceptInvitation('inv_4', 'usr_bo', '2026-10-03T00:00:00.000Z'), null, 'no acceptance at or after expiry');
+  assert.equal((await store.findActiveInvitation('bo@example.com'))?.id, 'inv_4', 'an expired pending row is still found; the caller judges expiry');
+  const before = await store.createInvitation({ id: 'inv_5', email: 'bo@example.com', groups: [], invitedBy: 'user:u1', createdAt: '2026-10-02T23:00:00.000Z' });
+  assert.equal(before.created, false, 'not yet expired: the pending row stands');
+  const fresh = await store.createInvitation({ id: 'inv_6', email: 'bo@example.com', groups: ['brand'], invitedBy: 'user:u1', createdAt: '2026-10-04T00:00:00.000Z' });
+  assert.equal(fresh.created, true, 'an expired pending row makes way');
+  assert.equal((await store.getInvitation('inv_4'))?.revokedAt, '2026-10-04T00:00:00.000Z', 'the lapsed row is revoked at the replacing instant');
+  assert.equal((await store.findActiveInvitation('bo@example.com'))?.id, 'inv_6');
+
+  // Revocation: once; the email is then free for a new invitation.
+  const revoked = await store.revokeInvitation('inv_6', '2026-10-05T00:00:00.000Z');
+  assert.equal(revoked?.email, 'bo@example.com');
+  assert.equal(await store.revokeInvitation('inv_6', '2026-10-05T00:00:00.000Z'), null, 'a revoked invitation revokes once');
+  assert.equal(await store.revokeInvitation('inv_nope', '2026-10-05T00:00:00.000Z'), null);
+  assert.equal(await store.acceptInvitation('inv_6', 'usr_bo', '2026-10-05T00:00:01.000Z'), null, 'a revoked invitation is never accepted');
+  assert.equal(await store.findActiveInvitation('bo@example.com'), null);
+  assert.equal((await store.createInvitation({ id: 'inv_7', email: 'bo@example.com', groups: [], invitedBy: 'user:u1', createdAt: '2026-10-06T00:00:00.000Z' })).created, true);
+  const invList = await store.listInvitations();
+  assert.deepEqual(invList.map((i) => i.id), ['inv_7', 'inv_6', 'inv_4', 'inv_1'], 'newest first, revoked rows kept');
+  assert.equal(invList.find((i) => i.id === 'inv_7')?.expiresAt, undefined, 'no expiry reads as absent');
+
+  // Projects on an invitation (plans/74, migration 0040): stored, read back,
+  // empty by default, and replaceable only while the invitation is pending.
+  assert.deepEqual(invList.find((i) => i.id === 'inv_7')?.projects ?? [], [], 'no projects reads as empty');
+  const withProjects = await store.createInvitation({
+    id: 'inv_8', email: 'cy@example.com', groups: [], invitedBy: 'user:u1', createdAt: '2026-10-06T00:00:00.000Z',
+    projects: [{ projectId: 'prj_x', role: 'editor' }],
+  });
+  assert.deepEqual(withProjects.invitation.projects, [{ projectId: 'prj_x', role: 'editor' }]);
+  const extended = await store.setInvitationProjects('inv_8', [{ projectId: 'prj_x', role: 'manager' }, { projectId: 'prj_y', role: 'viewer' }]);
+  assert.deepEqual(extended?.projects, [{ projectId: 'prj_x', role: 'manager' }, { projectId: 'prj_y', role: 'viewer' }]);
+  assert.deepEqual((await store.findActiveInvitation('cy@example.com'))?.projects, extended?.projects);
+  assert.equal(await store.setInvitationProjects('inv_1', []), null, 'an accepted invitation keeps its projects');
+  assert.equal(await store.setInvitationProjects('inv_6', []), null, 'a revoked invitation keeps its projects');
+  assert.equal(await store.setInvitationProjects('inv_nope', []), null);
+  // Each entry keeps who put it there; the route writes the origin.
+  const byEntry = await store.setInvitationProjects('inv_8', [{ projectId: 'prj_x', role: 'manager', invitedBy: 'user:u9' }]);
+  assert.deepEqual(byEntry?.projects, [{ projectId: 'prj_x', role: 'manager', invitedBy: 'user:u9' }]);
+  assert.equal((await store.getInvitation('inv_8'))?.createdVia, undefined, 'a row written without an origin reads as console');
+  const fromProject = await store.createInvitation({
+    id: 'inv_9', email: 'dy@example.com', groups: [], invitedBy: 'user:u1', createdAt: '2026-10-06T00:00:00.000Z',
+    expiresAt: '2026-10-08T00:00:00.000Z', projects: [{ projectId: 'prj_x', role: 'viewer', invitedBy: 'user:u1' }], createdVia: 'project',
+  });
+  assert.equal(fromProject.invitation.createdVia, 'project');
+  assert.equal((await store.getInvitation('inv_9'))?.createdVia, 'project');
+  // Open invitations by project: pending, unexpired, carrying the project.
+  const openFor = async (projectId: string, at: string) => (await store.listOpenInvitationsForProject(projectId, at)).map((i) => i.id);
+  assert.deepEqual(await openFor('prj_x', '2026-10-07T00:00:00.000Z'), ['inv_9', 'inv_8'], 'newest first');
+  assert.deepEqual(await openFor('prj_x', '2026-10-09T00:00:00.000Z'), ['inv_8'], 'an expired one is left out');
+  assert.deepEqual(await openFor('prj_y', '2026-10-07T00:00:00.000Z'), [], 'a project taken off is left out');
+  assert.deepEqual(await openFor('prj_none', '2026-10-07T00:00:00.000Z'), []);
+  // A pending-only revoke leaves an accepted row alone, so a revoke racing
+  // an acceptance never undoes it.
+  await store.acceptInvitation('inv_9', 'usr_dy', '2026-10-06T01:00:00.000Z');
+  assert.deepEqual(await openFor('prj_x', '2026-10-07T00:00:00.000Z'), ['inv_8'], 'an accepted one is left out');
+  assert.equal(await store.revokeInvitation('inv_9', '2026-10-06T02:00:00.000Z', { pendingOnly: true }), null);
+  assert.equal((await store.getInvitation('inv_9'))?.revokedAt, undefined, 'still active');
+  assert.ok((await store.revokeInvitation('inv_8', '2026-10-06T02:00:00.000Z', { pendingOnly: true }))?.revokedAt, 'a pending row is revoked');
+  assert.deepEqual(await openFor('prj_x', '2026-10-07T00:00:00.000Z'), [], 'a revoked one is left out');
+  // Dropping one project off a pending invitation: the others keep their
+  // order and fields; the last one revokes the row only when asked and only
+  // when it carries no groups.
+  await store.createInvitation({
+    id: 'inv_10', email: 'ey@example.com', groups: [], invitedBy: 'user:u1', createdAt: '2026-10-06T00:00:00.000Z', createdVia: 'project',
+    projects: [{ projectId: 'prj_a', role: 'viewer' }, { projectId: 'prj_b', role: 'editor', invitedBy: 'user:u2' }, { projectId: 'prj_c', role: 'manager' }],
+  });
+  const dropped = await store.dropInvitationProject('inv_10', 'prj_b', '2026-10-06T03:00:00.000Z', { revokeWhenEmpty: true });
+  assert.deepEqual(dropped?.projects, [{ projectId: 'prj_a', role: 'viewer' }, { projectId: 'prj_c', role: 'manager' }]);
+  assert.equal(dropped?.revokedAt, undefined, 'projects remain, so it stays open');
+  assert.equal(await store.dropInvitationProject('inv_10', 'prj_b', '2026-10-06T03:00:00.000Z'), null, 'a project it no longer carries');
+  await store.dropInvitationProject('inv_10', 'prj_a', '2026-10-06T03:00:00.000Z', { revokeWhenEmpty: true });
+  const keptOpen = await store.dropInvitationProject('inv_10', 'prj_c', '2026-10-06T03:00:00.000Z');
+  assert.deepEqual(keptOpen?.projects, []);
+  assert.equal(keptOpen?.revokedAt, undefined, 'empty, but not asked to revoke');
+  assert.equal((await store.findActiveInvitation('ey@example.com'))?.id, 'inv_10');
+  await store.createInvitation({
+    id: 'inv_11', email: 'fy@example.com', groups: [], invitedBy: 'user:u1', createdAt: '2026-10-06T00:00:00.000Z', createdVia: 'project',
+    projects: [{ projectId: 'prj_a', role: 'viewer' }],
+  });
+  const revokedEmpty = await store.dropInvitationProject('inv_11', 'prj_a', '2026-10-06T04:00:00.000Z', { revokeWhenEmpty: true });
+  assert.deepEqual(revokedEmpty?.projects, []);
+  assert.equal(revokedEmpty?.revokedAt, '2026-10-06T04:00:00.000Z', 'nothing left, so revoked in the same step');
+  assert.equal(await store.findActiveInvitation('fy@example.com'), null);
+  assert.equal(await store.dropInvitationProject('inv_11', 'prj_a', '2026-10-06T04:00:00.000Z'), null, 'a revoked row is left alone');
+  await store.createInvitation({
+    id: 'inv_12', email: 'gy@example.com', groups: ['design'], invitedBy: 'user:u1', createdAt: '2026-10-06T00:00:00.000Z', createdVia: 'project',
+    projects: [{ projectId: 'prj_a', role: 'viewer' }],
+  });
+  const withGroups = await store.dropInvitationProject('inv_12', 'prj_a', '2026-10-06T04:00:00.000Z', { revokeWhenEmpty: true });
+  assert.equal(withGroups?.revokedAt, undefined, 'its groups keep it open');
+  assert.deepEqual(withGroups?.groups, ['design']);
+  await store.createInvitation({
+    id: 'inv_13', email: 'hy@example.com', groups: [], invitedBy: 'user:u1', createdAt: '2026-10-06T00:00:00.000Z',
+    projects: [{ projectId: 'prj_a', role: 'viewer' }],
+  });
+  await store.acceptInvitation('inv_13', 'usr_hy', '2026-10-06T01:00:00.000Z');
+  assert.equal(await store.dropInvitationProject('inv_13', 'prj_a', '2026-10-06T04:00:00.000Z', { revokeWhenEmpty: true }), null,
+    'an accepted invitation keeps its projects');
+  assert.deepEqual((await store.getInvitation('inv_13'))?.projects, [{ projectId: 'prj_a', role: 'viewer' }]);
+
+  // Linked sign-ins (plans/74, migration 0039): one person, many sign-ins.
+  // A link is refreshed in place for its own user, refused for anyone else's
+  // (a link row or that user's own users.sub), and only verified rows answer
+  // the email lookup.
+  const idA = await store.upsertUserBySub({ sub: 'ident-a', email: 'ident@example.com', groups: [], role: 'member' });
+  const idB = await store.upsertUserBySub({ sub: 'gh:ident-b', email: 'other@example.com', groups: [], role: 'member' });
+  assert.equal(await store.getUserByIdentity('ident-a'), null, 'no row until one is written');
+  const linkedA = await store.linkIdentity({ identitySub: 'ident-a', userId: idA.id, idp: 'primary', email: ' Ident@Example.com ', emailVerified: true, linkedAt: '2026-10-02T00:00:00.000Z', lastLoginAt: '2026-10-02T00:00:00.000Z' });
+  assert.equal(linkedA?.created, true);
+  assert.equal(linkedA?.identity.email, 'ident@example.com', 'email stored lowercased');
+  assert.equal((await store.getUserByIdentity('ident-a'))?.id, idA.id);
+  const linkedGh = await store.linkIdentity({ identitySub: 'github:42', userId: idA.id, idp: 'github', email: 'ident@example.com', emailVerified: false, linkedAt: '2026-10-02T01:00:00.000Z' });
+  assert.equal(linkedGh?.created, true);
+  assert.equal(linkedGh?.identity.lastLoginAt, undefined, 'no sign-in yet reads as absent');
+  const relinked = await store.linkIdentity({ identitySub: 'github:42', userId: idA.id, idp: 'github', email: 'ident@example.com', emailVerified: true, linkedAt: '2026-10-03T00:00:00.000Z', lastLoginAt: '2026-10-03T00:00:00.000Z' });
+  assert.equal(relinked?.created, false, 'a second link of the same pair refreshes the row');
+  assert.equal(relinked?.identity.linkedAt, '2026-10-02T01:00:00.000Z', 'linkedAt is kept');
+  assert.equal(relinked?.identity.lastLoginAt, '2026-10-03T00:00:00.000Z');
+  assert.equal(relinked?.identity.emailVerified, true);
+  // The groups a sign-in asserted: none on a new row, replaced when given,
+  // kept when a write leaves them out.
+  assert.deepEqual(relinked?.identity.groups, [], 'a row starts with no asserted groups');
+  const grouped = await store.linkIdentity({ identitySub: 'ident-a', userId: idA.id, idp: 'primary', email: 'ident@example.com', emailVerified: true, groups: ['admins', 'admins', 'design'], linkedAt: '2026-10-03T00:00:00.000Z', lastLoginAt: '2026-10-03T00:00:00.000Z' });
+  assert.deepEqual(grouped?.identity.groups, ['admins', 'design'], 'stored once each');
+  const kept = await store.linkIdentity({ identitySub: 'ident-a', userId: idA.id, idp: 'primary', email: 'ident@example.com', emailVerified: true, linkedAt: '2026-10-03T00:00:00.000Z' });
+  assert.deepEqual(kept?.identity.groups, ['admins', 'design'], 'absent keeps what was stored');
+  assert.deepEqual((await store.listIdentities(idA.id)).find((r) => r.identitySub === 'ident-a')?.groups, ['admins', 'design']);
+  const cleared = await store.linkIdentity({ identitySub: 'ident-a', userId: idA.id, idp: 'primary', email: 'ident@example.com', emailVerified: true, groups: [], linkedAt: '2026-10-03T00:00:00.000Z' });
+  assert.deepEqual(cleared?.identity.groups, [], 'an empty list clears them');
+  assert.equal(await store.linkIdentity({ identitySub: 'github:42', userId: idB.id, idp: 'github', emailVerified: true, linkedAt: '2026-10-03T00:00:00.000Z' }), null,
+    "another user's link is refused");
+  assert.equal(await store.linkIdentity({ identitySub: 'gh:ident-b', userId: idA.id, idp: 'gh', emailVerified: true, linkedAt: '2026-10-03T00:00:00.000Z' }), null,
+    "another user's own sub is refused");
+  assert.equal(await store.linkIdentity({ identitySub: 'nobody:1', userId: 'usr_nope', idp: 'nobody', emailVerified: true, linkedAt: '2026-10-03T00:00:00.000Z' }), null,
+    'an unknown user is refused');
+  assert.equal((await store.getUserByIdentity('github:42'))?.id, idA.id, 'the refused writes changed nothing');
+  assert.deepEqual((await store.listIdentities(idA.id)).map((r) => r.identitySub), ['ident-a', 'github:42'], 'oldest link first');
+  assert.deepEqual(await store.listIdentities(idB.id), []);
+  // Verified email: each user once, whatever the case; unverified rows never answer.
+  assert.deepEqual((await store.findUsersByVerifiedEmail('IDENT@example.com')).map((u) => u.id), [idA.id]);
+  await store.linkIdentity({ identitySub: 'gh:ident-b', userId: idB.id, idp: 'gh', email: 'shared@example.com', emailVerified: false, linkedAt: '2026-10-03T00:00:00.000Z' });
+  assert.deepEqual(await store.findUsersByVerifiedEmail('shared@example.com'), [], 'an unverified address links nothing');
+  assert.deepEqual(await store.findUsersByVerifiedEmail('  '), []);
+  // Unlink: only this user's own row, once.
+  assert.equal(await store.unlinkIdentity(idB.id, 'github:42'), false, "never another user's row");
+  assert.equal(await store.unlinkIdentity(idA.id, 'github:42'), true);
+  assert.equal(await store.unlinkIdentity(idA.id, 'github:42'), false);
+  assert.equal(await store.getUserByIdentity('github:42'), null);
+  assert.ok(await store.linkIdentity({ identitySub: 'github:42', userId: idB.id, idp: 'github', emailVerified: true, linkedAt: '2026-10-04T00:00:00.000Z' }),
+    'an unlinked identity can be linked again, to anyone');
 
   // durable automation jobs: principal isolation, idempotency lookup and delete
   const jobAt = '2026-09-04T12:00:00.000Z';
@@ -643,6 +829,148 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.equal((await store.listSessionsFiltered({ toolId: 'poster' })).length, 1);
   assert.equal((await store.listSessionsFiltered({ projectId: 'prj_t', toolId: 'flyer' })).length, 1);
   assert.equal((await store.listSessionsFiltered({})).length, 2);
+  // listings read counts and summaries, never the documents themselves
+  const summaries = await store.listSessionSummaries('prj_t');
+  assert.deepEqual(summaries.map((s) => s.id).sort(), ['ses_a', 'ses_b']);
+  assert.ok(summaries.every((s) => !('inputs' in s)), 'a summary carries no inputs');
+  assert.equal(summaries.find((s) => s.id === 'ses_a')?.meta.label, 'Draft');
+  assert.equal(summaries.find((s) => s.id === 'ses_b')?.toolVersion, '2.0.0');
+  assert.deepEqual(await store.listSessionSummaries('prj_p'), []);
+  assert.deepEqual(await store.projectSessionStats(), [{ projectId: 'prj_t', count: 2, updatedAt: now, updatedBy: u1.id }], 'a project with no live session has no entry');
+  assert.deepEqual(await store.projectSessionStats('prj_t'), [{ projectId: 'prj_t', count: 2, updatedAt: now, updatedBy: u1.id }]);
+  assert.deepEqual(await store.projectSessionStats('prj_p'), []);
+
+  // project activity + members (plans/74, migration 0040). The store stores;
+  // the routes decide who may change what.
+  await store.putProject({ id: 'prj_m', name: 'Members', visibility: 'private', ownerId: u1.id, createdAt: now });
+  assert.equal((await store.getProject('prj_m'))?.updatedAt, undefined, 'an unchanged project has no updatedAt');
+  const renamedAt = new Date(Date.parse(now) + 1000).toISOString();
+  await store.putProject({ id: 'prj_m', name: 'Members 2', visibility: 'private', ownerId: u1.id, createdAt: now, updatedAt: renamedAt, updatedBy: u1.id });
+  assert.equal((await store.getProject('prj_m'))?.updatedAt, renamedAt);
+  assert.equal((await store.getProject('prj_m'))?.updatedBy, u1.id);
+  const mA = await store.upsertUserBySub({ sub: 'member-a', email: 'member-a@example.com', groups: [], role: 'member' });
+  const mB = await store.upsertUserBySub({ sub: 'member-b', email: 'member-b@example.com', groups: [], role: 'member' });
+  assert.deepEqual(await store.listProjectMembers('prj_m'), []);
+  assert.equal(await store.getProjectMember('prj_m', mA.id), null);
+  const addedAt = '2026-10-02T09:00:00.000Z';
+  await store.putProjectMember({ projectId: 'prj_m', userId: mA.id, role: 'viewer', addedBy: `user:${u1.id}`, addedAt });
+  await store.putProjectMember({ projectId: 'prj_m', userId: mB.id, role: 'editor', addedBy: `user:${u1.id}`, addedAt: '2026-10-02T09:30:00.000Z' });
+  await store.putProjectMember({ projectId: 'prj_t', userId: mA.id, role: 'manager', addedBy: `user:${u1.id}`, addedAt });
+  assert.deepEqual((await store.listProjectMembers('prj_m')).map((m) => [m.userId, m.role]), [[mA.id, 'viewer'], [mB.id, 'editor']], 'oldest first');
+  assert.deepEqual(await store.getProjectMember('prj_m', mA.id), { projectId: 'prj_m', userId: mA.id, role: 'viewer', addedBy: `user:${u1.id}`, addedAt });
+  assert.deepEqual((await store.listUserProjectMemberships(mA.id)).map((m) => `${m.projectId}:${m.role}`).sort(), ['prj_m:viewer', 'prj_t:manager']);
+  // A role change keeps who first added the person, and when.
+  await store.putProjectMember({ projectId: 'prj_m', userId: mA.id, role: 'manager', addedBy: 'user:someone-else', addedAt: '2026-10-03T00:00:00.000Z' });
+  assert.deepEqual(await store.getProjectMember('prj_m', mA.id), { projectId: 'prj_m', userId: mA.id, role: 'manager', addedBy: `user:${u1.id}`, addedAt });
+  // A role change through updateProjectMemberRole never inserts: a person
+  // removed between a read and the write stays removed.
+  assert.deepEqual(await store.updateProjectMemberRole('prj_m', mB.id, 'viewer'),
+    { projectId: 'prj_m', userId: mB.id, role: 'viewer', addedBy: `user:${u1.id}`, addedAt: '2026-10-02T09:30:00.000Z' });
+  assert.equal(await store.updateProjectMemberRole('prj_m', 'usr_nobody', 'editor'), null);
+  assert.equal(await store.getProjectMember('prj_m', 'usr_nobody'), null, 'nothing was inserted');
+  assert.equal(await store.deleteProjectMember('prj_m', mB.id), true);
+  assert.equal(await store.updateProjectMemberRole('prj_m', mB.id, 'manager'), null, 'a removed member is not put back');
+  assert.equal(await store.getProjectMember('prj_m', mB.id), null);
+  await store.putProjectMember({ projectId: 'prj_m', userId: mB.id, role: 'editor', addedBy: `user:${u1.id}`, addedAt: '2026-10-02T09:30:00.000Z' });
+  assert.equal(await store.deleteProjectMember('prj_m', mB.id), true);
+  assert.equal(await store.deleteProjectMember('prj_m', mB.id), false, 'a missing row deletes once');
+  assert.deepEqual((await store.listProjectMembers('prj_m')).map((m) => m.userId), [mA.id]);
+  assert.deepEqual((await store.getUsersByIds([mA.id, mB.id, mA.id, 'usr_nobody'])).map((u) => u.email).sort(), ['member-a@example.com', 'member-b@example.com']);
+  assert.deepEqual(await store.getUsersByIds([]), []);
+  // A membership goes with its user at erasure; it never blocks one.
+  assert.deepEqual((await store.eraseUserAccount(mA.id)).status, 'erased');
+  assert.deepEqual(await store.listUserProjectMemberships(mA.id), []);
+  assert.deepEqual(await store.listProjectMembers('prj_m'), []);
+  assert.equal(await store.getProjectMember('prj_t', mA.id), null);
+
+  // shared project files (plans/74, migration 0041). Budgets and the pending
+  // limits count ready files and unexpired uploads only, a budget counts each
+  // file at its size plus R, the instance budget spans projects, and ready
+  // files list newest first.
+  {
+    const hour = 60 * 60 * 1000, t = Date.now(), sum = 'a'.repeat(64), R = PROJECT_FILE_OVERHEAD_BYTES;
+    const iso = (ms: number) => new Date(ms).toISOString();
+    const pf = (id: string, projectId: string, size: number, createdAt: number, expiresIn = hour, createdBy = u1.id): ProjectFileRecord => ({
+      id, projectId, name: `${id}.png`, size, checksum: sum, contentType: 'image/png', parts: [{ size, checksum: sum }],
+      asset: { type: 'raster', format: 'png' }, createdBy, createdAt: iso(createdAt), expiresAt: iso(createdAt + expiresIn), ready: false,
+    });
+    const roomy = { projectBudgetBytes: 1000 + 4 * R, instanceBudgetBytes: 1000 + 4 * R, maxPending: 16, maxPendingBytes: 10_000 };
+    await store.putProject({ id: 'prj_f1', name: 'Files', visibility: 'private', ownerId: u1.id, createdAt: now });
+    await store.putProject({ id: 'prj_f2', name: 'Files 2', visibility: 'private', ownerId: u1.id, createdAt: now });
+    const other = await store.upsertUserBySub({ sub: 'files-other', email: 'files-other@example.com', groups: [], role: 'member' });
+    assert.equal(await store.reserveProjectFile(pf('pf_a', 'prj_f1', 10, t - 3000), roomy), 'reserved');
+    assert.equal(await store.reserveProjectFile(pf('pf_a', 'prj_f1', 10, t - 3000), roomy), 'refused', 'an id is reserved once');
+    assert.equal(await store.reserveProjectFile(pf('pf_x', 'prj_none', 10, t), roomy), 'refused', 'no such project');
+    assert.equal(await store.reserveProjectFile(pf('pf_c', 'prj_f1', 30, t - 2000), roomy), 'reserved');
+    assert.equal(await store.reserveProjectFile(pf('pf_b', 'prj_f1', 20, t - 2000), roomy), 'reserved');
+    assert.deepEqual(await store.getProjectFile('pf_a'), pf('pf_a', 'prj_f1', 10, t - 3000));
+    assert.equal(await store.getProjectFile('pf_nope'), null);
+    assert.deepEqual(await store.listProjectFiles('prj_f1'), [], 'unfinished uploads are not listed');
+    for (const id of ['pf_a', 'pf_b', 'pf_c']) assert.equal(await store.completeProjectFile(id), true);
+    assert.equal(await store.completeProjectFile('pf_a'), true, 'completing again is harmless');
+    assert.equal(await store.completeProjectFile('pf_nope'), false);
+    assert.deepEqual((await store.listProjectFiles('prj_f1')).map((f) => f.id), ['pf_b', 'pf_c', 'pf_a'], 'newest first, then id');
+    assert.equal((await store.listProjectFiles('prj_f1'))[0]?.ready, true);
+    assert.deepEqual(await store.listProjectFiles('prj_f2'), []);
+
+    // An expired upload never completes and counts toward nothing.
+    assert.equal(await store.reserveProjectFile(pf('pf_old', 'prj_f1', 900, t - 3 * hour), roomy), 'reserved');
+    assert.equal(await store.completeProjectFile('pf_old'), false, 'an expired upload cannot be completed');
+    assert.deepEqual(await store.projectFileUsage('prj_f1'), { projectBytes: 60 + 3 * R, instanceBytes: 60 + 3 * R }, 'the expired upload is not counted');
+    assert.equal(await store.reserveProjectFile(pf('pf_d', 'prj_f1', 940, t - 1000), roomy), 'reserved', 'the budget ignores expired uploads');
+    assert.equal(await store.reserveProjectFile(pf('pf_e', 'prj_f1', 1, t), roomy), 'project-budget');
+    // The instance budget spans projects.
+    assert.equal(await store.reserveProjectFile(pf('pf_f', 'prj_f2', 1, t), { ...roomy, projectBudgetBytes: 2000 + 4 * R }), 'instance-budget');
+    assert.equal(await store.reserveProjectFile(pf('pf_f', 'prj_f2', 100, t), { ...roomy, instanceBudgetBytes: 1100 + 5 * R }), 'reserved');
+    assert.deepEqual(await store.projectFileUsage('prj_f2'), { projectBytes: 100 + R, instanceBytes: 1100 + 5 * R });
+    // The pending limits are per person: u1 has pf_d (940) and pf_f (100)
+    // unfinished; pf_old has expired. Bytes count declared sizes.
+    const wide = { projectBudgetBytes: 10_000 + 10 * R, instanceBudgetBytes: 10_000 + 10 * R, maxPending: 2, maxPendingBytes: 10_000 };
+    assert.equal(await store.reserveProjectFile(pf('pf_g', 'prj_f2', 1, t), wide), 'pending');
+    assert.equal(await store.reserveProjectFile(pf('pf_g', 'prj_f2', 1, t, hour, other.id), wide), 'reserved', "another person's uploads are not mine");
+    assert.equal(await store.reserveProjectFile(pf('pf_h', 'prj_f2', 6, t), { ...wide, maxPending: 16, maxPendingBytes: 1045 }), 'pending', 'pending bytes');
+    assert.equal(await store.reserveProjectFile(pf('pf_h', 'prj_f2', 6, t), { ...wide, maxPending: 16, maxPendingBytes: 1046 }), 'reserved');
+
+    // Unfinished uploads by uploader and by expiry, earliest expiry first.
+    assert.deepEqual((await store.listUnfinishedProjectFiles({ createdBy: u1.id }, 10)).map((f) => f.id), ['pf_old', 'pf_d', 'pf_f', 'pf_h']);
+    assert.deepEqual((await store.listUnfinishedProjectFiles({ createdBy: u1.id }, 1)).map((f) => f.id), ['pf_old']);
+    assert.deepEqual((await store.listUnfinishedProjectFiles({ expiredBy: iso(t - hour) }, 10)).map((f) => f.id), ['pf_old']);
+    assert.deepEqual((await store.listUnfinishedProjectFiles({ createdBy: other.id, expiredBy: iso(t - hour) }, 10)), []);
+
+    // A touch moves an unfinished upload's expiry out, never in; an expired
+    // or missing file refuses it, and a ready one keeps no expiry.
+    assert.equal(await store.touchProjectFile('pf_d', iso(t + 2 * hour)), true);
+    assert.equal((await store.getProjectFile('pf_d'))?.expiresAt, iso(t + 2 * hour));
+    assert.equal(await store.touchProjectFile('pf_d', iso(t)), true);
+    assert.equal((await store.getProjectFile('pf_d'))?.expiresAt, iso(t + 2 * hour), 'never earlier');
+    assert.equal(await store.touchProjectFile('pf_old', iso(t + 2 * hour)), false, 'expired');
+    assert.equal(await store.touchProjectFile('pf_nope', iso(t + 2 * hour)), false);
+    assert.equal(await store.touchProjectFile('pf_a', iso(t + 2 * hour)), true, 'ready');
+    assert.equal((await store.getProjectFile('pf_a'))?.expiresAt, iso(t - 3000 + hour));
+
+    // Which live sessions of the project use a file.
+    const used = { projectId: 'prj_f1', toolId: 'poster', toolVersion: '1.0.0', meta: { label: 'Uses it' }, createdBy: u1.id, updatedBy: u1.id, rev: 1, updatedAt: now };
+    await store.putSession({ ...used, id: 'ses_f1', inputs: { image: { assetId: 'user/team/pf_b', version: sum } } });
+    await store.putSession({ ...used, id: 'ses_f2', inputs: { image: 'user/team/pf_b' }, deletedAt: now });
+    await store.putSession({ ...used, id: 'ses_f3', projectId: 'prj_f2', inputs: { image: 'user/team/pf_b' } });
+    const users = await store.listSessionsUsingProjectFile('prj_f1', 'pf_b');
+    assert.deepEqual(users.map((s) => s.id), ['ses_f1'], 'live sessions of this project only');
+    assert.equal(users[0]?.meta.label, 'Uses it');
+    assert.ok(!('inputs' in users[0]!), 'no session document comes back');
+    assert.deepEqual(await store.listSessionsUsingProjectFile('prj_f1', 'pf_c'), []);
+
+    // Ready files block erasure of their uploader; unfinished ones are counted nowhere.
+    assert.equal((await store.previewUserErasure(u1.id)).references.projectFiles, 3);
+    assert.equal((await store.previewUserErasure(other.id)).references.projectFiles, 0);
+
+    assert.equal(await store.deleteProjectFile('pf_b'), true);
+    assert.equal(await store.deleteProjectFile('pf_b'), false, 'a row deletes once');
+    assert.equal(await store.getProjectFile('pf_b'), null);
+    assert.deepEqual((await store.listProjectFiles('prj_f1')).map((f) => f.id), ['pf_c', 'pf_a']);
+    // Leave no rows behind for the erasure suite.
+    for (const id of ['pf_a', 'pf_c', 'pf_old', 'pf_d', 'pf_f', 'pf_g', 'pf_h']) assert.equal(await store.deleteProjectFile(id), true, id);
+    for (const id of ['ses_f1', 'ses_f3']) await store.putSession({ ...used, id, projectId: id === 'ses_f3' ? 'prj_f2' : 'prj_f1', inputs: {}, deletedAt: now });
+  }
 
   // CAS on rev: the write a concurrent editor needs. Wrong rev writes nothing;
   // right rev writes and the row moves; a tombstoned row refuses outright, so a
@@ -670,6 +998,34 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.equal(await store.casSession({ ...casBase, id: 'nope', rev: 2 }, 1), false, 'unknown id');
   // restore the fixture the rest of the suite reads
   await store.putSession({ ...(afterCas as NonNullable<typeof a>), inputs: { title: 'Hi', size: 42 }, rev: casBase.rev });
+
+  // A live room's lease: CAS refuses at the CURRENT rev, and collabLeaseActive is
+  // how a caller tells that refusal from a revision conflict. A batch that
+  // accepted nothing stores its receipts under the same fence as commitCollab and
+  // changes nothing else.
+  const leased = (await store.getSession('ses_a')) as NonNullable<typeof a>;
+  const historyBefore = await store.listSessionRevisions('ses_a');
+  assert.equal(await store.collabLeaseActive('ses_a'), false, 'no room, no lease');
+  assert.equal(await store.collabLeaseActive('nope'), false, 'unknown id');
+  assert.equal(await store.claimCollab('ses_a', 'conformance-room', 30_000), true);
+  assert.equal(await store.collabLeaseActive('ses_a'), true);
+  assert.equal(await store.casSession({ ...leased, inputs: { title: 'REST' }, rev: leased.rev + 1 }, leased.rev), false,
+    'a live room refuses a CAS even at the current rev');
+  const refusal = { sessionId: 'ses_a', owner: 'conformance-room', principal: u1.id, expectedRev: leased.rev,
+    receipts: [{ id: 'refused-op', digest: 'digest', accepted: false }] };
+  await assert.rejects(store.commitCollabReceipts({ ...refusal, owner: 'another-room' }), /collab-owner-conflict/);
+  await assert.rejects(store.commitCollabReceipts({ ...refusal, expectedRev: leased.rev + 1 }), /collab-owner-conflict/);
+  await assert.rejects(store.commitCollabReceipts({ ...refusal, receipts: [{ ...refusal.receipts[0]!, accepted: true }] }), /accepted-receipt/,
+    'an accepted receipt needs its operation committed');
+  await store.commitCollabReceipts(refusal);
+  assert.deepEqual(await store.getCollabReceipts('ses_a', u1.id, ['refused-op']),
+    [{ id: 'refused-op', digest: 'digest', accepted: false, revision: leased.rev }]);
+  await assert.rejects(store.commitCollabReceipts(refusal), 'a receipt is written once');
+  assert.deepEqual(await store.getSession('ses_a'), leased, 'rev, inputs, updatedBy and updatedAt unchanged');
+  assert.deepEqual(await store.listSessionRevisions('ses_a'), historyBefore, 'no revision row');
+  assert.equal((await store.getCollabJournal('ses_a', 0)).length, 0, 'no journal row');
+  await store.releaseCollab('ses_a', 'conformance-room');
+  assert.equal(await store.collabLeaseActive('ses_a'), false, 'released');
 
   // revision history: append two, newest-first, round-trips inputs/meta
   await store.appendSessionRevision({ sessionId: 'ses_a', rev: 2, inputs: { title: 'Hi2' }, meta: { label: 'Draft' }, actor: u1.id, at: now });
@@ -717,6 +1073,8 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.ok((await store.getSession('ses_a'))?.deletedAt, 'still tombstoned after the refused CAS');
   assert.equal((await store.listSessions('prj_t')).length, 1, 'tombstone excluded from project list');
   assert.equal((await store.listSessionsFiltered({ toolId: 'poster' })).length, 0, 'tombstone excluded from filtered list');
+  assert.deepEqual((await store.listSessionSummaries('prj_t')).map((s) => s.id), ['ses_b'], 'tombstone excluded from summaries');
+  assert.deepEqual((await store.projectSessionStats('prj_t')).map((s) => s.count), [1], 'tombstone excluded from the count');
 
   // ── user group split: idp mirror vs durable local groups (plans/02 §4) ────
   const alice = await store.upsertUserBySub({

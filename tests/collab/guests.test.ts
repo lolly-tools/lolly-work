@@ -84,6 +84,8 @@ let carolCookie = '';
 let carolId = '';
 let daveCookie = '';
 let daveId = '';
+let erinCookie = '';
+let erinId = '';
 /** The guest-edit link bound to `sessionId`, and a cookie minted from it. */
 let linkId = '';
 let guestCookie = '';
@@ -116,6 +118,9 @@ before(async () => {
         // still relies on, nor each other.
         { email: 'carol@test', name: 'Carol Temp', groups: ['team-eng'] },
         { email: 'dave@test', name: 'Dave Temp', groups: ['team-eng'] },
+        // An inviter whose ONLY access to the project is an explicit editor
+        // membership (plans/74), so a demotion or removal is what takes it away.
+        { email: 'erin@test', name: 'Erin Member', groups: ['team-ops'] },
       ],
     },
   }));
@@ -139,17 +144,19 @@ before(async () => {
   bobCookie = await login('bob@test');
   carolCookie = await login('carol@test');
   daveCookie = await login('dave@test');
+  erinCookie = await login('erin@test');
   const users = await store.listUsers();
   aliceId = users.find((u) => u.email === 'alice@test')!.id;
   adminId = users.find((u) => u.email === 'admin@test')!.id;
   bobId = users.find((u) => u.email === 'bob@test')!.id;
   carolId = users.find((u) => u.email === 'carol@test')!.id;
   daveId = users.find((u) => u.email === 'dave@test')!.id;
+  erinId = users.find((u) => u.email === 'erin@test')!.id;
   // bob, carol and dave all mint guest-edit links in the tests below despite
   // none carrying the `admin` group that grants `link.create-guest` by
   // default - an explicit per-user grant, matching plans/02 §8's "minting is
   // governed per group", not "admin only".
-  for (const id of [bobId, carolId, daveId]) {
+  for (const id of [bobId, carolId, daveId, erinId]) {
     await store.putGrant({ principal: `user:${id}`, action: 'link.create-guest', resource: '*', effect: 'allow' });
   }
 
@@ -919,6 +926,34 @@ test("a guest is refused once its inviter loses `link.create-guest` — the SAME
     guest.close();
     // Leave dave able to mint again for any test that might run after this one.
     await store.deleteGrant({ principal: `user:${daveId}`, action: 'link.create-guest', resource: '*', effect: 'deny' });
+  }
+});
+
+test('a guest is refused once its inviter loses editor on the project, the same re-check as the mint', async () => {
+  // erin reaches the project only through an explicit editor membership.
+  const added = await json(aliceCookie, 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['erin@test'], role: 'editor' });
+  assert.equal(added.status, 200);
+  const seed = await makeSession(aliceCookie, projectId, { title: 'inviter demoted' });
+  const mint = await json(erinCookie, 'POST', '/api/v1/links', {
+    kind: 'guest-edit', target: { toolId: TOOL_ID, sessionId: seed }, projectId,
+  });
+  assert.equal(mint.status, 201, 'an editor member may mint a guest-edit link');
+  const minted = await mint.json() as { url: string };
+  const mintedUrl = new URL(minted.url);
+  const cookie = await guestCookieFor(`${mintedUrl.pathname}${mintedUrl.search}`, 'Lee');
+
+  const guest = new Client(seed, cookie);
+  try {
+    await guest.join();
+    // The owner demotes erin to viewer: she can no longer save, so the writer
+    // seat she handed out must not keep writing either.
+    const demoted = await json(aliceCookie, 'PATCH', `/api/v1/projects/${projectId}/members/${erinId}`, { role: 'viewer' });
+    assert.equal(demoted.status, 200);
+    guest.send({ t: 'ops', ops: [param('title', 'after the inviter was demoted', 'g9', 1)] });
+    assert.equal(await guest.closed(), CLOSE.UNAUTHORIZED, 'the inviter losing editor reaches the live guest seat');
+  } finally {
+    guest.close();
+    await json(aliceCookie, 'DELETE', `/api/v1/projects/${projectId}/members/${erinId}`);
   }
 });
 

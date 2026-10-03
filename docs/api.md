@@ -86,9 +86,12 @@ in on the instance and export the pack, or connect from the desktop app.
 
 | Route | Action | Notes |
 |---|---|---|
-| `GET /api/auth/config` | public | what the sign-in screen needs (mode, IdP display name) |
-| `GET /api/auth/login` | public | starts OIDC (PKCE); `404 NO_IDP` without an issuer |
-| `GET /api/auth/callback` | public | verifies the `id_token`, mints `lw_session` |
+| `GET /api/auth/config` | public | what the sign-in screen needs (mode, IdP display name, and `providers: [{ id, name, kind, loginPath }]` with `kind` `oidc` or `github`) |
+| `GET /api/auth/login` | public | starts sign-in with PKCE: OIDC, or GitHub OAuth 2.0 for `?idp=` naming a `kind: "github"` entry; `404 NO_IDP` without an issuer |
+| `GET /api/auth/callback` | public | verifies the `id_token` (OIDC) or reads the GitHub profile and emails, then mints `lw_session`. A failure a browser sees is an HTML page with a way to start again; an API caller without `Accept: text/html` keeps the JSON error, except GitHub failures, which are always the page |
+| `GET /api/auth/link?idp=<id>&returnTo=<path>` | member (cookie) | runs that IdP and links the identity it returns to the current user, then redirects to `returnTo`; no new session. An identity that belongs to someone else is a `409` HTML page. See [identity.md](identity.md#one-person-several-sign-ins) |
+| `GET /api/v1/me/identities` | member | the person's linked sign-ins: `{ identities: [{ idp, subjectHash, displayName, email, emailVerified, linkedAt, lastLoginAt, canUnlink, unlinkBlocked? }], available: [{ id, name, kind, linkPath }] }` |
+| `DELETE /api/v1/me/identities/:idp/:subjectHash` | member | `204` with a fresh session cookie: the removal ends every session of the account; `409 ACCOUNT_SIGN_IN` for the sign-in the account was created with, `409 LAST_SIGN_IN` for the last one |
 | `GET /api/auth/dev?email=…` | public | dev provider only; `404` when `dev.enabled` is false |
 | `GET /api/auth/session` | member/guest | the current principal |
 | `POST /api/auth/logout` | any | clears both cookies |
@@ -230,10 +233,69 @@ C2PA export assertion. See
 | `GET /api/v1/users`, `GET /api/v1/users/:id` | admin/owner role |
 | `POST /api/v1/users/:id/revoke-sessions` | `grant.edit` - sign-out-everywhere: bumps the user's session epoch, every prior cookie and token fails its next request |
 | `DELETE /api/v1/users/:id` | `instance.config` (**owner**) - erasure: deletes the row + de-attributes telemetry; `409` while they own unarchived projects |
-| `POST /api/v1/retention/run` | `instance.config` (**owner**) - apply the stated retention policy now |
+| `POST /api/v1/retention/run` | `instance.config` (**owner**) - apply the stated retention policy now, and remove expired unfinished project-file uploads (`projectFilesSwept`) |
 | `GET/POST /api/v1/groups`, `DELETE /api/v1/groups/:name` | `grant.edit` |
 | `PUT /api/v1/users/:id/local-groups` | `grant.edit` |
 | `POST /api/v1/users/:id/disabled` | `grant.edit` |
+| `GET /api/v1/users/:id/identities` | admin/owner role | that person's linked sign-ins, the same rows as `/api/v1/me/identities` |
+| `DELETE /api/v1/users/:id/identities/:idp/:subjectHash` | `grant.edit` | `204`, and every session of that person ends; the same two refusals; an owner's sign-ins are owner-only |
+
+## Invitations
+
+Who may sign in when `idp.admission` is set, one email address at a time. See
+[identity](identity.md#who-may-sign-in) for how sign-in uses an invitation.
+
+| Route | Action | Notes |
+|---|---|---|
+| `GET /api/v1/invitations` | `user.invite` (admin, owner) | every invitation, newest first, revoked ones included; plus `signInUrl` and `admission: { policy, invitations }` |
+| `POST /api/v1/invitations` | `user.invite` | body `{ emails: string[], groups?: string[], expiresAt? }`; `201` when anything was created, `200` otherwise. With `groups`, an address that already belongs to an account joins them now (`status: "applied"`) or is left alone (`status: "refused"`, `reason`: `self`, `account-disabled`, `owner-only`). A new address follows `policy.invites`: `reason` `invites-not-allowed` or `domain-not-allowed` |
+| `DELETE /api/v1/invitations/:id` | `user.invite` | revoke; `404` when the id is unknown or already revoked |
+
+An invitation reads `{ id, email, groups, invitedBy, createdAt, expiresAt, acceptedAt,
+acceptedUserId, revokedAt, status, projects, createdVia }`, with `status` one of
+`pending`, `accepted`, `expired` or `revoked`; absent dates are `null`. `projects` is
+`[{ projectId, role }]`, the projects the person joins on acceptance (empty for an
+invitation that only admits and groups). `createdVia` is `console` (this route) or
+`project` (a project invite). POST answers `{ invitations: [...], signInUrl, admission }`:
+an invitation carries `created: boolean`, and an address handled without one reads
+`{ email, status: "applied" | "refused", reason?, userIds, groups, created: false }`.
+
+- `emails`: 1 to 200 addresses, trimmed, lowercased and deduplicated. Each must look
+  like `local@domain` with no spaces.
+- `groups`: local group names, the same slug rule as `POST /api/v1/groups` (letters,
+  digits, `.`, `_`, `-`, 64 characters at most), at most 50. Attaching groups carries the
+  controls of `PUT /api/v1/users/:id/local-groups`:
+  - the caller also needs `grant.edit` (`403 FORBIDDEN`);
+  - a group that maps to the owner role needs the owner role (`403 OWNER_ONLY`);
+  - a group that maps to any role above the caller's is refused (`403 ROLE_ESCALATION`);
+  - a group holding a grant for an owner-only action needs the owner role
+    (`403 OWNER_ONLY_ACTION`);
+  - each group must be in the local registry (`400 UNKNOWN_GROUP`). An owner may also
+    name an IdP group or a role group, which the first admitted sign-in adds to the
+    registry;
+  - an address that already belongs to an account gets the groups at once
+    (`status: "applied"`, with the `userIds` changed), under the same controls, and is
+    refused for your own account (`self`), a disabled one (`account-disabled`) and an
+    owner's unless an owner is inviting (`owner-only`). Only an account that has shown
+    it holds the address counts: a sign-in whose IdP verified it, a trusted source (the
+    reverse proxy, an IdP set to `emailVerification: "trusted"`), an accepted invitation
+    for it, or an account provisioned with no sign-in yet. An account that only claims
+    the address gets an invitation, which a verified sign-in has to accept.
+- `policy.invites` applies to each address that gets an invitation: the `allow` tier
+  (`invites-not-allowed`) and the `domains` list (`domain-not-allowed`). It does not
+  apply to the `applied` branch. `maxTtlHours` is for in-app invites; this route takes
+  its own `expiresAt`.
+- `expiresAt`: optional ISO 8601 date-time, in the future and within 366 days. It bounds
+  acceptance only; an accepted invitation keeps admitting until someone revokes the
+  invitation.
+- One active (unrevoked) invitation per email. Inviting an address that has one returns
+  the existing invitation unchanged with `created: false`. A pending invitation that has
+  expired is revoked and replaced.
+- Revoking an accepted invitation that belongs to an owner needs the owner role
+  (`403 OWNER_ONLY`).
+
+Nothing is emailed. `signInUrl` is `instance.baseUrl`, the address to send the person.
+Audit actions: `invite.create`, `invite.revoke`, `invite.accept`.
 
 ## Service tokens
 
@@ -319,18 +381,27 @@ separate from the existing `/api/v1/batch` job/ZIP contract.
 
 | Route | Action |
 |---|---|
-| `GET /api/v1/projects` | member (own + team by group; admins all) |
+| `GET /api/v1/projects` | member: projects they own, were added to, or share a group with (admins all). Archived projects are left out unless you pass `?archived=1`. Rows carry `myRole`, `updatedAt` and `updatedByName` |
 | `POST /api/v1/projects` | `project.create` |
-| `PATCH /api/v1/projects/:id` | member (own/manage) - name, visibility, archive, and `ownerId` (transfer to an enabled member; audited `project.transfer`) |
-| `GET/POST /api/v1/projects/:id/sessions` | member / `session.create` |
-| `GET /api/v1/sessions/:id`, `GET …/revisions` | member |
-| `PUT /api/v1/sessions/:id` | `session.edit` |
-| `DELETE /api/v1/sessions/:id` | `session.delete` |
-| `POST /api/v1/sessions/bulk` | member |
+| `PATCH /api/v1/projects/:id` | manager of the project or `project.manage` - name, visibility, archive; `ownerId` (transfer to an enabled member; audited `project.transfer`) needs the owner or `project.manage` |
+| `GET/POST /api/v1/projects/:id/sessions` | viewer / editor and `session.create`. List rows carry `updatedByName` |
+| `GET /api/v1/sessions/:id`, `GET …/revisions` | viewer |
+| `PUT /api/v1/sessions/:id` | editor and `session.edit`. Session bodies (this and the `POST` above) may be up to 4 MiB; other routes take 512 KiB |
+| `DELETE /api/v1/sessions/:id` | `session.delete`, editor, and the caller must be the session's creator or a manager of the project (its owner, a manager member, or a holder of `project.manage`; admins and owners hold it by default and a deny grant applies to them too) |
+| `GET /api/v1/projects/:id/members` | viewer - `{ myRole, members: [{ userId, name, email?, role, addedAt, isMe? }], invitations? }`; `email` and `invitations` for managers only; `isMe: true` marks the caller's own row |
+| `POST /api/v1/projects/:id/invite` | manager - body `{ emails, role }`; `200 { results: [{ email, status: added \| invited \| already \| refused, reason? }], link }`. `link` is `<appUrl or baseUrl>/#/team/project/<id>`. New addresses follow `policy.invites`. A caller without `user.invite` may send 100 addresses an hour (`429 RATE_LIMITED`). Reasons are listed in [sharing](sharing.md#inviting-people) |
+| `PATCH /api/v1/projects/:id/members/:userId` | manager - body `{ role }`; `409` for the owner |
+| `DELETE /api/v1/projects/:id/members/:userId` | manager, or the member themselves; `204` |
+| `DELETE /api/v1/projects/:id/invitations/:invitationId` | manager - takes the project off the invitation; a project-made invitation (`createdVia: "project"`) left with no project is revoked, a console invitation never is; `204` |
+| `POST /api/v1/sessions/bulk` | `session.edit` and `project.manage`; only sessions in projects where the caller is an editor |
 | `GET /api/v1/collab/invitees?sessionId=…&q=…` | member with read access to the session |
 | `POST /api/v1/collab/invites` | `collab.edit` (= `session.edit`) |
 | `GET /api/v1/collab/rooms` | `telemetry.view` - live room census for the console |
 | `GET/POST /api/v1/collab/nearby` | `collab.join` - the nearby-discovery handover lane |
+
+Roles on a project (viewer, editor, manager, owner) are described in
+[sharing](sharing.md#people-and-roles). A viewer asked to write gets `403 READ_ONLY`;
+someone who cannot see the project gets `403 FORBIDDEN`.
 
 **Session writes are compare-and-set, never last-writer-wins.** `PUT` requires the `rev`
 you read; a stale `rev` answers `409 CONFLICT` with the **full current server session** in
@@ -341,6 +412,11 @@ edited between preview and apply is **skipped, not stomped**, and reported as
 audited as `session.conflict` (ids and revs only - never input values) and folded into
 `GET /api/v1/stats/overview`'s `sessions.conflicts30d`.
 
+While a live collab room holds a session, no `rev` can be written: `PUT` and `DELETE`
+answer `409 COLLAB_ACTIVE` (no `current`, and not audited as a conflict), and `bulk` skips
+the session with `reason: "collab-active"` in its `skipped` entry. Save again once the room
+closes.
+
 `invitees` autocompletes over **eligible principals only** - project membership
 plus `collab.join`, never the directory, and the admin/owner "sees every
 project" bypass does not make someone invitable. Prefix match on display name,
@@ -348,6 +424,60 @@ capped, self excluded, no email addresses. `invites` enforces the same predicate
 server-side and delivers through the inbox (`kind: "collab"`, `data.sessionId`
 for the deep link); re-inviting refreshes the pending message instead of adding
 a second.
+
+### Project files
+
+Files shared inside a project ([sharing](sharing.md#shared-files)). While
+`sharing.projectFiles` in org-config is `false` (policy off, or the memory store), every
+route here answers `404 NOT_FOUND` with the message `project files are off`.
+
+| Route | Who | Answer |
+|---|---|---|
+| `GET /api/v1/projects/:id/files` | viewer | `200 { files, limits }` |
+| `POST /api/v1/projects/:id/files` | editor and `session.create`, project not archived; a person, so a service token gets `403` | `201 { file, partBytes }`: the upload is reserved |
+| `PUT /api/v1/projects/:id/files/:fileId/parts/:n` | the uploader | `204`; the body is part `n`'s bytes |
+| `POST /api/v1/projects/:id/files/:fileId/finalize` | the uploader | `200 { file }` with `ready: true`; repeating it is harmless |
+| `GET /api/v1/projects/:id/files/:fileId` | viewer | the bytes, as an attachment, `private, no-store` |
+| `DELETE /api/v1/projects/:id/files/:fileId` | the uploader, or manager and up | `204`; on an unfinished upload this cancels it |
+
+The begin body is `{ name, size, checksum, contentType, parts: [{ size, checksum }], asset }`,
+where `checksum` is the hex SHA-256 of the whole file and of each part, every part but the
+last is `partBytes` (1 MiB) long, and `asset` is the shell's own description of the file.
+The instance keeps only `type` and `format` (up to 64 characters each), `width` and `height`
+(numbers above zero) and `meta.name` (up to 200 characters) from `asset`, and drops anything
+else, a credential included. `file` in the begin answer also carries `parts` and `expiresAt`.
+`expiresAt` is 15 minutes after the begin; each accepted part moves it to 15 minutes after
+that part, but never past `policy.projectFiles.uploadTtlHours` after the begin.
+
+Each `files` row is `{ id, projectId, name, size, checksum, contentType, ready: true, asset,
+createdAt, createdBy, createdByName? }`, newest first. Only finished files are listed.
+`createdByName` never falls back to an email address. `limits` is `{ partBytes, maxBytes,
+projectBudgetBytes, projectUsedBytes, instanceRemainingBytes }`, where the used and remaining
+figures count finished files and unfinished uploads that have not expired, each at its size
+plus 4096 bytes for its database rows.
+
+| Code | Status | When |
+|---|---|---|
+| `PROJECT_FILE_TOO_LARGE` | 413 | begin: `size` is over `policy.projectFiles.maxFileBytes` |
+| `PROJECT_FILE_BUDGET` | 413 | begin: the project's files would pass `projectBudgetBytes` |
+| `INSTANCE_FILE_BUDGET` | 413 | begin: all projects' files would pass `instanceBudgetBytes` |
+| `PROJECT_FILE_PENDING` | 413 | begin: the caller already has 16 unfinished uploads, or their declared sizes with this one would pass twice `maxFileBytes` |
+| `INVALID_INPUT` / `INVALID_PART` | 400 | malformed metadata, or no such part |
+| `CHECKSUM_MISMATCH` | 422 | a part, or the finished file, does not match its declared digest |
+| `FILE_READY` | 409 | a part sent to a finished file |
+| `UPLOAD_INCOMPLETE` | 409 | finalize before every part arrived |
+| `UPLOAD_EXPIRED` | 410 | the upload passed its expiry (15 minutes without an accepted part, or `uploadTtlHours` after the begin) or was cancelled |
+| `FILE_IN_USE` | 409 | delete of a file that live sessions in the project use; `sessions: [{ id, title }]` names them. A manager may add `?force=1` |
+| `RATE_LIMITED` | 429 | download: this person already downloaded twice `instanceBudgetBytes` today, as counted by this server process; `retry-after` gives the seconds to wait |
+
+Errors keep the usual `{ "error": { "code", "message" } }` shape. Finishing an upload is
+audited as `project.file-upload`, a delete or cancel as `project.file-delete` (with
+`forced: true` and the session ids when `?force=1` was needed). An unfinished upload more
+than an hour past its expiry is removed, parts first, when someone next begins an upload (up to
+50 at a time) and by `POST /api/v1/retention/run` (up to 500), whose answer then carries
+`projectFilesSwept`. The long-lived server also sweeps them at boot and daily, whatever the
+retention policy says. A serverless deploy has no timer, so there their parts stay in storage
+until one of those runs; they count toward no budget meanwhile.
 
 ### The collab socket
 

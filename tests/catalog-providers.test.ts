@@ -275,7 +275,12 @@ test('(b3) credential expiry, automation jobs, deliveries and render resources f
   assert.equal(files[at + 7], '0034_audit_mac_and_append_guard.sql', 'audit hardening follows render batches');
   assert.equal(files[at + 8], '0035_collab_receipts.sql', 'durable collab receipts follow audit hardening');
   assert.equal(files[at + 9], '0036_collab_journal.sql', 'the operation journal follows durable receipts');
-  assert.equal(files.at(-1), '0037_brand_state.sql', 'durable source decisions follow the operation journal');
+  assert.equal(files[at + 10], '0037_brand_state.sql', 'durable source decisions follow the operation journal');
+  assert.equal(files[at + 11], '0038_invitations.sql', 'invitations follow durable source decisions');
+  assert.equal(files[at + 12], '0039_user_identities.sql', 'linked sign-ins follow invitations');
+  assert.equal(files[at + 13], '0040_project_members.sql', 'project members follow linked sign-ins');
+  assert.equal(files[at + 14], '0041_project_files.sql', 'shared project files follow project members');
+  assert.equal(files.at(-1), '0041_project_files.sql', 'shared project files are the newest migration');
   assert.match(await readFile(`${dir}/0027_credential_expiry.sql`, 'utf8'), /add column credential_expires_at/);
   assert.match(await readFile(`${dir}/0028_automation_jobs.sql`, 'utf8'), /create table automation_jobs/);
   assert.match(await readFile(`${dir}/0029_deliveries.sql`, 'utf8'), /create table deliveries/);

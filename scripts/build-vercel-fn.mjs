@@ -15,9 +15,11 @@
  * Vercel invokes it as the project's buildCommand (vercel.json).
  */
 import { build, buildSync, transformSync } from 'esbuild';
-import { mkdirSync, rmSync, cpSync, writeFileSync, readFileSync, readdirSync, existsSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { mkdirSync, rmSync, cpSync, writeFileSync, readFileSync, readdirSync, existsSync, lstatSync, statSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { functionPrefixes, parseRegions, parseShellOrigin, vcFunctionConfig, vercelRoutes } from './vercel-routes.ts';
+import { incompletePackReason } from './build-instance-pack.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = join(ROOT, '.vercel', 'output');
@@ -37,6 +39,27 @@ const RUNTIME_DYNAMIC = ['@lolly/engine', 'jsdom'];
 // from the module's own URL in every bundle's banner.
 const REQUIRE_SHIM = "import { createRequire as __lwCreateRequire } from 'node:module'; const require = __lwCreateRequire(import.meta.url);";
 const common = { bundle: true, platform: 'node', format: 'esm', target: 'node24', logLevel: 'warning' };
+
+// Private-instance options (deploy/vercel/README.md, "Private instance with the
+// Lolly app"). Each is validated before anything is written; with none of them
+// set the output is the demo build, byte for byte.
+//   LW_SHELL_ORIGIN     https origin the Lolly app is proxied from; switches the
+//                       route table to shell mode (scripts/vercel-routes.ts).
+//   LW_PACK_DIR         repo-relative pack directory bundled beside packs/demo,
+//                       as real files (symlinks dereferenced).
+//   LW_FUNCTION_REGION  Vercel region id(s) for the function, e.g. fra1.
+const env = (name) => process.env[name]?.trim() || undefined;
+const SHELL_ORIGIN = env('LW_SHELL_ORIGIN') && parseShellOrigin(env('LW_SHELL_ORIGIN'));
+const REGIONS = env('LW_FUNCTION_REGION') && parseRegions(env('LW_FUNCTION_REGION'));
+const PACK_REL = env('LW_PACK_DIR') && (() => {
+  const abs = resolve(ROOT, env('LW_PACK_DIR'));
+  const rel = relative(ROOT, abs);
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) throw new Error('LW_PACK_DIR must be a directory inside this repository, such as packs/my-instance');
+  if (!existsSync(abs) || !statSync(abs).isDirectory()) throw new Error(`LW_PACK_DIR ${rel} does not exist; build it with scripts/build-instance-pack.ts`);
+  const incomplete = incompletePackReason(abs);
+  if (incomplete) throw new Error(`LW_PACK_DIR ${rel}: ${incomplete}`);
+  return rel.split(sep).join('/');
+})();
 
 console.log('▶ clean', OUT);
 rmSync(OUT, { recursive: true, force: true });
@@ -178,35 +201,64 @@ for (const d of ['migrations', 'console', 'docs', join('packs', 'demo')]) {
 // produced and copy the ACTIVE profile's catalog in as real files, always.
 // A read-only deploy cannot switch profiles anyway; the marker keeps the
 // profile listing honest.
-const demoPack = join(FUNC, 'packs', 'demo');
-if (existsSync(join(demoPack, 'brands'))) {
-  rmSync(join(demoPack, 'catalog'), { recursive: true, force: true });
+function materializeBrandCatalog(packOut) {
+  if (!existsSync(join(packOut, 'brands'))) return;
+  rmSync(join(packOut, 'catalog'), { recursive: true, force: true });
   let active;
   try {
-    active = readFileSync(join(demoPack, '.lolly-profile'), 'utf8').trim();
+    active = readFileSync(join(packOut, '.lolly-profile'), 'utf8').trim();
   } catch {
-    active = readdirSync(join(demoPack, 'brands'))[0];
+    active = readdirSync(join(packOut, 'brands'))[0];
   }
   console.log('▶ materialize brand-profile catalog:', active);
-  cpSync(join(demoPack, 'brands', active, 'catalog'), join(demoPack, 'catalog'), { recursive: true });
+  cpSync(join(packOut, 'brands', active, 'catalog'), join(packOut, 'catalog'), { recursive: true });
+}
+materializeBrandCatalog(join(FUNC, 'packs', 'demo'));
+
+// engine-pin.json beside index.mjs: the instance manifest and the fleet drift
+// line read the vendored engine version from it (app.ts pinnedEngineVersion),
+// and without it /api/v1/instance reported engineVersion null.
+cpSync(join(ROOT, 'engine-pin.json'), join(FUNC, 'engine-pin.json'));
+
+// 4b. An instance pack (LW_PACK_DIR), copied as real files. `filter` forces Node's
+//     JS copy path, which honours `dereference` (the native recursive path has not
+//     always, which is how the demo once shipped absolute links into the build
+//     sandbox). Any link that survives fails the build rather than the runtime.
+if (PACK_REL && PACK_REL !== 'packs/demo') {
+  const packOut = join(FUNC, ...PACK_REL.split('/'));
+  console.log('▶ copy instance pack', PACK_REL);
+  rmSync(packOut, { recursive: true, force: true });
+  cpSync(join(ROOT, PACK_REL), packOut, { recursive: true, dereference: true, filter: () => true });
+  materializeBrandCatalog(packOut);
+  const links = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (lstatSync(path).isSymbolicLink()) links.push(relative(packOut, path));
+      else if (entry.isDirectory()) walk(path);
+    }
+  };
+  walk(packOut);
+  if (links.length) throw new Error(`instance pack ${PACK_REL} still holds symbolic links after copying: ${links.slice(0, 5).join(', ')}`);
+  for (const dir of ['tools', 'catalog']) {
+    if (!existsSync(join(packOut, dir))) throw new Error(`instance pack ${PACK_REL} has no ${dir}/ directory; build it with scripts/build-instance-pack.ts`);
+  }
 }
 
 // 5. Function + platform config (Build Output API v3).
-writeFileSync(join(FUNC, '.vc-config.json'), JSON.stringify({
-  runtime: 'nodejs24.x',
-  handler: 'index.mjs',
-  launcherType: 'Nodejs',
-  shouldAddHelpers: false,
-  supportsResponseStreaming: false,
-}, null, 2));
+// A private instance streams its responses so a pack file over Vercel's 4.5 MB
+// buffered limit can still be served; the demo's config is unchanged
+// (scripts/vercel-routes.ts vcFunctionConfig).
+writeFileSync(join(FUNC, '.vc-config.json'), JSON.stringify(
+  vcFunctionConfig({ shellOrigin: SHELL_ORIGIN, pack: PACK_REL, regions: REGIONS }), null, 2));
 
 writeFileSync(join(OUT, 'config.json'), JSON.stringify({
   version: 3,
-  // Everything funnels to the one catch-all function; the request.path transform restores
-  // the caller's original path into req.url (mirrors the repo's vercel.json approach).
-  routes: [
-    { src: '^/(.*)$', dest: '/api/index', transforms: [{ type: 'request.path', op: 'set', args: '/$1' }] },
-  ],
+  // Demo: everything funnels to the one catch-all function; the request.path transform
+  // restores the caller's original path into req.url. Shell mode (LW_SHELL_ORIGIN): the
+  // router's own prefixes go to the function and the rest is proxied to the Lolly app.
+  routes: vercelRoutes(SHELL_ORIGIN ? { shellOrigin: SHELL_ORIGIN, prefixes: functionPrefixes(join(ROOT, 'server', 'src')) } : {}),
 }, null, 2));
+if (SHELL_ORIGIN) console.log('▶ routes: shell mode, app proxied from', SHELL_ORIGIN);
 
 console.log('✓ Build Output API written to', OUT);

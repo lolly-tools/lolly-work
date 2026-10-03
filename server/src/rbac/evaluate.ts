@@ -75,6 +75,11 @@ const ROLE_ACTIONS: Record<Role, string[]> = (() => {
     // which is why admin tier suffices and no owner gate applies.
     'message.send', 'telemetry.view', 'fleet.view', 'fleet.manage', 'audit.export',
     'project.manage', 'project.archive', 'approval.assign', 'export.server',
+    // `user.invite` (plans/74 W-ID-2) creates and revokes sign-in invitations.
+    // Admin tier like group editing, which an invitation's groups amount to;
+    // an invitation into a group that maps to the owner role stays owner-only
+    // at the route.
+    'user.invite',
   ];
   // Credentials + the enable/disable kill switch stay owner-only: an admin can
   // shape a provider, but only an owner puts a key in or turns it on (plans/17 §6).

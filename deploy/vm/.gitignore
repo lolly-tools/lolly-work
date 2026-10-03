@@ -1,0 +1,6 @@
+# The repository ignores every instance.json and .env*; keep the examples.
+!.env.example
+# Filled-in copies stay on the operator's machine and the VM.
+instance.json
+.env
+caddy.env

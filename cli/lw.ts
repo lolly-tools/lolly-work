@@ -36,6 +36,8 @@ const OPTIONS = {
     kind: { type: 'string' },
     severity: { type: 'string' },
     groups: { type: 'string' },
+    // Repeatable: `lw invite add a@x b@x --group team --group brand`.
+    group: { type: 'string', multiple: true },
     shells: { type: 'string' },
     'max-engine': { type: 'string' },
     effect: { type: 'string' },
@@ -78,6 +80,12 @@ const OPTIONS = {
     days: { type: 'string' },
     shape: { type: 'boolean' },
     'dry-run': { type: 'boolean' },
+    // `lw audit retire-key --reason "…"`: the one line kept on the boundary row,
+    // the head recorded before the rotation, and the two recorded overrides.
+    reason: { type: 'string' },
+    'expect-head': { type: 'string' },
+    'allow-interleaved': { type: 'boolean' },
+    'no-witness': { type: 'boolean' },
     prune: { type: 'boolean' },
     json: { type: 'boolean' },
 } as const;
@@ -366,9 +374,12 @@ switch (cmd) {
 
   case 'retention': {
     if (sub !== 'run') fail('usage: lw retention run');
-    const r = await call('/api/v1/retention/run', { method: 'POST' }) as { telemetryTrimmed: number; auditTrimmed: number };
+    const r = await call('/api/v1/retention/run', { method: 'POST' }) as { telemetryTrimmed: number; auditTrimmed: number; projectFilesSwept?: number };
     out(r);
-    if (!values.json) console.log(`trimmed ${r.telemetryTrimmed} telemetry event(s), ${r.auditTrimmed} audit row(s)`);
+    if (!values.json) {
+      console.log(`trimmed ${r.telemetryTrimmed} telemetry event(s), ${r.auditTrimmed} audit row(s)`
+        + (typeof r.projectFilesSwept === 'number' ? `, swept ${r.projectFilesSwept} expired project-file upload(s)` : ''));
+    }
     break;
   }
 
@@ -378,6 +389,56 @@ switch (cmd) {
     if (sub === 'erase-preview') { out(await call(`/api/v1/users/${encodeURIComponent(id)}/erasure-preview`)); break; }
     const r = await call(`/api/v1/users/${encodeURIComponent(id)}`, { method: 'DELETE' }) as { scrubbed: number };
     console.log(`erased account identity ${id} - ${r.scrubbed} telemetry event(s) de-attributed. Other retained records, audit identifiers, external copies and backups require separate review; this is not complete personal-data erasure.`);
+    break;
+  }
+
+  case 'invite':
+  case 'invites': {
+    // Invitations (plans/74 W-ID-2): who may sign in, one address at a time.
+    // Nothing is emailed; the sign-in address is printed for you to share.
+    type Invitation = {
+      id: string; email: string; groups: string[]; status: string; created?: boolean; reason?: string;
+      createdAt: string; expiresAt: string | null; acceptedAt: string | null;
+    };
+    const line = (i: Invitation): string =>
+      `${i.id}  ${i.email}  ${i.status}${i.groups.length ? `  groups ${i.groups.join(',')}` : ''}`
+      + `${i.status === 'accepted' && i.acceptedAt ? `  accepted ${i.acceptedAt}` : i.expiresAt ? `  expires ${i.expiresAt}` : ''}`;
+    if (sub === 'add') {
+      const emails = positionals.slice(2);
+      if (!emails.length) fail('usage: lw invite add <email...> [--group g]... [--expires <ISO date-time>]');
+      const groups = (values.group ?? []).flatMap((g) => g.split(',')).map((g) => g.trim()).filter(Boolean);
+      const r = await call('/api/v1/invitations', { method: 'POST', body: {
+        emails, ...(groups.length ? { groups } : {}), ...(values.expires ? { expiresAt: values.expires } : {}),
+      } }) as { invitations: Invitation[]; signInUrl: string };
+      out(r);
+      if (!values.json) {
+        for (const i of r.invitations) {
+          // An address that already has an account joins the groups now
+          // ('applied'); 'refused' carries a reason (an existing account left
+          // alone, or a new address that policy.invites does not allow).
+          if (i.status === 'applied' || i.status === 'refused') {
+            console.log(`${i.status.padEnd(8)}  ${i.email}${i.reason ? `  ${i.reason}` : ''}${i.status === 'applied' ? `  groups ${i.groups.join(',')}` : ''}`);
+          } else console.log(`${i.created ? 'invited ' : 'existing'}  ${line(i)}`);
+        }
+        console.log(`share the sign-in address: ${r.signInUrl}`);
+      }
+      break;
+    }
+    if (sub === 'rm' || sub === 'revoke') {
+      const id = positionals[2] ?? fail('usage: lw invite rm <id>');
+      const r = await call(`/api/v1/invitations/${encodeURIComponent(id)}`, { method: 'DELETE' }) as Invitation;
+      out(r);
+      if (!values.json) console.log(`revoked ${r.id} (${r.email})`);
+      break;
+    }
+    if (sub !== undefined && sub !== 'ls' && sub !== 'list') fail('usage: lw invite add <email...> [--group g] | ls [--all] | rm <id>');
+    const r = await call('/api/v1/invitations') as { invitations: Invitation[]; signInUrl: string };
+    const shown = values.all ? r.invitations : r.invitations.filter((i) => i.status !== 'revoked');
+    out({ ...r, invitations: shown });
+    if (!values.json) {
+      if (!shown.length) console.log('no invitations');
+      for (const i of shown) console.log(line(i));
+    }
     break;
   }
 
@@ -1223,19 +1284,30 @@ switch (cmd) {
   }
 
   case 'audit': {
+    if (sub === 'retire-key') {
+      // Local infra command, like migrate: talks to the DATABASE directly and
+      // needs the server's LW_SESSION_SECRET, never the API base.
+      const { runRetireKeyCommand } = await import('../server/src/audit/retire-cli.ts');
+      const args = [...(values.reason !== undefined ? ['--reason', values.reason] : []),
+        ...(values['expect-head'] !== undefined ? ['--expect-head', values['expect-head']] : []),
+        ...(values['allow-interleaved'] ? ['--allow-interleaved'] : []), ...(values['no-witness'] ? ['--no-witness'] : []),
+        ...(values['dry-run'] ? ['--dry-run'] : []), ...(values.json ? ['--json'] : [])];
+      process.exit(await runRetireKeyCommand(args));
+    }
+    const { retiredKeyNote } = await import('../server/src/audit/chain.ts');
     if (sub === 'head') {
-      const head = await call('/api/v1/audit/head') as { seq: number; hash: string; at: string | null; count: number; chainIntact: boolean; badSeq?: number };
+      const head = await call('/api/v1/audit/head') as { seq: number; hash: string; at: string | null; count: number; chainIntact: boolean; badSeq?: number; retiredKeyRows?: number; retiredBefore?: string };
       out(head);
       if (!values.json) console.log(head.chainIntact
-        ? `head #${head.seq} · ${head.hash} · ${head.count} events · intact`
+        ? `head #${head.seq} · ${head.hash} · ${head.count} events · intact${retiredKeyNote(head)}`
         : `head #${head.seq} · ${head.hash} · CHAIN BROKEN at #${head.badSeq}`);
       if (!head.chainIntact) process.exit(2);
       break;
     }
-    if (sub !== 'verify') fail('usage: lw audit verify|head');
-    const { chain, total } = await call('/api/v1/audit?limit=1') as { chain: { ok: boolean; badSeq?: number }; total: number };
+    if (sub !== 'verify') fail('usage: lw audit verify|head|retire-key');
+    const { chain, total } = await call('/api/v1/audit?limit=1') as { chain: { ok: boolean; badSeq?: number; retiredKeyRows?: number; retiredBefore?: string }; total: number };
     out({ chain, total });
-    if (!values.json) console.log(chain.ok ? `chain intact · ${total} events` : `CHAIN BROKEN at #${chain.badSeq} · ${total} events`);
+    if (!values.json) console.log(chain.ok ? `chain intact${retiredKeyNote(chain)} · ${total} events` : `CHAIN BROKEN at #${chain.badSeq} · ${total} events`);
     if (!chain.ok) process.exit(2);
     break;
   }
@@ -1358,7 +1430,9 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   login --cookie 'lw_session=…'   store a browser session
   whoami · summary · fleet · fleet installs · audit verify|head
   tokens [create --label <l> --role <r> | revoke <id>]   service tokens for automation (LW_TOKEN / --token authenticates any command)
-  retention run              apply the stated retention policy now (also runs daily on the long-lived server)
+  invite add <email...> [--group g]... [--expires <ISO>]   let these addresses sign in; prints the sign-in address to share
+  invite ls [--all] · invite rm <id>   open invitations (--all adds revoked ones); revoke one
+  retention run              apply the stated retention policy and sweep expired uploads now (both also run daily on the long-lived server)
   users erase-preview <id>   read-only reference counts and account-erasure scope (owner)
   users erase <id>           atomic account-row removal + telemetry de-attribution (owner; retained references block it)
   brand                      inspect design-system sources and permissions
@@ -1368,6 +1442,7 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   instance pack <file.lolly> host the signed instance pack cut by the OSS builder (owner)
   instance pack-rm           stop hosting the pack
   migrate [--check]          apply pending migrations (needs local DATABASE_URL; --check = status, exit 1 if pending)
+  audit retire-key --reason "…" [--expect-head <seq>:<hash>] [--dry-run]   after rotating LW_SESSION_SECRET without its old value: record a retired-key boundary (needs local DATABASE_URL + LW_SESSION_SECRET)
   c2pa init [--org N] [--out dir]   mint a C2PA signing identity (root+leaf) for real signed exports
   export [--out file]        dump governance (grants, overlays, chains, providers, flags) as canonical JSON
   apply <file> [--dry-run] [--prune]   apply a governance document (dry-run shows the diff; prune removes store-only entries)

@@ -10,6 +10,7 @@
  */
 import { createHash } from 'node:crypto';
 import { bufferToStream, readBlobBody, type BlobStat, type BlobStore } from './types.ts';
+import { guardPool, pgPoolOptions } from '../store/pg-options.ts';
 
 interface PgPool {
   query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[]; rowCount: number | null }>;
@@ -20,7 +21,7 @@ export async function createPostgresBlobStore(databaseUrl: string): Promise<Blob
   const { default: pg } = await import('pg');
   // A small pool: blob traffic is admin-materialization + serving, not the
   // record store's request-path volume, so it needn't compete for connections.
-  const pool: PgPool = new pg.Pool({ connectionString: databaseUrl, max: 4 }) as unknown as PgPool;
+  const pool: PgPool = guardPool(new pg.Pool(pgPoolOptions(databaseUrl, { max: 4 })), 'blob') as unknown as PgPool;
 
   return {
     async put(blobId, body, contentType) {

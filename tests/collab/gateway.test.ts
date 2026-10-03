@@ -26,7 +26,7 @@ import { parseConfig } from '../../server/src/config/instance.ts';
 import { createMemoryStore } from '../../server/src/store/memory.ts';
 import { buildApp } from '../../server/src/api/app.ts';
 import {
-  createCollabGateway, collabSessionId, isAllowedOrigin, parseOp, COLLAB_WS_PREFIX, CLOSE, ERR,
+  createCollabGateway, collabSessionId, isAllowedOrigin, parseOp, COLLAB_WS_PREFIX, CLOSE, ERR, JOIN_TIMEOUT_MS,
   MAX_SOCKETS_PER_USER, OPS_MESSAGES_PER_SEC, OPS_PER_SEC,
   type CollabGateway,
 } from '../../server/src/collab/gateway.ts';
@@ -1303,5 +1303,50 @@ test('demotion broadcasts the new role and durably resolves old and newly reject
   } finally {
     writer.close(); peer.close();
     await store.deleteGrant({ principal: `user:${user.id}`, action: 'session.edit', resource: '*', effect: 'deny' });
+  }
+});
+
+test('a join refused because another gateway owns the room closes at once with GOING_AWAY', async () => {
+  // Two processes over one store: the first gateway holds the session's room
+  // lease. The second used to leave the joiner's socket open until
+  // JOIN_TIMEOUT_MS; now it closes straight away with the code the shell
+  // retries with backoff, so a retry gets in once the lease is free.
+  const proj = await json(aliceCookie, 'POST', '/api/v1/projects', {
+    name: 'Owned elsewhere', visibility: { groups: ['team-eng', 'team-design'] },
+  });
+  const pid = (await proj.json() as { id: string }).id;
+  const seed = await makeSession(aliceCookie, pid, { title: 'leased' });
+  const holder = new Client(seed, aliceCookie);
+  await holder.join();
+
+  const other = createCollabGateway({ config: gatewayConfig, store, secrets: { session: 'sc', link: 'lc' } });
+  const otherServer = createServer((req, res) => void res.end());
+  otherServer.on('upgrade', (req, socket, head) => {
+    if (!other.handleUpgrade(req, socket, head)) socket.destroy();
+  });
+  await new Promise<void>((r) => otherServer.listen(0, () => r()));
+  const addr = otherServer.address();
+  const port = typeof addr === 'object' && addr ? addr.port : 0;
+  const ws = new WebSocket(`ws://127.0.0.1:${port}${COLLAB_WS_PREFIX}${seed}`, { headers: { cookie: bobCookie } });
+  try {
+    const closed = new Promise<{ code: number; at: number }>((resolve) => ws.on('close', (code) => resolve({ code, at: Date.now() })));
+    await new Promise<void>((resolve, reject) => {
+      ws.on('open', () => resolve());
+      ws.on('error', reject);
+    });
+    const sent = Date.now();
+    ws.send(JSON.stringify({ t: 'join', opVersion: CANVAS_OP_VERSION }));
+    const { code, at } = await Promise.race([
+      closed,
+      new Promise<never>((_r, reject) => setTimeout(() => reject(new Error('still open after 3 s')), 3000)),
+    ]);
+    assert.equal(code, CLOSE.GOING_AWAY);
+    assert.ok(at - sent < JOIN_TIMEOUT_MS / 2, `closed after ${at - sent} ms, not at the join timeout`);
+  } finally {
+    ws.close();
+    holder.close();
+    await holder.closed();
+    other.close();
+    otherServer.close();
   }
 });

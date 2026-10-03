@@ -166,3 +166,35 @@ test('the setup sample submits ordinary verified renders and shows failures with
     assert.equal(fixture.calls.find(call => call.path === '/api/v1/renders').body.inputs.title, 'Sample welcome');
   } finally { editor.dispose(); p.dom.window.close(); }
 });
+
+test('the Projects view restores an archived project and archives a live one', async () => {
+  // The console is where an archived project is found again (the list route
+  // hides it elsewhere), so restoring has to be possible from here too.
+  const p = page(); const calls: any[] = [];
+  p.w.requestAnimationFrame = (cb: () => void) => setTimeout(cb, 0);
+  const projects = [
+    { id: 'prj_old', name: 'Old campaign', visibility: { groups: ['team-eng'] }, ownerId: 'u1', sessionCount: 2, createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z', archivedAt: '2026-09-02T00:00:00Z' },
+    { id: 'prj_live', name: 'Summit', visibility: 'private', ownerId: 'u1', sessionCount: 0, createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z' },
+  ];
+  p.w.fetch = async (path: string, options: any = {}) => {
+    calls.push({ path, method: options.method ?? 'GET', body: options.body ? JSON.parse(options.body) : undefined });
+    const body = path === '/api/v1/projects?archived=1' ? { projects } : {};
+    return { status: 200, ok: true, statusText: 'OK', json: async () => body };
+  };
+  try {
+    await p.w.renderProjectList(p.main);
+    const row = (name: string) => [...p.main.querySelectorAll('tr')].find((tr: any) => tr.textContent.includes(name));
+    const button = (tr: any, text: string) => [...tr.querySelectorAll('button')].find((b: any) => b.textContent === text);
+    assert.ok(!button(row('Old campaign'), 'Archive'), 'an archived row offers no Archive');
+    button(row('Old campaign'), 'Restore').click(); await pause(); await pause();
+    assert.deepEqual(calls.find((c) => c.method === 'PATCH'), { path: '/api/v1/projects/prj_old', method: 'PATCH', body: { archived: false } });
+
+    calls.length = 0;
+    const archive = button(row('Summit'), 'Archive');
+    assert.ok(!button(row('Summit'), 'Restore'), 'a live row offers no Restore');
+    archive.click(); await pause();
+    assert.equal(calls.filter((c) => c.method === 'PATCH').length, 0, 'the first press only arms');
+    archive.click(); await pause(); await pause();
+    assert.deepEqual(calls.find((c) => c.method === 'PATCH'), { path: '/api/v1/projects/prj_live', method: 'PATCH', body: { archived: true } });
+  } finally { p.dom.window.close(); }
+});

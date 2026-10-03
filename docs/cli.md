@@ -37,6 +37,7 @@ lw instance           # the public instance manifest - what a fresh app reads fi
 lw links [--all]
 lw audit verify       # exits 2 if the chain is broken
 lw audit head         # seq · hash · count · intact  (exits 2 if broken)
+                      # "intact (N rows signed with a retired key before …)" after a rotation
 lw preview --groups marketing,contractors   # what such a member receives
 ```
 
@@ -56,6 +57,31 @@ Lolly Work treats the pack as a signed byte artifact, not as a second token proc
 It does not parse, rewrite, or filter `tokens.json`: the shell-reserved
 `lolly.foundation` and `lolly.ui` namespaces (including aliases between them) download
 exactly as the OSS builder produced them.
+
+## Invitations
+
+```bash
+lw invite add ana@example.com bo@example.com --group team --group brand   # admin or owner
+lw invite add cy@partner.example --expires 2026-11-01T00:00:00Z
+lw invite ls                 # open invitations: id, email, status, groups, expiry
+lw invite ls --all           # revoked ones too
+lw invite rm <id>            # revoke
+```
+
+`add` prints each address as one of:
+
+- `invited`: a new invitation;
+- `existing`: the address keeps its one active invitation, unchanged;
+- `applied`: with `--group`, the address already belongs to an account, which joins the
+  groups now;
+- `refused`, with a reason: `self`, `account-disabled` or `owner-only` for an existing
+  account, `invites-not-allowed` or `domain-not-allowed` for a new address that
+  `policy.invites` does not allow.
+
+It then prints the sign-in address to share. Nothing is emailed. `--group` repeats, and a
+comma-separated value also works. An invited person joins the groups at their first
+sign-in. Groups must already exist as local groups, and the caller needs `grant.edit` as
+well. See [identity](identity.md#who-may-sign-in).
 
 ## Service tokens
 
@@ -153,12 +179,14 @@ the mint is the one moment you can copy it. The IdP then drives `/scim/v2` with 
 ## Data lifecycle
 
 ```bash
-lw retention run            # apply the stated retention policy now (trims telemetry + audit)
+lw retention run            # apply the stated retention policy now (trims telemetry + audit, sweeps expired uploads)
 lw users erase <id>         # erasure: delete the person's row + de-attribute their telemetry
 ```
 
 `retention run` also runs daily on a long-lived server; on serverless, cron it with a service
-token (`LW_TOKEN=… lw retention run`). `users erase` is owner-only and answers a data-subject
+token (`LW_TOKEN=… lw retention run`). It also removes unfinished project-file uploads more
+than an hour past their expiry and reports how many as `swept`; the long-lived server does
+that at boot and daily even with no retention policy. `users erase` is owner-only and answers a data-subject
 request - the person's projects must be archived first, and the audit chain keeps its opaque
 user id (the mapping to a person is what is removed). See [operations](operations.md).
 
@@ -362,12 +390,21 @@ lw msg send --title "Update by Aug 15" \
 
 ## Local infrastructure commands
 
-These two talk to something other than the API base:
+These talk to something other than the API base:
 
 ```bash
 lw migrate [--check]          # needs a local DATABASE_URL; --check exits 1 if pending
+lw audit retire-key --reason "secret rotation 2026-10-04" [--expect-head <seq>:<hash>] [--dry-run]   # needs DATABASE_URL and LW_SESSION_SECRET
 lw c2pa init [--org "Acme"] [--out ./c2pa] [--days 365]
 ```
+
+`lw audit retire-key` records a retired-key boundary in the audit log after
+`LW_SESSION_SECRET` was rotated, so the rows signed under the old value read as
+retired rather than as a broken chain. It runs with the server's own environment: the
+container image carries it as `node scripts/audit-retire-key.ts`. Pass the head you recorded
+before the rotation with `--expect-head`. It refuses (exit 2, nothing written) when the rows
+do not look like a key change; `--allow-interleaved` and `--no-witness` override two of those
+checks, and the boundary records it. See [audit](audit.md#rotating-the-session-secret).
 
 `lw c2pa init` mints a self-contained signing identity (root + leaf) so exports can be signed
 with zero corporate PKI, and prints exactly what to wire where. If you have a corporate CA,

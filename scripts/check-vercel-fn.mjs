@@ -4,10 +4,11 @@
  *  Run via check:vercel so require(ESM) is disabled as in the hosted runtime. */
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { readFileSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { FUNCTION_PREFIX_BASELINE, functionPrefixes, parseRegions, parseShellOrigin, resolveRoute, vcFunctionConfig, vercelRoutes } from './vercel-routes.ts';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 assert.equal(process.features.require_module, false, 'Run pnpm run check:vercel to exercise the hosted require(ESM) restriction');
@@ -16,6 +17,67 @@ const original = JSON.parse(readFileSync(join(root, 'vendor/@lolly/engine/packag
 const shipped = JSON.parse(readFileSync(join(func, 'node_modules/@lolly/engine/package.json'), 'utf8'));
 const runtime = JSON.parse(readFileSync(join(func, '.vc-config.json'), 'utf8'));
 assert.equal(runtime.runtime, 'nodejs24.x');
+
+// Route table. The build mode is read from the same variables the build used,
+// before the fixture below clears every LW_* variable.
+const shellOrigin = process.env.LW_SHELL_ORIGIN?.trim() ? parseShellOrigin(process.env.LW_SHELL_ORIGIN.trim()) : undefined;
+const regions = process.env.LW_FUNCTION_REGION?.trim() ? parseRegions(process.env.LW_FUNCTION_REGION.trim()) : undefined;
+const packRel = process.env.LW_PACK_DIR?.trim();
+const routes = JSON.parse(readFileSync(join(root, '.vercel/output/config.json'), 'utf8')).routes;
+const prefixes = functionPrefixes(join(root, 'server/src'));
+for (const prefix of FUNCTION_PREFIX_BASELINE) assert.ok(prefixes.includes(prefix), `router scan lost the ${prefix} prefix`);
+// Both modes, from the generator, whichever one this build used.
+assert.deepEqual(vercelRoutes(), [{ src: '^/(.*)$', dest: '/api/index', transforms: [{ type: 'request.path', op: 'set', args: '/$1' }] }]);
+const assertShellMode = (table, origin) => {
+  // Vercel keeps matching later routes after a rewrite to the function, so the
+  // function row must be the last route and the only one (scripts/vercel-routes.ts).
+  assert.equal(table.length, 3, 'shell mode: bt functions, shell catch-all that skips function paths, function');
+  assert.match(table[0].dest, /^https:\/\//, 'shell mode: bt functions are proxied first');
+  assert.match(table[1].dest, /^https:\/\//, 'shell mode: the shell catch-all is proxied before the function row');
+  assert.deepEqual(table.flatMap((r, i) => (r.dest === '/api/index' ? [i] : [])), [2], 'the function row is the only one and the last');
+  assert.equal(table[2].src, '^/(.*)$');
+  for (const prefix of prefixes.filter(p => p !== 'tools')) {
+    for (const path of [`/${prefix}`, `/${prefix}/x/y`]) assert.equal(resolveRoute(table, path)?.to, 'function', `${path} must reach the function`);
+  }
+  assert.deepEqual(resolveRoute(table, '/tools/qr-code/tool.json'), { to: 'function', path: '/tools/qr-code/tool.json' });
+  assert.deepEqual(resolveRoute(table, '/catalog/tools/index.sig.json'), { to: 'function', path: '/catalog/tools/index.sig.json' });
+  for (const path of ['/', '/tools', '/t/qr-code', '/info/index.html', '/sw.js', '/api/ca/sign', '/api/penpot/x', '/api/mcp', '/api/fetch-image']) {
+    assert.deepEqual(resolveRoute(table, path), { to: 'proxy', url: `${origin}${path}` }, `${path} must go to the shell origin`);
+  }
+  // The instance's session cookie never leaves for the shell origin.
+  for (const route of table.filter(r => /^https:/.test(r.dest))) {
+    assert.ok((route.transforms ?? []).some(t => t.type === 'request.headers' && t.op === 'delete' && t.target?.key === 'cookie'),
+      `${route.src} must delete the Cookie header before proxying`);
+  }
+};
+assertShellMode(vercelRoutes({ shellOrigin: 'https://shell.fixture.test', prefixes }), 'https://shell.fixture.test');
+if (shellOrigin) assertShellMode(routes, shellOrigin);
+else assert.deepEqual(routes, vercelRoutes(), 'without LW_SHELL_ORIGIN the build keeps the demo catch-all');
+assert.deepEqual(runtime.regions, regions, 'function regions follow LW_FUNCTION_REGION');
+assert.deepEqual(runtime, vcFunctionConfig({ shellOrigin, pack: packRel, regions }), 'function config follows the build variables');
+// Vercel answers 413 for a buffered function response over 4.5 MB; only a
+// streaming function may serve a bundled file larger than that.
+const BUFFERED_LIMIT = 4.5 * 1000 * 1000;
+const oversized = [];
+const walkPack = (dir, onFile) => {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    assert.ok(!lstatSync(path).isSymbolicLink(), `bundled pack holds a symbolic link: ${path}`);
+    if (entry.isDirectory()) walkPack(path, onFile);
+    else onFile(path);
+  }
+};
+for (const rel of new Set(['packs/demo', ...(packRel ? [packRel] : [])])) {
+  const pack = join(func, rel);
+  assert.ok(existsSync(join(pack, 'tools')) && existsSync(join(pack, 'catalog')), `bundled pack ${rel} has tools/ and catalog/`);
+  for (const dir of ['tools', 'catalog']) {
+    walkPack(join(pack, dir), path => { if (statSync(path).size > BUFFERED_LIMIT) oversized.push(relative(func, path)); });
+  }
+}
+if (oversized.length) {
+  assert.equal(runtime.supportsResponseStreaming, true,
+    `these bundled files are over Vercel's 4.5 MB buffered response limit, so the function must stream: ${oversized.slice(0, 5).join(', ')}`);
+}
 assert.equal(shipped.version, original.version);
 assert.equal(shipped.license, original.license);
 assert.deepEqual(Object.keys(shipped.exports).sort(), Object.keys(original.exports).sort());
@@ -59,6 +121,9 @@ const base = `http://127.0.0.1:${server.address().port}`;
 const request = (path, options = {}) => fetch(base + path, { ...options, signal: AbortSignal.timeout(30000) });
 try {
   assert.equal((await request('/healthz')).status, 200, 'packaged function boots with its copied brand/catalog data');
+  // engine-pin.json is bundled, so the manifest names the engine this build serves.
+  const manifest = await request('/api/v1/instance'); assert.equal(manifest.status, 200);
+  assert.equal((await manifest.json()).engineVersion, JSON.parse(readFileSync(join(root, 'engine-pin.json'), 'utf8')).engine.version);
   const shell = await request('/admin'); assert.equal(shell.status, 200); assert.match(await shell.text(), /app\.js/);
   for (const name of ['app.js', 'provider-setup.js', 'provider-oauth-setup.js']) {
     const module = await request(`/admin/${name}`); assert.equal(module.status, 200);

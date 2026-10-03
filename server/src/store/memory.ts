@@ -1,5 +1,6 @@
 import type { CanvasCheckpoint, CanvasOp } from '@lolly-tools/core/canvas-op-v1';
 import { matchesAudit } from '../audit/filter.ts';
+import { activeProjectFile, projectFileAssetId, projectFileCharge, type ProjectFileRecord } from '../projects/files.ts';
 import { initialBrandState } from '../brand/state.ts';
 import type { CollabReceipt } from './types.ts';
 /**
@@ -28,7 +29,7 @@ import type { DeliveryRecord } from '../delivery/types.ts';
 import { createMemoryRenderStore } from '../renders/memory.ts';
 import {
   SESSION_REVISION_LIMIT, effectiveGroups,
-  type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type LocalGroupRecord, type ProjectRecord, type ScimTokenRecord,
+  type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type LocalGroupRecord, type ProjectMemberRecord, type ProjectRecord, type ScimTokenRecord, type UserIdentityRecord,
   type SessionRecord, type SessionRevision, type Store, type SubmitQuotaRow, type UserRecord,
 } from './types.ts';
 
@@ -44,6 +45,20 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const localGroups = new Map<string, LocalGroupRecord>(); // registry, by name
   const scimTokens = new Map<string, ScimTokenRecord>(); // SCIM provisioning bearers, by id
   const apiTokens = new Map<string, ApiTokenRecord>(); // service tokens (plans/35), by id
+  const invitations = new Map<string, InvitationRecord>(); // plans/74 W-ID-2, by id
+  const identities = new Map<string, UserIdentityRecord>(); // plans/74 linked sign-ins, by identitySub
+  const userById = (id: string): UserRecord | undefined => {
+    for (const u of users.values()) if (u.id === id) return u;
+    return undefined;
+  };
+  const copyInvitation = (r: InvitationRecord): InvitationRecord => ({
+    ...r, groups: [...r.groups], projects: (r.projects ?? []).map((p) => ({ ...p })),
+  });
+  const activeInvitation = (email: string): InvitationRecord | undefined => {
+    const e = email.trim().toLowerCase();
+    for (const r of invitations.values()) if (r.email === e && !r.revokedAt) return r;
+    return undefined;
+  };
   const automationJobs = new Map<string, AutomationJobRecord>();
   const deliveries = new Map<string, DeliveryRecord>();
   let siemCursor = 0; // highest audit seq confirmed delivered to the SIEM receiver
@@ -81,6 +96,10 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const assetVersions = new Map<string, AssetVersionRecord>();
   const providers = new Map<string, ProviderRecord>();
   const projects = new Map<string, ProjectRecord>();
+  const projectFiles = new Map<string, ProjectFileRecord>();
+  // `${projectId} ${userId}` - the composite primary key of migration 0040.
+  const projectMembers = new Map<string, ProjectMemberRecord>();
+  const memberKey = (projectId: string, userId: string): string => `${projectId} ${userId}`;
   const sessions = new Map<string, SessionRecord>();
   const sessionRevisions = new Map<string, SessionRevision[]>(); // sessionId -> ascending by rev
   const collabOwners = new Map<string, { owner: string; until: number }>();
@@ -97,9 +116,13 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       links: [...links.values()].filter((l) => l.createdBy === id).length,
       approvals: [...approvals.values()].filter((a) => a.createdBy === id).length,
       messageAcks: acks.get(id)?.size ?? 0,
+      projectFiles: [...projectFiles.values()].filter((f) => f.ready && f.createdBy === id).length,
     },
     telemetryEvents: events.filter((e) => e.userId === id).length,
   });
+  // Ready files, and unfinished uploads that have not expired: what the
+  // budgets and the pending limit count.
+  const liveProjectFiles = (now = Date.now()) => [...projectFiles.values()].filter((f) => activeProjectFile(f, now));
 
   return {
     configureRoleGroups(mapping) { roleGroups = structuredClone(mapping); },
@@ -135,6 +158,11 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     async getUser(id) {
       for (const u of users.values()) if (u.id === id) return mapped(u);
       return null;
+    },
+    async findUsersByEmail(email) {
+      const e = email.trim().toLowerCase();
+      if (!e) return [];
+      return [...users.values()].filter((u) => u.email.trim().toLowerCase() === e).map(mapped);
     },
     async setTelemetryConsent(userId, consent) {
       for (const u of users.values()) {
@@ -270,6 +298,112 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       if (!t || t.revokedAt) return false;
       apiTokens.set(id, { ...t, revokedAt: at });
       return true;
+    },
+
+    async createInvitation(rec) {
+      const email = rec.email.trim().toLowerCase();
+      const existing = activeInvitation(email);
+      if (existing) {
+        const lapsed = !existing.acceptedAt && !!existing.expiresAt && Date.parse(existing.expiresAt) <= Date.parse(rec.createdAt);
+        if (!lapsed) return { invitation: copyInvitation(existing), created: false };
+        invitations.set(existing.id, { ...existing, revokedAt: rec.createdAt });
+      }
+      const row: InvitationRecord = { ...rec, email, groups: [...new Set(rec.groups)], projects: (rec.projects ?? []).map((p) => ({ ...p })) };
+      invitations.set(row.id, row);
+      return { invitation: copyInvitation(row), created: true };
+    },
+    async listInvitations() {
+      return [...invitations.values()]
+        .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : a.id < b.id ? 1 : -1))
+        .map(copyInvitation);
+    },
+    async getInvitation(id) {
+      const r = invitations.get(id);
+      return r ? copyInvitation(r) : null;
+    },
+    async findActiveInvitation(email) {
+      const r = activeInvitation(email);
+      return r ? copyInvitation(r) : null;
+    },
+    async revokeInvitation(id, at, opts) {
+      const r = invitations.get(id);
+      if (!r || r.revokedAt || (opts?.pendingOnly && r.acceptedAt)) return null;
+      const next = { ...r, revokedAt: at };
+      invitations.set(id, next);
+      return copyInvitation(next);
+    },
+    async listOpenInvitationsForProject(projectId, now) {
+      const t = Date.parse(now);
+      return [...invitations.values()]
+        .filter((r) => !r.revokedAt && !r.acceptedAt && !(r.expiresAt && Date.parse(r.expiresAt) <= t)
+          && (r.projects ?? []).some((p) => p.projectId === projectId))
+        .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : a.id < b.id ? 1 : -1))
+        .map(copyInvitation);
+    },
+    async acceptInvitation(id, userId, at) {
+      const r = invitations.get(id);
+      if (!r || r.revokedAt || r.acceptedAt) return null;
+      if (r.expiresAt && Date.parse(r.expiresAt) <= Date.parse(at)) return null;
+      const next = { ...r, acceptedAt: at, acceptedUserId: userId };
+      invitations.set(id, next);
+      return copyInvitation(next);
+    },
+    async setInvitationProjects(id, list) {
+      const r = invitations.get(id);
+      if (!r || r.revokedAt || r.acceptedAt) return null;
+      const next = { ...r, projects: list.map((p) => ({ ...p })) };
+      invitations.set(id, next);
+      return copyInvitation(next);
+    },
+    async dropInvitationProject(id, projectId, at, opts) {
+      const r = invitations.get(id);
+      if (!r || r.revokedAt || r.acceptedAt || !(r.projects ?? []).some((p) => p.projectId === projectId)) return null;
+      const projects = (r.projects ?? []).filter((p) => p.projectId !== projectId).map((p) => ({ ...p }));
+      const revoke = !!opts?.revokeWhenEmpty && !projects.length && !r.groups.length;
+      const next: InvitationRecord = { ...r, projects, ...(revoke ? { revokedAt: at } : {}) };
+      invitations.set(id, next);
+      return copyInvitation(next);
+    },
+
+    async getUserByIdentity(identitySub) {
+      const row = identities.get(identitySub);
+      const user = row ? userById(row.userId) : undefined;
+      return user ? mapped(user) : null;
+    },
+    async linkIdentity(rec) {
+      if (!userById(rec.userId)) return null;
+      const prev = identities.get(rec.identitySub);
+      if (prev && prev.userId !== rec.userId) return null;
+      const owner = users.get(rec.identitySub);
+      if (owner && owner.id !== rec.userId) return null;
+      const email = rec.email?.trim().toLowerCase();
+      const next: UserIdentityRecord = {
+        identitySub: rec.identitySub, userId: rec.userId, idp: rec.idp,
+        ...(email ? { email } : {}), emailVerified: rec.emailVerified === true,
+        groups: [...new Set((rec.groups ?? prev?.groups ?? []).filter(Boolean))],
+        linkedAt: prev?.linkedAt ?? rec.linkedAt,
+        ...(rec.lastLoginAt ? { lastLoginAt: rec.lastLoginAt } : prev?.lastLoginAt ? { lastLoginAt: prev.lastLoginAt } : {}),
+      };
+      identities.set(rec.identitySub, next);
+      return { identity: { ...next, groups: [...(next.groups ?? [])] }, created: !prev };
+    },
+    async listIdentities(userId) {
+      return [...identities.values()]
+        .filter((r) => r.userId === userId)
+        .sort((a, b) => (a.linkedAt < b.linkedAt ? -1 : a.linkedAt > b.linkedAt ? 1 : a.identitySub < b.identitySub ? -1 : 1))
+        .map((r) => ({ ...r, groups: [...(r.groups ?? [])] }));
+    },
+    async unlinkIdentity(userId, identitySub) {
+      const row = identities.get(identitySub);
+      if (!row || row.userId !== userId) return false;
+      return identities.delete(identitySub);
+    },
+    async findUsersByVerifiedEmail(email) {
+      const e = email.trim().toLowerCase();
+      if (!e) return [];
+      const ids = new Set<string>();
+      for (const r of identities.values()) if (r.emailVerified && r.email === e) ids.add(r.userId);
+      return [...ids].map((id) => userById(id)).filter((u): u is UserRecord => !!u).map(mapped);
     },
 
     async claimAutomationJob(owner, verbs, leaseMs) {
@@ -426,6 +560,13 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       audit.push(evt);
       return evt;
     },
+    async appendAuditIfTail(expectedTail, body) {
+      const tail = audit[audit.length - 1] ?? null;
+      if (tail?.seq !== expectedTail?.seq || tail?.hash !== expectedTail?.hash) return null;
+      const evt = nextEvent(tail, body, auditMacKey);
+      audit.push(evt);
+      return evt;
+    },
     async listAudit() {
       return [...audit];
     },
@@ -484,6 +625,10 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       for (const [sub, u] of users) {
         if (u.id === id) {
           users.delete(sub);
+          // migration 0040: a membership row goes with its user.
+          for (const [k, m] of projectMembers) if (m.userId === id) projectMembers.delete(k);
+          // migration 0039: so do its linked sign-ins.
+          for (const [k, r] of identities) if (r.userId === id) identities.delete(k);
           return true;
         }
       }
@@ -495,6 +640,8 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       const user = [...users.values()].find((u) => u.id === id);
       if (!user) return { status: 'not-found' };
       if (Object.values(erasurePreview(id).references).some((count) => count > 0)) return { status: 'referenced' };
+      // Postgres refuses on its users FK for ANY project_files row, ready or not.
+      if ([...projectFiles.values()].some((f) => f.createdBy === id)) return { status: 'referenced' };
       let scrubbed = 0;
       for (let i = 0; i < events.length; i++) {
         const event = events[i]!;
@@ -504,6 +651,16 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
         scrubbed++;
       }
       users.delete(user.sub);
+      // Invitations hold the email, and an accepted one keeps admitting it, so
+      // the rows this account accepted go with it. Other rows for the address
+      // go too unless another account still carries that email.
+      const email = user.email.trim().toLowerCase();
+      const emailStillUsed = [...users.values()].some((u) => u.email.trim().toLowerCase() === email);
+      for (const [invId, inv] of invitations) {
+        if (inv.acceptedUserId === id || (!emailStillUsed && inv.email === email)) invitations.delete(invId);
+      }
+      for (const [k, m] of projectMembers) if (m.userId === id) projectMembers.delete(k);
+      for (const [k, r] of identities) if (r.userId === id) identities.delete(k);
       return { status: 'erased', scrubbed };
     },
 
@@ -804,6 +961,91 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     async listProjects() {
       return [...projects.values()];
     },
+    // No await between the checks and the insert, so this is atomic here.
+    async reserveProjectFile(file, limits) {
+      if (!projects.has(file.projectId) || projectFiles.has(file.id)) return 'refused';
+      const live = liveProjectFiles();
+      const used = (projectId?: string) => live.filter((f) => !projectId || f.projectId === projectId).reduce((sum, f) => sum + projectFileCharge(f), 0);
+      const pending = live.filter((f) => !f.ready && f.createdBy === file.createdBy);
+      if (pending.length >= limits.maxPending || pending.reduce((sum, f) => sum + f.size, file.size) > limits.maxPendingBytes) return 'pending';
+      if (used(file.projectId) + projectFileCharge(file) > limits.projectBudgetBytes) return 'project-budget';
+      if (used() + projectFileCharge(file) > limits.instanceBudgetBytes) return 'instance-budget';
+      projectFiles.set(file.id, structuredClone(file));
+      return 'reserved';
+    },
+    async getProjectFile(id) { return structuredClone(projectFiles.get(id) ?? null); },
+    async listProjectFiles(projectId) {
+      return [...projectFiles.values()].filter((f) => f.projectId === projectId && f.ready)
+        .sort((a, b) => (a.createdAt > b.createdAt ? -1 : a.createdAt < b.createdAt ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+        .map((f) => structuredClone(f));
+    },
+    async listUnfinishedProjectFiles(filter, limit) {
+      return [...projectFiles.values()]
+        .filter((f) => !f.ready && (!filter.createdBy || f.createdBy === filter.createdBy)
+          && (!filter.expiredBy || Date.parse(f.expiresAt) <= Date.parse(filter.expiredBy)))
+        .sort((a, b) => Date.parse(a.expiresAt) - Date.parse(b.expiresAt) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+        .slice(0, limit).map((f) => structuredClone(f));
+    },
+    async projectFileUsage(projectId) {
+      const live = liveProjectFiles();
+      return {
+        projectBytes: live.filter((f) => f.projectId === projectId).reduce((sum, f) => sum + projectFileCharge(f), 0),
+        instanceBytes: live.reduce((sum, f) => sum + projectFileCharge(f), 0),
+      };
+    },
+    async touchProjectFile(id, expiresAt) {
+      const f = projectFiles.get(id);
+      if (!f || !activeProjectFile(f)) return false;
+      if (!f.ready && Date.parse(expiresAt) > Date.parse(f.expiresAt)) f.expiresAt = expiresAt;
+      return true;
+    },
+    async completeProjectFile(id) {
+      const f = projectFiles.get(id);
+      if (!f || (!f.ready && Date.parse(f.expiresAt) <= Date.now())) return false;
+      f.ready = true;
+      return true;
+    },
+    async deleteProjectFile(id) { return projectFiles.delete(id); },
+    async listSessionsUsingProjectFile(projectId, fileId) {
+      const needle = projectFileAssetId(fileId);
+      return [...sessions.values()]
+        .filter((s) => s.projectId === projectId && !s.deletedAt && JSON.stringify(s.inputs).includes(needle))
+        .sort((a, b) => (a.updatedAt > b.updatedAt ? -1 : a.updatedAt < b.updatedAt ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+        .map(({ inputs: _inputs, ...summary }) => structuredClone(summary));
+    },
+    async listProjectMembers(projectId) {
+      return [...projectMembers.values()]
+        .filter((m) => m.projectId === projectId)
+        .sort((a, b) => (a.addedAt < b.addedAt ? -1 : a.addedAt > b.addedAt ? 1 : a.userId < b.userId ? -1 : 1))
+        .map((m) => ({ ...m }));
+    },
+    async getProjectMember(projectId, userId) {
+      const m = projectMembers.get(memberKey(projectId, userId));
+      return m ? { ...m } : null;
+    },
+    async listUserProjectMemberships(userId) {
+      return [...projectMembers.values()].filter((m) => m.userId === userId).map((m) => ({ ...m }));
+    },
+    async putProjectMember(rec) {
+      const k = memberKey(rec.projectId, rec.userId);
+      const prev = projectMembers.get(k);
+      projectMembers.set(k, prev ? { ...prev, role: rec.role } : { ...rec });
+    },
+    async updateProjectMemberRole(projectId, userId, role) {
+      const k = memberKey(projectId, userId);
+      const prev = projectMembers.get(k);
+      if (!prev) return null;
+      const next = { ...prev, role };
+      projectMembers.set(k, next);
+      return { ...next };
+    },
+    async deleteProjectMember(projectId, userId) {
+      return projectMembers.delete(memberKey(projectId, userId));
+    },
+    async getUsersByIds(ids) {
+      const wanted = new Set(ids);
+      return [...users.values()].filter((u) => wanted.has(u.id)).map(mapped);
+    },
     async putSession(session) {
       if ((collabOwners.get(session.id)?.until ?? 0) > Date.now()) throw new Error('collab-active');
       sessions.set(session.id, session);
@@ -821,6 +1063,24 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     },
     async listSessions(projectId) {
       return [...sessions.values()].filter((s) => s.projectId === projectId && !s.deletedAt);
+    },
+    async listSessionSummaries(projectId) {
+      return [...sessions.values()]
+        .filter((s) => s.projectId === projectId && !s.deletedAt)
+        .map(({ inputs: _inputs, ...summary }) => structuredClone(summary));
+    },
+    async projectSessionStats(projectId) {
+      const stats = new Map<string, { projectId: string; count: number; updatedAt: string; updatedBy: string }>();
+      for (const s of sessions.values()) {
+        if (s.deletedAt || (projectId !== undefined && s.projectId !== projectId)) continue;
+        const prev = stats.get(s.projectId);
+        if (!prev) stats.set(s.projectId, { projectId: s.projectId, count: 1, updatedAt: s.updatedAt, updatedBy: s.updatedBy });
+        else {
+          prev.count += 1;
+          if (s.updatedAt > prev.updatedAt) { prev.updatedAt = s.updatedAt; prev.updatedBy = s.updatedBy; }
+        }
+      }
+      return [...stats.values()];
     },
     async listSessionsFiltered(filter) {
       return [...sessions.values()].filter((s) =>
@@ -846,6 +1106,9 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     },
     async releaseCollab(sessionId, owner) {
       if (collabOwners.get(sessionId)?.owner === owner) collabOwners.delete(sessionId);
+    },
+    async collabLeaseActive(sessionId) {
+      return sessions.has(sessionId) && (collabOwners.get(sessionId)?.until ?? 0) > Date.now();
     },
     async getCollabCheckpoint(sessionId) { return structuredClone(collabCheckpoints.get(sessionId) ?? null); },
     async getCollabJournal(sessionId, afterRevision) {
@@ -875,6 +1138,14 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       const revisions = sessionRevisions.get(session.id) ?? [];
       sessionRevisions.set(session.id, [...revisions, { sessionId: session.id, rev, inputs, meta: session.meta, actor: batch.actor, at }].slice(-SESSION_REVISION_LIMIT));
       return rev;
+    },
+    async commitCollabReceipts(batch) {
+      if (batch.receipts.some(r => r.accepted)) throw new Error('collab-accepted-receipt-needs-commit');
+      const session = sessions.get(batch.sessionId), held = collabOwners.get(batch.sessionId);
+      if (!session || session.deletedAt || session.rev !== batch.expectedRev || held?.owner !== batch.owner || held.until <= Date.now())
+        throw new Error('collab-owner-conflict');
+      for (const r of batch.receipts) if (collabReceipts.has(receiptKey(batch.sessionId, batch.principal, r.id))) throw new Error('collab-receipt-conflict');
+      for (const r of batch.receipts) collabReceipts.set(receiptKey(session.id, batch.principal, r.id), { ...r, revision: batch.expectedRev });
     },
 
     async putCollabSnapshot(snap) {
