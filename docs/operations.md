@@ -77,6 +77,14 @@ Vercel "sensitive" variable, say) cannot give it back, so a rotation there is a 
 Set the same new values on every host that serves this database (each replica, and a
 rollback deployment kept on another platform) before any of them takes traffic.
 
+## Console headers
+
+The console loads its assets and API calls from the same origin. Its HTML uses a
+Content Security Policy that permits the two preference scripts by their content
+hashes and blocks other inline scripts, script evaluation and framing. Console
+responses also send `nosniff`, `no-referrer` and `X-Frame-Options: DENY`. The policy
+allows inline styles for the console's existing controls and theme.
+
 ## Backup and restore
 
 Postgres is the durable state - with one carve-out: under `blobs.driver: "s3"` the byte

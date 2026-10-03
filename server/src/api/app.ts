@@ -20,6 +20,7 @@ import type { RoomSnapshot } from '../collab/rooms.ts';
 import type { NearbyRegistry } from '../collab/nearby.ts';
 import { createRouter, readJson, readRaw, sendError, sendJson, type RouteCtx } from './router.ts';
 import { readShotCred } from './shot-provenance.ts';
+import { CONSOLE_ASSET_HEADERS, consoleDocumentHeaders } from './console-headers.ts';
 import { mintToken, verifyToken } from '../iam/tokens.ts';
 import {
   GUEST_COOKIE, SESSION_COOKIE, clearCookie, guestActor, mintGuestCookie, mintSessionCookie, parseCookies, readPrincipal,
@@ -9076,7 +9077,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (clean.includes('..')) return sendError(res, 400, 'INVALID_INPUT', 'bad path');
     try {
       const bytes = await readFile(join(consoleDir, clean));
-      res.writeHead(200, { 'content-type': contentType(clean), 'cache-control': 'no-cache' });
+      const mime = contentType(clean);
+      const headers = mime.startsWith('text/html') ? consoleDocumentHeaders(bytes.toString('utf8')) : CONSOLE_ASSET_HEADERS;
+      res.writeHead(200, { 'content-type': mime, 'cache-control': 'no-cache', ...headers });
       res.end(bytes);
     } catch {
       sendError(res, 404, 'NOT_FOUND', 'no such console file');

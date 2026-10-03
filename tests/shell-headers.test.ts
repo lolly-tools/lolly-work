@@ -7,6 +7,7 @@
  */
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
@@ -62,5 +63,41 @@ test('GET of the shell and of a shell asset returns every header', async () => {
     assert.equal(res.status, 200, path);
     for (const [name, value] of Object.entries(SHELL_SECURITY_HEADERS)) assert.equal(res.headers.get(name), value, `${path} ${name}`);
     await res.arrayBuffer();
+  }
+});
+
+
+test('console documents protect their origin and allow only their own inline boot scripts', async () => {
+  const config = parseConfig(JSON.stringify({ instance: { name: 'Console headers', baseUrl: 'http://localhost', pack: 'packs/demo' }, rateLimit: { enabled: false }, dev: { enabled: true, users: [] } }));
+  const app = buildApp({ config, store: createMemoryStore(), secrets: { session: 's3', link: 'l3' } });
+  const server = createServer((req, res) => void app(req, res));
+  servers.push(server);
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  const addr = server.address();
+  const base = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
+  const document = await fetch(base + '/admin');
+  assert.equal(document.status, 200);
+  const html = await document.text();
+  const policy = document.headers.get('content-security-policy')!;
+  assert.ok(policy);
+  assert.match(policy, /frame-ancestors 'none'/);
+  assert.match(policy, /default-src 'none'/);
+  assert.match(policy, /connect-src 'self'/);
+  assert.match(policy, /base-uri 'none'/);
+  const scriptPolicy = policy.split('; ').find((value) => value.startsWith('script-src '))!;
+  assert.doesNotMatch(scriptPolicy, /unsafe-inline|unsafe-eval|https:/);
+  const inline = [...html.matchAll(/<script>([^]*?)<\/script>/g)];
+  assert.equal(inline.length, 2, 'both pre-paint preference scripts remain');
+  for (const [, script] of inline) {
+    const hash = createHash('sha256').update(script!).digest('base64');
+    assert.ok(scriptPolicy.includes(`'sha256-${hash}'`), 'the returned HTML and allowed script bytes agree');
+  }
+  for (const path of ['/admin', '/admin/index.html', '/admin/app.js', '/admin/styles.css', '/admin/theme.css']) {
+    const response = await fetch(base + path);
+    assert.equal(response.status, 200, path);
+    assert.equal(response.headers.get('x-content-type-options'), 'nosniff', path);
+    assert.equal(response.headers.get('x-frame-options'), 'DENY', path);
+    assert.equal(response.headers.get('referrer-policy'), 'no-referrer', path);
+    await response.arrayBuffer();
   }
 });
