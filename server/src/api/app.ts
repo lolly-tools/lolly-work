@@ -1065,6 +1065,50 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     res.end();
   };
 
+  /**
+   * The end of every interactive sign-in once the person is proven (the
+   * OIDC and GitHub callback), so a check added here reaches every way in.
+   * In order: which user the identity belongs to (iam/identities.ts, read
+   * before admission so a sign-in linked to a disabled person is refused),
+   * admission BEFORE any write (a refused person gets no user row), the
+   * bootstrap owner group, the user and identity rows, the invitation, the
+   * audit rows, and a newly minted session for the account. On a refusal
+   * the refusal is sent and the answer is null; otherwise the caller sends
+   * `cookie` with its own response.
+   */
+  const completeSignIn = async (
+    res: ServerResponse, idp: ResolvedIdp, identity: MappedIdentity, opts: { switchHref: string },
+  ): Promise<{ user: UserRecord; cookie: string } | null> => {
+    const provider = providerOf(idp);
+    const verifiedForLinking = linkableEmail(identity, idp);
+    const resolution = await resolveSignIn(store, {
+      sub: identity.sub, email: identity.email, emailVerified: verifiedForLinking, linkByEmail: idp.linkByEmail,
+      pin: idpPin(idp.constraints), pinOf: pinOfIdp,
+    });
+    const admitted = await admitSignIn(identity, idp.constraints, resolution);
+    if (!admitted.ok) {
+      await refuseSignIn(res, identity.email, admitted.reason, { provider, idp: idp.id, switchHref: opts.switchHref });
+      return null;
+    }
+    const { emailVerified: _verified, hd: _hd, tid: _tid, ...profile } = identity;
+    const ownerGroup = bootstrapOwnerGroup(admitted, identity.email, config.idp.bootstrapOwners, config.idp.roleGroups.owner);
+    if (ownerGroup && !profile.groups.includes(ownerGroup)) profile.groups = [...profile.groups, ownerGroup];
+    const upserted = await recordSignIn({
+      resolution, sub: identity.sub, idp: idp.id, email: identity.email, emailVerified: verifiedForLinking,
+      profile: { ...profile, role: roleFromGroups(profile.groups, config.idp.roleGroups) },
+      provider,
+    });
+    // The row exists now, so an invitation's groups can be joined to it.
+    const user = await acceptInvitationAtSignIn(upserted, admitted, { provider, idp: idp.id });
+    const sessionUser: SessionUser = {
+      sub: user.sub, email: user.email, groups: user.groups, role: user.role,
+      name: displayName(user), epoch: user.sessionEpoch,
+    };
+    if (ownerGroup) await audit(`user:${user.id}`, 'auth.bootstrap-owner', `user:${user.id}`, { provider, idp: idp.id, group: ownerGroup });
+    await audit(`user:${user.id}`, 'auth.login', 'session', { provider, idp: idp.id, ...(admitted.via !== 'open' ? { admittedVia: admitted.via } : {}), setupFingerprint: identitySettingsHash(config) });
+    return { user, cookie: mintSessionCookie(sessionUser, secrets.session, secure, sessionTtlSec) };
+  };
+
   router.add('GET', '/api/auth/callback', async (req, res, ctx) => {
     if (!config.idp.issuer) return sendError(res, 404, 'NO_IDP', 'no OIDC issuer configured');
     const cookies = req.headers.cookie ?? '';
@@ -1163,41 +1207,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     identity.sub = `${idp.subPrefix}${identity.sub}`;
     // A self-service link (GET /api/auth/link) ends here: no new session.
     if (box.linkTo) return finishLink(req, res, box, idp, identity);
-    // Which user this sign-in belongs to (iam/identities.ts), read before
-    // admission so a sign-in linked to a disabled person is refused.
-    const verifiedForLinking = linkableEmail(identity, idp);
-    const resolution = await resolveSignIn(store, {
-      sub: identity.sub, email: identity.email, emailVerified: verifiedForLinking, linkByEmail: idp.linkByEmail,
-      pin: idpPin(idp.constraints), pinOf: pinOfIdp,
-    });
-    // Admission BEFORE the upsert: a refused person gets no user row.
-    const admitted = await admitSignIn(identity, idp.constraints, resolution);
-    if (!admitted.ok) {
-      const again = `/api/auth/login?${config.idp.additional.length ? '' : `idp=${encodeURIComponent(idp.id)}&`}prompt=select_account&returnTo=${encodeURIComponent(box.returnTo)}`;
-      return refuseSignIn(res, identity.email, admitted.reason, { provider: providerOf(idp), idp: idp.id, switchHref: again });
-    }
-    const { emailVerified: _verified, hd: _hd, tid: _tid, ...profile } = identity;
-    const ownerGroup = bootstrapOwnerGroup(admitted, identity.email, config.idp.bootstrapOwners, config.idp.roleGroups.owner);
-    if (ownerGroup && !profile.groups.includes(ownerGroup)) profile.groups = [...profile.groups, ownerGroup];
-    const upserted = await recordSignIn({
-      resolution, sub: identity.sub, idp: idp.id, email: identity.email, emailVerified: verifiedForLinking,
-      profile: { ...profile, role: roleFromGroups(profile.groups, config.idp.roleGroups) },
-      provider: providerOf(idp),
-    });
-    // The row exists now, so an invitation's groups can be joined to it.
-    const user = await acceptInvitationAtSignIn(upserted, admitted, { provider: providerOf(idp), idp: idp.id });
-    const sessionUser: SessionUser = {
-      sub: user.sub, email: user.email, groups: user.groups, role: user.role,
-      name: displayName(user), epoch: user.sessionEpoch,
-    };
-    if (ownerGroup) await audit(`user:${user.id}`, 'auth.bootstrap-owner', `user:${user.id}`, { provider: providerOf(idp), idp: idp.id, group: ownerGroup });
-    await audit(`user:${user.id}`, 'auth.login', 'session', { provider: providerOf(idp), idp: idp.id, ...(admitted.via !== 'open' ? { admittedVia: admitted.via } : {}), setupFingerprint: identitySettingsHash(config) });
+    const again = `/api/auth/login?${config.idp.additional.length ? '' : `idp=${encodeURIComponent(idp.id)}&`}prompt=select_account&returnTo=${encodeURIComponent(box.returnTo)}`;
+    const done = await completeSignIn(res, idp, identity, { switchHref: again });
+    if (!done) return;
     res.writeHead(302, {
       location: box.returnTo,
-      'set-cookie': [
-        mintSessionCookie(sessionUser, secrets.session, secure, sessionTtlSec),
-        `${STATE_COOKIE}=; Path=/api/auth; HttpOnly; Max-Age=0`,
-      ],
+      'set-cookie': [done.cookie, `${STATE_COOKIE}=; Path=/api/auth; HttpOnly; Max-Age=0`],
     });
     res.end();
   });
