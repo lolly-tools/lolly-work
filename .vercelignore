@@ -5,3 +5,18 @@
 # non-recursive git checkout anyway; this covers `vercel` CLI deploys from a local
 # tree where it IS inited.
 vendor/lolly
+
+# The development view links to another checkout. Hosted builds use a real
+# instance pack through LW_PACK_DIR instead.
+/packs/oss-view
+
+# Workstation dependencies, settings and planning records are not build inputs.
+/node_modules
+**/node_modules
+/plans
+/scratch
+/.scratch
+/artifacts
+*.log
+/.env
+/.env.*
