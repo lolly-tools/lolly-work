@@ -151,8 +151,15 @@ test('invite: link and the share message open the same address, relative without
   const projectId = await seed(env);
   const r = await env.as('alice@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['olly@test', 'new@else.example'], role: 'editor' });
   assert.equal(r.status, 200);
-  assert.deepEqual(r.json.results, [{ email: 'olly@test', status: 'added' }, { email: 'new@else.example', status: 'invited' }]);
+  const [added, invited] = r.json.results as Array<Record<string, string>>;
+  assert.deepEqual(added, { email: 'olly@test', status: 'added' });
+  // An invited row carries what Lolly needs for its invite message: the
+  // invitation, this project's invite link and when the invitation ends.
+  assert.deepEqual([invited!.email, invited!.status, typeof invited!.invitationId, typeof invited!.expiresAt],
+    ['new@else.example', 'invited', 'string', 'string']);
+  assert.match(invited!.link!, /^https:\/\/team\.example\/l\/invite\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
   assert.equal(r.json.link, `https://team.example/#/team/project/${projectId}`);
+  assert.deepEqual(r.json.message, { workspace: 'Team Hub', inviter: 'Alice', providers: [] });
 
   const inbox = (await env.as('olly@test', 'GET', '/api/v1/inbox')).json.messages as Array<Record<string, any>>;
   const share = inbox.find((m) => m.kind === 'share')!;
@@ -166,6 +173,11 @@ test('invite: link and the share message open the same address, relative without
   assert.equal(typeof inv.id, 'string');
   assert.equal(typeof inv.createdAt, 'string');
   assert.equal(typeof inv.expiresAt, 'string');
+  assert.equal(inv.status, 'pending');
+  assert.equal(inv.link, invited!.link, 'the people panel copies the same link the invite answered');
+  assert.equal(inv.invitedByName, 'Alice');
+  assert.equal(inv.passwordSetup, false);
+  assert.deepEqual(people.requests, [], 'managers get the open requests they may answer');
 });
 
 test('invite: with appUrl set, the link goes where the app lives, like the inbox message', async () => {
@@ -231,5 +243,6 @@ test('org-config carries what the shell gates People and saving on', async () =>
   assert.equal(typeof cfg.can['session.edit'], 'boolean');
   assert.equal(typeof cfg.can['session.create'], 'boolean');
   assert.equal(typeof cfg.can['project.create'], 'boolean');
-  assert.deepEqual(cfg.invites, { domains: ['example.com'], maxTtlHours: 48, projectRoles: ['viewer', 'editor'] });
+  assert.deepEqual(cfg.invites, { domains: ['example.com'], maxTtlHours: 48, projectRoles: ['viewer', 'editor'], passwordSetup: false, passwordDomains: [] });
+  assert.deepEqual(cfg.requests, { project: true });
 });
