@@ -66,7 +66,9 @@ drop_previous=0
 allow_unverified=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --vercel-project) [ $# -ge 2 ] && [ -n "$2" ] || die "--vercel-project needs a name"; project=$2; shift ;;
+    --vercel-project)
+      if [ $# -lt 2 ] || [ -z "$2" ]; then die "--vercel-project needs a name"; fi
+      project=$2; shift ;;
     --yes) assume_yes=1 ;;
     --drop-previous) drop_previous=1 ;;
     --allow-unverified-audit) allow_unverified=1 ;;
