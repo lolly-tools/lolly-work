@@ -101,7 +101,8 @@ export function assess(text: string, format: 'config' | 'manifests'): Report {
       check('config.schema', true, 'Configuration accepted by the application parser.');
       check('config.https', !!safeUrl(cfg.instance.baseUrl), 'Application base URL must use HTTPS without URL credentials.');
       check('config.identity', !!safeUrl(cfg.idp.issuer) && !!cfg.idp.clientId.trim(), 'Primary OIDC issuer/client must be configured with HTTPS; this does not verify MFA or membership.');
-      check('config.additional-identity', cfg.idp.additional.every(idp => (idp.kind === 'github' ? !!idp.clientSecretRef : !!safeUrl(idp.issuer)) && !!idp.clientId.trim()), 'Every additional identity provider must use HTTPS and a client registration.');
+      // An email and password entry has no issuer or client to check: the passwords live here.
+      check('config.additional-identity', cfg.idp.additional.every(idp => idp.kind === 'password' || ((idp.kind === 'github' ? !!idp.clientSecretRef : !!safeUrl(idp.issuer)) && !!idp.clientId.trim())), 'Every additional identity provider must use HTTPS and a client registration.');
       check('config.gated', cfg.policy.defaultAccessMode === 'gated', 'The proposed internal profile requires gated access.');
       check('config.auth-bypass', !cfg.dev.enabled && !cfg.proxyAuth.enabled, 'Development and proxy authentication must be disabled for this OIDC profile.');
       check('config.session', cfg.policy.sessionTtlHours <= 24, 'Member sessions must not exceed the proposed 24-hour ceiling.');

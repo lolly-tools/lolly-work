@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
-import type { InstanceConfig, Secrets } from '../config/instance.ts';
+import { passwordIdpOf, type InstanceConfig, type Secrets } from '../config/instance.ts';
 import { checkShellDist } from '../lib/shell-dist.ts';
 import { inspectPack, type PackCheck } from './pack.ts';
 
@@ -20,7 +20,8 @@ export function startupChecks(config: InstanceConfig, secrets: Secrets, durable:
     status: ok ? 'pass' : production ? 'fail' : 'warning', message: ok ? pass : fail });
   check('storage', durable, 'Durable database configured.', 'State uses memory and disappears on restart. Configure DATABASE_URL for production.');
   check('development-login', !config.dev.enabled, 'Development login disabled.', 'Disable dev.enabled before using production mode.');
-  check('identity', !!(config.idp.issuer && config.idp.clientId) || config.proxyAuth.enabled,
+  // Email and password needs no issuer, client or secret: the entry is the whole setup.
+  check('identity', !!(config.idp.issuer && config.idp.clientId) || config.proxyAuth.enabled || !!passwordIdpOf(config),
     'An identity provider or authenticating proxy is configured.', 'Configure an identity provider or authenticating proxy.');
   check('access', config.policy.defaultAccessMode !== 'open', 'Access is governed.', 'Use gated or per-tool access for production.');
   // Not a refusal: an IdP that only ever issues accounts to your own people

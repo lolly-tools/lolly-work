@@ -8,7 +8,9 @@
  */
 import { b64u, b64uDecode, hmac, macEquals } from '../lib/crypto.ts';
 
-export type TokenDomain = 'lw/session' | 'lw/guest' | 'lw/state' | 'lw/link' | 'lw/job' | 'lw/api-key';
+/** `lw/form` is the signed half of the double-submit token on the server-rendered
+ *  password forms (api/app.ts), which run before anyone has a session. */
+export type TokenDomain = 'lw/session' | 'lw/guest' | 'lw/state' | 'lw/link' | 'lw/job' | 'lw/api-key' | 'lw/form';
 
 export interface TokenBox<T> {
   typ: TokenDomain;

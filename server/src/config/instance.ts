@@ -321,20 +321,33 @@ export interface RateLimitConfig {
 export interface AdditionalIdp extends IdpConstraints {
   id: string;
   /** `oidc` (default): any OpenID Connect issuer. `github`: GitHub's OAuth 2.0
-   *  sign-in (iam/github.ts), which has no issuer and needs `clientSecretRef`. */
+   *  sign-in (iam/github.ts), which has no issuer and needs `clientSecretRef`.
+   *  `password`: email and password, set from a one-time link an admin issues
+   *  (iam/password.ts); no issuer, client or secret, and at most one. */
   kind?: IdpKind;
-  /** The OIDC issuer. Empty for `kind: 'github'`, which has none. */
+  /** The OIDC issuer. Empty for `kind: 'github'` and `kind: 'password'`, which have none. */
   issuer: string;
+  /** Empty for `kind: 'password'`. */
   clientId: string;
-  /** Required: the chooser button must say which house. */
+  /** Required: the chooser button must say which house. A password entry
+   *  may give it as `label` instead, and defaults to PASSWORD_IDP_LABEL. */
   displayName: string;
+  /** `kind: 'password'` only: the same as `displayName`. */
+  label?: string;
   groupsClaim: string;
   claimMap: ClaimMap;
   clientSecretRef?: string;
 }
 
-export type IdpKind = 'oidc' | 'github';
-export const IDP_KINDS: readonly IdpKind[] = ['oidc', 'github'];
+export type IdpKind = 'oidc' | 'github' | 'password';
+export const IDP_KINDS: readonly IdpKind[] = ['oidc', 'github', 'password'];
+/** What the chooser calls a password entry that names nothing itself. */
+export const PASSWORD_IDP_LABEL = 'Email and password';
+
+/** The email and password entry in `idp.additional`, or null. There is at most one. */
+export function passwordIdpOf(config: { idp: { additional: AdditionalIdp[] } }): AdditionalIdp | null {
+  return config.idp.additional.find((a) => a.kind === 'password') ?? null;
+}
 
 /** Whether a sign-in from this IdP may join an existing person by a matching
  *  email. Default: yes when the IdP's own verified flag is checked (`claim`),
@@ -760,10 +773,45 @@ export function parseConfig(json: string): InstanceConfig {
     if (a.id === 'primary' || a.id === 'dev') throw new Error(`idp.additional id "${a.id}" is reserved`);
     if (idpIds.has(a.id)) throw new Error(`duplicate idp.additional id: ${a.id}`);
     idpIds.add(a.id);
-    if (!cfg.idp.issuer) throw new Error('idp.additional needs the primary idp.issuer configured first');
     if (a.kind !== undefined && !IDP_KINDS.includes(a.kind)) {
       throw new Error(`idp.additional "${a.id}" kind must be one of: ${IDP_KINDS.join(', ')}`);
     }
+    // Password subjects are `password:<credential id>` whatever the entry's
+    // id, so no other IdP may namespace its subjects the same way.
+    if (a.id === 'password' && a.kind !== 'password') throw new Error('idp.additional id "password" is reserved for kind password');
+    if (a.kind === 'password') {
+      // Email and password needs nothing from outside: no issuer to discover,
+      // no client, no secret, no claims to map and no directory to pin.
+      if (cfg.idp.additional.filter((x) => x.kind === 'password').length > 1) {
+        throw new Error('idp.additional may hold one kind password entry at most');
+      }
+      for (const k of ['issuer', 'clientId', 'clientSecretRef', 'groupsClaim', 'claimMap', 'hostedDomain', 'tenantId', 'scopes', 'authParams'] as const) {
+        if (a[k] !== undefined && a[k] !== '') throw new Error(`idp.additional "${a.id}".${k} does not apply to kind password`);
+      }
+      // The address is the one an admin issued the sign-in link for, so it
+      // counts as verified; "trusted" would add nothing and would turn off
+      // linking by email.
+      if (a.emailVerification !== undefined && a.emailVerification !== 'claim') {
+        throw new Error(`idp.additional "${a.id}" is kind password, whose emailVerification can only be "claim"`);
+      }
+      const label = a.label ?? a.displayName;
+      if (label !== undefined && (typeof label !== 'string' || !label.trim() || label.length > 80)) {
+        throw new Error(`idp.additional "${a.id}".label must be a short name for the sign-in button`);
+      }
+      if (a.label !== undefined && a.displayName !== undefined && a.label !== a.displayName) {
+        throw new Error(`idp.additional "${a.id}" sets label and displayName differently: give one`);
+      }
+      a.displayName = label?.trim() || PASSWORD_IDP_LABEL;
+      delete a.label;
+      a.issuer = '';
+      a.clientId = '';
+      a.groupsClaim = cfg.idp.groupsClaim;
+      a.claimMap = { ...cfg.idp.claimMap };
+      validateIdpConstraints(`idp.additional "${a.id}"`, a);
+      continue;
+    }
+    if (a.label !== undefined) throw new Error(`idp.additional "${a.id}".label is for kind password; this entry names itself with displayName`);
+    if (!cfg.idp.issuer) throw new Error('idp.additional needs the primary idp.issuer configured first');
     if (a.kind === 'github') {
       // GitHub is OAuth 2.0 with fixed endpoints and scopes: nothing to
       // discover, no claims to pin, and a confidential client is mandatory.
@@ -826,8 +874,8 @@ export function parseConfig(json: string): InstanceConfig {
     if (rl[s].capacity <= 0 || rl[s].refillPerSec < 0) throw new Error(`rateLimit.${s} needs capacity>0 and refillPerSec>=0`);
   }
   validateProxyAuth(cfg.proxyAuth);
-  if (cfg.policy.defaultAccessMode !== 'open' && !cfg.idp.issuer && !cfg.proxyAuth.enabled && !cfg.dev.enabled) {
-    throw new Error('gated access needs idp.issuer or proxyAuth.enabled (or dev.enabled for local work)');
+  if (cfg.policy.defaultAccessMode !== 'open' && !cfg.idp.issuer && !cfg.proxyAuth.enabled && !passwordIdpOf(cfg) && !cfg.dev.enabled) {
+    throw new Error('gated access needs idp.issuer or proxyAuth.enabled, or a kind password entry in idp.additional (or dev.enabled for local work)');
   }
   const seen = new Set<string>();
   for (const p of cfg.catalogProviders) {

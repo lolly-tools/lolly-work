@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-import { linkByEmailFor, linkKeys, sessionKeys, type InstanceConfig, type Secrets } from '../config/instance.ts';
+import { linkByEmailFor, linkKeys, passwordIdpOf, sessionKeys, type InstanceConfig, type Secrets } from '../config/instance.ts';
 import type { InvitationRecord, ProjectMemberRole, ProjectRecord, ProjectSessionStats, ScimTokenRecord, SessionRecord, SessionSummary, Store, UserRecord } from '../store/types.ts';
 import type { RoomSnapshot } from '../collab/rooms.ts';
 import type { NearbyRegistry } from '../collab/nearby.ts';
@@ -22,14 +22,21 @@ import { createRouter, readJson, readRaw, sendError, sendJson, type RouteCtx } f
 import { readShotCred } from './shot-provenance.ts';
 import { mintToken, verifyToken } from '../iam/tokens.ts';
 import {
-  GUEST_COOKIE, SESSION_COOKIE, clearCookie, guestActor, mintGuestCookie, mintSessionCookie, readPrincipal,
+  GUEST_COOKIE, SESSION_COOKIE, clearCookie, guestActor, mintGuestCookie, mintSessionCookie, parseCookies, readPrincipal,
   type Principal, type SessionUser,
 } from '../iam/sessions.ts';
 import { buildAuthorizeUrl, discover, exchangeCode, mapClaims, pkcePair, verifyIdToken, fetchJwks, kidOf, type MappedIdentity } from '../iam/oidc.ts';
 import { displayName, resolveMember } from '../iam/member.ts';
 import { resolveProxyIdentity } from '../iam/proxy-auth.ts';
 import { createDeviceAuth, normalizeUserCode } from '../iam/device-auth.ts';
-import { activateDoneHtml, activateFormHtml, activateSignedOutHtml, admissionRefusedHtml, idpChooserHtml, signInErrorHtml } from '../iam/activate-page.ts';
+import {
+  activateDoneHtml, activateFormHtml, activateSignedOutHtml, admissionRefusedHtml, idpChooserHtml, passwordLinkDeadHtml,
+  passwordLoginHtml, passwordSetHtml, signInErrorHtml,
+} from '../iam/activate-page.ts';
+import {
+  PASSWORD_MIN_LENGTH, checkPasswordRules, hashPassword as hashSignInPassword, normaliseEmail, passwordRuleMessage,
+  verifyPassword as verifySignInPassword,
+} from '../iam/password.ts';
 import { buildGitHubAuthorizeUrl, exchangeGitHubCode, fetchGitHubIdentity, GitHubSignInError } from '../iam/github.ts';
 import { bootstrapOwnerGroup, decideAdmission, emailIsVerified, type AdmissionDecision, type AdmissionIdentity, type AdmissionIdp } from '../iam/admission.ts';
 import {
@@ -135,7 +142,7 @@ import { CATALOG_INDEX_REL, CATALOG_SIG_REL, createCatalogSigning, servedToolInd
 import { isToolKeyedCatalogPath, servedToolSidecar } from '../catalog/tool-sidecars.ts';
 import type { ProvenanceDoc, ProvenanceIngredient } from '../render/provenance.ts';
 import type { Profile } from '../render/contract.ts';
-import { hashPassword, randomId, sealSecret, secretFingerprint, sha256Hex, verifyPassword } from '../lib/crypto.ts';
+import { hashPassword, randomId, sameString, sealSecret, secretFingerprint, sha256Hex, verifyPassword } from '../lib/crypto.ts';
 import { demoLandingHtml } from '../lib/demo-landing.ts';
 import { sanitizeEvent, summarize, type RawEvent } from '../telemetry/ingest.ts';
 import { targetedMessages, type Message } from '../inbox/target.ts';
@@ -156,6 +163,8 @@ import {
 import { SHELL_SECURITY_HEADERS } from './shell-headers.ts';
 
 const STATE_COOKIE = 'lw_state';
+/** The signed half of the password forms' double-submit token (`lw/form`). */
+const FORM_COOKIE = 'lw_form';
 const LINK_KINDS: LinkKind[] = ['share', 'embed', 'download', 'guest-edit'];
 const SUBJECT_TYPES: SubjectType[] = ['asset', 'tool-change', 'config', 'guest-link'];
 
@@ -562,10 +571,14 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // advertises a provider (the auth config, the instance card, the gate's
   // login link) reads this, so a new provider can never reach one and miss
   // another. Precedence: a real IdP, then the reverse proxy, then the dev
-  // provider - the most accountable path wins when several are on.
-  const authProvider = (): { provider: 'oidc' | 'proxy' | 'dev' | null; providerName: string | null; loginPath: string | null } => {
+  // provider - the most accountable path wins when several are on. Email and
+  // password alone (no issuer) comes after the proxy: passwords an admin hands
+  // out vouch for less than the organisation's own directory does.
+  const passwordIdp = passwordIdpOf(config);
+  const authProvider = (): { provider: 'oidc' | 'proxy' | 'password' | 'dev' | null; providerName: string | null; loginPath: string | null } => {
     if (config.idp.issuer) return { provider: 'oidc', providerName: config.idp.displayName || null, loginPath: '/api/auth/login' };
     if (config.proxyAuth.enabled) return { provider: 'proxy', providerName: config.proxyAuth.displayName, loginPath: '/api/auth/proxy' };
+    if (passwordIdp) return { provider: 'password', providerName: passwordIdp.displayName, loginPath: '/api/auth/login' };
     if (config.dev.enabled) return { provider: 'dev', providerName: null, loginPath: '/api/auth/dev' };
     return { provider: null, providerName: null, loginPath: null };
   };
@@ -593,8 +606,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // secrets ride the env var the ref names - the provider-credentialRef
   // precedent (see the config-managed provider credential resolution below).
   interface ResolvedIdp {
-    /** `oidc` for the primary and any issuer; `github` for the OAuth 2.0 adapter (iam/github.ts). */
-    kind: 'oidc' | 'github';
+    /** `oidc` for the primary and any issuer; `github` for the OAuth 2.0
+     *  adapter (iam/github.ts); `password` for email and password (iam/password.ts). */
+    kind: 'oidc' | 'github' | 'password';
     id: string; issuer: string; clientId: string; displayName: string;
     groupsClaim: string; claimMap: typeof config.idp.claimMap; clientSecret?: string; subPrefix: string;
     /** Per-IdP sign-in constraints (plans/74 W-ID-1); never inherited between IdPs. */
@@ -634,7 +648,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       kind: extra.kind ?? 'oidc', id: extra.id, issuer: extra.issuer, clientId: extra.clientId,
       displayName: extra.displayName, groupsClaim: extra.groupsClaim, claimMap: extra.claimMap,
       ...(secret ? { clientSecret: secret } : {}),
-      subPrefix: `${extra.id}:`,
+      // A password subject names the credential, not the entry, so renaming
+      // the entry's id never strands the accounts made through it.
+      subPrefix: extra.kind === 'password' ? 'password:' : `${extra.id}:`,
       ...idpExtras(extra),
     };
   };
@@ -712,7 +728,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
    * decide entry but still carries its groups. Returns the user as it stands.
    */
   const acceptInvitationAtSignIn = async (
-    user: UserRecord, admitted: SignInAdmission, meta: { provider: 'oidc' | 'github' | 'proxy'; idp?: string },
+    user: UserRecord, admitted: SignInAdmission, meta: { provider: 'oidc' | 'github' | 'password' | 'proxy'; idp?: string },
   ): Promise<UserRecord> => {
     const pending = admitted.invitation;
     if (!admitted.ok || !admitted.emailVerified || !pending || pending.acceptedAt || pending.revokedAt) return user;
@@ -779,14 +795,16 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   };
   /** The phone-friendly 403 page, plus the `auth.denied` audit row. The
    *  account is named on the page (the person needs to see which one they
-   *  used) and in the audit row (an owner needs it to send an invitation). */
+   *  used) and in the audit row (an owner needs it to send an invitation).
+   *  `json` answers an API caller (the password route) with the error instead. */
   const refuseSignIn = async (
     res: ServerResponse, email: string, reason: Extract<AdmissionDecision, { ok: false }>['reason'],
-    meta: { provider: 'oidc' | 'github' | 'proxy'; idp?: string; switchHref: string },
+    meta: { provider: 'oidc' | 'github' | 'password' | 'proxy'; idp?: string; switchHref: string; json?: boolean },
   ): Promise<void> => {
     await audit('anonymous', 'auth.denied', 'session', {
       provider: meta.provider, ...(meta.idp ? { idp: meta.idp } : {}), reason, email: email.trim().toLowerCase(),
     });
+    if (meta.json) return sendError(res, 403, 'NOT_ADMITTED', 'this account may not sign in here', { reason });
     res.writeHead(403, {
       'content-type': 'text/html; charset=utf-8',
       'cache-control': 'private, no-store',
@@ -796,12 +814,13 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     });
     res.end(admissionRefusedHtml(config.instance.name, { email, reason, switchHref: meta.switchHref }));
   };
-  /** What /api/auth/config and the manifest advertise - one entry per house. */
-  const idpProviders = (): Array<{ id: string; name: string; kind: 'oidc' | 'github'; loginPath: string }> =>
-    !config.idp.issuer ? [] : [
-      { id: 'primary', name: config.idp.displayName || 'SSO', kind: 'oidc', loginPath: '/api/auth/login?idp=primary' },
-      ...config.idp.additional.map((a) => ({ id: a.id, name: a.displayName, kind: a.kind ?? 'oidc', loginPath: `/api/auth/login?idp=${a.id}` })),
-    ];
+  /** What /api/auth/config and the manifest advertise - one entry per house.
+   *  Config validation lets an additional entry stand without the primary
+   *  issuer only when it is the password one. */
+  const idpProviders = (): Array<{ id: string; name: string; kind: 'oidc' | 'github' | 'password'; loginPath: string }> => [
+    ...(config.idp.issuer ? [{ id: 'primary', name: config.idp.displayName || 'SSO', kind: 'oidc' as const, loginPath: '/api/auth/login?idp=primary' }] : []),
+    ...config.idp.additional.map((a) => ({ id: a.id, name: a.displayName, kind: a.kind ?? 'oidc', loginPath: `/api/auth/login?idp=${a.id}` })),
+  ];
 
   // ── instance manifest (plans/34 wave 1a) ──────────────────────────────────
   // The card a fresh app-store shell reads before anyone signs in: what this
@@ -849,6 +868,59 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // and one answer for both paths is simpler than two rules.
   router.add('OPTIONS', '/api/v1/instance', (_req, res) => sendReadPreflight(res));
 
+  // ── email and password forms (plans/74) ───────────────────────────────────
+  /** A label as it reads after "Sign in with": "Email and password" becomes
+   *  "email and password", while a name such as "SUSE ID" is left alone. */
+  const inSentence = (label: string): string => (/^[A-Z][a-z]/.test(label) ? `${label[0]!.toLowerCase()}${label.slice(1)}` : label);
+  const FORM_TTL_SEC = 3600;
+  /**
+   * Login CSRF for the password forms, which run before anyone has a
+   * session: a signed double submit. The page sets `lw_form`, a token signed
+   * with the session key in its own `lw/form` domain that carries a random
+   * nonce, and puts the same nonce in a hidden field. A POST must bring both
+   * and they must match. A page on another site can neither read the nonce
+   * nor mint a cookie this server would accept, and the cookie is
+   * SameSite=Strict on top. The dispatch-wide Origin check (iam/csrf.ts) also
+   * runs, because the POST carries this cookie. An open form keeps its nonce
+   * when the page is loaded again, so two tabs do not invalidate each other.
+   */
+  const formToken = (req: IncomingMessage): { nonce: string; cookie: string } => {
+    const raw = parseCookies(req.headers.cookie)[FORM_COOKIE];
+    const box = raw ? verifyToken<{ n?: unknown }>('lw/form', raw, sessionVerify) : null;
+    const nonce = box && typeof box.n === 'string' ? box.n : randomId(24);
+    const token = mintToken('lw/form', { n: nonce }, secrets.session, FORM_TTL_SEC);
+    return { nonce, cookie: `${FORM_COOKIE}=${token}; Path=/api/auth; HttpOnly; SameSite=Strict; Max-Age=${FORM_TTL_SEC}${secure ? '; Secure' : ''}` };
+  };
+  const formTokenOk = (req: IncomingMessage, submitted: string | null): boolean => {
+    const raw = parseCookies(req.headers.cookie)[FORM_COOKIE];
+    const box = raw ? verifyToken<{ n?: unknown }>('lw/form', raw, sessionVerify) : null;
+    return !!box && typeof box.n === 'string' && !!submitted && sameString(box.n, submitted);
+  };
+  const clearFormCookie = `${FORM_COOKIE}=; Path=/api/auth; HttpOnly; SameSite=Strict; Max-Age=0`;
+  /** Script-free like the chooser, but posts a form: form-action 'self'. The
+   *  set-password page carries a token in its URL, so nothing is cached and
+   *  no Referer leaves the page. */
+  const passwordPageHeaders = {
+    'content-type': 'text/html; charset=utf-8',
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+    'referrer-policy': 'no-referrer',
+    'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
+  };
+  const passwordLoginHref = (returnTo: string): string =>
+    `/api/auth/login?${passwordIdp && idpProviders().length > 1 ? `idp=${encodeURIComponent(passwordIdp.id)}&` : ''}returnTo=${encodeURIComponent(returnTo)}`;
+  const renderPasswordLogin = (
+    req: IncomingMessage, res: ServerResponse, status: number, opts: { returnTo: string; email?: string; error?: string },
+  ): void => {
+    const { nonce, cookie } = formToken(req);
+    res.writeHead(status, { ...passwordPageHeaders, 'set-cookie': cookie });
+    res.end(passwordLoginHtml(config.instance.name, {
+      returnTo: opts.returnTo, csrf: nonce,
+      ...(opts.email ? { email: opts.email } : {}), ...(opts.error ? { error: opts.error } : {}),
+      ...(idpProviders().length > 1 ? { otherHref: `/api/auth/login?returnTo=${encodeURIComponent(opts.returnTo)}` } : {}),
+    }));
+  };
+
   /** The 302 to an IdP's authorize endpoint, with PKCE and the signed state
    *  cookie. `linkTo` (a user id) marks a self-service link (GET
    *  /api/auth/link): the callback then links the identity instead of
@@ -885,12 +957,13 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   /** The prompt values a sign-in link may ask for; anything else is ignored. */
   const loginPrompt = (raw: string | null): 'select_account' | 'login' | null =>
     raw === 'select_account' || raw === 'login' ? raw : null;
-  router.add('GET', '/api/auth/login', async (_req, res, ctx) => {
-    if (!config.idp.issuer) return sendError(res, 404, 'NO_IDP', 'no OIDC issuer configured');
+  router.add('GET', '/api/auth/login', async (req, res, ctx) => {
+    const providers = idpProviders();
+    if (!providers.length) return sendError(res, 404, 'NO_IDP', 'no OIDC issuer configured');
     const wanted = ctx.url.searchParams.get('idp');
     // Several houses, none named: the script-free chooser (plans/36 §3). The
     // returnTo rides each button, so the choice costs nothing downstream.
-    if (!wanted && config.idp.additional.length) {
+    if (!wanted && providers.length > 1) {
       const returnTo = ctx.url.searchParams.get('returnTo');
       const askedPrompt = loginPrompt(ctx.url.searchParams.get('prompt'));
       const carry = `${returnTo ? `&returnTo=${encodeURIComponent(returnTo)}` : ''}${askedPrompt ? `&prompt=${askedPrompt}` : ''}`;
@@ -901,11 +974,16 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
       });
       res.end(idpChooserHtml(config.instance.name,
-        idpProviders().map((p) => ({ href: `${p.loginPath}${carry}`, label: `Sign in with ${p.name}` }))));
+        providers.map((p) => ({ href: `${p.loginPath}${carry}`, label: `Sign in with ${p.kind === 'password' ? inSentence(p.name) : p.name}` }))));
       return;
     }
-    const idp = resolveIdp(wanted);
+    // One house: the primary when there is one, else the only entry (email
+    // and password standing alone).
+    const idp = resolveIdp(wanted ?? (config.idp.issuer ? null : providers[0]!.id));
     if (!idp) return sendError(res, 404, 'NO_IDP', `no IdP named "${wanted}" is configured`);
+    if (idp.kind === 'password') {
+      return renderPasswordLogin(req, res, 200, { returnTo: returnToSafe(ctx.url.searchParams.get('returnTo')) });
+    }
     // A person may ask for the account picker or a fresh login (the refusal
     // page's "use a different account" link does); nothing else from the
     // query string reaches the IdP.
@@ -925,6 +1003,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!wanted) return sendError(res, 400, 'INVALID_INPUT', 'idp is required: name the sign-in to add', { field: 'idp' });
     const idp = resolveIdp(wanted);
     if (!idp) return sendError(res, 404, 'NO_IDP', `no IdP named "${wanted}" is configured`);
+    // A password sign-in starts from a link an admin issues, never from here.
+    if (idp.kind === 'password') {
+      return sendError(res, 400, 'NOT_LINKABLE', 'an email and password sign-in is added from a sign-in link an admin issues', { field: 'idp' });
+    }
     await redirectToIdp(res, idp, returnToSafe(ctx.url.searchParams.get('returnTo')),
       loginPrompt(ctx.url.searchParams.get('prompt')) ?? 'select_account', me.id);
   });
@@ -975,7 +1057,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     return r ? idpPin(r.constraints) : undefined;
   };
   /** The audit `provider` for a sign-in through this IdP: GitHub is OAuth 2.0, not OIDC. */
-  const providerOf = (idp: ResolvedIdp): 'oidc' | 'github' => (idp.kind === 'github' ? 'github' : 'oidc');
+  const providerOf = (idp: ResolvedIdp): 'oidc' | 'github' | 'password' => idp.kind;
   /**
    * The writes an admitted sign-in makes: the user row (iam/identities.ts
    * `signInUpsert`), its identity row, and the audit rows for a link made by
@@ -1066,18 +1148,19 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   };
 
   /**
-   * The end of every interactive sign-in once the person is proven (the
-   * OIDC and GitHub callback), so a check added here reaches every way in.
-   * In order: which user the identity belongs to (iam/identities.ts, read
-   * before admission so a sign-in linked to a disabled person is refused),
-   * admission BEFORE any write (a refused person gets no user row), the
-   * bootstrap owner group, the user and identity rows, the invitation, the
-   * audit rows, and a newly minted session for the account. On a refusal
-   * the refusal is sent and the answer is null; otherwise the caller sends
-   * `cookie` with its own response.
+   * The end of every interactive sign-in once the person is proven: the
+   * OIDC and GitHub callback and the email and password routes all finish
+   * here, so a check added here reaches every way in. In order: which user
+   * the identity belongs to (iam/identities.ts, read before admission so a
+   * sign-in linked to a disabled person is refused), admission BEFORE any
+   * write (a refused person gets no user row), the bootstrap owner group,
+   * the user and identity rows, the invitation, the audit rows, and a newly
+   * minted session for the account. On a refusal the refusal is sent and
+   * the answer is null; otherwise the caller sends `cookie` with its own
+   * response (a redirect, or JSON for an API caller).
    */
   const completeSignIn = async (
-    res: ServerResponse, idp: ResolvedIdp, identity: MappedIdentity, opts: { switchHref: string },
+    res: ServerResponse, idp: ResolvedIdp, identity: MappedIdentity, opts: { switchHref: string; json?: boolean },
   ): Promise<{ user: UserRecord; cookie: string } | null> => {
     const provider = providerOf(idp);
     const verifiedForLinking = linkableEmail(identity, idp);
@@ -1087,7 +1170,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     });
     const admitted = await admitSignIn(identity, idp.constraints, resolution);
     if (!admitted.ok) {
-      await refuseSignIn(res, identity.email, admitted.reason, { provider, idp: idp.id, switchHref: opts.switchHref });
+      await refuseSignIn(res, identity.email, admitted.reason, { provider, idp: idp.id, switchHref: opts.switchHref, ...(opts.json ? { json: true } : {}) });
       return null;
     }
     const { emailVerified: _verified, hd: _hd, tid: _tid, ...profile } = identity;
@@ -1123,7 +1206,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // signed state token, so a crafted callback cannot cross issuers. A token
     // from before multi-IdP carries no id and reads as primary.
     const idp = resolveIdp(box.idp ?? 'primary');
-    if (!idp) return sendError(res, 400, 'BAD_STATE', 'the IdP that started this sign-in is no longer configured');
+    if (!idp || idp.kind === 'password') return sendError(res, 400, 'BAD_STATE', 'the IdP that started this sign-in is no longer configured');
     const code = ctx.url.searchParams.get('code');
     // "Try again" restarts what was started: during a link, the link. A
     // fresh sign-in there would replace the person's session, and could
@@ -1292,6 +1375,153 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       'set-cookie': mintSessionCookie(sessionUser, secrets.session, secure, sessionTtlSec),
     });
     res.end();
+  });
+
+  // ── email and password sign-in (plans/74) ─────────────────────────────────
+  // For people whose organisation blocks the instance's other sign-ins. There
+  // is no sign-up: a password is set only from a one-time link an admin issues
+  // (POST /api/v1/admin/password-links) and passes on by hand, since nothing
+  // is emailed from here. A sign-in then finishes through `completeSignIn`
+  // like every other, so admission, linking by email, invitations and
+  // "Disable access" apply unchanged. Every route rides the auth rate-limit
+  // bucket; on top of it a credential locks for PASSWORD_LOCK_MS after
+  // PASSWORD_MAX_FAILURES wrong passwords in a row. A password, its hash and a
+  // link token are never logged or audited.
+  const PASSWORD_MAX_FAILURES = 10;
+  const PASSWORD_LOCK_MS = 15 * 60 * 1000;
+  const PASSWORD_LINK_TTL_MS = 7 * 86_400_000;
+  const PASSWORD_BODY_MAX = 8 * 1024;
+  /** The one answer for an unknown email, a wrong password and a locked
+   *  credential, so the form says nothing about which accounts exist. */
+  const PASSWORD_MISMATCH = 'That email and password do not match.';
+  const passwordSignIn = (): ResolvedIdp | null => (passwordIdp ? resolveIdp(passwordIdp.id) : null);
+  /** A form post or, for an API caller, a JSON body; null for anything else. */
+  const readSignInBody = async (req: IncomingMessage): Promise<{ json: boolean; get: (k: string) => string } | null> => {
+    const type = String(req.headers['content-type'] ?? '').split(';')[0]!.trim().toLowerCase();
+    if (type === 'application/x-www-form-urlencoded') {
+      const form = new URLSearchParams((await readRaw(req, PASSWORD_BODY_MAX)).toString('utf8'));
+      return { json: false, get: (k) => form.get(k) ?? '' };
+    }
+    if (type === 'application/json') {
+      const body = (await readJson(req, PASSWORD_BODY_MAX)) as Record<string, unknown> | null;
+      return { json: true, get: (k) => (body && typeof body === 'object' && typeof body[k] === 'string' ? body[k] as string : '') };
+    }
+    return null;
+  };
+  /** The signed-in answer: a 303 for the form, JSON for an API caller. */
+  const sendSignedIn = (res: ServerResponse, json: boolean, cookie: string, returnTo: string): void => {
+    if (json) {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'set-cookie': cookie });
+      res.end(JSON.stringify({ ok: true, returnTo }));
+      return;
+    }
+    res.writeHead(303, { location: returnTo, 'cache-control': 'no-store', 'referrer-policy': 'no-referrer', 'set-cookie': [cookie, clearFormCookie] });
+    res.end();
+  };
+
+  router.add('POST', '/api/auth/password/login', async (req, res) => {
+    const idp = passwordSignIn();
+    if (!idp) return sendError(res, 404, 'NO_IDP', 'email and password sign-in is not configured');
+    const body = await readSignInBody(req);
+    if (!body) return sendError(res, 415, 'UNSUPPORTED_MEDIA_TYPE', 'send the form, or application/json for an API call');
+    const { json } = body;
+    const email = normaliseEmail(body.get('email'));
+    const password = body.get('password');
+    const returnTo = returnToSafe(body.get('returnTo') || null);
+    const fail = (status: number, code: string, message: string): void => (json
+      ? sendError(res, status, code, message)
+      : renderPasswordLogin(req, res, status, { returnTo, ...(email ? { email } : {}), error: message }));
+    // A JSON body needs a preflight from another origin, which this server
+    // never grants, so only the form needs the double-submit token.
+    if (!json && !formTokenOk(req, body.get('csrf'))) {
+      return fail(403, 'FORM_EXPIRED', 'This form expired. Enter your email and password again.');
+    }
+    if (!email || !password) return fail(400, 'INVALID_INPUT', 'Enter your email and password.');
+    const cred = await store.getPasswordCredential(email);
+    const locked = !!cred?.lockedUntil && Date.parse(cred.lockedUntil) > Date.now();
+    // Always one derivation, against a stand-in when there is no credential,
+    // so the time taken does not say whether the address has one.
+    const check = await verifySignInPassword(password, cred?.hash ?? null);
+    if (!cred || locked || !check.ok) {
+      const at = new Date().toISOString();
+      // Counted for an unknown address too (the update then matches no row),
+      // so both answers cost the same database round trips. Guesses during a
+      // lock count as well: ten more renew it.
+      const after = await store.recordPasswordFailure(email, at, { maxFailures: PASSWORD_MAX_FAILURES, lockMs: PASSWORD_LOCK_MS });
+      if (after?.lockedUntil && after.failedCount === 0 && Date.parse(after.lockedUntil) > Date.parse(at)) {
+        await audit('anonymous', 'auth.password.locked', 'session', { provider: 'password', idp: idp.id, email: after.email, until: after.lockedUntil });
+      }
+      // An address with no credential is recorded by hash only: anyone can
+      // type anything here, and the audit chain is no place for it.
+      await audit('anonymous', 'auth.password.fail', 'session', {
+        provider: 'password', idp: idp.id, reason: !cred ? 'unknown-email' : locked ? 'locked' : 'wrong-password',
+        ...(cred ? { email: cred.email } : { emailHash: sha256Hex(email).slice(0, 16) }),
+      });
+      return fail(400, 'INVALID_CREDENTIALS', PASSWORD_MISMATCH);
+    }
+    if (cred.failedCount || cred.lockedUntil) await store.clearPasswordFailures(cred.email);
+    if (check.needsRehash) {
+      await store.putPasswordCredential({ id: cred.id, email: cred.email, hash: await hashSignInPassword(password), at: new Date().toISOString() });
+    }
+    const identity: MappedIdentity = { sub: `${idp.subPrefix}${cred.id}`, email: cred.email, emailVerified: true, groups: [] };
+    const done = await completeSignIn(res, idp, identity, { switchHref: passwordLoginHref(returnTo), json });
+    if (done) sendSignedIn(res, json, done.cookie, returnTo);
+  });
+
+  /** A link token as the URL carries it: 32 random bytes, base64url. */
+  const LINK_TOKEN = /^[A-Za-z0-9_-]{43}$/;
+  const sendLinkDead = (res: ServerResponse): void => {
+    res.writeHead(410, passwordPageHeaders);
+    res.end(passwordLinkDeadHtml(config.instance.name, passwordLoginHref('/')));
+  };
+  const renderPasswordSet = (
+    req: IncomingMessage, res: ServerResponse, status: number,
+    opts: { token: string; email: string; purpose: 'setup' | 'reset'; error?: string },
+  ): void => {
+    const { nonce, cookie } = formToken(req);
+    res.writeHead(status, { ...passwordPageHeaders, 'set-cookie': cookie });
+    res.end(passwordSetHtml(config.instance.name, { ...opts, csrf: nonce, minLength: PASSWORD_MIN_LENGTH }));
+  };
+
+  // Opening a link only reads it; the POST below spends it.
+  router.add('GET', '/api/auth/password/set', async (req, res, ctx) => {
+    if (!passwordSignIn()) return sendError(res, 404, 'NO_IDP', 'email and password sign-in is not configured');
+    const token = ctx.url.searchParams.get('token') ?? '';
+    const link = LINK_TOKEN.test(token) ? await store.findLivePasswordLink(sha256Hex(token), new Date().toISOString()) : null;
+    if (!link) return sendLinkDead(res);
+    renderPasswordSet(req, res, 200, { token, email: link.email, purpose: link.purpose });
+  });
+
+  router.add('POST', '/api/auth/password/set', async (req, res) => {
+    const idp = passwordSignIn();
+    if (!idp) return sendError(res, 404, 'NO_IDP', 'email and password sign-in is not configured');
+    const body = await readSignInBody(req);
+    if (!body || body.json) return sendError(res, 415, 'UNSUPPORTED_MEDIA_TYPE', 'send the form');
+    const token = body.get('token');
+    const tokenHash = LINK_TOKEN.test(token) ? sha256Hex(token) : '';
+    const link = tokenHash ? await store.findLivePasswordLink(tokenHash, new Date().toISOString()) : null;
+    if (!link) return sendLinkDead(res);
+    const again = (status: number, error: string): void => renderPasswordSet(req, res, status, { token, email: link.email, purpose: link.purpose, error });
+    if (!formTokenOk(req, body.get('csrf'))) return again(403, 'This form expired. Enter your new password again.');
+    // The rules are checked before the link is spent, so a typo does not cost
+    // the person their link.
+    const password = body.get('password');
+    if (password !== body.get('confirm')) return again(400, 'The two passwords do not match.');
+    const rule = checkPasswordRules(password, link.email);
+    if (rule) return again(400, passwordRuleMessage(rule));
+    const hash = await hashSignInPassword(password);
+    const at = new Date().toISOString();
+    // Spent exactly once: of two racing posts, one gets the row back.
+    const spent = await store.consumePasswordLink(tokenHash, at);
+    if (!spent) return sendLinkDead(res);
+    const existing = await store.getPasswordCredential(spent.email);
+    const cred = await store.putPasswordCredential({ id: existing?.id ?? `pwc_${randomId(12)}`, email: spent.email, hash, at });
+    await audit('anonymous', 'auth.password.set', 'session', {
+      provider: 'password', idp: idp.id, email: cred.email, purpose: spent.purpose, ...(spent.createdBy ? { issuedBy: spent.createdBy } : {}),
+    });
+    const identity: MappedIdentity = { sub: `${idp.subPrefix}${cred.id}`, email: cred.email, emailVerified: true, groups: [] };
+    const done = await completeSignIn(res, idp, identity, { switchHref: passwordLoginHref('/') });
+    if (done) sendSignedIn(res, false, done.cookie, '/');
   });
 
   router.add('GET', '/api/auth/session', async (req, res) => {
@@ -2985,7 +3215,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     sendJson(res, 200, {
       identities: (await identitiesOf(me)).wire,
       // The sign-ins this instance offers, so a profile can say "Add GitHub".
-      available: idpProviders().map((p) => ({ id: p.id, name: p.name, kind: p.kind, linkPath: `/api/auth/link?idp=${encodeURIComponent(p.id)}` })),
+      // A password sign-in comes from a link an admin issues, so it is not offered.
+      available: idpProviders().filter((p) => p.kind !== 'password')
+        .map((p) => ({ id: p.id, name: p.name, kind: p.kind, linkPath: `/api/auth/link?idp=${encodeURIComponent(p.id)}` })),
     }, { 'cache-control': 'no-store' });
   });
 
@@ -3004,7 +3236,19 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!['admin', 'owner'].includes(user.role)) return sendError(res, 403, 'FORBIDDEN', 'admin role required');
     const target = await store.getUser(ctx.params.id as string);
     if (!target) return sendError(res, 404, 'NOT_FOUND', 'no such user');
-    sendJson(res, 200, { identities: (await identitiesOf(target)).wire }, { 'cache-control': 'no-store' });
+    const { all, wire } = await identitiesOf(target);
+    // With email and password sign-in on: whether this person has a password,
+    // and the address a new sign-in link would be for (the one holding the
+    // password, else the account's own).
+    let password: { set: boolean; email: string } | undefined;
+    if (passwordIdp) {
+      const emails = [...new Set([target.email, ...all.filter((r) => r.idp === passwordIdp.id).map((r) => r.email ?? '')]
+        .map((e) => normaliseEmail(e)).filter(Boolean))];
+      let held: string | null = null;
+      for (const e of emails) if (!held && await store.getPasswordCredential(e)) held = e;
+      password = { set: !!held, email: held ?? normaliseEmail(target.email) };
+    }
+    sendJson(res, 200, { identities: wire, ...(password ? { password } : {}) }, { 'cache-control': 'no-store' });
   });
 
   // The same guard as disable: an owner's sign-ins are owner-only to change.
@@ -3268,6 +3512,63 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       email: revoked.email, was: invitationStatus(existing),
     });
     sendJson(res, 200, invitationWire(revoked));
+  });
+
+  // ── password sign-in links (plans/74) ──────────────────────────────────────
+  // How a person gets an email and password sign-in: an admin or owner issues
+  // a one-time link here and passes it on by hand (nothing is emailed). The
+  // link opens GET /api/auth/password/set. Whoever holds it can set the
+  // password for the address and so sign in as that address, which is why
+  // this takes a person's session (never a service token), the admin role
+  // and `user.invite`, and why an address that leads to an owner (an owner's
+  // account, a bootstrap owner, a pending invitation into an owner group) is
+  // owner-only, like disabling an owner.
+  router.add('POST', '/api/v1/admin/password-links', async (req, res) => {
+    const actor = await memberOf(req);
+    if (!actor) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+    const actorCtx = { userId: actor.id, groups: actor.groups, role: actor.role as Role };
+    if (!['admin', 'owner'].includes(actor.role) || !evaluate(actorCtx, 'user.invite', ['*'], await store.listGrants())) {
+      return sendError(res, 403, 'FORBIDDEN', 'an admin or owner with user.invite issues sign-in links');
+    }
+    if (!passwordIdp) return sendError(res, 404, 'NO_PASSWORD_SIGN_IN', 'email and password sign-in is not configured on this instance');
+    const body = (await readJson(req, 4096)) as { email?: unknown; purpose?: unknown } | null;
+    const email = typeof body?.email === 'string' ? normaliseEmail(body.email) : '';
+    if (!email || email.length > 254 || !INVITE_EMAIL.test(email)) {
+      return sendError(res, 400, 'INVALID_INPUT', 'email must be an email address', { field: 'email' });
+    }
+    const purpose = body?.purpose;
+    if (purpose !== 'setup' && purpose !== 'reset') {
+      return sendError(res, 400, 'INVALID_INPUT', 'purpose must be "setup" or "reset"', { field: 'purpose' });
+    }
+    const [claimed, verified, invitation] = await Promise.all([
+      store.findUsersByEmail(email), store.findUsersByVerifiedEmail(email), store.findActiveInvitation(email),
+    ]);
+    const accounts = [...new Map([...claimed, ...verified].map((u) => [u.id, u])).values()];
+    if (accounts.some((u) => u.disabledAt)) {
+      return sendError(res, 409, 'ACCOUNT_DISABLED', 'this address belongs to a disabled account; re-enable it first');
+    }
+    const pendingInvitation = invitation && !invitation.acceptedAt && !invitation.revokedAt ? invitation : null;
+    const leadsToOwner = accounts.some((u) => u.role === 'owner')
+      || config.idp.bootstrapOwners.some((o) => o.trim().toLowerCase() === email)
+      || (!!pendingInvitation && roleFromGroups(pendingInvitation.groups, config.idp.roleGroups) === 'owner');
+    if (leadsToOwner && actor.role !== 'owner') {
+      return sendError(res, 403, 'OWNER_ONLY', 'only an owner can issue a sign-in link for an owner');
+    }
+    // The sign-in this link leads to must be one admission lets in now: an
+    // open invitation, the admission lists, or an account they still admit.
+    const { disabled, invitationView } = await admissionInputs('', email);
+    const decision = decideAdmission({ email, emailVerified: true, disabled }, { emailVerification: 'claim' }, config.idp.admission, invitationView);
+    if (!decision.ok) {
+      return sendError(res, 409, 'NOT_ADMITTED', 'this address may not sign in here: invite it first, or add it or its domain to the sign-in rule', { field: 'email' });
+    }
+    const token = randomId(32);
+    const now = Date.now();
+    const expiresAt = new Date(now + PASSWORD_LINK_TTL_MS).toISOString();
+    await store.createPasswordLink({
+      tokenHash: sha256Hex(token), email, purpose, createdBy: `user:${actor.id}`, createdAt: new Date(now).toISOString(), expiresAt,
+    });
+    await audit(`user:${actor.id}`, 'auth.password.link.issue', 'session', { idp: passwordIdp.id, email, purpose });
+    sendJson(res, 201, { url: `${config.instance.baseUrl}/api/auth/password/set?token=${token}`, expiresAt }, { 'cache-control': 'no-store' });
   });
 
   router.add('GET', '/api/v1/messages', async (req, res) => {

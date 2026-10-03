@@ -66,6 +66,9 @@ export function rateLimitSurface(method: string, pathname: string): Surface | nu
   // Proxy sign-in is unauthenticated at this layer and may cost a directory
   // round trip, so it rides the auth bucket like the OIDC pair.
   if (pathname === '/api/auth/proxy') return 'auth';
+  // Email and password sign-in (plans/74): every guess and every use of a
+  // sign-in link costs a token, on top of the per-account lockout.
+  if (pathname === '/api/auth/password/login' || pathname === '/api/auth/password/set') return 'auth';
   // The instance manifest is unauthenticated by design (plans/34 wave 1a) - a
   // first-run shell probes it before anyone signs in - so it shares the auth
   // bucket rather than being free to hammer.

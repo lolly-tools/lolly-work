@@ -28,6 +28,11 @@ const SHELL_STYLE = `
          background: ButtonFace; color: ButtonText; cursor: pointer; }
   button.primary { background: color-mix(in srgb, CanvasText 85%, Canvas); color: Canvas; border-color: transparent; }
   a { color: inherit; }
+  label.field { display: block; margin-top: 14px; font-size: .9rem; }
+  input.field { font: inherit; width: 100%; box-sizing: border-box; margin-top: 4px; padding: 9px 12px; border-radius: 8px;
+         border: 1px solid color-mix(in srgb, CanvasText 30%, transparent); background: Field; color: FieldText; }
+  input.field[readonly] { background: transparent; }
+  .err { border: 1px solid color-mix(in srgb, CanvasText 30%, transparent); border-radius: 8px; padding: 8px 12px; }
 `;
 
 function page(instanceName: string, body: string, heading = 'Connect a device'): string {
@@ -140,4 +145,67 @@ export function signInErrorHtml(
 <p>${esc(opts.message)}</p>
 ${opts.retryHref ? `<p style="margin-top:16px"><a href="${esc(opts.retryHref)}" style="display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:9px 18px;border-radius:8px;border:1px solid color-mix(in srgb, CanvasText 30%, transparent);text-decoration:none">${esc(opts.retryLabel ?? 'Try again')}</a></p>` : ''}
 </div>`, opts.heading ?? 'Sign-in did not finish');
+}
+
+const LINK_STYLE = 'display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:9px 18px;border-radius:8px;border:1px solid color-mix(in srgb, CanvasText 30%, transparent);text-decoration:none';
+
+/** The email and password form (plans/74), served by /api/auth/login for a
+ *  `kind: "password"` entry. Script-free like the rest of this file. `csrf`
+ *  is the value the signed form cookie carries; `otherHref` leads back to
+ *  the chooser when other sign-ins exist. The password is never echoed. */
+export function passwordLoginHtml(
+  instanceName: string,
+  opts: { returnTo: string; csrf: string; email?: string; error?: string; otherHref?: string },
+): string {
+  return page(instanceName, `
+<div class="card">
+${opts.error ? `<p class="err" role="alert">${esc(opts.error)}</p>` : ''}
+<form method="post" action="/api/auth/password/login">
+<input type="hidden" name="csrf" value="${esc(opts.csrf)}">
+<input type="hidden" name="returnTo" value="${esc(opts.returnTo)}">
+<label class="field" for="pw-email">Email</label>
+<input class="field" id="pw-email" type="email" name="email" value="${esc(opts.email ?? '')}" autocomplete="username" required${opts.email ? '' : ' autofocus'}>
+<label class="field" for="pw-password">Password</label>
+<input class="field" id="pw-password" type="password" name="password" autocomplete="current-password" required${opts.email ? ' autofocus' : ''}>
+<div class="row"><button class="primary" type="submit">Sign in</button></div>
+</form>
+<p class="muted" style="margin-top:16px">Forgot your password? Ask the person who invited you for a new sign-in link.</p>
+${opts.otherHref ? `<p><a href="${esc(opts.otherHref)}">Other ways to sign in</a></p>` : ''}
+</div>`, 'Sign in');
+}
+
+/** The page a one-time sign-in link opens (plans/74): the address the link
+ *  was issued for, read-only, and a new password twice. */
+export function passwordSetHtml(
+  instanceName: string,
+  opts: { token: string; csrf: string; email: string; purpose: 'setup' | 'reset'; minLength: number; error?: string },
+): string {
+  const heading = opts.purpose === 'reset' ? 'Choose a new password' : 'Set your password';
+  return page(instanceName, `
+<div class="card">
+<p>${opts.purpose === 'reset' ? 'Choose a new password for this address. It replaces the old one.' : 'Choose a password for this address. You sign in with the two of them from now on.'}</p>
+${opts.error ? `<p class="err" role="alert">${esc(opts.error)}</p>` : ''}
+<form method="post" action="/api/auth/password/set">
+<input type="hidden" name="csrf" value="${esc(opts.csrf)}">
+<input type="hidden" name="token" value="${esc(opts.token)}">
+<label class="field" for="pw-email">Email</label>
+<input class="field" id="pw-email" type="email" name="email" value="${esc(opts.email)}" autocomplete="username" readonly>
+<label class="field" for="pw-new">New password</label>
+<input class="field" id="pw-new" type="password" name="password" autocomplete="new-password" minlength="${opts.minLength}" required autofocus aria-describedby="pw-hint">
+<p class="muted" id="pw-hint">At least ${opts.minLength} characters. A few words you can remember work well.</p>
+<label class="field" for="pw-confirm">New password again</label>
+<input class="field" id="pw-confirm" type="password" name="confirm" autocomplete="new-password" minlength="${opts.minLength}" required>
+<div class="row"><button class="primary" type="submit">Save password and sign in</button></div>
+</form>
+</div>`, heading);
+}
+
+/** A sign-in link that is unknown, used or expired. Says nothing about which. */
+export function passwordLinkDeadHtml(instanceName: string, loginHref: string): string {
+  return page(instanceName, `
+<div class="card">
+<p>A sign-in link works once, for seven days. Ask the person who sent it for a new one.</p>
+<p>If you have already set your password, sign in with it.</p>
+<p style="margin-top:16px"><a href="${esc(loginHref)}" style="${LINK_STYLE}">Sign in</a></p>
+</div>`, 'This link no longer works');
 }

@@ -95,7 +95,7 @@ export function generateSetup(value: unknown, current: InstanceConfig) {
   if (draft.application === 'web' && !draft.shellDir && !draft.appUrl) throw new SetupInputError('shellDir', 'Set a served shell path or the external employee app URL.');
   if (draft.authentication === 'oidc' && (!draft.clientId || !draft.groupsClaim)) throw new SetupInputError('clientId', 'Set the registered client ID and groups claim name.');
   if (draft.authentication === 'proxy' && !current.proxyAuth.enabled) throw new SetupInputError('authentication', 'Configure and test the proxy headers and shared secret using the identity guide first.');
-  if (draft.authentication !== 'oidc' && current.idp.additional.length) throw new SetupInputError('authentication', 'Additional issuers require the primary OIDC registration. Keep OIDC or update the advanced identity configuration first.');
+  if (draft.authentication !== 'oidc' && current.idp.additional.some((a) => a.kind !== 'password')) throw new SetupInputError('authentication', 'Additional issuers require the primary OIDC registration. Keep OIDC or update the advanced identity configuration first.');
   if (draft.mode === 'production' && (draft.authentication === 'development' || draft.keepDevelopmentLogin)) throw new SetupInputError('keepDevelopmentLogin', 'Production requires real identity and development login disabled.');
   if (!raw.roleGroups || typeof raw.roleGroups !== 'object' || Array.isArray(raw.roleGroups)) throw new SetupInputError('roleGroups', 'Enter the groups for each role.');
   draft.roleGroups = raw.roleGroups as RoleGroups;
