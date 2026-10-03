@@ -42,6 +42,7 @@ to the database nor calls identity, renderer or asset providers. The owner conso
 | `appUrl` | *unset* | where the Lolly app lives when it is *not* same-origin (a Vite dev server, a split deploy). The console routes "Open Lolly" and deep links through it |
 | `brandTokens` | *unset* | map source IDs (`mounted` or `profile:<name>`) to explicit tokens asset IDs; required when a source has multiple independent heads |
 | `connectPack` | *unset* | a `.lolly` instance pack to HOST from boot - a path relative to `pack` (or absolute). Seeded only before any durable branding decision, while no download is suppressed or hosted, so an ephemeral deploy offers `/connect/pack.lolly` without an owner ever uploading; an owner's own upload always wins, and a file naming a different instance base is refused loudly at seed time |
+| `homeView` | *unset* | the view a signed-in member's Lolly opens on when they arrive at the bare address: `tools` (the tools gallery) or `projects` (their Projects). Unset means tools. A link to a tool, a team project or a view still opens where it points, and choosing Tools later still shows the tools. Sent to members' shells in `GET /api/v1/org-config` as `home`; a shell that predates it ignores it |
 
 `pack` supports materialized trees, modern `profiles.json` roots and legacy brand layouts. Selection lives in the Store; mounted files are never rewritten. See [Design-system administration](design-system-administration.md) for persistence requirements and explicit tokens selection.
 

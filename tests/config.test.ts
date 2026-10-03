@@ -105,3 +105,14 @@ test('delivery destinations are explicit, normalized, and fail closed at config 
     assert.throws(() => parseConfig(JSON.stringify({ ...base, delivery: { destinations: [destination] } })), message);
   }
 });
+
+test('instance.homeView: absent by default, tools or projects when set, anything else refused', () => {
+  const open = { policy: { defaultAccessMode: 'open' } };
+  assert.equal(parseConfig(JSON.stringify(open)).instance.homeView, undefined);
+  for (const view of ['tools', 'projects'] as const) {
+    assert.equal(parseConfig(JSON.stringify({ ...open, instance: { homeView: view } })).instance.homeView, view);
+  }
+  for (const bad of ['gallery', 'Projects', '', null, 1, ['projects']]) {
+    assert.throws(() => parseConfig(JSON.stringify({ ...open, instance: { homeView: bad } })), /instance\.homeView must be "tools" or "projects"/);
+  }
+});

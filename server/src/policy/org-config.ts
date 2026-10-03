@@ -57,6 +57,10 @@ export interface ProfileFieldPolicy {
 export interface OrgConfigPayload {
   ai: AiPolicy;
   instance: { name: string };
+  /** The view the shell opens on at the bare app address
+   *  (`instance.homeView`). Absent when the deployment sets none, so the shell
+   *  keeps its own default. Deployment-scoped, the same for every caller. */
+  home?: 'tools' | 'projects';
   session: {
     sub: string;
     email: string;
@@ -169,9 +173,10 @@ export function policyVersionOf(
   ai: AiPolicy = resolveAiPolicy(undefined, new Map()),
   member?: { groups: readonly string[]; role: string; sharingGroups: readonly string[] },
   /** Deployment settings that move `can` bits or payload blocks for every
-   *  caller: the invite policy and whether guest links are on. Absent for
+   *  caller: the invite policy, whether guest links are on and the home view
+   *  (`instance.homeView`). Absent for
    *  callers that hash policy only, so their versions are unchanged. */
-  deployment?: { invites: unknown; guestLinks: boolean; liveCollab?: false; projectFiles?: true },
+  deployment?: { invites: unknown; guestLinks: boolean; liveCollab?: false; projectFiles?: true; home?: 'tools' | 'projects' },
 ): string {
   const doc = {
     ai,
@@ -336,6 +341,7 @@ export function assembleOrgConfig(opts: {
   return {
     ai: resolveAiPolicy(config.policy.ai, flagGovernance),
     instance: { name: config.instance.name },
+    ...(config.instance.homeView ? { home: config.instance.homeView } : {}),
     session: {
       sub: user.sub,
       email: user.email,
@@ -378,6 +384,10 @@ export function assembleOrgConfig(opts: {
         ...(opts.liveCollab === false ? { liveCollab: false } : {}),
         // Only present when on, so deployments without shared files keep theirs.
         ...(opts.projectFiles === true ? { projectFiles: true as const } : {}),
+        // Only present when set, so deployments without a home view keep theirs.
+        // Setting one changes the payload, so the version follows it. A shell reads
+        // `home` once, at boot, so an open tab keeps its first view until reloaded.
+        ...(config.instance.homeView ? { home: config.instance.homeView } : {}),
       },
     ),
   };

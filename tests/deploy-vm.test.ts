@@ -107,6 +107,7 @@ test('instance.json.example: production-ready for lolly.ing, live co-editing on,
   const config = parseConfig(read('instance.json.example'));
   assert.equal(config.instance.baseUrl, 'https://lolly.ing');
   assert.equal(config.instance.pack, 'packs/lolly-ing');
+  assert.equal(config.instance.homeView, 'projects', 'members open on their Projects');
   assert.equal(config.idp.issuer, 'https://accounts.google.com');
   assert.deepEqual(config.idp.bootstrapOwners, ['andyfitz@gmail.com']);
   assert.deepEqual(config.idp.admission?.emails, ['andyfitz@gmail.com']);

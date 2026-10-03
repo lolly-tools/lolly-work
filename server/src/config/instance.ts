@@ -127,6 +127,11 @@ export interface InstanceConfig {
     connectPack?: string;
     /** Explicit tokens asset per source id when a catalogue carries multiple token sets. */
     brandTokens?: Record<string, string>;
+    /** The view a signed-in member's shell opens on at the bare app address (no
+     *  route in it): the tools gallery or their Projects. Absent ⇒ the shell's own
+     *  default (tools). Passed to members as org-config `home`; a link to a tool,
+     *  project or view still opens where it points. */
+    homeView?: 'tools' | 'projects';
   };
   idp: {
     issuer: string;
@@ -700,6 +705,9 @@ export function parseConfig(json: string): InstanceConfig {
     || typeof cfg.instance.brandTokens !== 'object' || Object.entries(cfg.instance.brandTokens).some(([key, value]) =>
       !/^(mounted|profile:[a-z0-9][a-z0-9-]*)$/.test(key) || typeof value !== 'string' || !value.trim()))) {
     throw new Error('instance.brandTokens must map mounted or profile:<name> source ids to tokens asset ids');
+  }
+  if (cfg.instance.homeView !== undefined && !['tools', 'projects'].includes(cfg.instance.homeView)) {
+    throw new Error('instance.homeView must be "tools" or "projects"');
   }
   const mode = cfg.policy.defaultAccessMode;
   const roles = ['owner', 'admin', 'approver', 'author', 'member', 'viewer'];

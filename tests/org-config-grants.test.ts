@@ -121,3 +121,18 @@ test('with no collab gateway in the process, every collab bit says no and the ve
   // Unset keeps the version a gateway deployment already had.
   assert.equal(assembleOrgConfig({ ...base, liveCollab: true }).policyVersion, withGateway.policyVersion);
 });
+
+test('instance.homeView reaches the shell as home, only when set, and moves the version', () => {
+  const base = { config: CONFIG, user: user(['sales']), overlays: OVERLAYS, grants: [], inboxUnread: 0 };
+  const unset = assembleOrgConfig(base);
+  assert.ok(!('home' in unset), 'no home view set: the field is absent and the shell keeps its own default');
+  const withHome = (homeView: 'tools' | 'projects') => assembleOrgConfig({
+    ...base, config: { ...CONFIG, instance: { ...CONFIG.instance, homeView } } as InstanceConfig,
+  });
+  const projects = withHome('projects');
+  assert.equal(projects.home, 'projects');
+  assert.equal(withHome('tools').home, 'tools');
+  // The payload differs, so the version (and the ETag built from it) differs too.
+  assert.notEqual(projects.policyVersion, unset.policyVersion);
+  assert.notEqual(projects.policyVersion, withHome('tools').policyVersion);
+});

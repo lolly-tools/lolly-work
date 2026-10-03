@@ -1,6 +1,6 @@
 {
   "deployment": { "mode": "production" },
-  "instance": { "name": "Lolly", "baseUrl": "https://lolly.ing", "pack": "packs/lolly-ing" },
+  "instance": { "name": "Lolly", "baseUrl": "https://lolly.ing", "pack": "packs/lolly-ing", "homeView": "projects" },
   "idp": {
     "issuer": "https://accounts.google.com",
     "clientId": "927099338182-26scslnv41r3g8d7qro5jlmnlof3hp6r.apps.googleusercontent.com",
