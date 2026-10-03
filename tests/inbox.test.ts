@@ -1,6 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { audienceMatches, compareVersions, targetedMessages, type Message } from '../server/src/inbox/target.ts';
+import { createServer } from 'node:http';
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { parseConfig } from '../server/src/config/instance.ts';
+import { createMemoryStore } from '../server/src/store/memory.ts';
+import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
+import { buildApp } from '../server/src/api/app.ts';
 
 test('version compare handles unequal lengths and double digits', () => {
   assert.equal(compareVersions('1.61.0', '1.61.0'), 0);
@@ -46,4 +54,61 @@ test('targeting excludes acked and out-of-window messages', () => {
   ];
   const out = targetedMessages(messages, { groups: [] }, new Set(['acked']), now);
   assert.deepEqual(out.map((m) => m.id), ['live']);
+});
+
+// ── GET /api/v1/inbox over HTTP (plans/74 invite spec R5) ───────────────────
+// The shell asks on focus and once a minute while visible, so a quiet read
+// must be a 304, and anything the caller would see differently must not be.
+
+test('GET /api/v1/inbox: an ETag over what the caller sees, a 304 when nothing moved, and the unread count', async (t) => {
+  const pack = await mkdtemp(join(tmpdir(), 'lw-inbox-'));
+  const config = parseConfig(JSON.stringify({
+    instance: { name: 'Inbox Hub', baseUrl: 'https://team.example', pack },
+    rateLimit: { enabled: false },
+    dev: { enabled: true, users: [{ email: 'ana@test', groups: [] }, { email: 'bo@test', groups: [] }] },
+  }));
+  const store = createMemoryStore();
+  const app = buildApp({ config, store, blobs: createMemoryBlobStore(), secrets: { session: 'sIb', link: 'lIb' } });
+  const server = createServer((req, res) => void app(req, res));
+  t.after(() => server.close());
+  await new Promise<void>((r) => server.listen(0, () => r()));
+  const addr = server.address();
+  const base = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
+  const login = async (email: string) => {
+    const res = await fetch(`${base}/api/auth/dev?email=${encodeURIComponent(email)}`, { redirect: 'manual' });
+    return res.headers.getSetCookie().find((c) => c.startsWith('lw_session='))!.split(';')[0]!;
+  };
+  const ana = await login('ana@test');
+  const bo = await login('bo@test');
+  const anaId = (await store.findUsersByEmail('ana@test'))[0]!.id;
+  const read = (cookie: string, etag?: string) => fetch(`${base}/api/v1/inbox`, { headers: { cookie, ...(etag ? { 'if-none-match': etag } : {}) } });
+
+  await store.putMessage(msg('m1', { audience: { users: [anaId] }, data: { kind: 'welcome', at: new Date().toISOString() } }));
+  const first = await read(ana);
+  assert.equal(first.status, 200);
+  const etag = first.headers.get('etag')!;
+  assert.match(etag, /^"ib-[0-9a-f]{16}"$/);
+  assert.equal(first.headers.get('cache-control'), 'private, no-cache');
+  const body = await first.json() as { messages: Message[]; unread: number };
+  assert.deepEqual([body.messages.map((m) => m.id), body.unread], [['m1'], 1]);
+
+  // Nothing moved: 304 with the same tag and no body, a weak tag or a list included.
+  const quiet = await read(ana, etag);
+  assert.deepEqual([quiet.status, quiet.headers.get('etag'), await quiet.text()], [304, etag, '']);
+  assert.equal((await read(ana, `"ib-0000000000000000", W/${etag}`)).status, 304);
+  // Someone else's inbox has its own tag.
+  assert.notEqual((await read(bo)).headers.get('etag'), etag);
+
+  // A new message, and an acknowledgement, each move it.
+  await store.putMessage(msg('m2', { audience: { users: [anaId] } }));
+  const grown = await read(ana, etag);
+  assert.equal(grown.status, 200);
+  const grownTag = grown.headers.get('etag')!;
+  assert.equal((await grown.json() as { unread: number }).unread, 2);
+  assert.equal((await fetch(`${base}/api/v1/inbox/m1/ack`, { method: 'POST', headers: { cookie: ana } })).status, 200);
+  const acked = await read(ana, grownTag);
+  assert.equal(acked.status, 200);
+  const ackedBody = await acked.json() as { messages: Message[]; unread: number };
+  assert.deepEqual([ackedBody.messages.map((m) => m.id), ackedBody.unread], [['m2'], 1]);
+  assert.equal((await fetch(`${base}/api/v1/inbox`)).status, 401);
 });

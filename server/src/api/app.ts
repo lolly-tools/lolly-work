@@ -1963,6 +1963,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   });
 
   // ── inbox ─────────────────────────────────────────────────────────────────
+  // The shell asks again when its tab regains focus and once a minute while
+  // it is visible (plans/74 invite spec R5), so a quiet read is a 304. The
+  // ETag is a hash of exactly what this caller is shown: a new message, an
+  // acknowledgement, an edit or a message reaching its end all move it.
+  // `unread` counts the messages shown, which are the ones not yet
+  // acknowledged, the same count org-config carries as `inboxUnread`.
   router.add('GET', '/api/v1/inbox', async (req, res) => {
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
@@ -1974,7 +1980,15 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       ...(client?.shell ? { shell: client.shell } : {}),
       ...(client?.engine ? { engineVersion: client.engine } : {}),
     }, acked);
-    sendJson(res, 200, { messages: msgs });
+    const etag = `"ib-${sha256Hex(JSON.stringify(msgs)).slice(0, 16)}"`;
+    const headers = { etag, 'cache-control': 'private, no-cache' };
+    const asked = String(req.headers['if-none-match'] ?? '').split(',').map((t) => t.trim().replace(/^W\//, ''));
+    if (asked.includes(etag)) {
+      res.writeHead(304, headers);
+      res.end();
+      return;
+    }
+    sendJson(res, 200, { messages: msgs, unread: msgs.length }, headers);
   });
 
   router.add('POST', '/api/v1/inbox/:id/ack', async (req, res, ctx) => {
