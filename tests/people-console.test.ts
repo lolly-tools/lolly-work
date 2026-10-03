@@ -4,9 +4,12 @@
  * "Copy sign-in link" on each pending invitation and the person detail's
  * Password row with "Copy password link", both shown only while the instance
  * offers a password sign-in; the link is copied and shown read-only with its
- * expiry. Also pinned: the sign-in gate says plain "Sign in" when several
- * sign-ins exist, and creating a local group from a person no longer throws
- * (the group filter's search learns the new name instead).
+ * expiry, focused and in view. A locked password shows Unlock, removing the
+ * password sign-in says it removes the password, and the invite share card
+ * points to the password link. Also pinned: the sign-in gate says plain
+ * "Sign in" when several sign-ins exist (and offers the password form beside
+ * the dev sign-in), and creating a local group from a person no longer
+ * throws: the group filter's search learns the new name as an exact match.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -26,7 +29,10 @@ const PROVIDERS = [
 const LINK = { url: 'https://team.example/api/auth/password/set?token=abc', expiresAt: '2026-10-10T10:00:00.000Z' };
 const PERSON = { id: 'usr_1', email: 'ana@partner.example', name: 'Ana', title: null, groups: [], idpGroups: [], localGroups: [], role: 'member', lastSeenAt: '2026-10-02T10:00:00.000Z', disabled: false };
 
-function page(opts: { providers?: typeof PROVIDERS; password?: { set: boolean; email: string } | null } = {}) {
+function page(opts: {
+  providers?: typeof PROVIDERS; password?: { set: boolean; email: string; lockedUntil?: string } | null;
+  identities?: unknown[]; groups?: string[];
+} = {}) {
   const dom = new JSDOM('<div id="app"></div><div id="live"></div><div id="tip"></div>', { url: 'https://work.test/admin#/users', runScripts: 'outside-only' });
   const w = dom.window;
   w.matchMedia = () => ({ matches: false });
@@ -44,13 +50,18 @@ function page(opts: { providers?: typeof PROVIDERS; password?: { set: boolean; e
     const body = init.body ? JSON.parse(init.body) : undefined;
     calls.push({ path, method, body });
     const json = (status: number, data: unknown) => ({ ok: status < 400, status, json: async () => data });
+    if (path === '/api/v1/invitations' && method === 'POST') {
+      return json(201, { invitations: body.emails.map((email: string) => ({ email, created: true, status: 'pending' })) });
+    }
     if (path === '/api/v1/invitations') return json(200, { invitations, signInUrl: 'https://team.example', admission: { policy: true, invitations: true } });
+    if (path === `/api/v1/users/${PERSON.id}/password/unlock` && method === 'POST') return { ok: true, status: 204, json: async () => ({}) };
+    if (path.startsWith(`/api/v1/users/${PERSON.id}/identities/`) && method === 'DELETE') return { ok: true, status: 204, json: async () => ({}) };
     if (path === '/api/v1/admin/password-links' && method === 'POST') return json(201, LINK);
-    if (path === '/api/v1/groups' && method === 'GET') return json(200, { groups: [{ name: 'team', source: 'local', memberCount: 0 }] });
+    if (path === '/api/v1/groups' && method === 'GET') return json(200, { groups: (opts.groups ?? ['team']).map((name) => ({ name, source: 'local', memberCount: 0 })) });
     if (path === '/api/v1/groups' && method === 'POST') return json(201, { name: body.name, source: 'local', memberCount: 0, createdAt: '2026-10-03T00:00:00.000Z' });
     if (path.startsWith('/api/v1/users?')) return json(200, { users: [PERSON], total: 1, page: 1, pageSize: 50 });
     if (path === `/api/v1/users/${PERSON.id}/identities`) {
-      return json(200, { identities: [], ...(opts.password ? { password: opts.password } : {}) });
+      return json(200, { identities: opts.identities ?? [], ...(opts.password ? { password: opts.password } : {}) });
     }
     if (path === '/api/v1/policy/tools') return json(200, { tools: [] });
     if (path === '/api/v1/grants') return json(200, { grants: [] });
@@ -147,4 +158,94 @@ test('the sign-in gate says "Sign in" when there are several ways in, and names 
   const go = r.main.querySelector('a.gate-go') as any;
   assert.equal(go?.textContent, 'Sign in', 'email and password alone');
   assert.equal(go?.getAttribute('href'), '/api/auth/login?returnTo=%2Fadmin');
+});
+
+// ── review fixes ──────────────────────────────────────────────────────────────
+
+test('the issued link is brought into view and focused, so a phone or a long list shows it', async () => {
+  const p = page();
+  const section = await p.helpers.invitationsSection([]);
+  p.main.append(section);
+  let scrolled = 0;
+  p.w.HTMLElement.prototype.scrollIntoView = () => { scrolled++; };
+  (buttonByText(section, 'Copy sign-in link') as any).click();
+  await pause();
+  const field = section.querySelector('input[readonly]') as any;
+  assert.equal(p.w.document.activeElement, field, 'focus lands on the link');
+  assert.ok(scrolled > 0, 'scrolled into view');
+});
+
+test('after inviting, the share card points to the password link when password sign-in is on', async () => {
+  for (const [providers, expect] of [[PROVIDERS, true], [PROVIDERS.slice(0, 1), false]] as const) {
+    const p = page({ providers: [...providers] });
+    const section = await p.helpers.invitationsSection([]);
+    p.main.append(section);
+    (section.querySelector('textarea') as any).value = 'dee@partner.example';
+    (section.querySelector('form') as any).dispatchEvent(new p.w.Event('submit', { cancelable: true }));
+    await pause(20);
+    assert.ok(section.textContent.includes('Sign-in address to share'), 'the share card is shown');
+    assert.equal(section.textContent.includes('send them a password link instead: press Copy sign-in link'), expect);
+  }
+});
+
+test('person detail: a locked password says so and offers Unlock', async () => {
+  const until = new Date(Date.now() + 10 * 60_000).toISOString();
+  const p = page({ password: { set: true, email: 'ana@partner.example', lockedUntil: until } });
+  await p.helpers.viewUsers(p.main, new p.w.URLSearchParams(''));
+  (p.main.querySelector('tbody tr.row-click') as any).click();
+  await pause(20);
+  const cells = [...p.main.querySelectorAll('.idy')].map((c: any) => [c.querySelector('.idy-l').textContent, c.querySelector('.idy-v').textContent]);
+  assert.deepEqual(cells.find(([l]) => l === 'Password'), ['Password', 'Set, locked']);
+  assert.ok(p.main.textContent.includes('Locked after too many wrong passwords'));
+  (buttonByText(p.main, 'Unlock') as any).click();
+  await pause(20);
+  assert.ok(p.calls.some((c) => c.path === `/api/v1/users/${PERSON.id}/password/unlock` && c.method === 'POST'));
+  assert.equal(buttonByText(p.main, 'Unlock'), undefined);
+  assert.ok(!p.main.textContent.includes('Locked after too many wrong passwords'));
+});
+
+test('person detail: removing the email and password sign-in says it removes the password', async () => {
+  const identities = [
+    { idp: 'primary', subjectHash: 'aaaa', displayName: 'Google', email: 'ana@partner.example', emailVerified: true, linkedAt: '2026-10-01T00:00:00.000Z', lastLoginAt: null, canUnlink: false, unlinkBlocked: 'account' },
+    { idp: 'email', subjectHash: 'bbbb', displayName: 'Email and password', email: 'ana@partner.example', emailVerified: false, linkedAt: '2026-10-02T00:00:00.000Z', lastLoginAt: null, canUnlink: true },
+  ];
+  const p = page({ password: { set: true, email: 'ana@partner.example' }, identities });
+  await p.helpers.viewUsers(p.main, new p.w.URLSearchParams(''));
+  (p.main.querySelector('tbody tr.row-click') as any).click();
+  await pause(20);
+  const remove = buttonByText(p.main, 'Remove') as any;
+  remove.click();
+  assert.equal(remove.textContent, 'Really remove their password?');
+  remove.click();
+  await pause(20);
+  assert.ok(p.calls.some((c) => c.path === `/api/v1/users/${PERSON.id}/identities/email/bbbb` && c.method === 'DELETE'));
+  const cells = [...p.main.querySelectorAll('.idy')].map((c: any) => [c.querySelector('.idy-l').textContent, c.querySelector('.idy-v').textContent]);
+  assert.deepEqual(cells.find(([l]) => l === 'Password'), ['Password', 'Not set']);
+});
+
+test('a new group whose name is inside an existing one is picked exactly, not snapped to the longer name', async () => {
+  const p = page({ groups: ['design-team'] });
+  await p.helpers.viewUsers(p.main, new p.w.URLSearchParams(''));
+  (p.main.querySelector('tbody tr.row-click') as any).click();
+  await pause(20);
+  const name = p.main.querySelector('input[aria-label="New local group name"]') as any;
+  name.value = 'design';
+  (buttonByText(p.main, 'Create') as any).click();
+  await pause(20);
+  const filter = p.main.querySelector('.filters-more .search-select input') as any;
+  filter.value = 'design';
+  filter.dispatchEvent(new p.w.Event('change'));
+  await pause(20);
+  assert.equal(filter.value, 'design', 'not rewritten to design-team');
+  const last = p.calls.filter((c) => c.path.startsWith('/api/v1/users?')).at(-1)!;
+  assert.equal(new p.w.URLSearchParams(last.path.split('?')[1]).get('group'), 'design');
+});
+
+test('with the dev provider and a password entry, the gate offers both', async () => {
+  const p = page({ providers: PROVIDERS.slice(1) });
+  p.helpers.setAuthConfig({ provider: 'dev', providerName: null, providers: PROVIDERS.slice(1) });
+  await p.helpers.signInGate();
+  assert.ok(p.main.querySelector('form.gate-form'), 'the dev form');
+  const link = [...p.main.querySelectorAll('a')].find((a: any) => a.textContent === 'Sign in with email and password') as any;
+  assert.equal(link?.getAttribute('href'), '/api/auth/login?returnTo=%2Fadmin');
 });

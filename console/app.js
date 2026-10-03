@@ -3400,10 +3400,12 @@ const ROLE_CHOICES = ['owner', 'admin', 'approver', 'author', 'member', 'viewer'
 // library). options: [{ value, label }]. Calls onchange(value) with the resolved
 // option value ('' = cleared). strict:true only fires on an exact/unique label
 // match (for id-valued filters like a person); non-strict passes free text
-// through (for name-valued filters like a group). Returns { node, input, set }.
+// through (for name-valued filters like a group). Returns { node, input, set,
+// add }: add(option) offers one more option, as an exact match from then on.
 let dlSeq = 0;
-function searchSelect(options, { placeholder = 'Search…', value = '', strict = false, onchange }) {
+function searchSelect(initial, { placeholder = 'Search…', value = '', strict = false, onchange }) {
   const id = `dl-${++dlSeq}`;
+  const options = [...initial];
   const byLabel = new Map(options.map((o) => [o.label.toLowerCase(), o]));
   const cur = options.find((o) => o.value === value);
   const input = el('input', { list: id, placeholder, autocomplete: 'off', value: cur ? cur.label : '' });
@@ -3418,7 +3420,13 @@ function searchSelect(options, { placeholder = 'Search…', value = '', strict =
     if (strict) return;              // unresolved id → keep the previous selection
     onchange(t);                     // free text (value === label, e.g. a group name)
   };
-  return { node: el('span', { class: 'search-select' }, input, datalist), input, set: (v) => { input.value = v; } };
+  const add = (o) => {
+    if (byLabel.has(o.label.toLowerCase())) return;
+    options.push(o);
+    byLabel.set(o.label.toLowerCase(), o);
+    datalist.append(el('option', { value: o.label }));
+  };
+  return { node: el('span', { class: 'search-select' }, input, datalist), input, set: (v) => { input.value = v; }, add };
 }
 
 // ── password sign-in links (plans/74) ─────────────────────────────────────────
@@ -3439,6 +3447,10 @@ async function issuePasswordLink(email, purpose, host) {
       copyButton(() => r.url)),
     input,
     el('p', { class: 'sub flush' }, `Works once, until ${when(r.expiresAt)}.`, copied ? ' Copied to the clipboard.' : ' Copy it from the field above.')));
+  // The field may sit below the fold (a long invitation list, a phone):
+  // bring it into view and focus it, which also selects the link.
+  scrollIntoViewMotionSafe(host);
+  input.focus({ preventScroll: true });
   announce(copied ? 'Sign-in link copied to clipboard' : 'Sign-in link ready to copy');
 }
 
@@ -3497,7 +3509,10 @@ async function invitationsSection(groupOptions) {
       el('span', {}, 'Sign-in address to share'),
       copyButton(() => signInUrl)),
     el('p', { class: 'mono url-line' }, signInUrl),
-    el('p', { class: 'sub flush' }, 'Send this address yourself, by chat or email. An invited person signs in with the same email address you entered here.'));
+    el('p', { class: 'sub flush' }, 'Send this address yourself, by chat or email. An invited person signs in with the same email address you entered here.'),
+    passwordSignInOn()
+      ? el('p', { class: 'sub flush' }, `If they cannot use ${idpName()}, send them a password link instead: press Copy sign-in link on their invitation below.`)
+      : null);
 
   const admissionNote = !data.admission?.policy
     ? el('p', { class: 'sub' }, 'This instance has no sign-in rule yet, so anyone your identity provider signs in is admitted. Invitations still add their groups at the first sign-in.')
@@ -3858,7 +3873,7 @@ async function viewUsers(main, params) {
           cell('Title', u.title ?? '—'),
           cell('Role', el('span', { class: 'chip' }, u.role)),
           cell('Last seen', when(u.lastSeenAt)),
-          ...(password ? [cell('Password', password.set ? 'Set' : 'Not set')] : [])),
+          ...(password ? [cell('Password', password.set ? (password.lockedUntil ? 'Set, locked' : 'Set') : 'Not set')] : [])),
         el('p', { class: 'sub', style: 'margin:8px 0 0' }, `Name, email, title and role are managed by ${idpName()} — read-only here. Role is derived from group membership.`));
     }
 
@@ -3873,11 +3888,28 @@ async function viewUsers(main, params) {
         try { await issuePasswordLink(password.email, password.set ? 'reset' : 'setup', out); } catch (e) { err.textContent = e.message; }
         btn.disabled = false;
       } }, 'Copy password link');
+      // Ten wrong passwords in a row lock it for a while; anyone can cause
+      // that by guessing, so an admin can lift it without a new password.
+      const unlock = password.lockedUntil
+        ? el('button', { type: 'button', onclick: async () => {
+            err.textContent = '';
+            unlock.disabled = true;
+            try {
+              await api(`/api/v1/users/${encodeURIComponent(u.id)}/password/unlock`, { method: 'POST' });
+              password = { ...password, lockedUntil: undefined };
+              announce('Password unlocked');
+              renderDetail();
+            } catch (e) { err.textContent = e.message; unlock.disabled = false; }
+          } }, 'Unlock')
+        : null;
       return el('div', { class: 'stack' },
         el('p', { class: 'sub flush' }, password.set
-          ? `Signs in with a password as ${password.email}. A new link lets them choose another; the current password keeps working until they do.`
+          ? `Signs in with a password as ${password.email}. A new link lets them choose another; the current password keeps working until they do, and setting a new one signs them out everywhere.`
           : `No password yet. A link lets them set one and sign in as ${password.email}.`),
-        el('p', { class: 'flush' }, btn),
+        password.lockedUntil
+          ? el('p', { class: 'form-err flush', role: 'status' }, `Locked after too many wrong passwords, until ${when(password.lockedUntil)}.`)
+          : null,
+        el('p', { class: 'flush' }, btn, unlock ? ' ' : null, unlock),
         out, err);
     }
 
@@ -3886,16 +3918,20 @@ async function viewUsers(main, params) {
     // last one, cannot be removed (the server says which in unlinkBlocked).
     function signInsBlock() {
       const err = errSpan();
+      const isPassword = (i) => (authConfig?.providers ?? []).some((p) => p.kind === 'password' && p.id === i.idp);
       const rows = identities.map((i) => {
         let action;
         if (i.canUnlink) {
-          action = armConfirmButton({ class: 'danger' }, 'Remove', 'Really remove?', async (disarm) => {
+          // Removing the password sign-in deletes the password itself, so
+          // the confirm says so.
+          action = armConfirmButton({ class: 'danger' }, 'Remove', isPassword(i) ? 'Really remove their password?' : 'Really remove?', async (disarm) => {
             err.textContent = '';
             action.disabled = true;
             try {
               await api(`/api/v1/users/${encodeURIComponent(u.id)}/identities/${encodeURIComponent(i.idp)}/${encodeURIComponent(i.subjectHash)}`, { method: 'DELETE' });
               identities = identities.filter((x) => x !== i);
-              announce(`${i.displayName} sign-in removed`);
+              if (isPassword(i) && password) password = { ...password, set: false, lockedUntil: undefined };
+              announce(isPassword(i) ? 'Password removed' : `${i.displayName} sign-in removed`);
               renderDetail();
             } catch (e) { err.textContent = e.message; action.disabled = false; disarm(); }
           });
@@ -3909,7 +3945,7 @@ async function viewUsers(main, params) {
           el('td', {}, action));
       });
       return el('div', { class: 'stack' },
-        el('p', { class: 'sub' }, 'The accounts this person signs in with. A new sign-in joins this person when its provider confirms the same email address, or when they add it from their own profile. Removing one stops it signing in as this person and signs this person out everywhere, so a session it opened ends too; if its provider confirms a matching email, its next sign-in can link it again.'),
+        el('p', { class: 'sub' }, 'The accounts this person signs in with. A new sign-in joins this person when its provider confirms the same email address, or when they add it from their own profile. Removing one stops it signing in as this person and signs this person out everywhere, so a session it opened ends too; if its provider confirms a matching email, its next sign-in can link it again. Removing an email and password sign-in deletes the password: it works again only after a new password link.'),
         identities.length
           ? dataTable(['Provider', 'Email', 'Last sign-in', { label: 'Actions', w: '1%' }], rows)
           : el('p', { class: 'empty' }, 'No sign-ins recorded yet. One appears after this person next signs in.'),
@@ -3949,8 +3985,9 @@ async function viewUsers(main, params) {
         try {
           const g = await api('/api/v1/groups', { method: 'POST', body: { name } });
           allGroups = [...allGroups, g].sort((a, b) => a.name.localeCompare(b.name));
-          // The People filter's group search offers it at once too.
-          groupBox.node.querySelector('datalist')?.append(el('option', { value: g.name }));
+          // The People filter's group search offers it at once too, as an
+          // exact match (not a partial one that could snap to a longer name).
+          groupBox.add({ value: g.name, label: g.name });
           newName.value = '';
           announce(`Local group ${g.name} created`);
           renderDetail();
@@ -5347,7 +5384,11 @@ async function signInGate() {
             el('label', { for: 'gate-email' }, 'Work email'),
             el('input', { id: 'gate-email', name: 'email', type: 'email', autocomplete: 'email', placeholder: 'you@example.com', autofocus: 'true' }),
             el('button', { class: 'primary gate-go' }, 'Continue'),
-            el('p', { class: 'gate-hint' }, 'Development sign-in, no password required.'))
+            el('p', { class: 'gate-hint' }, 'Development sign-in, no password required.'),
+            // Email and password beside the dev sign-in (restricted evaluation).
+            (cfg?.providers ?? []).some((p) => p.kind === 'password')
+              ? el('p', { class: 'gate-hint' }, el('a', { href: `/api/auth/login?returnTo=${returnTo}` }, 'Sign in with email and password'))
+              : null)
         : el('p', { class: 'empty' }, 'No identity provider is configured on this deployment.'),
   ]);
 }
