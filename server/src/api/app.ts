@@ -3575,6 +3575,48 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     return { holders: [...holders.values()], claimed };
   };
 
+  // STAND-IN for WP-D's `issueInvitation` and `invitationView` (plans/74
+  // invite spec 2.9), so the requests routes run on this branch. WP-D's
+  // branch defines the real closures here; drop this block when merging.
+  const issueInvitation = async (actor: UserRecord, input: {
+    email: string; groups: string[]; projects: NonNullable<InvitationRecord['projects']>; expiresAt?: string;
+    createdVia: 'console' | 'project' | 'request'; passwordSetup?: boolean;
+  }): Promise<
+    | { status: 'created' | 'existing'; invitation: InvitationRecord }
+    | { status: 'already-member'; userIds: string[] }
+    | { status: 'refused'; reason: 'invites-not-allowed' | 'domain-not-allowed' | 'invitations-off' | 'account-disabled' }
+  > => {
+    const email = input.email.trim().toLowerCase();
+    const policy = resolveInvitePolicy(config.policy.invites);
+    if (!mayInviteNewPeople(actor, await store.listGrants(), policy)) return { status: 'refused', reason: 'invites-not-allowed' };
+    if (!inviteDomainAllowed(email, policy)) return { status: 'refused', reason: 'domain-not-allowed' };
+    if (config.idp.admission?.invitations === false) return { status: 'refused', reason: 'invitations-off' };
+    const { holders, claimed } = await accountsHoldingEmail(email);
+    if ([...holders, ...claimed].some((a) => a.disabledAt)) return { status: 'refused', reason: 'account-disabled' };
+    if (holders.length && !input.groups.length && !input.projects.length) return { status: 'already-member', userIds: holders.map((h) => h.id) };
+    const createdAt = new Date().toISOString();
+    const { invitation, created } = await store.createInvitation({
+      id: `inv_${randomId(10)}`, email, groups: input.groups, invitedBy: `user:${actor.id}`, createdAt,
+      ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}), projects: input.projects, createdVia: input.createdVia,
+      ...(input.passwordSetup ? { passwordSetup: true } : {}),
+    });
+    if (created) {
+      await audit(`user:${actor.id}`, 'invite.create', `invitation:${invitation.id}`, {
+        email, groups: input.groups, projects: input.projects, ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}), via: input.createdVia,
+      });
+      return { status: 'created', invitation };
+    }
+    let merged = invitation.projects ?? [];
+    for (const entry of input.projects) merged = mergeInvitationProject(merged, entry).projects;
+    const updated = invitation.acceptedAt ? null : await store.setInvitationProjects(invitation.id, merged);
+    return { status: 'existing', invitation: updated ?? invitation };
+  };
+  const invitationView = (r: InvitationRecord) => ({
+    ...invitationWire(r),
+    link: invitationStatus(r) === 'pending' ? inviteLink(r, null) : null,
+    linkVersion: r.linkVersion, openedAt: r.openedAt ?? null, passwordSetup: !!r.passwordSetup,
+  });
+
   router.add('GET', '/api/v1/invitations', async (req, res) => {
     if (!(await requireAction(req, res, 'user.invite'))) return;
     sendJson(res, 200, { invitations: (await store.listInvitations()).map((r) => invitationWire(r)), ...invitationContext() },
@@ -7323,7 +7365,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   const shareMessageQuota = createWindowQuota(SHARE_MESSAGES_PER_DAY, 86_400_000);
   const shareProjectWith = async (
     project: ProjectRecord, target: UserRecord, role: ProjectMemberRole,
-    actor: { principal: string; name: string; userId: string | null }, via: 'invite' | 'invitation',
+    actor: { principal: string; name: string; userId: string | null }, via: 'invite' | 'invitation' | 'request',
+    opts: { message?: boolean } = {},
   ): Promise<'added' | 'already'> => {
     // 'already' closes invitations too, which tidies a row left open before
     // this rule existed the next time someone shares with the person.
@@ -7332,7 +7375,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (existing && !roleAbove(role, existing.role)) { await closeMemberInvitations(project, target, actor.principal); return 'already'; }
     await store.putProjectMember({ projectId: project.id, userId: target.id, role, addedBy: actor.principal, addedAt: new Date().toISOString() });
     let messageHeld = false;
-    if (!existing && target.id !== actor.userId) {
+    if (!existing && target.id !== actor.userId && opts.message !== false) {
       if (shareMessageQuota.take(actor.principal)) {
         await store.putMessage(buildShareMessage({
           projectId: project.id, projectName: project.name, role, inviteeId: target.id,
