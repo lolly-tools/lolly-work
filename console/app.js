@@ -3885,7 +3885,8 @@ async function viewUsers(main, params) {
         try {
           const g = await api('/api/v1/groups', { method: 'POST', body: { name } });
           allGroups = [...allGroups, g].sort((a, b) => a.name.localeCompare(b.name));
-          groupSel.append(el('option', { value: g.name }, `${g.name} (${g.source})`));
+          // The People filter's group search offers it at once too.
+          groupBox.node.querySelector('datalist')?.append(el('option', { value: g.name }));
           newName.value = '';
           announce(`Local group ${g.name} created`);
           renderDetail();
@@ -5264,10 +5265,12 @@ function currentRouteId() {
 async function signInGate() {
   const cfg = authConfig ?? await api('/api/auth/config').catch(() => null);
   const returnTo = encodeURIComponent('/admin');
+  // Several sign-ins: the button leads to the server's chooser, so it names none of them.
+  const plainSignIn = (cfg?.providers ?? []).length > 1;
   gate([
     el('p', { class: 'gate-lede' }, 'Sign in to manage your organisation’s tools, approvals and catalog.'),
     cfg?.provider === 'oidc'
-      ? el('a', { class: 'btn primary gate-go', href: `/api/auth/login?returnTo=${returnTo}` }, `Sign in with ${cfg?.providerName || 'SSO'}`)
+      ? el('a', { class: 'btn primary gate-go', href: `/api/auth/login?returnTo=${returnTo}` }, plainSignIn ? 'Sign in' : `Sign in with ${cfg?.providerName || 'SSO'}`)
       : cfg?.provider === 'proxy'
         // The reverse proxy in front of the deploy already holds the session
         // (YunoHost's portal, Authelia); one click turns it into ours.
