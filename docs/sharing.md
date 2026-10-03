@@ -203,7 +203,9 @@ top: an account with the instance `viewer` role cannot save, whatever its projec
 a deny grant on `session.edit` or `project.manage` holds here as anywhere else. A viewer who
 tries to save gets `403 READ_ONLY`; someone who cannot see the project gets `403 FORBIDDEN`.
 
-Each row of `GET /api/v1/projects` carries `myRole`, so Lolly can show the right controls.
+Each row of `GET /api/v1/projects` and the document returned by
+`GET /api/v1/sessions/:id` carry `myRole`, the caller's effective project role, so Lolly
+can show the right controls. Workspace capabilities still apply on top of that role.
 `GET /api/v1/projects/:id/members` lists the owner and everyone added, for anyone who can
 see the project. Managers also see each person's email and the open invitations that carry
 the project. For everyone else a person with no first or last name is shown by the part of

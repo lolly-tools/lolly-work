@@ -22,7 +22,7 @@ const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const servers: Server[] = [];
 after(() => { for (const s of servers) s.close(); });
 
-async function boot(): Promise<string> {
+async function boot(liveCollab?: boolean): Promise<string> {
   const pack = await mkdtemp(join(tmpdir(), 'lw-manifest-'));
   await mkdir(join(pack, 'catalog', 'assets'), { recursive: true });
   await writeFile(join(pack, 'catalog', 'assets', 'index.json'), JSON.stringify({ version: 1, assets: [] }));
@@ -31,7 +31,7 @@ async function boot(): Promise<string> {
     rateLimit: { enabled: false },
     dev: { enabled: true, users: [{ email: 'owner@test', groups: ['owner'] }] },
   }));
-  const app = buildApp({ config, store: createMemoryStore(), blobs: createMemoryBlobStore(), secrets: { session: 'sM', link: 'lM' } });
+  const app = buildApp({ config, store: createMemoryStore(), blobs: createMemoryBlobStore(), secrets: { session: 'sM', link: 'lM' }, liveCollab });
   const server = createServer((req, res) => void app(req, res));
   servers.push(server);
   await new Promise<void>((r) => server.listen(0, () => r()));
@@ -63,4 +63,10 @@ test('engineVersion is the vendored pin, read off engine-pin.json itself', async
   const body = (await (await fetch(`${base}/api/v1/instance`)).json()) as { engineVersion: string | null };
   assert.equal(body.engineVersion, pin.engine.version);
   assert.match(String(body.engineVersion), /^\d+\.\d+\.\d+$/);
+});
+
+test('a deployment without a gateway advertises that live collaboration is unavailable', async () => {
+  const base = await boot(false);
+  const body = await (await fetch(`${base}/api/v1/instance`)).json() as { capabilities: { collab: boolean } };
+  assert.equal(body.capabilities.collab, false);
 });

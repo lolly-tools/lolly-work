@@ -151,7 +151,9 @@ test('one access level per person drives every project and session route', async
   const sessionId = await newSession(env, projectId);
   for (const email of ['alice@test', 'mona@test', 'eddie@test', 'vic@test', 'gina@test', 'vera@test', 'admin@test']) {
     assert.equal((await env.as(email, 'GET', `/api/v1/projects/${projectId}/sessions`)).status, 200, `${email} lists sessions`);
-    assert.equal((await env.as(email, 'GET', `/api/v1/sessions/${sessionId}`)).status, 200, `${email} reads a session`);
+    const full = await env.as(email, 'GET', `/api/v1/sessions/${sessionId}`);
+    assert.equal(full.status, 200, `${email} reads a session`);
+    assert.equal(full.json.myRole, expectRole[email], `${email} receives the effective project role`);
     assert.equal((await env.as(email, 'GET', `/api/v1/sessions/${sessionId}/revisions`)).status, 200, `${email} reads revisions`);
     assert.equal((await env.as(email, 'GET', `/api/v1/projects/${projectId}/members`)).status, 200, `${email} lists people`);
   }

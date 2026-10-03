@@ -1036,9 +1036,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       // client compares its own engine to, and the fixed point fleet drift is
       // measured from.
       engineVersion: pinnedEngineVersion(),
-      // Statically true today; stated so an older deploy (whose manifest lacks
-      // a key) and a newer one read differently to the same probe.
-      capabilities: { catalog: true, collab: true, submit: true, scim: true },
+      // Serverless deployments have no live gateway.
+      capabilities: { catalog: true, collab: deps.liveCollab !== false, submit: true, scim: true },
       providers: idpProviders(),
       // Which brand this deployment hosts, and whether it has moved since a
       // client last looked (OSS plans/186 section 7). Always present, null when
@@ -7740,9 +7739,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!session) return sendError(res, 404, 'NOT_FOUND', 'no such session');
     const project = await store.getProject(session.projectId);
     if (!project) return sendError(res, 403, 'FORBIDDEN', 'you cannot see this session');
-    if (!projectAllows(res, await projectAccessOf(user, project), 'viewer', 'session')) return;
+    const myRole = await projectAccessOf(user, project);
+    if (!projectAllows(res, myRole, 'viewer', 'session')) return;
     if (session.deletedAt) return sendError(res, 410, 'SESSION_DELETED', 'this session was deleted');
-    sendJson(res, 200, sessionFull(session));
+    sendJson(res, 200, { ...sessionFull(session), myRole });
   });
 
   /** The newer version a 409 hands back, with the name of whoever saved it, so the
