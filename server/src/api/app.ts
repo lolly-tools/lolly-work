@@ -46,6 +46,9 @@ import {
 import { PACK_MAX_BYTES, type InstancePackMeta } from '../catalog/instance-pack.ts';
 import { readBlobBody } from '../blobs/types.ts';
 import { createNotifier } from '../notify/notify.ts';
+import { createPeopleNotifier } from '../notify/people.ts';
+import { invitePageUrl, mintInviteToken } from '../access/invite-token.ts';
+import type { RequestDeps } from '../access/types.ts';
 import { SERVICE_TOKEN_PREFIX, TOKEN_ROLES, hashServiceSecret, mintServiceSecret, serviceAccountFor } from '../iam/service-tokens.ts';
 import { runRetention } from '../audit/retention.ts';
 import { bearerFromHeader, hashScimSecret, mintScimSecret } from '../scim/tokens.ts';
@@ -353,6 +356,17 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     config, secrets, fetchImpl,
     onResult: (channel, ok) => metrics.notify(channel, ok ? 'sent' : 'failed'),
   });
+
+  // People notices (invitations and access requests, plans/74 invite spec
+  // 2.9 and 2.10). Every one goes through `people`: the inbox today, email
+  // once it is switched on. `accessDeps` is what the requests core
+  // (access/requests.ts) takes. `inviteLink` mints the personal invite link
+  // for one entry of an invitation (projectId null for the workspace link);
+  // it is derived each time, never stored, and verified with `linkVerify`.
+  const people = createPeopleNotifier({ store, config, notifier });
+  const accessDeps: RequestDeps = { store, config, audit, people, now: Date.now };
+  const inviteLink = (inv: Pick<InvitationRecord, 'id' | 'linkVersion'>, projectId: string | null): string =>
+    invitePageUrl(config.instance.baseUrl, mintInviteToken({ invitationId: inv.id, projectId, version: inv.linkVersion }, secrets.link));
 
   /**
    * The instance-owned half of the render cache key's `catalogVersion`
