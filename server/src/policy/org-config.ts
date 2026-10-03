@@ -12,7 +12,7 @@ import { evaluate, grantDecision, mayEditCollab, type Grant, type Role, type Rol
 import { resolveFeatureFlags, flagGovernanceForVersion, type FlagGovernance, type ResolvedFlag } from './feature-flags.ts';
 import { projectInjectables, flagInjectableGovernance, injectablesForVersion } from '../injectables/registry.ts';
 import type { InjectableRecord } from '../injectables/types.ts';
-import type { InstanceConfig } from '../config/instance.ts';
+import { passwordIdpOf, type InstanceConfig } from '../config/instance.ts';
 import type { UserRecord } from '../store/types.ts';
 import { destinationAvailableTo, destinationDescriptor, destinationVersion } from '../delivery/destinations.ts';
 import type { ConfigDeliveryDestination, DeliveryDestinationDescriptor } from '../delivery/types.ts';
@@ -94,8 +94,18 @@ export interface OrgConfigPayload {
   sharing: { groups: string[]; projectFiles: boolean };
   /** The invite limits (plans/74 `policy.invites`), so the shell offers only
    *  the roles and domains the server accepts and a truthful expiry. Whether
-   *  this caller may invite new people at all is `can['user.invite']`. */
-  invites: { domains: string[]; maxTtlHours: number; projectRoles: ProjectMemberRole[] };
+   *  this caller may invite new people at all is `can['user.invite']`.
+   *  `passwordSetup` says whether this caller may let an invitation set a
+   *  password from its link (`maySetPasswordFromLink`), and `passwordDomains`
+   *  the domains whose invitations start with that ticked (plans/74 invite
+   *  spec 2.8). */
+  invites: {
+    domains: string[]; maxTtlHours: number; projectRoles: ProjectMemberRole[];
+    passwordSetup: boolean; passwordDomains: string[];
+  };
+  /** Which access requests a member may file here (`policy.requests`): with
+   *  `project` false the shell offers no "Ask for access" or "Ask to edit". */
+  requests: { project: boolean };
   /** What this deployment can render server-side (plans/23 §3.A) - shells gray
    *  out or hide exports not offered here instead of discovering the limit by
    *  501/400. Deployment-scoped, same for every caller; the render route stays
@@ -176,7 +186,10 @@ export function policyVersionOf(
    *  caller: the invite policy, whether guest links are on and the home view
    *  (`instance.homeView`). Absent for
    *  callers that hash policy only, so their versions are unchanged. */
-  deployment?: { invites: unknown; guestLinks: boolean; liveCollab?: false; projectFiles?: true; home?: 'tools' | 'projects' },
+  deployment?: {
+    invites: unknown; guestLinks: boolean; liveCollab?: false; projectFiles?: true; home?: 'tools' | 'projects';
+    passwordSignIn?: true; projectRequests?: false;
+  },
 ): string {
   const doc = {
     ai,
@@ -219,6 +232,31 @@ export function policyVersionOf(
       )),
   };
   return sha256Hex(canonicalJson(doc)).slice(0, 16);
+}
+
+/** Whether email and password sign-in is configured (`passwordIdpOf`). The
+ *  partial configs some unit fixtures build carry no `idp.additional`. */
+const passwordSignInOn = (config: Pick<InstanceConfig, 'idp'>): boolean =>
+  Array.isArray(config.idp?.additional) && !!passwordIdpOf(config);
+
+/**
+ * Whether `user` may let an invitation set a password from its link (plans/74
+ * invite spec 2.6 and 4.8 rule 14). Whoever holds such a link can set the
+ * password for the address and so sign in as it, which makes the link a
+ * credential: only an admin or owner who holds `user.invite` may ask for one,
+ * the bar `POST /api/v1/admin/password-links` sets for a password link, and
+ * only while email and password sign-in is configured. Like that route, it
+ * takes a person: a service token (an `svc_` account) never qualifies, so a
+ * script cannot hand out credentials. The invitation routes ask this before
+ * they store the flag, and org-config passes it to the shell as
+ * `invites.passwordSetup`, so the tick and the route never disagree. The
+ * invite page asks again, of the issuer, when the link is used.
+ */
+export function maySetPasswordFromLink(
+  config: Pick<InstanceConfig, 'idp'>, user: Pick<UserRecord, 'id' | 'groups' | 'role'>, grants: Grant[],
+): boolean {
+  if (!passwordSignInOn(config) || user.id.startsWith('svc_') || (user.role !== 'admin' && user.role !== 'owner')) return false;
+  return evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'user.invite', ['*'], grants);
 }
 
 /** The input ids an overlay names in its own rules, minus the '*' default. */
@@ -329,7 +367,12 @@ export function assembleOrgConfig(opts: {
   // project, which the route checks.
   const invitePolicy = resolveInvitePolicy(config.policy.invites);
   can['user.invite'] = mayInviteNewPeople(user, grants, invitePolicy);
-  const invites = invitePolicyForClient(invitePolicy);
+  const invites = {
+    ...invitePolicyForClient(invitePolicy),
+    passwordSetup: maySetPasswordFromLink(config, user, grants),
+    passwordDomains: [...invitePolicy.passwordDomains],
+  };
+  const projectRequests = config.policy.requests?.project !== false;
   const destinations = (config.delivery?.destinations ?? [])
     .filter((destination) => destinationAvailableTo(destination, principal, grants))
     .map((destination) => destinationDescriptor(destination, config.delivery?.maxBytes ?? 64 * 1024 * 1024));
@@ -354,6 +397,7 @@ export function assembleOrgConfig(opts: {
     can,
     sharing: { groups: sharingGroups, projectFiles: opts.projectFiles === true },
     invites,
+    requests: { project: projectRequests },
     render,
     // Flag-kind injectables merge into the flag map, but only where the dedicated
     // feature-flag governance has NO explicit opinion - so the two rails never
@@ -388,6 +432,13 @@ export function assembleOrgConfig(opts: {
         // Setting one changes the payload, so the version follows it. A shell reads
         // `home` once, at boot, so an open tab keeps its first view until reloaded.
         ...(config.instance.homeView ? { home: config.instance.homeView } : {}),
+        // `invites.passwordSetup` follows whether password sign-in is on (the
+        // caller's role and grants are hashed above), and `requests.project`
+        // follows `policy.requests.project`. Each is present only when it
+        // differs from the old default, so deployments without password
+        // sign-in, or with project requests on, keep their version.
+        ...(passwordSignInOn(config) ? { passwordSignIn: true as const } : {}),
+        ...(projectRequests ? {} : { projectRequests: false as const }),
       },
     ),
   };

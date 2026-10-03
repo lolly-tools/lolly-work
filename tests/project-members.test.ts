@@ -25,12 +25,14 @@ import { parseConfig } from '../server/src/config/instance.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
 import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import { buildApp } from '../server/src/api/app.ts';
-import { assembleOrgConfig } from '../server/src/policy/org-config.ts';
+import { assembleOrgConfig, maySetPasswordFromLink } from '../server/src/policy/org-config.ts';
+import { readInviteToken } from '../server/src/access/invite-token.ts';
+import type { Grant } from '../server/src/rbac/evaluate.ts';
 import { startupChecks } from '../server/src/setup/checks.ts';
 import { effectiveProjectAccess, projectAccess } from '../server/src/rbac/project-access.ts';
 import { eligibleInvitees, mayJoinSession } from '../server/src/collab/invites.ts';
 import { mergeInvitationProject } from '../server/src/projects/sharing.ts';
-import type { ProjectRecord, Store, UserRecord } from '../server/src/store/types.ts';
+import type { AccessRequestRecord, ProjectRecord, Store, UserRecord } from '../server/src/store/types.ts';
 import { withFreshPostgres } from './pg-test-schema.ts';
 
 const servers: Server[] = [];
@@ -96,6 +98,11 @@ async function boot(over: Record<string, unknown> = {}, secrets: Record<string, 
 }
 
 type Env = Awaited<ReturnType<typeof boot>>;
+
+/** Invite result rows without the invitation id, invite link and end date
+ *  a row backed by a pending invitation carries (pinned on their own below). */
+const brief = (rows: Array<Record<string, unknown>>) =>
+  rows.map(({ invitationId: _id, link: _link, expiresAt: _ends, ...rest }) => rest);
 
 /** alice owns a team-visible project; mona manages, eddie and vera edit, vic views. */
 async function seedProject(env: Env, visibility: unknown = { groups: ['team'] }) {
@@ -253,7 +260,7 @@ test('invite: an existing account joins now with an inbox message; a role is rai
   const projectId = await seedProject(env);
   const r = await env.as('mona@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['OLLY@test', 'olly@test'], role: 'editor' });
   assert.equal(r.status, 200);
-  assert.deepEqual(r.json.results, [{ email: 'olly@test', status: 'added' }], 'deduplicated, lowercased');
+  assert.deepEqual(brief(r.json.results), [{ email: 'olly@test', status: 'added' }], 'deduplicated, lowercased');
   assert.equal(r.json.link, `https://team.example/#/team/project/${projectId}`);
   const row = ((await env.as('olly@test', 'GET', '/api/v1/projects')).json.projects as Array<{ id: string; myRole: string }>).find((p) => p.id === projectId);
   assert.equal(row?.myRole, 'editor');
@@ -266,19 +273,19 @@ test('invite: an existing account joins now with an inbox message; a role is rai
   assert.equal(share.data.projectId, projectId);
 
   const lower = await env.as('mona@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['olly@test'], role: 'viewer' });
-  assert.deepEqual(lower.json.results, [{ email: 'olly@test', status: 'already' }]);
+  assert.deepEqual(brief(lower.json.results), [{ email: 'olly@test', status: 'already' }]);
   assert.equal((await env.store.getProjectMember(projectId, await env.userId('olly@test')))?.role, 'editor', 'never lowered silently');
   // A dismissed message stays dismissed: a raise posts nothing, and neither
   // does removing and re-adding the person (finding: inbox re-delivery).
   await env.as('olly@test', 'POST', `/api/v1/inbox/${share.id}/ack`);
   const raise = await env.as('mona@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['olly@test'], role: 'manager' });
-  assert.deepEqual(raise.json.results, [{ email: 'olly@test', status: 'added' }]);
+  assert.deepEqual(brief(raise.json.results), [{ email: 'olly@test', status: 'added' }]);
   const inboxIds = async () => ((await env.as('olly@test', 'GET', '/api/v1/inbox')).json.messages as Array<{ id: string }>).map((m) => m.id);
   assert.ok(!(await inboxIds()).includes(share.id), 'a raise does not re-deliver');
   const ollyIdNow = await env.userId('olly@test');
   for (let i = 0; i < 3; i++) {
     assert.equal((await env.as('mona@test', 'DELETE', `/api/v1/projects/${projectId}/members/${ollyIdNow}`)).status, 204);
-    assert.deepEqual((await env.as('mona@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['olly@test'], role: 'manager' })).json.results,
+    assert.deepEqual(brief((await env.as('mona@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['olly@test'], role: 'manager' })).json.results),
       [{ email: 'olly@test', status: 'added' }]);
   }
   assert.ok(!(await inboxIds()).includes(share.id), 'removing and re-adding never puts a dismissed message back');
@@ -291,12 +298,12 @@ test('invite: an existing account joins now with an inbox message; a role is rai
   // holds user.invite) is told, a plain member manager gets exactly what an
   // unknown address gets.
   const disabled = await env.as('admin@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['dee@test', 'not-an-email'], role: 'viewer' });
-  assert.deepEqual(disabled.json.results, [
+  assert.deepEqual(brief(disabled.json.results), [
     { email: 'dee@test', status: 'refused', reason: 'account-disabled' },
     { email: 'not-an-email', status: 'refused', reason: 'invalid-email' },
   ]);
   const blind = await env.as('mona@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['dee@test', 'nobody@test'], role: 'viewer' });
-  assert.deepEqual(blind.json.results, [
+  assert.deepEqual(brief(blind.json.results), [
     { email: 'dee@test', status: 'refused', reason: 'invites-not-allowed' },
     { email: 'nobody@test', status: 'refused', reason: 'invites-not-allowed' },
   ], 'a disabled account and an unknown address read the same to a member');
@@ -319,12 +326,12 @@ test('invite: an unknown address gets an invitation carrying the project, within
 
   // A plain member manager may share with existing people but not invite new ones.
   const byMember = await env.as('mona@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['new@else.example'], role: 'editor' });
-  assert.deepEqual(byMember.json.results, [{ email: 'new@else.example', status: 'refused', reason: 'invites-not-allowed' }]);
+  assert.deepEqual(brief(byMember.json.results), [{ email: 'new@else.example', status: 'refused', reason: 'invites-not-allowed' }]);
   assert.equal(await env.store.findActiveInvitation('new@else.example'), null);
 
   const before = Date.now();
   const byAdmin = await env.as('admin@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['new@else.example'], role: 'editor' });
-  assert.deepEqual(byAdmin.json.results, [{ email: 'new@else.example', status: 'invited' }]);
+  assert.deepEqual(brief(byAdmin.json.results), [{ email: 'new@else.example', status: 'invited' }]);
   const inv = (await env.store.findActiveInvitation('new@else.example'))!;
   const adminId = await env.userId('admin@test');
   assert.deepEqual(inv.projects, [{ projectId, role: 'editor', invitedBy: `user:${adminId}` }]);
@@ -334,11 +341,11 @@ test('invite: an unknown address gets an invitation carrying the project, within
   assert.ok(ttl > 719 * 3_600_000 && ttl <= 720 * 3_600_000 + 60_000, 'expires after the default 720 hours');
 
   // Extending: another project merges in; the same project at a higher role upgrades; lower is 'already'.
-  assert.deepEqual((await env.as('admin@test', 'POST', `/api/v1/projects/${second}/invite`, { emails: ['new@else.example'], role: 'viewer' })).json.results,
+  assert.deepEqual(brief((await env.as('admin@test', 'POST', `/api/v1/projects/${second}/invite`, { emails: ['new@else.example'], role: 'viewer' })).json.results),
     [{ email: 'new@else.example', status: 'invited' }]);
-  assert.deepEqual((await env.as('admin@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['new@else.example'], role: 'viewer' })).json.results,
+  assert.deepEqual(brief((await env.as('admin@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['new@else.example'], role: 'viewer' })).json.results),
     [{ email: 'new@else.example', status: 'already' }]);
-  assert.deepEqual((await env.as('admin@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['new@else.example'], role: 'manager' })).json.results,
+  assert.deepEqual(brief((await env.as('admin@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['new@else.example'], role: 'manager' })).json.results),
     [{ email: 'new@else.example', status: 'invited' }]);
   const merged = (await env.store.findActiveInvitation('new@else.example'))!;
   assert.equal(merged.id, inv.id, 'one invitation per address');
@@ -364,7 +371,7 @@ test('invite policy: allow tiers, domains, project roles and the expiry are enfo
   const env = await boot({ policy: { invites: { allow: 'members', domains: ['@Example.com'], projectRoles: ['viewer', 'editor'], maxTtlHours: 48 } } });
   const projectId = await seedProject(env);
   const res = await env.as('mona@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['a@example.com', 'b@other.org'], role: 'viewer' });
-  assert.deepEqual(res.json.results, [
+  assert.deepEqual(brief(res.json.results), [
     { email: 'a@example.com', status: 'invited' },
     { email: 'b@other.org', status: 'refused', reason: 'domain-not-allowed' },
   ]);
@@ -375,23 +382,23 @@ test('invite policy: allow tiers, domains, project roles and the expiry are enfo
   assert.equal(manager.json.error.code, 'ROLE_NOT_ALLOWED');
   assert.equal((await env.as('mona@test', 'PATCH', `/api/v1/projects/${projectId}/members/${await env.userId('vic@test')}`, { role: 'manager' })).json.error.code, 'ROLE_NOT_ALLOWED');
   // The domain list is for new people: an existing account from anywhere can be shared with.
-  assert.deepEqual((await env.as('mona@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['olly@test'], role: 'viewer' })).json.results,
+  assert.deepEqual(brief((await env.as('mona@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['olly@test'], role: 'viewer' })).json.results),
     [{ email: 'olly@test', status: 'added' }]);
   // An editor is not a manager, whatever the tier.
   assert.equal((await env.as('eddie@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['c@example.com'], role: 'viewer' })).status, 403);
   // A deny of user.invite wins over the members tier.
   const deny = { principal: `user:${await env.userId('mona@test')}`, action: 'user.invite', resource: '*', effect: 'deny' as const };
   await env.store.putGrant(deny);
-  assert.deepEqual((await env.as('mona@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['d@example.com'], role: 'viewer' })).json.results,
+  assert.deepEqual(brief((await env.as('mona@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['d@example.com'], role: 'viewer' })).json.results),
     [{ email: 'd@example.com', status: 'refused', reason: 'invites-not-allowed' }]);
   await env.store.deleteGrant(deny);
 
   // owners tier: an admin manages the project but cannot invite new people.
   const strict = await boot({ policy: { invites: { allow: 'owners' } } });
   const p2 = await seedProject(strict);
-  assert.deepEqual((await strict.as('admin@test', 'POST', `/api/v1/projects/${p2}/invite`, { emails: ['n@x.example'], role: 'viewer' })).json.results,
+  assert.deepEqual(brief((await strict.as('admin@test', 'POST', `/api/v1/projects/${p2}/invite`, { emails: ['n@x.example'], role: 'viewer' })).json.results),
     [{ email: 'n@x.example', status: 'refused', reason: 'invites-not-allowed' }]);
-  assert.deepEqual((await strict.as('owner@test', 'POST', `/api/v1/projects/${p2}/invite`, { emails: ['n@x.example'], role: 'viewer' })).json.results,
+  assert.deepEqual(brief((await strict.as('owner@test', 'POST', `/api/v1/projects/${p2}/invite`, { emails: ['n@x.example'], role: 'viewer' })).json.results),
     [{ email: 'n@x.example', status: 'invited' }]);
 
   // The config is validated.
@@ -411,7 +418,7 @@ test('acceptance at sign-in applies project memberships, for a new account and a
   const env = await boot({ proxyAuth: { enabled: true, displayName: 'Proxy' }, idp: { admission: { emails: ['owner@test'] } } }, { proxyAuth: SECRET });
   const projectId = (await env.as('owner@test', 'POST', '/api/v1/projects', { name: 'Brand refresh' })).json.id as string;
   const invited = await env.as('owner@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['bo@partner.example'], role: 'editor' });
-  assert.deepEqual(invited.json.results, [{ email: 'bo@partner.example', status: 'invited' }]);
+  assert.deepEqual(brief(invited.json.results), [{ email: 'bo@partner.example', status: 'invited' }]);
 
   const headers = { 'x-lw-proxy-auth': SECRET, ynh_user: 'bo', ynh_user_email: 'bo@partner.example' };
   const signIn = await fetch(`${env.base}/api/auth/proxy`, { headers, redirect: 'manual' });
@@ -449,7 +456,7 @@ test('org-config: can[user.invite] follows the tier, can[session.edit], invite l
   assert.equal(admin.can['user.invite'], true);
   assert.equal(admin.can['session.edit'], true);
   assert.equal(admin.can['link.create-guest'], true);
-  assert.deepEqual(admin.invites, { domains: [], maxTtlHours: 720, projectRoles: ['viewer', 'editor', 'manager'] });
+  assert.deepEqual(admin.invites, { domains: [], maxTtlHours: 720, projectRoles: ['viewer', 'editor', 'manager'], passwordSetup: false, passwordDomains: [] });
   const member = await oc('alice@test');
   assert.equal(member.can['user.invite'], false, 'admins tier by default');
   assert.equal(member.can['session.edit'], true);
@@ -458,7 +465,7 @@ test('org-config: can[user.invite] follows the tier, can[session.edit], invite l
   const open = await boot({ policy: { invites: { allow: 'members', domains: ['example.com'], maxTtlHours: 24, projectRoles: ['viewer'] }, guestLinks: { enabled: false } } });
   const m2 = (await open.as('alice@test', 'GET', '/api/v1/org-config')).json as typeof admin & { policyVersion: string };
   assert.equal(m2.can['user.invite'], true, 'members tier');
-  assert.deepEqual(m2.invites, { domains: ['example.com'], maxTtlHours: 24, projectRoles: ['viewer'] });
+  assert.deepEqual(m2.invites, { domains: ['example.com'], maxTtlHours: 24, projectRoles: ['viewer'], passwordSetup: false, passwordDomains: [] });
   const a2 = (await open.as('admin@test', 'GET', '/api/v1/org-config')).json as typeof admin;
   assert.equal(a2.can['link.create-guest'], false, 'guest links are off');
 
@@ -569,7 +576,7 @@ test('taking a project off a console invitation never withdraws the invitation i
   const inv = made.json.invitations[0] as { id: string; createdVia: string };
   assert.equal(inv.createdVia, 'console');
   // An admin shares the project with the address: the console invitation gains it.
-  assert.deepEqual((await env.as('admin@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['newhire@x.example'], role: 'viewer' })).json.results,
+  assert.deepEqual(brief((await env.as('admin@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['newhire@x.example'], role: 'viewer' })).json.results),
     [{ email: 'newhire@x.example', status: 'invited' }]);
   // mona manages the project but holds no user.invite: she can take the
   // project off, and the invitation that admits the person stays.
@@ -595,7 +602,7 @@ test('acceptance applies a project entry only while its inviter still manages th
   for (const projectId of [kept, lost]) await env.store.putProjectMember({ projectId, userId: monaId, role: 'manager', addedBy: 'user:seed', addedAt: at });
   // mona invites a second mailbox of her own as manager on both projects.
   for (const projectId of [kept, lost]) {
-    assert.deepEqual((await env.as('mona@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['m.alt@partner.example'], role: 'manager' })).json.results,
+    assert.deepEqual(brief((await env.as('mona@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['m.alt@partner.example'], role: 'manager' })).json.results),
       [{ email: 'm.alt@partner.example', status: 'invited' }]);
   }
   // The owner then removes her from one project.
@@ -625,7 +632,7 @@ test('sharing goes only to an account that has shown it holds the address', asyn
   await env.store.linkIdentity({ identitySub: 'selfreg:re', userId: real.id, idp: 'selfreg', email: 'real@corp.example', emailVerified: true, linkedAt: at });
 
   const res = await env.as('admin@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['newhire@corp.example', 'real@corp.example'], role: 'editor' });
-  assert.deepEqual(res.json.results, [
+  assert.deepEqual(brief(res.json.results), [
     { email: 'newhire@corp.example', status: 'invited' },
     { email: 'real@corp.example', status: 'added' },
   ]);
@@ -690,7 +697,7 @@ test('with invitations off, a project invite refuses new addresses instead of wr
   const env = await boot({ idp: { admission: { emails: ['owner@test'], domains: ['partner.example'], invitations: false } } });
   for (const p of PEOPLE) await env.login(p.email);
   const projectId = (await env.as('owner@test', 'POST', '/api/v1/projects', { name: 'Off' })).json.id as string;
-  assert.deepEqual((await env.as('owner@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['bo@partner.example'], role: 'editor' })).json.results,
+  assert.deepEqual(brief((await env.as('owner@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['bo@partner.example'], role: 'editor' })).json.results),
     [{ email: 'bo@partner.example', status: 'refused', reason: 'invitations-off' }]);
   assert.equal(await env.store.findActiveInvitation('bo@partner.example'), null);
 });
@@ -733,14 +740,14 @@ onBothStores('inviting someone who signed up since their invitation closes it', 
   const second = (await env.as('owner@test', 'POST', '/api/v1/projects', { name: 'Second' })).json.id as string;
   // dee has no account yet, so both invites write one invitation.
   for (const projectId of [first, second]) {
-    assert.deepEqual((await env.as('owner@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['dee@test'], role: 'editor' })).json.results,
+    assert.deepEqual(brief((await env.as('owner@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['dee@test'], role: 'editor' })).json.results),
       [{ email: 'dee@test', status: 'invited' }]);
   }
   const inv = (await env.store.findActiveInvitation('dee@test'))!;
   assert.deepEqual(await invitationRows(env, first), ['dee@test']);
   // She signs in (the dev provider accepts no invitation), then is invited again.
   const deeId = await env.userId('dee@test');
-  assert.deepEqual((await env.as('owner@test', 'POST', `/api/v1/projects/${first}/invite`, { emails: ['dee@test'], role: 'editor' })).json.results,
+  assert.deepEqual(brief((await env.as('owner@test', 'POST', `/api/v1/projects/${first}/invite`, { emails: ['dee@test'], role: 'editor' })).json.results),
     [{ email: 'dee@test', status: 'added' }]);
   const people = (await env.as('owner@test', 'GET', `/api/v1/projects/${first}/members`)).json;
   assert.ok(people.members.some((m: { userId: string }) => m.userId === deeId), 'a member');
@@ -753,7 +760,7 @@ onBothStores('inviting someone who signed up since their invitation closes it', 
   assert.equal(removed?.actor, ownerPrincipal);
   assert.deepEqual(removed?.payload, { email: 'dee@test', projectId: first, userId: deeId, via: 'membership' });
   // The last project goes the same way, and the invitation is withdrawn.
-  assert.deepEqual((await env.as('owner@test', 'POST', `/api/v1/projects/${second}/invite`, { emails: ['dee@test'], role: 'viewer' })).json.results,
+  assert.deepEqual(brief((await env.as('owner@test', 'POST', `/api/v1/projects/${second}/invite`, { emails: ['dee@test'], role: 'viewer' })).json.results),
     [{ email: 'dee@test', status: 'added' }]);
   assert.deepEqual(await invitationRows(env, second), []);
   assert.ok((await env.store.getInvitation(inv.id))?.revokedAt, 'revoked');
@@ -795,7 +802,7 @@ onBothStores('transferring a project to someone closes their invitation to it', 
   const env = await boot({}, {}, store);
   const projectId = (await env.as('owner@test', 'POST', '/api/v1/projects', { name: 'Handover' })).json.id as string;
   for (const email of ['dee@test', 'newhire@corp.example']) {
-    assert.deepEqual((await env.as('owner@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: [email], role: 'viewer' })).json.results,
+    assert.deepEqual(brief((await env.as('owner@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: [email], role: 'viewer' })).json.results),
       [{ email, status: 'invited' }]);
   }
   // Someone who only claims newhire@ (an IdP that did not verify it) takes
@@ -816,13 +823,13 @@ onBothStores('transferring a project to someone closes their invitation to it', 
 onBothStores('an account with no sign-in yet keeps its invitation open, without the project', async (store) => {
   const env = await boot({}, {}, store);
   const projectId = (await env.as('owner@test', 'POST', '/api/v1/projects', { name: 'Provisioned' })).json.id as string;
-  assert.deepEqual((await env.as('owner@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['prov@corp.example'], role: 'viewer' })).json.results,
+  assert.deepEqual(brief((await env.as('owner@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['prov@corp.example'], role: 'viewer' })).json.results),
     [{ email: 'prov@corp.example', status: 'invited' }]);
   const inv = (await env.store.findActiveInvitation('prov@corp.example'))!;
   // The operator provisions the account (SCIM, a seed): no sign-in yet, so
   // the invitation may be what admits this person the first time.
   const prov = await env.store.upsertUserBySub({ sub: 'scim:prov', email: 'prov@corp.example', groups: [], role: 'member' });
-  assert.deepEqual((await env.as('owner@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['prov@corp.example'], role: 'viewer' })).json.results,
+  assert.deepEqual(brief((await env.as('owner@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['prov@corp.example'], role: 'viewer' })).json.results),
     [{ email: 'prov@corp.example', status: 'added' }]);
   assert.equal((await env.store.getProjectMember(projectId, prov.id))?.role, 'viewer');
   const after = (await env.store.getInvitation(inv.id))!;
@@ -845,7 +852,7 @@ onBothStores('the people list never shows an invitation for someone already on t
   assert.deepEqual(await invitationRows(env, projectId), ['stranger@else.example'], 'neither a member nor the owner is listed as invited');
   assert.ok(!(await env.store.getInvitation('inv_dee'))?.revokedAt, 'reading the list changes nothing');
   // Sharing with her again tidies the row: 'already', and the invitation is closed.
-  assert.deepEqual((await env.as('owner@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['dee@test'], role: 'viewer' })).json.results,
+  assert.deepEqual(brief((await env.as('owner@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['dee@test'], role: 'viewer' })).json.results),
     [{ email: 'dee@test', status: 'already' }]);
   assert.ok((await env.store.getInvitation('inv_dee'))?.revokedAt);
 });
@@ -861,10 +868,10 @@ onBothStores('an invitation that would still raise a member stays listed until i
   const bo = (await env.store.findUsersByEmail('bo@partner.example'))[0]!;
   // Nobody holds these addresses yet, so each invite writes an invitation.
   for (const [email, role] of [['bo.home@else.example', 'manager'], ['bo.alt@else.example', 'viewer'], ['bo.ed@else.example', 'editor']] as const) {
-    assert.deepEqual((await env.as('owner@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: [email], role })).json.results,
+    assert.deepEqual(brief((await env.as('owner@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: [email], role })).json.results),
       [{ email, status: 'invited' }]);
   }
-  assert.deepEqual((await env.as('owner@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['bo@partner.example'], role: 'viewer' })).json.results,
+  assert.deepEqual(brief((await env.as('owner@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['bo@partner.example'], role: 'viewer' })).json.results),
     [{ email: 'bo@partner.example', status: 'added' }]);
   // Bo then links sign-ins carrying the three addresses. A link accepts nothing.
   const at = new Date().toISOString();
@@ -882,4 +889,208 @@ onBothStores('an invitation that would still raise a member stays listed until i
   assert.equal((await signIn('bohome', 'bo.home@else.example')).status, 302);
   assert.equal((await env.store.getProjectMember(projectId, bo.id))?.role, 'manager');
   assert.deepEqual(await invitationRows(env, projectId), [], 'accepted, and the viewer one now changes nothing');
+});
+
+// ── invite links, requests and Invite again on the people panel ────────────
+// (plans/74 invite spec R17 to R20): what the panel lists, the link a pending
+// invitation carries for this project, New link and Invite again, the
+// password tick, and the access requests a share supersedes.
+
+const PASSWORD_IDP = { additional: [{ id: 'email', kind: 'password', displayName: 'Email and password' }] };
+const DAY = 86_400_000;
+const isoAgo = (ms: number): string => new Date(Date.now() - ms).toISOString();
+const openRequest = (over: Partial<AccessRequestRecord> & Pick<AccessRequestRecord, 'id' | 'email'>): AccessRequestRecord => ({
+  kind: 'project', status: 'open', createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 14 * DAY).toISOString(), ...over,
+});
+
+onBothStores('the people panel lists pending invitations with this project\'s link, expired ones for 30 days, and the requests a manager may answer', async (store) => {
+  const env = await boot({}, {}, store);
+  const projectId = await seedProject(env);
+  const invited = await env.as('admin@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['new@else.example'], role: 'editor' });
+  const row = invited.json.results[0] as { invitationId: string; link: string; expiresAt: string };
+  assert.deepEqual(readInviteToken(row.link.slice(row.link.lastIndexOf('/') + 1), ['lMem']),
+    { invitationId: row.invitationId, projectId, version: 1 }, 'the link is for this project\'s entry');
+  assert.equal(await env.store.markInvitationOpened(row.invitationId, new Date().toISOString()), true);
+  // Ended within the window: listed as expired, without a link. Longer ago: gone.
+  await env.store.createInvitation({
+    id: 'inv_late', email: 'late@else.example', groups: [], invitedBy: `user:${await env.userId('mona@test')}`,
+    createdAt: isoAgo(10 * DAY), expiresAt: isoAgo(2 * DAY), projects: [{ projectId, role: 'viewer' }], createdVia: 'project',
+  });
+  await env.store.createInvitation({
+    id: 'inv_gone', email: 'gone@else.example', groups: [], invitedBy: 'user:x',
+    createdAt: isoAgo(60 * DAY), expiresAt: isoAgo(40 * DAY), projects: [{ projectId, role: 'viewer' }], createdVia: 'project',
+  });
+
+  const panel = (await env.as('mona@test', 'GET', `/api/v1/projects/${projectId}/members`)).json;
+  const byEmail = new Map((panel.invitations as Array<Record<string, unknown>>).map((i) => [i.email, i]));
+  assert.deepEqual([...byEmail.keys()].sort(), ['late@else.example', 'new@else.example']);
+  const pending = byEmail.get('new@else.example')!;
+  assert.deepEqual(
+    [pending.status, pending.link, pending.expiresAt, typeof pending.openedAt, pending.invitedByName, pending.passwordSetup],
+    ['pending', row.link, row.expiresAt, 'string', 'Ada Admin', false],
+  );
+  const late = byEmail.get('late@else.example')!;
+  assert.deepEqual([late.status, late.link, late.invitedByName, late.role], ['expired', undefined, 'Mona', 'viewer']);
+
+  // Requests: managers who may answer see them, with the session link they came through.
+  const sessionId = await newSession(env, projectId);
+  const vicId = await env.userId('vic@test');
+  await env.store.createAccessRequest(openRequest({
+    id: 'req_vic', email: 'vic@test', userId: vicId, projectId, role: 'editor', currentRole: 'viewer', note: '<b>may I</b>', viaSessionId: sessionId,
+  }), new Date().toISOString());
+  const asked = (await env.as('mona@test', 'GET', `/api/v1/projects/${projectId}/members`)).json;
+  assert.deepEqual(asked.requests, [{
+    id: 'req_vic', userId: vicId, name: 'Vic', email: 'vic@test', role: 'editor', currentRole: 'viewer', note: '<b>may I</b>',
+    createdAt: (await env.store.getAccessRequest('req_vic'))!.createdAt, viaSession: { id: sessionId, name: 'x' },
+  }]);
+  assert.deepEqual((await env.as('alice@test', 'GET', `/api/v1/projects/${projectId}/members`)).json.requests.map((r: { id: string }) => r.id), ['req_vic']);
+  // An admin manages the project through project.manage, but its owner and
+  // managers answer while they can, so the admin is listed nothing to answer.
+  assert.deepEqual((await env.as('admin@test', 'GET', `/api/v1/projects/${projectId}/members`)).json.requests, []);
+  const asEditor = (await env.as('eddie@test', 'GET', `/api/v1/projects/${projectId}/members`)).json;
+  assert.deepEqual([asEditor.invitations, asEditor.requests], [undefined, undefined], 'neither for anyone below manager');
+});
+
+onBothStores('a share, an invite or a role change supersedes the person\'s open requests for no more than they now have', async (store) => {
+  const env = await boot({}, {}, store);
+  const projectId = await seedProject(env);
+  const vicId = await env.userId('vic@test');
+  const ollyId = await env.userId('olly@test');
+  const monaId = await env.userId('mona@test');
+  const now = new Date().toISOString();
+  await env.store.createAccessRequest(openRequest({ id: 'req_edit', email: 'vic@test', userId: vicId, projectId, role: 'editor', currentRole: 'viewer' }), now);
+  await env.store.createAccessRequest(openRequest({ id: 'req_view', email: 'olly@test', userId: ollyId, projectId, role: 'viewer', currentRole: 'none' }), now);
+  // The approvers' notice for a request ends with it.
+  await env.store.putMessage({
+    id: 'msg_req_req_edit', kind: 'request', severity: 'action', audience: { users: [monaId] }, title: 'Vic asks to edit Launch',
+    endsAt: new Date(Date.now() + 14 * DAY).toISOString(), dismissible: true,
+  });
+  const inboxIds = async () => ((await env.as('mona@test', 'GET', '/api/v1/inbox')).json.messages as Array<{ id: string }>).map((m) => m.id);
+  assert.ok((await inboxIds()).includes('msg_req_req_edit'));
+
+  // olly is given viewer: their viewer request is moot.
+  assert.deepEqual(brief((await env.as('mona@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['olly@test'], role: 'viewer' })).json.results),
+    [{ email: 'olly@test', status: 'added' }]);
+  assert.equal((await env.store.getAccessRequest('req_view'))?.status, 'superseded');
+  // vic asked to edit; a share at viewer ('already') leaves the ask open, a role change to editor ends it.
+  assert.deepEqual(brief((await env.as('mona@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['vic@test'], role: 'viewer' })).json.results),
+    [{ email: 'vic@test', status: 'already' }]);
+  assert.equal((await env.store.getAccessRequest('req_edit'))?.status, 'open');
+  assert.equal((await env.as('mona@test', 'PATCH', `/api/v1/projects/${projectId}/members/${vicId}`, { role: 'editor' })).status, 200);
+  const closed = (await env.store.getAccessRequest('req_edit'))!;
+  assert.deepEqual([closed.status, closed.answeredBy], ['superseded', `user:${monaId}`]);
+  assert.ok(!(await inboxIds()).includes('msg_req_req_edit'), 'the approvers\' notice is retired');
+  const rows = (await env.store.listAudit()).filter((e) => e.action === 'access.supersede').map((e) => [e.subject, e.payload?.by]);
+  assert.deepEqual(rows.sort(), [['request:req_edit', 'membership'], ['request:req_view', 'membership']]);
+});
+
+test('project invite answers carry each invitation\'s link and the message context; the password tick counts only for admins', async () => {
+  const env = await boot({
+    idp: PASSWORD_IDP,
+    instance: { name: 'lolly.ing', baseUrl: 'https://team.example', inviteNote: 'Use GitHub or email and password.' },
+    policy: { invites: { allow: 'members', passwordDomains: ['suse.com'] } },
+  });
+  const projectId = await seedProject(env);
+  const r = await env.as('admin@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['sam@suse.com'], role: 'editor', passwordSetup: true });
+  assert.equal(r.status, 200);
+  const [sam] = r.json.results as Array<{ email: string; status: string; invitationId: string; link: string; expiresAt: string }>;
+  const inv = (await env.store.findActiveInvitation('sam@suse.com'))!;
+  assert.deepEqual([sam!.status, sam!.invitationId, sam!.expiresAt, inv.passwordSetup], ['invited', inv.id, inv.expiresAt, true]);
+  assert.deepEqual(r.json.message, { workspace: 'lolly.ing', inviter: 'Ada Admin', providers: ['Email and password'], note: 'Use GitHub or email and password.' });
+  assert.equal((await env.store.listAudit()).find((e) => e.action === 'invite.create')?.payload?.passwordSetup, true);
+  assert.equal((await env.as('admin@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['x@suse.com'], role: 'editor', passwordSetup: 1 })).status, 400);
+
+  // Inviting the same address again at the same role: already invited, with the link to copy again.
+  const again = (await env.as('admin@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['sam@suse.com'], role: 'viewer' })).json.results[0];
+  assert.deepEqual([again.status, again.link], ['already', sam!.link]);
+
+  // A member manager may invite under the members tier, but never with a password link.
+  const byMona = await env.as('mona@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['kim@suse.com'], role: 'viewer', passwordSetup: true });
+  assert.deepEqual(brief(byMona.json.results), [{ email: 'kim@suse.com', status: 'invited' }]);
+  assert.equal((await env.store.findActiveInvitation('kim@suse.com'))?.passwordSetup, undefined, 'passwordSetup ignored for a non-admin manager');
+  // An admin's tick on an existing invitation turns it on, once.
+  await env.as('admin@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['kim@suse.com'], role: 'viewer', passwordSetup: true });
+  assert.equal((await env.store.findActiveInvitation('kim@suse.com'))?.passwordSetup, true);
+
+  // Without password sign-in the tick means nothing.
+  const plain = await boot();
+  const p2 = await seedProject(plain);
+  await plain.as('admin@test', 'POST', `/api/v1/projects/${p2}/invite`, { emails: ['sam@suse.com'], role: 'viewer', passwordSetup: true });
+  assert.equal((await plain.store.findActiveInvitation('sam@suse.com'))?.passwordSetup, undefined);
+});
+
+onBothStores('New link and Invite again from the people panel', async (store) => {
+  const env = await boot({}, {}, store);
+  const projectId = await seedProject(env);
+  const other = (await env.as('admin@test', 'POST', '/api/v1/projects', { name: 'Other' })).json.id as string;
+  const first = (await env.as('admin@test', 'POST', `/api/v1/projects/${projectId}/invite`, { emails: ['new@else.example'], role: 'editor' })).json.results[0];
+
+  // New link (R19): a manager of a project the invitation carries.
+  const rotated = await env.as('mona@test', 'POST', `/api/v1/projects/${projectId}/invitations/${first.invitationId}/link`, {});
+  assert.equal(rotated.status, 200);
+  assert.notEqual(rotated.json.link, first.link);
+  assert.equal(rotated.json.expiresAt, first.expiresAt);
+  assert.equal(readInviteToken(rotated.json.link.slice(rotated.json.link.lastIndexOf('/') + 1), ['lMem'])?.version, 2);
+  const linkRow = (await env.store.listAudit()).find((e) => e.action === 'invite.link');
+  assert.deepEqual([linkRow?.actor, linkRow?.payload], [`user:${await env.userId('mona@test')}`, { email: 'new@else.example', version: 2 }]);
+  assert.equal((await env.as('eddie@test', 'POST', `/api/v1/projects/${projectId}/invitations/${first.invitationId}/link`, {})).status, 403);
+  assert.equal((await env.as('admin@test', 'POST', `/api/v1/projects/${other}/invitations/${first.invitationId}/link`, {})).status, 404,
+    'only from a project the invitation carries');
+  // Invite again is for an expired invitation only.
+  assert.equal((await env.as('admin@test', 'POST', `/api/v1/projects/${projectId}/invitations/${first.invitationId}/reinvite`, {})).json.error.code, 'NOT_ENDED');
+
+  // An expired one: New link is refused, Invite again needs someone who may invite new people.
+  const monaId = await env.userId('mona@test');
+  await env.store.createInvitation({
+    id: 'inv_late', email: 'late@else.example', groups: ['kept-out'], invitedBy: `user:${monaId}`,
+    createdAt: isoAgo(31 * DAY), expiresAt: isoAgo(DAY),
+    projects: [{ projectId, role: 'viewer', invitedBy: `user:${monaId}` }, { projectId: other, role: 'editor' }], createdVia: 'project',
+  });
+  assert.equal((await env.as('mona@test', 'POST', `/api/v1/projects/${projectId}/invitations/inv_late/link`, {})).json.error.code, 'NOT_PENDING');
+  const refused = await env.as('mona@test', 'POST', `/api/v1/projects/${projectId}/invitations/inv_late/reinvite`, {});
+  assert.deepEqual([refused.status, refused.json.error.code], [403, 'FORBIDDEN'], 'admins invite new people by default (plans/75 C12)');
+  const again = await env.as('admin@test', 'POST', `/api/v1/projects/${projectId}/invitations/inv_late/reinvite`, {});
+  assert.equal(again.status, 200);
+  const [result] = again.json.results as Array<{ email: string; status: string; invitationId: string; link: string }>;
+  assert.deepEqual([result!.email, result!.status], ['late@else.example', 'invited']);
+  assert.equal(readInviteToken(result!.link.slice(result!.link.lastIndexOf('/') + 1), ['lMem'])?.projectId, projectId);
+  assert.equal(again.json.link, `https://team.example/#/team/project/${projectId}`);
+  assert.equal(again.json.message.inviter, 'Ada Admin');
+  assert.ok((await env.store.getInvitation('inv_late'))?.revokedAt, 'the expired invitation ends');
+  const fresh = (await env.store.getInvitation(result!.invitationId))!;
+  const adminId = await env.userId('admin@test');
+  assert.deepEqual([fresh.groups, fresh.projects], [[], [{ projectId, role: 'viewer', invitedBy: `user:${adminId}` }]],
+    'only this project, at the role it had, now in the name of whoever invited again');
+  const create = (await env.store.listAudit()).find((e) => e.action === 'invite.create' && e.subject === `invitation:${fresh.id}`);
+  assert.deepEqual([create?.payload?.via, create?.payload?.from], ['reinvite', 'inv_late']);
+  const panel = (await env.as('mona@test', 'GET', `/api/v1/projects/${projectId}/members`)).json.invitations as Array<{ id: string; status: string }>;
+  assert.deepEqual(panel.filter((i) => i.id !== first.invitationId).map((i) => [i.id, i.status]), [[fresh.id, 'pending']]);
+});
+
+test('org-config: invites.passwordSetup follows password sign-in, the role and user.invite; passwordDomains and requests ride along', async () => {
+  const config = (over: Record<string, unknown> = {}) => parseConfig(JSON.stringify({
+    instance: { name: 'x', baseUrl: 'https://x.example', pack: '/tmp' }, dev: { enabled: true }, ...over,
+  }));
+  const person = (role: string, id = 'u1') => ({ id, sub: 's', email: 'e@x', groups: [role], idpGroups: [], localGroups: [], role, sessionEpoch: 0, createdAt: '', lastSeenAt: '' }) as unknown as UserRecord;
+  const withPassword = config({ idp: PASSWORD_IDP, policy: { invites: { passwordDomains: ['SUSE.com'] }, requests: { project: false, join: true, ttlDays: 14, joinOpenMax: 50 } } });
+  const oc = (c: ReturnType<typeof config>, user: UserRecord, grants: Grant[] = []) => assembleOrgConfig({ config: c, user, overlays: new Map(), grants, inboxUnread: 0 });
+
+  assert.equal(oc(withPassword, person('admin')).invites.passwordSetup, true);
+  assert.equal(oc(withPassword, person('owner')).invites.passwordSetup, true);
+  assert.equal(oc(withPassword, person('member')).invites.passwordSetup, false);
+  const deny: Grant = { principal: 'user:u1', action: 'user.invite', resource: '*', effect: 'deny' };
+  assert.equal(oc(withPassword, person('admin'), [deny]).invites.passwordSetup, false, 'a deny of user.invite wins');
+  assert.equal(oc(config(), person('admin')).invites.passwordSetup, false, 'no password sign-in, no tick');
+  assert.equal(maySetPasswordFromLink(withPassword, person('admin'), []), true);
+  assert.equal(maySetPasswordFromLink(withPassword, person('admin', 'svc_ci'), []), false, 'a service token is not a person');
+  assert.deepEqual(oc(withPassword, person('member')).invites.passwordDomains, ['suse.com']);
+  assert.deepEqual(oc(withPassword, person('member')).requests, { project: false });
+  assert.deepEqual(oc(config(), person('member')).requests, { project: true });
+
+  // Both settings move the version, so a redeploy that changes them is not a stale 304.
+  const v = (c: ReturnType<typeof config>) => oc(c, person('member')).policyVersion;
+  assert.notEqual(v(config()), v(config({ idp: PASSWORD_IDP })));
+  assert.notEqual(v(config()), v(config({ policy: { requests: { project: false, join: false, ttlDays: 14, joinOpenMax: 50 } } })));
+  assert.equal(v(config()), v(config({ policy: { requests: { project: true, join: true, ttlDays: 7, joinOpenMax: 10 } } })),
+    'what the shell does not read leaves it alone');
 });

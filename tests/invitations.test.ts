@@ -24,6 +24,7 @@ import { parseConfig } from '../server/src/config/instance.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
 import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import { buildApp } from '../server/src/api/app.ts';
+import { readInviteToken } from '../server/src/access/invite-token.ts';
 
 const servers: Server[] = [];
 after(() => { for (const s of servers) s.close(); });
@@ -169,7 +170,7 @@ test('routes: create, idempotent re-invite, list, revoke once, re-invite after r
   assert.deepEqual((await mixed.json() as { invitations: Wire[] }).invitations.map((i) => i.created), [false, true]);
   assert.equal((await store.listAudit()).filter((e) => e.action === 'invite.create').length, 3, 'one audit row per invitation actually created');
   const createRow = (await store.listAudit()).find((e) => e.action === 'invite.create' && e.subject === `invitation:${ana.id}`);
-  assert.deepEqual(createRow?.payload, { email: 'ana@example.com', groups: ['team'], expiresAt });
+  assert.deepEqual(createRow?.payload, { email: 'ana@example.com', groups: ['team'], expiresAt, via: 'console', passwordSetup: false });
 
   const listed = await (await fetch(`${base}/api/v1/invitations`, { headers: { cookie: admin } })).json() as { invitations: Wire[] };
   assert.equal(listed.invitations.length, 3);
@@ -520,4 +521,201 @@ test('lw invite add / ls / rm', async () => {
   assert.doesNotMatch((await run(['invite', 'ls'])).stdout, /bo@example\.com/, 'revoked rows hide by default');
   assert.match((await run(['invite', 'ls', '--all'])).stdout, /bo@example\.com +revoked/);
   await assert.rejects(run(['invite', 'add']), /usage: lw invite add/);
+});
+
+// ── invite links, New link and Invite again (plans/74 invite spec R13 to R16) ─
+
+const PASSWORD = { id: 'email', kind: 'password', displayName: 'Email and password' };
+const post = (base: string, cookie: string, path: string, body: unknown = {}) =>
+  fetch(`${base}${path}`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+type LinkWire = Wire & {
+  link: string | null; linkVersion: number; openedAt: string | null; passwordSetup: boolean; password: string;
+  inviter: { name: string } | null; createdVia: string; acceptedUser: { name: string; email: string } | null;
+  projects: Array<{ projectId: string; name: string | null; role: string; invitedBy: { name: string } | null }>;
+};
+const tokenOf = (link: string): string => link.slice(link.lastIndexOf('/') + 1);
+
+test('invitation wires: a personal link while pending, names and projects, password state, and the message context', async () => {
+  const { base, store } = await boot({
+    dev: { enabled: true, users: [...DEV.users, { email: 'ada@test', name: 'Ada', groups: ['admin'] }] },
+    idp: { additional: [PASSWORD] },
+    instance: { name: 'lolly.ing', baseUrl: 'https://team.example', inviteNote: 'Use GitHub or email and password.' },
+    policy: { invites: { passwordDomains: ['suse.com'] } },
+  });
+  const ada = await devLogin(base, 'ada@test');
+  const made = await invite(base, ada, { emails: ['sam@suse.com'], passwordSetup: true });
+  assert.equal(made.status, 201);
+  const body = await made.json() as { invitations: LinkWire[]; providers: string[]; passwordSignIn: boolean; passwordDomains: string[]; inviteNote: string | null };
+  const sam = body.invitations[0]!;
+  assert.match(sam.link!, /^https:\/\/team\.example\/l\/invite\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+  assert.deepEqual(readInviteToken(tokenOf(sam.link!), ['lInv']), { invitationId: sam.id, projectId: null, version: 1 },
+    'the console carries the workspace link, signed with the link secret');
+  assert.deepEqual([sam.linkVersion, sam.openedAt, sam.passwordSetup, sam.password, sam.createdVia], [1, null, true, 'none', 'console']);
+  assert.deepEqual(sam.inviter, { name: 'Ada' }, 'named, never by address');
+  assert.deepEqual([body.providers, body.passwordSignIn, body.passwordDomains, body.inviteNote],
+    [['Email and password'], true, ['suse.com'], 'Use GitHub or email and password.']);
+  const create = (await store.listAudit()).find((e) => e.action === 'invite.create');
+  assert.deepEqual(create?.payload, { email: 'sam@suse.com', groups: [], via: 'console', passwordSetup: true });
+
+  // A password set since ends what the flag offers; the wire says so.
+  await store.putPasswordCredential({ id: 'pw_1', email: 'sam@suse.com', hash: 'x', at: new Date().toISOString(), ownerIssued: false });
+  const listed = await (await fetch(`${base}/api/v1/invitations`, { headers: { cookie: ada } })).json() as { invitations: LinkWire[] };
+  assert.equal(listed.invitations.find((i) => i.id === sam.id)?.password, 'set');
+
+  // A project invitation shows its project and who put it there.
+  const projectId = (await (await post(base, ada, '/api/v1/projects', { name: 'Brand refresh' })).json() as { id: string }).id;
+  assert.equal((await post(base, ada, `/api/v1/projects/${projectId}/invite`, { emails: ['bo@x.example'], role: 'editor' })).status, 200);
+  const all = await (await fetch(`${base}/api/v1/invitations`, { headers: { cookie: ada } })).json() as { invitations: LinkWire[] };
+  const bo = all.invitations.find((i) => i.email === 'bo@x.example')!;
+  assert.equal(bo.createdVia, 'project');
+  assert.deepEqual(bo.projects, [{ projectId, name: 'Brand refresh', role: 'editor', invitedBy: { name: 'Ada' } }]);
+
+  // Ended rows carry no link; an accepted one names the account.
+  const revoked = await (await revoke(base, ada, bo.id)).json() as LinkWire;
+  assert.deepEqual([revoked.status, revoked.link], ['revoked', null]);
+  const past = new Date(Date.now() - 86_400_000).toISOString();
+  await store.createInvitation({ id: 'inv_old', email: 'old@x.example', groups: [], invitedBy: 'user:x', createdAt: past, expiresAt: past });
+  const member = (await store.findUsersByEmail('ada@test'))[0]!;
+  await store.createInvitation({ id: 'inv_acc', email: 'acc@x.example', groups: [], invitedBy: 'user:x', createdAt: new Date().toISOString() });
+  await store.acceptInvitation('inv_acc', member.id, new Date().toISOString());
+  const later = await (await fetch(`${base}/api/v1/invitations`, { headers: { cookie: ada } })).json() as { invitations: LinkWire[] };
+  const old = later.invitations.find((i) => i.id === 'inv_old')!;
+  assert.deepEqual([old.status, old.link, old.inviter], ['expired', null, null]);
+  const acc = later.invitations.find((i) => i.id === 'inv_acc')!;
+  assert.deepEqual([acc.status, acc.link, acc.acceptedUser], ['accepted', null, { name: 'Ada', email: 'ada@test' }]);
+});
+
+test('POST /api/v1/invitations: an account that holds the address is "already", and the password tick needs an admin and password sign-in', async () => {
+  const { base, store } = await boot({ dev: DEV, idp: { additional: [PASSWORD] } });
+  const admin = await devLogin(base, 'admin@test');
+  await devLogin(base, 'member@test');
+  const res = await invite(base, admin, { emails: ['member@test', 'new@x.example'] });
+  assert.equal(res.status, 201);
+  const rows = (await res.json() as { invitations: Array<{ email: string; status: string; created: boolean; userIds?: string[] }> }).invitations;
+  const memberId = (await store.findUsersByEmail('member@test'))[0]!.id;
+  assert.deepEqual(rows.map((r) => [r.email, r.status, r.created]), [['member@test', 'already', false], ['new@x.example', 'pending', true]]);
+  assert.deepEqual(rows[0]?.userIds, [memberId]);
+  assert.equal(await store.findActiveInvitation('member@test'), null, 'no row is written for someone already here');
+  assert.equal((await invite(base, admin, { emails: ['p@x.example'], passwordSetup: 'yes' })).status, 400);
+
+  // A member who holds user.invite may invite, but not with a password link.
+  await store.putGrant({ principal: `user:${memberId}`, action: 'user.invite', resource: '*', effect: 'allow' });
+  const member = await devLogin(base, 'member@test');
+  const byMember = await (await invite(base, member, { emails: ['m@suse.com'], passwordSetup: true })).json() as { invitations: LinkWire[] };
+  assert.equal(byMember.invitations[0]?.passwordSetup, false, 'ignored, not refused');
+
+  // Without password sign-in the tick means nothing, even for an admin.
+  const plain = await boot({ dev: DEV });
+  const plainAdmin = await devLogin(plain.base, 'admin@test');
+  const made = await (await invite(plain.base, plainAdmin, { emails: ['p@x.example'], passwordSetup: true })).json() as { invitations: LinkWire[]; passwordSignIn: boolean };
+  assert.deepEqual([made.invitations[0]?.passwordSetup, made.passwordSignIn], [false, false]);
+});
+
+test('POST /api/v1/invitations supersedes the open join request of an address it invites', async () => {
+  const { base, store } = await boot({ dev: DEV });
+  const admin = await devLogin(base, 'admin@test');
+  const now = new Date();
+  await store.createAccessRequest({
+    id: 'req_join', kind: 'join', status: 'open', email: 'zed@x.example', idp: 'github', identitySub: 'github:9',
+    createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + 14 * 86_400_000).toISOString(),
+  }, now.toISOString());
+  assert.equal((await invite(base, admin, { emails: ['zed@x.example'] })).status, 201);
+  assert.equal((await store.getAccessRequest('req_join'))?.status, 'superseded');
+  const adminId = (await store.findUsersByEmail('admin@test'))[0]!.id;
+  const row = (await store.listAudit()).find((e) => e.action === 'access.supersede');
+  assert.deepEqual([row?.actor, row?.subject, row?.payload], [`user:${adminId}`, 'request:req_join', { kind: 'join', by: 'invitation' }]);
+});
+
+test('New link (R13): the version goes up and earlier links stop matching; pending only; ten a day per invitation', async () => {
+  const { base, store } = await boot({ dev: DEV });
+  const admin = await devLogin(base, 'admin@test');
+  const first = (await (await invite(base, admin, { emails: ['ana@x.example'] })).json() as { invitations: LinkWire[] }).invitations[0]!;
+  assert.equal(await store.markInvitationOpened(first.id, new Date().toISOString()), true);
+
+  const res = await post(base, admin, `/api/v1/invitations/${first.id}/link`);
+  assert.equal(res.status, 200);
+  const next = (await res.json() as { invitation: LinkWire }).invitation;
+  assert.deepEqual([next.id, next.linkVersion, next.openedAt], [first.id, 2, null], 'opened again counts from the new link');
+  assert.notEqual(next.link, first.link);
+  // The invite page compares the signed version with the stored one, so a
+  // link copied before reads as ended there.
+  assert.equal(readInviteToken(tokenOf(first.link!), ['lInv'])?.version, 1);
+  assert.equal(readInviteToken(tokenOf(next.link!), ['lInv'])?.version, (await store.getInvitation(first.id))?.linkVersion);
+  const adminId = (await store.findUsersByEmail('admin@test'))[0]!.id;
+  const row = (await store.listAudit()).find((e) => e.action === 'invite.link');
+  assert.deepEqual([row?.actor, row?.subject, row?.payload], [`user:${adminId}`, `invitation:${first.id}`, { email: 'ana@x.example', version: 2 }]);
+
+  // Ten new links a day for one invitation, then 429.
+  for (let i = 0; i < 9; i++) assert.equal((await post(base, admin, `/api/v1/invitations/${first.id}/link`)).status, 200, `link ${i + 2}`);
+  const eleventh = await post(base, admin, `/api/v1/invitations/${first.id}/link`);
+  assert.equal(eleventh.status, 429);
+  assert.equal((await eleventh.json() as { error: { code: string } }).error.code, 'RATE_LIMITED');
+  assert.equal((await store.getInvitation(first.id))?.linkVersion, 11);
+
+  // Only a pending invitation: accepted and expired are 409, revoked and unknown 404, members 403.
+  const at = new Date().toISOString();
+  await store.createInvitation({ id: 'inv_acc', email: 'acc@x.example', groups: [], invitedBy: 'user:x', createdAt: at });
+  await store.acceptInvitation('inv_acc', adminId, at);
+  const past = new Date(Date.now() - 1000).toISOString();
+  await store.createInvitation({ id: 'inv_exp', email: 'exp@x.example', groups: [], invitedBy: 'user:x', createdAt: past, expiresAt: past });
+  await store.createInvitation({ id: 'inv_rev', email: 'rev@x.example', groups: [], invitedBy: 'user:x', createdAt: at });
+  await store.revokeInvitation('inv_rev', at);
+  const code = async (r: Response) => [r.status, (await r.json() as { error: { code: string } }).error.code];
+  assert.deepEqual(await code(await post(base, admin, '/api/v1/invitations/inv_acc/link')), [409, 'NOT_PENDING']);
+  assert.deepEqual(await code(await post(base, admin, '/api/v1/invitations/inv_exp/link')), [409, 'NOT_PENDING']);
+  assert.deepEqual(await code(await post(base, admin, '/api/v1/invitations/inv_rev/link')), [404, 'NOT_FOUND']);
+  assert.deepEqual(await code(await post(base, admin, '/api/v1/invitations/inv_nope/link')), [404, 'NOT_FOUND']);
+  assert.equal((await post(base, await devLogin(base, 'member@test'), `/api/v1/invitations/${first.id}/link`)).status, 403);
+});
+
+test('Invite again (R14): a fresh invitation for an ended one, under the same group checks; refused while another is live', async () => {
+  const { base, store } = await boot({ dev: DEV });
+  const admin = await devLogin(base, 'admin@test');
+  const adminId = (await store.findUsersByEmail('admin@test'))[0]!.id;
+  await store.putLocalGroup({ name: 'team', createdAt: new Date().toISOString() });
+  const longAgo = new Date(Date.now() - 40 * 86_400_000).toISOString();
+  const past = new Date(Date.now() - 86_400_000).toISOString();
+  await store.createInvitation({
+    id: 'inv_exp', email: 'cy@x.example', groups: ['team'], invitedBy: 'user:someone', createdAt: longAgo, expiresAt: past,
+    projects: [{ projectId: 'prj_a', role: 'editor', invitedBy: 'user:other' }, { projectId: 'prj_b', role: 'viewer' }], createdVia: 'project',
+  });
+
+  const before = Date.now();
+  const res = await post(base, admin, '/api/v1/invitations/inv_exp/reinvite');
+  assert.equal(res.status, 201);
+  const fresh = (await res.json() as { invitation: LinkWire }).invitation;
+  assert.notEqual(fresh.id, 'inv_exp');
+  assert.deepEqual([fresh.status, fresh.groups, fresh.createdVia, fresh.linkVersion], ['pending', ['team'], 'project', 1]);
+  assert.deepEqual((await store.getInvitation(fresh.id))?.projects, [
+    { projectId: 'prj_a', role: 'editor', invitedBy: 'user:other' }, { projectId: 'prj_b', role: 'viewer', invitedBy: 'user:someone' },
+  ], 'the projects keep who put them there, so acceptance asks about the same people');
+  assert.ok(fresh.link);
+  const ttl = Date.parse(fresh.expiresAt!) - before;
+  assert.ok(ttl > 719 * 3_600_000 && ttl <= 720 * 3_600_000 + 60_000, 'a fresh 30 days');
+  assert.ok((await store.getInvitation('inv_exp'))?.revokedAt, 'the expired one ends, so its links stop working');
+  const create = (await store.listAudit()).find((e) => e.action === 'invite.create' && e.subject === `invitation:${fresh.id}`);
+  assert.equal(create?.actor, `user:${adminId}`);
+  assert.deepEqual([create?.payload?.via, create?.payload?.from], ['reinvite', 'inv_exp']);
+
+  const code = async (r: Response) => [r.status, (await r.json() as { error: { code: string } }).error.code];
+  // A live invitation for the address: 409 with it. A pending one: not ended.
+  await revoke(base, admin, fresh.id);
+  await store.createInvitation({ id: 'inv_live', email: 'cy@x.example', groups: [], invitedBy: 'user:x', createdAt: new Date().toISOString() });
+  const clash = await post(base, admin, `/api/v1/invitations/${fresh.id}/reinvite`);
+  assert.equal(clash.status, 409);
+  const clashBody = await clash.json() as { error: { code: string; invitation: { id: string } } };
+  assert.deepEqual([clashBody.error.code, clashBody.error.invitation.id], ['ACTIVE_INVITATION', 'inv_live']);
+  assert.deepEqual(await code(await post(base, admin, '/api/v1/invitations/inv_live/reinvite')), [409, 'NOT_ENDED']);
+  assert.deepEqual(await code(await post(base, admin, '/api/v1/invitations/inv_nope/reinvite')), [404, 'NOT_FOUND']);
+
+  // A revoked invitation that never ended stays without an end; the groups are checked again.
+  await store.createInvitation({ id: 'inv_own', email: 'boss@x.example', groups: ['owner'], invitedBy: 'user:x', createdAt: new Date().toISOString() });
+  await store.revokeInvitation('inv_own', new Date().toISOString());
+  assert.deepEqual(await code(await post(base, admin, '/api/v1/invitations/inv_own/reinvite')), [403, 'OWNER_ONLY']);
+  const owner = await devLogin(base, 'owner@test');
+  assert.deepEqual(await code(await post(base, owner, '/api/v1/invitations/inv_own/reinvite', { expiresAt: 'soon' })), [400, 'INVALID_INPUT']);
+  const byOwner = await post(base, owner, '/api/v1/invitations/inv_own/reinvite');
+  assert.equal(byOwner.status, 201);
+  assert.equal((await byOwner.json() as { invitation: LinkWire }).invitation.expiresAt, null);
+  assert.equal((await post(base, await devLogin(base, 'member@test'), '/api/v1/invitations/inv_exp/reinvite')).status, 403);
 });

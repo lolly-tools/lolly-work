@@ -97,6 +97,8 @@ export function shareMessageId(projectId: string, userId: string): string {
  * <project> with you", with a link to the shell's team project route
  * `<appBase>/#/team/project/<projectId>`. `appBase` is '' when the app is
  * served from the same origin, which makes the link '/#/team/project/<id>'.
+ * `at`, when given, is the ISO time of the share, carried as `data.at` like
+ * every people notice (access/messages.ts), so the inbox can say "2 h ago".
  */
 export function buildShareMessage(opts: {
   projectId: string;
@@ -105,6 +107,7 @@ export function buildShareMessage(opts: {
   inviteeId: string;
   inviterName: string;
   appBase: string;
+  at?: string;
 }): Message {
   const name = opts.projectName.trim().slice(0, MAX_PROJECT_NAME_CHARS) || 'a project';
   return {
@@ -114,7 +117,7 @@ export function buildShareMessage(opts: {
     audience: { users: [opts.inviteeId] },
     title: `${opts.inviterName} shared ${name} with you`.slice(0, MAX_TITLE_CHARS),
     cta: { label: 'Open', url: `${opts.appBase.replace(/\/+$/, '')}/#/team/project/${encodeURIComponent(opts.projectId)}` },
-    data: { kind: 'project-share', projectId: opts.projectId, role: opts.role },
+    data: { kind: 'project-share', projectId: opts.projectId, role: opts.role, ...(opts.at ? { at: opts.at } : {}) },
     dismissible: true,
   };
 }

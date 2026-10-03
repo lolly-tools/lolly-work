@@ -61,8 +61,10 @@ import { accessAtLeast, effectiveProjectAccess, type ProjectAccess } from '../rb
 import { registerProjectFileRoutes } from '../projects/file-routes.ts';
 import { projectFilesEnabled, removeUploadsBy } from '../projects/files.ts';
 import { buildShareMessage, createWindowQuota, mergeInvitationProject, nameWithoutEmail, roleAbove } from '../projects/sharing.ts';
+import { approversFor, closeRequestsForEmail, closeRequestsOnAccess } from '../access/requests.ts';
+import type { ProjectRequestWire } from '../access/types.ts';
 import { inviteDomainAllowed, mayInviteNewPeople, resolveInvitePolicy } from '../policy/invites.ts';
-import { PROJECT_MEMBER_ROLES } from '../store/types.ts';
+import { PROJECT_MEMBER_ROLES, type InvitationProject } from '../store/types.ts';
 import {
   buildInviteMessage, eligibleInvitees, mayJoinSession, normalizeQuery, sessionLabel,
   INVITEE_LIMIT, MAX_LABEL_CHARS,
@@ -113,7 +115,7 @@ import { previewGuidedProvider } from '../catalog/providers/setup-preview.ts';
 import { providerOAuthInfo, providerSetupRevision, registerProviderOAuth } from '../catalog/providers/setup-oauth.ts';
 import { noDetailShapeLine, noShapeLine, renderShapeReport, type ProviderShapeReport } from '../catalog/providers/shape.ts';
 import { invalidateAccessTokens } from '../catalog/providers/oauth.ts';
-import { assembleOrgConfig } from '../policy/org-config.ts';
+import { assembleOrgConfig, maySetPasswordFromLink } from '../policy/org-config.ts';
 import { resolveAiPolicy } from '../policy/ai.ts';
 import { renderCapabilities } from '../render/capabilities.ts';
 import { assessSetup, productionMode, type SetupReport } from '../setup/checks.ts';
@@ -3521,32 +3523,116 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // person joins on their first admitted sign-in. Nothing is emailed: the
   // console and the CLI show the sign-in address to share. One active
   // invitation per email, so inviting an address again is a no-op that
-  // returns the invitation already there.
+  // returns the invitation already there. Each pending invitation also has
+  // a personal invite link (`inviteLink`, plans/74 invite spec 2.6), which
+  // the wires carry; "New link" ends every link copied before it, and
+  // "Invite again" writes a fresh invitation for an address whose
+  // invitation ended.
   const INVITE_EMAIL = /^[^\s@]+@[^\s@]+$/;
   const INVITE_BATCH_MAX = 200;
   const INVITE_GROUPS_MAX = 50;
   const INVITE_MAX_DAYS = 366;
+  /** New links one invitation may get in a day, from the console and the
+   *  project people panel together. */
+  const INVITE_LINKS_PER_DAY = 10;
+  const inviteLinkQuota = createWindowQuota(INVITE_LINKS_PER_DAY, 86_400_000);
   /** Lowest to highest, for "does this group's role outrank the inviter". */
   const ROLE_RANK: readonly Role[] = ['guest', 'viewer', 'member', 'author', 'approver', 'admin', 'owner'];
   const invitationStatus = (r: InvitationRecord, now = Date.now()): 'pending' | 'accepted' | 'revoked' | 'expired' =>
     r.revokedAt ? 'revoked'
       : r.acceptedAt ? 'accepted'
         : r.expiresAt && Date.parse(r.expiresAt) <= now ? 'expired' : 'pending';
-  const invitationWire = (r: InvitationRecord) => ({
-    id: r.id, email: r.email, groups: r.groups, invitedBy: r.invitedBy, createdAt: r.createdAt,
-    expiresAt: r.expiresAt ?? null, acceptedAt: r.acceptedAt ?? null, acceptedUserId: r.acceptedUserId ?? null,
-    revokedAt: r.revokedAt ?? null, status: invitationStatus(r),
-    projects: (r.projects ?? []).map((p) => ({ projectId: p.projectId, role: p.role })),
-    createdVia: r.createdVia ?? 'console',
-  });
+  /** An invitation as the console and the CLI see it (invite spec 2.8). */
+  type InvitationWire = {
+    id: string; email: string; groups: string[]; invitedBy: string; inviter: { name: string } | null;
+    createdAt: string; expiresAt: string | null; acceptedAt: string | null; acceptedUserId: string | null;
+    acceptedUser: { name: string; email: string } | null; revokedAt: string | null;
+    status: 'pending' | 'accepted' | 'revoked' | 'expired';
+    projects: Array<{ projectId: string; name: string | null; role: ProjectMemberRole; invitedBy: { name: string } | null }>;
+    createdVia: 'console' | 'project' | 'request';
+    link: string | null; linkVersion: number; openedAt: string | null;
+    passwordSetup: boolean; password: 'none' | 'set';
+  };
+  /**
+   * Invitations as wires, with each person and project read once for the
+   * whole list. People are named without their address (`nameWithoutEmail`),
+   * as the invite page names them; the console shows addresses in columns
+   * of their own. `link` is the workspace link (no project) and is there
+   * only while the invitation is pending. `password` is 'set' once the
+   * address has a password, after which `passwordSetup` offers nothing.
+   */
+  const invitationViews = async (rows: readonly InvitationRecord[]): Promise<InvitationWire[]> => {
+    const userIdOf = (principal: string | undefined): string | null => (principal?.startsWith('user:') ? principal.slice(5) : null);
+    const userIds = new Set<string>();
+    const projectIds = new Set<string>();
+    for (const r of rows) {
+      for (const principal of [r.invitedBy, ...(r.projects ?? []).map((p) => p.invitedBy)]) {
+        const id = userIdOf(principal);
+        if (id) userIds.add(id);
+      }
+      if (r.acceptedUserId) userIds.add(r.acceptedUserId);
+      for (const p of r.projects ?? []) projectIds.add(p.projectId);
+    }
+    const users = new Map((await store.getUsersByIds([...userIds])).map((u) => [u.id, u]));
+    const projects = new Map<string, ProjectRecord>();
+    for (const id of projectIds) {
+      const project = await store.getProject(id);
+      if (project) projects.set(id, project);
+    }
+    const withPassword = new Set<string>();
+    if (passwordIdp) {
+      for (const email of new Set(rows.map((r) => r.email))) if (await store.getPasswordCredential(email)) withPassword.add(email);
+    }
+    const named = (principal: string | undefined): { name: string } | null => {
+      const u = users.get(userIdOf(principal) ?? '');
+      return u ? { name: nameWithoutEmail(u) } : null;
+    };
+    const now = Date.now();
+    return rows.map((r) => {
+      const status = invitationStatus(r, now);
+      const accepted = r.acceptedUserId ? users.get(r.acceptedUserId) : undefined;
+      return {
+        id: r.id, email: r.email, groups: r.groups, invitedBy: r.invitedBy, inviter: named(r.invitedBy), createdAt: r.createdAt,
+        expiresAt: r.expiresAt ?? null, acceptedAt: r.acceptedAt ?? null, acceptedUserId: r.acceptedUserId ?? null,
+        acceptedUser: accepted ? { name: nameWithoutEmail(accepted), email: accepted.email } : null,
+        revokedAt: r.revokedAt ?? null, status,
+        projects: (r.projects ?? []).map((p) => ({
+          projectId: p.projectId, name: projects.get(p.projectId)?.name ?? null, role: p.role, invitedBy: named(p.invitedBy ?? r.invitedBy),
+        })),
+        createdVia: r.createdVia ?? 'console',
+        link: status === 'pending' ? inviteLink(r, null) : null,
+        linkVersion: r.linkVersion, openedAt: r.openedAt ?? null,
+        passwordSetup: r.passwordSetup === true, password: withPassword.has(r.email) ? 'set' : 'none',
+      };
+    });
+  };
+  /** One invitation as a wire. The approve route of access requests answers with it. */
+  const invitationView = async (r: InvitationRecord): Promise<InvitationWire> => (await invitationViews([r]))[0]!;
+  /**
+   * The sign-ins an invite message names ("Sign in as sam@work.com with
+   * Google or GitHub"): every OIDC and GitHub sign-in, or the password one
+   * when it is the only way in. A password is set from a link, so someone
+   * who has none yet cannot use it to answer an invitation.
+   */
+  const inviteProviders = (): string[] => {
+    const all = idpProviders();
+    const named = all.filter((p) => p.kind !== 'password');
+    return (named.length ? named : all).map((p) => p.name);
+  };
   /** What the console needs to describe invitations honestly: the address to
-   *  share, and whether this deployment's admission rule reads invitations. */
+   *  share, whether this deployment's admission rule reads invitations, and
+   *  what an invite message says (the sign-ins, the password option, the
+   *  domains whose invitations start with it ticked, and `instance.inviteNote`). */
   const invitationContext = () => ({
     signInUrl: config.instance.baseUrl,
     admission: {
       policy: !!config.idp.admission,
       invitations: config.idp.admission?.invitations !== false,
     },
+    providers: inviteProviders(),
+    passwordSignIn: !!passwordIdp,
+    passwordDomains: resolveInvitePolicy(config.policy.invites).passwordDomains,
+    inviteNote: config.instance.inviteNote ?? null,
   });
 
   /**
@@ -3589,16 +3675,181 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     return { holders: [...holders.values()], claimed };
   };
 
+  /**
+   * Why `actor` may not attach these local groups to an invitation, or null.
+   * Attaching groups to an invitation assigns groups, so it carries every
+   * control PUT /api/v1/users/:id/local-groups and the grant guard carry:
+   *   - grant.edit, the action that edits a person's local groups;
+   *   - no group whose mapped role outranks the inviter's own role (an
+   *     owner group is owner-only, the grant guard's rule);
+   *   - no group holding a grant for an owner-only action, unless an owner
+   *     is inviting;
+   *   - each group exists in the local registry. An owner may also name an
+   *     IdP group or a role-mapped name: with a groupless IdP the owner group
+   *     exists only as the bootstrap owner's IdP group, and an invitation is
+   *     the console's one way to add a second owner.
+   * Asked when an invitation is written and again when it is invited again.
+   */
+  const inviteGroupsRefusal = async (
+    actor: UserRecord, groups: readonly string[],
+  ): Promise<{ status: number; code: string; message: string; field?: string } | null> => {
+    if (!groups.length) return null;
+    const grants = await store.listGrants();
+    const actorCtx = { userId: actor.id, groups: actor.groups, role: actor.role as Role };
+    if (!evaluate(actorCtx, 'grant.edit', ['*'], grants)) {
+      return { status: 403, code: 'FORBIDDEN', message: 'grant.edit required to invite people into groups', field: 'groups' };
+    }
+    const isOwner = actor.role === 'owner';
+    const ownerGroups = groups.filter((g) => roleFromGroups([g], config.idp.roleGroups) === 'owner');
+    if (ownerGroups.length && !isOwner) {
+      return { status: 403, code: 'OWNER_ONLY', message: `only an owner can invite into an owner group: ${ownerGroups.join(', ')}` };
+    }
+    const actorRank = ROLE_RANK.indexOf(actor.role as Role);
+    const above = groups.filter((g) => ROLE_RANK.indexOf(roleFromGroups([g], config.idp.roleGroups)) > actorRank);
+    if (above.length) {
+      return { status: 403, code: 'ROLE_ESCALATION', message: `these groups carry a role above yours: ${above.join(', ')}`, field: 'groups' };
+    }
+    if (!isOwner) {
+      const powered = groups.filter((g) => grants.some((gr) => gr.principal === `group:${g}` && gr.effect === 'allow' && ownerOnlyAction(gr.action)));
+      if (powered.length) {
+        return { status: 403, code: 'OWNER_ONLY_ACTION', message: `only an owner can invite into a group holding owner-only grants: ${powered.join(', ')}`, field: 'groups' };
+      }
+    }
+    const registry = new Set((await store.listLocalGroups()).map((g) => g.name));
+    const ownerNamable = new Set<string>();
+    if (isOwner) {
+      for (const u of await store.listUsers()) for (const g of u.idpGroups) ownerNamable.add(g);
+      for (const role of ['owner', 'admin', 'approver', 'author', 'member', 'viewer'] as const) {
+        const names = config.idp.roleGroups[role] ?? (['owner', 'admin', 'approver', 'author'].includes(role) ? [role] : []);
+        for (const n of names) ownerNamable.add(n);
+      }
+    }
+    const unknown = groups.filter((g) => !registry.has(g) && !ownerNamable.has(g));
+    if (unknown.length) return { status: 400, code: 'UNKNOWN_GROUP', message: `not local groups: ${unknown.join(', ')}`, field: 'groups' };
+    return null;
+  };
+
+  /** An `expiresAt` from a request body: absent, or an ISO time in the
+   *  future and at most `INVITE_MAX_DAYS` away. */
+  const parseInviteExpiry = (raw: unknown): { at?: string } | { error: string } => {
+    if (raw === undefined || raw === null || raw === '') return {};
+    const t = typeof raw === 'string' ? Date.parse(raw) : Number.NaN;
+    const now = Date.now();
+    if (!Number.isFinite(t)) return { error: 'expiresAt must be an ISO 8601 date-time' };
+    if (t <= now) return { error: 'expiresAt must be in the future' };
+    if (t > now + INVITE_MAX_DAYS * 86_400_000) return { error: `expiresAt must be within ${INVITE_MAX_DAYS} days` };
+    return { at: new Date(t).toISOString() };
+  };
+
+  /** Why `issueInvitation` wrote nothing. 'invitation-changed': the
+   *  invitation there was accepted or revoked while it was being extended. */
+  type IssueRefusal = 'invites-not-allowed' | 'domain-not-allowed' | 'invitations-off' | 'account-disabled' | 'invitation-changed';
+  type IssueResult =
+    | { status: 'created' | 'existing'; invitation: InvitationRecord; extended?: boolean }
+    | { status: 'already-member'; userIds: string[] }
+    | { status: 'refused'; reason: IssueRefusal };
+  /**
+   * Write, or extend, the invitation that lets a new person in (invite spec
+   * 2.9). Every route that invites an address comes through here: the
+   * console (R15), Invite again (R14, R20), a project invite (R18) and an
+   * approved join or switch request (access/routes.ts). In order:
+   *   - an address an account has shown it holds needs no invitation
+   *     ('already-member'), and one that a disabled account names would
+   *     never be let in ('account-disabled'). A caller that has already
+   *     shared with, or refused, those accounts passes `accountsChecked`;
+   *   - `policy.invites`: the allow tier, then the domain list;
+   *   - `idp.admission.invitations: false`, under which sign-in reads no
+   *     invitation, so one written now would never be accepted;
+   *   - one active invitation per address: a new one is written, or the
+   *     projects are merged into the one there (a role is only raised and
+   *     its end date never moves). An accepted one comes back unchanged.
+   * `passwordSetup` is kept only when `maySetPasswordFromLink` allows it for
+   * the actor, and this only ever turns it on. A new invitation supersedes
+   * the address's open join request. Audited `invite.create` (`via` the
+   * route, or 'reinvite' with `from` for Invite again) or `invite.extend`.
+   */
+  const issueInvitation = async (actor: UserRecord, input: {
+    email: string; groups: string[]; projects: InvitationProject[]; expiresAt?: string;
+    createdVia: 'console' | 'project' | 'request'; passwordSetup?: boolean;
+    /** The caller already shared with, or refused, every account that holds the address. */
+    accountsChecked?: boolean;
+    /** Invite again: the ended invitation this one replaces. */
+    reinviteOf?: string;
+  }): Promise<IssueResult> => {
+    const email = input.email.trim().toLowerCase();
+    if (!input.accountsChecked) {
+      const { holders, claimed } = await accountsHoldingEmail(email);
+      if ([...holders, ...claimed].some((u) => u.disabledAt)) return { status: 'refused', reason: 'account-disabled' };
+      if (holders.length) return { status: 'already-member', userIds: holders.map((u) => u.id) };
+    }
+    const grants = await store.listGrants();
+    const policy = resolveInvitePolicy(config.policy.invites);
+    if (!mayInviteNewPeople(actor, grants, policy)) return { status: 'refused', reason: 'invites-not-allowed' };
+    if (!inviteDomainAllowed(email, policy)) return { status: 'refused', reason: 'domain-not-allowed' };
+    if (config.idp.admission?.invitations === false) return { status: 'refused', reason: 'invitations-off' };
+    const passwordSetup = input.passwordSetup === true && maySetPasswordFromLink(config, actor, grants);
+    const principal = `user:${actor.id}`;
+    const { invitation, created } = await store.createInvitation({
+      id: `inv_${randomId(10)}`, email, groups: input.groups, invitedBy: principal, createdAt: new Date().toISOString(),
+      ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
+      ...(input.projects.length ? { projects: input.projects } : {}),
+      createdVia: input.createdVia, ...(passwordSetup ? { passwordSetup: true } : {}),
+    });
+    if (created) {
+      await audit(principal, 'invite.create', `invitation:${invitation.id}`, {
+        email, groups: invitation.groups, ...(input.projects.length ? { projects: input.projects } : {}),
+        ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
+        via: input.reinviteOf ? 'reinvite' : input.createdVia, ...(input.reinviteOf ? { from: input.reinviteOf } : {}),
+        passwordSetup,
+      });
+      await closeRequestsForEmail(accessDeps, { email }, principal);
+      return { status: 'created', invitation };
+    }
+    if (invitation.acceptedAt) return { status: 'existing', invitation };
+    let current = invitation;
+    let extended = false;
+    for (const entry of input.projects) {
+      const merged = mergeInvitationProject(current.projects ?? [], entry);
+      if (!merged.changed) continue;
+      const updated = await store.setInvitationProjects(current.id, merged.projects);
+      if (!updated) return { status: 'refused', reason: 'invitation-changed' };
+      await audit(principal, 'invite.extend', `invitation:${current.id}`, { email, project: entry });
+      current = updated;
+      extended = true;
+    }
+    if (passwordSetup && !current.passwordSetup) {
+      const updated = await store.setInvitationPasswordSetup(current.id, true);
+      if (!updated) return { status: 'refused', reason: 'invitation-changed' };
+      await audit(principal, 'invite.extend', `invitation:${current.id}`, { email, passwordSetup: true });
+      current = updated;
+      extended = true;
+    }
+    return { status: 'existing', invitation: current, extended };
+  };
+
+  /** Raise a pending invitation's link version, within its daily allowance,
+   *  and audit it. Answers 429 or 404 itself and returns null then. */
+  const rotateInviteLink = async (res: ServerResponse, actor: UserRecord, inv: InvitationRecord): Promise<InvitationRecord | null> => {
+    if (!inviteLinkQuota.take(inv.id)) {
+      sendError(res, 429, 'RATE_LIMITED', `at most ${INVITE_LINKS_PER_DAY} new links a day for one invitation; try again tomorrow`);
+      return null;
+    }
+    const rotated = await store.rotateInvitationLink(inv.id);
+    if (!rotated) { sendError(res, 404, 'NOT_FOUND', 'no such pending invitation'); return null; }
+    await audit(`user:${actor.id}`, 'invite.link', `invitation:${rotated.id}`, { email: rotated.email, version: rotated.linkVersion });
+    return rotated;
+  };
+
   router.add('GET', '/api/v1/invitations', async (req, res) => {
     if (!(await requireAction(req, res, 'user.invite'))) return;
-    sendJson(res, 200, { invitations: (await store.listInvitations()).map((r) => invitationWire(r)), ...invitationContext() },
+    sendJson(res, 200, { invitations: await invitationViews(await store.listInvitations()), ...invitationContext() },
       { 'cache-control': 'no-store' });
   });
 
   router.add('POST', '/api/v1/invitations', async (req, res) => {
     const actor = await requireAction(req, res, 'user.invite');
     if (!actor) return;
-    const body = (await readJson(req)) as { emails?: unknown; groups?: unknown; expiresAt?: unknown } | null;
+    const body = (await readJson(req)) as { emails?: unknown; groups?: unknown; expiresAt?: unknown; passwordSetup?: unknown } | null;
     if (!body || typeof body !== 'object' || Array.isArray(body)) return sendError(res, 400, 'INVALID_INPUT', 'body must be a JSON object');
 
     if (!Array.isArray(body.emails) || body.emails.length === 0 || !body.emails.every((e): e is string => typeof e === 'string')) {
@@ -3612,6 +3863,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const badEmails = emails.filter((e) => e.length > 254 || !INVITE_EMAIL.test(e));
     if (badEmails.length) {
       return sendError(res, 400, 'INVALID_INPUT', `not email addresses: ${badEmails.slice(0, 5).join(', ')}`, { field: 'emails' });
+    }
+    if (body.passwordSetup !== undefined && typeof body.passwordSetup !== 'boolean') {
+      return sendError(res, 400, 'INVALID_INPUT', 'passwordSetup must be true or false', { field: 'passwordSetup' });
     }
 
     let groups: string[] = [];
@@ -3628,79 +3882,22 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         return sendError(res, 400, 'INVALID_INPUT', `group names must be slugs (letters, digits, . _ -), 64 characters at most: ${badGroups.join(', ')}`, { field: 'groups' });
       }
     }
-    // Attaching groups to an invitation assigns groups, so it carries every
-    // control PUT /api/v1/users/:id/local-groups and the grant guard carry:
-    //   - grant.edit, the action that edits a person's local groups;
-    //   - no group whose mapped role outranks the inviter's own role (an
-    //     owner group is owner-only, the grant guard's rule);
-    //   - no group holding a grant for an owner-only action, unless an owner
-    //     is inviting;
-    //   - each group exists in the local registry. An owner may also name an
-    //     IdP group or a role-mapped name: with a groupless IdP the owner group
-    //     exists only as the bootstrap owner's IdP group, and an invitation is
-    //     the console's one way to add a second owner;
-    //   - an email that already belongs to an account gets the groups at
-    //     once (status 'applied') rather than an invitation, never for the
-    //     inviter's own account, a disabled one, or an owner's unless an
-    //     owner is inviting.
-    if (groups.length) {
-      const grants = await store.listGrants();
-      const actorCtx = { userId: actor.id, groups: actor.groups, role: actor.role as Role };
-      if (!evaluate(actorCtx, 'grant.edit', ['*'], grants)) {
-        return sendError(res, 403, 'FORBIDDEN', 'grant.edit required to invite people into groups', { field: 'groups' });
-      }
-      const isOwner = actor.role === 'owner';
-      const ownerGroups = groups.filter((g) => roleFromGroups([g], config.idp.roleGroups) === 'owner');
-      if (ownerGroups.length && !isOwner) {
-        return sendError(res, 403, 'OWNER_ONLY', `only an owner can invite into an owner group: ${ownerGroups.join(', ')}`);
-      }
-      const actorRank = ROLE_RANK.indexOf(actor.role as Role);
-      const above = groups.filter((g) => ROLE_RANK.indexOf(roleFromGroups([g], config.idp.roleGroups)) > actorRank);
-      if (above.length) {
-        return sendError(res, 403, 'ROLE_ESCALATION', `these groups carry a role above yours: ${above.join(', ')}`, { field: 'groups' });
-      }
-      if (!isOwner) {
-        const powered = groups.filter((g) => grants.some((gr) => gr.principal === `group:${g}` && gr.effect === 'allow' && ownerOnlyAction(gr.action)));
-        if (powered.length) {
-          return sendError(res, 403, 'OWNER_ONLY_ACTION', `only an owner can invite into a group holding owner-only grants: ${powered.join(', ')}`, { field: 'groups' });
-        }
-      }
-      const registry = new Set((await store.listLocalGroups()).map((g) => g.name));
-      const ownerNamable = new Set<string>();
-      if (isOwner) {
-        for (const u of await store.listUsers()) for (const g of u.idpGroups) ownerNamable.add(g);
-        for (const role of ['owner', 'admin', 'approver', 'author', 'member', 'viewer'] as const) {
-          const names = config.idp.roleGroups[role] ?? (['owner', 'admin', 'approver', 'author'].includes(role) ? [role] : []);
-          for (const n of names) ownerNamable.add(n);
-        }
-      }
-      const unknown = groups.filter((g) => !registry.has(g) && !ownerNamable.has(g));
-      if (unknown.length) {
-        return sendError(res, 400, 'UNKNOWN_GROUP', `not local groups: ${unknown.join(', ')}`, { field: 'groups' });
-      }
-    }
+    const refusal = await inviteGroupsRefusal(actor, groups);
+    if (refusal) return sendError(res, refusal.status, refusal.code, refusal.message, refusal.field ? { field: refusal.field } : undefined);
 
-    const now = new Date();
-    let expiresAt: string | undefined;
-    if (body.expiresAt !== undefined && body.expiresAt !== null && body.expiresAt !== '') {
-      const t = typeof body.expiresAt === 'string' ? Date.parse(body.expiresAt) : Number.NaN;
-      if (!Number.isFinite(t)) return sendError(res, 400, 'INVALID_INPUT', 'expiresAt must be an ISO 8601 date-time', { field: 'expiresAt' });
-      if (t <= now.getTime()) return sendError(res, 400, 'INVALID_INPUT', 'expiresAt must be in the future', { field: 'expiresAt' });
-      if (t > now.getTime() + INVITE_MAX_DAYS * 86_400_000) {
-        return sendError(res, 400, 'INVALID_INPUT', `expiresAt must be within ${INVITE_MAX_DAYS} days`, { field: 'expiresAt' });
-      }
-      expiresAt = new Date(t).toISOString();
-    }
+    const expiry = parseInviteExpiry(body.expiresAt);
+    if ('error' in expiry) return sendError(res, 400, 'INVALID_INPUT', expiry.error, { field: 'expiresAt' });
+    const expiresAt = expiry.at;
 
-    const createdAt = now.toISOString();
-    type Applied = { email: string; status: 'applied' | 'refused'; reason?: string; userIds: string[]; groups: string[]; created: false };
-    const out: Array<(ReturnType<typeof invitationWire> & { created: boolean }) | Applied> = [];
+    const createdAt = new Date().toISOString();
+    type Applied = { email: string; status: 'applied' | 'already' | 'refused'; reason?: string; userIds: string[]; groups: string[]; created: false };
+    const out: Array<(InvitationWire & { created: boolean }) | Applied> = [];
     // policy.invites governs every invitation that lets a new person sign in,
-    // this route's included: the `allow` tier and the domain list apply to
-    // each address that gets an invitation. Giving groups to an account that
-    // already exists is not inviting, so they do not apply to that branch.
-    const invitePolicy = resolveInvitePolicy(config.policy.invites);
-    const mayInvite = mayInviteNewPeople(actor, await store.listGrants(), invitePolicy);
+    // this route's included: `issueInvitation` applies the `allow` tier and
+    // the domain list to each address that gets an invitation. Giving groups
+    // to an account that already exists is not inviting, so they do not
+    // apply to that branch, and an account that holds an address asked
+    // without groups needs nothing at all ('already', plans/75 A5).
     for (const email of emails) {
       const refuse = (reason: string): Applied => ({ email, status: 'refused', reason, userIds: [], groups, created: false });
       // An address that already has an account gets the groups now instead of
@@ -3730,20 +3927,85 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         out.push({ email, status: 'applied', userIds: accounts.map((a) => a.id), groups, created: false });
         continue;
       }
-      if (!mayInvite) { out.push(refuse('invites-not-allowed')); continue; }
-      if (!inviteDomainAllowed(email, invitePolicy)) { out.push(refuse('domain-not-allowed')); continue; }
-      const { invitation, created } = await store.createInvitation({
-        id: `inv_${randomId(10)}`, email, groups, invitedBy: `user:${actor.id}`, createdAt,
-        ...(expiresAt ? { expiresAt } : {}),
+      const issued = await issueInvitation(actor, {
+        email, groups, projects: [], ...(expiresAt ? { expiresAt } : {}), createdVia: 'console', passwordSetup: body.passwordSetup === true,
       });
-      if (created) {
-        await audit(`user:${actor.id}`, 'invite.create', `invitation:${invitation.id}`, {
-          email, groups, ...(expiresAt ? { expiresAt } : {}),
-        });
-      }
-      out.push({ ...invitationWire(invitation), created });
+      if (issued.status === 'refused') { out.push(refuse(issued.reason)); continue; }
+      if (issued.status === 'already-member') { out.push({ email, status: 'already', userIds: issued.userIds, groups, created: false }); continue; }
+      out.push({ ...(await invitationView(issued.invitation)), created: issued.status === 'created' });
     }
     sendJson(res, out.some((r) => r.created) ? 201 : 200, { invitations: out, ...invitationContext() });
+  });
+
+  // New link (invite spec R13): every link copied for this invitation before,
+  // the console's and each project's alike, stops working. Only while it is
+  // pending; an invitation that ended is invited again instead.
+  router.add('POST', '/api/v1/invitations/:id/link', async (req, res, ctx) => {
+    const actor = await requireAction(req, res, 'user.invite');
+    if (!actor) return;
+    const inv = await store.getInvitation(ctx.params.id as string);
+    if (!inv || inv.revokedAt) return sendError(res, 404, 'NOT_FOUND', 'no such active invitation');
+    if (invitationStatus(inv) !== 'pending') {
+      return sendError(res, 409, 'NOT_PENDING', 'only a pending invitation gets a new link; invite the address again instead');
+    }
+    const rotated = await rotateInviteLink(res, actor, inv);
+    if (!rotated) return;
+    sendJson(res, 200, { invitation: await invitationView(rotated) });
+  });
+
+  // Invite again (invite spec R14): a fresh invitation, with a new link, for
+  // the address of one that expired or was revoked. Its groups pass the
+  // checks of a new invitation, asked again now; its projects keep the
+  // people who put them there, whose standing acceptance asks again. An
+  // expired invitation ends in the same step, so its links stop working.
+  // Without `expiresAt` the new one ends after `policy.invites.maxTtlHours`,
+  // or never when the old one never did.
+  router.add('POST', '/api/v1/invitations/:id/reinvite', async (req, res, ctx) => {
+    const actor = await requireAction(req, res, 'user.invite');
+    if (!actor) return;
+    const old = await store.getInvitation(ctx.params.id as string);
+    if (!old) return sendError(res, 404, 'NOT_FOUND', 'no such invitation');
+    const was = invitationStatus(old);
+    if (was !== 'expired' && was !== 'revoked') {
+      return sendError(res, 409, 'NOT_ENDED', 'only an invitation that expired or was revoked can be invited again');
+    }
+    const body = (await readJson(req)) as { expiresAt?: unknown } | null;
+    if (body !== null && (typeof body !== 'object' || Array.isArray(body))) return sendError(res, 400, 'INVALID_INPUT', 'body must be a JSON object');
+    const expiry = parseInviteExpiry(body?.expiresAt);
+    if ('error' in expiry) return sendError(res, 400, 'INVALID_INPUT', expiry.error, { field: 'expiresAt' });
+    const active = await store.findActiveInvitation(old.email);
+    if (active && invitationStatus(active) !== 'expired') {
+      return sendError(res, 409, 'ACTIVE_INVITATION', 'this address already has an invitation', { invitation: await invitationView(active) });
+    }
+    const refusal = await inviteGroupsRefusal(actor, old.groups);
+    if (refusal) return sendError(res, refusal.status, refusal.code, refusal.message, refusal.field ? { field: refusal.field } : undefined);
+    const ttlHours = resolveInvitePolicy(config.policy.invites).maxTtlHours;
+    const expiresAt = expiry.at ?? (old.expiresAt ? new Date(Date.now() + ttlHours * 3_600_000).toISOString() : undefined);
+    // An entry with no inviter of its own was the old invitation's inviter's;
+    // naming them keeps acceptance asking about the same person.
+    const projects = (old.projects ?? []).map((p) => ({ ...p, invitedBy: p.invitedBy ?? old.invitedBy }));
+    const issued = await issueInvitation(actor, {
+      email: old.email, groups: old.groups, projects, ...(expiresAt ? { expiresAt } : {}),
+      createdVia: old.createdVia ?? 'console', passwordSetup: old.passwordSetup === true, reinviteOf: old.id,
+    });
+    if (issued.status === 'existing') {
+      return sendError(res, 409, 'ACTIVE_INVITATION', 'this address already has an invitation', { invitation: await invitationView(issued.invitation) });
+    }
+    if (issued.status === 'already-member') {
+      return sendError(res, 409, 'ALREADY_MEMBER', 'an account already holds this address, so it needs no invitation', { userIds: issued.userIds });
+    }
+    if (issued.status === 'refused') {
+      const refused: Record<IssueRefusal, [number, string, string]> = {
+        'invites-not-allowed': [403, 'FORBIDDEN', 'your role cannot invite new people here'],
+        'domain-not-allowed': [403, 'DOMAIN_NOT_ALLOWED', 'this instance does not invite addresses at this domain'],
+        'invitations-off': [409, 'INVITATIONS_OFF', 'sign-in reads no invitations on this instance (idp.admission.invitations is false)'],
+        'account-disabled': [409, 'ACCOUNT_DISABLED', 'this address belongs to a disabled account; re-enable it first'],
+        'invitation-changed': [409, 'INVITATION_CHANGED', 'the invitation changed meanwhile; try again'],
+      };
+      const [status, code, message] = refused[issued.reason];
+      return sendError(res, status, code, message);
+    }
+    sendJson(res, 201, { invitation: await invitationView(issued.invitation) });
   });
 
   router.add('DELETE', '/api/v1/invitations/:id', async (req, res, ctx) => {
@@ -3762,7 +4024,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     await audit(`user:${actor.id}`, 'invite.revoke', `invitation:${revoked.id}`, {
       email: revoked.email, was: invitationStatus(existing),
     });
-    sendJson(res, 200, invitationWire(revoked));
+    sendJson(res, 200, await invitationView(revoked));
   });
 
   // ── password sign-in links (plans/74) ──────────────────────────────────────
@@ -7289,13 +7551,17 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // ── people on a project (plans/74 "Invite from inside Lolly") ─────────────
   // A project's owner, its explicit members (project_members) and the open
   // invitations that carry it. Anyone who can see the project may list the
-  // people; emails and invitations are shown only to managers. Adding,
-  // changing and removing people needs manager (owner, manager member, or
-  // project.manage on a project they can see). Someone who already has an
-  // account becomes a member at once and gets an inbox message; an unknown
-  // address gets an invitation (created or extended) carrying the project,
-  // within `policy.invites` (policy/invites.ts).
+  // people; emails, invitations and access requests are shown only to
+  // managers. Adding, changing and removing people needs manager (owner,
+  // manager member, or project.manage on a project they can see). Someone
+  // who already has an account becomes a member at once and gets an inbox
+  // message; an unknown address gets an invitation (created or extended)
+  // carrying the project, within `policy.invites` (policy/invites.ts), with
+  // a personal invite link for this project's entry (invite spec R17 to R20).
   const PROJECT_INVITE_BATCH_MAX = 50;
+  /** How long an expired invitation stays on the people panel, so a manager
+   *  can invite the address again. */
+  const PROJECT_INVITE_EXPIRED_SHOWN_DAYS = 30;
   /** Addresses an hour for a caller without `user.invite` (see the route). */
   const PROJECT_INVITE_ADDRESSES_PER_HOUR = 100;
   const projectInviteQuota = createWindowQuota(PROJECT_INVITE_ADDRESSES_PER_HOUR, 3_600_000);
@@ -7332,25 +7598,39 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
    * messages is otherwise the admin `message.send` action, so each inviter
    * also has a daily allowance (`SHARE_MESSAGES_PER_DAY`); past it the
    * membership is still added and the audit row says the message was held.
+   * `opts.message: false` sends none: an accepted invitation sends its
+   * welcome instead, and an approved request its answer.
+   *
+   * `via` says what put the person on: a share or project invite
+   * ('invite'), an accepted invitation ('invitation') or an approved access
+   * request ('request'). Either way the person's open requests for this
+   * project that ask for no more than they now have are superseded
+   * (`closeRequestsOnAccess`), so their approvers stop seeing them.
    */
   const SHARE_MESSAGES_PER_DAY = 200;
   const shareMessageQuota = createWindowQuota(SHARE_MESSAGES_PER_DAY, 86_400_000);
   const shareProjectWith = async (
     project: ProjectRecord, target: UserRecord, role: ProjectMemberRole,
-    actor: { principal: string; name: string; userId: string | null }, via: 'invite' | 'invitation',
+    actor: { principal: string; name: string; userId: string | null }, via: 'invite' | 'invitation' | 'request',
+    opts: { message?: boolean } = {},
   ): Promise<'added' | 'already'> => {
     // 'already' closes invitations too, which tidies a row left open before
     // this rule existed the next time someone shares with the person.
     if (project.ownerId === target.id) { await closeMemberInvitations(project, target, actor.principal); return 'already'; }
     const existing = await store.getProjectMember(project.id, target.id);
-    if (existing && !roleAbove(role, existing.role)) { await closeMemberInvitations(project, target, actor.principal); return 'already'; }
-    await store.putProjectMember({ projectId: project.id, userId: target.id, role, addedBy: actor.principal, addedAt: new Date().toISOString() });
+    if (existing && !roleAbove(role, existing.role)) {
+      await closeMemberInvitations(project, target, actor.principal);
+      await closeRequestsOnAccess(accessDeps, { projectId: project.id, userId: target.id, role: existing.role }, actor.principal);
+      return 'already';
+    }
+    const addedAt = new Date().toISOString();
+    await store.putProjectMember({ projectId: project.id, userId: target.id, role, addedBy: actor.principal, addedAt });
     let messageHeld = false;
-    if (!existing && target.id !== actor.userId) {
+    if (!existing && target.id !== actor.userId && opts.message !== false) {
       if (shareMessageQuota.take(actor.principal)) {
         await store.putMessage(buildShareMessage({
           projectId: project.id, projectName: project.name, role, inviteeId: target.id,
-          inviterName: actor.name, appBase: config.instance.appUrl ?? '',
+          inviterName: actor.name, appBase: config.instance.appUrl ?? '', at: addedAt,
         }));
       } else {
         messageHeld = true;
@@ -7360,6 +7640,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       userId: target.id, role, via, ...(existing ? { from: existing.role } : {}), ...(messageHeld ? { message: 'held' } : {}),
     });
     await closeMemberInvitations(project, target, actor.principal);
+    await closeRequestsOnAccess(accessDeps, { projectId: project.id, userId: target.id, role }, actor.principal);
     return 'added';
   };
 
@@ -7395,6 +7676,35 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
   };
 
+  /**
+   * The open requests for a project, as its people panel lists them (invite
+   * spec R17): only those the caller may answer now (`approversFor`, asked
+   * again on every read), oldest first, each with the session link it came
+   * from when that session is still on the project. The approvers of a
+   * project request are the same people whoever asked (a requester has
+   * less than manager on the project, so is never one of them), so they are
+   * worked out once.
+   */
+  const projectRequestsFor = async (caller: UserRecord, project: ProjectRecord): Promise<ProjectRequestWire[]> => {
+    const open = (await store.listAccessRequests({ status: 'open', now: new Date().toISOString(), kinds: ['project'], projectIds: [project.id] }))
+      .filter((r) => r.userId && r.projectId === project.id);
+    if (!open.length || !(await approversFor(accessDeps, open[0]!)).some((u) => u.id === caller.id)) return [];
+    const people = new Map((await store.getUsersByIds([...new Set(open.map((r) => r.userId!))])).map((u) => [u.id, u]));
+    const out: ProjectRequestWire[] = [];
+    for (const r of open) {
+      const who = people.get(r.userId!);
+      if (!who || who.disabledAt) continue;
+      const session = r.viaSessionId ? await store.getSession(r.viaSessionId) : null;
+      out.push({
+        id: r.id, userId: who.id, name: nameWithoutEmail(who), email: r.email,
+        role: r.role === 'editor' ? 'editor' : 'viewer', currentRole: r.currentRole ?? 'none',
+        ...(r.note ? { note: r.note } : {}), createdAt: r.createdAt,
+        ...(session && session.projectId === project.id && !session.deletedAt ? { viaSession: { id: session.id, name: labelOf(session) } } : {}),
+      });
+    }
+    return out;
+  };
+
   router.add('GET', '/api/v1/projects/:id/members', async (req, res, ctx) => {
     const gate = await projectGate(req, res, ctx.params.id as string, 'viewer');
     if (!gate) return;
@@ -7420,22 +7730,108 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // without an acceptance (a linked sign-in). An invitation that would
     // still raise a holder's role stays listed, so a manager can see that
     // grant and withdraw it: acceptance at sign-in applies it.
+    // Expired invitations stay listed for `PROJECT_INVITE_EXPIRED_SHOWN_DAYS`,
+    // marked so, for Invite again. A pending one carries this project's
+    // invite link, when it was first opened, and who put the project on it.
     const standing = new Map<string, ProjectAccess>([
       ...rows.map((m) => [m.userId, m.role] as [string, ProjectAccess]), [project.ownerId, 'owner'],
     ]);
-    const open = manager ? await store.listOpenInvitationsForProject(project.id, new Date().toISOString()) : [];
-    const roleOn = (inv: (typeof open)[number]) => (inv.projects ?? []).find((p) => p.projectId === project.id)!.role;
+    const nowMs = Date.now();
+    const open = manager
+      ? await store.listProjectInvitations(project.id, {
+        now: new Date(nowMs).toISOString(), expiredSince: new Date(nowMs - PROJECT_INVITE_EXPIRED_SHOWN_DAYS * 86_400_000).toISOString(),
+      })
+      : [];
+    const entryOf = (inv: (typeof open)[number]) => (inv.projects ?? []).find((p) => p.projectId === project.id)!;
+    const roleOn = (inv: (typeof open)[number]) => entryOf(inv).role;
     const inert = await Promise.all(open.map(async (inv) => {
       const { holders } = await accountsHoldingEmail(inv.email);
       return holders.length > 0 && holders.every((h) => accessAtLeast(standing.get(h.id) ?? 'none', roleOn(inv)));
     }));
+    const listed = open.filter((_, i) => !inert[i]);
+    const inviterIdOf = (inv: (typeof open)[number]): string | null => {
+      const by = entryOf(inv).invitedBy ?? inv.invitedBy;
+      return by.startsWith('user:') ? by.slice(5) : null;
+    };
+    const inviters = new Map((await store.getUsersByIds([...new Set(listed.map(inviterIdOf).filter((id): id is string => !!id))])).map((u) => [u.id, u]));
     const invitations = manager
-      ? open.filter((_, i) => !inert[i]).map((inv) => ({
-        id: inv.id, email: inv.email, role: roleOn(inv),
-        createdAt: inv.createdAt, ...(inv.expiresAt ? { expiresAt: inv.expiresAt } : {}),
-      }))
+      ? listed.map((inv) => {
+        const pending = invitationStatus(inv, nowMs) === 'pending';
+        const inviter = inviters.get(inviterIdOf(inv) ?? '');
+        return {
+          id: inv.id, email: inv.email, role: roleOn(inv),
+          createdAt: inv.createdAt, ...(inv.expiresAt ? { expiresAt: inv.expiresAt } : {}),
+          status: pending ? 'pending' as const : 'expired' as const,
+          ...(inv.openedAt ? { openedAt: inv.openedAt } : {}),
+          ...(inviter ? { invitedByName: nameWithoutEmail(inviter) } : {}),
+          passwordSetup: inv.passwordSetup === true,
+          ...(pending ? { link: inviteLink(inv, project.id) } : {}),
+        };
+      })
       : null;
-    sendJson(res, 200, { myRole: access, members, ...(invitations ? { invitations } : {}) }, { 'cache-control': 'no-store' });
+    const requests = manager ? await projectRequestsFor(user, project) : null;
+    sendJson(res, 200, {
+      myRole: access, members, ...(invitations ? { invitations } : {}), ...(requests ? { requests } : {}),
+    }, { 'cache-control': 'no-store' });
+  });
+
+  /** One address's answer to a project invite (R18) or an Invite again (R20).
+   *  A row backed by a pending invitation carries its id, this project's
+   *  invite link and its end date, so Lolly can copy an invite message. */
+  type ProjectInviteResult = {
+    email: string; status: 'added' | 'invited' | 'already' | 'refused'; reason?: string;
+    invitationId?: string; link?: string; expiresAt?: string;
+  };
+  /**
+   * Invite one address to a project. Only an account that has shown it holds
+   * the address is shared with directly (`accountsHoldingEmail`); one that
+   * merely claims it in `users.email` is treated as unknown and gets an
+   * invitation, which a verified sign-in has to accept. Admission refuses
+   * every row of an address when one is disabled, so sharing with it would
+   * add a member who cannot sign in: a caller who sees the directory is told,
+   * and anyone else gets what an unknown address gets. Everything else goes
+   * through `issueInvitation`.
+   */
+  const inviteToProject = async (o: {
+    user: UserRecord; project: ProjectRecord; email: string; role: ProjectMemberRole;
+    seesDirectory: boolean; expiresAt: string; passwordSetup: boolean; reinviteOf?: string;
+  }): Promise<ProjectInviteResult> => {
+    const { user, project, email, role } = o;
+    if (email.length > 254 || !INVITE_EMAIL.test(email)) return { email, status: 'refused', reason: 'invalid-email' };
+    const { holders, claimed } = await accountsHoldingEmail(email);
+    const disabled = [...holders, ...claimed].some((a) => a.disabledAt);
+    if (disabled && o.seesDirectory) return { email, status: 'refused', reason: 'account-disabled' };
+    if (holders.length && !disabled) {
+      const actor = { principal: `user:${user.id}`, name: displayName(user), userId: user.id };
+      let added = false;
+      for (const account of holders) if ((await shareProjectWith(project, account, role, actor, 'invite')) === 'added') added = true;
+      return { email, status: added ? 'added' : 'already' };
+    }
+    const entry = { projectId: project.id, role, invitedBy: `user:${user.id}` };
+    const issued = await issueInvitation(user, {
+      email, groups: [], projects: [entry], expiresAt: o.expiresAt, createdVia: 'project',
+      passwordSetup: o.passwordSetup, accountsChecked: true, ...(o.reinviteOf ? { reinviteOf: o.reinviteOf } : {}),
+    });
+    if (issued.status === 'refused') return { email, status: 'refused', reason: issued.reason };
+    if (issued.status === 'already-member') return { email, status: 'already' };
+    const inv = issued.invitation;
+    // An open invitation for the address already exists: `issueInvitation`
+    // added this project to it (a higher role replaces a lower one, never the
+    // other way). Its end date stays as it was, so a project invite cannot
+    // prolong an invitation somebody else wrote. An accepted one has done its
+    // work; the person signs in under another address, so there is nobody to
+    // add. That answer says an account exists, so a caller without
+    // `user.invite` gets the plain 'unavailable' instead.
+    if (inv.acceptedAt) return { email, status: 'refused', reason: o.seesDirectory ? 'invitation-accepted' : 'unavailable' };
+    const linked = invitationStatus(inv) === 'pending'
+      ? { invitationId: inv.id, link: inviteLink(inv, project.id), ...(inv.expiresAt ? { expiresAt: inv.expiresAt } : {}) }
+      : {};
+    return { email, status: issued.status === 'created' || issued.extended ? 'invited' : 'already', ...linked };
+  };
+  /** What Lolly needs to write an invite message from this inviter (R18). */
+  const inviteMessageContext = (inviter: UserRecord) => ({
+    workspace: config.instance.name, inviter: nameWithoutEmail(inviter), providers: inviteProviders(),
+    ...(config.instance.inviteNote ? { note: config.instance.inviteNote } : {}),
   });
 
   router.add('POST', '/api/v1/projects/:id/invite', async (req, res, ctx) => {
@@ -7443,7 +7839,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!gate) return;
     const { user, project, grants } = gate;
     if (project.archivedAt) return sendError(res, 409, 'PROJECT_ARCHIVED', 'restore the project before inviting people to it');
-    const body = (await readJson(req)) as { emails?: unknown; role?: unknown } | null;
+    const body = (await readJson(req)) as { emails?: unknown; role?: unknown; passwordSetup?: unknown } | null;
     if (!isMemberRole(body?.role)) {
       return sendError(res, 400, 'INVALID_INPUT', 'role must be viewer, editor or manager', { field: 'role' });
     }
@@ -7455,12 +7851,14 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!Array.isArray(body.emails) || body.emails.length === 0 || !body.emails.every((e): e is string => typeof e === 'string')) {
       return sendError(res, 400, 'INVALID_INPUT', 'emails must be a non-empty array of email addresses', { field: 'emails' });
     }
+    if (body.passwordSetup !== undefined && typeof body.passwordSetup !== 'boolean') {
+      return sendError(res, 400, 'INVALID_INPUT', 'passwordSetup must be true or false', { field: 'passwordSetup' });
+    }
     const emails = [...new Set(body.emails.map((e) => e.trim().toLowerCase()).filter(Boolean))];
     if (emails.length === 0) return sendError(res, 400, 'INVALID_INPUT', 'emails must name at least one address', { field: 'emails' });
     if (emails.length > PROJECT_INVITE_BATCH_MAX) {
       return sendError(res, 400, 'INVALID_INPUT', `at most ${PROJECT_INVITE_BATCH_MAX} addresses per request`, { field: 'emails' });
     }
-    const mayInvite = mayInviteNewPeople(user, grants, policy);
     // Who already has an account here is directory knowledge: GET
     // /api/v1/users is for admins, and the collab invite route answers one
     // code so it cannot be probed. A caller without `user.invite` therefore
@@ -7473,61 +7871,74 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!seesDirectory && !projectInviteQuota.take(user.id, emails.length)) {
       return sendError(res, 429, 'RATE_LIMITED', `at most ${PROJECT_INVITE_ADDRESSES_PER_HOUR} addresses an hour; try again later`);
     }
-    // With `idp.admission.invitations: false` sign-in never reads an
-    // invitation, so one written here would never be accepted.
-    const invitationsOff = config.idp.admission?.invitations === false;
-    const now = new Date();
-    const createdAt = now.toISOString();
-    const expiresAt = new Date(now.getTime() + policy.maxTtlHours * 3_600_000).toISOString();
-    type Result = { email: string; status: 'added' | 'invited' | 'already' | 'refused'; reason?: string };
-    const results: Result[] = [];
-    const actor = { principal: `user:${user.id}`, name: displayName(user), userId: user.id };
+    // A link that can set a password is a credential, so the tick counts
+    // only for an admin or owner with `user.invite` (`maySetPasswordFromLink`);
+    // anyone else's is ignored, not refused, like a hidden form field.
+    const passwordSetup = body.passwordSetup === true && maySetPasswordFromLink(config, user, grants);
+    const expiresAt = new Date(Date.now() + policy.maxTtlHours * 3_600_000).toISOString();
+    const results: ProjectInviteResult[] = [];
     for (const email of emails) {
-      if (email.length > 254 || !INVITE_EMAIL.test(email)) { results.push({ email, status: 'refused', reason: 'invalid-email' }); continue; }
-      // Only an account that has shown it holds the address is shared with
-      // directly (`accountsHoldingEmail`); one that merely claims it in
-      // `users.email` is treated as unknown and gets an invitation, which a
-      // verified sign-in has to accept.
-      const { holders, claimed } = await accountsHoldingEmail(email);
-      // Admission refuses every row of an address when one is disabled, so
-      // sharing with it would add a member who cannot sign in.
-      const disabled = [...holders, ...claimed].some((a) => a.disabledAt);
-      if (disabled && seesDirectory) { results.push({ email, status: 'refused', reason: 'account-disabled' }); continue; }
-      if (holders.length && !disabled) {
-        let added = false;
-        for (const account of holders) if ((await shareProjectWith(project, account, role, actor, 'invite')) === 'added') added = true;
-        results.push({ email, status: added ? 'added' : 'already' });
-        continue;
-      }
-      if (!mayInvite) { results.push({ email, status: 'refused', reason: 'invites-not-allowed' }); continue; }
-      if (!inviteDomainAllowed(email, policy)) { results.push({ email, status: 'refused', reason: 'domain-not-allowed' }); continue; }
-      if (invitationsOff) { results.push({ email, status: 'refused', reason: 'invitations-off' }); continue; }
-      const entry = { projectId: project.id, role, invitedBy: `user:${user.id}` };
-      const { invitation, created } = await store.createInvitation({
-        id: `inv_${randomId(10)}`, email, groups: [], invitedBy: `user:${user.id}`, createdAt, expiresAt, projects: [entry],
-        createdVia: 'project',
-      });
-      if (created) {
-        await audit(`user:${user.id}`, 'invite.create', `invitation:${invitation.id}`, { email, groups: [], projects: [entry], expiresAt, via: 'project' });
-        results.push({ email, status: 'invited' });
-        continue;
-      }
-      // An open invitation for the address already exists: add this project
-      // to it (a higher role replaces a lower one, never the other way). Its
-      // expiry stays as it was, so a project invite cannot prolong an
-      // invitation somebody else wrote. An accepted one has done its work;
-      // the person signs in under another address, so there is nobody to add.
-      // That answer says an account exists, so a caller without `user.invite`
-      // gets the plain 'unavailable' instead.
-      if (invitation.acceptedAt) { results.push({ email, status: 'refused', reason: seesDirectory ? 'invitation-accepted' : 'unavailable' }); continue; }
-      const merged = mergeInvitationProject(invitation.projects ?? [], entry);
-      if (!merged.changed) { results.push({ email, status: 'already' }); continue; }
-      const updated = await store.setInvitationProjects(invitation.id, merged.projects);
-      if (!updated) { results.push({ email, status: 'refused', reason: 'invitation-changed' }); continue; }
-      await audit(`user:${user.id}`, 'invite.extend', `invitation:${invitation.id}`, { email, project: entry });
-      results.push({ email, status: 'invited' });
+      results.push(await inviteToProject({ user, project, email, role, seesDirectory, expiresAt, passwordSetup }));
     }
-    sendJson(res, 200, { results, link: projectLink(project.id) });
+    sendJson(res, 200, { results, link: projectLink(project.id), message: inviteMessageContext(user) });
+  });
+
+  // New link for this project's entry on an invitation (invite spec R19).
+  // The link version belongs to the invitation, so every link copied for it
+  // before stops working, this project's and any other's; whoever needs one
+  // copies it again. Shares the console's daily allowance per invitation.
+  router.add('POST', '/api/v1/projects/:id/invitations/:invitationId/link', async (req, res, ctx) => {
+    const gate = await projectGate(req, res, ctx.params.id as string, 'manager');
+    if (!gate) return;
+    const { user, project } = gate;
+    const inv = await store.getInvitation(ctx.params.invitationId as string);
+    if (!inv || inv.revokedAt || inv.acceptedAt || !(inv.projects ?? []).some((p) => p.projectId === project.id)) {
+      return sendError(res, 404, 'NOT_FOUND', 'no such open invitation on this project');
+    }
+    if (invitationStatus(inv) !== 'pending') {
+      return sendError(res, 409, 'NOT_PENDING', 'this invitation has expired; invite the address again instead');
+    }
+    const rotated = await rotateInviteLink(res, user, inv);
+    if (!rotated) return;
+    sendJson(res, 200, { link: inviteLink(rotated, project.id), expiresAt: rotated.expiresAt ?? null });
+  });
+
+  // Invite again from the people panel (invite spec R20): a fresh
+  // invitation to this project, at the role the expired one gave, for its
+  // address. Only for a manager who may invite new people (plans/75 C12),
+  // within the same hourly allowance as a project invite. The expired
+  // invitation ends in the same step, so its links stop working; whatever
+  // else it carried (another project, groups) is not carried over, since
+  // those were someone else's to give. It answers as a project invite
+  // does, with one row.
+  router.add('POST', '/api/v1/projects/:id/invitations/:invitationId/reinvite', async (req, res, ctx) => {
+    const gate = await projectGate(req, res, ctx.params.id as string, 'manager');
+    if (!gate) return;
+    const { user, project, grants } = gate;
+    if (project.archivedAt) return sendError(res, 409, 'PROJECT_ARCHIVED', 'restore the project before inviting people to it');
+    const policy = resolveInvitePolicy(config.policy.invites);
+    if (!mayInviteNewPeople(user, grants, policy)) {
+      return sendError(res, 403, 'FORBIDDEN', 'your role cannot invite new people here; ask an admin');
+    }
+    const old = await store.getInvitation(ctx.params.invitationId as string);
+    const entry = old && !old.revokedAt && !old.acceptedAt ? (old.projects ?? []).find((p) => p.projectId === project.id) : undefined;
+    if (!old || !entry) return sendError(res, 404, 'NOT_FOUND', 'no such invitation on this project');
+    if (invitationStatus(old) !== 'expired') {
+      return sendError(res, 409, 'NOT_ENDED', 'only an expired invitation can be invited again');
+    }
+    if (!policy.projectRoles.includes(entry.role)) {
+      return sendError(res, 403, 'ROLE_NOT_ALLOWED', `this instance does not allow giving the ${entry.role} role by invitation`);
+    }
+    const seesDirectory = evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'user.invite', ['*'], grants);
+    if (!seesDirectory && !projectInviteQuota.take(user.id, 1)) {
+      return sendError(res, 429, 'RATE_LIMITED', `at most ${PROJECT_INVITE_ADDRESSES_PER_HOUR} addresses an hour; try again later`);
+    }
+    const result = await inviteToProject({
+      user, project, email: old.email, role: entry.role, seesDirectory,
+      expiresAt: new Date(Date.now() + policy.maxTtlHours * 3_600_000).toISOString(),
+      passwordSetup: old.passwordSetup === true && maySetPasswordFromLink(config, user, grants), reinviteOf: old.id,
+    });
+    sendJson(res, 200, { results: [result], link: projectLink(project.id), message: inviteMessageContext(user) });
   });
 
   router.add('PATCH', '/api/v1/projects/:id/members/:userId', async (req, res, ctx) => {
@@ -7553,6 +7964,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         return sendError(res, 404, 'NOT_FOUND', 'no such member on this project');
       }
       await audit(`user:${user.id}`, 'project.member.role', `project:${project.id}`, { userId: targetId, from: existing.role, to: role });
+      // The person's open requests for no more than the new role are moot.
+      await closeRequestsOnAccess(accessDeps, { projectId: project.id, userId: targetId, role }, `user:${user.id}`);
     }
     const target = await store.getUser(targetId);
     sendJson(res, 200, {
