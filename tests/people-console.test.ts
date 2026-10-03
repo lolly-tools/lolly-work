@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * The console's People view in jsdom. Pinned: the sign-in gate says plain
- * "Sign in" when several sign-ins exist, and creating a local group from a
- * person no longer throws (the group filter's search learns the new name
- * instead).
+ * The console's People view in jsdom. Email and password sign-in (plans/74):
+ * "Copy sign-in link" on each pending invitation and the person detail's
+ * Password row with "Copy password link", both shown only while the instance
+ * offers a password sign-in; the link is copied and shown read-only with its
+ * expiry. Also pinned: the sign-in gate says plain "Sign in" when several
+ * sign-ins exist, and creating a local group from a person no longer throws
+ * (the group filter's search learns the new name instead).
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -65,6 +68,54 @@ window.helpers = {
 }
 const buttonByText = (root: any, text: string) => [...root.querySelectorAll('button')].find((b: any) => b.textContent === text);
 
+test('a pending invitation offers "Copy sign-in link": it issues a setup link, copies it and shows it read-only', async () => {
+  const p = page();
+  const section = await p.helpers.invitationsSection([]);
+  p.main.append(section);
+  const buttons = [...section.querySelectorAll('button')].filter((b: any) => b.textContent === 'Copy sign-in link');
+  assert.equal(buttons.length, 1, 'the pending row only, not the accepted one');
+  assert.ok(section.textContent.includes('It works once, for seven days'));
+  (buttons[0] as any).click();
+  await pause();
+  assert.deepEqual(p.calls.find((c) => c.path === '/api/v1/admin/password-links')?.body, { email: 'bo@partner.example', purpose: 'setup' });
+  assert.deepEqual(p.copied, [LINK.url]);
+  const field = section.querySelector('input[readonly]') as any;
+  assert.equal(field?.value, LINK.url);
+  assert.ok(section.textContent.includes('Works once, until'));
+  assert.ok(section.textContent.includes('Sign-in link for bo@partner.example'));
+});
+
+test('without a password sign-in the invitation list has no sign-in link button', async () => {
+  const p = page({ providers: PROVIDERS.slice(0, 1) });
+  const section = await p.helpers.invitationsSection([]);
+  assert.equal(buttonByText(section, 'Copy sign-in link'), undefined);
+  assert.ok(!section.textContent.includes('Copy sign-in link'));
+});
+
+test('person detail: the Password row and "Copy password link" (reset when set, setup when not)', async () => {
+  for (const [password, purpose, shown] of [
+    [{ set: true, email: 'ana@partner.example' }, 'reset', 'Set'],
+    [{ set: false, email: 'ana@partner.example' }, 'setup', 'Not set'],
+  ] as const) {
+    const p = page({ password });
+    await p.helpers.viewUsers(p.main, new p.w.URLSearchParams(''));
+    (p.main.querySelector('tbody tr.row-click') as any).click();
+    await pause(20);
+    const cells = [...p.main.querySelectorAll('.idy')].map((c: any) => [c.querySelector('.idy-l').textContent, c.querySelector('.idy-v').textContent]);
+    assert.deepEqual(cells.find(([l]) => l === 'Password'), ['Password', shown]);
+    (buttonByText(p.main, 'Copy password link') as any).click();
+    await pause();
+    assert.deepEqual(p.calls.find((c) => c.path === '/api/v1/admin/password-links')?.body, { email: 'ana@partner.example', purpose });
+    assert.equal((p.main.querySelector('.detail-sheet input[readonly]') as any)?.value, LINK.url);
+  }
+  // No password sign-in: no row, no button.
+  const q = page({ providers: PROVIDERS.slice(0, 1), password: null });
+  await q.helpers.viewUsers(q.main, new q.w.URLSearchParams(''));
+  (q.main.querySelector('tbody tr.row-click') as any).click();
+  await pause(20);
+  assert.equal(buttonByText(q.main, 'Copy password link'), undefined);
+});
+
 test('creating a local group from a person adds it to the group filter instead of throwing', async () => {
   const p = page();
   await p.helpers.viewUsers(p.main, new p.w.URLSearchParams(''));
@@ -90,4 +141,10 @@ test('the sign-in gate says "Sign in" when there are several ways in, and names 
   const q = page({ providers: PROVIDERS.slice(0, 1) });
   await q.helpers.signInGate();
   assert.equal((q.main.querySelector('a.gate-go') as any)?.textContent, 'Sign in with Google');
+  const r = page({ providers: PROVIDERS.slice(1) });
+  r.helpers.setAuthConfig({ provider: 'password', providerName: 'Email and password', providers: PROVIDERS.slice(1) });
+  await r.helpers.signInGate();
+  const go = r.main.querySelector('a.gate-go') as any;
+  assert.equal(go?.textContent, 'Sign in', 'email and password alone');
+  assert.equal(go?.getAttribute('href'), '/api/auth/login?returnTo=%2Fadmin');
 });

@@ -743,6 +743,8 @@ function activityLine(item, names) {
   const push = (...xs) => out.push(...xs);
   switch (item.action) {
     case 'auth.login': push('signed in', p.provider ? ` via ${p.provider}` : ''); break;
+    case 'auth.password.link.issue': push('issued a ', p.purpose === 'reset' ? 'password' : 'sign-in', ' link for ', el('b', {}, p.email || 'someone')); break;
+    case 'auth.password.set': push('set the password for ', el('b', {}, p.email || 'an account')); break;
     case 'link.create': push('created a ', el('b', {}, `${p.kind || 'share'} link`), p.toolId ? [' for ', actToolObj(p.toolId)] : '', s ? [' — ', actConsoleObj('link', s.id, 'link')] : ''); break;
     case 'link.revoke': push('revoked ', actConsoleObj('link', s?.id, 'a link')); break;
     case 'session.create': push('created a session', p.toolId ? [' of ', actToolObj(p.toolId)] : '', s ? [' — ', actSessionObj(s.id, p.toolId)] : '', p.projectId ? [' in ', actProjectObj(p.projectId)] : ''); break;
@@ -3419,6 +3421,27 @@ function searchSelect(options, { placeholder = 'Search…', value = '', strict =
   return { node: el('span', { class: 'search-select' }, input, datalist), input, set: (v) => { input.value = v; } };
 }
 
+// ── password sign-in links (plans/74) ─────────────────────────────────────────
+// With email and password sign-in on, a person sets their password from a
+// one-time link an admin issues here. Nothing is emailed: the button asks the
+// server for a link, copies it, and shows it to pass on by chat or email.
+const passwordSignInOn = () => (authConfig?.providers ?? []).some((p) => p.kind === 'password');
+
+/** Issue a link for `email`, copy it, and show it in `host`. Throws on a
+ *  refusal (the caller shows the message). */
+async function issuePasswordLink(email, purpose, host) {
+  const r = await api('/api/v1/admin/password-links', { method: 'POST', body: { email, purpose } });
+  const copied = await copyToClipboard(r.url);
+  const input = el('input', { type: 'text', readonly: 'true', class: 'mono', value: r.url, 'aria-label': `Sign-in link for ${email}`, onfocus: (e) => e.target.select() });
+  host.replaceChildren(el('div', { class: 'card mint-out stack' },
+    el('div', { class: 'list-bar' },
+      el('span', {}, `${purpose === 'reset' ? 'Password link' : 'Sign-in link'} for ${email}`),
+      copyButton(() => r.url)),
+    input,
+    el('p', { class: 'sub flush' }, `Works once, until ${when(r.expiresAt)}.`, copied ? ' Copied to the clipboard.' : ' Copy it from the field above.')));
+  announce(copied ? 'Sign-in link copied to clipboard' : 'Sign-in link ready to copy');
+}
+
 // ── invitations (plans/74 W-ID-2) ─────────────────────────────────────────────
 // "Invite people" on the People view: email addresses plus the local groups
 // each person joins at their first sign-in. Nothing is emailed from here, so
@@ -3529,8 +3552,18 @@ async function invitationsSection(groupOptions) {
     result);
 
   // ── the list ──
+  // One place for the sign-in link a row's button issues, under the table.
+  const linkOut = el('div');
   function invitationRow(inv) {
     const rowErr = errSpan();
+    const linkBtn = passwordSignInOn() && inv.status === 'pending'
+      ? el('button', { type: 'button', onclick: async () => {
+          rowErr.textContent = '';
+          linkBtn.disabled = true;
+          try { await issuePasswordLink(inv.email, 'setup', linkOut); } catch (e) { rowErr.textContent = e.message; }
+          linkBtn.disabled = false;
+        } }, 'Copy sign-in link')
+      : null;
     const revoke = inv.status === 'revoked'
       ? null
       : armConfirmButton({ class: 'danger' }, 'Revoke', 'Really revoke?', async (disarm) => {
@@ -3548,7 +3581,7 @@ async function invitationsSection(groupOptions) {
       el('td', { 'data-sort': inv.status }, el('span', { class: `status ${INVITE_STATUS_CLASS[inv.status] ?? ''}` }, inv.status)),
       whenCell(inv.createdAt),
       whenCell(inv.status === 'accepted' ? inv.acceptedAt : inv.expiresAt),
-      el('td', {}, revoke, rowErr));
+      el('td', {}, linkBtn, linkBtn && revoke ? ' ' : null, revoke, rowErr));
   }
   function renderList(invitations) {
     const live = invitations.filter((i) => i.status !== 'revoked');
@@ -3561,10 +3594,14 @@ async function invitationsSection(groupOptions) {
       live.length
         ? table(live)
         : el('p', { class: 'empty' }, 'No open invitations. Invite someone above.'),
+      linkOut,
       revoked.length
         ? el('details', { class: 'ov-section' },
             el('summary', {}, el('span', { class: 'detail-h section-h' }, `Revoked (${revoked.length})`)),
             table(revoked))
+        : null,
+      passwordSignInOn()
+        ? el('p', { class: 'sub flush' }, 'Copy sign-in link gives the person a link to set a password, for when they cannot use your other sign-ins. It works once, for seven days, and a new link replaces the last one.')
         : null,
       el('p', { class: 'sub flush' }, 'Revoking a pending invitation stops it being used. Revoking an accepted one blocks that person’s next sign-in unless your sign-in rule lists their email or domain. It does not end a session that is already open: use Disable access on the person for that.')));
   }
@@ -3758,6 +3795,8 @@ async function viewUsers(main, params) {
     let grants = [];
     // Linked sign-ins (plans/74): null when the server predates them.
     let identities = null;
+    // { set, email } while email and password sign-in is on, else null.
+    let password = null;
     const opener = document.activeElement; // restore focus here on Close
     // Escape closes the sheet. Below 700px .detail-sheet is a fixed overlay and
     // Close scrolls off the top, so Escape is the only reliable dismissal.
@@ -3782,7 +3821,11 @@ async function viewUsers(main, params) {
     scrollIntoViewMotionSafe(detailHost);
     const tools = await loadTools();
     try { grants = (await api('/api/v1/grants')).grants ?? []; } catch { /* grant.edit may be absent */ }
-    try { identities = (await api(`/api/v1/users/${encodeURIComponent(u.id)}/identities`)).identities ?? []; } catch { identities = null; }
+    try {
+      const r = await api(`/api/v1/users/${encodeURIComponent(u.id)}/identities`);
+      identities = r.identities ?? [];
+      password = r.password ?? null;
+    } catch { identities = null; }
     renderDetail(true);
 
     function renderDetail(focusIn) {
@@ -3799,6 +3842,7 @@ async function viewUsers(main, params) {
           heading,
           el('button', { onclick: closeDetail }, 'Close')),
         identityBlock(),
+        ...(password ? [passwordBlock()] : []),
         ...(identities ? [section(`Sign-ins (${identities.length})`, signInsBlock(), identities.length > 1)] : []),
         section(`Groups (${(u.groups ?? []).length})`, groupsBlock()),
         section(`Individual tool access (${grants.filter((g) => g.principal === `user:${u.id}` && g.action === 'tool.use' && g.effect === 'allow').length})`, toolAccessBlock()),
@@ -3813,8 +3857,28 @@ async function viewUsers(main, params) {
           cell('Email', u.email),
           cell('Title', u.title ?? '—'),
           cell('Role', el('span', { class: 'chip' }, u.role)),
-          cell('Last seen', when(u.lastSeenAt))),
+          cell('Last seen', when(u.lastSeenAt)),
+          ...(password ? [cell('Password', password.set ? 'Set' : 'Not set')] : [])),
         el('p', { class: 'sub', style: 'margin:8px 0 0' }, `Name, email, title and role are managed by ${idpName()} — read-only here. Role is derived from group membership.`));
+    }
+
+    // Email and password: a one-time link to set or replace this person's
+    // password, for the address that holds it (else the account's own).
+    function passwordBlock() {
+      const err = errSpan();
+      const out = el('div');
+      const btn = el('button', { type: 'button', onclick: async () => {
+        err.textContent = '';
+        btn.disabled = true;
+        try { await issuePasswordLink(password.email, password.set ? 'reset' : 'setup', out); } catch (e) { err.textContent = e.message; }
+        btn.disabled = false;
+      } }, 'Copy password link');
+      return el('div', { class: 'stack' },
+        el('p', { class: 'sub flush' }, password.set
+          ? `Signs in with a password as ${password.email}. A new link lets them choose another; the current password keeps working until they do.`
+          : `No password yet. A link lets them set one and sign in as ${password.email}.`),
+        el('p', { class: 'flush' }, btn),
+        out, err);
     }
 
     // One person, many sign-ins: each IdP account linked to this person, and
@@ -4030,18 +4094,20 @@ async function viewUsers(main, params) {
 // ── copy-to-clipboard affordance ────────────────────────────────────────────
 // Air-gapped: the async Clipboard API with an execCommand fallback, no external
 // calls. Shared so any link surface can offer the same one-click copy.
+async function copyToClipboard(text) {
+  try { await navigator.clipboard.writeText(text); return true; }
+  catch {
+    try {
+      const ta = el('textarea', { style: 'position:fixed;top:-1000px;opacity:0' });
+      ta.value = text; document.body.append(ta); ta.select();
+      const ok = document.execCommand('copy'); ta.remove();
+      return ok;
+    } catch { return false; }
+  }
+}
 function copyButton(getText, label = 'Copy link') {
   const btn = el('button', { onclick: async () => {
-    const text = getText();
-    let ok = false;
-    try { await navigator.clipboard.writeText(text); ok = true; }
-    catch {
-      try {
-        const ta = el('textarea', { style: 'position:fixed;top:-1000px;opacity:0' });
-        ta.value = text; document.body.append(ta); ta.select();
-        ok = document.execCommand('copy'); ta.remove();
-      } catch { ok = false; }
-    }
+    const ok = await copyToClipboard(getText());
     announce(ok ? 'Link copied to clipboard' : 'Copy failed — select the link manually');
     btn.textContent = ok ? 'Copied' : 'Copy failed';
     setTimeout(() => { btn.textContent = label; }, 1600);
@@ -5265,11 +5331,12 @@ function currentRouteId() {
 async function signInGate() {
   const cfg = authConfig ?? await api('/api/auth/config').catch(() => null);
   const returnTo = encodeURIComponent('/admin');
-  // Several sign-ins: the button leads to the server's chooser, so it names none of them.
-  const plainSignIn = (cfg?.providers ?? []).length > 1;
+  // Several sign-ins (or email and password alone): the button leads to the
+  // server's chooser or form, so it names none of them.
+  const plainSignIn = (cfg?.providers ?? []).length > 1 || cfg?.provider === 'password';
   gate([
     el('p', { class: 'gate-lede' }, 'Sign in to manage your organisation’s tools, approvals and catalog.'),
-    cfg?.provider === 'oidc'
+    cfg?.provider === 'oidc' || cfg?.provider === 'password'
       ? el('a', { class: 'btn primary gate-go', href: `/api/auth/login?returnTo=${returnTo}` }, plainSignIn ? 'Sign in' : `Sign in with ${cfg?.providerName || 'SSO'}`)
       : cfg?.provider === 'proxy'
         // The reverse proxy in front of the deploy already holds the session
