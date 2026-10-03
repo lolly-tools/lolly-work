@@ -6,6 +6,34 @@ minors, never removed or signature-changed without a major bump.
 
 Moved verbatim from the comment block that used to live in `src/index.ts`.
 
+## 1.243.0
+
+- Add `forensic/heat.ts`, a per-sentence reading of a forensic report for drawing heat over text and pages. `forensicSegments` splits text into sentences and sentence-less lines with exact offsets; `forensicHeat(report, page)` combines the findings on each sentence and each page region by guidance level (a specific artifact at full strength, a style clue at 0.6, an excluded match at 0) and lists whole-text findings separately. Heat is derived from the report and never stored in it, so the report contract and its digest are unchanged.
+- Classifier observations may carry `chunks`, the raw score of each sentence-aligned group of at least 55 words (`forensicChunkSpans`, `forensicChunkScores`, `FORENSIC_CHUNK_VERSION`), with `chunkThreshold` and `chunkFloor` from the model roster (0.93 and 0.85 for e5-small, measured on the plans/287 corpus-v4 development split). Chunk scores are drawn beside the heat and never enter the evidence index. `verifyForensicReport` validates them on import.
+- AI-signal lexicon 8, measured against a 9,474-document corpus (RAID across eight domains, HC3 human and ChatGPT answers, learner essays, presumed-human READMEs and current Claude chat answers). New families `chat-structure` (repeated "Label: sentence" lines, scaffold headings such as Strengths and Weaknesses, numbered section titles alongside them, question headings) and `list-triads` (dense "X, Y, and Z" lists). The chatbot preamble learns "Here is an evaluation/analysis/assessment/review/comparison…" anywhere a sentence starts and a document-opening "Based on…," frame. `uniform-burstiness` and `uniform-paragraphs` need more sentences and paragraphs before firing; smart punctuation, "in conclusion", "at the end of the day", emoji tells and the bare "not X, but Y" are no longer counted, because they fired as often on human writing. On the development split, human documents with any weak or stronger evidence fall from 29% to 8% while notable and strong stay at 0.6%, and chat answers with no evidence fall from 40% to 15% (Markdown) and 69% to 22% (plain text). Older-generator recall drops where the sentence-rhythm rules were tightened.
+- `LEXICON_VERSION` 7 -> 8, so stored AI-signal notes recompute on next read.
+- Export the looking helpers (`agent-view.ts`, `edge-trace.ts`) from the engine index, for the MCP looking tools and the CLI's `lolly look`, `lolly sample` and `lolly trace`, which share one core in `@lolly-tools/node-shell/look`.
+- Photoshop import, checked against files saved by Photoshop: a shape's fill read from `vscg` as well as `SoCo`; several shapes in one layer read as one path; each outline's join with the ones before (`PsdSubpath.op`: 1 combines, others are kept as pixels with a note); strokes with cap, join, alignment and dashes (`PsdStroke`); a note when a stroke is a gradient or pattern; empty adjustment blocks such as Invert kept; and effects noted only when switched on, by name.
+
+## 1.242.0
+
+- Manifests may declare `openWith` intents for compatible catalog assets, binding a declared input or a supported canvas, timeline or text import. The shared resolver matches source types, formats and selection cardinality. Validation rejects duplicate intent ids and invalid input bindings.
+
+## 1.241.0
+
+- A `text` input can declare `display: "curve"`: it holds a photo tone curve as `in-out` level pairs joined by `_` (`0-0_64-48_255-255`), which a URL query keeps unescaped. The engine and every shell still treat the value as text; the web sidebar adds a curve plot that edits the field. Declared in both schema copies.
+- Add `tone-curve.ts`: the curve's reader (canonical form, typed pairs and JSON), its normaliser, its writer and the monotone cubic through its points, flat outside the end points. Darkroom keeps a copy in its hooks; `tests/tone-curve-drift.test.ts` holds the two to the same points and levels.
+- Add `agent-view.ts`, the helpers behind the MCP looking tools: the document frame of an SVG, a region framed and drawn with an overlay, a raster wrapped as an SVG in its own pixels, a labelled grid drawn as stroked digits (no font needed), a disc-averaged colour sample read from premultiplied or straight RGBA, and the nearest design-system colour by ΔE in OKLab.
+- Add `edge-trace.ts`: Canny edges linked into polylines (adapted from Composa, MIT), longest first, with closed outlines flagged, and `polylineToDesignLayer`, which turns a line into a Design path layer with its nodes as fractions of the box.
+- Photoshop import reads what a layer is, not only its pixels. Add `psd-descriptor.ts`, a bounded reader for the Action Descriptor and EngineData formats inside a layer's tagged blocks, and `psd-layer-semantics.ts`, which reads type layers (text, font, size, colour, tracking, leading, alignment, box and rotation, plus `runs`: the text split where weight, italic, colour, underline or strikethrough change, with faux bold and faux italic read as weight and italic), shapes drawn with the shape tool, vector paths, solid colour fills and the kind of an adjustment layer, with a note for each property an importer cannot keep. `readPsd` attaches the result as the optional `RasterLayer.psd` and keeps those blocks to 8 MB per layer and 64 MB per file.
+- `writePsd` layers take optional `extraBlocks` (tagged blocks written as given) and `clipped` (clip to the layer below), so tests can build files with live layers.
+
+## 1.240.0
+
+- The AI-signal lexicon learns the vague pointer: "beside it", "next to it", "in front of it", "behind it", "above it" and "below it" when the sentence names no layout or physical element ("each claim has a mechanism behind it"). `spatialPointerRe()` and `SPATIAL_CONTEXT_WORDS` in `claudisms.ts` are shared with the docs, code-comment and UI-copy gates, which ratchet the same rule.
+- The detector also scores the docs gate's claudisms it was missing: "worth knowing", "now says so", "brings us back to", "anchors it", the short assertion after a comma, a heading that ends in "it", "deep dive", "treasure trove", "raise the bar", "reflecting a broader trend", "moving on to", bare "worth noting", "lean into", "let's turn to" and the wider "landscape" set. Phrases that ordinary human writing uses too often stay out of the score.
+- `LEXICON_VERSION` 6 -> 7, so stored AI-signal notes recompute on next read.
+
 ## 1.239.0
 
 - Reserve the `iframe` presence flag for a tool shown inside another page. Shells show only the rendered output, keep nothing on the device and stamp `data-lolly-iframe` for tools to read. It implies `full`, and the CLI and the render route ignore it.

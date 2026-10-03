@@ -111,7 +111,7 @@ export interface InputSpec {
   min?: number;
   max?: number;
   step?: number;
-  display?: 'input' | 'slider' | 'select' | 'icon-toggle' | 'pill' | 'segmented';
+  display?: 'input' | 'slider' | 'select' | 'icon-toggle' | 'pill' | 'segmented' | 'curve';
   unit?: string;
   suffix?: string;
   /** Named columns and optional form controls for a string-valued table. */
@@ -328,6 +328,7 @@ export interface TemplateVariant {
  * same). `id` is a permanent contract: never rename or reuse it.
  */
 export interface ToolManifest {
+  openWith?: import('./asset-open-v1.ts').AssetOpenIntentV1[];
   designTool?: import('./design-tool-v1.ts').DesignToolPolicyV1;
   id: string;
   name: string;

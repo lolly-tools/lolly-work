@@ -1,17 +1,17 @@
 {
-  "generatedFrom": "563cdb9fbf79dc9bf2e9d28059504adf96c52f28",
+  "generatedFrom": "ae49bf82fb8ec8e4ce08a978c5752af0e8a94cdf",
   "note": "Pin manifest - a consumer verifies vendored content against contentHash. tarballSha256 is informational (gzip is not reproducible).",
   "core": {
     "version": "1.0.0",
     "tarball": "lolly-tools-core-1.0.0.tgz",
-    "tarballSha256": "d680b07e49d46f1dc6880377a1243383cac7f731fdd43b0a682cc33f1d0268ea",
-    "contentHash": "1de7271447a1f22d12cccfe5a296e06a82a830ecf6d668760b024eac65db853c"
+    "tarballSha256": "d40d8fc857ac7808fe06996e5a072fc906503436c4851e2ab256d17109a821cb",
+    "contentHash": "7f5de55276610113e14f8aeda3beaafff342b119adf33c9e4333e1d65c5c7329"
   },
   "engine": {
-    "version": "1.239.0",
-    "tarball": "lolly-engine-1.239.0.tgz",
-    "tarballSha256": "89db87a15a458973dd283d61c81015afb94cb0529952120638979be0953255d9",
-    "contentHash": "ee4ed0f08e6b9ba441e7867f5339f6fb5d165b569b8b9d72bb26422aec227f2b"
+    "version": "1.243.0",
+    "tarball": "lolly-engine-1.243.0.tgz",
+    "tarballSha256": "d693aa61b3097fc46737db143c7846fa984f1f35bb13385c3d4bef7d703305cf",
+    "contentHash": "5c53121708870545704dc3c660de3a3e163ae88e452e184cb77fd8e8bfa00413"
   },
   "schemas": {
     "asset-ref.schema.json": "e07d85d6db6c3a7c88190c86a4779707e2b073ce17dbaa9bb355ed2c015fcdae",
@@ -40,6 +40,6 @@
     "text-document-v1.schema.json": "660b2108ee2dcd5a3e15ada040205a930b58faa0b101a23341892d59bf4ceeff",
     "text-frame-v1.schema.json": "4da9745015da8dfd75e60f7e15300604eeedd4902bca7a049d063a396455f069",
     "tokens.schema.json": "be8a2f388d451f778aeaf334c903556689e3897e7523e6c31b7c428040673384",
-    "tool.schema.json": "0d1bf16e694d390c4d0382ea66b0359a0622ca4e6d9ffc3433b5adeb4120633d"
+    "tool.schema.json": "2172f8c2e5568437ea8e0564c0522ad9dfde5e6d22809bb429aa85eef66f9db9"
   }
 }
