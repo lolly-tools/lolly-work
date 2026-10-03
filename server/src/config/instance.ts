@@ -132,6 +132,11 @@ export interface InstanceConfig {
      *  default (tools). Passed to members as org-config `home`; a link to a tool,
      *  project or view still opens where it points. */
     homeView?: 'tools' | 'projects';
+    /** One plain-text line the invite page and copied invite messages show,
+     *  such as which sign-in to use when an organisation blocks one
+     *  (plans/74 invite spec 2.5). Trimmed, at most 240 characters, no line
+     *  breaks. Absent shows nothing. */
+    inviteNote?: string;
   };
   idp: {
     issuer: string;
@@ -211,6 +216,9 @@ export interface InstanceConfig {
      *  budgets are bytes; unfinished uploads expire after `uploadTtlHours`.
      *  The defaults fit a small hosted Postgres that also holds the blobs. */
     projectFiles: ProjectFilePolicy;
+    /** Access requests (plans/75 G13): who may ask for what, and for how
+     *  long a request stays open. See `RequestPolicy`. */
+    requests: RequestPolicy;
   };
   render: {
     /**
@@ -291,12 +299,34 @@ export interface InstanceConfig {
   notify: {
     smtp?: { host: string; port: number; secure: boolean; from: string; user?: string };
     webhook?: { url: string };
+    /** Notices to people (invitations, requests, answers; notify/people.ts).
+     *  They always reach the inbox. `email` also mails them once `smtp` is
+     *  set and the sender can confirm delivery; off by default. `fromName`
+     *  is the sender's display name, at most 60 characters, and defaults to
+     *  `instance.name`. */
+    people: { email: boolean; fromName?: string };
   };
   /** SIEM forwarding (plans/35 wave 2): audit events pushed to the org's own
    *  receiver in signed batches, loss-free behind the siem_cursor. `url`
    *  absent = off. Long-lived server only; the HMAC key rides LW_SIEM_SECRET. */
   siem: { url?: string; batchSize: number; intervalSeconds: number };
   rateLimit: RateLimitConfig;
+}
+
+/**
+ * Access requests (plans/75 G13; server/src/access/requests.ts). `project`
+ * lets a member ask for a project they cannot open, or ask to edit one they
+ * view; on by default. `join` lets a person who signed in but is not
+ * admitted ask the admins to let them in; off by default, because it opens
+ * a channel to the admins for anyone who can sign in somewhere. A request
+ * stays open `ttlDays`; `joinOpenMax` bounds the open join and switch
+ * requests across the workspace.
+ */
+export interface RequestPolicy {
+  join: boolean;
+  project: boolean;
+  ttlDays: number;
+  joinOpenMax: number;
 }
 
 export interface RateLimitSurfaceConfig { capacity: number; refillPerSec: number }
@@ -492,6 +522,7 @@ const DEFAULTS: InstanceConfig = {
     fleet: {},
     retention: { telemetryDays: 0, auditDays: 0 },
     projectFiles: { ...PROJECT_FILE_DEFAULTS },
+    requests: { join: false, project: true, ttlDays: 14, joinOpenMax: 50 },
   },
   render: { allowHooksInFastPath: false, worker: { url: '', timeoutMs: 20000 }, c2pa: { certFile: '', claimGenerator: '' } },
   audit: { headLog: { onBoot: true, intervalMinutes: 60 } },
@@ -516,10 +547,29 @@ const DEFAULTS: InstanceConfig = {
   catalogProviders: [],
   delivery: { maxBytes: 64 * 1024 * 1024, destinations: [] },
   blobs: { driver: 'pg' },
-  notify: {},
+  notify: { people: { email: false } },
   siem: { batchSize: 200, intervalSeconds: 30 },
   submit: {},
 };
+
+/** Validate `policy.requests` in place: two switches and two whole-number bounds. */
+function validateRequestPolicy(r: RequestPolicy): void {
+  if (!r || typeof r !== 'object' || Array.isArray(r)) throw new Error('policy.requests must be an object');
+  for (const k of Object.keys(r)) {
+    if (!['join', 'project', 'ttlDays', 'joinOpenMax'].includes(k)) {
+      throw new Error(`policy.requests.${k} is not a known key (join, project, ttlDays, joinOpenMax)`);
+    }
+  }
+  for (const k of ['join', 'project'] as const) {
+    if (typeof r[k] !== 'boolean') throw new Error(`policy.requests.${k} must be true or false`);
+  }
+  if (!Number.isInteger(r.ttlDays) || r.ttlDays < 1 || r.ttlDays > 60) {
+    throw new Error(`invalid policy.requests.ttlDays: ${r.ttlDays} (whole days, 1-60)`);
+  }
+  if (!Number.isInteger(r.joinOpenMax) || r.joinOpenMax < 1 || r.joinOpenMax > 1000) {
+    throw new Error(`invalid policy.requests.joinOpenMax: ${r.joinOpenMax} (a whole number, 1-1000)`);
+  }
+}
 
 function merge<T extends Record<string, unknown>>(base: T, over: Partial<T> | undefined): T {
   if (!over) return base;
@@ -722,6 +772,15 @@ export function parseConfig(json: string): InstanceConfig {
   if (cfg.instance.homeView !== undefined && !['tools', 'projects'].includes(cfg.instance.homeView)) {
     throw new Error('instance.homeView must be "tools" or "projects"');
   }
+  if (cfg.instance.inviteNote !== undefined) {
+    const note = cfg.instance.inviteNote;
+    if (typeof note !== 'string') throw new Error('instance.inviteNote must be a line of text');
+    const line = note.trim();
+    if (/[\u0000-\u001f\u007f\u2028\u2029]/.test(line)) throw new Error('instance.inviteNote must be one line, without line breaks');
+    if (line.length > 240) throw new Error('instance.inviteNote must be at most 240 characters');
+    if (line) cfg.instance.inviteNote = line;
+    else delete cfg.instance.inviteNote;
+  }
   const mode = cfg.policy.defaultAccessMode;
   const roles = ['owner', 'admin', 'approver', 'author', 'member', 'viewer'];
   const mapping = cfg.idp.roleGroups;
@@ -764,6 +823,7 @@ export function parseConfig(json: string): InstanceConfig {
     throw new Error('policy.projectFiles needs maxFileBytes <= projectBudgetBytes <= instanceBudgetBytes');
   }
   if (files.uploadTtlHours > 720) throw new Error(`invalid policy.projectFiles.uploadTtlHours: ${files.uploadTtlHours} (at most 720)`);
+  validateRequestPolicy(cfg.policy.requests);
   // Additional IdPs (plans/36 §3): defaults applied, then validated hard - a
   // half-described issuer would fail at sign-in, in front of the person.
   if (!Array.isArray(cfg.idp.additional)) throw new Error('idp.additional must be a list');
@@ -851,6 +911,16 @@ export function parseConfig(json: string): InstanceConfig {
     if (!smtp.host || typeof smtp.host !== 'string') throw new Error('notify.smtp needs a host');
     if (!smtp.from || !String(smtp.from).includes('@')) throw new Error('notify.smtp.from must be a mail address');
     if (!Number.isInteger(smtp.port) || smtp.port <= 0 || smtp.port > 65535) throw new Error(`invalid notify.smtp.port: ${smtp.port}`);
+  }
+  const people = cfg.notify.people;
+  if (!people || typeof people !== 'object' || Array.isArray(people)) throw new Error('notify.people must be an object');
+  if (typeof people.email !== 'boolean') throw new Error('notify.people.email must be true or false');
+  if (people.fromName !== undefined) {
+    const name = typeof people.fromName === 'string' ? people.fromName.trim() : '';
+    if (!name || name.length > 60 || /[\u0000-\u001f\u007f]/.test(name)) {
+      throw new Error('notify.people.fromName must be a name of 1 to 60 characters on one line');
+    }
+    people.fromName = name;
   }
   if (cfg.notify.webhook) {
     let u: URL | null = null;

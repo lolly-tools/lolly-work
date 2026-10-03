@@ -9,8 +9,12 @@
 import { b64u, b64uDecode, hmac, macEquals } from '../lib/crypto.ts';
 
 /** `lw/form` is the signed half of the double-submit token on the server-rendered
- *  password forms (api/app.ts), which run before anyone has a session. */
-export type TokenDomain = 'lw/session' | 'lw/guest' | 'lw/state' | 'lw/link' | 'lw/job' | 'lw/api-key' | 'lw/form';
+ *  password forms (api/app.ts), which run before anyone has a session.
+ *  `lw/ask` carries the identity a sign-in just verified to the "ask to join"
+ *  and "use this account instead" forms, in a hidden field only, so a person
+ *  who is not admitted can file a request without typing an address
+ *  (access/types.ts `AskTokenPayload`). */
+export type TokenDomain = 'lw/session' | 'lw/guest' | 'lw/state' | 'lw/link' | 'lw/job' | 'lw/api-key' | 'lw/form' | 'lw/ask';
 
 export interface TokenBox<T> {
   typ: TokenDomain;

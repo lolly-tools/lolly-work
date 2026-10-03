@@ -36,6 +36,7 @@ export interface InvitePolicyConfig {
   domains?: string[];
   maxTtlHours?: number;
   projectRoles?: ProjectMemberRole[];
+  passwordDomains?: string[];
 }
 
 /** The same policy with every default applied. */
@@ -45,6 +46,12 @@ export interface InvitePolicy {
   domains: string[];
   maxTtlHours: number;
   projectRoles: ProjectMemberRole[];
+  /** Lowercased domain names whose people usually sign in with a password
+   *  (their organisation blocks the other sign-ins). When every address on
+   *  an invite is in one of them, the console and the shell start the
+   *  "set a password from the link" tick ticked. It only suggests: the tick
+   *  is still an admin's choice. Empty by default. */
+  passwordDomains: string[];
 }
 
 export const DEFAULT_INVITE_TTL_HOURS = 720;
@@ -60,34 +67,40 @@ export function resolveInvitePolicy(cfg: InvitePolicyConfig | undefined): Invite
     domains: [...(cfg?.domains ?? [])],
     maxTtlHours: cfg?.maxTtlHours ?? DEFAULT_INVITE_TTL_HOURS,
     projectRoles: cfg?.projectRoles?.length ? [...cfg.projectRoles] : [...PROJECT_MEMBER_ROLES],
+    passwordDomains: [...(cfg?.passwordDomains ?? [])],
   };
 }
 
+/** A list of domain names, lowercased, a leading "@" dropped, duplicates
+ *  removed. Throws with the key that is wrong. */
+function domainList(key: string, raw: unknown): string[] {
+  if (!Array.isArray(raw) || raw.length > 1000) throw new Error(`policy.invites.${key} must be a list of domain names`);
+  return [...new Set(raw.map((x) => {
+    const n = typeof x === 'string' ? x.trim().toLowerCase().replace(/^@/, '') : '';
+    if (!DOMAIN_NAME.test(n)) throw new Error(`policy.invites.${key} entry is not a domain name: ${String(x)}`);
+    return n;
+  }))];
+}
+
 /**
- * Validate `policy.invites` and normalise it in place (domains lowercased,
- * a leading "@" dropped, duplicates removed). Throws with the key that is
- * wrong, like the rest of `parseConfig`.
+ * Validate `policy.invites` and normalise it in place (both domain lists
+ * lowercased, a leading "@" dropped, duplicates removed). Throws with the
+ * key that is wrong, like the rest of `parseConfig`.
  */
 export function validateInvitePolicy(raw: unknown): InvitePolicyConfig | undefined {
   if (raw === undefined) return undefined;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('policy.invites must be an object');
   const p = raw as Record<string, unknown>;
   for (const k of Object.keys(p)) {
-    if (!['allow', 'domains', 'maxTtlHours', 'projectRoles'].includes(k)) {
-      throw new Error(`policy.invites.${k} is not a known key (allow, domains, maxTtlHours, projectRoles)`);
+    if (!['allow', 'domains', 'maxTtlHours', 'projectRoles', 'passwordDomains'].includes(k)) {
+      throw new Error(`policy.invites.${k} is not a known key (allow, domains, maxTtlHours, projectRoles, passwordDomains)`);
     }
   }
   if (p.allow !== undefined && !INVITE_ALLOW.includes(p.allow as InviteAllow)) {
     throw new Error(`policy.invites.allow must be one of: ${INVITE_ALLOW.join(', ')}`);
   }
-  if (p.domains !== undefined) {
-    if (!Array.isArray(p.domains) || p.domains.length > 1000) throw new Error('policy.invites.domains must be a list of domain names');
-    p.domains = [...new Set(p.domains.map((x) => {
-      const n = typeof x === 'string' ? x.trim().toLowerCase().replace(/^@/, '') : '';
-      if (!DOMAIN_NAME.test(n)) throw new Error(`policy.invites.domains entry is not a domain name: ${String(x)}`);
-      return n;
-    }))];
-  }
+  if (p.domains !== undefined) p.domains = domainList('domains', p.domains);
+  if (p.passwordDomains !== undefined) p.passwordDomains = domainList('passwordDomains', p.passwordDomains);
   if (p.maxTtlHours !== undefined) {
     const h = p.maxTtlHours;
     if (typeof h !== 'number' || !Number.isFinite(h) || h <= 0 || h > MAX_INVITE_TTL_HOURS) {

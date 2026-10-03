@@ -18,8 +18,11 @@ export interface Message {
   /** `announcement`/`upgrade`/`policy` are composed in the console; the rest are
    *  system-generated on the same pipe - `approval`/`expiry` from plans/05/06,
    *  `collab` from a live-room invite (plans/14 §6, OSS plans/100 §7 item 9),
-   *  `share` when someone adds you to a project (plans/74). */
-  kind: 'announcement' | 'upgrade' | 'policy' | 'approval' | 'expiry' | 'collab' | 'share';
+   *  `share` when someone adds you to a project (plans/74), `request` when
+   *  someone asks for access and you may answer, and `notice` for the rest of
+   *  the people notices (an answer, an accepted invitation, a welcome; built
+   *  in access/messages.ts, sent through notify/people.ts). */
+  kind: 'announcement' | 'upgrade' | 'policy' | 'approval' | 'expiry' | 'collab' | 'share' | 'request' | 'notice';
   severity: 'info' | 'action' | 'blocking';
   audience: Audience;
   title: string;

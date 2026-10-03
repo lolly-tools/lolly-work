@@ -30,3 +30,11 @@ test('tampered body or wrong secret fails; garbage never throws', () => {
   assert.equal(verifyToken('lw/session', `${body}.`, SECRET), null);
   assert.equal(verifyToken('lw/session', '', SECRET), null);
 });
+
+test('an ask token (lw/ask) is its own domain: never a session, never a form token', () => {
+  const ask = mintToken('lw/ask', { e: 'sam@example.com', idp: 'github', sub: 'github:42' }, SECRET, 1800);
+  assert.deepEqual(verifyToken('lw/ask', ask, SECRET), { e: 'sam@example.com', idp: 'github', sub: 'github:42' });
+  assert.equal(verifyToken('lw/session', ask, SECRET), null);
+  assert.equal(verifyToken('lw/form', ask, SECRET), null);
+  assert.equal(verifyToken('lw/ask', mintToken('lw/session', { sub: 'u1' }, SECRET, 60), SECRET), null);
+});

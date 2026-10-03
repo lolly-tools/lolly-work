@@ -116,3 +116,58 @@ test('instance.homeView: absent by default, tools or projects when set, anything
     assert.throws(() => parseConfig(JSON.stringify({ ...open, instance: { homeView: bad } })), /instance\.homeView must be "tools" or "projects"/);
   }
 });
+
+// ── invitations and access requests (plans/74 invite spec 2.5) ─────────────
+const openCfg = (over: Record<string, unknown>) => parseConfig(JSON.stringify({ policy: { defaultAccessMode: 'open' }, ...over }));
+
+test("lolly.ing's invite and request settings parse as written (decisions D1 to D3)", () => {
+  const cfg = parseConfig(JSON.stringify({
+    instance: { name: 'lolly.ing', inviteNote: 'If your organisation blocks Google sign-in (for example @suse.com), use GitHub or email and password.' },
+    policy: {
+      defaultAccessMode: 'open',
+      invites: { passwordDomains: ['suse.com'] },
+      requests: { join: true, project: true, ttlDays: 14, joinOpenMax: 50 },
+    },
+  }));
+  assert.equal(cfg.instance.name, 'lolly.ing');
+  assert.match(cfg.instance.inviteNote ?? '', /^If your organisation blocks Google sign-in/);
+  assert.deepEqual(cfg.policy.invites?.passwordDomains, ['suse.com']);
+  assert.deepEqual(cfg.policy.requests, { join: true, project: true, ttlDays: 14, joinOpenMax: 50 });
+});
+
+test('policy.requests: project requests on and join requests off by default, partial overrides merge, bounds enforced', () => {
+  assert.deepEqual(openCfg({}).policy.requests, { join: false, project: true, ttlDays: 14, joinOpenMax: 50 });
+  assert.deepEqual(openCfg({ policy: { defaultAccessMode: 'open', requests: { join: true } } }).policy.requests,
+    { join: true, project: true, ttlDays: 14, joinOpenMax: 50 });
+  const bad = (requests: unknown) => () => openCfg({ policy: { defaultAccessMode: 'open', requests } });
+  assert.throws(bad({ join: 'yes' }), /policy\.requests\.join/);
+  assert.throws(bad({ project: 1 }), /policy\.requests\.project/);
+  for (const ttlDays of [0, 61, 1.5, '14']) assert.throws(bad({ ttlDays }), /policy\.requests\.ttlDays/, String(ttlDays));
+  for (const joinOpenMax of [0, 1001, 2.5]) assert.throws(bad({ joinOpenMax }), /policy\.requests\.joinOpenMax/, String(joinOpenMax));
+  assert.throws(bad({ ttl: 3 }), /policy\.requests\.ttl is not a known key/);
+  assert.throws(bad([]), /policy\.requests must be an object/);
+  assert.equal(openCfg({ policy: { defaultAccessMode: 'open', requests: { ttlDays: 60, joinOpenMax: 1000 } } }).policy.requests.ttlDays, 60);
+});
+
+test('instance.inviteNote: one trimmed line of at most 240 characters; blank means none', () => {
+  assert.equal(openCfg({}).instance.inviteNote, undefined);
+  assert.equal(openCfg({ instance: { inviteNote: '  Use GitHub.  ' } }).instance.inviteNote, 'Use GitHub.');
+  assert.equal('inviteNote' in openCfg({ instance: { inviteNote: '   ' } }).instance, false);
+  assert.equal(openCfg({ instance: { inviteNote: 'x'.repeat(240) } }).instance.inviteNote?.length, 240);
+  assert.throws(() => openCfg({ instance: { inviteNote: 'x'.repeat(241) } }), /instance\.inviteNote/);
+  for (const note of ['two\nlines', 'a\r\nb', 'tab\there', 'sep arator']) {
+    assert.throws(() => openCfg({ instance: { inviteNote: note } }), /instance\.inviteNote/, JSON.stringify(note));
+  }
+  assert.throws(() => openCfg({ instance: { inviteNote: 42 } }), /instance\.inviteNote/);
+});
+
+test('policy.invites.passwordDomains follows the domains rule and defaults to none', async () => {
+  const { resolveInvitePolicy } = await import('../server/src/policy/invites.ts');
+  assert.deepEqual(resolveInvitePolicy(undefined).passwordDomains, []);
+  const cfg = openCfg({ policy: { defaultAccessMode: 'open', invites: { passwordDomains: [' @SUSE.com ', 'suse.com', 'partner.example'] } } });
+  assert.deepEqual(cfg.policy.invites?.passwordDomains, ['suse.com', 'partner.example'], 'lowercased, "@" dropped, de-duplicated');
+  assert.deepEqual(resolveInvitePolicy(cfg.policy.invites).passwordDomains, ['suse.com', 'partner.example']);
+  assert.deepEqual(resolveInvitePolicy(cfg.policy.invites).domains, [], 'the admission domains are a separate list');
+  assert.throws(() => openCfg({ policy: { defaultAccessMode: 'open', invites: { passwordDomains: ['not a domain'] } } }), /policy\.invites\.passwordDomains/);
+  assert.throws(() => openCfg({ policy: { defaultAccessMode: 'open', invites: { passwordDomains: 'suse.com' } } }), /policy\.invites\.passwordDomains/);
+});
