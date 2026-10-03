@@ -49,6 +49,7 @@ import { createNotifier } from '../notify/notify.ts';
 import { createPeopleNotifier } from '../notify/people.ts';
 import { invitePageUrl, mintInviteToken } from '../access/invite-token.ts';
 import type { RequestDeps } from '../access/types.ts';
+import { registerAccessRoutes } from '../access/routes.ts';
 import { SERVICE_TOKEN_PREFIX, TOKEN_ROLES, hashServiceSecret, mintServiceSecret, serviceAccountFor } from '../iam/service-tokens.ts';
 import { runRetention } from '../audit/retention.ts';
 import { bearerFromHeader, hashScimSecret, mintScimSecret } from '../scim/tokens.ts';
@@ -7630,6 +7631,14 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       await audit(`user:${user.id}`, 'invite.project.remove', `invitation:${inv.id}`, { email: inv.email, projectId: project.id });
     }
     res.writeHead(204); res.end();
+  });
+
+  // Access requests (plans/74 invite spec R6 to R12, access/routes.ts): ask
+  // for a project or to edit it, your own asks, and the list, approve and
+  // decline for whoever may answer. After the invitation and project regions,
+  // so the closures it takes already exist.
+  registerAccessRoutes(router, {
+    ...accessDeps, memberOf, projectAccessOf, shareProjectWith, issueInvitation, invitationView, inviteLink,
   });
 
   // POST /sessions/bulk - multi-edit: merge `set` by EXACT input id into every
