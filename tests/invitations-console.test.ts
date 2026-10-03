@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
  * The console's "Invite people" card (plans/74 W-ID-2) in jsdom: it posts the
- * parsed addresses with the ticked local groups, hands over the sign-in
+ * parsed addresses with the ticked local groups, shows one result row per
  * address, lists invitations by status and revokes with the two-click confirm.
  */
 import { test } from 'node:test';
@@ -53,7 +53,7 @@ test('address parsing splits on commas, semicolons and whitespace and drops brac
     ['ana@example.com', 'bo@x.example', 'cy@x.example']);
 });
 
-test('invite form posts addresses, ticked groups and expiry, then shows the sign-in address', async () => {
+test('invite form posts addresses, ticked groups and expiry, then shows a row per address', async () => {
   const p = page([]);
   const section = await p.helpers.invitationsSection(['brand', 'team']);
   p.main.append(section);
@@ -70,9 +70,9 @@ test('invite form posts addresses, ticked groups and expiry, then shows the sign
   assert.deepEqual(post?.body.groups, ['team']);
   const days = (Date.parse(post?.body.expiresAt) - Date.now()) / 86_400_000;
   assert.ok(days > 29.9 && days < 30.1, 'expiry is thirty days out');
-  assert.ok(section.textContent.includes('2 invitations created.'));
-  assert.ok(section.textContent.includes('https://team.example'), 'the sign-in address to share');
-  assert.ok(buttonByText(section, 'Copy link'), 'with a copy button');
+  assert.ok(section.textContent.includes('ana@example.com · Invitation ready · ends'), 'one result row per address');
+  assert.ok(section.textContent.includes('bo@example.com · Invitation ready · ends'));
+  assert.ok(buttonByText(section, 'Copy message') && buttonByText(section, 'Copy link'), 'each with its copy buttons');
   await pause();
   assert.equal(section.querySelectorAll('tbody tr').length, 2, 'the list refreshed');
   assert.ok(section.querySelector('.status.review'), 'pending reads with the in-progress status');

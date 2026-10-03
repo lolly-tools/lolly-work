@@ -65,7 +65,9 @@ async function api(path, opts = {}) {
   });
   if (res.status === 204) return null;
   const data = await res.json().catch(() => null);
-  if (!res.ok) throw Object.assign(new Error(data?.error?.message ?? res.statusText), { status: res.status, code: data?.error?.code, field: data?.error?.field });
+  // `body` keeps the whole answer: a 409 can carry the current state (a
+  // request someone else answered, the live invitation for an address).
+  if (!res.ok) throw Object.assign(new Error(data?.error?.message ?? res.statusText), { status: res.status, code: data?.error?.code, field: data?.error?.field, body: data });
   return data;
 }
 
@@ -693,17 +695,30 @@ const ACT_CAT_LABEL = {
   catalog: 'Catalog', provider: 'Providers', grant: 'Grants', group: 'Groups',
   user: 'People', approval: 'Approvals', chain: 'Approval chains', message: 'Messages',
   auth: 'Sign-ins', telemetry: 'Telemetry', guest: 'Guests', collab: 'Collab',
+  invite: 'Invitations', access: 'Access requests',
 };
 const ACT_CAT_ICON = {
   link: 'links', render: 'tools', session: 'projects', project: 'projects',
   catalog: 'catalog', provider: 'providers', grant: 'grants', group: 'users',
   user: 'users', approval: 'approvals', chain: 'approvals', message: 'messages',
   auth: 'users', telemetry: 'overview', guest: 'users', collab: 'projects',
+  invite: 'users', access: 'users',
 };
 const CONSOLE_VIEW_OF = {
   link: 'links', session: 'projects', project: 'projects', tool: 'tools',
   provider: 'providers', grant: 'grants', group: 'users', user: 'users',
   approval: 'approvals', chain: 'approvals', asset: 'catalog', message: 'messages',
+  invitation: 'users', request: 'users',
+};
+// Why a sign-in was refused (auth.denied `reason`), in words.
+const DENIED_REASON = {
+  'not-invited': 'not invited',
+  'not-admitted': 'not admitted',
+  'email-unverified': 'email address not verified',
+  disabled: 'account turned off',
+  'hosted-domain': 'outside the allowed organisation',
+  tenant: 'outside the allowed organisation',
+  'owner-link-required': 'an owner needs a sign-in link from another owner',
 };
 function actShort(id) { return id && id.length > 16 ? `${id.slice(0, 13)}…` : (id || ''); }
 function actSubjRef(subject) {
@@ -734,6 +749,12 @@ function actPrincipalObj(pr, names) {
   if (kind === 'user') return actUserObj(id, names);
   if (kind === 'group') return actConsoleObj('group', id, id);
   return pr;
+}
+// An address or name in bold, "Someone" when the row has none.
+const bold = (text) => el('b', {}, text || 'Someone');
+// Nodes joined as "a, b and c".
+function listNodes(nodes) {
+  return nodes.flatMap((n, i) => (i === 0 ? [n] : [i === nodes.length - 1 ? ' and ' : ', ', n]));
 }
 // Build the linear sentence for one item as a flat array of text + link nodes.
 function activityLine(item, names) {
@@ -783,6 +804,29 @@ function activityLine(item, names) {
     case 'guest.admit': push('joined via ', actConsoleObj('link', s?.id, 'a guest link'), p.name ? ` as ${p.name}` : ''); break;
     case 'render.denied': push('was blocked from ', p.toolId ? actToolObj(p.toolId) : 'a render', p.code ? ` (${p.code})` : ''); break;
     case 'collab.invite': push('invited ', p.invitee ? actUserObj(p.invitee, names) : 'a teammate', ' to co-edit ', s ? actSessionObj(s.id, p.toolId) : 'a session'); break;
+    // Invitations and access requests (plans/74 invite spec 4.4). A step
+    // taken before anyone is admitted is audited as `anonymous`, which the
+    // feed names "the system", so those sentences lead with the address.
+    case 'invite.create': push('invited ', bold(p.email), p.projects?.length ? [' to ', ...listNodes(p.projects.map((x) => actProjectObj(x.projectId)))] : ''); break;
+    case 'invite.extend': push('added ', p.project?.projectId ? actProjectObj(p.project.projectId) : 'a project', ' to the invitation for ', bold(p.email)); break;
+    case 'invite.accept': push('accepted the invitation for ', bold(p.email)); break;
+    case 'invite.revoke': push('revoked the invitation for ', bold(p.email)); break;
+    case 'invite.link': push('made a new invite link for ', bold(p.email)); break;
+    case 'invite.open': out[0] = 'Someone'; push('opened ', p.email ? ['the invitation for ', bold(p.email)] : 'an invitation'); break;
+    case 'invite.wrong-account': out[0] = bold(p.email); push('opened an invitation with another account'); break;
+    case 'auth.denied': out[0] = bold(p.email); push('could not sign in', p.reason ? ` (${DENIED_REASON[p.reason] ?? p.reason.replace(/-/g, ' ')})` : ''); break;
+    case 'access.request':
+      if (p.kind === 'project') push(p.role === 'editor' ? 'asked to edit ' : 'asked to view ', p.projectId ? actProjectObj(p.projectId) : 'a project');
+      else {
+        if (item.actor?.kind !== 'user') out[0] = bold(p.email);
+        push(p.kind === 'join' ? `asked to join ${workspaceName()}` : 'asked to use their own account for an invitation');
+      }
+      break;
+    case 'access.request.held': out[0] = bold(p.email); push('asked again, and the request limit held it'); break;
+    case 'access.approve': push('approved a request from ', bold(p.email)); break;
+    case 'access.decline': push('declined a request from ', bold(p.email)); break;
+    case 'access.withdraw': if (item.actor?.kind !== 'user') out[0] = 'Someone'; push('withdrew a request'); break;
+    case 'access.supersede': push('closed a request, because the person got access another way'); break;
     default: push(item.action.replace(/\./g, ' '), s ? [' ', actConsoleObj(s.type, s.id)] : '');
   }
   return out;
@@ -897,13 +941,14 @@ async function renderActivityFeed(host) {
 }
 
 async function viewOverview(main) {
-  const [summary, fleet, links, stats, appr, auditHead] = await Promise.all([
+  const [summary, fleet, links, stats, appr, auditHead, asks] = await Promise.all([
     api('/api/v1/telemetry/summary'),
     api('/api/v1/fleet').catch(() => ({ clients: [] })),
     api('/api/v1/links?all=1').catch(() => ({ links: [] })),
     api('/api/v1/stats/overview').catch(() => null),
     api('/api/v1/approvals').catch(() => null),
     api('/api/v1/audit?limit=1').catch(() => null),
+    api('/api/v1/access-requests?status=open').catch(() => null),
   ]);
   const d14 = summary.days;
   const events14 = d14.reduce((a, d) => a + d.events, 0);
@@ -932,6 +977,11 @@ async function viewOverview(main) {
   if (inboxCount) {
     needs.push({ level: 'review', icon: 'approvals', href: '#/approvals', text: `${fmt(inboxCount)} approval${inboxCount === 1 ? '' : 's'} waiting on you` });
   }
+  // Access requests the viewer may answer (plans/74 invite spec 4.4).
+  const asking = asks?.requests?.length ?? 0;
+  if (asking) {
+    needs.push({ level: 'review', icon: 'users', href: '#/users', text: `${fmt(asking)} request${asking === 1 ? '' : 's'} waiting` });
+  }
   const soon = Date.now() + 7 * 86400e3;
   const expiring = links.links.filter((l) => l.status === 'live' && l.expiresAt && Date.parse(l.expiresAt) < soon).length;
   if (expiring) {
@@ -952,7 +1002,7 @@ async function viewOverview(main) {
       el('h2', { class: 'flush' }, 'Nothing here yet'),
       el('p', { class: 'sub' }, 'That is expected on a new deployment. Numbers fill in as people sign in and apps connect. To get going:'),
       el('ul', { class: 'zero-steps' },
-        el('li', {}, 'Invite people from ', el('a', { href: '#/users' }, 'People'), ' (they appear in the directory after their first sign-in).'),
+        el('li', {}, 'Invite people from ', el('a', { href: '#/users' }, 'People'), '. Invited people appear in the directory after they first sign in.'),
         el('li', {}, 'Confirm the mounted brand pack in ', el('a', { href: '#/instance?tab=design' }, 'This Deploy → Design system'), '.'),
         el('li', {}, 'Mint a time-boxed guest link under ', el('a', { href: '#/contractors' }, 'Contractors'), '. Every link this deployment mints, from here or from the apps, is tracked under ', el('a', { href: '#/links' }, 'Links'), '.'))));
   }
@@ -3454,11 +3504,12 @@ async function issuePasswordLink(email, purpose, host) {
   announce(copied ? 'Sign-in link copied to clipboard' : 'Sign-in link ready to copy');
 }
 
-// ── invitations (plans/74 W-ID-2) ─────────────────────────────────────────────
+// ── invitations (plans/74 W-ID-2, invite spec 4.1 and 4.2) ───────────────────
 // "Invite people" on the People view: email addresses plus the local groups
-// each person joins at their first sign-in. Nothing is emailed from here, so
-// the card hands over the sign-in address to share. One active invitation per
-// address: inviting someone again keeps the invitation already there.
+// each person joins at their first sign-in. Nothing is emailed from here:
+// every invitation has its own link, and the card builds the invite message
+// for the admin to send. One active invitation per address: inviting
+// someone again keeps the invitation already there.
 const INVITE_EXPIRY_CHOICES = [
   { value: '7', label: '7 days' },
   { value: '30', label: '30 days' },
@@ -3466,6 +3517,139 @@ const INVITE_EXPIRY_CHOICES = [
   { value: '', label: 'No expiry' },
 ];
 const INVITE_STATUS_CLASS = { pending: 'review', accepted: 'live', expired: 'expired', revoked: 'revoked' };
+// The list order: what still needs doing first.
+const INVITE_STATUS_RANK = { pending: 0, expired: 1, accepted: 2, revoked: 3 };
+const PROJECT_ROLE_LABEL = { viewer: 'Viewer', editor: 'Editor', manager: 'Manager' };
+const projectRoleLabel = (role) => PROJECT_ROLE_LABEL[role] ?? role;
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+// "2 Nov" and "Fri 10 Oct 2026" in the viewer's time zone, spelled the same
+// on every browser: the invite message is English, like the server pages.
+const dayMonth = (iso) => { const d = new Date(iso); return `${d.getDate()} ${MONTHS[d.getMonth()]}`; };
+const fullDay = (iso) => { const d = new Date(iso); return `${WEEKDAYS[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`; };
+// "Google", "Google or GitHub", "Google, GitHub or Okta".
+const orList = (names) => (names.length < 2 ? names[0] ?? '' : `${names.slice(0, -1).join(', ')} or ${names.at(-1)}`);
+const emailDomain = (email) => email.slice(email.lastIndexOf('@') + 1).toLowerCase();
+// Buttons and links in one row, a space between each.
+const spaced = (nodes) => nodes.filter(Boolean).flatMap((n, i) => (i ? [' ', n] : [n]));
+// The workspace name first, everywhere (plans/75 C6).
+const workspaceName = () => authConfig?.instanceName || instanceName;
+
+// The caller's org-config (its invite limits), read at most once a minute.
+// Null when it does not load; every reader has a fallback.
+let orgConfigMemo = null;
+function orgConfigSoon() {
+  if (!orgConfigMemo || Date.now() - orgConfigMemo.at > 60_000) {
+    orgConfigMemo = { at: Date.now(), p: api('/api/v1/org-config').catch(() => null) };
+  }
+  return orgConfigMemo.p;
+}
+
+/** What the invite messages and sentences need: GET /api/v1/invitations
+ *  context (R16) and the org-config, each part with a fallback. The provider
+ *  names leave out the password sign-in, which the message mentions on its
+ *  own line when the invitation can set a password. */
+function inviteContext(data, orgConfig) {
+  const passwordNames = new Set((authConfig?.providers ?? []).filter((p) => p.kind === 'password').map((p) => p.name));
+  const names = Array.isArray(data?.providers) ? data.providers : (authConfig?.providers ?? []).map((p) => p.name);
+  return {
+    workspace: workspaceName(),
+    providers: names.filter((n) => typeof n === 'string' && n && !passwordNames.has(n)),
+    inviteNote: typeof data?.inviteNote === 'string' ? data.inviteNote.trim() : '',
+    passwordDomains: (data?.passwordDomains ?? orgConfig?.invites?.passwordDomains ?? []).map((d) => String(d).toLowerCase()),
+    domains: orgConfig?.invites?.domains ?? [],
+    projectRoles: orgConfig?.invites?.projectRoles?.length ? orgConfig.invites.projectRoles : ['viewer', 'editor', 'manager'],
+    signInUrl: data?.signInUrl ?? '',
+  };
+}
+
+/** The invite message an admin copies and sends (invite spec 4.1), from an
+ *  invitation wire. English, like the server pages (plans/75 C20). */
+function inviteMessage(inv, ctx) {
+  const projects = inv.projects ?? [];
+  const one = projects.length === 1 ? projects[0] : null;
+  const inviter = one?.invitedBy?.name || inv.inviter?.name;
+  const opener = inviter ? `${inviter} invited you to` : 'You are invited to';
+  const projectName = (p) => p.name || 'a project';
+  const lines = [one
+    ? `${opener} ${projectName(one)} on ${ctx.workspace}. Your role: ${projectRoleLabel(one.role)}.`
+    : `${opener} ${ctx.workspace}.`];
+  if (projects.length > 1) lines.push(`Projects: ${projects.map((p) => `${projectName(p)} (${projectRoleLabel(p.role)})`).join(', ')}.`);
+  lines.push(inv.link || ctx.signInUrl);
+  lines.push(ctx.providers.length ? `Sign in as ${inv.email} with ${orList(ctx.providers)}.` : `Sign in as ${inv.email}.`);
+  if (inv.passwordSetup && inv.password !== 'set') lines.push('Open the link to set your password.');
+  if (inv.expiresAt) lines.push(`This invitation ends on ${fullDay(inv.expiresAt)}.`);
+  if (ctx.inviteNote) lines.push(ctx.inviteNote);
+  return lines.join('\n');
+}
+
+/** Who can use an invitation's link. A link that can set a password is a
+ *  credential until the password is set. */
+function inviteBearerLine(inv) {
+  return inv.passwordSetup && inv.password !== 'set'
+    ? `Anyone with this link can set the password for ${inv.email} until it is used. Send the link privately.`
+    : `The link works only for someone who signs in as ${inv.email}.`;
+}
+
+/** Why an address was not invited, one sentence per reason. */
+function inviteRefusal(reason, ctx) {
+  switch (reason) {
+    case 'invites-not-allowed': return 'Not invited. Your role cannot invite new people.';
+    case 'domain-not-allowed': return ctx.domains.length
+      ? `Not invited. ${ctx.workspace} only invites addresses at ${orList(ctx.domains)}.`
+      : `Not invited. ${ctx.workspace} does not invite addresses at that domain.`;
+    case 'self': return 'Not invited. That is your own account.';
+    case 'account-disabled': return 'Not invited. That account is turned off. Turn the account on first.';
+    case 'owner-only': return 'Not invited. Only an owner can change an owner’s groups.';
+    default: return 'Not invited.';
+  }
+}
+
+/** "Copy message": the text to the clipboard. When the clipboard refuses,
+ *  the text goes into a read-only box in `host`, already selected. */
+function copyMessageButton(getText, host, copiedNote = 'Invite message copied') {
+  const label = 'Copy message';
+  const btn = el('button', { type: 'button', onclick: async () => {
+    const text = getText();
+    if (await copyToClipboard(text)) {
+      announce(copiedNote);
+      btn.textContent = 'Copied';
+      setTimeout(() => { btn.textContent = label; }, 1600);
+      return;
+    }
+    const box = el('textarea', { readonly: 'true', rows: String(text.split('\n').length + 1), 'aria-label': 'Message to copy', onfocus: (e) => e.target.select() });
+    box.value = text;
+    host.replaceChildren(el('div', { class: 'stack' },
+      el('p', { class: 'sub flush' }, 'The clipboard is not available here. Copy the message from this box.'),
+      box));
+    scrollIntoViewMotionSafe(host);
+    box.focus({ preventScroll: true });
+    box.select();
+    announce('Message ready to copy');
+  } }, label);
+  return btn;
+}
+
+/** One row per address after Invite, Invite again or an approved request
+ *  (invite spec 4.1). `r` is an invitation wire with `created`, or an
+ *  `already`, `applied` or `refused` result. */
+function inviteResultRow(r, ctx) {
+  const line = (text, ...actions) => el('div', { class: 'list-bar' },
+    el('span', {}, text),
+    actions.length ? el('span', {}, ...spaced(actions)) : null);
+  if (r.status === 'refused') return line(`${r.email} · ${inviteRefusal(r.reason, ctx)}`);
+  if (r.status === 'already') return line(`${r.email} · Already on ${ctx.workspace}`);
+  if (r.status === 'applied') return line(`${r.email} · Already on ${ctx.workspace} · joined the groups now`);
+  const ends = r.expiresAt ? ` · ends ${dayMonth(r.expiresAt)}` : '';
+  const out = el('div');
+  const message = copyMessageButton(() => inviteMessage(r, ctx), out);
+  return el('div', { class: 'stack' },
+    r.created
+      ? line(`${r.email} · Invitation ready${ends}`, message, copyButton(() => r.link || ctx.signInUrl))
+      : line(`${r.email} · Already invited${ends}`, message),
+    el('p', { class: 'sub flush' }, inviteBearerLine(r)),
+    out);
+}
 
 /** Split pasted text into addresses: commas, semicolons, spaces and new lines
  *  all separate, and surrounding angle brackets or quotes are dropped. The
@@ -3484,9 +3668,10 @@ function parseInviteEmails(text) {
  *  it is how a second owner joins. */
 async function invitationsSection(groupOptions) {
   let data;
-  try { data = await api('/api/v1/invitations'); }
+  let orgConfig;
+  try { [data, orgConfig] = await Promise.all([api('/api/v1/invitations'), orgConfigSoon()]); }
   catch (e) { return el('div', { class: 'card' }, el('h2', {}, 'Invite people'), el('p', { class: 'form-err', role: 'status' }, e.message)); }
-  const signInUrl = data.signInUrl;
+  const ctx = inviteContext(data, orgConfig);
   const listHost = el('div', { class: 'stack' });
 
   // ── the form ──
@@ -3501,18 +3686,30 @@ async function invitationsSection(groupOptions) {
   });
   const expirySel = el('select', {}, ...INVITE_EXPIRY_CHOICES.map((c) => el('option', { value: c.value, ...(c.value === '30' ? { selected: 'selected' } : {}) }, c.label)));
   const err = errSpan();
-  const result = el('div', { class: 'stack' });
+  const result = el('div');
   const sendBtn = el('button', { class: 'primary' }, 'Invite');
 
-  const shareBlock = el('div', { class: 'card mint-out' },
-    el('div', { class: 'list-bar' },
-      el('span', {}, 'Sign-in address to share'),
-      copyButton(() => signInUrl)),
-    el('p', { class: 'mono url-line' }, signInUrl),
-    el('p', { class: 'sub flush' }, 'Send this address yourself, by chat or email. An invited person signs in with the same email address you entered here.'),
-    passwordSignInOn()
-      ? el('p', { class: 'sub flush' }, `If they cannot use ${idpName()}, send them a password link instead: press Copy sign-in link on their invitation below.`)
-      : null);
+  // The password tick (invite spec 4.1, M4): the invite link can then set
+  // the password for its address, once. It starts ticked while every address
+  // typed is in policy.invites.passwordDomains, until the admin changes it.
+  // The server honours it only for an admin or owner, and each result says
+  // whether the invitation took it.
+  let pwTouched = false;
+  const pwBox = passwordSignInOn() && data.passwordSignIn !== false
+    ? el('input', { type: 'checkbox', onchange: () => { pwTouched = true; } })
+    : null;
+  const syncPwBox = () => {
+    if (!pwBox || pwTouched) return;
+    const emails = parseInviteEmails(emailsInput.value);
+    pwBox.checked = emails.length > 0 && emails.every((e) => ctx.passwordDomains.includes(emailDomain(e)));
+  };
+  emailsInput.addEventListener('input', syncPwBox);
+  const pwField = pwBox
+    ? el('div', {},
+        el('label', { class: 'chk' }, pwBox, el('span', {}, 'Let them set a password from the invite link')),
+        el('p', { class: 'sub flush' }, 'Anyone with the link can then set the password for that address, once. Send the link privately. ',
+          `Use this for people who cannot use ${ctx.providers.length ? orList(ctx.providers) : 'your other sign-ins'}.`))
+    : null;
 
   const admissionNote = !data.admission?.policy
     ? el('p', { class: 'sub' }, 'This instance has no sign-in rule yet, so anyone your identity provider signs in is admitted. Invitations still add their groups at the first sign-in.')
@@ -3531,27 +3728,24 @@ async function invitationsSection(groupOptions) {
       emails,
       groups: groupBoxes.filter((g) => g.cb.checked).map((g) => g.name),
       ...(days ? { expiresAt: new Date(Date.now() + days * 86_400_000).toISOString() } : {}),
+      ...(pwBox ? { passwordSetup: pwBox.checked } : {}),
     };
     sendBtn.disabled = true;
     try {
       const r = await api('/api/v1/invitations', { method: 'POST', body });
-      const made = r.invitations.filter((i) => i.created).length;
-      const applied = r.invitations.filter((i) => i.status === 'applied').length;
-      const refused = r.invitations.filter((i) => i.status === 'refused');
-      const kept = r.invitations.length - made - applied - refused.length;
+      const rows = r.invitations ?? [];
+      const made = rows.filter((i) => i.created).length;
       emailsInput.value = '';
-      result.replaceChildren(el('p', { class: 'sub flush' },
-        made ? `${made} ${made === 1 ? 'invitation' : 'invitations'} created.` : '',
-        applied ? ` ${applied} already had an account and joined the groups now.` : '',
-        kept ? ` ${kept} already had an invitation, which stays as it was.` : '',
-        refused.length ? ` Not changed: ${refused.map((i) => `${i.email} (${i.reason})`).join(', ')}.` : ''), shareBlock);
+      if (pwBox) { pwTouched = false; pwBox.checked = false; }
+      result.replaceChildren(el('div', { class: 'card mint-out' }, ...rows.map((row) => inviteResultRow(row, ctx))));
       toast(made ? `Invited ${made} ${made === 1 ? 'person' : 'people'}` : 'Nothing new to invite');
       refreshList();
     } catch (e2) { err.textContent = e2.message; }
     sendBtn.disabled = false;
   } },
     el('h2', {}, 'Invite people'),
-    el('p', { class: 'sub' }, 'Add the email addresses of the people who may sign in. Each person joins the groups you tick at their first sign-in. To change an invitation, revoke it and invite again.'),
+    el('p', { class: 'sub' }, 'Add the email addresses of the people who may sign in. Each person joins the groups you tick at their first sign-in. Invite again makes a new link and ends the old one.'),
+    el('p', { class: 'sub' }, `${ctx.workspace} does not send email. Copy each invite message and send the message yourself.`),
     admissionNote,
     field('Email addresses', emailsInput),
     el('div', { role: 'group', 'aria-labelledby': 'invite-groups-h' },
@@ -3561,49 +3755,122 @@ async function invitationsSection(groupOptions) {
         : groupBoxes.length
           ? el('div', { class: 'chk-list' }, ...groupBoxes.map((g) => g.node))
           : el('p', { class: 'muted' }, 'No local groups yet. Open a person below and create one under Groups, or invite without groups.')),
+    pwField,
     el('div', { class: 'formrow' }, field('Expires after', expirySel)),
     el('p', {}, sendBtn),
     err,
     result);
 
   // ── the list ──
-  // One place for the sign-in link a row's button issues, under the table.
+  // One place under the table for what a row's button produces: a sign-in
+  // link, an invitation made again, or a message the clipboard refused.
   const linkOut = el('div');
+  const showOut = (node) => {
+    linkOut.replaceChildren(el('div', { class: 'card mint-out' }, node));
+    scrollIntoViewMotionSafe(linkOut);
+  };
+  const madeFrom = (inv) => {
+    if (inv.createdVia === 'request') return 'Request';
+    if (inv.createdVia !== 'project') return 'Console';
+    const p = inv.projects?.[0];
+    if (!p) return 'A project';
+    return p.invitedBy?.name ? `${p.name || 'A project'} (${p.invitedBy.name})` : p.name || 'A project';
+  };
   function invitationRow(inv) {
     const rowErr = errSpan();
-    const linkBtn = passwordSignInOn() && inv.status === 'pending'
+    const id = encodeURIComponent(inv.id);
+    const pending = inv.status === 'pending';
+    const statusText = pending ? (inv.openedAt ? `Opened ${relTime(inv.openedAt)}` : 'Waiting')
+      : inv.status === 'accepted' ? `Accepted as ${inv.acceptedUser?.email ?? inv.email}`
+        : inv.status === 'expired' ? 'Expired' : 'Revoked';
+    const passwordText = inv.password === 'set' ? 'Password set' : pending && inv.passwordSetup ? 'Can set a password' : null;
+
+    const newLink = pending
+      ? armConfirmButton({}, 'New link', 'Old links stop working?', async (disarm) => {
+          rowErr.textContent = '';
+          newLink.disabled = true;
+          try {
+            await api(`/api/v1/invitations/${id}/link`, { method: 'POST', body: {} });
+            toast(`New link for ${inv.email}. Earlier links no longer work.`);
+            refreshList();
+          } catch (e) { rowErr.textContent = e.message; newLink.disabled = false; disarm(); }
+        })
+      : null;
+    const signInLink = pending && passwordSignInOn()
       ? el('button', { type: 'button', onclick: async () => {
           rowErr.textContent = '';
-          linkBtn.disabled = true;
+          signInLink.disabled = true;
           try { await issuePasswordLink(inv.email, 'setup', linkOut); } catch (e) { rowErr.textContent = e.message; }
-          linkBtn.disabled = false;
+          signInLink.disabled = false;
         } }, 'Copy sign-in link')
       : null;
-    const revoke = inv.status === 'revoked'
-      ? null
-      : armConfirmButton({ class: 'danger' }, 'Revoke', 'Really revoke?', async (disarm) => {
+    // Invite again (R14): a new invitation and link for an expired or revoked
+    // row. A 409 carries the address's live invitation, shown instead.
+    const again = inv.status === 'expired' || inv.status === 'revoked'
+      ? el('button', { type: 'button', onclick: async () => {
+          rowErr.textContent = '';
+          again.disabled = true;
+          try {
+            const r = await api(`/api/v1/invitations/${id}/reinvite`, { method: 'POST', body: {} });
+            showOut(inviteResultRow({ ...r.invitation, created: true }, ctx));
+            toast(`Invited ${inv.email} again`);
+            refreshList();
+          } catch (e) {
+            const live = e.body?.error?.invitation ?? e.body?.invitation;
+            if (e.status === 409 && live) showOut(inviteResultRow({ ...live, created: false }, ctx));
+            else rowErr.textContent = e.message;
+          }
+          again.disabled = false;
+        } }, 'Invite again')
+      : null;
+    const revoke = pending || inv.status === 'accepted'
+      ? armConfirmButton({ class: 'danger' }, 'Revoke', 'Really revoke?', async (disarm) => {
           rowErr.textContent = '';
           revoke.disabled = true;
           try {
-            await api(`/api/v1/invitations/${encodeURIComponent(inv.id)}`, { method: 'DELETE' });
+            await api(`/api/v1/invitations/${id}`, { method: 'DELETE' });
             toast(`Invitation for ${inv.email} revoked`);
             refreshList();
           } catch (e) { rowErr.textContent = e.message; revoke.disabled = false; disarm(); }
-        });
+        })
+      : null;
+    const actions = [
+      pending ? copyMessageButton(() => inviteMessage(inv, ctx), linkOut) : null,
+      pending ? copyButton(() => inv.link || ctx.signInUrl) : null,
+      newLink,
+      signInLink,
+      again,
+      inv.status === 'accepted' && inv.acceptedUserId
+        ? el('a', { href: `#/users?focus=${encodeURIComponent(inv.acceptedUserId)}` }, 'Open person')
+        : null,
+      revoke,
+    ];
+    const projects = inv.projects ?? [];
     return el('tr', {},
-      el('td', { title: inv.email }, inv.email),
-      el('td', { title: inv.groups.join(', ') }, inv.groups.length ? inv.groups.join(', ') : el('span', { class: 'muted' }, 'none')),
-      el('td', { 'data-sort': inv.status }, el('span', { class: `status ${INVITE_STATUS_CLASS[inv.status] ?? ''}` }, inv.status)),
-      whenCell(inv.createdAt),
+      el('td', { title: inv.email }, inv.email,
+        inv.groups?.length ? [' ', el('div', { class: 'muted' }, `Groups: ${inv.groups.join(', ')}`)] : null),
+      el('td', {}, projects.length
+        ? projects.map((p) => `${p.name || 'A removed project'} (${projectRoleLabel(p.role)})`).join(', ')
+        : el('span', { class: 'muted' }, 'none')),
+      el('td', {}, madeFrom(inv)),
+      el('td', {}, inv.inviter?.name ?? '—'),
+      el('td', { 'data-sort': String(INVITE_STATUS_RANK[inv.status] ?? 9) },
+        el('span', { class: `status ${INVITE_STATUS_CLASS[inv.status] ?? ''}` }, statusText),
+        passwordText ? [' ', el('div', { class: 'muted' }, passwordText)] : null),
       whenCell(inv.status === 'accepted' ? inv.acceptedAt : inv.expiresAt),
-      el('td', {}, linkBtn, linkBtn && revoke ? ' ' : null, revoke, rowErr));
+      el('td', {}, ...spaced(actions), rowErr));
   }
   function renderList(invitations) {
-    const live = invitations.filter((i) => i.status !== 'revoked');
-    const revoked = invitations.filter((i) => i.status === 'revoked');
+    // Pending first, then expired (Invite again), then accepted, each newest
+    // first; revoked rows fold away under their own heading.
+    const ordered = invitations.slice().sort((a, b) =>
+      (INVITE_STATUS_RANK[a.status] ?? 9) - (INVITE_STATUS_RANK[b.status] ?? 9) || String(b.createdAt).localeCompare(String(a.createdAt)));
+    const live = ordered.filter((i) => i.status !== 'revoked');
+    const revoked = ordered.filter((i) => i.status === 'revoked');
     const table = (rows) => dataTable(
-      ['Email', 'Groups', 'Status', { label: 'Invited', sort: 'date' }, { label: 'Expires or accepted', sort: 'date' }, { label: 'Actions', w: '1%', sort: false }],
+      ['Email', 'Projects', 'Made from', 'Invited by', 'Status', { label: 'Ends or accepted', sort: 'date' }, { label: 'Actions', w: '1%', sort: false }],
       rows.map(invitationRow), { sortable: true });
+    const bearer = live.some((i) => i.status === 'pending' && i.passwordSetup && i.password !== 'set');
     listHost.replaceChildren(el('div', { class: 'card stack' },
       el('h2', { class: 'flush' }, 'Invitations'),
       live.length
@@ -3614,6 +3881,9 @@ async function invitationsSection(groupOptions) {
         ? el('details', { class: 'ov-section' },
             el('summary', {}, el('span', { class: 'detail-h section-h' }, `Revoked (${revoked.length})`)),
             table(revoked))
+        : null,
+      bearer
+        ? el('p', { class: 'sub flush' }, 'Anyone with the link of an invitation that can set a password can set that password until it is used. Send those links privately.')
         : null,
       passwordSignInOn()
         ? el('p', { class: 'sub flush' }, 'Copy sign-in link gives the person a link to set a password, for when they cannot use your other sign-ins. It works once, for seven days, and a new link replaces the last one.')
@@ -3626,6 +3896,180 @@ async function invitationsSection(groupOptions) {
   }
   renderList(data.invitations ?? []);
   return el('div', { class: 'stack' }, form, listHost);
+}
+
+// ── access requests (plans/74 invite spec 4.3) ───────────────────────────────
+// Requests to join the workspace, to use another account for an invitation,
+// and to open or edit a project, listed for the people who may answer them
+// (GET /api/v1/access-requests, R10). The server checks the approver again
+// on every answer, and a request someone else answered first comes back as
+// 409 with who answered it.
+const REQUEST_ANSWERED_DAYS = 7;
+// The 409s that close a request as expired, in words.
+const REQUEST_ENDED = {
+  REQUESTER_UNAVAILABLE: 'Not approved. Their account is turned off, so the request is closed.',
+  INVITATION_ENDED: 'Not approved. The invitation has ended, so the request is closed.',
+  PROJECT_ARCHIVED: 'Not approved. The project is archived, so the request is closed.',
+};
+const requesterName = (req) => req.name || req.email;
+
+/** What a request asks for, as the Asks for column says it. */
+function requestAsksFor(req, workspace) {
+  if (req.kind === 'join') return `Join ${workspace}`;
+  if (req.kind === 'switch') {
+    return `Use this account for ${req.invitation?.maskedEmail ?? 'another address'}’s invitation${req.project ? ` (${req.project.name})` : ''}`;
+  }
+  const verb = req.role === 'editor' ? 'Edit' : req.role === 'manager' ? 'Manage' : 'View';
+  const via = req.session ? ` (from the ${req.session.name ? `${req.session.name} link` : 'session link'})` : '';
+  return `${verb} ${req.project?.name ?? 'a project'}${via}`;
+}
+
+/** How a request was answered, for a row whose actions are done. */
+function requestAnswer(r) {
+  if (!r) return 'Someone else already answered this request.';
+  const who = r.answeredBy?.name ?? 'Someone';
+  const at = r.answeredAt ? ` ${relTime(r.answeredAt)}` : '';
+  switch (r.status) {
+    case 'approved': return `${who} approved this${at}${r.answerRole ? ` as ${projectRoleLabel(r.answerRole)}` : ''}`;
+    case 'declined': return `${who} declined this${at}`;
+    case 'withdrawn': return `They withdrew this${at}`;
+    case 'superseded': return `They got access another way${at}`;
+    case 'expired': return 'Expired before anyone answered';
+    default: return 'Waiting';
+  }
+}
+
+/** The Requests card at the top of People, or null when there is nothing
+ *  to show: no request to answer and no permission to invite. */
+async function requestsSection(canInvite) {
+  const since = new Date(Date.now() - REQUEST_ANSWERED_DAYS * 86_400_000).toISOString();
+  let open;
+  let answered;
+  let orgConfig;
+  try {
+    [open, answered, orgConfig] = await Promise.all([
+      api('/api/v1/access-requests?status=open').then((r) => r.requests ?? []),
+      api(`/api/v1/access-requests?status=answered&since=${encodeURIComponent(since)}`).then((r) => r.requests ?? []).catch(() => []),
+      orgConfigSoon(),
+    ]);
+  } catch (e) {
+    // 404: a server without request routes. Without user.invite the card is
+    // only for requests, so a failure hides it.
+    if (e.status === 404 || !canInvite) return null;
+    return el('div', { class: 'card' }, el('h2', {}, 'Requests'), el('p', { class: 'form-err', role: 'status' }, e.message));
+  }
+  if (!open.length && !answered.length && !canInvite) return null;
+  const ctx = inviteContext(null, orgConfig);
+  // Approving a join can also add the person to a project the approver
+  // manages; the list loads only when a join request is waiting.
+  const manageable = open.some((r) => r.kind === 'join')
+    ? await api('/api/v1/projects').then((r) => (r.projects ?? []).filter((p) => p.myRole === 'manager' || p.myRole === 'owner')).catch(() => [])
+    : [];
+
+  open.sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+  answered = answered.filter((r) => !r.answeredAt || r.answeredAt >= since)
+    .sort((a, b) => String(b.answeredAt ?? '').localeCompare(String(a.answeredAt ?? '')));
+  let waiting = open.length;
+  const count = el('span', { class: 'muted' });
+  const syncCount = () => { count.textContent = waiting ? ` (${waiting} waiting)` : ''; };
+  syncCount();
+  const resultHost = el('div');
+
+  const roleSelect = (label, selected) => el('select', { 'aria-label': label },
+    ...ctx.projectRoles.map((r) => el('option', { value: r, ...(r === selected ? { selected: 'selected' } : {}) }, projectRoleLabel(r))));
+  const whoCell = (req) => el('td', { title: req.email },
+    el('div', {}, requesterName(req)),
+    req.name ? [' ', el('div', { class: 'muted' }, req.email)] : null,
+    req.provider ? [' ', el('span', { class: 'chip' }, req.provider)] : null);
+  const asksCell = (req) => el('td', {}, requestAsksFor(req, ctx.workspace),
+    req.kind === 'switch'
+      ? [' ', el('p', { class: 'sub flush' }, `Someone with the invitation for ${req.invitation?.maskedEmail ?? 'another address'} signed in as ${req.email}. Approve only if you know the address belongs to the same person.`)]
+      : null);
+  const askedCell = (req) => el('td', { 'data-sort': req.createdAt ?? '', title: when(req.createdAt) }, relTime(req.createdAt));
+
+  /** After an approved join or switch the person has no account to tell
+   *  them, so the approver gets the message to send. */
+  function showApproved(req, r) {
+    if (req.kind === 'project' || r.outcome === 'added') return;
+    const text = r.message?.text || (r.invitation ? inviteMessage({ ...r.invitation, link: r.link ?? r.invitation.link }, ctx) : '');
+    if (!text) return;
+    const out = el('div');
+    resultHost.replaceChildren(el('div', { class: 'card mint-out' },
+      el('p', { class: 'flush' }, `Approved. Tell ${req.email}:`),
+      el('p', { class: 'mono url-line', style: 'white-space:pre-line' }, text),
+      el('p', { class: 'flush' }, copyMessageButton(() => text, out, 'Message copied')),
+      out));
+    scrollIntoViewMotionSafe(resultHost);
+  }
+
+  function openRow(req) {
+    const cell = el('td');
+    const err = errSpan();
+    const name = requesterName(req);
+    const roleSel = req.kind === 'project'
+      ? roleSelect(`Role for ${name}`, ctx.projectRoles.includes(req.role) ? req.role : ctx.projectRoles[0])
+      : null;
+    const projectSel = req.kind === 'join' && manageable.length
+      ? el('select', { 'aria-label': `Also add ${name} to a project` },
+          el('option', { value: '' }, 'No project'),
+          ...manageable.map((p) => el('option', { value: p.id }, p.name)))
+      : null;
+    const joinRoleSel = projectSel
+      ? roleSelect(`Project role for ${name}`, ctx.projectRoles.includes('editor') ? 'editor' : ctx.projectRoles[0])
+      : null;
+    if (joinRoleSel) {
+      joinRoleSel.disabled = true;
+      projectSel.addEventListener('change', () => { joinRoleSel.disabled = !projectSel.value; });
+    }
+    const settle = (node) => {
+      cell.replaceChildren(node);
+      waiting = Math.max(0, waiting - 1);
+      syncCount();
+    };
+    const answer = async (verb) => {
+      err.textContent = '';
+      approveBtn.disabled = true;
+      declineBtn.disabled = true;
+      const body = verb === 'decline' ? {}
+        : roleSel ? { role: roleSel.value }
+          : projectSel?.value ? { projectId: projectSel.value, role: joinRoleSel.value } : {};
+      try {
+        const r = await api(`/api/v1/access-requests/${encodeURIComponent(req.id)}/${verb}`, { method: 'POST', body });
+        settle(el('span', {}, requestAnswer(r.request ?? { status: verb === 'approve' ? 'approved' : 'declined' })));
+        if (verb === 'approve') showApproved(req, r);
+        toast(verb === 'approve' ? `Approved the request from ${name}` : `Declined the request from ${name}`);
+      } catch (e) {
+        if (e.status === 409 && e.code === 'ALREADY_ANSWERED') {
+          settle(el('span', {}, requestAnswer(e.body?.error?.request ?? e.body?.request ?? null)));
+        } else if (e.status === 409 && REQUEST_ENDED[e.code]) {
+          settle(el('span', { class: 'form-err', role: 'status' }, REQUEST_ENDED[e.code]));
+        } else {
+          err.textContent = e.message;
+          approveBtn.disabled = false;
+          declineBtn.disabled = false;
+        }
+      }
+    };
+    const approveBtn = el('button', { type: 'button', class: 'primary', onclick: () => answer('approve') }, 'Approve');
+    const declineBtn = el('button', { type: 'button', onclick: () => answer('decline') }, 'Decline');
+    cell.append(...spaced([roleSel, projectSel, joinRoleSel, approveBtn, declineBtn]), err);
+    return el('tr', {}, whoCell(req), asksCell(req), el('td', {}, req.note ?? ''), askedCell(req), cell);
+  }
+  const answeredRow = (req) => el('tr', {}, whoCell(req), asksCell(req), el('td', {}, req.note ?? ''), askedCell(req),
+    el('td', {}, requestAnswer(req)));
+
+  const columns = (last) => ['Who', 'Asks for', 'Note', { label: 'Asked', sort: 'date' }, last];
+  return el('div', { class: 'card stack' },
+    el('h2', { class: 'flush' }, 'Requests', count),
+    resultHost,
+    open.length
+      ? dataTable(columns({ label: 'Actions', sort: false }), open.map(openRow), { sortable: true })
+      : el('p', { class: 'empty' }, 'No requests waiting.'),
+    answered.length
+      ? el('details', { class: 'ov-section' },
+          el('summary', {}, el('span', { class: 'detail-h section-h' }, `Answered (${answered.length})`)),
+          dataTable(columns('Answer'), answered.map(answeredRow), { sortable: true }))
+      : null);
 }
 
 async function viewUsers(main, params) {
@@ -4109,10 +4553,15 @@ async function viewUsers(main, params) {
   // Groups need grant.edit too; only an owner is offered IdP groups.
   const inviteGroups = !canAction('grant.edit') ? null
     : allGroups.filter((g) => g.source === 'local' || session?.user?.role === 'owner').map((g) => ({ name: g.name, source: g.source }));
-  const invites = canAction('user.invite') ? await invitationsSection(inviteGroups) : null;
+  // Access requests sit at the top (plans/74 invite spec 4.3).
+  const [invites, requests] = await Promise.all([
+    canAction('user.invite') ? invitationsSection(inviteGroups) : null,
+    requestsSection(canAction('user.invite')),
+  ]);
   main.replaceChildren(
     el('h1', {}, 'People'),
     el('p', { class: 'sub' }, `Everyone who has signed in — search, filter and sort across the directory. Open a person for their groups, individual tool access and instant lockout. Identity and role follow ${idpName()}; telemetry attribution is each person’s own opt-in choice.`),
+    ...(requests ? [requests] : []),
     ...(hdr ? [hdr] : []),
     ...(invites ? [invites] : []),
     filters,
