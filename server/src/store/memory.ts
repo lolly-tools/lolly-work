@@ -29,7 +29,7 @@ import type { DeliveryRecord } from '../delivery/types.ts';
 import { createMemoryRenderStore } from '../renders/memory.ts';
 import {
   SESSION_REVISION_LIMIT, effectiveGroups,
-  type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type LocalGroupRecord, type ProjectMemberRecord, type ProjectRecord, type ScimTokenRecord, type UserIdentityRecord,
+  type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type LocalGroupRecord, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ScimTokenRecord, type UserIdentityRecord,
   type SessionRecord, type SessionRevision, type Store, type SubmitQuotaRow, type UserRecord,
 } from './types.ts';
 
@@ -47,6 +47,8 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const apiTokens = new Map<string, ApiTokenRecord>(); // service tokens (plans/35), by id
   const invitations = new Map<string, InvitationRecord>(); // plans/74 W-ID-2, by id
   const identities = new Map<string, UserIdentityRecord>(); // plans/74 linked sign-ins, by identitySub
+  const passwordCredentials = new Map<string, PasswordCredentialRecord>(); // plans/74, by lowercased email
+  const passwordLinks = new Map<string, PasswordLinkRecord>(); // plans/74, by token hash
   const userById = (id: string): UserRecord | undefined => {
     for (const u of users.values()) if (u.id === id) return u;
     return undefined;
@@ -406,6 +408,55 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       return [...ids].map((id) => userById(id)).filter((u): u is UserRecord => !!u).map(mapped);
     },
 
+    async getPasswordCredential(email) {
+      const r = passwordCredentials.get(email.trim().toLowerCase());
+      return r ? { ...r } : null;
+    },
+    async putPasswordCredential(rec) {
+      const email = rec.email.trim().toLowerCase();
+      const prev = passwordCredentials.get(email);
+      const next: PasswordCredentialRecord = {
+        id: prev?.id ?? rec.id, email, hash: rec.hash,
+        createdAt: prev?.createdAt ?? rec.at, updatedAt: rec.at, failedCount: 0,
+      };
+      passwordCredentials.set(email, next);
+      return { ...next };
+    },
+    async recordPasswordFailure(email, at, opts) {
+      const r = passwordCredentials.get(email.trim().toLowerCase());
+      if (!r) return null;
+      const count = r.failedCount + 1;
+      const next: PasswordCredentialRecord = count >= opts.maxFailures
+        ? { ...r, failedCount: 0, lockedUntil: new Date(Date.parse(at) + opts.lockMs).toISOString() }
+        : { ...r, failedCount: count };
+      passwordCredentials.set(r.email, next);
+      return { ...next };
+    },
+    async clearPasswordFailures(email) {
+      const r = passwordCredentials.get(email.trim().toLowerCase());
+      if (!r || (!r.failedCount && !r.lockedUntil)) return;
+      const { lockedUntil: _cleared, ...rest } = r;
+      passwordCredentials.set(r.email, { ...rest, failedCount: 0 });
+    },
+    async createPasswordLink(rec) {
+      const email = rec.email.trim().toLowerCase();
+      for (const [k, l] of passwordLinks) {
+        if ((l.email === email && !l.usedAt) || l.expiresAt <= rec.createdAt) passwordLinks.delete(k);
+      }
+      passwordLinks.set(rec.tokenHash, { ...rec, email });
+    },
+    async findLivePasswordLink(tokenHash, at) {
+      const l = passwordLinks.get(tokenHash);
+      return l && !l.usedAt && Date.parse(l.expiresAt) > Date.parse(at) ? { ...l } : null;
+    },
+    async consumePasswordLink(tokenHash, at) {
+      const l = passwordLinks.get(tokenHash);
+      if (!l || l.usedAt || Date.parse(l.expiresAt) <= Date.parse(at)) return null;
+      const next = { ...l, usedAt: at };
+      passwordLinks.set(tokenHash, next);
+      return { ...next };
+    },
+
     async claimAutomationJob(owner, verbs, leaseMs) {
       const now = Date.now();
       const job = [...automationJobs.values()].filter(j => verbs.includes(j.verb) && (j.state === 'queued' || j.state === 'running' && (!j.leaseUntil || Date.parse(j.leaseUntil) < now)))
@@ -658,6 +709,11 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       const emailStillUsed = [...users.values()].some((u) => u.email.trim().toLowerCase() === email);
       for (const [invId, inv] of invitations) {
         if (inv.acceptedUserId === id || (!emailStillUsed && inv.email === email)) invitations.delete(invId);
+      }
+      // A password for the address would sign the person straight back in.
+      if (!emailStillUsed) {
+        passwordCredentials.delete(email);
+        for (const [k, l] of passwordLinks) if (l.email === email) passwordLinks.delete(k);
       }
       for (const [k, m] of projectMembers) if (m.userId === id) projectMembers.delete(k);
       for (const [k, r] of identities) if (r.userId === id) identities.delete(k);

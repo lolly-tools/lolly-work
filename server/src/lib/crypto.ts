@@ -24,6 +24,14 @@ export function macEquals(a: string, b: string): boolean {
   return timingSafeEqual(ab, bb);
 }
 
+/** Constant-time compare of two strings exactly as given (no decoding, so
+ *  two spellings of one base64url value differ). The length is not secret. */
+export function sameString(a: string, b: string): boolean {
+  const ab = Buffer.from(a, 'utf8');
+  const bb = Buffer.from(b, 'utf8');
+  return ab.length === bb.length && timingSafeEqual(ab, bb);
+}
+
 export function sha256Hex(data: string | Uint8Array): string {
   return createHash('sha256').update(data).digest('hex');
 }
@@ -59,7 +67,10 @@ function scryptDerive(pw: string, salt: Buffer, log2N: number): Promise<Buffer> 
   });
 }
 
-async function withScryptSlot<T>(fn: () => Promise<T>): Promise<T> {
+/** Run one scrypt derivation inside the process-wide cap. Shared with sign-in
+ *  passwords (iam/password.ts), so link guesses and sign-in guesses together
+ *  never run more than SCRYPT_CONCURRENCY derivations at once. */
+export async function withScryptSlot<T>(fn: () => Promise<T>): Promise<T> {
   if (scryptInflight >= SCRYPT_CONCURRENCY) await new Promise<void>((r) => scryptWaiters.push(r));
   scryptInflight++;
   try {

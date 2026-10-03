@@ -123,6 +123,38 @@ export interface UserIdentityRecord {
   lastLoginAt?: string;
 }
 
+/** One email and password sign-in (plans/74; migration 0042). Keyed by the
+ *  lowercased email; `id` is stable across resets and names the sign-in's
+ *  subject (`password:<id>`). `hash` is the scrypt string iam/password.ts
+ *  writes, never the password. */
+export interface PasswordCredentialRecord {
+  id: string;
+  /** Lowercased; the store lowercases again on write. */
+  email: string;
+  hash: string;
+  createdAt: string;
+  /** When the hash last changed (set, reset or rehash). */
+  updatedAt: string;
+  /** Wrong passwords since the last success or lock. */
+  failedCount: number;
+  /** Sign-in is refused until this instant. */
+  lockedUntil?: string;
+}
+
+/** A one-time link that sets a password (plans/74; migration 0042). Only the
+ *  sha256 hex of the token is stored; the token itself is shown once. */
+export interface PasswordLinkRecord {
+  tokenHash: string;
+  /** Lowercased. */
+  email: string;
+  purpose: 'setup' | 'reset';
+  /** 'user:<id>' who issued it. */
+  createdBy?: string;
+  createdAt: string;
+  expiresAt: string;
+  usedAt?: string;
+}
+
 /** A SCIM provisioning bearer token (plans/31 §8). One per IdP connector; the
  *  opaque secret is shown once at mint and stored only as `tokenHash`. */
 export interface ScimTokenRecord {
@@ -513,6 +545,30 @@ export interface Store extends RenderStore {
    *  one comes back. */
   findUsersByVerifiedEmail(email: string): Promise<UserRecord[]>;
 
+  // Email and password sign-in (plans/74; migration 0042). Emails are
+  // compared lowercased.
+  getPasswordCredential(email: string): Promise<PasswordCredentialRecord | null>;
+  /** Insert the credential for `rec.email`, or replace the hash of the one
+   *  already there (keeping its id and createdAt). Either way the failure
+   *  count and any lock are cleared. Returns the row as stored. */
+  putPasswordCredential(rec: { id: string; email: string; hash: string; at: string }): Promise<PasswordCredentialRecord>;
+  /** Count one wrong password, in one atomic step. The failure that brings
+   *  the count to `maxFailures` locks the credential until `at + lockMs` and
+   *  starts the count again from zero. Returns the row as written, or null
+   *  when there is no credential for the email. */
+  recordPasswordFailure(email: string, at: string, opts: { maxFailures: number; lockMs: number }): Promise<PasswordCredentialRecord | null>;
+  /** Clear the failure count and any lock (a successful sign-in). */
+  clearPasswordFailures(email: string): Promise<void>;
+  /** Store a new link. Earlier unused links for the same email are removed
+   *  in the same step, so only the newest one works; expired rows are
+   *  pruned on the way. */
+  createPasswordLink(rec: PasswordLinkRecord): Promise<void>;
+  /** The link with this token hash when it is unused and unexpired at `at`, else null. */
+  findLivePasswordLink(tokenHash: string, at: string): Promise<PasswordLinkRecord | null>;
+  /** Mark the link used at `at`, exactly once: null when it is already used,
+   *  expired or unknown, so two racing uses cannot both succeed. */
+  consumePasswordLink(tokenHash: string, at: string): Promise<PasswordLinkRecord | null>;
+
   // Service tokens (plans/35 wave 2) - same contract shapes as the SCIM set.
   putApiToken(rec: ApiTokenRecord): Promise<void>;
   listApiTokens(): Promise<ApiTokenRecord[]>;
@@ -614,7 +670,9 @@ export interface Store extends RenderStore {
    * This is an account-erasure preview, not a full personal-data inventory. */
   previewUserErasure(id: string): Promise<{ references: Record<'projects' | 'sessions' | 'links' | 'approvals' | 'messageAcks' | 'projectFiles', number>; telemetryEvents: number }>;
   /** Atomic identity deletion + telemetry de-attribution. Referential blocks
-   * leave BOTH untouched; callers must never imply shared content was erased. */
+   * leave BOTH untouched; callers must never imply shared content was erased.
+   * The email's invitations, password credential and password links go with
+   * the account unless another account still carries that email. */
   eraseUserAccount(id: string): Promise<{ status: 'erased'; scrubbed: number } | { status: 'referenced' } | { status: 'not-found' }>;
 
   // Device sign-in codes (plans/35 wave 5) - store-backed so any replica can

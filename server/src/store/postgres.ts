@@ -33,7 +33,7 @@ import type { DeliveryRecord } from '../delivery/types.ts';
 import { createPostgresRenderStore } from '../renders/postgres.ts';
 import {
   SESSION_REVISION_LIMIT, effectiveGroups,
-  type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type ListUsersPageOpts, type LocalGroupRecord, type ProjectMemberRecord, type ProjectRecord, type UserIdentityRecord,
+  type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type ListUsersPageOpts, type LocalGroupRecord, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type UserIdentityRecord,
   type ScimTokenRecord, type SessionRecord, type SessionRevision, type Store, type SubmitQuotaRow, type UserRecord,
 } from './types.ts';
 
@@ -355,6 +355,26 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     groups: Array.isArray(r.groups) ? (r.groups as string[]) : [],
     linkedAt: new Date(r.linked_at as string).toISOString(),
     ...(r.last_login_at ? { lastLoginAt: new Date(r.last_login_at as string).toISOString() } : {}),
+  });
+
+  // Email and password sign-in (migration 0042).
+  const passwordCredentialFromRow = (r: Record<string, unknown>): PasswordCredentialRecord => ({
+    id: r.id as string,
+    email: r.email as string,
+    hash: r.hash as string,
+    createdAt: new Date(r.created_at as string).toISOString(),
+    updatedAt: new Date(r.updated_at as string).toISOString(),
+    failedCount: Number(r.failed_count ?? 0),
+    ...(r.locked_until ? { lockedUntil: new Date(r.locked_until as string).toISOString() } : {}),
+  });
+  const passwordLinkFromRow = (r: Record<string, unknown>): PasswordLinkRecord => ({
+    tokenHash: r.token_hash as string,
+    email: r.email as string,
+    purpose: r.purpose as PasswordLinkRecord['purpose'],
+    ...(r.created_by ? { createdBy: r.created_by as string } : {}),
+    createdAt: new Date(r.created_at as string).toISOString(),
+    expiresAt: new Date(r.expires_at as string).toISOString(),
+    ...(r.used_at ? { usedAt: new Date(r.used_at as string).toISOString() } : {}),
   });
 
   const projectMemberFromRow = (r: Record<string, unknown>): ProjectMemberRecord => ({
@@ -763,6 +783,81 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       return rows.map(userFromRow);
     },
 
+    // Email and password sign-in (migration 0042). Each write is one
+    // statement, so the lock counter and a link's single use hold across
+    // replicas without a transaction of their own.
+    async getPasswordCredential(email) {
+      const { rows } = await pool.query('select * from password_credentials where email = $1', [email.trim().toLowerCase()]);
+      return rows[0] ? passwordCredentialFromRow(rows[0]) : null;
+    },
+    async putPasswordCredential(rec) {
+      const { rows } = await pool.query(
+        `insert into password_credentials (id, email, hash, created_at, updated_at, failed_count, locked_until)
+         values ($1, $2, $3, $4, $4, 0, null)
+         on conflict (email) do update set hash = excluded.hash, updated_at = excluded.updated_at,
+           failed_count = 0, locked_until = null
+         returning *`,
+        [rec.id, rec.email.trim().toLowerCase(), rec.hash, rec.at],
+      );
+      return passwordCredentialFromRow(rows[0]!);
+    },
+    async recordPasswordFailure(email, at, opts) {
+      // SET reads the row as it was, so both expressions see the old count.
+      const { rows } = await pool.query(
+        `update password_credentials set
+           failed_count = case when failed_count + 1 >= $3 then 0 else failed_count + 1 end,
+           locked_until = case when failed_count + 1 >= $3
+             then $2::timestamptz + ($4 * interval '1 millisecond') else locked_until end
+         where email = $1
+         returning *`,
+        [email.trim().toLowerCase(), at, opts.maxFailures, opts.lockMs],
+      );
+      return rows[0] ? passwordCredentialFromRow(rows[0]) : null;
+    },
+    async clearPasswordFailures(email) {
+      await pool.query(
+        `update password_credentials set failed_count = 0, locked_until = null
+         where email = $1 and (failed_count <> 0 or locked_until is not null)`,
+        [email.trim().toLowerCase()],
+      );
+    },
+    async createPasswordLink(rec) {
+      const email = rec.email.trim().toLowerCase();
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        await client.query(
+          'delete from password_links where (email = $1 and used_at is null) or expires_at <= $2', [email, rec.createdAt],
+        );
+        await client.query(
+          `insert into password_links (token_hash, email, purpose, created_by, created_at, expires_at)
+           values ($1, $2, $3, $4, $5, $6)`,
+          [rec.tokenHash, email, rec.purpose, rec.createdBy ?? null, rec.createdAt, rec.expiresAt],
+        );
+        await client.query('commit');
+      } catch (err) {
+        await client.query('rollback');
+        throw err;
+      } finally {
+        client.release();
+      }
+    },
+    async findLivePasswordLink(tokenHash, at) {
+      const { rows } = await pool.query(
+        'select * from password_links where token_hash = $1 and used_at is null and expires_at > $2', [tokenHash, at],
+      );
+      return rows[0] ? passwordLinkFromRow(rows[0]) : null;
+    },
+    async consumePasswordLink(tokenHash, at) {
+      const { rows } = await pool.query(
+        `update password_links set used_at = $2
+         where token_hash = $1 and used_at is null and expires_at > $2
+         returning *`,
+        [tokenHash, at],
+      );
+      return rows[0] ? passwordLinkFromRow(rows[0]) : null;
+    },
+
     async claimAutomationJob(owner, verbs, leaseMs) {
       const { rows } = await pool.query(
         `update automation_jobs j set state='running', lease_owner=$1, lease_until=now()+($3 * interval '1 millisecond'), lease_token=j.lease_token+1, attempt=j.attempt+1, updated_at=now()
@@ -1091,6 +1186,13 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
              or (email = $2 and not exists (select 1 from users where lower(trim(email)) = $2))`,
           [id, erasedEmail],
         );
+        // A password for the address would sign the person straight back in.
+        for (const table of ['password_credentials', 'password_links']) {
+          await client.query(
+            `delete from ${table} where email = $1 and not exists (select 1 from users where lower(trim(email)) = $1)`,
+            [erasedEmail],
+          );
+        }
         await client.query('commit');
         return { status: 'erased', scrubbed: scrubbed.rowCount ?? 0 };
       } catch (error) {
