@@ -86,8 +86,11 @@ in on the instance and export the pack, or connect from the desktop app.
 
 | Route | Action | Notes |
 |---|---|---|
-| `GET /api/auth/config` | public | what the sign-in screen needs (mode, IdP display name, and `providers: [{ id, name, kind, loginPath }]` with `kind` `oidc` or `github`) |
-| `GET /api/auth/login` | public | starts sign-in with PKCE: OIDC, or GitHub OAuth 2.0 for `?idp=` naming a `kind: "github"` entry; `404 NO_IDP` without an issuer |
+| `GET /api/auth/config` | public | what the sign-in screen needs (mode, IdP display name, and `providers: [{ id, name, kind, loginPath }]` with `kind` `oidc`, `github` or `password`) |
+| `GET /api/auth/login` | public | starts sign-in with PKCE: OIDC, or GitHub OAuth 2.0 for `?idp=` naming a `kind: "github"` entry; for a `kind: "password"` entry, the email and password form. With several entries and no `?idp=`, the chooser; `404 NO_IDP` with no sign-in configured |
+| `POST /api/auth/password/login` | public | the form (`email`, `password`, `returnTo`, `csrf`) answers `303` to `returnTo` with `lw_session`, or the form again with `400` and one message for an unknown email, a wrong password and a locked address. A JSON body `{ email, password, returnTo? }` answers `{ ok, returnTo }` or `400 INVALID_CREDENTIALS`. A refused admission is `403`. See [identity.md](identity.md#email-and-password) |
+| `GET /api/auth/password/set?token=…` | public | the page a one-time link opens: the address, read-only, and a new password twice. A used, expired or unknown link is a `410` page |
+| `POST /api/auth/password/set` | public | the form (`token`, `password`, `confirm`, `csrf`): spends the link once, sets the password, signs the person in and answers `303` to `/` |
 | `GET /api/auth/callback` | public | verifies the `id_token` (OIDC) or reads the GitHub profile and emails, then mints `lw_session`. A failure a browser sees is an HTML page with a way to start again; an API caller without `Accept: text/html` keeps the JSON error, except GitHub failures, which are always the page |
 | `GET /api/auth/link?idp=<id>&returnTo=<path>` | member (cookie) | runs that IdP and links the identity it returns to the current user, then redirects to `returnTo`; no new session. An identity that belongs to someone else is a `409` HTML page. See [identity.md](identity.md#one-person-several-sign-ins) |
 | `GET /api/v1/me/identities` | member | the person's linked sign-ins: `{ identities: [{ idp, subjectHash, displayName, email, emailVerified, linkedAt, lastLoginAt, canUnlink, unlinkBlocked? }], available: [{ id, name, kind, linkPath }] }` |
@@ -237,7 +240,7 @@ C2PA export assertion. See
 | `GET/POST /api/v1/groups`, `DELETE /api/v1/groups/:name` | `grant.edit` |
 | `PUT /api/v1/users/:id/local-groups` | `grant.edit` |
 | `POST /api/v1/users/:id/disabled` | `grant.edit` |
-| `GET /api/v1/users/:id/identities` | admin/owner role | that person's linked sign-ins, the same rows as `/api/v1/me/identities` |
+| `GET /api/v1/users/:id/identities` | admin/owner role | that person's linked sign-ins, the same rows as `/api/v1/me/identities`. With a `password` entry configured, also `password: { set, email }`: whether the person has a password, and the address a new link would be for |
 | `DELETE /api/v1/users/:id/identities/:idp/:subjectHash` | `grant.edit` | `204`, and every session of that person ends; the same two refusals; an owner's sign-ins are owner-only |
 
 ## Invitations
@@ -250,6 +253,7 @@ Who may sign in when `idp.admission` is set, one email address at a time. See
 | `GET /api/v1/invitations` | `user.invite` (admin, owner) | every invitation, newest first, revoked ones included; plus `signInUrl` and `admission: { policy, invitations }` |
 | `POST /api/v1/invitations` | `user.invite` | body `{ emails: string[], groups?: string[], expiresAt? }`; `201` when anything was created, `200` otherwise. With `groups`, an address that already belongs to an account joins them now (`status: "applied"`) or is left alone (`status: "refused"`, `reason`: `self`, `account-disabled`, `owner-only`). A new address follows `policy.invites`: `reason` `invites-not-allowed` or `domain-not-allowed` |
 | `DELETE /api/v1/invitations/:id` | `user.invite` | revoke; `404` when the id is unknown or already revoked |
+| `POST /api/v1/admin/password-links` | admin or owner session with `user.invite` | body `{ email, purpose: "setup" \| "reset" }`; `201 { url, expiresAt }`: a one-time link to set a password, valid 7 days, which cancels the address's earlier unused links. `404 NO_PASSWORD_SIGN_IN` without a `password` entry, `409 NOT_ADMITTED` for an address admission refuses, `409 ACCOUNT_DISABLED`, `403 OWNER_ONLY` for an owner's address unless an owner asks. Service tokens are refused |
 
 An invitation reads `{ id, email, groups, invitedBy, createdAt, expiresAt, acceptedAt,
 acceptedUserId, revokedAt, status, projects, createdVia }`, with `status` one of

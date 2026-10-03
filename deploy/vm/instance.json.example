@@ -21,7 +21,8 @@
         "displayName": "GitHub",
         "clientId": "REPLACE-WITH-GITHUB-OAUTH-APP-CLIENT-ID",
         "clientSecretRef": "LW_IDP_GITHUB_SECRET"
-      }
+      },
+      { "id": "email", "kind": "password", "label": "Email and password" }
     ]
   },
   "policy": {

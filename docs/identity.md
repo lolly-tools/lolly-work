@@ -40,7 +40,9 @@ the org user record through `claimMap`.
   issuer works; open and sovereign providers are first-class.
 
 Routes: `GET /api/auth/config` (what the sign-in screen needs), `GET /api/auth/login`,
-`GET /api/auth/callback`, `GET /api/auth/session`, `POST /api/auth/logout`.
+`GET /api/auth/callback`, `GET /api/auth/session`, `POST /api/auth/logout`, and for
+[email and password](#email-and-password) `POST /api/auth/password/login` and
+`GET`/`POST /api/auth/password/set`.
 
 ### More than one IdP
 
@@ -69,11 +71,55 @@ house's subs are stored namespaced (`<id>:<sub>`), so two issuers handing out th
 bare sub can never collide into one row. The primary's subs stay raw: existing rows and
 the SCIM `externalId` linkage are untouched.
 
+### Email and password
+
+Some people cannot use the instance's IdPs: their organisation's Google Workspace, for
+example, refuses OAuth apps it has not reviewed. For them, add one `kind: "password"`
+entry to `idp.additional` (see [configuration](configuration.md#email-and-password-kind-password)):
+
+```json
+"additional": [{ "id": "email", "kind": "password", "label": "Email and password" }]
+```
+
+The chooser then offers "Sign in with email and password", which opens a server-rendered
+form. With no other sign-in configured, `/api/auth/login` is that form.
+
+There is no sign-up and no email is sent. A person gets a password like this:
+
+1. An admin or owner invites the address (or it is already admitted by the lists, or
+   it belongs to an account).
+2. In the console, they press **Copy sign-in link** on the invitation, or **Copy
+   password link** on the person. The console copies a one-time link and shows it with
+   its expiry.
+3. They send the link themselves, by chat or email. It works once, for 7 days. A new
+   link for the same address cancels any unused one.
+4. The person opens it, sees their address, chooses a password (12 to 256 characters,
+   not the address), and is signed in.
+
+A forgotten password is the same: ask the person who invited you for a new link. The
+old password keeps working until the new one is set.
+
+A password sign-in finishes exactly like an OIDC or GitHub one. Admission runs on every
+sign-in, so revoking the invitation or taking the address off the lists stops it;
+"Disable access" stops it; an open invitation is accepted and its groups join; and the
+sign-in joins the existing person who holds the same verified email (see
+[one person, several sign-ins](#one-person-several-sign-ins)), unless that person's
+only verified sign-ins are pinned to a directory. A password brings no IdP groups.
+
+Guessing is slowed twice over: every attempt uses the `auth` rate-limit bucket, and ten
+wrong passwords in a row lock the address for 15 minutes (a success resets the count).
+An unknown address, a wrong password and a locked address all get the same answer:
+"That email and password do not match." The form carries a signed double-submit token
+against login CSRF. Passwords are stored as scrypt hashes; passwords, hashes and link
+tokens never reach a log line or the audit chain. The audit actions are
+`auth.password.link.issue`, `auth.password.set`, `auth.password.fail` and
+`auth.password.locked`, beside the usual `auth.login` and `auth.denied`.
+
 ## Who may sign in
 
 Completing a sign-in at the IdP proves who a person is. It does not say they belong here.
-`idp.admission` decides that, on every OIDC and reverse-proxy sign-in, after the
-`id_token` is verified and **before** a user row is written. A refused person gets a
+`idp.admission` decides that, on every OIDC, GitHub, password and reverse-proxy sign-in,
+after the `id_token` (or password) is verified and **before** a user row is written. A refused person gets a
 403 page and leaves only an `auth.denied` audit row.
 
 ```json

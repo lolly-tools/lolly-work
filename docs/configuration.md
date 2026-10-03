@@ -62,8 +62,8 @@ For generated deployment files and a staged owner cutover, use [Customer setup](
 | `groupsClaim` | `groups` | the claim carrying group membership |
 | `claimMap` | `given_name` / `family_name` / `email` / `title` | which claims fill firstname, lastname, email, title. `email_verified` vouches only for the `email` claim: a remapped email counts as verified only when it equals `email`, otherwise only under `emailVerification: trusted` |
 | `roleGroups` | `{}` | exact groups for owner/admin/approver/author/member/viewer. Highest match wins; unmatched accounts are members. Omitted high roles retain literal legacy names; omitted member/viewer have no mapping. An explicit empty array disables that role mapping. Each group can appear once. Applies to IdP and local groups, including existing accounts after restart. |
-| `additional` | `[]` | further IdPs beside the primary - each `{ id, kind?, issuer, clientId, displayName, groupsClaim?, claimMap?, clientSecretRef? }`. `kind` is `oidc` (default) or `github`: a GitHub entry takes no `issuer`, needs `clientSecretRef`, refuses `scopes`, `authParams`, `hostedDomain` and `tenantId`, and accepts only `emailVerification: "claim"` (see the [GitHub recipe](identity.md#provider-recipes)). Unset claims inherit the primary's; the secret rides the env var `clientSecretRef` names; subs store namespaced `<id>:<sub>`. With several houses, plain `/api/auth/login` serves a chooser. Each entry may also set the per-IdP keys below (`hostedDomain`, `tenantId`, `emailVerification`, `scopes`, `authParams`); those are never inherited from the primary. See [identity](identity.md#more-than-one-idp) |
-| `admission` | absent | who may sign in, checked on every OIDC and proxy sign-in before a user row is written: `{ emails?: string[], domains?: string[], invitations?: boolean (default true) }`. Absent = every verified sign-in is admitted (production setup warns). `{}` admits invitations only. Admission by email, domain or invitation needs a verified email (see `emailVerification`). See [who may sign in](identity.md#who-may-sign-in) |
+| `additional` | `[]` | further IdPs beside the primary - each `{ id, kind?, issuer, clientId, displayName, groupsClaim?, claimMap?, clientSecretRef? }`. `kind` is `oidc` (default), `github` or `password`. A GitHub entry takes no `issuer`, needs `clientSecretRef`, refuses `scopes`, `authParams`, `hostedDomain` and `tenantId`, and accepts only `emailVerification: "claim"` (see the [GitHub recipe](identity.md#provider-recipes)). A `password` entry is described below. Unset claims inherit the primary's; the secret rides the env var `clientSecretRef` names; subs store namespaced `<id>:<sub>`. With several houses, plain `/api/auth/login` serves a chooser. Each entry may also set the per-IdP keys below (`hostedDomain`, `tenantId`, `emailVerification`, `scopes`, `authParams`); those are never inherited from the primary. See [identity](identity.md#more-than-one-idp) |
+| `admission` | absent | who may sign in, checked on every OIDC, GitHub, password and proxy sign-in before a user row is written: `{ emails?: string[], domains?: string[], invitations?: boolean (default true) }`. Absent = every verified sign-in is admitted (production setup warns). `{}` admits invitations only. Admission by email, domain or invitation needs a verified email (see `emailVerification`). See [who may sign in](identity.md#who-may-sign-in) |
 | `linkedStandingDays` | `30` | whole days, 1-365. How long one sign-in's IdP groups, and the account's own sign-in's standing under `admission`, carry over to the person's other linked sign-ins. See [one person, several sign-ins](identity.md#one-person-several-sign-ins) |
 | `bootstrapOwners` | `[]` | emails that get the owner group (first `roleGroups.owner` name, else `owner`) at sign-in once admitted with a verified email. Audited as `auth.bootstrap-owner`. Each must be admitted by `admission.emails` or `admission.domains`; refused when `roleGroups.owner` is `[]` |
 | `hostedDomain` | absent | per IdP. Google Workspace domain: the `hd` claim must equal it (a mismatch or missing claim refuses), and it is sent as the `hd` authorization parameter |
@@ -73,8 +73,48 @@ For generated deployment files and a staged owner cutover, use [Customer setup](
 | `scopes` | `["openid", "profile", "email"]` | per IdP. Requested scopes, a list or a space-separated string; must include `openid` |
 | `authParams` | `{}` | per IdP. Extra authorization request parameters, allowlisted: `prompt`, `hd`, `domain_hint`, `login_hint`, `acr_values`. Any other key is refused; `hd` must equal `hostedDomain` when both are set |
 
-Gated access needs `idp.issuer` - or `dev.enabled` for local work. The server refuses to
-start otherwise. See [identity](identity.md).
+Gated access needs `idp.issuer`, `proxyAuth.enabled` or a `password` entry - or
+`dev.enabled` for local work. The server refuses to start otherwise. See [identity](identity.md).
+
+### Email and password (`kind: "password"`)
+
+For people who cannot use the instance's other sign-ins, for example because their own
+organisation blocks unreviewed OAuth apps. Add one entry to `idp.additional`:
+
+```json
+{ "id": "email", "kind": "password", "label": "Email and password" }
+```
+
+| Key | Default | What it does |
+|---|---|---|
+| `id` | - | the slug in `/api/auth/login?idp=<id>`. `password` is reserved for this kind |
+| `kind` | - | `password` |
+| `label` | `Email and password` | the chooser button and the sign-in list in a profile; `displayName` is accepted instead |
+| `linkByEmail` | `true` | whether a password sign-in joins the existing person who holds the same verified email |
+
+- At most one `password` entry. It takes no `issuer`, `clientId`, `clientSecretRef`,
+  `groupsClaim`, `claimMap`, `hostedDomain`, `tenantId`, `scopes` or `authParams`, and
+  `emailVerification` can only be `claim`. It needs no secret, so setup counts it as
+  complete. It can be the only sign-in: then no `issuer` is needed and
+  `/api/auth/login` is the form itself.
+- **No self sign-up, and nothing is emailed.** An admin or owner issues a one-time link
+  from the console (Copy sign-in link on an invitation, or Copy password link on a
+  person) and passes it on. The link sets the password and signs the person in. It
+  works once, for 7 days, and issuing a new link for an address cancels its unused
+  ones. A link for an owner's address is owner-only.
+- A link is issued only for an address `admission` lets in now: an open invitation, a
+  listed email or domain, or an account the lists still admit. Every password sign-in
+  then runs the same admission, linking, invitation and "Disable access" checks as
+  any other sign-in.
+- Passwords are 12 to 256 characters and not the email address. They are stored as
+  scrypt hashes (N 2^15, r 8, p 1).
+- Ten wrong passwords in a row lock that address for 15 minutes; a successful sign-in
+  resets the count. An unknown address, a wrong password and a locked address all get
+  the same answer.
+- The sign-in and link routes use the `auth` rate-limit bucket below, per client IP, on
+  top of the lockout.
+
+See [email and password](identity.md#email-and-password) for the flow.
 
 ## `policy`
 
@@ -231,7 +271,7 @@ Authelia, oauth2-proxy) states who the person is in request headers. See
 | `enabled` | `true` | per-IP token buckets on the auth, telemetry and link surfaces |
 | `trustedProxyHops` | `0` | how many reverse proxies to trust in `X-Forwarded-For`. `0` reads only the socket peer. Behind one ingress, set `1` |
 | `maxBuckets` | `50000` | bucket table cap |
-| `auth` | `capacity 10, refillPerSec 0.2` | sign-in attempts |
+| `auth` | `capacity 10, refillPerSec 0.2` | sign-in attempts, including each email and password guess and each use of a password link |
 | `telemetry` | `capacity 120, refillPerSec 4` | event ingest |
 | `link` | `capacity 30, refillPerSec 1` | signed-link resolution |
 
