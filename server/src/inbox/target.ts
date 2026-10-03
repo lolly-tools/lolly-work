@@ -77,7 +77,7 @@ export function audienceMatches(audience: Audience, client: ClientCtx): boolean 
 export function messageLive(msg: Message, now = new Date()): boolean {
   const t = now.getTime();
   if (msg.startsAt && Date.parse(msg.startsAt) > t) return false;
-  if (msg.endsAt && Date.parse(msg.endsAt) < t) return false;
+  if (msg.endsAt && Date.parse(msg.endsAt) <= t) return false;
   return true;
 }
 

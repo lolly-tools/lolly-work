@@ -51,9 +51,11 @@ test('targeting excludes acked and out-of-window messages', () => {
     msg('acked'),
     msg('future', { startsAt: '2026-08-01T00:00:00Z' }),
     msg('ended', { endsAt: '2026-07-01T00:00:00Z' }),
+    msg('ends-now', { endsAt: now.toISOString() }),
+    msg('starts-now', { startsAt: now.toISOString() }),
   ];
   const out = targetedMessages(messages, { groups: [] }, new Set(['acked']), now);
-  assert.deepEqual(out.map((m) => m.id), ['live']);
+  assert.deepEqual(out.map((m) => m.id), ['live', 'starts-now']);
 });
 
 // ── GET /api/v1/inbox over HTTP (plans/74 invite spec R5) ───────────────────

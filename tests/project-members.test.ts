@@ -429,7 +429,8 @@ test('acceptance at sign-in applies project memberships, for a new account and a
   const list = await (await fetch(`${env.base}/api/v1/projects`, { headers: { cookie } })).json() as { projects: Array<{ id: string; myRole: string }> };
   assert.equal(list.projects.find((p) => p.id === projectId)?.myRole, 'editor');
   const inbox = await (await fetch(`${env.base}/api/v1/inbox`, { headers: { cookie } })).json() as { messages: Array<{ kind: string; title: string }> };
-  assert.ok(inbox.messages.some((m) => m.kind === 'share' && m.title === 'Olive Owner shared Brand refresh with you'));
+  assert.ok(inbox.messages.some((m) => m.kind === 'notice' && m.title === 'Welcome to Team Hub'));
+  assert.ok(!inbox.messages.some((m) => m.kind === 'share'), 'the welcome replaces the share message');
   const accept = (await env.store.listAudit()).find((e) => e.action === 'invite.accept');
   assert.deepEqual(accept?.payload?.projects, [{ projectId, role: 'editor', invitedBy: `user:${await env.userId('owner@test')}` }]);
 
