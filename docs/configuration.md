@@ -90,29 +90,56 @@ organisation blocks unreviewed OAuth apps. Add one entry to `idp.additional`:
 | `id` | - | the slug in `/api/auth/login?idp=<id>`. `password` is reserved for this kind |
 | `kind` | - | `password` |
 | `label` | `Email and password` | the chooser button and the sign-in list in a profile; `displayName` is accepted instead |
-| `linkByEmail` | `true` | whether a password sign-in joins the existing person who holds the same verified email |
+| `linkByEmail` | `true` | whether a password sign-in joins the existing person who holds the same verified email. The other way round never happens: a password sign-in is stored unverified (an admin typed the address, no mailbox proved it), so no later sign-in through another provider joins an account by it |
 
 - At most one `password` entry. It takes no `issuer`, `clientId`, `clientSecretRef`,
   `groupsClaim`, `claimMap`, `hostedDomain`, `tenantId`, `scopes` or `authParams`, and
   `emailVerification` can only be `claim`. It needs no secret, so setup counts it as
-  complete. It can be the only sign-in: then no `issuer` is needed and
-  `/api/auth/login` is the form itself.
+  complete.
+- It can be the only sign-in: then no `issuer` is needed and `/api/auth/login` is the
+  form itself. Such an instance has no admin to issue the first link, so the first
+  owner gets theirs from the operator: list them in `bootstrapOwners` and run
+  `node scripts/password-link.ts --email <their address>` where the server runs (it
+  needs the server's `LW_CONFIG`, `DATABASE_URL` and `LW_SESSION_SECRET`, and prints the
+  link). The same command lets a locked-out bootstrap owner back in. During restricted
+  evaluation (`dev.enabled` on), a dev-login admin can issue links instead, and the
+  console's sign-in screen offers the dev sign-in with the password form beside it.
 - **No self sign-up, and nothing is emailed.** An admin or owner issues a one-time link
   from the console (Copy sign-in link on an invitation, or Copy password link on a
   person) and passes it on. The link sets the password and signs the person in. It
   works once, for 7 days, and issuing a new link for an address cancels its unused
-  ones. A link for an owner's address is owner-only.
-- A link is issued only for an address `admission` lets in now: an open invitation, a
-  listed email or domain, or an account the lists still admit. Every password sign-in
-  then runs the same admission, linking, invitation and "Disable access" checks as
-  any other sign-in.
+  ones.
+- Whoever holds a link can sign in as its address, so a link that leads to an owner,
+  or that adds a password to an account that already signs in another way (unless it
+  is the issuer's own), is owner-only. A link is also issued only for an address
+  `admission` lets in now: an open invitation, a listed email or domain, or an account
+  the lists still admit. All of this is asked again when the link is opened and used,
+  on the issuer's standing at that moment, so a link stops working when its issuer is
+  disabled or loses the admin role, or the address has since come to need an owner.
+  "Disable access" cancels the person's unused links.
+- An owner signs in with a password only when an owner (or the operator command)
+  issued the link that set it. A password set from an admin's link stops working for
+  an account that is later made an owner, until an owner issues a new link.
+- Every password sign-in runs the same admission, linking, invitation and "Disable
+  access" checks as any other sign-in. Setting a new password from a link ends every
+  session the account had. Removing the email and password sign-in from a person
+  (their profile, or the console) deletes the password.
 - Passwords are 12 to 256 characters and not the email address. They are stored as
-  scrypt hashes (N 2^15, r 8, p 1).
-- Ten wrong passwords in a row lock that address for 15 minutes; a successful sign-in
-  resets the count. An unknown address, a wrong password and a locked address all get
-  the same answer.
+  scrypt hashes (N 2^15, r 8, p 1). At most two hashes are computed at once and 32
+  wait; past that a sign-in gets `503` with `Retry-After` at once.
+- Ten sign-in attempts in a row without a success lock that address for 15 minutes; a
+  successful sign-in resets the count. Each attempt is counted before its password is
+  checked, so parallel guesses get no more than ten checks, and attempts during a lock
+  are not counted, so guessing does not extend it. An admin can lift a lock from the
+  person (Unlock), without a new password. An unknown address, a wrong password and a
+  locked address all get the same answer.
 - The sign-in and link routes use the `auth` rate-limit bucket below, per client IP, on
-  top of the lockout.
+  top of the lockout. A browser that runs out gets a page saying to wait a minute.
+- The forms are served with `Referrer-Policy: strict-origin`, not `no-referrer`: a form
+  post from a `no-referrer` page carries `Origin: null`, which the CSRF check refuses.
+  A proxy in front must not replace that header on `/api/auth/` (the YunoHost package's
+  nginx sets `no-referrer` on `/api/`, so email and password sign-in does not work
+  there as shipped).
 
 See [email and password](identity.md#email-and-password) for the flow.
 

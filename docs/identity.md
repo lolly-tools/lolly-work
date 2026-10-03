@@ -97,23 +97,60 @@ There is no sign-up and no email is sent. A person gets a password like this:
    not the address), and is signed in.
 
 A forgotten password is the same: ask the person who invited you for a new link. The
-old password keeps working until the new one is set.
+old password keeps working until the new one is set, and setting it ends every session
+the account had, so a password that got out stops working everywhere at once.
+
+Whoever holds a link can sign in as its address, so some links are owner-only: one
+that leads to an owner (an owner's account, a `bootstrapOwners` address, an invitation
+into an owner group), and one that adds a password to an account that already signs
+in another way, unless it is the issuer's own account. Each link is judged again when
+it is opened and when it is used, on its issuer's standing at that moment: if the
+issuer has been disabled or is no longer an admin, or the address has since come to
+need an owner, the link no longer works (an `auth.password.link.refused` audit row says
+why). An owner signs in with a password only when an owner issued the link that set
+it, so a password an admin's link set stops working for an account that is later made
+an owner.
 
 A password sign-in finishes exactly like an OIDC or GitHub one. Admission runs on every
 sign-in, so revoking the invitation or taking the address off the lists stops it;
-"Disable access" stops it; an open invitation is accepted and its groups join; and the
-sign-in joins the existing person who holds the same verified email (see
-[one person, several sign-ins](#one-person-several-sign-ins)), unless that person's
-only verified sign-ins are pinned to a directory. A password brings no IdP groups.
+"Disable access" stops it (and cancels the person's unused links); an open invitation
+is accepted and its groups join; and the sign-in joins the existing person who holds
+the same verified email (see [one person, several sign-ins](#one-person-several-sign-ins)),
+unless that person's only verified sign-ins are pinned to a directory. A password
+brings no IdP groups. The password sign-in itself is stored as unverified: an admin
+typed the address, no mailbox proved it. So a later sign-in through another provider
+never joins an account by a password's address; a person who wants both adds the other
+one from their profile while signed in with the password.
+
+Removing the email and password sign-in from a person, from their profile or in the
+console, deletes the password. A new one needs a new link. The sign-in an account was
+created with cannot be removed (as for any provider); "Disable access" is the way to
+stop that one.
 
 Guessing is slowed twice over: every attempt uses the `auth` rate-limit bucket, and ten
-wrong passwords in a row lock the address for 15 minutes (a success resets the count).
-An unknown address, a wrong password and a locked address all get the same answer:
-"That email and password do not match." The form carries a signed double-submit token
+attempts in a row without a success lock the address for 15 minutes (a success resets
+the count). An attempt is counted before its password is checked, so a burst of
+parallel guesses gets no more than ten checks, and attempts during a lock are not
+counted. An admin or owner can unlock a person from the console (Unlock) without
+making them choose a new password; anyone can lock an address by guessing at it. An
+unknown address, a wrong password and a locked address all get the same answer: "That
+email and password do not match." The form carries a signed double-submit token
 against login CSRF. Passwords are stored as scrypt hashes; passwords, hashes and link
 tokens never reach a log line or the audit chain. The audit actions are
-`auth.password.link.issue`, `auth.password.set`, `auth.password.fail` and
-`auth.password.locked`, beside the usual `auth.login` and `auth.denied`.
+`auth.password.link.issue`, `auth.password.link.refused`, `auth.password.set`,
+`auth.password.fail`, `auth.password.locked`, `auth.password.unlock` and
+`auth.password.remove`, beside the usual `auth.login` and `auth.denied`.
+
+An instance whose only sign-in is email and password has no admin to issue the first
+link. The operator prints one for an address listed in `bootstrapOwners`, where the
+server runs:
+
+```sh
+docker compose exec server node scripts/password-link.ts --email ana@example.com
+```
+
+The link behaves like one an owner issued: once, for 7 days, still subject to
+admission. The same command lets a locked-out bootstrap owner back in.
 
 ## Who may sign in
 
