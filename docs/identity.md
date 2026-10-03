@@ -94,7 +94,14 @@ There is no sign-up and no email is sent. A person gets a password like this:
 3. They send the link themselves, by chat or email. It works once, for 7 days. A new
    link for the same address cancels any unused one.
 4. The person opens it, sees their address, chooses a password (12 to 256 characters,
-   not the address), and is signed in.
+   not the address), and is signed in. The same page asks for "Your name" (optional,
+   1 to 80 characters, trimmed); a name given there becomes the account's display name,
+   so People lists, presence and notices show it instead of the address.
+
+An invitation can also do this in one link: when the admin ticks "Can set a password",
+the invite link itself offers **Set a password** (see
+[setting a password from the link](#setting-a-password-from-the-link)), so the person gets
+one link, not two.
 
 A forgotten password is the same: ask the person who invited you for a new link. The
 old password keeps working until the new one is set, and setting it ends every session
@@ -207,13 +214,15 @@ only when it equals the `email` claim. Otherwise the address is unverified under
 and you must choose `trusted` on purpose for an IdP whose usernames you control.
 
 A reverse proxy is the authority for the address it sends, so proxy sign-ins count as
-verified. The refusal page names the account the person used, says to ask an owner for an
-invitation, and links to `/api/auth/login?prompt=select_account` so a browser holding
-several accounts can pick another (behind a proxy only the proxy can switch accounts, so
-the link is left out). It never shows which emails or domains are listed. The rule is
-checked at every sign-in: removing someone from the lists blocks their next sign-in, and
-the console's disable ends live sessions at once (see
-[offboarding](#offboarding-disable-and-revocation)). A device sign-in (a code approved
+verified. The refusal page starts with the workspace name ("lolly.ing is invite only"),
+names the account the person used, says to sign in with the account the invitation went
+to or to ask an admin, and links to `/api/auth/login?prompt=select_account` so a browser
+holding several accounts can pick another (behind a proxy only the proxy can switch
+accounts, so the link is left out). With `policy.requests.join` on, a person refused as
+not invited can also [ask to join](#asking-to-join) from that page. It never shows which
+emails or domains are listed. The rule is checked at every sign-in: removing someone from
+the lists blocks their next sign-in, and the console's disable ends live sessions at once
+(see [offboarding](#offboarding-disable-and-revocation)). A device sign-in (a code approved
 at `/activate`) mints a session without the IdP, so before minting it the server asks
 the lists, the invitation and the disabled state again, and answers `denied` when the
 person is no longer admitted.
@@ -222,10 +231,11 @@ person is no longer admitted.
 from **Invite people** on the console's People view, with `lw invite add`, or with
 `POST /api/v1/invitations` (see [the API](api.md#invitations)). An invitation names one
 address, stored lowercased, plus optional local groups and an optional expiry of at most
-366 days. Nothing is emailed: the console shows the sign-in address (`instance.baseUrl`)
-for you to send. An address has at most one active invitation. Inviting the same address
-again returns the existing invitation unchanged, so to change its groups or expiry,
-revoke the invitation and invite again.
+366 days. Nothing is emailed: every pending invitation has a personal
+[invite link](#invite-links), which the console copies on its own or inside a
+ready-to-send message. An address has at most one active invitation. Inviting the same
+address again returns the existing invitation unchanged, so to change its groups or
+expiry, revoke the invitation and invite again.
 
 At each sign-in, while `invitations` is not `false`, the server looks up the active
 invitation for the email:
@@ -292,13 +302,19 @@ sign-in is refused; `auth.bootstrap-owner` (payload `idp`, `group`); and
 `auth.login` carries `admittedVia` (`email`, `domain` or `invitation`) whenever a policy
 admitted the person; and `auth.failed` when a GitHub sign-in could not finish (see the
 GitHub recipe below). `provider` is `oidc` for an OpenID Connect IdP, `github` for
-GitHub and `proxy` for the reverse proxy. Invitations write `invite.create` (payload `email`, `groups`,
-`expiresAt`), `invite.revoke` (payload `email`, `was`: the status before revoking) and
-`invite.accept` (actor the new member; payload `provider`, `idp`, `email`, `groups`, and
-`createdGroups` when the sign-in created local groups, or `groupsNotApplied` when the
-account predates the invitation and already carried the invited address, or is the
-inviter's own), each with subject
-`invitation:<id>`.
+GitHub and `proxy` for the reverse proxy. A refusal that came from an invite link adds
+`invitationId`. Invitations write `invite.create` (payload `email`, `groups`,
+`expiresAt`, `via`: `console`, `project`, `request` or `reinvite`, `from` for an invitation
+made again, and `passwordSetup`), `invite.link` (a new link; payload `email`, `version`),
+`invite.open` (actor `anonymous`, the first sign-in started from a link; payload
+`provider`, `idp`), `invite.wrong-account` (payload the signed-in `email`, `provider`, `idp`
+and `admitted`), `invite.revoke` (payload `email`, `was`: the status before revoking) and
+`invite.accept` (actor the new member; payload `provider`, `idp`, `email`, `groups`, `via`:
+`sign-in`, `join` or `link`, and `createdGroups` when the sign-in created local groups, or
+`groupsNotApplied` when the account predates the invitation and already carried the
+invited address, or is the inviter's own), each with subject `invitation:<id>`. Requests
+to join and to use another account write the `access.*` rows listed in
+[the API](api.md#invite-links-and-access-requests).
 
 ### Provider recipes
 
@@ -404,8 +420,10 @@ the person to add and confirm one (`auth.failed`, reason `no-email`). For the sa
 reason a GitHub entry accepts only `emailVerification: "claim"` (the default); the
 server refuses `trusted` on it. "Keep my email addresses private" in GitHub does not
 hide the list from this app: `user:email` reads private addresses too, so the address
-shown in Lolly Work may differ from the public profile. GitHub sends no groups: use
-`bootstrapOwners` for the first owner and local groups after that.
+shown in Lolly Work may differ from the public profile. For invitations only, every
+other verified address on the account counts too (see
+[GitHub addresses](#github-addresses)). GitHub sends no groups: use `bootstrapOwners` for
+the first owner and local groups after that.
 
 A failed exchange (a stale code, GitHub unreachable, a missing or wrong client secret)
 shows the same phone-friendly page with a "Try again" link and writes an `auth.failed`
@@ -416,6 +434,190 @@ page or the audit log; the token is used for two API reads and then dropped.
 **SAML.** SAML is a different protocol and does not connect directly. Put a broker in
 front: an Auth0 SAML enterprise connection or a Keycloak SAML identity provider in the
 realm. This instance then talks OIDC to the broker as in the recipes above.
+
+## Invite links
+
+Every pending invitation has a personal link, `<baseUrl>/l/invite/<token>`, and each
+project on the invitation has a link of its own. Admins copy the workspace link from the
+console's Invitations table (**Copy link**, or **Copy message** for a ready-to-send
+message). Managers copy a project's link from that project's People panel in Lolly. The
+link identifies the invitation and never admits anyone by itself: the person still signs
+in, and the address they sign in with must be the invited one. The token is signed, not
+stored (see [the API](api.md#invite-links-and-access-requests)), so every inviter who added
+a project to an invitation can copy a working link at any time.
+
+**The invite page.** Opening a link shows a page with no script on it. It says who invited
+the person, to which project and with which role, which address to use, and when the
+invitation ends:
+
+- the heading names the inviter and the project ("Andy invited you to Brand refresh"), or
+  the workspace for a workspace link ("Andy invited you to lolly.ing"). Each link shows
+  its own project only, never the others the invitation carries. An archived project is
+  shown as a workspace invite;
+- a line explains the role ("On lolly.ing, as an Editor. Editors can open and save work in
+  Brand refresh.");
+- the address is masked: "Sign in with the address this invitation was sent to:
+  an•••@suse.com". A screen reader hears "an address at suse.com that starts with an";
+- the end date, as a relative time and a UTC date ("Ends in 30 days (2 Nov, UTC).");
+- one button per sign-in: **Set a password** first when the link may set one, then one
+  button per OIDC or GitHub IdP, then **Sign in with email and password** when the
+  address already has a password;
+- when GitHub is configured, a line saying that every verified address on the GitHub
+  account counts;
+- `instance.inviteNote`, when set (on lolly.ing, which sign-ins to use when an
+  organisation blocks Google);
+- inside an in-app browser (a mail, chat or social app's own web view, where Google
+  sign-in can fail), a hint to open the link in Safari or Chrome, with the link to copy.
+
+The page never contains the full invited address, the inviter's email, the project name in
+the `<title>` (always "Invitation to" and the instance name) or `og:` and `twitter:`
+preview tags, so a link pasted into a chat previews as nothing in particular. Reading the page changes
+nothing: a link preview or a mail scanner that fetches it does not mark the invitation
+opened. It is marked opened when someone presses a sign-in button.
+
+| State | Status | The page |
+|---|---|---|
+| Pending, signed out | 200 | the invite page above |
+| Pending, signed in with the invited address | 200 | "You are signed in as …" and **Join Brand refresh** (**Accept invitation** for a workspace link), which accepts and opens the project |
+| Pending, signed in as another account | 200 | "You are signed in as another account", sign-in buttons that ask for an account, and [Use this account instead?](#using-another-account) |
+| Accepted by the reader | 200 | "You are already in" and **Open Brand refresh** |
+| Accepted by someone else, or signed out | 200 | "This invitation was already used", with **Sign in** |
+| Ended (pending past its end date) | 410 | "This invitation has ended. … Ask Andy for a new link." |
+| Unknown, malformed, revoked or replaced | 410 | "This link no longer works", the same page for every cause |
+
+**Signing in from the page.** A sign-in button posts to `POST /api/auth/invite`. The server
+records the first opening (`invite.open`), then starts that sign-in with the invitation
+carried in the signed `state` the IdP hands back; the token itself never goes to the IdP.
+An OIDC IdP also gets `login_hint` with the invited address, so its account picker offers
+the right account first. GitHub takes no hint, and the email and password form says which
+address to use without filling it in. When the sign-in comes back:
+
+- **The address matches.** The sign-in finishes as usual, the invitation is accepted, and
+  Lolly opens on the project (`/#/team/project/<id>`), or on `/` for a workspace link.
+- **Another address, not admitted.** The page "This is not the invited account" (403)
+  names both addresses (the invited one masked) and offers **Use a different account**
+  and [Ask to use this account](#using-another-account). No user row is written. The
+  audit log gets `auth.denied` (reason `not-invited`, with `invitationId`) and
+  `invite.wrong-account` with `admitted: false`.
+- **Another address that is admitted anyway** (already a member). The person is signed in
+  and sees the signed-in wrong-account page (200) instead of the app, with
+  `invite.wrong-account` and `admitted: true`.
+
+If the invitation was revoked, replaced or accepted by someone else while the person was
+at the IdP, the sign-in finishes as a plain one and opens `/`.
+
+### Setting a password from the link
+
+For people who will sign in with [email and password](#email-and-password), an admin or
+owner can let the invite link set the password, so they send one link, not an invitation
+and a password link. The tick is "Can set a password" on **Invite people** in the console
+and on Lolly's invite form, and it is only offered to an admin or owner while a `password`
+entry is configured. It starts ticked when every address on the invite is at a domain in
+`policy.invites.passwordDomains` (on lolly.ing, `suse.com`, whose Google Workspace blocks
+apps it has not reviewed).
+
+The invite page then shows **Set a password** first. Pressing it works only when all of
+these hold, and they are checked at that moment:
+
+- a `password` entry is still configured;
+- the invitation is pending and has not ended;
+- the address has no password yet;
+- the person who invited them (the project entry's inviter, else the invitation's) could
+  still issue a password link for the address, under the same rules as **Copy sign-in
+  link** (owner-only addresses, a disabled or demoted inviter).
+
+The server then mints a one-time password link valid for an hour (audited as
+`auth.password.link.issue` with `via: "invitation"`) and shows the set-password form,
+including the optional name. Setting the password signs the person in and opens the
+project. If any check fails, the invite page shows "This invitation can no longer set a
+password. Sign in another way, or ask Andy for a sign-in link."
+
+Whoever holds such a link can set the password for the address until one is set, so the
+link is a credential: send it privately, not in a shared channel. Once a password exists,
+the link only offers the ordinary sign-ins.
+
+### New link and Invite again
+
+**New link** (console, or a pending row in a project's People panel) raises the
+invitation's link version. Every link copied before, from any project and from the
+console, then shows "This link no longer works", and the invitation's "Opened" mark is
+cleared. Use it when a link went to the wrong place. Each invitation gets at most 10 new
+links a day.
+
+**Invite again** is for an expired or revoked invitation. It writes a new invitation for
+the same address, with the same projects, and in the console the same groups, and a new
+link. The console needs `user.invite` and the usual group controls; a project needs a
+manager who may invite new people.
+
+### GitHub addresses
+
+GitHub accounts often carry several verified addresses: a personal one as primary and a
+work one beside it. For invitations, and only for invitations, a GitHub sign-in counts
+every verified address on the account (up to 10; never the
+`users.noreply.github.com` commit address). So a person invited at their work address can
+sign in with a personal GitHub account that has the work address verified on it, and the
+console shows "Accepted as" the primary address.
+
+Everything else still uses the primary address alone: the `emails` and `domains` lists, the
+address stored on the account, and joining an existing person by email. A secondary
+address at a listed domain does not admit anyone. An account admitted through a secondary
+address stays admitted, device sign-ins included, while the invitation it accepted is not
+revoked.
+
+### Asking to join
+
+A person who signed in but is not invited sees the refusal page ("lolly.ing is invite
+only"). With `policy.requests.join` on (off by default; on for lolly.ing), the page also
+offers **Ask to join**: "Ask the admins of lolly.ing to let sam.k@gmail.com in.", with an
+optional note of up to 280 characters. The request carries the address the sign-in just
+verified, never a typed one. With it off, the page says to ask the person who invited them
+to invite this address. Other refusals (a disabled account, an unverified email, a
+`hostedDomain` or `tenantId` mismatch) never offer it.
+
+- **Who answers.** Every enabled account that may invite new people (`policy.invites.allow`;
+  on lolly.ing, admins and owners). They see the request in the console's Requests card on
+  People and in their inbox.
+- **Approve.** Needs an approver who may invite new people and an address at a domain
+  `policy.invites.domains` allows. It writes an invitation for the address
+  (`createdVia: "request"`), so the person is admitted at their next sign-in. The approver gets a message to send ("You can
+  now sign in to lolly.ing. Open https://lolly.ing and sign in as … with GitHub."). An
+  address that already has an account needs nothing more.
+- **While it is open,** signing in again shows "You asked to join 3 hours ago. An admin of
+  lolly.ing has not answered yet." with **Withdraw request**.
+- **Declined,** the page says so for 7 days with the date, and hides the form until then.
+- **Limits.** One open request per address, 3 per address in 30 days, and at most
+  `policy.requests.joinOpenMax` open requests to join and to use another account across
+  the instance. Past a limit the same "Request sent" page shows and nothing is stored
+  (`access.request.held`). A request expires after `policy.requests.ttlDays` (14 days).
+- **Closed by an invitation.** Inviting the address, or the person accepting an
+  invitation, closes the open request.
+
+While people email is off (see [configuration](configuration.md#notify)), the "Request
+sent" page says "lolly.ing does not send email yet. Sign in again later: once an admin
+approves, you are in."
+
+### Using another account
+
+An invitation is for the invited address only. When someone opens an invite link and
+signs in with another account, the wrong-account page lets them ask the inviter: "Andy
+decides whether sam.k@gmail.com can use this invitation." (The signed-in page asks
+"Use this account instead?", shown when the reader is not the inviter and has less than
+the invitation gives.) This files a request of kind `switch`. It goes to the admins who
+may invite new people and, when the person already has an account here, also to the
+managers of the link's project. Their notice carries a warning: "Someone with the
+invitation for an•••@… signed in as … Approve only if you know the address belongs to
+them."
+
+- **For an existing account** (the signed-in case), approving adds that account to each
+  project on the invitation that the approver manages, and gives it the invitation's
+  groups only when the approver holds `grant.edit`. Those entries come off the invitation,
+  and a project-made invitation left with nothing is revoked.
+- **For an address with no account** (the refused case), approving revokes the old
+  invitation, so its links stop working, and writes a new one for the signed-in address
+  with the same projects, end date and, when the approver may grant them, groups. The
+  person is admitted at their next sign-in. One invitation never admits two people.
+- Approving needs the invitation to be still pending; otherwise the request closes as
+  expired. Each invitation takes at most 3 such requests a day.
 
 ## One person, several sign-ins
 
@@ -515,8 +717,10 @@ address joins the same person again at its next sign-in; to keep one out for goo
 
 **Invitations.** An invitation is accepted by whichever account signs in with the
 invited address, including an existing account that reaches it through a newly linked
-sign-in. Its groups and projects then apply to that account. The inviter's own account
-never takes groups from its own invitation.
+sign-in. Adding a sign-in from the profile accepts it at once when that sign-in's IdP
+vouches for the invited address and links by email (`invite.accept` with `via: "link"`).
+Its groups and projects then apply to that account. The inviter's own account never takes
+groups from its own invitation.
 
 **Upgrading.** Migration 0039 writes one identity row per existing user from
 `users.sub` (the IdP is the prefix before the first `:`, or `primary` when there is

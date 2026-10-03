@@ -1,6 +1,12 @@
 {
   "deployment": { "mode": "production" },
-  "instance": { "name": "Lolly", "baseUrl": "https://lolly.ing", "pack": "packs/lolly-ing", "homeView": "projects" },
+  "instance": {
+    "name": "lolly.ing",
+    "baseUrl": "https://lolly.ing",
+    "pack": "packs/lolly-ing",
+    "homeView": "projects",
+    "inviteNote": "If your organisation blocks Google sign-in (for example @suse.com), use GitHub or email and password."
+  },
   "idp": {
     "issuer": "https://accounts.google.com",
     "clientId": "927099338182-26scslnv41r3g8d7qro5jlmnlof3hp6r.apps.googleusercontent.com",
@@ -30,6 +36,8 @@
     "guestLinks": { "enabled": false },
     "nearby": { "enabled": false },
     "sessionTtlHours": 72,
+    "invites": { "passwordDomains": ["suse.com"] },
+    "requests": { "join": true, "project": true, "ttlDays": 14, "joinOpenMax": 50 },
     "projectFiles": {
       "enabled": true,
       "maxFileBytes": 26214400,

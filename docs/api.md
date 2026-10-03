@@ -86,11 +86,11 @@ in on the instance and export the pack, or connect from the desktop app.
 
 | Route | Action | Notes |
 |---|---|---|
-| `GET /api/auth/config` | public | what the sign-in screen needs (mode, IdP display name, and `providers: [{ id, name, kind, loginPath }]` with `kind` `oidc`, `github` or `password`) |
+| `GET /api/auth/config` | public | what the sign-in screen needs (mode, IdP display name, and `providers: [{ id, name, kind, loginPath }]` with `kind` `oidc`, `github` or `password`), plus `instanceName` (`instance.name`), `inviteOnly` (`true` while `idp.admission` is set) and `joinRequests` (`policy.requests.join`: the refusal page offers Ask to join) |
 | `GET /api/auth/login` | public | starts sign-in with PKCE: OIDC, or GitHub OAuth 2.0 for `?idp=` naming a `kind: "github"` entry; for a `kind: "password"` entry, the email and password form. With several entries and no `?idp=`, the chooser; `404 NO_IDP` with no sign-in configured |
 | `POST /api/auth/password/login` | public | the form (`email`, `password`, `returnTo`, `csrf`) answers `303` to `returnTo` with `lw_session`, or the form again with `400` and one message for an unknown email, a wrong password and a locked address. A JSON body `{ email, password, returnTo? }` answers `{ ok, returnTo }` or `400 INVALID_CREDENTIALS`. A refused admission is `403`; an owner's account reached with a password not set from an owner's link is `403 OWNER_LINK_REQUIRED`. `503 BUSY` with `Retry-After` while too many password checks wait. See [identity.md](identity.md#email-and-password) |
-| `GET /api/auth/password/set?token=…` | public | the page a one-time link opens: the address, read-only, and a new password twice. A used, expired or unknown link, or one its issuer may no longer issue, is a `410` page |
-| `POST /api/auth/password/set` | public | the form (`token`, `password`, `confirm`, `csrf`): spends the link once, sets the password, ends the account's other sessions, signs the person in and answers `303` to `/` |
+| `GET /api/auth/password/set?token=…` | public | the page a one-time link opens: the address, read-only, an optional name, and a new password twice. A used, expired or unknown link, or one its issuer may no longer issue, is a `410` page |
+| `POST /api/auth/password/set` | public | the form (`token`, `name`, `password`, `confirm`, `returnTo`, `csrf`): spends the link once, sets the password, ends the account's other sessions, signs the person in and answers `303` to `returnTo`. `name` is optional, 1 to 80 characters once trimmed, and becomes the account's display name. `returnTo` is set only by the [invite page](#invite-links-and-access-requests); a value that is not a path on this origin, or none, is `/` |
 | `GET /api/auth/callback` | public | verifies the `id_token` (OIDC) or reads the GitHub profile and emails, then mints `lw_session`. A failure a browser sees is an HTML page with a way to start again; an API caller without `Accept: text/html` keeps the JSON error, except GitHub failures, which are always the page |
 | `GET /api/auth/link?idp=<id>&returnTo=<path>` | member (cookie) | runs that IdP and links the identity it returns to the current user, then redirects to `returnTo`; no new session. An identity that belongs to someone else is a `409` HTML page. A `password` entry is not linked from here: a `400` HTML page says to ask an admin for a sign-in link, with a link back to `returnTo`. See [identity.md](identity.md#one-person-several-sign-ins) |
 | `GET /api/v1/me/identities` | member | the person's linked sign-ins: `{ identities: [{ idp, subjectHash, displayName, email, emailVerified, linkedAt, lastLoginAt, canUnlink, unlinkBlocked? }], available: [{ id, name, kind, linkPath }] }` |
@@ -251,19 +251,38 @@ Who may sign in when `idp.admission` is set, one email address at a time. See
 
 | Route | Action | Notes |
 |---|---|---|
-| `GET /api/v1/invitations` | `user.invite` (admin, owner) | every invitation, newest first, revoked ones included; plus `signInUrl` and `admission: { policy, invitations }` |
-| `POST /api/v1/invitations` | `user.invite` | body `{ emails: string[], groups?: string[], expiresAt? }`; `201` when anything was created, `200` otherwise. With `groups`, an address that already belongs to an account joins them now (`status: "applied"`) or is left alone (`status: "refused"`, `reason`: `self`, `account-disabled`, `owner-only`). A new address follows `policy.invites`: `reason` `invites-not-allowed` or `domain-not-allowed` |
+| `GET /api/v1/invitations` | `user.invite` (admin, owner) | every invitation, newest first, revoked ones included; plus `signInUrl`, `admission: { policy, invitations }`, and what an invite message needs: `providers` (the names of the sign-ins on offer), `passwordSignIn` (a `password` entry is configured), `passwordDomains` (`policy.invites.passwordDomains`) and `inviteNote` (`instance.inviteNote`, or `null`) |
+| `POST /api/v1/invitations` | `user.invite` | body `{ emails: string[], groups?: string[], expiresAt?, passwordSetup?: boolean }`; `201` when anything was created, `200` otherwise. With `groups`, an address that already belongs to an account joins them now (`status: "applied"`) or is left alone (`status: "refused"`, `reason`: `self`, `account-disabled`, `owner-only`). Without `groups`, such an address is `status: "already"` and no invitation is written. A new address follows `policy.invites`: `reason` `invites-not-allowed` or `domain-not-allowed`. Each invitation in the answer carries its `link` and `expiresAt` |
+| `POST /api/v1/invitations/:id/link` | `user.invite` | New link: `200 { invitation }` with a new `link`. Every link copied earlier for this invitation, from the console or a project, stops working, and `openedAt` is cleared. Refused for an accepted or revoked invitation; 10 a day per invitation, then `429 RATE_LIMITED` |
+| `POST /api/v1/invitations/:id/reinvite` | `user.invite`, with the same group controls as `POST` | Invite again, for an expired or revoked invitation: body `{ expiresAt? }`; `201 { invitation }`, a new invitation with the same address, groups and projects and a new link. `409 ACTIVE_INVITATION { invitation }` when the address already has a live one |
 | `DELETE /api/v1/invitations/:id` | `user.invite` | revoke; `404` when the id is unknown or already revoked |
 | `POST /api/v1/admin/password-links` | admin or owner session with `user.invite` | body `{ email, purpose: "setup" \| "reset" }`; `201 { url, expiresAt }`: a one-time link to set a password, valid 7 days, which cancels the address's earlier unused links. `404 NO_PASSWORD_SIGN_IN` without a `password` entry, `409 NOT_ADMITTED` for an address admission refuses, `409 ACCOUNT_DISABLED`, `403 OWNER_ONLY` unless an owner asks for an owner's address or for an account that already signs in another way (an admin's own account excepted). The same rules are asked again when the link is used. Service tokens are refused |
 
-An invitation reads `{ id, email, groups, invitedBy, createdAt, expiresAt, acceptedAt,
-acceptedUserId, revokedAt, status, projects, createdVia }`, with `status` one of
-`pending`, `accepted`, `expired` or `revoked`; absent dates are `null`. `projects` is
-`[{ projectId, role }]`, the projects the person joins on acceptance (empty for an
-invitation that only admits and groups). `createdVia` is `console` (this route) or
-`project` (a project invite). POST answers `{ invitations: [...], signInUrl, admission }`:
-an invitation carries `created: boolean`, and an address handled without one reads
-`{ email, status: "applied" | "refused", reason?, userIds, groups, created: false }`.
+An invitation reads:
+
+```ts
+{
+  id, email, groups, invitedBy, inviter: { name } | null,
+  createdAt, expiresAt, acceptedAt, acceptedUserId, acceptedUser: { name, email } | null, revokedAt,
+  status: 'pending' | 'accepted' | 'expired' | 'revoked',
+  projects: [{ projectId, name, role, invitedBy: { name } | null }],
+  createdVia: 'console' | 'project' | 'request',
+  link,                      // the workspace invite link; only while pending, else null
+  linkVersion, openedAt,     // openedAt: the first sign-in started from a link, or null
+  passwordSetup,             // the link may set a password for the address
+  password: 'none' | 'set',  // whether the address already has a password
+}
+```
+
+Absent dates are `null`. `projects` are the projects the person joins on acceptance (empty
+for an invitation that only admits and groups), each with the name of the person who added
+it. `createdVia` is `console` (this route), `project` (a project invite) or `request` (an
+approved [request](#invite-links-and-access-requests)). `inviter` and `acceptedUser` carry
+names for the console; `acceptedUser.email` is the address the account signed in with,
+which can differ from the invited one (a GitHub account with the invited address as a
+secondary one). POST answers `{ invitations: [...], signInUrl, admission }`: an invitation
+carries `created: boolean`, and an address handled without one reads
+`{ email, status: "applied" | "refused" | "already", reason?, userIds, groups, created: false }`.
 
 - `emails`: 1 to 200 addresses, trimmed, lowercased and deduplicated. Each must look
   like `local@domain` with no spaces.
@@ -296,11 +315,95 @@ an invitation carries `created: boolean`, and an address handled without one rea
 - One active (unrevoked) invitation per email. Inviting an address that has one returns
   the existing invitation unchanged with `created: false`. A pending invitation that has
   expired is revoked and replaced.
+- `passwordSetup`: the invite link may also set a password for the address, once, while
+  it has none (see [identity](identity.md#setting-a-password-from-the-link)). Honoured only
+  for an admin or owner while a `password` entry is configured, and ignored otherwise.
+  Whoever holds such a link can set the password, so send it privately.
 - Revoking an accepted invitation that belongs to an owner needs the owner role
   (`403 OWNER_ONLY`).
+- Inviting an address closes its open request to join, if it has one.
 
-Nothing is emailed. `signInUrl` is `instance.baseUrl`, the address to send the person.
-Audit actions: `invite.create`, `invite.revoke`, `invite.accept`.
+Nothing is emailed. Send each person their `link`, which opens the
+[invite page](identity.md#invite-links) for that invitation. `signInUrl` is
+`instance.baseUrl`. Audit actions: `invite.create` (with `via`: `console`, `project`,
+`request` or `reinvite`, plus `from` for an invitation made again and `passwordSetup`),
+`invite.link` (a new link), `invite.open` (the first sign-in started from a link),
+`invite.wrong-account`, `invite.revoke` and `invite.accept` (with `via`: `sign-in`,
+`join` or `link`).
+
+## Invite links and access requests
+
+Every pending invitation has a personal link, `<baseUrl>/l/invite/<token>`, and each project
+on it has a link of its own. The token is signed with `LW_LINK_SECRET` (the previous key
+still verifies during a rotation) over the invitation id, the project id (none for the
+workspace link) and the invitation's link version. It is never stored. A token identifies an
+invitation and never admits anyone: the person still signs in, with the invited address.
+New link raises the version, so every earlier link stops working. See
+[identity](identity.md#invite-links) for the pages and the sign-in they start.
+
+**Pages and forms.** Server-rendered HTML in English, with no script.
+
+| Route | Who | Notes |
+|---|---|---|
+| `GET /l/invite/:token` | public; reads the session cookie when there is one | the invite page. `200` while the invitation is pending or accepted, `410` once it has ended. Unknown, malformed, revoked and replaced tokens all get the same `410` "This link no longer works" page. Reading it changes nothing, so a chat preview or a mail scanner leaves no trace. `link` rate-limit bucket |
+| `POST /api/auth/invite` | public; `join` needs a session | the invite page's forms: `token`, `csrf`, `action` (`start`, `password` or `join`), `idp` (for `start`) and `prompt` (`select_account`, optional). `start` records the first opening, then answers `302` to that IdP, or `200` with the email and password form. `password` answers `200` with the set-password form when this invitation may set one, else the invite page again with an error line. `join` accepts the invitation for a signed-in account that holds the address and answers `303` to the project, or `200` with the wrong-account page. A dead or ended token gets its `410` page. `auth` rate-limit bucket |
+| `POST /api/auth/request` | public, with a valid `ask` token | the forms on the refusal and wrong-account pages: `ask`, `csrf`, `action` (`join`, `switch` or `withdraw`) and `note` (optional, at most 280 characters). `200` "Request sent" whether the request was created, was already open or was held by a cap; `withdraw` answers "Request withdrawn". An expired `ask` token or form is a `403` "This page expired" page. `auth` rate-limit bucket |
+
+Every form carries the `lw_form` double-submit nonce (a cookie on `Path=/api/auth`) and
+passes the Origin check. The pages are sent with `cache-control: no-store`,
+`x-content-type-options: nosniff`, `referrer-policy: strict-origin`,
+`x-robots-tag: noindex, nofollow` and
+`content-security-policy: default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'`.
+The `ask` token is minted only on a page the server renders right after it verified a
+sign-in (the refusal and wrong-account pages). It lives 30 minutes, travels in a hidden
+form field, and carries the verified address, so the address on a request is never typed.
+
+**Requests.** JSON routes with the session cookie. Service tokens are refused.
+
+| Route | Who | Notes |
+|---|---|---|
+| `POST /api/v1/projects/:id/access-requests` | member (no guest) | Ask for access, or Ask to edit: body `{ role: "viewer" \| "editor", note? }`. Always `202 { "ok": true }`: an unknown or archived project, access the caller already has, a request already open and requests switched off all get the same answer, so filing reveals nothing. A note over 280 characters is `400 INVALID_INPUT`. After 20 requests in a day, `429 RATE_LIMITED` with `Retry-After` |
+| `POST /api/v1/sessions/:id/access-requests` | member (no guest) | the same for a session link: the server finds the session's project and records the session the request came from. Shares the daily quota |
+| `GET /api/v1/access-requests/mine?projectId=…` or `?sessionId=…` | member | `{ requests: MyRequest[] }`: the caller's own requests for that target, open or answered in the last 30 days, newest first |
+| `POST /api/v1/access-requests/:id/withdraw` | the requester | body `{}`; `200 { request: MyRequest }`, or `404` for anyone else |
+| `GET /api/v1/access-requests?status=open\|answered&since=…` | member | `{ requests: RequestView[] }`: the requests the caller may answer now, and nothing for someone who answers none |
+| `POST /api/v1/access-requests/:id/approve` | an approver, checked again now | body `{ role? }` (project requests; the role asked for when absent). `200 { request, outcome, invitation?, link?, message? }`, with `outcome` one of `added`, `already`, `invited` or `moved`. `message.text` is a ready-to-send line for an approved join, for example "You can now sign in to lolly.ing. Open https://lolly.ing and sign in as sam.k@gmail.com with GitHub." |
+| `POST /api/v1/access-requests/:id/decline` | an approver | body `{}`; `200 { request }` |
+
+```ts
+type MyRequest = { id, status, role, createdAt, answeredAt, answerRole };
+type RequestView = {
+  id, kind: 'project' | 'join' | 'switch',
+  status: 'open' | 'approved' | 'declined' | 'withdrawn' | 'superseded' | 'expired',
+  email, name, provider,     // provider: the display name of the sign-in that proved the address
+  note, role, currentRole,   // currentRole: the requester's access when they asked
+  project: { id, name } | null, session: { id, name } | null,
+  invitation: { id, maskedEmail, inviter } | null,   // switch requests only
+  createdAt, expiresAt, answeredAt, answeredBy: { name } | null, answerRole,
+};
+```
+
+Who may answer, what each approval does, and how requests close are in
+[sharing](sharing.md#asking-for-access) and [identity](identity.md#asking-to-join). An
+approver is checked again on every list, approve and decline, against the project stored on
+the request, never an id the client sends. Exactly one answer wins: approve claims the
+request first, then acts. If the action then fails on a database error, the answer is
+`500`, the request stays approved, the audit row records `effect: "failed"`, and a manager
+adds the person by hand.
+
+| Code | Status | Meaning |
+|---|---|---|
+| `ALREADY_ANSWERED` | 409 | someone answered first; the body's `request` says who and how |
+| `FORBIDDEN` | 403 | the caller may not answer this request now, for example a manager since demoted |
+| `REQUESTER_UNAVAILABLE` | 409 | the requester's account is disabled; the request closes as `expired` |
+| `PROJECT_ARCHIVED` | 409 | the project was archived; the request closes as `expired` |
+| `INVITATION_ENDED` | 409 | a switch request whose invitation is no longer pending; the request closes as `expired` |
+
+Audit actions: `access.request`, `access.request.held` (a cap held it; `reason`
+`per-email`, `workspace-cap` or `per-invitation`), `access.approve`, `access.decline`,
+`access.withdraw` and `access.supersede`, each with subject `request:<id>` (a held request
+stores nothing, so its subject is `request`). A note is recorded only as its length
+(`noteChars`), never its text, and no payload holds a token.
 
 ## Service tokens
 
@@ -341,10 +444,16 @@ disable + session-epoch bump. Group membership maps to each user's local groups.
 | `GET /api/v1/approvals/approvers` | member |
 | `POST /api/v1/approvals/:id/act` | `approval.act` |
 | `POST /api/v1/approvals/:id/withdraw` | member (submitter) |
-| `GET /api/v1/inbox`, `POST /api/v1/inbox/:id/ack` | member |
+| `GET /api/v1/inbox` | member - `{ messages, unread }` with `ETag: "ib-<16 hex>"` and `cache-control: private, no-cache`; a matching `If-None-Match` answers `304`, so a shell can check often for one header |
+| `POST /api/v1/inbox/:id/ack` | member |
 | `GET/POST /api/v1/messages` | `message.send` |
 
-Message targeting is groups × shell selectors × engine-version range.
+Message targeting is groups × shell selectors × engine-version range. Besides the
+console's messages, the server writes `approval`, `expiry`, `collab` and `share`
+messages, `request` (someone asks for access and you may answer) and `notice` (an
+answer to your request, an accepted invitation, a welcome, an invitation entry that no
+longer works). `data.kind` names which, and `data.at` is when it happened; the kinds
+are listed in [sharing](sharing.md#notices).
 
 ## Links and rendering
 
@@ -393,11 +502,14 @@ separate from the existing `/api/v1/batch` job/ZIP contract.
 | `GET /api/v1/sessions/:id`, `GET …/revisions` | viewer |
 | `PUT /api/v1/sessions/:id` | editor and `session.edit`. Session bodies (this and the `POST` above) may be up to 4 MiB; other routes take 512 KiB |
 | `DELETE /api/v1/sessions/:id` | `session.delete`, editor, and the caller must be the session's creator or a manager of the project (its owner, a manager member, or a holder of `project.manage`; admins and owners hold it by default and a deny grant applies to them too) |
-| `GET /api/v1/projects/:id/members` | viewer - `{ myRole, members: [{ userId, name, email?, role, addedAt, isMe? }], invitations? }`; `email` and `invitations` for managers only; `isMe: true` marks the caller's own row |
-| `POST /api/v1/projects/:id/invite` | manager - body `{ emails, role }`; `200 { results: [{ email, status: added \| invited \| already \| refused, reason? }], link }`. `link` is `<appUrl or baseUrl>/#/team/project/<id>`. New addresses follow `policy.invites`. A caller without `user.invite` may send 100 addresses an hour (`429 RATE_LIMITED`). Reasons are listed in [sharing](sharing.md#inviting-people) |
+| `GET /api/v1/projects/:id/members` | viewer - `{ myRole, members: [{ userId, name, email?, role, addedAt, isMe? }], invitations?, requests? }`; `email`, `invitations` and `requests` for managers only; `isMe: true` marks the caller's own row. `invitations` lists the pending invitations that carry the project and those that expired in the last 30 days: `{ id, email, role, createdAt, expiresAt?, status: pending \| expired, openedAt?, invitedByName?, passwordSetup, link? }`, where `link` is the invite link for this project's entry, while pending. `requests` lists the open requests for the project: `{ id, userId, name, email, role, currentRole, note?, createdAt, viaSession?: { id, name } }` |
+| `POST /api/v1/projects/:id/invite` | manager - body `{ emails, role, passwordSetup? }`; `200 { results: [{ email, status: added \| invited \| already \| refused, reason?, invitationId?, link?, expiresAt? }], link, message }`. A result's `link` is that address's own invite link for this project; the top-level `link` is `<appUrl or baseUrl>/#/team/project/<id>`. `message: { workspace, inviter, providers, note? }` is what Lolly needs to compose an invite message. `passwordSetup` is honoured only for an admin or owner with `user.invite` while a `password` entry is configured. New addresses follow `policy.invites`. A caller without `user.invite` may send 100 addresses an hour (`429 RATE_LIMITED`). Reasons are listed in [sharing](sharing.md#inviting-people) |
 | `PATCH /api/v1/projects/:id/members/:userId` | manager - body `{ role }`; `409` for the owner |
 | `DELETE /api/v1/projects/:id/members/:userId` | manager, or the member themselves; `204` |
 | `DELETE /api/v1/projects/:id/invitations/:invitationId` | manager - takes the project off the invitation; a project-made invitation (`createdVia: "project"`) left with no project is revoked, a console invitation never is; `204` |
+| `POST /api/v1/projects/:id/invitations/:invitationId/link` | manager, for an invitation that carries this project - New link: `200 { link, expiresAt }`. Every earlier link for the invitation stops working, the console's included. 10 a day per invitation, then `429 RATE_LIMITED` |
+| `POST /api/v1/projects/:id/invitations/:invitationId/reinvite` | manager who may invite new people - Invite again, for an expired entry: `200` with one result row, the same shape as `invite`. Counts toward the hourly invite quota |
+| `POST /api/v1/projects/:id/access-requests` | member - Ask for access or Ask to edit; see [access requests](#invite-links-and-access-requests) |
 | `POST /api/v1/sessions/bulk` | `session.edit` and `project.manage`; only sessions in projects where the caller is an editor |
 | `GET /api/v1/collab/invitees?sessionId=…&q=…` | member with read access to the session |
 | `POST /api/v1/collab/invites` | `collab.edit` (= `session.edit`) |

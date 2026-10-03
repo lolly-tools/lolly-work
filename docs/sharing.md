@@ -224,7 +224,8 @@ them to viewer or making the project private ends those guests' seats.
 In Lolly, **People with access** in the Share dialog and the Team projects view lists the
 people on a project, and **Invite by email** adds more. Under the hood that is
 `POST /api/v1/projects/:id/invite` with `{"emails": [...], "role": "viewer" | "editor" |
-"manager"}`, which needs a manager of the project. Each address gets a result:
+"manager", "passwordSetup": false}`, which needs a manager of the project. Each address
+gets a result:
 
 - `added`: the address belongs to an account, which becomes a member now. The person finds
   "*name* shared *project* with you" in their inbox, with a link to the project. Only an
@@ -234,7 +235,9 @@ people on a project, and **Invite by email** adds more. Under the hood that is
   one provisioned with no sign-in yet. An account whose sign-in only claimed the address is
   treated as if the address had no account.
 - `invited`: the address has no account yet. An invitation carrying the project is created,
-  or the open invitation for that address gains the project. At their first sign-in the
+  or the open invitation for that address gains the project. The result carries the
+  `invitationId`, the address's own [invite link](identity.md#invite-links) for this
+  project (`link`) and when the invitation ends (`expiresAt`). At their first sign-in the
   person joins every project the invitation names, each only while the person who added it
   is still an enabled account that manages that project and may still invite people, and
   the role is still one the policy gives. An entry that fails is skipped and audited
@@ -269,9 +272,32 @@ still added, and the audit row records the message as held.
 
 The response also carries `link`, the address of the project in Lolly
 (`<baseUrl>/#/team/project/<projectId>`, or `<appUrl>/...` when `instance.appUrl` is set, the
-same address the inbox message opens). Nothing is emailed from Lolly Work: copy the link
-and send it yourself. Opening the link signed out goes through sign-in and then opens the
-project. A manager withdraws an invitation from the project with
+same address the inbox message opens), and `message`: the workspace name, the inviter's
+name, the sign-ins on offer and `instance.inviteNote`. Nothing is emailed from Lolly Work.
+Instead, each invited address gets **Copy invite message** in the People panel: a message
+naming the inviter, the project and the role, the address's invite link on its own line,
+which sign-ins to use ("Sign in as … with Google or GitHub."), "Open the link to set your
+password." when the link may set one, the end date and the invite note. Send it yourself,
+by chat or email. The invite link shows who invited the person and to what, and opens the
+project once they have signed in with the invited address; someone who is already a member
+can use the plain project `link`.
+
+Managers see the project's pending invitations in the People panel, from
+`GET /api/v1/projects/:id/members`: each with its end date, whether it was opened, who
+invited the person, and **Copy link**, **Copy message**, **New link** and **Revoke**.
+**New link** (`POST /api/v1/projects/:id/invitations/:invitationId/link`) ends every link
+copied before for that invitation, the console's included. An invitation that expired in
+the last 30 days stays listed as Expired with **Invite again**
+(`POST /api/v1/projects/:id/invitations/:invitationId/reinvite`), which needs a manager who
+may invite new people.
+
+An admin or owner can also tick **Can set a password** for people who will sign in with
+email and password. Their invite link then sets the password as well, so they need one link,
+not two; whoever holds such a link can set the password, so send it privately. The tick
+starts ticked when every address is at a domain in `policy.invites.passwordDomains`. See
+[setting a password from the link](identity.md#setting-a-password-from-the-link).
+
+A manager withdraws an invitation from the project with
 `DELETE /api/v1/projects/:id/invitations/:invitationId`. When a project invite created the
 invitation (`createdVia: "project"`) and no project is left on it, the invitation is revoked
 too, so the address can no longer sign in through it. An invitation made in the console only
@@ -312,6 +338,9 @@ invite **new** people and on what terms:
 - `maxTtlHours`: how long an invitation made from a project stays open (default 720, 30
   days). Adding a project to an existing invitation keeps its expiry.
 - `projectRoles`: which roles may be given, by invitation or role change (default all three).
+- `passwordDomains`: domains whose addresses usually sign in with a password. When every
+  address on an invite is at one of them, **Can set a password** starts ticked. It only
+  suggests; the tick stays an admin's choice.
 
 The tier and the domain list apply to invitations, which let a new person in, from a
 project or from the console and `lw invite add` alike. Sharing a project with someone who
@@ -319,8 +348,85 @@ already has an account, or giving their account groups in the console, needs man
 project (or the console's own checks) and an allowed role, and nothing else. `maxTtlHours`
 is for invitations made from a project; the console sets its own expiry. Lolly reads `can['user.invite']` and `invites` (`domains`,
 `maxTtlHours`, `projectRoles`) from `GET /api/v1/org-config` to offer only what the server
-accepts; older servers send neither, and Lolly then hides inviting. The policy is part of the
-instance configuration, so changing it means editing the configuration and redeploying.
+accepts; older servers send neither, and Lolly then hides inviting. The same `invites` block
+also carries `passwordSetup` (the caller may tick **Can set a password**) and
+`passwordDomains`. The policy is part of the instance configuration, so changing it means
+editing the configuration and redeploying.
+
+### Asking for access
+
+Someone who opens a project or session link they cannot open sees "You do not have access
+to this team project." and can **Ask for access**: they choose the access they need (Can
+view or Can edit) and may add a note of up to 280 characters. A viewer can **Ask to edit**
+the same way, from Share > Team and from the People panel. Both are a request of kind
+`project`, filed with `POST /api/v1/projects/:id/access-requests` or, from a session link,
+`POST /api/v1/sessions/:id/access-requests` (see [the API](api.md#invite-links-and-access-requests)).
+The same request for a person who is not on the instance at all is
+[asking to join](identity.md#asking-to-join).
+
+Filing never tells the requester anything about the project. The answer is the same
+`202` whether the project exists, is archived, the person already has that access, a
+request is already open, or requests are switched off (`policy.requests.project`). The
+requester never learns who manages a project until someone approves.
+
+**Who answers.** The project's owner and its managers, when at least one of them is an
+enabled account. Otherwise, everyone who manages the project through `project.manage`
+(admins and owners). They get an inbox notice, "Sam asks to edit Brand refresh", and see
+the request under **Asking for access** in the project's People panel. The approver is
+checked again on every list and answer, against the project stored on the request.
+
+- **Approve** with a role, by default the one asked for. The role must be one
+  `policy.invites.projectRoles` allows and one the approver could give directly. The person
+  is added to the project and gets a notice, "Andy gave you edit access to Brand refresh",
+  with **Open**. Approving fails when the project was archived (`PROJECT_ARCHIVED`) or the
+  requester's account was disabled (`REQUESTER_UNAVAILABLE`); the request then closes as
+  expired.
+- **Decline.** The requester gets "Your request for Brand refresh was not approved".
+- **Withdraw.** The requester can withdraw an open request.
+- **Already handled.** When two approvers answer at once, one wins. The other sees who
+  answered and how ("Priya already approved this"), and nothing changes.
+- **Access another way.** When the person is added to the project with that role or a
+  higher one, by an invite, a share or an accepted invitation, their open requests for it
+  close as `superseded`. Nobody gets a second notice; the share covers it.
+- **Expiry.** A request expires after `policy.requests.ttlDays` (14 days), and its notice
+  with it.
+- **Limits.** One open request per person and project, and 20 requests a day per
+  requester (`429 RATE_LIMITED` past that).
+
+Every step is audited (`access.request`, `access.approve`, `access.decline`,
+`access.withdraw`, `access.supersede`). The note is recorded only as its length.
+
+### Notices
+
+The people steps above reach people through their inbox. The server writes every one of
+these notices in one place (`server/src/notify/people.ts`), in English, naming people by
+name and never by email to anyone who could not already see the address:
+
+| `data.kind` | Goes to | Title |
+|---|---|---|
+| `access-request` | the people who may answer it | "Sam asks to edit Brand refresh", "… asks to view …", "Sam asks to join lolly.ing", or "Sam asks to use their own account for an invitation", with the address, the sign-in and the note in the body, and **Review** |
+| `access-answer` | the requester | "Andy gave you edit access to Brand refresh" with **Open**, or "Your request for Brand refresh was not approved" |
+| `invite-accepted` | each person who invited them (at most 5) | "Sam accepted your invitation", with **Open** (the project) or **Open People** (the console) |
+| `invite-skipped` | the invitee | "Your invitation to Brand refresh no longer works", when the person who added the project can no longer add people to it, or the project was archived |
+| `welcome` | the invitee, on accepting | "Welcome to lolly.ing", with the inviter and, for a project, its name, the role and **Open** |
+
+A request notice has `kind: "request"` and severity `action`; the others have
+`kind: "notice"`. Each carries `data.at`, the time it happened, and the ids a client needs
+(`requestId`, `projectId`, `invitationId` and so on). A request notice disappears when the
+request is answered, withdrawn, superseded or expires. The others stay until dismissed, and
+an answer or acceptance notice for 30 days at most.
+
+`GET /api/v1/inbox` answers with an `ETag` and an `unread` count, and `304` when nothing
+changed, so Lolly checks it when the tab comes back into view (at most once a minute) and
+every 60 seconds while it is visible. The banner shows one message at a time and the next
+after a dismiss; **View all** opens the inbox, where project requests have **Approve** (with
+a role) and **Decline**. Requests to join and to use another account are answered in the
+console.
+
+Notices are not emailed yet. `notify.people.email` is the switch for that, off by default,
+and this release sends no people email even with it on (see
+[configuration](configuration.md#emailing-people-notices)). Until then, copy invite
+messages and links and send them yourself.
 
 ### Saving from Lolly
 

@@ -35,13 +35,14 @@ to the database nor calls identity, renderer or asset providers. The owner conso
 
 | Key | Default | What it does |
 |---|---|---|
-| `name` | `Lolly Work` | the deploy's display name (console rail, sign-in card, `/healthz`) |
+| `name` | `Lolly Work` | the deploy's display name, also called the workspace name: console rail, sign-in card, `/healthz`, `instanceName` in `/api/auth/config`, and the invite, refusal and request pages, notices and copied invite messages ("Andy invited you to lolly.ing"). Put the name people know first: lolly.ing uses `lolly.ing` |
 | `baseUrl` | `http://localhost:8787` | the URL this deploy answers on. Drives OIDC redirect URIs and the `Secure` cookie flag - **must** match reality |
 | `pack` | `./packs/demo` | the brand pack mount: catalog, tools, design tokens, fonts, logos. The default is the small demo pack committed at `packs/demo`; the server warns at boot if the path does not exist, and the catalog is empty until it does |
 | `shellDir` | *unset* | path to a built Lolly `shells/web/dist`. Set ⇒ the shell is served at `/` on one origin (session cookies work, the shell's `org/` governance seam activates) |
 | `appUrl` | *unset* | where the Lolly app lives when it is *not* same-origin (a Vite dev server, a split deploy). The console routes "Open Lolly" and deep links through it |
 | `brandTokens` | *unset* | map source IDs (`mounted` or `profile:<name>`) to explicit tokens asset IDs; required when a source has multiple independent heads |
 | `connectPack` | *unset* | a `.lolly` instance pack to HOST from boot - a path relative to `pack` (or absolute). Seeded only before any durable branding decision, while no download is suppressed or hosted, so an ephemeral deploy offers `/connect/pack.lolly` without an owner ever uploading; an owner's own upload always wins, and a file naming a different instance base is refused loudly at seed time |
+| `inviteNote` | *unset* | one plain-text line shown on the invite page and at the end of copied invite messages, such as which sign-in to use when an organisation blocks one. Trimmed, at most 240 characters, no line breaks; an empty line is the same as unset. See [invite links](identity.md#invite-links) |
 | `homeView` | *unset* | the view a signed-in member's Lolly opens on when they arrive at the bare address: `tools` (the tools gallery) or `projects` (their Projects). Unset means tools. A link to a tool, a team project or a view still opens where it points, and choosing Tools later still shows the tools. Sent to members' shells in `GET /api/v1/org-config` as `home`; a shell that predates it ignores it |
 
 `pack` supports materialized trees, modern `profiles.json` roots and legacy brand layouts. Selection lives in the Store; mounted files are never rewritten. See [Design-system administration](design-system-administration.md) for persistence requirements and explicit tokens selection.
@@ -159,6 +160,11 @@ See [email and password](identity.md#email-and-password) for the flow.
 | `invites.domains` | `[]` | when not empty, a new address must be at one of these domains (a leading `@` is dropped, matching is case-insensitive) |
 | `invites.maxTtlHours` | `720` | how long an invitation made from a project stays open; at most 8784 (366 days) |
 | `invites.projectRoles` | all three | which project roles may be given by invitation or role change: any of `viewer`, `editor`, `manager` |
+| `invites.passwordDomains` | `[]` | domains whose people usually sign in with email and password, the same rule as `domains`. When every address on a console or project invite is at one of them, "Can set a password" starts ticked, so the invite link also sets the password. It only suggests: the tick stays an admin's choice. See [setting a password from the link](identity.md#setting-a-password-from-the-link) |
+| `requests.project` | `true` | members may ask for access to a project or session link they cannot open, and viewers may ask to edit. See [asking for access](sharing.md#asking-for-access) |
+| `requests.join` | `false` | a person who signed in but is not admitted may ask the admins to let them in, from the refusal page. Off by default, because it lets anyone who can sign in somewhere reach the admins. See [asking to join](identity.md#asking-to-join) |
+| `requests.ttlDays` | `14` | whole days, 1 to 60. How long a request stays open before it expires, with its notice |
+| `requests.joinOpenMax` | `50` | whole number, 1 to 1000. The most requests to join and to use another account for an invitation that may be open at once across the instance; past it, new ones are held (the person sees the same page, nothing is stored) |
 | `nearby.enabled` | `true` | instance-mediated "nearby" presence: the `collab.nearby` capability bit and both `/api/v1/collab/nearby` routes. `false` keeps the whole surface dark fleet-wide |
 | `sessionTtlHours` | `12` | member session lifetime (token `exp` and cookie `Max-Age`); must be > 0 and ≤ 720 |
 | `submit.maxBytes` | `67108864` | per-file cap on a catalog submission (64 MiB, matching publish-out). Over it: `413 PAYLOAD_TOO_LARGE` |
@@ -186,6 +192,22 @@ org-config. See [sharing](sharing.md#invite-policy).
 ```json
 "policy": {
   "invites": { "allow": "members", "domains": ["example.com"], "maxTtlHours": 168, "projectRoles": ["viewer", "editor"] }
+}
+```
+
+`policy.requests` is optional too, and unknown keys in it are refused at startup. Requests
+answer to the same rules as inviting: an approver may only grant what they could grant
+directly. lolly.ing runs with join requests on, the invitation lifetime at its 30-day
+default, and the password tick suggested for SUSE addresses:
+
+```json
+"instance": {
+  "name": "lolly.ing",
+  "inviteNote": "If your organisation blocks Google sign-in (for example @suse.com), use GitHub or email and password."
+},
+"policy": {
+  "invites": { "passwordDomains": ["suse.com"] },
+  "requests": { "join": true, "project": true, "ttlDays": 14, "joinOpenMax": 50 }
 }
 ```
 
@@ -298,9 +320,9 @@ Authelia, oauth2-proxy) states who the person is in request headers. See
 | `enabled` | `true` | per-IP token buckets on the auth, telemetry and link surfaces |
 | `trustedProxyHops` | `0` | how many reverse proxies to trust in `X-Forwarded-For`. `0` reads only the socket peer. Behind one ingress, set `1` |
 | `maxBuckets` | `50000` | bucket table cap |
-| `auth` | `capacity 10, refillPerSec 0.2` | sign-in attempts, including each email and password guess and each use of a password link |
+| `auth` | `capacity 10, refillPerSec 0.2` | sign-in attempts, including each email and password guess and each use of a password link, and the invite page's and refusal page's forms (`/api/auth/invite`, `/api/auth/request`) |
 | `telemetry` | `capacity 120, refillPerSec 4` | event ingest |
-| `link` | `capacity 30, refillPerSec 1` | signed-link resolution |
+| `link` | `capacity 30, refillPerSec 1` | signed-link resolution, including invite pages (`/l/invite/`) |
 
 ## `blobs`
 
@@ -394,6 +416,60 @@ relay never fails or slows a request. What gets sent, and to whom, is written up
 | `smtp.from` | - | the From address on every notification |
 | `smtp.user` | *unset* | AUTH PLAIN user; the password rides `LW_SMTP_PASSWORD`, never this file |
 | `webhook.url` | *unset* | one JSON POST per event, signed with `LW_WEBHOOK_SECRET` (required - an unsigned webhook is refused at boot) |
+| `people.email` | `false` | also email people notices: access requests and their answers and accepted invitations, which always reach the inbox of anyone with an account, and invitations and approved requests to join, for addresses with no account yet. Needs `smtp`. See below |
+| `people.fromName` | `instance.name` | the sender's display name on those emails, 1 to 60 characters on one line. An invitation is sent as "Andy via lolly.ing" |
+
+### Emailing people notices
+
+People notices go through one function (`server/src/notify/people.ts`), which writes the
+inbox message and, once email is on, also mails each recipient's verified address, or the
+address of an invitee or a person asking to join who has no account yet. Email is off by
+default, and every page and answer says so: the request page says the instance does not
+send email yet, and the console never shows "Emailed" for a mail that did not go.
+
+Email is on only when all three hold: `people.email` is `true`, `smtp` is set, and the
+server's mail sender can confirm that the relay accepted each message. The sender in this
+release sends and forgets, so it cannot confirm, and people notices stay inbox-only even
+with the first two set. Still to be built: that confirming sender; plain-text mails sent as
+"Andy via lolly.ing" from the `smtp.from` address, which never carry text a person wrote
+(such as a request note) and end with "Not expecting this? You can ignore this email." and
+a link to stop emails from the instance; and caps of 50 invitation emails a day per
+inviter, one email per address a day, and one per request to each approver. Once a release
+carries them, switching email on takes these steps:
+
+1. **Pick a provider** that gives you an SMTP relay on port 587 with STARTTLS and its own
+   DNS records, such as Postmark, or Amazon SES. The sender address needs no mailbox.
+2. **Configure** the relay in `instance.json` and redeploy (`deploy/vm/push.sh` for
+   lolly.ing):
+
+   ```json
+   "notify": {
+     "smtp": { "host": "<relay host>", "port": 587, "secure": false, "from": "no-reply@lolly.ing", "user": "<relay user or API token name>" },
+     "people": { "email": true, "fromName": "lolly.ing" }
+   }
+   ```
+
+   Put the relay password or token in `LW_SMTP_PASSWORD` in the server's environment
+   (`/opt/lolly-ing/.env` on the lolly.ing VM), never in the file. `secure: false`
+   with port 587 takes STARTTLS when the relay offers it; use `secure: true` only for
+   port 465.
+3. **Publish the DNS records** the provider shows, in the domain's DNS. For lolly.ing that
+   is Namecheap, Domain List > Manage > Advanced DNS, zone `lolly.ing`:
+
+   | Record | Host | Value |
+   |---|---|---|
+   | SPF (TXT) | `@` | `v=spf1 include:<provider SPF host> ~all`. A domain has one SPF record: if a `v=spf1` record exists already (Namecheap's mail forwarding adds `include:spf.efwd.registrar-servers.com`), add the provider's `include:` to that record, never publish a second |
+   | DKIM (TXT or CNAME) | `<selector>._domainkey` | exactly what the provider shows |
+   | Bounce domain | the provider's return-path host, for example `pm-bounces` (Postmark, a CNAME) or `mail` (SES custom MAIL FROM, an MX and a TXT) | what the provider shows; it lets SPF align with the From domain |
+   | DMARC (TXT) | `_dmarc` | `v=DMARC1; p=none; rua=mailto:andyfitz@gmail.com; adkim=s; aspf=r`. Move to `p=quarantine` after a clean week of reports |
+
+   No MX record is needed to send from `no-reply@`.
+4. **Check.** Wait until the provider shows the domain as verified. Then approve a request
+   to join from a spare address, or invite one, and read the delivered mail's headers:
+   they should show `spf=pass`, `dkim=pass` and `dmarc=pass`.
+
+Keep using **Copy invite message** after email is on: a message sent from your own account
+is the one a new person is most likely to trust.
 
 ## `siem`
 
