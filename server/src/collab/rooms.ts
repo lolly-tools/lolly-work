@@ -24,6 +24,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { PRESENCE_VERSION, readPresenceFrame, sanitizePresenceState } from '@lolly-tools/core/collab-presence-v1';
 import type { PresenceFrame, PresenceState } from '@lolly-tools/core/collab-presence-v1';
+import type { CanvasClaim, CanvasClaimTarget } from '@lolly-tools/core/canvas-interaction-v1';
+import { CanvasClaims, type ClaimAnswer } from './claims.ts';
 import {
   DEFAULT_GEOMETRY_FIELDS,
   ReferenceCanvasDoc,
@@ -141,6 +143,8 @@ export type ServerFrame =
       t: 'join-ack';
       presenceVersion?: number;
       receipts?: number;
+      interactionVersion?: number;
+      claims?: CanvasClaim[];
       checkpoint?: CanvasCheckpoint;
       roster: RosterEntry[];
       docState: WireDocState;
@@ -158,6 +162,8 @@ export type ServerFrame =
   | { t: 'peer-role'; id: string; role: MemberRole }
   | { t: 'ops'; ops: CanvasOp[]; from: string }
   | { t: 'presence'; frame: PresenceFrame | PresenceState; from: string }
+  | { t: 'claims'; claims: CanvasClaim[] }
+  | { t: 'claim-result'; requestId: string; claim?: CanvasClaim; reason?: string; blockedBy?: string }
   | { t: 'receipt'; batchId: string; durableRevision: number; acceptedIds: string[]; rejectedIds: string[]; checkpoint?: CanvasCheckpoint; serverClock?: number }
   | { t: 'error'; code: string; message: string; inputs?: string[] };
 
@@ -171,6 +177,7 @@ export interface RoomMember {
    *  it would mis-route (`isOpSendableTo`). */
   readonly opVersion: string;
   readonly presenceVersion?: number;
+  readonly interactionVersion?: number;
   /** Set when this seat is a GUEST admitted by a guest-edit link (plans/02 §8,
    *  plans/14 §6) rather than a signed-in member, and carrying the link id - 
    *  which IS a guest's principal id (`iam/sessions.ts` `guestActor`).
@@ -423,6 +430,10 @@ export class Room implements RoomWriteback {
 
   private doc: ReferenceCanvasDoc;
   private readonly members = new Map<string, RoomMember>();
+  private readonly claims = new CanvasClaims(claims => {
+    for (const peer of this.members.values()) if (peer.interactionVersion === 1) peer.send({ t: 'claims', claims });
+  });
+  private readonly claimTimer = setInterval(() => this.claims.expire(), 1_000);
   /** When each currently-seated member joined - `snapshotForAdmin`'s only use.
    *  Cleared on leave, same as `presenceOf`: an admin snapshot is about who is
    *  in the room NOW, not a join-history log this module has no business
@@ -487,6 +498,7 @@ export class Room implements RoomWriteback {
     this.baseRev = hydrated.rev;
     this.recovered = hydrated.recovered;
     this.doc = new ReferenceCanvasDoc('lw:room');
+    this.claimTimer.unref();
     const seed = seedOpsFromInputs(hydrated.inputs);
     for (const op of seed.ops) {
       this.doc.apply(op);
@@ -551,12 +563,13 @@ export class Room implements RoomWriteback {
   }
   private loseLease(): void {
     this.closed = true;
+    clearInterval(this.claimTimer); this.claims.clear();
     clearInterval(this.leaseTimer);
     for (const member of this.members.values()) member.disconnect?.();
   }
 
   /** Serialize across ALL connections. Nothing is applied or broadcast until the database commits. */
-  applyBatch(from: RoomMember, batchId: string, ids: string[], ops: CanvasOp[], accepted: ReadonlySet<CanvasOp>): Promise<void> {
+  applyBatch(from: RoomMember, batchId: string, ids: string[], ops: CanvasOp[], accepted: ReadonlySet<CanvasOp>, claimId?: string): Promise<void> {
     const bytes = JSON.stringify(ops).length * 2;
     if (this.pendingBatches >= 32 || this.pendingBytes + bytes > 4 * 1024 * 1024) return Promise.reject(new Error('collab-room-busy'));
     this.pendingBatches++; this.pendingBytes += bytes;
@@ -572,6 +585,11 @@ export class Room implements RoomWriteback {
       for (const record of records) {
         const prior = previous.get(record.id);
         if (prior && prior.digest !== record.digest) throw new Error('collab-receipt-conflict');
+      }
+      const novelOps = ops.filter((_, i) => !previous.has(ids[i]!));
+      if (novelOps.length && !this.claims.allows(from.id, novelOps, claimId)) {
+        for (const record of records) if (!previous.has(record.id)) record.accepted = false;
+        from.send({ t: 'error', code: 'collab-claim-lost', message: 'Another edit owns this object. Keep a recovery copy before retrying.' });
       }
       // Admission was checked before queuing. Reserve capacity again in the
       // serialized transaction so concurrent batches cannot exceed recovery caps.
@@ -660,9 +678,26 @@ export class Room implements RoomWriteback {
     return n;
   }
 
+  /** Claim changes share the document queue, so a grant starts after earlier durable edits. */
+  requestClaim(from: RoomMember, action: 'acquire' | 'renew' | 'release', target?: CanvasClaimTarget, id?: string): Promise<ClaimAnswer> {
+    const run = this.writes.then(() => {
+      if (this.closed || this.members.get(from.id) !== from) return { reason: 'claim-lost' };
+      if (action === 'release') { this.claims.release(from.id, id); return { reason: 'released' }; }
+      if (action === 'renew') return this.claims.renew(from, id ?? '');
+      if (!target) return { reason: 'invalid-target' };
+      const state = this.snapshot(), boxes = state.collections?.[target.collection]?.boxes;
+      if (!boxes || target.ids.some(id => !Object.hasOwn(boxes, id))
+        || target.param && !Object.hasOwn(state.params, target.param)) return { reason: 'target-gone' };
+      return this.claims.acquire(from, target);
+    });
+    this.writes = run.then(() => {}, () => {});
+    return run;
+  }
+
   demote(member: RoomMember): void {
     if (this.members.get(member.id) !== member || member.role === 'observer') return;
     member.role = 'observer';
+    this.claims.release(member.id);
     this.broadcast({ t: 'peer-role', id: member.id, role: 'observer' });
   }
 
@@ -732,6 +767,7 @@ export class Room implements RoomWriteback {
    *  arrival that sees itself in the roster renders an orphan ghost of itself
    *  (plans/100 §4.7). */
   join(member: RoomMember): {
+    claims: CanvasClaim[];
     roster: RosterEntry[];
     docState: WireDocState;
     checkpoint: CanvasCheckpoint;
@@ -747,6 +783,7 @@ export class Room implements RoomWriteback {
     const you = this.entry(member);
     this.broadcast({ t: 'peer-join', member: you }, member.id);
     return {
+      claims: this.claims.list(),
       roster,
       docState: this.snapshot(),
       checkpoint: this.doc.checkpoint(),
@@ -759,6 +796,7 @@ export class Room implements RoomWriteback {
 
   leave(memberId: string): void {
     if (!this.members.delete(memberId)) return;
+    this.claims.release(memberId);
     this.joinedAtOf.delete(memberId);
     this.presenceOf.delete(memberId);
     this.broadcast({ t: 'peer-leave', id: memberId });
@@ -829,6 +867,7 @@ export class Room implements RoomWriteback {
   }
 
   private recordOp(op: CanvasOp, userId: string): void {
+    if (op.k === 'remove') this.claims.removed([op]);
     this.note(op);
     const seen = this.highestClock.get(op.origin.client);
     if (seen === undefined || op.origin.clock > seen) this.noteClock(op.origin.client, op.origin.clock);
@@ -848,8 +887,12 @@ export class Room implements RoomWriteback {
    */
   relayPresence(from: RoomMember, raw: unknown): void {
     const previous = this.presenceOf.get(from.id);
-    const frame = readPresenceFrame(raw, { ...from, from: from.id, epoch: from.id, seq: (previous?.seq ?? 0) + 1 });
+    let frame = readPresenceFrame(raw, { ...from, from: from.id, epoch: from.id, seq: (previous?.seq ?? 0) + 1 });
     if (!frame || previous && frame.seq <= previous.seq) return;
+    if (frame.state?.preview && !this.claims.preview(from.id, frame.state.preview)) {
+      const { preview: _preview, ...state } = frame.state;
+      frame = { ...frame, state };
+    }
     this.presenceOf.set(from.id, frame);
     for (const peer of this.members.values()) {
       if (peer.id === from.id) continue;
@@ -888,6 +931,7 @@ export class Room implements RoomWriteback {
    */
   async quiesce(): Promise<QuiesceResult | null> {
     this.closed = true;
+    clearInterval(this.claimTimer); this.claims.clear();
     clearInterval(this.leaseTimer);
     if (this.store) { await this.writes; await this.store.releaseCollab(this.sessionId, this.owner); return { written: this.opTotal > 0, rev: this.durableRevision }; }
     const persistence = this.persistence;

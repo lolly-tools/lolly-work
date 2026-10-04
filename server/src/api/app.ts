@@ -1,3 +1,4 @@
+import { registerCommentRoutes } from '../comments/routes.ts';
 /**
  * The lolly-work HTTP app - auth, org-config, telemetry, inbox, links,
  * catalog serving, fleet. Plain (req, res) handler (see router.ts) so it
@@ -8443,6 +8444,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
     return { session, project, access };
   };
+
+  registerCommentRoutes(router, { config, store, memberOf, audit, sessionFor: collabSessionFor });
 
   // Invite autocomplete. Read-access only - an OBSERVER may look up who else
   // could watch, which is the same disclosure they already get from the room's

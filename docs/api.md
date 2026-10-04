@@ -625,6 +625,42 @@ the design system to switch to. On a pack with no brand profiles there is
 nothing to compare a name against, so only `dsi` is checked. Sending neither
 param joins as before; sending one of the two checks only that one.
 
+Clients can negotiate `interactionVersion: 1` in their join frame. Transform and
+text claims belong to the live room, expire after ten seconds without renewal and
+end on disconnect, demotion or object deletion. Acquisition covers all requested
+objects atomically. Previews use document coordinates and never write the session.
+Durable operations carry their claim ID; conflicting or expired claims are refused.
+Clients that do not negotiate this version continue to use the existing protocol.
+
+### Canvas comments
+
+Comments survive after the live room closes and have their own revisions. Every
+request requires current session and comment read access. Service accounts cannot
+post as people. `policy.comments.enabled: false` disables review on the instance.
+
+| Route | Result |
+|---|---|
+| `GET /api/v1/sessions/:id/comments` | Threads and current comment permissions |
+| `POST /api/v1/sessions/:id/comments` | Create a thread using `id`, `messageId`, `anchor` and `body` |
+| `POST /api/v1/sessions/:id/comments/:threadId` | `reply`, `edit`, `delete`, `resolve` or `reopen`, with the current thread `revision` |
+
+Viewers may comment when `comment.create` permits it, without gaining artwork
+editing rights. People may edit or delete their own messages with `comment.edit`.
+Editors with `comment.resolve` may resolve any thread; managers with
+`comment.moderate` may delete other messages. Authors may resolve their own threads.
+Archived projects permit reading only. Access removal takes effect on every request.
+
+Point anchors contain `kind: "canvas"`, a surface ID and document-space `x`/`y`.
+Object anchors contain `kind: "object"`, a collection, stable object ID, surface ID
+and normalized `x`/`y` between zero and one. Deleting the object leaves its thread
+findable; restoring that stable ID restores the pin. Creation requires a live object.
+Retrying the same accepted thread or reply ID is idempotent, including after its
+object is deleted. Conflicting IDs and stale revisions return `409`.
+
+Limits are 100 threads per session, 50 messages per thread, 4,000 characters per
+message and 64 KB per stored thread. Message bodies are plain text. Attribution and
+timestamps come from the server; audit records contain identifiers, not message text.
+
 ## Telemetry, activity, audit, fleet, system
 
 | Route | Action |
