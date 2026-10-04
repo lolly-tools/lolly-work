@@ -471,7 +471,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   };
   const cmsBytes = (groups: string[]) => async (ref: HostedProviderRef): Promise<{ bytes: Uint8Array; mime: string; id?: string } | null> => {
     await providersReady;
-    const rec = await store.getProvider(ref.scope);
+    const rec = await store.getProvider(ref.scope, { includeFragment: false });
     if (!rec || !rec.enabled || !callerSeesProvider(rec, groups)) return null;
     if (!ref.path) throw new Error('cms provider refs require a remote asset id');
     const provider = federation.instantiate(rec);
@@ -580,7 +580,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       const [head, cursor] = await Promise.all([auditHead(store, auditMacKey), store.getSiemCursor()]);
       gauges.push({ name: 'lw_siem_lag', help: 'Audit events not yet confirmed by the SIEM receiver.', type: 'gauge', value: Math.max(0, head.seq - cursor) });
     }
-    for (const p of await store.listProviders()) {
+    for (const p of await store.listProviders({ includeFragment: false })) {
       gauges.push({ name: 'lw_provider_enabled', help: 'Catalog provider enabled (1) or disabled (0).', type: 'gauge', labels: { provider: p.id, kind: p.kind }, value: p.enabled ? 1 : 0 });
       gauges.push({ name: 'lw_provider_assets', help: 'Assets last synced from a catalog provider.', type: 'gauge', labels: { provider: p.id }, value: p.state?.assetCount ?? 0 });
       gauges.push({ name: 'lw_provider_last_error', help: 'Provider last sync recorded an error (1) or not (0).', type: 'gauge', labels: { provider: p.id }, value: p.state?.lastError ? 1 : 0 });
@@ -4708,7 +4708,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         const assetId = extAssetId(pid, rid);
         if (seen.has(assetId)) continue;
         seen.add(assetId);
-        const rec = await store.getProvider(pid);
+        const rec = await store.getProvider(pid, { includeFragment: false });
         fragments ??= await federation.fragments();
         const entry = fragments.find((f) => f.rec.id === pid)?.fragment.assets.find((a) => a.id === assetId);
         const formats = (entry?.formats ?? []) as Array<{ url?: string; filename?: string }>;
@@ -4945,7 +4945,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       if (parts.length !== 4) return sendError(res, 404, 'NOT_FOUND', 'bad federated asset path');
       const [, providerId, remoteId, formatRef] = parts as [string, string, string, string];
       await providersReady;
-      const rec = await store.getProvider(providerId);
+      const rec = await store.getProvider(providerId, { includeFragment: false });
       if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such provider');
       if (!rec.enabled) return sendError(res, 410, 'PROVIDER_DISABLED', 'this provider is disabled');
       if (!callerSeesProvider(rec, user?.groups ?? [])) return sendError(res, 403, 'FORBIDDEN', 'not visible to your groups');
@@ -5152,7 +5152,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       const [, providerId] = assetId.split('/');
       if (!providerId) return false;
       await providersReady;
-      const rec = await store.getProvider(providerId);
+      const rec = await store.getProvider(providerId, { includeFragment: false });
       if (!rec || !rec.enabled || !callerSeesProvider(rec, user.groups)) return false;
       return Boolean(await federatedEntry(providerId, assetId));
     }
@@ -5234,7 +5234,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       const [, providerId, remoteId] = assetId.split('/');
       if (!providerId || !remoteId) return refuse(404, 'NOT_FOUND', 'bad federated asset id');
       await providersReady;
-      const rec = await store.getProvider(providerId);
+      const rec = await store.getProvider(providerId, { includeFragment: false });
       if (!rec) return refuse(404, 'NOT_FOUND', 'no such provider');
       if (!rec.enabled) return refuse(410, 'PROVIDER_DISABLED', 'this provider is disabled');
       if ((await catalogBytesGate(assetId, true)).blocked) return goneSource();
@@ -5997,7 +5997,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       if (id.startsWith(EXT_PREFIX)) {
         const [, pid, rid] = id.split('/');
         if (!pid || !rid) return sendError(res, 400, 'INVALID_INPUT', 'bad federated asset id');
-        const rec = await store.getProvider(pid);
+        const rec = await store.getProvider(pid, { includeFragment: false });
         if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such provider');
         if (!rec.enabled) return sendError(res, 410, 'PROVIDER_DISABLED', 'this provider is disabled');
         const frags = await federation.fragments();
@@ -7497,7 +7497,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // fragment hasn't picked up yet. Bounded per provider; failures reported,
     // never fatal.
     const missed: string[] = [];
-    const live = (await store.listProviders()).filter((rec) =>
+    const live = (await store.listProviders({ includeFragment: false })).filter((rec) =>
       rec.enabled && callerSeesProvider(rec, user.groups));
     await Promise.all(live.map(async (rec) => {
       try {

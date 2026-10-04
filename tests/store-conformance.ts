@@ -851,6 +851,16 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.equal(p3?.state.assetCount, 2, 'state survives config upsert');
   assert.equal(p3?.state.fragment?.hash, 'h1');
 
+  const metadata = await store.getProvider('bf', { includeFragment: false });
+  assert.equal(metadata?.state.fragment, undefined);
+  assert.equal(metadata?.state.assetCount, 2);
+  assert.equal(metadata?.credentialFingerprint, p3?.credentialFingerprint);
+  assert.deepEqual(metadata?.credentialCiphertext, p3?.credentialCiphertext);
+  assert.deepEqual(metadata?.exposure, p3?.exposure);
+  const listedMetadata = (await store.listProviders({ includeFragment: false })).find(p => p.id === 'bf');
+  assert.deepEqual(listedMetadata, metadata);
+  assert.equal((await store.getProvider('bf'))?.state.fragment?.hash, 'h1', 'metadata reads preserve the stored fragment');
+
   await store.putProviderCredential('bf', null);
   assert.equal((await store.getProvider('bf'))?.credentialFingerprint, undefined, 'credential cleared');
   assert.ok((await store.listProviders()).some((p) => p.id === 'bf'));

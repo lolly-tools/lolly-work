@@ -180,11 +180,13 @@ export function createFederation(deps: FederationDeps): Federation {
     } catch (err) {
       const prev = cache.get(rec.id);
       if (prev) cache.set(rec.id, { ...prev, stale: true });
+      const state = (await deps.store.getProvider(rec.id))?.state ?? rec.state;
+      const lastGood = state.fragment ?? prev?.fragment;
       await deps.store.putProviderState(rec.id, {
-        ...(rec.state.lastSyncAt ? { lastSyncAt: rec.state.lastSyncAt } : {}),
+        ...(state.lastSyncAt ? { lastSyncAt: state.lastSyncAt } : {}),
         lastError: (err as Error).message,
-        assetCount: rec.state.assetCount,
-        ...(rec.state.fragment ? { fragment: rec.state.fragment } : {}),
+        assetCount: state.assetCount,
+        ...(lastGood ? { fragment: lastGood } : {}),
       });
       throw err;
     }
@@ -198,7 +200,7 @@ export function createFederation(deps: FederationDeps): Federation {
 
   const fragments: Federation['fragments'] = async () => {
     const out: Array<{ rec: ProviderRecord; fragment: ProviderFragment; stale: boolean }> = [];
-    for (const rec of await deps.store.listProviders()) {
+    for (let rec of await deps.store.listProviders({ includeFragment: false })) {
       if (!rec.enabled) continue;
       const ttlMs = (rec.sync.ttlSeconds ?? DEFAULT_TTL_SECONDS) * 1000;
       const cached = cache.get(rec.id);
@@ -207,6 +209,11 @@ export function createFederation(deps: FederationDeps): Federation {
         out.push({ rec, fragment: cached.fragment, stale: cached.stale });
         continue;
       }
+      // Only a cold fragment cache needs its persisted index. Recheck the
+      // provider after the second read in case it was disabled or removed.
+      const full = await deps.store.getProvider(rec.id);
+      if (!full?.enabled) continue;
+      rec = full;
       // Cold cache: last-good from the store if it has one (serve stale,
       // refresh behind), else a blocking first sync (best-effort).
       if (rec.state.fragment) {

@@ -1142,11 +1142,19 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       return [...submitQuota.values()];
     },
 
-    async listProviders() {
-      return [...providers.values()];
+    async listProviders(options) {
+      return [...providers.values()].map(rec => {
+        if (options?.includeFragment !== false) return rec;
+        const { fragment: _fragment, ...state } = rec.state;
+        return { ...rec, state };
+      });
     },
-    async getProvider(id) {
-      return providers.get(id) ?? null;
+    async getProvider(id, options) {
+      const rec = providers.get(id);
+      if (!rec) return null;
+      if (options?.includeFragment !== false) return rec;
+      const { fragment: _fragment, ...state } = rec.state;
+      return { ...rec, state };
     },
     async putProvider(rec) {
       const prev = providers.get(rec.id);
