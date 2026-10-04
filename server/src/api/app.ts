@@ -53,6 +53,7 @@ import { invitePageUrl, mintInviteToken } from '../access/invite-token.ts';
 import type { RequestDeps } from '../access/types.ts';
 import type { AskIdentity, AskTokenPayload } from '../access/types.ts';
 import { registerInviteRoutes, type InviteRef } from '../access/invite-routes.ts';
+import { registerProjectInviteLinks } from '../access/project-invite-links.ts';
 import { relativeTime, utcDay } from '../access/pages.ts';
 import { DECLINE_SHOWN_DAYS, closeRequestsForEmail, requestStateFor } from '../access/requests.ts';
 import { acceptedNotice, noticeContext, skippedNotice, welcomeNotice } from '../access/messages.ts';
@@ -2454,6 +2455,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   router.add('GET', '/l/:id', async (req, res, ctx) => {
     const link = await store.getLink(ctx.params.id as string);
     if (!link) return sendError(res, 404, 'NOT_FOUND', 'no such link');
+    if (link.kind === 'project-invite') return sendError(res, 404, 'NOT_FOUND', 'open the project invitation address');
     const sig = ctx.url.searchParams.get('s') ?? '';
     const pw = ctx.url.searchParams.get('pw');
     let passwordOk = true;
@@ -3501,7 +3503,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const links = wantAll ? await store.listAllLinks() : await store.listLinksBy(user.id);
     const now = Math.floor(Date.now() / 1000);
     sendJson(res, 200, {
-      links: links.map((l) => ({
+      links: links.filter(l => l.kind !== 'project-invite').map((l) => ({
         id: l.id, kind: l.kind, target: l.target, createdBy: l.createdBy, createdAt: l.createdAt,
         url: `${config.instance.baseUrl}${linkPath(l, secrets.link)}`,
         expiresAt: new Date(l.exp * 1000).toISOString(), protected: Boolean(l.pwHash),
@@ -8327,6 +8329,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // so the closures it takes already exist.
   registerAccessRoutes(router, {
     ...accessDeps, memberOf, projectAccessOf, shareProjectWith, issueInvitation, invitationView, inviteLink,
+  });
+  registerProjectInviteLinks(router, {
+    store, config, memberOf, projectGate, projectAccessOf, shareProjectWith, issueInvitation, audit,
+    linkSecret: secrets.link, linkVerify, formToken, formTokenOk,
+    readForm: async req => { const form = await readSignInBody(req); return form && !form.json ? form : null; },
   });
 
   // POST /sessions/bulk - multi-edit: merge `set` by EXACT input id into every
