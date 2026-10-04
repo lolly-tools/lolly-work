@@ -32,7 +32,7 @@ test('a font HEAD probe has the GET content type and size but sends no bytes', a
   assert.equal(get.status, 200); assert.deepEqual(Buffer.from(await get.arrayBuffer()), bytes);
   const head = await fetch(base + '/catalog/fonts/ttf/Test.ttf', {method: 'HEAD', headers: {cookie}});
   assert.equal(head.status, 200); assert.equal(head.headers.get('content-type'), 'font/ttf');
-  assert.equal(head.headers.get('content-length'), get.headers.get('content-length')); assert.equal((await head.arrayBuffer()).byteLength, 0);
+  assert.equal(Number(head.headers.get('content-length')), bytes.length); assert.equal((await head.arrayBuffer()).byteLength, 0);
 });
 
 test('font probes retain sign-in gating and missing-file refusal', async () => {

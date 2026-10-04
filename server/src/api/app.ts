@@ -5098,8 +5098,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         }
       }
     }
-    res.writeHead(200, { 'content-type': contentType(rel), 'cache-control': 'private, no-cache' });
-    res.end(bytes);
+    res.writeHead(200, {
+      'content-type': contentType(rel), 'cache-control': 'private, no-cache',
+      ...(req.method === 'HEAD' ? { 'content-length': String(bytes.length) } : {}),
+    });
+    res.end(req.method === 'HEAD' ? undefined : bytes);
   };
   router.add('GET', '/catalog/*', serveCatalog);
   // Font availability probes follow the same admission and lifecycle gates as GET.
