@@ -117,6 +117,6 @@ test('materializeAsset snapshots a search-only ref (no listAssets scan) via the 
   assert.equal(result.extId, 'ext/pp/f_p_b');
   const insts = await deps.store.listInstanceAssets();
   assert.equal(insts.length, 1);
-  assert.equal(insts[0]!.entry.type, 'image', 'board → image via typeMap');
+  assert.equal(insts[0]!.entry.type, 'raster', 'legacy image mapping becomes a usable PNG catalog type');
   assert.equal(insts[0]!.origin?.remoteId, 'f_p_b');
 });
