@@ -1,17 +1,17 @@
 {
-  "generatedFrom": "e572e4063244f8a68b47e46a972e9311be86219e",
+  "generatedFrom": "51cd47bb51e55f43a33b8de48ab602bfdd23a243",
   "note": "Pin manifest - a consumer verifies vendored content against contentHash. tarballSha256 is informational (gzip is not reproducible).",
   "core": {
     "version": "1.0.0",
     "tarball": "lolly-tools-core-1.0.0.tgz",
-    "tarballSha256": "fe77a03c1b4df5ebbbd9c0233bb59e091adefeeb6350f00a222ce965fd8f687f",
-    "contentHash": "8246996d59832a0b246457fe7dfe9b22a2dda2c329787f7799970c3a824231ba"
+    "tarballSha256": "3357df6cbc591846234fae893fad7eae2bf759f8f6aecb63981550edc21db8f2",
+    "contentHash": "242b9e4901b6f9a98e9de02d011708fffb09863c95c318bab3fff77f050f774b"
   },
   "engine": {
-    "version": "1.243.0",
-    "tarball": "lolly-engine-1.243.0.tgz",
-    "tarballSha256": "d693aa61b3097fc46737db143c7846fa984f1f35bb13385c3d4bef7d703305cf",
-    "contentHash": "5c53121708870545704dc3c660de3a3e163ae88e452e184cb77fd8e8bfa00413"
+    "version": "1.244.0",
+    "tarball": "lolly-engine-1.244.0.tgz",
+    "tarballSha256": "705bd52de22b560274e184038289ffea04e9bdc7872fdc68424e258a2023914e",
+    "contentHash": "95db6c71d6c0b482068b3686ebda4724a428e1c45f44ec935147eba59a9862ac"
   },
   "schemas": {
     "asset-ref.schema.json": "e07d85d6db6c3a7c88190c86a4779707e2b073ce17dbaa9bb355ed2c015fcdae",
@@ -22,6 +22,11 @@
     "canonical-inputs.json": "8747d7dea7721ae0a6a0fce9e58ce188dd86faab94c44a15304fc70042095e22",
     "canvas-op.schema.json": "e1acaf0c98b875012104b49582994bf5b5bdb9aa3fc3e210a0d9e3c527f9453d",
     "chart-v1.schema.json": "7bc73ce09be779f9ba04ad7c2a0f872f5c663dc39558c81a74bf8295b272e822",
+    "check-report-v1.schema.json": "907111ca5c75d11b72e90c087e884a9ca2312e526125b9db1953641a0c341561",
+    "content-inventory-v1.schema.json": "fc6e0a75509e4c6fb6b3709be65fb600528b7e3064ad6be25e21246879b349c6",
+    "design-authoring-v1.schema.json": "0a41529dc27ef1eb98183c5851b60dad9965e47ad1b23d1fa5bcb53991fdaa3f",
+    "design-compose-v1.schema.json": "97af1b80fd2e82fe4470ca23735ebc7b8bade0c75beb2faf85f559d8d8c875cb",
+    "design-package-v1.schema.json": "07177ea87ede6a30cebf3ffced43738a35505c01b5c099ea111c68e4f0729239",
     "design-tool-v1.schema.json": "5a1d4217569e09b113f11905fb8127e8d5666cc0ee2d1b6cc8f7a0e1b61662e4",
     "emoji-pack-v1.schema.json": "48b5dbaaddd8269f242544157cf542519f76b50384745bee5bf0aa45bb92de89",
     "emoji-source-records-v1.schema.json": "fa7a2f9bbf0433ad901d832bbf5f817bf6142fb433a7c5be8a418ce426911c30",
@@ -29,17 +34,18 @@
     "file-operation-report-v1.schema.json": "f95969fd3f0f5099ef642679e079de1eec7432b73275dfc1772e25a79b0447d7",
     "file-operation-request-v1.schema.json": "20ca45779c17949e4d5a8482209106fd9be768ff89ee71127624860d8d2c13e2",
     "ratecard.schema.json": "e164d8ce234279c04877511cb9673cc721d0118647cdae0401246c8f35d0b777",
-    "rebrand-census-v1.schema.json": "00808d89ef1a1015936b932cc3eb9153bbd1f95465225d15ce4f3b394c684b94",
+    "rebrand-census-v1.schema.json": "174fca1471739bd5bd01fae50c1a95a07326ed2f51580bac2ee39e04457370c7",
     "rebrand-compiled-v1.schema.json": "b931daa79f5c03f5d256371afef07f467da6416991bbf62704c935cf9018d6e5",
     "rebrand-plan-v1.schema.json": "381b0cccffc71b408fdc706dbee683d3c67a3d9b894146338270575f351a8a3a",
-    "rebrand-project-v1.schema.json": "3dbbc694449834b69887ec0963cc4423ec3cb2c5bd94d2093cafebebcb7e437f",
+    "rebrand-project-v1.schema.json": "addc344fa5cb2836350ebeddb726ecf64724f61ec3ed345b2541aabe800b651d",
     "rebrand-report-v1.schema.json": "4b6edd27fe17a91eed3e5fd3fb8e2701192998192462acfa14e6501ff17dc002",
-    "rebrand-source-v1.schema.json": "6a9eff67be049eba68c4951097a5dc079d8b2d34b08a75eda850881e6fe49a91",
+    "rebrand-source-v1.schema.json": "40cfeab6a9471d72db769e797e25c99fdc06cb786c4a89a3d6f4ad94ea5a89f5",
     "section-vocabulary.json": "0c0cc7684863166daba64b5f744ff6c583765880e18aeece8465ea20efd475ba",
     "slide-master-v1.schema.json": "b925b7fb859a33dd8be573d1fae54d1ae88c60e4e713b77233c8bd9f4bddd30b",
     "text-document-v1.schema.json": "660b2108ee2dcd5a3e15ada040205a930b58faa0b101a23341892d59bf4ceeff",
     "text-frame-v1.schema.json": "4da9745015da8dfd75e60f7e15300604eeedd4902bca7a049d063a396455f069",
-    "tokens.schema.json": "be8a2f388d451f778aeaf334c903556689e3897e7523e6c31b7c428040673384",
+    "text-measure-v1.schema.json": "6a3b17fdc8d7d8769d723724b73dabd3d5d74c77df577480a9c42cfcb0a0e976",
+    "tokens.schema.json": "012f3050656230bb609eb841c6a7e42a3cfa4088c7c3b938a561a81d3fa13dcc",
     "tool.schema.json": "2172f8c2e5568437ea8e0564c0522ad9dfde5e6d22809bb429aa85eef66f9db9"
   }
 }
