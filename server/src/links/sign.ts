@@ -9,9 +9,10 @@
  */
 import { canonicalJson, hmac, macEquals, sha256Hex } from '../lib/crypto.ts';
 
-export type LinkKind = 'share' | 'embed' | 'download' | 'guest-edit';
+export type LinkKind = 'share' | 'embed' | 'download' | 'guest-edit' | 'project-invite';
 
 export interface LinkTarget {
+  projectInvite?: { projectId: string; role: 'editor' | 'viewer'; allowNewPeople: boolean };
   toolId?: string;
   sessionId?: string;
   /**
@@ -81,6 +82,7 @@ export const DEFAULT_TTL_SEC: Record<LinkKind, number> = {
   embed: 90 * 24 * 3600,
   download: 24 * 3600,
   'guest-edit': 72 * 3600,
+  'project-invite': 7 * 24 * 3600,
 };
 
 function sigBase(id: string, kind: LinkKind, exp: number, target: LinkTarget): string {
@@ -92,7 +94,7 @@ export function signLink(link: Pick<LinkRecord, 'id' | 'kind' | 'exp' | 'target'
 }
 
 export function linkPath(link: Pick<LinkRecord, 'id' | 'kind' | 'exp' | 'target'>, secret: string): string {
-  return `/l/${link.id}?s=${signLink(link, secret)}`;
+  return `/l/${link.kind === 'project-invite' ? 'join/' : ''}${link.id}?s=${signLink(link, secret)}`;
 }
 
 export type LinkStatus = 'ok' | 'expired' | 'revoked' | 'bad-signature' | 'password-required';

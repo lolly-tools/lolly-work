@@ -5,7 +5,7 @@
  * Every invitation, and every project entry on it, has a link at
  * `/l/invite/<token>`. The token names the invitation, the project the link
  * was made for (none for a workspace link) and the invitation's link
- * version, and is signed with the link secret:
+ * version, optionally a document destination, and is signed with the link secret:
  *
  *   body  = base64url(invitationId + "\n" + (projectId ?? "") + "\n" + version)
  *   token = body + "." + base64url(HMAC-SHA256(secret, "lw/invite." + body))
@@ -29,6 +29,8 @@ export interface InviteLinkRef {
   projectId: string | null;
   /** The invitation's `linkVersion` when the link was minted. */
   version: number;
+  /** A document in this project to open after accepting the invitation. */
+  sessionId?: string;
 }
 
 /** Longest token `readInviteToken` looks at. A real one is about 120 characters. */
@@ -42,7 +44,7 @@ const macFor = (body: string, secret: string): string => hmac(`lw/invite.${body}
 
 /** Mint the token for one entry of an invitation. `secret` is the current link secret. */
 export function mintInviteToken(ref: InviteLinkRef, secret: string): string {
-  const body = b64u(`${ref.invitationId}\n${ref.projectId ?? ''}\n${ref.version}`);
+  const body = b64u(`${ref.invitationId}\n${ref.projectId ?? ''}\n${ref.version}${ref.sessionId ? `\n${ref.sessionId}` : ''}`);
   return `${body}.${macFor(body, secret)}`;
 }
 
@@ -50,7 +52,7 @@ export function mintInviteToken(ref: InviteLinkRef, secret: string): string {
  * Read a token back, or null for anything that is not one this server
  * signed: too long, a character outside base64url and ".", a bad MAC under
  * every key in `secrets` (current first, then the previous one during a
- * rotation), or a body that is not exactly three well-formed lines. Never
+ * rotation), or a body without three well-formed lines and an optional document id. Never
  * throws. Whether the invitation still exists, and still has this version,
  * is the caller's question.
  */
@@ -62,10 +64,12 @@ export function readInviteToken(token: string, secrets: readonly string[]): Invi
   if (!body || !mac) return null;
   if (!secrets.some((k) => macEquals(mac, macFor(body, k)))) return null;
   const lines = b64uDecode(body).toString('utf8').split('\n');
-  if (lines.length !== 3) return null;
+  if (lines.length !== 3 && lines.length !== 4) return null;
   const [invitationId, projectId, version] = lines as [string, string, string];
   if (!ID.test(invitationId) || (projectId !== '' && !ID.test(projectId)) || !VERSION.test(version)) return null;
-  return { invitationId, projectId: projectId || null, version: Number(version) };
+  const sessionId = lines[3];
+  if (sessionId !== undefined && (!projectId || !ID.test(sessionId))) return null;
+  return { invitationId, projectId: projectId || null, version: Number(version), ...(sessionId ? { sessionId } : {}) };
 }
 
 /** The invite page's address for a token. */

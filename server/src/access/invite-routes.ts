@@ -39,7 +39,7 @@ import type { AskIdentity, AskTokenPayload, RequestDeps } from './types.ts';
 
 /** The invitation a sign-in started from an invite page carries through the
  *  IdP, inside the signed `lw/state` box: invitation, project, link version. */
-export interface InviteRef { i: string; p: string | null; v: number }
+export interface InviteRef { i: string; p: string | null; v: number; s?: string }
 
 /** A sign-in the workspace offers (`idpProviders()` in api/app.ts). */
 export interface ProviderEntry { id: string; name: string; kind: 'oidc' | 'github' | 'password' }
@@ -131,6 +131,7 @@ interface InviteFacts {
   project: ProjectRecord | null;
   inviterPrincipal: string;
   inviter: string | null;
+  sessionId?: string;
 }
 
 export function registerInviteRoutes(router: ReturnType<typeof createRouter>, kit: InviteRoutesKit): InvitePages {
@@ -145,12 +146,12 @@ export function registerInviteRoutes(router: ReturnType<typeof createRouter>, ki
   const sendExpired = (res: ServerResponse): void => send(res, 403, requestExpiredHtml(workspace));
 
   /** The invitation behind a token, or null for every kind of dead link. */
-  const load = async (token: string): Promise<{ inv: InvitationRecord; projectId: string | null } | null> => {
+  const load = async (token: string): Promise<{ inv: InvitationRecord; projectId: string | null; sessionId?: string } | null> => {
     const ref = readInviteToken(token, kit.linkVerify);
     if (!ref) return null;
     const inv = await store.getInvitation(ref.invitationId);
     if (!inv || inv.revokedAt || inv.linkVersion !== ref.version) return null;
-    return { inv, projectId: ref.projectId };
+    return { inv, projectId: ref.projectId, ...(ref.sessionId ? { sessionId: ref.sessionId } : {}) };
   };
 
   /** A person's name, never their address; null for a principal that is not an account. */
@@ -159,12 +160,13 @@ export function registerInviteRoutes(router: ReturnType<typeof createRouter>, ki
     return user ? nameWithoutEmail(user) : null;
   };
 
-  const factsFor = async (inv: InvitationRecord, projectId: string | null): Promise<InviteFacts> => {
+  const factsFor = async (inv: InvitationRecord, projectId: string | null, sessionId?: string): Promise<InviteFacts> => {
     const entry = projectId ? (inv.projects ?? []).find((p) => p.projectId === projectId) ?? null : null;
     const found = entry ? await store.getProject(entry.projectId) : null;
     const project = found && !found.archivedAt ? found : null;
     const inviterPrincipal = (project && entry?.invitedBy) || inv.invitedBy;
-    return { inv, entry: project ? entry : null, project, inviterPrincipal, inviter: await nameOf(inviterPrincipal) };
+    const session = sessionId && project ? await store.getSession(sessionId) : null;
+    return { inv, entry: project ? entry : null, project, inviterPrincipal, inviter: await nameOf(inviterPrincipal), ...(session && session.projectId === project?.id && !session.deletedAt ? { sessionId: session.id } : {}) };
   };
 
   const viewOf = (f: InviteFacts, token: string): InviteView => ({
@@ -181,12 +183,12 @@ export function registerInviteRoutes(router: ReturnType<typeof createRouter>, ki
    *  app. A split deploy (`instance.appUrl`) serves the app elsewhere, so
    *  it goes to this instance's root there. */
   const landOf = (f: InviteFacts): string =>
-    kit.returnToSafe(f.project && !config.instance.appUrl ? `/#/team/project/${encodeURIComponent(f.project.id)}` : '/');
+    kit.returnToSafe(f.project && !config.instance.appUrl ? f.sessionId ? `/#/team/${encodeURIComponent(f.sessionId)}` : `/#/team/project/${encodeURIComponent(f.project.id)}` : '/');
 
   /** The token of the link a sign-in started from, minted again from what
    *  the state box carried, so "Other ways to sign in" opens the same page. */
   const tokenFor = (ref: InviteRef): string =>
-    mintInviteToken({ invitationId: ref.i, projectId: ref.p, version: ref.v }, kit.linkSecret);
+    mintInviteToken({ invitationId: ref.i, projectId: ref.p, version: ref.v, ...(ref.s ? { sessionId: ref.s } : {}) }, kit.linkSecret);
 
   /** The button for one sign-in: "Continue with Google", or "Sign in with
    *  email and password" for the password one. */
@@ -249,7 +251,7 @@ export function registerInviteRoutes(router: ReturnType<typeof createRouter>, ki
     opts: { status?: number; error?: 'password' | 'expired' } = {},
   ): Promise<void> => {
     const now = kit.now();
-    const f = await factsFor(inv, projectId);
+    const f = await factsFor(inv, projectId, readInviteToken(token, kit.linkVerify)?.sessionId);
     const v = viewOf(f, token);
     const user = await kit.memberOf(req);
     const land = landOf(f);
@@ -311,7 +313,7 @@ export function registerInviteRoutes(router: ReturnType<typeof createRouter>, ki
     if (!kit.formTokenOk(req, form.get('csrf'))) return renderState(req, res, inv, projectId, token, { status: 403, error: 'expired' });
     // Accepted or ended since the page was drawn: the page for that state.
     if (!invitationLive(inv, kit.now())) return renderState(req, res, inv, projectId, token);
-    const f = await factsFor(inv, projectId);
+    const f = await factsFor(inv, projectId, loaded.sessionId);
     const land = landOf(f);
     const action = form.get('action');
 
@@ -321,7 +323,7 @@ export function registerInviteRoutes(router: ReturnType<typeof createRouter>, ki
       await markOpened(inv, { provider: choice.kind, idp: choice.id });
       return kit.startSignIn(req, res, {
         idpId: choice.id, returnTo: land, prompt: form.get('prompt') === 'select_account' ? 'select_account' : null,
-        invite: { i: inv.id, p: f.project?.id ?? null, v: inv.linkVersion }, email: inv.email,
+        invite: { i: inv.id, p: f.project?.id ?? null, v: inv.linkVersion, ...(f.sessionId ? { s: f.sessionId } : {}) }, email: inv.email,
       });
     }
     if (action === 'password') {
@@ -402,7 +404,7 @@ export function registerInviteRoutes(router: ReturnType<typeof createRouter>, ki
       return inv && !inv.revokedAt && inv.linkVersion === ref.v && invitationLive(inv, kit.now()) ? inv : null;
     },
     async sendWrongAccount(req, res, o) {
-      const f = await factsFor(o.invitation, o.ref.p);
+      const f = await factsFor(o.invitation, o.ref.p, o.ref.s);
       const { nonce, cookie } = kit.formToken(req);
       const token = tokenFor(o.ref);
       send(res, 403, wrongAccountHtml(viewOf(f, token), {
@@ -411,7 +413,7 @@ export function registerInviteRoutes(router: ReturnType<typeof createRouter>, ki
       }), [...(o.extraCookies ?? []), cookie]);
     },
     async sendOtherAccount(req, res, o) {
-      const f = await factsFor(o.invitation, o.ref.p);
+      const f = await factsFor(o.invitation, o.ref.p, o.ref.s);
       const page = await otherAccountPage(req, f, tokenFor(o.ref), o.user);
       send(res, 200, page.html, [...(o.extraCookies ?? []), page.cookie]);
     },

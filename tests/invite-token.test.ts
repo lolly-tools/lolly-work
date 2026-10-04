@@ -62,12 +62,20 @@ test('tampered body, wrong key, lw/link token, too long and bad characters are a
   refused(undefined as unknown as string, 'not a string');
 });
 
-test('a correctly signed body that is not three well-formed lines is refused', () => {
+test('a correctly signed body with malformed fields is refused', () => {
   const sign = (text: string) => { const body = b64u(text); return `${body}.${hmac(`lw/invite.${body}`, KEY)}`; };
   assert.ok(readInviteToken(sign('inv_1\n\n1'), [KEY]), 'the well-formed control');
-  for (const text of ['inv_1\n1', 'inv_1\nprj\n1\nextra', '\nprj\n1', 'inv 1\n\n1', 'inv_1\nprj/x\n1', 'inv_1\n\n0', 'inv_1\n\n01', 'inv_1\n\n-1', 'inv_1\n\n1.5', 'inv_1\n\nx']) {
+  for (const text of ['inv_1\n1', 'inv_1\nprj\n1\n/extra', 'inv_1\n\n1\nses_1', '\nprj\n1', 'inv 1\n\n1', 'inv_1\nprj/x\n1', 'inv_1\n\n0', 'inv_1\n\n01', 'inv_1\n\n-1', 'inv_1\n\n1.5', 'inv_1\n\nx']) {
     assert.equal(readInviteToken(sign(text), [KEY]), null, JSON.stringify(text));
   }
+});
+
+test('a document destination is signed with the personal invitation and cannot be changed', () => {
+  const ref = { invitationId: 'inv_1', projectId: 'prj_1', version: 1, sessionId: 'ses_1' };
+  const token = mintInviteToken(ref, KEY);
+  assert.deepEqual(readInviteToken(token, [KEY]), ref);
+  const [, mac] = token.split('.');
+  assert.equal(readInviteToken(`${b64u('inv_1\nprj_1\n1\nses_other')}.${mac}`, [KEY]), null);
 });
 
 test('the invite page lives under /l/, which every deploy already routes', () => {
