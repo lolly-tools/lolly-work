@@ -1,5 +1,5 @@
 {
-  "generatedFrom": "4e9274aa09169bc994df8ad1151bfceb84f43fe6",
+  "generatedFrom": "d0ae43ee604441fdb9a15ceae9f851070b847cf1",
   "note": "Pin manifest - a consumer verifies vendored content against contentHash. tarballSha256 is informational (gzip is not reproducible).",
   "core": {
     "version": "1.0.0",
