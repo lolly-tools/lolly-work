@@ -27,8 +27,27 @@ const DEFAULT_TTL_SECONDS = 300;
  *  100/page (driver-side) × 50 pages = 5k assets; log-worthy when hit. */
 const MAX_PAGES = 50;
 
+/** Use file formats when a DAM reports a broad native type such as generic_files. */
+export function providerAssetType(asset: ProviderAssetRef): string {
+  const types: Record<string, string> = {
+    svg: 'vector',
+    png: 'raster', jpg: 'raster', jpeg: 'raster', webp: 'raster', gif: 'raster',
+    avif: 'raster', heic: 'raster', heif: 'raster', tiff: 'raster', tif: 'raster', jxl: 'raster',
+    mp4: 'video', webm: 'video', mov: 'video', m4v: 'video',
+    mp3: 'audio', wav: 'audio', ogg: 'audio', flac: 'audio', m4a: 'audio', aac: 'audio',
+    otf: 'font', ttf: 'font', woff: 'font', woff2: 'font',
+    glb: 'model', gltf: 'model', cube: 'lut', txt: 'text', md: 'text', srt: 'text',
+  };
+  for (const format of asset.formats) {
+    const type = types[format.format.toLowerCase()];
+    if (type) return type;
+  }
+  return 'data';
+}
+
 export function mapProviderAsset(rec: ProviderRecord, asset: ProviderAssetRef): AssetIndexEntry {
-  const type = rec.mapping.typeMap?.[asset.nativeType] ?? rec.mapping.defaultType ?? 'image';
+  const mappedType = rec.mapping.typeMap?.[asset.nativeType] ?? rec.mapping.defaultType;
+  const type = mappedType === undefined || mappedType === 'image' ? providerAssetType(asset) : mappedType;
   const sectionTags = rec.mapping.sectionTags === false ? [] : asset.sections;
   const idPath = extAssetId(rec.id, asset.remoteId);
   return {
@@ -36,19 +55,20 @@ export function mapProviderAsset(rec: ProviderRecord, asset: ProviderAssetRef): 
     name: asset.name,
     ...(asset.description ? { description: asset.description } : {}),
     type,
-    ...(rec.exposure.tier ? { tier: rec.exposure.tier } : {}),
+    version: sha256Hex(canonicalJson({ updatedAt: asset.updatedAt ?? null, formats: asset.formats })).slice(0, 16),
+    tier: rec.exposure.tier ?? 'on-demand',
     tags: [...new Set([`provider:${rec.id}`, ...sectionTags, ...asset.tags])],
     provider: rec.id,
     ...(asset.updatedAt ? { updatedAt: asset.updatedAt } : {}),
     ...(asset.availableFrom ? { availableFrom: asset.availableFrom } : {}),
     ...(asset.availableUntil ? { availableUntil: asset.availableUntil } : {}),
     ...(asset.hasThumbnail ? { thumbnail: `/catalog/${idPath}/thumb` } : {}),
-    formats: asset.formats.map((f) => ({
+    formats: [...asset.formats.map((f) => ({
       format: f.format,
       url: `/catalog/${idPath}/${f.remoteRef}`,
       ...(f.size !== undefined ? { size: f.size } : {}),
       ...(f.filename ? { filename: f.filename } : {}),
-    })),
+    })), ...(asset.hasThumbnail ? [{ format: 'thumb', url: `/catalog/${idPath}/thumb` }] : [])],
   };
 }
 
