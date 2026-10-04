@@ -22,6 +22,7 @@
  * transaction path instead. Registry acquisition waits for disposal to drain.
  */
 import { createHash, randomUUID } from 'node:crypto';
+import { encodeCanvasAsset } from '@lolly-tools/core/canvas-asset-v1';
 import { PRESENCE_VERSION, readPresenceFrame, sanitizePresenceState } from '@lolly-tools/core/collab-presence-v1';
 import type { PresenceFrame, PresenceState } from '@lolly-tools/core/collab-presence-v1';
 import type { CanvasClaim, CanvasClaimTarget } from '@lolly-tools/core/canvas-interaction-v1';
@@ -395,7 +396,9 @@ function blockRows(inputId: string, value: unknown): Map<BoxId, BoxRow> | null {
     if (rows.has(id)) return; // duplicate synthetic id - cannot happen, but never overwrite
     const row: BoxRow = {};
     let fields = 0;
-    for (const [key, v] of Object.entries(raw)) {
+    for (const [key, rawValue] of Object.entries(raw)) {
+      const v = isScalar(rawValue) ? rawValue : encodeCanvasAsset(rawValue);
+      if (!isScalar(rawValue) && v === null) continue;
       if (key === 'id' || !isSafeKey(key) || !isScalar(v)) continue;
       if (typeof v === 'string' && v.length > MAX_SCALAR_CHARS) continue;
       if (++fields > MAX_ROW_FIELDS) break;

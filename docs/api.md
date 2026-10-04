@@ -630,6 +630,13 @@ text claims belong to the live room, expire after ten seconds without renewal an
 end on disconnect, demotion or object deletion. Acquisition covers all requested
 objects atomically. Previews use document coordinates and never write the session.
 Durable operations carry their claim ID; conflicting or expired claims are refused.
+
+Canvas asset fields carry bounded `lolly-asset-v1:` references on the scalar lane.
+These contain an asset ID, type, format, optional dimensions and an immutable project
+file version; local URLs, file bytes and metadata do not travel in room operations.
+The session projection stores ordinary asset reference objects so project file usage,
+reopening and export retain their existing behavior. The shell uploads a device image
+before sending its reference and restores project bytes before painting a received image.
 Clients that do not negotiate this version continue to use the existing protocol.
 
 ### Canvas comments
