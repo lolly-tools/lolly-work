@@ -1,3 +1,4 @@
+import { COMMENT_THREAD_LIMIT, type CommentThread } from '@lolly-tools/core/canvas-review-v1';
 import type { CanvasCheckpoint, CanvasOp } from '@lolly-tools/core/canvas-op-v1';
 import { auditWhere } from '../audit/filter.ts';
 import { projectFileAssetId, PROJECT_FILE_OVERHEAD_BYTES, type ProjectFileRecord } from '../projects/files.ts';
@@ -2077,6 +2078,37 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       if (!unique.length) return [];
       const { rows } = await pool.query('select * from users where id = any($1::text[])', [unique]);
       return rows.map(userFromRow);
+    },
+    async getCommentThread(id) {
+      const { rows } = await pool.query('select data from canvas_comment_threads where id = $1', [id]);
+      return rows[0] ? rows[0].data as CommentThread : null;
+    },
+    async listCommentThreads(sessionId) {
+      const { rows } = await pool.query('select data from canvas_comment_threads where session_id = $1 order by updated_at, id limit $2', [sessionId, COMMENT_THREAD_LIMIT]);
+      return rows.map(row => row.data as CommentThread);
+    },
+    async createCommentThread(thread) {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        const session = await client.query('select id from sessions where id = $1 and deleted_at is null for update', [thread.sessionId]);
+        if (!session.rows.length) { await client.query('rollback'); return 'limit'; }
+        const prior = await client.query('select id from canvas_comment_threads where id = $1', [thread.id]);
+        if (prior.rows.length) { await client.query('rollback'); return 'exists'; }
+        const count = await client.query('select count(*)::int as n from canvas_comment_threads where session_id = $1', [thread.sessionId]);
+        if (Number(count.rows[0]?.n) >= COMMENT_THREAD_LIMIT) { await client.query('rollback'); return 'limit'; }
+        const result = await client.query('insert into canvas_comment_threads (id, session_id, revision, data, updated_at) values ($1,$2,$3,$4::jsonb,$5) on conflict (id) do nothing',
+          [thread.id, thread.sessionId, thread.revision, JSON.stringify(thread), thread.updatedAt]);
+        await client.query('commit'); return result.rowCount ? 'created' : 'exists';
+      } catch (error) { await client.query('rollback'); throw error; }
+      finally { client.release(); }
+    },
+    async casCommentThread(thread, expectedRevision) {
+      const result = await pool.query(`update canvas_comment_threads set revision = $3, data = $4::jsonb, updated_at = $5
+        where id = $1 and session_id = $2 and revision = $6
+        and exists (select 1 from sessions where id = $2 and deleted_at is null)`,
+        [thread.id, thread.sessionId, thread.revision, JSON.stringify(thread), thread.updatedAt, expectedRevision]);
+      return result.rowCount === 1;
     },
     async putSession(session) {
       const result = await pool.query(

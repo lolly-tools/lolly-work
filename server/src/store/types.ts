@@ -1,3 +1,4 @@
+import type { CommentThread } from '@lolly-tools/core/canvas-review-v1';
 import type { CanvasCheckpoint, CanvasOp } from '@lolly-tools/core/canvas-op-v1';
 /**
  * Storage interface - the seam that keeps deploy targets honest (plans/01):
@@ -557,6 +558,10 @@ export interface SubmitQuotaRow {
 }
 
 export interface Store extends RenderStore {
+  getCommentThread(id: string): Promise<CommentThread | null>;
+  listCommentThreads(sessionId: string): Promise<CommentThread[]>;
+  createCommentThread(thread: CommentThread): Promise<'created' | 'exists' | 'limit'>;
+  casCommentThread(thread: CommentThread, expectedRevision: number): Promise<boolean>;
   configureRoleGroups(mapping: RoleGroups): void;
   readonly storageKind: 'memory' | 'postgres';
   readonly brandPersistence: 'durable' | 'ephemeral';

@@ -150,8 +150,8 @@ class Client {
   private closeWaiters: Array<(code: number) => void> = [];
   private readonly consumed = new Set<Frame>();
 
-  constructor(sessionId: string, cookie: string) {
-    this.ws = new WebSocket(`${wsBase}${COLLAB_WS_PREFIX}${sessionId}`, { headers: { cookie } });
+  constructor(sessionId: string, cookie: string, socketBase = wsBase) {
+    this.ws = new WebSocket(`${socketBase}${COLLAB_WS_PREFIX}${sessionId}`, { headers: { cookie } });
     this.ready = new Promise<void>((resolve, reject) => {
       this.ws.once('open', () => resolve());
       this.ws.once('error', (err) => reject(err));
@@ -215,9 +215,9 @@ class Client {
   }
 
   /** Join and return the ack. */
-  async join(opVersion: string = CANVAS_OP_VERSION): Promise<Frame> {
+  async join(opVersion: string = CANVAS_OP_VERSION, interactionVersion?: number): Promise<Frame> {
     await this.open();
-    this.send({ t: 'join', opVersion });
+    this.send({ t: 'join', opVersion, ...(interactionVersion ? { interactionVersion, presenceVersion: 1 } : {}) });
     return this.next('join-ack');
   }
 
@@ -1349,4 +1349,72 @@ test('a join refused because another gateway owns the room closes at once with G
     other.close();
     otherServer.close();
   }
+});
+
+async function freshClaimGateway() {
+  const gateway = createCollabGateway({ config: gatewayConfig, store, secrets: { session: 'sc', link: 'lc' } });
+  const http = createServer();
+  http.on('upgrade', (req, socket, head) => { if (!gateway.handleUpgrade(req, socket, head)) socket.destroy(); });
+  await new Promise<void>(resolve => http.listen(0, resolve));
+  const address = http.address(); assert.ok(address && typeof address === 'object');
+  return { base: `ws://localhost:${address.port}`, close() { gateway.close(); http.close(); } };
+}
+
+test('editing claims are atomic over the socket; previews stay ephemeral and unrelated fields stay writable', async () => {
+  const id = await makeSession(aliceCookie, projectId, { slides: [
+    { id: 'one', body: 'One', x: 0, y: 0, w: 100, h: 80 },
+    { id: 'two', body: 'Two', x: 200, y: 0, w: 100, h: 80 },
+    { id: 'three', body: 'Three', x: 400, y: 0, w: 100, h: 80 },
+  ] });
+  const gateway = await freshClaimGateway();
+  const alice = new Client(id, aliceCookie, gateway.base), bob = new Client(id, bobCookie, gateway.base);
+  try {
+    const ack = await alice.join(CANVAS_OP_VERSION, 1); await bob.join(CANVAS_OP_VERSION, 1);
+    assert.equal(ack.interactionVersion, 1);
+    const before = (await store.getSession(id))!.rev;
+    alice.send({ t: 'claim', action: 'acquire', requestId: 'alice', target: { kind: 'transform', collection: 'slides', ids: ['one', 'two'] } });
+    const answer = await alice.next('claim-result');
+    const claim = answer.claim as { id: string };
+    assert.ok(claim.id);
+    bob.send({ t: 'claim', action: 'acquire', requestId: 'bob', target: { kind: 'transform', collection: 'slides', ids: ['two', 'three'] } });
+    assert.equal((await bob.next('claim-result')).reason, 'claimed');
+    bob.send({ t: 'claim', action: 'acquire', requestId: 'bob-free', target: { kind: 'transform', collection: 'slides', ids: ['three'] } });
+    assert.ok((await bob.next('claim-result')).claim, 'the rejected multi-object request claimed none of its targets');
+    alice.send({ t: 'presence', frame: { v: 1, seq: 1, state: { preview: { claimId: claim.id,
+      collection: 'slides', kind: 'move', phase: 'active', objects: [{ id: 'one', x: 40, y: 20, w: 100, h: 80, rot: 0 }] } } } });
+    const frame = (await bob.next('presence')).frame as { state: { preview: { objects: { x: number }[] } } };
+    assert.equal(frame.state.preview.objects[0]!.x, 40);
+    assert.equal((await store.getSession(id))!.rev, before, 'a preview does not save a revision');
+    const origin = { client: 'claim-bob', clock: 1 };
+    bob.send({ t: 'ops', batchId: 'color', ids: ['color-id'], ops: [{ k: 'field', col: 'slides', id: 'one', field: 'body', value: 'Blue', origin }] });
+    assert.deepEqual((await bob.next('receipt')).acceptedIds, ['color-id']);
+    bob.send({ t: 'ops', batchId: 'competing', ids: ['move-id'], ops: [{ k: 'geom', col: 'slides', id: 'one', fields: { x: 900 }, origin: { ...origin, clock: 2 } }] });
+    assert.deepEqual((await bob.next('receipt')).rejectedIds, ['move-id']);
+    assert.equal((await bob.next('error')).code, 'collab-claim-lost');
+    alice.send({ t: 'claim', action: 'release', requestId: 'release', claimId: claim.id });
+    assert.equal((await alice.next('claim-result')).reason, 'released');
+    alice.send({ t: 'ops', batchId: 'late', ids: ['late-id'], claimId: claim.id,
+      ops: [{ k: 'geom', col: 'slides', id: 'one', fields: { x: 999 }, origin: { client: 'claim-alice', clock: 3 } }] });
+    assert.deepEqual((await alice.next('receipt')).rejectedIds, ['late-id']);
+    const stored = (await store.getSession(id))!.inputs.slides as { id: string; x: number; body: string }[];
+    assert.equal(stored.find(row => row.id === 'one')!.x, 0);
+    assert.equal(stored.find(row => row.id === 'one')!.body, 'Blue');
+  } finally { alice.close(); bob.close(); gateway.close(); }
+});
+
+test('deleting an object cancels its lease and a late claimed operation cannot recreate it', async () => {
+  const id = await makeSession(aliceCookie, projectId, { slides: [{ id: 'one', body: 'One', x: 0, y: 0, w: 100, h: 80 }] });
+  const gateway = await freshClaimGateway();
+  const alice = new Client(id, aliceCookie, gateway.base), bob = new Client(id, bobCookie, gateway.base);
+  try {
+    await alice.join(CANVAS_OP_VERSION, 1); await bob.join(CANVAS_OP_VERSION, 1);
+    alice.send({ t: 'claim', action: 'acquire', requestId: 'alice-delete', target: { kind: 'transform', collection: 'slides', ids: ['one'] } });
+    const claim = (await alice.next('claim-result')).claim as { id: string };
+    bob.send({ t: 'ops', batchId: 'delete', ids: ['delete-id'], ops: [{ k: 'remove', col: 'slides', id: 'one', origin: { client: 'delete-bob', clock: 1 } }] });
+    assert.deepEqual((await bob.next('receipt')).acceptedIds, ['delete-id']);
+    alice.send({ t: 'ops', batchId: 'after-delete', ids: ['after-delete-id'], claimId: claim.id,
+      ops: [{ k: 'geom', col: 'slides', id: 'one', fields: { x: 900 }, origin: { client: 'delete-alice', clock: 2 } }] });
+    assert.deepEqual((await alice.next('receipt')).rejectedIds, ['after-delete-id']);
+    assert.deepEqual((await store.getSession(id))!.inputs.slides, []);
+  } finally { alice.close(); bob.close(); gateway.close(); }
 });

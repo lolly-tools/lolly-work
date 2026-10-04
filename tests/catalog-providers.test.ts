@@ -283,7 +283,8 @@ test('(b3) credential expiry, automation jobs, deliveries and render resources f
   assert.equal(files[at + 15], '0042_password_credentials.sql', 'email and password sign-in follows shared project files');
   assert.equal(files[at + 16], '0043_invitation_links.sql', 'invitation links follow email and password sign-in');
   assert.equal(files[at + 17], '0044_access_requests.sql', 'access requests follow invitation links');
-  assert.equal(files.at(-1), '0044_access_requests.sql', 'access requests are the newest migration');
+  assert.equal(files[at + 18], '0045_canvas_comments.sql', 'canvas review follows access requests');
+  assert.equal(files.at(-1), '0045_canvas_comments.sql', 'canvas review is the newest migration');
   assert.match(await readFile(`${dir}/0027_credential_expiry.sql`, 'utf8'), /add column credential_expires_at/);
   assert.match(await readFile(`${dir}/0028_automation_jobs.sql`, 'utf8'), /create table automation_jobs/);
   assert.match(await readFile(`${dir}/0029_deliveries.sql`, 'utf8'), /create table deliveries/);

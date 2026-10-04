@@ -49,7 +49,7 @@ before(async () => {
 after(() => server.close());
 
 async function login(email: string): Promise<string> {
-  const res = await fetch(`${base}/api/auth/dev?email=${encodeURIComponent(email)}`, { redirect: 'manual' });
+  const res = await fetch(`${base}/api/auth/dev?email=${encodeURIComponent(email)}`, { redirect: 'manual', headers: { connection: 'close' } });
   assert.equal(res.status, 302);
   const cookie = res.headers.getSetCookie().find((c) => c.startsWith('lw_session='));
   assert.ok(cookie, 'session cookie set');
@@ -58,7 +58,8 @@ async function login(email: string): Promise<string> {
 const json = (cookie: string, method: string, path: string, body?: unknown) =>
   fetch(`${base}${path}`, {
     method,
-    headers: { cookie, ...(body ? { 'content-type': 'application/json' } : {}) },
+    // Fresh fixture sockets keep local keep-alive expiry out of the permission matrix.
+    headers: { cookie, connection: 'close', ...(body ? { 'content-type': 'application/json' } : {}) },
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
 

@@ -1,3 +1,4 @@
+import { COMMENT_THREAD_LIMIT, type CommentThread } from '@lolly-tools/core/canvas-review-v1';
 import type { CanvasCheckpoint, CanvasOp } from '@lolly-tools/core/canvas-op-v1';
 import { matchesAudit } from '../audit/filter.ts';
 import { activeProjectFile, projectFileAssetId, projectFileCharge, type ProjectFileRecord } from '../projects/files.ts';
@@ -133,6 +134,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   // `${projectId} ${userId}` - the composite primary key of migration 0040.
   const projectMembers = new Map<string, ProjectMemberRecord>();
   const memberKey = (projectId: string, userId: string): string => `${projectId} ${userId}`;
+  const commentThreads = new Map<string, CommentThread>();
   const sessions = new Map<string, SessionRecord>();
   const sessionRevisions = new Map<string, SessionRevision[]>(); // sessionId -> ascending by rev
   const collabOwners = new Map<string, { owner: string; until: number }>();
@@ -1274,6 +1276,19 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     async getUsersByIds(ids) {
       const wanted = new Set(ids);
       return [...users.values()].filter((u) => wanted.has(u.id)).map(mapped);
+    },
+    async getCommentThread(id) { const thread = commentThreads.get(id); return thread ? structuredClone(thread) : null; },
+    async listCommentThreads(sessionId) { return [...commentThreads.values()].filter(thread => thread.sessionId === sessionId).map(thread => structuredClone(thread)); },
+    async createCommentThread(thread) {
+      if (commentThreads.has(thread.id)) return 'exists';
+      if (!sessions.has(thread.sessionId) || sessions.get(thread.sessionId)?.deletedAt) return 'limit';
+      if ([...commentThreads.values()].filter(value => value.sessionId === thread.sessionId).length >= COMMENT_THREAD_LIMIT) return 'limit';
+      commentThreads.set(thread.id, structuredClone(thread)); return 'created';
+    },
+    async casCommentThread(thread, expectedRevision) {
+      const previous = commentThreads.get(thread.id);
+      if (!previous || previous.sessionId !== thread.sessionId || previous.revision !== expectedRevision || sessions.get(thread.sessionId)?.deletedAt) return false;
+      commentThreads.set(thread.id, structuredClone(thread)); return true;
     },
     async putSession(session) {
       if ((collabOwners.get(session.id)?.until ?? 0) > Date.now()) throw new Error('collab-active');

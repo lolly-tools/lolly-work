@@ -49,6 +49,7 @@
  * to the store, by shape rather than by discipline (plans/100 §7 item 5).
  */
 import { isDeepStrictEqual } from 'node:util';
+import { decodeCanvasAsset } from '@lolly-tools/core/canvas-asset-v1';
 
 import type { BoxId, BoxRow, CanvasDocState, ParamValue } from '@lolly-tools/core/canvas-op-v1';
 import { guestActor } from '../iam/sessions.ts';
@@ -122,7 +123,7 @@ function isSyntheticId(col: string, id: BoxId): boolean {
  *  the user never had, and a subsequent seed would then treat the invention as
  *  authoritative. */
 function rowToBlock(col: string, id: BoxId, row: BoxRow): Record<string, unknown> {
-  const out: Record<string, unknown> = { ...row };
+  const out: Record<string, unknown> = Object.fromEntries(Object.entries(row).map(([field, value]) => [field, decodeCanvasAsset(value) ?? value]));
   if (!isSyntheticId(col, id)) out['id'] = id;
   return out;
 }

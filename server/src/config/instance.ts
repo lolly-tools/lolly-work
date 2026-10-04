@@ -168,6 +168,7 @@ export interface InstanceConfig {
     linkedStandingDays?: number;
   } & IdpConstraints;
   policy: {
+    comments?: { enabled: boolean };
     /** Managed AI is off unless both this approval ceiling and the audited
      * operator flag allow it. A personal shell preference cannot enable it. */
     ai: import('../policy/ai.ts').AiConfig;
@@ -510,6 +511,7 @@ const DEFAULTS: InstanceConfig = {
     bootstrapOwners: [],
   },
   policy: {
+    comments: { enabled: true },
     ai: { enabled: false, capabilities: [] },
     defaultAccessMode: 'gated',
     telemetry: 'standard',
@@ -812,6 +814,7 @@ export function parseConfig(json: string): InstanceConfig {
     const v = cfg.policy.retention[k];
     if (!Number.isInteger(v) || v < 0) throw new Error(`invalid policy.retention.${k}: ${v} (days, 0 = keep forever)`);
   }
+  if (cfg.policy.comments !== undefined && (typeof cfg.policy.comments !== 'object' || cfg.policy.comments === null || typeof cfg.policy.comments.enabled !== 'boolean')) throw new Error('policy.comments.enabled must be true or false');
   const files = cfg.policy.projectFiles;
   if (!files || typeof files !== 'object' || Array.isArray(files)) throw new Error('policy.projectFiles must be an object');
   if (typeof files.enabled !== 'boolean') throw new Error('policy.projectFiles.enabled must be true or false');

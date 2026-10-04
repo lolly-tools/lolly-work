@@ -125,6 +125,7 @@ import { mayCreateGuestLinks, mayEditCollab, mayJoinCollab, type Grant, type Rol
 import { resolveInputAccess, type ResolvedAccess, type ToolOverlay, inputIsGoverned } from '../policy/overlay.ts';
 import { readToolInputs } from '../policy/tool-inputs.ts';
 import { randomId } from '../lib/crypto.ts';
+import { interactionKey, readClaimTarget } from '@lolly-tools/core/canvas-interaction-v1';
 import {
   MAX_OPS_PER_MESSAGE, MAX_ROW_FIELDS, MAX_SCALAR_CHARS, PRESENCE_FRAMES_PER_SEC,
   WRITER_CAP, WRITER_CAP_PER_USER,
@@ -1508,6 +1509,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
         name: ctx.identity.name,
         role,
         presenceVersion: raw['presenceVersion'] === 1 ? 1 : undefined,
+        interactionVersion: raw['interactionVersion'] === 1 ? 1 : undefined,
         opVersion: compatible ? opVersion : CANVAS_OP_VERSION,
         ...(ctx.identity.kind === 'guest' ? { guestLinkId: ctx.identity.linkId } : {}),
         send,
@@ -1517,7 +1519,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
       room = live;
       member = me;
       joinedAt = Date.now();
-      send({ t: 'join-ack', ...ack, presenceVersion: 1, receipts: 1, ...(notice ? { notice } : {}) });
+      send({ t: 'join-ack', ...ack, presenceVersion: 1, receipts: 1, interactionVersion: 1, ...(notice ? { notice } : {}) });
       await audit(ctx.identity.actor, 'collab.join', `session:${ctx.session.id}`, {
         projectId: ctx.session.projectId, toolId: ctx.session.toolId, role, opVersion: me.opVersion,
         ...guestAudit(ctx.identity),
@@ -1583,8 +1585,33 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
       if (typeof batchId !== 'string' || batchId.length > 128 || !Array.isArray(ids)
         || ids.length !== parsed.length || ids.some(id => typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,80}$/.test(id))
         || new Set(ids).size !== ids.length) return fail(ERR.INVALID_OP, 'durable batch identity required');
-      try { await live.applyBatch(me, batchId, ids as string[], parsed, new Set(accepted)); }
+      if (raw['claimId'] !== undefined && !interactionKey(raw['claimId'])) return fail(ERR.INVALID_OP, 'invalid editing claim');
+      try { await live.applyBatch(me, batchId, ids as string[], parsed, new Set(accepted), raw['claimId'] as string | undefined); }
       catch { fail('collab-save-failed', 'Edits remain pending. Reconnect to retry.'); ws.close(CLOSE.GOING_AWAY, 'save unavailable'); }
+    };
+
+    const doClaim = async (raw: Record<string, unknown>): Promise<void> => {
+      const live = room, me = member, requestId = raw['requestId'], action = raw['action'];
+      if (!live || !me) return fail(ERR.NOT_JOINED, 'join before requesting a claim');
+      if (!interactionKey(requestId) || requestId.length > 80 || !['acquire', 'renew', 'release'].includes(String(action)))
+        return fail(ERR.INVALID_OP, 'invalid editing claim request');
+      const target = action === 'acquire' ? readClaimTarget(raw['target']) : null;
+      if (action === 'acquire' ? !target : !interactionKey(raw['claimId']))
+        return void send({ t: 'claim-result', requestId, reason: 'invalid-target' });
+      const authz = await authorizeOps(ctx);
+      if (!authz) return void ws.close(CLOSE.UNAUTHORIZED, 'this session is no longer valid');
+      if (action !== 'release' && (!authz.mayEdit || me.role !== 'writer')) {
+        live.demote(me); return void send({ t: 'claim-result', requestId, reason: 'view-only' });
+      }
+      if (target) {
+        const origin = { client: me.id, clock: 0 };
+        const probe: CanvasOp = target.param ? { k: 'param', key: target.param, value: '', origin }
+          : target.kind === 'transform' ? { k: 'geom', col: target.collection, id: target.ids[0]!, fields: { x: 0 }, origin }
+          : { k: 'field', col: target.collection, id: target.ids[0]!, field: target.field!, value: '', origin };
+        if (!vetoOps([probe], authz, live).accepted.length) return void send({ t: 'claim-result', requestId, reason: 'view-only' });
+      }
+      const answer = await live.requestClaim(me, action as 'acquire' | 'renew' | 'release', target ?? undefined, raw['claimId'] as string | undefined);
+      send({ t: 'claim-result', requestId, ...answer });
     };
 
     const doPresence = (raw: Record<string, unknown>): void => {
@@ -1636,6 +1663,10 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
           } catch {
             /* a presence frame can never take the socket down */
           }
+          break;
+        case 'claim':
+          if (!opsMessageRate.add(Date.now(), 1) || !enqueue(() => doClaim(msg)))
+            ws.close(CLOSE.OPS_RATE, 'too many editing claim requests');
           break;
         case 'leave':
           ws.close(1000, 'left');

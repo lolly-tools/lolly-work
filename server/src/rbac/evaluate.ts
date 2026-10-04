@@ -35,11 +35,12 @@ const ROLE_ACTIONS: Record<Role, string[]> = (() => {
   // can see a session can watch its collab, matching the observers-are-
   // presence-visible rule (plans/14 §6). `collab.edit` is NOT listed here at
   // all - see `mayEditCollab` below for why.
-  const viewer = ['catalog.read', 'session.view', 'collab.join'];
+  const viewer = ['catalog.read', 'session.view', 'collab.join', 'comment.view', 'comment.create', 'comment.edit'];
   const member = [
     ...viewer,
     'tool.use',
     'session.create', 'session.edit', 'session.delete', 'session.share',
+    'comment.resolve', 'comment.moderate',
     'project.create',
     'export.download', 'export.request',
     // Sending to an organization target is a member workflow once an owner has
