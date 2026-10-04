@@ -19,7 +19,7 @@ import { linkByEmailFor, linkKeys, passwordIdpOf, sessionKeys, type InstanceConf
 import type { InvitationRecord, PasswordLinkRecord, ProjectMemberRole, ProjectRecord, ProjectSessionStats, ScimTokenRecord, SessionRecord, SessionSummary, Store, UserRecord } from '../store/types.ts';
 import type { RoomSnapshot } from '../collab/rooms.ts';
 import type { NearbyRegistry } from '../collab/nearby.ts';
-import { createRouter, readJson, readRaw, sendError, sendJson, type RouteCtx } from './router.ts';
+import { createRouter, readJson, readRaw, sendError, sendJson, type Handler, type RouteCtx } from './router.ts';
 import { readShotCred } from './shot-provenance.ts';
 import { CONSOLE_ASSET_HEADERS, consoleDocumentHeaders } from './console-headers.ts';
 import { mintToken, verifyToken } from '../iam/tokens.ts';
@@ -4863,7 +4863,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   });
 
   // ── catalog serving (pack mount, per-caller filtered, lifecycle-enforced) ──
-  router.add('GET', '/catalog/*', async (req, res, ctx) => {
+  const serveCatalog: Handler = async (req, res, ctx) => {
     const user = await memberOf(req);
     const p = principalOf(req);
     if (config.policy.defaultAccessMode === 'gated' && !user && p?.kind !== 'guest') {
@@ -5100,6 +5100,13 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
     res.writeHead(200, { 'content-type': contentType(rel), 'cache-control': 'private, no-cache' });
     res.end(bytes);
+  };
+  router.add('GET', '/catalog/*', serveCatalog);
+  // Font availability probes follow the same admission and lifecycle gates as GET.
+  router.add('HEAD', '/catalog/fonts/*', async (req, res, ctx) => {
+    const rel = ctx.params['*'] ?? '';
+    if (rel.includes('..')) return sendError(res, 400, 'INVALID_INPUT', 'bad path');
+    await serveCatalog(req, res, { ...ctx, params: { '*': `fonts/${rel}` } });
   });
 
   // ── signed links onto catalog assets (plans/31 §2 1b) ────────────────────
