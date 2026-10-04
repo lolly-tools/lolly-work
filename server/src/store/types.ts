@@ -1012,8 +1012,10 @@ export interface Store extends RenderStore {
   // separate methods so the write-only credential path and the sync path can
   // never clobber each other: putProvider upserts config fields ONLY,
   // preserving any stored credential and runtime state on update.
-  listProviders(): Promise<ProviderRecord[]>;
-  getProvider(id: string): Promise<ProviderRecord | null>;
+  /** Metadata-only reads keep the potentially large fragment in its existing
+   *  federation cache; credentials and governance are still read fresh. */
+  listProviders(options?: { includeFragment?: boolean }): Promise<ProviderRecord[]>;
+  getProvider(id: string, options?: { includeFragment?: boolean }): Promise<ProviderRecord | null>;
   putProvider(rec: ProviderRecord): Promise<void>;
   deleteProvider(id: string): Promise<void>;
   /** null clears the stored credential. */

@@ -361,6 +361,9 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     ...(r.revoked_at ? { revokedAt: new Date(r.revoked_at as string).toISOString() } : {}),
   });
 
+  const providerMetadataColumns = `id, kind, label, managed_by, enabled, options, mapping, exposure, sync,
+    credential_ciphertext, credential_fingerprint, credential_updated_at, credential_expires_at,
+    created_by, created_at, updated_at, last_sync_at, last_error, asset_count`;
   const providerFromRow = (r: Record<string, unknown>): ProviderRecord => ({
     id: r.id as string,
     kind: r.kind as ProviderKind,
@@ -1895,12 +1898,14 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     // catalog providers (migrations/0005_catalog_providers.sql). putProvider
     // touches config columns only; credential_* and state columns have their
     // own methods so the paths can't clobber each other.
-    async listProviders() {
-      const { rows } = await pool.query('select * from catalog_providers order by created_at asc');
+    async listProviders(options) {
+      const columns = options?.includeFragment === false ? providerMetadataColumns : '*';
+      const { rows } = await pool.query(`select ${columns} from catalog_providers order by created_at asc`);
       return rows.map(providerFromRow);
     },
-    async getProvider(id) {
-      const { rows } = await pool.query('select * from catalog_providers where id = $1', [id]);
+    async getProvider(id, options) {
+      const columns = options?.includeFragment === false ? providerMetadataColumns : '*';
+      const { rows } = await pool.query(`select ${columns} from catalog_providers where id = $1`, [id]);
       return rows[0] ? providerFromRow(rows[0]) : null;
     },
     async putProvider(rec) {
