@@ -9592,7 +9592,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (devCors(req, res)) return;
     // Fleet: every tagged request feeds the version histogram (plans/10 §1).
     const client = parseClientHeader(req.headers['x-lolly-client'] as string | undefined);
-    if (client) void store.recordClient(client);
+    // Histogram writes must not terminate the server when the store is unavailable.
+    if (client) void store.recordClient(client).catch(() => log('warn', 'fleet observation failed'));
     // Install identity (plans/34 wave 3): a shell may add `install/<id>` to its
     // tag. The registry row is written ONLY when the request carries a live
     // member session - anonymous and guest traffic can never mint one - and it

@@ -179,3 +179,18 @@ test('migration 0022 follows 0021, is the ceiling, and keeps the covenant in sch
   const driver = await readFile(new URL('../server/src/store/postgres.ts', import.meta.url).pathname, 'utf8');
   assert.match(driver, /insert into fleet_installs/);
 });
+
+
+test('a failed background histogram write leaves member requests available', async () => {
+  const { base, store } = await boot();
+  const cookie = await login(base, 'maker@test');
+  let attempts = 0;
+  store.recordClient = async () => { attempts++; throw new Error('controlled database timeout'); };
+  for (let i = 0; i < 2; i++) {
+    const response = await fetch(`${base}/api/auth/session`, {headers: {cookie, 'x-lolly-client': 'web engine/1.146.0'}});
+    assert.equal(response.status, 200);
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  assert.equal(attempts, 2);
+  assert.equal((await fetch(`${base}/healthz`)).status, 200);
+});
