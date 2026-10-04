@@ -23,6 +23,7 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { encodeCanvasAsset } from '@lolly-tools/core/canvas-asset-v1';
+import { canvasAssetCheckpoint, canvasAssetOps } from './asset-wire.ts';
 import { PRESENCE_VERSION, readPresenceFrame, sanitizePresenceState } from '@lolly-tools/core/collab-presence-v1';
 import type { PresenceFrame, PresenceState } from '@lolly-tools/core/collab-presence-v1';
 import type { CanvasClaim, CanvasClaimTarget } from '@lolly-tools/core/canvas-interaction-v1';
@@ -650,7 +651,7 @@ export class Room implements RoomWriteback {
         for (const op of fresh) this.recordOp(op, from.userId);
         for (const peer of this.members.values()) {
           if (peer.id === from.id) continue;
-          const sendable = fresh.filter(op => isOpSendableTo(op, peer.opVersion));
+          const sendable = canvasAssetOps(fresh.filter(op => isOpSendableTo(op, peer.opVersion)), peer.interactionVersion);
           if (sendable.length) peer.send({ t: 'ops', ops: sendable, from: from.id });
         }
       }
@@ -659,7 +660,7 @@ export class Room implements RoomWriteback {
       // An accepted retry may predate a later REST save. Its optimistic replay
       // must reconcile to the current document even though the receipt is accepted.
       from.send({ t: 'receipt', batchId, durableRevision: this.durableRevision, acceptedIds, rejectedIds,
-        ...(rejectedIds.length || previous.size ? { checkpoint: this.doc.checkpoint(), serverClock: this.serverClock } : {}) });
+        ...(rejectedIds.length || previous.size ? { checkpoint: canvasAssetCheckpoint(this.doc.checkpoint(), from.interactionVersion), serverClock: this.serverClock } : {}) });
     });
     const settled = run.then(() => { this.lastSaveMs = performance.now() - started; }, error => { this.saveFailures++; throw error; })
       .finally(() => { this.pendingBatches--; this.pendingBytes -= bytes; });
@@ -788,8 +789,7 @@ export class Room implements RoomWriteback {
     return {
       claims: this.claims.list(),
       roster,
-      docState: this.snapshot(),
-      checkpoint: this.doc.checkpoint(),
+      ...this.projectionFor(member),
       serverClock: this.serverClock,
       opVersion: CANVAS_OP_VERSION,
       you,
@@ -841,7 +841,7 @@ export class Room implements RoomWriteback {
       : { kind: 'member', userId: from.userId };
     for (const peer of this.members.values()) {
       if (peer.id === from.id) continue;
-      const sendable = fresh.filter((op) => isOpSendableTo(op, peer.opVersion));
+      const sendable = canvasAssetOps(fresh.filter((op) => isOpSendableTo(op, peer.opVersion)), peer.interactionVersion);
       if (sendable.length) peer.send({ t: 'ops', ops: sendable, from: from.id });
     }
     this.noteBatch(fresh.length);
@@ -910,6 +910,13 @@ export class Room implements RoomWriteback {
    *  complexity is in updates to already connected documents". */
   snapshot(): WireDocState {
     return toWire(this.doc.state());
+  }
+
+  private projectionFor(member: RoomMember): { docState: WireDocState; checkpoint: CanvasCheckpoint } {
+    const checkpoint = canvasAssetCheckpoint(this.doc.checkpoint(), member.interactionVersion);
+    if (member.interactionVersion === 1) return { docState: this.snapshot(), checkpoint };
+    const projection = new ReferenceCanvasDoc('wire'); projection.restore(checkpoint);
+    return { docState: toWire(projection.state()), checkpoint };
   }
 
   /** The `RoomWriteback` seam: the converged document expressed as session

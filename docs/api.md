@@ -637,6 +637,9 @@ file version; local URLs, file bytes and metadata do not travel in room operatio
 The session projection stores ordinary asset reference objects so project file usage,
 reopening and export retain their existing behavior. The shell uploads a device image
 before sending its reference and restores project bytes before painting a received image.
+The interaction-v1 shell understands these references. Older members receive ordinary
+fields and retain their already-restored images; extension strings are omitted from
+their operations and checkpoints. Live delivery of a newly added image needs the current shell.
 Clients that do not negotiate this version continue to use the existing protocol.
 
 ### Canvas comments
