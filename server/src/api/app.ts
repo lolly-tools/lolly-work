@@ -1,3 +1,6 @@
+import { WorkerError } from '../render/worker-client.ts';
+import { createFilePreview, readPreviewInput, PREVIEW_INPUT_LIMIT } from '../catalog/file-preview.ts';
+import { visibleSourceStatuses } from '../catalog/source-status.ts';
 import { registerCommentRoutes } from '../comments/routes.ts';
 /**
  * The lolly-work HTTP app - auth, org-config, telemetry, inbox, links,
@@ -4962,6 +4965,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       if (!callerSeesProvider(rec, user?.groups ?? [])) return sendError(res, 403, 'FORBIDDEN', 'not visible to your groups');
       const assetId = extAssetId(providerId, remoteId);
       const filePreview = ctx.url.searchParams.get('preview') === '1';
+      const convertedPreview = ctx.url.searchParams.get('view') === '1';
+      if (convertedPreview && filePreview) return sendError(res, 400, 'INVALID_INPUT', 'choose one preview representation');
+
       // The local row combined with any upstream availability window imported
       // from the DAM (plans/27 §2), read off the in-process fragment beside the
       // lifecycle row. Upstream expiry blocks bytes even under onExpiry:'warn' -
@@ -4969,11 +4975,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       if ((await catalogBytesGate(assetId, true)).blocked) {
         return sendError(res, 410, 'ASSET_EXPIRED', 'this asset is no longer available');
       }
+      if (convertedPreview && !renderWorker) return sendError(res, 501, 'PREVIEW_UNAVAILABLE', 'This instance has no preview service.');
       // hold-implies-pin (plans/27 §3, §5): when this asset's bytes have been
       // materialized into the instance's own store, prefer the local copy - the
       // federated identity stays, but the bytes survive upstream deletion.
       const pinned = await store.getInstanceAsset(materializedIdFor(providerId, remoteId));
-      if (pinned && !filePreview) {
+      if (pinned && !filePreview && !convertedPreview) {
         const fmtName = pinned.refMap?.[formatRef] ?? formatRef;
         const localId = pinned.blobs[fmtName];
         const localStat = localId ? await blobs.head(localId) : null;
@@ -4999,6 +5006,19 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         const driver = federation.instantiate(rec);
         if (filePreview && !driver.resolveFilePreview) return sendError(res, 404, 'NOT_FOUND', 'this provider has no file preview');
         const blob = filePreview ? await driver.resolveFilePreview!(remoteId, formatRef) : await driver.resolveBlob(remoteId, formatRef);
+        if (convertedPreview) {
+          if (blob.kind !== 'stream') return sendError(res, 422, 'PREVIEW_UNAVAILABLE', 'This source does not support conversion previews.');
+          const controller = new AbortController(); const disconnected = () => { if (!res.writableFinished) controller.abort(); }; res.once('close', disconnected);
+          try {
+            const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(35_000)]);
+            const bytes = await readPreviewInput(blob.body, signal);
+            const output = await createFilePreview(renderWorker!, bytes, signal);
+            const currentUser = await requireAction(req, res, 'catalog.read'); if (!currentUser) return;
+            const currentProvider = await store.getProvider(providerId, { includeFragment: false });
+            if (!currentProvider?.enabled || !callerSeesProvider(currentProvider, currentUser.groups) || (await catalogBytesGate(assetId, true)).blocked) return sendError(res, 410, 'ASSET_EXPIRED', 'This asset is no longer available.');
+            res.writeHead(200, { 'content-type': 'application/pdf', ...INERT_BYTES, 'cache-control': 'private, no-store', 'content-length': String(output.length) }); res.end(output); return;
+          } finally { res.removeListener('close', disconnected); }
+        }
         if (blob.kind === 'redirect') {
           res.writeHead(302, { location: blob.url, 'cache-control': 'private, no-store' });
           res.end();
@@ -7460,6 +7480,29 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   });
 
   // ── catalog search (plans/17 §9): composed index + live provider fan-out ──
+  router.add('GET', '/api/v1/catalog/sources', async (req, res) => {
+    const user = await requireAction(req, res, 'catalog.read'); if (!user) return;
+    await providersReady;
+    const fragments = await federation.fragments();
+    const composed = await federation.composeIndex({}, user.groups);
+    const visible = applyLifecycleToIndex(composed, await store.listLifecycle(), Date.now());
+    const sources = visibleSourceStatuses(await store.listProviders(), fragments, user.groups, new Set((visible.assets ?? []).map(a => a.id)));
+    const canManage = evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'catalog.provider.manage', ['*'], await store.listGrants());
+    sendJson(res, 200, { sources, canManage, scope: user.id }, { 'cache-control': 'private, no-store' });
+  });
+  router.add('POST', '/api/v1/catalog/file-preview', async (req, res) => {
+    if (!(await requireAction(req, res, 'catalog.read'))) return;
+    if (!renderWorker) return sendError(res, 501, 'PREVIEW_UNAVAILABLE', 'This instance has no preview service.');
+    const controller = new AbortController(); const disconnected = () => { if (!res.writableFinished) controller.abort(); }; res.once('close', disconnected);
+    try {
+      const bytes = await readRaw(req, PREVIEW_INPUT_LIMIT);
+      const output = await createFilePreview(renderWorker, bytes, controller.signal);
+      if (!(await requireAction(req, res, 'catalog.read'))) return;
+      res.writeHead(200, { 'content-type': 'application/pdf', ...INERT_BYTES, 'cache-control': 'private, no-store', 'content-length': String(output.length) }); res.end(output);
+    } catch (error) { const status = error instanceof WorkerError ? error.status : 422; sendError(res, status, 'PREVIEW_FAILED', 'This file could not be converted within the preview limits.'); }
+    finally { res.removeListener('close', disconnected); }
+  });
+
   router.add('GET', '/api/v1/catalog/search', async (req, res, ctx) => {
     const user = await requireAction(req, res, 'catalog.read');
     if (!user) return;
