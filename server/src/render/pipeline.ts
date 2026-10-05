@@ -356,7 +356,10 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
     try {
       const boundValues = Object.fromEntries(engine.buildInputModel(tool.manifest, { profile: { ...req.profile }, initial: bakedValues })
         .filter(input => input.bindToProfile).map(input => [input.id, input.value]));
-      const readable = queryFromValues({ ...boundValues, ...bakedValues });
+      const readable = queryFromValues({ ...boundValues, ...bakedValues,
+        ...(pxW ? { width: st.width } : {}), ...(pxH ? { height: st.height } : {}),
+        ...(st.unit ? { unit: st.unit } : {}), ...(st.dpi ? { dpi: st.dpi } : {}),
+      });
       const packed = readable.length > 4096 ? await engine.packQuery(readable) : null;
       const query = packed && packed.length + 2 < readable.length ? `z=${packed}` : readable;
       // The worker navigates through ordinary HTTP servers/proxies. Bound the
