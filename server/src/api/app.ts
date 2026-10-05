@@ -4957,6 +4957,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       if (!rec.enabled) return sendError(res, 410, 'PROVIDER_DISABLED', 'this provider is disabled');
       if (!callerSeesProvider(rec, user?.groups ?? [])) return sendError(res, 403, 'FORBIDDEN', 'not visible to your groups');
       const assetId = extAssetId(providerId, remoteId);
+      const filePreview = ctx.url.searchParams.get('preview') === '1';
       // The local row combined with any upstream availability window imported
       // from the DAM (plans/27 §2), read off the in-process fragment beside the
       // lifecycle row. Upstream expiry blocks bytes even under onExpiry:'warn' -
@@ -4968,7 +4969,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       // materialized into the instance's own store, prefer the local copy - the
       // federated identity stays, but the bytes survive upstream deletion.
       const pinned = await store.getInstanceAsset(materializedIdFor(providerId, remoteId));
-      if (pinned) {
+      if (pinned && !filePreview) {
         const fmtName = pinned.refMap?.[formatRef] ?? formatRef;
         const localId = pinned.blobs[fmtName];
         const localStat = localId ? await blobs.head(localId) : null;
@@ -4991,7 +4992,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         }
       }
       try {
-        const blob = await federation.instantiate(rec).resolveBlob(remoteId, formatRef);
+        const driver = federation.instantiate(rec);
+        if (filePreview && !driver.resolveFilePreview) return sendError(res, 404, 'NOT_FOUND', 'this provider has no file preview');
+        const blob = filePreview ? await driver.resolveFilePreview!(remoteId, formatRef) : await driver.resolveBlob(remoteId, formatRef);
         if (blob.kind === 'redirect') {
           res.writeHead(302, { location: blob.url, 'cache-control': 'private, no-store' });
           res.end();

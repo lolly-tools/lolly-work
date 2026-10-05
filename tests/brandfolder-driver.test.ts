@@ -82,7 +82,7 @@ test('listAssets maps the recorded shape: section names, attachment formats, pag
   assert.deepEqual(a?.collections, ['Logo Kit']);
   assert.equal(a?.approved, true);
   assert.equal(a?.hasThumbnail, true);
-  assert.deepEqual(a?.formats, [{ format: 'png', remoteRef: 'njc8wh9647cjst8h55ff38', size: 16561, filename: 'x.png' }]);
+  assert.deepEqual(a?.formats, [{ format: 'png', remoteRef: 'njc8wh9647cjst8h55ff38', size: 16561, filename: 'x.png', width: 834, height: 626 }]);
   // Upstream availability window is imported into the asset ref (plans/27 §2).
   assert.equal(a?.availableFrom, '2024-01-01T00:00:00.000Z');
   assert.equal(a?.availableUntil, '2027-01-01T00:00:00.000Z');
@@ -120,6 +120,7 @@ test('searchAssets URL-encodes the query and bearer auth rides every call', asyn
 
 test('resolveBlob re-fetches a fresh signed URL per request and streams from bfldr hosts only', async () => {
   const fetchImpl = fakeFetch([
+    { match: (u) => u.includes('/assets/255hvp7s4xkbqb9rbncsfqp3?'), body: { data: ASSETS_PAGE.data[0] } },
     { match: (u) => u.includes('/attachments/njc8wh9647cjst8h55ff38'), body: ATTACHMENT_DOC },
     { match: (u) => u.startsWith('https://storage-us-gcs.bfldr.com/'), bytes: 'PNGBYTES' },
   ]);
@@ -138,9 +139,33 @@ test('an upstream URL outside Brandfolder-owned hosts is refused (no open proxy)
   const evil = {
     data: { id: 'x', type: 'attachments', attributes: { url: 'https://bfldr.com.evil.example/steal', mimetype: 'image/png' } },
   };
-  const fetchImpl = fakeFetch([{ match: (u) => u.includes('/attachments/'), body: evil }]);
+  const fetchImpl = fakeFetch([
+    { match: (u) => u.includes('/assets/a?'), body: { data: { id: 'a', attributes: {}, relationships: { attachments: { data: [{ id: 'x', type: 'attachments' }] } } } } },
+    { match: (u) => u.includes('/attachments/'), body: evil },
+  ]);
   const bf = createBrandfolderProvider('suse-bf', { brandfolderId: BF_ID }, 'key', fetchImpl);
   await assert.rejects(() => bf.resolveBlob('a', 'x'), /outside allowed hosts/);
+});
+
+test('a guessed attachment cannot bypass the requested asset boundary', async () => {
+  const fetchImpl = fakeFetch([{ match: u => u.includes('/assets/allowed?'), body: { data: ASSETS_PAGE.data[0] } }]);
+  const bf = createBrandfolderProvider('b', { brandfolderId: BF_ID }, 'key', fetchImpl);
+  await assert.rejects(bf.resolveBlob('allowed', 'private_attachment'), /does not belong/);
+  await assert.rejects(bf.resolveFilePreview!('allowed', 'private_attachment'), /does not belong/);
+  assert.equal((fetchImpl as unknown as { calls: string[] }).calls.some(u => u.includes('/attachments/')), false);
+});
+
+test('a file preview fetches its thumbnail without downloading the original', async () => {
+  const fetchImpl = fakeFetch([
+    { match: u => u.includes('/assets/255hvp7s4xkbqb9rbncsfqp3?'), body: { data: ASSETS_PAGE.data[0] } },
+    { match: u => u.includes('/attachments/njc8wh9647cjst8h55ff38?fields=thumbnail_url'), body: { data: { attributes: { thumbnail_url: 'https://thumbs.bfldr.com/file-preview' } } } },
+    { match: u => u === 'https://thumbs.bfldr.com/file-preview', bytes: 'SMALL_PREVIEW' },
+  ]);
+  const bf = createBrandfolderProvider('b', { brandfolderId: BF_ID }, 'key', fetchImpl);
+  const blob = await bf.resolveFilePreview!('255hvp7s4xkbqb9rbncsfqp3', 'njc8wh9647cjst8h55ff38');
+  assert.equal(blob.kind, 'stream');
+  if (blob.kind === 'stream') assert.equal(await new Response(blob.body).text(), 'SMALL_PREVIEW');
+  assert.equal((fetchImpl as unknown as { calls: string[] }).calls.some(u => u.includes('fields=url')), false);
 });
 
 test('healthCheck: ok on 200, detail on 401, and a missing credential fails closed', async () => {
