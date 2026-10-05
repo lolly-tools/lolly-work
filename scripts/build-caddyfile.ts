@@ -49,6 +49,7 @@ export function main(argv = process.argv.slice(2)): number {
     else if (flag === '--redirect') { options.redirectDomains.push(value()); redirectsGiven = true; }
     else if (flag === '--shell-origin') options.shellOrigin = value();
     else if (flag === '--upstream') options.upstream = value();
+    else if (flag === '--serve-shell') options.serveShell = true;
     else throw new Error(`unknown flag ${flag}`);
   }
   if (!redirectsGiven) options.redirectDomains = [...(LOLLY_ING.redirectDomains ?? [])];
