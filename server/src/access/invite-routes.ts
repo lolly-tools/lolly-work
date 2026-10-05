@@ -111,7 +111,7 @@ export const INVITE_PAGE_HEADERS: Readonly<Record<string, string>> = {
   'x-content-type-options': 'nosniff',
   'referrer-policy': 'strict-origin',
   'x-robots-tag': 'noindex, nofollow',
-  'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
+  'content-security-policy': "default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'",
 };
 
 /** In-app browsers, where Google refuses to sign in (invite spec 3.2). */
@@ -193,8 +193,10 @@ export function registerInviteRoutes(router: ReturnType<typeof createRouter>, ki
   /** The button for one sign-in: "Continue with Google", or "Sign in with
    *  email and password" for the password one. */
   const choiceOf = (p: ProviderEntry): SignInChoice => ({
-    idp: p.id, label: p.kind === 'password' ? `Sign in with ${inSentence(p.name)}` : `Continue with ${p.name}`,
+    idp: p.id, provider: p.name, label: p.kind === 'password' ? `Sign in with ${inSentence(p.name)}` : `Continue with ${p.name}`,
   });
+
+  const pendingChoices = (): SignInChoice[] => (config.idp.pending ?? []).map(name => ({ idp: '', label: name, provider: name, pending: true }));
 
   /** What an account has that this invitation would give: less access to
    *  the link's project, or (for a workspace link) a project or group it
@@ -236,7 +238,7 @@ export function registerInviteRoutes(router: ReturnType<typeof createRouter>, ki
     const ask = mayAsk ? await switchAsk(f, await accountIdentity(user), nonce, user.id) : null;
     const html = inviteOtherAccountHtml(viewOf(f, token), {
       csrf: nonce, signedInAs: user.email, ask,
-      choices: kit.providers().map(choiceOf),
+      choices: [...kit.providers().map(choiceOf), ...pendingChoices()],
     });
     return { html, cookie };
   };
@@ -277,7 +279,7 @@ export function registerInviteRoutes(router: ReturnType<typeof createRouter>, ki
     const ua = String(req.headers['user-agent'] ?? '');
     send(res, opts.status ?? 200, invitePageHtml(v, {
       csrf: nonce,
-      choices: providers.filter((p) => p.kind !== 'password').map(choiceOf),
+      choices: [...providers.filter((p) => p.kind !== 'password').map(choiceOf), ...pendingChoices()],
       passwordSetup,
       passwordSignIn: password && hasPassword ? choiceOf(password) : null,
       github: providers.some((p) => p.kind === 'github'),

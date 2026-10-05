@@ -1,7 +1,8 @@
+import { providerIcon } from './provider-icons.ts';
 /**
  * The /activate page (plans/34 wave 4) - where a person confirms a device
  * code. Server-rendered, script-free, same posture as links/collection-page.ts:
- * our own markup, inline style only, nothing loadable from anywhere else. The
+ * our own markup with same-origin theme assets and no scripts. The
  * form is the whole interface - approval is a personal act performed by the
  * signed-in person typing the code, which is why this page exists instead of a
  * console button.
@@ -46,6 +47,29 @@ const SHELL_STYLE = `
   form.stack { margin: 10px 0; }
   form.stack button { width: 100%; max-width: 20rem; }
   .addr { overflow-wrap: anywhere; }
+  body { padding:clamp(24px,8vh,88px) 16px; background:var(--plane);color:var(--ink);font-family:var(--font-sans,var(--font-sys)); }
+  main { max-width:30rem; }
+  .auth-brand { display:flex;align-items:center;gap:10px;margin-bottom:32px;font-size:20px;font-weight:650; }
+  .auth-brand img { flex:none; }
+  h1 { font-size:clamp(24px,5vw,32px);font-weight:500;letter-spacing:-.02em;line-height:1.2;overflow-wrap:anywhere; }
+  h2 { font-weight:500; }
+  .muted { color:var(--muted);opacity:1; }
+  .card { border:1px solid var(--hairline);border-radius:var(--radius);background:var(--surface);padding:24px;margin-top:24px;box-shadow:var(--shadow-pop); }
+  button, .auth-provider { display:inline-flex;align-items:center;justify-content:center;gap:12px;font:inherit;min-height:48px;border:1px solid var(--baseline);border-radius:var(--radius-sm);background:var(--surface);color:var(--ink); }
+  button.primary { background:var(--accent);color:var(--on-accent);border-color:transparent; }
+  button:hover:not(:disabled), .auth-provider:hover { border-color:var(--accent);box-shadow:var(--shadow-pop); }
+  button:disabled { cursor:default;opacity:.55;box-shadow:none; }
+  .auth-providers { display:grid;gap:12px;margin-top:24px; }
+  .auth-provider { width:100%;box-sizing:border-box;padding:12px 16px;justify-content:flex-start;text-decoration:none;text-align:start; }
+  .auth-arrow, .auth-pending { margin-inline-start:auto; }
+  .auth-pending { font-size:.8rem; }
+  .provider-icon { display:block;width:22px;height:22px;flex:none; }
+  form.stack button { max-width:none; }
+  input.field, textarea.field, input[type=text] { background:var(--plane);color:var(--ink);border-color:var(--baseline);border-radius:var(--radius-sm);min-height:48px; }
+  a:focus-visible,button:focus-visible,input:focus-visible,textarea:focus-visible { outline-color:var(--accent); }
+  .err { border-color:var(--critical);padding:12px 16px; }
+  @media (max-width:400px) { .card { padding:20px 16px; } .auth-provider { padding-inline:12px; } }
+
 `;
 
 /** An action link drawn as a button, 44px tall for a finger. */
@@ -53,7 +77,7 @@ export const LINK_STYLE = 'display:inline-flex;align-items:center;justify-conten
 
 /**
  * Every server page: English (plans/75 C20), one h1, the workspace name
- * under it, inline style only and no script. `title` replaces the default
+ * under it, same-origin theme assets and no script. `title` replaces the default
  * "<heading> - <workspace>" where the heading would say too much, as on the
  * invite pages, whose title never names a project or a person.
  */
@@ -70,11 +94,11 @@ export function actionLink(href: string, label: string): string {
  *  on a phone. `extra` is markup placed above the button, built by the
  *  caller from escaped parts. */
 export function postForm(o: {
-  action: string; fields: Record<string, string>; label: string; primary?: boolean; extra?: string;
+  action: string; fields: Record<string, string>; label: string; primary?: boolean; extra?: string; provider?: string;
 }): string {
   const hidden = Object.entries(o.fields).map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`).join('');
   return `<form class="stack" method="post" action="${esc(o.action)}">${hidden}${o.extra ?? ''}`
-    + `<button${o.primary ? ' class="primary"' : ''} type="submit">${esc(o.label)}</button></form>`;
+    + `<button${o.primary ? ' class="primary"' : ''} type="submit">${o.provider ? providerIcon(o.provider) : ''}${esc(o.label)}</button></form>`;
 }
 
 /** The note field of a request form: optional, at most 280 characters. */
@@ -97,10 +121,14 @@ function page(instanceName: string, body: string, heading = 'Connect a device', 
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
 <title>${esc(title ?? `${heading} - ${instanceName}`)}</title>
+<link rel="stylesheet" href="/admin/theme.css">
+<link rel="stylesheet" href="/api/brand/auth.css">
+<link rel="icon" href="/admin/favicon.ico">
 <style>${SHELL_STYLE}</style>
 </head>
 <body>
 <main>
+<div class="auth-brand" aria-hidden="true"><img src="/admin/icon.svg" alt="" width="36" height="36"><span>Lolly</span></div>
 <h1>${esc(heading)}</h1>
 <p class="muted">${esc(instanceName)}</p>
 ${body}
@@ -144,18 +172,18 @@ ${known ? `<p class="muted">Asking: <span class="tag">${esc(opts.clientTag ?? 'u
  *  the OSS shell's gate and the console gate get multi-IdP with zero client
  *  changes - their one sign-in link simply arrives here first. */
 export function idpChooserHtml(
-  instanceName: string, entries: Array<{ href: string; label: string }>, opts: { inviteOnly?: boolean } = {},
+  instanceName: string, entries: Array<{ href: string; label: string; provider?: string }>, opts: { inviteOnly?: boolean; pending?: string[] } = {},
 ): string {
   // Full width of the card up to 20rem, padding included, so a 360px phone
   // never scrolls sideways; 44px tall like every other action here.
-  const buttons = entries.map((e) =>
-    `<p style="margin:.5rem 0"><a href="${esc(e.href)}" style="${LINK_STYLE};box-sizing:border-box;width:100%;max-width:20rem;text-align:center">${esc(e.label)}</a></p>`).join('\n');
+  const buttons = entries.map(e => `<a class="auth-provider" href="${esc(e.href)}">${providerIcon(e.provider ?? e.label)}<span>${esc(e.label)}</span><span class="auth-arrow" aria-hidden="true">→</span></a>`).join('\n');
+  const pending = (opts.pending ?? []).map(name => `<button class="auth-provider" type="button" disabled aria-label="${esc(name)} (pending)">${providerIcon(name)}<span>${esc(name)}</span><span class="auth-pending">(pending)</span></button>`).join('\n');
   // On an invite-only workspace most refusals are a person who picked the
   // wrong account, so the chooser says which one to pick (plans/75 5.10).
   return page(instanceName, `
 <div class="card">
-<p>Choose where you sign in.${opts.inviteOnly ? ' Use the account your invitation went to.' : ''}</p>
-${buttons}
+<p>Choose how to sign in.${opts.inviteOnly ? ' Use the account your invitation went to.' : ''}</p>
+<div class="auth-providers">${buttons}${pending}</div>
 </div>`, 'Sign in');
 }
 

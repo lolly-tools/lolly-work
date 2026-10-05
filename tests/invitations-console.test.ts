@@ -120,7 +120,7 @@ test('an owner is offered IdP groups (the way to add a second owner); without gr
   const q = page([]);
   const plain = await q.helpers.invitationsSection(null);
   q.main.append(plain);
-  assert.equal(plain.querySelectorAll('input[type=checkbox]').length, 0);
+  assert.equal(plain.querySelector('form').querySelectorAll('input[type=checkbox]').length, 0);
   assert.ok(plain.textContent.includes('needs permission to edit groups'));
   plain.querySelector('textarea').value = 'ana@example.com';
   plain.querySelector('form').dispatchEvent(new q.w.Event('submit', { cancelable: true }));
@@ -136,4 +136,23 @@ test('a deployment with invitations switched off says so on the card', async () 
   const p = page([], { policy: true, invitations: false });
   const section = await p.helpers.invitationsSection([]);
   assert.ok(section.textContent.includes('Invitations are switched off'));
+});
+
+
+test('invitation filters preserve typing and selection; bulk revocation confirms and touches only selected invitations', async () => {
+  const row = (id: string, email: string): Inv => ({ id, email, groups: [], status: 'pending', createdAt: '2026-10-05T10:00:00Z', expiresAt: null, acceptedAt: null });
+  const p = page([row('a', 'ana@example.com'), row('b', 'bo@example.com'), row('c', 'cy@example.com')]);
+  const section = await p.helpers.invitationsSection([]); p.main.append(section);
+  const search = section.querySelector('input[type=search]'); search.focus(); search.value = 'ana'; search.dispatchEvent(new p.w.Event('input'));
+  assert.equal(p.w.document.activeElement, search, 'typing does not detach the filter');
+  assert.equal(section.querySelectorAll('tbody tr').length, 1);
+  const selectAll = section.querySelector('input[aria-label="Select matching invitations"]'); selectAll.checked = true; selectAll.dispatchEvent(new p.w.Event('change'));
+  search.value = ''; search.dispatchEvent(new p.w.Event('input'));
+  assert.equal(section.querySelector('input[aria-label="Select invitation for ana@example.com"]').checked, true);
+  assert.equal(section.querySelector('input[aria-label="Select invitation for bo@example.com"]').checked, false);
+  const revoke = buttonByText(section, 'Revoke invitations'); revoke.click();
+  assert.equal(p.calls.filter(c => c.method === 'DELETE').length, 0);
+  assert.equal(revoke.dataset.armed, 'true', 'confirmation remains visible'); revoke.click(); await pause(); await pause();
+  assert.deepEqual(p.calls.filter(c => c.method === 'DELETE').map(c => c.path), ['/api/v1/invitations/a']);
+  assert.ok(section.querySelector('.invite-action[title][aria-label]'), 'compact actions remain labelled and explained');
 });

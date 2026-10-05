@@ -327,10 +327,11 @@ function armConfirmButton(attrs, idleLabel, armedLabel, onConfirm) {
   const labelText = () => (typeof idleLabel === 'function' ? idleLabel() : idleLabel);
   let armed = false;
   let armTimer = null;
-  const disarm = () => { armed = false; btn.textContent = labelText(); };
+  const disarm = () => { armed = false; delete btn.dataset.armed; btn.textContent = labelText(); };
   const btn = el('button', { type: 'button', ...attrs, onclick: async () => {
     if (!armed) {
       armed = true;
+      btn.dataset.armed = 'true';
       btn.textContent = armedLabel;
       announce(`${armedLabel} Activate again to confirm.`);
       armTimer = setTimeout(disarm, CONFIRM_ARM_MS);
@@ -3607,8 +3608,7 @@ function inviteRefusal(reason, ctx) {
 
 /** "Copy message": the text to the clipboard. When the clipboard refuses,
  *  the text goes into a read-only box in `host`, already selected. */
-function copyMessageButton(getText, host, copiedNote = 'Invite message copied') {
-  const label = 'Copy message';
+function copyMessageButton(getText, host, copiedNote = 'Invite message copied', label = 'Copy message') {
   const btn = el('button', { type: 'button', onclick: async () => {
     const text = getText();
     if (await copyToClipboard(text)) {
@@ -3776,6 +3776,67 @@ async function invitationsSection(groupOptions) {
     if (!p) return 'A project';
     return p.invitedBy?.name ? `${p.name || 'A project'} (${p.invitedBy.name})` : p.name || 'A project';
   };
+  let currentInvitations = [], visibleInvitations = [], query = '', statusFilter = 'all', bulkBusy = false;
+  const selected = new Set();
+  const rowChecks = new Map();
+  const selectionNote = el('span', { role: 'status', class: 'sub' });
+  const bulkError = el('p', { class: 'form-err', role: 'status' });
+  const selectVisible = el('input', { type: 'checkbox', 'aria-label': 'Select matching invitations', onchange: () => {
+    for (const inv of visibleInvitations) { if (selectVisible.checked) selected.add(inv.id); else selected.delete(inv.id); }
+    syncSelection();
+  } });
+  const selectedRows = () => currentInvitations.filter(inv => selected.has(inv.id));
+  function syncSelection() {
+    for (const [id, check] of rowChecks) { check.checked = selected.has(id); check.disabled = bulkBusy; }
+    const visibleSelected = visibleInvitations.filter(inv => selected.has(inv.id)).length;
+    selectVisible.checked = visibleInvitations.length > 0 && visibleSelected === visibleInvitations.length;
+    selectVisible.indeterminate = visibleSelected > 0 && visibleSelected < visibleInvitations.length;
+    selectVisible.disabled = bulkBusy || !visibleInvitations.length;
+    const rows = selectedRows(), pending = rows.filter(inv => inv.status === 'pending').length;
+    selectionNote.textContent = rows.length ? `${rows.length} selected · ${pending} waiting` : 'Select invitations to manage them together.';
+    bulkCopy.disabled = bulkBusy || !pending;
+    bulkReplace.disabled = bulkBusy || !pending;
+    bulkRevoke.disabled = bulkBusy || !rows.some(inv => inv.status === 'pending' || inv.status === 'accepted');
+    bulkAgain.disabled = bulkBusy || !rows.some(inv => inv.status === 'expired' || inv.status === 'revoked');
+  }
+  async function bulkRun(action, eligible, disarm = () => {}) {
+    const rows = selectedRows().filter(eligible);
+    if (!rows.length || bulkBusy) { disarm(); return; }
+    bulkBusy = true; bulkError.textContent = ''; syncSelection();
+    let completed = 0; const failures = [], results = [];
+    for (const inv of rows) {
+      const id = encodeURIComponent(inv.id);
+      try {
+        const answer = await api(`/api/v1/invitations/${id}${action === 'replace' ? '/link' : action === 'again' ? '/reinvite' : ''}`, { method: action === 'revoke' ? 'DELETE' : 'POST', ...(action === 'revoke' ? {} : { body: {} }) });
+        completed++; selected.delete(inv.id);
+        if (action === 'again' && answer?.invitation) results.push(inviteResultRow({ ...answer.invitation, created: true }, ctx));
+      } catch (error) { failures.push(`${inv.email}: ${error.message}`); }
+    }
+    bulkBusy = false; disarm();
+    if (results.length) showOut(el('div', { class: 'stack' }, ...results));
+    await refreshList(); syncSelection();
+    if (failures.length) bulkError.textContent = `${completed} completed. ${failures.join(' ')}`;
+    toast(`${completed} invitation${completed === 1 ? '' : 's'} ${action === 'revoke' ? 'revoked' : action === 'replace' ? 'updated with new links' : 'created again'}.`);
+  }
+  const bulkCopy = copyMessageButton(() => selectedRows().filter(inv => inv.status === 'pending').map(inv => inviteMessage(inv, ctx)).join('\n\n'), linkOut, 'Selected invite messages copied', 'Copy selected messages');
+  bulkCopy.title = 'Copy a separate invitation message for each selected waiting invitation';
+  const bulkReplace = armConfirmButton({}, 'Replace links', 'Replace selected links?', disarm => bulkRun('replace', inv => inv.status === 'pending', disarm));
+  bulkReplace.title = 'Replace links for selected waiting invitations. Earlier links stop working.';
+  const bulkRevoke = armConfirmButton({ class: 'danger' }, 'Revoke invitations', 'Revoke selected invitations?', disarm => bulkRun('revoke', inv => inv.status === 'pending' || inv.status === 'accepted', disarm));
+  bulkRevoke.title = 'Stop waiting invitations being accepted. Accepted invitations stop granting future sign-in; existing sessions stay open.';
+  const bulkAgain = el('button', { type: 'button', title: 'Create fresh invitations for selected expired or revoked invitations', onclick: () => bulkRun('again', inv => inv.status === 'expired' || inv.status === 'revoked') }, 'Invite selected again');
+  const bulk = el('div', { class: 'invite-bulk' }, selectionNote, el('div', { class: 'invite-bulk-actions' }, bulkCopy, bulkReplace, bulkAgain, bulkRevoke), bulkError);
+  const search = el('input', { type: 'search', placeholder: 'Search invitations', 'aria-label': 'Search invitations', oninput: () => { query = search.value.toLowerCase().trim(); renderList(currentInvitations); } });
+  const status = el('select', { 'aria-label': 'Invitation status', onchange: () => { statusFilter = status.value; renderList(currentInvitations); } }, ...['all', 'pending', 'accepted', 'expired', 'revoked'].map(value => el('option', { value }, value === 'all' ? 'All statuses' : value === 'pending' ? 'Waiting' : value[0].toUpperCase() + value.slice(1))));
+  const filters = el('div', { class: 'invite-filters' }, search, status);
+  const listBody = el('div', { class: 'stack' });
+  listHost.append(el('div', { class: 'card stack invitations-card' }, el('h2', { class: 'flush' }, 'Invitations'), filters, el('label', { class: 'chk invite-select-all' }, selectVisible, 'Select matching invitations'), bulk, listBody));
+  const actionIcon = (node, glyph, tip) => {
+    if (!node) return null;
+    node.classList.add('invite-action'); node.dataset.actionIcon = glyph;
+    node.setAttribute('aria-label', node.textContent); node.title = tip;
+    return node;
+  };
   function invitationRow(inv) {
     const rowErr = errSpan();
     const id = encodeURIComponent(inv.id);
@@ -3845,9 +3906,20 @@ async function invitationsSection(groupOptions) {
         : null,
       revoke,
     ];
+    const descriptions = [
+      ['message', 'Copy this invitation message'], ['copy', 'Copy the invitation link'],
+      ['refresh', 'Replace this link. Earlier links stop working.'], ['key', 'Create a one-time password sign-in link'],
+      ['send', 'Invite this person again'], ['person', 'Open this person’s account'], ['revoke', 'Revoke this invitation'],
+    ];
+    actions.forEach((node, index) => actionIcon(node, ...descriptions[index]));
+    const check = el('input', { type: 'checkbox', 'aria-label': `Select invitation for ${inv.email}`, checked: selected.has(inv.id) ? 'checked' : null, onchange: () => {
+      if (check.checked) selected.add(inv.id); else selected.delete(inv.id); syncSelection();
+    } }); rowChecks.set(inv.id, check);
+    const avatar = el('span', { class: 'invite-avatar', 'aria-hidden': 'true' }, inv.email.split('@')[0].slice(0, 2).toUpperCase());
     const projects = inv.projects ?? [];
-    return el('tr', {},
-      el('td', { title: inv.email }, inv.email,
+    return el('tr', { 'data-invitation-id': inv.id },
+      el('td', {}, check),
+      el('td', { title: inv.email }, el('div', { class: 'invite-account' }, avatar, el('span', {}, inv.email)),
         inv.groups?.length ? [' ', el('div', { class: 'muted' }, `Groups: ${inv.groups.join(', ')}`)] : null),
       el('td', {}, projects.length
         ? projects.map((p) => `${p.name || 'A removed project'} (${projectRoleLabel(p.role)})`).join(', ')
@@ -3858,27 +3930,30 @@ async function invitationsSection(groupOptions) {
         el('span', { class: `status ${INVITE_STATUS_CLASS[inv.status] ?? ''}` }, statusText),
         passwordText ? [' ', el('div', { class: 'muted' }, passwordText)] : null),
       whenCell(inv.status === 'accepted' ? inv.acceptedAt : inv.expiresAt),
-      el('td', {}, ...spaced(actions), rowErr));
+      el('td', {}, el('div', { class: 'invite-row-actions' }, ...actions.filter(Boolean)), rowErr));
   }
   function renderList(invitations) {
+    currentInvitations = invitations; rowChecks.clear();
+    for (const id of selected) if (!invitations.some(inv => inv.id === id)) selected.delete(id);
     // Pending first, then expired (Invite again), then accepted, each newest
     // first; revoked rows fold away under their own heading.
     const ordered = invitations.slice().sort((a, b) =>
       (INVITE_STATUS_RANK[a.status] ?? 9) - (INVITE_STATUS_RANK[b.status] ?? 9) || String(b.createdAt).localeCompare(String(a.createdAt)));
-    const live = ordered.filter((i) => i.status !== 'revoked');
-    const revoked = ordered.filter((i) => i.status === 'revoked');
+    const filtered = ordered.filter(inv => (statusFilter === 'all' || inv.status === statusFilter) && (!query || [inv.email, inv.status, inv.inviter?.name, ...(inv.projects ?? []).map(p => p.name)].filter(Boolean).join(' ').toLowerCase().includes(query)));
+    visibleInvitations = filtered;
+    const live = filtered.filter(i => i.status !== 'revoked');
+    const revoked = filtered.filter(i => i.status === 'revoked');
     const table = (rows) => dataTable(
-      ['Email', 'Projects', 'Made from', 'Invited by', 'Status', { label: 'Ends or accepted', sort: 'date' }, { label: 'Actions', w: '1%', sort: false }],
-      rows.map(invitationRow), { sortable: true });
+      [{ label: 'Select', sort: false, w: '1%' }, 'Email', 'Projects', 'Made from', 'Invited by', 'Status', { label: 'Ends or accepted', sort: 'date' }, { label: 'Actions', w: '1%', sort: false }],
+      rows.map(invitationRow), { sortable: true, filter: false, csv: true, csvName: 'invitations' });
     const bearer = live.some((i) => i.status === 'pending' && i.passwordSetup && i.password !== 'set');
-    listHost.replaceChildren(el('div', { class: 'card stack' },
-      el('h2', { class: 'flush' }, 'Invitations'),
+    const card = el('div', { class: 'stack' },
       live.length
         ? table(live)
         : el('p', { class: 'empty' }, 'No open invitations. Invite someone above.'),
       linkOut,
       revoked.length
-        ? el('details', { class: 'ov-section' },
+        ? el('details', { class: 'ov-section', ...(statusFilter === 'revoked' || query ? { open: 'true' } : {}) },
             el('summary', {}, el('span', { class: 'detail-h section-h' }, `Revoked (${revoked.length})`)),
             table(revoked))
         : null,
@@ -3888,13 +3963,14 @@ async function invitationsSection(groupOptions) {
       passwordSignInOn()
         ? el('p', { class: 'sub flush' }, 'Copy sign-in link gives the person a link to set a password, for when they cannot use your other sign-ins. It works once, for seven days, and a new link replaces the last one.')
         : null,
-      el('p', { class: 'sub flush' }, 'Revoking a pending invitation stops it being used. Revoking an accepted one blocks that person’s next sign-in unless your sign-in rule lists their email or domain. It does not end a session that is already open: use Disable access on the person for that.')));
+      el('p', { class: 'sub flush' }, 'Revoking a pending invitation stops it being used. Revoking an accepted one blocks that person’s next sign-in unless your sign-in rule lists their email or domain. It does not end a session that is already open: use Disable access on the person for that.'));
+    listBody.replaceChildren(card); syncSelection();
   }
   async function refreshList() {
     try { renderList((await api('/api/v1/invitations')).invitations ?? []); }
     catch { /* keep the current list on a transient error */ }
   }
-  renderList(data.invitations ?? []);
+  renderList(data.invitations ?? []); syncSelection();
   return el('div', { class: 'stack' }, form, listHost);
 }
 

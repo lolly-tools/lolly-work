@@ -316,6 +316,14 @@ invited address, or is the inviter's own), each with subject `invitation:<id>`. 
 to join and to use another account write the `access.*` rows listed in
 [the API](api.md#invite-links-and-access-requests).
 
+### Planned sign-ins
+
+`idp.pending` lists provider names that appear as disabled choices on sign-in and invitation pages. For example, `"pending": ["SUSE ID"]` shows **SUSE ID (pending)** without adding an authentication route. Remove the name when adding the registered OIDC provider to `idp.additional`.
+
+For SUSE ID, obtain the app's actual issuer and client ID from its administrator, register `https://lolly.ing/api/auth/callback`, and store its secret in the environment variable named by `clientSecretRef`. The discovery URL is specific to the app registration. Existing admission, invitation and email-verification checks also apply to this provider.
+
+The sign-in and invitation pages share the console's local theme and fonts. Brand colours and fonts resolve from the active design-token source on the server; these pages need no scripts or external assets.
+
 ### Provider recipes
 
 Every recipe uses one redirect URI: `<instance.baseUrl>/api/auth/callback`. Secrets go in

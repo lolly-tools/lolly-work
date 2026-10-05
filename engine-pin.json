@@ -1,17 +1,17 @@
 {
-  "generatedFrom": "288934a0defcb458d01a43c9885cb807720b54b7",
+  "generatedFrom": "930cc13d9ec27d1bb20a051c5a1188f6e9316aa9",
   "note": "Pin manifest - a consumer verifies vendored content against contentHash. tarballSha256 is informational (gzip is not reproducible).",
   "core": {
     "version": "1.0.0",
     "tarball": "lolly-tools-core-1.0.0.tgz",
-    "tarballSha256": "3357df6cbc591846234fae893fad7eae2bf759f8f6aecb63981550edc21db8f2",
-    "contentHash": "242b9e4901b6f9a98e9de02d011708fffb09863c95c318bab3fff77f050f774b"
+    "tarballSha256": "5413f5ffa718532c84be4861aa83c4733eab239e703959b206ded9b148874df1",
+    "contentHash": "054d801f6cf92e0e3994a595d5cbf57de915e63b0f663c856388019d9474caa3"
   },
   "engine": {
     "version": "1.244.0",
     "tarball": "lolly-engine-1.244.0.tgz",
-    "tarballSha256": "705bd52de22b560274e184038289ffea04e9bdc7872fdc68424e258a2023914e",
-    "contentHash": "95db6c71d6c0b482068b3686ebda4724a428e1c45f44ec935147eba59a9862ac"
+    "tarballSha256": "f6d8e628c60130df22b3566a7d886fc0647b499215a7caa672572337946d98d4",
+    "contentHash": "9324c014dd8eab6560acc86db48cc4897b3035a182807ebfb71ddb80416c9b0b"
   },
   "schemas": {
     "asset-ref.schema.json": "e07d85d6db6c3a7c88190c86a4779707e2b073ce17dbaa9bb355ed2c015fcdae",
@@ -20,7 +20,7 @@
     "brand-system-v1.schema.json": "19f653283b83e99ecdc4ea98014828dcb5e660633f86cb0772387a02d89378ca",
     "canonical-aliases.json": "3b008b3d5c2936cd68246d736b0de877e98d5a37939645928ef55380aff7cc29",
     "canonical-inputs.json": "8747d7dea7721ae0a6a0fce9e58ce188dd86faab94c44a15304fc70042095e22",
-    "canvas-op.schema.json": "e1acaf0c98b875012104b49582994bf5b5bdb9aa3fc3e210a0d9e3c527f9453d",
+    "canvas-op.schema.json": "1064a68336522ef3eb33bd11f02e3672e1d9604e1da1da4de64015805e14f3cf",
     "chart-v1.schema.json": "7bc73ce09be779f9ba04ad7c2a0f872f5c663dc39558c81a74bf8295b272e822",
     "check-report-v1.schema.json": "907111ca5c75d11b72e90c087e884a9ca2312e526125b9db1953641a0c341561",
     "content-inventory-v1.schema.json": "fc6e0a75509e4c6fb6b3709be65fb600528b7e3064ad6be25e21246879b349c6",

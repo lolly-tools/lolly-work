@@ -1104,7 +1104,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     'cache-control': 'no-store',
     'x-content-type-options': 'nosniff',
     'referrer-policy': 'strict-origin',
-    'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
+    'content-security-policy': "default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'",
   };
   const passwordLoginHref = (returnTo: string): string =>
     `/api/auth/login?${passwordIdp && idpProviders().length > 1 ? `idp=${encodeURIComponent(passwordIdp.id)}&` : ''}returnTo=${encodeURIComponent(returnTo)}`;
@@ -1182,11 +1182,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         'content-type': 'text/html; charset=utf-8',
         'cache-control': 'private, no-store',
         'x-content-type-options': 'nosniff',
-        'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+        'content-security-policy': "default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; frame-ancestors 'none'",
       });
       res.end(idpChooserHtml(config.instance.name,
-        providers.map((p) => ({ href: `${p.loginPath}${carry}`, label: `Sign in with ${p.kind === 'password' ? inSentence(p.name) : p.name}` })),
-        { inviteOnly: !!config.idp.admission }));
+        providers.map((p) => ({ href: `${p.loginPath}${carry}`, provider: p.name, label: `Sign in with ${p.kind === 'password' ? inSentence(p.name) : p.name}` })),
+        { inviteOnly: !!config.idp.admission, pending: config.idp.pending }));
       return;
     }
     // One house: the primary when there is one, else the only entry (email
@@ -1244,7 +1244,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       'content-type': 'text/html; charset=utf-8',
       'cache-control': 'private, no-store',
       'x-content-type-options': 'nosniff',
-      'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+      'content-security-policy': "default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; frame-ancestors 'none'",
       'set-cookie': clear,
     });
     res.end(signInErrorHtml(config.instance.name, {
@@ -1442,7 +1442,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       } else {
         res.writeHead(403, {
           'content-type': 'text/html; charset=utf-8', 'cache-control': 'private, no-store', 'x-content-type-options': 'nosniff',
-          'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+          'content-security-policy': "default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; frame-ancestors 'none'",
         });
         res.end(signInErrorHtml(config.instance.name, { message, retryHref: '', heading: 'Ask an owner for a new sign-in link' }));
       }
@@ -2053,7 +2053,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     'referrer-policy': 'strict-origin',
     // Script-free page, same posture as the bearer collection page - except
     // form-action 'self', so the confirm form can submit.
-    'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
+    'content-security-policy': "default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'",
   };
   const loginPathFor = (returnTo: string): string | null => {
     const { loginPath } = authProvider();
@@ -9640,7 +9640,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         if (surface === 'auth' && /^\/api\/auth\/(login|password\/)/.test(pathname) && /\btext\/html\b/.test(String(req.headers.accept ?? ''))) {
           res.writeHead(429, {
             'content-type': 'text/html; charset=utf-8', 'cache-control': 'private, no-store', 'x-content-type-options': 'nosniff',
-            'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+            'content-security-policy': "default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; frame-ancestors 'none'",
             'retry-after': String(verdict.retryAfterSec),
           });
           const isGet = (req.method ?? 'GET') === 'GET';

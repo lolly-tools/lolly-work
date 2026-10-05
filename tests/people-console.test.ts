@@ -404,11 +404,11 @@ test('the invitations table: columns, text statuses, password lines and the acti
   const card = [...section.querySelectorAll('.card')].find((c: any) => c.querySelector('h2')?.textContent === 'Invitations') as any;
   const tables = card.querySelectorAll('table');
   assert.deepEqual([...tables[0].querySelectorAll('thead th')].map((t: any) => textOf(t)),
-    ['Email', 'Projects', 'Made from', 'Invited by', 'Status', 'Ends or accepted', 'Actions']);
+    ['Select', 'Email', 'Projects', 'Made from', 'Invited by', 'Status', 'Ends or accepted', 'Actions']);
   const rows = [...tables[0].querySelectorAll('tbody tr')] as any[];
-  assert.deepEqual(rows.map((r) => r.children[0].textContent), ['op@partner.example', 'wa@partner.example', 'ex@partner.example', 'cy@partner.example'],
+  assert.deepEqual(rows.map((r) => r.children[1].querySelector('.invite-account > span:last-child').textContent), ['op@partner.example', 'wa@partner.example', 'ex@partner.example', 'cy@partner.example'],
     'pending first, then expired, then accepted');
-  const cells = (r: any) => [...r.children].map((c: any) => textOf(c));
+  const cells = (r: any) => [...r.children].slice(1).map((c: any) => textOf(c));
   const [open, wait, expired, accepted] = rows;
   assert.equal(cells(open)[1], 'Brand refresh (Editor), Spring poster (Viewer)');
   assert.equal(cells(open)[2], 'Brand refresh (Priya)');

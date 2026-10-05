@@ -215,12 +215,12 @@ test('the gate learns the workspace name, that it is invite only, and that peopl
   assert.equal(config.inviteOnly, true);
   assert.equal(config.joinRequests, true);
   const chooser = await (await fetch(`${env.base}/api/auth/login`)).text();
-  assert.ok(chooser.includes('Choose where you sign in. Use the account your invitation went to.'));
+  assert.ok(chooser.includes('Choose how to sign in. Use the account your invitation went to.'));
   const open = await boot({ idp: { admission: undefined } });
   const openConfig = (await (await fetch(`${open.base}/api/auth/config`)).json()) as Record<string, unknown>;
   assert.equal(openConfig.inviteOnly, false);
   assert.equal(openConfig.joinRequests, false, 'an open workspace has nobody to refuse');
-  assert.ok((await (await fetch(`${open.base}/api/auth/login`)).text()).includes('<p>Choose where you sign in.</p>'));
+  assert.ok((await (await fetch(`${open.base}/api/auth/login`)).text()).includes('<p>Choose how to sign in.</p>'));
 });
 
 test('from the wrong-account page: ask to use this account, see it waiting, and the inviter is told', async () => {

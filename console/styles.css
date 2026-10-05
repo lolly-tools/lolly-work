@@ -1197,3 +1197,28 @@ td.url-cell { max-width: 240px; }
 .setup-wizard a { color: var(--accent); }
 .setup-wizard a.btn { display: inline-block; }
 .setup-wizard a.btn.primary { color: var(--on-accent); }
+
+/* Invitation controls share the console theme and retain visible confirmation labels. */
+.invite-filters, .invite-bulk-actions, .invite-row-actions { display:flex;align-items:center;gap:8px;flex-wrap:wrap; }
+.invite-filters input { flex:1;min-width:180px; }
+.invite-filters select { min-width:150px; }
+.invite-bulk { display:grid;gap:10px;padding:12px;border-radius:var(--radius-sm);background:var(--plane); }
+.invite-bulk-actions button { min-height:40px; }
+.invite-bulk .form-err:empty { display:none; }
+.invite-account { display:flex;align-items:center;gap:10px;min-width:0; }
+.invite-account > span:last-child { overflow-wrap:anywhere; }
+.invite-avatar { display:inline-grid;place-items:center;flex:none;width:32px;height:32px;border-radius:50%;background:color-mix(in oklab,var(--accent) 12%,var(--surface));color:var(--ink);font-size:11px;font-weight:650; }
+.invite-action { display:inline-flex;align-items:center;justify-content:center;gap:8px;min-width:36px;min-height:36px;padding:8px;font-size:0;text-decoration:none; }
+.invite-action::before { content:"";width:18px;height:18px;flex:none;background:currentColor;mask:var(--action-icon) center/contain no-repeat; }
+.invite-action[data-armed="true"] { font-size:12px;width:auto;max-width:240px;white-space:normal; }
+.invite-action:focus-visible { outline:2px solid var(--accent);outline-offset:3px; }
+@media (pointer:coarse) { .invite-action { min-width:44px;min-height:44px; } }
+@media (max-width:640px) { .invite-filters > * { width:100%; } .invite-row-actions { gap:6px; } }
+
+.invite-action[data-action-icon="message"] { --action-icon:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M3%204h18v12H8l-5%204V4Z%22%2F%3E%3C%2Fsvg%3E"); }
+.invite-action[data-action-icon="copy"] { --action-icon:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M8%208h12v12H8V8ZM4%2016V4h12%22%2F%3E%3C%2Fsvg%3E"); }
+.invite-action[data-action-icon="refresh"] { --action-icon:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M20%207a8%208%200%201%200%200%2010M20%203v5h-5%22%2F%3E%3C%2Fsvg%3E"); }
+.invite-action[data-action-icon="key"] { --action-icon:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M14%2010a5%205%200%201%200-3%203l7%207%203-3-7-7ZM7%207h.01%22%2F%3E%3C%2Fsvg%3E"); }
+.invite-action[data-action-icon="send"] { --action-icon:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22m3%203%2018%209-18%209%204-9-4-9Zm4%209h14%22%2F%3E%3C%2Fsvg%3E"); }
+.invite-action[data-action-icon="person"] { --action-icon:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M7%209a5%205%200%201%200%2010%200%205%205%200%201%200-10%200ZM3%2022v-3c0-5%2018-5%2018%200v3%22%2F%3E%3C%2Fsvg%3E"); }
+.invite-action[data-action-icon="revoke"] { --action-icon:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M4%204l16%2016M3%2012a9%209%200%201%200%2018%200%209%209%200%201%200-18%200Z%22%2F%3E%3C%2Fsvg%3E"); }

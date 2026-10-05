@@ -156,6 +156,8 @@ export interface InstanceConfig {
      *  /api/auth/login with no ?idp= serves a script-free chooser - the OSS
      *  gate and the console gate grow multiple buttons with zero client work. */
     additional: AdditionalIdp[];
+    /** Planned sign-ins shown as disabled choices; never used for authentication. */
+    pending?: string[];
     /** Who may sign in (plans/74 W-ID-1), shared by every IdP and the proxy.
      *  Absent = every verified sign-in is admitted (and production setup warns). */
     admission?: AdmissionPolicy;
@@ -829,6 +831,7 @@ export function parseConfig(json: string): InstanceConfig {
   validateRequestPolicy(cfg.policy.requests);
   // Additional IdPs (plans/36 §3): defaults applied, then validated hard - a
   // half-described issuer would fail at sign-in, in front of the person.
+  if (cfg.idp.pending !== undefined && (!Array.isArray(cfg.idp.pending) || cfg.idp.pending.length > 8 || cfg.idp.pending.some(name => typeof name !== 'string' || !name.trim() || name.length > 80))) throw new Error('idp.pending must be a list of at most eight short provider names');
   if (!Array.isArray(cfg.idp.additional)) throw new Error('idp.additional must be a list');
   const idpIds = new Set<string>();
   for (const a of cfg.idp.additional) {
