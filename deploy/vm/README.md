@@ -336,6 +336,15 @@ contain the same routes, configuration, engine pin, secrets and compatible migra
 Vercel functions cannot supply the VM's WebSocket gateway, worker or live relay. The public
 lolly.tools deployment is not a replacement for the private workspace deployment. Do not
 change workspace DNS until these differences are understood and the target is verified.
+Probe the prepared Vercel target directly before changing DNS:
+
+```bash
+curl -s --resolve lolly.ing:443:76.76.21.21 https://lolly.ing/api/v1/instance
+```
+
+Its `engineVersion` must match the intended engine pin; also check readiness, sign-in and
+private-catalog denial without a session. A successful instance probe alone does not qualify
+live collaboration or the worker on that target.
 
 ## Operating
 
