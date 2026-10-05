@@ -70,6 +70,8 @@ import { evaluate, grantDecision, denialCode, mayEditCollab, ownerOnlyAction, ro
 import { accessAtLeast, effectiveProjectAccess, type ProjectAccess } from '../rbac/project-access.ts';
 import { registerProjectFileRoutes } from '../projects/file-routes.ts';
 import { registerProjectFolderRoutes } from '../projects/folder-routes.ts';
+import { registerAgentRoutes } from '../agents/routes.ts';
+import type { AgentRoomBridge } from '../agents/types.ts';
 import { mintRenderRead, renderReader } from '../render/read-ticket.ts';
 import { projectFilesEnabled, removeUploadsBy } from '../projects/files.ts';
 import { buildShareMessage, createWindowQuota, mergeInvitationProject, nameWithoutEmail, roleAbove } from '../projects/sharing.ts';
@@ -208,6 +210,7 @@ function pinnedEngineVersion(): string | null {
 }
 
 export interface AppDeps {
+  agentRooms?: AgentRoomBridge;
   config: InstanceConfig;
   store: Store;
   secrets: Secrets;
@@ -623,6 +626,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       mode: renderReader(req, brand.current()!.revision, linkVerify) ? 'open' : config.policy.defaultAccessMode,
       ...authProvider(),
       ...(passkeysEnabled(config.instance.baseUrl) ? { passkeyManagementPath: '/api/auth/security' } : {}),
+      ...(deps.agentRooms ? { documentAgentPath: '/api/workspace/mcp' } : {}),
       // The public sandbox (dev.enabled) serves the deployment docs to anyone - 
       // the console reads this so an anonymous visitor can land straight on the
       // Docs view (see console/app.js publicMode) instead of the sign-in gate.
@@ -7621,6 +7625,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
 
   registerProjectFileRoutes(router, { config, store, blobs, memberOf, requireAction, projectAccessOf, audit });
   registerProjectFolderRoutes(router, { store, memberOf, requireAction, projectAccessOf, audit });
+  registerAgentRoutes(router, { store, memberOf, projectAccessOf, audit, origin: config.instance.baseUrl, rooms: deps.agentRooms });
 
   // GET /projects - projects visible to the caller (own + team by group; admins all).
   // Archived projects are left out unless `?archived=1`: the shell's team

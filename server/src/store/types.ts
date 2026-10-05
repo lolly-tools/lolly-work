@@ -447,6 +447,13 @@ export interface ProjectFolderRecord {
   items: Array<{ kind: 'session' | 'file'; ref: string }>;
 }
 
+/** A named collaborator whose bearer grants access to one document only. */
+export interface DocumentAgentRecord {
+  id: string; sessionId: string; projectId: string; userId: string; createdBy: string;
+  label: string; role: 'viewer' | 'editor'; tokenHash: string;
+  createdAt: string; expiresAt: string; revokedAt?: string;
+}
+
 /** A person's explicit role on one project (plans/74, migration 0040). The
  *  project's owner never has one. viewer reads, editor also writes sessions,
  *  manager also renames, shares, archives and manages the people. */
@@ -1075,6 +1082,13 @@ export interface Store extends RenderStore, PasskeyStore {
   /** Every explicit member of one project, oldest first. */
   listProjectMembers(projectId: string): Promise<ProjectMemberRecord[]>;
   getProjectMember(projectId: string, userId: string): Promise<ProjectMemberRecord | null>;
+  /** Creates the account, project membership and credential together; at most 16 live keys per creator. */
+  createDocumentAgent(record: DocumentAgentRecord): Promise<boolean>;
+  getDocumentAgent(id: string): Promise<DocumentAgentRecord | null>;
+  findDocumentAgentByHash(hash: string): Promise<DocumentAgentRecord | null>;
+  listDocumentAgents(sessionId: string): Promise<DocumentAgentRecord[]>;
+  /** Revocation removes the membership and disables the account in the same transaction. */
+  revokeDocumentAgent(id: string, at: string): Promise<void>;
   /** Every project this user is an explicit member of: one read for a list. */
   listUserProjectMemberships(userId: string): Promise<ProjectMemberRecord[]>;
   /** Insert, or change the role of an existing row. `addedBy`/`addedAt` of an

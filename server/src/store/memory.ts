@@ -5,6 +5,7 @@ import { activeProjectFile, projectFileAssetId, projectFileCharge, type ProjectF
 import { initialBrandState } from '../brand/state.ts';
 import type { CollabReceipt } from './types.ts';
 import type { ProjectFolderRecord } from './types.ts';
+import type { DocumentAgentRecord } from './types.ts';
 /**
  * In-memory Store - dev, tests, and the evaluation container's default.
  * Postgres driver lands beside this (migrations/0001_init.sql is the schema).
@@ -49,6 +50,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const localGroups = new Map<string, LocalGroupRecord>(); // registry, by name
   const scimTokens = new Map<string, ScimTokenRecord>(); // SCIM provisioning bearers, by id
   const apiTokens = new Map<string, ApiTokenRecord>(); // service tokens (plans/35), by id
+  const documentAgents = new Map<string, DocumentAgentRecord>();
   const invitations = new Map<string, InvitationRecord>(); // plans/74 W-ID-2, by id
   const identities = new Map<string, UserIdentityRecord>(); // plans/74 linked sign-ins, by identitySub
   const passwordCredentials = new Map<string, PasswordCredentialRecord>(); // plans/74, by lowercased email
@@ -848,6 +850,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
           for (const [k, r] of identities) if (r.userId === id) identities.delete(k);
           // migration 0044: and its access requests.
           dropRequestsWhere((r) => r.userId === id);
+          for (const [key, r] of documentAgents) if (r.userId === id || r.createdBy === id) documentAgents.delete(key);
           return true;
         }
       }
@@ -871,6 +874,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       }
       users.delete(user.sub);
       passkeys.forgetUser(id);
+      for (const [key, r] of documentAgents) if (r.userId === id || r.createdBy === id) documentAgents.delete(key);
       // Invitations hold the email, and an accepted one keeps admitting it, so
       // the rows this account accepted go with it. Other rows for the address
       // go too unless another account still carries that email.
@@ -1282,6 +1286,20 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     async getProjectMember(projectId, userId) {
       const m = projectMembers.get(memberKey(projectId, userId));
       return m ? { ...m } : null;
+    },
+    async createDocumentAgent(rec) {
+      if (!userById(rec.createdBy) || userById(rec.createdBy)?.disabledAt || !projects.has(rec.projectId) || sessions.get(rec.sessionId)?.deletedAt || sessions.get(rec.sessionId)?.projectId !== rec.projectId
+        || documentAgents.has(rec.id) || rec.userId !== rec.createdBy) return false;
+      if ([...documentAgents.values()].filter(r => r.createdBy === rec.createdBy && !r.revokedAt && r.expiresAt > rec.createdAt).length >= 16) return false;
+      if ([...documentAgents.values()].some(r => r.tokenHash === rec.tokenHash)) return false;
+      documentAgents.set(rec.id, { ...rec }); return true;
+    },
+    async getDocumentAgent(id) { const r = documentAgents.get(id); return r ? { ...r } : null; },
+    async findDocumentAgentByHash(hash) { const r = [...documentAgents.values()].find(r => r.tokenHash === hash); return r ? { ...r } : null; },
+    async listDocumentAgents(sessionId) { return [...documentAgents.values()].filter(r => r.sessionId === sessionId).map(r => ({ ...r })); },
+    async revokeDocumentAgent(id, at) {
+      const rec = documentAgents.get(id); if (!rec || rec.revokedAt) return;
+      rec.revokedAt = at;
     },
     async listUserProjectMemberships(userId) {
       return [...projectMembers.values()].filter((m) => m.userId === userId).map((m) => ({ ...m }));
