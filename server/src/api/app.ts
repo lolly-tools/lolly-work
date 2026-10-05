@@ -180,7 +180,7 @@ import {
   stepOf, validateNominees, withdraw,
   type Approval, type SubjectType,
 } from '../approvals/engine.ts';
-import { SHELL_SECURITY_HEADERS } from './shell-headers.ts';
+import { shellSecurityHeaders } from './shell-headers.ts';
 
 const STATE_COOKIE = 'lw_state';
 /** The signed half of the password forms' double-submit token (`lw/form`). */
@@ -9556,7 +9556,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       try {
         const bytes = await readFile(join(shellDir, target));
         res.writeHead(200, {
-          ...SHELL_SECURITY_HEADERS,
+          ...shellSecurityHeaders(rel),
           'content-type': contentType(target),
           'cache-control': target === 'index.html' ? 'no-cache' : 'public, max-age=300',
         });

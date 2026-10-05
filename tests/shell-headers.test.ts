@@ -16,7 +16,7 @@ import { join } from 'node:path';
 import { parseConfig } from '../server/src/config/instance.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
 import { buildApp } from '../server/src/api/app.ts';
-import { SHELL_SECURITY_HEADERS } from '../server/src/api/shell-headers.ts';
+import { SHELL_SECURITY_HEADERS, shellSecurityHeaders } from '../server/src/api/shell-headers.ts';
 
 const servers: Server[] = [];
 after(() => { for (const s of servers) s.close(); });
@@ -37,6 +37,17 @@ test('the base keeps the properties the open-source policy is built on', () => {
   assert.match(directive('frame-ancestors'), /'self'/);
   assert.equal(SHELL_SECURITY_HEADERS['referrer-policy'], 'no-referrer');
   assert.equal(SHELL_SECURITY_HEADERS['cross-origin-embedder-policy'], 'credentialless');
+});
+
+
+test('only the isolated any-site route carries the approved iframe policy', () => {
+  for (const path of ['/', 'design', '/any-site-other', 'nested/any-site', '/assets/app.js']) assert.equal(shellSecurityHeaders(path), SHELL_SECURITY_HEADERS);
+  for (const path of ['any-site', '/any-site/', 'any-site/path']) {
+    const headers = shellSecurityHeaders(path), csp = headers['content-security-policy']!;
+    assert.match(csp, /frame-src 'self' blob: https: http:\/\/localhost:\* http:\/\/127\.0\.0\.1:\*/);
+    for (const [key, value] of Object.entries(SHELL_SECURITY_HEADERS)) if (key !== 'content-security-policy') assert.equal(headers[key], value);
+    assert.match(csp, /frame-ancestors 'self'/); assert.match(csp, /object-src 'none'/);
+  }
 });
 
 test('GET of the shell and of a shell asset returns every header', async () => {
@@ -64,6 +75,10 @@ test('GET of the shell and of a shell asset returns every header', async () => {
     for (const [name, value] of Object.entries(SHELL_SECURITY_HEADERS)) assert.equal(res.headers.get(name), value, `${path} ${name}`);
     await res.arrayBuffer();
   }
+  const isolated = await fetch(base + '/any-site/?url=https%3A%2F%2Fexample.com');
+  assert.equal(isolated.status, 200);
+  assert.equal(isolated.headers.get('content-security-policy'), shellSecurityHeaders('any-site/')['content-security-policy']);
+  await isolated.arrayBuffer();
 });
 
 

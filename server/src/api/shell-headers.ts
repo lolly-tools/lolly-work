@@ -21,3 +21,10 @@ export const SHELL_SECURITY_HEADERS: Readonly<Record<string, string>> = Object.f
   'cross-origin-embedder-policy': 'credentialless',
   'permissions-policy': 'camera=(self), microphone=(self), display-capture=(self), geolocation=()',
 });
+
+/** The isolated any-site page embeds only URLs approved by the document UI. */
+export function shellSecurityHeaders(path: string): Readonly<Record<string, string>> {
+  if (!/^any-site(?:\/|$)/.test(path.replace(/^\/+/, ''))) return SHELL_SECURITY_HEADERS;
+  return { ...SHELL_SECURITY_HEADERS, 'content-security-policy': SHELL_SECURITY_HEADERS['content-security-policy']!
+    .replace(/frame-src [^;]+/, "frame-src 'self' blob: https: http://localhost:* http://127.0.0.1:*") };
+}
