@@ -32,6 +32,7 @@ import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderFragment, ProviderKind, ProviderRecord } from '../catalog/providers/types.ts';
 import type { DeliveryRecord } from '../delivery/types.ts';
 import type { ProjectAccess } from '../rbac/project-access.ts';
+import type { ProjectFolderRecord } from './types.ts';
 import { createPostgresRenderStore } from '../renders/postgres.ts';
 import {
   SESSION_REVISION_LIMIT, effectiveGroups,
@@ -1963,6 +1964,26 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     async listProjects() {
       const { rows } = await pool.query('select * from projects order by created_at desc');
       return rows.map(projectFromRow);
+    },
+    async putProjectFolder(folder) {
+      const result = await pool.query(`insert into project_folders (id,project_id,parent_id,name,created_at,created_by)
+        values ($1,$2,$3,$4,$5,$6) on conflict (id) do update set name=excluded.name
+        where project_folders.project_id=excluded.project_id and project_folders.parent_id is not distinct from excluded.parent_id`,
+        [folder.id, folder.projectId, folder.parentId, folder.name, folder.createdAt, folder.createdBy]);
+      if (!result.rowCount) throw new Error('Invalid folder project or parent');
+    },
+    async listProjectFolders(projectId) {
+      const { rows } = await pool.query(`select f.*,coalesce(jsonb_agg(jsonb_build_object('kind',i.kind,'ref',i.ref))
+        filter (where i.ref is not null),'[]'::jsonb) as items from project_folders f
+        left join project_folder_items i on i.folder_id=f.id and i.project_id=f.project_id
+        where f.project_id=$1 group by f.id order by f.created_at,f.id`, [projectId]);
+      return rows.map(r => ({ id: r.id, projectId: r.project_id, parentId: r.parent_id, name: r.name,
+        createdAt: new Date(r.created_at as string).toISOString(), createdBy: r.created_by, items: r.items } as ProjectFolderRecord));
+    },
+    async assignProjectFolderItem(projectId, folderId, kind, ref) {
+      if (folderId) await pool.query(`insert into project_folder_items (project_id,folder_id,kind,ref) values ($1,$2,$3,$4)
+        on conflict (project_id,kind,ref) do update set folder_id=excluded.folder_id`, [projectId, folderId, kind, ref]);
+      else await pool.query('delete from project_folder_items where project_id=$1 and kind=$2 and ref=$3', [projectId, kind, ref]);
     },
     // Budgets count ready files and unfinished uploads that have not expired
     // (`ready or expires_at > now()`), the same rule as the memory store.

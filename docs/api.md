@@ -498,6 +498,10 @@ separate from the existing `/api/v1/batch` job/ZIP contract.
 | `GET /api/v1/projects` | member: projects they own, were added to, or share a group with (admins all). Archived projects are left out unless you pass `?archived=1`. Rows carry `myRole`, `updatedAt` and `updatedByName` |
 | `POST /api/v1/projects` | `project.create` |
 | `PATCH /api/v1/projects/:id` | manager of the project or `project.manage` - name, visibility, archive; `ownerId` (transfer to an enabled member; audited `project.transfer`) needs the owner or `project.manage` |
+| `GET /api/v1/projects/:id/folders` | viewer; `{ folders: [{ id, projectId, parentId, name, createdAt, createdBy, items: [{ kind, ref }] }] }` |
+| `POST /api/v1/projects/:id/folders` | editor and `session.edit`, project not archived; `{ name, parentId? }`; `201 { folder }`. An omitted or null parent creates a folder at the project root |
+| `PATCH /api/v1/projects/:id/folders/:folderId` | editor and `session.edit`; `{ name }` renames a folder |
+| `PUT /api/v1/projects/:id/folders/items/:kind/:ref` | editor and `session.edit`; `{ folderId }` moves a session or finished file into a folder in this project. Null returns it to the project root. Changes no document content or file bytes |
 | `GET/POST /api/v1/projects/:id/sessions` | viewer / editor and `session.create`. List rows carry `updatedByName` |
 | `GET /api/v1/sessions/:id`, `GET …/revisions` | viewer. The full session carries `myRole`, the caller's effective project role; workspace capabilities still apply |
 | `PUT /api/v1/sessions/:id` | editor and `session.edit`. Session bodies (this and the `POST` above) may be up to 4 MiB; other routes take 512 KiB |

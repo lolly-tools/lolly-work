@@ -69,6 +69,7 @@ import {
 import { evaluate, grantDecision, denialCode, mayEditCollab, ownerOnlyAction, roleFromGroups, type Grant, type Role, ROLES } from '../rbac/evaluate.ts';
 import { accessAtLeast, effectiveProjectAccess, type ProjectAccess } from '../rbac/project-access.ts';
 import { registerProjectFileRoutes } from '../projects/file-routes.ts';
+import { registerProjectFolderRoutes } from '../projects/folder-routes.ts';
 import { projectFilesEnabled, removeUploadsBy } from '../projects/files.ts';
 import { buildShareMessage, createWindowQuota, mergeInvitationProject, nameWithoutEmail, roleAbove } from '../projects/sharing.ts';
 import { approversFor, closeRequestsOnAccess } from '../access/requests.ts';
@@ -7613,6 +7614,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   });
 
   registerProjectFileRoutes(router, { config, store, blobs, memberOf, requireAction, projectAccessOf, audit });
+  registerProjectFolderRoutes(router, { store, memberOf, requireAction, projectAccessOf, audit });
 
   // GET /projects - projects visible to the caller (own + team by group; admins all).
   // Archived projects are left out unless `?archived=1`: the shell's team

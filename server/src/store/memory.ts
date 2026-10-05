@@ -4,6 +4,7 @@ import { matchesAudit } from '../audit/filter.ts';
 import { activeProjectFile, projectFileAssetId, projectFileCharge, type ProjectFileRecord } from '../projects/files.ts';
 import { initialBrandState } from '../brand/state.ts';
 import type { CollabReceipt } from './types.ts';
+import type { ProjectFolderRecord } from './types.ts';
 /**
  * In-memory Store - dev, tests, and the evaluation container's default.
  * Postgres driver lands beside this (migrations/0001_init.sql is the schema).
@@ -130,6 +131,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const assetVersions = new Map<string, AssetVersionRecord>();
   const providers = new Map<string, ProviderRecord>();
   const projects = new Map<string, ProjectRecord>();
+  const projectFolders = new Map<string, ProjectFolderRecord>();
   const projectFiles = new Map<string, ProjectFileRecord>();
   // `${projectId} ${userId}` - the composite primary key of migration 0040.
   const projectMembers = new Map<string, ProjectMemberRecord>();
@@ -1199,6 +1201,20 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     },
     async listProjects() {
       return [...projects.values()];
+    },
+    async putProjectFolder(folder) {
+      const old = projectFolders.get(folder.id);
+      if (!projects.has(folder.projectId) || old && (old.projectId !== folder.projectId || old.parentId !== folder.parentId)) throw new Error('Invalid folder project');
+      if (folder.parentId && projectFolders.get(folder.parentId)?.projectId !== folder.projectId) throw new Error('Invalid folder parent');
+      projectFolders.set(folder.id, structuredClone(old ? { ...old, name: folder.name } : { ...folder, items: [] }));
+    },
+    async listProjectFolders(projectId) {
+      return structuredClone([...projectFolders.values()].filter(f => f.projectId === projectId));
+    },
+    async assignProjectFolderItem(projectId, folderId, kind, ref) {
+      if (folderId && projectFolders.get(folderId)?.projectId !== projectId) throw new Error('Invalid folder');
+      for (const folder of projectFolders.values()) if (folder.projectId === projectId) folder.items = folder.items.filter(item => item.kind !== kind || item.ref !== ref);
+      if (folderId) projectFolders.get(folderId)!.items.push({ kind, ref });
     },
     // No await between the checks and the insert, so this is atomic here.
     async reserveProjectFile(file, limits) {

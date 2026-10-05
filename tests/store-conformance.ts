@@ -880,6 +880,20 @@ export async function runStoreConformance(store: Store): Promise<void> {
   // re-put updates in place (archive)
   await store.putProject({ id: 'prj_p', name: 'Personal', visibility: 'private', ownerId: u1.id, createdAt: now, archivedAt: now });
   assert.equal((await store.getProject('prj_p'))?.archivedAt, now);
+  const folder = { id: 'fld_conformance', projectId: 'prj_t', parentId: null, name: 'Assets', createdAt: now, createdBy: u1.id, items: [] };
+  await store.putProjectFolder(folder);
+  await store.putProjectFolder({ ...folder, id: 'fld_child', parentId: folder.id, name: 'Images' });
+  await assert.rejects(store.putProjectFolder({ ...folder, id: 'fld_wrong', projectId: 'prj_p', parentId: folder.id }));
+  await store.assignProjectFolderItem('prj_t', folder.id, 'session', 'reference_a');
+  await store.assignProjectFolderItem('prj_t', 'fld_child', 'session', 'reference_a');
+  let tree = await store.listProjectFolders('prj_t');
+  assert.deepEqual(tree.find(f => f.id === folder.id)?.items, []);
+  assert.deepEqual(tree.find(f => f.id === 'fld_child')?.items, [{ kind: 'session', ref: 'reference_a' }]);
+  await store.putProjectFolder({ ...folder, name: 'New name' });
+  assert.equal((await store.listProjectFolders('prj_t')).find(f => f.id === folder.id)?.name, 'New name');
+  await store.assignProjectFolderItem('prj_t', null, 'session', 'reference_a');
+  tree = await store.listProjectFolders('prj_t'); assert.ok(tree.every(f => !f.items.length));
+  assert.deepEqual(await store.listProjectFolders('prj_p'), []);
 
   await store.putSession({
     id: 'ses_a', projectId: 'prj_t', toolId: 'poster', toolVersion: '1.0.0',
