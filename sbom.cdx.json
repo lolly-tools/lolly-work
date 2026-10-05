@@ -1,7 +1,7 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:eaeadea2-a9bc-4d53-81cc-b121531ff48b",
+  "serialNumber": "urn:uuid:0abc20cc-6bf1-4523-8a6c-b6780087910f",
   "version": 1,
   "metadata": {
     "tools": [
@@ -297,6 +297,27 @@
         {
           "alg": "SHA-512",
           "content": "4ba98bd32341fc06edf448b8b6af200e171ccdce12dfebd0e2b6bbbf19c07fe6070b4dacaedab128a660871d83abaa747bae931cac11eabf0de8ff79c04b72ed"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40hexagon/base64@1.1.28",
+      "name": "@hexagon/base64",
+      "version": "1.1.28",
+      "purl": "pkg:npm/%40hexagon/base64@1.1.28",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "961a83100bd68b1cb76d9f943986cfc146c193006ae42d4b009ff13c2f0e8be94be78a326a4bff9e96c0d1a5368600acc7fd4d51de0806f574dfe694056c5eaf"
         }
       ]
     },
@@ -966,6 +987,342 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:npm/%40levischuck/tiny-cbor@0.2.11",
+      "name": "@levischuck/tiny-cbor",
+      "version": "0.2.11",
+      "purl": "pkg:npm/%40levischuck/tiny-cbor@0.2.11",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "9650519b8753e19f3d691b26eaeda8119f2d7f02ffda5e81c2967b25cca27a8ba788310233902a360affcb4f336a5108bd6dd148ae2ea58cb26c37268d7a80a3"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40peculiar/asn1-android@2.10.0",
+      "name": "@peculiar/asn1-android",
+      "version": "2.10.0",
+      "purl": "pkg:npm/%40peculiar/asn1-android@2.10.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "20729d60be4c456efa0ce402bf61d213fbd430e7f68ea1f813bca1b5061eff1c7e471a4f8977e451d85ec74378fece5caec9d70867ed44dcf2e11267d6ce8264"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40peculiar/asn1-asym-key@2.10.0",
+      "name": "@peculiar/asn1-asym-key",
+      "version": "2.10.0",
+      "purl": "pkg:npm/%40peculiar/asn1-asym-key@2.10.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "d51f315137aa7144d230b1534c2cc9c85b8a8aadf2db91102acf437b351eb49f2a32a6c9cb1a375e4cf2922c304ff5f396de7fbd1cd2fec5b8335afea6ad454e"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40peculiar/asn1-cms@2.10.0",
+      "name": "@peculiar/asn1-cms",
+      "version": "2.10.0",
+      "purl": "pkg:npm/%40peculiar/asn1-cms@2.10.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "0a45f41f834220e307394deb876c57672c229d867f12726568e9498862347b92f85e316a1dfe221f7d0b31b5d60a1569a5d03d9636da9e3b734053a10cd7d35a"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40peculiar/asn1-csr@2.10.0",
+      "name": "@peculiar/asn1-csr",
+      "version": "2.10.0",
+      "purl": "pkg:npm/%40peculiar/asn1-csr@2.10.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "8d33d3afff6bc4a33e9e240b305de388031bd2558752150722e48e85d18221fa41e0501061ff52a225ce8313fc6d2ffaf0807e6e3fb5387bd59c354241f55467"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40peculiar/asn1-ecc@2.10.0",
+      "name": "@peculiar/asn1-ecc",
+      "version": "2.10.0",
+      "purl": "pkg:npm/%40peculiar/asn1-ecc@2.10.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "18577788e8c5ad65fe4161f647674ee50489cb2446bfd08804ab5194694f342bdbd91be609b0437b17bdd4c26057be9cebd77df7c5ec6be0afb90f7cb1ea223e"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40peculiar/asn1-pfx@2.10.0",
+      "name": "@peculiar/asn1-pfx",
+      "version": "2.10.0",
+      "purl": "pkg:npm/%40peculiar/asn1-pfx@2.10.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "d72dd02bd647d483e57803264682653d2d747869005a750b1135bccc314d50ad5f7eaa46ef398363e91804c61083095c419da28ad2e6db3d8404fd31cd15e968"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40peculiar/asn1-pkcs8@2.10.0",
+      "name": "@peculiar/asn1-pkcs8",
+      "version": "2.10.0",
+      "purl": "pkg:npm/%40peculiar/asn1-pkcs8@2.10.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "462f81653f5b9f0aa51d69a1b3b96f5a3bc947129ebf6840dbee046d96a381e61609b47c872bf4ce71780e1b05a2e3a1323da748357f88627a0cc42dc084e70b"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40peculiar/asn1-pkcs9@2.10.0",
+      "name": "@peculiar/asn1-pkcs9",
+      "version": "2.10.0",
+      "purl": "pkg:npm/%40peculiar/asn1-pkcs9@2.10.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "5c85ec6c34057b3624e9fb9d73392ebdac24443e06369212182a9f621764265bdc185fd11649d4fb40c325a80e689a817fe3dd3f393827da0ca8319cbdf47d1d"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40peculiar/asn1-rsa@2.10.0",
+      "name": "@peculiar/asn1-rsa",
+      "version": "2.10.0",
+      "purl": "pkg:npm/%40peculiar/asn1-rsa@2.10.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "e09be6c25877819021359e3fbbb252c8bb9c7bd8687ce159e28dcf60a01c7022261a7c9a4f908cca6fc04e0bc0beaa4e605356e77d683d9bc9944061272f557c"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40peculiar/asn1-schema@2.10.0",
+      "name": "@peculiar/asn1-schema",
+      "version": "2.10.0",
+      "purl": "pkg:npm/%40peculiar/asn1-schema@2.10.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "1a1a240f8d65578810aeb2d89b7c029077c13a726b9e10cc82de1778c5bc8337c4d54749a88b92c2c13e8207fcd97063517449ca5726f8a2064056b8bad2152f"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40peculiar/asn1-x509-attr@2.10.0",
+      "name": "@peculiar/asn1-x509-attr",
+      "version": "2.10.0",
+      "purl": "pkg:npm/%40peculiar/asn1-x509-attr@2.10.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "ffce46b4a38a9a0bee4893656857f019635d452659fa1a45d36372334d57882773a5a64e362065b43c9f96e14fbc5c7deba091f991cd486d639e2c29cb4ee81a"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40peculiar/asn1-x509-post-quantum@2.10.0",
+      "name": "@peculiar/asn1-x509-post-quantum",
+      "version": "2.10.0",
+      "purl": "pkg:npm/%40peculiar/asn1-x509-post-quantum@2.10.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "71729c677d3029b52444ae512b86775b58a67b05ef1c007d6a9100b88a89d0e3a43900a926bc0b3ae377f1096c117a8e23ede0b54bfc29fdd46688549826dfdf"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40peculiar/asn1-x509@2.10.0",
+      "name": "@peculiar/asn1-x509",
+      "version": "2.10.0",
+      "purl": "pkg:npm/%40peculiar/asn1-x509@2.10.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "b9c35583cf8036f793a4c3777f2f650366a5af238d7577360387041b684c9e259bbd0b7e60e6687bc048f3461834ef0505cb83635a9b0d0e2e406415ada1f118"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40peculiar/utils@2.0.3",
+      "name": "@peculiar/utils",
+      "version": "2.0.3",
+      "purl": "pkg:npm/%40peculiar/utils@2.0.3",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "fa82f71cf151219d52b762b9d255825e28a82204a8c73cfb475277b85ea778edb2975b209a9818e975c91f805da680e4316ce741379817aa1634364b09d43879"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40peculiar/x509@2.1.0",
+      "name": "@peculiar/x509",
+      "version": "2.1.0",
+      "purl": "pkg:npm/%40peculiar/x509@2.1.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "2186e0d51d370924065b0976e241b2aab755b62c4d49b45a0ef060d6be70c988d33fe5703d09246b50734e0539fafc62bb0aa0d383b176f749d7161814875448"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:npm/%40resvg/resvg-js-android-arm-eabi@2.6.2",
       "name": "@resvg/resvg-js-android-arm-eabi",
       "version": "2.6.2",
@@ -1239,6 +1596,27 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:npm/%40simplewebauthn/server@14.0.3",
+      "name": "@simplewebauthn/server",
+      "version": "14.0.3",
+      "purl": "pkg:npm/%40simplewebauthn/server@14.0.3",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "0f7f7fd1f88389898657e9eb698f6ceb70f51e8d805ffc1a30bcb6dbff6051a75352ebdb027b2d7dbe1ba5b1d86f066e57964b0d83754a6cc32ae887cca000e1"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:npm/%40types/node@24.13.3",
       "name": "@types/node",
       "version": "24.13.3",
@@ -1318,6 +1696,27 @@
         {
           "alg": "SHA-512",
           "content": "f3ef56a9e6db173a57f4e47e59ae8edbd6ac22881e44ccdc1ad00835da4c1c7c80835d1fd3969215505b704a867ff3d7c35123019faadbf6c4060dc3beeacadd"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/asn1js@3.0.10",
+      "name": "asn1js",
+      "version": "3.0.10",
+      "purl": "pkg:npm/asn1js@3.0.10",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "4b6b3768ecad88a74545dba5c36a8f139d4cce3cd53a2b29a5c56fee354547e2b0d24c70bc5ac371803487b35da9b9a3d0790c2176166a88fb7e58bc920c757a"
         }
       ]
     },
@@ -2184,6 +2583,48 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:npm/pvtsutils@1.3.6",
+      "name": "pvtsutils",
+      "version": "1.3.6",
+      "purl": "pkg:npm/pvtsutils@1.3.6",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "3cb8105d0e87d8558269e45a93cbef935196e3ada5331079b37266ebbdcdf36cc8e2faad5543ee65d7df7596cf0c546853c900848b5616d3c25a23e9a78fc40e"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/pvutils@1.2.0",
+      "name": "pvutils",
+      "version": "1.2.0",
+      "purl": "pkg:npm/pvutils@1.2.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "05bb9b7821324ee42354c6a4bc943f4b16dcf77176a7099bb3138d4ff651af053b51adfc77cba7613c17a5354b00a278043b87f481b3b428d071dfcdff7f43be"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:npm/railroad-diagrams@1.0.0",
       "name": "railroad-diagrams",
       "version": "1.0.0",
@@ -2221,6 +2662,27 @@
         {
           "alg": "SHA-512",
           "content": "f3458d99df43034b6666bc3da906bad863cf59fb972649eb99598b731beae2e641758a9bd706282939a794651c86f5567b45e22eea58901a1754ec73dc2f0361"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/reflect-metadata@0.2.2",
+      "name": "reflect-metadata",
+      "version": "0.2.2",
+      "purl": "pkg:npm/reflect-metadata@0.2.2",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "bab07081faef54ffde0325f1e2196e262bc12b3b846d242cf6b2960ab0a46d2c4dbfc9b13dc51929eba8177532e26265dcbc29ae9eb2cb9ff7f555a2819e0ae9"
         }
       ]
     },
@@ -2583,6 +3045,27 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:npm/tslib@1.14.1",
+      "name": "tslib",
+      "version": "1.14.1",
+      "purl": "pkg:npm/tslib@1.14.1",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "0BSD"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "5e78b7e4d2b38e032bc1ebf2b074c202bb4b0e93efc9ef3357fd04e04c989f8dcfeffeeabd0c0f87d0469077b06ccba5567b5b8a099c4fbadd5f704da3dc1126"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:npm/tslib@2.8.1",
       "name": "tslib",
       "version": "2.8.1",
@@ -2599,6 +3082,27 @@
         {
           "alg": "SHA-512",
           "content": "a0916ef781d06fe29576e49440bef09e99aa9df98bb0e03f9c087a6fa107d30084a0ad3f98f79753a737c0a0d5f373243ae1cf447b525ca294f7d2016b34bfdb"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/tsyringe@4.10.0",
+      "name": "tsyringe",
+      "version": "4.10.0",
+      "purl": "pkg:npm/tsyringe@4.10.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "6b1af721d36e548c6768ae571845054eedd898043a965960aefa9f128475ea0fc71a7618ffa59ee2858436d027ccaebf2e9276babf4f01bf34441b7bfd4e2e83"
         }
       ]
     },
