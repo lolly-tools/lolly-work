@@ -439,6 +439,13 @@ export interface ProjectRecord {
   updatedBy?: string;
 }
 
+/** Shared organisation of a project's documents and files; access is inherited. */
+export interface ProjectFolderRecord {
+  id: string; projectId: string; parentId: string | null; name: string;
+  createdAt: string; createdBy: string;
+  items: Array<{ kind: 'session' | 'file'; ref: string }>;
+}
+
 /** A person's explicit role on one project (plans/74, migration 0040). The
  *  project's owner never has one. viewer reads, editor also writes sessions,
  *  manager also renames, shares, archives and manages the people. */
@@ -1029,6 +1036,9 @@ export interface Store extends RenderStore {
   putProject(project: ProjectRecord): Promise<void>;
   getProject(id: string): Promise<ProjectRecord | null>;
   listProjects(): Promise<ProjectRecord[]>;
+  putProjectFolder(folder: ProjectFolderRecord): Promise<void>;
+  listProjectFolders(projectId: string): Promise<ProjectFolderRecord[]>;
+  assignProjectFolderItem(projectId: string, folderId: string | null, kind: 'session' | 'file', ref: string): Promise<void>;
 
   // shared project files (plans/74, migration 0041). Budgets and the pending
   // limits count ready files and unfinished uploads that have not expired; an

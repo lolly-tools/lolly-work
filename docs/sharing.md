@@ -534,3 +534,11 @@ lists the routes.
 - Restricting formats and inputs: [governance](governance.md)
 - What renders get recorded as: [telemetry](telemetry.md), [audit](audit.md)
 - Worker deployment: [deployment](deployment.md)
+
+## Shared subfolders
+
+Subfolders belong to their project and inherit its membership. Viewers can browse
+folders and their contents; editors can create folders, rename them and move
+sessions or finished files between them. A move changes only the folder listing,
+so open documents, their links and the assets they use keep working. Personal
+folders remain on the person's device until they choose to share them.
