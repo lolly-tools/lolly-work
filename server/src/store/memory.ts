@@ -29,6 +29,7 @@ import { sortCollections, type CollectionRecord } from '../catalog/collections.t
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderRecord } from '../catalog/providers/types.ts';
 import type { DeliveryRecord } from '../delivery/types.ts';
+import { createMemoryPasskeys } from '../iam/passkeys/memory.ts';
 import { createMemoryRenderStore } from '../renders/memory.ts';
 import {
   SESSION_REVISION_LIMIT, effectiveGroups,
@@ -59,6 +60,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     for (const u of users.values()) if (u.id === id) return u;
     return undefined;
   };
+  const passkeys = createMemoryPasskeys(userById);
   const copyInvitation = (r: InvitationRecord): InvitationRecord => ({
     ...r, groups: [...r.groups], projects: (r.projects ?? []).map((p) => ({ ...p })),
   });
@@ -167,6 +169,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     configureRoleGroups(mapping) { roleGroups = structuredClone(mapping); },
     storageKind: 'memory',
     ...createMemoryRenderStore(),
+    ...passkeys.store,
     brandPersistence: 'ephemeral',
     async getBrandState() { return structuredClone(brandState); },
     async casBrandState(expected, next, body) {
@@ -840,6 +843,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       for (const [sub, u] of users) {
         if (u.id === id) {
           users.delete(sub);
+          passkeys.forgetUser(id);
           // migration 0040: a membership row goes with its user.
           for (const [k, m] of projectMembers) if (m.userId === id) projectMembers.delete(k);
           // migration 0039: so do its linked sign-ins.
@@ -869,6 +873,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
         scrubbed++;
       }
       users.delete(user.sub);
+      passkeys.forgetUser(id);
       // Invitations hold the email, and an accepted one keeps admitting it, so
       // the rows this account accepted go with it. Other rows for the address
       // go too unless another account still carries that email.

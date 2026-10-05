@@ -29,6 +29,8 @@ export interface SessionUser {
    *  are read as 0, matching the column default, so pre-upgrade sessions stay
    *  valid until an actual bump. */
   epoch?: number;
+  /** Time of the last completed sign-in; session refreshes cannot advance it. */
+  authenticatedAt?: number;
 }
 
 export interface GuestSession {

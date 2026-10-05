@@ -25,6 +25,7 @@ import type { CollectionRecord } from '../catalog/collections.ts';
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderRecord, ProviderState } from '../catalog/providers/types.ts';
 import type { DeliveryRecord } from '../delivery/types.ts';
+import type { PasskeyStore } from '../iam/passkeys/types.ts';
 import type { RenderStore } from '../renders/types.ts';
 import type { ProjectFileLimits, ProjectFileRecord, ProjectFileReservation } from '../projects/files.ts';
 import type { ProjectAccess } from '../rbac/project-access.ts';
@@ -571,7 +572,7 @@ export interface SubmitQuotaRow {
   updatedAt: string;
 }
 
-export interface Store extends RenderStore {
+export interface Store extends RenderStore, PasskeyStore {
   getCommentThread(id: string): Promise<CommentThread | null>;
   listCommentThreads(sessionId: string): Promise<CommentThread[]>;
   createCommentThread(thread: CommentThread): Promise<'created' | 'exists' | 'limit'>;
