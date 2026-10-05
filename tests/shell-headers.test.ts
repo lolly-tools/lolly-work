@@ -56,6 +56,8 @@ test('GET of the shell and of a shell asset returns every header', async () => {
   await writeFile(join(pack, 'catalog', 'tools', 'index.json'), JSON.stringify({ version: 1, tools: [] }));
   const shellDir = await mkdtemp(join(tmpdir(), 'lw-shell-'));
   await writeFile(join(shellDir, 'index.html'), '<!doctype html><title>shell</title>');
+  await mkdir(join(shellDir, 'info'));
+  await writeFile(join(shellDir, 'info', 'well-known-lolly.json'), JSON.stringify({ collaboration: { enabled: true } }));
   await mkdir(join(shellDir, 'assets'));
   await writeFile(join(shellDir, 'assets', 'app.js'), 'console.log(1)');
   const config = parseConfig(JSON.stringify({
@@ -75,6 +77,9 @@ test('GET of the shell and of a shell asset returns every header', async () => {
     for (const [name, value] of Object.entries(SHELL_SECURITY_HEADERS)) assert.equal(res.headers.get(name), value, `${path} ${name}`);
     await res.arrayBuffer();
   }
+  const discovery = await fetch(base + '/.well-known/lolly.json');
+  assert.equal(discovery.status, 200);
+  assert.deepEqual(await discovery.json(), { collaboration: { enabled: true } });
   const isolated = await fetch(base + '/any-site/?url=https%3A%2F%2Fexample.com');
   assert.equal(isolated.status, 200);
   assert.equal(isolated.headers.get('content-security-policy'), shellSecurityHeaders('any-site/')['content-security-policy']);
@@ -115,4 +120,12 @@ test('console documents protect their origin and allow only their own inline boo
     assert.equal(response.headers.get('referrer-policy'), 'no-referrer', path);
     await response.arrayBuffer();
   }
+});
+
+test('an instance can allow its exact hosted document relay origin', () => {
+  const headers = shellSecurityHeaders('/', 'https://lolly.ing');
+  assert.match(headers['content-security-policy']!, /connect-src 'self' https:\/\/lolly.ing wss:\/\/lolly.ing/);
+  assert.throws(() => shellSecurityHeaders('/', "https://example.com; script-src *"));
+  assert.throws(() => shellSecurityHeaders('/', 'http://lolly.ing'));
+  assert.throws(() => shellSecurityHeaders('/', 'https://lolly.ing/live'));
 });

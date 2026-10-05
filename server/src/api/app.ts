@@ -9552,7 +9552,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       // A path ending in a file extension is a real asset; anything else is an
       // SPA route → index.html (the shell hash-routes from there).
       const asset = /\.[a-z0-9]+$/i.test(clean);
-      const target = asset && clean ? clean : 'index.html';
+      const target = clean === '.well-known/lolly.json' ? 'info/well-known-lolly.json' : asset && clean ? clean : 'index.html';
       try {
         const bytes = await readFile(join(shellDir, target));
         res.writeHead(200, {
