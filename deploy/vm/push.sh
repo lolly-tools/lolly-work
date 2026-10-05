@@ -77,6 +77,11 @@ node -e '
 # ── 2. Local checks: no network, no real secrets ─────────────────────────────
 echo "==> checking deploy/vm/Caddyfile, instance.json and the pack"
 node scripts/build-caddyfile.ts --check
+caddy_source=deploy/vm/Caddyfile
+if node -e 'process.exit(JSON.parse(require("node:fs").readFileSync("deploy/vm/instance.json")).instance.shellDir ? 0 : 1)'; then
+  node scripts/build-caddyfile.ts --serve-shell --out "$work/Caddyfile"
+  caddy_source="$work/Caddyfile"
+fi
 # The setup checks need secret-shaped values to judge the rest; these are
 # throwaway ones and the database is never contacted.
 env -i PATH="$PATH" HOME="$HOME" NODE_ENV=production LW_CONFIG=deploy/vm/instance.json \
@@ -122,7 +127,7 @@ ssh -n "$target" "mkdir -p $REMOTE/src $REMOTE/packs/lolly-ing $REMOTE/caddy"
 rsync -az --delete "$work/src/" "$target:$REMOTE/src/"
 rsync -az --delete "$PACK/" "$target:$REMOTE/packs/lolly-ing/"
 rsync -az deploy/vm/docker-compose.yml deploy/vm/instance.json "$target:$REMOTE/"
-rsync -az deploy/vm/Caddyfile "$target:$REMOTE/caddy/Caddyfile"
+rsync -az "$caddy_source" "$target:$REMOTE/caddy/Caddyfile"
 
 # ── 5. Build, restart, reload, wait ──────────────────────────────────────────
 echo "==> deploying (TLS: $tls)"

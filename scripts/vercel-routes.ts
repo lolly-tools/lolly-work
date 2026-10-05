@@ -214,6 +214,8 @@ export interface CaddyOptions {
   redirectDomains?: readonly string[];
   /** The https origin the Lolly app is proxied from, as for Vercel. */
   shellOrigin: string;
+  /** Serve the already mounted instance.shellDir through the control plane. */
+  serveShell?: boolean;
   /** host:port of the lolly-work server (server/src/main.ts). */
   upstream: string;
   /** Function prefixes; the router scan in practice (`functionPrefixes`). */
@@ -330,7 +332,12 @@ export function caddyfile(opts: CaddyOptions): string {
     '\t# 3. Everything else is the Lolly app, proxied from the shell origin with',
     '\t#    no credential of this instance.',
     '\thandle {',
-    ...proxyShell(true),
+    ...(opts.serveShell ? [
+      `\t\treverse_proxy ${opts.upstream} {`,
+      '\t\t\theader_up -Cookie',
+      '\t\t\theader_up -Authorization',
+      '\t\t}',
+    ] : proxyShell(true)),
     '\t}',
     '}',
     '',
