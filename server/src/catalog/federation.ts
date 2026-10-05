@@ -64,6 +64,13 @@ export function mapProviderAsset(rec: ProviderRecord, asset: ProviderAssetRef): 
       providerSections: asset.sections,
       providerCollections: asset.collections ?? [],
       providerTags: asset.tags,
+      assetFiles: asset.formats.filter((f, i, all) => f.format !== 'thumb' && all.findIndex(other => other.remoteRef === f.remoteRef) === i).map(f => ({
+        id: sha256Hex(f.remoteRef).slice(0, 24), format: f.format,
+        url: `/catalog/${idPath}/${f.remoteRef}`, name: f.filename ?? `${asset.name}.${f.format}`,
+        ...(f.size !== undefined ? { size: f.size } : {}),
+        ...(f.width !== undefined ? { width: f.width } : {}), ...(f.height !== undefined ? { height: f.height } : {}),
+        ...(rec.kind === 'brandfolder' ? { thumbnail: `/catalog/${idPath}/${f.remoteRef}?preview=1` } : {}),
+      })),
     },
     ...(asset.updatedAt ? { updatedAt: asset.updatedAt } : {}),
     ...(asset.availableFrom ? { availableFrom: asset.availableFrom } : {}),
@@ -74,6 +81,7 @@ export function mapProviderAsset(rec: ProviderRecord, asset: ProviderAssetRef): 
       url: `/catalog/${idPath}/${f.remoteRef}`,
       ...(f.size !== undefined ? { size: f.size } : {}),
       ...(f.filename ? { filename: f.filename } : {}),
+      ...(f.width !== undefined ? { width: f.width } : {}), ...(f.height !== undefined ? { height: f.height } : {}),
     })), ...(asset.hasThumbnail ? [{ format: 'thumb', url: `/catalog/${idPath}/thumb` }] : [])],
   };
 }

@@ -65,3 +65,9 @@ wiring is needed.
 Motion, cadence and the per-DAM readiness table: [off-boarding](../offboarding.md).
 
 See also: [catalog](../catalog.md) · [permissions](../permissions.md).
+
+## Files and variations
+
+An asset with several attachments appears as one asset with a file count. The preview and picker show each file’s name, format, dimensions and size. Selecting a file keeps its own identity in the document, including when two files share an extension. Attachment previews use the provider’s thumbnail; they never fall back to downloading the original. An attachment must still belong to the visible asset before it can be read.
+
+These are current file variations, not a revision timeline. Other DAM providers use the same file-choice model when they expose multiple formats or renditions. Historical revisions remain a separate provider capability.

@@ -1046,6 +1046,10 @@ export interface Store extends RenderStore, PasskeyStore {
   listProjects(): Promise<ProjectRecord[]>;
   putProjectFolder(folder: ProjectFolderRecord): Promise<void>;
   listProjectFolders(projectId: string): Promise<ProjectFolderRecord[]>;
+  /** Remove a container, moving its contents and child folders to its parent. */
+  /** Moves a folder within its project, refusing cycles and foreign parents. */
+  moveProjectFolder(projectId: string, folderId: string, parentId: string | null): Promise<'moved' | 'missing' | 'invalid'>;
+  deleteProjectFolder(projectId: string, folderId: string): Promise<boolean>;
   assignProjectFolderItem(projectId: string, folderId: string | null, kind: 'session' | 'file', ref: string): Promise<void>;
 
   // shared project files (plans/74, migration 0041). Budgets and the pending

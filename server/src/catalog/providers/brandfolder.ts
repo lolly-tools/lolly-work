@@ -8,6 +8,7 @@
  * Upstream fetches are pinned to Brandfolder-owned hosts (no open proxy).
  */
 import type { CatalogProvider, ProviderAssetRef, ProviderFormatRef, ResolvedBlob } from './types.ts';
+import { extOf } from './types.ts';
 
 export interface BrandfolderOptions {
   brandfolderId: string;
@@ -54,10 +55,19 @@ export function createBrandfolderProvider(
   };
 
   const upstream = async (url: string): Promise<Response> => {
-    if (!ALLOWED_HOSTS.test(new URL(url).hostname)) throw new Error('brandfolder url outside allowed hosts');
-    const res = await fetchImpl(url);
-    if (!res.ok || !res.body) throw new Error(`brandfolder blob fetch ${res.status}`);
-    return res;
+    for (let redirects = 0; redirects <= 3; redirects++) {
+      const target = new URL(url);
+      if (target.protocol !== 'https:' || target.username || target.password || !ALLOWED_HOSTS.test(target.hostname)) throw new Error('brandfolder url outside allowed hosts');
+      const res = await fetchImpl(target.href, { redirect: 'manual' });
+      if ([301, 302, 303, 307, 308].includes(res.status)) {
+        const location = res.headers.get('location'); await res.body?.cancel();
+        if (!location || redirects === 3) throw new Error('brandfolder redirect refused');
+        url = new URL(location, target).href; continue;
+      }
+      if (!res.ok || !res.body) throw new Error(`brandfolder blob fetch ${res.status}`);
+      return res;
+    }
+    throw new Error('brandfolder redirect refused');
   };
 
   const mapAssets = (doc: JsonApiDoc): ProviderAssetRef[] => {
@@ -70,10 +80,12 @@ export function createBrandfolderProvider(
         .map((ref) => included.get(`attachments:${ref.id}`))
         .filter((a): a is JsonApiResource => !!a);
       const formats: ProviderFormatRef[] = attachments.map((a) => ({
-        format: (a.attributes.extension as string) ?? 'bin',
+        format: typeof a.attributes.extension === 'string' ? a.attributes.extension.toLowerCase().replace(/^\./, '') : extOf(String(a.attributes.filename ?? ''), 'bin'),
         remoteRef: a.id,
         ...(typeof a.attributes.size === 'number' ? { size: a.attributes.size } : {}),
         ...(typeof a.attributes.filename === 'string' ? { filename: a.attributes.filename } : {}),
+        ...(typeof a.attributes.width === 'number' && a.attributes.width > 0 ? { width: a.attributes.width } : {}),
+        ...(typeof a.attributes.height === 'number' && a.attributes.height > 0 ? { height: a.attributes.height } : {}),
       }));
       const sectionRef = rel.section?.data;
       const section = sectionRef && !Array.isArray(sectionRef) ? included.get(`sections:${sectionRef.id}`) : undefined;
@@ -101,6 +113,16 @@ export function createBrandfolderProvider(
         hasThumbnail: typeof asset.attributes.thumbnail_url === 'string',
       };
     });
+  };
+
+  // A URL segment is untrusted even when it resembles a mapped attachment id.
+  const attachment = async (remoteId: string, formatRef: string, fields: string) => {
+    const assetDoc = await api(`/assets/${encodeURIComponent(remoteId)}?include=attachments&fields=`);
+    const asset = Array.isArray(assetDoc.data) ? assetDoc.data[0] : assetDoc.data;
+    const refs = asset?.relationships?.attachments?.data;
+    if (!Array.isArray(refs) || !refs.some(r => r.id === formatRef)) throw new Error('attachment does not belong to asset');
+    const doc = await api(`/attachments/${encodeURIComponent(formatRef)}?fields=${fields}`);
+    return (Array.isArray(doc.data) ? doc.data[0] : doc.data)?.attributes ?? {};
   };
 
   return {
@@ -134,8 +156,7 @@ export function createBrandfolderProvider(
       }
       // formatRef is an attachment id from our own index mapping; its `url`
       // attribute is a freshly signed storage URL on every fetch.
-      const doc = await api(`/attachments/${formatRef}?fields=url,mimetype,size`);
-      const attrs = (Array.isArray(doc.data) ? doc.data[0] : doc.data)?.attributes ?? {};
+      const attrs = await attachment(remoteId, formatRef, 'url,mimetype,size');
       const url = attrs.url as string | undefined;
       if (!url) throw new Error('attachment has no url');
       const res = await upstream(url);
@@ -145,6 +166,14 @@ export function createBrandfolderProvider(
         contentType: (attrs.mimetype as string) ?? res.headers.get('content-type') ?? 'application/octet-stream',
         ...(typeof attrs.size === 'number' ? { size: attrs.size } : {}),
       };
+    },
+
+    async resolveFilePreview(remoteId, formatRef) {
+      const attrs = await attachment(remoteId, formatRef, 'thumbnail_url');
+      const url = attrs.thumbnail_url;
+      if (typeof url !== 'string' || !url) throw new Error('attachment has no preview');
+      const res = await upstream(url);
+      return { kind: 'stream', body: res.body as ReadableStream<Uint8Array>, contentType: res.headers.get('content-type') ?? 'image/png' };
     },
 
     async healthCheck() {

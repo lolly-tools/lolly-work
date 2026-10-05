@@ -30,4 +30,19 @@ test('shared folder creation, nesting and assignment inherit project access with
   assert.equal((await request(base + '/' + folder.id, 'PATCH', { name: 'Renamed', parentId: folder.id })).status, 400);
   assert.equal((await request(base + '/' + folder.id, 'PATCH', { name: 'Renamed' })).status, 200);
   assert.equal((await request(base + '/items/file/missing', 'PUT', { folderId: folder.id })).status, 404);
+  assert.equal((await request(base + '/' + folder.id, 'DELETE', undefined, other)).status, 403);
+  assert.equal((await request('/api/v1/projects/prj_elsewhere/folders/' + folder.id, 'DELETE')).status, 404);
+  const childId = (await env.store.listProjectFolders('prj_folders')).find(f => f.parentId === folder.id)!.id;
+  assert.equal((await request(base + '/' + folder.id + '/parent', 'PUT', { parentId: childId })).status, 400);
+  assert.equal((await request(base + '/' + childId + '/parent', 'PUT', { parentId: null }, other)).status, 403);
+  assert.equal((await request(base + '/' + childId + '/parent', 'PUT', { parentId: null })).status, 200);
+  assert.equal((await request(base + '/' + childId + '/parent', 'PUT', { parentId: folder.id })).status, 200);
+  await request(path, 'PUT', { folderId: folder.id });
+  assert.equal((await request(base + '/' + folder.id, 'DELETE')).status, 204);
+  assert.equal((await env.store.listProjectFolders('prj_folders')).find(f => f.id === childId)?.parentId, null);
+  assert.deepEqual(await env.store.getSession(session.id), session);
+  assert.equal((await request(base + '/' + folder.id, 'DELETE')).status, 404);
+  await env.store.putProject({ ...(await env.store.getProject('prj_folders'))!, archivedAt: now });
+  assert.equal((await request(base + '/' + childId, 'DELETE')).status, 403);
+
 });

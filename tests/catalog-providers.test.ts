@@ -175,7 +175,8 @@ test('(c) enable + federation: entries appear namespaced for exposed groups only
   const a1 = feed.assets.find((a) => a.id === 'ext/dam1/a1');
   assert.ok(a1?.tags?.includes('provider:dam1'));
   assert.ok(a1?.tags?.includes('Logos'), 'section folded into tags');
-  assert.deepEqual(a1?.meta, { providerLabel: 'Acme DAM', providerSections: ['Logos'], providerCollections: ['Launch Kit'], providerTags: ['event'] });
+  assert.deepEqual(a1?.meta, { providerLabel: 'Acme DAM', providerSections: ['Logos'], providerCollections: ['Launch Kit'], providerTags: ['event'],
+    assetFiles: [{ id: '35143e7a5239313ee73b81f2', format: 'png', url: '/catalog/ext/dam1/a1/att1', name: 'Summit Logo.png', size: 10 }] });
   assert.equal(a1?.tier, 'reference');
   assert.equal(a1?.formats[0]?.url, '/catalog/ext/dam1/a1/att1');
 

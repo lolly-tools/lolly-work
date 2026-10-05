@@ -161,6 +161,8 @@ export interface ProviderFormatRef {
   /** Opaque driver-internal ref resolved by resolveBlob - NEVER a caller-supplied URL. */
   remoteRef: string;
   size?: number;
+  width?: number;
+  height?: number;
   /** Upstream original filename - carried into export provenance (plans/17):
    *  even when the source has no C2PA manifest, "«filename» from «provider»"
    *  travels with anything a tool makes from this asset. */
@@ -238,6 +240,8 @@ export interface CatalogProvider {
   getAsset?(remoteId: string): Promise<ProviderAssetRef | null>;
   /** `formatRef` is a remoteRef from this driver's own ProviderFormatRef (or 'thumb'). */
   resolveBlob(remoteId: string, formatRef: string): Promise<ResolvedBlob>;
+  /** A lightweight preview of a particular file, when the DAM provides one. */
+  resolveFilePreview?(remoteId: string, formatRef: string): Promise<ResolvedBlob>;
   /** Push a lolly-generated export INTO the destination (plans/27 §10). Only
    *  present when `capabilities.publish` - the publish route gates on both. */
   publishAsset?(input: PublishInput): Promise<{ remoteId: string; url?: string }>;
