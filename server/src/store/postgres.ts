@@ -33,6 +33,7 @@ import type { ProviderFragment, ProviderKind, ProviderRecord } from '../catalog/
 import type { DeliveryRecord } from '../delivery/types.ts';
 import type { ProjectAccess } from '../rbac/project-access.ts';
 import type { ProjectFolderRecord } from './types.ts';
+import { createPostgresPasskeys } from '../iam/passkeys/postgres.ts';
 import { createPostgresRenderStore } from '../renders/postgres.ts';
 import {
   SESSION_REVISION_LIMIT, effectiveGroups,
@@ -466,6 +467,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
   return {
     configureRoleGroups(mapping) { roleGroups = structuredClone(mapping); },
     ...createPostgresRenderStore(pool),
+    ...createPostgresPasskeys(pool),
     storageKind: 'postgres',
     brandPersistence: 'durable',
     async getBrandState() {

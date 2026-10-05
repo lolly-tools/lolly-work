@@ -172,7 +172,7 @@ ${known ? `<p class="muted">Asking: <span class="tag">${esc(opts.clientTag ?? 'u
  *  the OSS shell's gate and the console gate get multi-IdP with zero client
  *  changes - their one sign-in link simply arrives here first. */
 export function idpChooserHtml(
-  instanceName: string, entries: Array<{ href: string; label: string; provider?: string }>, opts: { inviteOnly?: boolean; pending?: string[] } = {},
+  instanceName: string, entries: Array<{ href: string; label: string; provider?: string }>, opts: { inviteOnly?: boolean; pending?: string[]; passkeyHref?: string } = {},
 ): string {
   // Full width of the card up to 20rem, padding included, so a 360px phone
   // never scrolls sideways; 44px tall like every other action here.
@@ -183,7 +183,7 @@ export function idpChooserHtml(
   return page(instanceName, `
 <div class="card">
 <p>Choose how to sign in.${opts.inviteOnly ? ' Use the account your invitation went to.' : ''}</p>
-<div class="auth-providers">${buttons}${pending}</div>
+<div class="auth-providers">${buttons}${opts.passkeyHref ? `<a class="auth-provider" href="${esc(opts.passkeyHref)}">${providerIcon('passkey')}<span>Sign in with a passkey</span><span class="auth-arrow" aria-hidden="true">→</span></a>` : ''}${pending}</div>
 </div>`, 'Sign in');
 }
 

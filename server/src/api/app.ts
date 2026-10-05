@@ -167,6 +167,7 @@ import { parseClientHeader } from '../fleet/client-header.ts';
 import { verifyChain, deriveAuditMacKey } from '../audit/chain.ts';
 import { createLogger, requestId } from '../observability/log.ts';
 import { safeReturnTo } from '../iam/return-to.ts';
+import { registerPasskeyRoutes, passkeysEnabled } from '../iam/passkeys/routes.ts';
 import { csrfVerdict } from '../iam/csrf.ts';
 import { auditHead } from '../audit/head.ts';
 import { createMetrics, statusClass, metricsGate, type Metrics, type GaugeLine } from '../observability/metrics.ts';
@@ -352,6 +353,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
 
   const audit = (actor: string, action: string, subject: string, payload?: Record<string, unknown>) =>
     store.appendAudit({ at: new Date().toISOString(), actor, action, subject, ...(payload ? { payload } : {}) });
+
+  registerPasskeyRoutes(router, { store, baseUrl: config.instance.baseUrl, instanceName: config.instance.name, secret: secrets.session, verifySecrets: sessionVerify, sessionTtlSec, memberOf, audit });
 
   // Notification egress (plans/35 wave 1). Refused at boot, not discovered at
   // runtime: a webhook without its signing secret would emit forgeable events,
@@ -619,6 +622,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     sendJson(res, 200, {
       mode: renderReader(req, brand.current()!.revision, linkVerify) ? 'open' : config.policy.defaultAccessMode,
       ...authProvider(),
+      ...(passkeysEnabled(config.instance.baseUrl) ? { passkeyManagementPath: '/api/auth/security' } : {}),
       // The public sandbox (dev.enabled) serves the deployment docs to anyone - 
       // the console reads this so an anonymous visitor can land straight on the
       // Docs view (see console/app.js publicMode) instead of the sign-in gate.
@@ -1189,7 +1193,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       });
       res.end(idpChooserHtml(config.instance.name,
         providers.map((p) => ({ href: `${p.loginPath}${carry}`, provider: p.name, label: `Sign in with ${p.kind === 'password' ? inSentence(p.name) : p.name}` })),
-        { inviteOnly: !!config.idp.admission, pending: config.idp.pending }));
+        { inviteOnly: !!config.idp.admission, pending: config.idp.pending, ...(passkeysEnabled(config.instance.baseUrl) ? { passkeyHref: `/api/auth/passkeys/login?returnTo=${encodeURIComponent(returnToSafe(returnTo))}` } : {}) }));
       return;
     }
     // One house: the primary when there is one, else the only entry (email
@@ -1469,7 +1473,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (opts.ownerAllowed === false && user.role === 'owner') return refuseOwnerSession();
     const sessionUser: SessionUser = {
       sub: user.sub, email: user.email, groups: user.groups, role: user.role,
-      name: displayName(user), epoch: user.sessionEpoch,
+      name: displayName(user), epoch: user.sessionEpoch, authenticatedAt: Date.now(),
     };
     if (ownerGroup) await audit(`user:${user.id}`, 'auth.bootstrap-owner', `user:${user.id}`, { provider, idp: idp.id, group: ownerGroup });
     await audit(`user:${user.id}`, 'auth.login', 'session', { provider, idp: idp.id, ...(admitted.via !== 'open' ? { admittedVia: admitted.via } : {}), setupFingerprint: identitySettingsHash(config) });
@@ -1674,7 +1678,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const user = await acceptInvitationAtSignIn(upserted, admitted, { provider: 'proxy' });
     const sessionUser: SessionUser = {
       sub: user.sub, email: user.email, groups: user.groups, role: user.role,
-      name: displayName(user), epoch: user.sessionEpoch,
+      name: displayName(user), epoch: user.sessionEpoch, authenticatedAt: Date.now(),
     };
     if (ownerGroup) await audit(`user:${user.id}`, 'auth.bootstrap-owner', `user:${user.id}`, { provider: 'proxy', group: ownerGroup });
     await audit(`user:${user.id}`, 'auth.login', 'session', { provider: 'proxy', directory: id.sources.directory, ...(admitted.via !== 'open' ? { admittedVia: admitted.via } : {}), setupFingerprint: identitySettingsHash(config) });
@@ -3715,7 +3719,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
    *  session of theirs, so the device they acted from stays signed in. */
   const stayingSignedIn = (user: UserRecord): string => mintSessionCookie({
     sub: user.sub, email: user.email, groups: user.groups, role: user.role,
-    name: displayName(user), epoch: user.sessionEpoch,
+    name: displayName(user), epoch: user.sessionEpoch, authenticatedAt: Date.now(),
   }, secrets.session, secure, sessionTtlSec);
   /** Removes one sign-in, or answers why not. Returns the account as it
    *  stands after the removal, or null when an error was sent; the caller
