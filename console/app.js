@@ -81,6 +81,14 @@ function el(tag, attrs = {}, ...children) {
     else if (k.startsWith('on')) node.addEventListener(k.slice(2), v);
     else if (v !== null && v !== undefined) node.setAttribute(k, String(v));
   }
+  // These classes use the web shell's shared CSS primitives. Real controls
+  // retain keyboard, label, validation and indeterminate-state behavior.
+  if (tag === 'input') {
+    if (node.type === 'checkbox') node.classList.add('field-check');
+    else if (node.type === 'radio') node.classList.add('field-radio');
+    else if (!['hidden', 'range', 'color', 'file', 'submit', 'button'].includes(node.type)) node.classList.add('field-input');
+  } else if (tag === 'textarea') node.classList.add('field-input');
+  else if (tag === 'select') node.classList.add('field-select');
   for (const c of children.flat()) {
     if (c === null || c === undefined) continue;
     node.append(c.nodeType ? c : document.createTextNode(String(c)));
@@ -88,6 +96,43 @@ function el(tag, attrs = {}, ...children) {
   return node;
 }
 const fmt = (n) => n >= 10_000 ? `${(n / 1000).toFixed(n >= 100_000 ? 0 : 1)}K` : String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+
+// Tabs use the shell's segmented-control vocabulary, with independent panels
+// so switching tasks never drops typed filters or selection.
+function sectionTabs(name, sections, initial = sections[0]?.id) {
+  const tablist = el('div', { class: 'section-tabs', role: 'tablist', 'aria-label': name });
+  const buttons = new Map(), panels = new Map(), counts = new Map();
+  const select = (id, focus = false) => {
+    if (!buttons.has(id)) return;
+    for (const [key, button] of buttons) {
+      button.setAttribute('aria-selected', String(key === id));
+      button.tabIndex = key === id ? 0 : -1;
+      panels.get(key).hidden = key !== id;
+      if (key === id) requestAnimationFrame(() => {
+        for (const table of panels.get(key).querySelectorAll('.tbl-scroll')) table.dispatchEvent(new Event('console-panel-visible'));
+      });
+    }
+    if (focus) buttons.get(id).focus();
+  };
+  for (const section of sections) {
+    const panelId = `${name.toLowerCase().replace(/\W+/g, '-')}-${section.id}`;
+    const count = el('span', { class: 'tab-count', hidden: section.count ? null : 'true' }, section.count || '');
+    counts.set(section.id, count);
+    const button = el('button', { type: 'button', id: `${panelId}-tab`, role: 'tab', 'aria-controls': panelId,
+      onclick: () => select(section.id) }, section.label, ' ', count);
+    const panel = el('section', { id: panelId, class: 'section-panel', role: 'tabpanel', 'aria-labelledby': button.id }, section.content);
+    button.addEventListener('keydown', event => {
+      const ids = [...buttons.keys()], index = ids.indexOf(section.id);
+      const next = event.key === 'ArrowRight' ? (index + 1) % ids.length : event.key === 'ArrowLeft' ? (index + ids.length - 1) % ids.length
+        : event.key === 'Home' ? 0 : event.key === 'End' ? ids.length - 1 : null;
+      if (next !== null) { event.preventDefault(); select(ids[next], true); }
+    });
+    buttons.set(section.id, button); panels.set(section.id, panel); tablist.append(button);
+  }
+  select(buttons.has(initial) ? initial : sections[0]?.id);
+  return { element: el('div', { class: 'section-workspace' }, tablist, ...panels.values()), select,
+    setCount: (id, value) => { const count = counts.get(id); if (count) { count.textContent = String(value); count.hidden = !value; } } };
+}
 const when = (iso) => iso ? new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
 // Seconds → a compact duration ("45s" / "38m" / "6.2h" / "3.1d"); ≤0/NaN → '0m'.
 function fmtDuration(totalSeconds) {
@@ -244,9 +289,12 @@ function dataTable(cols, rows, opts = {}) {
   // Sticky headers need overflow-x:clip (no scroll container); only a table
   // that genuinely overflows trades them for horizontal scrolling. Measured
   // after the caller mounts us (rAF fires post-layout).
-  requestAnimationFrame(() => {
-    if (scroll.isConnected && scroll.scrollWidth > scroll.clientWidth + 1) scroll.classList.add('is-scrollx');
-  });
+  const measureOverflow = () => {
+    if (scroll.isConnected && scroll.clientWidth) scroll.classList.toggle('is-scrollx', scroll.scrollWidth > scroll.clientWidth + 1);
+  };
+  // A table can be mounted in an inactive task panel. Measure again on reveal.
+  scroll.addEventListener('console-panel-visible', measureOverflow);
+  requestAnimationFrame(measureOverflow);
 
   // Bar: search + match count (left), CSV export of the current view (right).
   const count = hasFilter || hasPager ? el('span', { class: 'tbl-filter-count muted', role: 'status' }) : null;
@@ -303,7 +351,7 @@ function field(labelText, control, attrs = {}) {
     ? control
     : control.querySelector?.('input, select, textarea') ?? control;
   if (!target.id) target.id = `fld-${++_fieldSeq}`;
-  return el('div', attrs, el('label', { for: target.id }, labelText), control);
+  return el('div', attrs, el('label', { class: 'field-label', for: target.id }, labelText), control);
 }
 
 // Cells that carry a canonical `data-sort` value so a sortable column orders by
@@ -506,7 +554,8 @@ async function activityHeader(caption, seriesDef /* [{key,label,match:[…]}] */
   const prev = prior.reduce((a, r) => a + dayTotal(r), 0);
   const busiest = win.reduce((b, r) => (dayTotal(r) > dayTotal(b) ? r : b), win[0]);
   const delta = prev ? Math.round(((total - prev) / prev) * 100) : null;
-  return el('div', { class: 'card' },
+  return el('details', { class: 'card activity-summary' },
+    el('summary', {}, 'Activity · last 30 days', el('span', { class: 'muted' }, `${fmt(total)} events`)),
     el('p', { class: 'sub flush' }, caption),
     el('div', { class: 'grid tiles' },
       tile('Last 30 days', fmt(total)),
@@ -3029,9 +3078,14 @@ async function viewProviders(main, params = new URLSearchParams()) {
     { key: 'a', label: 'Config changes', match: ['catalog.provider.create', 'catalog.provider.update', 'catalog.provider.delete', 'catalog.provider.enable', 'catalog.provider.disable', 'catalog.provider.credential'] },
     { key: 'b', label: 'Syncs', match: ['catalog.provider.sync', 'catalog.provider.preview'] },
   ]);
+  const connections = el('details', { class: 'card provider-connect', open: providers.length ? null : 'true' },
+    el('summary', {}, 'Connect an asset source'), connectGrid);
+  const connectAction = canAction('catalog.provider.manage') ? el('button', { class: 'primary page-action', type: 'button', onclick: () => {
+    connections.open = true; scrollIntoViewMotionSafe(connections); connections.querySelector('button')?.focus();
+  } }, navIcon('providers'), 'Connect a source') : null;
   main.append(...[
-    el('h1', {}, 'Providers'),
-    el('p', { class: 'sub' }, 'Federated catalog sources. The external system stays the source of truth: Lolly consumes it read-only, and exposure rules decide which slice your members see. WebDAV / Nextcloud and Google Drive offer guided configuration, file testing and activation. Other integrations use their existing advanced forms and setup guides.'),
+    el('div', { class: 'page-heading' }, el('div', {}, el('h1', {}, 'Providers'),
+      el('p', { class: 'sub' }, 'Connect asset libraries and manage what your workspace can use.')), connectAction),
     ...(hdr ? [hdr] : []),
     providers.length
       ? el('div', { class: 'grid tiles' },
@@ -3040,10 +3094,6 @@ async function viewProviders(main, params = new URLSearchParams()) {
           tile('Errored', fmt(errored)),
           tile('Assets synced', fmt(assets)))
       : null,
-    el('div', { class: 'card stack' },
-      el('h2', {}, 'Connect a source'),
-      connectGrid),
-    searchImportPanel(),
     panelHost,
     el('div', { class: 'card stack' },
       el('h2', {}, 'Configured sources'),
@@ -3051,7 +3101,9 @@ async function viewProviders(main, params = new URLSearchParams()) {
         ? dataTable(
             ['Provider', 'Kind', { label: 'Status', sort: false }, { label: 'Assets', num: true }, { label: 'Last sync', sort: false }, { label: 'Credential', sort: false }, { label: 'Actions', w: '300px', sort: false }],
             providers.map((p) => providerRow(p, panels)), { sortable: true })
-        : el('p', { class: 'empty' }, 'No sources connected yet. Pick an integration above to federate an external DAM, bucket, or repo into the catalog.')),
+        : el('p', { class: 'empty' }, 'No sources connected yet. Connect an asset source below to make its approved assets available in Lolly.')),
+    connections,
+    el('details', { class: 'card provider-search' }, el('summary', {}, 'Search connected sources & import'), searchImportPanel()),
   ].filter(node => node !== null));
   const resumed = providers.find(provider => provider.id === params.get('setup'));
   if (resumed?.kind === 'gdrive' && resumed.guidedSetupAvailable && canAction('catalog.provider.manage')) showGuided(resumed, params.get('oauth'));
@@ -3920,12 +3972,11 @@ async function invitationsSection(groupOptions) {
     return el('tr', { 'data-invitation-id': inv.id },
       el('td', {}, check),
       el('td', { title: inv.email }, el('div', { class: 'invite-account' }, avatar, el('span', {}, inv.email)),
+        el('div', { class: 'invite-provenance muted' }, `Invited by ${inv.inviter?.name ?? '—'} · ${madeFrom(inv)}`),
         inv.groups?.length ? [' ', el('div', { class: 'muted' }, `Groups: ${inv.groups.join(', ')}`)] : null),
       el('td', {}, projects.length
         ? projects.map((p) => `${p.name || 'A removed project'} (${projectRoleLabel(p.role)})`).join(', ')
         : el('span', { class: 'muted' }, 'none')),
-      el('td', {}, madeFrom(inv)),
-      el('td', {}, inv.inviter?.name ?? '—'),
       el('td', { 'data-sort': String(INVITE_STATUS_RANK[inv.status] ?? 9) },
         el('span', { class: `status ${INVITE_STATUS_CLASS[inv.status] ?? ''}` }, statusText),
         passwordText ? [' ', el('div', { class: 'muted' }, passwordText)] : null),
@@ -3944,7 +3995,7 @@ async function invitationsSection(groupOptions) {
     const live = filtered.filter(i => i.status !== 'revoked');
     const revoked = filtered.filter(i => i.status === 'revoked');
     const table = (rows) => dataTable(
-      [{ label: 'Select', sort: false, w: '1%' }, 'Email', 'Projects', 'Made from', 'Invited by', 'Status', { label: 'Ends or accepted', sort: 'date' }, { label: 'Actions', w: '1%', sort: false }],
+      [{ label: 'Select', sort: false, w: '1%' }, 'Account', 'Projects', 'Status', { label: 'Ends or accepted', sort: 'date' }, { label: 'Actions', w: '1%', sort: false }],
       rows.map(invitationRow), { sortable: true, filter: false, csv: true, csvName: 'invitations' });
     const bearer = live.some((i) => i.status === 'pending' && i.passwordSetup && i.password !== 'set');
     const card = el('div', { class: 'stack' },
@@ -3971,7 +4022,8 @@ async function invitationsSection(groupOptions) {
     catch { /* keep the current list on a transient error */ }
   }
   renderList(data.invitations ?? []); syncSelection();
-  return el('div', { class: 'stack' }, form, listHost);
+  return el('div', { class: 'stack invitations-workspace' },
+    el('details', { class: 'invite-compose' }, el('summary', {}, navIcon('users'), 'Invite people'), form), listHost);
 }
 
 // ── access requests (plans/74 invite spec 4.3) ───────────────────────────────
@@ -4047,7 +4099,10 @@ async function requestsSection(canInvite) {
     .sort((a, b) => String(b.answeredAt ?? '').localeCompare(String(a.answeredAt ?? '')));
   let waiting = open.length;
   const count = el('span', { class: 'muted' });
-  const syncCount = () => { count.textContent = waiting ? ` (${waiting} waiting)` : ''; };
+  const syncCount = () => {
+    count.textContent = waiting ? ` (${waiting} waiting)` : '';
+    count.dispatchEvent(new CustomEvent('requests-count', { bubbles: true, detail: waiting }));
+  };
   syncCount();
   const resultHost = el('div');
 
@@ -4135,7 +4190,7 @@ async function requestsSection(canInvite) {
     el('td', {}, requestAnswer(req)));
 
   const columns = (last) => ['Who', 'Asks for', 'Note', { label: 'Asked', sort: 'date' }, last];
-  return el('div', { class: 'card stack' },
+  return el('div', { class: 'card stack', 'data-waiting': open.length },
     el('h2', { class: 'flush' }, 'Requests', count),
     resultHost,
     open.length
@@ -4273,9 +4328,11 @@ async function viewUsers(main, params) {
   function userRow(u) {
     const open = () => openDetail(u);
     // Name is a real link for keyboard access; the whole row is a mouse target.
-    const nameLink = el('a', { class: 'link-btn', href: '#/users', onclick: (e) => { e.preventDefault(); e.stopPropagation(); open(); } }, u.name);
+  const nameLink = el('a', { class: 'link-btn', href: '#/users', onclick: (e) => { e.preventDefault(); e.stopPropagation(); open(); } }, u.name);
     return el('tr', { class: 'row-click', onclick: open },
-      el('td', {}, nameLink, u.disabled ? el('span', { class: 'status revoked', style: 'margin-left:8px' }, 'disabled') : null),
+      el('td', {}, el('div', { class: 'invite-account' },
+        el('span', { class: 'invite-avatar', 'aria-hidden': 'true' }, (u.name || u.email || '?').split(/[\s.@_-]+/).filter(Boolean).slice(0, 2).map(part => part[0]).join('').toUpperCase()),
+        nameLink), u.disabled ? el('span', { class: 'status revoked', style: 'margin-left:8px' }, 'disabled') : null),
       el('td', { title: u.email }, u.email),
       el('td', {}, u.title ?? '—'),
       el('td', {}, el('span', { class: 'chip' }, u.role)),
@@ -4629,21 +4686,28 @@ async function viewUsers(main, params) {
   // Groups need grant.edit too; only an owner is offered IdP groups.
   const inviteGroups = !canAction('grant.edit') ? null
     : allGroups.filter((g) => g.source === 'local' || session?.user?.role === 'owner').map((g) => ({ name: g.name, source: g.source }));
-  // Access requests sit at the top (plans/74 invite spec 4.3).
+  // Each task gets its own panel; requests keep a visible waiting count.
   const [invites, requests] = await Promise.all([
     canAction('user.invite') ? invitationsSection(inviteGroups) : null,
     requestsSection(canAction('user.invite')),
   ]);
+  const tabs = sectionTabs('People', [
+    { id: 'directory', label: 'Directory', count: firstData.total, content: el('div', {}, filters, alphaBar, results) },
+    ...(invites ? [{ id: 'invitations', label: 'Invitations', content: invites }] : []),
+    ...(requests ? [{ id: 'requests', label: 'Access requests', count: Number(requests.dataset.waiting), content: requests }] : []),
+    ...(hdr ? [{ id: 'activity', label: 'Activity', content: hdr }] : []),
+  ], params?.get?.('tab'));
+  requests?.addEventListener('requests-count', event => tabs.setCount('requests', event.detail));
+  const inviteButton = invites ? el('button', { class: 'primary page-action', type: 'button', onclick: () => {
+    tabs.select('invitations');
+    const compose = invites.querySelector('.invite-compose');
+    if (compose) compose.open = true;
+    invites.querySelector('textarea')?.focus();
+  } }, navIcon('users'), 'Invite people') : null;
   main.replaceChildren(
-    el('h1', {}, 'People'),
-    el('p', { class: 'sub' }, `Everyone who has signed in — search, filter and sort across the directory. Open a person for their groups, individual tool access and instant lockout. Identity and role follow ${idpName()}; telemetry attribution is each person’s own opt-in choice.`),
-    ...(requests ? [requests] : []),
-    ...(hdr ? [hdr] : []),
-    ...(invites ? [invites] : []),
-    filters,
-    alphaBar,
-    results,
-    detailHost);
+    el('div', { class: 'page-heading' }, el('div', {}, el('h1', {}, 'People'),
+      el('p', { class: 'sub' }, 'Manage accounts, invitations and workspace access.')), inviteButton),
+    tabs.element, detailHost);
   renderResults(firstData);
   // Deep link from the activity feed: #/users?focus=<id> opens that person.
   const focusId = params?.get?.('focus');
@@ -5748,13 +5812,11 @@ const VIEWS = {
   fleet: { title: 'Fleet', render: viewFleet },
   rooms: { title: 'Rooms', render: viewRooms },
   links: { title: 'Links', render: viewLinks },
-  // Tools and Catalog are the governance surface an admin comes here for, so
-  // they sit in the rail (they are also tabs of This Deploy); providers and
-  // injectables stay reachable by deep link and tab only.
+  // Deployment tabs and the task-grouped navigation share the same renderers.
   tools: { title: 'Tools', render: viewTools },
   catalog: { title: 'Catalog', render: viewCatalog },
-  providers: { title: 'Providers', render: viewProviders, hidden: true },
-  injectables: { title: 'Injectables', render: viewInjectables, hidden: true },
+  providers: { title: 'Providers', render: viewProviders },
+  injectables: { title: 'Injectables', render: viewInjectables },
   approvals: { title: 'Approvals', render: viewApprovals },
   messages: { title: 'Messages', render: viewMessages },
   audit: { title: 'Audit', render: viewAudit },
@@ -5805,6 +5867,52 @@ function brandLogoEl(cls) {
   );
 }
 
+const NAV_GROUPS = [
+  { title: 'Workspace', ids: ['overview', 'projects', 'users', 'contractors'] },
+  { title: 'Assets & tools', ids: ['catalog', 'providers', 'tools', 'injectables'] },
+  { title: 'Governance', ids: ['approvals', 'chains', 'grants', 'tokens'] },
+  { title: 'Operations', ids: ['activity', 'rooms', 'links', 'messages', 'audit', 'fleet'] },
+  { title: 'Instance', ids: ['instance', 'setup', 'preview', 'docs'] },
+];
+
+function consoleNavigation(current) {
+  const picker = el('select', { class: 'mobile-section-picker', 'aria-label': 'Console section', onchange: event => { location.hash = `#/${event.target.value}`; } },
+    ...NAV_GROUPS.map(group => el('optgroup', { label: group.title },
+      ...group.ids.filter(id => VIEWS[id] && !VIEWS[id].hidden && canView(id)).map(id =>
+        el('option', { value: id, selected: id === current ? 'selected' : null }, VIEWS[id].title)))));
+  const groups = NAV_GROUPS.map(group => {
+    const ids = group.ids.filter(id => VIEWS[id] && !VIEWS[id].hidden && canView(id));
+    if (!ids.length) return null;
+    return el('section', { class: 'rail-group', 'aria-label': group.title },
+      el('h2', { class: 'rail-group-title' }, group.title),
+      ...ids.map(id => el('a', { href: `#/${id}`, 'aria-current': id === current ? 'page' : null, title: VIEWS[id].title },
+        navIcon(id), el('span', {}, VIEWS[id].title))));
+  }).filter(Boolean);
+  const empty = el('p', { class: 'nav-empty', role: 'status', hidden: 'true' }, 'No sections match.');
+  const search = el('input', { type: 'search', class: 'nav-search', placeholder: 'Find a section…', 'aria-label': 'Find a console section', autocomplete: 'off' });
+  search.addEventListener('input', () => {
+    const query = search.value.trim().toLowerCase();
+    let count = 0;
+    for (const group of groups) {
+      let found = 0;
+      for (const link of group.querySelectorAll('a')) {
+        link.hidden = !`${group.getAttribute('aria-label')} ${link.textContent}`.toLowerCase().includes(query);
+        if (!link.hidden) found++;
+      }
+      group.hidden = !found; count += found;
+    }
+    empty.hidden = count > 0;
+  });
+  search.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { search.value = ''; search.dispatchEvent(new Event('input')); }
+    if (event.key === 'Enter') {
+      const first = groups.find(group => !group.hidden)?.querySelector('a:not([hidden])');
+      if (first) { event.preventDefault(); first.click(); }
+    }
+  });
+  return el('nav', { id: 'rail-nav', 'aria-label': 'Console sections' }, picker, search, ...groups, empty);
+}
+
 function shell(current, content) {
   const logo = brandLogoEl('brand-logo--rail');
   $app.replaceChildren(
@@ -5814,9 +5922,7 @@ function shell(current, content) {
         : el('div', { class: 'brand' }, el('span', { class: 'brand-name' }, instanceName), el('small', {}, 'Control plane console')),
       el('a', { class: 'back', href: lollyHref('/') }, 'Open Lolly →'),
       railToggleBtn(),
-      el('nav', { id: 'rail-nav', 'aria-label': 'Console sections' },
-        ...Object.entries(VIEWS).filter(([id, v]) => !v.hidden && canView(id)).map(([id, v]) =>
-          el('a', { href: `#/${id}`, 'aria-current': id === current ? 'page' : null, title: v.title }, navIcon(id), el('span', {}, v.title)))),
+      consoleNavigation(current),
       el('div', { class: 'session' },
         el('div', { class: 'who', title: session?.user?.email ?? '' }, session?.user?.email ?? ''),
         el('div', {}, session?.user?.role ?? ''),
@@ -6125,6 +6231,9 @@ async function boot() {
   updateFavicon();
   mountThemeToggle();
   applyRailState();
+  window.addEventListener('resize', () => {
+    for (const table of document.querySelectorAll('.tbl-scroll')) table.dispatchEvent(new Event('console-panel-visible'));
+  });
   // The instance's IdP display name (instance.json idp.displayName) — any OIDC
   // issuer works, open/sovereign providers first-class; unset → generic "SSO".
   try {

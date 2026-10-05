@@ -1,0 +1,470 @@
+/* SPDX-License-Identifier: MPL-2.0
+ * Generated from the Lolly web shell. Do not edit component recipes here.
+ * Source CSS SHA-256: 2362e1344ad6f9c13ca174f12c0338f287becb93aaacf407089d9c74101964e9
+ * Update: node scripts/sync-console-ui.mjs --source <lolly checkout>
+ */
+:root { --space: 8px; --a11y-fs: 1; --font-brand: var(--font-sans, var(--font-sys)); --font-mono: var(--font-mono-sys); }
+/* @generated-chrome-tokens start */
+:root {
+  /* typeface stacks - the platform defaults (SUSE / SUSE Mono, shell-served). applyChromeBrandVars (brand-vars.ts) overrides both inline on <html> when the active brand's tokens declare font.brand / font.mono; these are the unbranded fallback */
+  /* edges - the hairline-ring-instead-of-border move (82 audited sites) */
+  --edge: inset 0 0 0 1px var(--baseline);
+  --edge-faint: inset 0 0 0 1px color-mix(in srgb, var(--ink) 10%, transparent);
+  --edge-strong: inset 0 0 0 1px color-mix(in srgb, var(--ink) 18%, transparent);
+  /* elevation - control / raised / floating / drawer / modal */
+  --shadow-1: 0 1px 3px hsl(0 0% 0% / .13);
+  --shadow-2: 0 4px 14px hsl(0 0% 0% / .18);
+  --shadow-3: 0 8px 28px hsl(0 0% 0% / .22);
+  --shadow-4: 0 12px 36px hsl(0 0% 0% / .26);
+  --shadow-5: 0 24px 60px hsl(0 0% 0% / .3);
+  /* glass top-light */
+  --bevel: inset 0 1px hsl(0 0% 100% / .1);
+  /* focus rings */
+  --ring-focus: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent);
+  --ring-focus-strong: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+  /* Radius scale derived from the design system's shape.radius source (--radius). Zero makes every Lolly UI corner square; any non-zero base turns the high 999× step into a pill/round treatment. */
+  --radius-xs: calc(var(--radius) * .25);
+  --radius-sm: calc(var(--radius) * .5);
+  --radius-md: calc(var(--radius) * .75);
+  --radius-lg: var(--radius);
+  --radius-pill: calc(var(--radius) * 999);
+  --radius-round: calc(var(--radius) * 999);
+  /* chrome type scale - pre-multiplied by --a11y-fs (the sanctioned home for the largeText multiplier: scaled once, at declaration) */
+  --fs-2xs: calc(10px * var(--a11y-fs));
+  --fs-xs: calc(11px * var(--a11y-fs));
+  --fs-sm: calc(12px * var(--a11y-fs));
+  --fs-md: calc(13px * var(--a11y-fs));
+  --fs-lg: calc(14px * var(--a11y-fs));
+  --fs-xl: calc(16px * var(--a11y-fs));
+  /* Spacing scale derived from the design system's space.base source (--space). The default base is 8px; changing one token retunes every Lolly chrome gap proportionally. */
+  --sp-1: calc(var(--space) * .25);
+  --sp-2: calc(var(--space) * .5);
+  --sp-3: calc(var(--space) * .75);
+  --sp-4: var(--space);
+  --sp-5: calc(var(--space) * 1.25);
+  --sp-6: calc(var(--space) * 1.5);
+  --sp-7: calc(var(--space) * 2);
+  --sp-8: calc(var(--space) * 3);
+  /* motion */
+  --dur-1: .12s;
+  --dur-2: .18s;
+  --dur-3: .3s;
+  --ease-out: cubic-bezier(.32, .72, 0, 1);
+  --ease-spring: cubic-bezier(.34, 1.56, .64, 1);
+  /* stacking - names for what were magic numbers (99999/100000) */
+  --z-chrome: 20;
+  --z-overlay: 50;
+  --z-toast: 90;
+  --z-max: 100;
+  --z-top: 100000;
+}
+/* @generated-ui-semantics start */
+:root {
+  --ui-color-text-default: var(--ink);
+  --ui-color-text-muted: var(--muted);
+  --ui-color-surface-canvas: var(--plane);
+  --ui-color-surface-raised: var(--surface);
+  --ui-color-surface-overlay: var(--surface);
+  --ui-color-surface-muted: var(--grid);
+  --ui-color-action-primary: var(--accent);
+  --ui-color-action-on-primary: var(--on-accent);
+  --ui-color-selection-surface: color-mix(in srgb, var(--accent) 12%, transparent);
+  --ui-color-selection-border: var(--accent);
+  --ui-color-border-default: var(--baseline);
+  --ui-color-focus-ring: var(--accent);
+  --ui-color-syntax-keyword: var(--accent);
+  --ui-color-syntax-string: var(--ui-color-text-default);
+  --ui-color-syntax-comment: var(--ui-color-text-muted);
+  --ui-color-syntax-number: var(--accent);
+  --ui-color-syntax-function: var(--ui-color-text-default);
+  --ui-color-syntax-type: var(--accent);
+  --ui-color-syntax-operator: var(--ui-color-text-muted);
+  --ui-color-status-danger: var(--critical);
+  --ui-color-status-danger-surface: color-mix(in srgb, var(--critical) 7.000000000000001%, transparent);
+  --ui-color-status-notice-surface: color-mix(in srgb, var(--accent) 7.000000000000001%, transparent);
+  --ui-size-target: 44px;
+  --ui-size-icon-sm: calc(14px * var(--a11y-fs));
+  --ui-size-icon-md: calc(16px * var(--a11y-fs));
+  --ui-size-icon-lg: calc(20px * var(--a11y-fs));
+  --ui-size-control: calc(30px * var(--a11y-fs));
+  --ui-space-section: 64px;
+  --ui-space-control-inline: var(--sp-4);
+  --ui-space-control-block: var(--sp-3);
+  --ui-space-panel: var(--sp-7);
+  --ui-space-page: var(--sp-8);
+  --ui-radius-control: var(--radius-sm);
+  --ui-radius-choice: var(--radius-xs);
+  --ui-radius-choice-round: var(--radius-round);
+  --ui-radius-surface: var(--radius-lg);
+  --ui-radius-card: calc(var(--radius) * 1.25);
+  --ui-radius-panel: var(--radius);
+  --ui-radius-pill: var(--radius-pill);
+  --ui-elevation-control: var(--shadow-1);
+  --ui-elevation-panel: var(--shadow-2);
+  --ui-elevation-floating: var(--shadow-3);
+  --ui-elevation-sheet: var(--shadow-4);
+  --ui-elevation-overlay: var(--shadow-5);
+  --ui-edge-default: var(--edge);
+  --ui-edge-faint: var(--edge-faint);
+  --ui-edge-strong: var(--edge-strong);
+  --ui-effect-bevel: var(--bevel);
+  --ui-effect-focus-halo: var(--ring-focus);
+  --ui-effect-selected: inset 0 0 0 1px color-mix(in srgb, var(--accent) 20%, transparent);
+  --ui-effect-accent-ring: inset 0 0 0 1px color-mix(in srgb, var(--accent) 20%, transparent);
+  --ui-effect-selection-ring: 0 0 0 2px var(--ui-color-selection-border);
+  --ui-effect-selection-ring-hover: 0 0 0 2px color-mix(in srgb, var(--ui-color-selection-border) 40%, transparent);
+  --ui-type-display: calc(64px * var(--a11y-fs));
+  --ui-type-heading: calc(28px * var(--a11y-fs));
+  --ui-type-lead: calc(18px * var(--a11y-fs));
+  --ui-type-caption: calc(12px * var(--a11y-fs));
+  --ui-type-tracking-label: .06em;
+  --ui-type-tracking-tight: -.01em;
+  --ui-type-body: var(--fs-md);
+  --ui-type-label: var(--fs-sm);
+  --ui-type-title: var(--fs-lg);
+  --ui-type-ui-family: var(--font-brand);
+  --ui-type-mono-family: var(--font-mono);
+  --ui-type-band: var(--fs-xs);
+  --ui-type-section: var(--fs-md);
+  --ui-type-field: var(--fs-2xs);
+  --ui-type-help: var(--fs-xs);
+  --ui-type-weight-section: 600;
+  --ui-type-weight-label: 600;
+  --ui-motion-feedback: var(--dur-1);
+  --ui-motion-overlay: var(--dur-2);
+  --ui-motion-navigation: var(--dur-3);
+  --ui-motion-standard: var(--ease-out);
+  --ui-layer-chrome: var(--z-chrome);
+  --ui-layer-overlay: var(--z-overlay);
+  --ui-layer-toast: var(--z-toast);
+}
+:root {
+  /* The select chevron, declared ONCE. A Lucide `chevron-down` at a fixed mid
+     grey: #888 is the one ink that holds up on all three themes without a
+     second asset, and it is what the sidebar has shipped since the control
+     was first drawn (tool.css). Overridable per-surface if a dense toolbar
+     ever needs a lighter caret. */
+  --field-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23888888' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+
+  /* The checkbox tick. A glyph inside a data-URI can't read a token, and the
+     tick sits on `--primary` - which is a near-black teal on light and a mid
+     Pine Green on dark/brand - so the ink genuinely has to flip. Two variants,
+     both here, rather than a colour that is legible on neither. */
+  --field-tick: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
+}
+[data-theme="dark"],
+[data-theme="brand"] {
+  --field-tick: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23071a15' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
+}
+
+/* ─── Text-ish fields + selects: the shared box ──────────────────────────── */
+
+.field-input,
+.field-select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 10px;
+  color: var(--ui-color-text-default);
+  background-color: var(--ui-color-surface-canvas);
+  border: 0;
+  border-radius: var(--ui-radius-panel);
+  box-shadow: var(--ui-effect-bevel), var(--ui-elevation-control);
+  font: inherit;
+  font-size: var(--fs-md);
+  transition: box-shadow var(--ui-motion-feedback), background-color var(--ui-motion-feedback), background-position var(--ui-motion-feedback);
+}
+
+/* Width is the one thing a boxed field argues about most often - a toolbar cell
+   wants to hug, a sidebar row wants the full column. `--auto` opts out rather
+   than making every toolbar restate `width: auto` next to its real deltas. */
+.field-input--auto,
+.field-select--auto { width: auto; }
+
+/* Compact: toolbars, table cells, the studio's dense token rows. */
+.field-input--sm,
+.field-select--sm {
+  padding: 5px 8px;
+  font-size: var(--fs-md);
+  border-radius: var(--ui-radius-control);
+}
+/* (`.field-select--sm`'s own chevron gutter is set AFTER the `.field-select`
+   block below - same specificity, so it has to come later to win.) */
+
+/* Machine values - hex, ids, tokens, URLs. Mirrors the mono treatment the
+   `.field-input` alias list in components.css already carries. */
+.field-input--mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  background-color: color-mix(in srgb, var(--grid) 40%, transparent);
+}
+
+.field-select {
+  padding-inline-end: 32px;          /* room for the chevron */
+  cursor: pointer;
+  background-image: var(--field-chevron);
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  /* The caret is on the chrome icon scale (see tokens.css) like every other mark:
+     every <select> in the app grows its option text under `largeText`, and a
+     fixed caret beside grown text reads as a control that half-responded.
+     The data-URI itself needs no variant - it carries a `viewBox`, so the
+     authored width='14' is only its intrinsic size and `background-size` is
+     what actually paints it, at any scale, from the one asset.
+     The 32px gutter is NOT scaled: at every factor the painted caret still
+     ends inside it (10px inset + 14 × factor), and a padding that grows with
+     the type is the whole-UI zoom this mechanism exists to avoid. */
+  background-size: var(--fs-lg);
+  /* appearance:none drops the native menulist widget. The old appearance:auto +
+     transition combo made Chrome re-lay-out the native control on every hover
+     frame, producing a ~1px baseline jitter (tool.css records the same finding).
+     A plain box transitions cleanly. */
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+}
+/* Must follow the block above, not the other `--sm` declarations - equal
+   specificity, so source order is the whole argument. */
+.field-select--sm { padding-inline-end: 24px; background-size: var(--fs-sm); }
+
+/* Hover LIFTS. The chevron drifts a hair down the moment the control is live -
+   a one-pixel promise that the thing opens downward. */
+.field-input:hover:not(:disabled),
+.field-select:hover:not(:disabled) {
+  box-shadow: var(--ui-effect-bevel), var(--ui-elevation-panel);
+}
+.field-select:hover:not(:disabled) { background-position: right 10px calc(50% + 1px); }
+
+/* Focus: the house halo, over the emboss rather than instead of it, so a
+   keyboard-focused field still reads as the same object. */
+.field-input:focus,
+.field-select:focus {
+  outline: none;
+  box-shadow: var(--ui-effect-bevel), var(--ui-effect-focus-halo);
+}
+.field-select:focus { background-position: right 10px calc(50% + 1px); }
+
+/* …and a real ring for keyboard users specifically. Restated in a11y.css too
+   (that layer wins over any view sheet); this copy keeps the primitive correct
+   on its own, for anything that adopts it outside the app shell. */
+.field-input:focus-visible,
+.field-select:focus-visible {
+  outline: 2px solid var(--ui-color-focus-ring);
+  outline-offset: 2px;
+}
+
+/* Press: the object goes IN. Only the select gets it - a text field has a
+   caret to confirm the hit, a menulist has nothing until the popup paints. */
+.field-select:active:not(:disabled) {
+  /* Literal on purpose: the press is an INSET drop and every step of the
+     elevation ramp is an outer one, so no token spells a recessed box. */
+  box-shadow: inset 0 1px 3px #0003;
+}
+
+.field-input:disabled,
+.field-select:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+.field-input::placeholder { color: var(--ui-color-text-muted); }
+
+/* Invalid, but only once the user has actually typed something wrong - never
+   on an untouched empty required field. */
+.field-input:user-invalid {
+  box-shadow: var(--ui-effect-bevel), 0 0 0 2px color-mix(in srgb, var(--critical) 45%, transparent);
+}
+
+/* ─── The micro-label ────────────────────────────────────────────────────── */
+
+/* The app's most recognisable type gesture: tiny, uppercase, heavy, wide-tracked,
+   muted. Same values as `.input-label` (tool.css) and `.section-card-head`. */
+.field-label {
+  display: block;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: var(--ui-type-tracking-label);
+  color: var(--ui-color-text-muted);
+}
+
+/* A label + control stacked, the shape most call-sites hand-roll with an inline
+   `display:flex;flex-direction:column`. */
+.field-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.field-row--inline {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--sp-4);
+}
+.field-row--inline .field-label { flex: none; }
+
+/* ─── Checkbox + radio ───────────────────────────────────────────────────── */
+
+/* An outlined box that fills on check - the shape the profile view drew first
+   (profile.css `.profile-check input`), promoted here so every tick in the app
+   is the same object instead of a UA box at six different pixel sizes. */
+.field-check,
+.field-radio {
+  flex: none;
+  /* On the chrome icon scale (tokens.css). This is the tick that says
+     "provenance is on" / "watermark is off" - an icon-only control with no
+     visible mark of its own until it is checked - and at a flat 16px it sat
+     beside a 15.6px label under `largeText`, i.e. the one control on the row
+     that ignored the preference. The 1.5px hairline below is NOT scaled: it is
+     a boundary, not a glyph. */
+  width: var(--fs-xl);
+  height: var(--fs-xl);
+  /* The radio's dot radius, scaled HERE rather than inside the gradient that
+     paints it: the multiplier belongs on a length, not buried in a paint value
+     where nothing can see it. Inherited by :checked below. */
+  --field-dot: calc(3px * var(--a11y-fs));
+  margin: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  /* NOT `--border`. An unchecked tick has no fill, so this hairline IS the
+     control - and `--border` measures 1.49 / 1.40 / 2.53 against the page in
+     light / dark / brand, all under WCAG 1.4.11's 3:1 for a control boundary.
+     A native checkbox got this right for free (Chrome draws #767676, 4.54:1);
+     drawing our own means owning it. `--muted-foreground` at .75 measures
+     3.70 / 4.75 / 5.60. The CHECKED state is already fine - an action-primary fill
+     is 14.00 / 7.94 / 5.52 - so the failure was invisible until you looked for
+     a box that wasn't ticked, which is exactly the case that matters. */
+  border: 1.5px solid color-mix(in srgb, var(--muted) 75%, transparent);
+  background-color: transparent;
+  background-repeat: no-repeat;
+  background-position: center;
+  cursor: pointer;
+  transition: background-color var(--dur-1), border-color var(--dur-1), box-shadow var(--dur-1);
+}
+.field-check { border-radius: var(--ui-radius-choice); }
+.field-radio { border-radius: var(--ui-radius-choice-round); }
+
+.field-check:hover:not(:disabled),
+.field-radio:hover:not(:disabled) { border-color: color-mix(in srgb, var(--ui-color-action-primary) 55%, transparent); }
+
+.field-check:checked,
+.field-radio:checked {
+  background-color: var(--ui-color-action-primary);
+  border-color: var(--ui-color-action-primary);
+}
+/* The tick and the dot ride the box, so the mark keeps its proportion inside
+   the control at every factor. Both are centred by `background-position: center`
+   / `at center` above rather than by an offset, so nothing has to be re-centred
+   as they grow. */
+.field-check:checked {
+  background-image: var(--field-tick);
+  background-size: var(--fs-xs);
+}
+/* The radio dot is drawn, not fetched - a radial-gradient can read the semantic
+   on-primary role directly, so an app-token override reaches it without a
+   second asset. */
+.field-radio:checked {
+  background-image: radial-gradient(circle at center, var(--ui-color-action-on-primary) 0 var(--field-dot), transparent calc(var(--field-dot) + 0.5px));
+}
+
+.field-check:indeterminate {
+  background-color: var(--ui-color-action-primary);
+  border-color: var(--ui-color-action-primary);
+  background-image: linear-gradient(var(--ui-color-action-on-primary) 0 0);
+  background-size: calc(8px * var(--a11y-fs)) calc(2px * var(--a11y-fs));
+}
+
+.field-check:focus-visible,
+.field-radio:focus-visible {
+  outline: 2px solid var(--ui-color-focus-ring);
+  outline-offset: 2px;
+}
+
+.field-check:disabled,
+.field-radio:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+/* …but not twice. Inside a `.field-toggle` the ROW already carries the dim, and
+   two stacked opacities multiply - 0.55 × 0.5 leaves the tick at 0.275, which
+   reads as missing rather than unavailable. */
+.field-toggle .field-check:disabled,
+.field-toggle .field-radio:disabled { opacity: 1; }
+
+/* The row a tick lives in: hit-area, not just the 16px box. */
+.field-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  cursor: pointer;
+  min-width: 0;
+}
+/* Dimming a disabled row is right for a control that is genuinely unavailable and
+   WRONG for one that is briefly disabled while its write lands - several call-sites
+   flip `disabled` for the duration of an async save, and an instant dim reads as a
+   flash. So the dim waits 0.3s and the restore is immediate: a fast write never
+   crosses the threshold, a stalled one still reports itself as inert. */
+.field-toggle:has(.field-check:disabled),
+.field-toggle:has(.field-radio:disabled) {
+  opacity: .55;
+  cursor: not-allowed;
+  transition: opacity var(--dur-1) var(--dur-3);
+}
+.field-toggle { transition: opacity var(--dur-1); }
+
+.btn,
+:where(button),
+.tool-actions button:not(.btn),
+.docs-listen, .docs-edition {                     /* docs/build.ts - /info's Listen and print-edition controls */
+  text-decoration: none;
+  padding: 5px 14px;
+  background: var(--ui-color-surface-canvas);
+  color: var(--ui-color-text-default);
+  border: transparent;
+  border-radius: var(--ui-radius-panel);
+  font: inherit;
+  font-size: var(--ui-type-body);
+  cursor: pointer;
+  box-shadow: var(--ui-effect-bevel), var(--ui-elevation-control);
+  transition: background var(--ui-motion-feedback), border-color var(--ui-motion-feedback), color var(--ui-motion-feedback);
+  white-space: nowrap;
+}
+/* Hover/disabled stay scoped to .tool-actions button (its historical reach) -
+   many bare-.btn call-sites (gallery footer, catalog bulk bar, …) define their
+   own hover locally, so a blanket `.btn:hover` here would change their look. */
+.tool-actions button:not(.btn):hover:not(:disabled) {
+  background: var(--grid);
+  border-color: var(--ui-color-border-default);
+}
+.btn:disabled,
+.tool-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btn:focus-visible {
+  outline: 2px solid var(--ui-color-focus-ring);
+  outline-offset: 2px;
+}
+
+/* Small size - folds brand-studio's .be-btn--sm/.be-add--sm, a byte-identical
+   duplicate (this was previously just a comment claiming the generalisation;
+   the declaration itself hadn't actually been merged). */
+.btn--sm,
+.be-btn--sm, .be-add--sm {                        /* brand-studio.css */
+  padding: .25rem .6rem;
+  font-size: calc(.72rem * var(--a11y-fs));
+}
+
+/* Ghost - the shape brand-studio's .be-btn composes onto (component audit rec 1). */
+.btn--ghost {
+  background: var(--ui-color-surface-canvas);
+  color: var(--ui-color-text-default);
+  border-color: var(--ui-color-border-default);
+}
+.btn--ghost:hover:not(:disabled),
+.be-btn:hover:not(:disabled), .be-add:hover:not(:disabled) {   /* brand-studio.css - identical hover */
+  border-color: color-mix(in srgb, var(--accent) 55.00000000000001%, transparent);
+}
+.btn--ghost:hover:not(:disabled) { background: var(--ui-color-surface-muted); }
+
+
+.btn--primary { background: var(--ui-color-action-primary); color: var(--ui-color-action-on-primary); }
