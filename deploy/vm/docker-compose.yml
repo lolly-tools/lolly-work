@@ -63,6 +63,33 @@ services:
         max-size: "10m"
         max-file: "5"
 
+  render-worker:
+    profiles: [render]
+    build:
+      context: ./src/workers/render
+      dockerfile: Dockerfile
+    image: lolly-work-render-worker:local
+    # Only the render credential enters this container; no database or sign-in keys.
+    environment:
+      LW_RENDER_WORKER_SECRET: ${LW_RENDER_WORKER_SECRET:-}
+      LOLLY_WEB_BASE: https://lolly.ing
+      LW_RENDER_MAX_CONCURRENT: 2
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 1536m
+    cpus: 1.5
+    pids_limit: 256
+    # Compose DNS resolves render-worker:8791; the port is never published.
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   caddy:
     image: caddy:2
     depends_on:

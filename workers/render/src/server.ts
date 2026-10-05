@@ -141,7 +141,7 @@ async function withContext<T>(signal: AbortSignal, options: BrowserContextOption
   }
 }
 
-async function renderSvg(job: { toolId: string; query: string; overrides: Record<string, unknown>; brandRevision?: string; evidence?: boolean; inputIds?: string[]; requestSha256?: string }, signal: AbortSignal) {
+async function renderSvg(job: { toolId: string; query: string; overrides: Record<string, unknown>; brandRevision?: string; readToken?: string; evidence?: boolean; inputIds?: string[]; requestSha256?: string }, signal: AbortSignal) {
   return withContext(signal, { serviceWorkers: 'block', acceptDownloads: true }, async ctx => {
     // Server exports have no member AI lease. Keep their supported shell AI
     // paths off even if WEB_BASE points at a standalone build. Also refuse
@@ -160,9 +160,16 @@ async function renderSvg(job: { toolId: string; query: string; overrides: Record
       const verdict = await egress(raw);
       if (!verdict.allow) { refused(raw, verdict.reason); return route.abort('blockedbyclient'); }
       const url = new URL(raw);
-      if (!job.brandRevision || url.origin !== new URL(WEB_BASE).origin || !/^\/(catalog|tools|api\/brand)(\/|$)/.test(url.pathname)) return route.continue();
+      const readPath = /^(\/catalog\/|\/tools\/|\/api\/auth\/config$)/.test(url.pathname);
+      if (url.origin !== new URL(WEB_BASE).origin) return route.continue();
+      if (readPath && job.readToken && !/^\/(catalog|tools)(\/|$)/.test(url.pathname)) {
+        const response = await route.fetch({ maxRedirects: 0, headers: { ...route.request().headers(), 'x-lw-render-read': job.readToken } });
+        return route.fulfill({ response });
+      }
+      if (!job.brandRevision || !/^\/(catalog|tools|api\/brand)(\/|$)/.test(url.pathname)) return route.continue();
       try {
-        const response = await route.fetch({ headers: { ...route.request().headers(), 'x-lolly-brand-revision': job.brandRevision } });
+        const response = await route.fetch({ maxRedirects: 0, headers: { ...route.request().headers(), 'x-lolly-brand-revision': job.brandRevision,
+          ...(readPath && job.readToken ? { 'x-lw-render-read': job.readToken } : {}) } });
         if (response.headers()['x-lolly-brand-revision'] !== job.brandRevision || response.status() === 409) {
           rejectBrand(new Error('The catalogue revision changed or the worker is not connected to this instance. Retry after refreshing.'));
           return route.abort('failed');
@@ -318,7 +325,7 @@ export const server = createServer((req, res) => {
     if (typeof sig !== 'string' || !macEquals(sig, hmac(raw))) {
       return fail(res, 401, 'BAD_SIGNATURE', 'invalid or missing render signature');
     }
-    let job: { toolId?: unknown; query?: unknown; overrides?: unknown; format?: unknown; ts?: unknown; evidence?: unknown; inputIds?: unknown; brandRevision?: unknown; svg?: unknown; width?: unknown };
+    let job: { toolId?: unknown; query?: unknown; overrides?: unknown; format?: unknown; ts?: unknown; evidence?: unknown; inputIds?: unknown; brandRevision?: unknown; readToken?: unknown; svg?: unknown; width?: unknown };
     try { job = JSON.parse(raw); } catch { return fail(res, 400, 'BAD_JSON', 'invalid JSON body'); }
     if (typeof job.ts !== 'number' || Math.abs(Date.now() - job.ts) > TS_SKEW_MS) {
       return fail(res, 401, 'STALE', 'request timestamp outside the accepted window');
@@ -353,13 +360,14 @@ export const server = createServer((req, res) => {
       return fail(res, 400, 'BAD_REQUEST', 'expected { toolId, query, format:"svg", overrides }');
     }
     if (job.inputIds !== undefined && (!Array.isArray(job.inputIds) || job.inputIds.length > 128 || job.inputIds.some(id => typeof id !== 'string' || !id || id.length > 4096))) return fail(res, 400, 'BAD_REQUEST', 'invalid production input ids');
+    if (job.readToken !== undefined && (typeof job.readToken !== 'string' || job.readToken.length > 8192)) return fail(res, 400, 'BAD_REQUEST', 'invalid render read credential');
     const overrides = (job.overrides && typeof job.overrides === 'object') ? job.overrides as Record<string, unknown> : {};
 
     const release = sem.tryAcquire();
     if (!release) return busy(res);
     try {
       const brandRevision = typeof job.brandRevision === 'string' ? job.brandRevision : undefined;
-      const output = await renderSvg({ toolId: job.toolId, query: job.query, overrides, brandRevision, evidence: job.evidence === true, inputIds: job.inputIds as string[] | undefined, requestSha256: createHash('sha256').update(raw).digest('hex') }, controller.signal);
+      const output = await renderSvg({ toolId: job.toolId, query: job.query, overrides, brandRevision, readToken: job.readToken as string | undefined, evidence: job.evidence === true, inputIds: job.inputIds as string[] | undefined, requestSha256: createHash('sha256').update(raw).digest('hex') }, controller.signal);
       return sendJson(res, 200, { ...output, ...(brandRevision ? { brandRevision } : {}) }, true);
     } catch (e) {
       return fail(res, 502, 'RENDER_FAILED', `Chromium render failed: ${(e as Error).message}`);
