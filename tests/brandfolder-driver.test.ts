@@ -26,9 +26,14 @@ const ASSETS_PAGE = {
     relationships: {
       section: { data: { id: 'sec1', type: 'sections' } },
       attachments: { data: [{ id: 'njc8wh9647cjst8h55ff38', type: 'attachments' }] },
+      tags: { data: [{ id: 'tag1', type: 'tags' }, { id: 'tag1', type: 'tags' }, { id: 'missing', type: 'tags' }, { id: 'tag2', type: 'tags' }] },
+      collections: { data: [{ id: 'col1', type: 'collections' }] },
     },
   }],
   included: [
+    { id: 'tag1', type: 'tags', attributes: { name: ' SUSE Virtualization ' } },
+    { id: 'tag2', type: 'tags', attributes: { name: 42 } },
+    { id: 'col1', type: 'collections', attributes: { name: 'Logo Kit' } },
     { id: 'sec1', type: 'sections', attributes: { name: 'Standard Logos', default_asset_type: 'GenericFile', position: 0 } },
     {
       id: 'njc8wh9647cjst8h55ff38', type: 'attachments',
@@ -73,6 +78,8 @@ test('listAssets maps the recorded shape: section names, attachment formats, pag
   assert.equal(a?.remoteId, '255hvp7s4xkbqb9rbncsfqp3');
   assert.equal(a?.name, 'program-logo-positive');
   assert.deepEqual(a?.sections, ['Standard Logos']);
+  assert.deepEqual(a?.tags, ['SUSE Virtualization']);
+  assert.deepEqual(a?.collections, ['Logo Kit']);
   assert.equal(a?.approved, true);
   assert.equal(a?.hasThumbnail, true);
   assert.deepEqual(a?.formats, [{ format: 'png', remoteRef: 'njc8wh9647cjst8h55ff38', size: 16561, filename: 'x.png' }]);
@@ -82,6 +89,7 @@ test('listAssets maps the recorded shape: section names, attachment formats, pag
   // The v4 availability fields are actually requested.
   const firstCall = (fetchImpl as unknown as { calls: string[] }).calls[0] ?? '';
   assert.ok(firstCall.includes('availability_start') && firstCall.includes('availability_end'), 'availability fields are requested');
+  assert.equal(new URL(firstCall).searchParams.get('include'), 'section,attachments,tags,collections');
 
   await bf.listAssets('2');
   const calls = (fetchImpl as unknown as { calls: string[] }).calls;
@@ -102,6 +110,7 @@ test('searchAssets URL-encodes the query and bearer auth rides every call', asyn
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     seenAuth = (init?.headers as Record<string, string>)?.authorization ?? '';
     assert.ok(String(input).includes('search=summit%20%26%20logo'));
+    assert.equal(new URL(String(input)).searchParams.get('include'), 'section,attachments,tags,collections');
     return new Response(JSON.stringify({ data: [], included: [] }), { status: 200 });
   }) as typeof fetch;
   const bf = createBrandfolderProvider('suse-bf', { brandfolderId: BF_ID }, 'sekret', fetchImpl);

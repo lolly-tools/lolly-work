@@ -77,14 +77,22 @@ export function createBrandfolderProvider(
       }));
       const sectionRef = rel.section?.data;
       const section = sectionRef && !Array.isArray(sectionRef) ? included.get(`sections:${sectionRef.id}`) : undefined;
-      const sectionName = section?.attributes.name as string | undefined;
+      const sectionName = typeof section?.attributes.name === 'string' ? section.attributes.name.trim() : '';
+      const names = (relationship: string): string[] => {
+        const refs = rel[relationship]?.data;
+        return [...new Set((Array.isArray(refs) ? refs : []).flatMap(ref => {
+          const name = included.get(`${ref.type}:${ref.id}`)?.attributes.name;
+          return typeof name === 'string' && name.trim() ? [name.trim()] : [];
+        }))];
+      };
       return {
         remoteId: asset.id,
         name: (asset.attributes.name as string) ?? asset.id,
         ...(asset.attributes.description ? { description: asset.attributes.description as string } : {}),
         nativeType: asset.type,
         sections: sectionName ? [sectionName] : [],
-        tags: [],
+        tags: names('tags'),
+        collections: names('collections'),
         ...(typeof asset.attributes.approved === 'boolean' ? { approved: asset.attributes.approved } : {}),
         ...(asset.attributes.updated_at ? { updatedAt: asset.attributes.updated_at as string } : {}),
         ...(typeof asset.attributes.availability_start === 'string' ? { availableFrom: asset.attributes.availability_start } : {}),
@@ -103,7 +111,7 @@ export function createBrandfolderProvider(
     async listAssets(cursor) {
       const page = cursor ? Number(cursor) : 1;
       const doc = await api(
-        `/brandfolders/${options.brandfolderId}/assets?per=${PAGE_SIZE}&page=${page}&include=section,attachments&${ASSET_FIELDS}`,
+        `/brandfolders/${options.brandfolderId}/assets?per=${PAGE_SIZE}&page=${page}&include=section,attachments,tags,collections&${ASSET_FIELDS}`,
       );
       const next = doc.meta?.next_page;
       return { assets: mapAssets(doc), ...(next ? { next: String(next) } : {}) };
@@ -111,7 +119,7 @@ export function createBrandfolderProvider(
 
     async searchAssets(query, limit) {
       const doc = await api(
-        `/brandfolders/${options.brandfolderId}/assets?search=${encodeURIComponent(query)}&per=${limit}&include=section,attachments&${ASSET_FIELDS}`,
+        `/brandfolders/${options.brandfolderId}/assets?search=${encodeURIComponent(query)}&per=${limit}&include=section,attachments,tags,collections&${ASSET_FIELDS}`,
       );
       return mapAssets(doc);
     },
