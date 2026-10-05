@@ -88,14 +88,13 @@ if node -e 'process.exit(JSON.parse(require("node:fs").readFileSync("deploy/vm/i
   # Setup runs on this machine; the persisted path belongs to the container.
   check_config="$work/instance-check.json"
   node -e '
-    const fs=require("node:fs"), path=require("node:path"), crypto=require("node:crypto");
+    const fs=require("node:fs"), path=require("node:path");
     const c=JSON.parse(fs.readFileSync(process.argv[1]));
     if (c.instance.shellDir !== "/app/shell/current") throw new Error("VM native shellDir must be /app/shell/current");
     c.instance.shellDir=path.resolve(process.argv[2]);
     fs.writeFileSync(process.argv[3],JSON.stringify(c),{mode:0o600});
-    console.log("release-"+crypto.createHash("sha256").update(fs.readFileSync(path.join(c.instance.shellDir,"index.html"))).digest("hex").slice(0,16));
-  ' deploy/vm/instance.json "$LOLLY_SHELL_DIST" "$check_config" > "$work/shell-release"
-  shell_release=$(cat "$work/shell-release")
+  ' deploy/vm/instance.json "$LOLLY_SHELL_DIST" "$check_config"
+  shell_release=$(node scripts/shell-release-id.ts "$LOLLY_SHELL_DIST")
 fi
 # The setup checks need secret-shaped values to judge the rest; these are
 # throwaway ones and the database is never contacted.
