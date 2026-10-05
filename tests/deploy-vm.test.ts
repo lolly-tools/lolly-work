@@ -56,7 +56,7 @@ interface Service {
 
 test('compose: the server is private, drains on stop and never polls the database on a clock', () => {
   const compose = YAML.parse(read('docker-compose.yml')) as { services: Record<string, Service>; volumes: Record<string, unknown> };
-  assert.deepEqual(Object.keys(compose.services).sort(), ['caddy', 'server'], 'no database service: Neon holds the data');
+  assert.deepEqual(Object.keys(compose.services).sort(), ['caddy', 'render-worker', 'server'], 'no database service: Neon holds the data');
   const server = compose.services.server!;
   assert.deepEqual(server.build, { context: './src', dockerfile: 'deploy/compose/Dockerfile' });
   assert.equal(server.env_file, '.env');
@@ -78,6 +78,22 @@ test('compose: the server is private, drains on stop and never polls the databas
     'a directory mount, so caddy reload reads the copied file; shared, since caddy validate runs in a second container');
   assert.equal(caddy.env_file, 'caddy.env');
   assert.ok('caddy_data' in compose.volumes && 'caddy_config' in compose.volumes);
+});
+
+test('compose: rendering is isolated from identity and database secrets, with bounded resources', () => {
+  const worker = YAML.parse(read('docker-compose.yml')).services['render-worker'];
+  assert.equal(worker.env_file, undefined);
+  assert.deepEqual(Object.keys(worker.environment).sort(), ['LOLLY_WEB_BASE', 'LW_RENDER_MAX_CONCURRENT', 'LW_RENDER_WORKER_SECRET']);
+  assert.equal(worker.environment.LOLLY_WEB_BASE, 'https://lolly.ing');
+  assert.equal(worker.environment.LW_RENDER_MAX_CONCURRENT, 2);
+  assert.equal(worker.ports, undefined);
+  assert.equal(worker.volumes, undefined);
+  assert.equal(worker.read_only, true);
+  assert.deepEqual(worker.cap_drop, ['ALL']);
+  assert.deepEqual(worker.security_opt, ['no-new-privileges:true']);
+  assert.equal(worker.mem_limit, '1536m');
+  assert.equal(worker.cpus, 1.5);
+  assert.equal(worker.pids_limit, 256);
 });
 
 test('compose: every bind mount carries an SELinux label, and only Caddy publishes a port beyond the VM', () => {
@@ -155,10 +171,10 @@ test('push.sh: no command on the VM can swallow the rest of the deploy script, a
   // Fed to `bash -s`, bash reads the script as it runs; docker compose run and
   // exec attach standard input by default and would eat the rest, exit 0.
   assert.ok(!/^ssh .*bash -s/m.test(push), 'the remote script is not read from standard input');
-  assert.match(push, /^ssh -n "\$target" "bash -c \\"\\\$\(echo \$encoded \| base64 -d\)\\" push-remote \$tls"$/m);
+  assert.match(push, /^ssh -n "\$target" "bash -c \\"\\\$\(echo \$encoded \| base64 -d\)\\" push-remote \$tls \$render_worker"$/m);
   for (const line of push.split('\n').filter((l) => /^ssh /.test(l))) assert.match(line, /^ssh -n /, `standard input closed: ${line}`);
   const attaching = push.split('\n').filter((l) => /^\s*(if )?docker compose (run|exec)\b/.test(l));
-  assert.equal(attaching.length, 2, 'caddy validate and caddy reload');
+  assert.equal(attaching.length, 3, 'caddy validate, worker health and caddy reload');
   for (const line of attaching) assert.match(line, /<\/dev\/null/, `standard input is closed for: ${line.trim()}`);
 
   // Run the remote script against stand-ins that read standard input as the

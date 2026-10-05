@@ -14,7 +14,7 @@ import { b64u, b64uDecode, hmac, macEquals } from '../lib/crypto.ts';
  *  and "use this account instead" forms, in a hidden field only, so a person
  *  who is not admitted can file a request without typing an address
  *  (access/types.ts `AskTokenPayload`). */
-export type TokenDomain = 'lw/session' | 'lw/guest' | 'lw/state' | 'lw/link' | 'lw/job' | 'lw/api-key' | 'lw/form' | 'lw/ask';
+export type TokenDomain = 'lw/session' | 'lw/guest' | 'lw/state' | 'lw/link' | 'lw/job' | 'lw/api-key' | 'lw/form' | 'lw/ask' | 'lw/render-read';
 
 export interface TokenBox<T> {
   typ: TokenDomain;

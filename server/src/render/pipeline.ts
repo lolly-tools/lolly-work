@@ -84,6 +84,7 @@ function renderErrorFromWorker(e: WorkerError): RenderError {
 }
 
 export interface RenderDeps {
+  workerReadToken?: string;
   managedRules?: ManagedRuleContext;
   brandRevision?: string;
   config: InstanceConfig;
@@ -355,7 +356,10 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
     try {
       const boundValues = Object.fromEntries(engine.buildInputModel(tool.manifest, { profile: { ...req.profile }, initial: bakedValues })
         .filter(input => input.bindToProfile).map(input => [input.id, input.value]));
-      const readable = queryFromValues({ ...boundValues, ...bakedValues });
+      const readable = queryFromValues({ ...boundValues, ...bakedValues,
+        ...(pxW ? { width: st.width } : {}), ...(pxH ? { height: st.height } : {}),
+        ...(st.unit ? { unit: st.unit } : {}), ...(st.dpi ? { dpi: st.dpi } : {}),
+      });
       const packed = readable.length > 4096 ? await engine.packQuery(readable) : null;
       const query = packed && packed.length + 2 < readable.length ? `z=${packed}` : readable;
       // The worker navigates through ordinary HTTP servers/proxies. Bound the
@@ -365,6 +369,7 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
       }
       req.signal?.throwIfAborted();
       svgStr = await renderViaWorker(deps.worker, {
+        ...(deps.workerReadToken ? { readToken: deps.workerReadToken } : {}),
         ...(deps.brandRevision ? { brandRevision: deps.brandRevision } : {}),
         ...(production || deps.managedRules ? { evidence: true, inputIds } : {}),
         toolId: req.toolId,

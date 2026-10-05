@@ -1,4 +1,26 @@
 // SPDX-License-Identifier: MPL-2.0
+/** Resolve the brand UI family; never choose an arbitrary display or black face. */
+export function pickAuthFont(tokens: unknown, files: readonly string[]): { family: string; file: string } | null {
+  const values = new Map<string, string>();
+  const flatten = (node: unknown, prefix = '', depth = 0): void => {
+    if (!node || typeof node !== 'object' || depth > 16 || values.size > 4096) return;
+    const record = node as Record<string, unknown>;
+    if (typeof record.$value === 'string') { values.set(prefix, record.$value); return; }
+    for (const [key, child] of Object.entries(record)) if (!key.startsWith('$')) flatten(child, prefix ? `${prefix}.${key}` : key, depth + 1);
+  };
+  if (tokens && typeof tokens === 'object') for (const [key, set] of Object.entries(tokens)) if (!key.startsWith('$')) flatten(set);
+  const resolve = (key: string, seen = new Set<string>()): string | null => {
+    if (seen.has(key)) return null; seen.add(key);
+    const value = values.get(key), alias = value?.match(/^\{([^}]+)\}$/);
+    return alias ? resolve(alias[1]!, seen) : value?.trim() || null;
+  };
+  const family = resolve('font.brand') ?? resolve('font.sans');
+  if (!family || !/^[A-Za-z0-9 _-]{1,80}$/.test(family)) return null;
+  const base = family.replace(/\s+/g, '');
+  const file = [`${base}-Variable.woff2`, `${base}[wght].woff2`, `${base}-Regular.woff2`].find(file => files.includes(file));
+  return file ? { family, file } : null;
+}
+
 /** Script-free sign-in pages inherit the active source's DTCG colours and fonts. */
 export function authThemeCss(tokens: unknown, font: { family: string; file: string } | null): string {
   const sets = tokens && typeof tokens === 'object' ? tokens as Record<string, unknown> : {};
@@ -39,7 +61,7 @@ export function authThemeCss(tokens: unknown, font: { family: string; file: stri
   }
   let face = '';
   if (font && /^[A-Za-z0-9 _-]{1,80}$/.test(font.family) && /^[A-Za-z0-9._[\]-]+\.woff2$/.test(font.file)) {
-    face = `@font-face{font-family:'AuthBrand';src:url('/api/brand/font/${encodeURIComponent(font.file)}') format('woff2');font-weight:100 900;font-display:swap}`;
+    face = `@font-face{font-family:'AuthBrand';src:url('/api/brand/font/${encodeURIComponent(font.file)}') format('woff2');font-weight:${/variable|\[wght\]/i.test(font.file) ? '100 900' : '400'};font-style:normal;font-display:swap}`;
     properties.push("--font-sans:'AuthBrand',system-ui,sans-serif");
   }
   return `${face}:root{${properties.join(';')}}`;

@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { idpChooserHtml } from '../server/src/iam/activate-page.ts';
 import { invitePageHtml } from '../server/src/access/pages.ts';
-import { authThemeCss } from '../server/src/brand/auth-theme.ts';
+import { authThemeCss, pickAuthFont } from '../server/src/brand/auth-theme.ts';
 import { parseConfig } from '../server/src/config/instance.ts';
 
 test('sign-in and invitation pages use local theme assets, provider marks, and inert pending providers', () => {
@@ -27,4 +27,18 @@ test('server theme resolves DTCG aliases, excludes CSS injection, and keeps usab
   const unsafe = authThemeCss({ light: { color: { semantic: { primary: { $value: '#ffffff; background:url(https://evil.test)' } } } } }, { family: "x'}", file: 'external.woff2' });
   assert.ok(!unsafe.includes('evil.test')); assert.ok(!unsafe.includes('@font-face'));
   assert.throws(() => parseConfig(JSON.stringify({ idp: { pending: [''] } })), /idp.pending/);
+});
+
+
+test('authentication selects the active UI family and maps variable and static weights truthfully', () => {
+  const tokens = { base: { font: { brand: { $value: '{font.ui}' }, ui: { $value: 'SUSE' } } } };
+  const font = pickAuthFont(tokens, ['SUSE-Black.woff2', 'SUSE-Italic[wght].woff2', 'Other-Variable.woff2', 'SUSE[wght].woff2', 'SUSE-Regular.woff2']);
+  assert.deepEqual(font, { family: 'SUSE', file: 'SUSE[wght].woff2' });
+  assert.match(authThemeCss(tokens, font), /font-weight:100 900;font-style:normal/);
+  const regular = pickAuthFont(tokens, ['SUSE-Black.woff2', 'SUSE-Regular.woff2']);
+  assert.equal(regular?.file, 'SUSE-Regular.woff2');
+  assert.match(authThemeCss(tokens, regular), /font-weight:400;font-style:normal/);
+  assert.equal(pickAuthFont(tokens, ['SUSE-Black.woff2', 'Other-Variable.woff2']), null);
+  assert.equal(pickAuthFont({}, ['SUSE-Black.woff2']), null);
+  assert.equal(pickAuthFont({ base: { font: { brand: { $value: '{font.brand}' } } } }, ['SUSE[wght].woff2']), null);
 });

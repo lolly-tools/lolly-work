@@ -334,6 +334,18 @@ test('(f) hooked tool dispatches to a configured Chromium worker; HMAC-signed', 
   assert.ok(svg.includes('WORKER_RENDER'), 'served the SVG the worker returned');
   assert.ok(sawSig, 'worker received a valid HMAC signature');
   assert.equal(sawToolId, 'hooky');
+  const dimensionsResponse = await fetch(`${srv.base}/render/hooky.svg?title=CANVAS&w=900&h=300`, { headers: { cookie } });
+  assert.equal(dimensionsResponse.status, 200);
+  const dimensionsQuery = new URLSearchParams(sawQuery);
+  assert.equal(dimensionsQuery.get('width'), '900', 'Chromium receives the requested canvas width');
+  assert.equal(dimensionsQuery.get('height'), '300', 'Chromium receives the requested canvas height');
+  const physicalResponse = await fetch(`${srv.base}/render/hooky.svg?title=PRINT&width=30&height=10&unit=cm&dpi=192`, { headers: { cookie } });
+  assert.equal(physicalResponse.status, 200);
+  const physicalQuery = new URLSearchParams(sawQuery);
+  assert.equal(physicalQuery.get('width'), '30');
+  assert.equal(physicalQuery.get('height'), '10');
+  assert.equal(physicalQuery.get('unit'), 'cm', 'physical units survive worker dispatch');
+  assert.equal(physicalQuery.get('dpi'), '192', 'raster resolution survives worker dispatch');
   const title = 'A large scene row '.repeat(1500);
   const packedResponse = await fetch(`${srv.base}/api/v1/render`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' },
     body: JSON.stringify({ toolId: 'hooky', format: 'svg', inputs: { title } }) });

@@ -47,6 +47,7 @@ done
 cd "$ROOT"
 command -v rsync >/dev/null || die "rsync is needed"
 [ -f deploy/vm/instance.json ] || die "no deploy/vm/instance.json: copy deploy/vm/instance.json.example and fill it in"
+render_worker=$(node -e 'const c=JSON.parse(require("node:fs").readFileSync("deploy/vm/instance.json")); console.log(c.render?.worker?.url === "http://render-worker:8791" ? "1" : "0")')
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/lolly-ing-push.XXXXXX")
 trap 'rm -rf "$work"' EXIT
@@ -80,6 +81,7 @@ node scripts/build-caddyfile.ts --check
 # throwaway ones and the database is never contacted.
 env -i PATH="$PATH" HOME="$HOME" NODE_ENV=production LW_CONFIG=deploy/vm/instance.json \
   LW_SESSION_SECRET="$(openssl rand -hex 48)" LW_LINK_SECRET="$(openssl rand -hex 48)" \
+  LW_RENDER_WORKER_SECRET="$(openssl rand -hex 48)" \
   DATABASE_URL=postgres://setup-check.invalid/none \
   node scripts/check-setup.ts | sed -n '/^{/,$p' > "$work/setup.json" || true
 # shellcheck disable=SC2016 # the ${...} below are JavaScript template literals
@@ -147,6 +149,15 @@ chmod go+r instance.json
 if [ "$1" = internal ]; then echo 'LW_CADDY_GLOBAL=local_certs' > caddy.env; else echo 'LW_CADDY_GLOBAL=' > caddy.env; fi
 docker compose config --quiet
 docker compose run --rm --no-deps caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile </dev/null
+if [ "${2:-0}" = 1 ]; then
+  docker compose --profile render build render-worker
+  docker compose --profile render up -d --no-deps render-worker
+  for attempt in 1 2 3 4 5; do
+    if docker compose exec -T render-worker node -e 'fetch("http://127.0.0.1:8791/healthz",{signal:AbortSignal.timeout(5000)}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))' </dev/null; then break; fi
+    [ "$attempt" = 5 ] && { echo "push.sh: the render worker did not start" >&2; exit 1; }
+    sleep 2
+  done
+fi
 docker compose build server
 # SIGTERM, then up to stop_grace_period for the drain of live collab rooms.
 docker compose up -d --no-deps --force-recreate server
@@ -177,5 +188,5 @@ docker compose logs --tail 40 caddy >&2
 exit 1
 REMOTE_SCRIPT
 encoded=$(printf '%s' "$remote" | base64 | tr -d '\n')
-ssh -n "$target" "bash -c \"\$(echo $encoded | base64 -d)\" push-remote $tls"
+ssh -n "$target" "bash -c \"\$(echo $encoded | base64 -d)\" push-remote $tls $render_worker"
 echo "==> deployed. Next: deploy/vm/smoke.sh ${target#*@}$( [ "$tls" = internal ] && printf ' --insecure' )"
