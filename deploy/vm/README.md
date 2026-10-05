@@ -338,3 +338,7 @@ On the VM (`ssh sles@<ip>`), in `/opt/lolly-ing`. `sles` is in the `docker` grou
 A WebSocket cannot go through Vercel's rewrite to another origin (rewrites carry plain HTTP
 requests with a 120 s cap), so live co-editing needs this host or a gateway of its own; the
 Vercel project keeps it off.
+
+### Native web shell
+
+Set `instance.shellDir` to `/app/shell/current` in the private instance config and pass `LOLLY_SHELL_DIST=/absolute/path/to/qualified/dist` to `push.sh`. Build and verify the signed release before deployment. The setup check uses this local path while the deployed configuration keeps the container path. Each release receives an immutable directory and an atomic `current` pointer. Older hashed app chunks stay available to open tabs; unchanged release files use hard links. Secrets and other configuration fields are preserved.

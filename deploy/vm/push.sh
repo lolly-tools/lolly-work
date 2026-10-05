@@ -78,13 +78,28 @@ node -e '
 echo "==> checking deploy/vm/Caddyfile, instance.json and the pack"
 node scripts/build-caddyfile.ts --check
 caddy_source=deploy/vm/Caddyfile
+check_config=deploy/vm/instance.json
+shell_release=
 if node -e 'process.exit(JSON.parse(require("node:fs").readFileSync("deploy/vm/instance.json")).instance.shellDir ? 0 : 1)'; then
   node scripts/build-caddyfile.ts --serve-shell --out "$work/Caddyfile"
   caddy_source="$work/Caddyfile"
+  [ -n "${LOLLY_SHELL_DIST:-}" ] || die "set LOLLY_SHELL_DIST to the qualified shell dist for a native shell deploy"
+  [ -f "$LOLLY_SHELL_DIST/index.html" ] || die "LOLLY_SHELL_DIST has no index.html"
+  # Setup runs on this machine; the persisted path belongs to the container.
+  check_config="$work/instance-check.json"
+  node -e '
+    const fs=require("node:fs"), path=require("node:path"), crypto=require("node:crypto");
+    const c=JSON.parse(fs.readFileSync(process.argv[1]));
+    if (c.instance.shellDir !== "/app/shell/current") throw new Error("VM native shellDir must be /app/shell/current");
+    c.instance.shellDir=path.resolve(process.argv[2]);
+    fs.writeFileSync(process.argv[3],JSON.stringify(c),{mode:0o600});
+    console.log("release-"+crypto.createHash("sha256").update(fs.readFileSync(path.join(c.instance.shellDir,"index.html"))).digest("hex").slice(0,16));
+  ' deploy/vm/instance.json "$LOLLY_SHELL_DIST" "$check_config" > "$work/shell-release"
+  shell_release=$(cat "$work/shell-release")
 fi
 # The setup checks need secret-shaped values to judge the rest; these are
 # throwaway ones and the database is never contacted.
-env -i PATH="$PATH" HOME="$HOME" NODE_ENV=production LW_CONFIG=deploy/vm/instance.json \
+env -i PATH="$PATH" HOME="$HOME" NODE_ENV=production LW_CONFIG="$check_config" \
   LW_SESSION_SECRET="$(openssl rand -hex 48)" LW_LINK_SECRET="$(openssl rand -hex 48)" \
   LW_RENDER_WORKER_SECRET="$(openssl rand -hex 48)" \
   DATABASE_URL=postgres://setup-check.invalid/none \
@@ -126,6 +141,12 @@ ssh -n "$target" "mkdir -p $REMOTE/src $REMOTE/packs/lolly-ing $REMOTE/caddy"
 # --chmod and ignores it. The deploy script below makes them readable on the VM.
 rsync -az --delete "$work/src/" "$target:$REMOTE/src/"
 rsync -az --delete "$PACK/" "$target:$REMOTE/packs/lolly-ing/"
+if [ -n "$shell_release" ]; then
+  # A new immutable directory plus an atomic pointer leaves open clients intact.
+  ssh -n "$target" "mkdir -p $REMOTE/shell/$shell_release"
+  rsync -az --link-dest="$REMOTE/shell/current" "$LOLLY_SHELL_DIST/" "$target:$REMOTE/shell/$shell_release/"
+  ssh -n "$target" "if [ -d $REMOTE/shell/current/_app ]; then cp -an $REMOTE/shell/current/_app/. $REMOTE/shell/$shell_release/_app/; fi; ln -sfn $shell_release $REMOTE/shell/current-next; mv -Tf $REMOTE/shell/current-next $REMOTE/shell/current"
+fi
 rsync -az deploy/vm/docker-compose.yml deploy/vm/instance.json "$target:$REMOTE/"
 rsync -az "$caddy_source" "$target:$REMOTE/caddy/Caddyfile"
 
