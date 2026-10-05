@@ -4,7 +4,7 @@ import { type createRouter, sendError, sendJson } from '../api/router.ts';
 import type { BrandService } from './service.ts';
 import type { InstancePackMeta } from '../catalog/instance-pack.ts';
 import { pickBrandLogoUrl } from './logo.ts';
-import { authThemeCss } from './auth-theme.ts';
+import { authThemeCss, pickAuthFont } from './auth-theme.ts';
 
 /** Caches belong to a source snapshot, so overlapping requests cannot mix brands. */
 export function createBrandChrome(name: string, brand: BrandService) {
@@ -22,10 +22,9 @@ export function createBrandChrome(name: string, brand: BrandService) {
     const dark = local(pickBrandLogoUrl(source.assets, 'dark'));
     const names = (await readdir(join(source.root, 'catalog', 'fonts', 'webfonts')).catch(() => [] as string[]))
       .filter(file => file.toLowerCase().endsWith('.woff2') && !/mono/i.test(file)).sort();
-    const file = names.find(file => /variable/i.test(file)) ?? names[0];
     return { source, tokens, light, dark, label: asset?.name ?? source.label,
       checksum: asset?.checksum ?? format?.checksum ?? (asset ? source.revision : null), locked: asset?.brandLock === true,
-      font: file ? { family: file.split(/[-.]/)[0] || 'Brand', file } : null };
+      font: pickAuthFont(tokens, names) };
   };
   const get = async () => {
     const snap = brand.current() ?? await brand.snapshot();
