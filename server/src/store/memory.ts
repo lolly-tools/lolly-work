@@ -1225,6 +1225,26 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       for (const folder of projectFolders.values()) if (folder.projectId === projectId) folder.items = folder.items.filter(item => item.kind !== kind || item.ref !== ref);
       if (folderId) projectFolders.get(folderId)!.items.push({ kind, ref });
     },
+    async moveProjectFolder(projectId, folderId, parentId) {
+      const folder = projectFolders.get(folderId);
+      if (!folder || folder.projectId !== projectId) return 'missing';
+      const seen = new Set([folderId]); let next = parentId;
+      while (next) {
+        const parent = projectFolders.get(next);
+        if (seen.has(next) || !parent || parent.projectId !== projectId) return 'invalid';
+        seen.add(next); next = parent.parentId;
+      }
+      folder.parentId = parentId; return 'moved';
+    },
+    async deleteProjectFolder(projectId, folderId) {
+      const folder = projectFolders.get(folderId);
+      if (!folder || folder.projectId !== projectId) return false;
+      const parent = folder.parentId && projectFolders.get(folder.parentId);
+      if (parent) parent.items.push(...folder.items);
+      for (const child of projectFolders.values()) if (child.projectId === projectId && child.parentId === folderId) child.parentId = folder.parentId;
+      projectFolders.delete(folderId);
+      return true;
+    },
     // No await between the checks and the insert, so this is atomic here.
     async reserveProjectFile(file, limits) {
       if (!projects.has(file.projectId) || projectFiles.has(file.id)) return 'refused';

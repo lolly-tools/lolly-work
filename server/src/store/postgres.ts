@@ -1997,6 +1997,40 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         on conflict (project_id,kind,ref) do update set folder_id=excluded.folder_id`, [projectId, folderId, kind, ref]);
       else await pool.query('delete from project_folder_items where project_id=$1 and kind=$2 and ref=$3', [projectId, kind, ref]);
     },
+    async moveProjectFolder(projectId, folderId, parentId) {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        await client.query('select id from projects where id=$1 for update', [projectId]);
+        const { rows } = await client.query('select id,parent_id from project_folders where project_id=$1 for update', [projectId]);
+        const folders = new Map<string, string | null>(rows.map(r => [String(r.id), r.parent_id as string | null]));
+        if (!folders.has(folderId)) { await client.query('rollback'); return 'missing'; }
+        const seen = new Set([folderId]); let next = parentId;
+        while (next) {
+          if (seen.has(next) || !folders.has(next)) { await client.query('rollback'); return 'invalid'; }
+          seen.add(next); next = folders.get(next) ?? null;
+        }
+        await client.query('update project_folders set parent_id=$3 where project_id=$1 and id=$2', [projectId, folderId, parentId]);
+        await client.query('commit'); return 'moved';
+      } catch (error) { await client.query('rollback'); throw error; }
+      finally { client.release(); }
+    },
+    async deleteProjectFolder(projectId, folderId) {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        await client.query('select id from projects where id=$1 for update', [projectId]);
+        const found = await client.query('select parent_id from project_folders where project_id=$1 and id=$2 for update', [projectId, folderId]);
+        if (!found.rows.length) { await client.query('rollback'); return false; }
+        const parentId = found.rows[0]!.parent_id;
+        if (parentId) await client.query('update project_folder_items set folder_id=$3 where project_id=$1 and folder_id=$2', [projectId, folderId, parentId]);
+        else await client.query('delete from project_folder_items where project_id=$1 and folder_id=$2', [projectId, folderId]);
+        await client.query('update project_folders set parent_id=$3 where project_id=$1 and parent_id=$2', [projectId, folderId, parentId]);
+        await client.query('delete from project_folders where project_id=$1 and id=$2', [projectId, folderId]);
+        await client.query('commit'); return true;
+      } catch (error) { await client.query('rollback'); throw error; }
+      finally { client.release(); }
+    },
     // Budgets count ready files and unfinished uploads that have not expired
     // (`ready or expires_at > now()`), the same rule as the memory store.
     async reserveProjectFile(file, limits) {

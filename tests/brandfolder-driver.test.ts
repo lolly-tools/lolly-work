@@ -182,3 +182,21 @@ test('healthCheck: ok on 200, detail on 401, and a missing credential fails clos
   const keyless = createBrandfolderProvider('b', { brandfolderId: BF_ID }, undefined, fakeFetch([]));
   assert.equal((await keyless.healthCheck()).ok, false);
 });
+
+
+test('signed file redirects remain HTTPS on Brandfolder hosts and never forward API credentials', async () => {
+  const calls: string[] = [];
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input); calls.push(url);
+    if (url.includes('/assets/a?')) return Response.json({ data: { attributes: { thumbnail_url: 'https://thumbs.bfldr.com/preview' } } });
+    assert.equal(init?.redirect, 'manual'); assert.equal(init?.headers, undefined);
+    return new Response(null, { status: 302, headers: { location: 'https://private.example/file' } });
+  }) as typeof fetch;
+  const bf = createBrandfolderProvider('b', { brandfolderId: BF_ID }, 'secret', fetchImpl);
+  await assert.rejects(bf.resolveBlob('a', 'thumb'), /outside allowed hosts/);
+  assert.equal(calls.some(u => u.startsWith('https://private.example')), false);
+  for (const url of ['http://thumbs.bfldr.com/preview', 'https://user:secret@thumbs.bfldr.com/preview']) {
+    const bf = createBrandfolderProvider('b', { brandfolderId: BF_ID }, 'key', fakeFetch([{ match: () => true, body: { data: { attributes: { thumbnail_url: url } } } }]));
+    await assert.rejects(bf.resolveBlob('a', 'thumb'), /outside allowed hosts/);
+  }
+});

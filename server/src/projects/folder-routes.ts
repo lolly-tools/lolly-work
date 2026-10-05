@@ -51,6 +51,22 @@ export function registerProjectFolderRoutes(router: ReturnType<typeof createRout
     await d.audit(`user:${admitted.user.id}`, 'project.folder.rename', `project:${admitted.project.id}`, { folderId: folder.id });
     sendJson(res, 200, { folder: { ...folder, name } });
   });
+  router.add('PUT', '/api/v1/projects/:id/folders/:folderId/parent', async (req, res, ctx) => {
+    const admitted = await gate(req, res, ctx.params.id!, true); if (!admitted) return;
+    const body = await readJson(req) as { parentId?: unknown } | null;
+    if (!body || !Object.hasOwn(body, 'parentId') || body.parentId !== null && typeof body.parentId !== 'string') return sendError(res, 400, 'INVALID_INPUT', 'choose a parent folder or the project root');
+    const result = await d.store.moveProjectFolder(admitted.project.id, ctx.params.folderId!, body.parentId as string | null);
+    if (result === 'missing') return sendError(res, 404, 'NOT_FOUND', 'no such folder');
+    if (result === 'invalid') return sendError(res, 400, 'INVALID_INPUT', 'choose a parent in this project, outside this folder');
+    await d.audit(`user:${admitted.user.id}`, 'project.folder.move', `project:${admitted.project.id}`, { folderId: ctx.params.folderId, parentId: body.parentId });
+    sendJson(res, 200, { parentId: body.parentId });
+  });
+  router.add('DELETE', '/api/v1/projects/:id/folders/:folderId', async (req, res, ctx) => {
+    const admitted = await gate(req, res, ctx.params.id!, true); if (!admitted) return;
+    if (!await d.store.deleteProjectFolder(admitted.project.id, ctx.params.folderId!)) return sendError(res, 404, 'NOT_FOUND', 'no such folder');
+    await d.audit(`user:${admitted.user.id}`, 'project.folder.delete', `project:${admitted.project.id}`, { folderId: ctx.params.folderId });
+    res.writeHead(204); res.end();
+  });
   router.add('PUT', '/api/v1/projects/:id/folders/items/:kind/:ref', async (req, res, ctx) => {
     const admitted = await gate(req, res, ctx.params.id!, true); if (!admitted) return;
     const body = await readJson(req) as { folderId?: unknown } | null;

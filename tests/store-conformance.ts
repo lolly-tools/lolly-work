@@ -894,6 +894,21 @@ export async function runStoreConformance(store: Store): Promise<void> {
   await store.assignProjectFolderItem('prj_t', null, 'session', 'reference_a');
   tree = await store.listProjectFolders('prj_t'); assert.ok(tree.every(f => !f.items.length));
   assert.deepEqual(await store.listProjectFolders('prj_p'), []);
+  assert.equal(await store.moveProjectFolder('prj_t', folder.id, 'fld_child'), 'invalid');
+  assert.equal(await store.moveProjectFolder('prj_p', folder.id, null), 'missing');
+  assert.equal(await store.moveProjectFolder('prj_t', 'fld_child', null), 'moved');
+  assert.equal(await store.moveProjectFolder('prj_t', 'fld_child', folder.id), 'moved');
+  await store.assignProjectFolderItem('prj_t', 'fld_child', 'session', 'reference_a');
+  assert.equal(await store.deleteProjectFolder('prj_p', 'fld_child'), false);
+  assert.equal(await store.deleteProjectFolder('prj_t', 'fld_child'), true);
+  assert.deepEqual((await store.listProjectFolders('prj_t')).find(f => f.id === folder.id)?.items, [{ kind: 'session', ref: 'reference_a' }]);
+  await store.putProjectFolder({ ...folder, id: 'fld_survivor', parentId: folder.id });
+  assert.equal(await store.deleteProjectFolder('prj_t', folder.id), true);
+  tree = await store.listProjectFolders('prj_t');
+  assert.equal(tree.find(f => f.id === 'fld_survivor')?.parentId, null);
+  assert.ok(tree.every(f => !f.items.length));
+  assert.equal(await store.deleteProjectFolder('prj_t', folder.id), false);
+
 
   await store.putSession({
     id: 'ses_a', projectId: 'prj_t', toolId: 'poster', toolVersion: '1.0.0',

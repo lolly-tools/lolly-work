@@ -55,10 +55,19 @@ export function createBrandfolderProvider(
   };
 
   const upstream = async (url: string): Promise<Response> => {
-    if (!ALLOWED_HOSTS.test(new URL(url).hostname)) throw new Error('brandfolder url outside allowed hosts');
-    const res = await fetchImpl(url);
-    if (!res.ok || !res.body) throw new Error(`brandfolder blob fetch ${res.status}`);
-    return res;
+    for (let redirects = 0; redirects <= 3; redirects++) {
+      const target = new URL(url);
+      if (target.protocol !== 'https:' || target.username || target.password || !ALLOWED_HOSTS.test(target.hostname)) throw new Error('brandfolder url outside allowed hosts');
+      const res = await fetchImpl(target.href, { redirect: 'manual' });
+      if ([301, 302, 303, 307, 308].includes(res.status)) {
+        const location = res.headers.get('location'); await res.body?.cancel();
+        if (!location || redirects === 3) throw new Error('brandfolder redirect refused');
+        url = new URL(location, target).href; continue;
+      }
+      if (!res.ok || !res.body) throw new Error(`brandfolder blob fetch ${res.status}`);
+      return res;
+    }
+    throw new Error('brandfolder redirect refused');
   };
 
   const mapAssets = (doc: JsonApiDoc): ProviderAssetRef[] => {
