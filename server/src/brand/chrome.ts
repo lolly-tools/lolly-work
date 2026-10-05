@@ -4,6 +4,7 @@ import { type createRouter, sendError, sendJson } from '../api/router.ts';
 import type { BrandService } from './service.ts';
 import type { InstancePackMeta } from '../catalog/instance-pack.ts';
 import { pickBrandLogoUrl } from './logo.ts';
+import { authThemeCss } from './auth-theme.ts';
 
 /** Caches belong to a source snapshot, so overlapping requests cannot mix brands. */
 export function createBrandChrome(name: string, brand: BrandService) {
@@ -48,6 +49,11 @@ export function createBrandChrome(name: string, brand: BrandService) {
         sourceId: data.source.id, revision: snap.revision };
     },
     register(router: ReturnType<typeof createRouter>) {
+      router.add('GET', '/api/brand/auth.css', async (_req, res) => {
+        const data = await get();
+        res.writeHead(200, { 'content-type': 'text/css; charset=utf-8', 'cache-control': 'public, no-cache', 'x-content-type-options': 'nosniff' });
+        res.end(authThemeCss(data.tokens, data.font));
+      });
       router.add('GET', '/api/brand', async (_req, res) => {
         const data = await get();
         if (!data.tokens) return sendError(res, 404, 'NO_BRAND', 'No unambiguous design tokens are configured for this source.');

@@ -16,6 +16,7 @@
  * Every name, project and note goes through `esc()`.
  */
 import { actionLink, esc, maskedAddress, noteField, postForm, serverPage } from '../iam/activate-page.ts';
+import { providerIcon } from '../iam/provider-icons.ts';
 import type { ProjectMemberRole } from '../store/types.ts';
 import { maskEmail, maskEmailSpoken } from './mask.ts';
 
@@ -45,7 +46,7 @@ export function relativeTime(iso: string, nowMs: number): string {
 }
 
 /** A sign-in the page offers: the idp id it posts and the name on the button. */
-export interface SignInChoice { idp: string; label: string }
+export interface SignInChoice { idp: string; label: string; provider?: string; pending?: boolean }
 
 /** What every invite page knows about the invitation it was opened for. */
 export interface InviteView {
@@ -96,7 +97,8 @@ function endLine(v: InviteView): string {
 }
 
 const startForm = (v: InviteView, csrf: string, choice: SignInChoice, opts: { prompt?: boolean; primary?: boolean } = {}): string =>
-  postForm({
+  choice.pending ? `<p class="stack"><button class="auth-provider" type="button" disabled>${providerIcon(choice.provider ?? choice.label)}<span>${esc(choice.label)}</span><span class="auth-pending">(pending)</span></button></p>` : postForm({
+    provider: choice.provider,
     action: '/api/auth/invite',
     fields: { token: v.token, csrf, action: 'start', idp: choice.idp, ...(opts.prompt ? { prompt: 'select_account' } : {}) },
     label: choice.label, ...(opts.primary ? { primary: true } : {}),

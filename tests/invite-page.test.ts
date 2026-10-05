@@ -62,7 +62,7 @@ test('signed out, pending: who invited, to what, as which role, until when, and 
   assert.equal(h.get('x-robots-tag'), 'noindex, nofollow');
   assert.equal(h.get('referrer-policy'), 'strict-origin');
   assert.equal(h.get('x-content-type-options'), 'nosniff');
-  assert.equal(h.get('content-security-policy'), "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'");
+  assert.equal(h.get('content-security-policy'), "default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'");
   assert.match(page.res.headers.getSetCookie().join('\n'), /lw_form=[^;]+; Path=\/api\/auth; HttpOnly; SameSite=Strict/);
 });
 
