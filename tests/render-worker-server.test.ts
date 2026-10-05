@@ -347,3 +347,26 @@ test('worker response signs observed resource bytes and the dispatched request',
   assert.equal(out.evidence.resources[0].sha256, createHash('sha256').update(source).digest('hex'));
   assert.equal(out.evidence.outputSha256, createHash('sha256').update(svg).digest('hex'));
 });
+
+
+test('render read credentials stay on the instance catalog and do not follow redirects', async t => {
+  const fetched: string[] = [], continued: string[] = [];
+  setBrowserGetter(async () => ({ newContext: async () => ({
+    addInitScript: async () => {}, close: async () => {},
+    route: async (_pattern: string, handler: (route: any) => Promise<void>) => {
+      for (const path of ['http://web.test/api/auth/config', 'http://web.test/catalog/assets/index.json', 'http://web.test/tools/design/tool.json', 'http://web.test/api/v1/projects', 'https://example.com/catalog/assets/index.json']) {
+        const response = { headers: () => ({ 'x-lolly-brand-revision': 'rev' }), status: () => 200 };
+        await handler({ request: () => ({ url: () => path, headers: () => ({ accept: '*/*' }) }),
+          fetch: async (options: any) => { assert.equal(options.maxRedirects, 0); assert.equal(options.headers['x-lw-render-read'], 'read-token'); fetched.push(path); return response; },
+          fulfill: async () => {}, abort: async () => { assert.fail('unexpected refusal'); }, continue: async () => { continued.push(path); } });
+      }
+    },
+    newPage: async () => ({ goto: async () => {}, waitForEvent: async () => ({ createReadStream: async () => (async function* () { yield Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'); })(), delete: async () => {} }) }),
+  }) }));
+  t.after(() => setBrowserGetter(null));
+  const body = JSON.stringify({ toolId: 'design', query: '', overrides: {}, format: 'svg', brandRevision: 'rev', readToken: 'read-token', ts: Date.now() });
+  const res = await fetch(base+'/render', { method: 'POST', headers: sign(body), body });
+  assert.equal(res.status, 200, JSON.stringify(await res.json()));
+  assert.deepEqual(fetched, ['http://web.test/api/auth/config', 'http://web.test/catalog/assets/index.json', 'http://web.test/tools/design/tool.json']);
+  assert.deepEqual(continued, ['http://web.test/api/v1/projects', 'https://example.com/catalog/assets/index.json']);
+});

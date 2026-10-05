@@ -84,6 +84,7 @@ function renderErrorFromWorker(e: WorkerError): RenderError {
 }
 
 export interface RenderDeps {
+  workerReadToken?: string;
   managedRules?: ManagedRuleContext;
   brandRevision?: string;
   config: InstanceConfig;
@@ -365,6 +366,7 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
       }
       req.signal?.throwIfAborted();
       svgStr = await renderViaWorker(deps.worker, {
+        ...(deps.workerReadToken ? { readToken: deps.workerReadToken } : {}),
         ...(deps.brandRevision ? { brandRevision: deps.brandRevision } : {}),
         ...(production || deps.managedRules ? { evidence: true, inputIds } : {}),
         toolId: req.toolId,

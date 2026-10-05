@@ -15,6 +15,8 @@ export interface WorkerConfig { url: string; secret: string; timeoutMs: number }
 
 export interface WorkerEvidence { inputs?: Record<string, string>; version: 1; requestSha256: string; outputSha256: string; resources: { url: string; sha256: string; size: number }[]; limitations: string[] }
 export interface WorkerJob {
+  /** Short-lived catalog-only credential, never a member session. */
+  readToken?: string;
   evidence?: boolean;
   inputIds?: string[];
   /** The catalogue revision every browser request must observe. */

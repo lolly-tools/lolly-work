@@ -70,6 +70,7 @@ import { evaluate, grantDecision, denialCode, mayEditCollab, ownerOnlyAction, ro
 import { accessAtLeast, effectiveProjectAccess, type ProjectAccess } from '../rbac/project-access.ts';
 import { registerProjectFileRoutes } from '../projects/file-routes.ts';
 import { registerProjectFolderRoutes } from '../projects/folder-routes.ts';
+import { mintRenderRead, renderReader } from '../render/read-ticket.ts';
 import { projectFilesEnabled, removeUploadsBy } from '../projects/files.ts';
 import { buildShareMessage, createWindowQuota, mergeInvitationProject, nameWithoutEmail, roleAbove } from '../projects/sharing.ts';
 import { approversFor, closeRequestsOnAccess } from '../access/requests.ts';
@@ -267,7 +268,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       const snap = brand.current()!;
       const policyHash = brandPolicyHash([...args[1].overlays]);
       const managedRules = await managedRuleContext(snap, args[1].toolId, args[1].format === 'jpeg' ? 'jpg' : args[1].format);
-      const out = await renderToolUnscoped({ ...args[0], brandRevision: snap.revision, managedRules }, args[1]);
+      const out = await renderToolUnscoped({ ...args[0], brandRevision: snap.revision, managedRules,
+        workerReadToken: mintRenderRead(args[1].principal?.groups ?? [], snap.revision, secrets.link) }, args[1]);
       if ((await brand.snapshot()).revision !== snap.revision || brandPolicyHash([...await store.listOverlays()]) !== policyHash) throw new BrandError('Brand or organisation policy changed during rendering. Retry with the current revision.', 409, 'BRAND_REVISION_CHANGED');
       if (managedRules) await sourceRules(snap);
       return out;
@@ -613,9 +615,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     return { provider: null, providerName: null, loginPath: null };
   };
 
-  router.add('GET', '/api/auth/config', (_req, res) => {
+  router.add('GET', '/api/auth/config', (req, res) => {
     sendJson(res, 200, {
-      mode: config.policy.defaultAccessMode,
+      mode: renderReader(req, brand.current()!.revision, linkVerify) ? 'open' : config.policy.defaultAccessMode,
       ...authProvider(),
       // The public sandbox (dev.enabled) serves the deployment docs to anyone - 
       // the console reads this so an anonymous visitor can land straight on the
@@ -4840,7 +4842,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // same absence the index shows. A guest may fetch the tool its link opens.
   // `tools` is a reserved prefix below, so the dist's copy is never consulted.
   router.add('GET', '/tools/*', async (req, res, ctx) => {
-    const user = await memberOf(req);
+    const user = await memberOf(req) ?? renderReader(req, brand.current()!.revision, linkVerify);
     const p = principalOf(req);
     if (config.policy.defaultAccessMode === 'gated' && !user && p?.kind !== 'guest') {
       return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
@@ -4865,7 +4867,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
 
   // ── catalog serving (pack mount, per-caller filtered, lifecycle-enforced) ──
   const serveCatalog: Handler = async (req, res, ctx) => {
-    const user = await memberOf(req);
+    const user = await memberOf(req) ?? renderReader(req, brand.current()!.revision, linkVerify);
     const p = principalOf(req);
     if (config.policy.defaultAccessMode === 'gated' && !user && p?.kind !== 'guest') {
       return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');

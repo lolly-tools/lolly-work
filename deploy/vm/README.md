@@ -90,6 +90,20 @@ stored there too, so `policy.projectFiles` budgets are sized for it) and 5 GB of
 
 ## Runbook
 
+The optional Chromium worker uses the `render` Compose profile. Set
+`render.worker.url` to `http://render-worker:8791` and a suitable timeout (60000 ms)
+in the private `instance.json`, and add `LW_RENDER_WORKER_SECRET` to the VM's
+private `.env`. `push.sh` then builds and starts the worker before restarting
+the server. Both services use that same key. Preserve every other secret when
+editing `.env`; the worker receives only its render key, with no database or
+sign-in credentials. It drives the signed shell at `https://lolly.ing` using a
+five-minute read-only catalog ticket scoped to the caller's groups and current
+brand revision. This ticket cannot sign in, read projects or call write routes. The worker runs
+with a read-only filesystem and temporary browser storage, and accepts at most
+two simultaneous jobs. Its port stays inside the Compose network. Test an
+authenticated tool export and PNG/PDF rendering after deployment; health alone
+does not prove Chromium can start.
+
 Run everything from the root of this repository on your own machine. `<ip>` is the server's
 public IPv4 address. Your ssh key is `~/.ssh/id_ed25519.pub`.
 
