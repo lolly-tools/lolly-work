@@ -132,6 +132,8 @@ export interface InstanceConfig {
      *  default (tools). Passed to members as org-config `home`; a link to a tool,
      *  project or view still opens where it points. */
     homeView?: 'tools' | 'projects';
+    /** Optional destination for Home and arrival at the bare app address. */
+    homeUrl?: string;
     /** One plain-text line the invite page and copied invite messages show,
      *  such as which sign-in to use when an organisation blocks one
      *  (plans/74 invite spec 2.5). Trimmed, at most 240 characters, no line
@@ -775,6 +777,15 @@ export function parseConfig(json: string): InstanceConfig {
   }
   if (cfg.instance.homeView !== undefined && !['tools', 'projects'].includes(cfg.instance.homeView)) {
     throw new Error('instance.homeView must be "tools" or "projects"');
+  }
+  if (cfg.instance.homeUrl !== undefined) {
+    const value = cfg.instance.homeUrl;
+    if (typeof value !== 'string' || !value || value.length > 2048 || /[\s\\\u0000-\u001f\u007f]/.test(value)) throw new Error('instance.homeUrl must be a root-relative URL or an HTTPS URL');
+    let url: URL;
+    try { url = new URL(value, 'https://instance.invalid'); } catch { throw new Error('instance.homeUrl must be a root-relative URL or an HTTPS URL'); }
+    if ((!value.startsWith('/') && !value.startsWith('https://')) || value.startsWith('//') || url.protocol !== 'https:' || url.username || url.password) {
+      throw new Error('instance.homeUrl must be a root-relative URL or an HTTPS URL');
+    }
   }
   if (cfg.instance.inviteNote !== undefined) {
     const note = cfg.instance.inviteNote;

@@ -2,6 +2,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseConfig, loadSecrets, parseAutoMigrate } from '../server/src/config/instance.ts';
 
+test('instance.homeUrl supports chosen destinations and rejects credentials or executable URLs', () => {
+  for (const homeUrl of ['/#/p', '/#/p?team=prj_123', '/portal', 'https://company.example/teams/home']) {
+    assert.equal(parseConfig(JSON.stringify({ policy: { defaultAccessMode: 'open' }, instance: { homeUrl } })).instance.homeUrl, homeUrl);
+  }
+  for (const homeUrl of ['', '//other.example/path', 'javascript:alert(1)', 'data:text/html,hi', 'http://other.example', 'https://user:password@other.example', '/\\evil.example', '/path\nnext', 4]) {
+    assert.throws(() => parseConfig(JSON.stringify({ policy: { defaultAccessMode: 'open' }, instance: { homeUrl } })), /instance.homeUrl/);
+  }
+});
+
 test('defaults merge under a partial config', () => {
   const cfg = parseConfig(JSON.stringify({ instance: { name: 'Test Hub' }, dev: { enabled: true, users: [] } }));
   assert.equal(cfg.instance.name, 'Test Hub');

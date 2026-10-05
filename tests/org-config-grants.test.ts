@@ -136,3 +136,12 @@ test('instance.homeView reaches the shell as home, only when set, and moves the 
   assert.notEqual(projects.policyVersion, unset.policyVersion);
   assert.notEqual(projects.policyVersion, withHome('tools').policyVersion);
 });
+
+test('an instance home URL reaches members and moves the cached policy version', () => {
+  const base = { config: CONFIG, user: user(['sales']), overlays: OVERLAYS, grants: [], inboxUnread: 0 };
+  const unset = assembleOrgConfig(base);
+  const destination = assembleOrgConfig({ ...base, config: { ...CONFIG, instance: { ...CONFIG.instance, homeUrl: '/#/p?team=prj_123' } } });
+  assert.equal(destination.homeUrl, '/#/p?team=prj_123');
+  assert.notEqual(destination.policyVersion, unset.policyVersion);
+  assert.equal('homeUrl' in unset, false);
+});
