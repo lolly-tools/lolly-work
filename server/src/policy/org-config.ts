@@ -61,6 +61,7 @@ export interface OrgConfigPayload {
    *  (`instance.homeView`). Absent when the deployment sets none, so the shell
    *  keeps its own default. Deployment-scoped, the same for every caller. */
   home?: 'tools' | 'projects';
+  homeUrl?: string;
   session: {
     sub: string;
     email: string;
@@ -187,7 +188,7 @@ export function policyVersionOf(
    *  (`instance.homeView`). Absent for
    *  callers that hash policy only, so their versions are unchanged. */
   deployment?: {
-    invites: unknown; guestLinks: boolean; liveCollab?: false; projectFiles?: true; home?: 'tools' | 'projects';
+    invites: unknown; guestLinks: boolean; liveCollab?: false; projectFiles?: true; home?: 'tools' | 'projects'; homeUrl?: string;
     passwordSignIn?: true; projectRequests?: false;
   },
 ): string {
@@ -385,6 +386,7 @@ export function assembleOrgConfig(opts: {
     ai: resolveAiPolicy(config.policy.ai, flagGovernance),
     instance: { name: config.instance.name },
     ...(config.instance.homeView ? { home: config.instance.homeView } : {}),
+    ...(config.instance.homeUrl ? { homeUrl: config.instance.homeUrl } : {}),
     session: {
       sub: user.sub,
       email: user.email,
@@ -432,6 +434,7 @@ export function assembleOrgConfig(opts: {
         // Setting one changes the payload, so the version follows it. A shell reads
         // `home` once, at boot, so an open tab keeps its first view until reloaded.
         ...(config.instance.homeView ? { home: config.instance.homeView } : {}),
+        ...(config.instance.homeUrl ? { homeUrl: config.instance.homeUrl } : {}),
         // `invites.passwordSetup` follows whether password sign-in is on (the
         // caller's role and grants are hashed above), and `requests.project`
         // follows `policy.requests.project`. Each is present only when it

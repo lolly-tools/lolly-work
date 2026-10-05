@@ -63,6 +63,11 @@
           "summary": "OIDC SSO, group mapping, member and guest sessions, the dev provider."
         },
         {
+          "slug": "document-agents",
+          "title": "Document agent invitations",
+          "summary": "Invite MCP agents under your identity, with document access, expiry, live collaboration and revocation."
+        },
+        {
           "slug": "design-system-administration",
           "title": "Design-system administration",
           "summary": "Inspect sources, review replacements and retirement, and manage durable connect downloads."

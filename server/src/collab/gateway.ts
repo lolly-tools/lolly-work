@@ -125,6 +125,9 @@ import { mayCreateGuestLinks, mayEditCollab, mayJoinCollab, type Grant, type Rol
 import { resolveInputAccess, type ResolvedAccess, type ToolOverlay, inputIsGoverned } from '../policy/overlay.ts';
 import { readToolInputs } from '../policy/tool-inputs.ts';
 import { randomId } from '../lib/crypto.ts';
+import { createAgentRooms } from '../agents/rooms.ts';
+import { agentStanding } from '../agents/access.ts';
+import type { AgentRoomBridge } from '../agents/types.ts';
 import { interactionKey, readClaimTarget } from '@lolly-tools/core/canvas-interaction-v1';
 import {
   MAX_OPS_PER_MESSAGE, MAX_ROW_FIELDS, MAX_SCALAR_CHARS, PRESENCE_FRAMES_PER_SEC,
@@ -244,6 +247,7 @@ export interface CollabGatewayDeps {
 }
 
 export interface CollabGateway {
+  agents: AgentRoomBridge;
   /** Returns false when the path is not ours - the caller destroys the socket.
    *  True means the gateway has taken ownership (auth continues async). */
   handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): boolean;
@@ -1727,8 +1731,19 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
     console.error('[lolly-work] collab handler failed:', (err as Error)?.message ?? err);
   };
 
+  const agents = createAgentRooms({ store, registry, parse: parseOp, audit, dispose: disposeIfEmpty,
+    async authorize(record, ops, live) {
+      const standing = await agentStanding(store, record);
+      if (!standing || !standing.mayEdit) throw new Error('READ_ONLY');
+      const [overlays, inputs] = await Promise.all([store.listOverlays(), brand.snapshot().then(snap => readToolInputs(snap.source.root, standing.session.toolId))]);
+      const policy: OpsAuthz = { groups: standing.creator.groups, mayEdit: true, overlay: overlays.get(standing.session.toolId), isGuest: false, ...declaredOf(inputs) };
+      return new Set(vetoOps(ops, policy, live).accepted);
+    },
+  });
+
   const drain = async (): Promise<void> => {
     closing = true;
+    await agents.close();
     for (const ws of sockets) ws.close(CLOSE.GOING_AWAY, 'server closing');
     sockets.clear();
     // Every room still standing after the sockets went - including any whose
@@ -1742,6 +1757,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
   };
 
   return {
+    agents,
     handleUpgrade(req, socket, head) {
       // The WHOLE body is guarded, not just the async half. main.ts calls this
       // synchronously from `server.on('upgrade')`, so anything that throws here

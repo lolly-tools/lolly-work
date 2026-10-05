@@ -33,6 +33,7 @@ import type { ProviderFragment, ProviderKind, ProviderRecord } from '../catalog/
 import type { DeliveryRecord } from '../delivery/types.ts';
 import type { ProjectAccess } from '../rbac/project-access.ts';
 import type { ProjectFolderRecord } from './types.ts';
+import type { DocumentAgentRecord } from './types.ts';
 import { createPostgresPasskeys } from '../iam/passkeys/postgres.ts';
 import { createPostgresRenderStore } from '../renders/postgres.ts';
 import {
@@ -54,6 +55,15 @@ function apiTokenFromRow(r: Record<string, unknown>): ApiTokenRecord {
     ...(r.last_used_at ? { lastUsedAt: new Date(r.last_used_at as string).toISOString() } : {}),
     ...(r.revoked_at ? { revokedAt: new Date(r.revoked_at as string).toISOString() } : {}),
   };
+}
+
+/** One document-scoped agent credential, without its original bearer. */
+function documentAgentFromRow(r: Record<string, unknown>): DocumentAgentRecord {
+  return { id: r.id as string, sessionId: r.session_id as string, projectId: r.project_id as string,
+    userId: r.user_id as string, createdBy: r.created_by as string, label: r.label as string,
+    role: r.role as DocumentAgentRecord['role'], tokenHash: r.token_hash as string,
+    createdAt: new Date(r.created_at as string).toISOString(), expiresAt: new Date(r.expires_at as string).toISOString(),
+    ...(r.revoked_at ? { revokedAt: new Date(r.revoked_at as string).toISOString() } : {}) };
 }
 
 /** An invitation's projects as stored: only the known keys. */
@@ -2076,6 +2086,27 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         'select * from project_members where project_id = $1 and user_id = $2', [projectId, userId],
       );
       return rows[0] ? projectMemberFromRow(rows[0]) : null;
+    },
+    async createDocumentAgent(rec) {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        const creator = await client.query('select id from users where id = $1 and disabled_at is null for update', [rec.createdBy]);
+        const session = await client.query('select id from sessions where id = $1 and project_id = $2 and deleted_at is null', [rec.sessionId, rec.projectId]);
+        const count = await client.query('select count(*)::int as n from document_agents where created_by = $1 and revoked_at is null and expires_at > $2', [rec.createdBy, rec.createdAt]);
+        if (rec.userId !== rec.createdBy || !creator.rows.length || !session.rows.length || Number(count.rows[0]?.n) >= 16) { await client.query('rollback'); return false; }
+        await client.query(`insert into document_agents (id, session_id, project_id, user_id, created_by, label, role, token_hash, created_at, expires_at)
+          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+          [rec.id, rec.sessionId, rec.projectId, rec.userId, rec.createdBy, rec.label, rec.role, rec.tokenHash, rec.createdAt, rec.expiresAt]);
+        await client.query('commit'); return true;
+      } catch (error) { await client.query('rollback'); if ((error as { code?: string }).code === '23505') return false; throw error; }
+      finally { client.release(); }
+    },
+    async getDocumentAgent(id) { const { rows } = await pool.query('select * from document_agents where id = $1', [id]); return rows[0] ? documentAgentFromRow(rows[0]) : null; },
+    async findDocumentAgentByHash(hash) { const { rows } = await pool.query('select * from document_agents where token_hash = $1', [hash]); return rows[0] ? documentAgentFromRow(rows[0]) : null; },
+    async listDocumentAgents(sessionId) { const { rows } = await pool.query('select * from document_agents where session_id = $1 order by created_at, id', [sessionId]); return rows.map(documentAgentFromRow); },
+    async revokeDocumentAgent(id, at) {
+      await pool.query('update document_agents set revoked_at = $2 where id = $1 and revoked_at is null', [id, at]);
     },
     async listUserProjectMemberships(userId) {
       const { rows } = await pool.query('select * from project_members where user_id = $1', [userId]);
