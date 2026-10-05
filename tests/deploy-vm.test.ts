@@ -114,7 +114,7 @@ test('compose: every bind mount carries an SELinux label, and only Caddy publish
       else assert.match(port, /^127\.0\.0\.1:/, `${name} publishes ${port} on loopback only, never 0.0.0.0`);
     }
   }
-  assert.equal(mounts, 4, 'instance.json, the pack, engine-pin.json and the Caddy directory');
+  assert.equal(mounts, 5, 'instance.json, the pack, engine-pin.json, shell releases and the Caddy directory');
   assert.ok(!/^\s*-\s*"?(0\.0\.0\.0:)?8787:/m.test(read('docker-compose.yml')), 'the server port is never published publicly');
 });
 

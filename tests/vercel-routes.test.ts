@@ -204,6 +204,16 @@ test('Caddy rules are plain RE2 a Caddyfile can carry unquoted', () => {
   assert.throws(() => caddyfile({ ...LOLLY_ING, shellOrigin: 'http://lolly.tools' }), /https/);
 });
 
+test('a mounted local shell keeps workspace and OSS function routing separate', () => {
+  const text = caddyfile({ ...LOLLY_ING, serveShell: true });
+  const last = text.slice(text.lastIndexOf('\thandle {'));
+  assert.match(last, /reverse_proxy server:8787/);
+  assert.match(last, /header_up -Cookie/); assert.match(last, /header_up -Authorization/);
+  assert.ok(!last.includes('lolly.tools'));
+  const functions = text.slice(text.indexOf('\thandle @shell_functions'), text.indexOf('\thandle @control_plane'));
+  assert.match(functions, /reverse_proxy https:\/\/lolly.tools/);
+});
+
 test('the generated Caddyfile proxies like the Vercel table and keeps credentials home', () => {
   const text = caddyfile({ ...LOLLY_ING, prefixes: functionPrefixes(SRC) });
   // Site blocks: the redirect host and the instance.

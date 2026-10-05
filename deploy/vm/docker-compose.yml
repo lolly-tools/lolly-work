@@ -39,6 +39,8 @@ services:
       # The image does not copy engine-pin.json; /api/v1/instance reads the
       # engine version from it (engineVersion is null without it).
       - ./src/engine-pin.json:/app/engine-pin.json:ro,Z
+      # Optional signed web release. instance.shellDir selects the active build.
+      - ./shell:/app/shell:ro,Z
     # Reachable from the VM itself (curl http://127.0.0.1:8787/healthz) and from
     # Caddy over the compose network; never from outside. Docker's published
     # ports bypass firewalld, so this one must stay on 127.0.0.1.
