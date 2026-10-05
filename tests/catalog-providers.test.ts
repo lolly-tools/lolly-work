@@ -29,7 +29,7 @@ const MOCK_SECRET = 'brandfolder-key-123';
 // a2 fails it twice over (unapproved, wrong section) and must never federate.
 const MOCK_ASSETS = [
   {
-    remoteId: 'a1', name: 'Summit Logo', nativeType: 'file', sections: ['Logos'], tags: ['event'],
+    remoteId: 'a1', name: 'Summit Logo', nativeType: 'file', sections: ['Logos'], tags: ['event'], collections: ['Launch Kit'],
     approved: true, updatedAt: '2026-06-01T00:00:00.000Z',
     formats: [{ format: 'png', remoteRef: 'att1', size: 10 }], hasThumbnail: true,
   },
@@ -166,7 +166,7 @@ test('(c) enable + federation: entries appear namespaced for exposed groups only
 
   const designer = await login('designer@test');
   const feed = await (await fetch(`${base}/catalog/assets/index.json`, { headers: { cookie: designer } })).json() as {
-    assets: Array<{ id: string; tags?: string[]; tier?: string; formats: Array<{ url: string }> }>;
+    assets: Array<{ id: string; tags?: string[]; tier?: string; meta?: Record<string, unknown>; formats: Array<{ url: string }> }>;
   };
   const ids = feed.assets.map((a) => a.id);
   assert.ok(ids.includes('acme/logo/primary'), 'pack assets still served');
@@ -175,6 +175,7 @@ test('(c) enable + federation: entries appear namespaced for exposed groups only
   const a1 = feed.assets.find((a) => a.id === 'ext/dam1/a1');
   assert.ok(a1?.tags?.includes('provider:dam1'));
   assert.ok(a1?.tags?.includes('Logos'), 'section folded into tags');
+  assert.deepEqual(a1?.meta, { providerLabel: 'Acme DAM', providerSections: ['Logos'], providerCollections: ['Launch Kit'], providerTags: ['event'] });
   assert.equal(a1?.tier, 'reference');
   assert.equal(a1?.formats[0]?.url, '/catalog/ext/dam1/a1/att1');
 

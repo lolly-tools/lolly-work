@@ -175,6 +175,8 @@ export interface ProviderAssetRef {
   nativeType: string;
   /** Provider-native section/folder names (exposure scoping + tags). */
   sections: string[];
+  /** Provider-native collection names for browsing and search. */
+  collections?: string[];
   tags: string[];
   approved?: boolean;
   updatedAt?: string;

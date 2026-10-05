@@ -59,6 +59,12 @@ export function mapProviderAsset(rec: ProviderRecord, asset: ProviderAssetRef): 
     tier: rec.exposure.tier ?? 'on-demand',
     tags: [...new Set([`provider:${rec.id}`, ...sectionTags, ...asset.tags])],
     provider: rec.id,
+    meta: {
+      providerLabel: rec.label,
+      providerSections: asset.sections,
+      providerCollections: asset.collections ?? [],
+      providerTags: asset.tags,
+    },
     ...(asset.updatedAt ? { updatedAt: asset.updatedAt } : {}),
     ...(asset.availableFrom ? { availableFrom: asset.availableFrom } : {}),
     ...(asset.availableUntil ? { availableUntil: asset.availableUntil } : {}),
