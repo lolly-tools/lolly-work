@@ -573,7 +573,8 @@ export class Room implements RoomWriteback {
   }
 
   /** Serialize across ALL connections. Nothing is applied or broadcast until the database commits. */
-  applyBatch(from: RoomMember, batchId: string, ids: string[], ops: CanvasOp[], accepted: ReadonlySet<CanvasOp>, claimId?: string): Promise<void> {
+  applyBatch(from: RoomMember, batchId: string, ids: string[], ops: CanvasOp[], accepted: ReadonlySet<CanvasOp>, claimId?: string,
+    options?: { expectedRevision: number; serverOrigin: boolean; authorize: () => Promise<ReadonlySet<CanvasOp>> }): Promise<void> {
     const bytes = JSON.stringify(ops).length * 2;
     if (this.pendingBatches >= 32 || this.pendingBytes + bytes > 4 * 1024 * 1024) return Promise.reject(new Error('collab-room-busy'));
     this.pendingBatches++; this.pendingBytes += bytes;
@@ -581,16 +582,18 @@ export class Room implements RoomWriteback {
     const run = this.writes.then(async () => {
       const store = this.store;
       if (!store || this.closed) throw new Error('collab-storage-unavailable');
+      const authorized = options ? await options.authorize() : accepted;
       const previous = new Map((await store.getCollabReceipts(this.sessionId, from.userId, ids)).map(r => [r.id, r]));
       if (this.closed) throw new Error('collab-owner-lost');
       const canonical = (v: unknown): unknown => Array.isArray(v) ? v.map(canonical)
         : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b)).map(([k, value]) => [k, canonical(value)])) : v;
-      const records = ops.map((op, i) => ({ id: ids[i]!, digest: createHash('sha256').update(JSON.stringify(canonical(op))).digest('hex'), accepted: accepted.has(op) }));
+      const records = ops.map((op, i) => ({ id: ids[i]!, digest: createHash('sha256').update(JSON.stringify(canonical(op))).digest('hex'), accepted: authorized.has(op) }));
       for (const record of records) {
         const prior = previous.get(record.id);
         if (prior && prior.digest !== record.digest) throw new Error('collab-receipt-conflict');
       }
       const novelOps = ops.filter((_, i) => !previous.has(ids[i]!));
+      if (options && novelOps.length && options.expectedRevision !== this.durableRevision) throw new Error('collab-revision-changed');
       if (novelOps.length && !this.claims.allows(from.id, novelOps, claimId)) {
         for (const record of records) if (!previous.has(record.id)) record.accepted = false;
         from.send({ t: 'error', code: 'collab-claim-lost', message: 'Another edit owns this object. Keep a recovery copy before retrying.' });
@@ -614,7 +617,8 @@ export class Room implements RoomWriteback {
         }
       }
       const novel = records.filter(r => !previous.has(r.id));
-      const fresh = ops.filter((_, i) => !previous.has(ids[i]!) && records[i]!.accepted);
+      const approved = ops.filter((_, i) => !previous.has(ids[i]!) && records[i]!.accepted);
+      const fresh = options?.serverOrigin ? approved.map((op, i) => ({ ...op, origin: { client: from.id, clock: this.serverClock + i + 1 } })) : approved;
       if (!fresh.length && novel.length) {
         // Nothing accepted (an observer's batch, a full veto): the document is
         // unchanged, so only the receipts are stored. No revision, no history
