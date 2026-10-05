@@ -2094,12 +2094,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         const creator = await client.query('select id from users where id = $1 and disabled_at is null for update', [rec.createdBy]);
         const session = await client.query('select id from sessions where id = $1 and project_id = $2 and deleted_at is null', [rec.sessionId, rec.projectId]);
         const count = await client.query('select count(*)::int as n from document_agents where created_by = $1 and revoked_at is null and expires_at > $2', [rec.createdBy, rec.createdAt]);
-        if (!creator.rows.length || !session.rows.length || Number(count.rows[0]?.n) >= 16) { await client.query('rollback'); return false; }
-        await client.query(`insert into users (id, sub, email, firstname, groups, idp_groups, local_groups, role, created_at, last_seen_at)
-          values ($1, $2, $3, $4, '[]', '[]', '[]', 'member', $5, $5)`,
-          [rec.userId, `agent:${rec.id}`, `${rec.id}@agents.invalid`, `${rec.label} · agent`, rec.createdAt]);
-        await client.query('insert into project_members (project_id, user_id, role, added_by, added_at) values ($1, $2, $3, $4, $5)',
-          [rec.projectId, rec.userId, rec.role, `user:${rec.createdBy}`, rec.createdAt]);
+        if (rec.userId !== rec.createdBy || !creator.rows.length || !session.rows.length || Number(count.rows[0]?.n) >= 16) { await client.query('rollback'); return false; }
         await client.query(`insert into document_agents (id, session_id, project_id, user_id, created_by, label, role, token_hash, created_at, expires_at)
           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
           [rec.id, rec.sessionId, rec.projectId, rec.userId, rec.createdBy, rec.label, rec.role, rec.tokenHash, rec.createdAt, rec.expiresAt]);
@@ -2111,16 +2106,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     async findDocumentAgentByHash(hash) { const { rows } = await pool.query('select * from document_agents where token_hash = $1', [hash]); return rows[0] ? documentAgentFromRow(rows[0]) : null; },
     async listDocumentAgents(sessionId) { const { rows } = await pool.query('select * from document_agents where session_id = $1 order by created_at, id', [sessionId]); return rows.map(documentAgentFromRow); },
     async revokeDocumentAgent(id, at) {
-      const client = await pool.connect();
-      try {
-        await client.query('begin');
-        const { rows } = await client.query('update document_agents set revoked_at = $2 where id = $1 and revoked_at is null returning user_id, project_id', [id, at]);
-        if (rows[0]) {
-          await client.query('delete from project_members where project_id = $1 and user_id = $2', [rows[0].project_id, rows[0].user_id]);
-          await client.query('update users set disabled_at = $2, session_epoch = session_epoch + 1 where id = $1', [rows[0].user_id, at]);
-        }
-        await client.query('commit');
-      } catch (error) { await client.query('rollback'); throw error; } finally { client.release(); }
+      await pool.query('update document_agents set revoked_at = $2 where id = $1 and revoked_at is null', [id, at]);
     },
     async listUserProjectMemberships(userId) {
       const { rows } = await pool.query('select * from project_members where user_id = $1', [userId]);

@@ -11,19 +11,19 @@ export const principalOf = (user: UserRecord) => ({ userId: user.id, groups: use
 
 export async function agentStanding(store: Store, record: DocumentAgentRecord) {
   const current = await store.getDocumentAgent(record.id);
-  if (!current || current.revokedAt || Date.parse(current.expiresAt) <= Date.now()) return null;
-  const [creator, agent, session, project, creatorSeat, agentSeat, grants] = await Promise.all([
-    store.getUser(current.createdBy), store.getUser(current.userId), store.getSession(current.sessionId), store.getProject(current.projectId),
-    store.getProjectMember(current.projectId, current.createdBy), store.getProjectMember(current.projectId, current.userId), store.listGrants(),
+  if (!current || current.revokedAt || !Number.isFinite(Date.parse(current.expiresAt)) || Date.parse(current.expiresAt) <= Date.now()) return null;
+  const [creator, session, project, creatorSeat, grants] = await Promise.all([
+    store.getUser(current.createdBy), store.getSession(current.sessionId), store.getProject(current.projectId),
+    store.getProjectMember(current.projectId, current.createdBy), store.listGrants(),
   ]);
-  if (!creator || creator.disabledAt || !agent || agent.disabledAt || !session || session.deletedAt || session.toolId !== 'design'
-    || !project || session.projectId !== current.projectId || !agentSeat
+  if (!creator || creator.disabledAt || current.userId !== current.createdBy || !session || session.deletedAt || session.toolId !== 'design'
+    || !project || session.projectId !== current.projectId
     || !accessAtLeast(effectiveProjectAccess(creator, project, creatorSeat, grants), 'viewer')
-    || !mayJoinCollab(principalOf(creator), grants) || !mayJoinCollab(principalOf(agent), grants)) return null;
-  const mayEdit = current.role === 'editor' && agentSeat.role !== 'viewer' && !project.archivedAt
+    || !mayJoinCollab(principalOf(creator), grants)) return null;
+  const mayEdit = current.role === 'editor' && current.userId === current.createdBy && !project.archivedAt
     && accessAtLeast(effectiveProjectAccess(creator, project, creatorSeat, grants), 'editor')
-    && mayEditCollab(principalOf(creator), grants) && mayEditCollab(principalOf(agent), grants);
-  return { record: current, creator, agent, session, project, mayEdit, grants };
+    && mayEditCollab(principalOf(creator), grants);
+  return { record: current, creator, agent: creator, session, project, mayEdit, grants };
 }
 
 export async function resolveAgent(store: Store, authorization: string | undefined) {

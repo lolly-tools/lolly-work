@@ -916,6 +916,13 @@ export class Room implements RoomWriteback {
     return toWire(this.doc.state());
   }
 
+  /** Read after earlier durable edits, using the same projection as a joining peer. */
+  async readCurrent(member: RoomMember): Promise<Record<string, unknown>> {
+    await this.writes;
+    if (this.closed || this.members.get(member.id) !== member) throw new Error('AGENT_UNAVAILABLE');
+    return { ...this.projectionFor(member), revision: this.durableRevision, serverClock: this.serverClock, claims: this.claims.list() };
+  }
+
   private projectionFor(member: RoomMember): { docState: WireDocState; checkpoint: CanvasCheckpoint } {
     const checkpoint = canvasAssetCheckpoint(this.doc.checkpoint(), member.interactionVersion);
     if (member.interactionVersion === 1) return { docState: this.snapshot(), checkpoint };

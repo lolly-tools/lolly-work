@@ -874,6 +874,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       }
       users.delete(user.sub);
       passkeys.forgetUser(id);
+      for (const [key, r] of documentAgents) if (r.userId === id || r.createdBy === id) documentAgents.delete(key);
       // Invitations hold the email, and an accepted one keeps admitting it, so
       // the rows this account accepted go with it. Other rows for the address
       // go too unless another account still carries that email.
@@ -1287,15 +1288,10 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       return m ? { ...m } : null;
     },
     async createDocumentAgent(rec) {
-      if (!userById(rec.createdBy) || !projects.has(rec.projectId) || sessions.get(rec.sessionId)?.projectId !== rec.projectId
-        || documentAgents.has(rec.id) || userById(rec.userId)) return false;
+      if (!userById(rec.createdBy) || userById(rec.createdBy)?.disabledAt || !projects.has(rec.projectId) || sessions.get(rec.sessionId)?.deletedAt || sessions.get(rec.sessionId)?.projectId !== rec.projectId
+        || documentAgents.has(rec.id) || rec.userId !== rec.createdBy) return false;
       if ([...documentAgents.values()].filter(r => r.createdBy === rec.createdBy && !r.revokedAt && r.expiresAt > rec.createdAt).length >= 16) return false;
-      const sub = `agent:${rec.id}`;
-      if (users.has(sub) || [...documentAgents.values()].some(r => r.tokenHash === rec.tokenHash)) return false;
-      users.set(sub, { id: rec.userId, sub, email: `${rec.id}@agents.invalid`, firstname: `${rec.label} · agent`,
-        groups: [], idpGroups: [], localGroups: [], role: 'member', sessionEpoch: 0, createdAt: rec.createdAt, lastSeenAt: rec.createdAt });
-      projectMembers.set(memberKey(rec.projectId, rec.userId), { projectId: rec.projectId, userId: rec.userId, role: rec.role,
-        addedBy: `user:${rec.createdBy}`, addedAt: rec.createdAt });
+      if ([...documentAgents.values()].some(r => r.tokenHash === rec.tokenHash)) return false;
       documentAgents.set(rec.id, { ...rec }); return true;
     },
     async getDocumentAgent(id) { const r = documentAgents.get(id); return r ? { ...r } : null; },
@@ -1303,8 +1299,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     async listDocumentAgents(sessionId) { return [...documentAgents.values()].filter(r => r.sessionId === sessionId).map(r => ({ ...r })); },
     async revokeDocumentAgent(id, at) {
       const rec = documentAgents.get(id); if (!rec || rec.revokedAt) return;
-      rec.revokedAt = at; projectMembers.delete(memberKey(rec.projectId, rec.userId));
-      const user = userById(rec.userId); if (user) { user.disabledAt = at; user.sessionEpoch++; }
+      rec.revokedAt = at;
     },
     async listUserProjectMemberships(userId) {
       return [...projectMembers.values()].filter((m) => m.userId === userId).map((m) => ({ ...m }));

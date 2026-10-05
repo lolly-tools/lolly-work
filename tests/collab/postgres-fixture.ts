@@ -36,6 +36,6 @@ export async function createCollabPostgresFixture() {
     store = await createPostgresStore(url);
     const pid = Number((await readFile(join(directory, 'postmaster.pid'), 'utf8')).split('\n')[0]);
     const { stdout: version } = await execute(command('postgres'), ['--version']);
-    return { store, pid, version: version.trim(), close };
+    return { store, pid, url, version: version.trim(), close };
   } catch (error) { await close(); throw error; }
 }
