@@ -1,7 +1,7 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:6b8e8025-c972-4c13-8c68-18ad7c1a3c2e",
+  "serialNumber": "urn:uuid:7adc673f-97a5-46c7-80dc-8b1f4836ec2d",
   "version": 1,
   "metadata": {
     "tools": [
@@ -29,10 +29,10 @@
   "components": [
     {
       "type": "library",
-      "bom-ref": "pkg:npm/%40asamuzakjp/css-color@6.0.7",
+      "bom-ref": "pkg:npm/%40asamuzakjp/css-color@7.1.3",
       "name": "@asamuzakjp/css-color",
-      "version": "6.0.7",
-      "purl": "pkg:npm/%40asamuzakjp/css-color@6.0.7",
+      "version": "7.1.3",
+      "purl": "pkg:npm/%40asamuzakjp/css-color@7.1.3",
       "scope": "required",
       "licenses": [
         {
@@ -44,16 +44,16 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "bc2fdb9352f3ed39ff11f53dfdaa4e4c193cd3ff1dc86c96328c0fa15d6d279da6b831ac0eab761cf4f6925ac552263ad0c42642ff6af32221b75e499c18031b"
+          "content": "d6dd54f029b744197dbe1dd101986390f69dbb32d2bd02514e846bc69191fde0d15bdf663911257aebbe9967e215aefde5b5338f086decd829842293b3689a9d"
         }
       ]
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/%40asamuzakjp/dom-selector@8.3.2",
+      "bom-ref": "pkg:npm/%40asamuzakjp/dom-selector@9.2.4",
       "name": "@asamuzakjp/dom-selector",
-      "version": "8.3.2",
-      "purl": "pkg:npm/%40asamuzakjp/dom-selector@8.3.2",
+      "version": "9.2.4",
+      "purl": "pkg:npm/%40asamuzakjp/dom-selector@9.2.4",
       "scope": "required",
       "licenses": [
         {
@@ -65,7 +65,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "f7767537e050357caca1da22729388c8d87676b1dfcff0937fd9e74f4144c7bd8625c222c20c9d0fbb4602befc8f8d4bb189f7865467f8b7463ee04b9f5065f1"
+          "content": "627573c43c4b6aa2f4b7b438c1f7201d98e0e795a6eb2e4468eec186edeaf49ef0abff22c373e1b275a23908587a4c7855ec676e4816a534fa9fe40857b91ccf"
         }
       ]
     },
@@ -92,10 +92,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/%40csstools/color-helpers@6.1.1",
+      "bom-ref": "pkg:npm/%40csstools/color-helpers@6.1.2",
       "name": "@csstools/color-helpers",
-      "version": "6.1.1",
-      "purl": "pkg:npm/%40csstools/color-helpers@6.1.1",
+      "version": "6.1.2",
+      "purl": "pkg:npm/%40csstools/color-helpers@6.1.2",
       "scope": "required",
       "licenses": [
         {
@@ -107,16 +107,16 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "80b36cba7bf07f79828b9bb9a38ebf67f25c24c9e16c749a67af6b9203f334cdc9e2cf215b0a4f51007afedb741031720a25b3c40365c7ed8b270a588f8cd2d7"
+          "content": "82b851cb738a9a789a004297323b9ae73fc43835f4312a811a3ba7c3cfa3ff71d08ce9da86cd801a1bc4388615516714e92700a5b84b855ad04d7f17aab32ba3"
         }
       ]
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/%40csstools/css-calc@3.3.0",
+      "bom-ref": "pkg:npm/%40csstools/css-calc@3.4.3",
       "name": "@csstools/css-calc",
-      "version": "3.3.0",
-      "purl": "pkg:npm/%40csstools/css-calc@3.3.0",
+      "version": "3.4.3",
+      "purl": "pkg:npm/%40csstools/css-calc@3.4.3",
       "scope": "required",
       "licenses": [
         {
@@ -128,16 +128,16 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "7398a162c3e4746e890a4536cd3326e3e93aafb457b86c6d59886ee431cc222175147ceb7e61cbe6ca35d40a05a54bffb6eeb5c5f7264f80262a815f30fa2a75"
+          "content": "89ec76d1df021d5932be0e81ed4295eee1e723606aa3d83e1057d3f44d32f86bd3be167f0f038d27ef5a29bd5d96a9b46621ac2f94578e9d1f0a82589e47838c"
         }
       ]
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/%40csstools/css-color-parser@4.2.2",
+      "bom-ref": "pkg:npm/%40csstools/css-color-parser@4.2.6",
       "name": "@csstools/css-color-parser",
-      "version": "4.2.2",
-      "purl": "pkg:npm/%40csstools/css-color-parser@4.2.2",
+      "version": "4.2.6",
+      "purl": "pkg:npm/%40csstools/css-color-parser@4.2.6",
       "scope": "required",
       "licenses": [
         {
@@ -149,16 +149,16 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "dd02a347fbf1ca37125c12e06fa94fd12dcc19dbf06e6a92b2f2cf6d8755391a8f0dcf055f51c02744a9937f1bc5a45782f10d4c0e3bb658616dbe59d9ef2112"
+          "content": "8a23d0de2456c272647849fa448bba4893ebee162b2f3e9767db3f41997edbf2c8e4a4158e99767dd9834992ae0f8c4fe8632630f8071455e0ea4d56933d13ae"
         }
       ]
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/%40csstools/css-parser-algorithms@4.0.0",
+      "bom-ref": "pkg:npm/%40csstools/css-parser-algorithms@4.0.2",
       "name": "@csstools/css-parser-algorithms",
-      "version": "4.0.0",
-      "purl": "pkg:npm/%40csstools/css-parser-algorithms@4.0.0",
+      "version": "4.0.2",
+      "purl": "pkg:npm/%40csstools/css-parser-algorithms@4.0.2",
       "scope": "required",
       "licenses": [
         {
@@ -170,16 +170,16 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "f81f3ba92edf206dcbe61deac09fc815b8e856839efdba4e761f610235dbbf1d28f08984994b065cdd229c53a79360a108582a92418543e4e9339adb86429ee3"
+          "content": "e347122b232f2beb6ae2acfa030ae5c9ed961ae38ab771703e0b4683a2937db1ce58dc3e464d6bcdb02d66767a20186c638f751cb4670d7c28c810228e69882c"
         }
       ]
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/%40csstools/css-syntax-patches-for-csstree@1.1.12",
+      "bom-ref": "pkg:npm/%40csstools/css-syntax-patches-for-csstree@1.1.15",
       "name": "@csstools/css-syntax-patches-for-csstree",
-      "version": "1.1.12",
-      "purl": "pkg:npm/%40csstools/css-syntax-patches-for-csstree@1.1.12",
+      "version": "1.1.15",
+      "purl": "pkg:npm/%40csstools/css-syntax-patches-for-csstree@1.1.15",
       "scope": "required",
       "licenses": [
         {
@@ -191,16 +191,16 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "def2d02be757c6104c4765b1f7d3d30a27c4faf1ed5b69dd656ca56bcc8af35ddebfaa068729fc2e36bc8c2c860164c9f8b11864aec456d271ac38fcced7af27"
+          "content": "274bbb1e4565da7cd2961b224cea78026c1c510dc3fa618410a7c1cbfed3a39ff2ec5d8e1f0c8bad77eb851d12320af8a792e8f9e68c55279a8b6e3351c048c4"
         }
       ]
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/%40csstools/css-tokenizer@4.0.0",
+      "bom-ref": "pkg:npm/%40csstools/css-tokenizer@4.0.2",
       "name": "@csstools/css-tokenizer",
-      "version": "4.0.0",
-      "purl": "pkg:npm/%40csstools/css-tokenizer@4.0.0",
+      "version": "4.0.2",
+      "purl": "pkg:npm/%40csstools/css-tokenizer@4.0.2",
       "scope": "required",
       "licenses": [
         {
@@ -212,7 +212,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "43150b1c09bb70dbbbdb0f7b25434204538315a5e96c383e74ff1bfe8585019d8c4d1a69037534d18d8bd47a9a4b827ac81ab1c1afd8de73016b154a6c1fcdb0"
+          "content": "3a82a84747fbe9d098ebae8995c6e19954ecd9dad88f51945d94d84dc6d48098e1f4dbf8d5a15f676d5b3d04c4466e7e2f97010e8e3ae8d96d076969952e4607"
         }
       ]
     },
@@ -2016,10 +2016,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/html-encoding-sniffer@6.0.0",
+      "bom-ref": "pkg:npm/html-encoding-sniffer@7.0.0",
       "name": "html-encoding-sniffer",
-      "version": "6.0.0",
-      "purl": "pkg:npm/html-encoding-sniffer@6.0.0",
+      "version": "7.0.0",
+      "purl": "pkg:npm/html-encoding-sniffer@7.0.0",
       "scope": "required",
       "licenses": [
         {
@@ -2031,7 +2031,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "095f535b76377fcff04f405115cd7f280550dd350789799a01be955bdbed88c15fed22e831dd4f7407385b728538511304951bf7429ab47aa5b1931657e47d1a"
+          "content": "52290de72afbc6c08302af3b3abe68af43c0943dc724938a573334e5acf9f3c5a7a43278531edad80e77422ea0a1f1a0dbf12dbc5fc7e210a2fd35df096e18eb"
         }
       ]
     },
@@ -2079,10 +2079,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/jsdom@30.0.1",
+      "bom-ref": "pkg:npm/jsdom@30.1.1",
       "name": "jsdom",
-      "version": "30.0.1",
-      "purl": "pkg:npm/jsdom@30.0.1",
+      "version": "30.1.1",
+      "purl": "pkg:npm/jsdom@30.1.1",
       "scope": "required",
       "licenses": [
         {
@@ -2094,7 +2094,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "e76bfb9945547cd415618a84d6571d6b29962f49e33bb9532d4a20e99bd6d94e4ab1b88b93f1a7665549faac74c5f34967a1a7f8a4a93cd139dafbab6f1670ac"
+          "content": "15a866a0f2b9bdb3dcfa3c55d6212b307980672a4267de36347178faaa9a580baf68a293059c5ac27980b6b6c658b53b32d9717ea20fd2ac3a69223e6961ad2e"
         }
       ]
     },
@@ -2158,6 +2158,27 @@
         {
           "alg": "SHA-512",
           "content": "e297ccd457f4c79d28d2d4306f9b9cc3f4733720f4fd824c13a215712b5a959b8c5b176ddec47786e4ad4edc73e0f526bd97d182ebc37a36acbd0da489f475d6"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/lru-cache@11.5.3",
+      "name": "lru-cache",
+      "version": "11.5.3",
+      "purl": "pkg:npm/lru-cache@11.5.3",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "BlueOak-1.0.0"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "53837c160ce65b173c935547f0aafa950835f14ec58ef6f2eb05c75515ff659ec8c166d1320ad16cfd16adbe6ae4d5629ebca9e1241a9a91ca76fb5e708b7152"
         }
       ]
     },
@@ -2289,10 +2310,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/pg-cloudflare@1.4.0",
+      "bom-ref": "pkg:npm/pg-cloudflare@1.4.1",
       "name": "pg-cloudflare",
-      "version": "1.4.0",
-      "purl": "pkg:npm/pg-cloudflare@1.4.0",
+      "version": "1.4.1",
+      "purl": "pkg:npm/pg-cloudflare@1.4.1",
       "scope": "required",
       "licenses": [
         {
@@ -2304,16 +2325,16 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "568ef3ffaaeb418c69351ca5a784e5a1bd9e9736e1f8dfcc3906f1155582c52ee8131ea3179dc64c91712b6596a4ab814649a28a7e0cb7ec687c50e3c74f51d0"
+          "content": "e8f41bb05599729f44989130cb97064362daf80316a4fe3a9606dbf17f94fd7b07214c1e603342a5eb8a724e51c4bd8c755162ee4adb6c48b99d7e1987b261ad"
         }
       ]
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/pg-connection-string@2.14.0",
+      "bom-ref": "pkg:npm/pg-connection-string@2.14.1",
       "name": "pg-connection-string",
-      "version": "2.14.0",
-      "purl": "pkg:npm/pg-connection-string@2.14.0",
+      "version": "2.14.1",
+      "purl": "pkg:npm/pg-connection-string@2.14.1",
       "scope": "required",
       "licenses": [
         {
@@ -2325,7 +2346,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "5f058319c2d11825c047c17f00ce5b1bb43e0375a6dace907848e538a64b947dd461c82e8aa0962b259755a8394cb4c88d1ee8389518f247000da66058fc8b7a"
+          "content": "a91de418d3c12e908db73d1ebdb280d18fcc4455f0492753fa94c9bd8a7f6d74dc45e65bbd7d64cc5d08c93735427c6a17b0196ce78184d2fc47999841957f30"
         }
       ]
     },
@@ -2373,10 +2394,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/pg-protocol@1.16.0",
+      "bom-ref": "pkg:npm/pg-protocol@1.16.1",
       "name": "pg-protocol",
-      "version": "1.16.0",
-      "purl": "pkg:npm/pg-protocol@1.16.0",
+      "version": "1.16.1",
+      "purl": "pkg:npm/pg-protocol@1.16.1",
       "scope": "required",
       "licenses": [
         {
@@ -2388,7 +2409,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "b082d7bad2d58c22e3703b8e9af857e5ed99e1c4b9a86ffa06edd592917075fffadf712518ba4487d6e09ae239238b2a2aa9227d0886ca209cc751ddb6b2bbb6"
+          "content": "a7d54e14c88707f65b2404deb5b83ef7d3f1b2c4d5490467cae3d243aee6375fb52813a365a67cdd943396d9f13e12704ac0b79f0563275d0354995eadb1732e"
         }
       ]
     },
@@ -2415,10 +2436,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/pg@8.23.0",
+      "bom-ref": "pkg:npm/pg@8.23.1",
       "name": "pg",
-      "version": "8.23.0",
-      "purl": "pkg:npm/pg@8.23.0",
+      "version": "8.23.1",
+      "purl": "pkg:npm/pg@8.23.1",
       "scope": "required",
       "licenses": [
         {
@@ -2430,7 +2451,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "229d844029e0a3024b18e7c2c241613d753bfe58e5867e91c659b2e1761f2f663ebf244ce7dfbcb91db1a9158a75899b5e6c4214e0262b106e49409d177e2a2e"
+          "content": "68bf7a00700db568cf2c338baa7871fa7829f7e50aec44c453c549ac3086bec4928bf9862dc598b12e877ab83b96668125ee2ec2b7eab1aee04c415a4a2cc3a1"
         }
       ]
     },
@@ -2919,27 +2940,6 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/symbol-tree@3.2.4",
-      "name": "symbol-tree",
-      "version": "3.2.4",
-      "purl": "pkg:npm/symbol-tree@3.2.4",
-      "scope": "required",
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "f50364e4ac0317e06fcfe3f239b9264988c8e64b15518b635bb014db6af634a71f2c9717a7dea1903594dfe5e774eb146fe010f5085fcdf093d8ef823564f94f"
-        }
-      ]
-    },
-    {
-      "type": "library",
       "bom-ref": "pkg:npm/terser@5.51.2",
       "name": "terser",
       "version": "5.51.2",
@@ -3171,10 +3171,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/w3c-xmlserializer@5.0.0",
+      "bom-ref": "pkg:npm/w3c-xmlserializer@6.0.0",
       "name": "w3c-xmlserializer",
-      "version": "5.0.0",
-      "purl": "pkg:npm/w3c-xmlserializer@5.0.0",
+      "version": "6.0.0",
+      "purl": "pkg:npm/w3c-xmlserializer@6.0.0",
       "scope": "required",
       "licenses": [
         {
@@ -3186,7 +3186,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "a3caa086523c3591d4d652cfae98b6f94abb69b8781863e96003656a5cd6c725ad789382b2bfcffa83c1038f5338bbb915364ee1ddc5f4c9d625f88ca3806498"
+          "content": "e0db32f0ae53afa48f0c7f6384a24e1dfec2843adcd73b9f65355217bc7bda1c2e11706ac6a93d1ba70af8ad8d454b41de210b449aa35dbe093c33018cc4e5d9"
         }
       ]
     },
@@ -3255,22 +3255,15 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/whatwg-url@17.1.0",
+      "bom-ref": "pkg:npm/whatwg-url@17.1.2",
       "name": "whatwg-url",
-      "version": "17.1.0",
-      "purl": "pkg:npm/whatwg-url@17.1.0",
+      "version": "17.1.2",
+      "purl": "pkg:npm/whatwg-url@17.1.2",
       "scope": "required",
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ],
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "dc67b0a2b3e673665f1041cfee511b51f057fcbef9c1d12c8b4acb3615dc5f19e83798f2ab448be600b2d3a4865b67324c865d4ef5880d0350a336befaf29e6b"
+          "content": "4c4640f99ab18a7ec98ec9b672346884299e9f96b087e853e998b755976a66535193bcef388ffd5a904583f0d6940e7a6d69f3c26e83b81f0d4b412cc501fdb9"
         }
       ]
     },
@@ -3297,10 +3290,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/ws@8.21.3",
+      "bom-ref": "pkg:npm/ws@8.22.0",
       "name": "ws",
-      "version": "8.21.3",
-      "purl": "pkg:npm/ws@8.21.3",
+      "version": "8.22.0",
+      "purl": "pkg:npm/ws@8.22.0",
       "scope": "required",
       "licenses": [
         {
@@ -3312,7 +3305,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "db4d5367f90f5b1a0faff38a5a3aae651d5258a5dcbf1747f9ed71af1f3d6f761b9b32cc1422df9da1b51c52205b324e11667b32fa4afbea1d66e7e0611e7447"
+          "content": "61d82073df3bf913b40275ad67fed6abd16d36f72b2f56ff44ed2e77d9968d43e00ebb00030412179d6c9b6866d57a1f6d4ff88e4a4612c2c5b1967153ed433a"
         }
       ]
     },
@@ -3402,10 +3395,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/yjs@13.6.32",
+      "bom-ref": "pkg:npm/yjs@13.6.33",
       "name": "yjs",
-      "version": "13.6.32",
-      "purl": "pkg:npm/yjs@13.6.32",
+      "version": "13.6.33",
+      "purl": "pkg:npm/yjs@13.6.33",
       "scope": "required",
       "licenses": [
         {
@@ -3417,7 +3410,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "95f8892080b85dacade48b729c4e34ede865134de90a378e738864478cb1c6fbcd27892e88ddb907483e429f176a0633dfad4b2cbec30b34796ef149f3540ab5"
+          "content": "abf518bebd603a4e17208f82bb5096d9d20d8d8a8924589f4f3a2011a2004739ebbd7eee3a51ec75311772738132e22cac218410a74dc62ef893230b6652957f"
         }
       ]
     }
