@@ -813,3 +813,15 @@ for fields, collector limits and worker compatibility.
 | `POST /api/v1/brand/rules` | `policy.edit` | Apply the reviewed mappings with `revision` and `reviewToken`; audited, stale-safe and durable outside development |
 
 See [managed production rules](design-system-administration.md#managed-production-rules) for scope and draft handling. Render input checks do not certify output appearance. Durable output metadata includes `brandRules` with disposition, scope and revision; synchronous and durable downloads expose `x-lolly-brand-check`.
+
+
+### Agent activity
+
+`GET /api/v1/agents/activity?days=30` requires `audit.export`. `days` is an
+integer from 1–90 (default 30). The private, no-store response includes summary
+call/outcome/operation counts, the most recently observed agent invitations with
+inviter, scope, role, expiry and live document-room presence, and a metadata-only
+recent timeline. No credentials, arguments or document contents are returned.
+`truncated` and `inventoryTruncated` explicitly disclose the 10,000-event and
+500-agent coverage limits. Room presence is `null` when no room host is wired.
+See [Document agents](document-agents.md#admin-visibility) for reporting semantics.

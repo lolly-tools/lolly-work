@@ -5,6 +5,7 @@ import { CANVAS_OP_VERSION } from '@lolly-tools/core/canvas-op-v1';
 import { Room, type RoomRegistry, type RoomMember, type ServerFrame, WRITER_CAP, WRITER_CAP_PER_USER } from '../collab/rooms.ts';
 import type { DocumentAgentRecord, Store } from '../store/types.ts';
 import { displayName } from '../iam/member.ts';
+import { agentActor, agentAttribution } from './attribution.ts';
 import { agentStanding } from './access.ts';
 import type { AgentRoomBridge } from './types.ts';
 
@@ -58,7 +59,7 @@ export function createAgentRooms(d: Dependencies): AgentRoomBridge & { close(): 
       const seat: Seat = { record, room, member, usedAt: Date.now(), frames, writes: Promise.resolve() };
       room.join(member); seats.set(record.id, seat);
       if (!timer) { timer = setInterval(() => { void sweep().catch(() => {}); }, 30_000); timer.unref(); }
-      await d.audit(`user:${record.userId}`, 'collab.join', `session:${record.sessionId}`, { agentId: record.id, role: member.role });
+      await d.audit(agentActor(record), 'collab.join', `session:${record.sessionId}`, { ...agentAttribution(record), role: member.role });
       return seat;
     })();
     opening.set(record.id, create);

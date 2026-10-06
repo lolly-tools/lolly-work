@@ -16,6 +16,7 @@ import { buildApp } from '../server/src/api/app.ts';
 interface Invitation { secret: string; agent: { id: string } }
 interface RpcResult { result: { protocolVersion?: string; tools: unknown[]; isError?: boolean; content: { text: string }[]; structuredContent: { revision: number; rejectedIds: string[]; docState: { params: Record<string, unknown> } } } }
 import { withFreshPostgres } from './pg-test-schema.ts';
+import { agentDashboard } from '../server/src/agents/dashboard.ts';
 import { agentSecret } from '../server/src/agents/access.ts';
 
 async function exercise(store: Store) {
@@ -103,6 +104,14 @@ async function exercise(store: Store) {
     assert.equal((await http(cookieOf(reader), 'DELETE', `/api/v1/sessions/other_document/agents/${invite.agent.id}`)).status, 404);
     const bounded = await mcp('tools/call', { name: 'read_document', arguments: { sessionId: 'other_document' } });
     assert.equal(bounded.body.result.structuredContent.docState.params.title, 'Human edit', 'a caller-supplied document cannot expand the credential scope');
+    const observed = await agentDashboard(store, gateway.agents);
+    assert.equal(observed.summary.agentsUsed, 2);
+    assert.ok(observed.summary.succeeded > 0); assert.ok(observed.summary.rejected > 0);
+    assert.equal(observed.summary.connected, 2);
+    const viewerCall = observed.timeline.find(e => e.action === 'agent.tool-call' && e.actor.id === viewer.agent.id);
+    assert.equal(viewerCall?.payload.outcome, 'rejected'); assert.equal(viewerCall?.payload.code, 'READ_ONLY');
+    assert.equal(viewerCall?.actor.invitedBy?.id, reader.id);
+    assert.equal(observed.timeline.some(e => e.action === 'agent.tool-call' && e.payload.arguments), false);
     const expiredKey = agentSecret();
     await store.createDocumentAgent({ ...(await store.getDocumentAgent(invite.agent.id))!, id: 'agt_expired', tokenHash: expiredKey.tokenHash, expiresAt: '2000-01-01T00:00:00Z' });
     assert.equal((await mcp('ping', {}, expiredKey.secret)).status, 401);

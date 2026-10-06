@@ -1374,3 +1374,20 @@ html.account-inspector-open { overflow: hidden; }
 .grant-preview .muted { display: block; font-size: var(--ui-type-caption); margin-bottom: var(--sp-4); }
 .grant-compose { margin-top: var(--sp-7); }
 @media (max-width: 600px) { .grant-fields { grid-template-columns: 1fr; } }
+
+/* Agent observability uses the same density, tokens and controls as the shell. */
+.agent-toolbar, .agent-heading { display: flex; flex-wrap: wrap; gap: var(--sp-3); align-items: center; justify-content: space-between; }
+.agent-toolbar { margin-bottom: var(--sp-4); justify-content: flex-start; }
+.agent-toolbar .field { margin: 0; }
+.agent-heading h2 { display: flex; align-items: center; gap: var(--sp-2); }
+.agent-identity { display: flex; gap: var(--sp-2); align-items: flex-start; min-width: 130px; }
+.agent-identity .nav-ico { flex: none; width: 20px; height: 20px; margin-top: 2px; }
+.agent-toolbar button { display: inline-flex; align-items: center; gap: var(--sp-2); }
+.agent-toolbar .nav-ico, .agent-heading .nav-ico { width: 20px; height: 20px; flex: none; }
+.agent-identity .muted { display: block; font-size: var(--ui-type-caption); }
+.agent-state { font-weight: 550; }
+.agent-outcome { padding: 2px 8px; border-radius: var(--ui-radius-pill); background: var(--ui-color-surface-raised); color: var(--ink-2); }
+.agent-outcome--rejected { color: var(--critical); }
+.agent-outcome--partial, .agent-coverage { color: color-mix(in oklab, var(--warning) 55%, var(--ink)); }
+.agent-outcome--succeeded { color: var(--good-text); }
+@media (max-width: 600px) { .agent-toolbar { align-items: flex-end; } .agent-toolbar > .sub { flex-basis: 100%; } .agent-heading > a { margin-bottom: var(--sp-2); } }

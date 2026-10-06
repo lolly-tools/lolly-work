@@ -4,7 +4,7 @@ import { evaluate, type PrincipalCtx, type Grant } from '../rbac/evaluate.ts';
 /** Mirror route requirements, including endpoints that still require an admin role. */
 export function consoleAccess(principal: PrincipalCtx, grants: Grant[]) {
   const requirements: Record<string, string[]> = {
-    overview: ['telemetry.view'], activity: ['telemetry.view'], fleet: ['fleet.view'], rooms: ['telemetry.view'],
+    overview: ['telemetry.view'], activity: ['audit.export'], agents: ['audit.export'], fleet: ['fleet.view'], rooms: ['telemetry.view'],
     links: ['link.revoke'], tools: ['policy.edit'], catalog: ['catalog.expire'], providers: ['catalog.provider.read'],
     injectables: ['catalog.injectable.manage'], flags: ['policy.edit'], design: ['catalog.read'],
     contractors: ['link.create-guest'], grants: ['grant.edit'], preview: ['policy.edit'], audit: ['audit.export'],
