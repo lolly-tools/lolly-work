@@ -92,3 +92,32 @@ test('buildActivity filters by the actor’s group membership', () => {
   const eng = buildActivity(audit, [], names, { group: 'engineering' }, groupsByUser);
   assert.deepEqual(eng.items.map((i) => i.id), ['a2']);
 });
+
+test('agents keep their identity and inviter in activity, search, facets and user/group filters', () => {
+  const audit = [
+    auditEvent(1, '2026-10-06T09:00:00Z', 'agent:agt_one', 'agent.tool-call', 'session:s1', { agentLabel: 'Design helper', invitedBy: 'user:u1', outcome: 'succeeded' }),
+    auditEvent(2, '2026-10-06T09:01:00Z', 'agent:agt_two', 'agent.tool-call', 'session:s2', { agentLabel: 'Other helper', invitedBy: 'user:u2', outcome: 'rejected' }),
+    auditEvent(3, '2026-10-06T09:02:00Z', 'agent:old', 'agent.tool-call', 'session:s3'),
+  ];
+  const page = buildActivity(audit, [], names, { actor: 'u1' }, new Map([['u1', ['brand']]]));
+  assert.equal(page.items.length, 1);
+  assert.deepEqual(page.items[0]!.actor, { id: 'agt_one', name: 'Design helper', kind: 'agent', invitedBy: { id: 'u1', name: 'Ada Byron' } });
+  assert.equal(page.names.u1, 'Ada Byron');
+  assert.ok(page.actors.some(actor => actor.id === 'agt_one'));
+  assert.equal(buildActivity(audit, [], names, { actor: 'agt_one' }).total, 1);
+  assert.equal(buildActivity(audit, [], names, { q: 'Ada Byron' }).total, 1);
+  assert.equal(buildActivity(audit, [], names, { group: 'brand' }, new Map([['u1', ['brand']]])).total, 1);
+  assert.equal(normalizeActivity(audit, [], names)[2]!.actor.kind, 'agent');
+  assert.equal(normalizeActivity(audit, [], names)[2]!.actor.invitedBy, undefined);
+});
+
+test('legacy agent writes are distinguishable without misattributing invitations to the agent', () => {
+  const items = normalizeActivity([
+    auditEvent(1, '2026-10-06T09:00:00Z', 'user:u1', 'agent.invite', 'session:s1', { agentId: 'agt_one' }),
+    auditEvent(2, '2026-10-06T09:01:00Z', 'user:u1', 'collab.join', 'session:s1', { agentId: 'agt_one' }),
+    auditEvent(3, '2026-10-06T09:02:00Z', 'user:u1', 'agent.project-write', 'project:p', { agentId: 'agt_one' }),
+  ], [], names);
+  assert.equal(items[0]!.actor.kind, 'user');
+  assert.equal(items[1]!.actor.kind, 'agent');
+  assert.equal(items[2]!.actor.invitedBy?.id, 'u1');
+});

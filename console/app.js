@@ -766,14 +766,14 @@ const ACT_CAT_LABEL = {
   catalog: 'Catalog', provider: 'Providers', grant: 'Grants', group: 'Groups',
   user: 'People', approval: 'Approvals', chain: 'Approval chains', message: 'Messages',
   auth: 'Sign-ins', telemetry: 'Telemetry', guest: 'Guests', collab: 'Collab',
-  invite: 'Invitations', access: 'Access requests',
+  invite: 'Invitations', access: 'Access requests', agent: 'Agents',
 };
 const ACT_CAT_ICON = {
   link: 'links', render: 'tools', session: 'projects', project: 'projects',
   catalog: 'catalog', provider: 'providers', grant: 'grants', group: 'users',
   user: 'users', approval: 'approvals', chain: 'approvals', message: 'messages',
   auth: 'users', telemetry: 'overview', guest: 'users', collab: 'projects',
-  invite: 'users', access: 'users',
+  invite: 'users', access: 'users', agent: 'agents',
 };
 const CONSOLE_VIEW_OF = {
   link: 'links', session: 'projects', project: 'projects', tool: 'tools',
@@ -804,7 +804,7 @@ function actSessionObj(id, toolId) {
   const href = toolId ? lollyHref(`/t/${encodeURIComponent(toolId)}?session=${encodeURIComponent(id)}`) : '#/projects';
   return actAnchor(href, actShort(id), toolId ? 'Open this session in Lolly' : 'Open in Projects');
 }
-function actProjectObj(id) { return actAnchor(lollyHref(`/#/p/${encodeURIComponent(id)}`), actShort(id), 'Open this project in Lolly'); }
+function actProjectObj(id) { return actAnchor(lollyHref(`/#/p?team=${encodeURIComponent(id)}`), actShort(id), 'Open this project in Lolly'); }
 // Console deep links (hash → routed in-place).
 function actConsoleObj(type, id, label) { return actAnchor(`#/${CONSOLE_VIEW_OF[type] ?? 'overview'}`, label ?? actShort(id), id); }
 function actUserObj(id, names) { return actAnchor(`#/users?focus=${encodeURIComponent(id)}`, (names && names[id]) || actShort(id), 'Open in People'); }
@@ -831,7 +831,9 @@ function listNodes(nodes) {
 function activityLine(item, names) {
   const p = item.payload || {};
   const s = actSubjRef(item.subject);
-  const out = [actActorObj(item.actor, names), ' '];
+  const out = [actActorObj(item.actor, names)];
+  if (item.actor.kind === 'agent' && item.actor.invitedBy) out.push(' (invited by ', actUserObj(item.actor.invitedBy.id, names), ')');
+  out.push(' ');
   const push = (...xs) => out.push(...xs);
   switch (item.action) {
     case 'auth.login': push('signed in', p.provider ? ` via ${p.provider}` : ''); break;
@@ -874,6 +876,14 @@ function activityLine(item, names) {
     case 'telemetry.consent': push('updated their telemetry consent'); break;
     case 'guest.admit': push('joined via ', actConsoleObj('link', s?.id, 'a guest link'), p.name ? ` as ${p.name}` : ''); break;
     case 'render.denied': push('was blocked from ', p.toolId ? actToolObj(p.toolId) : 'a render', p.code ? ` (${p.code})` : ''); break;
+    case 'agent.invite':
+    case 'agent.project-invite': push('invited ', bold(p.agentLabel || 'an agent'), ' to ', s?.type === 'session' ? actSessionObj(s.id) : s ? actProjectObj(s.id) : 'a project'); break;
+    case 'agent.revoke':
+    case 'agent.project-revoke': push('revoked ', bold(p.agentLabel || 'an agent'), '’s invitation'); break;
+    case 'agent.connect': push('connected to ', s?.type === 'session' ? actSessionObj(s.id, 'design') : s ? actProjectObj(s.id) : 'the workspace'); break;
+    case 'agent.disconnect': push('disconnected from ', s?.type === 'session' ? actSessionObj(s.id, 'design') : s ? actProjectObj(s.id) : 'the workspace'); break;
+    case 'agent.tool-call': push(p.outcome === 'rejected' ? 'was refused ' : p.outcome === 'partial' ? 'partially completed ' : 'used ', bold(p.tool), p.code ? ` (${p.code})` : ''); break;
+    case 'agent.project-write': push('ran ', bold(p.tool), ' in ', s ? actProjectObj(s.id) : 'a project'); break;
     case 'collab.invite': push('invited ', p.invitee ? actUserObj(p.invitee, names) : 'a teammate', ' to co-edit ', s ? actSessionObj(s.id, p.toolId) : 'a session'); break;
     // Invitations and access requests (plans/74 invite spec 4.4). A step
     // taken before anyone is admitted is audited as `anonymous`, which the
@@ -918,8 +928,8 @@ function activityThumb(item) {
   return badge;
 }
 
-async function renderActivityFeed(host) {
-  const state = { category: '', actor: '', group: '', day: '', q: '', nextBefore: null };
+async function renderActivityFeed(host, params = new URLSearchParams()) {
+  const state = { category: params.get('category') || '', actor: params.get('actor') || '', group: params.get('group') || '', day: params.get('day') || '', q: params.get('q') || '', nextBefore: null };
   let names = {};
   const list = el('ul', { class: 'act-list' });
   const moreWrap = el('div', { class: 'act-more' });
@@ -951,17 +961,22 @@ async function renderActivityFeed(host) {
   state.nextBefore = first.nextBefore;
 
   const search = el('input', { type: 'search', placeholder: 'Search activity…', 'aria-label': 'Search activity' });
+  search.value = state.q;
   let deb; search.oninput = () => { clearTimeout(deb); deb = setTimeout(() => { state.q = search.value.trim(); reload(); }, 250); };
   const catSel = el('select', { 'aria-label': 'Filter by type' },
     el('option', { value: '' }, 'All types'),
+    ...(state.category && !first.categories.some(c => c.key === state.category) ? [el('option', { value: state.category }, ACT_CAT_LABEL[state.category] || state.category)] : []),
     ...first.categories.map((c) => el('option', { value: c.key }, `${ACT_CAT_LABEL[c.key] ?? c.key} (${c.count})`)));
+  catSel.value = state.category;
   catSel.onchange = () => { state.category = catSel.value; reload(); };
   // People and groups can be long lists → searchable comboboxes.
   const personBox = searchSelect(first.actors.map((a) => ({ value: a.id, label: a.name })),
     { placeholder: 'Anyone', strict: true, onchange: (v) => { state.actor = v; reload(); } });
   const groupBox = searchSelect(groups.map((g) => ({ value: g.name, label: g.name })),
     { placeholder: 'Any group', onchange: (v) => { state.group = v; reload(); } });
+  personBox.set(state.actor); groupBox.set(state.group);
   const dayInput = el('input', { type: 'date', 'aria-label': 'Filter by day' });
+  dayInput.value = state.day;
   dayInput.onchange = () => { state.day = dayInput.value; reload(); };
   const clearBtn = el('button', { class: 'link-btn', onclick: () => {
     state.category = state.actor = state.group = state.day = state.q = '';
@@ -969,7 +984,7 @@ async function renderActivityFeed(host) {
     reload();
   } }, 'Clear');
   const bar = el('div', { class: 'act-bar' },
-    field('Search', search), field('Type', catSel), field('Person', personBox.node),
+    field('Search', search), field('Type', catSel), field('Person or agent', personBox.node),
     field('Group', groupBox.node), field('Day', dayInput),
     el('div', { class: 'act-bar-clear' }, clearBtn));
 
@@ -1012,7 +1027,7 @@ async function renderActivityFeed(host) {
 }
 
 async function viewOverview(main) {
-  const [summary, fleet, links, stats, appr, auditHead, asks] = await Promise.all([
+  const [summary, fleet, links, stats, appr, auditHead, asks, agentUse] = await Promise.all([
     api('/api/v1/telemetry/summary'),
     api('/api/v1/fleet').catch(() => ({ clients: [] })),
     api('/api/v1/links?all=1').catch(() => ({ links: [] })),
@@ -1020,6 +1035,7 @@ async function viewOverview(main) {
     api('/api/v1/approvals').catch(() => null),
     api('/api/v1/audit?limit=1').catch(() => null),
     api('/api/v1/access-requests?status=open').catch(() => null),
+    canView('agents') ? api('/api/v1/agents/activity?days=14').catch(() => null) : null,
   ]);
   const d14 = summary.days;
   const events14 = d14.reduce((a, d) => a + d.events, 0);
@@ -1096,6 +1112,13 @@ async function viewOverview(main) {
         hbarChart(fleetChartRows(fleet.clients), { colorOf: shellColorOf, empty: 'No shells have connected yet.' })),
     ),
   );
+
+  if (agentUse) main.append(el('div', { class: 'card agent-overview' },
+    el('div', { class: 'agent-heading' }, el('h2', {}, navIcon('agents'), 'Agents'), el('a', { class: 'btn', href: '#/agents' }, 'View agent activity')),
+    el('p', { class: 'sub' }, 'Delegated work across the last 14 days. Each agent acts under the access of the person who invited it.'),
+    el('div', { class: 'grid tiles' }, tile('Agents used', fmt(agentUse.summary.agentsUsed)), tile('Tool calls', fmt(agentUse.summary.toolCalls)),
+      tile('Rejected calls', fmt(agentUse.summary.rejected)), tile('In document rooms now', agentUse.summary.connected === null ? 'Unavailable' : fmt(agentUse.summary.connected))),
+    ...(agentUse.truncated || agentUse.inventoryTruncated ? [el('p', { class: 'sub' }, 'This summary is limited to the most recent recorded activity. Open Agents for coverage details.')] : [])));
 
   // ── seat / session utility (internal instance — utilisation shown in full) ──
   // Extended telemetry summary carries per-kind session durations; tolerate an
@@ -1193,7 +1216,7 @@ async function viewOverview(main) {
 }
 
 // ── activity view (its own section, listed under Overview) ──────────────────
-async function viewActivity(main) {
+async function viewActivity(main, params) {
   const actHost = el('div', { class: 'act-host' });
   const hdr = await activityHeader('All audited events per day — the feed below is the detail.', [
     { key: 'a', label: 'Events', match: ['*'] },
@@ -1204,7 +1227,84 @@ async function viewActivity(main) {
     ...(hdr ? [hdr] : []),
     actHost,
   );
-  await renderActivityFeed(actHost).catch(() => { actHost.replaceChildren(el('p', { class: 'sub' }, 'Activity is unavailable right now.')); });
+  await renderActivityFeed(actHost, params).catch(() => { actHost.replaceChildren(el('p', { class: 'sub' }, 'Activity is unavailable right now.')); });
+}
+
+// ── agents — delegated identity, outcomes and room presence ─────────────────
+const AGENT_STATUS = { active: 'Active invitation', expired: 'Expired', revoked: 'Revoked', unavailable: 'Unavailable' };
+function agentActivityRow(item, names) {
+  const outcome = item.payload?.outcome;
+  return el('li', { class: 'act-row' }, activityThumb(item), el('div', { class: 'act-body' },
+    el('div', { class: 'act-line' }, ...activityLine(item, names).flat(Infinity)),
+    el('div', { class: 'act-meta' }, el('time', { datetime: item.at }, when(item.at)),
+      ...(outcome ? [el('span', { class: `agent-outcome agent-outcome--${['rejected', 'partial', 'succeeded'].includes(outcome) ? outcome : 'unknown'}` }, outcome === 'succeeded' ? 'Succeeded' : outcome === 'partial' ? 'Partially accepted' : outcome === 'rejected' ? 'Rejected' : 'Outcome unreported')] : []),
+      ...(item.payload?.acceptedOps !== undefined ? [el('span', {}, `${fmt(item.payload.acceptedOps)} operations accepted · ${fmt(item.payload.rejectedOps || 0)} rejected`)] : []))));
+}
+async function viewAgents(main) {
+  let disposed = false, timer, inFlight = false, days = '30';
+  const period = el('select', { 'aria-label': 'Agent activity period' }, ...[7, 30, 90].map(n => el('option', { value: n, selected: n === 30 ? 'selected' : null }, `Last ${n} days`)));
+  const updated = el('p', { class: 'sub flush', role: 'status' });
+  const metrics = el('div'), detail = el('div'), errors = el('div', { role: 'status' });
+  const refresh = el('button', { type: 'button', onclick: () => void load(true) }, navIcon('activity'), 'Refresh');
+  main.append(el('h1', {}, 'Agents'), el('p', { class: 'sub' }, 'See who invited each agent, where it works, and whether its tool calls succeeded. Credentials and document contents stay private.'),
+    el('div', { class: 'agent-toolbar' }, field('Activity period', period), refresh, updated), errors, metrics, detail);
+  const dispose = () => { disposed = true; clearTimeout(timer); };
+  disposeAgentView = dispose;
+  function render(data, replaceDetail) {
+    const s = data.summary;
+    metrics.replaceChildren(el('div', { class: 'grid tiles' },
+      tile('Agents used', fmt(s.agentsUsed)), tile('Tool calls', fmt(s.toolCalls)), tile('Succeeded', fmt(s.succeeded)), tile('Partially accepted', fmt(s.partial)), tile('Rejected', fmt(s.rejected)),
+      tile('In document rooms now', s.connected === null ? 'Unavailable' : fmt(s.connected))),
+      el('p', { class: 'sub' }, `${fmt(s.invited)} invitations created · ${fmt(s.revoked)} revoked · ${fmt(s.acceptedOps)} document operations accepted · ${fmt(s.rejectedOps)} rejected in this period. Room presence is a live snapshot of this host; project-only calls do not occupy a document room.`),
+      ...(data.truncated || data.inventoryTruncated ? [el('p', { class: 'agent-coverage' }, `Coverage limited: newest ${fmt(data.limits.events)} agent events and ${fmt(data.limits.agents)} agents. Counts may be lower than the full period. Choose a shorter period or use the audit log for complete history.`)] : []));
+    updated.textContent = `Updated ${new Date(data.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })} · refreshes every 15 seconds`;
+    if (!replaceDetail) return;
+    const rows = data.agents.map(a => el('tr', {},
+      el('td', {}, el('div', { class: 'agent-identity' }, navIcon('agents'), el('div', {}, el('strong', {}, a.label), el('span', { class: 'muted' }, a.lastTool || 'No tool calls yet')))),
+      el('td', {}, a.invitedBy ? actUserObj(a.invitedBy.id, { [a.invitedBy.id]: a.invitedBy.name }) : 'Former member'),
+      el('td', {}, ...(a.project ? [el('a', { href: lollyHref(`/#/p?team=${encodeURIComponent(a.project.id)}`) }, a.project.name)] : ['Unavailable project']),
+        ...(a.session ? [el('div', { class: 'muted' }, a.session.toolId ? el('a', { href: lollyHref(`/t/${encodeURIComponent(a.session.toolId)}?session=${encodeURIComponent(a.session.id)}`) }, a.session.name) : a.session.name)] : [])),
+      el('td', {}, a.role ? `${a.role === 'editor' ? 'Editor' : 'Viewer'} · ${a.scope === 'document' ? 'document' : 'project'}` : 'Unknown'),
+      el('td', {}, el('span', { class: 'agent-state', title: 'Current access is checked again on every tool call.' }, AGENT_STATUS[a.status] || a.status),
+        el('div', { class: 'muted' }, a.connected === null ? 'Room presence unavailable' : a.connected ? 'In a document room' : 'Not in a document room'),
+        ...(a.expiresAt ? [el('div', { class: 'muted' }, `Expires ${new Date(a.expiresAt).toLocaleString()}`)] : [])),
+      el('td', { 'data-sort': a.calls }, el('strong', {}, fmt(a.calls)), ...(a.rejected || a.partial ? [el('div', { class: 'muted' }, `${fmt(a.rejected)} rejected · ${fmt(a.partial)} partial`)] : [])),
+      el('td', { 'data-sort': a.lastActivity }, el('time', { datetime: a.lastActivity, title: new Date(a.lastActivity).toLocaleString() }, when(a.lastActivity))),
+      el('td', {}, el('a', { class: 'btn', href: `#/activity?category=agent&actor=${encodeURIComponent(a.id)}`, title: `Activity for ${a.label}` }, 'Activity'))));
+    const inventory = el('div', { class: 'card' }, el('h2', {}, 'Agents seen in this period'),
+      ...(rows.length ? [dataTable(['Agent', 'Invited by', 'Workspace', 'Access', 'Invitation & presence', 'Tool calls', 'Last activity', { label: 'Actions', sort: false }], rows,
+        { filter: true, paginate: true, pageSize: 25, csv: true, csvName: 'agent-activity.csv' })] : [el('p', { class: 'empty' }, 'No agents have been invited or used in this period. Invite an agent from a shared project or design session to begin.')]),
+      el('p', { class: 'sub' }, 'Access belongs to the inviter. An active invitation can still be refused when project permissions, locks or account access change.'));
+    const timeline = el('div', { class: 'card' }, el('div', { class: 'agent-heading' }, el('h2', {}, 'Recent agent activity'), el('a', { class: 'btn', href: '#/activity?category=agent' }, 'Full timeline')),
+      el('p', { class: 'sub' }, 'Newest 100 events in this period. Tool outcomes include rejected and partially accepted edits.'),
+      el('ul', { class: 'act-list' }, ...(data.timeline.length ? data.timeline.map(item => agentActivityRow(item, data.names)) : [el('li', { class: 'act-empty' }, 'Agent activity will appear here when an invitation is used.')])));
+    const selected = detail.querySelector('[role=tab][aria-selected=true]')?.getAttribute('aria-controls')?.replace('agent-details-', '') || 'agents';
+    detail.replaceChildren(sectionTabs('Agent details', [{ id: 'agents', label: 'Agents', count: data.agents.length, content: inventory }, { id: 'activity', label: 'Activity', count: data.timeline.length, content: timeline }], selected).element);
+  }
+  async function load(manual = false) {
+    if (disposed || inFlight || !main.isConnected) return;
+    inFlight = true; refresh.disabled = true;
+    const requestedDays = days;
+    try {
+      const data = await api(`/api/v1/agents/activity?days=${requestedDays}`);
+      if (disposed || days !== requestedDays) return;
+      errors.replaceChildren();
+      // Keep table search, sorting and keyboard focus while someone is using it.
+      const editing = detail.contains(document.activeElement) || !!detail.querySelector('input[type=search]')?.value;
+      render(data, manual || !editing);
+    } catch (error) {
+      if (!disposed) errors.replaceChildren(el('p', { class: 'sub' }, error.status === 403 ? 'Agent activity needs permission to read the audit log.' : error.status === 401 ? 'Sign in again to see agent activity.' : 'Agent activity could not refresh. Showing the last successful snapshot.', ...(error.status === 401 || error.status === 403 ? [] : [el('button', { type: 'button', onclick: () => void load(true) }, 'Try again')])));
+      if (error.status === 401 || error.status === 403) { metrics.replaceChildren(); detail.replaceChildren(); dispose(); }
+    } finally {
+      inFlight = false; refresh.disabled = false; clearTimeout(timer);
+      if (!disposed) {
+        if (days !== requestedDays) void load(true); else scheduleRefresh();
+      }
+    }
+  }
+  function scheduleRefresh() { timer = setTimeout(() => { if (disposed) return; if (document.visibilityState === 'visible') void load(); else scheduleRefresh(); }, 15_000); }
+  period.onchange = () => { days = period.value; void load(true); };
+  await load(true);
 }
 
 // ── This Deploy — a tabbed home combining the per-deployment surfaces. The tabs
@@ -5760,6 +5860,7 @@ async function viewDocs(main, params) {
 // Inline lucide-style nav glyphs (24×24, stroke=currentColor) — no external
 // assets, per the air-gap rule; each is the `d`/shapes of one lucide icon.
 const NAV_ICONS = {
+  agents: '<rect x="5" y="6" width="14" height="14" rx="4"/><path d="M12 2v4M2 12h3M19 12h3M9 15h6"/><circle cx="9" cy="10" r="1"/><circle cx="15" cy="10" r="1"/>',
   export: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>',
   overview: '<rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/>',
   activity: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
@@ -5926,6 +6027,7 @@ const VIEWS = {
   } },
   overview: { title: 'Overview', render: viewOverview },
   activity: { title: 'Activity', render: viewActivity },
+  agents: { title: 'Agents', render: viewAgents },
   instance: { title: 'This deployment', render: viewInstance },
   fleet: { title: 'Fleet', render: viewFleet },
   rooms: { title: 'Rooms', render: viewRooms },
@@ -5948,7 +6050,7 @@ const VIEWS = {
 };
 
 let session = null;
-const canView = id => session?.console?.views?.[id] ?? true;
+const canView = id => session?.console?.views?.[id] ?? (id === 'agents' ? false : true);
 const canAction = action => session?.console?.actions?.includes(action) ?? true;
 let instanceName = 'Lolly Work';
 // GET /api/auth/config, cached at boot (provider, providerName, publicDocs).
@@ -5989,7 +6091,7 @@ const NAV_GROUPS = [
   { title: 'Workspace', ids: ['overview', 'projects', 'users', 'contractors'] },
   { title: 'Assets & tools', ids: ['catalog', 'providers', 'tools', 'injectables'] },
   { title: 'Governance', ids: ['approvals', 'chains', 'grants', 'tokens'] },
-  { title: 'Operations', ids: ['activity', 'rooms', 'links', 'messages', 'audit', 'fleet'] },
+  { title: 'Operations', ids: ['agents', 'activity', 'rooms', 'links', 'messages', 'audit', 'fleet'] },
   { title: 'Instance', ids: ['instance', 'setup', 'preview', 'docs'] },
 ];
 
@@ -6142,6 +6244,7 @@ async function signInGate() {
   ]);
 }
 
+let disposeAgentView = null;
 async function route() {
   if (activeAccountInspector) {
     const inspector = activeAccountInspector, targetHash = location.hash;
@@ -6171,6 +6274,7 @@ async function route() {
     }
     activeToolPolicyEditor.dispose(); activeToolPolicyEditor = null;
   }
+  disposeAgentView?.(); disposeAgentView = null;
   renderedRouteHash = location.hash;
   if (session?.console) {
     try { session = await api('/api/auth/session'); }

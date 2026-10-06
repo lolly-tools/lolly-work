@@ -6,6 +6,7 @@ import { randomId } from '../lib/crypto.ts';
 import { accessAtLeast, type ProjectAccess } from '../rbac/project-access.ts';
 import { mayEditCollab, mayJoinCollab } from '../rbac/evaluate.ts';
 import type { DocumentAgentRecord, ProjectRecord, Store, UserRecord } from '../store/types.ts';
+import { agentActor, agentAttribution } from './attribution.ts';
 import { agentSecret, principalOf, resolveAgent } from './access.ts';
 import { displayName } from '../iam/member.ts';
 import type { AgentRoomBridge } from './types.ts';
@@ -69,7 +70,7 @@ export function registerAgentRoutes(router: ReturnType<typeof createRouter>, d: 
     const record: DocumentAgentRecord = { id: `agt_${randomId(8)}`, userId: seat.user.id, sessionId: seat.session.id, projectId: seat.project.id,
       createdBy: seat.user.id, label, role: role as 'viewer' | 'editor', tokenHash, createdAt: new Date(now).toISOString(), expiresAt: new Date(now + Number(hours) * 3_600_000).toISOString() };
     if (!await d.store.createDocumentAgent(record)) return sendError(res, 409, 'AGENT_LIMIT', 'Revoke an unused agent invitation before creating another.');
-    await d.audit(`user:${seat.user.id}`, 'agent.invite', `session:${seat.session.id}`, { agentId: record.id, role: record.role });
+    await d.audit(`user:${seat.user.id}`, 'agent.invite', `session:${seat.session.id}`, { ...agentAttribution(record), role: record.role });
     sendJson(res, 201, { agent: safeRecord(record, d.rooms), secret, endpoint: `${origin}/api/workspace/mcp` }, { 'cache-control': 'no-store' });
   });
   router.add('DELETE', '/api/v1/sessions/:id/agents/:agentId', async (req, res, ctx) => {
@@ -78,7 +79,7 @@ export function registerAgentRoutes(router: ReturnType<typeof createRouter>, d: 
     if (!agent || agent.sessionId !== seat.session.id) return sendError(res, 404, 'NOT_FOUND', 'This agent invitation is not available.');
     if (agent.createdBy !== seat.user.id && !accessAtLeast(seat.access, 'manager')) return sendError(res, 403, 'FORBIDDEN', 'Only the inviter or a project manager can revoke this invitation.');
     await d.store.revokeDocumentAgent(agent.id, new Date().toISOString()); await d.rooms?.disconnect(agent.id);
-    await d.audit(`user:${seat.user.id}`, 'agent.revoke', `session:${seat.session.id}`, { agentId: agent.id });
+    await d.audit(`user:${seat.user.id}`, 'agent.revoke', `session:${seat.session.id}`, agentAttribution(agent));
     res.writeHead(204); res.end();
   });
   const buckets = new Map<string, { at: number; tokens: number }>();
@@ -99,7 +100,9 @@ export function registerAgentRoutes(router: ReturnType<typeof createRouter>, d: 
   });
   router.add('DELETE', '/api/workspace/mcp', async (req, res) => {
     const standing = await agentGate(req, res); if (!standing) return;
-    await d.rooms!.disconnect(standing.record.id); res.writeHead(204); res.end();
+    await d.rooms!.disconnect(standing.record.id);
+    await d.audit(agentActor(standing.record), 'agent.disconnect', `session:${standing.record.sessionId}`, agentAttribution(standing.record));
+    res.writeHead(204); res.end();
   });
   router.add('POST', '/api/workspace/mcp', async (req, res) => {
     const standing = await agentGate(req, res); if (!standing) return;
@@ -111,6 +114,7 @@ export function registerAgentRoutes(router: ReturnType<typeof createRouter>, d: 
     if (typeof msg.id !== 'number' && typeof msg.id !== 'string') return sendJson(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Invalid request id' } });
     const reply = (result: unknown) => sendJson(res, 200, { jsonrpc: '2.0', id: msg.id, result }, { 'cache-control': 'no-store' });
     if (msg.method === 'initialize') {
+      await d.audit(agentActor(standing.record), 'agent.connect', `session:${standing.record.sessionId}`, agentAttribution(standing.record));
       const asked = object(msg.params) ? msg.params.protocolVersion : null;
       return reply({ protocolVersion: typeof asked === 'string' && versions.has(asked) ? asked : '2025-11-25', capabilities: { tools: { listChanged: false } },
         serverInfo: { name: 'Lolly document collaboration', version: '1.0.0' }, instructions: 'This invitation accesses one document only. Read its current state and claims before making small edits. Use a unique batchId per change; do not overwrite the session over REST.' });
@@ -122,11 +126,21 @@ export function registerAgentRoutes(router: ReturnType<typeof createRouter>, d: 
     try {
       const value = params.name === 'read_document' ? await d.rooms!.read(standing.record)
         : params.name === 'apply_document_ops' ? await d.rooms!.apply(standing.record, args) : null;
-      if (!value) return sendJson(res, 200, { jsonrpc: '2.0', id: msg.id, error: { code: -32602, message: 'Unknown tool' } });
+      if (!value) {
+        await d.audit(agentActor(standing.record), 'agent.tool-call', `session:${standing.record.sessionId}`, { ...agentAttribution(standing.record), tool: 'unknown', outcome: 'rejected', code: 'UNKNOWN_TOOL' });
+        return sendJson(res, 200, { jsonrpc: '2.0', id: msg.id, error: { code: -32602, message: 'Unknown tool' } });
+      }
+      const rejected = Array.isArray(value.rejectedIds) ? value.rejectedIds.length : 0;
+      const accepted = Array.isArray(value.acceptedIds) ? value.acceptedIds.length : 0;
+      await d.audit(agentActor(standing.record), 'agent.tool-call', `session:${standing.record.sessionId}`, {
+        ...agentAttribution(standing.record), tool: params.name, outcome: rejected ? accepted ? 'partial' : 'rejected' : 'succeeded',
+        ...(Array.isArray(value.acceptedIds) ? { acceptedOps: accepted, rejectedOps: rejected } : {}),
+      });
       reply({ content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value });
     } catch (error) {
       const code = (error as Error).message;
       const known = ['READ_ONLY', 'AGENT_REVOKED', 'AGENT_UNAVAILABLE', 'AGENT_CAPACITY', 'INVALID_OPS', 'collab-revision-changed', 'collab-receipt-conflict', 'collab-room-busy'];
+      await d.audit(agentActor(standing.record), 'agent.tool-call', `session:${standing.record.sessionId}`, { ...agentAttribution(standing.record), tool: ['read_document', 'apply_document_ops'].includes(String(params.name)) ? params.name : 'unknown', outcome: 'rejected', code: known.includes(code) ? code : 'EDIT_UNAVAILABLE' });
       reply({ isError: true, content: [{ type: 'text', text: JSON.stringify({ code: known.includes(code) ? code : 'EDIT_UNAVAILABLE', message: 'Read the document again before retrying. Your changes were not confirmed.' }) }] });
     }
   });

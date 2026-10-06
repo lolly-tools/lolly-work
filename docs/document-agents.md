@@ -11,3 +11,30 @@ The Streamable HTTP MCP endpoint is `/api/workspace/mcp`. Each request uses `Aut
 Agents commit through the room's serialized durable queue. The server assigns operation origins and checks current project permissions, input locks, room limits and human editing claims inside that queue. Agent edits are attributed to the inviter. Collaborators see the agent name and inviter in the room. Idle connections leave after two minutes; keys remain usable until expiry or revocation. Connection checks run only while agent connections exist.
 
 An invitation does not expose other projects, administrator tools or arbitrary session replacement. This server implements document collaboration; provider account credentials stay on the server.
+
+
+## Admin visibility
+
+Admins and owners with `audit.export` can open **Agents** in the control plane
+(`/admin#/agents`). The Overview also shows a 14-day agent summary. Agents offers
+7-, 30- and 90-day windows, the inviter, project or document scope, delegated role,
+invitation expiry/status, last use and per-agent tool calls. Recent activity
+separates succeeded, rejected and partially accepted calls, including durable
+operation counts. Document room presence is a snapshot of the current host;
+project-only MCP requests do not occupy a document room. Hosts without a room
+bridge report presence as unavailable.
+
+`GET /api/v1/agents/activity?days=30` uses the audit permission, returns private
+uncacheable metadata and excludes credentials, tool arguments and document
+contents. It reads at most 10,001 agent audit events for the requested 1–90 days;
+reports use the newest 10,000, inspect at most 500 agents and show 100 recent
+events. Both coverage limits are explicit in the response and UI. Shorten the
+period or use the audit log when either limit is reached. The view refreshes
+while visible every 15 seconds, preserves a table being searched or focused,
+and stops refreshing after navigation or permission loss.
+
+Agents remain distinct from human users in the Activity timeline. Each delegated
+action names the agent and its inviter; filtering a person or group also includes
+work delegated by that person. An invitation or revocation remains attributed to
+the human who performed it. Legacy agent room events are recognised without
+rewriting the audit chain.
