@@ -21,7 +21,7 @@
         {
           "slug": "install",
           "title": "Installing",
-          "summary": "Nothing → a running, configured, governed instance: local demo, first config, sign-in, Postgres, secrets, Compose, systemd, Helm."
+          "summary": "Nothing \u2192 a running, configured, governed instance: local demo, first config, sign-in, Postgres, secrets, Compose, systemd, Helm."
         },
         {
           "slug": "customer-setup",
