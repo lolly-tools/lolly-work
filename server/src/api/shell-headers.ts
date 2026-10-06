@@ -23,8 +23,15 @@ export const SHELL_SECURITY_HEADERS: Readonly<Record<string, string>> = Object.f
 });
 
 /** The isolated any-site page embeds only URLs approved by the document UI. */
-export function shellSecurityHeaders(path: string): Readonly<Record<string, string>> {
-  if (!/^any-site(?:\/|$)/.test(path.replace(/^\/+/, ''))) return SHELL_SECURITY_HEADERS;
-  return { ...SHELL_SECURITY_HEADERS, 'content-security-policy': SHELL_SECURITY_HEADERS['content-security-policy']!
+export function shellSecurityHeaders(path: string, relayOrigin = process.env.LW_LIVE_RELAY_ORIGIN): Readonly<Record<string, string>> {
+  let headers = SHELL_SECURITY_HEADERS;
+  if (relayOrigin) {
+    const url = new URL(relayOrigin);
+    if (url.protocol !== 'https:' || url.origin !== relayOrigin) throw new Error('LW_LIVE_RELAY_ORIGIN must be a bare HTTPS origin');
+    headers = { ...headers, 'content-security-policy': headers['content-security-policy']!
+      .replace("connect-src 'self'", `connect-src 'self' ${url.origin} wss://${url.host}`) };
+  }
+  if (!/^any-site(?:\/|$)/.test(path.replace(/^\/+/, ''))) return headers;
+  return { ...headers, 'content-security-policy': headers['content-security-policy']!
     .replace(/frame-src [^;]+/, "frame-src 'self' blob: https: http://localhost:* http://127.0.0.1:*") };
 }

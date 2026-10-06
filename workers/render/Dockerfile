@@ -23,7 +23,8 @@ ENV XDG_CACHE_HOME=/tmp/chromium-cache
 # Mirrors replace older OpenSSL revisions; retain the security floor rather
 # than requiring a removed APK. Browser/font pins match this Alpine branch.
 RUN apk add --no-cache 'libcrypto3>=3.5.8-r0' 'libssl3>=3.5.8-r0' \
-    chromium=152.0.7977.82-r0 font-noto=2026.06.01-r0
+    chromium=152.0.7977.82-r0 font-noto=2026.06.01-r0 \
+    ghostscript inkscape=1.4.2-r8 util-linux-misc
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 # playwright-core only (no @playwright/test); Chromium is already in the image.

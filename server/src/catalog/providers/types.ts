@@ -179,6 +179,7 @@ export interface ProviderAssetRef {
   sections: string[];
   /** Provider-native collection names for browsing and search. */
   collections?: string[];
+  taxonomy?: Array<{ id: string; name: string; kind: 'section' | 'collection' | 'folder'; parentId?: string }>;
   tags: string[];
   approved?: boolean;
   updatedAt?: string;

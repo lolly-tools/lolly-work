@@ -185,6 +185,19 @@ test('(c) enable + federation: entries appear namespaced for exposed groups only
   assert.ok(!sellerFeed.assets.some((a) => a.id.startsWith('ext/')), 'group exposure hides the provider entirely');
 });
 
+test('members see only their source summaries, without connection secrets or settings', async () => {
+  const designer = await login('designer@test');
+  const seller = await login('seller@test');
+  const response = await fetch(`${base}/api/v1/catalog/sources`, { headers: { cookie: designer } });
+  assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'private, no-store');
+  const data = await response.json() as { sources: Array<Record<string, unknown>>; canManage: boolean };
+  assert.equal(data.sources[0]?.id, 'dam1'); assert.equal(data.sources[0]?.count, 1); assert.equal(data.canManage, false);
+  assert.deepEqual(Object.keys(data.sources[0]!).sort(), ['count', 'id', 'label', 'lastSyncedAt', 'status']);
+  const hidden = await (await fetch(`${base}/api/v1/catalog/sources`, { headers: { cookie: seller } })).json() as { sources: unknown[] };
+  assert.deepEqual(hidden.sources, []);
+  assert.equal((await fetch(`${base}/api/v1/catalog/file-preview`, { method: 'POST', body: '%!PS fixture' })).status, 401);
+});
+
 test('(d) ext blob serving: streams for visible callers, 403 outside exposure groups', async () => {
   const designer = await login('designer@test');
   const blob = await fetch(`${base}/catalog/ext/dam1/a1/att1`, { headers: { cookie: designer } });
@@ -194,6 +207,7 @@ test('(d) ext blob serving: streams for visible callers, 403 outside exposure gr
 
   const seller = await login('seller@test');
   assert.equal((await fetch(`${base}/catalog/ext/dam1/a1/att1`, { headers: { cookie: seller } })).status, 403);
+  assert.equal((await fetch(`${base}/catalog/ext/dam1/a1/att1?view=1`, { headers: { cookie: seller } })).status, 403);
   assert.equal((await fetch(`${base}/catalog/ext/nope/a1/att1`, { headers: { cookie: designer } })).status, 404);
 });
 
