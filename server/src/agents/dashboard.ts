@@ -3,6 +3,7 @@
 import type { Store, DocumentAgentRecord } from '../store/types.ts';
 import type { AgentRoomBridge } from './types.ts';
 import { normalizeActivity } from '../activity/feed.ts';
+import { normalizeAgentClient } from './client-info.ts';
 import { displayName } from '../iam/member.ts';
 
 type Invitation = Omit<DocumentAgentRecord, 'tokenHash' | 'sessionId'> & { sessionId?: string };
@@ -54,6 +55,8 @@ export async function agentDashboard(store: ObservableStore, rooms?: AgentRoomBr
         ?? recent.find(e => e.subject?.startsWith('project:'))?.subject?.slice(8);
       const sessionId = record?.sessionId ?? (invitation?.subject?.startsWith('session:') ? invitation.subject.slice(8) : undefined);
       const [project, session] = await Promise.all([projectId ? projectOf(projectId) : null, sessionId ? sessionOf(sessionId) : null]);
+      const reported = recent.find(e => Object.hasOwn(e.payload, 'client') || e.action === 'agent.connect');
+      const client = normalizeAgentClient(reported?.payload.client);
       const calls = recent.filter(e => e.action === 'agent.tool-call');
       const status = !record ? 'unavailable' : record.revokedAt ? 'revoked' : Date.parse(record.expiresAt) <= now ? 'expired'
         : !users.get(record.createdBy) || users.get(record.createdBy)?.disabledAt || !project || project.archivedAt || sessionId && (!session || session.deletedAt) ? 'unavailable' : 'active';
@@ -65,6 +68,7 @@ export async function agentDashboard(store: ObservableStore, rooms?: AgentRoomBr
         session: sessionId ? { id: sessionId, name: text(session?.meta?.label) ?? text(session?.meta?.title) ?? text(session?.meta?.name) ?? sessionId, toolId: session?.toolId ?? null } : null,
         status, expiresAt: record?.expiresAt ?? null,
         connected: rooms ? status === 'active' && rooms.connected(id) : null,
+        client, clientReportedAt: client ? reported!.at : null,
         lastActivity: newest.at, lastTool: text(calls[0]?.payload.tool),
         calls: calls.length, rejected: calls.filter(e => e.payload.outcome === 'rejected').length,
         partial: calls.filter(e => e.payload.outcome === 'partial').length,
@@ -79,6 +83,8 @@ export async function agentDashboard(store: ObservableStore, rooms?: AgentRoomBr
     for (const key of ['agentId', 'agentLabel', 'invitedBy', 'projectId', 'sessionId', 'tool', 'outcome', 'code', 'role']) {
       const value = text(e.payload[key]); if (value !== undefined) payload[key] = value;
     }
+    const client = normalizeAgentClient(e.payload.client);
+    if (client) payload.client = client;
     if (record) payload.agentLabel = record.label;
     for (const key of ['acceptedOps', 'rejectedOps']) if (key in e.payload) payload[key] = count(e.payload[key]);
     const actor = e.actor.kind === 'user' ? { ...e.actor, name: names[e.actor.id!] ?? 'A teammate' }

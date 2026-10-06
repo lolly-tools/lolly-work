@@ -38,3 +38,37 @@ action names the agent and its inviter; filtering a person or group also include
 work delegated by that person. An invitation or revocation remains attributed to
 the human who performed it. Legacy agent room events are recognised without
 rewriting the audit chain.
+
+## Reported agent client and model
+
+The Agents inventory shows the last client report in the selected period, with
+recognizable marks for Claude, Codex, Gemini, Qwen, GLM and DeepSeek. Unknown
+clients keep their supplied application name; older or unnamed connections show
+**Not reported**. Search and CSV export include the client, version and any
+explicitly reported model. Activity badges belong only to requests carrying that
+report; older tool calls are not retrospectively labelled.
+
+Lolly reads the standard MCP `initialize.params.clientInfo` fields `name`, `title`
+and `version`. A client can also send request-local implementation metadata in
+`params._meta["io.modelcontextprotocol/clientInfo"]`. To explicitly report the
+model it is currently using, send the optional Lolly extension:
+
+```json
+{
+  "_meta": {
+    "tools.lolly/agent": { "model": "your-exact-model-id", "provider": "provider-name" }
+  }
+}
+```
+
+This is display-only, **client-reported** information, not verified identity or
+an access control signal. The [MCP initialization spec](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle)
+identifies the client application, not necessarily its underlying model.
+For example, Cursor can report a Claude model while remaining a Cursor client.
+A plain Claude Code or Codex client name does not imply any exact model.
+
+Only bounded scalar display fields enter the agent audit metadata. Arbitrary
+client icons, website URLs and other implementation fields are discarded. A
+reconnect without client information clears the prior inventory report. There
+is no shared “last client” cache attached to a reusable invitation key, so tool
+calls from another client do not inherit an earlier client's identity.

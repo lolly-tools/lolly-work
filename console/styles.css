@@ -1385,6 +1385,16 @@ html.account-inspector-open { overflow: hidden; }
 .agent-toolbar button { display: inline-flex; align-items: center; gap: var(--sp-2); }
 .agent-toolbar .nav-ico, .agent-heading .nav-ico { width: 20px; height: 20px; flex: none; }
 .agent-identity .muted { display: block; font-size: var(--ui-type-caption); }
+.agent-client { display: flex; gap: var(--sp-2); align-items: flex-start; min-width: 170px; max-width: 300px; }
+.agent-client > div { min-width: 0; overflow-wrap: anywhere; }
+.agent-client .muted, .agent-model { display: block; font-size: var(--ui-type-caption); }
+.agent-model { color: var(--ink-2); margin-top: var(--sp-1); }
+.agent-client-mark { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; flex: none; border-radius: var(--ui-radius-control); background: var(--ui-color-surface-raised); color: var(--ink-2); border: 1px solid var(--hairline); font-size: var(--ui-type-caption); font-weight: 650; letter-spacing: .02em; }
+.agent-client-mark--claude { border-color: color-mix(in oklab, var(--warning) 65%, var(--hairline)); }
+.agent-client-mark--codex, .agent-client-mark--openai { border-color: color-mix(in oklab, var(--good-text) 65%, var(--hairline)); }
+.agent-client-mark--gemini, .agent-client-mark--qwen { border-color: color-mix(in oklab, var(--accent) 65%, var(--hairline)); }
+.agent-client-mark--glm, .agent-client-mark--deepseek { border-color: color-mix(in oklab, var(--ink-2) 65%, var(--hairline)); }
+.agent-client-tag { display: inline-block; font-size: var(--ui-type-caption); color: var(--ink-2); background: var(--ui-color-surface-raised); border: 1px solid var(--hairline); border-radius: var(--ui-radius-pill); padding: 0 var(--sp-2); overflow-wrap: anywhere; }
 .agent-state { font-weight: 550; }
 .agent-outcome { padding: 2px 8px; border-radius: var(--ui-radius-pill); background: var(--ui-color-surface-raised); color: var(--ink-2); }
 .agent-outcome--rejected { color: var(--critical); }
