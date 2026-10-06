@@ -110,6 +110,23 @@ test('compose: rendering is isolated from identity and database secrets, with bo
   assert.equal(worker.pids_limit, 256);
 });
 
+test('optional PostgreSQL persists data without publishing a port or receiving Work secrets', () => {
+  const override = YAML.parse(read('postgres.compose.yml'));
+  assert.deepEqual(Object.keys(override.services).sort(), ['db', 'server']);
+  const db = override.services.db;
+  assert.equal(db.image, 'postgres:17-alpine');
+  assert.equal(db.ports, undefined);
+  assert.equal(db.env_file, undefined);
+  assert.deepEqual(Object.keys(db.environment).sort(), ['POSTGRES_DB', 'POSTGRES_PASSWORD', 'POSTGRES_USER']);
+  assert.match(db.environment.POSTGRES_PASSWORD, /^\$\{LW_LOCAL_PG_PASSWORD:\?/);
+  assert.deepEqual(db.volumes, ['local_pgdata:/var/lib/postgresql/data']);
+  assert.ok('local_pgdata' in override.volumes);
+  assert.equal(override.services.server.depends_on.db.condition, 'service_healthy');
+  assert.match(override.services.server.environment.DATABASE_URL, /@db:5432\/lollywork$/);
+  assert.equal(override.services.server.environment.DATABASE_URL_UNPOOLED, override.services.server.environment.DATABASE_URL);
+  assert.equal(db.stop_grace_period, '60s');
+});
+
 test('compose: every bind mount carries an SELinux label, and only Caddy publishes a port beyond the VM', () => {
   // openSUSE runs SELinux enforcing and Docker with selinux-enabled: a bind
   // mount without :z or :Z is unreadable inside the container. Docker's

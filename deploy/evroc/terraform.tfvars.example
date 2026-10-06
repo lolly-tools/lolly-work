@@ -1,0 +1,12 @@
+# Select actual project inventory; the image/profile here are examples, not availability claims.
+name              = "lolly-staging"
+project           = "REPLACE_WITH_PROJECT_ID"
+region            = "se-sto"
+zone              = "a"
+flavor            = "a1a.s"
+disk_image        = "ubuntu-24.04"
+root_disk_gb      = 80
+ssh_user          = "evroc-user"
+ssh_sudo_group    = "sudo"
+ssh_public_keys   = ["ssh-ed25519 REPLACE_WITH_YOUR_PUBLIC_KEY"]
+ssh_allowed_cidrs = ["192.0.2.10/32"]

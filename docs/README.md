@@ -22,6 +22,7 @@ any Lolly deployment. The console links there when this deploy serves or points 
 | [install](install.md) | The whole first deploy: local demo, first config, sign-in and the first owner, Postgres, secrets, Compose / systemd / Helm |
 | [customer setup](customer-setup.md) | Six steps from deployment settings and real owner sign-in to a checked, downloadable sample |
 | [deployment](deployment.md) | Helm/Rancher, Compose, Vercel, air-gap - what each path carries |
+| [UpCloud and Evroc](cloud-deployment.md) | OpenTofu/Terraform, database restore and reducing separate hosting services |
 
 ## Configure
 

@@ -47,11 +47,9 @@ ram.runtime = "512M"
     type = "domain"
     # The control plane and the web shell it serves resolve every route from the
     # domain root (/admin, /api, /render, the shell's assets and service worker).
-    full_domain = true
+    # Omitting an install.path question reserves the whole domain.
 
     [install.admin]
-    ask.en = "First owner"
-    ask.fr = "Premier propriétaire"
     help.en = "This YunoHost user gets the owner role: they can change instance settings and connect brand sources. Owners, admins, approvers and authors are YunoHost permissions of this app afterwards (Users › Groups and permissions)."
     help.fr = "Cet utilisateur YunoHost obtient le rôle propriétaire : réglages de l'instance et connexion des sources de marque. Ensuite, propriétaires, admins, approbateurs et auteurs sont des permissions YunoHost de cette app (Utilisateurs › Groupes et permissions)."
     type = "user"
@@ -133,7 +131,7 @@ ram.runtime = "512M"
     # server authenticates every one of these itself (session cookie, service
     # token or link signature), so SSOwat passes them through untouched.
     api.url = "/api"
-    api.additional_urls = ["/scim", "/healthz", "/metrics", "re:/l/.*", "re:/render/.*", "re:/connect/.*"]
+    api.additional_urls = ["/scim", "/healthz", "/readyz", "/metrics", "/l", "/render", "/connect", "/ws"]
     api.allowed = "visitors"
     api.show_tile = false
     api.auth_header = false
@@ -147,6 +145,9 @@ ram.runtime = "512M"
     admin.show_tile = false
     approver.show_tile = false
     author.show_tile = false
+
+    [resources.apt]
+    packages = "postgresql"
 
     [resources.database]
     type = "postgresql"

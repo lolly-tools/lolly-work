@@ -32,6 +32,11 @@
           "slug": "deployment",
           "title": "Deployment shapes",
           "summary": "Helm/Rancher, Compose, Vercel, air-gap: what each path carries and what it doesn't."
+        },
+        {
+          "slug": "cloud-deployment",
+          "title": "UpCloud, Evroc and fewer hosting services",
+          "summary": "Two cloud targets, OpenTofu/Terraform, private VM boundaries, database restore and public-host migration."
         }
       ]
     },

@@ -43,6 +43,15 @@ top-level Build directory.
 
 ## Files
 
+For new servers, [UpCloud](../upcloud/README.md) and [Evroc](../evroc/README.md)
+supply provider-pinned OpenTofu/Terraform modules and network tests. This host
+provisioning kit remains openSUSE-specific; the Evroc runbook describes the image
+and real-boot qualification still required. The optional
+`postgres.compose.yml` is for new databases or an explicit migration; it is never
+selected by `push.sh`. Follow the [database migration guide](../../docs/cloud-deployment.md#database-migration)
+before adding it. `postgres-backup.sh` provides a verified logical dump and an
+empty-database restore for that rehearsal.
+
 | File | What |
 |---|---|
 | `docker-compose.yml` | the `server` and `caddy` services, as laid out in `/opt/lolly-ing` on the VM; every bind mount carries an SELinux label |
