@@ -162,7 +162,7 @@
   "semver@7.8.5": "ISC",
   "sharp@0.35.4": "Apache-2.0",
   "smol-toml@1.9.0": "BSD-3-Clause",
-  "source-map-js@1.2.1": "BSD-3-Clause",
+  "source-map-js@1.2.2": "BSD-3-Clause",
   "source-map-support@0.5.21": "MIT",
   "source-map@0.6.1": "BSD-3-Clause",
   "split2@4.2.0": "ISC",

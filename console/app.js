@@ -28,9 +28,10 @@ const $live = document.getElementById('live');
 // announced to assistive tech without a visual-only cue. Clearing first makes a
 // repeated identical message re-announce.
 function announce(msg) {
-  if (!$live) return;
-  $live.textContent = '';
-  requestAnimationFrame(() => { $live.textContent = msg; });
+  const live = document.querySelector('dialog[open] .sheet-live') || $live;
+  if (!live) return;
+  live.textContent = '';
+  requestAnimationFrame(() => { live.textContent = msg; });
 }
 
 // Visible transient confirmation for a successful mutation (revoke, save, send,
@@ -50,6 +51,7 @@ function toast(msg) {
     t = el('div', { id: 'toast', class: 'toast', role: 'status', 'aria-live': 'polite' });
     document.body.append(t);
   }
+  (document.querySelector('dialog[open]') || document.body).append(t);
   t.textContent = msg;
   t.classList.add('show');
   clearTimeout(_toastTimer);
@@ -99,7 +101,7 @@ const fmt = (n) => n >= 10_000 ? `${(n / 1000).toFixed(n >= 100_000 ? 0 : 1)}K` 
 
 // Tabs use the shell's segmented-control vocabulary, with independent panels
 // so switching tasks never drops typed filters or selection.
-function sectionTabs(name, sections, initial = sections[0]?.id) {
+function sectionTabs(name, sections, initial = sections[0]?.id, onSelect = () => {}) {
   const tablist = el('div', { class: 'section-tabs', role: 'tablist', 'aria-label': name });
   const buttons = new Map(), panels = new Map(), counts = new Map();
   const select = (id, focus = false) => {
@@ -113,6 +115,7 @@ function sectionTabs(name, sections, initial = sections[0]?.id) {
       });
     }
     if (focus) buttons.get(id).focus();
+    onSelect(id);
   };
   for (const section of sections) {
     const panelId = `${name.toLowerCase().replace(/\W+/g, '-')}-${section.id}`;
@@ -168,7 +171,7 @@ function th(col, idx = 0, sortable = false, onSort = null) {
   // when the column opts out (sort:false — actions/icon columns) or the label is
   // already a DOM node (e.g. People's own server-sort buttons), so it can't
   // double-wire. Everything else is byte-identical to before.
-  const canSort = sortable && c.sort !== false && (c.label == null || typeof c.label === 'string');
+  const canSort = sortable && c.sort !== false && typeof c.label === 'string' && c.label.trim() && !/^actions?$/i.test(c.label);
   if (canSort) {
     attrs['aria-sort'] = 'none';
     return el('th', attrs, el('button', {
@@ -209,6 +212,7 @@ function dataTable(cols, rows, opts = {}) {
   const hasCsv = opts.csv ?? (hasFilter || hasPager);
 
   const tbody = el('tbody');
+  let mobileSort;
   let sIdx = -1;
   let sDir = 0; // 0 none, 1 asc, -1 desc
   let q = '';
@@ -247,12 +251,19 @@ function dataTable(cols, rows, opts = {}) {
         if (caret) caret.textContent = active ? (sDir === 1 ? '▲' : '▼') : '';
       }
     }
+    if (mobileSort) mobileSort.value = sDir ? `${sIdx}:${sDir}` : '';
     const list = currentRows();
     const pages = Number.isFinite(pageSize) ? Math.max(1, Math.ceil(list.length / pageSize)) : 1;
     if (page > pages) page = pages;
     const start = Number.isFinite(pageSize) ? (page - 1) * pageSize : 0;
     const shown = Number.isFinite(pageSize) ? list.slice(start, start + pageSize) : list;
     tbody.replaceChildren(...shown);
+    if (!shown.length) tbody.append(el('tr', { class: 'tbl-empty-row' },
+      el('td', { colspan: norm.length }, el('div', { class: 'tbl-empty', role: 'status' },
+        el('strong', {}, q ? 'No matching rows' : 'No entries yet'),
+        q ? el('span', { class: 'muted' }, 'Try another search or clear it to see all entries.') : null,
+        q ? el('button', { type: 'button', onclick: () => { input.value = ''; q = ''; page = 1; apply(); input.focus(); } }, 'Clear search') : null))));
+    if (clearBtn) clearBtn.hidden = !q;
     if (count) {
       const total = list.length === original.length ? fmt(original.length) : `${fmt(list.length)} of ${fmt(original.length)}`;
       count.textContent = shown.length === list.length ? total : `${fmt(start + 1)}–${fmt(start + shown.length)} of ${total}`;
@@ -264,7 +275,7 @@ function dataTable(cols, rows, opts = {}) {
     }
   }
   function onSort(i) {
-    if (norm[i].sort === false) return;
+    if (norm[i].sort === false || !heads[i].querySelector('.col-sort')) return;
     if (sIdx === i) sDir = sDir === 1 ? -1 : sDir === -1 ? 0 : 1;
     else { sIdx = i; sDir = 1; }
     page = 1;
@@ -302,12 +313,22 @@ function dataTable(cols, rows, opts = {}) {
     type: 'search', class: 'tbl-filter', placeholder: 'Search rows…', 'aria-label': 'Search rows',
     oninput: (e) => { q = e.target.value.trim().toLowerCase(); page = 1; apply(); },
   }) : null;
+  const clearBtn = hasFilter ? el('button', { class: 'tbl-clear', type: 'button', hidden: 'true',
+    onclick: () => { input.value = ''; q = ''; page = 1; apply(); input.focus(); } }, 'Clear search') : null;
+  // Card rows hide column headers on phones. Keep the same sorting available
+  // there, including reverse order and a return to the original order.
+  const sortOptions = norm.flatMap((c, i) => heads[i].querySelector('.col-sort')
+    ? [el('option', { value: `${i}:1` }, `${labelText(c)} · ascending`), el('option', { value: `${i}:-1` }, `${labelText(c)} · descending`)] : []);
+  mobileSort = sortOptions.length && norm.length >= 4 ? el('select', { class: 'tbl-sort-mobile', 'aria-label': 'Sort rows', onchange: event => {
+    [sIdx, sDir] = event.target.value ? event.target.value.split(':').map(Number) : [-1, 0]; page = 1; apply();
+  } }, el('option', { value: '' }, 'Original order'), ...sortOptions) : null;
   const csvBtn = hasCsv ? el('button', {
     class: 'tbl-csv', type: 'button', title: 'Download the current view (search + sort applied) as CSV',
     onclick: () => {
       const cellText = (n) => n.textContent.replace(/\s+/g, ' ').trim();
       const esc = (s) => (/[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
-      const lines = [heads.map(cellText), ...currentRows().map((tr) => Array.from(tr.children, cellText))]
+      const exportCols = norm.map((c, i) => ({ i, label: labelText(c) })).filter(c => c.label && !/^actions?$/i.test(c.label));
+      const lines = [exportCols.map(c => c.label), ...currentRows().map(tr => exportCols.map(c => cellText(tr.children[c.i])))]
         .map((cells) => cells.map(esc).join(',')).join('\r\n');
       // Leading BOM so Excel opens the UTF-8 file with accents intact.
       const url = URL.createObjectURL(new Blob(['\ufeff' + lines], { type: 'text/csv' }));
@@ -315,7 +336,7 @@ function dataTable(cols, rows, opts = {}) {
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     },
-  }, 'CSV') : null;
+  }, navIcon('export'), 'Export CSV') : null;
 
   // Pager: prev/next + page size, all client-side over the filtered list.
   let prevBtn, nextBtn, pageNote, pager = null;
@@ -331,8 +352,8 @@ function dataTable(cols, rows, opts = {}) {
   }
 
   apply();
-  if (!input && !csvBtn && !pager) return scroll;
-  const bar = (input || csvBtn || count) ? el('div', { class: 'tbl-bar' }, input, count, csvBtn) : null;
+  if (!input && !csvBtn && !pager && !mobileSort) return scroll;
+  const bar = (input || csvBtn || count || mobileSort) ? el('div', { class: 'tbl-bar' }, input, clearBtn, count, mobileSort, csvBtn) : null;
   return el('div', { class: 'data-tbl' }, bar, scroll, pager);
 }
 
@@ -2749,6 +2770,7 @@ function toolPolicyRow(tool, expandHost) {
 }
 
 let activeToolPolicyEditor = null;
+let activeAccountInspector = null;
 let renderedRouteHash = '';
 
 function renderToolPolicyEditor(tool, host) {
@@ -4352,10 +4374,16 @@ async function viewUsers(main, params) {
     const prevBtn = el('button', { disabled: page <= 1 ? 'true' : null, onclick: () => { state.page = page - 1; refetch(); } }, '‹ Prev');
     const nextBtn = el('button', { disabled: end >= total ? 'true' : null, onclick: () => { state.page = page + 1; refetch(); } }, 'Next ›');
 
+    const mobileSort = el('select', { class: 'tbl-sort-mobile', 'aria-label': 'Sort people', onchange: event => {
+      [state.sort, state.dir] = event.target.value.split(':'); state.page = 1; refetch();
+    } }, ...[['name', 'Name'], ['email', 'Email'], ['role', 'Role'], ['lastSeen', 'Last seen']].flatMap(([key, label]) =>
+      ['asc', 'desc'].map(dir => el('option', { value: `${key}:${dir}` }, `${label} · ${dir === 'asc' ? 'ascending' : 'descending'}`))));
+    mobileSort.value = `${state.sort}:${state.dir}`;
     results.replaceChildren(el('div', { class: 'card' },
       el('div', { class: 'list-bar' },
         el('h2', { class: 'flush' }, 'People'),
         el('span', { class: 'muted' }, total ? `${fmt(start)}–${fmt(end)} of ${fmt(total)}` : 'no matches')),
+      mobileSort,
       users.length
         ? dataTable(
             [{ label: sortBtn('Name', 'name') }, { label: sortBtn('Email', 'email') }, 'Title',
@@ -4381,64 +4409,113 @@ async function viewUsers(main, params) {
     }
   }
 
-  // ── user detail panel ───────────────────────────────────────────────────────
+  // ── account inspector ──────────────────────────────────────────────────────
+  // The web shell uses native dialog for modal focus containment. The console
+  // follows that lifecycle without pulling its router/build into this shell.
+  let activeDetail = null;
   async function openDetail(initialU) {
-    let u = initialU;
-    let grants = [];
-    // Linked sign-ins (plans/74): null when the server predates them.
-    let identities = null;
-    // { set, email } while email and password sign-in is on, else null.
-    let password = null;
-    const opener = document.activeElement; // restore focus here on Close
-    // Escape closes the sheet. Below 700px .detail-sheet is a fixed overlay and
-    // Close scrolls off the top, so Escape is the only reliable dismissal.
-    // Reopening replaces the handler instead of stacking a second one, so the
-    // focus restore always names the row that opened the sheet you are looking at.
-    if (detailHost._esc) document.removeEventListener('keydown', detailHost._esc);
-    const closeDetail = () => {
-      document.removeEventListener('keydown', onEsc);
-      if (detailHost._esc === onEsc) detailHost._esc = null;
-      detailHost.replaceChildren();
-      opener?.focus?.();
+    activeDetail?.close();
+    const opener = document.activeElement;
+    let u = initialU, grants = [], identities = null, password = null;
+    let closed = false, activeTab = 'overview', savingGroups = false;
+    let groupDraft = new Set(u.localGroups ?? []), newGroupDraft = '';
+    let tabs;
+    const dialog = el('dialog', { class: 'detail-sheet', 'aria-label': `Account: ${u.name}` });
+    const content = el('div', { class: 'account-content' });
+    const footer = el('div', { class: 'account-footer', hidden: 'true' });
+    const heading = el('h2', { class: 'flush', tabindex: '-1' }, u.name);
+    const closeButton = el('button', { type: 'button', 'aria-label': 'Close account', onclick: () => requestClose() }, 'Close');
+    const header = el('div', { class: 'account-header' },
+      el('span', { class: 'invite-avatar account-avatar', 'aria-hidden': 'true' },
+        (u.name || u.email || '?').split(/[\s.@_-]+/).filter(Boolean).slice(0, 2).map(part => part[0]).join('').toUpperCase()),
+      el('div', { class: 'account-title' }, el('span', { class: 'account-eyebrow' }, 'Account'), heading,
+        el('p', { class: 'sub flush' }, u.email)), closeButton);
+    const isCurrent = () => !closed && activeDetail?.dialog === dialog && detailHost.isConnected;
+    const groupsDirty = () => groupDraft.size !== (u.localGroups ?? []).length || (u.localGroups ?? []).some(name => !groupDraft.has(name));
+    const closeDetail = (restoreFocus = true) => {
+      if (closed) return;
+      closed = true;
+      window.removeEventListener('hashchange', onNavigate);
+      if (activeDetail?.dialog === dialog) activeDetail = null;
+      if (activeAccountInspector?.dialog === dialog) activeAccountInspector = null;
+      const notification = dialog.querySelector('#toast');
+      if (notification) document.body.append(notification);
+      document.documentElement.classList.remove('account-inspector-open');
+      if (dialog.open) dialog.close();
+      dialog.remove();
+      if (restoreFocus && opener?.isConnected) opener.focus();
     };
-    const onEsc = (ev) => {
-      if (!detailHost.isConnected) { document.removeEventListener('keydown', onEsc); return; }
-      if (ev.key !== 'Escape' || !detailHost.firstChild) return;
-      ev.stopPropagation();
-      closeDetail();
+    const requestClose = (afterClose = closeDetail) => {
+      if (savingGroups) { announce('Wait for the local groups to finish saving.'); return; }
+      if (!groupsDirty() && !newGroupDraft.trim()) { afterClose(); return; }
+      footer.hidden = false;
+      const keep = el('button', { type: 'button', onclick: () => { updateDraftNotice(); tabs?.select('access', true); } }, 'Keep editing');
+      footer.replaceChildren(el('p', { class: 'flush', role: 'status' }, 'Discard your unsaved group changes?'),
+        el('div', { class: 'account-footer-actions' }, keep,
+          el('button', { type: 'button', class: 'danger', onclick: () => afterClose() }, 'Discard changes')));
+      keep.focus();
     };
-    detailHost._esc = onEsc;
-    document.addEventListener('keydown', onEsc);
-    detailHost.replaceChildren(el('div', { class: 'card detail-sheet' }, el('p', { class: 'sub flush' }, `Loading ${u.name}…`)));
-    scrollIntoViewMotionSafe(detailHost);
-    const tools = await loadTools();
-    try { grants = (await api('/api/v1/grants')).grants ?? []; } catch { /* grant.edit may be absent */ }
-    try {
-      const r = await api(`/api/v1/users/${encodeURIComponent(u.id)}/identities`);
-      identities = r.identities ?? [];
-      password = r.password ?? null;
-    } catch { identities = null; }
-    renderDetail(true);
+    const updateDraftNotice = () => {
+      footer.hidden = !groupsDirty() && !newGroupDraft.trim();
+      footer.replaceChildren(el('p', { class: 'flush', role: 'status' }, savingGroups ? 'Saving local groups…' : 'Unsaved group changes'),
+        el('button', { type: 'button', onclick: () => tabs?.select('access', true) }, 'Review changes'));
+    };
+    // Removing a route closes its inspector, including while detail reads or
+    // mutations are in flight. Their late replies cannot reopen an old account.
+    const openedHash = location.hash;
+    const onNavigate = () => {
+      if (location.hash !== openedHash && !groupsDirty() && !newGroupDraft.trim() && !savingGroups) closeDetail(false);
+    };
+    window.addEventListener('hashchange', onNavigate);
+    dialog.addEventListener('cancel', event => { event.preventDefault(); requestClose(); });
+    dialog.addEventListener('close', () => closeDetail());
+    dialog.addEventListener('click', event => {
+      if (event.target !== dialog) return;
+      const rect = dialog.getBoundingClientRect();
+      if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) requestClose();
+    });
+    activeDetail = { dialog, close: closeDetail };
+    activeAccountInspector = { dialog, close: closeDetail, isDirty: () => groupsDirty() || !!newGroupDraft.trim(),
+      isBusy: () => savingGroups, requestDiscard: requestClose };
+    content.append(loadingCard(`account details for ${u.name}`));
+    dialog.append(header, content, footer, el('div', { class: 'sr-only sheet-live', 'aria-live': 'polite' }));
+    detailHost.replaceChildren(dialog);
+    document.documentElement.classList.add('account-inspector-open');
+    dialog.showModal();
+    heading.focus();
+    const [tools, grantReply, signIns] = await Promise.all([
+      loadTools(), api('/api/v1/grants').catch(() => null),
+      api(`/api/v1/users/${encodeURIComponent(u.id)}/identities`).catch(() => null),
+    ]);
+    if (!isCurrent()) return;
+    grants = grantReply?.grants ?? [];
+    identities = signIns?.identities ?? null; password = signIns?.password ?? null;
+    renderDetail();
 
-    function renderDetail(focusIn) {
-      const heading = el('h2', { class: 'flush', tabindex: '-1' }, u.name);
-      if (focusIn) requestAnimationFrame(() => heading.focus());
-      // Progressive disclosure: identity + lockout are the at-a-glance tier;
-      // group membership and per-tool access expand on demand (the counts on
-      // the summaries say whether there's anything inside worth opening).
-      const section = (title, node, open = false) => el('details', { class: 'ov-section', ...(open ? { open: 'true' } : {}) },
-        el('summary', {}, el('h3', { class: 'detail-h section-h' }, title)),
-        node);
-      detailHost.replaceChildren(el('div', { class: 'card stack detail-sheet' },
-        el('div', { class: 'list-bar' },
-          heading,
-          el('button', { onclick: closeDetail }, 'Close')),
-        identityBlock(),
-        ...(password ? [passwordBlock()] : []),
-        ...(identities ? [section(`Sign-ins (${identities.length})`, signInsBlock(), identities.length > 1)] : []),
-        section(`Groups (${(u.groups ?? []).length})`, groupsBlock()),
-        section(`Individual tool access (${grants.filter((g) => g.principal === `user:${u.id}` && g.action === 'tool.use' && g.effect === 'allow').length})`, toolAccessBlock()),
-        lockoutBlock()));
+    function renderDetail() {
+      if (!isCurrent()) return;
+      heading.textContent = u.name;
+      const previousFocus = dialog.contains(document.activeElement) ? document.activeElement : null;
+      const focusLabel = previousFocus?.getAttribute('aria-label') || previousFocus?.textContent;
+      tabs = sectionTabs('Account', [
+        { id: 'overview', label: 'Overview', content: identityBlock() },
+        { id: 'access', label: 'Groups & tools', count: (u.groups ?? []).length,
+          content: el('div', { class: 'stack' },
+            el('section', {}, el('h3', {}, 'Group membership'), groupsBlock()),
+            el('section', {}, el('h3', {}, 'Individual tool access'), toolAccessBlock())) },
+        { id: 'security', label: 'Sign-in & security',
+          content: el('div', { class: 'stack' }, ...(password ? [passwordBlock()] : []),
+            ...(identities ? [el('section', {}, el('h3', {}, `Linked sign-ins (${identities.length})`), signInsBlock())] : []), lockoutBlock()) },
+      ], activeTab, id => { activeTab = id; });
+      content.replaceChildren(tabs.element);
+      updateDraftNotice();
+      // A save replaces controls, so return keyboard users to the same action
+      // or the current tab instead of leaving focus on the document body.
+      if (previousFocus && !previousFocus.isConnected) {
+        const candidate = [...dialog.querySelectorAll('button, input, select')].find(node =>
+          !node.closest('[hidden]') && (node.getAttribute('aria-label') || node.textContent) === focusLabel);
+        if (candidate && !candidate.disabled) candidate.focus(); else tabs.select(activeTab, true);
+      }
     }
 
     function identityBlock() {
@@ -4449,6 +4526,8 @@ async function viewUsers(main, params) {
           cell('Email', u.email),
           cell('Title', u.title ?? '—'),
           cell('Role', el('span', { class: 'chip' }, u.role)),
+          cell('Account access', el('span', { class: `status ${u.disabled ? 'revoked' : 'live'}` }, u.disabled ? 'Disabled' : 'Active')),
+          cell('Account ID', el('div', { class: 'stack' }, el('span', { class: 'mono' }, u.id), copyButton(() => u.id, 'Copy ID'))),
           cell('Last seen', when(u.lastSeenAt)),
           ...(password ? [cell('Password', password.set ? (password.lockedUntil ? 'Set, locked' : 'Set') : 'Not set')] : [])),
         el('p', { class: 'sub', style: 'margin:8px 0 0' }, `Name, email, title and role are managed by ${idpName()} — read-only here. Role is derived from group membership.`));
@@ -4522,7 +4601,8 @@ async function viewUsers(main, params) {
           el('td', {}, action));
       });
       return el('div', { class: 'stack' },
-        el('p', { class: 'sub' }, 'The accounts this person signs in with. A new sign-in joins this person when its provider confirms the same email address, or when they add it from their own profile. Removing one stops it signing in as this person and signs this person out everywhere, so a session it opened ends too; if its provider confirms a matching email, its next sign-in can link it again. Removing an email and password sign-in deletes the password: it works again only after a new password link.'),
+        el('details', { class: 'ov-section account-help' }, el('summary', {}, 'How linked sign-ins work'),
+          el('p', { class: 'sub' }, 'The accounts this person signs in with. A new sign-in joins this person when its provider confirms the same email address, or when they add it from their own profile. Removing one stops it signing in as this person and signs this person out everywhere, so a session it opened ends too; if its provider confirms a matching email, its next sign-in can link it again. Removing an email and password sign-in deletes the password: it works again only after a new password link.')),
         identities.length
           ? dataTable(['Provider', 'Email', 'Last sign-in', { label: 'Actions', w: '1%' }], rows)
           : el('p', { class: 'empty' }, 'No sign-ins recorded yet. One appears after this person next signs in.'),
@@ -4532,27 +4612,31 @@ async function viewUsers(main, params) {
     function groupsBlock() {
       const err = errSpan();
       const idp = u.idpGroups ?? [];
-      const checkedSet = new Set(u.localGroups ?? []);
+      const checkedSet = groupDraft;
       const entries = localGroups().map((g) => {
         const cb = el('input', { type: 'checkbox', ...(checkedSet.has(g.name) ? { checked: 'checked' } : {}) });
+        cb.addEventListener('change', () => { if (cb.checked) groupDraft.add(g.name); else groupDraft.delete(g.name); saveBtn.disabled = !groupsDirty(); updateDraftNotice(); });
         return { name: g.name, cb, node: el('label', { class: 'chk' }, cb, el('span', {}, g.name), g.description ? el('span', { class: 'muted' }, ` — ${g.description}`) : null) };
       });
 
       const saveBtn = el('button', { class: 'primary', onclick: async () => {
         err.textContent = '';
-        saveBtn.disabled = true;
-        const groups = entries.filter((e) => e.cb.checked).map((e) => e.name);
+        saveBtn.disabled = true; savingGroups = true; updateDraftNotice();
+        const groups = [...groupDraft];
         try {
           u = await api(`/api/v1/users/${u.id}/local-groups`, { method: 'PUT', body: { groups } });
-          announce('Local groups saved');
+          groupDraft = new Set(u.localGroups ?? []); savingGroups = false;
+          toast('Local groups saved');
           renderDetail();  // reflect the recomputed effective groups + role
           refetch();       // the list's Groups/Role columns show the effective set
-        } catch (e) { err.textContent = e.message; saveBtn.disabled = false; }
+        } catch (e) { err.textContent = e.message; saveBtn.disabled = false; savingGroups = false; updateDraftNotice(); }
       } }, 'Save local groups');
+      saveBtn.disabled = !groupsDirty();
 
       // 'New local group' affordance (admin) — POST /api/v1/groups, then it
       // becomes an option here and in the group filter without a full reload.
-      const newName = el('input', { placeholder: 'brand', 'aria-label': 'New local group name' });
+      const newName = el('input', { placeholder: 'brand', value: newGroupDraft, 'aria-label': 'New local group name',
+        oninput: event => { newGroupDraft = event.target.value; updateDraftNotice(); } });
       const newErr = errSpan();
       const addBtn = el('button', { onclick: async () => {
         const name = newName.value.trim();
@@ -4565,7 +4649,7 @@ async function viewUsers(main, params) {
           // The People filter's group search offers it at once too, as an
           // exact match (not a partial one that could snap to a longer name).
           groupBox.add({ value: g.name, label: g.name });
-          newName.value = '';
+          newName.value = ''; newGroupDraft = '';
           announce(`Local group ${g.name} created`);
           renderDetail();
         } catch (e) { newErr.textContent = e.message; addBtn.disabled = false; }
@@ -4668,7 +4752,7 @@ async function viewUsers(main, params) {
         disarm();
       });
       return el('div', { class: 'stack' },
-        el('h3', { class: 'detail-h' }, 'Access'),
+        el('h3', {}, 'Account access'),
         el('p', { style: 'margin:0 0 6px' },
           u.disabled ? el('span', { class: 'status revoked' }, 'disabled') : el('span', { class: 'status live' }, 'active'),
           el('span', { class: 'sub', style: 'margin:0 0 0 10px' }, u.disabled
@@ -5134,16 +5218,40 @@ async function viewGrants(main) {
     a.principal.localeCompare(b.principal) || a.action.localeCompare(b.action));
 
   const kindSel = el('select', {},
-    el('option', { value: 'group' }, 'group'),
-    el('option', { value: 'user' }, 'user'),
-    el('option', { value: '*' }, 'everyone (*)'));
+    el('option', { value: 'group' }, 'Group'),
+    el('option', { value: 'user' }, 'Person'),
+    el('option', { value: '*' }, 'Everyone'));
   const nameInput = el('input', { placeholder: 'marketing' });
-  kindSel.onchange = () => { nameInput.disabled = kindSel.value === '*'; };
   const actionInput = el('input', { list: 'grant-actions', placeholder: 'export.download' });
   const datalist = el('datalist', { id: 'grant-actions' }, ...KNOWN_ACTIONS.map((a) => el('option', { value: a })));
   const resourceInput = el('input', { value: '*', placeholder: "* or tool:<id> or catalog:tag/<t>" });
-  const effectSel = el('select', {}, el('option', { value: 'deny' }, 'deny'), el('option', { value: 'allow' }, 'allow'));
+  const effectSel = el('select', {}, el('option', { value: 'deny' }, 'Deny permission'), el('option', { value: 'allow' }, 'Allow permission'));
   const err = errSpan();
+  err.id = `grant-error-${++_fieldSeq}`;
+  for (const input of [nameInput, actionInput, resourceInput]) input.setAttribute('aria-describedby', err.id);
+  const nameField = field('Group name', nameInput);
+  const targetHelp = el('p', { class: 'sub flush' }, 'Use the exact group name.');
+  nameField.append(targetHelp);
+  const preview = el('div', { class: 'grant-preview' });
+  const updatePreview = () => {
+    const target = kindSel.value === '*' ? 'everyone' : `${kindSel.value === 'user' ? 'person' : 'group'} ${nameInput.value.trim() || '…'}`;
+    preview.replaceChildren(el('span', { class: 'muted' }, 'New rule'),
+      el('p', { class: 'flush' }, el('strong', {}, effectSel.value === 'deny' ? 'Deny ' : 'Allow '),
+        el('span', { class: 'mono' }, actionInput.value.trim() || 'permission…'), ` for ${target}`, ', on ',
+        el('span', { class: 'mono' }, resourceInput.value.trim() || '*'), '.'));
+  };
+  kindSel.onchange = () => {
+    nameInput.disabled = kindSel.value === '*'; nameField.hidden = kindSel.value === '*';
+    nameField.querySelector('label').textContent = kindSel.value === 'user' ? 'Account ID' : 'Group name';
+    nameInput.placeholder = kindSel.value === 'user' ? 'usr_…' : 'marketing';
+    targetHelp.textContent = kindSel.value === 'user' ? 'Copy the account ID from the person’s profile in People.' : 'Use the exact group name.';
+    updatePreview();
+  };
+  for (const control of [nameInput, actionInput, resourceInput, effectSel]) control.addEventListener('input', () => {
+    control.removeAttribute('aria-invalid'); err.textContent = ''; updatePreview();
+  });
+  updatePreview();
+  const invalid = (control, message) => { err.textContent = message; control.setAttribute('aria-invalid', 'true'); control.focus(); };
   const addBtn = el('button', { class: 'primary' }, 'Add grant'); // submits the form
   // Real <form> so Enter-to-submit works and form semantics apply (matches the
   // 'Send a message'/'New project' panels).
@@ -5151,9 +5259,9 @@ async function viewGrants(main) {
     e.preventDefault();
     err.textContent = '';
     const principal = kindSel.value === '*' ? '*' : `${kindSel.value}:${nameInput.value.trim()}`;
-    if (principal.endsWith(':')) { err.textContent = 'Name the group or user.'; return; }
+    if (principal.endsWith(':')) { invalid(nameInput, kindSel.value === 'user' ? 'Enter the account ID.' : 'Enter the group name.'); return; }
     const action = actionInput.value.trim();
-    if (!action) { err.textContent = 'Pick a permission from the list.'; return; }
+    if (!action) { invalid(actionInput, 'Choose a permission or enter a custom one.'); return; }
     // An unknown permission is not refused: the server takes any action string
     // and its vocabulary is wider than KNOWN_ACTIONS (brand.switch,
     // token.manage, collab.join and more are enforced but unlisted). A typo
@@ -5174,14 +5282,21 @@ async function viewGrants(main) {
   } },
     el('h2', {}, 'Add grant'),
     datalist,
-    el('div', { class: 'formrow' },
-      field('Applies to', kindSel),
-      field('Group or person', nameInput),
-      field('Permission', actionInput),
-      field('Scope', resourceInput),
-      field('Allow or deny', effectSel)),
+    el('p', { class: 'sub flush' }, 'Choose who the rule applies to, the permission and its scope. A matching deny takes precedence over an allow.'),
+    el('div', { class: 'grant-fields' },
+      field('Applies to', kindSel), nameField,
+      field('Permission', actionInput), field('Effect', effectSel),
+      el('div', { class: 'grant-scope' }, field('Resource scope', resourceInput),
+        el('p', { class: 'sub flush' }, '* matches all resources. Examples: tool:<id>, catalog:tag/<tag>.'))),
+    preview,
     el('p', {}, addBtn),
     err);
+
+  const composer = el('details', { class: 'compose-section grant-compose', open: sorted.length ? null : 'true' },
+    el('summary', {}, el('span', { class: 'section-h' }, 'Add a grant')), addForm);
+  const openComposer = el('button', { type: 'button', class: 'primary page-action', onclick: () => {
+    composer.open = true; scrollIntoViewMotionSafe(composer); kindSel.focus({ preventScroll: true });
+  } }, navIcon('grants'), 'Add grant');
 
   // grant.create / grant.delete are template-literal actions in grantMutation —
   // easy to miss when grepping the audit vocabulary, but they are audited.
@@ -5190,15 +5305,17 @@ async function viewGrants(main) {
     { key: 'b', label: 'Other governance', match: ['policy.', 'chain.edit', 'config.apply'] },
   ]);
   main.append(
-    el('h1', {}, 'Grants'),
-    el('p', { class: 'sub' }, 'Fine-grained permissions under the role defaults: a matching deny always wins, then a matching allow, then the member’s role decides. Deny export.download to a group to route them through approvals; allow policy.edit to your brand group to delegate tool governance. Owner-only actions can only be granted by an owner.'),
+    el('div', { class: 'page-heading' }, el('div', {}, el('h1', {}, 'Grants'),
+      el('p', { class: 'sub' }, 'Allow or deny a permission for a group, a person or everyone.')), openComposer),
+    el('details', { class: 'ov-section grant-help' }, el('summary', {}, 'How permissions are decided'),
+      el('p', { class: 'sub' }, 'A matching deny always wins, then a matching allow, then the member’s role decides. Deny export.download to a group to route them through approvals; allow policy.edit to your brand group to delegate tool governance. Owner-only actions can only be granted by an owner.')),
     ...(hdr ? [hdr] : []),
     el('div', { class: 'card' },
       el('h2', {}, 'Active grants'),
       sorted.length
         ? dataTable(['Principal', { label: 'Action', w: '180px' }, { label: 'Resource', w: '220px' }, 'Effect', { label: 'Actions', w: '1%', sort: false }], sorted.map(grantRow), { sortable: true, filter: true })
-        : el('p', { class: 'empty' }, 'No grants yet. Everyone has the permissions their role gives them. Add a grant below to allow or deny one permission for a group or a person.')),
-    addForm,
+        : el('p', { class: 'empty' }, 'No grants yet. Everyone has the permissions their role gives them. Add a grant to allow or deny one permission for a group or a person.')),
+    composer,
   );
 }
 
@@ -5643,6 +5760,7 @@ async function viewDocs(main, params) {
 // Inline lucide-style nav glyphs (24×24, stroke=currentColor) — no external
 // assets, per the air-gap rule; each is the `d`/shapes of one lucide icon.
 const NAV_ICONS = {
+  export: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>',
   overview: '<rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/>',
   activity: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
   instance: '<path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/>',
@@ -6025,6 +6143,20 @@ async function signInGate() {
 }
 
 async function route() {
+  if (activeAccountInspector) {
+    const inspector = activeAccountInspector, targetHash = location.hash;
+    const proceed = () => {
+      inspector.close(false);
+      history.replaceState(null, '', `${location.pathname}${location.search}${targetHash}`);
+      void route();
+    };
+    if (inspector.isDirty() || inspector.isBusy()) {
+      history.replaceState(null, '', `${location.pathname}${location.search}${renderedRouteHash}`);
+      inspector.requestDiscard(proceed);
+      return;
+    }
+    inspector.close(false);
+  }
   if (activeToolPolicyEditor) {
     const targetHash = location.hash;
     const proceed = () => {

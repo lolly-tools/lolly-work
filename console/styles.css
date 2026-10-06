@@ -978,17 +978,56 @@ td.url-cell { max-width: 240px; }
   .tbl-filter { flex: 1 1 120px; min-width: 120px; }
 }
 
-/* ── People detail as a bottom sheet on narrow viewports ────────────────────
-   Opening a person keeps your place in the list; the sheet floats over it and
-   Close returns focus to the row that opened it (openDetail already does). */
+/* Account inspector: native dialog owns focus containment and the top layer.
+   Header and draft notice remain visible while the content scrolls. */
+html.account-inspector-open { overflow: hidden; }
+.detail-sheet {
+  position: fixed; inset: 0 0 0 auto; margin: 0;
+  width: min(640px, 100%); max-width: 100%; height: 100dvh; max-height: 100dvh;
+  padding: 0; border: 0; border-left: 1px solid var(--baseline); border-radius: 0;
+  background: var(--ui-color-surface-overlay); color: var(--ui-color-text-default);
+  box-shadow: var(--ui-elevation-overlay); overflow: hidden;
+}
+.detail-sheet[open] { display: flex; flex-direction: column; }
+.detail-sheet::backdrop { background: hsl(0 0% 0% / .42); }
+.account-header { display: flex; align-items: center; gap: var(--sp-6); padding: var(--ui-space-panel); border-bottom: 1px solid var(--grid); flex: none; }
+.account-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.account-title h2 { font-size: var(--ui-type-lead); line-height: 1.3; margin: var(--sp-2) 0; }
+.account-title .sub { font-size: var(--ui-type-body); }
+.account-eyebrow { color: var(--muted); font-size: var(--ui-type-caption); }
+.invite-avatar.account-avatar { width: 44px; height: 44px; font-size: var(--ui-type-title); flex: none; }
+.account-header button { align-self: flex-start; flex: none; }
+.account-content { overflow-y: auto; overscroll-behavior: contain; min-height: 0; flex: 1; padding: var(--ui-space-panel); }
+.account-content .section-tabs { position: sticky; top: calc(-1 * var(--ui-space-panel)); z-index: 1; background: var(--surface); padding-block: var(--sp-4); }
+.account-content .stack { display: flex; flex-direction: column; gap: var(--sp-7); margin-top: 0; }
+.account-content .account-help { margin: 0; }
+.account-content h3 { font-size: var(--ui-type-title); font-weight: var(--ui-type-weight-section); margin: 0 0 var(--sp-6); }
+.account-content .idy-grid { grid-template-columns: 1fr 1fr; }
+.account-content .idy-v { overflow-wrap: anywhere; }
+.account-content .gr-split { grid-template-columns: 1fr; }
+.account-content .chk-list { gap: var(--sp-4); }
+.account-content section + section { border-top: 1px solid var(--grid); padding-top: var(--ui-space-panel); }
+.account-footer { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-6); padding: var(--ui-space-panel); border-top: 1px solid var(--baseline); background: var(--plane); flex: none; }
+.account-footer[hidden] { display: none; }
+.account-footer-actions { display: flex; gap: var(--sp-4); flex-wrap: wrap; }
+.tbl-sort-mobile { display: none; }
+.tbl-clear[hidden] { display: none; }
+.tbl-empty { padding: var(--ui-space-panel); display: flex; flex-direction: column; align-items: center; gap: var(--sp-4); text-align: center; }
+.tbl-empty-row:hover { background: none; }
+.tbl-empty-row td { white-space: normal; }
+.tbl-bar .tbl-csv { display: inline-flex; align-items: center; gap: var(--sp-3); }
+.tbl-csv .nav-ico { width: 14px; height: 14px; }
 @media (max-width: 700px) {
-  .detail-sheet {
-    position: fixed; left: 0; right: 0; bottom: 0; z-index: 55;
-    max-height: 82dvh; overflow-y: auto;
-    border-radius: var(--radius-lg) var(--radius-lg) 0 0; border-bottom: 0;
-    box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.35);
-    padding-bottom: calc(16px + env(safe-area-inset-bottom));
-  }
+  .detail-sheet { inset: auto 0 0; height: 92dvh; border-left: 0; border-top: 1px solid var(--baseline); border-radius: var(--ui-radius-panel) var(--ui-radius-panel) 0 0; }
+  .account-header { gap: var(--sp-4); }
+  .account-content, .account-header, .account-footer { padding: var(--sp-7); }
+  .account-footer { flex-wrap: wrap; padding-bottom: max(var(--sp-7), env(safe-area-inset-bottom)); }
+}
+@media (max-width: 600px) {
+  .tbl-sort-mobile { display: block; width: auto; max-width: 100%; margin-bottom: var(--sp-4); }
+  .tbl-bar .tbl-sort-mobile { margin-bottom: 0; }
+  .tbl-cards .tbl-empty-row td::before { display: none; }
+  .tbl-cards .tbl-empty-row td { display: block; grid-column: 1 / -1; }
 }
 
 /* ── touch targets (WCAG 2.5.8) ─────────────────────────────────────────────
@@ -1324,3 +1363,14 @@ td.url-cell { max-width: 240px; }
 .provider-connect[open] > summary, .provider-search[open] > summary { margin-bottom: var(--sp-7); }
 .provider-search > .card { padding: 0; margin: 0; border: 0; }
 @media (forced-colors: active) { :root input.field-check, :root input.field-radio { appearance: auto; background: none; border: revert; } }
+
+/* Grant authoring uses the shell field scale and a short readable rule preview. */
+.grant-help { margin: 0 0 var(--sp-7); }
+.grant-fields { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-6) var(--sp-7); }
+.grant-fields > [hidden] { display: none; }
+.grant-fields .sub { margin-top: var(--sp-4); }
+.grant-scope { grid-column: 1 / -1; }
+.grant-preview { padding: var(--sp-7); background: var(--plane); border: 1px solid var(--grid); border-radius: var(--ui-radius-surface); overflow-wrap: anywhere; }
+.grant-preview .muted { display: block; font-size: var(--ui-type-caption); margin-bottom: var(--sp-4); }
+.grant-compose { margin-top: var(--sp-7); }
+@media (max-width: 600px) { .grant-fields { grid-template-columns: 1fr; } }
