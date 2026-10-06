@@ -69,6 +69,23 @@ function fakeFetch(routes: Array<{ match: (url: string) => boolean; body?: unkno
   return impl;
 }
 
+test('attachment formats discard preview context and fall back to the filename', async () => {
+  for (const [extension, filename, expected] of [
+    ['mp4 context standalone_preview role work', 'preview.mp4', 'mp4'],
+    ['aep context standalone_preview role work', 'project.aep', 'aep'],
+    [' invalid suffix ', 'font.OTF', 'otf'],
+    [' .3MF ', 'mesh.3mf', '3mf'],
+  ]) {
+    const doc = structuredClone(ASSETS_PAGE);
+    const attachment = doc.included.find(r => r.type === 'attachments')!;
+    Object.assign(attachment.attributes, { extension, filename });
+    const bf = createBrandfolderProvider('suse-bf', { brandfolderId: BF_ID }, 'key', fakeFetch([
+      { match: u => u.includes(`/brandfolders/${BF_ID}/assets`), body: doc },
+    ]));
+    assert.equal((await bf.listAssets()).assets[0]?.formats[0]?.format, expected);
+  }
+});
+
 test('listAssets maps the recorded shape: section names, attachment formats, pagination cursor', async () => {
   const fetchImpl = fakeFetch([{ match: (u) => u.includes(`/brandfolders/${BF_ID}/assets`), body: ASSETS_PAGE }]);
   const bf = createBrandfolderProvider('suse-bf', { brandfolderId: BF_ID }, 'key', fetchImpl);

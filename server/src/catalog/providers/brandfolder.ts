@@ -19,6 +19,15 @@ const DEFAULT_BASE = 'https://brandfolder.com/api/v4';
 const ALLOWED_HOSTS = /(^|\.)(brandfolder\.com|bfldr\.com)$/;
 const PAGE_SIZE = 100;
 const ASSET_FIELDS = 'fields=cdn_url,thumbnail_url,extension,updated_at,approved,availability,availability_start,availability_end';
+/** Some attachment extensions carry preview context after the actual suffix. */
+function attachmentFormat(extension: unknown, filename: unknown): string {
+  const suffix = typeof extension === 'string' ? extension.trim().replace(/^\./, '').toLowerCase() : '';
+  if (/^[a-z0-9]{1,16}$/.test(suffix)) return suffix;
+  const fromName = typeof filename === 'string' ? extOf(filename) : 'bin';
+  if (/^[a-z0-9]{1,16}$/.test(fromName) && fromName !== 'bin') return fromName;
+  const first = suffix.split(/\s+/)[0] ?? '';
+  return /^[a-z0-9]{1,16}$/.test(first) ? first : 'bin';
+}
 // Attachment filename/size ride the default include payload (verified live);
 // original_filename maps into ProviderFormatRef.filename for provenance.
 // availability_start/availability_end are the v4 asset-availability window
@@ -80,7 +89,7 @@ export function createBrandfolderProvider(
         .map((ref) => included.get(`attachments:${ref.id}`))
         .filter((a): a is JsonApiResource => !!a);
       const formats: ProviderFormatRef[] = attachments.map((a) => ({
-        format: typeof a.attributes.extension === 'string' ? a.attributes.extension.toLowerCase().replace(/^\./, '') : extOf(String(a.attributes.filename ?? ''), 'bin'),
+        format: attachmentFormat(a.attributes.extension, a.attributes.filename),
         remoteRef: a.id,
         ...(typeof a.attributes.size === 'number' ? { size: a.attributes.size } : {}),
         ...(typeof a.attributes.filename === 'string' ? { filename: a.attributes.filename } : {}),
