@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: MPL-2.0
+# Opt-in database for a NEW or migrated instance. Adding this override selects
+# its empty database immediately: complete the restore and maintenance runbook first.
+services:
+  server:
+    environment:
+      DATABASE_URL: postgres://lolly:${LW_LOCAL_PG_PASSWORD:?set a URL-safe database password}@db:5432/lollywork
+      DATABASE_URL_UNPOOLED: postgres://lolly:${LW_LOCAL_PG_PASSWORD:?set a URL-safe database password}@db:5432/lollywork
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: lolly
+      POSTGRES_DB: lollywork
+      POSTGRES_PASSWORD: ${LW_LOCAL_PG_PASSWORD:?set a URL-safe database password}
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U lolly -d lollywork -h 127.0.0.1"]
+      interval: 5s
+      timeout: 3s
+      start_period: 20s
+      retries: 20
+    volumes:
+      - local_pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    stop_grace_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+volumes:
+  local_pgdata:

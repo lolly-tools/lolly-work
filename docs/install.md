@@ -487,7 +487,7 @@ conformant cluster.
 > **Most sovereign, your choice of paid or free:** **SLES + SUSE Rancher Prime** (paid,
 > supported) or **openSUSE Leap + Rancher Community** (free, same SLES sources). Same
 > reproducible supply chain, air-gappable, EU jurisdiction - the why is in
-> [deployment - Sovereignty](deployment.md#sovereignty---the-recommended-path).
+> [deployment - hosting choices](deployment.md#hosting-and-operating-system-choices).
 
 **The image comes first.** Multi-arch images (amd64 + arm64) publish to
 `ghcr.io/lolly-tools/lolly-work-server` and `...-render-worker` on every `v*` release, but

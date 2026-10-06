@@ -180,9 +180,10 @@ test('manifest: whole domain, Node 24, Postgres, and the permission layout the s
   assert.match(manifest, /^packaging_format = 2$/m);
   assert.match(manifest, /^id = "lolly-work"$/m);
   assert.match(manifest, /^helpers_version = "2\.1"$/m);
-  assert.match(manifest, /^\s*full_domain = true$/m);
+  assert.doesNotMatch(manifest, /^\s*\[install\.path\]/m, 'no path question: the app reserves a whole domain');
   assert.match(manifest, /^\s*\[resources\.nodejs\]\s*\n(?:\s*#.*\n)*\s*version = "24"$/m, 'the server needs Node 24');
   assert.match(manifest, /^\s*type = "postgresql"$/m);
+  assert.match(manifest, /^\s*\[resources\.apt\]\s*\n\s*packages = "postgresql"$/m);
   assert.match(manifest, /^ldap = true$/m);
   assert.match(manifest, /^sso = true$/m);
   assert.match(manifest, /^\s*\[install\.admin\]/m, 'the first owner is an install question');
@@ -197,6 +198,8 @@ test('manifest: whole domain, Node 24, Postgres, and the permission layout the s
   assert.match(manifest, /^\s*api\.allowed = "visitors"$/m);
   assert.match(manifest, /^\s*api\.auth_header = false$/m);
   assert.match(manifest, /^\s*api\.protected = true$/m);
+  assert.match(manifest, /^\s*api\.additional_urls = \["\/scim", "\/healthz", "\/readyz", "\/metrics", "\/l", "\/render", "\/connect", "\/ws"\]$/m);
+  assert.doesNotMatch(manifest, /"re:/, 'permission prefixes follow the current manifest schema');
   // The four roles exist as permissions with no URL, named as the template's pattern expects.
   for (const role of ['owner', 'admin', 'approver', 'author']) {
     assert.match(manifest, new RegExp(`^\\s*${role}\\.show_tile = false$`, 'm'), `${role} permission missing`);
@@ -251,6 +254,7 @@ test('scripts: present, executable, valid bash, helpers-2.1 names only', () => {
   assert.match(read('scripts/backup'), /ynh_psql_dump_db > db\.sql/);
   assert.match(read('scripts/restore'), /ynh_psql_db_shell < \.\/db\.sql/);
   assert.match(read('scripts/change_url'), /lollywork_add_config/, 'baseUrl must follow the domain');
+  assert.match(read('config_panel.toml'), /choices = \["gated", "per-tool", "open"\]/, 'access-mode values use the schema-supported list form');
 });
 
 test('nginx: the includes the scripts write, and a deliberate header set per location', () => {
@@ -274,7 +278,7 @@ test('nginx: the includes the scripts write, and a deliberate header set per loc
   // The shell gets the app's policy; the control plane's own routes do not.
   const shellLocs = locations.filter((l) => /shell-headers\.inc;/.test(l.body)).map((l) => l.path);
   assert.deepEqual(shellLocs, ['/']);
-  for (const p of ['/api/', '/admin', '/activate', '/l/', '/render/', '/connect/', '/scim', '/healthz', '/metrics']) {
+  for (const p of ['/api/', '/admin', '/activate', '/l/', '/render/', '/connect/', '/scim', '/healthz', '/readyz', '/ws/', '/metrics']) {
     assert.ok(locations.some((l) => l.path === p), `no pass-through location for ${p}`);
   }
   // proxy.inc carries the shared secret and the WebSocket upgrade.

@@ -24,9 +24,7 @@ services = ["__APP__"]
         ask.en = "Access mode"
         ask.fr = "Mode d'accès"
         type = "select"
-        choices.gated = "Gated: every tool needs a signed-in member"
-        choices.per-tool = "Per tool: the tool's overlay decides who may render it"
-        choices.open = "Open: anyone who reaches the domain may render"
+        choices = ["gated", "per-tool", "open"]
         help.en = "Open only makes sense if the YunoHost permission on the app is also public; renders through signed links work in every mode."
         help.fr = "Ouvert n'a de sens que si la permission YunoHost de l'app est aussi publique ; les rendus par liens signés fonctionnent dans tous les modes."
 

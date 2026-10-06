@@ -1,8 +1,9 @@
 # Deployment shapes
 
-Four supported shapes. All four run the *same* code - the differences are how config and
-secrets arrive, where the schema is applied, and whether the pack, the shell and the
-Chromium worker are present.
+The deployment paths below run the same application code. They differ in how
+configuration and secrets arrive, who applies migrations, and whether the pack,
+shell, collaboration gateway and Chromium worker are present. UpCloud and Evroc
+provide repeatable VM foundations for the shared application deployment.
 
 | Shape | Where used | Schema owner | Pack / shell |
 |---|---|---|---|
@@ -11,12 +12,12 @@ Chromium worker are present.
 | Helm (`deploy/helm/`) | Kubernetes / Rancher, HA | pre-install/upgrade Job | volumes you mount |
 | YunoHost (`deploy/yunohost/`) | a self-hosting box, sign-in with its accounts | boot auto-migrate | seeded from the shell into the app's data directory |
 | Vercel (`vercel.json` + `scripts/build-vercel-fn.mjs`) | trial / pilot / public demo | Neon + external migrate | demo pack bundled; shell not served |
-| Single VM with Caddy (`deploy/vm/`) | one small team on its own domain, with live co-editing | boot auto-migrate over the direct URL | pack mounted read-only; a public shell proxied onto the same origin by Caddy. lolly.ing runs this way |
+| Single VM with Caddy (`deploy/vm/`) | one small team on its own domain, with live co-editing | boot auto-migrate over the direct URL | pack mounted read-only; a signed shell served natively when configured, otherwise proxied through Caddy. lolly.ing uses native shell serving |
 | Vercel private instance (the same build with `LW_SHELL_ORIGIN`, `LW_PACK_DIR`) | a small, sign-in gated team on its own domain | Neon, migrated at cold start | pack from `scripts/build-instance-pack.ts` bundled; a public shell proxied onto the same origin, catalog signed per caller with `LW_CATALOG_SIGNING_KEY`; no live co-editing. See `deploy/vercel/README.md`, section 6 |
 
 ## Render topologies - the default is Chromium-free
 
-Orthogonal to the four shapes, every deployment is one of **two render topologies**, and the
+Each deployment selects one of **two render topologies**. The
 switch is simply whether the worker pair is configured (`config.render.worker.url` +
 `LW_RENDER_WORKER_SECRET`):
 
@@ -24,8 +25,8 @@ switch is simply whether the worker pair is configured (`config.render.worker.ur
   worker isn't even in that stack). SVG renders in-process (jsdom) and PNG in-process
   (resvg); hooked/HTML-heavy tools answer `501`, formats beyond the tier answer `400`, and
   connected shells are told the capability set upfront via org_config's `render` block, so
-  they don't offer exports this deployment can't produce. A 1 GB VM runs this comfortably - 
-  there is no browser to feed.
+  they don't offer exports this deployment can't produce. Qualify memory with the
+  actual pack and traffic; this topology has no browser process.
 - **Worker-attached.** A separately scaled Chromium pod (`workers/render/`, Helm
   `renderWorker.enabled`) renders hooked tools, rasterises via the shell's own export
   path, and **widens the export tier to `svg, png, jpg, pdf`** - advertised to
@@ -34,36 +35,30 @@ switch is simply whether the worker pair is configured (`config.render.worker.ur
   key; per-pod concurrency is capped (`LW_RENDER_MAX_CONCURRENT`), a saturated pod answers
   `503 RENDER_BUSY` + `Retry-After` and drops out of readiness, and the HPA scales the tier.
 
-**Capacity posture, honestly:** one server node + Postgres carries SUSE-internal scale
-(thousands of users, tens of thousands of renders/day). There is deliberately **no queue or
-broker tier** - overload is answered by bounded concurrency and honest 503s, not by Redis;
-a PG-backed job queue is scoped for if cross-pod fairness
-ever demands it.
+Capacity depends on the pack, active collaborators, database and render workload.
+Measure CPU, memory, disk growth and latency on the chosen UpCloud or Evroc profile
+before increasing concurrency or adding replicas. Work persists durable jobs in
+PostgreSQL; render-worker saturation returns a bounded `503` response. Replica
+rollout still needs room affinity, migration ownership and shared-limit checks.
 
-## Sovereignty - the recommended path
+## Hosting and operating-system choices
 
-**For a governed, sovereign deployment, run lolly-work on the SUSE stack (Helm) - the safest
-option, and the one to recommend.** Two tiers, your choice of paid or free, identical
-sovereignty either way:
+Lolly Work can run on a SUSE stack using SLES and Rancher Prime, or openSUSE Leap
+and Rancher Community. Helm keeps the application and render worker in the chosen
+cluster; Compose and systemd provide smaller deployment shapes. UpCloud and Evroc
+are supported infrastructure foundations for these operator-managed releases.
 
-- **Paid / supported:** **SUSE Linux Enterprise Server** + **SUSE Rancher Prime** - enterprise
-  support, lifecycle, and hardening.
-- **Free / community:** **openSUSE Leap** + **Rancher (Community)** - openSUSE Leap is built from
-  the *same* SLES sources, so it inherits the same supply chain.
+Select jurisdiction, support lifecycle, images, dependencies and recovery policy
+according to the deployment's requirements. Provider or operating-system branding
+does not by itself qualify an instance's compliance or reproducibility. The engine
+is vendored and hash-checked, and the console self-hosts its assets. Optional DAM,
+identity, email, model and proxy integrations may still reach external services.
+Inventory those paths before making a sovereignty or offline-operation claim.
 
-The reason it is the safest is the supply chain underneath both: SUSE builds SLES/Leap and
-the container base images (BCI) **reproducibly**, with dependencies frozen alongside the
-build in SUSE's governed datacentre in **Prague**. What you run is auditable and rebuildable
-from a pinned, EU-jurisdiction source of truth. Combined with lolly-work's own design - 
-the engine **vendored** (pinned, hash-verified, no external fetch - see `../engine-pin.json`),
-the console self-hosting its assets, the pack a plain directory, and **nothing in the serving
-path phoning home** - the SUSE stack gives an **air-gappable, EU-jurisdiction, reproducible**
-control plane end to end. Both the control plane and the Chromium render worker run as ordinary
-pods on your own cluster; no US hyperscaler, no `gcloud`, no Vercel is involved.
-
-Compose (single VM) and bare metal (systemd) are the same code with less orchestration - also
-fully self-hosted. **The Vercel / Cloud Run path below is a *demo/trial host only*, never the
-sovereign deployment.**
+See the [cloud deployment guide](cloud-deployment.md) for provider differences and
+real boot, capacity and restore gates. The existing host provisioner supports
+openSUSE; another OS needs equivalent host preparation. Rancher/Helm retains the
+same application configuration and release checks on either cloud.
 
 ## Rancher: RKE2 and k3s - both supported
 
@@ -214,13 +209,19 @@ access mode, `instance.shellDir` with a missing or stale dist stops boot
 
 ## Single VM with Caddy (lolly.ing)
 
+For repeatable VM creation, the [UpCloud and Evroc guide](cloud-deployment.md) covers
+the OpenTofu/Terraform modules, credential-free qualification and the optional
+local PostgreSQL deployment. The default VM deployment retains its external
+database and existing public API proxy.
+
 `deploy/vm/` runs a private instance on one server: Caddy for TLS and routing, the
 lolly-work server built from `deploy/compose/Dockerfile` (it runs the live co-editing gateway
 in process), and a managed Postgres outside the VM (Neon for lolly.ing) holding the records
-and the blobs. Caddy routes the way the Vercel private instance does, from the same router
-scan: the OSS functions and everything that is not a control-plane path go to the public
-shell origin with the session cookie removed, control-plane paths and `/ws/collab/<session>`
-go to the server. `node scripts/build-caddyfile.ts` writes `deploy/vm/Caddyfile`;
+and the blobs. With `instance.shellDir`, Caddy sends static shell requests to the
+Work server for native signed-shell serving. Otherwise it proxies the public shell
+with the session cookie removed. Public OSS API functions continue through the
+public API proxy until standalone parity is qualified. Control-plane paths and
+`/ws/collab/<session>` go to the Work server. `node scripts/build-caddyfile.ts` writes `deploy/vm/Caddyfile`;
 `tests/vercel-routes.test.ts` checks both tables agree on every path but the WebSocket.
 
 The kit: `bootstrap-opensuse.sh` (puts openSUSE Leap 16.0 on an UpCloud server, which has
@@ -241,14 +242,10 @@ pooler cannot keep the lock after the runner leaves.
 
 ## Vercel (trial / public demo)
 
-> **This is a demo host, not a sovereign deployment.** Vercel (and any hyperscaler-hosted render worker - the preferred worker host is the RKE2 cluster pod, `deploy/vercel/README.md` section 4a)
-> host the public **lolly.work** demo and the blank-brand starter so anyone can try the product at
-> a URL - nothing more. It is a temporary convenience: the demo + blank brand will move to a
-> **trusted European sovereign cloud** (Elastio / Evroc-class - likely **Evroc**; partnership in
-> progress). A US team evaluating on Vercel may be perfectly happy there. But for a governed,
-> sovereign deployment use the **SUSE stack** (SLES + Rancher Prime, or openSUSE Leap + Rancher
-> Community) - see *Sovereignty* above. Nothing here is required
-> to run lolly-work; it's just the fastest way to a public demo today.
+Vercel hosts a public evaluation path with the limitations below. It is optional
+for self-hosted Work. Moving a public host to UpCloud or Evroc requires complete
+API parity and an accepted candidate release, as described in the
+[cloud deployment guide](cloud-deployment.md#public-shell-cutover).
 
 `vercel.json` runs `scripts/build-vercel-fn.mjs` as the build command: it esbuild-bundles the
 whole app + the vendored engine into one plain-JS function (Build Output API) - necessary
@@ -287,10 +284,13 @@ The source SBOM (`sbom.cdx.json`) stays in the repo beside the per-image attesta
 
 ## Air-gap
 
-Nothing in the serving path reaches the internet unless you configure a catalog provider
-that does. The console ships no CDN assets and self-hosts its fonts; the pack is a
-directory; the engine is vendored. The remaining pulls are your container images and the
-Rancher charts above.
+An offline deployment needs an explicit inventory and qualification of every
+external path: DAMs, OIDC, SMTP, public API proxies, model downloads, certificate
+enrollment and ACME. The console self-hosts its assets and fonts; packs and the
+engine can be local. Stage and verify container images, charts, signed shells,
+models and certificates before isolating the network. Test the required user and
+agent flows with egress denied rather than inferring air-gap support from the
+application packaging.
 
 ## Related
 
