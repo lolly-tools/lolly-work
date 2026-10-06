@@ -50,10 +50,12 @@ either provider; public CA/MCP/Penpot containers receive no private Work secrets
 
 The public Lolly shell and a private Work instance serving a signed shell must
 both expose the shell's public documentation before the app fallback. This
-contract is the same on UpCloud and Evroc. It covers `/info/`, literal and
-extensionless articles, `/docs` aliases, `/robots.txt` and the sitemap. Native
-Work serving resolves only files inside the signed shell release. Missing
-articles return 404 rather than an app page with a successful status.
+contract is the same on UpCloud and Evroc. It covers `/info/`, literal `/info/`
+articles, `/docs` aliases, `/robots.txt` and the sitemap. Native Work also offers
+extensionless `/info/` article URLs; the public hosted shell does not currently
+provide that convenience. Native serving resolves only files inside the signed
+shell release. Missing articles return 404 rather than an app page with a
+successful status.
 
 GET serves the signed document bytes unchanged. HEAD returns the same public
 document headers and file size without reading or sending its body. The root
