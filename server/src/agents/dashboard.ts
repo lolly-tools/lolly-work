@@ -62,7 +62,7 @@ export async function agentDashboard(store: ObservableStore, rooms?: AgentRoomBr
         invitedBy: invitedBy ? { id: invitedBy, name: names[invitedBy] ?? 'Former member' } : null,
         scope: sessionId ? 'document' : 'project', role: record?.role ?? text(invitation?.payload.role) ?? null,
         project: projectId ? { id: projectId, name: project?.name ?? 'Unavailable project' } : null,
-        session: sessionId ? { id: sessionId, name: text(session?.meta?.title) ?? text(session?.meta?.name) ?? sessionId, toolId: session?.toolId ?? null } : null,
+        session: sessionId ? { id: sessionId, name: text(session?.meta?.label) ?? text(session?.meta?.title) ?? text(session?.meta?.name) ?? sessionId, toolId: session?.toolId ?? null } : null,
         status, expiresAt: record?.expiresAt ?? null,
         connected: rooms ? status === 'active' && rooms.connected(id) : null,
         lastActivity: newest.at, lastTool: text(calls[0]?.payload.tool),
@@ -74,13 +74,15 @@ export async function agentDashboard(store: ObservableStore, rooms?: AgentRoomBr
   const calls = events.filter(e => e.action === 'agent.tool-call');
   const used = new Set(calls.map(e => e.actor.id).filter(Boolean));
   const timeline = events.slice(0, 100).map(e => {
+    const record = records.get(e.actor.kind === 'agent' ? e.actor.id! : String(e.payload.agentId));
     const payload: Record<string, unknown> = {};
     for (const key of ['agentId', 'agentLabel', 'invitedBy', 'projectId', 'sessionId', 'tool', 'outcome', 'code', 'role']) {
       const value = text(e.payload[key]); if (value !== undefined) payload[key] = value;
     }
+    if (record) payload.agentLabel = record.label;
     for (const key of ['acceptedOps', 'rejectedOps']) if (key in e.payload) payload[key] = count(e.payload[key]);
     const actor = e.actor.kind === 'user' ? { ...e.actor, name: names[e.actor.id!] ?? 'A teammate' }
-      : { ...e.actor, ...(e.actor.invitedBy ? { invitedBy: { ...e.actor.invitedBy, name: names[e.actor.invitedBy.id] ?? 'Former member' } } : {}) };
+      : { ...e.actor, name: record?.label ?? e.actor.name, ...(record ? { invitedBy: { id: record.createdBy, name: names[record.createdBy] ?? 'Former member' } } : e.actor.invitedBy ? { invitedBy: { ...e.actor.invitedBy, name: names[e.actor.invitedBy.id] ?? 'Former member' } } : {}) };
     return { ...e, actor, payload };
   });
   return {
