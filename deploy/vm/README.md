@@ -185,6 +185,37 @@ standalone parity is accepted. The base-only push does not manage extra relay or
 database overlays; preserve their complete file list in an operator-managed
 release, as described below. None of these options changes DNS automatically.
 
+### Optional document relay
+
+An operator-managed release can route document invitation WebSockets to an
+existing relay on Caddy's private network. Generate its Caddyfile with the
+optional `--live-relay-upstream` flag, then check it with the same options:
+
+```sh
+node scripts/build-caddyfile.ts --domain workspace.example.com --serve-shell \
+  --live-relay-upstream live-relay:8790 --out /path/to/private-release/Caddyfile
+node scripts/build-caddyfile.ts --domain workspace.example.com --serve-shell \
+  --live-relay-upstream live-relay:8790 --out /path/to/private-release/Caddyfile --check
+```
+
+The address must be one `host:port`, such as a Compose service name or private
+IP, with a port from 1 to 65535. IPv6 uses brackets, such as `[::1]:8790`.
+Schemes, paths, credentials, environment placeholders and multiple addresses
+are refused before writing. Choose an address reachable from the Caddy service;
+loopback inside a container refers to that container. The `/live/*` route keeps
+the invitation bearer token and strips the instance session cookie. It precedes
+the shell and Work routes. Omitting the flag keeps the existing Caddyfile output.
+
+This flag generates routing only; it does not install or start a relay, modify
+DNS, or add overlay files to the base-only `push.sh`. Keep the complete Compose
+overlay and private release file list together, validate that configuration,
+and qualify a real invitation connection before activation. Build the signed
+shell with `VITE_LIVE_RELAY=https://workspace.example.com/live` and allow its
+actual origin in the relay's `LOLLY_LIVE_ORIGINS`. If the relay uses a separate
+origin, also configure Work's `LW_LIVE_RELAY_ORIGIN` for the shell's connection
+policy. These contracts apply on both UpCloud and Evroc; a live instance's
+overlay can intentionally pin its own hostname.
+
 ## Runbook
 
 These steps describe provisioning a new VM and the original DNS transition. The existing

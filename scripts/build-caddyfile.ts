@@ -6,7 +6,7 @@
  *
  *   node scripts/build-caddyfile.ts [--check] [--out <file>]
  *     [--domain lolly.ing] [--redirect www.lolly.ing]... [--shell-origin https://lolly.tools]
- *     [--upstream server:8787]
+ *     [--upstream server:8787] [--serve-shell] [--live-relay-upstream live-relay:8790]
  *
  * The defaults are lolly.ing's. `--check` writes nothing and exits 1 when the
  * file differs from what would be generated (deploy/vm/push.sh runs it).
@@ -49,6 +49,7 @@ export function main(argv = process.argv.slice(2)): number {
     else if (flag === '--redirect') { options.redirectDomains.push(value()); redirectsGiven = true; }
     else if (flag === '--shell-origin') options.shellOrigin = value();
     else if (flag === '--upstream') options.upstream = value();
+    else if (flag === '--live-relay-upstream') options.liveRelayUpstream = value();
     else if (flag === '--serve-shell') options.serveShell = true;
     else throw new Error(`unknown flag ${flag}`);
   }
