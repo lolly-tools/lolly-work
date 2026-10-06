@@ -26,7 +26,7 @@ export function createAgentRooms(d: Dependencies): AgentRoomBridge & { close(): 
   async function disconnect(id: string): Promise<void> {
     const seat = seats.get(id); if (!seat) return;
     seats.delete(id); seat.room.leave(seat.member.id);
-    await d.audit(`user:${seat.record.userId}`, 'collab.leave', `session:${seat.record.sessionId}`, { agentId: id });
+    await d.audit(agentActor(seat.record), 'collab.leave', `session:${seat.record.sessionId}`, agentAttribution(seat.record));
     if (!seats.size) { clearInterval(timer); timer = undefined; }
     if (!seat.room.size) await d.dispose(seat.room);
   }
