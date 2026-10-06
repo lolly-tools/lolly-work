@@ -299,7 +299,7 @@ The table is generated. Run `node scripts/gen-engine-modules.ts` after adding, r
 | `geom/bezier.ts` | 483 | Cubic Bézier kernel - the geometric substrate for boolean operations, offsetting and stroke outlining. | yes | `tests/geom-bezier.test.ts` | – |
 | `geom/boolean.ts` | 1812 | Boolean operations on regions bounded by cubic Béziers - union, intersection, difference, exclusive-or - and the winding-number test they are all decided by. | yes | `tests/geom-boolean.test.ts` | – |
 | `geom/fit.ts` | 1260 | Fitting cubics to a curve that has no Bézier form - an exact offset, a stroke edge, a distorted path. | yes | `tests/geom-fit.test.ts` | – |
-| `geom/intersect.ts` | 2351 | Curve intersection. | yes | `tests/geom-intersect.test.ts` | – |
+| `geom/intersect.ts` | 2367 | Curve intersection. | yes | `tests/geom-intersect.test.ts` | – |
 | `geom/offset.ts` | 1315 | Offsetting: moving a path a fixed distance sideways. | yes | `tests/geom-offset.test.ts` | – |
 | `geom/path.ts` | 226 | The path model the geometry operates on, and its conversions to and from the rest of the engine. | yes | indirect | – |
 | `geom/spiro.ts` | 437 | Spiro. | no | `tests/spiro.test.ts` | – |
@@ -321,7 +321,7 @@ The table is generated. Run `node scripts/gen-engine-modules.ts` after adding, r
 | `image-cloud.ts` | 274 | An image's colours as a point cloud in OKLCH, plus what the distribution says. | yes | `tests/image-cloud.test.ts` | – |
 | `image-meta.ts` | 1111 | Image-metadata byte stampers and the metadata-carry core - DOM-free, shared by the web export bridge and the Node shells. | yes | indirect | – |
 | `inpaint.ts` | 422 | Telea inpainting: fill a brushed-out region of an RGBA frame from the pixels around it, by fast marching inward from the region boundary. | yes | `tests/inpaint.test.ts` | – |
-| `inputs.ts` | 885 | Builds a runtime input model from a tool manifest. | yes | indirect | – |
+| `inputs.ts` | 884 | Builds a runtime input model from a tool manifest. | yes | indirect | – |
 | `jpeg-segments.ts` | 372 | JPEG marker-segment walker and writer - one shared primitive, DOM-free. | no | `tests/jpeg-segments.test.ts` | – |
 | `jxl-container.ts` | 43 | Bounded uncompressed metadata boxes. | no | indirect | – |
 | `jxl.ts` | 37 | JPEG XL identity and bounded operation policy. | no | `tests/jxl.test.ts` | yes |
@@ -446,7 +446,7 @@ The table is generated. Run `node scripts/gen-engine-modules.ts` after adding, r
 | `studio3d-lights.ts` | 90 | Light placement on the preview: orbit a source about the subject and save it where the rig keeps it. | yes | `tests/studio3d-lights.test.ts` | – |
 | `studio3d-look.ts` | 305 | The boundary between a studio and a document (plan 265 step 2, milestone 2 lane A). | yes | `tests/studio3d-look.test.ts` | – |
 | `studio3d-motion.ts` | 273 | What the subject does over the loop (plan 267, lane A). | yes | `tests/studio3d-motion.test.ts` | – |
-| `studio3d.ts` | 586 | Portable studio recipe validation, material finishes and repeatable camera time. | yes | `tests/studio3d.test.ts` | – |
+| `studio3d.ts` | 591 | Portable studio recipe validation, material finishes and repeatable camera time. | yes | `tests/studio3d.test.ts` | – |
 | `surface-variant.ts` | 639 | Surface-aware logos and icons (plan 291 W4): one reference, `<id>?theme=auto`, that takes the variant the surface under the layer asks for. | yes | `tests/surface-variant.test.ts` | – |
 | `svg-colors.ts` | 126 | Pure, DOM-free colour extraction from raw SVG source text. | yes | `tests/svg-colors.test.ts` | – |
 | `svg-custgeom.ts` | 609 | Flat-SVG to native PowerPoint shapes. | yes | `tests/svg-custgeom.test.ts` | – |

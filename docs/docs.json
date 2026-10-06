@@ -21,7 +21,7 @@
         {
           "slug": "install",
           "title": "Installing",
-          "summary": "Nothing → a running, configured, governed instance: local demo, first config, sign-in, Postgres, secrets, Compose, systemd, Helm."
+          "summary": "Nothing \u2192 a running, configured, governed instance: local demo, first config, sign-in, Postgres, secrets, Compose, systemd, Helm."
         },
         {
           "slug": "customer-setup",
@@ -101,8 +101,8 @@
         },
         {
           "slug": "file-preview",
-          "title": "File previews",
-          "summary": "Disposable PDF previews for EPS, EMF and WMF originals through the isolated render worker."
+          "title": "Asset previews",
+          "summary": "Supported formats, preview conversion and render-worker configuration."
         },
         {
           "slug": "offboarding",

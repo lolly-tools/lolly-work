@@ -46,6 +46,40 @@ The openSUSE `provision.sh` does not support Ubuntu. See the target runbook befo
 choosing an image. Public APIs and private data retain the same boundaries on
 either provider; public CA/MCP/Penpot containers receive no private Work secrets.
 
+## Public documentation on both deployment types
+
+The public Lolly shell and a private Work instance serving a signed shell must
+both expose the shell's public documentation before the app fallback. This
+contract is the same on UpCloud and Evroc. It covers `/info/`, literal `/info/`
+articles, `/docs` aliases, `/robots.txt` and the sitemap. Native Work also offers
+extensionless `/info/` article URLs; the public hosted shell does not currently
+provide that convenience. Native serving resolves only files inside the signed
+shell release. Missing articles return 404 rather than an app page with a
+successful status.
+
+GET serves the signed document bytes unchanged. HEAD returns the same public
+document headers and file size without reading or sending its body. The root
+`/robots.txt` uses the release's `robots-lolly-tools.txt`; `/sitemap.xml` redirects
+to `/info/sitemap.xml`, which is served as XML. Preserve the common docs'
+canonical `https://lolly.tools` URLs, search index and sitemap. Mirroring those
+docs does not create a second canonical site or publish tenant documentation.
+
+Public shell docs require no workspace sign-in. The separate Work markdown API,
+`/api/v1/docs`, stays member-only on a governed instance, as do private catalogs,
+uploads, projects and render routes. Robots instructions are discovery hints;
+authentication and route policy enforce the private boundary.
+
+Before accepting a release on either provider, check unauthenticated GET and
+HEAD at the candidate origin. Confirm that `/info/` and
+`/docs/operate/deployment` contain the documentation titles and their existing
+canonical links, rather than the app shell. Check the root robots and sitemap
+redirect, XML content type, empty HEAD bodies, missing-document 404 responses
+and private API/catalog refusals. The native server's HTTP tests exercise these
+boundaries. A static shell host needs equivalent aliases and discovery routing;
+a generic SPA fallback alone does not meet this contract. Use the maintained
+[UpCloud](../deploy/upcloud/README.md), [Evroc](../deploy/evroc/README.md) and
+[application VM](../deploy/vm/README.md) runbooks together with these checks.
+
 ## Custom instance domain
 
 The [VM kit's custom-domain procedure](../deploy/vm/README.md#custom-instance-domains)

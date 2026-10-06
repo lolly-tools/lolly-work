@@ -52,6 +52,30 @@ selected by `push.sh`. Follow the [database migration guide](../../docs/cloud-de
 before adding it. `postgres-backup.sh` provides a verified logical dump and an
 empty-database restore for that rehearsal.
 
+### Public documentation acceptance
+
+The same signed shell documentation must be available without sign-in on the
+public Lolly host and a private native Work host, on both UpCloud and Evroc.
+Native Caddy routing is unchanged: the Work server resolves public docs within
+the mounted signed release before its app fallback. See the
+[documentation contract](../../docs/cloud-deployment.md#public-documentation-on-both-deployment-types).
+
+At a candidate origin, check GET and HEAD for `/info/`,
+`/info/operate/deployment.html`, `/docs/operate/deployment` and `/robots.txt`.
+Confirm the real documentation title and the existing `https://lolly.tools`
+canonical link, not a successful app-shell response. `/sitemap.xml` must redirect
+to `/info/sitemap.xml`; its target must have an XML content type. HEAD must
+return the document size and no body. A missing article must return 404.
+
+Use signed release files unchanged, including `robots-lolly-tools.txt` and the
+public sitemap. These expose common product docs, not private workspace data.
+In the same unauthenticated check, ensure `/api/v1/docs`, `/api/v1/projects`,
+private `/catalog/` files and `/render/` requests remain refused by their
+existing policy. Public docs must not turn private API HEAD requests into GET
+calls. Complete these checks along with provider boot, identity, collaboration
+and export acceptance; passing the repository HTTP tests does not qualify an
+UpCloud or Evroc image or move a public domain.
+
 | File | What |
 |---|---|
 | `docker-compose.yml` | the `server` and `caddy` services, as laid out in `/opt/lolly-ing` on the VM; every bind mount carries an SELinux label |
@@ -440,3 +464,5 @@ Vercel project keeps it off.
 Set `instance.shellDir` to `/app/shell/current` in the private instance config and pass `LOLLY_SHELL_DIST=/absolute/path/to/qualified/dist` to `push.sh`. Build and verify the signed release before deployment. The setup check uses this local path while the deployed configuration keeps the container path. Each release receives an immutable directory identified by all of its file names and bytes, including static assets, and an atomic `current` pointer. Older hashed app chunks stay available to open tabs; unchanged release files use hard links. Secrets and other configuration fields are preserved.
 
 For the native Work release, keep the plugin review recording at `shells/web/public/review/agent-collaboration-review.mp4` before building. The public plugin continues to use its canonical `lolly.tools` recording URL. Work redirects the previous `/info/media/agent-collaboration-review.mp4` path to `/review/agent-collaboration-review.mp4`, preserving native links while leaving the recording outside the offline documentation bundle.
+
+Hard links share SELinux labels. Staged qualification must not relabel files shared with the active release: copy pack files before mounting them with `:Z`, and verify hard-linked shell artifacts through a read-only check that leaves their labels unchanged. After staging, confirm the running server can still read a tool template and a brand asset; a healthy API alone does not detect denied pack files.

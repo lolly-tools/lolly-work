@@ -36,8 +36,8 @@ services:
     volumes:
       - ./instance.json:/app/instance.json:ro,Z
       - ./packs/lolly-ing:/app/packs/lolly-ing:ro,Z
-      # The image does not copy engine-pin.json; /api/v1/instance reads the
-      # engine version from it (engineVersion is null without it).
+      # The image carries its verified pin. This instance override must match
+      # the deployed image so /api/v1/instance reports the same engine version.
       - ./src/engine-pin.json:/app/engine-pin.json:ro,Z
       # Optional signed web release. instance.shellDir selects the active build.
       - ./shell:/app/shell:ro,Z
