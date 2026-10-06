@@ -155,16 +155,21 @@ test('CAS: two PUTs with the same stale rev — first wins, second 409 with curr
 
 test('revisions grow on edit', async () => {
   const alice = await login('alice@test');
-  const revs1 = await (await json(alice, 'GET', `/api/v1/sessions/${posterSessionId}/revisions`)).json() as { revisions: Array<{ rev: number }> };
+  const revs1 = await (await json(alice, 'GET', `/api/v1/sessions/${posterSessionId}/revisions`)).json() as { revisions: Array<{ rev: number; actorLabel?: string }> };
   assert.equal(revs1.revisions.length, 1, 'one revision after one successful edit');
   assert.equal(revs1.revisions[0]?.rev, 2);
+  assert.equal(revs1.revisions[0]?.actorLabel, 'Alice Eng');
 
   // another edit (now at rev 2)
-  const edit = await json(alice, 'PUT', `/api/v1/sessions/${posterSessionId}`, { rev: 2, inputs: { title: 'Final v2' }, meta: {} });
+  const bob = await login('bob@test');
+  const edit = await json(bob, 'PUT', `/api/v1/sessions/${posterSessionId}`, { rev: 2, inputs: { title: 'Final v2' }, meta: {} });
   assert.equal(edit.status, 200);
-  const revs2 = await (await json(alice, 'GET', `/api/v1/sessions/${posterSessionId}/revisions`)).json() as { revisions: Array<{ rev: number }> };
+  const revs2 = await (await json(alice, 'GET', `/api/v1/sessions/${posterSessionId}/revisions`)).json() as { revisions: Array<{ rev: number; actorLabel?: string }> };
   assert.equal(revs2.revisions.length, 2, 'revisions grew');
   assert.equal(revs2.revisions[0]?.rev, 3, 'newest first');
+  assert.deepEqual(revs2.revisions.map(revision => revision.actorLabel), ['Bob Eng', 'Alice Eng']);
+  const carol = await login('carol@test');
+  assert.equal((await json(carol, 'GET', `/api/v1/sessions/${posterSessionId}/revisions`)).status, 403);
 });
 
 test('tombstone: DELETE then GET 410 and list excludes it', async () => {

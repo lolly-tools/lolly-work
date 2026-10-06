@@ -5,7 +5,7 @@ import { activeProjectFile, projectFileAssetId, projectFileCharge, type ProjectF
 import { initialBrandState } from '../brand/state.ts';
 import type { CollabReceipt } from './types.ts';
 import type { ProjectFolderRecord } from './types.ts';
-import type { DocumentAgentRecord } from './types.ts';
+import type { DocumentAgentRecord, ProjectAgentRecord } from './types.ts';
 /**
  * In-memory Store - dev, tests, and the evaluation container's default.
  * Postgres driver lands beside this (migrations/0001_init.sql is the schema).
@@ -51,6 +51,8 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const scimTokens = new Map<string, ScimTokenRecord>(); // SCIM provisioning bearers, by id
   const apiTokens = new Map<string, ApiTokenRecord>(); // service tokens (plans/35), by id
   const documentAgents = new Map<string, DocumentAgentRecord>();
+  const projectAgents = new Map<string, ProjectAgentRecord>();
+  const agentCreations = new Map<string, { digest: string; sessionId: string }>();
   const invitations = new Map<string, InvitationRecord>(); // plans/74 W-ID-2, by id
   const identities = new Map<string, UserIdentityRecord>(); // plans/74 linked sign-ins, by identitySub
   const passwordCredentials = new Map<string, PasswordCredentialRecord>(); // plans/74, by lowercased email
@@ -851,6 +853,8 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
           // migration 0044: and its access requests.
           dropRequestsWhere((r) => r.userId === id);
           for (const [key, r] of documentAgents) if (r.userId === id || r.createdBy === id) documentAgents.delete(key);
+          for (const [key, r] of projectAgents) if (r.createdBy === id) projectAgents.delete(key);
+          for (const key of agentCreations.keys()) if (!projectAgents.has(JSON.parse(key)[0])) agentCreations.delete(key);
           return true;
         }
       }
@@ -875,6 +879,8 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       users.delete(user.sub);
       passkeys.forgetUser(id);
       for (const [key, r] of documentAgents) if (r.userId === id || r.createdBy === id) documentAgents.delete(key);
+      for (const [key, r] of projectAgents) if (r.createdBy === id) projectAgents.delete(key);
+      for (const key of agentCreations.keys()) if (!projectAgents.has(JSON.parse(key)[0])) agentCreations.delete(key);
       // Invitations hold the email, and an accepted one keeps admitting it, so
       // the rows this account accepted go with it. Other rows for the address
       // go too unless another account still carries that email.
@@ -1265,8 +1271,8 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     },
     async listUnfinishedProjectFiles(filter, limit) {
       return [...projectFiles.values()]
-        .filter((f) => !f.ready && (!filter.createdBy || f.createdBy === filter.createdBy)
-          && (!filter.expiredBy || Date.parse(f.expiresAt) <= Date.parse(filter.expiredBy)))
+        .filter((f) => !f.ready && (!filter.createdBy || f.createdBy === filter.createdBy) && (!filter.projectId || f.projectId === filter.projectId)
+          && (!filter.expiredBy || Date.parse(f.expiresAt) <= Date.parse(filter.expiredBy)) && (!filter.activeAt || Date.parse(f.expiresAt) > Date.parse(filter.activeAt)))
         .sort((a, b) => Date.parse(a.expiresAt) - Date.parse(b.expiresAt) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
         .slice(0, limit).map((f) => structuredClone(f));
     },
@@ -1310,7 +1316,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     async createDocumentAgent(rec) {
       if (!userById(rec.createdBy) || userById(rec.createdBy)?.disabledAt || !projects.has(rec.projectId) || sessions.get(rec.sessionId)?.deletedAt || sessions.get(rec.sessionId)?.projectId !== rec.projectId
         || documentAgents.has(rec.id) || rec.userId !== rec.createdBy) return false;
-      if ([...documentAgents.values()].filter(r => r.createdBy === rec.createdBy && !r.revokedAt && r.expiresAt > rec.createdAt).length >= 16) return false;
+      if ([...documentAgents.values(), ...projectAgents.values()].filter(r => r.createdBy === rec.createdBy && !r.revokedAt && r.expiresAt > rec.createdAt).length >= 16) return false;
       if ([...documentAgents.values()].some(r => r.tokenHash === rec.tokenHash)) return false;
       documentAgents.set(rec.id, { ...rec }); return true;
     },
@@ -1320,6 +1326,27 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     async revokeDocumentAgent(id, at) {
       const rec = documentAgents.get(id); if (!rec || rec.revokedAt) return;
       rec.revokedAt = at;
+    },
+    async createProjectAgent(rec) {
+      const creator = userById(rec.createdBy);
+      if (!creator || creator.disabledAt || !projects.has(rec.projectId) || rec.userId !== rec.createdBy || projectAgents.has(rec.id)) return false;
+      const active = [...documentAgents.values(), ...projectAgents.values()].filter(r => r.createdBy === rec.createdBy && !r.revokedAt && r.expiresAt > rec.createdAt);
+      if (active.length >= 16 || [...projectAgents.values()].some(r => r.tokenHash === rec.tokenHash)) return false;
+      projectAgents.set(rec.id, { ...rec }); return true;
+    },
+    async getProjectAgent(id) { const rec = projectAgents.get(id); return rec ? { ...rec } : null; },
+    async findProjectAgentByHash(hash) { const rec = [...projectAgents.values()].find(r => r.tokenHash === hash); return rec ? { ...rec } : null; },
+    async listProjectAgents(projectId) { return [...projectAgents.values()].filter(r => r.projectId === projectId).map(r => ({ ...r })); },
+    async revokeProjectAgent(id, at) { const rec = projectAgents.get(id); if (rec && !rec.revokedAt) rec.revokedAt = at; },
+    async createAgentSession(session, agentId, requestId, digest) {
+      const agent = projectAgents.get(agentId), creator = agent && userById(agent.createdBy);
+      if (!agent || agent.revokedAt || agent.expiresAt <= new Date().toISOString() || agent.role !== 'editor' || !creator || creator.disabledAt
+        || agent.projectId !== session.projectId || agent.createdBy !== session.createdBy) return 'refused';
+      const key = JSON.stringify([agentId, requestId]), previous = agentCreations.get(key);
+      if (previous) return previous.digest === digest && previous.sessionId === session.id ? 'replayed' : 'conflict';
+      if (sessions.has(session.id)) return 'conflict';
+      if ([...agentCreations.keys()].filter(key => JSON.parse(key)[0] === agentId).length >= 1000) return 'refused';
+      sessions.set(session.id, structuredClone(session)); agentCreations.set(key, { digest, sessionId: session.id }); return 'created';
     },
     async listUserProjectMemberships(userId) {
       return [...projectMembers.values()].filter((m) => m.userId === userId).map((m) => ({ ...m }));

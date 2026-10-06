@@ -1,17 +1,27 @@
-# Security headers for the Lolly web shell the server serves at / - the same set
-# the open-source app ships on lolly.tools and in its own YunoHost package
-# (deploy/yunohost/conf/security-headers.inc in the Lolly repository; the test
-# tests/yunohost-package.test.ts compares the two when that checkout is beside
-# this one). YunoHost's own baseline (HSTS, X-Frame-Options, a permissive CSP,
-# Referrer-Policy same-origin) runs at server level first; for a header both
-# set, this file's later directive wins, and the baseline headers it does not
-# set stay. See nginx.conf for the whole picture.
+# Security headers for every Lolly response, as `more_set_headers` lines: a
+# YunoHost domain sets its own baseline (HSTS, X-Frame-Options, a permissive
+# Content-Security-Policy, Referrer-Policy same-origin) at server level with the
+# same module, and its directives run first. For a header both set, the later
+# one - this file's - wins, so Lolly's policy replaces the permissive defaults
+# while the baseline headers Lolly does not set (HSTS, X-Frame-Options) stay.
+# Verified against nginx 1.22 + headers-more on Debian 12 (YunoHost 12).
 #
-# Only the shell's location includes this file. The control plane's own routes
-# (/api, /admin, /activate, /l, /render, ...) send their own per-route
-# Content-Security-Policy, which this file would overwrite; nginx.conf puts the
-# upstream's own value back there instead.
-more_set_headers "Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' blob: data: https://lolli.li https://www.googleapis.com https://fonts.googleapis.com https://fonts.gstatic.com https://api.somafm.com https://registry.color.org https://www.color.org https://geocoding-api.open-meteo.com https://api.dropboxapi.com https://content.dropboxapi.com https://login.microsoftonline.com https://graph.microsoft.com https://api.onedrive.com https://*.up.1drv.com https://*.files.1drv.com https://my.microsoftpersonalcontent.com https://*.sharepoint.com; img-src 'self' data: blob:; media-src 'self' blob: data: https://*.somafm.com; font-src 'self' data: blob:; worker-src 'self' blob:; child-src 'self' blob:; frame-src 'self' blob: https://www.youtube-nocookie.com https://player.vimeo.com https://www.loom.com https://www.google.com https://www.figma.com https://wikipedia.org https://*.wikipedia.org https://commons.wikimedia.org https://upload.wikimedia.org https://www.wikidata.org https://www.mediawiki.org https://www.openstreetmap.org; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'";
+# With no extra storage origins, the set is byte-identical to the hosted
+# deployment. tests/yunohost-package.test.ts checks the rendered default against
+# vercel.json. The saved csp_extra_connect_src setting extends only connect-src.
+#
+# Every nginx location that sets a header of its own includes this file again.
+# That is not strictly required with this module (unlike nginx's own header
+# directive, whose inherited entries vanish in such a location), but it keeps
+# the policy next to every Cache-Control and costs nothing.
+#
+# The CSP is not strict on purpose: tool hooks run through `new Function`
+# (engine/src/runtime.ts) so script-src carries 'unsafe-eval'. The directive doing
+# the work is connect-src - injected script cannot exfiltrate to an arbitrary host.
+# The two Google Fonts hosts serve the opt-in brand-editor font picker and
+# lolli.li serves the on-device ML models; an instance that wants neither can
+# drop those hosts and the features fail closed.
+more_set_headers "Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' blob: data: https://lolly.ing wss://lolly.ing https://lolli.li https://www.googleapis.com https://fonts.googleapis.com https://fonts.gstatic.com https://api.somafm.com https://registry.color.org https://www.color.org https://geocoding-api.open-meteo.com https://api.dropboxapi.com https://content.dropboxapi.com https://login.microsoftonline.com https://graph.microsoft.com https://api.onedrive.com https://*.up.1drv.com https://*.files.1drv.com https://my.microsoftpersonalcontent.com https://*.sharepoint.com; img-src 'self' data: blob:; media-src 'self' blob: data: https://*.somafm.com; font-src 'self' data: blob:; worker-src 'self' blob:; child-src 'self' blob:; frame-src 'self' blob: https://www.youtube-nocookie.com https://player.vimeo.com https://www.loom.com https://www.google.com https://www.figma.com https://wikipedia.org https://*.wikipedia.org https://commons.wikimedia.org https://upload.wikimedia.org https://www.wikidata.org https://www.mediawiki.org https://www.openstreetmap.org; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'";
 more_set_headers "Referrer-Policy: no-referrer";
 more_set_headers "X-Content-Type-Options: nosniff";
 more_set_headers "Cross-Origin-Opener-Policy: same-origin";

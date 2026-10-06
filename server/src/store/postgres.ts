@@ -33,7 +33,7 @@ import type { ProviderFragment, ProviderKind, ProviderRecord } from '../catalog/
 import type { DeliveryRecord } from '../delivery/types.ts';
 import type { ProjectAccess } from '../rbac/project-access.ts';
 import type { ProjectFolderRecord } from './types.ts';
-import type { DocumentAgentRecord } from './types.ts';
+import type { DocumentAgentRecord, ProjectAgentRecord } from './types.ts';
 import { createPostgresPasskeys } from '../iam/passkeys/postgres.ts';
 import { createPostgresRenderStore } from '../renders/postgres.ts';
 import {
@@ -64,6 +64,11 @@ function documentAgentFromRow(r: Record<string, unknown>): DocumentAgentRecord {
     role: r.role as DocumentAgentRecord['role'], tokenHash: r.token_hash as string,
     createdAt: new Date(r.created_at as string).toISOString(), expiresAt: new Date(r.expires_at as string).toISOString(),
     ...(r.revoked_at ? { revokedAt: new Date(r.revoked_at as string).toISOString() } : {}) };
+}
+
+function projectAgentFromRow(r: Record<string, unknown>): ProjectAgentRecord {
+  const { sessionId: _sessionId, ...record } = documentAgentFromRow(r);
+  return record;
 }
 
 /** An invitation's projects as stored: only the known keys. */
@@ -2074,8 +2079,9 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     async listUnfinishedProjectFiles(filter, limit) {
       const { rows } = await pool.query(
         `select * from project_files where not ready and ($1::text is null or created_by = $1)
-           and ($2::timestamptz is null or expires_at <= $2) order by expires_at, id collate "C" limit $3`,
-        [filter.createdBy ?? null, filter.expiredBy ?? null, limit]);
+           and ($2::timestamptz is null or expires_at <= $2) and ($4::text is null or project_id = $4)
+           and ($5::timestamptz is null or expires_at > $5) order by expires_at, id collate "C" limit $3`,
+        [filter.createdBy ?? null, filter.expiredBy ?? null, limit, filter.projectId ?? null, filter.activeAt ?? null]);
       return rows.map(projectFileFromRow);
     },
     async projectFileUsage(projectId) {
@@ -2127,7 +2133,9 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         await client.query('begin');
         const creator = await client.query('select id from users where id = $1 and disabled_at is null for update', [rec.createdBy]);
         const session = await client.query('select id from sessions where id = $1 and project_id = $2 and deleted_at is null', [rec.sessionId, rec.projectId]);
-        const count = await client.query('select count(*)::int as n from document_agents where created_by = $1 and revoked_at is null and expires_at > $2', [rec.createdBy, rec.createdAt]);
+        const count = await client.query(`select count(*)::int as n from (
+          select id from document_agents where created_by = $1 and revoked_at is null and expires_at > $2
+          union all select id from project_agents where created_by = $1 and revoked_at is null and expires_at > $2) active`, [rec.createdBy, rec.createdAt]);
         if (rec.userId !== rec.createdBy || !creator.rows.length || !session.rows.length || Number(count.rows[0]?.n) >= 16) { await client.query('rollback'); return false; }
         await client.query(`insert into document_agents (id, session_id, project_id, user_id, created_by, label, role, token_hash, created_at, expires_at)
           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
@@ -2141,6 +2149,47 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     async listDocumentAgents(sessionId) { const { rows } = await pool.query('select * from document_agents where session_id = $1 order by created_at, id', [sessionId]); return rows.map(documentAgentFromRow); },
     async revokeDocumentAgent(id, at) {
       await pool.query('update document_agents set revoked_at = $2 where id = $1 and revoked_at is null', [id, at]);
+    },
+    async createProjectAgent(rec) {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        const creator = await client.query('select id from users where id = $1 and disabled_at is null for update', [rec.createdBy]);
+        const project = await client.query('select id from projects where id = $1', [rec.projectId]);
+        const count = await client.query(`select count(*)::int as n from (
+          select id from document_agents where created_by = $1 and revoked_at is null and expires_at > $2
+          union all select id from project_agents where created_by = $1 and revoked_at is null and expires_at > $2) active`, [rec.createdBy, rec.createdAt]);
+        if (rec.userId !== rec.createdBy || !creator.rows.length || !project.rows.length || Number(count.rows[0]?.n) >= 16) { await client.query('rollback'); return false; }
+        await client.query(`insert into project_agents (id, project_id, user_id, created_by, label, role, token_hash, created_at, expires_at)
+          values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, [rec.id, rec.projectId, rec.userId, rec.createdBy, rec.label, rec.role, rec.tokenHash, rec.createdAt, rec.expiresAt]);
+        await client.query('commit'); return true;
+      } catch (error) { await client.query('rollback'); if ((error as { code?: string }).code === '23505') return false; throw error; }
+      finally { client.release(); }
+    },
+    async getProjectAgent(id) { const { rows } = await pool.query('select * from project_agents where id = $1', [id]); return rows[0] ? projectAgentFromRow(rows[0]) : null; },
+    async findProjectAgentByHash(hash) { const { rows } = await pool.query('select * from project_agents where token_hash = $1', [hash]); return rows[0] ? projectAgentFromRow(rows[0]) : null; },
+    async listProjectAgents(projectId) { const { rows } = await pool.query('select * from project_agents where project_id = $1 order by created_at, id', [projectId]); return rows.map(projectAgentFromRow); },
+    async revokeProjectAgent(id, at) { await pool.query('update project_agents set revoked_at = $2 where id = $1 and revoked_at is null', [id, at]); },
+    async createAgentSession(session, agentId, requestId, digest) {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        const agent = await client.query(`select a.id from project_agents a join users u on u.id = a.created_by
+          where a.id = $1 and a.project_id = $2 and a.created_by = $3 and a.role = 'editor'
+          and a.revoked_at is null and a.expires_at > now() and u.disabled_at is null for update of a`, [agentId, session.projectId, session.createdBy]);
+        if (!agent.rows.length) { await client.query('rollback'); return 'refused'; }
+        const previous = await client.query('select digest, session_id from agent_session_creations where agent_id = $1 and request_id = $2', [agentId, requestId]);
+        if (previous.rows[0]) { await client.query('rollback'); return previous.rows[0].digest === digest && previous.rows[0].session_id === session.id ? 'replayed' : 'conflict'; }
+        const count = await client.query('select count(*)::int as n from agent_session_creations where agent_id = $1', [agentId]);
+        if (Number(count.rows[0]?.n) >= 1000) { await client.query('rollback'); return 'refused'; }
+        const inserted = await client.query(`insert into sessions (id, project_id, tool_id, tool_version, inputs, meta, created_by, updated_by, rev, updated_at)
+          values ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8,$9,$10) on conflict (id) do nothing returning id`,
+          [session.id, session.projectId, session.toolId, session.toolVersion, JSON.stringify(session.inputs), JSON.stringify(session.meta), session.createdBy, session.updatedBy, session.rev, session.updatedAt]);
+        if (!inserted.rows.length) { await client.query('rollback'); return 'conflict'; }
+        await client.query('insert into agent_session_creations (agent_id, request_id, digest, session_id) values ($1,$2,$3,$4)', [agentId, requestId, digest, session.id]);
+        await client.query('commit'); return 'created';
+      } catch (error) { await client.query('rollback'); throw error; }
+      finally { client.release(); }
     },
     async listUserProjectMemberships(userId) {
       const { rows } = await pool.query('select * from project_members where user_id = $1', [userId]);
