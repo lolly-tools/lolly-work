@@ -33,6 +33,7 @@
  * function has no gateway for.
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { isIP } from 'node:net';
 import { join } from 'node:path';
 
 /** Build Output API route transforms (shape checked against
@@ -218,7 +219,7 @@ export interface CaddyOptions {
   shellOrigin: string;
   /** Serve the already mounted instance.shellDir through the control plane. */
   serveShell?: boolean;
-  /** Optional document invitation relay on the private compose network. */
+  /** Optional document invitation relay: one host:port on the private network. */
   liveRelayUpstream?: string;
   /** host:port of the lolly-work server (server/src/main.ts). */
   upstream: string;
@@ -260,6 +261,29 @@ const hostName = (value: string, what: string): string => {
   return value.toLowerCase();
 };
 
+/** A single relay address, without a scheme, path or Caddyfile directives.
+ * IPv6 addresses must use brackets so the port is unambiguous. */
+export function parseLiveRelayUpstream(value: string): string {
+  const fail = (): never => {
+    throw new Error('live relay upstream must be host:port (port 1-65535), such as live-relay:8790');
+  };
+  if (typeof value !== 'string') return fail();
+  const address = /^(\[[0-9a-f:.]+\]|[a-z0-9.-]+):(\d+)$/i.exec(value);
+  if (!address) return fail();
+  const host = address[1]!;
+  const port = Number(address[2]);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return fail();
+  if (host.startsWith('[')) {
+    if (isIP(host.slice(1, -1)) !== 6) return fail();
+  } else if (/^[\d.]+$/.test(host)) {
+    if (isIP(host) !== 4) return fail();
+  } else if (host.length > 253 || host.split('.').some(label =>
+    !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label))) {
+    return fail();
+  }
+  return value;
+}
+
 /** The Caddyfile for one domain on one host (deploy/vm/Caddyfile). */
 export function caddyfile(opts: CaddyOptions): string {
   const domain = hostName(opts.domain, 'domain');
@@ -267,6 +291,7 @@ export function caddyfile(opts: CaddyOptions): string {
   const origin = parseShellOrigin(opts.shellOrigin);
   const shellHost = new URL(origin).host;
   if (!/^[a-z0-9.-]+:\d+$/i.test(opts.upstream)) throw new Error('upstream must be host:port, such as server:8787');
+  const liveRelayUpstream = opts.liveRelayUpstream === undefined ? undefined : parseLiveRelayUpstream(opts.liveRelayUpstream);
   const rules = caddyRules(opts.prefixes);
   const shell = rules.find((r) => r.to === 'shell')!;
   const server = rules.find((r) => r.to === 'server')!;
@@ -314,11 +339,11 @@ export function caddyfile(opts: CaddyOptions): string {
     '\t\tmax_size 65MiB',
     '\t}',
     '',
-    ...(opts.liveRelayUpstream ? [
+    ...(liveRelayUpstream ? [
       '\t# Document invitations and the editor WebSocket share one relay process.',
       '\t@live_relay path /live/*',
       '\thandle @live_relay {',
-      `\t\treverse_proxy ${opts.liveRelayUpstream} {`,
+      `\t\treverse_proxy ${liveRelayUpstream} {`,
       '\t\t\theader_up -Cookie',
       '\t\t\tstream_close_delay 5m',
       '\t\t}',

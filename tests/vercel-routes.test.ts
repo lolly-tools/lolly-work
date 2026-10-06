@@ -262,5 +262,21 @@ test('a configured document relay wins before the local shell fallback', () => {
   assert.match(file, /@live_relay path \/live\/\*/);
   assert.ok(file.indexOf('handle @live_relay') < file.indexOf('handle @shell_functions'));
   assert.match(file, /reverse_proxy live-relay:8790/);
-  assert.match(file, /header_up -Cookie/);
+  const relay = file.slice(file.indexOf('\thandle @live_relay'), file.indexOf('\t@shell_functions'));
+  assert.match(relay, /header_up -Cookie/);
+  assert.doesNotMatch(relay, /-Authorization/, 'the relay keeps the invitation bearer token');
+});
+
+test('relay generation accepts only one hostname or IP with a valid port', () => {
+  for (const upstream of ['live-relay:8790', 'relay.internal.example:443', 'localhost:1',
+    '127.0.0.1:65535', '[::1]:8790', '[2001:db8::1]:8790']) {
+    assert.ok(caddyfile({ ...LOLLY_ING, liveRelayUpstream: upstream }).includes(`reverse_proxy ${upstream} {`), upstream);
+  }
+  for (const upstream of ['', 'relay', 'relay:0', 'relay:-1', 'relay:1.5', 'relay:65536',
+    'http://relay:8790', 'relay:8790/path', 'relay:8790?x=1', 'relay:8790#x', 'user:pass@relay:8790',
+    'relay:8790\nrespond hacked', 'relay:8790\r\n}', 'relay:8790 other:8790', '{$RELAY}:8790',
+    '-relay:8790', 'relay-:8790', 'relay..example:8790', `${'a'.repeat(64)}:8790`,
+    '999.1.1.1:8790', '::1:8790', '[::1:8790', '[1.2.3.4]:8790', '[2001:db8:::1]:8790']) {
+    assert.throws(() => caddyfile({ ...LOLLY_ING, liveRelayUpstream: upstream }), /live relay upstream must be host:port/, upstream);
+  }
 });
