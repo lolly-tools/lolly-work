@@ -60,6 +60,9 @@ test('recognizes additional named clients and model namespaces without mistaking
   for (const name of ['jevel', 'malaya', 'kolibridge', 'not-mistral-vibe', 'cursorily', 'copilotage', 'clineage', 'my-openclaw', 'continueous', 'gooseberry']) assert.equal(agentFamily(name), 'other', name);
   const info = agentClientInfo({ clientInfo: { name: 'opencode' }, _meta: { 'tools.lolly/agent': { model: 'Aleph-Alpha/Kolibri-1' } } }, true)!;
   assert.equal(info.family, 'opencode'); assert.equal(info.modelFamily, 'kolibri');
+  for (const [model, family] of [['Qwen/Qwen3.5', 'qwen'], ['organization/Laya-4B', 'laya'], ['organization/Kolibri-1', 'kolibri'], ['organization/custom-model', 'other']] as const) {
+    assert.equal(agentClientInfo({ _meta: { 'tools.lolly/agent': { model } } })?.modelFamily, family);
+  }
   const unknown = agentClientInfo({ clientInfo: { name: 'My studio agent', title: 'Studio helper' } }, true)!;
   assert.equal(unknown.name, 'My studio agent'); assert.equal(unknown.title, 'Studio helper'); assert.equal(unknown.family, 'other');
 });

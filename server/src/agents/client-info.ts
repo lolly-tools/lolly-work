@@ -69,9 +69,10 @@ export function normalizeAgentClient(value: unknown): AgentClientInfo | null {
   const provider = model ? clean(value.provider) : undefined;
   const family = agentFamily(name), reportedProvider = agentFamily(provider);
   const modelFamily = model ? agentFamily(model) : 'other';
+  const namespacedModelFamily = modelFamily === 'other' && model?.includes('/') ? agentFamily(model.split('/').at(-1)) : modelFamily;
   return {
     ...(name ? { name } : {}), ...(title && name ? { title } : {}), ...(version && name ? { version } : {}),
-    family, ...(model ? { model, ...(provider ? { provider } : {}), modelFamily: modelFamily !== 'other' ? modelFamily : reportedProvider } : {}), source: 'client-reported',
+    family, ...(model ? { model, ...(provider ? { provider } : {}), modelFamily: namespacedModelFamily !== 'other' ? namespacedModelFamily : reportedProvider } : {}), source: 'client-reported',
   };
 }
 /** Standard initialize metadata, or request-local metadata for clients that provide it. */
