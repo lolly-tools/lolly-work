@@ -256,3 +256,11 @@ test('deploy/vm/Caddyfile is the generated one', () => {
   assert.equal(readFileSync(CADDYFILE_PATH, 'utf8'), generateLollyIngCaddyfile(),
     'run node scripts/build-caddyfile.ts after changing the routes or the generator');
 });
+
+test('a configured document relay wins before the local shell fallback', () => {
+  const file = caddyfile({ ...LOLLY_ING, serveShell: true, liveRelayUpstream: 'live-relay:8790', prefixes: functionPrefixes(SRC) });
+  assert.match(file, /@live_relay path \/live\/\*/);
+  assert.ok(file.indexOf('handle @live_relay') < file.indexOf('handle @shell_functions'));
+  assert.match(file, /reverse_proxy live-relay:8790/);
+  assert.match(file, /header_up -Cookie/);
+});

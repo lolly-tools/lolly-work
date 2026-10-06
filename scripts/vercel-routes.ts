@@ -218,6 +218,8 @@ export interface CaddyOptions {
   shellOrigin: string;
   /** Serve the already mounted instance.shellDir through the control plane. */
   serveShell?: boolean;
+  /** Optional document invitation relay on the private compose network. */
+  liveRelayUpstream?: string;
   /** host:port of the lolly-work server (server/src/main.ts). */
   upstream: string;
   /** Function prefixes; the router scan in practice (`functionPrefixes`). */
@@ -312,6 +314,17 @@ export function caddyfile(opts: CaddyOptions): string {
     '\t\tmax_size 65MiB',
     '\t}',
     '',
+    ...(opts.liveRelayUpstream ? [
+      '\t# Document invitations and the editor WebSocket share one relay process.',
+      '\t@live_relay path /live/*',
+      '\thandle @live_relay {',
+      `\t\treverse_proxy ${opts.liveRelayUpstream} {`,
+      '\t\t\theader_up -Cookie',
+      '\t\t\tstream_close_delay 5m',
+      '\t\t}',
+      '\t}',
+      '',
+    ] : []),
     "\t# 1. The OSS project's own functions, which the shell calls on its own",
     '\t#    origin. The session cookie stays here; Authorization is kept for the',
     "\t#    Penpot proxy, which forwards it as the user's own Penpot token.",
