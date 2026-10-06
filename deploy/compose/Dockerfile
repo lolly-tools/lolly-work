@@ -43,6 +43,9 @@ COPY migrations ./migrations
 # scripts/ — `pnpm run migrate` → scripts/migrate.ts; the Helm chart's migrate
 # Job invokes it (HA path, LW_AUTO_MIGRATE=false).
 COPY scripts ./scripts
+# A healthy server alone cannot detect a missing admin feature after a merge.
+# This uses a temporary memory store, with no instance credentials or database.
+RUN node scripts/check-release-capabilities.ts
 # Mount point for the instance's tool pack (instance.json `pack`, default
 # ./packs/demo). compose/Helm bind it read-only; empty here by design —
 # EXCEPT the demo pack (252 KB), always aboard so an evaluation install with no

@@ -121,3 +121,24 @@ test('legacy agent writes are distinguishable without misattributing invitations
   assert.equal(items[1]!.actor.kind, 'agent');
   assert.equal(items[2]!.actor.invitedBy?.id, 'u1');
 });
+
+test('activity searches client name, family, version and exact reported model without filling older events', () => {
+  const audit = [
+    auditEvent(1, '2026-10-06T09:00:00Z', 'agent:one', 'agent.connect', 'session:s1', { agentLabel: 'Helper', invitedBy: 'user:u1', client: { name: 'codex-mcp-client', version: '0.42', model: 'gpt-5' } }),
+    auditEvent(2, '2026-10-06T09:01:00Z', 'agent:one', 'agent.tool-call', 'session:s1', { agentLabel: 'Helper', invitedBy: 'user:u1', tool: 'read_document' }),
+  ];
+  for (const q of ['Codex', 'codex-mcp-client', '0.42', 'gpt-5', 'OpenAI']) assert.equal(buildActivity(audit, [], names, { q }).total, 1, q);
+  const items = buildActivity(audit, [], names, {}).items;
+  assert.equal(items[0]!.actor.client, undefined); assert.equal(items[1]!.actor.client?.source, 'client-reported');
+  assert.equal(items[1]!.actor.invitedBy?.name, 'Ada Byron');
+});
+
+
+test('new client and model family labels are searchable while preserving the independent application name', () => {
+  const audit = [auditEvent(1, '2026-10-06T09:00:00Z', 'agent:one', 'agent.tool-call', 'session:s1', { client: { name: 'opencode', model: 'Aleph-Alpha/Kolibri-1' } })];
+  const info = buildActivity(audit, [], names, {}).items[0]!.actor.client!;
+  assert.equal(info.family, 'opencode'); assert.equal(info.modelFamily, 'kolibri');
+  for (const q of ['OpenCode', 'Kolibri', 'Aleph-Alpha/Kolibri-1']) assert.equal(buildActivity(audit, [], names, { q }).total, 1);
+  const mistral = [auditEvent(2, '2026-10-06T09:00:00Z', 'agent:two', 'agent.connect', 'session:s1', { client: { name: 'vibe-cli' } })];
+  assert.equal(buildActivity(mistral, [], names, { q: 'Mistral' }).total, 1);
+});

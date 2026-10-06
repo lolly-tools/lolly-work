@@ -11,6 +11,7 @@ import type { InstanceConfig } from '../config/instance.ts';
 import type { ProjectRequestRunner } from './project-requests.ts';
 import { registerProjectInvitations } from './project-invitations.ts';
 import { createProjectTools, projectTools, projectWriteTools } from './project-tools.ts';
+import { agentClientInfo } from './client-info.ts';
 import { agentActor, agentAttribution } from './attribution.ts';
 import { agentSecret, principalOf, projectAgentStanding, resolveAgent } from './access.ts';
 import { displayName } from '../iam/member.ts';
@@ -126,9 +127,11 @@ export function registerAgentRoutes(router: ReturnType<typeof createRouter>, d: 
     if (!object(msg) || msg.jsonrpc !== '2.0' || typeof msg.method !== 'string') return sendJson(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Invalid request' } });
     if (msg.id === undefined) { res.writeHead(202); res.end(); return; }
     if (typeof msg.id !== 'number' && typeof msg.id !== 'string') return sendJson(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Invalid request id' } });
+    const client = agentClientInfo(msg.params, msg.method === 'initialize');
+    const requestAttribution = { ...agentAttribution(standing.record), ...(client ? { client } : {}) };
     const reply = (result: unknown) => sendJson(res, 200, { jsonrpc: '2.0', id: msg.id, result }, { 'cache-control': 'no-store' });
     if (msg.method === 'initialize') {
-      await d.audit(agentActor(standing.record), 'agent.connect', `project:${standing.record.projectId}`, agentAttribution(standing.record));
+      await d.audit(agentActor(standing.record), 'agent.connect', standing.scope === 'document' ? `session:${standing.record.sessionId}` : `project:${standing.record.projectId}`, { ...requestAttribution, client });
       const asked = object(msg.params) ? msg.params.protocolVersion : null;
       return reply({ protocolVersion: typeof asked === 'string' && versions.has(asked) ? asked : '2025-11-25', capabilities: { tools: { listChanged: false } },
         serverInfo: { name: 'Lolly workspace collaboration', version: '1.1.0' }, instructions: isProject
@@ -143,7 +146,7 @@ export function registerAgentRoutes(router: ReturnType<typeof createRouter>, d: 
     try {
       const definition = available.find(tool => tool.name === params.name);
       if (!definition) {
-        await d.audit(agentActor(standing.record), 'agent.tool-call', `project:${standing.record.projectId}`, { ...agentAttribution(standing.record), tool: 'unknown', outcome: 'rejected', code: 'UNKNOWN_TOOL' });
+        await d.audit(agentActor(standing.record), 'agent.tool-call', `project:${standing.record.projectId}`, { ...requestAttribution, tool: 'unknown', outcome: 'rejected', code: 'UNKNOWN_TOOL' });
         return sendJson(res, 200, { jsonrpc: '2.0', id: msg.id, error: { code: -32602, message: 'Unknown tool' } });
       }
       if (isProject && Object.keys(args).some(key => !Object.hasOwn(definition.inputSchema.properties, key))) throw new Error('INVALID_INPUT');
@@ -156,10 +159,10 @@ export function registerAgentRoutes(router: ReturnType<typeof createRouter>, d: 
       const accepted = Array.isArray(value.acceptedIds) ? value.acceptedIds.length : 0;
       const outcome = rejected ? accepted ? 'partial' : 'rejected' : 'succeeded';
       if (isProject && outcome !== 'rejected' && (projectWriteTools.has(String(params.name)) || params.name === 'apply_document_ops')) {
-        await d.audit(agentActor(standing.record), 'agent.project-write', `project:${standing.record.projectId}`, { ...agentAttribution(standing.record), tool: params.name });
+        await d.audit(agentActor(standing.record), 'agent.project-write', `project:${standing.record.projectId}`, { ...requestAttribution, tool: params.name });
       }
       await d.audit(agentActor(standing.record), 'agent.tool-call', `project:${standing.record.projectId}`, {
-        ...agentAttribution(standing.record), tool: definition.name, outcome,
+        ...requestAttribution, tool: definition.name, outcome,
         ...(typeof value.sessionId === 'string' ? { sessionId: value.sessionId } : {}),
         ...(Array.isArray(value.acceptedIds) ? { acceptedOps: value.acceptedIds.length, rejectedOps: rejected } : {}),
       });
@@ -176,7 +179,7 @@ export function registerAgentRoutes(router: ReturnType<typeof createRouter>, d: 
         INVALID_INPUT: 'Check the tool’s arguments before trying again.',
       };
       await d.audit(agentActor(standing.record), 'agent.tool-call', `project:${standing.record.projectId}`, {
-        ...agentAttribution(standing.record), tool: available.find(tool => tool.name === params.name)?.name ?? 'unknown', outcome: 'rejected', code: known.includes(code) ? code : 'EDIT_UNAVAILABLE',
+        ...requestAttribution, tool: available.find(tool => tool.name === params.name)?.name ?? 'unknown', outcome: 'rejected', code: known.includes(code) ? code : 'EDIT_UNAVAILABLE',
       });
       const detail = (error as { detail?: unknown }).detail;
       reply({ isError: true, content: [{ type: 'text', text: JSON.stringify({ code: known.includes(code) ? code : 'EDIT_UNAVAILABLE', message: isProject

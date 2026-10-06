@@ -36,3 +36,73 @@ The audit trail records invitation and revocation by the member, agent connectio
 The console activity timeline names the agent and links its inviter to People. Agents can be filtered individually; filtering by a person or group also includes their invited agents. Older agent join, leave and project-write events that already identify the inviter are displayed as agent activity. Where the inviter is unknown, the timeline leaves that attribution absent.
 
 This records the user who created the workspace invitation. It cannot identify which local process launched an agent or who later used a forwarded connection key.
+
+
+## Admin visibility
+
+Admins and owners with `audit.export` can open **Agents** in the control plane
+(`/admin#/agents`). The Overview also shows a 14-day agent summary. Agents offers
+7-, 30- and 90-day windows, the inviter, project or document scope, delegated role,
+invitation expiry/status, last use and per-agent tool calls. Recent activity
+separates succeeded, rejected and partially accepted calls, including durable
+operation counts. Document room presence is a snapshot of the current host;
+project-only MCP requests do not occupy a document room. Hosts without a room
+bridge report presence as unavailable.
+
+`GET /api/v1/agents/activity?days=30` uses the audit permission, returns private
+uncacheable metadata and excludes credentials, tool arguments and document
+contents. It reads at most 10,001 agent audit events for the requested 1–90 days;
+reports use the newest 10,000, inspect at most 500 agents and show 100 recent
+events. Both coverage limits are explicit in the response and UI. Shorten the
+period or use the audit log when either limit is reached. The view refreshes
+while visible every 15 seconds, preserves a table being searched or focused,
+and stops refreshing after navigation or permission loss.
+
+Agents remain distinct from human users in the Activity timeline. Each delegated
+action names the agent and its inviter; filtering a person or group also includes
+work delegated by that person. An invitation or revocation remains attributed to
+the human who performed it. Legacy agent room events are recognised without
+rewriting the audit chain.
+
+## Reported agent client and model
+
+The Agents inventory shows the last client report in the selected period, with
+recognizable marks for Claude, Codex, Gemini, Qwen, GLM, DeepSeek, Jev, Laya,
+Kolibri and Mistral (including Vibe). Common clients such as Cursor, GitHub
+Copilot, OpenCode, Cline, Roo Code, Windsurf, OpenClaw, Goose, Continue, Aider,
+Amazon Q, Factory Droid and VS Code have their own names and marks too. Kimi,
+Grok and Llama are recognized when explicitly reported. Unknown
+clients keep their supplied application name; older or unnamed connections show
+**Not reported**. Search and CSV export include the client, version and any
+explicitly reported model. Activity badges belong only to requests carrying that
+report; older tool calls are not retrospectively labelled.
+
+Lolly reads the standard MCP `initialize.params.clientInfo` fields `name`, `title`
+and `version`. A client can also send request-local implementation metadata in
+`params._meta["io.modelcontextprotocol/clientInfo"]`. To explicitly report the
+model it is currently using, send the optional Lolly extension:
+
+```json
+{
+  "_meta": {
+    "tools.lolly/agent": { "model": "your-exact-model-id", "provider": "provider-name" }
+  }
+}
+```
+
+This is display-only, **client-reported** information, not verified identity or
+an access control signal. The [MCP initialization spec](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle)
+identifies the client application, not necessarily its underlying model.
+For example, Cursor can report a Claude model while remaining a Cursor client.
+A plain Claude Code or Codex client name does not imply any exact model.
+
+Only bounded scalar display fields enter the agent audit metadata. Arbitrary
+client icons, website URLs and other implementation fields are discarded. A
+reconnect without client information clears the prior inventory report. There
+is no shared “last client” cache attached to a reusable invitation key, so tool
+calls from another client do not inherit an earlier client's identity.
+
+Reported models also show their recognized family next to the exact model ID,
+including namespaced IDs such as `Aleph-Alpha/Kolibri-1`, `NandhaKishorM/Laya-1`
+and `mistralai/devstral-small`. Recognizing a client never implies that it runs
+that family of model: OpenCode using Kolibri remains an OpenCode client.

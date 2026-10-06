@@ -39,7 +39,7 @@ function page(opts: {
   providers?: typeof PROVIDERS; password?: { set: boolean; email: string; lockedUntil?: string } | null;
   identities?: unknown[]; groups?: string[];
   /** Answers a call first; undefined falls through to the defaults. */
-  route?: (path: string, method: string, body: any) => Reply | undefined;
+  route?: (path: string, method: string, body: any) => Reply | undefined | Promise<Reply | undefined>;
   invitations?: unknown[]; context?: Record<string, unknown>; clipboard?: boolean;
 } = {}) {
   const dom = new JSDOM('<div id="app"></div><div id="live"></div><div id="tip"></div>', { url: 'https://work.test/admin#/users', runScripts: 'outside-only' });
@@ -47,6 +47,9 @@ function page(opts: {
   w.matchMedia = () => ({ matches: false });
   w.requestAnimationFrame = (fn: () => void) => setTimeout(fn, 0);
   w.HTMLElement.prototype.scrollIntoView = () => {};
+  // jsdom does not implement the browser's native dialog lifecycle.
+  w.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  w.HTMLDialogElement.prototype.close = function () { this.open = false; this.dispatchEvent(new w.Event('close')); };
   const copied: string[] = [];
   Object.defineProperty(w.navigator, 'clipboard', { value: { writeText: async (t: string) => {
     if (opts.clipboard === false) throw new Error('denied');
@@ -62,7 +65,7 @@ function page(opts: {
     const body = init.body ? JSON.parse(init.body) : undefined;
     calls.push({ path, method, body });
     const json = (status: number, data: unknown) => ({ ok: status < 400, status, json: async () => data });
-    const own = opts.route?.(path, method, body);
+    const own = await opts.route?.(path, method, body);
     if (own) return json(own.status, own.data);
     if (path === '/api/v1/invitations' && method === 'POST') {
       return json(201, { invitations: body.emails.map((email: string) => ({ email, created: true, status: 'pending' })) });
@@ -83,7 +86,8 @@ function page(opts: {
   };
   w.eval(`${source}
 window.helpers = {
-  invitationsSection, viewUsers, signInGate,
+  invitationsSection, viewUsers, signInGate, route,
+  setRenderedRouteHash: value => { renderedRouteHash = value; },
   setAuthConfig: (c) => { authConfig = c; },
   setSession: (s) => { session = s; },
 };`);
@@ -404,22 +408,22 @@ test('the invitations table: columns, text statuses, password lines and the acti
   const card = [...section.querySelectorAll('.card')].find((c: any) => c.querySelector('h2')?.textContent === 'Invitations') as any;
   const tables = card.querySelectorAll('table');
   assert.deepEqual([...tables[0].querySelectorAll('thead th')].map((t: any) => textOf(t)),
-    ['Select', 'Email', 'Projects', 'Made from', 'Invited by', 'Status', 'Ends or accepted', 'Actions']);
+    ['Select', 'Account', 'Projects', 'Status', 'Ends or accepted', 'Actions']);
   const rows = [...tables[0].querySelectorAll('tbody tr')] as any[];
   assert.deepEqual(rows.map((r) => r.children[1].querySelector('.invite-account > span:last-child').textContent), ['op@partner.example', 'wa@partner.example', 'ex@partner.example', 'cy@partner.example'],
     'pending first, then expired, then accepted');
   const cells = (r: any) => [...r.children].slice(1).map((c: any) => textOf(c));
   const [open, wait, expired, accepted] = rows;
   assert.equal(cells(open)[1], 'Brand refresh (Editor), Spring poster (Viewer)');
-  assert.equal(cells(open)[2], 'Brand refresh (Priya)');
-  assert.equal(cells(open)[4], 'Opened 2h ago Can set a password');
+  assert.ok(cells(open)[0].includes('Brand refresh (Priya)'), 'invitation provenance remains visible with the account');
+  assert.equal(cells(open)[2], 'Opened 2h ago Can set a password');
   assert.equal(cells(wait)[1], 'none');
-  assert.equal(cells(wait)[2], 'Console');
-  assert.equal(cells(wait)[4], 'Waiting');
-  assert.equal(cells(expired)[2], 'Request');
-  assert.equal(cells(expired)[3], '—');
-  assert.equal(cells(expired)[4], 'Expired');
-  assert.equal(cells(accepted)[4], 'Accepted as cy@gmail.example Password set');
+  assert.ok(cells(wait)[0].includes('Console'));
+  assert.equal(cells(wait)[2], 'Waiting');
+  assert.ok(cells(expired)[0].includes('Request'));
+  assert.ok(cells(expired)[0].includes('Invited by —'));
+  assert.equal(cells(expired)[2], 'Expired');
+  assert.equal(cells(accepted)[2], 'Accepted as cy@gmail.example Password set');
   const actions = (r: any) => [...r.lastElementChild.querySelectorAll('button, a')].map((b: any) => b.textContent);
   assert.deepEqual(actions(open), ['Copy message', 'Copy link', 'New link', 'Copy sign-in link', 'Revoke']);
   assert.deepEqual(actions(expired), ['Invite again']);
@@ -471,12 +475,128 @@ test('New link asks first and posts to the link route; Invite again shows the ne
   assert.ok(!section.querySelector('.form-err')?.textContent);
 });
 
-test('People opens with the Requests card above the invitations', async () => {
+test('People opens with the directory, keeps requests visible as a counted task and preserves drafts across tabs', async () => {
   const request = { id: 'req_1', kind: 'join', status: 'open', email: 'sam.k@gmail.example', name: 'Sam', provider: 'GitHub', note: null, role: null, currentRole: null, project: null, session: null, invitation: null, createdAt: ago(6e5), expiresAt: ago(-1e9), answeredAt: null, answeredBy: null, answerRole: null };
   const p = page({ route: (path) => (path.startsWith('/api/v1/access-requests?status=open') ? { status: 200, data: { requests: [request] } }
     : path.startsWith('/api/v1/access-requests?status=answered') ? { status: 200, data: { requests: [] } } : undefined) });
   await p.helpers.viewUsers(p.main, new p.w.URLSearchParams(''));
-  const headings = [...p.main.querySelectorAll('h2')].map((h: any) => h.textContent);
-  assert.ok(headings.indexOf('Requests (1 waiting)') >= 0, headings.join(' | '));
-  assert.ok(headings.indexOf('Requests (1 waiting)') < headings.indexOf('Invite people'));
+  const tabs = [...p.main.querySelectorAll('[role=tab]')] as any[];
+  assert.equal(tabs[0].getAttribute('aria-selected'), 'true');
+  assert.equal(p.main.querySelector('#people-directory').hidden, false);
+  const requests = tabs.find(t => t.textContent.trim() === 'Access requests 1');
+  assert.ok(requests, 'waiting requests have a visible count');
+  requests.click();
+  assert.equal(p.main.querySelector('#people-requests').hidden, false);
+  assert.equal(p.main.querySelector('#people-directory').hidden, true);
+  assert.ok(p.main.querySelector('#people-requests').textContent.includes('Sam'));
+  const invite = [...p.main.querySelectorAll('.page-action')][0] as any;
+  invite.click();
+  const email = p.main.querySelector('.invite-compose textarea');
+  assert.equal(p.w.document.activeElement, email);
+  email.value = 'draft@example.com';
+  tabs[0].click();
+  tabs[1].click();
+  assert.equal(email.value, 'draft@example.com', 'task switching preserves the invitation draft');
+  tabs[1].dispatchEvent(new p.w.KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
+  assert.equal(p.w.document.activeElement, tabs[0]);
+  assert.equal(tabs[0].getAttribute('aria-selected'), 'true');
+});
+
+test('the account inspector preserves group drafts across tabs and security updates, with explicit discard and focus restoration', async () => {
+  const until = new Date(Date.now() + 600_000).toISOString();
+  const p = page({ password: { set: true, email: PERSON.email, lockedUntil: until } });
+  await p.helpers.viewUsers(p.main, new p.w.URLSearchParams(''));
+  const opener = p.main.querySelector('tr.row-click a'); opener.focus(); opener.click();
+  await pause(20);
+  const dialog = p.main.querySelector('dialog');
+  assert.equal(dialog.open, true); assert.equal(dialog.getAttribute('aria-label'), 'Account: Ana');
+  assert.equal(p.w.document.activeElement, dialog.querySelector('h2'));
+  p.main.querySelector('#account-access-tab').click();
+  const cb = dialog.querySelector('.chk input'); cb.checked = true; cb.dispatchEvent(new p.w.Event('change'));
+  assert.equal(dialog.querySelector('.account-footer').hidden, false);
+  p.main.querySelector('#account-security-tab').click();
+  const unlock = buttonByText(dialog, 'Unlock'); unlock.focus(); unlock.click(); await pause(20);
+  assert.equal(p.main.querySelector('#account-security-tab').getAttribute('aria-selected'), 'true', 'the action keeps its section');
+  assert.equal(p.w.document.activeElement, p.main.querySelector('#account-security-tab'), 'a removed action focuses its section');
+  p.main.querySelector('#account-access-tab').click();
+  assert.equal(dialog.querySelector('.chk input').checked, true, 'security saves cannot reset the group draft');
+  dialog.dispatchEvent(new p.w.Event('cancel', { cancelable: true }));
+  assert.ok(buttonByText(dialog, 'Discard changes')); assert.equal(dialog.open, true);
+  buttonByText(dialog, 'Keep editing').click(); assert.equal(dialog.querySelector('.chk input').checked, true);
+  dialog.querySelector('[aria-label="Close account"]').click(); buttonByText(dialog, 'Discard changes').click();
+  assert.equal(p.main.querySelector('dialog'), null); assert.equal(p.w.document.activeElement, opener);
+  assert.ok(!p.calls.some(c => c.method === 'PUT'), 'drafts never save as a side effect of dismissal');
+});
+
+test('new group creation preserves unsaved membership; saving sends the draft once and clears its notice', async () => {
+  const p = page({ route: (path, method, body) => path.endsWith('/local-groups') && method === 'PUT'
+    ? { status: 200, data: { ...PERSON, localGroups: body.groups, groups: body.groups } } : undefined });
+  await p.helpers.viewUsers(p.main, new p.w.URLSearchParams(''));
+  p.main.querySelector('tr.row-click a').click(); await pause(20);
+  p.main.querySelector('#account-access-tab').click();
+  const cb = p.main.querySelector('dialog .chk input'); cb.checked = true; cb.dispatchEvent(new p.w.Event('change'));
+  const input = p.main.querySelector('[aria-label="New local group name"]'); input.value = 'brand'; input.dispatchEvent(new p.w.Event('input'));
+  buttonByText(p.main, 'Create').click(); await pause(20);
+  assert.deepEqual([...p.main.querySelectorAll('dialog .chk')].filter((label: any) => label.querySelector('input').checked).map((label: any) => label.textContent), ['team']);
+  assert.equal(p.main.querySelector('#account-access-tab').getAttribute('aria-selected'), 'true');
+  buttonByText(p.main, 'Save local groups').click(); await pause(20);
+  assert.deepEqual(p.calls.filter(c => c.method === 'PUT').map(c => c.body), [{ groups: ['team'] }]);
+  assert.equal(p.main.querySelector('.account-footer').hidden, true);
+  assert.equal(buttonByText(p.main, 'Save local groups').disabled, true);
+});
+
+test('closing a loading account or navigating away cannot be undone by its late response', async () => {
+  for (const navigation of [false, true]) {
+    let resolve!: (r: Reply) => void;
+    const deferred = new Promise<Reply>(r => { resolve = r; });
+    const p = page({ route: path => path.endsWith('/identities') ? deferred : undefined });
+    await p.helpers.viewUsers(p.main, new p.w.URLSearchParams(''));
+    p.main.querySelector('tr.row-click a').click();
+    assert.ok(p.main.querySelector('dialog[open]'));
+    if (navigation) { p.w.history.replaceState(null, '', '#/tools'); p.w.dispatchEvent(new p.w.HashChangeEvent('hashchange')); }
+    else p.main.querySelector('[aria-label="Close account"]').click();
+    resolve({ status: 200, data: { identities: [] } }); await pause(20);
+    assert.equal(p.main.querySelector('dialog'), null);
+    assert.equal(p.main.querySelector('.account-content'), null);
+  }
+});
+
+test('opening another account supersedes the older loading inspector', async () => {
+  let resolve!: (r: Reply) => void;
+  const deferred = new Promise<Reply>(r => { resolve = r; });
+  const second = { ...PERSON, id: 'usr_2', name: 'Bo', email: 'bo@partner.example' };
+  const p = page({ route: path => path.startsWith('/api/v1/users?')
+    ? { status: 200, data: { users: [PERSON, second], total: 2, page: 1, pageSize: 50 } }
+    : path === '/api/v1/users/usr_1/identities' ? deferred
+    : path === '/api/v1/users/usr_2/identities' ? { status: 200, data: { identities: [] } } : undefined });
+  await p.helpers.viewUsers(p.main, new p.w.URLSearchParams(''));
+  const links = p.main.querySelectorAll('tr.row-click a'); links[0].click(); links[1].click(); await pause(20);
+  resolve({ status: 200, data: { identities: [] } }); await pause(20);
+  assert.equal(p.main.querySelectorAll('dialog').length, 1);
+  assert.equal(p.main.querySelector('dialog').getAttribute('aria-label'), 'Account: Bo');
+  assert.equal(p.main.querySelector('dialog h2').textContent, 'Bo');
+});
+
+test('mobile directory sorting uses the server sort and resets the page', async () => {
+  const p = page(); await p.helpers.viewUsers(p.main, new p.w.URLSearchParams(''));
+  const sort = p.main.querySelector('[aria-label="Sort people"]'); sort.value = 'lastSeen:desc'; sort.dispatchEvent(new p.w.Event('change'));
+  await pause(20);
+  const call = p.calls.filter(c => c.path.startsWith('/api/v1/users?')).at(-1)!;
+  const query = new URL(call.path, 'https://work.test').searchParams;
+  assert.equal(query.get('sort'), 'lastSeen'); assert.equal(query.get('dir'), 'desc'); assert.equal(query.get('page'), '1');
+});
+
+
+test('route changes ask before discarding account edits, and Keep editing retains the route and draft', async () => {
+  const p = page(); await p.helpers.viewUsers(p.main, new p.w.URLSearchParams(''));
+  p.helpers.setRenderedRouteHash('#/users');
+  p.main.querySelector('tr.row-click a').click(); await pause(20);
+  p.main.querySelector('#account-access-tab').click();
+  const cb = p.main.querySelector('dialog .chk input'); cb.checked = true; cb.dispatchEvent(new p.w.Event('change'));
+  p.w.history.replaceState(null, '', '#/tools'); await p.helpers.route();
+  assert.equal(p.w.location.hash, '#/users');
+  assert.ok(buttonByText(p.main, 'Discard changes'));
+  buttonByText(p.main, 'Keep editing').click();
+  assert.equal(p.main.querySelector('dialog .chk input').checked, true); assert.equal(p.w.location.hash, '#/users');
+  assert.ok(!p.calls.some(c => c.method === 'PUT'));
 });

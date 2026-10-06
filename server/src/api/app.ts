@@ -176,6 +176,7 @@ import { csrfVerdict } from '../iam/csrf.ts';
 import { auditHead } from '../audit/head.ts';
 import { createMetrics, statusClass, metricsGate, type Metrics, type GaugeLine } from '../observability/metrics.ts';
 import { createRateLimiter, clientIp, rateLimitSurface } from '../observability/rate-limit.ts';
+import { agentDashboard } from '../agents/dashboard.ts';
 import { buildActivity } from '../activity/feed.ts';
 import {
   applyAction, createApproval, currentStep, eligibleForCurrentStep, isEligible, isTerminal, normalizeChain,
@@ -6130,6 +6131,14 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
     sendJson(res, 200, { days: dates.map((date) => ({ date, counts: byDay.get(date)! })) },
       { 'cache-control': 'private, max-age=30' });
+  });
+
+  // Audited agent usage uses the same disclosure permission as the audit timeline.
+  router.add('GET', '/api/v1/agents/activity', async (req, res, ctx) => {
+    if (!(await requireAction(req, res, 'audit.export'))) return;
+    const asked = Number(ctx.url.searchParams.get('days') ?? 30);
+    if (!Number.isInteger(asked) || asked < 1 || asked > 90) return sendError(res, 400, 'INVALID_INPUT', 'Choose a window from 1 to 90 days.');
+    sendJson(res, 200, await agentDashboard(store, deps.agentRooms, asked), { 'cache-control': 'private, no-store' });
   });
 
   // Humane, merged activity timeline (audit log + attributed usage telemetry).

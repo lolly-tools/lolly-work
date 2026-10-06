@@ -45,6 +45,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 cd "$ROOT"
+node scripts/check-release-capabilities.ts
 command -v rsync >/dev/null || die "rsync is needed"
 [ -f deploy/vm/instance.json ] || die "no deploy/vm/instance.json: copy deploy/vm/instance.json.example and fill it in"
 render_worker=$(node -e 'const c=JSON.parse(require("node:fs").readFileSync("deploy/vm/instance.json")); console.log(c.render?.worker?.url === "http://render-worker:8791" ? "1" : "0")')

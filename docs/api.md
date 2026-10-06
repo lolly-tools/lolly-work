@@ -815,6 +815,17 @@ for fields, collector limits and worker compatibility.
 See [managed production rules](design-system-administration.md#managed-production-rules) for scope and draft handling. Render input checks do not certify output appearance. Durable output metadata includes `brandRules` with disposition, scope and revision; synchronous and durable downloads expose `x-lolly-brand-check`.
 
 
+### Agent activity
+
+`GET /api/v1/agents/activity?days=30` requires `audit.export`. `days` is an
+integer from 1–90 (default 30). The private, no-store response includes summary
+call/outcome/operation counts, the most recently observed agent invitations with
+inviter, scope, role, expiry and live document-room presence, and a metadata-only
+recent timeline. No credentials, arguments or document contents are returned.
+`truncated` and `inventoryTruncated` explicitly disclose the 10,000-event and
+500-agent coverage limits. Room presence is `null` when no room host is wired.
+See [Document agents](document-agents.md#admin-visibility) for reporting semantics.
+
 ### Project agent invitations
 
 Agent activity uses an `agent:<invitation id>` audit actor with the inviting user recorded separately as `invitedBy`. The activity API returns `actor.kind: "agent"` and, when known, `actor.invitedBy: { id, name }`. Filtering by a user or group includes their invited agents. See [Activity attribution](document-agents.md#activity-attribution).

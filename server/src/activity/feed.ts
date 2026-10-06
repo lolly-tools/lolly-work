@@ -10,6 +10,7 @@
  * The console owns the phrasing, deep links, and thumbnails - this only
  * normalises, merges, filters, and sorts.
  */
+import { normalizeAgentClient, AGENT_FAMILY_NAMES, type AgentClientInfo } from '../agents/client-info.ts';
 import type { AuditEvent } from '../audit/chain.ts';
 import type { StoredEvent } from '../telemetry/ingest.ts';
 
@@ -19,6 +20,7 @@ export interface ActivityActor {
   name: string;
   kind: ActorKind;
   invitedBy?: { id: string; name: string };
+  client?: AgentClientInfo;
 }
 export interface ActivityItem {
   id: string; // 'a<seq>' for audit, 't<index>' for telemetry - stable within a snapshot
@@ -70,7 +72,8 @@ function parseActor(actor: string, nameById: Map<string, string>, payload: Recor
   if (kind === 'user' && id) return { id, name: nameById.get(id) ?? 'a teammate', kind: 'user' };
   if (kind === 'agent' && id) {
     const principal = typeof payload.invitedBy === 'string' && payload.invitedBy.startsWith('user:') ? payload.invitedBy.slice(5) : null;
-    return { id, name: typeof payload.agentLabel === 'string' && payload.agentLabel ? payload.agentLabel : 'an agent', kind: 'agent',
+    const client = normalizeAgentClient(payload.client);
+    return { id, ...(client ? { client } : {}), name: typeof payload.agentLabel === 'string' && payload.agentLabel ? payload.agentLabel : 'an agent', kind: 'agent',
       ...(principal ? { invitedBy: { id: principal, name: nameById.get(principal) ?? 'a former teammate' } } : {}) };
   }
   if (kind === 'guest' && id) return { id, name: 'a guest', kind: 'guest' };
@@ -101,7 +104,7 @@ export function normalizeActivity(
       source: 'audit',
       at: e.at,
       action: e.action,
-      category: categoryOf(e.action),
+      category: actor.startsWith('agent:') ? 'agent' : categoryOf(e.action),
       actor: parseActor(actor, nameById, payload),
       subject: e.subject ?? null,
       payload,
@@ -135,13 +138,15 @@ export function buildActivity(
   const q = (query.q ?? '').toLowerCase().trim();
   const matches = (x: ActivityItem): boolean => {
     if (query.category && x.category !== query.category) return false;
-    if (query.actor && x.actor.id !== query.actor && x.actor.invitedBy?.id !== query.actor) return false;
+    if (query.actor && x.actor.id !== query.actor && x.actor.invitedBy?.id !== query.actor && !(x.category === 'agent' && x.payload.agentId === query.actor)) return false;
     const accountableUser = x.actor.kind === 'agent' ? x.actor.invitedBy?.id : x.actor.id;
     if (query.group && !(groupsByUser.get(accountableUser ?? '') ?? []).includes(query.group)) return false;
     if (query.day && x.at.slice(0, 10) !== query.day) return false;
     if (query.before && !(x.at < query.before)) return false;
     if (q) {
-      const hay = `${x.action} ${x.subject ?? ''} ${x.actor.name} ${x.actor.invitedBy?.name ?? ''} ${Object.values(x.payload).join(' ')}`.toLowerCase();
+      const client = x.actor.client;
+      const clientText = client ? `${client.name ?? ''} ${client.title ?? ''} ${client.version ?? ''} ${client.model ?? ''} ${client.provider ?? ''} ${AGENT_FAMILY_NAMES[client.family]} ${client.modelFamily ? AGENT_FAMILY_NAMES[client.modelFamily] : ''}` : '';
+      const hay = `${x.action} ${x.subject ?? ''} ${x.actor.name} ${x.actor.invitedBy?.name ?? ''} ${clientText} ${Object.values(x.payload).join(' ')}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;

@@ -28,9 +28,10 @@ const $live = document.getElementById('live');
 // announced to assistive tech without a visual-only cue. Clearing first makes a
 // repeated identical message re-announce.
 function announce(msg) {
-  if (!$live) return;
-  $live.textContent = '';
-  requestAnimationFrame(() => { $live.textContent = msg; });
+  const live = document.querySelector('dialog[open] .sheet-live') || $live;
+  if (!live) return;
+  live.textContent = '';
+  requestAnimationFrame(() => { live.textContent = msg; });
 }
 
 // Visible transient confirmation for a successful mutation (revoke, save, send,
@@ -50,6 +51,7 @@ function toast(msg) {
     t = el('div', { id: 'toast', class: 'toast', role: 'status', 'aria-live': 'polite' });
     document.body.append(t);
   }
+  (document.querySelector('dialog[open]') || document.body).append(t);
   t.textContent = msg;
   t.classList.add('show');
   clearTimeout(_toastTimer);
@@ -81,6 +83,14 @@ function el(tag, attrs = {}, ...children) {
     else if (k.startsWith('on')) node.addEventListener(k.slice(2), v);
     else if (v !== null && v !== undefined) node.setAttribute(k, String(v));
   }
+  // These classes use the web shell's shared CSS primitives. Real controls
+  // retain keyboard, label, validation and indeterminate-state behavior.
+  if (tag === 'input') {
+    if (node.type === 'checkbox') node.classList.add('field-check');
+    else if (node.type === 'radio') node.classList.add('field-radio');
+    else if (!['hidden', 'range', 'color', 'file', 'submit', 'button'].includes(node.type)) node.classList.add('field-input');
+  } else if (tag === 'textarea') node.classList.add('field-input');
+  else if (tag === 'select') node.classList.add('field-select');
   for (const c of children.flat()) {
     if (c === null || c === undefined) continue;
     node.append(c.nodeType ? c : document.createTextNode(String(c)));
@@ -88,6 +98,44 @@ function el(tag, attrs = {}, ...children) {
   return node;
 }
 const fmt = (n) => n >= 10_000 ? `${(n / 1000).toFixed(n >= 100_000 ? 0 : 1)}K` : String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+
+// Tabs use the shell's segmented-control vocabulary, with independent panels
+// so switching tasks never drops typed filters or selection.
+function sectionTabs(name, sections, initial = sections[0]?.id, onSelect = () => {}) {
+  const tablist = el('div', { class: 'section-tabs', role: 'tablist', 'aria-label': name });
+  const buttons = new Map(), panels = new Map(), counts = new Map();
+  const select = (id, focus = false) => {
+    if (!buttons.has(id)) return;
+    for (const [key, button] of buttons) {
+      button.setAttribute('aria-selected', String(key === id));
+      button.tabIndex = key === id ? 0 : -1;
+      panels.get(key).hidden = key !== id;
+      if (key === id) requestAnimationFrame(() => {
+        for (const table of panels.get(key).querySelectorAll('.tbl-scroll')) table.dispatchEvent(new Event('console-panel-visible'));
+      });
+    }
+    if (focus) buttons.get(id).focus();
+    onSelect(id);
+  };
+  for (const section of sections) {
+    const panelId = `${name.toLowerCase().replace(/\W+/g, '-')}-${section.id}`;
+    const count = el('span', { class: 'tab-count', hidden: section.count ? null : 'true' }, section.count || '');
+    counts.set(section.id, count);
+    const button = el('button', { type: 'button', id: `${panelId}-tab`, role: 'tab', 'aria-controls': panelId,
+      onclick: () => select(section.id) }, section.label, ' ', count);
+    const panel = el('section', { id: panelId, class: 'section-panel', role: 'tabpanel', 'aria-labelledby': button.id }, section.content);
+    button.addEventListener('keydown', event => {
+      const ids = [...buttons.keys()], index = ids.indexOf(section.id);
+      const next = event.key === 'ArrowRight' ? (index + 1) % ids.length : event.key === 'ArrowLeft' ? (index + ids.length - 1) % ids.length
+        : event.key === 'Home' ? 0 : event.key === 'End' ? ids.length - 1 : null;
+      if (next !== null) { event.preventDefault(); select(ids[next], true); }
+    });
+    buttons.set(section.id, button); panels.set(section.id, panel); tablist.append(button);
+  }
+  select(buttons.has(initial) ? initial : sections[0]?.id);
+  return { element: el('div', { class: 'section-workspace' }, tablist, ...panels.values()), select,
+    setCount: (id, value) => { const count = counts.get(id); if (count) { count.textContent = String(value); count.hidden = !value; } } };
+}
 const when = (iso) => iso ? new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
 // Seconds → a compact duration ("45s" / "38m" / "6.2h" / "3.1d"); ≤0/NaN → '0m'.
 function fmtDuration(totalSeconds) {
@@ -123,7 +171,7 @@ function th(col, idx = 0, sortable = false, onSort = null) {
   // when the column opts out (sort:false — actions/icon columns) or the label is
   // already a DOM node (e.g. People's own server-sort buttons), so it can't
   // double-wire. Everything else is byte-identical to before.
-  const canSort = sortable && c.sort !== false && (c.label == null || typeof c.label === 'string');
+  const canSort = sortable && c.sort !== false && typeof c.label === 'string' && c.label.trim() && !/^actions?$/i.test(c.label);
   if (canSort) {
     attrs['aria-sort'] = 'none';
     return el('th', attrs, el('button', {
@@ -164,6 +212,7 @@ function dataTable(cols, rows, opts = {}) {
   const hasCsv = opts.csv ?? (hasFilter || hasPager);
 
   const tbody = el('tbody');
+  let mobileSort;
   let sIdx = -1;
   let sDir = 0; // 0 none, 1 asc, -1 desc
   let q = '';
@@ -202,12 +251,19 @@ function dataTable(cols, rows, opts = {}) {
         if (caret) caret.textContent = active ? (sDir === 1 ? '▲' : '▼') : '';
       }
     }
+    if (mobileSort) mobileSort.value = sDir ? `${sIdx}:${sDir}` : '';
     const list = currentRows();
     const pages = Number.isFinite(pageSize) ? Math.max(1, Math.ceil(list.length / pageSize)) : 1;
     if (page > pages) page = pages;
     const start = Number.isFinite(pageSize) ? (page - 1) * pageSize : 0;
     const shown = Number.isFinite(pageSize) ? list.slice(start, start + pageSize) : list;
     tbody.replaceChildren(...shown);
+    if (!shown.length) tbody.append(el('tr', { class: 'tbl-empty-row' },
+      el('td', { colspan: norm.length }, el('div', { class: 'tbl-empty', role: 'status' },
+        el('strong', {}, q ? 'No matching rows' : 'No entries yet'),
+        q ? el('span', { class: 'muted' }, 'Try another search or clear it to see all entries.') : null,
+        q ? el('button', { type: 'button', onclick: () => { input.value = ''; q = ''; page = 1; apply(); input.focus(); } }, 'Clear search') : null))));
+    if (clearBtn) clearBtn.hidden = !q;
     if (count) {
       const total = list.length === original.length ? fmt(original.length) : `${fmt(list.length)} of ${fmt(original.length)}`;
       count.textContent = shown.length === list.length ? total : `${fmt(start + 1)}–${fmt(start + shown.length)} of ${total}`;
@@ -219,7 +275,7 @@ function dataTable(cols, rows, opts = {}) {
     }
   }
   function onSort(i) {
-    if (norm[i].sort === false) return;
+    if (norm[i].sort === false || !heads[i].querySelector('.col-sort')) return;
     if (sIdx === i) sDir = sDir === 1 ? -1 : sDir === -1 ? 0 : 1;
     else { sIdx = i; sDir = 1; }
     page = 1;
@@ -244,9 +300,12 @@ function dataTable(cols, rows, opts = {}) {
   // Sticky headers need overflow-x:clip (no scroll container); only a table
   // that genuinely overflows trades them for horizontal scrolling. Measured
   // after the caller mounts us (rAF fires post-layout).
-  requestAnimationFrame(() => {
-    if (scroll.isConnected && scroll.scrollWidth > scroll.clientWidth + 1) scroll.classList.add('is-scrollx');
-  });
+  const measureOverflow = () => {
+    if (scroll.isConnected && scroll.clientWidth) scroll.classList.toggle('is-scrollx', scroll.scrollWidth > scroll.clientWidth + 1);
+  };
+  // A table can be mounted in an inactive task panel. Measure again on reveal.
+  scroll.addEventListener('console-panel-visible', measureOverflow);
+  requestAnimationFrame(measureOverflow);
 
   // Bar: search + match count (left), CSV export of the current view (right).
   const count = hasFilter || hasPager ? el('span', { class: 'tbl-filter-count muted', role: 'status' }) : null;
@@ -254,12 +313,22 @@ function dataTable(cols, rows, opts = {}) {
     type: 'search', class: 'tbl-filter', placeholder: 'Search rows…', 'aria-label': 'Search rows',
     oninput: (e) => { q = e.target.value.trim().toLowerCase(); page = 1; apply(); },
   }) : null;
+  const clearBtn = hasFilter ? el('button', { class: 'tbl-clear', type: 'button', hidden: 'true',
+    onclick: () => { input.value = ''; q = ''; page = 1; apply(); input.focus(); } }, 'Clear search') : null;
+  // Card rows hide column headers on phones. Keep the same sorting available
+  // there, including reverse order and a return to the original order.
+  const sortOptions = norm.flatMap((c, i) => heads[i].querySelector('.col-sort')
+    ? [el('option', { value: `${i}:1` }, `${labelText(c)} · ascending`), el('option', { value: `${i}:-1` }, `${labelText(c)} · descending`)] : []);
+  mobileSort = sortOptions.length && norm.length >= 4 ? el('select', { class: 'tbl-sort-mobile', 'aria-label': 'Sort rows', onchange: event => {
+    [sIdx, sDir] = event.target.value ? event.target.value.split(':').map(Number) : [-1, 0]; page = 1; apply();
+  } }, el('option', { value: '' }, 'Original order'), ...sortOptions) : null;
   const csvBtn = hasCsv ? el('button', {
     class: 'tbl-csv', type: 'button', title: 'Download the current view (search + sort applied) as CSV',
     onclick: () => {
       const cellText = (n) => n.textContent.replace(/\s+/g, ' ').trim();
       const esc = (s) => (/[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
-      const lines = [heads.map(cellText), ...currentRows().map((tr) => Array.from(tr.children, cellText))]
+      const exportCols = norm.map((c, i) => ({ i, label: labelText(c) })).filter(c => c.label && !/^actions?$/i.test(c.label));
+      const lines = [exportCols.map(c => c.label), ...currentRows().map(tr => exportCols.map(c => cellText(tr.children[c.i])))]
         .map((cells) => cells.map(esc).join(',')).join('\r\n');
       // Leading BOM so Excel opens the UTF-8 file with accents intact.
       const url = URL.createObjectURL(new Blob(['\ufeff' + lines], { type: 'text/csv' }));
@@ -267,7 +336,7 @@ function dataTable(cols, rows, opts = {}) {
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     },
-  }, 'CSV') : null;
+  }, navIcon('export'), 'Export CSV') : null;
 
   // Pager: prev/next + page size, all client-side over the filtered list.
   let prevBtn, nextBtn, pageNote, pager = null;
@@ -283,8 +352,8 @@ function dataTable(cols, rows, opts = {}) {
   }
 
   apply();
-  if (!input && !csvBtn && !pager) return scroll;
-  const bar = (input || csvBtn || count) ? el('div', { class: 'tbl-bar' }, input, count, csvBtn) : null;
+  if (!input && !csvBtn && !pager && !mobileSort) return scroll;
+  const bar = (input || csvBtn || count || mobileSort) ? el('div', { class: 'tbl-bar' }, input, clearBtn, count, mobileSort, csvBtn) : null;
   return el('div', { class: 'data-tbl' }, bar, scroll, pager);
 }
 
@@ -303,7 +372,7 @@ function field(labelText, control, attrs = {}) {
     ? control
     : control.querySelector?.('input, select, textarea') ?? control;
   if (!target.id) target.id = `fld-${++_fieldSeq}`;
-  return el('div', attrs, el('label', { for: target.id }, labelText), control);
+  return el('div', attrs, el('label', { class: 'field-label', for: target.id }, labelText), control);
 }
 
 // Cells that carry a canonical `data-sort` value so a sortable column orders by
@@ -506,7 +575,8 @@ async function activityHeader(caption, seriesDef /* [{key,label,match:[…]}] */
   const prev = prior.reduce((a, r) => a + dayTotal(r), 0);
   const busiest = win.reduce((b, r) => (dayTotal(r) > dayTotal(b) ? r : b), win[0]);
   const delta = prev ? Math.round(((total - prev) / prev) * 100) : null;
-  return el('div', { class: 'card' },
+  return el('details', { class: 'card activity-summary' },
+    el('summary', {}, 'Activity · last 30 days', el('span', { class: 'muted' }, `${fmt(total)} events`)),
     el('p', { class: 'sub flush' }, caption),
     el('div', { class: 'grid tiles' },
       tile('Last 30 days', fmt(total)),
@@ -703,7 +773,7 @@ const ACT_CAT_ICON = {
   catalog: 'catalog', provider: 'providers', grant: 'grants', group: 'users',
   user: 'users', approval: 'approvals', chain: 'approvals', message: 'messages',
   auth: 'users', telemetry: 'overview', guest: 'users', collab: 'projects',
-  invite: 'users', access: 'users', agent: 'users',
+  invite: 'users', access: 'users', agent: 'agents',
 };
 const CONSOLE_VIEW_OF = {
   link: 'links', session: 'projects', project: 'projects', tool: 'tools',
@@ -734,10 +804,41 @@ function actSessionObj(id, toolId) {
   const href = toolId ? lollyHref(`/t/${encodeURIComponent(toolId)}?session=${encodeURIComponent(id)}`) : '#/projects';
   return actAnchor(href, actShort(id), toolId ? 'Open this session in Lolly' : 'Open in Projects');
 }
-function actProjectObj(id) { return actAnchor(lollyHref(`/#/p/${encodeURIComponent(id)}`), actShort(id), 'Open this project in Lolly'); }
+function actProjectObj(id) { return actAnchor(lollyHref(`/#/p?team=${encodeURIComponent(id)}`), actShort(id), 'Open this project in Lolly'); }
 // Console deep links (hash → routed in-place).
 function actConsoleObj(type, id, label) { return actAnchor(`#/${CONSOLE_VIEW_OF[type] ?? 'overview'}`, label ?? actShort(id), id); }
 function actUserObj(id, names) { return actAnchor(`#/users?focus=${encodeURIComponent(id)}`, (names && names[id]) || actShort(id), 'Open in People'); }
+// Fixed local marks: client-provided URLs and icons are never loaded.
+const AGENT_CLIENTS = {
+  claude: ['Claude', 'CL'], codex: ['Codex', 'CX'], gemini: ['Gemini', 'GM'], qwen: ['Qwen', 'QW'], glm: ['GLM', 'GL'], deepseek: ['DeepSeek', 'DS'], openai: ['OpenAI', 'AI'],
+  jev: ['Jev', 'JV'], laya: ['Laya', 'LY'], kolibri: ['Kolibri', 'KB'], mistral: ['Mistral', 'MI'], cursor: ['Cursor', 'CU'], copilot: ['GitHub Copilot', 'CP'],
+  opencode: ['OpenCode', 'OC'], cline: ['Cline', 'CN'], roo: ['Roo Code', 'RC'], windsurf: ['Windsurf', 'WS'], openclaw: ['OpenClaw', 'CW'], goose: ['Goose', 'GS'],
+  continue: ['Continue', 'CT'], aider: ['Aider', 'AD'], 'amazon-q': ['Amazon Q', 'AQ'], droid: ['Factory Droid', 'FD'], kimi: ['Kimi', 'KM'], grok: ['Grok', 'GK'], llama: ['Llama', 'LM'], vscode: ['VS Code', 'VS'], other: ['Other client', 'AG'],
+};
+function agentClientMark(client, extraClass = '') {
+  const family = Object.hasOwn(AGENT_CLIENTS, client?.family) ? client.family : 'other';
+  const [label, mark] = AGENT_CLIENTS[family];
+  return el('span', { class: `agent-client-mark agent-client-mark--${family} ${extraClass}`, 'aria-hidden': 'true', title: `${label} · reported by client` }, mark);
+}
+function agentClientLabel(client) {
+  if (!client) return 'Not reported';
+  const family = Object.hasOwn(AGENT_CLIENTS, client.family) ? client.family : 'other';
+  return family === 'other' ? client.title || client.name || 'Client not reported' : AGENT_CLIENTS[family][0];
+}
+function agentModelLabel(client) {
+  if (!client?.model) return '';
+  const label = Object.hasOwn(AGENT_CLIENTS, client.modelFamily) && client.modelFamily !== 'other' ? AGENT_CLIENTS[client.modelFamily][0] : '';
+  return label && client.model.toLowerCase() !== label.toLowerCase() ? `${label} · ${client.model}` : client.model;
+}
+function agentClientCell(client, reportedAt) {
+  if (!client) return el('span', { class: 'muted' }, 'Not reported');
+  const name = client.name || client.title;
+  return el('div', { class: 'agent-client' }, agentClientMark(client), el('div', {},
+    el('strong', {}, agentClientLabel(client)),
+    ...(name ? [el('span', { class: 'muted' }, name, client.version ? ` · v${client.version}` : '')] : []),
+    ...(client.model ? [el('span', { class: 'agent-model' }, `Model: ${agentModelLabel(client)}`, client.provider ? ` (${client.provider})` : '')] : []),
+    el('span', { class: 'muted', title: reportedAt ? `Last reported ${new Date(reportedAt).toLocaleString()}` : null }, 'Client-reported')));
+}
 function actActorObj(actor, names) {
   const name = (actor.id && names && names[actor.id]) || actor.name;
   return actor.kind === 'user' && actor.id
@@ -762,6 +863,7 @@ function activityLine(item, names) {
   const p = item.payload || {};
   const s = actSubjRef(item.subject);
   const out = [actActorObj(item.actor, names)];
+  if (item.actor.kind === 'agent' && item.actor.client) out.push(' ', el('span', { class: 'agent-client-tag', title: 'Reported on this request; not verified by Lolly.' }, agentClientLabel(item.actor.client), ...(item.actor.client.model ? [` · ${agentModelLabel(item.actor.client)}`] : [])));
   if (item.actor.kind === 'agent' && item.actor.invitedBy) out.push(' (invited by ', actUserObj(item.actor.invitedBy.id, names), ')');
   out.push(' ');
   const push = (...xs) => out.push(...xs);
@@ -810,8 +912,8 @@ function activityLine(item, names) {
     case 'agent.project-invite': push('invited ', bold(p.agentLabel || 'an agent'), ' to ', s?.type === 'session' ? actSessionObj(s.id) : s ? actProjectObj(s.id) : 'a project'); break;
     case 'agent.revoke':
     case 'agent.project-revoke': push('revoked ', bold(p.agentLabel || 'an agent'), '’s invitation'); break;
-    case 'agent.connect': push('connected to ', s ? actProjectObj(s.id) : 'the workspace'); break;
-    case 'agent.disconnect': push('disconnected from ', s ? actProjectObj(s.id) : 'the workspace'); break;
+    case 'agent.connect': push('connected to ', s?.type === 'session' ? actSessionObj(s.id, 'design') : s ? actProjectObj(s.id) : 'the workspace'); break;
+    case 'agent.disconnect': push('disconnected from ', s?.type === 'session' ? actSessionObj(s.id, 'design') : s ? actProjectObj(s.id) : 'the workspace'); break;
     case 'agent.tool-call': push(p.outcome === 'rejected' ? 'was refused ' : p.outcome === 'partial' ? 'partially completed ' : 'used ', bold(p.tool), p.code ? ` (${p.code})` : ''); break;
     case 'agent.project-write': push('ran ', bold(p.tool), ' in ', s ? actProjectObj(s.id) : 'a project'); break;
     case 'collab.invite': push('invited ', p.invitee ? actUserObj(p.invitee, names) : 'a teammate', ' to co-edit ', s ? actSessionObj(s.id, p.toolId) : 'a session'); break;
@@ -845,6 +947,7 @@ function activityLine(item, names) {
 // A small square marker per row: the pack's tool/asset preview when one exists
 // (in-instance /catalog/ path only), else a category-icon badge. Air-gap-safe.
 function activityThumb(item) {
+  if (item.actor?.kind === 'agent' && item.actor.client) return agentClientMark(item.actor.client, 'act-thumb');
   const iconId = ACT_CAT_ICON[item.category] || 'overview';
   const badge = el('span', { class: 'act-thumb act-thumb--badge' }, navIcon(iconId));
   const p = item.payload || {};
@@ -858,8 +961,8 @@ function activityThumb(item) {
   return badge;
 }
 
-async function renderActivityFeed(host) {
-  const state = { category: '', actor: '', group: '', day: '', q: '', nextBefore: null };
+async function renderActivityFeed(host, params = new URLSearchParams()) {
+  const state = { category: params.get('category') || '', actor: params.get('actor') || '', group: params.get('group') || '', day: params.get('day') || '', q: params.get('q') || '', nextBefore: null };
   let names = {};
   const list = el('ul', { class: 'act-list' });
   const moreWrap = el('div', { class: 'act-more' });
@@ -891,17 +994,22 @@ async function renderActivityFeed(host) {
   state.nextBefore = first.nextBefore;
 
   const search = el('input', { type: 'search', placeholder: 'Search activity…', 'aria-label': 'Search activity' });
+  search.value = state.q;
   let deb; search.oninput = () => { clearTimeout(deb); deb = setTimeout(() => { state.q = search.value.trim(); reload(); }, 250); };
   const catSel = el('select', { 'aria-label': 'Filter by type' },
     el('option', { value: '' }, 'All types'),
+    ...(state.category && !first.categories.some(c => c.key === state.category) ? [el('option', { value: state.category }, ACT_CAT_LABEL[state.category] || state.category)] : []),
     ...first.categories.map((c) => el('option', { value: c.key }, `${ACT_CAT_LABEL[c.key] ?? c.key} (${c.count})`)));
+  catSel.value = state.category;
   catSel.onchange = () => { state.category = catSel.value; reload(); };
   // People and groups can be long lists → searchable comboboxes.
   const personBox = searchSelect(first.actors.map((a) => ({ value: a.id, label: a.name })),
     { placeholder: 'Anyone', strict: true, onchange: (v) => { state.actor = v; reload(); } });
   const groupBox = searchSelect(groups.map((g) => ({ value: g.name, label: g.name })),
     { placeholder: 'Any group', onchange: (v) => { state.group = v; reload(); } });
+  personBox.set(state.actor); groupBox.set(state.group);
   const dayInput = el('input', { type: 'date', 'aria-label': 'Filter by day' });
+  dayInput.value = state.day;
   dayInput.onchange = () => { state.day = dayInput.value; reload(); };
   const clearBtn = el('button', { class: 'link-btn', onclick: () => {
     state.category = state.actor = state.group = state.day = state.q = '';
@@ -909,7 +1017,7 @@ async function renderActivityFeed(host) {
     reload();
   } }, 'Clear');
   const bar = el('div', { class: 'act-bar' },
-    field('Search', search), field('Type', catSel), field('Person', personBox.node),
+    field('Search', search), field('Type', catSel), field('Person or agent', personBox.node),
     field('Group', groupBox.node), field('Day', dayInput),
     el('div', { class: 'act-bar-clear' }, clearBtn));
 
@@ -952,7 +1060,7 @@ async function renderActivityFeed(host) {
 }
 
 async function viewOverview(main) {
-  const [summary, fleet, links, stats, appr, auditHead, asks] = await Promise.all([
+  const [summary, fleet, links, stats, appr, auditHead, asks, agentUse] = await Promise.all([
     api('/api/v1/telemetry/summary'),
     api('/api/v1/fleet').catch(() => ({ clients: [] })),
     api('/api/v1/links?all=1').catch(() => ({ links: [] })),
@@ -960,6 +1068,7 @@ async function viewOverview(main) {
     api('/api/v1/approvals').catch(() => null),
     api('/api/v1/audit?limit=1').catch(() => null),
     api('/api/v1/access-requests?status=open').catch(() => null),
+    canView('agents') ? api('/api/v1/agents/activity?days=14').catch(() => null) : null,
   ]);
   const d14 = summary.days;
   const events14 = d14.reduce((a, d) => a + d.events, 0);
@@ -1036,6 +1145,13 @@ async function viewOverview(main) {
         hbarChart(fleetChartRows(fleet.clients), { colorOf: shellColorOf, empty: 'No shells have connected yet.' })),
     ),
   );
+
+  if (agentUse) main.append(el('div', { class: 'card agent-overview' },
+    el('div', { class: 'agent-heading' }, el('h2', {}, navIcon('agents'), 'Agents'), el('a', { class: 'btn', href: '#/agents' }, 'View agent activity')),
+    el('p', { class: 'sub' }, 'Delegated work across the last 14 days. Each agent acts under the access of the person who invited it.'),
+    el('div', { class: 'grid tiles' }, tile('Agents used', fmt(agentUse.summary.agentsUsed)), tile('Tool calls', fmt(agentUse.summary.toolCalls)),
+      tile('Rejected calls', fmt(agentUse.summary.rejected)), tile('In document rooms now', agentUse.summary.connected === null ? 'Unavailable' : fmt(agentUse.summary.connected))),
+    ...(agentUse.truncated || agentUse.inventoryTruncated ? [el('p', { class: 'sub' }, 'This summary is limited to the most recent recorded activity. Open Agents for coverage details.')] : [])));
 
   // ── seat / session utility (internal instance — utilisation shown in full) ──
   // Extended telemetry summary carries per-kind session durations; tolerate an
@@ -1133,7 +1249,7 @@ async function viewOverview(main) {
 }
 
 // ── activity view (its own section, listed under Overview) ──────────────────
-async function viewActivity(main) {
+async function viewActivity(main, params) {
   const actHost = el('div', { class: 'act-host' });
   const hdr = await activityHeader('All audited events per day — the feed below is the detail.', [
     { key: 'a', label: 'Events', match: ['*'] },
@@ -1144,7 +1260,85 @@ async function viewActivity(main) {
     ...(hdr ? [hdr] : []),
     actHost,
   );
-  await renderActivityFeed(actHost).catch(() => { actHost.replaceChildren(el('p', { class: 'sub' }, 'Activity is unavailable right now.')); });
+  await renderActivityFeed(actHost, params).catch(() => { actHost.replaceChildren(el('p', { class: 'sub' }, 'Activity is unavailable right now.')); });
+}
+
+// ── agents — delegated identity, outcomes and room presence ─────────────────
+const AGENT_STATUS = { active: 'Active invitation', expired: 'Expired', revoked: 'Revoked', unavailable: 'Unavailable' };
+function agentActivityRow(item, names) {
+  const outcome = item.payload?.outcome;
+  return el('li', { class: 'act-row' }, activityThumb(item), el('div', { class: 'act-body' },
+    el('div', { class: 'act-line' }, ...activityLine(item, names).flat(Infinity)),
+    el('div', { class: 'act-meta' }, el('time', { datetime: item.at }, when(item.at)),
+      ...(outcome ? [el('span', { class: `agent-outcome agent-outcome--${['rejected', 'partial', 'succeeded'].includes(outcome) ? outcome : 'unknown'}` }, outcome === 'succeeded' ? 'Succeeded' : outcome === 'partial' ? 'Partially accepted' : outcome === 'rejected' ? 'Rejected' : 'Outcome unreported')] : []),
+      ...(item.payload?.acceptedOps !== undefined ? [el('span', {}, `${fmt(item.payload.acceptedOps)} operations accepted · ${fmt(item.payload.rejectedOps || 0)} rejected`)] : []))));
+}
+async function viewAgents(main) {
+  let disposed = false, timer, inFlight = false, days = '30';
+  const period = el('select', { 'aria-label': 'Agent activity period' }, ...[7, 30, 90].map(n => el('option', { value: n, selected: n === 30 ? 'selected' : null }, `Last ${n} days`)));
+  const updated = el('p', { class: 'sub flush', role: 'status' });
+  const metrics = el('div'), detail = el('div'), errors = el('div', { role: 'status' });
+  const refresh = el('button', { type: 'button', onclick: () => void load(true) }, navIcon('activity'), 'Refresh');
+  main.append(el('h1', {}, 'Agents'), el('p', { class: 'sub' }, 'See who invited each agent, where it works, and whether its tool calls succeeded. Credentials and document contents stay private.'),
+    el('div', { class: 'agent-toolbar' }, field('Activity period', period), refresh, updated), errors, metrics, detail);
+  const dispose = () => { disposed = true; clearTimeout(timer); };
+  disposeAgentView = dispose;
+  function render(data, replaceDetail) {
+    const s = data.summary;
+    metrics.replaceChildren(el('div', { class: 'grid tiles' },
+      tile('Agents used', fmt(s.agentsUsed)), tile('Tool calls', fmt(s.toolCalls)), tile('Succeeded', fmt(s.succeeded)), tile('Partially accepted', fmt(s.partial)), tile('Rejected', fmt(s.rejected)),
+      tile('In document rooms now', s.connected === null ? 'Unavailable' : fmt(s.connected))),
+      el('p', { class: 'sub' }, `${fmt(s.invited)} invitations created · ${fmt(s.revoked)} revoked · ${fmt(s.acceptedOps)} document operations accepted · ${fmt(s.rejectedOps)} rejected in this period. Room presence is a live snapshot of this host; project-only calls do not occupy a document room.`),
+      ...(data.truncated || data.inventoryTruncated ? [el('p', { class: 'agent-coverage' }, `Coverage limited: newest ${fmt(data.limits.events)} agent events and ${fmt(data.limits.agents)} agents. Counts may be lower than the full period. Choose a shorter period or use the audit log for complete history.`)] : []));
+    updated.textContent = `Updated ${new Date(data.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })} · refreshes every 15 seconds`;
+    if (!replaceDetail) return;
+    const rows = data.agents.map(a => el('tr', {},
+      el('td', {}, el('div', { class: 'agent-identity' }, navIcon('agents'), el('div', {}, el('strong', {}, a.label), el('span', { class: 'muted' }, a.lastTool || 'No tool calls yet')))),
+      el('td', {}, agentClientCell(a.client, a.clientReportedAt)),
+      el('td', {}, a.invitedBy ? actUserObj(a.invitedBy.id, { [a.invitedBy.id]: a.invitedBy.name }) : 'Former member'),
+      el('td', {}, ...(a.project ? [el('a', { href: lollyHref(`/#/p?team=${encodeURIComponent(a.project.id)}`) }, a.project.name)] : ['Unavailable project']),
+        ...(a.session ? [el('div', { class: 'muted' }, a.session.toolId ? el('a', { href: lollyHref(`/t/${encodeURIComponent(a.session.toolId)}?session=${encodeURIComponent(a.session.id)}`) }, a.session.name) : a.session.name)] : [])),
+      el('td', {}, a.role ? `${a.role === 'editor' ? 'Editor' : 'Viewer'} · ${a.scope === 'document' ? 'document' : 'project'}` : 'Unknown'),
+      el('td', {}, el('span', { class: 'agent-state', title: 'Current access is checked again on every tool call.' }, AGENT_STATUS[a.status] || a.status),
+        el('div', { class: 'muted' }, a.connected === null ? 'Room presence unavailable' : a.connected ? 'In a document room' : 'Not in a document room'),
+        ...(a.expiresAt ? [el('div', { class: 'muted' }, `Expires ${new Date(a.expiresAt).toLocaleString()}`)] : [])),
+      el('td', { 'data-sort': a.calls }, el('strong', {}, fmt(a.calls)), ...(a.rejected || a.partial ? [el('div', { class: 'muted' }, `${fmt(a.rejected)} rejected · ${fmt(a.partial)} partial`)] : [])),
+      el('td', { 'data-sort': a.lastActivity }, el('time', { datetime: a.lastActivity, title: new Date(a.lastActivity).toLocaleString() }, when(a.lastActivity))),
+      el('td', {}, el('a', { class: 'btn', href: `#/activity?category=agent&actor=${encodeURIComponent(a.id)}`, title: `Activity for ${a.label}` }, 'Activity'))));
+    const inventory = el('div', { class: 'card' }, el('h2', {}, 'Agents seen in this period'),
+      ...(rows.length ? [dataTable(['Agent', 'Client / model', 'Invited by', 'Workspace', 'Access', 'Invitation & presence', 'Tool calls', 'Last activity', { label: 'Actions', sort: false }], rows,
+        { filter: true, paginate: true, pageSize: 25, csv: true, csvName: 'agent-activity.csv' })] : [el('p', { class: 'empty' }, 'No agents have been invited or used in this period. Invite an agent from a shared project or design session to begin.')]),
+      el('p', { class: 'sub' }, 'Client identity is the last report in this period. Names and models are supplied by the client, not verified by Lolly. A client name alone does not identify its model. Access belongs to the inviter. An active invitation can still be refused when project permissions, locks or account access change.'));
+    const timeline = el('div', { class: 'card' }, el('div', { class: 'agent-heading' }, el('h2', {}, 'Recent agent activity'), el('a', { class: 'btn', href: '#/activity?category=agent' }, 'Full timeline')),
+      el('p', { class: 'sub' }, 'Newest 100 events in this period. Tool outcomes include rejected and partially accepted edits.'),
+      el('ul', { class: 'act-list' }, ...(data.timeline.length ? data.timeline.map(item => agentActivityRow(item, data.names)) : [el('li', { class: 'act-empty' }, 'Agent activity will appear here when an invitation is used.')])));
+    const selected = detail.querySelector('[role=tab][aria-selected=true]')?.getAttribute('aria-controls')?.replace('agent-details-', '') || 'agents';
+    detail.replaceChildren(sectionTabs('Agent details', [{ id: 'agents', label: 'Agents', count: data.agents.length, content: inventory }, { id: 'activity', label: 'Activity', count: data.timeline.length, content: timeline }], selected).element);
+  }
+  async function load(manual = false) {
+    if (disposed || inFlight || !main.isConnected) return;
+    inFlight = true; refresh.disabled = true;
+    const requestedDays = days;
+    try {
+      const data = await api(`/api/v1/agents/activity?days=${requestedDays}`);
+      if (disposed || days !== requestedDays) return;
+      errors.replaceChildren();
+      // Keep table search, sorting and keyboard focus while someone is using it.
+      const editing = detail.contains(document.activeElement) || !!detail.querySelector('input[type=search]')?.value;
+      render(data, manual || !editing);
+    } catch (error) {
+      if (!disposed) errors.replaceChildren(el('p', { class: 'sub' }, error.status === 403 ? 'Agent activity needs permission to read the audit log.' : error.status === 401 ? 'Sign in again to see agent activity.' : 'Agent activity could not refresh. Showing the last successful snapshot.', ...(error.status === 401 || error.status === 403 ? [] : [el('button', { type: 'button', onclick: () => void load(true) }, 'Try again')])));
+      if (error.status === 401 || error.status === 403) { metrics.replaceChildren(); detail.replaceChildren(); dispose(); }
+    } finally {
+      inFlight = false; refresh.disabled = false; clearTimeout(timer);
+      if (!disposed) {
+        if (days !== requestedDays) void load(true); else scheduleRefresh();
+      }
+    }
+  }
+  function scheduleRefresh() { timer = setTimeout(() => { if (disposed) return; if (document.visibilityState === 'visible') void load(); else scheduleRefresh(); }, 15_000); }
+  period.onchange = () => { days = period.value; void load(true); };
+  await load(true);
 }
 
 // ── This Deploy — a tabbed home combining the per-deployment surfaces. The tabs
@@ -2710,6 +2904,7 @@ function toolPolicyRow(tool, expandHost) {
 }
 
 let activeToolPolicyEditor = null;
+let activeAccountInspector = null;
 let renderedRouteHash = '';
 
 function renderToolPolicyEditor(tool, host) {
@@ -3039,9 +3234,14 @@ async function viewProviders(main, params = new URLSearchParams()) {
     { key: 'a', label: 'Config changes', match: ['catalog.provider.create', 'catalog.provider.update', 'catalog.provider.delete', 'catalog.provider.enable', 'catalog.provider.disable', 'catalog.provider.credential'] },
     { key: 'b', label: 'Syncs', match: ['catalog.provider.sync', 'catalog.provider.preview'] },
   ]);
+  const connections = el('details', { class: 'card provider-connect', open: providers.length ? null : 'true' },
+    el('summary', {}, 'Connect an asset source'), connectGrid);
+  const connectAction = canAction('catalog.provider.manage') ? el('button', { class: 'primary page-action', type: 'button', onclick: () => {
+    connections.open = true; scrollIntoViewMotionSafe(connections); connections.querySelector('button')?.focus();
+  } }, navIcon('providers'), 'Connect a source') : null;
   main.append(...[
-    el('h1', {}, 'Providers'),
-    el('p', { class: 'sub' }, 'Federated catalog sources. The external system stays the source of truth: Lolly consumes it read-only, and exposure rules decide which slice your members see. WebDAV / Nextcloud and Google Drive offer guided configuration, file testing and activation. Other integrations use their existing advanced forms and setup guides.'),
+    el('div', { class: 'page-heading' }, el('div', {}, el('h1', {}, 'Providers'),
+      el('p', { class: 'sub' }, 'Connect asset libraries and manage what your workspace can use.')), connectAction),
     ...(hdr ? [hdr] : []),
     providers.length
       ? el('div', { class: 'grid tiles' },
@@ -3050,10 +3250,6 @@ async function viewProviders(main, params = new URLSearchParams()) {
           tile('Errored', fmt(errored)),
           tile('Assets synced', fmt(assets)))
       : null,
-    el('div', { class: 'card stack' },
-      el('h2', {}, 'Connect a source'),
-      connectGrid),
-    searchImportPanel(),
     panelHost,
     el('div', { class: 'card stack' },
       el('h2', {}, 'Configured sources'),
@@ -3061,7 +3257,9 @@ async function viewProviders(main, params = new URLSearchParams()) {
         ? dataTable(
             ['Provider', 'Kind', { label: 'Status', sort: false }, { label: 'Assets', num: true }, { label: 'Last sync', sort: false }, { label: 'Credential', sort: false }, { label: 'Actions', w: '300px', sort: false }],
             providers.map((p) => providerRow(p, panels)), { sortable: true })
-        : el('p', { class: 'empty' }, 'No sources connected yet. Pick an integration above to federate an external DAM, bucket, or repo into the catalog.')),
+        : el('p', { class: 'empty' }, 'No sources connected yet. Connect an asset source below to make its approved assets available in Lolly.')),
+    connections,
+    el('details', { class: 'card provider-search' }, el('summary', {}, 'Search connected sources & import'), searchImportPanel()),
   ].filter(node => node !== null));
   const resumed = providers.find(provider => provider.id === params.get('setup'));
   if (resumed?.kind === 'gdrive' && resumed.guidedSetupAvailable && canAction('catalog.provider.manage')) showGuided(resumed, params.get('oauth'));
@@ -3930,12 +4128,11 @@ async function invitationsSection(groupOptions) {
     return el('tr', { 'data-invitation-id': inv.id },
       el('td', {}, check),
       el('td', { title: inv.email }, el('div', { class: 'invite-account' }, avatar, el('span', {}, inv.email)),
+        el('div', { class: 'invite-provenance muted' }, `Invited by ${inv.inviter?.name ?? '—'} · ${madeFrom(inv)}`),
         inv.groups?.length ? [' ', el('div', { class: 'muted' }, `Groups: ${inv.groups.join(', ')}`)] : null),
       el('td', {}, projects.length
         ? projects.map((p) => `${p.name || 'A removed project'} (${projectRoleLabel(p.role)})`).join(', ')
         : el('span', { class: 'muted' }, 'none')),
-      el('td', {}, madeFrom(inv)),
-      el('td', {}, inv.inviter?.name ?? '—'),
       el('td', { 'data-sort': String(INVITE_STATUS_RANK[inv.status] ?? 9) },
         el('span', { class: `status ${INVITE_STATUS_CLASS[inv.status] ?? ''}` }, statusText),
         passwordText ? [' ', el('div', { class: 'muted' }, passwordText)] : null),
@@ -3954,7 +4151,7 @@ async function invitationsSection(groupOptions) {
     const live = filtered.filter(i => i.status !== 'revoked');
     const revoked = filtered.filter(i => i.status === 'revoked');
     const table = (rows) => dataTable(
-      [{ label: 'Select', sort: false, w: '1%' }, 'Email', 'Projects', 'Made from', 'Invited by', 'Status', { label: 'Ends or accepted', sort: 'date' }, { label: 'Actions', w: '1%', sort: false }],
+      [{ label: 'Select', sort: false, w: '1%' }, 'Account', 'Projects', 'Status', { label: 'Ends or accepted', sort: 'date' }, { label: 'Actions', w: '1%', sort: false }],
       rows.map(invitationRow), { sortable: true, filter: false, csv: true, csvName: 'invitations' });
     const bearer = live.some((i) => i.status === 'pending' && i.passwordSetup && i.password !== 'set');
     const card = el('div', { class: 'stack' },
@@ -3981,7 +4178,8 @@ async function invitationsSection(groupOptions) {
     catch { /* keep the current list on a transient error */ }
   }
   renderList(data.invitations ?? []); syncSelection();
-  return el('div', { class: 'stack' }, form, listHost);
+  return el('div', { class: 'stack invitations-workspace' },
+    el('details', { class: 'invite-compose' }, el('summary', {}, navIcon('users'), 'Invite people'), form), listHost);
 }
 
 // ── access requests (plans/74 invite spec 4.3) ───────────────────────────────
@@ -4057,7 +4255,10 @@ async function requestsSection(canInvite) {
     .sort((a, b) => String(b.answeredAt ?? '').localeCompare(String(a.answeredAt ?? '')));
   let waiting = open.length;
   const count = el('span', { class: 'muted' });
-  const syncCount = () => { count.textContent = waiting ? ` (${waiting} waiting)` : ''; };
+  const syncCount = () => {
+    count.textContent = waiting ? ` (${waiting} waiting)` : '';
+    count.dispatchEvent(new CustomEvent('requests-count', { bubbles: true, detail: waiting }));
+  };
   syncCount();
   const resultHost = el('div');
 
@@ -4145,7 +4346,7 @@ async function requestsSection(canInvite) {
     el('td', {}, requestAnswer(req)));
 
   const columns = (last) => ['Who', 'Asks for', 'Note', { label: 'Asked', sort: 'date' }, last];
-  return el('div', { class: 'card stack' },
+  return el('div', { class: 'card stack', 'data-waiting': open.length },
     el('h2', { class: 'flush' }, 'Requests', count),
     resultHost,
     open.length
@@ -4283,9 +4484,11 @@ async function viewUsers(main, params) {
   function userRow(u) {
     const open = () => openDetail(u);
     // Name is a real link for keyboard access; the whole row is a mouse target.
-    const nameLink = el('a', { class: 'link-btn', href: '#/users', onclick: (e) => { e.preventDefault(); e.stopPropagation(); open(); } }, u.name);
+  const nameLink = el('a', { class: 'link-btn', href: '#/users', onclick: (e) => { e.preventDefault(); e.stopPropagation(); open(); } }, u.name);
     return el('tr', { class: 'row-click', onclick: open },
-      el('td', {}, nameLink, u.disabled ? el('span', { class: 'status revoked', style: 'margin-left:8px' }, 'disabled') : null),
+      el('td', {}, el('div', { class: 'invite-account' },
+        el('span', { class: 'invite-avatar', 'aria-hidden': 'true' }, (u.name || u.email || '?').split(/[\s.@_-]+/).filter(Boolean).slice(0, 2).map(part => part[0]).join('').toUpperCase()),
+        nameLink), u.disabled ? el('span', { class: 'status revoked', style: 'margin-left:8px' }, 'disabled') : null),
       el('td', { title: u.email }, u.email),
       el('td', {}, u.title ?? '—'),
       el('td', {}, el('span', { class: 'chip' }, u.role)),
@@ -4305,10 +4508,16 @@ async function viewUsers(main, params) {
     const prevBtn = el('button', { disabled: page <= 1 ? 'true' : null, onclick: () => { state.page = page - 1; refetch(); } }, '‹ Prev');
     const nextBtn = el('button', { disabled: end >= total ? 'true' : null, onclick: () => { state.page = page + 1; refetch(); } }, 'Next ›');
 
+    const mobileSort = el('select', { class: 'tbl-sort-mobile', 'aria-label': 'Sort people', onchange: event => {
+      [state.sort, state.dir] = event.target.value.split(':'); state.page = 1; refetch();
+    } }, ...[['name', 'Name'], ['email', 'Email'], ['role', 'Role'], ['lastSeen', 'Last seen']].flatMap(([key, label]) =>
+      ['asc', 'desc'].map(dir => el('option', { value: `${key}:${dir}` }, `${label} · ${dir === 'asc' ? 'ascending' : 'descending'}`))));
+    mobileSort.value = `${state.sort}:${state.dir}`;
     results.replaceChildren(el('div', { class: 'card' },
       el('div', { class: 'list-bar' },
         el('h2', { class: 'flush' }, 'People'),
         el('span', { class: 'muted' }, total ? `${fmt(start)}–${fmt(end)} of ${fmt(total)}` : 'no matches')),
+      mobileSort,
       users.length
         ? dataTable(
             [{ label: sortBtn('Name', 'name') }, { label: sortBtn('Email', 'email') }, 'Title',
@@ -4334,64 +4543,113 @@ async function viewUsers(main, params) {
     }
   }
 
-  // ── user detail panel ───────────────────────────────────────────────────────
+  // ── account inspector ──────────────────────────────────────────────────────
+  // The web shell uses native dialog for modal focus containment. The console
+  // follows that lifecycle without pulling its router/build into this shell.
+  let activeDetail = null;
   async function openDetail(initialU) {
-    let u = initialU;
-    let grants = [];
-    // Linked sign-ins (plans/74): null when the server predates them.
-    let identities = null;
-    // { set, email } while email and password sign-in is on, else null.
-    let password = null;
-    const opener = document.activeElement; // restore focus here on Close
-    // Escape closes the sheet. Below 700px .detail-sheet is a fixed overlay and
-    // Close scrolls off the top, so Escape is the only reliable dismissal.
-    // Reopening replaces the handler instead of stacking a second one, so the
-    // focus restore always names the row that opened the sheet you are looking at.
-    if (detailHost._esc) document.removeEventListener('keydown', detailHost._esc);
-    const closeDetail = () => {
-      document.removeEventListener('keydown', onEsc);
-      if (detailHost._esc === onEsc) detailHost._esc = null;
-      detailHost.replaceChildren();
-      opener?.focus?.();
+    activeDetail?.close();
+    const opener = document.activeElement;
+    let u = initialU, grants = [], identities = null, password = null;
+    let closed = false, activeTab = 'overview', savingGroups = false;
+    let groupDraft = new Set(u.localGroups ?? []), newGroupDraft = '';
+    let tabs;
+    const dialog = el('dialog', { class: 'detail-sheet', 'aria-label': `Account: ${u.name}` });
+    const content = el('div', { class: 'account-content' });
+    const footer = el('div', { class: 'account-footer', hidden: 'true' });
+    const heading = el('h2', { class: 'flush', tabindex: '-1' }, u.name);
+    const closeButton = el('button', { type: 'button', 'aria-label': 'Close account', onclick: () => requestClose() }, 'Close');
+    const header = el('div', { class: 'account-header' },
+      el('span', { class: 'invite-avatar account-avatar', 'aria-hidden': 'true' },
+        (u.name || u.email || '?').split(/[\s.@_-]+/).filter(Boolean).slice(0, 2).map(part => part[0]).join('').toUpperCase()),
+      el('div', { class: 'account-title' }, el('span', { class: 'account-eyebrow' }, 'Account'), heading,
+        el('p', { class: 'sub flush' }, u.email)), closeButton);
+    const isCurrent = () => !closed && activeDetail?.dialog === dialog && detailHost.isConnected;
+    const groupsDirty = () => groupDraft.size !== (u.localGroups ?? []).length || (u.localGroups ?? []).some(name => !groupDraft.has(name));
+    const closeDetail = (restoreFocus = true) => {
+      if (closed) return;
+      closed = true;
+      window.removeEventListener('hashchange', onNavigate);
+      if (activeDetail?.dialog === dialog) activeDetail = null;
+      if (activeAccountInspector?.dialog === dialog) activeAccountInspector = null;
+      const notification = dialog.querySelector('#toast');
+      if (notification) document.body.append(notification);
+      document.documentElement.classList.remove('account-inspector-open');
+      if (dialog.open) dialog.close();
+      dialog.remove();
+      if (restoreFocus && opener?.isConnected) opener.focus();
     };
-    const onEsc = (ev) => {
-      if (!detailHost.isConnected) { document.removeEventListener('keydown', onEsc); return; }
-      if (ev.key !== 'Escape' || !detailHost.firstChild) return;
-      ev.stopPropagation();
-      closeDetail();
+    const requestClose = (afterClose = closeDetail) => {
+      if (savingGroups) { announce('Wait for the local groups to finish saving.'); return; }
+      if (!groupsDirty() && !newGroupDraft.trim()) { afterClose(); return; }
+      footer.hidden = false;
+      const keep = el('button', { type: 'button', onclick: () => { updateDraftNotice(); tabs?.select('access', true); } }, 'Keep editing');
+      footer.replaceChildren(el('p', { class: 'flush', role: 'status' }, 'Discard your unsaved group changes?'),
+        el('div', { class: 'account-footer-actions' }, keep,
+          el('button', { type: 'button', class: 'danger', onclick: () => afterClose() }, 'Discard changes')));
+      keep.focus();
     };
-    detailHost._esc = onEsc;
-    document.addEventListener('keydown', onEsc);
-    detailHost.replaceChildren(el('div', { class: 'card detail-sheet' }, el('p', { class: 'sub flush' }, `Loading ${u.name}…`)));
-    scrollIntoViewMotionSafe(detailHost);
-    const tools = await loadTools();
-    try { grants = (await api('/api/v1/grants')).grants ?? []; } catch { /* grant.edit may be absent */ }
-    try {
-      const r = await api(`/api/v1/users/${encodeURIComponent(u.id)}/identities`);
-      identities = r.identities ?? [];
-      password = r.password ?? null;
-    } catch { identities = null; }
-    renderDetail(true);
+    const updateDraftNotice = () => {
+      footer.hidden = !groupsDirty() && !newGroupDraft.trim();
+      footer.replaceChildren(el('p', { class: 'flush', role: 'status' }, savingGroups ? 'Saving local groups…' : 'Unsaved group changes'),
+        el('button', { type: 'button', onclick: () => tabs?.select('access', true) }, 'Review changes'));
+    };
+    // Removing a route closes its inspector, including while detail reads or
+    // mutations are in flight. Their late replies cannot reopen an old account.
+    const openedHash = location.hash;
+    const onNavigate = () => {
+      if (location.hash !== openedHash && !groupsDirty() && !newGroupDraft.trim() && !savingGroups) closeDetail(false);
+    };
+    window.addEventListener('hashchange', onNavigate);
+    dialog.addEventListener('cancel', event => { event.preventDefault(); requestClose(); });
+    dialog.addEventListener('close', () => closeDetail());
+    dialog.addEventListener('click', event => {
+      if (event.target !== dialog) return;
+      const rect = dialog.getBoundingClientRect();
+      if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) requestClose();
+    });
+    activeDetail = { dialog, close: closeDetail };
+    activeAccountInspector = { dialog, close: closeDetail, isDirty: () => groupsDirty() || !!newGroupDraft.trim(),
+      isBusy: () => savingGroups, requestDiscard: requestClose };
+    content.append(loadingCard(`account details for ${u.name}`));
+    dialog.append(header, content, footer, el('div', { class: 'sr-only sheet-live', 'aria-live': 'polite' }));
+    detailHost.replaceChildren(dialog);
+    document.documentElement.classList.add('account-inspector-open');
+    dialog.showModal();
+    heading.focus();
+    const [tools, grantReply, signIns] = await Promise.all([
+      loadTools(), api('/api/v1/grants').catch(() => null),
+      api(`/api/v1/users/${encodeURIComponent(u.id)}/identities`).catch(() => null),
+    ]);
+    if (!isCurrent()) return;
+    grants = grantReply?.grants ?? [];
+    identities = signIns?.identities ?? null; password = signIns?.password ?? null;
+    renderDetail();
 
-    function renderDetail(focusIn) {
-      const heading = el('h2', { class: 'flush', tabindex: '-1' }, u.name);
-      if (focusIn) requestAnimationFrame(() => heading.focus());
-      // Progressive disclosure: identity + lockout are the at-a-glance tier;
-      // group membership and per-tool access expand on demand (the counts on
-      // the summaries say whether there's anything inside worth opening).
-      const section = (title, node, open = false) => el('details', { class: 'ov-section', ...(open ? { open: 'true' } : {}) },
-        el('summary', {}, el('h3', { class: 'detail-h section-h' }, title)),
-        node);
-      detailHost.replaceChildren(el('div', { class: 'card stack detail-sheet' },
-        el('div', { class: 'list-bar' },
-          heading,
-          el('button', { onclick: closeDetail }, 'Close')),
-        identityBlock(),
-        ...(password ? [passwordBlock()] : []),
-        ...(identities ? [section(`Sign-ins (${identities.length})`, signInsBlock(), identities.length > 1)] : []),
-        section(`Groups (${(u.groups ?? []).length})`, groupsBlock()),
-        section(`Individual tool access (${grants.filter((g) => g.principal === `user:${u.id}` && g.action === 'tool.use' && g.effect === 'allow').length})`, toolAccessBlock()),
-        lockoutBlock()));
+    function renderDetail() {
+      if (!isCurrent()) return;
+      heading.textContent = u.name;
+      const previousFocus = dialog.contains(document.activeElement) ? document.activeElement : null;
+      const focusLabel = previousFocus?.getAttribute('aria-label') || previousFocus?.textContent;
+      tabs = sectionTabs('Account', [
+        { id: 'overview', label: 'Overview', content: identityBlock() },
+        { id: 'access', label: 'Groups & tools', count: (u.groups ?? []).length,
+          content: el('div', { class: 'stack' },
+            el('section', {}, el('h3', {}, 'Group membership'), groupsBlock()),
+            el('section', {}, el('h3', {}, 'Individual tool access'), toolAccessBlock())) },
+        { id: 'security', label: 'Sign-in & security',
+          content: el('div', { class: 'stack' }, ...(password ? [passwordBlock()] : []),
+            ...(identities ? [el('section', {}, el('h3', {}, `Linked sign-ins (${identities.length})`), signInsBlock())] : []), lockoutBlock()) },
+      ], activeTab, id => { activeTab = id; });
+      content.replaceChildren(tabs.element);
+      updateDraftNotice();
+      // A save replaces controls, so return keyboard users to the same action
+      // or the current tab instead of leaving focus on the document body.
+      if (previousFocus && !previousFocus.isConnected) {
+        const candidate = [...dialog.querySelectorAll('button, input, select')].find(node =>
+          !node.closest('[hidden]') && (node.getAttribute('aria-label') || node.textContent) === focusLabel);
+        if (candidate && !candidate.disabled) candidate.focus(); else tabs.select(activeTab, true);
+      }
     }
 
     function identityBlock() {
@@ -4402,6 +4660,8 @@ async function viewUsers(main, params) {
           cell('Email', u.email),
           cell('Title', u.title ?? '—'),
           cell('Role', el('span', { class: 'chip' }, u.role)),
+          cell('Account access', el('span', { class: `status ${u.disabled ? 'revoked' : 'live'}` }, u.disabled ? 'Disabled' : 'Active')),
+          cell('Account ID', el('div', { class: 'stack' }, el('span', { class: 'mono' }, u.id), copyButton(() => u.id, 'Copy ID'))),
           cell('Last seen', when(u.lastSeenAt)),
           ...(password ? [cell('Password', password.set ? (password.lockedUntil ? 'Set, locked' : 'Set') : 'Not set')] : [])),
         el('p', { class: 'sub', style: 'margin:8px 0 0' }, `Name, email, title and role are managed by ${idpName()} — read-only here. Role is derived from group membership.`));
@@ -4475,7 +4735,8 @@ async function viewUsers(main, params) {
           el('td', {}, action));
       });
       return el('div', { class: 'stack' },
-        el('p', { class: 'sub' }, 'The accounts this person signs in with. A new sign-in joins this person when its provider confirms the same email address, or when they add it from their own profile. Removing one stops it signing in as this person and signs this person out everywhere, so a session it opened ends too; if its provider confirms a matching email, its next sign-in can link it again. Removing an email and password sign-in deletes the password: it works again only after a new password link.'),
+        el('details', { class: 'ov-section account-help' }, el('summary', {}, 'How linked sign-ins work'),
+          el('p', { class: 'sub' }, 'The accounts this person signs in with. A new sign-in joins this person when its provider confirms the same email address, or when they add it from their own profile. Removing one stops it signing in as this person and signs this person out everywhere, so a session it opened ends too; if its provider confirms a matching email, its next sign-in can link it again. Removing an email and password sign-in deletes the password: it works again only after a new password link.')),
         identities.length
           ? dataTable(['Provider', 'Email', 'Last sign-in', { label: 'Actions', w: '1%' }], rows)
           : el('p', { class: 'empty' }, 'No sign-ins recorded yet. One appears after this person next signs in.'),
@@ -4485,27 +4746,31 @@ async function viewUsers(main, params) {
     function groupsBlock() {
       const err = errSpan();
       const idp = u.idpGroups ?? [];
-      const checkedSet = new Set(u.localGroups ?? []);
+      const checkedSet = groupDraft;
       const entries = localGroups().map((g) => {
         const cb = el('input', { type: 'checkbox', ...(checkedSet.has(g.name) ? { checked: 'checked' } : {}) });
+        cb.addEventListener('change', () => { if (cb.checked) groupDraft.add(g.name); else groupDraft.delete(g.name); saveBtn.disabled = !groupsDirty(); updateDraftNotice(); });
         return { name: g.name, cb, node: el('label', { class: 'chk' }, cb, el('span', {}, g.name), g.description ? el('span', { class: 'muted' }, ` — ${g.description}`) : null) };
       });
 
       const saveBtn = el('button', { class: 'primary', onclick: async () => {
         err.textContent = '';
-        saveBtn.disabled = true;
-        const groups = entries.filter((e) => e.cb.checked).map((e) => e.name);
+        saveBtn.disabled = true; savingGroups = true; updateDraftNotice();
+        const groups = [...groupDraft];
         try {
           u = await api(`/api/v1/users/${u.id}/local-groups`, { method: 'PUT', body: { groups } });
-          announce('Local groups saved');
+          groupDraft = new Set(u.localGroups ?? []); savingGroups = false;
+          toast('Local groups saved');
           renderDetail();  // reflect the recomputed effective groups + role
           refetch();       // the list's Groups/Role columns show the effective set
-        } catch (e) { err.textContent = e.message; saveBtn.disabled = false; }
+        } catch (e) { err.textContent = e.message; saveBtn.disabled = false; savingGroups = false; updateDraftNotice(); }
       } }, 'Save local groups');
+      saveBtn.disabled = !groupsDirty();
 
       // 'New local group' affordance (admin) — POST /api/v1/groups, then it
       // becomes an option here and in the group filter without a full reload.
-      const newName = el('input', { placeholder: 'brand', 'aria-label': 'New local group name' });
+      const newName = el('input', { placeholder: 'brand', value: newGroupDraft, 'aria-label': 'New local group name',
+        oninput: event => { newGroupDraft = event.target.value; updateDraftNotice(); } });
       const newErr = errSpan();
       const addBtn = el('button', { onclick: async () => {
         const name = newName.value.trim();
@@ -4518,7 +4783,7 @@ async function viewUsers(main, params) {
           // The People filter's group search offers it at once too, as an
           // exact match (not a partial one that could snap to a longer name).
           groupBox.add({ value: g.name, label: g.name });
-          newName.value = '';
+          newName.value = ''; newGroupDraft = '';
           announce(`Local group ${g.name} created`);
           renderDetail();
         } catch (e) { newErr.textContent = e.message; addBtn.disabled = false; }
@@ -4621,7 +4886,7 @@ async function viewUsers(main, params) {
         disarm();
       });
       return el('div', { class: 'stack' },
-        el('h3', { class: 'detail-h' }, 'Access'),
+        el('h3', {}, 'Account access'),
         el('p', { style: 'margin:0 0 6px' },
           u.disabled ? el('span', { class: 'status revoked' }, 'disabled') : el('span', { class: 'status live' }, 'active'),
           el('span', { class: 'sub', style: 'margin:0 0 0 10px' }, u.disabled
@@ -4639,21 +4904,28 @@ async function viewUsers(main, params) {
   // Groups need grant.edit too; only an owner is offered IdP groups.
   const inviteGroups = !canAction('grant.edit') ? null
     : allGroups.filter((g) => g.source === 'local' || session?.user?.role === 'owner').map((g) => ({ name: g.name, source: g.source }));
-  // Access requests sit at the top (plans/74 invite spec 4.3).
+  // Each task gets its own panel; requests keep a visible waiting count.
   const [invites, requests] = await Promise.all([
     canAction('user.invite') ? invitationsSection(inviteGroups) : null,
     requestsSection(canAction('user.invite')),
   ]);
+  const tabs = sectionTabs('People', [
+    { id: 'directory', label: 'Directory', count: firstData.total, content: el('div', {}, filters, alphaBar, results) },
+    ...(invites ? [{ id: 'invitations', label: 'Invitations', content: invites }] : []),
+    ...(requests ? [{ id: 'requests', label: 'Access requests', count: Number(requests.dataset.waiting), content: requests }] : []),
+    ...(hdr ? [{ id: 'activity', label: 'Activity', content: hdr }] : []),
+  ], params?.get?.('tab'));
+  requests?.addEventListener('requests-count', event => tabs.setCount('requests', event.detail));
+  const inviteButton = invites ? el('button', { class: 'primary page-action', type: 'button', onclick: () => {
+    tabs.select('invitations');
+    const compose = invites.querySelector('.invite-compose');
+    if (compose) compose.open = true;
+    invites.querySelector('textarea')?.focus();
+  } }, navIcon('users'), 'Invite people') : null;
   main.replaceChildren(
-    el('h1', {}, 'People'),
-    el('p', { class: 'sub' }, `Everyone who has signed in — search, filter and sort across the directory. Open a person for their groups, individual tool access and instant lockout. Identity and role follow ${idpName()}; telemetry attribution is each person’s own opt-in choice.`),
-    ...(requests ? [requests] : []),
-    ...(hdr ? [hdr] : []),
-    ...(invites ? [invites] : []),
-    filters,
-    alphaBar,
-    results,
-    detailHost);
+    el('div', { class: 'page-heading' }, el('div', {}, el('h1', {}, 'People'),
+      el('p', { class: 'sub' }, 'Manage accounts, invitations and workspace access.')), inviteButton),
+    tabs.element, detailHost);
   renderResults(firstData);
   // Deep link from the activity feed: #/users?focus=<id> opens that person.
   const focusId = params?.get?.('focus');
@@ -5080,16 +5352,40 @@ async function viewGrants(main) {
     a.principal.localeCompare(b.principal) || a.action.localeCompare(b.action));
 
   const kindSel = el('select', {},
-    el('option', { value: 'group' }, 'group'),
-    el('option', { value: 'user' }, 'user'),
-    el('option', { value: '*' }, 'everyone (*)'));
+    el('option', { value: 'group' }, 'Group'),
+    el('option', { value: 'user' }, 'Person'),
+    el('option', { value: '*' }, 'Everyone'));
   const nameInput = el('input', { placeholder: 'marketing' });
-  kindSel.onchange = () => { nameInput.disabled = kindSel.value === '*'; };
   const actionInput = el('input', { list: 'grant-actions', placeholder: 'export.download' });
   const datalist = el('datalist', { id: 'grant-actions' }, ...KNOWN_ACTIONS.map((a) => el('option', { value: a })));
   const resourceInput = el('input', { value: '*', placeholder: "* or tool:<id> or catalog:tag/<t>" });
-  const effectSel = el('select', {}, el('option', { value: 'deny' }, 'deny'), el('option', { value: 'allow' }, 'allow'));
+  const effectSel = el('select', {}, el('option', { value: 'deny' }, 'Deny permission'), el('option', { value: 'allow' }, 'Allow permission'));
   const err = errSpan();
+  err.id = `grant-error-${++_fieldSeq}`;
+  for (const input of [nameInput, actionInput, resourceInput]) input.setAttribute('aria-describedby', err.id);
+  const nameField = field('Group name', nameInput);
+  const targetHelp = el('p', { class: 'sub flush' }, 'Use the exact group name.');
+  nameField.append(targetHelp);
+  const preview = el('div', { class: 'grant-preview' });
+  const updatePreview = () => {
+    const target = kindSel.value === '*' ? 'everyone' : `${kindSel.value === 'user' ? 'person' : 'group'} ${nameInput.value.trim() || '…'}`;
+    preview.replaceChildren(el('span', { class: 'muted' }, 'New rule'),
+      el('p', { class: 'flush' }, el('strong', {}, effectSel.value === 'deny' ? 'Deny ' : 'Allow '),
+        el('span', { class: 'mono' }, actionInput.value.trim() || 'permission…'), ` for ${target}`, ', on ',
+        el('span', { class: 'mono' }, resourceInput.value.trim() || '*'), '.'));
+  };
+  kindSel.onchange = () => {
+    nameInput.disabled = kindSel.value === '*'; nameField.hidden = kindSel.value === '*';
+    nameField.querySelector('label').textContent = kindSel.value === 'user' ? 'Account ID' : 'Group name';
+    nameInput.placeholder = kindSel.value === 'user' ? 'usr_…' : 'marketing';
+    targetHelp.textContent = kindSel.value === 'user' ? 'Copy the account ID from the person’s profile in People.' : 'Use the exact group name.';
+    updatePreview();
+  };
+  for (const control of [nameInput, actionInput, resourceInput, effectSel]) control.addEventListener('input', () => {
+    control.removeAttribute('aria-invalid'); err.textContent = ''; updatePreview();
+  });
+  updatePreview();
+  const invalid = (control, message) => { err.textContent = message; control.setAttribute('aria-invalid', 'true'); control.focus(); };
   const addBtn = el('button', { class: 'primary' }, 'Add grant'); // submits the form
   // Real <form> so Enter-to-submit works and form semantics apply (matches the
   // 'Send a message'/'New project' panels).
@@ -5097,9 +5393,9 @@ async function viewGrants(main) {
     e.preventDefault();
     err.textContent = '';
     const principal = kindSel.value === '*' ? '*' : `${kindSel.value}:${nameInput.value.trim()}`;
-    if (principal.endsWith(':')) { err.textContent = 'Name the group or user.'; return; }
+    if (principal.endsWith(':')) { invalid(nameInput, kindSel.value === 'user' ? 'Enter the account ID.' : 'Enter the group name.'); return; }
     const action = actionInput.value.trim();
-    if (!action) { err.textContent = 'Pick a permission from the list.'; return; }
+    if (!action) { invalid(actionInput, 'Choose a permission or enter a custom one.'); return; }
     // An unknown permission is not refused: the server takes any action string
     // and its vocabulary is wider than KNOWN_ACTIONS (brand.switch,
     // token.manage, collab.join and more are enforced but unlisted). A typo
@@ -5120,14 +5416,21 @@ async function viewGrants(main) {
   } },
     el('h2', {}, 'Add grant'),
     datalist,
-    el('div', { class: 'formrow' },
-      field('Applies to', kindSel),
-      field('Group or person', nameInput),
-      field('Permission', actionInput),
-      field('Scope', resourceInput),
-      field('Allow or deny', effectSel)),
+    el('p', { class: 'sub flush' }, 'Choose who the rule applies to, the permission and its scope. A matching deny takes precedence over an allow.'),
+    el('div', { class: 'grant-fields' },
+      field('Applies to', kindSel), nameField,
+      field('Permission', actionInput), field('Effect', effectSel),
+      el('div', { class: 'grant-scope' }, field('Resource scope', resourceInput),
+        el('p', { class: 'sub flush' }, '* matches all resources. Examples: tool:<id>, catalog:tag/<tag>.'))),
+    preview,
     el('p', {}, addBtn),
     err);
+
+  const composer = el('details', { class: 'compose-section grant-compose', open: sorted.length ? null : 'true' },
+    el('summary', {}, el('span', { class: 'section-h' }, 'Add a grant')), addForm);
+  const openComposer = el('button', { type: 'button', class: 'primary page-action', onclick: () => {
+    composer.open = true; scrollIntoViewMotionSafe(composer); kindSel.focus({ preventScroll: true });
+  } }, navIcon('grants'), 'Add grant');
 
   // grant.create / grant.delete are template-literal actions in grantMutation —
   // easy to miss when grepping the audit vocabulary, but they are audited.
@@ -5136,15 +5439,17 @@ async function viewGrants(main) {
     { key: 'b', label: 'Other governance', match: ['policy.', 'chain.edit', 'config.apply'] },
   ]);
   main.append(
-    el('h1', {}, 'Grants'),
-    el('p', { class: 'sub' }, 'Fine-grained permissions under the role defaults: a matching deny always wins, then a matching allow, then the member’s role decides. Deny export.download to a group to route them through approvals; allow policy.edit to your brand group to delegate tool governance. Owner-only actions can only be granted by an owner.'),
+    el('div', { class: 'page-heading' }, el('div', {}, el('h1', {}, 'Grants'),
+      el('p', { class: 'sub' }, 'Allow or deny a permission for a group, a person or everyone.')), openComposer),
+    el('details', { class: 'ov-section grant-help' }, el('summary', {}, 'How permissions are decided'),
+      el('p', { class: 'sub' }, 'A matching deny always wins, then a matching allow, then the member’s role decides. Deny export.download to a group to route them through approvals; allow policy.edit to your brand group to delegate tool governance. Owner-only actions can only be granted by an owner.')),
     ...(hdr ? [hdr] : []),
     el('div', { class: 'card' },
       el('h2', {}, 'Active grants'),
       sorted.length
         ? dataTable(['Principal', { label: 'Action', w: '180px' }, { label: 'Resource', w: '220px' }, 'Effect', { label: 'Actions', w: '1%', sort: false }], sorted.map(grantRow), { sortable: true, filter: true })
-        : el('p', { class: 'empty' }, 'No grants yet. Everyone has the permissions their role gives them. Add a grant below to allow or deny one permission for a group or a person.')),
-    addForm,
+        : el('p', { class: 'empty' }, 'No grants yet. Everyone has the permissions their role gives them. Add a grant to allow or deny one permission for a group or a person.')),
+    composer,
   );
 }
 
@@ -5589,6 +5894,8 @@ async function viewDocs(main, params) {
 // Inline lucide-style nav glyphs (24×24, stroke=currentColor) — no external
 // assets, per the air-gap rule; each is the `d`/shapes of one lucide icon.
 const NAV_ICONS = {
+  agents: '<rect x="5" y="6" width="14" height="14" rx="4"/><path d="M12 2v4M2 12h3M19 12h3M9 15h6"/><circle cx="9" cy="10" r="1"/><circle cx="15" cy="10" r="1"/>',
+  export: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>',
   overview: '<rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/>',
   activity: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
   instance: '<path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/>',
@@ -5754,17 +6061,16 @@ const VIEWS = {
   } },
   overview: { title: 'Overview', render: viewOverview },
   activity: { title: 'Activity', render: viewActivity },
+  agents: { title: 'Agents', render: viewAgents },
   instance: { title: 'This deployment', render: viewInstance },
   fleet: { title: 'Fleet', render: viewFleet },
   rooms: { title: 'Rooms', render: viewRooms },
   links: { title: 'Links', render: viewLinks },
-  // Tools and Catalog are the governance surface an admin comes here for, so
-  // they sit in the rail (they are also tabs of This Deploy); providers and
-  // injectables stay reachable by deep link and tab only.
+  // Deployment tabs and the task-grouped navigation share the same renderers.
   tools: { title: 'Tools', render: viewTools },
   catalog: { title: 'Catalog', render: viewCatalog },
-  providers: { title: 'Providers', render: viewProviders, hidden: true },
-  injectables: { title: 'Injectables', render: viewInjectables, hidden: true },
+  providers: { title: 'Providers', render: viewProviders },
+  injectables: { title: 'Injectables', render: viewInjectables },
   approvals: { title: 'Approvals', render: viewApprovals },
   messages: { title: 'Messages', render: viewMessages },
   audit: { title: 'Audit', render: viewAudit },
@@ -5778,7 +6084,7 @@ const VIEWS = {
 };
 
 let session = null;
-const canView = id => session?.console?.views?.[id] ?? true;
+const canView = id => session?.console?.views?.[id] ?? (id === 'agents' ? false : true);
 const canAction = action => session?.console?.actions?.includes(action) ?? true;
 let instanceName = 'Lolly Work';
 // GET /api/auth/config, cached at boot (provider, providerName, publicDocs).
@@ -5815,6 +6121,52 @@ function brandLogoEl(cls) {
   );
 }
 
+const NAV_GROUPS = [
+  { title: 'Workspace', ids: ['overview', 'projects', 'users', 'contractors'] },
+  { title: 'Assets & tools', ids: ['catalog', 'providers', 'tools', 'injectables'] },
+  { title: 'Governance', ids: ['approvals', 'chains', 'grants', 'tokens'] },
+  { title: 'Operations', ids: ['agents', 'activity', 'rooms', 'links', 'messages', 'audit', 'fleet'] },
+  { title: 'Instance', ids: ['instance', 'setup', 'preview', 'docs'] },
+];
+
+function consoleNavigation(current) {
+  const picker = el('select', { class: 'mobile-section-picker', 'aria-label': 'Console section', onchange: event => { location.hash = `#/${event.target.value}`; } },
+    ...NAV_GROUPS.map(group => el('optgroup', { label: group.title },
+      ...group.ids.filter(id => VIEWS[id] && !VIEWS[id].hidden && canView(id)).map(id =>
+        el('option', { value: id, selected: id === current ? 'selected' : null }, VIEWS[id].title)))));
+  const groups = NAV_GROUPS.map(group => {
+    const ids = group.ids.filter(id => VIEWS[id] && !VIEWS[id].hidden && canView(id));
+    if (!ids.length) return null;
+    return el('section', { class: 'rail-group', 'aria-label': group.title },
+      el('h2', { class: 'rail-group-title' }, group.title),
+      ...ids.map(id => el('a', { href: `#/${id}`, 'aria-current': id === current ? 'page' : null, title: VIEWS[id].title },
+        navIcon(id), el('span', {}, VIEWS[id].title))));
+  }).filter(Boolean);
+  const empty = el('p', { class: 'nav-empty', role: 'status', hidden: 'true' }, 'No sections match.');
+  const search = el('input', { type: 'search', class: 'nav-search', placeholder: 'Find a section…', 'aria-label': 'Find a console section', autocomplete: 'off' });
+  search.addEventListener('input', () => {
+    const query = search.value.trim().toLowerCase();
+    let count = 0;
+    for (const group of groups) {
+      let found = 0;
+      for (const link of group.querySelectorAll('a')) {
+        link.hidden = !`${group.getAttribute('aria-label')} ${link.textContent}`.toLowerCase().includes(query);
+        if (!link.hidden) found++;
+      }
+      group.hidden = !found; count += found;
+    }
+    empty.hidden = count > 0;
+  });
+  search.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { search.value = ''; search.dispatchEvent(new Event('input')); }
+    if (event.key === 'Enter') {
+      const first = groups.find(group => !group.hidden)?.querySelector('a:not([hidden])');
+      if (first) { event.preventDefault(); first.click(); }
+    }
+  });
+  return el('nav', { id: 'rail-nav', 'aria-label': 'Console sections' }, picker, search, ...groups, empty);
+}
+
 function shell(current, content) {
   const logo = brandLogoEl('brand-logo--rail');
   $app.replaceChildren(
@@ -5824,9 +6176,7 @@ function shell(current, content) {
         : el('div', { class: 'brand' }, el('span', { class: 'brand-name' }, instanceName), el('small', {}, 'Control plane console')),
       el('a', { class: 'back', href: lollyHref('/') }, 'Open Lolly →'),
       railToggleBtn(),
-      el('nav', { id: 'rail-nav', 'aria-label': 'Console sections' },
-        ...Object.entries(VIEWS).filter(([id, v]) => !v.hidden && canView(id)).map(([id, v]) =>
-          el('a', { href: `#/${id}`, 'aria-current': id === current ? 'page' : null, title: v.title }, navIcon(id), el('span', {}, v.title)))),
+      consoleNavigation(current),
       el('div', { class: 'session' },
         el('div', { class: 'who', title: session?.user?.email ?? '' }, session?.user?.email ?? ''),
         el('div', {}, session?.user?.role ?? ''),
@@ -5928,7 +6278,22 @@ async function signInGate() {
   ]);
 }
 
+let disposeAgentView = null;
 async function route() {
+  if (activeAccountInspector) {
+    const inspector = activeAccountInspector, targetHash = location.hash;
+    const proceed = () => {
+      inspector.close(false);
+      history.replaceState(null, '', `${location.pathname}${location.search}${targetHash}`);
+      void route();
+    };
+    if (inspector.isDirty() || inspector.isBusy()) {
+      history.replaceState(null, '', `${location.pathname}${location.search}${renderedRouteHash}`);
+      inspector.requestDiscard(proceed);
+      return;
+    }
+    inspector.close(false);
+  }
   if (activeToolPolicyEditor) {
     const targetHash = location.hash;
     const proceed = () => {
@@ -5943,6 +6308,7 @@ async function route() {
     }
     activeToolPolicyEditor.dispose(); activeToolPolicyEditor = null;
   }
+  disposeAgentView?.(); disposeAgentView = null;
   renderedRouteHash = location.hash;
   if (session?.console) {
     try { session = await api('/api/auth/session'); }
@@ -6135,6 +6501,9 @@ async function boot() {
   updateFavicon();
   mountThemeToggle();
   applyRailState();
+  window.addEventListener('resize', () => {
+    for (const table of document.querySelectorAll('.tbl-scroll')) table.dispatchEvent(new Event('console-panel-visible'));
+  });
   // The instance's IdP display name (instance.json idp.displayName) — any OIDC
   // issuer works, open/sovereign providers first-class; unset → generic "SSO".
   try {

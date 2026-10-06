@@ -16,6 +16,7 @@ import { buildApp } from '../server/src/api/app.ts';
 interface Invitation { secret: string; agent: { id: string } }
 interface RpcResult { result: { protocolVersion?: string; tools: unknown[]; isError?: boolean; content: { text: string }[]; structuredContent: { revision: number; rejectedIds: string[]; docState: { params: Record<string, unknown> } } } }
 import { withFreshPostgres } from './pg-test-schema.ts';
+import { agentDashboard } from '../server/src/agents/dashboard.ts';
 import { agentSecret } from '../server/src/agents/access.ts';
 
 async function exercise(store: Store) {
@@ -60,10 +61,14 @@ async function exercise(store: Store) {
       const r = await fetch(base + '/api/workspace/mcp', { method: 'POST', headers: { authorization: `Bearer ${secret}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream', origin }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, ...(params ? { params } : {}) }) });
       return { status: r.status, body: await r.json() as RpcResult };
     };
-    assert.equal((await mcp('initialize', { protocolVersion: '2025-11-25' })).body.result.protocolVersion, '2025-11-25');
+    assert.equal((await mcp('initialize', { protocolVersion: '2025-11-25', clientInfo: { name: 'Codex', version: '1.2' } })).body.result.protocolVersion, '2025-11-25');
+    const initialized = await agentDashboard(store, gateway.agents);
+    assert.equal((initialized.agents[0]!.client as { family: string }).family, 'codex');
     assert.equal((await mcp('ping', {}, invite.secret, 'https://evil.test')).status, 403);
     assert.equal((await mcp('ping', {}, 'lwa_invalid')).status, 401);
-    const read = await mcp('tools/call', { name: 'read_document', arguments: {} });
+    const read = await mcp('tools/call', { name: 'read_document', arguments: {}, _meta: { 'io.modelcontextprotocol/clientInfo': { name: 'Gemini CLI', version: '0.8' }, 'tools.lolly/agent': { model: 'gemini-2.5-pro' } } });
+    const clientEvent = (await store.listAudit()).findLast(e => e.action === 'agent.tool-call')!;
+    assert.equal((clientEvent.payload?.client as { family: string }).family, 'gemini');
     assert.equal(read.body.result.structuredContent.docState.params.title, 'Before');
     const agentJoin = await next('peer-join'); assert.match(String((agentJoin.member as { name: string }).name), /Design helper ·/);
     const revision = read.body.result.structuredContent.revision;
@@ -110,6 +115,14 @@ async function exercise(store: Store) {
     assert.equal((await http(cookieOf(reader), 'DELETE', `/api/v1/sessions/other_document/agents/${invite.agent.id}`)).status, 404);
     const bounded = await mcp('tools/call', { name: 'read_document', arguments: { sessionId: 'other_document' } });
     assert.equal(bounded.body.result.structuredContent.docState.params.title, 'Human edit', 'a caller-supplied document cannot expand the credential scope');
+    const observed = await agentDashboard(store, gateway.agents);
+    assert.equal(observed.summary.agentsUsed, 2);
+    assert.ok(observed.summary.succeeded > 0); assert.ok(observed.summary.rejected > 0);
+    assert.equal(observed.summary.connected, 2);
+    const viewerCall = observed.timeline.find(e => e.action === 'agent.tool-call' && e.actor.id === viewer.agent.id);
+    assert.equal(viewerCall?.payload.outcome, 'rejected'); assert.equal(viewerCall?.payload.code, 'READ_ONLY');
+    assert.equal(viewerCall?.actor.invitedBy?.id, reader.id);
+    assert.equal(observed.timeline.some(e => e.action === 'agent.tool-call' && e.payload.arguments), false);
     const expiredKey = agentSecret();
     await store.createDocumentAgent({ ...(await store.getDocumentAgent(invite.agent.id))!, id: 'agt_expired', tokenHash: expiredKey.tokenHash, expiresAt: '2000-01-01T00:00:00Z' });
     assert.equal((await mcp('ping', {}, expiredKey.secret)).status, 401);

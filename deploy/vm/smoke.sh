@@ -77,6 +77,9 @@ check "/api/auth/login?idp=primary redirects to Google with the $DOMAIN callback
 fetch catalog "$BASE/catalog/tools/index.json"
 check "/catalog/tools/index.json refuses a signed-out caller (401)" "status $status" status_is 401
 
+fetch agents "$BASE/api/v1/agents/activity"
+check "/api/v1/agents/activity exists and refuses a signed-out caller (401)" "status $status" status_is 401
+
 shell_ok() { status_is 200 && grep -q "const CACHE = 'lolly-" "$tmp/shell.body" && grep -q "self.addEventListener('fetch'" "$tmp/shell.body"; }
 fetch shell "$BASE/sw.js"
 check "/sw.js is the Lolly service worker" "status $status" shell_ok
