@@ -169,7 +169,7 @@ const blobs = config.blobs.driver === 's3'
 const backgroundPollMs = parseBackgroundPollMs(process.env.LW_BACKGROUND_POLL_MS);
 if (backgroundPollMs !== undefined) console.log(`[lolly-work] background poll ${backgroundPollMs === 0 ? 'off (work runs on submission)' : `every ${backgroundPollMs} ms`}`);
 let renderRunner: RenderRunner | undefined;
-const app = buildApp({ config, store, secrets, blobs, listCollabRooms: () => collab.snapshot(), nearby, agentRooms: collab.agents,
+const app = buildApp({ config, store, secrets, blobs, listCollabRooms: () => collab.snapshot(), projectPresence: id => collab.projectPresence(id), nearby, agentRooms: collab.agents,
   onRenderRunner: (runner) => { renderRunner = runner; },
   ...(backgroundPollMs !== undefined ? { backgroundPollMs } : {}),
 });

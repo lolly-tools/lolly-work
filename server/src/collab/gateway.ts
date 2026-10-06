@@ -259,6 +259,7 @@ export interface CollabGateway {
    *  of `ws` (see this file's own header). Copies only - see
    *  `RoomRegistry.list`. */
   snapshot(): RoomSnapshot[];
+  projectPresence(projectId: string): import('./rooms.ts').SessionPresenceSnapshot[];
   /** Quiesce every live room into a session revision and audit its rollup - 
    *  orderly shutdown (plans/14 §6). `close()` starts this best-effort; a host
    *  that wants the writes to LAND awaits this before exiting. */
@@ -1793,6 +1794,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
     },
     rooms: () => registry.size(),
     snapshot: () => registry.list(),
+    projectPresence: projectId => registry.projectPresence(projectId),
     drain,
     close() {
       clearInterval(sweeper);
