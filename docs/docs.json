@@ -97,7 +97,7 @@
         {
           "slug": "file-preview",
           "title": "File previews",
-          "summary": "Bounded previews of PDF and EPS originals through the isolated render worker."
+          "summary": "Disposable PDF previews for EPS, EMF and WMF originals through the isolated render worker."
         },
         {
           "slug": "offboarding",
