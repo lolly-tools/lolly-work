@@ -22,6 +22,7 @@ import { parseConfig } from '../server/src/config/instance.ts';
 const CHART = fileURLToPath(new URL('../deploy/helm', import.meta.url));
 const helm = spawnSync('helm', ['version', '--short'], { encoding: 'utf8' });
 const noHelm = helm.error || helm.status !== 0 ? 'install helm to run (no cluster needed)' : false;
+if (process.env.LW_REQUIRE_HELM_TESTS === '1' && noHelm) throw new Error('Helm qualification requires a working Helm binary');
 
 const SECRETS = ['--set', 'secrets.sessionSecret=aaaa', '--set', 'secrets.linkSecret=bbbb'];
 const WORKER = [
@@ -40,6 +41,10 @@ function render(args: string[]): { out: string; err: string; ok: boolean } {
 const docsOf = (out: string): string[] => out.split(/\n---/);
 const workerDeployment = (out: string): string | undefined =>
   docsOf(out).find((d) => /kind: Deployment/.test(d) && /name: \S*render-worker/.test(d));
+const manifests = (out: string) => parseAllDocuments(out).map(doc => doc.toJSON());
+const deployment = (out: string, worker = false) => manifests(out).find(doc =>
+  doc?.kind === 'Deployment' && (doc.metadata.labels?.['app.kubernetes.io/component'] === 'render-worker') === worker);
+const SMALL = ['-f', `${CHART}/values-small-suse.yaml`];
 
 test('chart lints clean', { skip: noHelm }, () => {
   const r = spawnSync('helm', ['lint', CHART], { encoding: 'utf8' });
@@ -164,4 +169,173 @@ test('the app NetworkPolicy does not select the render worker pods', { skip: noH
   const app = docsOf(r.out).find((d) => /kind: NetworkPolicy/.test(d) && !/component: render-worker\n/.test(d.split('spec:')[0]!));
   assert.ok(app, 'app policy renders');
   assert.match(app!, /key: app\.kubernetes\.io\/component\s*operator: NotIn\s*values: \[render-worker\]/, 'its open egress cannot add to the worker\'s policy');
+});
+
+test('immutable digests pin app, migration and worker while tag defaults still work', { skip: noHelm }, () => {
+  const digest = `sha256:${'a'.repeat(64)}`;
+  const workerDigest = `sha256:${'b'.repeat(64)}`;
+  const r = render([...SECRETS, ...WORKER,
+    '--set', `image.digest=${digest}`, '--set', 'image.tag=ignored',
+    '--set', `renderWorker.image.digest=${workerDigest}`, '--set', 'renderWorker.image.tag=ignored',
+  ]);
+  assert.ok(r.ok, r.err);
+  const app = deployment(r.out);
+  const worker = deployment(r.out, true);
+  const migration = manifests(r.out).find(doc => doc?.kind === 'Job');
+  assert.equal(app.spec.template.spec.containers[0].image, `ghcr.io/lolly-tools/lolly-work-server@${digest}`);
+  assert.equal(migration.spec.template.spec.containers[0].image, app.spec.template.spec.containers[0].image);
+  assert.equal(worker.spec.template.spec.containers[0].image, `ghcr.io/lolly-tools/lolly-work-render-worker@${workerDigest}`);
+
+  const original = render([...SECRETS, ...WORKER]);
+  assert.ok(original.ok, original.err);
+  assert.equal(deployment(original.out).spec.template.spec.containers[0].image, 'ghcr.io/lolly-tools/lolly-work-server:0.2.0');
+  assert.equal(deployment(original.out, true).spec.template.spec.containers[0].image, 'ghcr.io/lolly-tools/lolly-work-render-worker:0.2.0');
+  const tagged = render([...SECRETS, ...WORKER, '--set', 'image.tag=custom', '--set', 'renderWorker.image.tag=worker-custom']);
+  assert.ok(tagged.ok, tagged.err);
+  assert.equal(deployment(tagged.out).spec.template.spec.containers[0].image, 'ghcr.io/lolly-tools/lolly-work-server:custom');
+  assert.equal(deployment(tagged.out, true).spec.template.spec.containers[0].image, 'ghcr.io/lolly-tools/lolly-work-render-worker:worker-custom');
+});
+
+test('malformed digests refuse to render rather than falling back to a tag', { skip: noHelm }, () => {
+  for (const name of ['image', 'renderWorker.image']) {
+    for (const value of ['latest', `sha256:${'a'.repeat(63)}`, `sha256:${'A'.repeat(64)}`, `sha256:${'g'.repeat(64)}`, 'true']) {
+      const r = render([...SECRETS, ...WORKER, '--set', `${name}.digest=${value}`]);
+      assert.equal(r.ok, false, `${name}.digest=${value} must fail`);
+      assert.match(r.err, new RegExp(`${name.replace('.', '\\.')}\\.digest must`));
+    }
+  }
+  const migrationOnly = render([...SECRETS, '--set', 'image.digest=invalid']);
+  assert.equal(migrationOnly.ok, false, 'the app/migration pin is checked even when the worker is off');
+});
+
+test('private registry credentials reach app, migration, worker and OCI init containers', { skip: noHelm }, () => {
+  const r = render([...SECRETS, ...WORKER,
+    '--set-json', 'imagePullSecrets=[{"name":"private-registry"}]',
+    '--set', 'pack.type=emptyDir', '--set', 'pack.image=registry.example.test/pack:release',
+    '--set', 'shell.enabled=true', '--set', 'shell.type=emptyDir', '--set', 'shell.image=registry.example.test/shell:release',
+  ]);
+  assert.ok(r.ok, r.err);
+  const pods = manifests(r.out).filter(doc => ['Deployment', 'Job'].includes(doc?.kind)).map(doc => doc.spec.template.spec);
+  assert.equal(pods.length, 3);
+  for (const pod of pods) assert.deepEqual(pod.imagePullSecrets, [{ name: 'private-registry' }]);
+  assert.deepEqual(deployment(r.out).spec.template.spec.initContainers.map((container: { name: string }) => container.name), ['pack-from-image', 'shell-from-image']);
+
+  const override = render([...SECRETS, ...WORKER,
+    '--set-json', 'imagePullSecrets=[{"name":"app-registry"}]',
+    '--set-json', 'renderWorker.imagePullSecrets=[{"name":"worker-registry"}]',
+  ]);
+  assert.ok(override.ok, override.err);
+  assert.deepEqual(deployment(override.out, true).spec.template.spec.imagePullSecrets, [{ name: 'worker-registry' }]);
+  assert.deepEqual(deployment(override.out).spec.template.spec.imagePullSecrets, [{ name: 'app-registry' }]);
+  const publicWorker = render([...SECRETS, ...WORKER,
+    '--set-json', 'imagePullSecrets=[{"name":"app-registry"}]', '--set-json', 'renderWorker.imagePullSecrets=[]',
+  ]);
+  assert.ok(publicWorker.ok, publicWorker.err);
+  assert.equal(deployment(publicWorker.out, true).spec.template.spec.imagePullSecrets, undefined, 'an empty override must not inherit credentials');
+  const invalid = render([...SECRETS, ...WORKER, '--set', 'renderWorker.imagePullSecrets=not-a-list']);
+  assert.equal(invalid.ok, false);
+  assert.match(invalid.err, /renderWorker.imagePullSecrets must/);
+});
+
+test('worker placement can isolate browser bursts without moving the collaboration owner', { skip: noHelm }, () => {
+  const affinity = { nodeAffinity: { requiredDuringSchedulingIgnoredDuringExecution: { nodeSelectorTerms: [{ matchExpressions: [{ key: 'workload', operator: 'In', values: ['render'] }] }] } } };
+  const spread = [{ maxSkew: 1, topologyKey: 'kubernetes.io/hostname', whenUnsatisfiable: 'ScheduleAnyway', labelSelector: { matchLabels: { 'app.kubernetes.io/component': 'render-worker' } } }];
+  const tolerations = [{ key: 'render', operator: 'Equal', value: 'true', effect: 'NoSchedule' }];
+  const r = render([...SECRETS, ...WORKER,
+    '--set-json', 'renderWorker.nodeSelector={"workload":"render"}',
+    '--set-json', `renderWorker.tolerations=${JSON.stringify(tolerations)}`,
+    '--set-json', `renderWorker.affinity=${JSON.stringify(affinity)}`,
+    '--set-json', `renderWorker.topologySpreadConstraints=${JSON.stringify(spread)}`,
+  ]);
+  assert.ok(r.ok, r.err);
+  const worker = deployment(r.out, true).spec.template.spec;
+  assert.deepEqual(worker.nodeSelector, { workload: 'render' });
+  assert.deepEqual(worker.tolerations, tolerations);
+  assert.deepEqual(worker.affinity, affinity);
+  assert.deepEqual(worker.topologySpreadConstraints, spread);
+  assert.equal(deployment(r.out).spec.template.spec.nodeSelector, undefined);
+});
+
+test('small SUSE profile bounds scratch, OCI copies and browser concurrency without claiming HA', { skip: noHelm }, () => {
+  const light = render([...SMALL, ...SECRETS]);
+  assert.ok(light.ok, light.err);
+  assert.equal(deployment(light.out, true), undefined, 'browser resources remain opt-in');
+  const r = render([...SMALL, ...SECRETS, ...WORKER,
+    '--set', 'pack.type=emptyDir', '--set', 'pack.image=registry.example.test/pack:release',
+    '--set', 'shell.enabled=true', '--set', 'shell.type=emptyDir', '--set', 'shell.image=registry.example.test/shell:release',
+  ]);
+  assert.ok(r.ok, r.err);
+  const app = deployment(r.out);
+  const pod = app.spec.template.spec;
+  const worker = deployment(r.out, true);
+  assert.equal(app.spec.replicas, 1);
+  assert.equal(app.spec.strategy.type, 'Recreate');
+  assert.equal(pod.terminationGracePeriodSeconds, 60);
+  assert.equal(pod.containers[0].resources.requests['ephemeral-storage'], '2Gi');
+  assert.equal(pod.containers[0].resources.limits['ephemeral-storage'], '6Gi');
+  for (const [name, size] of [['tmp', '256Mi'], ['pack', '1Gi'], ['shell', '2Gi']]) {
+    assert.deepEqual(pod.volumes.find((volume: { name: string }) => volume.name === name).emptyDir, { sizeLimit: size });
+  }
+  for (const init of pod.initContainers) {
+    assert.equal(init.resources.requests.memory, '32Mi');
+    assert.equal(init.resources.limits.memory, '128Mi');
+    assert.ok(init.resources.requests['ephemeral-storage']);
+    assert.ok(init.resources.limits['ephemeral-storage']);
+  }
+  const browser = worker.spec.template.spec;
+  assert.equal(worker.spec.replicas, 1);
+  assert.equal(browser.containers[0].env.find((env: { name: string }) => env.name === 'LW_RENDER_MAX_CONCURRENT').value, '1');
+  assert.equal(browser.containers[0].resources.limits['ephemeral-storage'], '2Gi');
+  assert.deepEqual(browser.volumes.find((volume: { name: string }) => volume.name === 'tmp').emptyDir, { sizeLimit: '1Gi' });
+  assert.ok(!manifests(r.out).some(doc => doc?.kind === 'PersistentVolumeClaim'), 'reproducible release copies need no replicated storage');
+  assert.ok(!manifests(r.out).some(doc => doc?.kind === 'HorizontalPodAutoscaler'));
+  const hpa = render([...SMALL, ...SECRETS, ...WORKER, '--set', 'renderWorker.autoscaling.enabled=true']);
+  assert.ok(hpa.ok, hpa.err);
+  assert.equal(manifests(hpa.out).find(doc => doc?.kind === 'HorizontalPodAutoscaler').spec.maxReplicas, 2);
+});
+
+test('multiple collaboration owners remain refused and evaluation scratch defaults remain unchanged', { skip: noHelm }, () => {
+  const unsafe = render([...SMALL, ...SECRETS, '--set', 'replicaCount=2']);
+  assert.equal(unsafe.ok, false);
+  assert.match(unsafe.err, /requires replicaCount=1/);
+  const evalProfile = render(['-f', `${CHART}/values-eval.yaml`]);
+  assert.ok(evalProfile.ok, evalProfile.err);
+  const pod = deployment(evalProfile.out).spec.template.spec;
+  assert.deepEqual(pod.volumes.find((volume: { name: string }) => volume.name === 'tmp').emptyDir, {});
+  assert.equal(pod.containers[0].resources.requests['ephemeral-storage'], undefined);
+  assert.ok(!manifests(evalProfile.out).some(doc => doc?.kind === 'Job'));
+});
+
+test('active scratch and release-copy bounds reject invalid quantities before installation', { skip: noHelm }, () => {
+  const active = [...SECRETS, ...WORKER,
+    '--set', 'pack.type=emptyDir', '--set', 'pack.image=registry.example.test/pack:release',
+    '--set', 'shell.enabled=true', '--set', 'shell.type=emptyDir', '--set', 'shell.image=registry.example.test/shell:release',
+  ];
+  for (const name of ['tmp.sizeLimit', 'pack.emptyDir.sizeLimit', 'shell.emptyDir.sizeLimit', 'renderWorker.tmp.sizeLimit']) {
+    for (const value of ['0', '0Gi', '-1Gi', '250m', '1.5Gi', '1e3', 'not-a-size']) {
+      const r = render([...active, '--set-string', `${name}=${value}`]);
+      assert.equal(r.ok, false, `${name}=${value} must fail before installation`);
+      assert.ok(r.err.includes(`${name} must`), r.err);
+    }
+    for (const value of ['1', 'true', 'null']) {
+      const r = render([...active, '--set-json', `${name}=${value}`]);
+      assert.equal(r.ok, false, `${name} must be a string`);
+      assert.ok(r.err.includes(`${name} must`), r.err);
+    }
+  }
+  for (const value of ['128', '64Ki', '512Mi', '2Gi', '1Ti', '1Pi', '1Ei', '2k', '3M', '4G', '5T', '6P', '7E']) {
+    const r = render([...SECRETS, '--set-string', `tmp.sizeLimit=${value}`]);
+    assert.ok(r.ok, `${value}: ${r.err}`);
+    assert.equal(deployment(r.out).spec.template.spec.volumes.find((volume: { name: string }) => volume.name === 'tmp').emptyDir.sizeLimit, value);
+  }
+});
+
+test('unused volume bounds do not change the light topology', { skip: noHelm }, () => {
+  const r = render([...SECRETS,
+    '--set', 'pack.emptyDir.sizeLimit=invalid', '--set', 'shell.emptyDir.sizeLimit=invalid',
+    '--set', 'renderWorker.tmp.sizeLimit=invalid',
+  ]);
+  assert.ok(r.ok, r.err);
+  assert.equal(deployment(r.out, true), undefined);
+  assert.equal(deployment(r.out).spec.template.spec.initContainers, undefined);
 });

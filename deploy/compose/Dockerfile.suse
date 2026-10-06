@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: MPL-2.0
+# Opt-in SUSE BCI candidate; the default image and release workflow stay separate.
+# Build with: docker build -f deploy/compose/Dockerfile.suse -t lolly-work-suse .
+# The metadata-only registry check on 2026-10-06 verified this multi-arch index
+# (including amd64/arm64), SLES 16.0 and Node 24.18.1. Image boot and native
+# bindings still need the SUSE container qualification workflow before use.
+FROM registry.suse.com/bci/nodejs:24-base@sha256:719aa24270f9d490ac9e78973a2ef8f6328b23eddbfe09613859e07c356d9f65
+WORKDIR /app
+
+# BCI supplies shadow tools but no node account. Keep the default image's
+# uid/gid 1000 so existing mounted-file and Helm security contexts agree.
+RUN groupadd --gid 1000 node && \
+    useradd --uid 1000 --gid node --create-home --shell /usr/sbin/nologin node
+
+# Install on BCI's glibc, including platform-selected sharp/resvg dependencies.
+# No node_modules or native binaries are copied from the Alpine runtime.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY vendor/@lolly ./vendor/@lolly
+COPY vendor/@lolly-tools ./vendor/@lolly-tools
+RUN npm install --global --prefix /usr/local pnpm@11.26.0
+RUN pnpm install --frozen-lockfile --prod
+# npm24 is a separate RPM, not the Alpine /usr/local npm tree. Removing it
+# preserves Node and the pinned pnpm used by the migration Job; fail if not.
+RUN rpm -e npm24 && zypper --non-interactive clean --all && \
+    node --version && pnpm --version
+
+COPY tsconfig.json engine-pin.json content-resolver-pin.json ./
+COPY sbom.cdx.json THIRD-PARTY-NOTICES.md LICENSE ./
+COPY server ./server
+COPY console ./console
+COPY docs ./docs
+COPY migrations ./migrations
+COPY scripts ./scripts
+RUN node scripts/verify-engine-pin.ts && node scripts/check-release-capabilities.ts
+RUN mkdir -p packs
+COPY packs/demo ./packs/demo
+
+ENV NODE_ENV=production
+USER node
+EXPOSE 8787
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:' + (process.env.PORT || '8787') + '/healthz', { signal: AbortSignal.timeout(4000) }).then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+CMD ["node", "server/src/main.ts"]

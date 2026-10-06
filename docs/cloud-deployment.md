@@ -25,6 +25,23 @@ VM creation. Use the [VM runbook](../deploy/vm/README.md) for the
 application release. Public APIs and private workspace records remain separate:
 moving a public host must not publish private packs, uploaded assets or member cookies.
 
+## SUSE Kubernetes and dependency images
+
+The optional [SUSE deployment runbook](../deploy/suse/README.md) covers a small
+K3s profile, RKE2 for larger operational requirements, provider CSI storage and
+Longhorn for qualified multi-node storage. Both cloud foundations can host these
+choices; Kubernetes still consumes the underlying VM or bare-metal capacity.
+Sharing services on a cluster reduces separate guest and service overhead, but
+does not remove the cloud's compute charges.
+
+The Work chart includes `values-small-suse.yaml`, immutable application digest
+references, inherited worker registry credentials, worker placement and bounded
+scratch/artifact copies. The public Lolly chart has its own `profiles/lean.yaml`;
+that chart installs only the static shell and optional CA/MCP services. These
+profiles preserve the existing deployment defaults until explicitly selected.
+Use Application Collection PostgreSQL as a separately managed dependency when
+appropriate. Lolly Work uses PostgreSQL for durable jobs and does not need Redis.
+
 ## Provider boundaries
 
 | Contract | UpCloud | Evroc |

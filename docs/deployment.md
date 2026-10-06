@@ -9,7 +9,7 @@ provide repeatable VM foundations for the shared application deployment.
 |---|---|---|---|
 | Local (`node server/src/main.ts`) | development, evaluation | boot auto-migrate | local paths |
 | Compose (`deploy/compose/`) | single VM, small org | boot auto-migrate | bind mounts |
-| Helm (`deploy/helm/`) | Kubernetes / Rancher, HA | pre-install/upgrade Job | volumes you mount |
+| Helm (`deploy/helm/`) | Kubernetes / Rancher, one collaboration owner | pre-install/upgrade Job | volumes you mount |
 | YunoHost (`deploy/yunohost/`) | a self-hosting box, sign-in with its accounts | boot auto-migrate | seeded from the shell into the app's data directory |
 | Vercel (`vercel.json` + `scripts/build-vercel-fn.mjs`) | trial / pilot / public demo | Neon + external migrate | demo pack bundled; shell not served |
 | Single VM with Caddy (`deploy/vm/`) | one small team on its own domain, with live co-editing | boot auto-migrate over the direct URL | pack mounted read-only; a signed shell served natively when configured, otherwise proxied through Caddy. lolly.ing uses native shell serving |
@@ -99,9 +99,11 @@ working, console at `/admin`. Every choice in `values-eval.yaml` is commented wi
 trades, including `config.instance.baseUrl`, which must match the URL a browser actually
 uses or the session cookie's `Secure` flag will be wrong.
 
-Graduate the same install in place by adding a database with `helm upgrade` (the single pod
-then applies DDL at boot; going multi-replica means also setting `migrate.enabled=true` so
-the hook Job owns the schema) - again, [install section 7a](install.md#7a-evaluate-on-a-cluster).
+Graduate the evaluation by adding durable PostgreSQL and enabling the migration
+hook with `migrate.enabled=true`. Keep one writable application replica: the chart
+refuses multiple collaboration owners until room routing and operation ordering
+are qualified. Independent render workers can scale after capacity testing. See
+[install section 7a](install.md#7a-evaluate-on-a-cluster).
 
 GHCR is private today, so add `imagePullSecrets`, build and push your own image (see the
 production notes below), or side-load: `docker save` + `k3d image import` /
@@ -121,7 +123,7 @@ and collect evidence from staging before production promotion.
 `helm install` with the image override, and the verification. One copy, there. This page is
 the values reference and the list of things to know before you run it.
 
-What the chart gives you: 2 replicas by default, non-root/read-only-rootfs/dropped-caps
+What the chart gives you: one application replica by default, non-root/read-only-rootfs/dropped-caps
 pod defaults, `/healthz` liveness+readiness, an Ingress template, an optional
 ServiceMonitor, an optional NetworkPolicy, a pack volume, a shell volume, an optional
 Chromium render-worker tier, and a migrate Job that owns the schema.
@@ -139,10 +141,11 @@ Things to know before you install:
 - **Secrets are never auto-generated.** Every replica must sign and verify with the *same*
   `LW_SESSION_SECRET` and `LW_LINK_SECRET`, and they must survive rollouts. Generate once,
   store safely, rotate deliberately.
-- **HA schema ownership:** the app runs with `LW_AUTO_MIGRATE=false`, so no replica applies
-  DDL. The pre-install/pre-upgrade Job applies migrations and must succeed before new pods
-  roll; the Deployment refuses to start on a pending schema, so a skipped migration fails
-  loudly instead of serving a half-migrated database.
+- **Schema ownership:** with `migrate.enabled=true`, the app runs with
+  `LW_AUTO_MIGRATE=false`. The pre-install/pre-upgrade Job applies migrations and
+  must succeed before the application starts; boot refuses a pending schema.
+  The singleton deployment uses `Recreate` and a 60-second drain to avoid
+  competing writable collaboration owners during rollout.
 - **`pack.type` defaults to `none`** - `config.instance.pack` points at `/app/packs/demo`,
   the small demo pack baked into the server image, so an unmounted install still serves a
   catalog. Mount your own pack and point `config.instance.pack` at it. Simplest
@@ -163,6 +166,49 @@ Things to know before you install:
   `runtimeClassName` (gVisor/Kata) - that tier renders the least-trusted content.
 - **Behind an ingress, set `config.rateLimit.trustedProxyHops: 1`**, or per-IP limits see
   only the ingress IP.
+
+### Small SUSE cluster profile
+
+`deploy/helm/values-small-suse.yaml` adds explicit CPU, memory and ephemeral disk
+budgets for a small K3s or RKE2 candidate. It retains one application owner and
+leaves the render worker, OCI pack and signed shell opt-in. Merge the profile
+before your reviewed instance values:
+
+```sh
+helm template lolly-work deploy/helm \
+  -f deploy/helm/values-small-suse.yaml -f instance-values.yaml
+```
+
+Use the rendered output for review before applying the production installation
+procedure. Supply the same existing application and database Secrets, instance
+configuration and ingress as any other production install. This overlay does not
+create a cluster, database, shared collaboration relay or backup service.
+
+Pin `image.digest` and `renderWorker.image.digest` to the SHA-256 digest of the
+complete application images you publish. The digest replaces `image.tag`; an
+empty digest retains the previous tag behavior. The app and migration Job share
+one image reference. `imagePullSecrets` now also reaches render workers; set
+`renderWorker.imagePullSecrets` only when that tier needs different credentials
+(`null` inherits, `[]` opts out). Worker `nodeSelector`, `tolerations`, `affinity`
+and `topologySpreadConstraints` let larger clusters separate browser workloads.
+
+The profile bounds `/tmp`, OCI pack and shell `emptyDir` copies and their init
+containers. Set `tmp.sizeLimit`, `pack.emptyDir.sizeLimit`,
+`shell.emptyDir.sizeLimit` and `renderWorker.tmp.sizeLimit` for your actual release
+sizes; default empty values preserve existing behavior. Container
+`ephemeral-storage` budgets also cover writable layers and logs. Image-cache
+space, database growth and rollback releases need separate node-disk headroom.
+Pack and shell copies are reproducible artifacts; durable records and uploaded
+asset bytes belong in PostgreSQL or the configured object store.
+
+For browser exports, enable the worker explicitly, supply its matching secret
+and shell origin, and set `config.render.worker.url` to its Service. The small
+profile starts with one worker and one concurrent render. Its HPA remains off;
+enabling HPA scales pods and requires existing node capacity and metrics.
+Measure shared editing, renders and recovery on the chosen host before cutover.
+
+See the [SUSE deployment runbook](../deploy/suse/README.md) for cluster and storage
+choices, preferred image sources and Application Collection dependencies.
 
 ### Environment dependencies
 

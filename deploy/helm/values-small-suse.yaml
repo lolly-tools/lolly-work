@@ -1,0 +1,52 @@
+# Lean single-owner profile for a small K3s or RKE2 candidate deployment.
+# Merge reviewed instance config, secret references, release images and ingress
+# with this file. This is not an HA or measured capacity claim.
+# Keep PostgreSQL durable and separately backed up; no database is bundled here.
+# Shell/pack mounting and render worker remain opt-in, as in the base chart.
+replicaCount: 1
+terminationGracePeriodSeconds: 60
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+    ephemeral-storage: 2Gi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+    ephemeral-storage: 6Gi
+
+tmp:
+  sizeLimit: 256Mi
+
+# Disk-backed, reproducible OCI copies; supply image refs and enable their types
+# only after measuring the expanded release size. Persistent data belongs in
+# PostgreSQL/S3, not these copies. Increase bounds for larger signed catalogs.
+pack:
+  emptyDir:
+    sizeLimit: 1Gi
+  initResources:
+    requests: { cpu: 25m, memory: 32Mi, ephemeral-storage: 1Gi }
+    limits: { cpu: 250m, memory: 128Mi, ephemeral-storage: 2Gi }
+shell:
+  emptyDir:
+    sizeLimit: 2Gi
+  initResources:
+    requests: { cpu: 25m, memory: 32Mi, ephemeral-storage: 2Gi }
+    limits: { cpu: 250m, memory: 128Mi, ephemeral-storage: 4Gi }
+
+renderWorker:
+  enabled: false
+  replicaCount: 1
+  maxConcurrent: 1
+  resources:
+    requests: { cpu: 250m, memory: 512Mi, ephemeral-storage: 1Gi }
+    limits: { cpu: "2", memory: 2Gi, ephemeral-storage: 2Gi }
+  tmp:
+    sizeLimit: 1Gi
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    # Enabling HPA does not provision nodes; qualify headroom before doing so.
+    maxReplicas: 2
+    targetCPUUtilizationPercentage: 70

@@ -286,8 +286,9 @@ pnpm run migrate                      # or just start the server: migrations aut
 Restart-survival needs the two secrets in section 4 as well: with a database but no
 `LW_SESSION_SECRET`, data persists and every session still dies on restart.
 
-For multi-replica rollouts, turn boot DDL off (`LW_AUTO_MIGRATE=false`) and run migrations
-as a job. The Helm chart does this for you; see [operations](operations.md).
+For Helm rollouts, enable the migration Job and turn boot DDL off
+(`LW_AUTO_MIGRATE=false`). Keep one writable collaboration owner; the current
+chart refuses multi-owner replicas. See [operations](operations.md).
 
 ## 4. Secrets
 
@@ -481,13 +482,16 @@ client connecting to this instance), because the server authenticates those itse
 
 ![Rancher](img/rancher-icon.svg) ![k3s](img/k3s-icon-color.svg) ![Helm](img/helm-icon-color.svg)
 
-The production path: HA, on **RKE2 or k3s** (both Rancher-managed, both verified) or any
-conformant cluster.
+The production path runs on **RKE2 or k3s**, or another conformant cluster.
+Work keeps one writable collaboration owner; independent render workers can
+scale after workload qualification. Cluster redundancy does not itself provide
+application room routing or failover.
 
-> **Most sovereign, your choice of paid or free:** **SLES + SUSE Rancher Prime** (paid,
-> supported) or **openSUSE Leap + Rancher Community** (free, same SLES sources). Same
-> reproducible supply chain, air-gappable, EU jurisdiction - the why is in
-> [deployment - hosting choices](deployment.md#hosting-and-operating-system-choices).
+Choose **SLES + SUSE Rancher Prime** for its commercial support path or
+**openSUSE Leap + Rancher Community** for a community-operated stack. Qualify the
+version matrix, infrastructure location and external integrations for your
+requirements. See [hosting choices](deployment.md#hosting-and-operating-system-choices)
+and the [SUSE deployment runbook](../deploy/suse/README.md).
 
 **The image comes first.** Multi-arch images (amd64 + arm64) publish to
 `ghcr.io/lolly-tools/lolly-work-server` and `...-render-worker` on every `v*` release, but

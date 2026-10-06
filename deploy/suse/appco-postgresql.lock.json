@@ -1,0 +1,23 @@
+{
+  "chart": {
+    "reference": "oci://dp.apps.rancher.io/charts/postgresql",
+    "version": "0.8.0",
+    "ociDigest": "sha256:af680c3cd2c317d143fda246a8d738f2e2e8adceef5d19e59d7995d11fa50675",
+    "archiveSha256": "aeff5d68d80c5fd8d182c966dcf3a23b38e4325217bacd900f6c717b0f183df8"
+  },
+  "image": {
+    "repository": "dp.apps.rancher.io/containers/postgresql",
+    "tag": "17.11-22.3",
+    "digest": "sha256:86d2c922014118dcb965295a344c058916829d4137f33659d6a636032df8073a",
+    "platforms": ["linux/amd64", "linux/arm64/v8"]
+  },
+  "qualification": {
+    "registryAccess": "verified",
+    "imageMetadata": "verified; manifest bytes match registry digest",
+    "chartRender": "verified with appco-postgresql.yaml",
+    "schema": "verified using strict Kubernetes 1.34.0 schemas",
+    "containerBoot": "pending",
+    "restore": "pending",
+    "productionMigration": "not performed"
+  }
+}
