@@ -230,6 +230,11 @@ export interface RoomSnapshot {
   saveFailures?: number;
 }
 
+export interface SessionPresenceSnapshot {
+  sessionId: string;
+  peers: Array<{ id: string; name: string; color?: string; away: boolean; role: MemberRole; kind: 'person' | 'agent' }>;
+}
+
 /**
  * The SIZE of the maps a room grows PER CONNECTION/PER GESTURE as members and
  * clients come and go - numbers only, never a key, an id, a name or a value. A
@@ -1038,6 +1043,21 @@ export class Room implements RoomWriteback {
     };
   }
 
+  /** Public collaborator display fields only; several tabs count as one person. */
+  snapshotForProject(): SessionPresenceSnapshot {
+    const peers = new Map<string, SessionPresenceSnapshot['peers'][number]>();
+    for (const member of this.members.values()) {
+      const presence = this.presenceOf.get(member.id);
+      const color = presence?.state?.color;
+      const old = peers.get(member.userId);
+      peers.set(member.userId, { id: member.userId, name: member.name.slice(0, 100),
+        ...(typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color) ? { color } : old?.color ? { color: old.color } : {}),
+        away: old ? old.away && presence?.away === true : presence?.away === true,
+        role: old?.role === 'writer' ? 'writer' : member.role, kind: member.agentId ? 'agent' : 'person' });
+    }
+    return { sessionId: this.sessionId, peers: [...peers.values()] };
+  }
+
   /** The sizes of this room's own maps - see `RoomInternals`. A fresh object of
    *  plain numbers; nothing here can be held onto or written through. */
   internals(): RoomInternals {
@@ -1215,6 +1235,11 @@ export class RoomRegistry {
    *  registry's own maps. */
   list(): RoomSnapshot[] {
     return [...this.rooms.values()].map((r) => r.snapshotForAdmin());
+  }
+
+  projectPresence(projectId: string): SessionPresenceSnapshot[] {
+    return [...this.rooms.values()].filter(room => room.projectId === projectId && room.size > 0 && room.available)
+      .map(room => room.snapshotForProject());
   }
 
   private async open(session: SessionRecord): Promise<Room> {

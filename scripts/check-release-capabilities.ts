@@ -29,6 +29,7 @@ try {
   assert.equal((await fetch(base + '/api/v1/agents/activity')).status, 401, 'agent dashboard route must exist and refuse anonymous access');
   for (const role of ['owner', 'admin', 'member'] as const) {
     const user = await store.upsertUserBySub({ sub: role, email: `${role}@release.invalid`, groups: [role], role });
+    if (role === 'owner') await store.putProject({ id: 'release-check', name: 'Release check', ownerId: user.id, visibility: 'private', createdAt: new Date().toISOString() });
     const cookie = mintSessionCookie({ sub: user.sub, email: user.email, name: role, groups: user.groups, role, epoch: user.sessionEpoch }, 'isolated-release-check', false).split(';')[0]!;
     const sessionResponse = await fetch(base + '/api/auth/session', { headers: { cookie } });
     assert.equal(sessionResponse.status, 200);
@@ -36,6 +37,7 @@ try {
     const permitted = role !== 'member';
     assert.equal(session.console.views.agents, permitted, `${role} console must advertise correct agent access`);
     assert.equal((await fetch(base + '/api/v1/agents/activity', { headers: { cookie } })).status, permitted ? 200 : 403);
+    assert.equal((await fetch(base + '/api/v1/projects/release-check/presence', { headers: { cookie } })).status, permitted ? 200 : 403, 'project presence route must exist and enforce membership');
     const dom = new JSDOM('<div id="app"></div><div id="live"></div><div id="tip"></div>', { url: base + '/admin#/agents', runScripts: 'outside-only' });
     try {
       dom.window.matchMedia = () => ({ matches: false });

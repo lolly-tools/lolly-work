@@ -229,6 +229,7 @@ export interface AppDeps {
    *  `() => collab.snapshot()`; the Vercel path never wires the gateway at
    *  all, so this stays undefined there and the route just answers `[]`. */
   listCollabRooms?: () => RoomSnapshot[];
+  projectPresence?: (projectId: string) => import('../collab/rooms.ts').SessionPresenceSnapshot[];
   /** Instance-mediated "nearby" registry (plans/26 §8). Like `listCollabRooms`,
    *  this is injected only by the long-lived server (main.ts) and left undefined on
    *  Vercel, where an in-memory presence registry cannot work across function
@@ -7653,6 +7654,23 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   registerProjectFileRoutes(router, { config, store, blobs, memberOf, requireAction, projectAccessOf, audit });
   registerProjectFolderRoutes(router, { store, memberOf, requireAction, projectAccessOf, audit });
   registerAgentRoutes(router, { store, config, blobs, memberOf, projectAccessOf, audit, origin: config.instance.baseUrl, rooms: deps.agentRooms, projectRequest: agentRequests.run });
+
+  router.add('GET', '/api/v1/projects/:id/presence', async (req, res, ctx) => {
+    const gate = await projectGate(req, res, ctx.params.id as string, 'viewer');
+    if (!gate) return;
+    const live = deps.projectPresence?.(gate.project.id) ?? [];
+    const sessions: import('../collab/rooms.ts').SessionPresenceSnapshot[] = [];
+    const principal = { userId: gate.user.id, groups: gate.user.groups, role: gate.user.role as Role };
+    for (let i = 0; i < Math.min(live.length, 500); i += 8) {
+      const rows = await Promise.all(live.slice(i, Math.min(i + 8, 500)).map(async row => {
+        const session = await store.getSession(row.sessionId);
+        if (!session || session.deletedAt || session.projectId !== gate.project.id || !evaluate(principal, 'session.view', [`session:${session.id}`, `project:${gate.project.id}`, '*'], gate.grants)) return null;
+        return row;
+      }));
+      sessions.push(...rows.filter((row): row is NonNullable<typeof row> => row !== null));
+    }
+    sendJson(res, 200, { available: !!deps.projectPresence, updatedAt: new Date().toISOString(), sessions, truncated: live.length > 500 }, { 'cache-control': 'private, no-store' });
+  });
 
   // GET /projects - projects visible to the caller (own + team by group; admins all).
   // Archived projects are left out unless `?archived=1`: the shell's team
