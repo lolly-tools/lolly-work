@@ -815,6 +815,15 @@ for fields, collector limits and worker compatibility.
 See [managed production rules](design-system-administration.md#managed-production-rules) for scope and draft handling. Render input checks do not certify output appearance. Durable output metadata includes `brandRules` with disposition, scope and revision; synchronous and durable downloads expose `x-lolly-brand-check`.
 
 
+### Project session presence
+
+`GET /api/v1/projects/:id/presence` requires project viewer access and `session.view`.
+It returns private, uncached live session participants: display names, assigned colours,
+writer/observer roles and away state. Multiple tabs count as one person. Session deny
+grants and deleted sessions are respected; cursor, chat and document fields are omitted.
+Hosts without a collaboration gateway return `available: false`. Coverage is capped at
+500 live sessions with an explicit `truncated` flag.
+
 ### Agent activity
 
 `GET /api/v1/agents/activity?days=30` requires `audit.export`. `days` is an
