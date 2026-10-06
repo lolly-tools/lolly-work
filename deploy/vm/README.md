@@ -114,6 +114,53 @@ monitoring; schedule HTTP readiness probes sparingly so they do not prevent auto
 Project-file and blob budgets remain enforced by `policy.projectFiles`. Provider metadata is
 cached to reduce repeated database reads and egress. Check the account before changing limits.
 
+## Custom instance domains
+
+The kit also derives its HTTPS hostname from the private `instance.baseUrl`,
+for example `https://workspace.example.com`. Use a canonical bare origin on port
+443, without credentials, a path, query or fragment. `push.sh` validates this
+before any remote copy, generates the matching Caddy configuration and probes
+that hostname by IP after restart. The checked-in Caddyfile keeps the lolly.ing
+defaults; a custom file is generated privately for the deploy.
+
+Custom domains have no implicit redirect aliases. Add only hostnames you own and
+intend to serve, using `--redirect` on push and smoke. Register the new
+`https://workspace.example.com/api/auth/callback` with the configured identity
+provider, and replace the example client IDs, owners, admission rules and group
+mappings with this instance's values. Keep the current private secrets and
+provider settings unless performing an explicit new-instance setup.
+
+```sh
+deploy/vm/push.sh sles@<ip> --internal-tls --redirect design.example.com
+deploy/vm/smoke.sh <ip> --insecure --domain workspace.example.com \
+  --redirect design.example.com --idp github --authorize-origin https://github.com
+```
+
+The smoke command checks unauthenticated health/readiness, sign-in HTML or an
+HTTPS provider redirect, private catalog/agent/room refusal and shell serving.
+On custom domains it checks an external provider only when both `--idp` and
+`--authorize-origin` are supplied; otherwise it prints that check as skipped.
+Choose the ID of a configured external provider and its actual authorization
+origin. This supports password-only and non-Google instances without probing an
+unconfigured Google provider. The lolly.ing defaults still check primary Google
+and the www redirect. Complete a real owner sign-in and shared session/export
+check as deployment acceptance; smoke does not exercise passkey enrollment.
+
+For the managed render worker, set `LOLLY_WEB_BASE` in the VM's private `.env` to
+this same bare HTTPS origin. Compose retains `https://lolly.ing` when it is unset.
+Before starting the worker or restarting Work, push parses Compose's resolved
+configuration with the host's Python 3 and refuses a mismatched worker origin.
+It never sources or prints the private environment file. Preserve all other keys.
+
+This is still the openSUSE host kit on either qualified provider. Its compatible
+storage paths remain `/opt/lolly-ing` and `packs/lolly-ing`, and the automatic
+pack builder still selects the SUSE profile. Prepare and qualify the intended
+pack at that path for another brand, or use the generic Compose/Helm shape and
+its own configuration. Public APIs still use the reviewed shell origin until
+standalone parity is accepted. The base-only push does not manage extra relay or
+database overlays; preserve their complete file list in an operator-managed
+release, as described below. None of these options changes DNS automatically.
+
 ## Runbook
 
 These steps describe provisioning a new VM and the original DNS transition. The existing
@@ -128,7 +175,8 @@ in the private `instance.json`, and add `LW_RENDER_WORKER_SECRET` to the VM's
 private `.env`. `push.sh` then builds and starts the worker before restarting
 the server. Both services use that same key. Preserve every other secret when
 editing `.env`; the worker receives only its render key, with no database or
-sign-in credentials. It drives the signed shell at `https://lolly.ing` using a
+sign-in credentials. It drives the signed shell at `LOLLY_WEB_BASE` (default
+`https://lolly.ing`, or the configured custom instance origin) using a
 five-minute read-only catalog ticket scoped to the caller's groups and current
 brand revision. This ticket cannot sign in, read projects or call write routes. The worker runs
 with a read-only filesystem and temporary browser storage, and accepts at most

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MPL-2.0
 #
-# Deploy this checkout to the lolly.ing VM (deploy/vm/README.md). Run on your
+# Deploy this checkout to an openSUSE VM (deploy/vm/README.md). Run on your
 # own machine from anywhere in the repository:
 #
-#   deploy/vm/push.sh [<user>@]<vm-ip> [--internal-tls]
+#   deploy/vm/push.sh [<user>@]<vm-ip> [--internal-tls] [--redirect <hostname>]...
 #
 #   <user>          the deploy account provision.sh set up; default LOLLY_VM_USER,
 #                   else sles (openSUSE's cloud user; root cannot log in)
@@ -28,7 +28,7 @@ PACK=packs/lolly-ing
 REMOTE=/opt/lolly-ing
 
 die() { echo "push.sh: $*" >&2; exit 1; }
-[ $# -ge 1 ] || die "usage: deploy/vm/push.sh [<user>@]<vm-ip> [--internal-tls]"
+[ $# -ge 1 ] || die "usage: deploy/vm/push.sh [<user>@]<vm-ip> [--internal-tls] [--redirect <hostname>]..."
 target=$1
 shift
 case "$target" in
@@ -37,9 +37,11 @@ case "$target" in
   *) target=${LOLLY_VM_USER:-sles}@$target ;;
 esac
 tls=acme
+redirect_args=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --internal-tls) tls=internal ;;
+    --redirect) [ $# -ge 2 ] || die "--redirect needs a hostname"; redirect_args+=(--redirect "$2"); shift ;;
     *) die "unknown option $1" ;;
   esac
   shift
@@ -48,6 +50,7 @@ cd "$ROOT"
 node scripts/check-release-capabilities.ts
 command -v rsync >/dev/null || die "rsync is needed"
 [ -f deploy/vm/instance.json ] || die "no deploy/vm/instance.json: copy deploy/vm/instance.json.example and fill it in"
+domain=$(node scripts/vm-domain.ts deploy/vm/instance.json)
 render_worker=$(node -e 'const c=JSON.parse(require("node:fs").readFileSync("deploy/vm/instance.json")); console.log(c.render?.worker?.url === "http://render-worker:8791" ? "1" : "0")')
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/lolly-ing-push.XXXXXX")
@@ -79,10 +82,14 @@ node -e '
 echo "==> checking deploy/vm/Caddyfile, instance.json and the pack"
 node scripts/build-caddyfile.ts --check
 caddy_source=deploy/vm/Caddyfile
+if [ "$domain" != lolly.ing ] || [ ${#redirect_args[@]} -gt 0 ]; then
+  node scripts/build-caddyfile.ts --domain "$domain" ${redirect_args[@]+"${redirect_args[@]}"} --out "$work/Caddyfile"
+  caddy_source="$work/Caddyfile"
+fi
 check_config=deploy/vm/instance.json
 shell_release=
 if node -e 'process.exit(JSON.parse(require("node:fs").readFileSync("deploy/vm/instance.json")).instance.shellDir ? 0 : 1)'; then
-  node scripts/build-caddyfile.ts --serve-shell --out "$work/Caddyfile"
+  node scripts/build-caddyfile.ts --domain "$domain" ${redirect_args[@]+"${redirect_args[@]}"} --serve-shell --out "$work/Caddyfile"
   caddy_source="$work/Caddyfile"
   [ -n "${LOLLY_SHELL_DIST:-}" ] || die "set LOLLY_SHELL_DIST to the qualified shell dist for a native shell deploy"
   [ -f "$LOLLY_SHELL_DIST/index.html" ] || die "LOLLY_SHELL_DIST has no index.html"
@@ -176,6 +183,13 @@ if [ "$1" = internal ]; then echo 'LW_CADDY_GLOBAL=local_certs' > caddy.env; els
 docker compose config --quiet
 docker compose run --rm --no-deps caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile </dev/null
 if [ "${2:-0}" = 1 ]; then
+  # Compose resolves the private .env without sourcing or printing it. Refuse a
+  # worker pointed at another instance before starting it or restarting Work.
+  docker compose --profile render config --format json | python3 -c '
+import json, sys
+value = json.load(sys.stdin)["services"]["render-worker"]["environment"].get("LOLLY_WEB_BASE")
+sys.exit(0 if value == "https://" + sys.argv[1] else 1)
+' "${3:-lolly.ing}" || { echo "push.sh: set LOLLY_WEB_BASE in the private .env to match instance.baseUrl before deploying the render worker" >&2; exit 1; }
   docker compose --profile render build render-worker
   docker compose --profile render up -d --no-deps render-worker
   for attempt in 1 2 3 4 5; do
@@ -204,15 +218,19 @@ for attempt in 1 2 3 4 5 6; do
   sleep 2
 done
 if [ "$1" = internal ]; then insecure=-k; else insecure=; fi
+domain=${3:-lolly.ing}
 for _ in $(seq 1 20); do
   # shellcheck disable=SC2086
-  if curl -fsS $insecure -o /dev/null --resolve lolly.ing:443:127.0.0.1 https://lolly.ing/healthz; then echo "healthy through Caddy"; exit 0; fi
+  if curl -fsS $insecure -o /dev/null --resolve "$domain:443:127.0.0.1" "https://$domain/healthz"; then echo "healthy through Caddy"; exit 0; fi
   sleep 3
 done
-echo "push.sh: the server is up but https://lolly.ing/healthz through Caddy is not (certificate not issued yet? DNS not pointing here?)" >&2
+echo "push.sh: the server is up but https://$domain/healthz through Caddy is not (certificate not issued yet? DNS not pointing here?)" >&2
 docker compose logs --tail 40 caddy >&2
 exit 1
 REMOTE_SCRIPT
 encoded=$(printf '%s' "$remote" | base64 | tr -d '\n')
-ssh -n "$target" "bash -c \"\$(echo $encoded | base64 -d)\" push-remote $tls $render_worker"
-echo "==> deployed. Next: deploy/vm/smoke.sh ${target#*@}$( [ "$tls" = internal ] && printf ' --insecure' )"
+ssh -n "$target" "bash -c \"\$(echo $encoded | base64 -d)\" push-remote $tls $render_worker $domain"
+printf '==> deployed. Next: deploy/vm/smoke.sh %s --domain %s' "${target#*@}" "$domain"
+printf ' %s' ${redirect_args[@]+"${redirect_args[@]}"}
+[ "$tls" != internal ] || printf ' --insecure'
+printf '\n'

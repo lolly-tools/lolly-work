@@ -46,6 +46,21 @@ The openSUSE `provision.sh` does not support Ubuntu. See the target runbook befo
 choosing an image. Public APIs and private data retain the same boundaries on
 either provider; public CA/MCP/Penpot containers receive no private Work secrets.
 
+## Custom instance domain
+
+The [VM kit's custom-domain procedure](../deploy/vm/README.md#custom-instance-domains)
+derives the deployment hostname from a validated HTTPS `instance.baseUrl`. Both
+providers use the same generated Caddy and application release. Custom domains
+have only explicitly requested redirect aliases; smoke can check a configured
+non-Google provider and its callback. The managed worker's `LOLLY_WEB_BASE` is set
+in the private environment and must match that origin before it can start.
+
+The openSUSE kit retains its existing compatible paths and SUSE pack default.
+Operators with another OS, brand or additional Compose overlays must use the
+corresponding host preparation and complete release file list. Keep actual
+image/SSH/reboot, owner sign-in, shared editing and real exports as acceptance
+gates. Generating a hostname does not register an OIDC client or move DNS.
+
 ## Database migration
 
 Choose managed PostgreSQL when its operations, availability and recovery policy

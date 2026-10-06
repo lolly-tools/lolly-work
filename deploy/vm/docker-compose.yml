@@ -74,7 +74,7 @@ services:
     # Only the render credential enters this container; no database or sign-in keys.
     environment:
       LW_RENDER_WORKER_SECRET: ${LW_RENDER_WORKER_SECRET:-}
-      LOLLY_WEB_BASE: https://lolly.ing
+      LOLLY_WEB_BASE: ${LOLLY_WEB_BASE:-https://lolly.ing}
       LW_RENDER_MAX_CONCURRENT: 2
     read_only: true
     tmpfs:
