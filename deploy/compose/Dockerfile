@@ -27,7 +27,7 @@ RUN pnpm install --frozen-lockfile --prod
 # its separate dependency tree after installing the pinned package manager.
 RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
-COPY tsconfig.json ./
+COPY tsconfig.json engine-pin.json content-resolver-pin.json ./
 COPY sbom.cdx.json THIRD-PARTY-NOTICES.md LICENSE ./
 COPY server ./server
 # console/ — server/src/api/app.ts serves the admin console from
@@ -45,7 +45,9 @@ COPY migrations ./migrations
 COPY scripts ./scripts
 # A healthy server alone cannot detect a missing admin feature after a merge.
 # This uses a temporary memory store, with no instance credentials or database.
-RUN node scripts/check-release-capabilities.ts
+# Verify the manifests inside the image as well, so source integrity checks
+# remain available to operators without a separately mounted checkout.
+RUN node scripts/verify-engine-pin.ts && node scripts/check-release-capabilities.ts
 # Mount point for the instance's tool pack (instance.json `pack`, default
 # ./packs/demo). compose/Helm bind it read-only; empty here by design —
 # EXCEPT the demo pack (252 KB), always aboard so an evaluation install with no
