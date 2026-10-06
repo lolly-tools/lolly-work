@@ -52,7 +52,9 @@ export function main(argv = process.argv.slice(2)): number {
     else if (flag === '--serve-shell') options.serveShell = true;
     else throw new Error(`unknown flag ${flag}`);
   }
-  if (!redirectsGiven) options.redirectDomains = [...(LOLLY_ING.redirectDomains ?? [])];
+  if (!redirectsGiven && options.domain.toLowerCase() === LOLLY_ING.domain) {
+    options.redirectDomains = [...(LOLLY_ING.redirectDomains ?? [])];
+  }
   const text = generate(options);
   if (check) {
     const current = existsSync(out) ? readFileSync(out, 'utf8') : '';

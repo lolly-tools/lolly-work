@@ -98,7 +98,7 @@ test('compose: rendering is isolated from identity and database secrets, with bo
   const worker = YAML.parse(read('docker-compose.yml')).services['render-worker'];
   assert.equal(worker.env_file, undefined);
   assert.deepEqual(Object.keys(worker.environment).sort(), ['LOLLY_WEB_BASE', 'LW_RENDER_MAX_CONCURRENT', 'LW_RENDER_WORKER_SECRET']);
-  assert.equal(worker.environment.LOLLY_WEB_BASE, 'https://lolly.ing');
+  assert.equal(worker.environment.LOLLY_WEB_BASE, '${LOLLY_WEB_BASE:-https://lolly.ing}');
   assert.equal(worker.environment.LW_RENDER_MAX_CONCURRENT, 2);
   assert.equal(worker.ports, undefined);
   assert.equal(worker.volumes, undefined);
@@ -202,7 +202,7 @@ test('push.sh: no command on the VM can swallow the rest of the deploy script, a
   // Fed to `bash -s`, bash reads the script as it runs; docker compose run and
   // exec attach standard input by default and would eat the rest, exit 0.
   assert.ok(!/^ssh .*bash -s/m.test(push), 'the remote script is not read from standard input');
-  assert.match(push, /^ssh -n "\$target" "bash -c \\"\\\$\(echo \$encoded \| base64 -d\)\\" push-remote \$tls \$render_worker"$/m);
+  assert.match(push, /^ssh -n "\$target" "bash -c \\"\\\$\(echo \$encoded \| base64 -d\)\\" push-remote \$tls \$render_worker \$domain"$/m);
   for (const line of push.split('\n').filter((l) => /^ssh /.test(l))) assert.match(line, /^ssh -n /, `standard input closed: ${line}`);
   const attaching = push.split('\n').filter((l) => /^\s*(if )?docker compose (run|exec)\b/.test(l));
   assert.equal(attaching.length, 3, 'caddy validate, worker health and caddy reload');
