@@ -142,10 +142,10 @@ ssh -n "$target" "mkdir -p $REMOTE/src $REMOTE/packs/lolly-ing $REMOTE/caddy"
 rsync -az --delete "$work/src/" "$target:$REMOTE/src/"
 rsync -az --delete "$PACK/" "$target:$REMOTE/packs/lolly-ing/"
 if [ -n "$shell_release" ]; then
-  # A new immutable directory plus an atomic pointer leaves open clients intact.
+  # Reuse identical assets and retain old browser bundles for open clients.
   ssh -n "$target" "mkdir -p $REMOTE/shell/$shell_release"
-  rsync -az --link-dest="$REMOTE/shell/current" "$LOLLY_SHELL_DIST/" "$target:$REMOTE/shell/$shell_release/"
-  ssh -n "$target" "if [ -d $REMOTE/shell/current/_app ]; then cp -an $REMOTE/shell/current/_app/. $REMOTE/shell/$shell_release/_app/; fi; ln -sfn $shell_release $REMOTE/shell/current-next; mv -Tf $REMOTE/shell/current-next $REMOTE/shell/current"
+  rsync -az --checksum --link-dest="$REMOTE/shell/current" "$LOLLY_SHELL_DIST/" "$target:$REMOTE/shell/$shell_release/"
+  ssh -n "$target" "if [ -d $REMOTE/shell/current/_app ]; then cp -aln $REMOTE/shell/current/_app/. $REMOTE/shell/$shell_release/_app/; fi; ln -sfn $shell_release $REMOTE/shell/current-next; mv -Tf $REMOTE/shell/current-next $REMOTE/shell/current"
 fi
 rsync -az deploy/vm/docker-compose.yml deploy/vm/instance.json "$target:$REMOTE/"
 rsync -az "$caddy_source" "$target:$REMOTE/caddy/Caddyfile"
