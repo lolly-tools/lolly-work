@@ -95,6 +95,11 @@
           "summary": "Brand packs, catalog providers, exposure slices, expiry and stop-sharing."
         },
         {
+          "slug": "file-preview",
+          "title": "File previews",
+          "summary": "Bounded previews of PDF and EPS originals through the isolated render worker."
+        },
+        {
           "slug": "offboarding",
           "title": "Off-boarding a DAM",
           "summary": "Leaving a DAM: pin early, the Canto/Image Relay fork, and per-vendor exit readiness."
