@@ -370,6 +370,13 @@
       "version": "0.35.5",
       "purl": "pkg:npm/%40img/sharp-darwin-x64@0.35.5",
       "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
       "hashes": [
         {
           "alg": "SHA-512",
@@ -384,6 +391,13 @@
       "version": "0.35.5",
       "purl": "pkg:npm/%40img/sharp-freebsd-wasm32@0.35.5",
       "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
       "hashes": [
         {
           "alg": "SHA-512",
@@ -419,6 +433,13 @@
       "version": "1.3.4",
       "purl": "pkg:npm/%40img/sharp-libvips-darwin-x64@1.3.4",
       "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "LGPL-3.0-or-later"
+          }
+        }
+      ],
       "hashes": [
         {
           "alg": "SHA-512",
@@ -433,6 +454,13 @@
       "version": "1.3.4",
       "purl": "pkg:npm/%40img/sharp-libvips-linux-arm@1.3.4",
       "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "LGPL-3.0-or-later"
+          }
+        }
+      ],
       "hashes": [
         {
           "alg": "SHA-512",
@@ -447,6 +475,13 @@
       "version": "1.3.4",
       "purl": "pkg:npm/%40img/sharp-libvips-linux-arm64@1.3.4",
       "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "LGPL-3.0-or-later"
+          }
+        }
+      ],
       "hashes": [
         {
           "alg": "SHA-512",
@@ -461,6 +496,13 @@
       "version": "1.3.4",
       "purl": "pkg:npm/%40img/sharp-libvips-linux-ppc64@1.3.4",
       "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "LGPL-3.0-or-later"
+          }
+        }
+      ],
       "hashes": [
         {
           "alg": "SHA-512",
@@ -475,6 +517,13 @@
       "version": "1.3.4",
       "purl": "pkg:npm/%40img/sharp-libvips-linux-riscv64@1.3.4",
       "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "LGPL-3.0-or-later"
+          }
+        }
+      ],
       "hashes": [
         {
           "alg": "SHA-512",
@@ -489,6 +538,13 @@
       "version": "1.3.4",
       "purl": "pkg:npm/%40img/sharp-libvips-linux-s390x@1.3.4",
       "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "LGPL-3.0-or-later"
+          }
+        }
+      ],
       "hashes": [
         {
           "alg": "SHA-512",
@@ -503,6 +559,13 @@
       "version": "1.3.4",
       "purl": "pkg:npm/%40img/sharp-libvips-linux-x64@1.3.4",
       "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "LGPL-3.0-or-later"
+          }
+        }
+      ],
       "hashes": [
         {
           "alg": "SHA-512",
@@ -517,6 +580,13 @@
       "version": "1.3.4",
       "purl": "pkg:npm/%40img/sharp-libvips-linuxmusl-arm64@1.3.4",
       "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "LGPL-3.0-or-later"
+          }
+        }
+      ],
       "hashes": [
         {
           "alg": "SHA-512",
@@ -531,6 +601,13 @@
       "version": "1.3.4",
       "purl": "pkg:npm/%40img/sharp-libvips-linuxmusl-x64@1.3.4",
       "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "LGPL-3.0-or-later"
+          }
+        }
+      ],
       "hashes": [
         {
           "alg": "SHA-512",
@@ -545,6 +622,13 @@
       "version": "0.35.5",
       "purl": "pkg:npm/%40img/sharp-linux-arm@0.35.5",
       "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
       "hashes": [
         {
           "alg": "SHA-512",
@@ -559,6 +643,13 @@
       "version": "0.35.5",
       "purl": "pkg:npm/%40img/sharp-linux-arm64@0.35.5",
       "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
       "hashes": [
         {
           "alg": "SHA-512",
@@ -573,6 +664,13 @@
       "version": "0.35.5",
       "purl": "pkg:npm/%40img/sharp-linux-ppc64@0.35.5",
       "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
       "hashes": [
         {
           "alg": "SHA-512",
@@ -587,6 +685,13 @@
       "version": "0.35.5",
       "purl": "pkg:npm/%40img/sharp-linux-riscv64@0.35.5",
       "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
       "hashes": [
         {
           "alg": "SHA-512",
@@ -601,6 +706,13 @@
       "version": "0.35.5",
       "purl": "pkg:npm/%40img/sharp-linux-s390x@0.35.5",
       "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
       "hashes": [
         {
           "alg": "SHA-512",
@@ -615,6 +727,13 @@
       "version": "0.35.5",
       "purl": "pkg:npm/%40img/sharp-linux-x64@0.35.5",
       "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
       "hashes": [
         {
           "alg": "SHA-512",
@@ -629,6 +748,13 @@
       "version": "0.35.5",
       "purl": "pkg:npm/%40img/sharp-linuxmusl-arm64@0.35.5",
       "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
       "hashes": [
         {
           "alg": "SHA-512",
@@ -643,6 +769,13 @@
       "version": "0.35.5",
       "purl": "pkg:npm/%40img/sharp-linuxmusl-x64@0.35.5",
       "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
       "hashes": [
         {
           "alg": "SHA-512",
@@ -657,6 +790,11 @@
       "version": "0.35.5",
       "purl": "pkg:npm/%40img/sharp-wasm32@0.35.5",
       "scope": "required",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 AND LGPL-3.0-or-later AND MIT"
+        }
+      ],
       "hashes": [
         {
           "alg": "SHA-512",
@@ -671,6 +809,13 @@
       "version": "0.35.5",
       "purl": "pkg:npm/%40img/sharp-webcontainers-wasm32@0.35.5",
       "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
       "hashes": [
         {
           "alg": "SHA-512",
@@ -685,6 +830,11 @@
       "version": "0.35.5",
       "purl": "pkg:npm/%40img/sharp-win32-arm64@0.35.5",
       "scope": "required",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 AND LGPL-3.0-or-later"
+        }
+      ],
       "hashes": [
         {
           "alg": "SHA-512",
@@ -699,6 +849,11 @@
       "version": "0.35.5",
       "purl": "pkg:npm/%40img/sharp-win32-ia32@0.35.5",
       "scope": "required",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 AND LGPL-3.0-or-later"
+        }
+      ],
       "hashes": [
         {
           "alg": "SHA-512",
@@ -713,6 +868,11 @@
       "version": "0.35.5",
       "purl": "pkg:npm/%40img/sharp-win32-x64@0.35.5",
       "scope": "required",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 AND LGPL-3.0-or-later"
+        }
+      ],
       "hashes": [
         {
           "alg": "SHA-512",
