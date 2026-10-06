@@ -35,7 +35,7 @@
     "check:vercel": "node --no-experimental-require-module scripts/check-vercel-fn.mjs"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
+    "@types/node": "^26.6.4",
     "@types/pg": "^8.23.1",
     "esbuild": "^0.28.2",
     "typescript": "^5.5.0",
