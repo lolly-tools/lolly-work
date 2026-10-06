@@ -1,3 +1,4 @@
+import { convertFilePreview } from './file-preview.ts';
 import { observeProductionInputs } from './production-inputs.ts';
 import { observeWorkerResources } from './evidence.ts';
 /**
@@ -65,6 +66,7 @@ function refused(url: string, reason: string): void {
 // immediately (see `busy()`) rather than queueing - an in-worker queue would
 // hide saturation from the HPA, so the plane owns retry policy instead.
 const sem = createSemaphore(MAX_CONCURRENT);
+const previewSem = createSemaphore(1);
 
 // ── HMAC (identical scheme to lib/crypto.ts hmac/macEquals) ────────────────────
 const hmac = (data: string): string => createHmac('sha256', SECRET).update(data).digest('base64url');
@@ -307,7 +309,7 @@ export const server = createServer((req, res) => {
     // probe endpoint.
     if (req.method === 'GET' && req.url === '/readyz') return sendJson(res, sem.atCapacity ? 503 : 200, { ok: !sem.atCapacity, active: sem.inUse, capacity: sem.limit });
     const path = (req.url ?? '').split('?')[0];
-    if (req.method !== 'POST' || (path !== '/render' && path !== '/rasterise')) {
+    if (req.method !== 'POST' || (path !== '/render' && path !== '/rasterise' && path !== '/file-preview')) {
       return fail(res, 404, 'NOT_FOUND', `no route for ${req.method} ${req.url}`);
     }
     // Read the body (bounded).
@@ -315,7 +317,7 @@ export const server = createServer((req, res) => {
     let total = 0;
     for await (const c of req) {
       total += (c as Buffer).length;
-      if (total > 256 * 1024) return fail(res, 413, 'TOO_LARGE', 'request body too large');
+      if (total > (path === '/file-preview' ? 23 * 1024 * 1024 : 256 * 1024)) return fail(res, 413, 'TOO_LARGE', 'request body too large');
       chunks.push(c as Buffer);
     }
     const raw = Buffer.concat(chunks).toString('utf8');
@@ -325,7 +327,7 @@ export const server = createServer((req, res) => {
     if (typeof sig !== 'string' || !macEquals(sig, hmac(raw))) {
       return fail(res, 401, 'BAD_SIGNATURE', 'invalid or missing render signature');
     }
-    let job: { toolId?: unknown; query?: unknown; overrides?: unknown; format?: unknown; ts?: unknown; evidence?: unknown; inputIds?: unknown; brandRevision?: unknown; readToken?: unknown; svg?: unknown; width?: unknown };
+    let job: { toolId?: unknown; query?: unknown; overrides?: unknown; format?: unknown; ts?: unknown; evidence?: unknown; inputIds?: unknown; brandRevision?: unknown; readToken?: unknown; svg?: unknown; width?: unknown; bytesB64?: unknown };
     try { job = JSON.parse(raw); } catch { return fail(res, 400, 'BAD_JSON', 'invalid JSON body'); }
     if (typeof job.ts !== 'number' || Math.abs(Date.now() - job.ts) > TS_SKEW_MS) {
       return fail(res, 401, 'STALE', 'request timestamp outside the accepted window');
@@ -334,6 +336,16 @@ export const server = createServer((req, res) => {
     const controller = new AbortController();
     const disconnected = () => { if (!res.writableFinished) controller.abort(new Error('render client disconnected')); };
     res.once('close', disconnected);
+
+    if (path === '/file-preview') {
+      if (typeof job.bytesB64 !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(job.bytesB64)) return fail(res, 400, 'BAD_REQUEST', 'expected file bytes');
+      const release = previewSem.tryAcquire(); if (!release) return busy(res);
+      try {
+        const bytes = await convertFilePreview(Buffer.from(job.bytesB64, 'base64'), controller.signal);
+        res.writeHead(200, { 'content-type': 'application/pdf', 'content-length': String(bytes.length), 'cache-control': 'no-store' }); res.end(bytes); return;
+      } catch { return fail(res, 422, 'PREVIEW_FAILED', 'This file could not be converted within the preview limits.'); }
+      finally { res.removeListener('close', disconnected); release(); }
+    }
 
     // /rasterise - a finished SVG → format bytes (the single-rasteriser path).
     if (path === '/rasterise') {
