@@ -9,7 +9,7 @@
 # rebuild. Dependabot's docker updater (/.github/dependabot.yml, dir
 # /workers/render) keeps the base pin moving. Update the browser package pin
 # alongside the application and exercise real render/raster requests.
-FROM node:24-alpine3.24@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1
+FROM node:26-alpine3.24@sha256:0b36e8c136b94cd4fcf02188228e76c31ad5872eef3fec8cbd2eee500cfd9e80
 WORKDIR /app
 
 ENV NODE_ENV=production
