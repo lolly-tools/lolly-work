@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import test from 'node:test';
+import { AGENT_FAMILY_NAMES } from '../server/src/agents/client-info.ts';
 
 const require = createRequire(import.meta.url);
 const { JSDOM } = require('jsdom');
@@ -30,7 +31,7 @@ test('client badges distinguish all families, keep model separate and never rend
   const dom = new JSDOM('<div id="app"></div><div id="live"></div><div id="tip"></div>', { url: 'https://work.test/admin', runScripts: 'outside-only' });
   try {
     const w = dom.window; w.matchMedia = () => ({ matches: false });
-    w.eval(source + '\nwindow.agentClient = { agentClientCell, agentClientMark, activityLine };');
+    w.eval(source + '\nwindow.agentClient = { agentClientCell, agentClientMark, activityLine, AGENT_CLIENTS };');
     for (const [family, label, mark] of [['claude', 'Claude', 'CL'], ['codex', 'Codex', 'CX'], ['gemini', 'Gemini', 'GM'], ['qwen', 'Qwen', 'QW'], ['glm', 'GLM', 'GL'], ['deepseek', 'DeepSeek', 'DS']]) {
       const cell = w.agentClient.agentClientCell({ name: label + ' CLI', family, version: '1.2' });
       assert.ok(cell.textContent.includes(label)); assert.ok(cell.textContent.includes('v1.2'));
@@ -38,6 +39,16 @@ test('client badges distinguish all families, keep model separate and never rend
       assert.equal(cell.textContent.includes('Model:'), false);
       assert.ok(cell.textContent.includes('Client-reported'));
     }
+    assert.deepEqual(Object.keys(w.agentClient.AGENT_CLIENTS).sort(), Object.keys(AGENT_FAMILY_NAMES).sort(), 'console and server recognize the same roster');
+    for (const [family, label] of Object.entries(AGENT_FAMILY_NAMES)) {
+      assert.equal(w.agentClient.AGENT_CLIENTS[family][0], label);
+      const named = w.agentClient.agentClientCell({ name: label, family, version: '1' });
+      assert.ok(named.textContent.includes(label));
+    }
+    const model = w.agentClient.agentClientCell({ name: 'OpenCode', family: 'opencode', model: 'Aleph-Alpha/Kolibri-1', modelFamily: 'kolibri' });
+    assert.ok(model.textContent.includes('OpenCode')); assert.ok(model.textContent.includes('Model: Kolibri · Aleph-Alpha/Kolibri-1'));
+    const custom = w.agentClient.agentClientCell({ name: 'My studio agent', title: 'Studio helper', family: 'other' });
+    assert.ok(custom.textContent.includes('Studio helper')); assert.ok(custom.textContent.includes('My studio agent'));
     const cell = w.agentClient.agentClientCell({ name: 'Cursor', family: 'other', model: '<img src=x>', icons: [{ src: 'https://evil.test' }] });
     assert.ok(cell.textContent.includes('Cursor')); assert.ok(cell.textContent.includes('Model: <img src=x>'));
     assert.equal(cell.querySelector('img'), null);

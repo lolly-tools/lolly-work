@@ -42,7 +42,11 @@ rewriting the audit chain.
 ## Reported agent client and model
 
 The Agents inventory shows the last client report in the selected period, with
-recognizable marks for Claude, Codex, Gemini, Qwen, GLM and DeepSeek. Unknown
+recognizable marks for Claude, Codex, Gemini, Qwen, GLM, DeepSeek, Jev, Laya,
+Kolibri and Mistral (including Vibe). Common clients such as Cursor, GitHub
+Copilot, OpenCode, Cline, Roo Code, Windsurf, OpenClaw, Goose, Continue, Aider,
+Amazon Q, Factory Droid and VS Code have their own names and marks too. Kimi,
+Grok and Llama are recognized when explicitly reported. Unknown
 clients keep their supplied application name; older or unnamed connections show
 **Not reported**. Search and CSV export include the client, version and any
 explicitly reported model. Activity badges belong only to requests carrying that
@@ -72,3 +76,8 @@ client icons, website URLs and other implementation fields are discarded. A
 reconnect without client information clears the prior inventory report. There
 is no shared “last client” cache attached to a reusable invitation key, so tool
 calls from another client do not inherit an earlier client's identity.
+
+Reported models also show their recognized family next to the exact model ID,
+including namespaced IDs such as `Aleph-Alpha/Kolibri-1`, `NandhaKishorM/Laya-1`
+and `mistralai/devstral-small`. Recognizing a client never implies that it runs
+that family of model: OpenCode using Kolibri remains an OpenCode client.
