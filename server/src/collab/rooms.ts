@@ -47,7 +47,7 @@ import type {
 } from '@lolly-tools/core/canvas-op-v1';
 import type { SessionRecord, Store } from '../store/types.ts';
 import {
-  EMPTY_GRACE_MS, SNAPSHOT_EVERY_BATCHES, SNAPSHOT_EVERY_OPS, docToInputs,
+  COLLAB_ACTOR, EMPTY_GRACE_MS, SNAPSHOT_EVERY_BATCHES, SNAPSHOT_EVERY_OPS, docToInputs,
 } from './persistence.ts';
 import type { QuiesceResult, RoomPersistence, RoomWriteback, RoomWriter } from './persistence.ts';
 
@@ -642,7 +642,7 @@ export class Room implements RoomWriteback {
           || this.journalBytes + journalBytes >= 1024 * 1024 || Date.now() - this.checkpointAt >= 30_000;
         this.durableRevision = await store.commitCollab({ sessionId: this.sessionId, owner: this.owner, principal: from.userId,
           expectedRev: this.durableRevision, inputs, ...(compact ? { checkpoint: candidate.checkpoint() } : {}), ops: fresh, receipts: novel,
-          actor: from.agentId ? `agent:${from.agentId}` : from.guestLinkId ? `guest:${from.guestLinkId}` : 'collab', updatedBy: from.guestLinkId ? session.updatedBy : from.userId });
+          actor: from.agentId ? `agent:${from.agentId}` : from.guestLinkId ? `guest:${from.guestLinkId}` : COLLAB_ACTOR, updatedBy: from.guestLinkId ? session.updatedBy : from.userId });
         if (this.closed) throw new Error('collab-owner-lost');
         this.doc = candidate;
         if (compact) {

@@ -42,6 +42,20 @@ function stubs(files: Record<string, string>): { dir: string; bin: string; calls
 /** The bind mounts of a service: short-syntax volumes whose source is a path. */
 const bindMounts = (volumes: string[] = []): string[] => volumes.filter((v) => /^[./~]/.test(v));
 
+test('push refuses a failed release capability check before any remote copy or restart', () => {
+  const { bin, calls } = stubs({
+    node: 'echo "release capability check refused" >&2\nexit 1',
+    ssh: 'echo "ssh $*" >> "$CALLS"',
+    rsync: 'echo "rsync $*" >> "$CALLS"',
+  });
+  const result = spawnSync('bash', [join(VM, 'push.sh'), 'sles@192.0.2.1'], {
+    encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CALLS: calls },
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /release capability check refused/);
+  assert.equal(readFileSync(calls, 'utf8'), '', 'no remote effects before the candidate qualifies');
+});
+
 interface Service {
   build?: { context: string; dockerfile: string };
   image?: string;

@@ -79,6 +79,7 @@ export const SHELL_SW_BYPASS_PREFIXES: readonly string[] = [
  *  to another origin does not carry a WebSocket. */
 export const UPGRADE_PREFIXES: readonly string[] = ['ws'];
 
+export const FUNCTION_EXACT_PATHS = ['/info/media/agent-collaboration-review.mp4'] as const;
 const FUNCTION_DEST = '/api/index';
 const restorePath: VercelTransform[] = [{ type: 'request.path', op: 'set', args: '/$1' }];
 const dropHeader = (key: string): VercelTransform => ({ type: 'request.headers', op: 'delete', target: { key } });
@@ -111,6 +112,7 @@ export function scanRouterPaths(srcDir: string): string[] {
 export function scanRouterPrefixes(srcDir: string): string[] {
   const prefixes = new Set<string>();
   for (const path of scanRouterPaths(srcDir)) {
+    if (FUNCTION_EXACT_PATHS.some(exact => exact === path)) continue;
     const first = path.split('/')[1]?.split('${')[0] ?? '';
     if (first && first !== '*' && !first.startsWith(':')) prefixes.add(first);
   }
@@ -162,7 +164,7 @@ export function vercelRoutes(opts: { shellOrigin?: string; prefixes?: readonly s
   // went on to the shell origin as /api/index and came back NOT_FOUND (first
   // lolly.ing deploy, 2026-10-03). So the shell catch-all excludes the function
   // paths itself and the function row comes last, with nothing after it.
-  const functionPaths = `(?:${prefixes.map(escape).join('|')})(?:/|$)|tools/.`;
+  const functionPaths = `(?:${prefixes.map(escape).join('|')})(?:/|$)|tools/.|${FUNCTION_EXACT_PATHS.map(p => escape(p.slice(1)) + '$').join('|')}`;
   return [
     { src: SHELL_FUNCTION_PATHS, dest: `${origin}/$1`, transforms: [dropHeader('cookie')] },
     { src: `^/(?!${functionPaths})(.*)$`, dest: `${origin}/$1`, transforms: [dropHeader('cookie'), dropHeader('authorization')] },
@@ -239,7 +241,7 @@ export function caddyRules(prefixes: readonly string[] = FUNCTION_PREFIX_BASELIN
   for (const p of own) if (!/^[a-z0-9_-]+$/i.test(p)) throw new Error(`prefix ${JSON.stringify(p)} is not a plain path segment`);
   return [
     { name: 'shell_functions', pattern: SHELL_FUNCTION_PATHS, to: 'shell' },
-    { name: 'control_plane', pattern: `^/(?:(?:${own.join('|')})(?:/|$)|tools/.)`, to: 'server' },
+    { name: 'control_plane', pattern: `^/(?:(?:${own.join('|')})(?:/|$)|tools/.|${FUNCTION_EXACT_PATHS.map(p => p.slice(1).replaceAll('.', '[.]') + '$').join('|')})`, to: 'server' },
   ];
 }
 

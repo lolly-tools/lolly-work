@@ -70,7 +70,9 @@ import { evaluate, grantDecision, denialCode, mayEditCollab, ownerOnlyAction, ro
 import { accessAtLeast, effectiveProjectAccess, type ProjectAccess } from '../rbac/project-access.ts';
 import { registerProjectFileRoutes } from '../projects/file-routes.ts';
 import { registerProjectFolderRoutes } from '../projects/folder-routes.ts';
+import { agentActor, agentAttribution } from '../agents/attribution.ts';
 import { registerAgentRoutes } from '../agents/routes.ts';
+import { createProjectRequests } from '../agents/project-requests.ts';
 import type { AgentRoomBridge } from '../agents/types.ts';
 import { mintRenderRead, renderReader } from '../render/read-ticket.ts';
 import { projectFilesEnabled, removeUploadsBy } from '../projects/files.ts';
@@ -285,6 +287,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   const secure = config.instance.baseUrl.startsWith('https:');
   const sessionTtlSec = config.policy.sessionTtlHours * 3600;
   const router = createRouter();
+  const agentRequests = createProjectRequests(router);
   const metrics = deps.metrics ?? createMetrics();
   const limiter = createRateLimiter(config.rateLimit);
   const automationResultUrl = (job: AutomationJob): string => {
@@ -352,12 +355,24 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // Shared with the collab ws gateway (server/src/iam/member.ts), which must
   // authenticate an `upgrade` request with byte-identical semantics - including
   // the disabled-account and pre-epoch-token refusals.
-  const memberOf = (req: IncomingMessage): Promise<UserRecord | null> =>
-    resolveMember(store, req.headers.cookie, sessionVerify);
+  const memberOf = async (req: IncomingMessage): Promise<UserRecord | null> => {
+    const delegated = agentRequests.principal(req);
+    if (!delegated) return resolveMember(store, req.headers.cookie, sessionVerify);
+    const user = await store.getUser(delegated.userId);
+    return user && !user.disabledAt ? user : null;
+  };
 
-  const audit = (actor: string, action: string, subject: string, payload?: Record<string, unknown>) =>
-    store.appendAudit({ at: new Date().toISOString(), actor, action, subject, ...(payload ? { payload } : {}) });
+  const audit = (actor: string, action: string, subject: string, payload?: Record<string, unknown>) => {
+    const agent = agentRequests.attribution();
+    const delegated = agent && actor === `user:${agent.createdBy}`;
+    return store.appendAudit({ at: new Date().toISOString(), actor: delegated ? agentActor(agent) : actor, action, subject,
+      ...(payload || delegated ? { payload: { ...payload, ...(delegated ? agentAttribution(agent) : {}) } } : {}) });
+  };
 
+  const revisionActor = (req: IncomingMessage, user: UserRecord): string => {
+    const agent = agentRequests.principal(req)?.agent;
+    return agent ? agentActor(agent) : user.id;
+  };
   registerPasskeyRoutes(router, { store, baseUrl: config.instance.baseUrl, instanceName: config.instance.name, secret: secrets.session, verifySecrets: sessionVerify, sessionTtlSec, memberOf, audit });
 
   // Notification egress (plans/35 wave 1). Refused at boot, not discovered at
@@ -7637,7 +7652,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
 
   registerProjectFileRoutes(router, { config, store, blobs, memberOf, requireAction, projectAccessOf, audit });
   registerProjectFolderRoutes(router, { store, memberOf, requireAction, projectAccessOf, audit });
-  registerAgentRoutes(router, { store, memberOf, projectAccessOf, audit, origin: config.instance.baseUrl, rooms: deps.agentRooms });
+  registerAgentRoutes(router, { store, config, blobs, memberOf, projectAccessOf, audit, origin: config.instance.baseUrl, rooms: deps.agentRooms, projectRequest: agentRequests.run });
 
   // GET /projects - projects visible to the caller (own + team by group; admins all).
   // Archived projects are left out unless `?archived=1`: the shell's team
@@ -7753,7 +7768,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!body?.toolId || typeof body.toolId !== 'string') return sendError(res, 400, 'INVALID_INPUT', 'toolId required');
     const now = new Date().toISOString();
     const session: SessionRecord = {
-      id: `ses_${randomId(8)}`,
+      id: agentRequests.principal(req)?.creation?.sessionId ?? `ses_${randomId(8)}`,
       projectId: project.id,
       toolId: body.toolId,
       toolVersion: typeof body.toolVersion === 'string' ? body.toolVersion : '',
@@ -7764,7 +7779,13 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       rev: 1,
       updatedAt: now,
     };
-    await store.putSession(session);
+    const creation = agentRequests.principal(req)?.creation;
+    if (creation) {
+      const result = await store.createAgentSession(session, creation.agentId, creation.requestId, creation.digest);
+      if (result === 'conflict') return sendError(res, 409, 'REQUEST_CONFLICT', 'Use a new requestId when changing creation arguments.');
+      if (result === 'refused') return sendError(res, 403, 'AGENT_REVOKED', 'This invitation can no longer create sessions.');
+      if (result === 'replayed') return sendJson(res, 200, { id: session.id, rev: 1, replayed: true });
+    } else await store.putSession(session);
     await audit(`user:${user.id}`, 'session.create', `session:${session.id}`, { projectId: project.id, toolId: session.toolId });
     sendJson(res, 201, { id: session.id, rev: session.rev });
   });
@@ -7843,7 +7864,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       await audit(`user:${user.id}`, 'session.conflict', `session:${fresh.id}`, { rev: fresh.rev, sentRev: body.rev, toolId: fresh.toolId });
       return sendJson(res, 409, { error: { code: 'CONFLICT', message: `session is at rev ${fresh.rev}, you sent ${body.rev}` }, current: await conflictCurrent(fresh, user.id) });
     }
-    await store.appendSessionRevision({ sessionId: next.id, rev: next.rev, inputs, meta, actor: user.id, at: now });
+    await store.appendSessionRevision({ sessionId: next.id, rev: next.rev, inputs, meta, actor: revisionActor(req, user), at: now });
     await audit(`user:${user.id}`, 'session.update', `session:${next.id}`, { rev: next.rev, projectId: next.projectId, toolId: next.toolId });
     sendJson(res, 200, sessionFull(next));
   });
@@ -7887,7 +7908,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const project = await store.getProject(session.projectId);
     if (!project) return sendError(res, 403, 'FORBIDDEN', 'you cannot see this session');
     if (!projectAllows(res, await projectAccessOf(user, project), 'viewer', 'session')) return;
-    sendJson(res, 200, { revisions: await store.listSessionRevisions(session.id) });
+    const revisions = await store.listSessionRevisions(session.id);
+    const names = await namesFor(revisions.map(revision => revision.actor));
+    sendJson(res, 200, { revisions: revisions.map(revision => ({ ...revision,
+      ...(names.has(revision.actor) ? { actorLabel: names.get(revision.actor) } : {}) })) });
   });
 
   // ── people on a project (plans/74 "Invite from inside Lolly") ─────────────
@@ -8434,7 +8458,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         continue;
       }
       applied.push(next);
-      await store.appendSessionRevision({ sessionId: next.id, rev: next.rev, inputs, meta: next.meta, actor: user.id, at: now });
+      await store.appendSessionRevision({ sessionId: next.id, rev: next.rev, inputs, meta: next.meta, actor: revisionActor(req, user), at: now });
     }
     // Bust affected render caches (reachable invalidation entry point, plans §6b).
     // The per-session rev bump also changes any future render key that folds in
@@ -9575,6 +9599,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         sendError(res, 404, 'NOT_FOUND', asset ? 'no such file' : 'shell index not found — check instance.shellDir');
       }
     };
+    router.add('GET', '/info/media/agent-collaboration-review.mp4', (_req, res) => {
+      res.writeHead(307, { location: '/review/agent-collaboration-review.mp4', 'cache-control': 'public, max-age=300' });
+      res.end();
+    });
     router.add('GET', '/', (_req, res) => void serveShell(res, 'index.html'));
     router.add('GET', '/*', (_req, res, ctx) => {
       const p = ctx.params['*'] || '';

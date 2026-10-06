@@ -58,6 +58,9 @@ test('GET of the shell and of a shell asset returns every header', async () => {
   await writeFile(join(shellDir, 'index.html'), '<!doctype html><title>shell</title>');
   await mkdir(join(shellDir, 'assets'));
   await writeFile(join(shellDir, 'assets', 'app.js'), 'console.log(1)');
+  await mkdir(join(shellDir, 'review'));
+  const recording = Buffer.from('review recording fixture');
+  await writeFile(join(shellDir, 'review', 'agent-collaboration-review.mp4'), recording);
   const config = parseConfig(JSON.stringify({
     instance: { name: 'Headers', baseUrl: 'http://localhost', pack, shellDir },
     rateLimit: { enabled: false },
@@ -75,6 +78,12 @@ test('GET of the shell and of a shell asset returns every header', async () => {
     for (const [name, value] of Object.entries(SHELL_SECURITY_HEADERS)) assert.equal(res.headers.get(name), value, `${path} ${name}`);
     await res.arrayBuffer();
   }
+  const legacyRecording = await fetch(base + '/info/media/agent-collaboration-review.mp4', { redirect: 'manual' });
+  assert.equal(legacyRecording.status, 307);
+  assert.equal(legacyRecording.headers.get('location'), '/review/agent-collaboration-review.mp4');
+  const servedRecording = await fetch(base + '/info/media/agent-collaboration-review.mp4');
+  assert.equal(servedRecording.status, 200);
+  assert.deepEqual(Buffer.from(await servedRecording.arrayBuffer()), recording);
   const isolated = await fetch(base + '/any-site/?url=https%3A%2F%2Fexample.com');
   assert.equal(isolated.status, 200);
   assert.equal(isolated.headers.get('content-security-policy'), shellSecurityHeaders('any-site/')['content-security-policy']);

@@ -58,7 +58,7 @@ const SHELL_PATHS = ['/', '/tools', '/tools/', '/t/qr-code', '/view/tools.html',
   '/sw.js', '/lab', '/llms.txt', '/api/ca/sign', '/api/penpot/export', '/api/mcp', '/api/mcp/sse', '/api/fetch-image'];
 const FUNCTION_PATHS = ['/tools/qr-code/tool.json', '/catalog/tools/index.json', '/catalog/tools/index.sig.json', '/api/v1/org-config',
   '/api/auth/callback', '/api/brand/x', '/healthz', '/readyz', '/metrics', '/admin', '/admin/app.js', '/l/abc', '/render/qr.svg',
-  '/scim/v2/Users', '/activate', '/connect/pack.lolly', '/api/castle', '/api/mcpx'];
+  '/scim/v2/Users', '/activate', '/connect/pack.lolly', '/api/castle', '/api/mcpx', '/info/media/agent-collaboration-review.mp4'];
 
 test('shell mode proxies the app, the gallery and the OSS functions to the shell origin', () => {
   const routes = vercelRoutes({ shellOrigin: ORIGIN, prefixes: functionPrefixes(SRC) });

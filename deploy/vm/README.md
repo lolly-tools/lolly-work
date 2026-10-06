@@ -30,6 +30,11 @@ would remove `/live/*`. Do not use the base push as a relay deployment recipe.
 The canonical development checkout is `~/Build/lolly-work`. Backend feature worktrees
 belong under its `.worktrees/`; frontend worktrees belong under `~/Build/lolly/.worktrees/`.
 Use `git worktree move` and repair untracked dependency/pack links when relocating one.
+Merge the latest backend main before exporting a release. Both `push.sh` and the
+container build run `scripts/check-release-capabilities.ts`: an isolated memory-store
+check of the owner/admin Agents API and desktop/mobile navigation. It also verifies
+that ordinary members and signed-out callers cannot read the dashboard. The public
+smoke check expects 401 from the agent activity route; a missing route is a failure.
 Do not copy private workspace configuration into tracked files. When a backend worktree
 needs its paired frontend, set `LOLLY_OSS_DIR` explicitly rather than relying on a sibling
 checkout path. `push.sh` uses `LOLLY_DIR` for the source-pack checkout, so set that too
@@ -376,3 +381,5 @@ Vercel project keeps it off.
 ### Native web shell
 
 Set `instance.shellDir` to `/app/shell/current` in the private instance config and pass `LOLLY_SHELL_DIST=/absolute/path/to/qualified/dist` to `push.sh`. Build and verify the signed release before deployment. The setup check uses this local path while the deployed configuration keeps the container path. Each release receives an immutable directory identified by all of its file names and bytes, including static assets, and an atomic `current` pointer. Older hashed app chunks stay available to open tabs; unchanged release files use hard links. Secrets and other configuration fields are preserved.
+
+For the native Work release, keep the plugin review recording at `shells/web/public/review/agent-collaboration-review.mp4` before building. The public plugin continues to use its canonical `lolly.tools` recording URL. Work redirects the previous `/info/media/agent-collaboration-review.mp4` path to `/review/agent-collaboration-review.mp4`, preserving native links while leaving the recording outside the offline documentation bundle.
