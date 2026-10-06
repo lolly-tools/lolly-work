@@ -30,7 +30,7 @@ test('a real DAM image maps to a selectable, versioned, on-demand catalog asset'
 });
 
 test('generic DAM types follow their actual files without classifying source documents as pictures', () => {
-  for (const [format, expected] of Object.entries({ jpeg: 'raster', SVG: 'vector', mp4: 'video', mov: 'video', wav: 'audio', otf: 'font', pdf: 'data', ai: 'data', eps: 'data', srt: 'text', glb: 'model' })) {
+  for (const [format, expected] of Object.entries({ jpeg: 'raster', SVG: 'vector', mp4: 'video', mov: 'video', wav: 'audio', otf: 'font', pdf: 'data', ai: 'data', eps: 'data', srt: 'text', glb: 'model', stl: 'model', '3mf': 'model' })) {
     assert.equal(providerAssetType({ ...asset, formats: [{ format, remoteRef: 'file' }] }), expected, format);
   }
   assert.equal(providerAssetType({ ...asset, nativeType: 'colors', formats: [] }), 'data');
@@ -41,4 +41,12 @@ test('legacy image mapping becomes a usable media type while explicit overrides 
   assert.equal(mapProviderAsset({ ...rec, mapping: { defaultType: 'image' } }, asset).type, 'raster');
   assert.equal(mapProviderAsset({ ...rec, mapping: { typeMap: { generic_files: 'tokens' } }, exposure: { tier: 'core' } }, asset).type, 'tokens');
   assert.equal(mapProviderAsset({ ...rec, exposure: { tier: 'core' } }, asset).tier, 'core');
+});
+
+test('Brandfolder 3MF assets retain model bytes and a separate thumbnail', () => {
+  const mapped = mapProviderAsset(rec, { ...asset, nativeType: 'generic_files', formats: [{ format: '3mf', remoteRef: 'mesh', filename: 'chameleon.3mf' }] });
+  assert.equal(mapped.type, 'model');
+  assert.equal(providerAssetType({ ...asset, formats: [{ format: 'png', remoteRef: 'poster' }, { format: '3mf', remoteRef: 'mesh' }] }), 'model');
+  assert.equal(mapped.formats![0]!.format, '3mf');
+  assert.equal(mapped.formats![1]!.format, 'thumb');
 });

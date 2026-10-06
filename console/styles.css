@@ -307,6 +307,7 @@ h2 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacin
   border: 1px solid var(--hairline);
   border-radius: var(--radius);
   padding: 14px 16px;
+  margin-bottom: 1rem;
 }
 /* Vertical rhythm between stacked cards — one value, not a per-card inline literal. */
 .stack { margin-top: 14px; }

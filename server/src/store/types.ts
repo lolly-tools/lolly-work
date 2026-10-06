@@ -452,7 +452,12 @@ export interface DocumentAgentRecord {
   id: string; sessionId: string; projectId: string; userId: string; createdBy: string;
   label: string; role: 'viewer' | 'editor'; tokenHash: string;
   createdAt: string; expiresAt: string; revokedAt?: string;
+  /** Internal room projection of a project invitation, never accepted from a client. */
+  projectAgentId?: string;
 }
+
+/** One member delegates their current access to a named agent in one project. */
+export type ProjectAgentRecord = Omit<DocumentAgentRecord, 'sessionId' | 'projectAgentId'>;
 
 /** A person's explicit role on one project (plans/74, migration 0040). The
  *  project's owner never has one. viewer reads, editor also writes sessions,
@@ -1065,9 +1070,8 @@ export interface Store extends RenderStore, PasskeyStore {
   getProjectFile(id: string): Promise<ProjectFileRecord | null>;
   /** Ready files of one project, newest first (createdAt desc, then id). */
   listProjectFiles(projectId: string): Promise<ProjectFileRecord[]>;
-  /** Unfinished uploads, earliest expiry first: by one uploader and/or expired
-   *  at or before `expiredBy`. */
-  listUnfinishedProjectFiles(filter: { createdBy?: string; expiredBy?: string }, limit: number): Promise<ProjectFileRecord[]>;
+  /** Unfinished uploads, earliest expiry first, filtered before applying the limit. */
+  listUnfinishedProjectFiles(filter: { createdBy?: string; projectId?: string; expiredBy?: string; activeAt?: string }, limit: number): Promise<ProjectFileRecord[]>;
   /** The bytes the budgets see right now, for one project and the instance. */
   projectFileUsage(projectId: string): Promise<{ projectBytes: number; instanceBytes: number }>;
   /** Move an unfinished upload's expiry out to `expiresAt`, never earlier.
@@ -1086,13 +1090,20 @@ export interface Store extends RenderStore, PasskeyStore {
   /** Every explicit member of one project, oldest first. */
   listProjectMembers(projectId: string): Promise<ProjectMemberRecord[]>;
   getProjectMember(projectId: string, userId: string): Promise<ProjectMemberRecord | null>;
-  /** Creates the account, project membership and credential together; at most 16 live keys per creator. */
+  /** Stores a delegated credential; at most 16 live document and project keys per creator. */
   createDocumentAgent(record: DocumentAgentRecord): Promise<boolean>;
   getDocumentAgent(id: string): Promise<DocumentAgentRecord | null>;
   findDocumentAgentByHash(hash: string): Promise<DocumentAgentRecord | null>;
   listDocumentAgents(sessionId: string): Promise<DocumentAgentRecord[]>;
-  /** Revocation removes the membership and disables the account in the same transaction. */
+  /** Invalidates the credential without changing the inviter's account or membership. */
   revokeDocumentAgent(id: string, at: string): Promise<void>;
+  createProjectAgent(record: ProjectAgentRecord): Promise<boolean>;
+  getProjectAgent(id: string): Promise<ProjectAgentRecord | null>;
+  findProjectAgentByHash(hash: string): Promise<ProjectAgentRecord | null>;
+  listProjectAgents(projectId: string): Promise<ProjectAgentRecord[]>;
+  revokeProjectAgent(id: string, at: string): Promise<void>;
+  /** Creation and its retry receipt commit together; retries never replace an edited session. */
+  createAgentSession(session: SessionRecord, agentId: string, requestId: string, digest: string): Promise<'created' | 'replayed' | 'conflict' | 'refused'>;
   /** Every project this user is an explicit member of: one read for a list. */
   listUserProjectMemberships(userId: string): Promise<ProjectMemberRecord[]>;
   /** Insert, or change the role of an existing row. `addedBy`/`addedAt` of an

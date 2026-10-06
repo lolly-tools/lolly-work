@@ -72,6 +72,13 @@ async function exercise(store: Store) {
     assert.equal(changed.body.result.structuredContent.docState.params.title, 'Agent edit');
     const live = await next('ops'); assert.equal((live.ops as { value: unknown }[])[0]!.value, 'Agent edit');
     const savedRev = (await store.getSession('document'))!.rev;
+    assert.equal((await store.listSessionRevisions('document')).find(revision => revision.rev === savedRev)?.actor, `agent:${invite.agent.id}`);
+    const agentAudit = (await store.listAudit()).filter(event => event.actor === `agent:${invite.agent.id}`);
+    assert.ok(agentAudit.some(event => event.action === 'agent.connect'));
+    assert.ok(agentAudit.some(event => event.action === 'agent.tool-call' && event.payload?.tool === 'read_document'));
+    assert.ok(agentAudit.every(event => event.payload?.invitedBy === `user:${owner.id}`));
+    assert.equal(JSON.stringify(agentAudit).includes('Agent edit'), false, 'document content is not copied to activity');
+    assert.equal(JSON.stringify(agentAudit).includes(invite.secret), false);
     assert.equal((await store.getSession('document'))!.updatedBy, owner.id, 'agent edits are attributed to the inviter');
     assert.equal((await store.listUsers()).length, 2, 'inviting an agent creates no independent account');
     assert.equal((await mcp('tools/call', { name: 'apply_document_ops', arguments: args })).body.result.isError, undefined);
@@ -108,6 +115,9 @@ async function exercise(store: Store) {
     assert.equal((await mcp('ping', {}, expiredKey.secret)).status, 401);
     assert.equal((await http(cookieOf(owner), 'DELETE', `/api/v1/sessions/document/agents/${invite.agent.id}`)).status, 204);
     assert.equal((await mcp('tools/call', { name: 'read_document' })).status, 401);
+    const rejectedEvents = (await store.listAudit()).filter(event => event.action === 'agent.tool-call' && event.payload?.outcome === 'rejected');
+    assert.ok(rejectedEvents.some(event => event.actor === `agent:${viewer.agent.id}` && event.payload?.code === 'READ_ONLY'));
+    assert.ok(rejectedEvents.some(event => event.actor === `agent:${invite.agent.id}` && event.payload?.rejectedOps === 1));
     const gone = await next('peer-leave'); assert.ok(gone.id);
     await store.setUserDisabled(reader.id, now);
     assert.equal((await mcp('tools/call', { name: 'read_document' }, viewer.secret)).status, 401, 'inviter offboarding removes agent access');

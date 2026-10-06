@@ -13,11 +13,12 @@
 import type { AuditEvent } from '../audit/chain.ts';
 import type { StoredEvent } from '../telemetry/ingest.ts';
 
-export type ActorKind = 'user' | 'guest' | 'system';
+export type ActorKind = 'user' | 'agent' | 'guest' | 'system';
 export interface ActivityActor {
   id: string | null;
   name: string;
   kind: ActorKind;
+  invitedBy?: { id: string; name: string };
 }
 export interface ActivityItem {
   id: string; // 'a<seq>' for audit, 't<index>' for telemetry - stable within a snapshot
@@ -62,11 +63,16 @@ export function categoryOf(action: string): string {
   return head; // link, session, project, catalog, grant, group, user, approval, message, chain, auth, guest, telemetry
 }
 
-function parseActor(actor: string, nameById: Map<string, string>): ActivityActor {
+function parseActor(actor: string, nameById: Map<string, string>, payload: Record<string, unknown>): ActivityActor {
   const i = actor.indexOf(':');
   const kind = i < 0 ? actor : actor.slice(0, i);
   const id = i < 0 ? null : actor.slice(i + 1);
   if (kind === 'user' && id) return { id, name: nameById.get(id) ?? 'a teammate', kind: 'user' };
+  if (kind === 'agent' && id) {
+    const principal = typeof payload.invitedBy === 'string' && payload.invitedBy.startsWith('user:') ? payload.invitedBy.slice(5) : null;
+    return { id, name: typeof payload.agentLabel === 'string' && payload.agentLabel ? payload.agentLabel : 'an agent', kind: 'agent',
+      ...(principal ? { invitedBy: { id: principal, name: nameById.get(principal) ?? 'a former teammate' } } : {}) };
+  }
   if (kind === 'guest' && id) return { id, name: 'a guest', kind: 'guest' };
   return { id: null, name: 'the system', kind: 'system' };
 }
@@ -85,15 +91,20 @@ export function normalizeActivity(
 ): ActivityItem[] {
   const items: ActivityItem[] = [];
   for (const e of audit) {
+    // Older agent joins and project writes were filed under the inviter's user principal.
+    const legacy = e.actor.startsWith('user:') && typeof e.payload?.agentId === 'string'
+      && ['collab.join', 'collab.leave', 'agent.project-write'].includes(e.action);
+    const payload = legacy ? { ...e.payload, invitedBy: e.actor } : e.payload ?? {};
+    const actor = legacy ? `agent:${payload.agentId}` : e.actor;
     items.push({
       id: `a${e.seq}`,
       source: 'audit',
       at: e.at,
       action: e.action,
       category: categoryOf(e.action),
-      actor: parseActor(e.actor, nameById),
+      actor: parseActor(actor, nameById, payload),
       subject: e.subject ?? null,
-      payload: e.payload ?? {},
+      payload,
     });
   }
   telemetry.forEach((e, i) => {
@@ -124,12 +135,13 @@ export function buildActivity(
   const q = (query.q ?? '').toLowerCase().trim();
   const matches = (x: ActivityItem): boolean => {
     if (query.category && x.category !== query.category) return false;
-    if (query.actor && x.actor.id !== query.actor) return false;
-    if (query.group && !(groupsByUser.get(x.actor.id ?? '') ?? []).includes(query.group)) return false;
+    if (query.actor && x.actor.id !== query.actor && x.actor.invitedBy?.id !== query.actor) return false;
+    const accountableUser = x.actor.kind === 'agent' ? x.actor.invitedBy?.id : x.actor.id;
+    if (query.group && !(groupsByUser.get(accountableUser ?? '') ?? []).includes(query.group)) return false;
     if (query.day && x.at.slice(0, 10) !== query.day) return false;
     if (query.before && !(x.at < query.before)) return false;
     if (q) {
-      const hay = `${x.action} ${x.subject ?? ''} ${x.actor.name} ${Object.values(x.payload).join(' ')}`.toLowerCase();
+      const hay = `${x.action} ${x.subject ?? ''} ${x.actor.name} ${x.actor.invitedBy?.name ?? ''} ${Object.values(x.payload).join(' ')}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;
@@ -143,7 +155,8 @@ export function buildActivity(
   const actorName = new Map<string, string>();
   for (const x of all) {
     catCount.set(x.category, (catCount.get(x.category) ?? 0) + 1);
-    if (x.actor.kind === 'user' && x.actor.id) actorName.set(x.actor.id, x.actor.name);
+    if ((x.actor.kind === 'user' || x.actor.kind === 'agent') && x.actor.id) actorName.set(x.actor.id, x.actor.kind === 'agent' ? `${x.actor.name} (agent)` : x.actor.name);
+    if (x.actor.invitedBy) actorName.set(x.actor.invitedBy.id, x.actor.invitedBy.name);
   }
   // Names for every user referenced on THIS page (actor, user: subject, user:
   // grant principal) - keeps the payload small while making the feed readable.
@@ -152,7 +165,9 @@ export function buildActivity(
     if (uid && nameById.has(uid)) names[uid] = nameById.get(uid)!;
   };
   for (const x of items) {
-    addName(x.actor.id);
+    if (x.actor.kind === 'user') addName(x.actor.id);
+    addName(x.actor.invitedBy?.id);
+    if (typeof x.payload.invitedBy === 'string' && x.payload.invitedBy.startsWith('user:')) addName(x.payload.invitedBy.slice(5));
     if (x.subject?.startsWith('user:')) addName(x.subject.slice(5));
     const pr = x.payload.principal;
     if (typeof pr === 'string' && pr.startsWith('user:')) addName(pr.slice(5));

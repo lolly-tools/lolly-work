@@ -813,3 +813,18 @@ for fields, collector limits and worker compatibility.
 | `POST /api/v1/brand/rules` | `policy.edit` | Apply the reviewed mappings with `revision` and `reviewToken`; audited, stale-safe and durable outside development |
 
 See [managed production rules](design-system-administration.md#managed-production-rules) for scope and draft handling. Render input checks do not certify output appearance. Durable output metadata includes `brandRules` with disposition, scope and revision; synchronous and durable downloads expose `x-lolly-brand-check`.
+
+
+### Project agent invitations
+
+Agent activity uses an `agent:<invitation id>` audit actor with the inviting user recorded separately as `invitedBy`. The activity API returns `actor.kind: "agent"` and, when known, `actor.invitedBy: { id, name }`. Filtering by a user or group includes their invited agents. See [Activity attribution](document-agents.md#activity-attribution).
+
+These routes require a signed-in person with access to the project. They never return a stored connection key. See [Document and project agent invitations](document-agents.md) for the MCP tools and their scope.
+
+| Route | Access and response |
+|---|---|
+| `GET /api/v1/projects/:id/agents` | viewer; `{ enabled, canInvite, canEdit, agents }`. Each row includes the inviter's display name, expiry, connection state and `canRevoke`; no key or hash |
+| `POST /api/v1/projects/:id/agents` | viewer; `{ label, role, hours? }`, with viewer/editor access and 1 to 168 hours (default 24). Editor access also needs project editor rights. Refused on archived projects. `201 { agent, endpoint, secret }` returns the connection key once |
+| `DELETE /api/v1/projects/:id/agents/:agentId` | inviter or project manager; revokes the key and closes its document connections; `204` |
+
+Project keys authenticate only `POST /api/workspace/mcp`, using `Authorization: Bearer <key>`. They do not authenticate the REST API. `DELETE /api/workspace/mcp` disconnects document connections without revoking the key. MCP requests recheck current inviter access. Project tools accept only their declared arguments and never a caller-selected project or HTTP path. Tool failures return `isError: true` with a safe error code and explanation. Document tools require `sessionId` for a project key; a document key remains bound to its original document.

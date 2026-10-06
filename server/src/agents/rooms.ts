@@ -5,6 +5,7 @@ import { CANVAS_OP_VERSION } from '@lolly-tools/core/canvas-op-v1';
 import { Room, type RoomRegistry, type RoomMember, type ServerFrame, WRITER_CAP, WRITER_CAP_PER_USER } from '../collab/rooms.ts';
 import type { DocumentAgentRecord, Store } from '../store/types.ts';
 import { displayName } from '../iam/member.ts';
+import { agentActor, agentAttribution } from './attribution.ts';
 import { agentStanding } from './access.ts';
 import type { AgentRoomBridge } from './types.ts';
 
@@ -23,9 +24,11 @@ export function createAgentRooms(d: Dependencies): AgentRoomBridge & { close(): 
   const seats = new Map<string, Seat>(), opening = new Map<string, Promise<Seat>>();
   let closed = false, timer: ReturnType<typeof setInterval> | undefined;
   async function disconnect(id: string): Promise<void> {
+    const related = [...seats.values()].filter(seat => seat.record.projectAgentId === id);
+    if (related.length) { await Promise.all(related.map(seat => disconnect(seat.record.id))); return; }
     const seat = seats.get(id); if (!seat) return;
     seats.delete(id); seat.room.leave(seat.member.id);
-    await d.audit(`user:${seat.record.userId}`, 'collab.leave', `session:${seat.record.sessionId}`, { agentId: id });
+    await d.audit(agentActor(seat.record), 'collab.leave', `session:${seat.record.sessionId}`, agentAttribution(seat.record));
     if (!seats.size) { clearInterval(timer); timer = undefined; }
     if (!seat.room.size) await d.dispose(seat.room);
   }
@@ -49,8 +52,12 @@ export function createAgentRooms(d: Dependencies): AgentRoomBridge & { close(): 
     if (seats.size + opening.size >= 128) throw new Error('AGENT_CAPACITY');
     const create = (async () => {
       const room = await d.registry.acquire(standing.session);
+      if (closed || !await agentStanding(d.store, record)) {
+        if (!room.size) await d.dispose(room);
+        throw new Error('AGENT_REVOKED');
+      }
       const frames: ServerFrame[] = [];
-      const member: RoomMember = { id: `agent_${record.id}`, userId: standing.agent.id, name: `${record.label} · ${displayName(standing.creator)}’s agent`,
+      const member: RoomMember = { id: `agent_${record.id}`, userId: standing.agent.id, agentId: record.projectAgentId ?? record.id, name: `${record.label} · ${displayName(standing.creator)}’s agent`,
         role: standing.mayEdit && room.writerCount() < WRITER_CAP && room.writerCountFor(standing.creator.id) < WRITER_CAP_PER_USER ? 'writer' : 'observer',
         opVersion: CANVAS_OP_VERSION, presenceVersion: 1, interactionVersion: 1,
         send: frame => { if (frames.length >= 256) frames.shift(); frames.push(frame); },
@@ -58,14 +65,14 @@ export function createAgentRooms(d: Dependencies): AgentRoomBridge & { close(): 
       const seat: Seat = { record, room, member, usedAt: Date.now(), frames, writes: Promise.resolve() };
       room.join(member); seats.set(record.id, seat);
       if (!timer) { timer = setInterval(() => { void sweep().catch(() => {}); }, 30_000); timer.unref(); }
-      await d.audit(`user:${record.userId}`, 'collab.join', `session:${record.sessionId}`, { agentId: record.id, role: member.role });
+      await d.audit(agentActor(record), 'collab.join', `session:${record.sessionId}`, { ...agentAttribution(record), role: member.role });
       return seat;
     })();
     opening.set(record.id, create);
     try { return await create; } finally { opening.delete(record.id); }
   }
   return {
-    connected: id => seats.has(id), disconnect,
+    connected: id => seats.has(id) || [...seats.values()].some(seat => seat.record.projectAgentId === id), disconnect,
     async read(record) {
       const seat = await seatOf(record);
       const current = await seat.room.readCurrent(seat.member);

@@ -696,14 +696,14 @@ const ACT_CAT_LABEL = {
   catalog: 'Catalog', provider: 'Providers', grant: 'Grants', group: 'Groups',
   user: 'People', approval: 'Approvals', chain: 'Approval chains', message: 'Messages',
   auth: 'Sign-ins', telemetry: 'Telemetry', guest: 'Guests', collab: 'Collab',
-  invite: 'Invitations', access: 'Access requests',
+  invite: 'Invitations', access: 'Access requests', agent: 'Agents',
 };
 const ACT_CAT_ICON = {
   link: 'links', render: 'tools', session: 'projects', project: 'projects',
   catalog: 'catalog', provider: 'providers', grant: 'grants', group: 'users',
   user: 'users', approval: 'approvals', chain: 'approvals', message: 'messages',
   auth: 'users', telemetry: 'overview', guest: 'users', collab: 'projects',
-  invite: 'users', access: 'users',
+  invite: 'users', access: 'users', agent: 'users',
 };
 const CONSOLE_VIEW_OF = {
   link: 'links', session: 'projects', project: 'projects', tool: 'tools',
@@ -761,7 +761,9 @@ function listNodes(nodes) {
 function activityLine(item, names) {
   const p = item.payload || {};
   const s = actSubjRef(item.subject);
-  const out = [actActorObj(item.actor, names), ' '];
+  const out = [actActorObj(item.actor, names)];
+  if (item.actor.kind === 'agent' && item.actor.invitedBy) out.push(' (invited by ', actUserObj(item.actor.invitedBy.id, names), ')');
+  out.push(' ');
   const push = (...xs) => out.push(...xs);
   switch (item.action) {
     case 'auth.login': push('signed in', p.provider ? ` via ${p.provider}` : ''); break;
@@ -804,6 +806,14 @@ function activityLine(item, names) {
     case 'telemetry.consent': push('updated their telemetry consent'); break;
     case 'guest.admit': push('joined via ', actConsoleObj('link', s?.id, 'a guest link'), p.name ? ` as ${p.name}` : ''); break;
     case 'render.denied': push('was blocked from ', p.toolId ? actToolObj(p.toolId) : 'a render', p.code ? ` (${p.code})` : ''); break;
+    case 'agent.invite':
+    case 'agent.project-invite': push('invited ', bold(p.agentLabel || 'an agent'), ' to ', s?.type === 'session' ? actSessionObj(s.id) : s ? actProjectObj(s.id) : 'a project'); break;
+    case 'agent.revoke':
+    case 'agent.project-revoke': push('revoked ', bold(p.agentLabel || 'an agent'), '’s invitation'); break;
+    case 'agent.connect': push('connected to ', s ? actProjectObj(s.id) : 'the workspace'); break;
+    case 'agent.disconnect': push('disconnected from ', s ? actProjectObj(s.id) : 'the workspace'); break;
+    case 'agent.tool-call': push(p.outcome === 'rejected' ? 'was refused ' : p.outcome === 'partial' ? 'partially completed ' : 'used ', bold(p.tool), p.code ? ` (${p.code})` : ''); break;
+    case 'agent.project-write': push('ran ', bold(p.tool), ' in ', s ? actProjectObj(s.id) : 'a project'); break;
     case 'collab.invite': push('invited ', p.invitee ? actUserObj(p.invitee, names) : 'a teammate', ' to co-edit ', s ? actSessionObj(s.id, p.toolId) : 'a session'); break;
     // Invitations and access requests (plans/74 invite spec 4.4). A step
     // taken before anyone is admitted is audited as `anonymous`, which the

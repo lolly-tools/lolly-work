@@ -342,3 +342,5 @@ Vercel project keeps it off.
 ### Native web shell
 
 Set `instance.shellDir` to `/app/shell/current` in the private instance config and pass `LOLLY_SHELL_DIST=/absolute/path/to/qualified/dist` to `push.sh`. Build and verify the signed release before deployment. The setup check uses this local path while the deployed configuration keeps the container path. Each release receives an immutable directory identified by all of its file names and bytes, including static assets, and an atomic `current` pointer. Older hashed app chunks stay available to open tabs; unchanged release files use hard links. Secrets and other configuration fields are preserved.
+
+For the native Work release, keep the plugin review recording at `shells/web/public/review/agent-collaboration-review.mp4` before building. The public plugin continues to use its canonical `lolly.tools` recording URL. Work redirects the previous `/info/media/agent-collaboration-review.mp4` path to `/review/agent-collaboration-review.mp4`, preserving native links while leaving the recording outside the offline documentation bundle.

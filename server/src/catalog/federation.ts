@@ -29,6 +29,7 @@ const MAX_PAGES = 50;
 
 /** Use file formats when a DAM reports a broad native type such as generic_files. */
 export function providerAssetType(asset: ProviderAssetRef): string {
+  if (asset.formats.some(format => /^(3mf|stl|glb|gltf)$/i.test(format.format))) return 'model';
   const types: Record<string, string> = {
     svg: 'vector',
     png: 'raster', jpg: 'raster', jpeg: 'raster', webp: 'raster', gif: 'raster',
@@ -36,7 +37,7 @@ export function providerAssetType(asset: ProviderAssetRef): string {
     mp4: 'video', webm: 'video', mov: 'video', m4v: 'video',
     mp3: 'audio', wav: 'audio', ogg: 'audio', flac: 'audio', m4a: 'audio', aac: 'audio',
     otf: 'font', ttf: 'font', woff: 'font', woff2: 'font',
-    glb: 'model', gltf: 'model', cube: 'lut', txt: 'text', md: 'text', srt: 'text',
+    glb: 'model', gltf: 'model', stl: 'model', '3mf': 'model', cube: 'lut', txt: 'text', md: 'text', srt: 'text',
   };
   for (const format of asset.formats) {
     const type = types[format.format.toLowerCase()];
