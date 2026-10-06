@@ -6,6 +6,7 @@ import { randomId } from '../lib/crypto.ts';
 import { accessAtLeast, type ProjectAccess } from '../rbac/project-access.ts';
 import { mayEditCollab, mayJoinCollab } from '../rbac/evaluate.ts';
 import type { DocumentAgentRecord, ProjectRecord, Store, UserRecord } from '../store/types.ts';
+import { agentClientInfo } from './client-info.ts';
 import { agentActor, agentAttribution } from './attribution.ts';
 import { agentSecret, principalOf, resolveAgent } from './access.ts';
 import { displayName } from '../iam/member.ts';
@@ -112,9 +113,11 @@ export function registerAgentRoutes(router: ReturnType<typeof createRouter>, d: 
     if (!object(msg) || msg.jsonrpc !== '2.0' || typeof msg.method !== 'string') return sendJson(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Invalid request' } });
     if (msg.id === undefined) { res.writeHead(202); res.end(); return; }
     if (typeof msg.id !== 'number' && typeof msg.id !== 'string') return sendJson(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Invalid request id' } });
+    const client = agentClientInfo(msg.params, msg.method === 'initialize');
+    const requestAttribution = { ...agentAttribution(standing.record), ...(client ? { client } : {}) };
     const reply = (result: unknown) => sendJson(res, 200, { jsonrpc: '2.0', id: msg.id, result }, { 'cache-control': 'no-store' });
     if (msg.method === 'initialize') {
-      await d.audit(agentActor(standing.record), 'agent.connect', `session:${standing.record.sessionId}`, agentAttribution(standing.record));
+      await d.audit(agentActor(standing.record), 'agent.connect', `session:${standing.record.sessionId}`, { ...requestAttribution, client });
       const asked = object(msg.params) ? msg.params.protocolVersion : null;
       return reply({ protocolVersion: typeof asked === 'string' && versions.has(asked) ? asked : '2025-11-25', capabilities: { tools: { listChanged: false } },
         serverInfo: { name: 'Lolly document collaboration', version: '1.0.0' }, instructions: 'This invitation accesses one document only. Read its current state and claims before making small edits. Use a unique batchId per change; do not overwrite the session over REST.' });
@@ -127,20 +130,20 @@ export function registerAgentRoutes(router: ReturnType<typeof createRouter>, d: 
       const value = params.name === 'read_document' ? await d.rooms!.read(standing.record)
         : params.name === 'apply_document_ops' ? await d.rooms!.apply(standing.record, args) : null;
       if (!value) {
-        await d.audit(agentActor(standing.record), 'agent.tool-call', `session:${standing.record.sessionId}`, { ...agentAttribution(standing.record), tool: 'unknown', outcome: 'rejected', code: 'UNKNOWN_TOOL' });
+        await d.audit(agentActor(standing.record), 'agent.tool-call', `session:${standing.record.sessionId}`, { ...requestAttribution, tool: 'unknown', outcome: 'rejected', code: 'UNKNOWN_TOOL' });
         return sendJson(res, 200, { jsonrpc: '2.0', id: msg.id, error: { code: -32602, message: 'Unknown tool' } });
       }
       const rejected = Array.isArray(value.rejectedIds) ? value.rejectedIds.length : 0;
       const accepted = Array.isArray(value.acceptedIds) ? value.acceptedIds.length : 0;
       await d.audit(agentActor(standing.record), 'agent.tool-call', `session:${standing.record.sessionId}`, {
-        ...agentAttribution(standing.record), tool: params.name, outcome: rejected ? accepted ? 'partial' : 'rejected' : 'succeeded',
+        ...requestAttribution, tool: params.name, outcome: rejected ? accepted ? 'partial' : 'rejected' : 'succeeded',
         ...(Array.isArray(value.acceptedIds) ? { acceptedOps: accepted, rejectedOps: rejected } : {}),
       });
       reply({ content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value });
     } catch (error) {
       const code = (error as Error).message;
       const known = ['READ_ONLY', 'AGENT_REVOKED', 'AGENT_UNAVAILABLE', 'AGENT_CAPACITY', 'INVALID_OPS', 'collab-revision-changed', 'collab-receipt-conflict', 'collab-room-busy'];
-      await d.audit(agentActor(standing.record), 'agent.tool-call', `session:${standing.record.sessionId}`, { ...agentAttribution(standing.record), tool: ['read_document', 'apply_document_ops'].includes(String(params.name)) ? params.name : 'unknown', outcome: 'rejected', code: known.includes(code) ? code : 'EDIT_UNAVAILABLE' });
+      await d.audit(agentActor(standing.record), 'agent.tool-call', `session:${standing.record.sessionId}`, { ...requestAttribution, tool: ['read_document', 'apply_document_ops'].includes(String(params.name)) ? params.name : 'unknown', outcome: 'rejected', code: known.includes(code) ? code : 'EDIT_UNAVAILABLE' });
       reply({ isError: true, content: [{ type: 'text', text: JSON.stringify({ code: known.includes(code) ? code : 'EDIT_UNAVAILABLE', message: 'Read the document again before retrying. Your changes were not confirmed.' }) }] });
     }
   });

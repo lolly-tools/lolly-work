@@ -117,3 +117,23 @@ test('agent dashboard and navigation enforce audit disclosure and validate the t
     assert.equal(consoleAccess({ role: 'admin', groups: [] }, []).views.agents, true);
   } finally { server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())); await rm(pack, { recursive: true, force: true }); }
 });
+
+test('dashboard reports the latest client, leaves historical calls unlabelled and clears identity on unknown reconnect', async () => {
+  const { store, payload } = await fixture();
+  const first = { name: 'Claude Code', version: '1.0', model: 'claude-sonnet-4-5', icons: [{ src: 'https://evil.test' }], private: 'PRIVATE CLIENT DATA' };
+  await store.appendAudit({ at, actor: 'agent:agt_1', action: 'agent.connect', subject: 'session:s1', payload: { ...payload, client: first } });
+  await store.appendAudit({ at, actor: 'agent:agt_1', action: 'agent.tool-call', subject: 'session:s1', payload: { ...payload, tool: 'read_document', outcome: 'succeeded' } });
+  let data = await agentDashboard(store, rooms, 30, now);
+  assert.equal((data.agents[0]!.client as { family: string }).family, 'claude');
+  assert.equal(data.agents[0]!.clientReportedAt, at);
+  assert.equal(data.timeline.find(e => e.action === 'agent.tool-call')?.actor.client, undefined);
+  for (const forbidden of ['PRIVATE CLIENT DATA', 'evil.test', 'icons']) assert.equal(JSON.stringify(data).includes(forbidden), false);
+  await store.appendAudit({ at, actor: 'agent:agt_1', action: 'agent.tool-call', subject: 'session:s1', payload: { ...payload, client: { name: 'Codex' }, tool: 'read_document', outcome: 'succeeded' } });
+  data = await agentDashboard(store, rooms, 30, now);
+  assert.equal((data.agents[0]!.client as { family: string }).family, 'codex');
+  assert.equal(data.timeline[0]!.actor.client?.family, 'codex');
+  await store.appendAudit({ at, actor: 'agent:agt_1', action: 'agent.connect', subject: 'session:s1', payload: { ...payload, client: null } });
+  data = await agentDashboard(store, rooms, 30, now);
+  assert.equal(data.agents[0]!.client, null); assert.equal(data.agents[0]!.clientReportedAt, null);
+  assert.equal(data.timeline.find(e => e.payload.client)?.actor.client?.family, 'codex', 'historical report stays attached to its original event');
+});

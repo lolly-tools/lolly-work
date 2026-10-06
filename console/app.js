@@ -808,6 +808,27 @@ function actProjectObj(id) { return actAnchor(lollyHref(`/#/p?team=${encodeURICo
 // Console deep links (hash → routed in-place).
 function actConsoleObj(type, id, label) { return actAnchor(`#/${CONSOLE_VIEW_OF[type] ?? 'overview'}`, label ?? actShort(id), id); }
 function actUserObj(id, names) { return actAnchor(`#/users?focus=${encodeURIComponent(id)}`, (names && names[id]) || actShort(id), 'Open in People'); }
+// Fixed local marks: client-provided URLs and icons are never loaded.
+const AGENT_CLIENTS = { claude: ['Claude', 'CL'], codex: ['Codex', 'CX'], gemini: ['Gemini', 'GM'], qwen: ['Qwen', 'QW'], glm: ['GLM', 'GL'], deepseek: ['DeepSeek', 'DS'], openai: ['OpenAI', 'AI'], other: ['Other client', 'AG'] };
+function agentClientMark(client, extraClass = '') {
+  const family = Object.hasOwn(AGENT_CLIENTS, client?.family) ? client.family : 'other';
+  const [label, mark] = AGENT_CLIENTS[family];
+  return el('span', { class: `agent-client-mark agent-client-mark--${family} ${extraClass}`, 'aria-hidden': 'true', title: `${label} · reported by client` }, mark);
+}
+function agentClientLabel(client) {
+  if (!client) return 'Not reported';
+  const family = Object.hasOwn(AGENT_CLIENTS, client.family) ? client.family : 'other';
+  return family === 'other' ? client.title || client.name || 'Client not reported' : AGENT_CLIENTS[family][0];
+}
+function agentClientCell(client, reportedAt) {
+  if (!client) return el('span', { class: 'muted' }, 'Not reported');
+  const name = client.title || client.name;
+  return el('div', { class: 'agent-client' }, agentClientMark(client), el('div', {},
+    el('strong', {}, agentClientLabel(client)),
+    ...(name ? [el('span', { class: 'muted' }, name, client.version ? ` · v${client.version}` : '')] : []),
+    ...(client.model ? [el('span', { class: 'agent-model' }, `Model: ${client.model}`, client.provider ? ` (${client.provider})` : '')] : []),
+    el('span', { class: 'muted', title: reportedAt ? `Last reported ${new Date(reportedAt).toLocaleString()}` : null }, 'Client-reported')));
+}
 function actActorObj(actor, names) {
   const name = (actor.id && names && names[actor.id]) || actor.name;
   return actor.kind === 'user' && actor.id
@@ -832,6 +853,7 @@ function activityLine(item, names) {
   const p = item.payload || {};
   const s = actSubjRef(item.subject);
   const out = [actActorObj(item.actor, names)];
+  if (item.actor.kind === 'agent' && item.actor.client) out.push(' ', el('span', { class: 'agent-client-tag', title: 'Reported on this request; not verified by Lolly.' }, agentClientLabel(item.actor.client), ...(item.actor.client.model ? [` · ${item.actor.client.model}`] : [])));
   if (item.actor.kind === 'agent' && item.actor.invitedBy) out.push(' (invited by ', actUserObj(item.actor.invitedBy.id, names), ')');
   out.push(' ');
   const push = (...xs) => out.push(...xs);
@@ -915,6 +937,7 @@ function activityLine(item, names) {
 // A small square marker per row: the pack's tool/asset preview when one exists
 // (in-instance /catalog/ path only), else a category-icon badge. Air-gap-safe.
 function activityThumb(item) {
+  if (item.actor?.kind === 'agent' && item.actor.client) return agentClientMark(item.actor.client, 'act-thumb');
   const iconId = ACT_CAT_ICON[item.category] || 'overview';
   const badge = el('span', { class: 'act-thumb act-thumb--badge' }, navIcon(iconId));
   const p = item.payload || {};
@@ -1261,6 +1284,7 @@ async function viewAgents(main) {
     if (!replaceDetail) return;
     const rows = data.agents.map(a => el('tr', {},
       el('td', {}, el('div', { class: 'agent-identity' }, navIcon('agents'), el('div', {}, el('strong', {}, a.label), el('span', { class: 'muted' }, a.lastTool || 'No tool calls yet')))),
+      el('td', {}, agentClientCell(a.client, a.clientReportedAt)),
       el('td', {}, a.invitedBy ? actUserObj(a.invitedBy.id, { [a.invitedBy.id]: a.invitedBy.name }) : 'Former member'),
       el('td', {}, ...(a.project ? [el('a', { href: lollyHref(`/#/p?team=${encodeURIComponent(a.project.id)}`) }, a.project.name)] : ['Unavailable project']),
         ...(a.session ? [el('div', { class: 'muted' }, a.session.toolId ? el('a', { href: lollyHref(`/t/${encodeURIComponent(a.session.toolId)}?session=${encodeURIComponent(a.session.id)}`) }, a.session.name) : a.session.name)] : [])),
@@ -1272,9 +1296,9 @@ async function viewAgents(main) {
       el('td', { 'data-sort': a.lastActivity }, el('time', { datetime: a.lastActivity, title: new Date(a.lastActivity).toLocaleString() }, when(a.lastActivity))),
       el('td', {}, el('a', { class: 'btn', href: `#/activity?category=agent&actor=${encodeURIComponent(a.id)}`, title: `Activity for ${a.label}` }, 'Activity'))));
     const inventory = el('div', { class: 'card' }, el('h2', {}, 'Agents seen in this period'),
-      ...(rows.length ? [dataTable(['Agent', 'Invited by', 'Workspace', 'Access', 'Invitation & presence', 'Tool calls', 'Last activity', { label: 'Actions', sort: false }], rows,
+      ...(rows.length ? [dataTable(['Agent', 'Client / model', 'Invited by', 'Workspace', 'Access', 'Invitation & presence', 'Tool calls', 'Last activity', { label: 'Actions', sort: false }], rows,
         { filter: true, paginate: true, pageSize: 25, csv: true, csvName: 'agent-activity.csv' })] : [el('p', { class: 'empty' }, 'No agents have been invited or used in this period. Invite an agent from a shared project or design session to begin.')]),
-      el('p', { class: 'sub' }, 'Access belongs to the inviter. An active invitation can still be refused when project permissions, locks or account access change.'));
+      el('p', { class: 'sub' }, 'Client identity is the last report in this period. Names and models are supplied by the client, not verified by Lolly. A client name alone does not identify its model. Access belongs to the inviter. An active invitation can still be refused when project permissions, locks or account access change.'));
     const timeline = el('div', { class: 'card' }, el('div', { class: 'agent-heading' }, el('h2', {}, 'Recent agent activity'), el('a', { class: 'btn', href: '#/activity?category=agent' }, 'Full timeline')),
       el('p', { class: 'sub' }, 'Newest 100 events in this period. Tool outcomes include rejected and partially accepted edits.'),
       el('ul', { class: 'act-list' }, ...(data.timeline.length ? data.timeline.map(item => agentActivityRow(item, data.names)) : [el('li', { class: 'act-empty' }, 'Agent activity will appear here when an invitation is used.')])));

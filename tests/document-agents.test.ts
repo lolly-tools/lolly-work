@@ -61,10 +61,14 @@ async function exercise(store: Store) {
       const r = await fetch(base + '/api/workspace/mcp', { method: 'POST', headers: { authorization: `Bearer ${secret}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream', origin }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, ...(params ? { params } : {}) }) });
       return { status: r.status, body: await r.json() as RpcResult };
     };
-    assert.equal((await mcp('initialize', { protocolVersion: '2025-11-25' })).body.result.protocolVersion, '2025-11-25');
+    assert.equal((await mcp('initialize', { protocolVersion: '2025-11-25', clientInfo: { name: 'Codex', version: '1.2' } })).body.result.protocolVersion, '2025-11-25');
+    const initialized = await agentDashboard(store, gateway.agents);
+    assert.equal((initialized.agents[0]!.client as { family: string }).family, 'codex');
     assert.equal((await mcp('ping', {}, invite.secret, 'https://evil.test')).status, 403);
     assert.equal((await mcp('ping', {}, 'lwa_invalid')).status, 401);
-    const read = await mcp('tools/call', { name: 'read_document', arguments: {} });
+    const read = await mcp('tools/call', { name: 'read_document', arguments: {}, _meta: { 'io.modelcontextprotocol/clientInfo': { name: 'Gemini CLI', version: '0.8' }, 'tools.lolly/agent': { model: 'gemini-2.5-pro' } } });
+    const clientEvent = (await store.listAudit()).findLast(e => e.action === 'agent.tool-call')!;
+    assert.equal((clientEvent.payload?.client as { family: string }).family, 'gemini');
     assert.equal(read.body.result.structuredContent.docState.params.title, 'Before');
     const agentJoin = await next('peer-join'); assert.match(String((agentJoin.member as { name: string }).name), /Design helper ·/);
     const revision = read.body.result.structuredContent.revision;
