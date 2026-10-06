@@ -9957,6 +9957,7 @@ function approvalStatus(code: string): number {
 function contentType(path: string): string {
   if (path.endsWith('.xml')) return 'application/xml; charset=utf-8';
   if (path.endsWith('.txt')) return 'text/plain; charset=utf-8';
+  if (path.endsWith('.md')) return 'text/markdown; charset=utf-8';
   if (path.endsWith('.json') || path.endsWith('.map')) return 'application/json; charset=utf-8';
   if (path.endsWith('.js') || path.endsWith('.mjs')) return 'text/javascript; charset=utf-8';
   if (path.endsWith('.css')) return 'text/css; charset=utf-8';

@@ -19,6 +19,7 @@ const html = (title: string, path: string) => `<!doctype html><title>${title}</t
 const documents = new Map([
   ['info/index.html', html('Documentation', 'index.html')],
   ['info/operate/deployment.html', html('Deployment', 'operate/deployment.html')],
+  ['info/operate/deployment.md', '# Deployment\n\nPublic operator documentation.\n'],
   ['info/deployment.html', html('Deployment alias', 'deployment.html')],
   ['info/de/operate/deployment.html', html('Bereitstellung', 'de/operate/deployment.html')],
   ['info/de/deployment.html', html('Bereitstellung alias', 'de/deployment.html')],
@@ -125,6 +126,7 @@ test('robots and sitemap expose the signed public discovery contract with correc
     ['/robots.txt', 'robots-lolly-tools.txt', 'text/plain; charset=utf-8'],
     ['/info/sitemap.xml', 'info/sitemap.xml', 'application/xml; charset=utf-8'],
     ['/info/search-index.json', 'info/search-index.json', 'application/json; charset=utf-8'],
+    ['/info/operate/deployment.md', 'info/operate/deployment.md', 'text/markdown; charset=utf-8'],
   ]) {
     for (const method of ['GET', 'HEAD']) {
       const res = await fetch(base + path, { method });
