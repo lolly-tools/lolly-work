@@ -809,7 +809,12 @@ function actProjectObj(id) { return actAnchor(lollyHref(`/#/p?team=${encodeURICo
 function actConsoleObj(type, id, label) { return actAnchor(`#/${CONSOLE_VIEW_OF[type] ?? 'overview'}`, label ?? actShort(id), id); }
 function actUserObj(id, names) { return actAnchor(`#/users?focus=${encodeURIComponent(id)}`, (names && names[id]) || actShort(id), 'Open in People'); }
 // Fixed local marks: client-provided URLs and icons are never loaded.
-const AGENT_CLIENTS = { claude: ['Claude', 'CL'], codex: ['Codex', 'CX'], gemini: ['Gemini', 'GM'], qwen: ['Qwen', 'QW'], glm: ['GLM', 'GL'], deepseek: ['DeepSeek', 'DS'], openai: ['OpenAI', 'AI'], other: ['Other client', 'AG'] };
+const AGENT_CLIENTS = {
+  claude: ['Claude', 'CL'], codex: ['Codex', 'CX'], gemini: ['Gemini', 'GM'], qwen: ['Qwen', 'QW'], glm: ['GLM', 'GL'], deepseek: ['DeepSeek', 'DS'], openai: ['OpenAI', 'AI'],
+  jev: ['Jev', 'JV'], laya: ['Laya', 'LY'], kolibri: ['Kolibri', 'KB'], mistral: ['Mistral', 'MI'], cursor: ['Cursor', 'CU'], copilot: ['GitHub Copilot', 'CP'],
+  opencode: ['OpenCode', 'OC'], cline: ['Cline', 'CN'], roo: ['Roo Code', 'RC'], windsurf: ['Windsurf', 'WS'], openclaw: ['OpenClaw', 'CW'], goose: ['Goose', 'GS'],
+  continue: ['Continue', 'CT'], aider: ['Aider', 'AD'], 'amazon-q': ['Amazon Q', 'AQ'], droid: ['Factory Droid', 'FD'], kimi: ['Kimi', 'KM'], grok: ['Grok', 'GK'], llama: ['Llama', 'LM'], vscode: ['VS Code', 'VS'], other: ['Other client', 'AG'],
+};
 function agentClientMark(client, extraClass = '') {
   const family = Object.hasOwn(AGENT_CLIENTS, client?.family) ? client.family : 'other';
   const [label, mark] = AGENT_CLIENTS[family];
@@ -820,13 +825,18 @@ function agentClientLabel(client) {
   const family = Object.hasOwn(AGENT_CLIENTS, client.family) ? client.family : 'other';
   return family === 'other' ? client.title || client.name || 'Client not reported' : AGENT_CLIENTS[family][0];
 }
+function agentModelLabel(client) {
+  if (!client?.model) return '';
+  const label = Object.hasOwn(AGENT_CLIENTS, client.modelFamily) && client.modelFamily !== 'other' ? AGENT_CLIENTS[client.modelFamily][0] : '';
+  return label && client.model.toLowerCase() !== label.toLowerCase() ? `${label} · ${client.model}` : client.model;
+}
 function agentClientCell(client, reportedAt) {
   if (!client) return el('span', { class: 'muted' }, 'Not reported');
-  const name = client.title || client.name;
+  const name = client.name || client.title;
   return el('div', { class: 'agent-client' }, agentClientMark(client), el('div', {},
     el('strong', {}, agentClientLabel(client)),
     ...(name ? [el('span', { class: 'muted' }, name, client.version ? ` · v${client.version}` : '')] : []),
-    ...(client.model ? [el('span', { class: 'agent-model' }, `Model: ${client.model}`, client.provider ? ` (${client.provider})` : '')] : []),
+    ...(client.model ? [el('span', { class: 'agent-model' }, `Model: ${agentModelLabel(client)}`, client.provider ? ` (${client.provider})` : '')] : []),
     el('span', { class: 'muted', title: reportedAt ? `Last reported ${new Date(reportedAt).toLocaleString()}` : null }, 'Client-reported')));
 }
 function actActorObj(actor, names) {
@@ -853,7 +863,7 @@ function activityLine(item, names) {
   const p = item.payload || {};
   const s = actSubjRef(item.subject);
   const out = [actActorObj(item.actor, names)];
-  if (item.actor.kind === 'agent' && item.actor.client) out.push(' ', el('span', { class: 'agent-client-tag', title: 'Reported on this request; not verified by Lolly.' }, agentClientLabel(item.actor.client), ...(item.actor.client.model ? [` · ${item.actor.client.model}`] : [])));
+  if (item.actor.kind === 'agent' && item.actor.client) out.push(' ', el('span', { class: 'agent-client-tag', title: 'Reported on this request; not verified by Lolly.' }, agentClientLabel(item.actor.client), ...(item.actor.client.model ? [` · ${agentModelLabel(item.actor.client)}`] : [])));
   if (item.actor.kind === 'agent' && item.actor.invitedBy) out.push(' (invited by ', actUserObj(item.actor.invitedBy.id, names), ')');
   out.push(' ');
   const push = (...xs) => out.push(...xs);
