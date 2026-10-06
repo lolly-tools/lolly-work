@@ -12,7 +12,7 @@ import { registerCommentRoutes } from '../comments/routes.ts';
  * (render/cache-key.ts, links/sign.ts).
  */
 import { readFileSync } from 'node:fs';
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, join, normalize, resolve as resolvePath, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
@@ -187,6 +187,7 @@ import {
   type Approval, type SubjectType,
 } from '../approvals/engine.ts';
 import { shellSecurityHeaders } from './shell-headers.ts';
+import { shellDocsPath } from './shell-docs.ts';
 
 const STATE_COOKIE = 'lw_state';
 /** The signed half of the password forms' double-submit token (`lw/form`). */
@@ -9636,10 +9637,50 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // ── the Lolly web shell, served same-origin at / (plans/16: one origin, so
   // session cookies work and the shell's org/ seam activates). Registered LAST,
   // so every API/console/catalog/render/link route wins; only unmatched GETs
-  // reach the SPA fallback. Absent shellDir → these routes aren't added at all.
+  // reach public docs or the SPA fallback. Absent shellDir means these routes
+  // are not added. HEAD handles only public docs, never private GET handlers.
   const shellDir = config.instance.shellDir;
   const RESERVED_PREFIX = /^(api|catalog|tools|render|l|admin|scim|healthz|activate|connect)(\/|$)/;
   if (shellDir) {
+    const serveShellDocs = async (req: IncomingMessage, res: ServerResponse, rel: string): Promise<boolean> => {
+      const doc = shellDocsPath(rel);
+      if (!doc) return false;
+      if (doc.kind === 'invalid') {
+        sendError(res, 400, 'INVALID_INPUT', 'bad documentation path');
+        return true;
+      }
+      try {
+        const root = await realpath(shellDir);
+        for (const candidate of doc.candidates) {
+          let target: string;
+          let metadata: Awaited<ReturnType<typeof stat>>;
+          try {
+            target = await realpath(resolvePath(root, candidate));
+            // The signed shell may be mounted through a release symlink, but a
+            // document symlink must not expose files outside that release.
+            if (!target.startsWith(root + sep)) break;
+            metadata = await stat(target);
+          } catch { continue; }
+          if (!metadata.isFile()) continue;
+          if (doc.kind === 'redirect') {
+            res.writeHead(308, { ...shellSecurityHeaders(rel), location: doc.location, 'cache-control': 'public, max-age=300' });
+            res.end();
+          } else {
+            const bytes = req.method === 'HEAD' ? undefined : await readFile(target);
+            res.writeHead(200, {
+              ...shellSecurityHeaders(rel),
+              'content-type': contentType(candidate),
+              'content-length': bytes?.length ?? metadata.size,
+              'cache-control': 'public, max-age=300',
+            });
+            res.end(bytes);
+          }
+          return true;
+        }
+      } catch { /* A missing shell mount is a missing public document. */ }
+      sendError(res, 404, 'NOT_FOUND', 'no such public document');
+      return true;
+    };
     const serveShell = async (res: ServerResponse, rel: string): Promise<void> => {
       const clean = normalize(rel.replace(/^\/+/, '')).replace(/^(\.\.[/\\])+/, '');
       if (clean.includes('..')) return sendError(res, 400, 'INVALID_INPUT', 'bad path');
@@ -9665,10 +9706,16 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       res.end();
     });
     router.add('GET', '/', (_req, res) => void serveShell(res, 'index.html'));
-    router.add('GET', '/*', (_req, res, ctx) => {
+    router.add('GET', '/*', async (req, res, ctx) => {
       const p = ctx.params['*'] || '';
       if (RESERVED_PREFIX.test(p)) return sendError(res, 404, 'NOT_FOUND', `no route for GET /${p}`);
-      void serveShell(res, p);
+      if (!(await serveShellDocs(req, res, p))) await serveShell(res, p);
+    });
+    router.add('HEAD', '/*', async (req, res, ctx) => {
+      const p = ctx.params['*'] || '';
+      if (RESERVED_PREFIX.test(p) || !(await serveShellDocs(req, res, p))) {
+        sendError(res, 404, 'NOT_FOUND', `no route for HEAD /${p}`);
+      }
     });
   } else if (config.dev.enabled) {
     // The passwordless testing sandbox serves persona sign-in, docs and the
@@ -9908,6 +9955,9 @@ function approvalStatus(code: string): number {
 }
 
 function contentType(path: string): string {
+  if (path.endsWith('.xml')) return 'application/xml; charset=utf-8';
+  if (path.endsWith('.txt')) return 'text/plain; charset=utf-8';
+  if (path.endsWith('.md')) return 'text/markdown; charset=utf-8';
   if (path.endsWith('.json') || path.endsWith('.map')) return 'application/json; charset=utf-8';
   if (path.endsWith('.js') || path.endsWith('.mjs')) return 'text/javascript; charset=utf-8';
   if (path.endsWith('.css')) return 'text/css; charset=utf-8';
