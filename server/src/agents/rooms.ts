@@ -51,7 +51,7 @@ export function createAgentRooms(d: Dependencies): AgentRoomBridge & { close(): 
     const create = (async () => {
       const room = await d.registry.acquire(standing.session);
       const frames: ServerFrame[] = [];
-      const member: RoomMember = { id: `agent_${record.id}`, userId: standing.agent.id, name: `${record.label} · ${displayName(standing.creator)}’s agent`,
+      const member: RoomMember = { id: `agent_${record.id}`, userId: standing.agent.id, agentId: record.id, name: `${record.label} · ${displayName(standing.creator)}’s agent`,
         role: standing.mayEdit && room.writerCount() < WRITER_CAP && room.writerCountFor(standing.creator.id) < WRITER_CAP_PER_USER ? 'writer' : 'observer',
         opVersion: CANVAS_OP_VERSION, presenceVersion: 1, interactionVersion: 1,
         send: frame => { if (frames.length >= 256) frames.shift(); frames.push(frame); },

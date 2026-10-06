@@ -73,6 +73,7 @@ async function exercise(store: Store) {
     assert.equal(changed.body.result.structuredContent.docState.params.title, 'Agent edit');
     const live = await next('ops'); assert.equal((live.ops as { value: unknown }[])[0]!.value, 'Agent edit');
     const savedRev = (await store.getSession('document'))!.rev;
+    assert.equal((await store.listSessionRevisions('document')).find(r => r.rev === savedRev)?.actor, `agent:${invite.agent.id}`, 'revision history keeps the agent identity');
     assert.equal((await store.getSession('document'))!.updatedBy, owner.id, 'agent edits are attributed to the inviter');
     assert.equal((await store.listUsers()).length, 2, 'inviting an agent creates no independent account');
     assert.equal((await mcp('tools/call', { name: 'apply_document_ops', arguments: args })).body.result.isError, undefined);

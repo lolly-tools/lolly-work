@@ -170,6 +170,8 @@ export type ServerFrame =
   | { t: 'error'; code: string; message: string; inputs?: string[] };
 
 export interface RoomMember {
+  /** Set only by the server's invitation-backed agent bridge. */
+  readonly agentId?: string;
   readonly id: string;
   readonly userId: string;
   readonly name: string;
@@ -640,7 +642,7 @@ export class Room implements RoomWriteback {
           || this.journalBytes + journalBytes >= 1024 * 1024 || Date.now() - this.checkpointAt >= 30_000;
         this.durableRevision = await store.commitCollab({ sessionId: this.sessionId, owner: this.owner, principal: from.userId,
           expectedRev: this.durableRevision, inputs, ...(compact ? { checkpoint: candidate.checkpoint() } : {}), ops: fresh, receipts: novel,
-          actor: from.guestLinkId ? `guest:${from.guestLinkId}` : 'collab', updatedBy: from.guestLinkId ? session.updatedBy : from.userId });
+          actor: from.agentId ? `agent:${from.agentId}` : from.guestLinkId ? `guest:${from.guestLinkId}` : 'collab', updatedBy: from.guestLinkId ? session.updatedBy : from.userId });
         if (this.closed) throw new Error('collab-owner-lost');
         this.doc = candidate;
         if (compact) {
@@ -840,7 +842,7 @@ export class Room implements RoomWriteback {
     });
     if (!fresh.length) return; // a pure replay: converged already, and nobody needs to hear it again
     for (const op of fresh) this.ingestOp(op, from.userId);
-    this.lastWriter = from.guestLinkId
+    this.lastWriter = from.agentId ? { kind: 'agent', agentId: from.agentId, userId: from.userId } : from.guestLinkId
       ? { kind: 'guest', linkId: from.guestLinkId }
       : { kind: 'member', userId: from.userId };
     for (const peer of this.members.values()) {

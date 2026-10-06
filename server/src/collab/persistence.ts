@@ -93,6 +93,7 @@ export const COLLAB_ACTOR = 'collab';
  */
 export type RoomWriter =
   | { kind: 'member'; userId: string }
+  | { kind: 'agent'; agentId: string; userId: string }
   | { kind: 'guest'; linkId: string };
 
 /**
@@ -104,7 +105,7 @@ export type RoomWriter =
  * otherwise land in history indistinguishable from one its members wrote.
  */
 export function roomRevisionActor(writer: RoomWriter | null | undefined): string {
-  return writer?.kind === 'guest' ? guestActor(writer.linkId) : COLLAB_ACTOR;
+  return writer?.kind === 'agent' ? `agent:${writer.agentId}` : writer?.kind === 'guest' ? guestActor(writer.linkId) : COLLAB_ACTOR;
 }
 
 // ── document → session inputs (the inverse of rooms.ts `seedOpsFromInputs`) ───
@@ -273,7 +274,7 @@ export function createRoomPersistence(deps: RoomPersistenceDeps): RoomPersistenc
         rev,
         // A guest is not a `users(id)` row, so it can only ever be attributed on
         // the revision below - see `RoomWriter`.
-        updatedBy: writer?.kind === 'member' ? writer.userId : session.updatedBy,
+        updatedBy: writer?.kind === 'member' || writer?.kind === 'agent' ? writer.userId : session.updatedBy,
         updatedAt: now,
       };
       if (!(await store.casSession(next, session.rev))) continue; // somebody moved it - re-read and re-merge
