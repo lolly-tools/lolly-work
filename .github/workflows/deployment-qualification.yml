@@ -1,0 +1,107 @@
+# SPDX-License-Identifier: MPL-2.0
+name: Deployment qualification
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deployment-qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  yunohost:
+    name: YunoHost package lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: YunoHost/package_linter
+          ref: c1a7491aab2c22d28b220330513e9555a8da3a1d
+          path: .qualification/package_linter
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Run the official static package checks
+        run: |
+          python3 -m venv "$RUNNER_TEMP/lolly-yunohost-linter"
+          "$RUNNER_TEMP/lolly-yunohost-linter/bin/pip" install --no-cache-dir -r .qualification/package_linter/requirements.txt
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/lolly-yunohost-linter/bin/python" "$GITHUB_WORKSPACE/.qualification/package_linter/package_linter.py" --json "$GITHUB_WORKSPACE/deploy/yunohost" > yunohost-lint.json
+          node "$GITHUB_WORKSPACE/scripts/check-yunohost-lint.ts" "$RUNNER_TEMP/yunohost-lint.json"
+
+  infrastructure:
+    name: ${{ matrix.cloud }} module (${{ matrix.tool }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        tool: [tofu, terraform]
+        cloud: [upcloud, evroc]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f # v1.0.6
+        if: matrix.tool == 'tofu'
+        with:
+          tofu_version: 1.13.1
+          tofu_wrapper: false
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v4.0.1
+        if: matrix.tool == 'terraform'
+        with:
+          terraform_version: 1.16.5
+          terraform_wrapper: false
+      - name: Format, provider schema and mocked plans (no cloud credentials)
+        working-directory: deploy/${{ matrix.cloud }}
+        env:
+          TOOL: ${{ matrix.tool }}
+          TF_IN_AUTOMATION: '1'
+        run: |
+          "$TOOL" fmt -check -recursive
+          "$TOOL" init -backend=false -input=false -lockfile=readonly
+          "$TOOL" validate -no-color
+          "$TOOL" test -no-color
+
+  database:
+    name: PostgreSQL backup and restore drill
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: lolly_backup_source
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Install PostgreSQL 17 client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-client-17
+          echo '/usr/lib/postgresql/17/bin' >> "$GITHUB_PATH"
+      - name: Exercise archive integrity, failure guards and a real database round trip
+        env:
+          LW_TEST_BACKUP_POSTGRES: '1'
+          PGHOST: 127.0.0.1
+          PGPORT: '5432'
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          PGDATABASE: lolly_backup_source
+        run: node --test tests/postgres-backup.test.ts

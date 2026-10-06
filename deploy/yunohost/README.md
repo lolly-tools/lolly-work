@@ -8,6 +8,13 @@ sudo yunohost app install https://github.com/lolly-tools/lolly-work_ynh
 
 This directory is developed inside the Lolly Work repository at `deploy/yunohost/`, beside the Compose and Helm shapes, and mirrored to `lolly-tools/lolly-work_ynh` at release time. Fix things here, not in the mirror.
 
+The deployment qualification workflow runs a pinned official package linter. It
+blocks package/schema/script errors and reports catalog registration and working
+status separately, since those belong to publishing the mirror. Repository
+contracts also exercise SSO/LDAP role mapping and rendered configuration. A real
+Linux `package_check` install/upgrade/backup/restore run is still required before
+qualifying a release; see the [cloud deployment guide](../../docs/cloud-deployment.md#yunohost-qualification).
+
 ## Shape
 
 - **One service, one database.** Node 24 (YunoHost's `nodejs` resource) runs `server/src/main.ts` behind the domain's nginx; PostgreSQL from the `database` resource; migrations at boot.

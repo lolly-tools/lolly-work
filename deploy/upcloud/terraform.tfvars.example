@@ -1,0 +1,9 @@
+# Replace with the qualified custom image UUID; never use a production disk UUID.
+template_uuid    = "00000000-0000-0000-0000-000000000000"
+hostname         = "lolly-staging"
+ssh_user         = "sles"
+ssh_public_keys  = ["ssh-ed25519 REPLACE_WITH_YOUR_PUBLIC_KEY"]
+ssh_allowed_cidrs = ["192.0.2.10/32"]
+zone             = "de-fra1"
+plan             = "CLOUDNATIVE-2xCPU-4GB"
+root_disk_gb     = 80
