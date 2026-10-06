@@ -1,0 +1,122 @@
+# SPDX-License-Identifier: MPL-2.0
+# Opt-in BCI candidate qualification; no registry push or production activation.
+name: SUSE container qualification
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/suse-container.yml'
+      - 'deploy/compose/Dockerfile'
+      - 'deploy/compose/Dockerfile.suse'
+      - 'tests/suse-container.test.ts'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - '*-pin.json'
+      - 'vendor/@lolly/**'
+      - 'vendor/@lolly-tools/**'
+      - 'server/**'
+      - 'console/**'
+      - 'docs/**'
+      - 'migrations/**'
+      - 'scripts/**'
+      - 'packs/demo/**'
+      - 'sbom.cdx.json'
+      - 'THIRD-PARTY-NOTICES.md'
+      - 'LICENSE'
+      - 'tsconfig.json'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/suse-container.yml'
+      - 'deploy/compose/Dockerfile'
+      - 'deploy/compose/Dockerfile.suse'
+      - 'tests/suse-container.test.ts'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - '*-pin.json'
+      - 'vendor/@lolly/**'
+      - 'vendor/@lolly-tools/**'
+      - 'server/**'
+      - 'console/**'
+      - 'docs/**'
+      - 'migrations/**'
+      - 'scripts/**'
+      - 'packs/demo/**'
+      - 'sbom.cdx.json'
+      - 'THIRD-PARTY-NOTICES.md'
+      - 'LICENSE'
+      - 'tsconfig.json'
+
+permissions:
+  contents: read
+
+jobs:
+  candidate:
+    name: BCI amd64 build and boot
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24'
+      - name: Check the source contract without installing host dependencies
+        run: node --test tests/suse-container.test.ts
+      - name: Build the candidate and run engine and release checks inside BCI
+        run: docker build --platform linux/amd64 -f deploy/compose/Dockerfile.suse -t lolly-work-suse:ci .
+      - name: Exercise glibc native rendering as the runtime user
+        run: |
+          docker run --rm --network none --entrypoint node lolly-work-suse:ci --input-type=module -e '
+            import assert from "node:assert/strict";
+            import { Resvg } from "@resvg/resvg-js";
+            import sharp from "sharp";
+            assert.equal(process.getuid(), 1000);
+            assert.ok(process.report.getReport().header.glibcVersionRuntime);
+            const svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"13\" height=\"7\"><rect width=\"13\" height=\"7\" fill=\"green\"/></svg>";
+            const png = new Resvg(svg).render().asPng();
+            const metadata = await sharp(png).metadata();
+            assert.equal(metadata.width, 13); assert.equal(metadata.height, 7);
+            assert.ok((await sharp(png).jpeg().toBuffer()).length > 0);
+            console.log("PASS: non-root glibc resvg PNG and sharp JPEG");
+          '
+      - name: Boot the unchanged entrypoint and check health and anonymous refusal
+        run: |
+          fixture=$(mktemp -d)
+          trap 'docker rm -f suse-work-smoke >/dev/null 2>&1 || true; rm -rf "$fixture"' EXIT
+          node --input-type=module - "$fixture/instance.json" <<'JS'
+          import { writeFileSync } from 'node:fs';
+          writeFileSync(process.argv[2], JSON.stringify({
+            deployment: { mode: 'evaluation', application: 'api', requireServerRendering: false },
+            instance: { name: 'BCI smoke fixture', baseUrl: 'http://localhost:8787', pack: '/app/packs/demo' },
+            idp: { additional: [{ id: 'email', kind: 'password' }] },
+            dev: { enabled: false }, rateLimit: { enabled: false },
+          }));
+          JS
+          chmod 755 "$fixture"
+          chmod 644 "$fixture/instance.json"
+          docker run --detach --name suse-work-smoke --network none \
+            --mount "type=bind,src=$fixture/instance.json,dst=/ci/instance.json,readonly" \
+            --env LW_CONFIG=/ci/instance.json lolly-work-suse:ci
+          healthy=false
+          for attempt in $(seq 1 60); do
+            status=$(docker inspect --format '{{.State.Health.Status}}' suse-work-smoke)
+            if [ "$status" = healthy ]; then healthy=true; break; fi
+            if [ "$status" = unhealthy ] || [ "$(docker inspect --format '{{.State.Running}}' suse-work-smoke)" != true ]; then break; fi
+            sleep 2
+          done
+          if [ "$healthy" != true ]; then docker logs suse-work-smoke; exit 1; fi
+          docker exec suse-work-smoke node --input-type=module -e '
+            import assert from "node:assert/strict";
+            assert.equal(process.getuid(), 1000);
+            const base = "http://127.0.0.1:8787";
+            for (const [path, status] of [["/healthz", 200], ["/api/v1/agents/activity", 401]]) {
+              const response = await fetch(base + path, { signal: AbortSignal.timeout(4000) });
+              assert.equal(response.status, status, path);
+            }
+            console.log("PASS: original entrypoint healthy; anonymous agent access refused");
+          '

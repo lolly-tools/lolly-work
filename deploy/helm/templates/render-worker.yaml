@@ -8,7 +8,13 @@
 {{- fail "renderWorker.webBase is required when renderWorker.enabled — a served Lolly web shell the worker drives (LOLLY_WEB_BASE)" }}
 {{- end }}
 {{- $name := printf "%s-render-worker" (include "lolly-work.fullname" .) }}
-{{- $tag := default .Chart.AppVersion .Values.renderWorker.image.tag }}
+{{- $image := include "lolly-work.imageRef" (dict "image" .Values.renderWorker.image "defaultTag" .Chart.AppVersion "name" "renderWorker.image") }}
+{{- $pullSecrets := .Values.imagePullSecrets }}
+{{- if kindIs "slice" .Values.renderWorker.imagePullSecrets }}
+{{- $pullSecrets = .Values.renderWorker.imagePullSecrets }}
+{{- else if not (kindIs "invalid" .Values.renderWorker.imagePullSecrets) }}
+{{- fail "renderWorker.imagePullSecrets must be null (inherit) or a list" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -30,6 +36,10 @@ spec:
         {{- include "lolly-work.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: render-worker
     spec:
+      {{- with $pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       serviceAccountName: {{ include "lolly-work.serviceAccountName" . }}
       automountServiceAccountToken: false
       {{- with .Values.renderWorker.runtimeClassName }}
@@ -37,9 +47,25 @@ spec:
       {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.renderWorker.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.renderWorker.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.renderWorker.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.renderWorker.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: render-worker
-          image: "{{ .Values.renderWorker.image.repository }}:{{ $tag }}"
+          image: {{ $image | quote }}
           imagePullPolicy: {{ .Values.renderWorker.image.pullPolicy }}
           # The worker launches Chromium (--no-sandbox); it needs a writable /tmp
           # and cannot use readOnlyRootFilesystem, but stays non-root + drops caps.
@@ -92,7 +118,7 @@ spec:
               mountPath: /tmp
       volumes:
         - name: tmp
-          emptyDir: {}
+          {{- include "lolly-work.emptyDir" (dict "sizeLimit" .Values.renderWorker.tmp.sizeLimit "name" "renderWorker.tmp.sizeLimit") | nindent 10 }}
 ---
 apiVersion: v1
 kind: Service

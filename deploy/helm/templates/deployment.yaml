@@ -91,6 +91,10 @@ spec:
           command: ["sh", "-c", "cp -a /pack/. /pack-volume/"]
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- with .Values.pack.initResources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           volumeMounts:
             - name: pack
               mountPath: /pack-volume
@@ -103,6 +107,10 @@ spec:
           command: ["sh", "-c", "cp -a /shell/. /shell-volume/"]
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- with .Values.shell.initResources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           volumeMounts:
             - name: shell
               mountPath: /shell-volume
@@ -166,7 +174,7 @@ spec:
           configMap:
             name: {{ include "lolly-work.fullname" . }}-config
         - name: tmp
-          emptyDir: {}
+          {{- include "lolly-work.emptyDir" (dict "sizeLimit" .Values.tmp.sizeLimit "name" "tmp.sizeLimit") | nindent 10 }}
         {{- if eq .Values.pack.type "pvc" }}
         - name: pack
           persistentVolumeClaim:
@@ -185,7 +193,7 @@ spec:
         {{- fail "pack.type=emptyDir requires pack.image (the initContainer that fills the per-pod volume)" }}
         {{- end }}
         - name: pack
-          emptyDir: {}
+          {{- include "lolly-work.emptyDir" (dict "sizeLimit" .Values.pack.emptyDir.sizeLimit "name" "pack.emptyDir.sizeLimit") | nindent 10 }}
         {{- else if ne .Values.pack.type "none" }}
         {{- fail (printf "unknown pack.type %q (one of: none | pvc | existingClaim | hostPath | emptyDir)" .Values.pack.type) }}
         {{- end }}
@@ -208,7 +216,7 @@ spec:
         {{- fail "shell.type=emptyDir requires shell.image (the initContainer that fills the per-pod volume)" }}
         {{- end }}
         - name: shell
-          emptyDir: {}
+          {{- include "lolly-work.emptyDir" (dict "sizeLimit" .Values.shell.emptyDir.sizeLimit "name" "shell.emptyDir.sizeLimit") | nindent 10 }}
         {{- else }}
         {{- fail (printf "unknown shell.type %q (one of: pvc | existingClaim | hostPath | emptyDir)" .Values.shell.type) }}
         {{- end }}

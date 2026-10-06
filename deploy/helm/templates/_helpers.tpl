@@ -57,11 +57,41 @@ ServiceAccount name to use.
 {{- end }}
 
 {{/*
-Container image reference (repository:tag, tag defaults to appVersion).
+Container image reference. A digest takes precedence over the optional tag.
 */}}
+{{- define "lolly-work.imageRef" -}}
+{{- $digest := get .image "digest" -}}
+{{- if not (kindIs "string" $digest) -}}
+{{- fail (printf "%s.digest must be an empty string or sha256 followed by 64 lowercase hex characters" .name) -}}
+{{- end -}}
+{{- if $digest -}}
+{{- if not (regexMatch "^sha256:[a-f0-9]{64}$" $digest) -}}
+{{- fail (printf "%s.digest must have the form sha256:<64 lowercase hex characters>" .name) -}}
+{{- end -}}
+{{- printf "%s@%s" .image.repository $digest -}}
+{{- else -}}
+{{- printf "%s:%s" .image.repository (default .defaultTag .image.tag) -}}
+{{- end -}}
+{{- end }}
+
 {{- define "lolly-work.image" -}}
-{{- $tag := default .Chart.AppVersion .Values.image.tag -}}
-{{- printf "%s:%s" .Values.image.repository $tag -}}
+{{- include "lolly-work.imageRef" (dict "image" .Values.image "defaultTag" .Chart.AppVersion "name" "image") -}}
+{{- end }}
+
+{{/* Disk bounds use a positive integer subset of Kubernetes byte quantities. */}}
+{{- define "lolly-work.emptyDir" -}}
+{{- if not (kindIs "string" .sizeLimit) -}}
+{{- fail (printf "%s must be an empty string or a positive integer byte quantity" .name) -}}
+{{- end -}}
+{{- if .sizeLimit -}}
+{{- if not (regexMatch "^[1-9][0-9]*([EPTGMK]i|[EPTGMk])?$" .sizeLimit) -}}
+{{- fail (printf "%s must be a positive integer byte quantity (bytes, Ki/Mi/Gi/Ti/Pi/Ei or k/M/G/T/P/E)" .name) -}}
+{{- end -}}
+emptyDir:
+  sizeLimit: {{ .sizeLimit | quote }}
+{{- else -}}
+emptyDir: {}
+{{- end -}}
 {{- end }}
 
 {{/*
