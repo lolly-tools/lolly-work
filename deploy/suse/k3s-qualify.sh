@@ -5,6 +5,92 @@ set -euo pipefail
 K3S_QUALIFY_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 source "$K3S_QUALIFY_DIR/k3s-bootstrap.sh"
 
+validate_edge_files() {
+  python3 -I - "$@" <<'PY'
+import datetime,ipaddress,json,os,re,sys
+stage,private,public,edge,review=sys.argv[1:]
+def need(ok,message):
+    if not ok: raise SystemExit('k3s edge qualification: '+message)
+def read(name):
+    with open(stage+'/'+name+'.json') as f: return json.load(f)
+expected=json.load(open(review))
+need(edge not in [private,public,'default'] and not edge.startswith('kube-'),'edge namespace must be distinct and nonreserved')
+need(expected['namespace']==edge and expected['hostNetworkDirectPorts'] is True,'explicit edge exception acknowledgement required')
+reviewed=datetime.datetime.fromisoformat(expected['reviewedAt'].replace('Z','+00:00'))
+need(reviewed.tzinfo and 0 <= (datetime.datetime.now(datetime.timezone.utc)-reviewed).total_seconds() <= 86400,'edge review must be current within 24 hours')
+peer=ipaddress.IPv4Address(expected['nodePrivateIp'])
+need(any(peer in ipaddress.ip_network(c) for c in ['10.0.0.0/8','172.16.0.0/12','192.168.0.0/16']),'edge peer must be private IPv4')
+need(not any(peer in ipaddress.ip_network(c) for c in ['10.42.0.0/16','10.43.0.0/16']),'edge peer may not use the pod/service ranges')
+need(expected['workTrustedProxyPeer']==str(peer),'Work trust must name the exact stable edge peer, not a CIDR')
+need(re.fullmatch(r'[^\s@]+@sha256:[a-f0-9]{64}',expected['image']),'edge image needs an immutable digest')
+namespace=read(edge+'-namespace');labels=namespace['metadata'].get('labels',{})
+for kind,value in [('enforce','privileged'),('audit','restricted'),('warn','restricted')]:
+    need(labels.get('pod-security.kubernetes.io/'+kind)==value,'edge PSA exception must retain restricted audit/warn')
+    need(labels.get('pod-security.kubernetes.io/'+kind+'-version')=='v1.34','edge PSA versions must be pinned')
+node=read('edge-node');need(node['metadata']['name']==expected['nodeName'],'edge node identity differs')
+need(any(a.get('type')=='InternalIP' and a.get('address')==str(peer) for a in node['status'].get('addresses',[])),'edge private peer is not the node InternalIP')
+pods=read(edge+'-pods')['items'];need(len(pods)==1,'edge namespace must contain exactly one release pod')
+pod=pods[0];spec=pod['spec'];status=pod['status']
+need(pod['metadata']['name']==expected['podName'] and spec.get('nodeName')==expected['nodeName'],'edge pod/node differs from review')
+need(spec.get('hostNetwork') is True and spec.get('dnsPolicy')=='ClusterFirstWithHostNet','only the acknowledged host network exception is allowed')
+need(not spec.get('hostPID') and not spec.get('hostIPC'),'host process/IPC access refused')
+need(not spec.get('shareProcessNamespace') and not spec.get('securityContext',{}).get('sysctls'),'edge process sharing and sysctl overrides refused')
+need(not spec.get('initContainers') and not spec.get('ephemeralContainers'),'edge extra containers refused')
+need(status.get('phase')=='Running' and any(c.get('type')=='Ready' and c.get('status')=='True' for c in status.get('conditions',[])),'edge pod must be running and ready')
+need(spec.get('serviceAccountName')==expected['serviceAccountName'],'edge service account differs')
+accounts={s['metadata']['name']:s for s in read(edge+'-accounts')['items']}
+account=accounts.get(expected['serviceAccountName']);need(account is not None,'edge account is missing')
+need(spec.get('automountServiceAccountToken',account.get('automountServiceAccountToken',True)) is False,'edge service-account token mount refused')
+need(not read(edge+'-rolebindings')['items'],'edge namespace RoleBindings are refused')
+for binding in read('edge-clusterrolebindings')['items']:
+    for subject in binding.get('subjects',[]):
+        matches=subject.get('kind')=='ServiceAccount' and subject.get('namespace')==edge
+        matches=matches or (subject.get('kind')=='Group' and subject.get('name') in ['system:serviceaccounts','system:serviceaccounts:'+edge])
+        need(not matches,'edge service-account cluster role binding refused')
+need(not read(edge+'-services')['items'],'host network edge must not add Services or NodePorts')
+containers=spec.get('containers',[]);need(len(containers)==1,'edge needs exactly one container')
+container=containers[0];need(container['name']==expected['containerName'] and container['image']==expected['image'],'edge container/image differs')
+security=container.get('securityContext',{});podsecurity=spec.get('securityContext',{})
+need(security.get('runAsNonRoot',podsecurity.get('runAsNonRoot')) is True,'edge must run as non-root')
+uid=security.get('runAsUser',podsecurity.get('runAsUser'));need(isinstance(uid,int) and uid>0,'edge must declare a non-root UID')
+need(security.get('allowPrivilegeEscalation') is False and not security.get('privileged'),'edge privilege escalation refused')
+need(security.get('readOnlyRootFilesystem') is True,'edge root filesystem must be read-only')
+need(security.get('procMount','Default')=='Default' and not security.get('windowsOptions',{}).get('hostProcess'),'edge process security overrides refused')
+caps=security.get('capabilities',{});need(set(caps.get('drop',[]))=={'ALL'} and set(caps.get('add',[]))=={'NET_BIND_SERVICE'},'edge may add only NET_BIND_SERVICE after dropping ALL')
+need(security.get('seccompProfile',podsecurity.get('seccompProfile',{})).get('type')=='RuntimeDefault','edge needs runtime-default seccomp')
+ports={(p.get('protocol','TCP'),p['containerPort']) for p in container.get('ports',[])}
+need({('TCP',80),('TCP',443)}.issubset(ports) and ports.issubset({('TCP',80),('TCP',443),('UDP',443)}),'edge ports must be only HTTP/HTTPS and optional HTTP/3')
+need(all(p.get('hostPort',p['containerPort'])==p['containerPort'] for p in container.get('ports',[])),'edge remapped host ports refused')
+refs=set(x['name'] for x in spec.get('imagePullSecrets',[]))
+allowed=expected['publicContentHostPaths'];need(isinstance(allowed,list),'public-content host path review required')
+actual=[];mounts=container.get('volumeMounts',[])
+for volume in spec.get('volumes',[]):
+    if 'hostPath' in volume:
+        hp=volume['hostPath'];path=hp['path']
+        need(path.startswith(('/opt/','/srv/')) and os.path.normpath(path)==path,'edge host path must be an explicit public content directory')
+        used=[m for m in mounts if m['name']==volume['name']]
+        need(len(used)==1 and used[0].get('readOnly') is True and not used[0].get('subPath') and not used[0].get('subPathExpr') and used[0].get('mountPropagation','None')=='None','edge public host mount must be read-only without subpaths/propagation')
+        actual.append({'path':path,'type':hp.get('type'),'mountPath':used[0]['mountPath'],'readOnly':True})
+        need(hp.get('type')=='Directory' and os.path.isdir(path) and os.path.realpath(path)==path,'edge host directory must already exist without symlinks')
+    if 'secret' in volume: refs.add(volume['secret']['secretName'])
+    for source in volume.get('projected',{}).get('sources',[]):
+        need('serviceAccountToken' not in source,'edge projected service-account token refused')
+        if 'secret' in source: refs.add(source['secret']['name'])
+need(sorted(actual,key=lambda x:x['path'])==sorted(allowed,key=lambda x:x['path']),'edge public host path differs from review')
+for env in container.get('env',[]):
+    if 'secretKeyRef' in env.get('valueFrom',{}): refs.add(env['valueFrom']['secretKeyRef']['name'])
+    need(not ('value' in env and re.search(r'SECRET|PASSWORD|DATABASE_URL|SIGNING_KEY|TOKEN|PRIVATE_KEY|ACCESS_KEY',env['name'],re.IGNORECASE)),'edge credentials must use its own Secret references')
+for env in container.get('envFrom',[]):
+    if 'secretRef' in env: refs.add(env['secretRef']['name'])
+need(refs.issubset(set(expected['secretRefs'])),'edge Secret reference is outside its review')
+summary={'status':'explicit-edge-exception-inspected','namespace':edge,'image':expected['image'],'nodePrivateIp':str(peer),
+ 'workTrustedProxyPeer':expected['workTrustedProxyPeer'],'networkPolicyApplies':False,
+ 'remainingAcceptance':['actual Work socket peer/trust verification','reviewed public edge routing and credential isolation','external dual-stack denied-port and host listener verification']}
+with open(stage+'/edge-summary.json','w') as f: json.dump(summary,f)
+print('Explicit edge exception inspected; actual peer/routing/external firewall acceptance remains.')
+PY
+}
+
 validate_cluster_files() {
   python3 -I - "$@" <<'PY'
 import ipaddress,json,os,re,sys
@@ -95,6 +181,7 @@ for namespace in [private,public]:
         need(not service['spec'].get('externalIPs'),'application externalIPs refused')
 report={'status':'automatic-cluster-checks-passed','promotionReady':False,'version':version,
  'namespaces':[private,public],'images':{n:lock[n]['images'] for n in [private,public]},
+ 'edgeInspection':read('edge-summary') if os.path.exists(stage+'/edge-summary.json') else {'status':'not-requested'},
  'remainingAcceptance':['independent snapshot plus server-token backup and fresh-host restore',
  'exact signed shell/catalog and application source binding','external TLS and complete public route/model/relay parity',
  'authenticated sign-in, collaboration, agents, DAM originals, shared uploads and render load',
@@ -105,13 +192,14 @@ PY
 }
 
 qualify_main() {
-  local private= public= probe= images= output= kubeconfig= context= interface= provider= review=
+  local private= public= probe= images= output= kubeconfig= context= interface= provider= review= edge= edge_review=
   while [[ $# -gt 0 ]]; do
     [[ $# -ge 2 ]] || fail 'option requires a value'
     case $1 in
       --namespace) private=$2 ;; --public-namespace) public=$2 ;; --probe-pod) probe=$2 ;;
       --image-review) images=$2 ;; --output) output=$2 ;; --kubeconfig) kubeconfig=$2 ;;
       --context) context=$2 ;; --interface) interface=$2 ;; --provider) provider=$2 ;; --provider-review) review=$2 ;;
+      --edge-namespace) edge=$2 ;; --edge-review) edge_review=$2 ;;
       *) fail "unknown qualification option: $1" ;;
     esac
     shift 2
@@ -119,12 +207,18 @@ qualify_main() {
   [[ -n $private && -n $public && $private != "$public" && -n $probe && -n $images && -n $output && -n $kubeconfig && -n $context && -n $interface && -n $review ]] || fail 'all qualification inputs are required; public/private namespaces must differ'
   [[ $private =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && $public =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && $probe =~ ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$ ]] || fail 'invalid Kubernetes name'
   [[ $private != default && $public != default && $private != kube-* && $public != kube-* ]] || fail 'reserved namespaces refused'
-  python3 -I - "$kubeconfig" "$images" <<'PY'
+  [[ -z $edge && -z $edge_review || -n $edge && -n $edge_review ]] || fail 'edge namespace and review must be provided together'
+  if [[ -n $edge ]]; then
+    [[ $edge =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && $edge != "$private" && $edge != "$public" && $edge != default && $edge != kube-* ]] || fail 'edge namespace must be distinct and nonreserved'
+  fi
+  python3 -I - "$kubeconfig" "$images" "$edge_review" <<'PY'
 import os,stat,sys
 for p in sys.argv[1:]:
+    if not p: continue
     s=os.lstat(p);assert stat.S_ISREG(s.st_mode) and not s.st_mode & 0o077, 'kubeconfig/review must be private regular files'
 PY
   validate_provider_review "$review" "$provider"
+  validate_ephemeral_range "$review" "$(cat /proc/sys/net/ipv4/ip_local_port_range)"
   validate_network "$interface"
   local version binary_url binary_sha installer_url installer_sha
   read -r version binary_url binary_sha installer_url installer_sha < <(read_release_lock)
@@ -148,6 +242,23 @@ PY
     "${kube[@]}" get networkpolicies -n "$ns" -o json > "$K3S_QUALIFY_STAGE/$ns-policies.json"
     "${kube[@]}" get serviceaccounts -n "$ns" -o json > "$K3S_QUALIFY_STAGE/$ns-accounts.json"
   done
+  if [[ -n $edge ]]; then
+    "${kube[@]}" get namespace "$edge" -o json > "$K3S_QUALIFY_STAGE/$edge-namespace.json"
+    for resource in pods services serviceaccounts rolebindings; do
+      local suffix=$resource
+      if [[ $resource == serviceaccounts ]]; then suffix=accounts; fi
+      "${kube[@]}" get "$resource" -n "$edge" -o json > "$K3S_QUALIFY_STAGE/$edge-$suffix.json"
+    done
+    "${kube[@]}" get clusterrolebindings -o json > "$K3S_QUALIFY_STAGE/edge-clusterrolebindings.json"
+    local edge_node
+    edge_node=$(python3 -I - "$edge_review" <<'PY'
+import json,re,sys
+name=json.load(open(sys.argv[1]))['nodeName'];assert re.fullmatch(r'[a-z0-9]([-a-z0-9.]*[a-z0-9])?',name);print(name)
+PY
+)
+    "${kube[@]}" get node "$edge_node" -o json > "$K3S_QUALIFY_STAGE/edge-node.json"
+    validate_edge_files "$K3S_QUALIFY_STAGE" "$private" "$public" "$edge" "$edge_review"
+  fi
   # No token is read. CoreDNS readiness proves its API cache is ready; this lookup
   # proves the default-deny Work namespace can still resolve cluster DNS.
   "${kube[@]}" exec -n "$private" "$probe" -c server -- node -e \

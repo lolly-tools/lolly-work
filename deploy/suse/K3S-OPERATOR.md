@@ -63,6 +63,10 @@ interface zone and repeat preflight after reboot. Inspecting rules is not an
 external port scan: independently prove the denied ports stay unreachable after
 K3s boots, including NodePort/NAT behavior and both address families.
 
+An edge may optionally expose UDP 443 for HTTP/3. Add only that explicit port to
+both reviewed provider rules and the permanent/runtime public host zone. Other
+public UDP ports, including overlay and control-plane transports, are refused.
+
 Retain a sanitized provider rule record without account IDs or credentials and a
 0600 review receipt. This structure records an operator review, not automatic
 proof of cloud state. A review older than 24 hours is refused:
@@ -77,7 +81,15 @@ proof of cloud state. A review older than 24 hours is refused:
   "dualStackReviewed": true,
   "publicTcpPorts": [22, 80, 443],
   "publicUdpPorts": [],
-  "sshSourceCidrs": ["203.0.113.9/32"]
+  "sshSourceCidrs": ["203.0.113.9/32"],
+  "statelessFirewall": true,
+  "hostConnectionTrackingRequired": true,
+  "kernelEphemeralPortRange": {"start": 32768, "end": 60999},
+  "statelessReturnRules": [
+    {"family":"IPv4","protocol":"tcp","sourcePort":443,"sourceCidrs":["0.0.0.0/0"],"destinationPortRange":{"start":32768,"end":60999}},
+    {"family":"IPv4","protocol":"tcp","sourcePort":53,"sourceCidrs":["REPLACE_WITH_MEASURED_RESOLVER_IP/32"],"destinationPortRange":{"start":32768,"end":60999}},
+    {"family":"IPv4","protocol":"udp","sourcePort":53,"sourceCidrs":["REPLACE_WITH_MEASURED_RESOLVER_IP/32"],"destinationPortRange":{"start":32768,"end":60999}}
+  ]
 }
 ```
 
@@ -85,6 +97,40 @@ Use `evroc` for that target and actual administrator ranges: IPv4 `/24` or
 narrower, IPv6 `/64` or narrower. `reviewedRulesSha256` hashes the retained
 sanitized rule record. Unavailable provider access blocks this review; a
 fabricated receipt is not acceptance.
+
+The [UpCloud public/utility firewall](https://upcloud.com/docs/products/networking/firewall/)
+is stateless. Outbound acceptance plus an inbound drop does not permit replies.
+Its receipt must additionally set `statelessFirewall: true`,
+`hostConnectionTrackingRequired: true`, record the measured
+`kernelEphemeralPortRange` and include the separately reviewed
+`statelessReturnRules`. For example, this single return rule describes HTTPS;
+the actual complete list must also permit UDP/TCP DNS replies from the exact
+measured resolver hosts:
+
+```json
+{
+  "family": "IPv4",
+  "protocol": "tcp",
+  "sourcePort": 443,
+  "sourceCidrs": ["0.0.0.0/0"],
+  "destinationPortRange": {"start": 32768, "end": 60999}
+}
+```
+
+Read `/proc/sys/net/ipv4/ip_local_port_range` on the actual candidate. The
+reviewed return range must match it, start at 32768 or above and exclude
+control-plane, database and standard NodePort destinations. TCP source 80/443
+may use global peers; DNS source 53 and optional UDP NTP source 123 require exact
+reviewed `/32` or `/128` peers. Do not substitute a guessed resolver/time pool.
+All return rules are included in the provider rules hash, separately from
+`publicTcpPorts` and optional `publicUdpPorts` for hosted services.
+
+Keep the host firewall stateful and do not open its ephemeral destination range:
+it must accept established replies while refusing unsolicited connections.
+Measure actual DNS/HTTPS/time functionality and independently test unsolicited
+return-range traffic before qualification. For Evroc inspect its actual chosen
+network controls; do not assume UpCloud semantics. If those controls are
+stateless, use the same explicit return-review fields and host checks.
 
 ## Stage, review and start
 
@@ -225,6 +271,60 @@ ingress separately. These charts do not supply the complete public relay,
 Penpot/model/admission topology; retain the
 [cloud parity gates](../../docs/cloud-deployment.md).
 
+### Optional direct-port edge exception
+
+A dedicated third namespace may contain one reviewed host-network edge pod
+binding TCP 80/443 and optional UDP 443 directly. Ordinary public/private app
+namespaces still enforce restricted Pod Security. The edge namespace must pin
+`enforce: privileged`, `audit: restricted` and `warn: restricted` to `v1.34`;
+this namespace admission exception is broader than the workload. Restrict who
+can create or change workloads there and keep its service account without token
+mounts, RoleBindings or explicit cluster role grants. Namespace admission labels
+alone do not narrow the exception to one pod; exact workload inspection and
+administrative RBAC review remain required.
+
+Use a complete immutable image, explicit non-root UID, runtime-default seccomp,
+read-only root filesystem, no privilege escalation, dropped `ALL` capabilities
+and only added `NET_BIND_SERVICE`. No init/ephemeral containers, host PID/IPC,
+Services/NodePorts or additional declared host ports are allowed. Any host
+content directory must already exist without symlinks under `/opt/` or `/srv/`,
+match an explicit public-content review and mount read-only without subpaths.
+Prefer normal namespace volumes for writable certificate/cache state. Review
+the actual mounted content and edge routing configuration before exposing it;
+the inspector does not prove that a reviewed directory contains only public
+data or that the process opens only its declared ports.
+
+Record the exact node InternalIP as Work's reviewed proxy peer, for example
+`10.4.27.58`, and prove the actual upstream socket peer before configuring trust.
+Do not trust the entire pod/service CIDR. Host-network traffic is not reliably
+governed by Kubernetes NetworkPolicy; provider/host rules, actual denied-port
+tests and edge routing/credential isolation remain independent acceptance.
+
+Pass `--edge-namespace` and `--edge-review` together. The 0600 review contains
+only names, references and explicit public mounts, never credential values:
+
+```json
+{
+  "namespace": "lolly-edge",
+  "reviewedAt": "REPLACE_WITH_CURRENT_UTC_ISO_TIMESTAMP",
+  "hostNetworkDirectPorts": true,
+  "nodeName": "REPLACE_WITH_ACTUAL_CANDIDATE_NODE",
+  "nodePrivateIp": "10.4.27.58",
+  "workTrustedProxyPeer": "10.4.27.58",
+  "podName": "REPLACE_WITH_ONE_ACTUAL_EDGE_POD",
+  "containerName": "edge",
+  "serviceAccountName": "lolly-edge",
+  "image": "registry.example/team/edge@sha256:REPLACE_WITH_64_HEX",
+  "publicContentHostPaths": [],
+  "secretRefs": ["edge-registry"]
+}
+```
+
+If a public content host mount is necessary, each reviewed entry is exactly
+`{"path":"/opt/lolly-public/shell","type":"Directory","mountPath":"/srv/shell","readOnly":true}`.
+Use actual immutable directories rather than the example or a mutable symlink.
+The image must be able to operate with its declared non-root/read-only posture.
+
 Save a 0600 allowlist of complete `repository@sha256:64_lowercase_hex` image
 references and permitted Secret **names** for each namespace:
 
@@ -251,12 +351,21 @@ sudo bash deploy/suse/k3s-qualify.sh \
   --image-review /private/reviewed-images.json --output /private/cluster-checks.json
 ```
 
+For the direct-port edge topology append:
+
+```sh
+  --edge-namespace lolly-edge --edge-review /private/reviewed-edge.json
+```
+
 The qualifier reads pod/service/account/policy metadata, checks pinned
 server/binary and Secret encryption, waits for CoreDNS API readiness and makes
 a DNS-only lookup in Work's `server` container. It reads no Kubernetes Secret
 values, applies no resources and writes an exclusive 0600 receipt. Failures stop
 the check. A pass always records `promotionReady: false`: actual recovery and
 application acceptance remain required.
+An edge supplied for inspection must pass all separate exception checks and is
+recorded in `edgeInspection`. Omitting it records `not-requested`, which cannot
+qualify an installed edge or replace its separate acceptance.
 
 ## Recovery, upgrades and Compose rollback
 

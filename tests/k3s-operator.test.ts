@@ -135,7 +135,7 @@ else if(a.includes('--list-forward-ports'))v=mode==='forward'?'port=8443:proto=t
 else if(a.includes('--list-interfaces'))v=mode==='trusted-interface'?'ens3':'';
 else if(a.includes('--list-sources'))v=mode==='global-source'?'0.0.0.0/0 10.42.0.0/16 10.43.0.0/16':'10.42.0.0/16 10.43.0.0/16';
 else if(a.includes('--list-services'))v='ssh http https';
-else if(a.includes('--list-ports'))v=mode==='node-port'?'30000-32767/tcp':mode==='permanent-api'&&a.includes('--permanent')?'6443/tcp':'';
+else if(a.includes('--list-ports'))v=mode==='node-port'?'30000-32767/tcp':mode==='permanent-api'&&a.includes('--permanent')?'6443/tcp':mode==='http3'?'443/udp':mode==='vpn'?'8472/udp':'';
 else if(a.includes('--query-source'))status=mode==='pod-closed'?1:0;
 else if(a.includes('--query-port'))status=mode==='query-error'?2:mode==='api'&&a.includes('6443')?0:1;
 else status=2;
@@ -145,11 +145,12 @@ if(v)console.log(v);process.exit(status);\n`,
   return { PATH: `${dir}:${process.env.PATH}` };
 }
 
-test('restricted firewall keeps pod/service paths without public API/NodePorts', () =>
-  sandbox((dir) => {
-    const result = bash('source "$K3S_TEST_BOOTSTRAP"; validate_network ens3', [], firewall(dir, 'safe'));
-    assert.equal(result.status, 0, result.stderr);
-  }));
+for (const mode of ['safe', 'http3'])
+  test(`restricted firewall keeps pod/service paths in ${mode} profile`, () =>
+    sandbox((dir) => {
+      const result = bash('source "$K3S_TEST_BOOTSTRAP"; validate_network ens3', [], firewall(dir, mode));
+      assert.equal(result.status, 0, result.stderr);
+    }));
 
 for (const mode of [
   'accept',
@@ -163,6 +164,7 @@ for (const mode of [
   'pod-closed',
   'command-error',
   'query-error',
+  'vpn',
 ]) {
   test(`firewall guard refuses ${mode}`, () =>
     sandbox((dir) => {
@@ -183,6 +185,32 @@ function providerReview(dir: string, change: Record<string, unknown> = {}) {
       publicUdpPorts: [],
       publicTcpPorts: [22, 80, 443],
       sshSourceCidrs: ['203.0.113.9/32'],
+      statelessFirewall: true,
+      hostConnectionTrackingRequired: true,
+      kernelEphemeralPortRange: { start: 32768, end: 60999 },
+      statelessReturnRules: [
+        {
+          family: 'IPv4',
+          protocol: 'tcp',
+          sourcePort: 443,
+          sourceCidrs: ['0.0.0.0/0'],
+          destinationPortRange: { start: 32768, end: 60999 },
+        },
+        {
+          family: 'IPv4',
+          protocol: 'tcp',
+          sourcePort: 53,
+          sourceCidrs: ['94.237.127.9/32'],
+          destinationPortRange: { start: 32768, end: 60999 },
+        },
+        {
+          family: 'IPv4',
+          protocol: 'udp',
+          sourcePort: 53,
+          sourceCidrs: ['94.237.127.9/32'],
+          destinationPortRange: { start: 32768, end: 60999 },
+        },
+      ],
       reviewedAt: new Date().toISOString(),
       reviewedRulesSha256: 'a'.repeat(64),
       ...change,
@@ -203,8 +231,13 @@ test('provider review must be current, private and restricted', () =>
       { controlPlanePublic: true },
       { dualStackReviewed: false },
       { publicTcpPorts: [22, 6443] },
+      { publicUdpPorts: [8472] },
       { sshSourceCidrs: ['0.0.0.0/0'] },
       { reviewedAt: '2020-01-01T00:00:00Z' },
+      { statelessFirewall: false },
+      { hostConnectionTrackingRequired: false },
+      { statelessReturnRules: [] },
+      { kernelEphemeralPortRange: { start: 30000, end: 60999 } },
     ]) {
       providerReview(dir, change);
       assert.notEqual(
@@ -219,6 +252,248 @@ test('provider review must be current, private and restricted', () =>
       0,
     );
   }));
+
+test('UpCloud return review matches actual kernel ports and refuses broad resolver peers', () =>
+  sandbox((dir) => {
+    const file = providerReview(dir);
+    assert.equal(
+      bash('source "$K3S_TEST_BOOTSTRAP"; validate_ephemeral_range "$1" "32768 60999"', [file]).status,
+      0,
+    );
+    assert.notEqual(
+      bash('source "$K3S_TEST_BOOTSTRAP"; validate_ephemeral_range "$1" "49152 65535"', [file]).status,
+      0,
+    );
+    const record = JSON.parse(readFileSync(file, 'utf8'));
+    record.statelessReturnRules[1].sourceCidrs = ['0.0.0.0/0'];
+    writeFileSync(file, JSON.stringify(record));
+    assert.notEqual(
+      bash('source "$K3S_TEST_BOOTSTRAP"; validate_provider_review "$1" upcloud', [file]).status,
+      0,
+    );
+  }));
+
+test('stateful Evroc provider review does not assume UpCloud return semantics', () =>
+  sandbox((dir) => {
+    const file = providerReview(dir, {
+      provider: 'evroc',
+      statelessFirewall: false,
+      statelessReturnRules: [],
+    });
+    assert.equal(bash('source "$K3S_TEST_BOOTSTRAP"; validate_provider_review "$1" evroc', [file]).status, 0);
+  }));
+
+test('provider permits reviewed optional HTTP3 while control-plane UDP stays closed', () =>
+  sandbox((dir) => {
+    const file = providerReview(dir, { publicUdpPorts: [443] });
+    assert.equal(
+      bash('source "$K3S_TEST_BOOTSTRAP"; validate_provider_review "$1" upcloud', [file]).status,
+      0,
+    );
+  }));
+
+function edgeFixture() {
+  const image = `registry.example/edge@sha256:${'b'.repeat(64)}`;
+  const review = {
+    namespace: 'edge',
+    reviewedAt: new Date().toISOString(),
+    hostNetworkDirectPorts: true,
+    nodeName: 'candidate',
+    nodePrivateIp: '10.4.27.58',
+    workTrustedProxyPeer: '10.4.27.58',
+    podName: 'edge-pod',
+    containerName: 'edge',
+    serviceAccountName: 'edge',
+    image,
+    publicContentHostPaths: [] as Array<{ path: string; type: string; mountPath: string; readOnly: boolean }>,
+    secretRefs: ['edge-tls'],
+  };
+  const pod = {
+    metadata: { name: 'edge-pod' },
+    spec: {
+      nodeName: 'candidate',
+      hostNetwork: true,
+      dnsPolicy: 'ClusterFirstWithHostNet',
+      hostPID: false,
+      hostIPC: false,
+      shareProcessNamespace: false,
+      securityContext: { sysctls: [] as Array<{ name: string; value: string }> },
+      serviceAccountName: 'edge',
+      automountServiceAccountToken: false,
+      initContainers: [] as Array<{ name: string }>,
+      ephemeralContainers: [] as Array<{ name: string }>,
+      volumes: [] as Array<{
+        name: string;
+        hostPath?: { path: string; type: string };
+        projected?: { sources: Array<{ serviceAccountToken: object }> };
+      }>,
+      containers: [
+        {
+          name: 'edge',
+          image,
+          securityContext: {
+            runAsNonRoot: true,
+            runAsUser: 1000,
+            allowPrivilegeEscalation: false,
+            privileged: false,
+            readOnlyRootFilesystem: true,
+            procMount: 'Default',
+            seccompProfile: { type: 'RuntimeDefault' },
+            capabilities: { drop: ['ALL'], add: ['NET_BIND_SERVICE'] },
+          },
+          ports: [
+            { protocol: 'TCP', containerPort: 80 },
+            { protocol: 'TCP', containerPort: 443 },
+            { protocol: 'UDP', containerPort: 443 },
+          ],
+          env: [] as Array<{ name: string; value: string }>,
+          volumeMounts: [] as Array<{ name: string; mountPath: string; readOnly: boolean }>,
+        },
+      ],
+    },
+    status: { phase: 'Running', conditions: [{ type: 'Ready', status: 'True' }] },
+  };
+  const data = {
+    'edge-namespace': {
+      metadata: {
+        name: 'edge',
+        labels: {
+          'pod-security.kubernetes.io/enforce': 'privileged',
+          'pod-security.kubernetes.io/enforce-version': 'v1.34',
+          'pod-security.kubernetes.io/audit': 'restricted',
+          'pod-security.kubernetes.io/audit-version': 'v1.34',
+          'pod-security.kubernetes.io/warn': 'restricted',
+          'pod-security.kubernetes.io/warn-version': 'v1.34',
+        },
+      },
+    },
+    'edge-pods': { items: [pod] },
+    'edge-services': { items: [] as Array<{ spec: { type: string } }> },
+    'edge-accounts': { items: [{ metadata: { name: 'edge' }, automountServiceAccountToken: false }] },
+    'edge-rolebindings': { items: [] as Array<object> },
+    'edge-clusterrolebindings': {
+      items: [] as Array<{ subjects: Array<{ kind: string; namespace?: string; name: string }> }>,
+    },
+    'edge-node': {
+      metadata: { name: 'candidate' },
+      status: { addresses: [{ type: 'InternalIP', address: '10.4.27.58' }] },
+    },
+  };
+  return { data, review, pod, container: first(pod.spec.containers) };
+}
+
+function validateEdgeFixture(dir: string, fixture: ReturnType<typeof edgeFixture>) {
+  for (const [name, value] of Object.entries(fixture.data))
+    writeFileSync(join(dir, `${name}.json`), JSON.stringify(value), { mode: 0o600 });
+  writeFileSync(join(dir, 'edge-review.json'), JSON.stringify(fixture.review), { mode: 0o600 });
+  return bash('source "$K3S_TEST_QUALIFY"; validate_edge_files "$1" work public edge "$1/edge-review.json"', [
+    dir,
+  ]);
+}
+
+test('separate edge exception verifies the exact non-root host listener and fixed private peer', () =>
+  sandbox((dir) => {
+    const result = validateEdgeFixture(dir, edgeFixture());
+    assert.equal(result.status, 0, result.stderr);
+    const summary = JSON.parse(readFileSync(join(dir, 'edge-summary.json'), 'utf8'));
+    assert.equal(summary.workTrustedProxyPeer, '10.4.27.58');
+    assert.equal(summary.networkPolicyApplies, false);
+    assert.ok(summary.remainingAcceptance.length >= 3);
+  }));
+
+const invalidEdges: Record<string, (fixture: ReturnType<typeof edgeFixture>) => void> = {
+  'missing acknowledgement': (f) => {
+    f.review.hostNetworkDirectPorts = false;
+  },
+  'stale review': (f) => {
+    f.review.reviewedAt = '2020-01-01T00:00:00Z';
+  },
+  'broad pod trust': (f) => {
+    f.review.workTrustedProxyPeer = '10.42.0.0/16';
+  },
+  'wrong node peer': (f) => {
+    first(f.data['edge-node'].status.addresses).address = '10.4.27.59';
+  },
+  'wrong node': (f) => {
+    f.pod.spec.nodeName = 'production';
+  },
+  'missing PSA audit': (f) => {
+    f.data['edge-namespace'].metadata.labels['pod-security.kubernetes.io/audit'] = 'privileged';
+  },
+  'second pod': (f) => {
+    f.data['edge-pods'].items.push(structuredClone(f.pod));
+  },
+  root: (f) => {
+    f.container.securityContext.runAsUser = 0;
+  },
+  'extra capability': (f) => {
+    f.container.securityContext.capabilities.add.push('SYS_ADMIN');
+  },
+  'privileged container': (f) => {
+    f.container.securityContext.privileged = true;
+  },
+  'writable root': (f) => {
+    f.container.securityContext.readOnlyRootFilesystem = false;
+  },
+  'wrong seccomp': (f) => {
+    f.container.securityContext.seccompProfile.type = 'Unconfined';
+  },
+  'host process access': (f) => {
+    f.pod.spec.hostPID = true;
+  },
+  'process security override': (f) => {
+    f.container.securityContext.procMount = 'Unmasked';
+  },
+  'sysctl override': (f) => {
+    f.pod.spec.securityContext.sysctls.push({ name: 'net.ipv4.ip_forward', value: '1' });
+  },
+  'extra init container': (f) => {
+    f.pod.spec.initContainers.push({ name: 'root-copy' });
+  },
+  'service account token': (f) => {
+    f.pod.spec.automountServiceAccountToken = true;
+  },
+  'projected token': (f) => {
+    f.pod.spec.volumes.push({ name: 'token', projected: { sources: [{ serviceAccountToken: {} }] } });
+  },
+  'role binding': (f) => {
+    f.data['edge-rolebindings'].items.push({});
+  },
+  'cluster role binding': (f) => {
+    f.data['edge-clusterrolebindings'].items.push({
+      subjects: [{ kind: 'ServiceAccount', namespace: 'edge', name: 'edge' }],
+    });
+  },
+  'service account group binding': (f) => {
+    f.data['edge-clusterrolebindings'].items.push({
+      subjects: [{ kind: 'Group', name: 'system:serviceaccounts' }],
+    });
+  },
+  'additional host port': (f) => {
+    f.container.ports.push({ protocol: 'TCP', containerPort: 6443 });
+  },
+  NodePort: (f) => {
+    f.data['edge-services'].items.push({ spec: { type: 'NodePort' } });
+  },
+  'inline credential': (f) => {
+    f.container.env.push({ name: 'LW_SESSION_SECRET', value: 'edge-credential-sentinel' });
+  },
+  'sensitive host path': (f) => {
+    f.pod.spec.volumes.push({ name: 'private', hostPath: { path: '/etc/rancher', type: 'Directory' } });
+  },
+  unready: (f) => {
+    first(f.pod.status.conditions).status = 'False';
+  },
+};
+for (const [name, change] of Object.entries(invalidEdges))
+  test(`edge qualification refuses ${name}`, () =>
+    sandbox((dir) => {
+      const fixture = edgeFixture();
+      change(fixture);
+      const result = validateEdgeFixture(dir, fixture);
+      assert.notEqual(result.status, 0);
+      assert.ok(!`${result.stdout}${result.stderr}`.includes('edge-credential-sentinel'));
+    }));
 
 type Namespace = 'work' | 'public';
 type Peer = {
@@ -379,7 +654,9 @@ const invalidFixtures: Record<string, (data: Fixture) => void> = {
     first(first(d['work-pods'].items).spec.containers).image = 'registry.example/lolly:latest';
   },
   'inline credential': (d) => {
-    first(first(d['work-pods'].items).spec.containers).env = [{ name: 'DATABASE_URL', value: 'credential-sentinel' }];
+    first(first(d['work-pods'].items).spec.containers).env = [
+      { name: 'DATABASE_URL', value: 'credential-sentinel' },
+    ];
   },
   'cross-role secret': (d) => {
     first(first(d['public-pods'].items).spec.containers).env = [

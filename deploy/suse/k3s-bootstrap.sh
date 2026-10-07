@@ -55,8 +55,26 @@ assert stat.S_ISREG(s.st_mode) and not s.st_mode & 0o077, 'review must be a priv
 d=json.load(open(p));assert d['provider']==sys.argv[2] and d['provider'] in ['upcloud','evroc']
 assert d['controlPlanePublic'] is False and d['nodePortsPublic'] is False
 assert d['dualStackReviewed'] is True, 'review both address families or verify the unused family is disabled'
-assert d['publicUdpPorts']==[]
+assert set(d['publicUdpPorts']).issubset({443}), 'only optional HTTP/3 UDP 443 is public'
 assert set(d['publicTcpPorts']).issubset({22,80,443}) and 22 in d['publicTcpPorts']
+if d['provider']=='upcloud':
+    assert d['statelessFirewall'] is True, 'UpCloud public/utility firewall is stateless'
+if d.get('statelessFirewall'):
+    assert d['hostConnectionTrackingRequired'] is True, 'stateless return traffic requires host connection tracking'
+    ports=d['kernelEphemeralPortRange'];assert isinstance(ports['start'],int) and isinstance(ports['end'],int) and 32768 <= ports['start'] <= ports['end'] <= 65535, 'return range must exclude control-plane and NodePorts'
+    returns=d['statelessReturnRules'];assert returns, 'review actual stateless return rules'
+    protocols=set()
+    for rule in returns:
+        assert rule['family'] in ['IPv4','IPv6'] and rule['protocol'] in ['tcp','udp']
+        assert rule['destinationPortRange']==ports and rule['sourceCidrs']
+        assert (rule['protocol'],rule['sourcePort']) in [('tcp',80),('tcp',443),('tcp',53),('udp',53),('udp',123)], 'unreviewed return protocol/port'
+        for cidr in rule['sourceCidrs']:
+            network=ipaddress.ip_network(cidr)
+            assert network.version==(4 if rule['family']=='IPv4' else 6)
+            if rule['sourcePort'] in [53,123]:
+                assert network.prefixlen==network.max_prefixlen, 'resolver/time peers must be exact hosts'
+        protocols.add((rule['protocol'],rule['sourcePort']))
+    assert {('tcp',443),('tcp',53),('udp',53)}.issubset(protocols), 'HTTPS and UDP/TCP resolver return paths must be reviewed'
 assert d['sshSourceCidrs']
 for c in d['sshSourceCidrs']:
     n=ipaddress.ip_network(c)
@@ -65,6 +83,16 @@ assert isinstance(d['reviewedAt'],str) and isinstance(d['reviewedRulesSha256'],s
 reviewed=datetime.datetime.fromisoformat(d['reviewedAt'].replace('Z','+00:00'))
 assert reviewed.tzinfo and 0 <= (datetime.datetime.now(datetime.timezone.utc)-reviewed).total_seconds() <= 86400, 'provider review must be current within 24 hours'
 assert len(d['reviewedRulesSha256'])==64 and all(c in '0123456789abcdef' for c in d['reviewedRulesSha256'])
+PY
+}
+
+validate_ephemeral_range() {
+  python3 -I - "$1" "$2" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1]))
+if d.get('statelessFirewall'):
+    observed=[int(x) for x in sys.argv[2].split()]
+    assert observed==[d['kernelEphemeralPortRange']['start'],d['kernelEphemeralPortRange']['end']], 'host kernel ephemeral range differs from reviewed provider return rules'
 PY
 }
 
@@ -98,7 +126,7 @@ validate_network() {
     case $service in ssh|http|https|dhcpv6-client) ;; *) fail "unexpected public service: $service" ;; esac
   done
   for port in $ports; do
-    case $port in 22/tcp|80/tcp|443/tcp) ;; *) fail "unexpected public port: $port" ;; esac
+    case $port in 22/tcp|80/tcp|443/tcp|443/udp) ;; *) fail "unexpected public port: $port" ;; esac
   done
   [[ -z $trusted_interfaces ]] || fail 'trusted zone may contain no host interfaces'
   python3 -I - "$trusted_sources" "$permanent_trusted_sources" <<'PY'
@@ -176,6 +204,7 @@ PY
     esac
   fi
   validate_provider_review "$PROVIDER_REVIEW" "$PROVIDER"
+  validate_ephemeral_range "$PROVIDER_REVIEW" "$(cat /proc/sys/net/ipv4/ip_local_port_range)"
   validate_network "$PUBLIC_INTERFACE"
 }
 
