@@ -16,6 +16,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { parseAllDocuments } from 'yaml';
 import { parseConfig } from '../server/src/config/instance.ts';
 
@@ -45,6 +48,24 @@ const manifests = (out: string) => parseAllDocuments(out).map(doc => doc.toJSON(
 const deployment = (out: string, worker = false) => manifests(out).find(doc =>
   doc?.kind === 'Deployment' && (doc.metadata.labels?.['app.kubernetes.io/component'] === 'render-worker') === worker);
 const SMALL = ['-f', `${CHART}/values-small-suse.yaml`];
+
+test('raw instance config remains exact with mounted pack and shell', { skip: noHelm }, () => {
+  const directory = mkdtempSync(join(tmpdir(), 'lolly-helm-raw-config-'));
+  try {
+    const raw = JSON.stringify({ instance: { baseUrl: 'https://work.example.test', pack: '/app/packs/custom', shellDir: '/app/shell' }, catalogProviders: [{ id: 'custom-provider' }] }, null, 2);
+    const config = join(directory, 'instance.json');
+    writeFileSync(config, raw, { mode: 0o600 });
+    const r = render([...SECRETS, '--set-file', `config=${config}`,
+      '--set', 'pack.type=existingClaim', '--set', 'pack.existingClaim=custom-pack',
+      '--set', 'shell.enabled=true', '--set', 'shell.type=existingClaim', '--set', 'shell.existingClaim=custom-shell']);
+    assert.ok(r.ok, r.err);
+    const actual = manifests(r.out).find(doc => doc?.kind === 'ConfigMap').data['instance.json'];
+    assert.equal(actual, raw, 'raw operator config must not gain defaults or lose extension fields');
+    assert.deepEqual(JSON.parse(actual), JSON.parse(raw));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test('control-plane Service never selects render workers or migration pods and keeps upgrade selectors stable', { skip: noHelm }, () => {
   const r = render([...SECRETS, ...WORKER]); assert.ok(r.ok, r.err);
