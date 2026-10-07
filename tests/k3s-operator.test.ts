@@ -448,6 +448,20 @@ test('reviewed randomized DNS SNAT keeps exact resolver TCP/UDP peers and the ac
     assert.notEqual(bash('source "$K3S_TEST_BOOTSTRAP"; validate_ephemeral_range "$1" "1024 65535"', [file]).status, 0);
   }));
 
+test('caller Python optimization cannot bypass trusted DNS peers or port bounds', () => sandbox((dir) => {
+  const environment = { PYTHONOPTIMIZE: '2' };
+  let fixture = randomizedDnsReview(dir);
+  assert.equal(bash('source "$K3S_TEST_BOOTSTRAP"; validate_provider_review "$1" upcloud', [fixture.file], environment).status, 0);
+  fixture.record.statelessReturnRules[1].sourceCidrs = ['0.0.0.0/0'];
+  writeFileSync(fixture.file, JSON.stringify(fixture.record));
+  assert.notEqual(bash('source "$K3S_TEST_BOOTSTRAP"; validate_provider_review "$1" upcloud', [fixture.file], environment).status, 0);
+  fixture = randomizedDnsReview(dir);
+  fixture.record.dnsReturnPortRange = { start: 1023, end: 65535 };
+  for (const rule of fixture.record.statelessReturnRules.slice(1)) rule.destinationPortRange = fixture.record.dnsReturnPortRange;
+  writeFileSync(fixture.file, JSON.stringify(fixture.record));
+  assert.notEqual(bash('source "$K3S_TEST_BOOTSTRAP"; validate_provider_review "$1" upcloud', [fixture.file], environment).status, 0);
+}));
+
 for (const [name, range] of Object.entries({
   privileged: { start: 1023, end: 65535 },
   zero: { start: 0, end: 65535 },
