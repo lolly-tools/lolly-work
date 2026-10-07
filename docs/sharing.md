@@ -411,12 +411,26 @@ name and never by email to anyone who could not already see the address:
 | `invite-accepted` | each person who invited them (at most 5) | "Sam accepted your invitation", with **Open** (the project) or **Open People** (the console) |
 | `invite-skipped` | the invitee | "Your invitation to Brand refresh no longer works", when the person who added the project can no longer add people to it, or the project was archived |
 | `welcome` | the invitee, on accepting | "Welcome to lolly.ing", with the inviter and, for a project, its name, the role and **Open** |
+| `comment-mention` | a person mentioned in a comment | "Ana mentioned you in Spring poster", with the start of the newest message and **Open thread** |
+| `comment-reply` | the people in a comment thread when someone replies | "Ana replied in Spring poster", or "New replies in Spring poster: 3", with **Open thread** |
 
 A request notice has `kind: "request"` and severity `action`; the others have
 `kind: "notice"`. Each carries `data.at`, the time it happened, and the ids a client needs
 (`requestId`, `projectId`, `invitationId` and so on). A request notice disappears when the
 request is answered, withdrawn, superseded or expires. The others stay until dismissed, and
 an answer or acceptance notice for 30 days at most.
+
+Comment notices (`kind: "comment"`, id `cn_…`) work differently. There is one per person
+per thread, updated as replies arrive. It stores no text and no names: the inbox writes
+the title, the excerpt and the names each time it is read, so an edited or deleted
+message never lingers there. It is shown only while the person can still open the
+document and read its comments. Dismissing it removes it, and the next reply brings it
+back. Reading the thread in Lolly removes it too. The [API reference](api.md#approvals-and-inbox)
+has the details.
+
+The inbox also stops showing a share or a collaboration invite once the person can no
+longer see its project (an invite also once its session is deleted), and a project access
+request once they no longer manage that project.
 
 `GET /api/v1/inbox` answers with an `ETag` and an `unread` count, and `304` when nothing
 changed, so Lolly checks it when the tab comes back into view (at most once a minute) and
@@ -519,6 +533,11 @@ with the saved inputs and remembers the revision for the next save. The link car
 the session id, and opening one needs the same visibility as reading the session through the
 API. A signed-out reader goes through the sign-in gate first and returns to the session
 afterwards. Collaboration invites in the inbox use this link too.
+
+A link to a comment thread adds `?thread=<threadId>`:
+`<app>/#/team/<sessionId>?thread=<threadId>`. Lolly opens the session, connects and shows
+that thread. The link grants nothing: someone who cannot open the session sees the usual
+refusal and can ask for access, and the thread opens once access is approved.
 
 ### When two people save the same session
 
