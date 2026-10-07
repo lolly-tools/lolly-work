@@ -13,6 +13,8 @@ export function consoleAccess(principal: PrincipalCtx, grants: Grant[]) {
   const actions = [...new Set(Object.values(requirements).flat().concat([
     'brand.switch', 'catalog.provider.credential', 'catalog.provider.manage', 'catalog.edit',
     'project.create', 'project.manage', 'session.create', 'approval.act', 'catalog.submit', 'user.invite',
+    // The review panel offers a collection to join on approval (plan 299).
+    'catalog.collection.manage',
   ]))].filter(action => evaluate(principal, action, ['*'], grants));
   const views = Object.fromEntries(Object.entries(requirements).map(([id, requirements]) =>
     [id, requirements.some(action => actions.includes(action))]));

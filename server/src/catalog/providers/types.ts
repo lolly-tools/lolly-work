@@ -78,6 +78,15 @@ export interface ProviderMapping {
   /** Fold provider sections/folders into entry tags (default true). */
   sectionTags?: boolean;
   /**
+   * Labels this provider's entries never show: exact tags or `prefix*`
+   * patterns, matched without regard to case, applied to tags, sections and
+   * collections when the index is served (catalog/tag-rules.ts). The asset
+   * itself stays in the feed; `exposure.excludeTags` is the knob that drops
+   * one. This is the declarative form for a provider instance.json manages;
+   * the console writes the same list as a tag rule instead.
+   */
+  hiddenTags?: string[];
+  /**
    * For DAMs that model availability as custom metadata rather than native
    * fields (Image Relay terms, IntelligenceBank custom fields - plans/27 §9):
    * the upstream field names a driver reads the availability window from.

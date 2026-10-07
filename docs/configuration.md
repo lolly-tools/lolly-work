@@ -509,6 +509,12 @@ Sizing for catalogs with tens of thousands of assets. Every key has a working de
 
 See [large catalogs](catalog.md#large-catalogs).
 
+`mapping.hiddenTags` lists labels this provider's assets never show: exact tags or prefixes
+ending in `*`, matched without regard to case. It is applied when the index is served, so a
+change takes effect at the next restart with no re-sync; the console's Tags panel shows these
+as set in instance.json. A database-managed provider takes the same list from the console
+instead ([hiding tags](catalog.md#hiding-tags)).
+
 ## Environment variables
 
 ### Secrets

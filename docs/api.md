@@ -126,6 +126,8 @@ in on the instance and export the pack, or connect from the desktop app.
 | `GET /catalog/inst/<id>/<format>?v=N` | per access mode | a prior version's bytes, through every gate the head answers to |
 | `GET /api/v1/catalog/fields` | `catalog.read` | the org's field definitions, plus a `canEdit` bit for honest UI |
 | `PUT/DELETE /api/v1/catalog/fields/<id>` | `policy.edit` | define or retire one field; the definitions also ride the governance document |
+| `GET /api/v1/catalog/tags[?provider=<id>]` | `policy.edit` or `catalog.provider.manage` | every label the catalog carries, counted per source, with the rules hiding each one |
+| `PUT /api/v1/catalog/tags/rules` | `policy.edit` (scope `*`), `catalog.provider.manage` (scope `provider:<id>`) | `{ scope, hidden }` replaces a hidden-tag list, `{ scope, hide, show }` edits it; applied when the index is served |
 | `GET /api/v1/catalog/collections` | `catalog.collection.manage` | the curator's view: every set as curated |
 | `GET/PUT/DELETE /api/v1/catalog/collections/<id>` | `catalog.collection.manage` | create, edit or remove one set; a `PUT` refuses any member the curator cannot see |
 | `GET /api/v1/catalog/lifecycle` | `catalog.expire` | all lifecycle rows |
@@ -143,10 +145,11 @@ The [design-system administration contract](design-system-administration.md#revi
 | Route | Action | Notes |
 |---|---|---|
 | `POST /api/v1/catalog/submit?name=…` | `catalog.submit` | raw bytes in the body; `201` for a new asset, `200` with `duplicate: true` for identical bytes |
+| `POST /api/v1/catalog/submit?type=template\|user-tool` | `catalog.submit` | a template or user tool as JSON; `toolId=` names the tool when the body does not; `422 INVALID_SUBMISSION` when the JSON or its tool is not one this pack can serve; `clientRef=` is echoed on the submission |
 | `POST /api/v1/catalog/submit?assetId=inst/…&note=…` | `catalog.edit` | the same pipeline, landing as the next VERSION of an existing asset; `groups`/`type`/`tags`/`description` are refused here and belong to `…/meta` |
 | `GET /api/v1/catalog/submissions` | `catalog.read` | the caller's own submissions plus the ones open on a step their groups may act on |
 | `GET /api/v1/catalog/submissions/:id/bytes` | `catalog.read` | preview before publication - submitter and reviewer only |
-| `PATCH /api/v1/catalog/submissions/:id` | `catalog.read` | correct a pending submission's `name`/`type`/`tags`/`description` and its org `fields`; `409` once it has settled |
+| `PATCH /api/v1/catalog/submissions/:id` | `catalog.read` | correct a pending submission's `name`/`type`/`tags`/`description` and its org `fields`, and (with `catalog.collection.manage`) the `collectionId` it joins on approval; `409` once it has settled |
 | `POST /api/v1/catalog/submissions/:id/act` | member (the approvals engine gates it) | `approve` publishes, `reject` returns with the comment |
 
 Refusals: `413 PAYLOAD_TOO_LARGE` over `policy.submit.maxBytes`, `409 QUOTA_EXCEEDED`,

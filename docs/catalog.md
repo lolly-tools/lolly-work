@@ -93,6 +93,46 @@ A quota scope is a group name, and a submission is charged to **every** group it
 belongs to, before the bytes are stored, so extra memberships only tighten a budget. A
 refused submission is refunded; a returned one is not (the bytes were still stored).
 
+### Templates and user tools
+
+A member's saved template, or a tool they built on another tool, can go into the catalog the
+same way. Both are JSON data for one of the pack's tools, never code, so they take the same
+pipeline as a file: quota, duplicate check, scan hook and review.
+
+```
+POST /api/v1/catalog/submit?type=template&toolId=design&tags=launch      # body: the template JSON
+POST /api/v1/catalog/submit?type=user-tool                               # body: the user tool JSON
+```
+
+A template body is `{ "toolId", "name", "description"?, "values" }`, the file the app's
+**Export as file** writes plus the tool id (which `toolId=` supplies when the file does not
+carry it). A user tool body is `{ "baseToolId", "title", "description"?, "icon"?, "formats"?,
+"values" }`. The `name` query param is optional for both; the document's own name is used.
+
+Before anything is hashed or stored the server checks that the body is one JSON object at most
+4 MiB, that `values` is an object, and that the tool it seeds exists in this instance's pack.
+A refusal is `422 INVALID_SUBMISSION` with the reason. What is stored is the normalized
+document, so a reviewer approves exactly what the feed will serve. A user tool's `icon` is
+kept only as a short glyph such as an emoji: markup one member submitted would otherwise draw
+inside every other member's app.
+
+The review queue shows what each one seeds ("Template for Design (design), 12 values") where a
+file would show a thumbnail, and keeps its type: a reviewer can rename or retag it but not turn
+it into an image. Once live it composes into the feed as an asset of type `template` or
+`user-tool` with one `json` format, and its entry's `meta` carries `toolId` (or `baseToolId`)
+and `valueCount`, so an app can offer it before downloading it.
+
+### Choosing a collection while reviewing
+
+`PATCH /api/v1/catalog/submissions/<id>` takes `"collectionId": "launch-kit"` (or `null` to
+clear it) from a reviewer who also holds `catalog.collection.manage`. Nothing joins while the
+submission waits: on approval the asset is appended to that collection, keeping the curated
+order, and the approval's audit event names the collection. A collection deleted in the
+meantime is left alone.
+
+A submitting client can also pass `clientRef=<its own reference>` on submit. It is echoed
+back on the submission so an app can show the state of what it sent.
+
 Submitted bytes are served with a content-security policy that sandboxes them and allows no
 script. An SVG is markup rather than a picture, and the console shares this origin, so a file
 a member uploaded is never allowed to run as whoever opens it - through `/catalog/*`, through
@@ -103,7 +143,7 @@ a share link, or in the review preview.
 ```
 GET   /api/v1/catalog/submissions[?state=submitted|live|returned]     # catalog.read
 GET   /api/v1/catalog/submissions/<id>/bytes                          # preview, pre-publication
-PATCH /api/v1/catalog/submissions/<id>         { "name": "…", "tags": ["…"], "type": "…", "description": "…", "fields": {…}, "extractedText": "…" }
+PATCH /api/v1/catalog/submissions/<id>         { "name": "…", "tags": ["…"], "type": "…", "description": "…", "fields": {…}, "extractedText": "…", "collectionId": "…" }
 POST  /api/v1/catalog/submissions/<id>/act     { "action": "approve" | "reject", "comment": "…" }
 ```
 
@@ -125,6 +165,10 @@ when it reaches the feed. The submitter can do all of this to their own while it
 submitter chose - and it refuses once the submission has settled, because a published asset is
 an ordinary catalog asset from then on. Every field that moves is audited with its before and
 after, under `catalog.edit-submission`.
+
+The console's Catalog view has a **Submit an asset** button for anyone holding
+`catalog.submit`: choose a file, or a template's JSON, name it, tag it and send it to the same
+route. It reports whether the asset went live or is waiting for review.
 
 The console's Catalog view shows the queue above the served assets. Reviewing one opens a panel
 below the table with the preview, the metadata as an editable form, and the decision with its
@@ -535,6 +579,41 @@ Console equivalent: **This Deploy → Providers**.
 Slice filters (`requireApproved`, `includeSections`, `excludeTags`) apply at
 fragment-build time - excluded assets never enter the feed *or* the store. Group visibility
 applies per caller at compose time.
+
+### Hiding tags
+
+`excludeTags` drops a whole asset. Most DAM noise is a label on a good asset instead:
+"approved-2019", a workflow state, a section called "Internal". Hide those labels and keep the
+asset. A hidden tag comes off an entry's `tags` and its `meta.providerTags`,
+`meta.providerSections` and `meta.providerCollections`, so it leaves the app's filters, tag
+chips, folder list and the server search. The asset, its exposure and its lifecycle are not
+touched.
+
+A rule is a list of exact tags or prefixes ending in `*` (`internal:*`), matched without regard
+to case, in one of two scopes: `*` for every entry the catalog serves (pack, uploads and every
+provider), or `provider:<id>` for one provider's entries. The `provider:<id>` tag itself is
+never hidden, because apps filter by it.
+
+The rules are applied when the index is served, not when a provider syncs. Hiding and showing a
+tag both take effect on the next catalog read, nothing re-syncs, and a hidden tag is still
+counted so it can be found and shown again.
+
+```
+GET /api/v1/catalog/tags[?provider=<id>]       # every label, with counts per source and what hides it
+PUT /api/v1/catalog/tags/rules  { "scope": "*", "hide": ["approved-*"], "show": ["Internal"] }
+PUT /api/v1/catalog/tags/rules  { "scope": "provider:brand-dam", "hidden": ["legal:*"] }
+```
+
+The instance scope needs `policy.edit` and a provider scope needs `catalog.provider.manage`.
+`hide` and `show` edit the list; `hidden` replaces it. Every change is audited as
+`catalog.tags.update` with the list before and after, and the rules ride the policy document as
+`tagRules`.
+
+In the console, **Catalog → Tags** lists every label with a search box, a filter for shown or
+hidden, and the source each one comes from; hide or show one tag, a selection, or every tag
+starting with a prefix. **Providers → Tags** on a provider's row opens the same list for that
+provider only. A provider that instance.json manages can declare `mapping.hiddenTags` there;
+those show in the list as set in instance.json.
 
 ### Credentials
 
