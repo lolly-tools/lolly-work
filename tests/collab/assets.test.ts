@@ -21,6 +21,22 @@ test('room asset references survive persistence and re-seeding without local URL
   assert.deepEqual(seedOpsFromInputs(stored).ops, seed.ops);
 });
 
+test('a placed tool survives persistence and re-seeding as its link, never as a render', () => {
+  const link = 'https://lolly.tools/tool/pose-geeko.svg?pose=curious&motion=alive&loop=8';
+  const inputs = { boxes: [{ id: 'geeko', x: 20, image: { id: link, source: 'remote', type: 'vector', format: 'svg',
+    url: 'data:image/svg+xml,%3Csvg%2F%3E', meta: { toolUrl: link, animated: true } } }] };
+  const doc = new ReferenceCanvasDoc('server');
+  const seed = seedOpsFromInputs(inputs);
+  for (const op of seed.ops) doc.apply(op);
+  const row = doc.state().collections!.get('boxes')!.boxes.get('geeko')!;
+  assert.equal(decodeCanvasAsset(row.image)?.id, link);
+  assert.doesNotMatch(String(row.image), /data:image/);
+  const stored = docToInputs(doc.state(), inputs, new Set(['boxes']));
+  const image = (stored.boxes as typeof inputs.boxes)[0]!.image;
+  assert.deepEqual(image, { id: link, source: 'remote', type: 'vector', format: 'svg', url: '' });
+  assert.deepEqual(seedOpsFromInputs(stored).ops, seed.ops);
+});
+
 test('legacy room members keep ordinary changes without receiving asset extension strings', async () => {
   const image = { id: 'user/team/file', source: 'user', type: 'raster', format: 'png', pin: { version: 'hash', format: 'png' }, url: '' };
   const room = await Room.open({ id: 'session', projectId: 'project', toolId: 'design', toolVersion: '1', inputs: { boxes: [{ id: 'a', x: 20, image }] },
