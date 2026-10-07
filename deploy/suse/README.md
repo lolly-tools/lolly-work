@@ -222,3 +222,11 @@ source identities. Collection publishes
 [signature and attestation verification instructions](https://docs.apps.rancher.io/developer-toolkit/verify-signatures-with-cosign).
 Mirror only the chosen application and dependency versions; no new registry
 service is required for a connected small deployment.
+
+## Optional WebAssembly tracks
+
+See [WebAssembly and Kubewarden choices](../../docs/wasm-deployment.md) for
+Rancher-managed admission policies and a separate WIT/WASI component evaluation.
+Current profiles keep their qualified OCI workloads and containerd default
+handler. A controller, RuntimeClass or component canary needs its own isolated
+qualification before any production rollout.

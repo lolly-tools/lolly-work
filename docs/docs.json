@@ -42,6 +42,11 @@
           "slug": "platform-deployment",
           "title": "Deploy with your platform team",
           "summary": "Reader, operator and developer paths for SUSE hosts, K3s/RKE2, Ansible/Salt, OCI builds and cloud or on-premises deployment."
+        },
+        {
+          "slug": "wasm-deployment",
+          "title": "WebAssembly and Kubewarden choices",
+          "summary": "Optional policy and component hosting tracks, current WASI compatibility, runtime qualification and bounded worker canaries."
         }
       ]
     },

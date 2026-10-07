@@ -64,3 +64,7 @@ Use the [cloud deployment guide](cloud-deployment.md) for durable-data boundarie
 database migration, public documentation routing and cutover preparation. Keep
 the same sign-in, invited collaboration, asset, agent and independent recovery
 checks on every deployment target.
+
+For optional Wasm policy or worker hosting, use [WebAssembly and Kubewarden
+choices](wasm-deployment.md). These are separately qualified development tracks;
+they do not add a controller or runtime requirement to a private installation.

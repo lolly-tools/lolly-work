@@ -24,6 +24,7 @@ any Lolly deployment. The console links there when this deploy serves or points 
 | [deployment](deployment.md) | Helm/Rancher, Compose, Vercel, air-gap - what each path carries |
 | [UpCloud and Evroc](cloud-deployment.md) | OpenTofu/Terraform, database restore and reducing separate hosting services |
 | [platform deployment](platform-deployment.md) | SUSE hosts, Ansible/Salt readiness, K3s/RKE2, OCI builds and cloud/on-premises boundaries |
+| [WebAssembly and Kubewarden choices](wasm-deployment.md) | Optional policy/component tracks and runtime qualification |
 
 ## Configure
 
