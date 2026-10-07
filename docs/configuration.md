@@ -168,6 +168,7 @@ See [email and password](identity.md#email-and-password) for the flow.
 | `requests.joinOpenMax` | `50` | whole number, 1 to 1000. The most requests to join and to use another account for an invitation that may be open at once across the instance; past it, new ones are held (the person sees the same page, nothing is stored) |
 | `nearby.enabled` | `true` | instance-mediated "nearby" presence: the `collab.nearby` capability bit and both `/api/v1/collab/nearby` routes. `false` keeps the whole surface dark fleet-wide |
 | `comments.enabled` | `true` | durable canvas review; `false` disables reading and writing comment threads without changing session access |
+| `versions.maxBytes` | `1073741824` | bytes of saved-version content all documents together may hold (1 GiB); one document may hold at most 100 MiB. Over it the oldest automatic versions are removed first, then a named save or a restore answers `409 VERSION_SPACE`. See [data lifecycle](data-lifecycle.md#session-versions) |
 | `sessionTtlHours` | `12` | member session lifetime (token `exp` and cookie `Max-Age`); must be > 0 and ≤ 720 |
 | `submit.maxBytes` | `67108864` | per-file cap on a catalog submission (64 MiB, matching publish-out). Over it: `413 PAYLOAD_TOO_LARGE` |
 | `submit.chain` | *unset* | approval chain id gating submissions. Unset means no review: a submitted asset is live the moment it is stored. Set to a chain that does not exist, submissions are refused (`503 SUBMIT_CHAIN_MISSING`) rather than published unreviewed |
