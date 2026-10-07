@@ -8,9 +8,10 @@
  * the memory store always, and against Postgres when LW_TEST_DATABASE_URL is set.
  * Persistence is the one collab surface where the driver can genuinely disagree - 
  * jsonb round-trips a blocks array, `sessions.updated_by` is a FOREIGN KEY to
- * users(id) (which is why a room's revision `actor` is 'collab' but its
- * `updatedBy` must stay a real user), and the snapshot row is an `on conflict`
- * upsert. Asserting all that on a Map alone would assert the wrong thing.
+ * users(id) (which is why a room several people wrote is 'collab' on its revision
+ * but its `updatedBy` must stay a real user), and the snapshot row is an
+ * `on conflict` upsert. Asserting all that on a Map alone would assert the wrong
+ * thing.
  *
  * It drives Room/RoomRegistry DIRECTLY rather than over a websocket: the wire,
  * the auth gates and the policy veto are gateway.test.ts's subject, and
@@ -50,7 +51,7 @@ function seatOf(id: string, userId: string): RoomMember & { sent: ServerFrame[] 
  *  `admitGuest`): `userId` is the guest's principal id (never a real user),
  *  and `guestLinkId` is set - which is the ONE thing that makes `Room.applyOps`
  *  attribute the write to the guest rather than to a member (persistence.ts
- *  `RoomWriter` / `roomRevisionActor`). */
+ *  `RoomWriter` / `revisionActorFor`). */
 function guestSeatOf(id: string, linkId: string): RoomMember & { sent: ServerFrame[] } {
   const sent: ServerFrame[] = [];
   return {
@@ -232,10 +233,32 @@ async function runCollabPersistence(t: TestContext, store: Store): Promise<void>
     const revs = await store.listSessionRevisions(session.id);
     assert.equal(revs.length, 1, 'ONE history: a room writes an ordinary revision, not a parallel log');
     assert.equal(revs[0]?.rev, stored.rev);
-    assert.equal(revs[0]?.actor, COLLAB_ACTOR, "a converged document has no single author — actor is 'collab'");
+    assert.equal(revs[0]?.actor, userId, 'one person wrote since the last write-back, so the revision names them (plan 76 M4)');
     assert.deepEqual(revs[0]?.inputs, stored.inputs);
     assert.deepEqual(revs[0]?.meta, session.meta, 'meta rides through untouched');
     assert.equal(await store.getCollabSnapshot(session.id), null, 'the quiesce clears the recovery row');
+  });
+
+  await t.test("several writers converge to 'collab' on the revision, and updated_by is the latest member", async () => {
+    const { session, userId } = await seed(store, 'several-writers', { title: 'start', accent: '#000000' });
+    const other = await store.upsertUserBySub({ sub: 'collab:several-writers-b', email: 'b@collab.test', groups: ['team'], role: 'member' });
+    const registry = registryFor();
+    const room = await registry.acquire(session);
+    const alice = seatOf('m1', userId);
+    const bea = seatOf('m2', other.id);
+    const guest = guestSeatOf('g1', 'lnk_several');
+    room.join(alice); room.join(bea); room.join(guest);
+    room.applyOps(alice, [param('title', 'by alice', 'ca', 2)]);
+    room.applyOps(bea, [param('accent', '#30ba78', 'cb', 3)]);
+    // A second tab of the same person, and then a guest, write last.
+    room.applyOps({ ...alice, id: 'm1-tab' }, [param('title', 'by alice again', 'ca2', 4)]);
+    room.applyOps(guest, [param('title', 'by the guest', 'cg', 5)]);
+    for (const seat of [alice, bea, guest]) room.leave(seat.id);
+    assert.equal(await registry.releaseIfEmpty(room), true);
+    const revs = await store.listSessionRevisions(session.id);
+    assert.equal(revs.length, 1);
+    assert.equal(revs[0]?.actor, COLLAB_ACTOR, 'a document several principals converged has no single author');
+    assert.equal((await reload(store, session.id)).updatedBy, userId, 'the latest MEMBER writer, never the guest');
   });
 
   await t.test(
@@ -532,7 +555,7 @@ async function runCollabPersistence(t: TestContext, store: Store): Promise<void>
     const revs = await store.listSessionRevisions(session.id);
     assert.deepEqual(revs.map((r) => r.rev), [session.rev + 2, session.rev + 1], 'both revisions exist, neither dropped');
     assert.equal(revs[1]?.actor, userId, 'the user keeps their revision');
-    assert.equal(revs[0]?.actor, COLLAB_ACTOR, 'and the room gets its own');
+    assert.equal(revs[0]?.rev, session.rev + 2, 'and the room gets its own');
   });
 
   await t.test('a DELETE landing INSIDE the write-back is never undone by it', async () => {

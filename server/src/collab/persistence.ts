@@ -9,13 +9,17 @@
  * `session_revisions` table. Nothing here invents a parallel timeline: a quiesce
  * is a `putSession` rev bump plus one `appendSessionRevision`, byte-identical in
  * shape to what `PUT /api/v1/sessions/:id` writes. The only difference is the
- * revision's `actor`, which is `'collab'` rather than a user id - a room's
- * converged document has no single author, and claiming one would be a lie in
- * the audit trail. (`SessionRecord.updatedBy` is a different matter: it is a
- * FOREIGN KEY to `users(id)` in Postgres, so it keeps a real user - the room's
- * last accepted writer, else whoever the record already named.) A GUEST's
- * write-back is the one case where those two diverge: it lands on the revision as
- * `guest:<linkId>` and leaves `updated_by` alone - see `RoomWriter` below.
+ * revision's `actor` (plan 76 M4, `revisionActorFor`): the one principal who
+ * wrote since the last write-back when there was exactly one, else `'collab'`,
+ * because a document several people converged has no single author and naming
+ * one would be a lie in the audit trail. (`SessionRecord.updatedBy` is a
+ * different matter: it is a FOREIGN KEY to `users(id)` in Postgres, so it keeps
+ * a real user - the room's last accepted member writer, else whoever the record
+ * already named.) A GUEST's write-back is the one case where those two diverge:
+ * it lands on the revision as `guest:<linkId>` and leaves `updated_by` alone - 
+ * see `RoomWriter` below. Store-backed rooms (rooms.ts `Room.open` with a store)
+ * commit every batch to the session row instead, and append the same one
+ * revision, with the same actor rule, when they quiesce.
  *
  * WHAT IS SNAPSHOTTED IS THE SESSION'S INPUTS. plans/14 §6 reached for a
  * "periodic snapshot + update log", the y-leveldb algorithm plans/100 §7 item 3
@@ -96,16 +100,37 @@ export type RoomWriter =
   | { kind: 'agent'; agentId: string; userId: string }
   | { kind: 'guest'; linkId: string };
 
+/** One principal per writer, so several tabs of one person count once. */
+export function roomWriterKey(writer: RoomWriter): string {
+  return writer.kind === 'member' ? `user:${writer.userId}` : writer.kind === 'agent' ? `agent:${writer.agentId}` : guestActor(writer.linkId);
+}
+
 /**
- * The `SessionRevision.actor` for one write-back. `'collab'` for a member-written
- * room (a converged document has no single author) and for a crash recovery with
- * no writer at all; the GUEST principal id when the last accepted writer was a
- * guest, because plans/02 §8 asks for a guest to be identifiable "everywhere - 
- * presence, revisions, audit", and a room whose only writer was a guest would
- * otherwise land in history indistinguishable from one its members wrote.
+ * The `SessionRevision.actor` for one write-back (plan 76 M4): the principal who
+ * wrote since the last write-back when there was exactly one - a member's user
+ * id, `agent:<id>` for an agent, `guest:<linkId>` for a guest - and `'collab'`
+ * when several did, or none (a crash recovery). A guest is named because plans/02
+ * §8 asks for a guest to be identifiable "everywhere - presence, revisions,
+ * audit"; a member is named because one person's edits are theirs, as a REST
+ * save's revision already says.
  */
-export function roomRevisionActor(writer: RoomWriter | null | undefined): string {
-  return writer?.kind === 'agent' ? `agent:${writer.agentId}` : writer?.kind === 'guest' ? guestActor(writer.linkId) : COLLAB_ACTOR;
+export function revisionActorFor(writers: Iterable<RoomWriter>): string {
+  const distinct = new Map<string, RoomWriter>();
+  for (const writer of writers) distinct.set(roomWriterKey(writer), writer);
+  if (distinct.size !== 1) return COLLAB_ACTOR;
+  const [only] = distinct.values();
+  return only!.kind === 'member' ? only!.userId : roomWriterKey(only!);
+}
+
+/** `SessionRecord.updatedBy` after a write-back: the latest member (or the
+ *  member an agent acts for) among `writers`, oldest first; a guest never, since
+ *  the column is a foreign key to a user. */
+function lastUserOf(writers: readonly RoomWriter[], fallback: string): string {
+  for (let i = writers.length - 1; i >= 0; i--) {
+    const writer = writers[i]!;
+    if (writer.kind !== 'guest') return writer.userId;
+  }
+  return fallback;
 }
 
 // ── document → session inputs (the inverse of rooms.ts `seedOpsFromInputs`) ───
@@ -205,12 +230,14 @@ export interface RoomPersistence {
   /** Cadence write - replaces this session's snapshot row. */
   snapshot(sessionId: string, doc: RoomWriteback, ops: number): Promise<void>;
   /** Final write: the room lands as a normal session revision, and its snapshot
-   *  row (the crash-recovery signal) is cleared. `actor` is the room's last
-   *  accepted writer - see `RoomWriter` for why it is not simply a string. */
+   *  row (the crash-recovery signal) is cleared. `writers` are the principals
+   *  whose ops the room accepted, oldest write first, one entry each - see
+   *  `RoomWriter` for why they are not simply strings, and `revisionActorFor`
+   *  for the actor they produce. */
   quiesce(
     sessionId: string,
     doc: RoomWriteback,
-    opts: { ops: number; actor: RoomWriter | null; baseRev: number },
+    opts: { ops: number; writers: readonly RoomWriter[]; baseRev: number },
   ): Promise<QuiesceResult>;
 }
 
@@ -257,7 +284,7 @@ export function createRoomPersistence(deps: RoomPersistenceDeps): RoomPersistenc
   const commit = async (
     sessionId: string,
     derive: (base: SessionRecord) => Record<string, unknown>,
-    writer: RoomWriter | null,
+    writers: readonly RoomWriter[],
   ): Promise<CommitOutcome> => {
     let lastRev = 0;
     for (let attempt = 0; attempt < COMMIT_ATTEMPTS; attempt++) {
@@ -274,12 +301,12 @@ export function createRoomPersistence(deps: RoomPersistenceDeps): RoomPersistenc
         rev,
         // A guest is not a `users(id)` row, so it can only ever be attributed on
         // the revision below - see `RoomWriter`.
-        updatedBy: writer?.kind === 'member' || writer?.kind === 'agent' ? writer.userId : session.updatedBy,
+        updatedBy: lastUserOf(writers, session.updatedBy),
         updatedAt: now,
       };
       if (!(await store.casSession(next, session.rev))) continue; // somebody moved it - re-read and re-merge
       await store.appendSessionRevision({
-        sessionId, rev, inputs, meta: session.meta, actor: roomRevisionActor(writer), at: now,
+        sessionId, rev, inputs, meta: session.meta, actor: revisionActorFor(writers), at: now,
       });
       return { ok: true, rev, session: next };
     }
@@ -310,7 +337,7 @@ export function createRoomPersistence(deps: RoomPersistenceDeps): RoomPersistenc
       // only on the next quiesce: the recovering join might be a reader who never
       // writes, and the recovered work must not depend on someone else's gesture
       // to become durable.
-      const out = await commit(session.id, () => snap.inputs, null);
+      const out = await commit(session.id, () => snap.inputs, []);
       await store.deleteCollabSnapshot(session.id);
       if (!out.ok) {
         // Lost the race the `baseRev` check was guarding: something moved the
@@ -357,7 +384,7 @@ export function createRoomPersistence(deps: RoomPersistenceDeps): RoomPersistenc
       // The "nothing actually changed" test lives INSIDE the commit loop, because
       // it is a question about the base that is finally written against, not about
       // the one first read.
-      const out = await commit(sessionId, (base) => doc.toInputs(base.inputs), opts.actor);
+      const out = await commit(sessionId, (base) => doc.toInputs(base.inputs), opts.writers);
       await store.deleteCollabSnapshot(sessionId);
       if (!out.ok) return { written: false, rev: out.rev };
       await audit('collab.quiesce', `session:${sessionId}`, {

@@ -290,3 +290,102 @@ test('commentView is read at send time; a departed seat and a closed room receiv
   await room.quiesce();
   assert.equal(room.notifyComment({ t: 'comment', threadId: 'th_4', revision: 3 }), 0, 'a closed room tells nobody');
 });
+
+// ── plan 76 M4 R2: presenting, hidden seats, the quiesce revision, restore plans ──
+
+test('a guest seat never carries `presenting`; a member keeps what the presence sanitizer keeps (S-26)', async () => {
+  const { sanitizePresenceState } = await import('@lolly-tools/core/collab-presence-v1');
+  const room = await Room.open(sessionOf());
+  const member = seatOf('m1');
+  const guest: RoomMember & { sent: ServerFrame[] } = { ...seatOf('g1'), guestLinkId: 'lnk_present' };
+  const watcher = { ...seatOf('w1'), presenceVersion: 1 } as RoomMember & { sent: ServerFrame[] };
+  for (const seat of [member, guest, watcher]) room.join(seat);
+  const stateOf = (from: string) => {
+    const frames = watcher.sent.filter((f): f is Extract<ServerFrame, { t: 'presence' }> => f.t === 'presence' && f.from === from);
+    const last = frames.at(-1)?.frame;
+    return last && 'state' in last ? last.state as Record<string, unknown> | null : null;
+  };
+  room.relayPresence(guest, { v: 1, seq: 1, state: { cursor: { x: 1, y: 2 }, presenting: true } });
+  assert.ok(stateOf('g1'), 'the guest presence frame is relayed');
+  assert.equal(Object.hasOwn(stateOf('g1')!, 'presenting'), false, 'without presenting');
+  room.relayPresence(member, { v: 1, seq: 1, state: { cursor: { x: 1, y: 2 }, presenting: true } });
+  const kept = Object.hasOwn(sanitizePresenceState({ presenting: true }, { userId: 'u', name: 'n' }) as object, 'presenting');
+  assert.equal(Object.hasOwn(stateOf('m1')!, 'presenting'), kept, 'a member is only ever reduced by the shared sanitizer');
+});
+
+test('a hidden seat is in no roster, announces nothing, holds no writer seat and gets no comment frame', async () => {
+  const room = await Room.open(sessionOf());
+  const person = { ...seatOf('m1'), commentView: true };
+  room.join(person);
+  const hidden: RoomMember & { sent: ServerFrame[] } = { ...seatOf('restore_1'), userId: person.userId, hidden: true, commentView: true };
+  room.join(hidden);
+  assert.deepEqual(person.sent.filter(f => f.t === 'peer-join'), [], 'no peer-join');
+  assert.deepEqual(room.roster().map(r => r.id), ['m1']);
+  assert.equal(room.writerCount(), 1, 'only the person holds a writer seat');
+  assert.equal(room.writerCountFor(person.userId), 1);
+  assert.equal(room.size, 2, 'the hidden seat still keeps the room open');
+  assert.deepEqual(room.snapshotForProject().peers.map(p => p.id), [person.userId]);
+  assert.equal(room.notifyComment({ t: 'comment', threadId: 'thr_1', revision: 1 }), 1);
+  assert.deepEqual(hidden.sent.filter(f => f.t === 'comment'), []);
+  room.leave(hidden.id);
+  assert.deepEqual(person.sent.filter(f => f.t === 'peer-leave'), [], 'no peer-leave');
+});
+
+test('a store-backed room appends one revision when it closes, named for its one writer', async () => {
+  const { createMemoryStore } = await import('../../server/src/store/memory.ts');
+  const store = createMemoryStore();
+  const owner = await store.upsertUserBySub({ sub: 'rooms-owner', email: 'rooms-owner@example.invalid', groups: [], role: 'member' });
+  const other = await store.upsertUserBySub({ sub: 'rooms-other', email: 'rooms-other@example.invalid', groups: [], role: 'member' });
+  await store.putProject({ id: 'prj_caps', name: 'Caps', visibility: 'private', ownerId: owner.id, createdAt: now });
+  const session = { ...sessionOf({ title: 'start' }), createdBy: owner.id, updatedBy: owner.id };
+  await store.putSession(session);
+  const writeOnce = async (seats: RoomMember[]) => {
+    const room = await Room.open(session, undefined, store);
+    for (const [i, seat] of seats.entries()) {
+      room.join(seat);
+      const op: CanvasOp = { k: 'param', key: 'title', value: `edit ${seat.id}`, origin: { client: seat.id, clock: 100 + i } };
+      await room.applyBatch(seat, `${seat.id}-batch-${Date.now()}-${i}`, [`${seat.id}-op-${Date.now()}-${i}`], [op], new Set([op]));
+    }
+    assert.deepEqual((await store.listSessionRevisions(session.id)).length, revisionsBefore, 'no revision while the room is live');
+    await room.quiesce();
+  };
+  let revisionsBefore = 0;
+  await writeOnce([{ ...seatOf('a1'), userId: owner.id }, { ...seatOf('a2'), userId: owner.id }]);
+  let revisions = await store.listSessionRevisions(session.id);
+  assert.deepEqual([revisions.length, revisions[0]!.actor, revisions[0]!.rev], [1, owner.id, 3], 'two tabs of one person are one writer');
+  revisionsBefore = 1;
+  await writeOnce([{ ...seatOf('b1'), userId: owner.id }, { ...seatOf('b2'), userId: other.id }]);
+  revisions = await store.listSessionRevisions(session.id);
+  assert.deepEqual([revisions.length, revisions[0]!.actor], [2, 'collab'], 'two people converge to collab');
+  revisionsBefore = 2;
+  const reader = await Room.open(session, undefined, store);
+  reader.join({ ...seatOf('r1'), userId: other.id });
+  await reader.quiesce();
+  assert.equal((await store.listSessionRevisions(session.id)).length, 2, 'a room that only read appends nothing');
+});
+
+test('a restore plan diffs scalars, rows and order, and reports what a live room cannot set', async () => {
+  const { restorePlan, seedOpsFromInputs } = await import('../../server/src/collab/rooms.ts');
+  const { ReferenceCanvasDoc } = await import('@lolly-tools/core/canvas-op-v1');
+  const current = { title: 'Now', accent: '#000', slides: [{ id: 's1', heading: 'One' }, { id: 's2', heading: 'Two', note: 'x' }], logo: { assetId: 'a' }, extra: 'only now' };
+  const doc = new ReferenceCanvasDoc('test');
+  for (const op of seedOpsFromInputs(current).ops) doc.apply(op);
+  // s3 existed once and was removed: a restore brings it back without its stale field.
+  doc.apply({ k: 'add', col: 'slides', id: 's3', row: { heading: 'Old', stale: 'gone' }, orderKey: 'z', origin: { client: 'p', clock: 5 } });
+  doc.apply({ k: 'remove', col: 'slides', id: 's3', origin: { client: 'p', clock: 6 } });
+  const target = { title: 'Then', accent: '#000', slides: [{ id: 's2', heading: 'Two' }, { id: 's3', heading: 'Old' }], logo: { assetId: 'b' } };
+  const plan = restorePlan(doc, current, target, { client: 'restore', clock: 0 });
+  assert.deepEqual(plan.skipped, ['extra', 'logo'], 'an input the version lacks and one the document cannot hold');
+  const replay = new ReferenceCanvasDoc('replay');
+  replay.restore(doc.checkpoint());
+  plan.ops.forEach((op, i) => replay.apply({ ...op, origin: { client: 'restore', clock: 100 + i } }));
+  const state = replay.state();
+  assert.equal(state.params.get('title'), 'Then');
+  assert.ok(!plan.ops.some(op => op.k === 'param' && op.key === 'accent'), 'an unchanged scalar is not rewritten');
+  const slides = state.collections!.get('slides')!;
+  assert.deepEqual(slides.order, ['s2', 's3']);
+  assert.deepEqual(slides.boxes.get('s2'), { heading: 'Two', note: null }, 'a field the version lacks reads as cleared');
+  assert.deepEqual(slides.boxes.get('s3'), { heading: 'Old', stale: null }, 'a restored row carries no stale content');
+  assert.deepEqual(restorePlan(replay, { ...target, extra: undefined }, { title: 'Then', accent: '#000', slides: target.slides }, { client: 'r', clock: 0 }).ops, [],
+    'restoring the same content again plans nothing');
+});

@@ -26,6 +26,17 @@ try {
   const address = server.address(); assert.ok(address && typeof address === 'object');
   const base = `http://127.0.0.1:${address.port}`;
   const source = (await readFile(new URL('../console/app.js', import.meta.url), 'utf8')).replace(/^import .*;$/gm, '').replace(/\nboot\(\);\s*$/, '');
+  // Plan 76 milestone 4 (R2): the version routes the shell's History feature-detects.
+  // An unknown session route answers 404, so a 401 shows the route is in this build.
+  assert.equal((await fetch(base + '/api/v1/sessions/release-check/version-missing')).status, 404, 'an unknown session route must answer 404');
+  for (const [method, path] of [
+    ['GET', '/api/v1/sessions/release-check/versions'],
+    ['POST', '/api/v1/sessions/release-check/versions'],
+    ['GET', '/api/v1/sessions/release-check/versions/ver_release'],
+    ['POST', '/api/v1/sessions/release-check/versions/ver_release/restore'],
+    ['DELETE', '/api/v1/sessions/release-check/versions/ver_release'],
+  ] as const) assert.equal((await fetch(base + path, { method })).status, 401, `${method} ${path} must exist and refuse anonymous access`);
+  console.log('PASS release capabilities: version routes present and refuse anonymous access');
   assert.equal((await fetch(base + '/api/v1/agents/activity')).status, 401, 'agent dashboard route must exist and refuse anonymous access');
   // Plan 76 milestone 4 (R1): the comment routes the shell feature-detects. An
   // unknown route answers 404, so a 401 shows the route is in this build.

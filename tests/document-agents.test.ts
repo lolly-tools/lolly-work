@@ -20,6 +20,8 @@ import { agentDashboard } from '../server/src/agents/dashboard.ts';
 import { agentSecret } from '../server/src/agents/access.ts';
 
 async function exercise(store: Store) {
+  // Live edits are attributed on versions now (plan 76 M4), read once the room closes.
+  let agentId = '';
   const pack = await mkdtemp(join(tmpdir(), 'lw-agents-'));
   await mkdir(join(pack, 'catalog/tools'), { recursive: true });
   await mkdir(join(pack, 'tools/design'), { recursive: true });
@@ -77,7 +79,7 @@ async function exercise(store: Store) {
     assert.equal(changed.body.result.structuredContent.docState.params.title, 'Agent edit');
     const live = await next('ops'); assert.equal((live.ops as { value: unknown }[])[0]!.value, 'Agent edit');
     const savedRev = (await store.getSession('document'))!.rev;
-    assert.equal((await store.listSessionRevisions('document')).find(revision => revision.rev === savedRev)?.actor, `agent:${invite.agent.id}`);
+    agentId = invite.agent.id;
     const agentAudit = (await store.listAudit()).filter(event => event.actor === `agent:${invite.agent.id}`);
     assert.ok(agentAudit.some(event => event.action === 'agent.connect'));
     assert.ok(agentAudit.some(event => event.action === 'agent.tool-call' && event.payload?.tool === 'read_document'));
@@ -137,6 +139,14 @@ async function exercise(store: Store) {
   } finally {
     human.close(); await gateway.drain(); server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())); await rm(pack, { recursive: true, force: true });
   }
+  // The agent's accepted edit is counted on the version written when the room
+  // closed, under the agent's own id; the person edited too, so the room's one
+  // revision is 'collab'.
+  const [closed] = await store.listSessionVersions('document', { limit: 1 });
+  assert.equal(closed?.kind, 'close');
+  assert.ok(closed.contributors.some(c => c.kind === 'agent' && c.id === agentId && c.edits >= 1), 'the agent is a contributor');
+  assert.ok(closed.contributors.some(c => c.kind === 'user' && c.id === owner.id), 'so is the person');
+  assert.equal((await store.listSessionRevisions('document'))[0]?.actor, 'collab');
 }
 test('document agents share a live human room, durable retries, locks and revocation (memory)', () => exercise(createMemoryStore()));
 test('document agents share a live human room, durable retries, locks and revocation (Postgres)', { skip: !process.env.LW_TEST_DATABASE_URL }, () => withFreshPostgres(process.env.LW_TEST_DATABASE_URL!, exercise));

@@ -58,6 +58,8 @@ export async function createWorkBrowserFixture(ossDir: string, viteOrigin: strin
     // As main.ts: a saved comment write tells the people in the session's live room.
     roomEvents: (id, frame) => gateway.notifyComment(id, frame),
     ...(options.renderWorker ? { onRenderRunner: (runner: RenderRunner) => { renders = runner; runner.start(); } } : {}),
+    // As main.ts: version restores go through the live room (plan 76 M4).
+    versionRooms: gateway.versions,
   });
   const sockets = new Set<Duplex>();
   let suspended = false;

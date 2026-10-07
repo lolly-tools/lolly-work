@@ -182,6 +182,10 @@ export interface InstanceConfig {
        *  title is not sent to a mail provider unless the operator says so. */
       emailTitles?: boolean;
     };
+    /** Saved versions of documents (plan 76 M4). `maxBytes` caps the content all
+     *  versions on the instance may hold together; the oldest automatic
+     *  versions go first, then a named save or restore is refused. Absent = 1 GiB. */
+    versions?: { maxBytes: number };
     /** Managed AI is off unless both this approval ceiling and the audited
      * operator flag allow it. A personal shell preference cannot enable it. */
     ai: import('../policy/ai.ts').AiConfig;
@@ -525,6 +529,7 @@ const DEFAULTS: InstanceConfig = {
   },
   policy: {
     comments: { enabled: true },
+    versions: { maxBytes: 1024 * 1024 * 1024 },
     ai: { enabled: false, capabilities: [] },
     defaultAccessMode: 'gated',
     telemetry: 'standard',
@@ -840,6 +845,11 @@ export function parseConfig(json: string): InstanceConfig {
   for (const key of ['mentions', 'notices', 'emailTitles'] as const) {
     const value = cfg.policy.comments?.[key];
     if (value !== undefined && typeof value !== 'boolean') throw new Error(`policy.comments.${key} must be true or false`);
+  }
+  const versions = cfg.policy.versions;
+  if (versions !== undefined && (typeof versions !== 'object' || versions === null || Array.isArray(versions)
+    || !Number.isSafeInteger(versions.maxBytes) || versions.maxBytes <= 0)) {
+    throw new Error('invalid policy.versions.maxBytes (a whole number of bytes above 0)');
   }
   const files = cfg.policy.projectFiles;
   if (!files || typeof files !== 'object' || Array.isArray(files)) throw new Error('policy.projectFiles must be an object');
