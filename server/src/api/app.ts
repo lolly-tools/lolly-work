@@ -2,6 +2,8 @@ import { WorkerError } from '../render/worker-client.ts';
 import { createFilePreview, readPreviewInput, PREVIEW_INPUT_LIMIT } from '../catalog/file-preview.ts';
 import { visibleSourceStatuses } from '../catalog/source-status.ts';
 import { registerCommentRoutes } from '../comments/routes.ts';
+import { registerShareRoutes } from '../access/share-routes.ts';
+import { resolveSharingPolicy } from '../policy/sharing.ts';
 /**
  * The lolly-work HTTP app - auth, org-config, telemetry, inbox, links,
  * catalog serving, fleet. Plain (req, res) handler (see router.ts) so it
@@ -70,7 +72,7 @@ import {
   scimErrorBody, scimList, userToScim,
 } from '../scim/resources.ts';
 import { evaluate, grantDecision, denialCode, mayEditCollab, ownerOnlyAction, roleFromGroups, type Grant, type Role, ROLES } from '../rbac/evaluate.ts';
-import { accessAtLeast, effectiveProjectAccess, type ProjectAccess } from '../rbac/project-access.ts';
+import { accessAtLeast, configureSharingLimits, effectiveProjectAccess, type ProjectAccess } from '../rbac/project-access.ts';
 import { registerProjectFileRoutes } from '../projects/file-routes.ts';
 import { registerProjectFolderRoutes } from '../projects/folder-routes.ts';
 import { agentActor, agentAttribution } from '../agents/attribution.ts';
@@ -264,6 +266,7 @@ export interface AppDeps {
 export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   const { config: deploymentConfig, store, secrets, listCollabRooms, nearby } = deps;
   store.configureRoleGroups(deploymentConfig.idp.roleGroups);
+  configureSharingLimits(resolveSharingPolicy(deploymentConfig.policy.sharing));
   const blobs = deps.blobs ?? createMemoryBlobStore();
   const brand = createBrandService(deploymentConfig, store, blobs, {
     ...(productionMode(deploymentConfig) ? { inspectSource: async (source: string) => {
@@ -7697,6 +7700,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
 
   registerProjectFileRoutes(router, { config, store, blobs, memberOf, requireAction, projectAccessOf, audit });
   registerProjectFolderRoutes(router, { store, memberOf, requireAction, projectAccessOf, audit });
+  registerShareRoutes(router, { config, store, memberOf, requireAction, projectAccessOf, audit });
   registerAgentRoutes(router, { store, config, blobs, memberOf, projectAccessOf, audit, origin: config.instance.baseUrl, rooms: deps.agentRooms, projectRequest: agentRequests.run });
 
   router.add('GET', '/api/v1/projects/:id/presence', async (req, res, ctx) => {

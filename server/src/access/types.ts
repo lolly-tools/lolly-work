@@ -60,7 +60,7 @@ export interface AskTokenPayload {
 export type FileInput =
   | {
     kind: 'project'; user: UserRecord; projectId: string; viaSessionId?: string;
-    role: 'viewer' | 'editor'; note?: string; currentRole: ProjectAccess;
+    role: 'viewer' | 'commenter' | 'editor'; note?: string; currentRole: ProjectAccess;
   }
   | { kind: 'join'; identity: AskIdentity; note?: string }
   | { kind: 'switch'; identity: AskIdentity; invitationId: string; projectId?: string; userId?: string; note?: string };

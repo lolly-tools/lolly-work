@@ -6,6 +6,7 @@ import { initialBrandState } from '../brand/state.ts';
 import type { CollabReceipt } from './types.ts';
 import type { ProjectFolderRecord } from './types.ts';
 import type { DocumentAgentRecord, ProjectAgentRecord } from './types.ts';
+import type { ShareGroupRecord } from './types.ts';
 /**
  * In-memory Store - dev, tests, and the evaluation container's default.
  * Postgres driver lands beside this (migrations/0001_init.sql is the schema).
@@ -48,6 +49,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   let brandState = initialBrandState();
   const users = new Map<string, UserRecord>(); // by sub
   const localGroups = new Map<string, LocalGroupRecord>(); // registry, by name
+  const shareGroups = new Map<string, ShareGroupRecord>(); // user-made groups (0060), by id
   const scimTokens = new Map<string, ScimTokenRecord>(); // SCIM provisioning bearers, by id
   const apiTokens = new Map<string, ApiTokenRecord>(); // service tokens (plans/35), by id
   const documentAgents = new Map<string, DocumentAgentRecord>();
@@ -62,6 +64,13 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     for (const u of users.values()) if (u.id === id) return u;
     return undefined;
   };
+  /** A share group as Postgres would return it after an erasure: an owner
+   *  whose account is gone reads as null and gone managers drop out. */
+  const liveShareGroup = (g: ShareGroupRecord): ShareGroupRecord => ({
+    ...structuredClone(g),
+    ownerId: g.ownerId && userById(g.ownerId) ? g.ownerId : null,
+    managers: g.managers.filter((m) => userById(m)),
+  });
   const passkeys = createMemoryPasskeys(userById);
   const copyInvitation = (r: InvitationRecord): InvitationRecord => ({
     ...r, groups: [...r.groups], projects: (r.projects ?? []).map((p) => ({ ...p })),
@@ -76,7 +85,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   // Access requests (migration 0044). A row is "live open" while its status
   // is open and its expiry is after `now`; the key is the partial unique
   // index's (kind, email, project, invitation).
-  const REQUEST_ROLE_RANK: Record<string, number> = { viewer: 1, editor: 2, manager: 3 };
+  const REQUEST_ROLE_RANK: Record<string, number> = { viewer: 1, commenter: 2, editor: 3, manager: 4 };
   const liveOpen = (r: AccessRequestRecord, now: string): boolean =>
     r.status === 'open' && Date.parse(r.expiresAt) > Date.parse(now);
   const requestKey = (r: Pick<AccessRequestRecord, 'kind' | 'email' | 'projectId' | 'invitationId'>): string =>
@@ -1495,6 +1504,43 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     },
     async deleteCollabSnapshot(sessionId) {
       collabSnapshots.delete(sessionId);
+    },
+
+    // The sharing ladder (migration 0060; lolly plan 299 M1).
+    async setProjectMemberExpiry(projectId, userId, expiresAt) {
+      const k = memberKey(projectId, userId);
+      const prev = projectMembers.get(k);
+      if (!prev) return null;
+      const next: ProjectMemberRecord = { ...prev };
+      if (expiresAt) next.expiresAt = expiresAt; else delete next.expiresAt;
+      projectMembers.set(k, next);
+      return { ...next };
+    },
+    async listShareGroups() {
+      return [...shareGroups.values()].map(liveShareGroup).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : a.id < b.id ? -1 : 1));
+    },
+    async getShareGroup(id) {
+      const g = shareGroups.get(id);
+      return g ? liveShareGroup(g) : null;
+    },
+    async putShareGroup(group) {
+      shareGroups.set(group.id, structuredClone(group));
+    },
+    async deleteShareGroup(id) {
+      shareGroups.delete(id);
+      for (const u of users.values()) {
+        if (u.shareGroups?.includes(id)) users.set(u.sub, { ...u, shareGroups: u.shareGroups.filter((g) => g !== id) });
+      }
+    },
+    async listShareGroupMembers(id) {
+      return [...users.values()].filter((u) => u.shareGroups?.includes(id)).map(mapped);
+    },
+    async setUserShareGroups(userId, ids) {
+      const u = userById(userId);
+      if (!u) return null;
+      const next: UserRecord = { ...u, shareGroups: [...new Set(ids.filter(Boolean))] };
+      users.set(u.sub, next);
+      return mapped(next);
     },
   };
 }

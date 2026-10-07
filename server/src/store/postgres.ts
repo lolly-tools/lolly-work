@@ -39,7 +39,7 @@ import { createPostgresRenderStore } from '../renders/postgres.ts';
 import {
   SESSION_REVISION_LIMIT, effectiveGroups,
   type AccessRequestMatch, type AccessRequestRecord, type ProjectMemberRole,
-  type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type ListUsersPageOpts, type LocalGroupRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type UserIdentityRecord,
+  type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type ListUsersPageOpts, type LocalGroupRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ShareGroupRecord, type UserIdentityRecord,
   type ScimTokenRecord, type SessionRecord, type SessionRevision, type Store, type SubmitQuotaRow, type UserRecord,
 } from './types.ts';
 
@@ -128,7 +128,8 @@ function accessRequestFromRow(r: Record<string, unknown>): AccessRequestRecord {
 }
 
 const REQUEST_ROLES_AT_MOST: Record<ProjectMemberRole, ProjectMemberRole[]> = {
-  viewer: ['viewer'], editor: ['viewer', 'editor'], manager: ['viewer', 'editor', 'manager'],
+  viewer: ['viewer'], commenter: ['viewer', 'commenter'], editor: ['viewer', 'commenter', 'editor'],
+  manager: ['viewer', 'commenter', 'editor', 'manager'],
 };
 
 /** The WHERE clause for `closeAccessRequests`: live open rows matching every
@@ -317,6 +318,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       sessionEpoch: Number(r.session_epoch ?? 0),
       createdAt: new Date(r.created_at as string).toISOString(),
       lastSeenAt: new Date(r.last_seen_at as string).toISOString(),
+      ...(Array.isArray(r.share_groups) && r.share_groups.length ? { shareGroups: r.share_groups as string[] } : {}),
     };
   };
 
@@ -423,6 +425,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     ...(r.archived_at ? { archivedAt: new Date(r.archived_at as string).toISOString() } : {}),
     ...(r.updated_at ? { updatedAt: new Date(r.updated_at as string).toISOString() } : {}),
     ...(r.updated_by ? { updatedBy: r.updated_by as string } : {}),
+    ...(r.sharing ? { sharing: r.sharing as ProjectRecord['sharing'] } : {}),
   });
 
   const identityFromRow = (r: Record<string, unknown>): UserIdentityRecord => ({
@@ -457,12 +460,28 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     ...(r.used_at ? { usedAt: new Date(r.used_at as string).toISOString() } : {}),
   });
 
+  /** Share groups with managers whose accounts are gone filtered out, so an
+   *  erased manager never reads back (the owner column clears on its own). */
+  const SHARE_GROUP_SELECT = `select g.*, coalesce((select jsonb_agg(m) from jsonb_array_elements_text(g.managers) m
+    where exists (select 1 from users u where u.id = m)), '[]'::jsonb) as live_managers from share_groups g`;
+  const shareGroupFromRow = (r: Record<string, unknown>): ShareGroupRecord => ({
+    id: r.id as string,
+    name: r.name as string,
+    ...(r.description ? { description: r.description as string } : {}),
+    ownerId: (r.owner_id as string | null) ?? null,
+    managers: (r.live_managers as string[]) ?? [],
+    createdBy: r.created_by as string,
+    createdAt: new Date(r.created_at as string).toISOString(),
+    ...(r.updated_at ? { updatedAt: new Date(r.updated_at as string).toISOString() } : {}),
+  });
+
   const projectMemberFromRow = (r: Record<string, unknown>): ProjectMemberRecord => ({
     projectId: r.project_id as string,
     userId: r.user_id as string,
     role: r.role as ProjectMemberRecord['role'],
     addedBy: r.added_by as string,
     addedAt: new Date(r.added_at as string).toISOString(),
+    ...(r.expires_at ? { expiresAt: new Date(r.expires_at as string).toISOString() } : {}),
   });
 
   const sessionFromRow = (r: Record<string, unknown>): SessionRecord => ({
@@ -1964,14 +1983,15 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     // projects + sessions (migrations/0004_sessions.sql)
     async putProject(project) {
       await pool.query(
-        `insert into projects (id, name, visibility, owner_id, created_at, archived_at, updated_at, updated_by)
-         values ($1, $2, $3::jsonb, $4, $5, $6, $7, $8)
+        `insert into projects (id, name, visibility, owner_id, created_at, archived_at, updated_at, updated_by, sharing)
+         values ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9::jsonb)
          on conflict (id) do update set
            name = excluded.name, visibility = excluded.visibility,
            owner_id = excluded.owner_id, archived_at = excluded.archived_at,
-           updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
+           updated_at = excluded.updated_at, updated_by = excluded.updated_by, sharing = excluded.sharing`,
         [project.id, project.name, JSON.stringify(project.visibility), project.ownerId,
-         project.createdAt, project.archivedAt ?? null, project.updatedAt ?? null, project.updatedBy ?? null],
+         project.createdAt, project.archivedAt ?? null, project.updatedAt ?? null, project.updatedBy ?? null,
+         project.sharing ? JSON.stringify(project.sharing) : null],
       );
     },
     async getProject(id) {
@@ -2197,10 +2217,10 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     },
     async putProjectMember(rec) {
       await pool.query(
-        `insert into project_members (project_id, user_id, role, added_by, added_at)
-         values ($1, $2, $3, $4, $5)
+        `insert into project_members (project_id, user_id, role, added_by, added_at, expires_at)
+         values ($1, $2, $3, $4, $5, $6)
          on conflict (project_id, user_id) do update set role = excluded.role`,
-        [rec.projectId, rec.userId, rec.role, rec.addedBy, rec.addedAt],
+        [rec.projectId, rec.userId, rec.role, rec.addedBy, rec.addedAt, rec.expiresAt ?? null],
       );
     },
     async updateProjectMemberRole(projectId, userId, role) {
@@ -2462,6 +2482,52 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     },
     async deleteCollabSnapshot(sessionId) {
       await pool.query('delete from collab_room_snapshots where session_id = $1', [sessionId]);
+    },
+
+    // The sharing ladder (migration 0060; lolly plan 299 M1).
+    async setProjectMemberExpiry(projectId, userId, expiresAt) {
+      const { rows } = await pool.query(
+        'update project_members set expires_at = $3 where project_id = $1 and user_id = $2 returning *', [projectId, userId, expiresAt],
+      );
+      return rows[0] ? projectMemberFromRow(rows[0]) : null;
+    },
+    async listShareGroups() {
+      const { rows } = await pool.query(`${SHARE_GROUP_SELECT} order by g.name, g.id`);
+      return rows.map(shareGroupFromRow);
+    },
+    async getShareGroup(id) {
+      const { rows } = await pool.query(`${SHARE_GROUP_SELECT} where g.id = $1`, [id]);
+      return rows[0] ? shareGroupFromRow(rows[0]) : null;
+    },
+    async putShareGroup(group) {
+      await pool.query(
+        `insert into share_groups (id, name, description, owner_id, managers, created_by, created_at, updated_at)
+         values ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
+         on conflict (id) do update set name = excluded.name, description = excluded.description,
+           owner_id = excluded.owner_id, managers = excluded.managers, updated_at = excluded.updated_at`,
+        [group.id, group.name, group.description ?? null, group.ownerId, JSON.stringify(group.managers),
+         group.createdBy, group.createdAt, group.updatedAt ?? null],
+      );
+    },
+    async deleteShareGroup(id) {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        await client.query('delete from share_groups where id = $1', [id]);
+        await client.query("update users set share_groups = share_groups - $1::text where share_groups @> jsonb_build_array($1::text)", [id]);
+        await client.query('commit');
+      } catch (error) { await client.query('rollback'); throw error; }
+      finally { client.release(); }
+    },
+    async listShareGroupMembers(id) {
+      const { rows } = await pool.query("select * from users where share_groups @> jsonb_build_array($1::text) order by id", [id]);
+      return rows.map(userFromRow);
+    },
+    async setUserShareGroups(userId, ids) {
+      const { rows } = await pool.query(
+        'update users set share_groups = $2::jsonb where id = $1 returning *', [userId, JSON.stringify([...new Set(ids.filter(Boolean))])],
+      );
+      return rows[0] ? userFromRow(rows[0]) : null;
     },
 
     async pendingMigrations() {

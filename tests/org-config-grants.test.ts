@@ -85,7 +85,7 @@ test('sharingGroupsOf drops only the groups that grant admin or owner, sorted an
 test('org-config carries sharing.groups and can[project.create] for the caller', () => {
   const config = { ...CONFIG, idp: { roleGroups: { admin: ['it-admins'] } } } as unknown as InstanceConfig;
   const payload = assembleOrgConfig({ config, user: user(['sales', 'it-admins', 'author', 'owner']), overlays: OVERLAYS, grants: [], inboxUnread: 0 });
-  assert.deepEqual(payload.sharing, { groups: ['author', 'sales'], projectFiles: false }, 'the admin group and the unmapped owner literal go; author stays');
+  assert.deepEqual(payload.sharing, { groups: ['author', 'sales'], projectFiles: false, instance: { enabled: true, maxRole: 'commenter' }, customGroups: true, maxGrantDays: null }, 'the admin group and the unmapped owner literal go; author stays');
   // Shared files are on only when the app says so, and turning them on moves the version.
   const withFiles = assembleOrgConfig({ config, user: user(['sales']), overlays: OVERLAYS, grants: [], inboxUnread: 0, projectFiles: true });
   assert.equal(withFiles.sharing.projectFiles, true);

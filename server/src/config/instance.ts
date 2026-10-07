@@ -22,6 +22,7 @@ import { DELIVERY_DESTINATION_KINDS, type ConfigDeliveryDestination } from '../d
 import { AUTH_PARAM_ALLOWLIST, type ClaimMap } from '../iam/oidc.ts';
 import type { AdmissionPolicy, EmailVerification } from '../iam/admission.ts';
 import type { RoleGroups } from '../rbac/evaluate.ts';
+import { validateSharingPolicy } from '../policy/sharing.ts';
 
 /** A deploy-time (GitOps/air-gap) provider entry - upserted at boot with
  *  managedBy:'config' and read-only in the control-plane API (plans/17 §4).
@@ -224,6 +225,10 @@ export interface InstanceConfig {
     /** Access requests (plans/75 G13): who may ask for what, and for how
      *  long a request stays open. See `RequestPolicy`. */
     requests: RequestPolicy;
+    /** Sharing limits (lolly plan 299 M1): the instance-wide audience, its
+     *  role ceiling, user-made groups and the longest grant. Absent: every
+     *  default (see `policy/sharing.ts`). */
+    sharing?: import('../policy/sharing.ts').SharingPolicyConfig;
   };
   render: {
     /**
@@ -840,6 +845,7 @@ export function parseConfig(json: string): InstanceConfig {
   }
   if (files.uploadTtlHours > 720) throw new Error(`invalid policy.projectFiles.uploadTtlHours: ${files.uploadTtlHours} (at most 720)`);
   validateRequestPolicy(cfg.policy.requests);
+  validateSharingPolicy(cfg.policy.sharing);
   // Additional IdPs (plans/36 §3): defaults applied, then validated hard - a
   // half-described issuer would fail at sign-in, in front of the person.
   if (cfg.idp.pending !== undefined && (!Array.isArray(cfg.idp.pending) || cfg.idp.pending.length > 8 || cfg.idp.pending.some(name => typeof name !== 'string' || !name.trim() || name.length > 80))) throw new Error('idp.pending must be a list of at most eight short provider names');

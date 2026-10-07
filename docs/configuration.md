@@ -160,7 +160,7 @@ See [email and password](identity.md#email-and-password) for the flow.
 | `invites.allow` | `admins` | who may invite **new** people by email, from inside Lolly or from the console and `lw invite add`: `owners` (instance owners), `admins` (holders of `user.invite`: admins and owners by default) or `members` (any member not denied `user.invite`). Inviting through a project also needs manager on that project |
 | `invites.domains` | `[]` | when not empty, a new address must be at one of these domains (a leading `@` is dropped, matching is case-insensitive) |
 | `invites.maxTtlHours` | `720` | how long an invitation made from a project stays open; at most 8784 (366 days) |
-| `invites.projectRoles` | all three | which project roles may be given by invitation or role change: any of `viewer`, `editor`, `manager` |
+| `invites.projectRoles` | all four | which project roles may be given by invitation, role change or group grant: any of `viewer`, `commenter`, `editor`, `manager`. A commenter reads and comments but never changes artwork |
 | `invites.passwordDomains` | `[]` | domains whose people usually sign in with email and password, the same rule as `domains`. When every address on a console or project invite is at one of them, "Can set a password" starts ticked, so the invite link also sets the password. It only suggests: the tick stays an admin's choice. See [setting a password from the link](identity.md#setting-a-password-from-the-link) |
 | `requests.project` | `true` | members may ask for access to a project or session link they cannot open, and viewers may ask to edit. See [asking for access](sharing.md#asking-for-access) |
 | `requests.join` | `false` | a person who signed in but is not admitted may ask the admins to let them in, from the refusal page. Off by default, because it lets anyone who can sign in somewhere reach the admins. See [asking to join](identity.md#asking-to-join) |
@@ -168,6 +168,10 @@ See [email and password](identity.md#email-and-password) for the flow.
 | `requests.joinOpenMax` | `50` | whole number, 1 to 1000. The most requests to join and to use another account for an invitation that may be open at once across the instance; past it, new ones are held (the person sees the same page, nothing is stored) |
 | `nearby.enabled` | `true` | instance-mediated "nearby" presence: the `collab.nearby` capability bit and both `/api/v1/collab/nearby` routes. `false` keeps the whole surface dark fleet-wide |
 | `comments.enabled` | `true` | durable canvas review; `false` disables reading and writing comment threads without changing session access |
+| `sharing.instance.enabled` | `true` | whether a project may be shared with everyone signed in to this instance (never guests or service tokens). `false` also stops shares made before the change |
+| `sharing.instance.maxRole` | `commenter` | the highest role that audience may get: `viewer`, `commenter` or `editor`. Lowering it lowers existing shares too |
+| `sharing.customGroups` | `true` | whether members may make their own groups (`group.create`) and share projects with them. These groups never count as directory groups for grants |
+| `sharing.maxGrantDays` | *unset* | the longest end date a membership or group grant may carry, in whole days (1 to 3660). Unset means no limit |
 | `sessionTtlHours` | `12` | member session lifetime (token `exp` and cookie `Max-Age`); must be > 0 and ≤ 720 |
 | `submit.maxBytes` | `67108864` | per-file cap on a catalog submission (64 MiB, matching publish-out). Over it: `413 PAYLOAD_TOO_LARGE` |
 | `submit.chain` | *unset* | approval chain id gating submissions. Unset means no review: a submitted asset is live the moment it is stored. Set to a chain that does not exist, submissions are refused (`503 SUBMIT_CHAIN_MISSING`) rather than published unreviewed |

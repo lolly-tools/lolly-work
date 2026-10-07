@@ -53,6 +53,10 @@ export interface UserRecord {
   sessionEpoch: number;
   createdAt: string;
   lastSeenAt: string;
+  /** Ids of the user-made share groups this person belongs to (migration 0060).
+   *  Kept apart from `groups` on purpose: `groups` feeds RBAC grants, and a
+   *  group any member can create must never grant an instance action. */
+  shareGroups?: string[];
 }
 
 /** A local group definition (the registry). IdP groups are NOT registered -
@@ -431,6 +435,9 @@ export interface ProjectRecord {
   id: string;
   name: string;
   visibility: 'private' | { groups: string[] };
+  /** What a manager set in the share dialog (migration 0060). Absent means
+   *  restricted, with visibility groups acting as editors, as before. */
+  sharing?: ProjectSharing;
   ownerId: string;
   createdAt: string;
   archivedAt?: string;
@@ -460,14 +467,49 @@ export interface DocumentAgentRecord {
 export type ProjectAgentRecord = Omit<DocumentAgentRecord, 'sessionId' | 'projectAgentId'>;
 
 /** A person's explicit role on one project (plans/74, migration 0040). The
- *  project's owner never has one. viewer reads, editor also writes sessions,
- *  manager also renames, shares, archives and manages the people. */
-export type ProjectMemberRole = 'viewer' | 'editor' | 'manager';
-export const PROJECT_MEMBER_ROLES: readonly ProjectMemberRole[] = ['viewer', 'editor', 'manager'];
+ *  project's owner never has one. viewer reads, commenter also comments
+ *  (migration 0060), editor also writes sessions, manager also renames,
+ *  shares, archives and manages the people. */
+export type ProjectMemberRole = 'viewer' | 'commenter' | 'editor' | 'manager';
+export const PROJECT_MEMBER_ROLES: readonly ProjectMemberRole[] = ['viewer', 'commenter', 'editor', 'manager'];
+
+/** Who a project reaches without being named (lolly plan 299 section 4.3).
+ *  `instance` is every signed-in member of this instance, never a guest. A
+ *  public audience arrives with public links (plan 299 M2). */
+export type GeneralAudience = 'restricted' | 'instance';
+/** One group's role on a project. A directory group (IdP or local) is named;
+ *  a user-made share group is identified by id. A directory grant applies
+ *  only while the group is also in the project's visibility, so the older
+ *  visibility edit keeps removing access as it always did. */
+export type ProjectGroupGrant =
+  | { kind: 'directory'; name: string; role: ProjectMemberRole; expiresAt?: string }
+  | { kind: 'custom'; id: string; role: ProjectMemberRole; expiresAt?: string };
+export interface ProjectSharing {
+  general?: { audience: GeneralAudience; role: ProjectMemberRole };
+  groups?: ProjectGroupGrant[];
+  settings?: { viewersCanComment?: boolean; viewersCanExport?: boolean; editorsCanShare?: boolean };
+}
+
+/** A group a member made themselves (migration 0060). Membership lives on
+ *  the user row (`UserRecord.shareGroups`); the owner and managers may change
+ *  it. `ownerId` is null once the owner's account is erased. */
+export interface ShareGroupRecord {
+  id: string;
+  name: string;
+  description?: string;
+  ownerId: string | null;
+  managers: string[];
+  createdBy: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
 export interface ProjectMemberRecord {
   projectId: string;
   userId: string;
   role: ProjectMemberRole;
+  /** The membership ends at this ISO time (migration 0060). Absent: no end. */
+  expiresAt?: string;
   /** 'user:<id>' (or a principal) who added the row. */
   addedBy: string;
   addedAt: string;
@@ -1177,4 +1219,17 @@ export interface Store extends RenderStore, PasskeyStore {
   getCollabSnapshot(sessionId: string): Promise<CollabSnapshot | null>;
   /** Unknown id is a no-op. */
   deleteCollabSnapshot(sessionId: string): Promise<void>;
+
+  // The sharing ladder (migration 0060; lolly plan 299 M1, lolly-work plan 79).
+  /** Set (ISO) or clear (null) a membership's end date. Null when no such row. */
+  setProjectMemberExpiry(projectId: string, userId: string, expiresAt: string | null): Promise<ProjectMemberRecord | null>;
+  listShareGroups(): Promise<ShareGroupRecord[]>;
+  getShareGroup(id: string): Promise<ShareGroupRecord | null>;
+  putShareGroup(group: ShareGroupRecord): Promise<void>;
+  /** Delete the group and take its id off every member's row. */
+  deleteShareGroup(id: string): Promise<void>;
+  /** The users whose `shareGroups` include `id`. */
+  listShareGroupMembers(id: string): Promise<UserRecord[]>;
+  /** Replace a user's share group ids. Returns the updated record, or null. */
+  setUserShareGroups(userId: string, ids: string[]): Promise<UserRecord | null>;
 }
