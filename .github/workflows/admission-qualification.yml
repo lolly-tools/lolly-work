@@ -1,0 +1,33 @@
+name: Admission service qualification
+on:
+  pull_request:
+    paths: ['services/admission/**', 'tests/admission-service.test.ts', '.github/workflows/admission-qualification.yml']
+  push:
+    branches: [main]
+    paths: ['services/admission/**', 'tests/admission-service.test.ts', '.github/workflows/admission-qualification.yml']
+permissions:
+  contents: read
+concurrency:
+  group: admission-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  unit:
+    name: Admission protocol, boundaries and transfer guards
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/admission
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+        with:
+          version: 11.26.0
+          run_install: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: services/admission/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm audit --prod --audit-level high
