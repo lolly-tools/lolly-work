@@ -6,6 +6,10 @@ import { initialBrandState } from '../brand/state.ts';
 import type { CollabReceipt } from './types.ts';
 import type { ProjectFolderRecord } from './types.ts';
 import type { DocumentAgentRecord, ProjectAgentRecord } from './types.ts';
+import {
+  newestVersionFirst, normalizeSessionVersionWrite, planSessionVersionPut, resolveVersionLimits, sessionVersionContent, sessionVersionId, versionListLimit,
+  type SessionVersion, type SessionVersionLimits, type SessionVersionPut, type SessionVersionRow, type SessionVersionSummary,
+} from './types.ts';
 /**
  * In-memory Store - dev, tests, and the evaluation container's default.
  * Postgres driver lands beside this (migrations/0001_init.sql is the schema).
@@ -1473,8 +1477,6 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
         collabJournal.set(session.id, [...(collabJournal.get(session.id) ?? []), { revision: rev, ops }]);
       }
       for (const r of batch.receipts) collabReceipts.set(receiptKey(session.id, batch.principal, r.id), { ...r, revision: rev });
-      const revisions = sessionRevisions.get(session.id) ?? [];
-      sessionRevisions.set(session.id, [...revisions, { sessionId: session.id, rev, inputs, meta: session.meta, actor: batch.actor, at }].slice(-SESSION_REVISION_LIMIT));
       return rev;
     },
     async commitCollabReceipts(batch) {
@@ -1495,6 +1497,122 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     },
     async deleteCollabSnapshot(sessionId) {
       collabSnapshots.delete(sessionId);
+    },
+    ...createMemoryVersions(sessions),
+  };
+}
+
+type VersionMethods = 'configureVersionLimits' | 'putSessionVersion' | 'listSessionVersions' | 'getSessionVersion' | 'deleteSessionVersion' | 'deleteSessionVersions';
+
+/**
+ * Session versions (plan 76 M4 R2): the memory twin of migration 0053's two
+ * tables. Writes run one at a time, as the Postgres driver's lock makes them, and
+ * the rules are the shared `planSessionVersionPut`.
+ */
+function createMemoryVersions(sessions: ReadonlyMap<string, SessionRecord>): Pick<Store, VersionMethods> {
+  type Stored = Omit<SessionVersion, 'inputs' | 'bytes'> & { digest: string; requestId?: string };
+  const versions = new Map<string, Stored>(); // by id
+  const contents = new Map<string, { sessionId: string; digest: string; inputs: Record<string, unknown>; bytes: number }>(); // `${sessionId} ${digest}`
+  const contentKey = (sessionId: string, digest: string): string => `${sessionId} ${digest}`;
+  let limits: SessionVersionLimits = resolveVersionLimits({});
+  let writes: Promise<unknown> = Promise.resolve();
+  const serial = <T>(work: () => Promise<T>): Promise<T> => {
+    const run = writes.then(work);
+    writes = run.catch(() => undefined);
+    return run;
+  };
+  const rowOf = (v: Stored): SessionVersionRow => ({ id: v.id, sessionId: v.sessionId, kind: v.kind, digest: v.digest, at: v.at,
+    ...(v.createdBy !== undefined ? { createdBy: v.createdBy } : {}), ...(v.requestId !== undefined ? { requestId: v.requestId } : {}),
+    ...(v.beforeId !== undefined ? { beforeId: v.beforeId } : {}) });
+  const summary = (v: Stored): SessionVersionSummary => ({
+    id: v.id, sessionId: v.sessionId, rev: v.rev, kind: v.kind, ...(v.label !== undefined ? { label: v.label } : {}),
+    contributors: structuredClone(v.contributors), ...(v.createdBy !== undefined ? { createdBy: v.createdBy } : {}),
+    ...(v.restoredFrom !== undefined ? { restoredFrom: v.restoredFrom } : {}), ...(v.beforeId !== undefined ? { beforeId: v.beforeId } : {}),
+    bytes: contents.get(contentKey(v.sessionId, v.digest))?.bytes ?? 0, at: v.at,
+  });
+  const own = (sessionId: string): Stored[] => [...versions.values()].filter((v) => v.sessionId === sessionId);
+  /** Delete versions as Postgres would: references to them become unset, then
+   *  the contents no version uses any more go. */
+  const drop = (ids: Iterable<string>): number => {
+    const gone = new Set(ids), touched = new Set<string>();
+    let count = 0;
+    for (const id of gone) {
+      const v = versions.get(id);
+      if (!v) continue;
+      touched.add(v.sessionId); versions.delete(id); count++;
+    }
+    for (const v of versions.values()) {
+      if (v.restoredFrom !== undefined && gone.has(v.restoredFrom)) delete v.restoredFrom;
+      if (v.beforeId !== undefined && gone.has(v.beforeId)) delete v.beforeId;
+    }
+    const used = new Set([...versions.values()].map((v) => contentKey(v.sessionId, v.digest)));
+    for (const [key, c] of contents) if (touched.has(c.sessionId) && !used.has(key)) contents.delete(key);
+    return count;
+  };
+
+  return {
+    configureVersionLimits(next) { limits = resolveVersionLimits(next); },
+    putSessionVersion(input) {
+      return serial(async (): Promise<SessionVersionPut> => {
+        const w = normalizeSessionVersionWrite(input);
+        const session = sessions.get(w.sessionId);
+        if (!session || session.deletedAt) throw new Error('session-gone');
+        for (const ref of [w.restoredFrom, w.beforeId]) if (ref !== undefined && versions.get(ref)?.sessionId !== w.sessionId) throw new Error('version-reference');
+        const content = sessionVersionContent(w.inputs);
+        const id = sessionVersionId();
+        const mine = own(w.sessionId);
+        const plan = await planSessionVersionPut(w, id, content, {
+          rows: mine.map(rowOf),
+          contents: new Map([...contents.values()].filter((c) => c.sessionId === w.sessionId).map((c) => [c.digest, c.bytes])),
+          instanceBytes: async () => [...contents.values()].reduce((sum, c) => sum + c.bytes, 0),
+          instanceRows: async () => ({ rows: [...versions.values()].map(rowOf), contents: new Map([...contents].map(([key, c]) => [key, c.bytes])) }),
+        }, limits);
+        if (plan.action === 'refuse') return plan.reason;
+        if (plan.action === 'return') return { version: summary(versions.get(plan.id)!), created: false };
+        if (plan.action === 'skip') {
+          const latest = mine.sort(newestVersionFirst)[0];
+          return latest ? { version: summary(latest), created: false } : 'version-space';
+        }
+        if (plan.contentIsNew) contents.set(contentKey(w.sessionId, content.digest), { sessionId: w.sessionId, digest: content.digest, inputs: structuredClone(w.inputs), bytes: content.bytes });
+        const { inputs: _inputs, ...fields } = w;
+        const stored: Stored = { ...structuredClone(fields), id, digest: content.digest };
+        versions.set(id, stored);
+        drop(plan.drops);
+        return { version: summary(stored), created: true };
+      });
+    },
+    async listSessionVersions(sessionId, opts) {
+      const rows = own(sessionId).sort(newestVersionFirst);
+      let start = 0;
+      if (opts.before !== undefined) {
+        start = rows.findIndex((v) => v.id === opts.before) + 1;
+        if (start === 0) return [];
+      }
+      return rows.slice(start, start + versionListLimit(opts.limit)).map(summary);
+    },
+    async getSessionVersion(sessionId, id) {
+      const v = versions.get(id);
+      if (!v || v.sessionId !== sessionId) return null;
+      const inputs = contents.get(contentKey(sessionId, v.digest))?.inputs ?? {};
+      return { ...summary(v), inputs: structuredClone(inputs), meta: structuredClone(v.meta) };
+    },
+    deleteSessionVersion(sessionId, id) {
+      return serial(async () => {
+        const v = versions.get(id);
+        if (!v || v.sessionId !== sessionId) return false;
+        const ids = new Set([id]);
+        if (v.beforeId !== undefined) ids.add(v.beforeId);
+        for (const r of versions.values()) if (r.sessionId === sessionId && r.beforeId === id) ids.add(r.id);
+        drop(ids);
+        return true;
+      });
+    },
+    deleteSessionVersions(sessionId) {
+      return serial(async () => {
+        const count = drop(own(sessionId).map((v) => v.id));
+        for (const [key, c] of contents) if (c.sessionId === sessionId) contents.delete(key);
+        return count;
+      });
     },
   };
 }

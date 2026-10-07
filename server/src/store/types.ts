@@ -1,5 +1,7 @@
 import type { CommentThread } from '@lolly-tools/core/canvas-review-v1';
 import type { CanvasCheckpoint, CanvasOp } from '@lolly-tools/core/canvas-op-v1';
+import { createHash, randomInt } from 'node:crypto';
+import { canonicalJson } from '../lib/crypto.ts';
 /**
  * Storage interface - the seam that keeps deploy targets honest (plans/01):
  * memory (dev/tests) now, Postgres next; the Vercel trial and the Helm chart
@@ -562,6 +564,275 @@ export interface CollabSnapshot {
   /** Accepted ops behind this snapshot. Zero ⇒ nothing to recover. */
   ops: number;
   updatedAt: string;
+}
+
+// Session versions (plan 76 M4 R2, migration 0053). A version is a meaningful
+// state of a document, kept apart from the 20-row revision window. Its content
+// is stored once per document and digest, so repeated states cost no extra bytes.
+
+/** auto: written after a pause in live editing. close: when a live room closes.
+ *  save: a REST save. named: a person saved it with a name. restore: the state a
+ *  restore produced. before: the state a restore replaced, paired with its
+ *  restore row. */
+export type SessionVersionKind = 'auto' | 'close' | 'save' | 'named' | 'restore' | 'before';
+export const SESSION_VERSION_KINDS: readonly SessionVersionKind[] = ['auto', 'close', 'save', 'named', 'restore', 'before'];
+/** Who edited a version, and how many accepted edits each made. Guests are
+ *  counted together as one entry with the id 'guest'; no link id is stored. */
+export interface SessionVersionContributor { id: string; kind: 'user' | 'agent' | 'guest'; edits: number }
+export interface SessionVersionSummary {
+  id: string; sessionId: string; rev: number; kind: SessionVersionKind; label?: string;
+  contributors: SessionVersionContributor[]; createdBy?: string; restoredFrom?: string; beforeId?: string;
+  /** Size of the version's content (canonical inputs JSON), shared with any
+   *  other version of the same document that has the same content. */
+  bytes: number; at: string;
+}
+export interface SessionVersion extends SessionVersionSummary { inputs: Record<string, unknown>; meta: Record<string, unknown> }
+export type SessionVersionWrite = Omit<SessionVersion, 'id' | 'bytes' | 'at'> & { at?: string; requestId?: string };
+/** What `putSessionVersion` did. `created: false` means an earlier row answers
+ *  the write: the same request id, the same content as the latest version, or an
+ *  automatic version skipped for space (the latest version is returned). */
+export type SessionVersionPut = { version: SessionVersionSummary; created: boolean } | 'version-limit' | 'version-space';
+/** Space caps on version content, counted over distinct contents. */
+export interface SessionVersionLimits { sessionMaxBytes: number; instanceMaxBytes: number }
+
+/** The most content one document's versions may hold. */
+export const VERSION_SESSION_MAX_BYTES = 100 * 1024 * 1024;
+/** The most content the whole instance's versions may hold, unless
+ *  `configureVersionLimits` sets another (`policy.versions.maxBytes`). */
+export const VERSION_INSTANCE_MAX_BYTES = 1024 * 1024 * 1024;
+/** Named versions: per person per document, and per document. */
+export const VERSION_NAMED_PER_PERSON = 20;
+export const VERSION_NAMED_PER_SESSION = 100;
+/** Restore rows kept per document (each with its paired 'before' row). */
+export const VERSION_RESTORE_KEEP = 200;
+/** auto, close and save rows: the newest this many are kept... */
+export const VERSION_RECENT_KEEP = 50;
+/** ...and the newest one of each UTC day within this many days... */
+export const VERSION_DAILY_DAYS = 30;
+/** ...and, whichever rule keeps them, none older than this many days. */
+export const VERSION_MAX_AGE_DAYS = 365;
+export const VERSION_LABEL_MAX = 120;
+/** `listSessionVersions` page size: the default and the most allowed. */
+export const VERSION_LIST_DEFAULT = 30;
+export const VERSION_LIST_MAX = 100;
+
+const VERSION_ID_ALPHABET = '0123456789abcdefghjkmnpqrstvwxyz';
+const RECYCLABLE_KINDS: ReadonlySet<SessionVersionKind> = new Set(['auto', 'close', 'save']);
+const DAY_MS = 86_400_000;
+let lastVersionMs = 0;
+let lastVersionSeq = 0;
+
+const base32 = (value: number, length: number): string => {
+  let out = '';
+  for (let i = 0; i < length; i++) {
+    out = VERSION_ID_ALPHABET[value % 32]! + out;
+    value = Math.floor(value / 32);
+  }
+  return out;
+};
+
+/** The caps `configureVersionLimits` sets: each given field, or its default. */
+export function resolveVersionLimits(limits: Partial<SessionVersionLimits>): SessionVersionLimits {
+  const pick = (value: number | undefined, fallback: number): number => {
+    if (value === undefined) return fallback;
+    if (!Number.isSafeInteger(value) || value <= 0) throw new RangeError('version limits must be whole numbers above zero');
+    return value;
+  };
+  return { sessionMaxBytes: pick(limits.sessionMaxBytes, VERSION_SESSION_MAX_BYTES), instanceMaxBytes: pick(limits.instanceMaxBytes, VERSION_INSTANCE_MAX_BYTES) };
+}
+
+/** `listSessionVersions`' page size: VERSION_LIST_DEFAULT when not a number,
+ *  else the whole part kept between 1 and VERSION_LIST_MAX. */
+export function versionListLimit(limit: number): number {
+  return Number.isFinite(limit) ? Math.min(VERSION_LIST_MAX, Math.max(1, Math.floor(limit))) : VERSION_LIST_DEFAULT;
+}
+
+/** `ver_` and 16 base32 characters: 10 of time, then 6 that count up within one
+ *  millisecond from a random start. Ids made by one process therefore sort in the
+ *  order they were made, which breaks ties between versions with the same `at`. */
+export function sessionVersionId(now = Date.now()): string {
+  if (now > lastVersionMs) {
+    lastVersionMs = now;
+    lastVersionSeq = randomInt(2 ** 29);
+  } else if (++lastVersionSeq >= 2 ** 30) {
+    lastVersionMs += 1;
+    lastVersionSeq = randomInt(2 ** 29);
+  }
+  return `ver_${base32(lastVersionMs, 10)}${base32(lastVersionSeq, 6)}`;
+}
+
+/** The digest and size of a version's content: sha256 and byte length of the
+ *  canonical (key-sorted) JSON of the inputs. */
+export function sessionVersionContent(inputs: Record<string, unknown>): { digest: string; bytes: number } {
+  const json = canonicalJson(inputs);
+  return { digest: createHash('sha256').update(json).digest('hex'), bytes: Buffer.byteLength(json) };
+}
+
+const plainObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** A version write in the shape both drivers store, or a thrown error for a
+ *  write the database would refuse. Contributors keep only their known fields,
+ *  and a guest is always stored as the one id 'guest'. */
+export function normalizeSessionVersionWrite(v: SessionVersionWrite, now = new Date()): SessionVersionWrite & { at: string } {
+  if (typeof v.sessionId !== 'string' || !v.sessionId) throw new TypeError('version-session');
+  if (!SESSION_VERSION_KINDS.includes(v.kind)) throw new TypeError('version-kind');
+  if (!Number.isSafeInteger(v.rev) || v.rev < 0) throw new TypeError('version-rev');
+  if (v.label !== undefined && (typeof v.label !== 'string' || [...v.label].length < 1 || [...v.label].length > VERSION_LABEL_MAX)) throw new TypeError('version-label');
+  if (!plainObject(v.inputs) || !plainObject(v.meta) || !Array.isArray(v.contributors)) throw new TypeError('version-shape');
+  for (const ref of [v.createdBy, v.restoredFrom, v.beforeId, v.requestId]) if (ref !== undefined && (typeof ref !== 'string' || !ref)) throw new TypeError('version-reference');
+  const at = v.at === undefined ? now : new Date(v.at);
+  if (!Number.isFinite(at.getTime())) throw new TypeError('version-at');
+  const contributors = v.contributors.flatMap((c): SessionVersionContributor[] => {
+    if (!plainObject(c) || !['user', 'agent', 'guest'].includes(c.kind as string) || typeof c.id !== 'string' || !c.id) return [];
+    const edits = Number.isSafeInteger(c.edits) && (c.edits as number) >= 0 ? c.edits as number : 0;
+    return [{ id: c.kind === 'guest' ? 'guest' : c.id, kind: c.kind as SessionVersionContributor['kind'], edits }];
+  });
+  return {
+    sessionId: v.sessionId, rev: v.rev, kind: v.kind, inputs: v.inputs, meta: v.meta, contributors,
+    ...(v.label !== undefined ? { label: v.label } : {}),
+    ...(v.createdBy !== undefined ? { createdBy: v.createdBy } : {}),
+    ...(v.restoredFrom !== undefined ? { restoredFrom: v.restoredFrom } : {}),
+    ...(v.beforeId !== undefined ? { beforeId: v.beforeId } : {}),
+    ...(v.requestId !== undefined ? { requestId: v.requestId } : {}),
+    at: at.toISOString(),
+  };
+}
+
+/** The facts the version rules read about one stored row. */
+export interface SessionVersionRow {
+  id: string; sessionId: string; kind: SessionVersionKind; digest: string; at: string;
+  createdBy?: string; requestId?: string; beforeId?: string;
+}
+/** Newest first: by `at`, then by id. */
+export const newestVersionFirst = (a: Pick<SessionVersionRow, 'id' | 'at'>, b: Pick<SessionVersionRow, 'id' | 'at'>): number =>
+  a.at < b.at ? 1 : a.at > b.at ? -1 : a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+
+/**
+ * The rows the retention rules remove from one document's versions, judged at
+ * `refIso` (the time of the write being made). auto, close and save rows older
+ * than VERSION_MAX_AGE_DAYS go; younger ones stay while they are among the newest
+ * VERSION_RECENT_KEEP or are the newest of their UTC day within VERSION_DAILY_DAYS.
+ * Restore rows beyond the newest VERSION_RESTORE_KEEP go with their 'before' rows.
+ * Named and 'before' rows are never chosen by these rules, nor is `keepId`.
+ */
+export function versionRetentionDrops(rows: SessionVersionRow[], refIso: string, keepId?: string): string[] {
+  const ref = Date.parse(refIso);
+  const oldest = new Date(ref - VERSION_MAX_AGE_DAYS * DAY_MS).toISOString();
+  const dayFloor = new Date(ref - VERSION_DAILY_DAYS * DAY_MS).toISOString().slice(0, 10);
+  const drops = new Set<string>();
+  const days = new Set<string>();
+  rows.filter((r) => RECYCLABLE_KINDS.has(r.kind)).sort(newestVersionFirst).forEach((r, i) => {
+    const day = r.at.slice(0, 10);
+    const dailyKeep = !days.has(day) && day >= dayFloor;
+    days.add(day);
+    if (r.at < oldest || (i >= VERSION_RECENT_KEEP && !dailyKeep)) drops.add(r.id);
+  });
+  rows.filter((r) => r.kind === 'restore').sort(newestVersionFirst).slice(VERSION_RESTORE_KEEP).forEach((r) => {
+    drops.add(r.id);
+    if (r.beforeId) drops.add(r.beforeId);
+  });
+  drops.delete(keepId ?? '');
+  return [...drops];
+}
+
+/**
+ * The oldest auto, close and save rows to remove so that at least `need` bytes of
+ * content are freed. Content is shared, so a content's bytes count as freed only
+ * when no remaining row uses it. `rows` are every row whose content is counted
+ * (any kind); rows in `exclude` are treated as already gone. Null when even
+ * removing every such row would not free enough.
+ */
+export function versionEvictionPlan(rows: SessionVersionRow[], bytesOf: (sessionId: string, digest: string) => number,
+  need: number, exclude: ReadonlySet<string>): string[] | null {
+  if (need <= 0) return [];
+  const key = (r: SessionVersionRow): string => `${r.sessionId} ${r.digest}`;
+  const users = new Map<string, number>();
+  for (const r of rows) if (!exclude.has(r.id)) users.set(key(r), (users.get(key(r)) ?? 0) + 1);
+  const drops: string[] = [];
+  let freed = 0;
+  for (const r of rows.filter((x) => RECYCLABLE_KINDS.has(x.kind) && !exclude.has(x.id)).sort(newestVersionFirst).reverse()) {
+    drops.push(r.id);
+    const left = (users.get(key(r)) ?? 1) - 1;
+    users.set(key(r), left);
+    if (left === 0) freed += bytesOf(r.sessionId, r.digest);
+    if (freed >= need) return drops;
+  }
+  return null;
+}
+
+/** What a driver does with one version write, decided by `planSessionVersionPut`.
+ *  `return`: answer with that existing row (`created: false`). `skip`: an
+ *  automatic version that does not fit; answer with the latest row. `insert`:
+ *  store the row (and its content when new) and delete `drops`. */
+export type SessionVersionPutPlan =
+  | { action: 'return'; id: string }
+  | { action: 'refuse'; reason: 'version-limit' | 'version-space' }
+  | { action: 'skip' }
+  | { action: 'insert'; contentIsNew: boolean; drops: string[] };
+
+/** What the planner reads. `rows` and `contents` (digest to bytes) are the
+ *  document's own; the instance totals are read only when new content is near a cap. */
+export interface SessionVersionPutState {
+  rows: SessionVersionRow[];
+  contents: ReadonlyMap<string, number>;
+  instanceBytes(): Promise<number>;
+  instanceRows(): Promise<{ rows: SessionVersionRow[]; contents: ReadonlyMap<string, number> }>;
+}
+
+/**
+ * The version rules, shared by both drivers, which call it with the document's
+ * rows read under their write lock and then apply the plan in the same
+ * transaction. In order: a repeated request id answers with its row; an auto,
+ * close or save write whose content equals the latest version's answers with that
+ * version; the named limits; then retention, and for new content the space caps,
+ * which first remove the oldest auto, close and save rows (of this document, then
+ * of the instance) and otherwise refuse a named, restore or before write and skip
+ * an automatic one.
+ */
+export async function planSessionVersionPut(w: SessionVersionWrite & { at: string }, newId: string,
+  content: { digest: string; bytes: number }, state: SessionVersionPutState, limits: SessionVersionLimits): Promise<SessionVersionPutPlan> {
+  if (w.requestId !== undefined) {
+    const same = state.rows.find((r) => r.requestId === w.requestId && r.kind === w.kind && r.createdBy === w.createdBy);
+    if (same) return { action: 'return', id: same.id };
+  }
+  const recyclable = RECYCLABLE_KINDS.has(w.kind);
+  const latest = [...state.rows].sort(newestVersionFirst)[0];
+  if (recyclable && latest?.digest === content.digest) return { action: 'return', id: latest.id };
+  if (w.kind === 'named') {
+    const named = state.rows.filter((r) => r.kind === 'named');
+    if (named.length >= VERSION_NAMED_PER_SESSION || named.filter((r) => r.createdBy === w.createdBy).length >= VERSION_NAMED_PER_PERSON)
+      return { action: 'refuse', reason: 'version-limit' };
+  }
+  const row: SessionVersionRow = { id: newId, sessionId: w.sessionId, kind: w.kind, digest: content.digest, at: w.at,
+    ...(w.createdBy !== undefined ? { createdBy: w.createdBy } : {}), ...(w.requestId !== undefined ? { requestId: w.requestId } : {}),
+    ...(w.beforeId !== undefined ? { beforeId: w.beforeId } : {}) };
+  const drops = new Set(versionRetentionDrops([...state.rows, row], w.at, newId));
+  const contentIsNew = !state.contents.has(content.digest);
+  if (!contentIsNew) return { action: 'insert', contentIsNew, drops: [...drops] };
+
+  const over = (): SessionVersionPutPlan => recyclable ? { action: 'skip' } : { action: 'refuse', reason: 'version-space' };
+  const sessionTotal = [...state.contents.values()].reduce((a, b) => a + b, 0);
+  const sessionKept = (): number => {
+    const live = new Set(state.rows.filter((r) => !drops.has(r.id)).map((r) => r.digest));
+    return [...state.contents].reduce((sum, [digest, bytes]) => sum + (live.has(digest) ? bytes : 0), 0);
+  };
+  const sessionNeed = sessionKept() + content.bytes - limits.sessionMaxBytes;
+  if (sessionNeed > 0) {
+    const plan = versionEvictionPlan(state.rows, (_s, digest) => state.contents.get(digest) ?? 0, sessionNeed, drops);
+    if (!plan) return over();
+    for (const id of plan) drops.add(id);
+  }
+  // Only this document's rows have been dropped so far, so the instance has lost
+  // exactly what this document has.
+  const instanceNeed = (await state.instanceBytes()) - (sessionTotal - sessionKept()) + content.bytes - limits.instanceMaxBytes;
+  if (instanceNeed > 0) {
+    const instance = await state.instanceRows();
+    const plan = versionEvictionPlan(instance.rows, (s, digest) => instance.contents.get(`${s} ${digest}`) ?? 0, instanceNeed, drops);
+    if (!plan) return over();
+    for (const id of plan) drops.add(id);
+  }
+  return { action: 'insert', contentIsNew, drops: [...drops] };
 }
 
 /**
@@ -1166,7 +1437,9 @@ export interface Store extends RenderStore, PasskeyStore {
   getCollabJournal(sessionId: string, afterRevision: number): Promise<{ revision: number; ops: CanvasOp[] }[]>;
   getCollabReceipts(sessionId: string, principal: string, ids: string[]): Promise<CollabReceipt[]>;
   /** Atomically compare owner + revision, save projection, journal/checkpoint and
-   * receipts, and append bounded history. A checkpoint compacts its covered journal. */
+   * receipts. A checkpoint compacts its covered journal. It writes no
+   * `session_revisions` row: live history is kept as session versions, and the
+   * room's quiesce appends one revision. */
   commitCollab(batch: CollabCommit): Promise<number>;
   /** Store the receipts of a batch that accepted nothing, fenced like `commitCollab`
    * (owner, live lease, `expectedRev`, not deleted). Each receipt records `expectedRev`.
@@ -1177,4 +1450,33 @@ export interface Store extends RenderStore, PasskeyStore {
   getCollabSnapshot(sessionId: string): Promise<CollabSnapshot | null>;
   /** Unknown id is a no-op. */
   deleteCollabSnapshot(sessionId: string): Promise<void>;
+
+  // Session versions (plan 76 M4 R2, migration 0053).
+  /** Set the space caps; a field left out goes back to its default
+   *  (VERSION_SESSION_MAX_BYTES, VERSION_INSTANCE_MAX_BYTES). Throws on a value
+   *  that is not a whole number above zero. */
+  configureVersionLimits(limits: Partial<SessionVersionLimits>): void;
+  /**
+   * Write a version, applying every rule of `planSessionVersionPut` in one
+   * transaction. Idempotent on (session, createdBy, kind, requestId). Returns
+   * 'version-limit' for a named version past VERSION_NAMED_PER_PERSON or
+   * VERSION_NAMED_PER_SESSION, and 'version-space' for a named, restore or before
+   * version that does not fit; an automatic one that does not fit answers with the
+   * latest version (`created: false`), or 'version-space' when there is none.
+   * Throws `session-gone` for an unknown or deleted session, `version-reference`
+   * when `restoredFrom` or `beforeId` is not a version of the same session, and a
+   * TypeError for a write the schema refuses (kind, label, rev, shape).
+   */
+  putSessionVersion(v: SessionVersionWrite): Promise<SessionVersionPut>;
+  /** Newest first (by `at`, then id), at most `limit` (1 to VERSION_LIST_MAX).
+   *  `before` is a version id: the page starts after it. An id that is not a
+   *  version of this session gives an empty page. */
+  listSessionVersions(sessionId: string, opts: { before?: string; limit: number }): Promise<SessionVersionSummary[]>;
+  /** With its inputs and meta; null when the id is not a version of this session. */
+  getSessionVersion(sessionId: string, id: string): Promise<SessionVersion | null>;
+  /** Delete one version, and its pair: a restore row's 'before' row, or the
+   *  restore rows of a 'before' row. False when it is not a version of this session. */
+  deleteSessionVersion(sessionId: string, id: string): Promise<boolean>;
+  /** Delete every version and content of the session; returns how many versions went. */
+  deleteSessionVersions(sessionId: string): Promise<number>;
 }
