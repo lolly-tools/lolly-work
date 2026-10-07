@@ -20,10 +20,9 @@ link signature or an OAuth state.
 A member session lasts `policy.sessionTtlHours`. With `policy.sessionMaxHours` set, a person
 who keeps working is not sent back to sign in at the end of it (plans/75 RENEW):
 
-- Each session cookie carries `authAt`, when the sign-in (or the device approval) that
-  started it happened. A cookie minted before `authAt` existed counts from its sign-in
-  time, which every sign-in but the dev provider's records, or else from when it was
-  issued.
+- Each session cookie carries `authAt`, when the sign-in that started its chain happened.
+  A cookie minted before `authAt` existed counts from its sign-in time, which every sign-in
+  but the dev provider's records, or else from when it was issued.
 - Once a session is past half its lifetime, the next request that qualifies gets a fresh
   cookie for another `sessionTtlHours`, with the same `authAt`. Qualifying requests are
   every API write and reads of the documents the apps poll: `GET /api/auth/session`,
@@ -40,6 +39,14 @@ who keeps working is not sent back to sign in at the end of it (plans/75 RENEW):
   ends when the current cookie does, or at once for a disable or an epoch bump.
 - A renewal is not a sign-in: the time of the last completed sign-in, which passkey
   changes ask for, does not move.
+- Nothing else starts a new chain without a sign-in either. A device approved at
+  `/activate` gets a cookie in the approving browser's chain: the approval records that
+  session's `authAt` and sign-in time, and the device's cookie ends no later than
+  `authAt + sessionMaxHours`. Once the approving chain has reached its cap the device is
+  refused (`denied`, audited as `auth.denied` with `reason: 'session-max'`). Removing one of
+  your own sign-ins ends every session you hold and keeps the browser you acted from signed
+  in with a cookie in the same chain, cut the same way; past the cap that browser signs in
+  again too.
 - `sessionMaxHours` is optional. Absent, it equals `sessionTtlHours`, and nothing is
   renewed. It must be at least `sessionTtlHours` and at most 720. A typical setting keeps
   the TTL short and the cap at a few days, for example `sessionTtlHours: 12` with

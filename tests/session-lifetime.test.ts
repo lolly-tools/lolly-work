@@ -26,6 +26,7 @@ import { mintToken } from '../server/src/iam/tokens.ts';
 import {
   mintSessionCookie, readMemberSession, sessionRenewal, type MemberSession, type SessionUser,
 } from '../server/src/iam/sessions.ts';
+import { subjectHash } from '../server/src/iam/identities.ts';
 import type { Store, UserRecord } from '../server/src/store/types.ts';
 
 const SECRET = 'sLife';
@@ -301,6 +302,95 @@ test('a revoked, disabled or no longer admitted person gets no renewal', async (
   const disabled = await env.call(liveCookie, 'GET', '/api/v1/org-config');
   assert.equal(disabled.status, 401);
   assert.equal(sessionCookieOf(disabled.headers), null);
+});
+
+// ── no new chain without a sign-in ─────────────────────────────────────────
+
+/** Run the device-code flow: start it, approve it at /activate as `approver`, poll it. */
+async function deviceSignIn(base: string, approver: string) {
+  const started = await fetch(`${base}/api/v1/auth/device`, { method: 'POST' });
+  assert.equal(started.status, 200);
+  const { deviceCode, userCode } = (await started.json()) as { deviceCode: string; userCode: string };
+  const approved = await fetch(`${base}/activate`, {
+    method: 'POST',
+    headers: { cookie: approver, 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ code: userCode, decision: 'approve' }).toString(),
+  });
+  assert.equal(approved.status, 200);
+  const poll = await fetch(`${base}/api/v1/auth/device/token`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ deviceCode }),
+  });
+  assert.equal(poll.status, 200);
+  return { body: (await poll.json()) as { status: string; cookie?: string }, cookie: sessionCookieOf(poll.headers) };
+}
+
+test('a device approved from an expiring session gets no cookie past that session\'s cap', async () => {
+  const env = await boot({ sessionTtlHours: 2, sessionMaxHours: 6 });
+  await env.login('dana@test');
+  const dana = (await env.store.findUsersByEmail('dana@test'))[0]!;
+  const now = Date.now();
+
+  // Signed in 5.5 h ago, this cookie issued an hour ago: half an hour left to the cap.
+  const signedIn = now - 5.5 * HOUR;
+  const nearCap = cookieAt(dana, now - HOUR, 2, { authAt: signedIn, authenticatedAt: signedIn });
+  const near = await deviceSignIn(env.base, nearCap);
+  assert.equal(near.body.status, 'approved');
+  assert.ok(near.cookie, 'the device gets a session');
+  assert.ok(near.cookie.maxAge <= 1800 && near.cookie.maxAge > 1790, `cut to the approver's cap (${near.cookie.maxAge})`);
+  const box = boxOf(near.cookie.pair);
+  assert.ok(box.exp * 1000 <= signedIn + 6 * HOUR + 1000, 'ends no later than authAt + sessionMaxHours');
+  assert.ok(box.p.authAt! <= signedIn && signedIn - box.p.authAt! < 1000, 'the device continues the approver\'s chain');
+  assert.equal(box.p.authenticatedAt, signedIn, 'and keeps the time of the last real sign-in');
+  assert.equal(near.body.cookie, near.cookie.pair, 'the JSON carries the same, cut cookie');
+  // The device's cookie cannot be renewed past the cap either.
+  assert.equal(sessionRenewal(readMemberSession(near.cookie.pair, SECRET)!, { ttlSec: 2 * 3600, maxSec: 6 * 3600 }, Date.now() + 1700_000), null);
+
+  // At the cap (the approving cookie still works until it ends): the device is refused.
+  const capped = cookieAt(dana, now - HOUR, 2, { authAt: now - 6 * HOUR - 60_000 });
+  assert.equal((await env.call(capped, 'GET', '/api/auth/session')).status, 200, 'the approver is still signed in');
+  const refused = await deviceSignIn(env.base, capped);
+  assert.deepEqual([refused.body, refused.cookie], [{ status: 'denied' }, null], 'no cookie, so no new chain');
+  const denied = (await env.store.listAudit()).filter((e) => e.action === 'auth.denied');
+  assert.deepEqual(denied.at(-1)?.payload, { provider: 'device', reason: 'session-max', email: 'dana@test' });
+
+  // A fresh session approves a device for a full TTL, in its own chain.
+  const fresh = cookieAt(dana, now - 0.25 * HOUR, 2, { authAt: now - 0.25 * HOUR });
+  const full = await deviceSignIn(env.base, fresh);
+  assert.equal(full.cookie?.maxAge, 2 * 3600);
+  assert.ok(Math.abs(boxOf(full.cookie!.pair).p.authAt! - (now - 0.25 * HOUR)) < 1000);
+});
+
+test('staying signed in after removing a sign-in keeps the chain and the sign-in time', async () => {
+  const env = await boot({ sessionTtlHours: 2, sessionMaxHours: 6 });
+  await env.login('dana@test');
+  const dana = (await env.store.findUsersByEmail('dana@test'))[0]!;
+  const at = new Date().toISOString();
+  for (const n of ['1', '2', '3']) {
+    await env.store.linkIdentity({ identitySub: `github:${n}`, userId: dana.id, idp: 'github', email: `dana${n}@mail.test`, emailVerified: true, linkedAt: at });
+  }
+  const now = Date.now();
+  const signedIn = now - 5 * HOUR;
+
+  // Five hours into a six-hour cap: the new cookie keeps both times and ends at the cap.
+  const before = (await env.store.getUser(dana.id))!;
+  const removed = await env.call(cookieAt(before, now - 0.5 * HOUR, 2, { authAt: signedIn, authenticatedAt: signedIn }),
+    'DELETE', `/api/v1/me/identities/github/${subjectHash('github:1')}`);
+  assert.equal(removed.status, 204);
+  const kept = sessionCookieOf(removed.headers);
+  assert.ok(kept, 'this browser stays signed in');
+  assert.ok(kept.maxAge <= 3600 && kept.maxAge > 3590, `cut to the cap (${kept.maxAge})`);
+  const box = boxOf(kept.pair);
+  assert.ok(box.p.authAt! <= signedIn && signedIn - box.p.authAt! < 1000, 'removing a sign-in is not a sign-in: the chain carries on');
+  assert.equal(box.p.authenticatedAt, signedIn, 'and passkey changes still see the old sign-in time');
+  assert.equal((await env.call(kept.pair, 'GET', '/api/auth/session')).status, 200, 'the kept cookie works at the new epoch');
+
+  // Past the cap: every session ends, this browser's too, and the person signs in again.
+  const after = (await env.store.getUser(dana.id))!;
+  const atCap = cookieAt(after, now - 0.5 * HOUR, 2, { authAt: now - 6 * HOUR - 60_000 });
+  const ended = await env.call(atCap, 'DELETE', `/api/v1/me/identities/github/${subjectHash('github:2')}`);
+  assert.equal(ended.status, 204);
+  assert.equal(sessionCookieOf(ended.headers), null, 'no fresh cookie past the cap');
+  assert.equal((await env.call(atCap, 'GET', '/api/auth/session')).status, 401);
 });
 
 test('sessionMaxHours: optional, at least sessionTtlHours, at most 720', () => {

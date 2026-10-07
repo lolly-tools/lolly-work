@@ -158,17 +158,38 @@ export interface SessionRenewal {
 export function sessionRenewal(
   session: MemberSession, policy: { ttlSec: number; maxSec: number }, now: number = Date.now(),
 ): SessionRenewal | null {
-  const ttlMs = policy.ttlSec * 1000;
   const expMs = session.exp * 1000;
-  if (expMs - now > ttlMs / 2) return null;
-  const issuedAt = expMs - ttlMs;
-  const stamped = session.user.authAt ?? session.user.authenticatedAt;
-  const authAt = typeof stamped === 'number' && Number.isFinite(stamped) ? Math.min(stamped, issuedAt) : issuedAt;
-  const maxMs = policy.maxSec * 1000;
-  if (now - authAt >= maxMs) return null;
-  const ttlSec = Math.floor((Math.min(now + ttlMs, authAt + maxMs) - now) / 1000);
+  if (expMs - now > (policy.ttlSec * 1000) / 2) return null;
+  const authAt = sessionChainStart(session, policy.ttlSec);
+  const ttlSec = chainTtlSec(authAt, policy, now);
   if (ttlSec <= 0 || now + ttlSec * 1000 < expMs + RENEWAL_MIN_GAIN_MS) return null;
   return { authAt, ttlSec };
+}
+
+/**
+ * When the chain a verified session belongs to began (ms), by the rule
+ * `sessionRenewal` follows: the token's `authAt`, else its sign-in time
+ * (`authenticatedAt`), never later than when the token was issued
+ * (`exp - ttl`), and the issue time for a token with neither. Every way of
+ * minting a session from a live one (a renewal, a device approval, staying
+ * signed in after removing a sign-in) starts from this, so none of them
+ * starts a new chain without a sign-in.
+ */
+export function sessionChainStart(session: MemberSession, ttlSec: number): number {
+  const issuedAt = session.exp * 1000 - ttlSec * 1000;
+  const stamped = session.user.authAt ?? session.user.authenticatedAt;
+  return typeof stamped === 'number' && Number.isFinite(stamped) ? Math.min(stamped, issuedAt) : issuedAt;
+}
+
+/**
+ * The lifetime (whole seconds) a cookie minted now in the chain that began at
+ * `authAt` may have: a full TTL, cut so that it never outlives
+ * `authAt + maxSec`. Zero or less means the chain has ended, and the caller
+ * mints nothing: the person signs in again.
+ */
+export function chainTtlSec(authAt: number, policy: { ttlSec: number; maxSec: number }, now: number = Date.now()): number {
+  if (!Number.isFinite(authAt)) return 0;
+  return Math.floor((Math.min(now + policy.ttlSec * 1000, authAt + policy.maxSec * 1000) - now) / 1000);
 }
 
 export function mintGuestCookie(guest: GuestSession, secret: string, secure: boolean, ttlSec: number): string {

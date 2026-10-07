@@ -27,8 +27,8 @@ import { readShotCred } from './shot-provenance.ts';
 import { CONSOLE_ASSET_HEADERS, consoleDocumentHeaders } from './console-headers.ts';
 import { mintToken, verifyToken } from '../iam/tokens.ts';
 import {
-  GUEST_COOKIE, SESSION_COOKIE, clearCookie, guestActor, mintGuestCookie, mintSessionCookie, parseCookies, readMemberSession, readPrincipal,
-  sessionRenewal, type Principal, type SessionUser,
+  GUEST_COOKIE, SESSION_COOKIE, chainTtlSec, clearCookie, guestActor, mintGuestCookie, mintSessionCookie, parseCookies, readMemberSession,
+  readPrincipal, sessionChainStart, sessionRenewal, type Principal, type SessionUser,
 } from '../iam/sessions.ts';
 import { buildAuthorizeUrl, discover, exchangeCode, mapClaims, pkcePair, verifyIdToken, fetchJwks, kidOf, type MappedIdentity } from '../iam/oidc.ts';
 import { displayName, resolveMember } from '../iam/member.ts';
@@ -70,7 +70,7 @@ import {
   scimErrorBody, scimList, userToScim,
 } from '../scim/resources.ts';
 import { evaluate, grantDecision, denialCode, mayEditCollab, ownerOnlyAction, roleFromGroups, type Grant, type Role, ROLES } from '../rbac/evaluate.ts';
-import { accessAtLeast, effectiveProjectAccess, type ProjectAccess } from '../rbac/project-access.ts';
+import { accessAtLeast, effectiveProjectAccess, projectAccess, type ProjectAccess } from '../rbac/project-access.ts';
 import { registerProjectFileRoutes } from '../projects/file-routes.ts';
 import { registerProjectFolderRoutes } from '../projects/folder-routes.ts';
 import { agentActor, agentAttribution } from '../agents/attribution.ts';
@@ -2126,8 +2126,20 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       await audit('anonymous', 'auth.denied', 'session', { provider: 'device', reason: 'not-admitted', email: user.email.trim().toLowerCase() });
       return sendJson(res, 200, { status: 'denied' });
     }
+    // A device session is a new cookie in the approver's own chain (plans/75
+    // RENEW), never a new chain: it carries the approving session's `authAt`
+    // and ends no later than `authAt + sessionMaxHours`, so approving a code
+    // from a browser near its cap cannot extend the person's access without
+    // the IdP. An approval without a chain start (none is written that way)
+    // is refused.
+    const ttl = typeof claim.user.authAt === 'number'
+      ? chainTtlSec(claim.user.authAt, { ttlSec: sessionTtlSec, maxSec: sessionMaxSec }) : 0;
+    if (ttl <= 0) {
+      await audit('anonymous', 'auth.denied', 'session', { provider: 'device', reason: 'session-max', email: user.email.trim().toLowerCase() });
+      return sendJson(res, 200, { status: 'denied' });
+    }
     await audit(`user:${user.id}`, 'auth.login', 'session', { provider: 'device' });
-    const setCookie = mintSessionCookie(claim.user, secrets.session, secure, sessionTtlSec);
+    const setCookie = mintSessionCookie(claim.user, secrets.session, secure, ttl);
     res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': setCookie });
     res.end(JSON.stringify({ status: 'approved', cookie: setCookie.split(';')[0] }));
   });
@@ -2181,9 +2193,15 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       if (ok) await audit(`user:${me.id}`, 'auth.device.deny', 'session', { code: normalizeUserCode(code) });
       return render(activateDoneHtml(config.instance.name, ok ? 'denied' : 'unknown'));
     }
+    // The approval carries the approving session's chain start and sign-in
+    // time, read from its own cookie by the rule renewal follows, so the
+    // device's session continues that chain instead of starting a new one.
+    const held = readMemberSession(req.headers.cookie, sessionVerify);
+    if (!held || held.user.sub !== me.sub) return render(activateSignedOutHtml(config.instance.name, loginPathFor('/activate') ?? '/'));
     const approved = await deviceAuth.approve(code, {
       sub: me.sub, email: me.email, groups: me.groups, role: me.role,
-      name: displayName(me), epoch: me.sessionEpoch,
+      name: displayName(me), epoch: me.sessionEpoch, authAt: sessionChainStart(held, sessionTtlSec),
+      ...(held.user.authenticatedAt !== undefined ? { authenticatedAt: held.user.authenticatedAt } : {}),
     });
     if (approved) await audit(`user:${me.id}`, 'auth.device.approve', 'session', { code: normalizeUserCode(code) });
     render(activateDoneHtml(config.instance.name, approved ? 'approved' : 'unknown'));
@@ -3765,11 +3783,24 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     return { all, wire: all.map((r) => identityWire(r, user, all, idpLabel(r.idp))) };
   };
   /** A fresh session cookie for a person whose own action just ended every
-   *  session of theirs, so the device they acted from stays signed in. */
-  const stayingSignedIn = (user: UserRecord): string => mintSessionCookie({
-    sub: user.sub, email: user.email, groups: user.groups, role: user.role,
-    name: displayName(user), epoch: user.sessionEpoch, authenticatedAt: Date.now(),
-  }, secrets.session, secure, sessionTtlSec);
+   *  session of theirs, so the browser they acted from stays signed in. It
+   *  continues the chain of the cookie the request carried (plans/75 RENEW):
+   *  the same `authAt` and sign-in time, cut at `authAt + sessionMaxHours`,
+   *  because removing a sign-in is not a sign-in. Null, and the person signs
+   *  in again, when the request carried no session cookie of theirs or the
+   *  chain has reached its cap. */
+  const stayingSignedIn = (req: IncomingMessage, user: UserRecord): string | null => {
+    const held = readMemberSession(req.headers.cookie, sessionVerify);
+    if (!held || held.user.sub !== user.sub) return null;
+    const authAt = sessionChainStart(held, sessionTtlSec);
+    const ttl = chainTtlSec(authAt, { ttlSec: sessionTtlSec, maxSec: sessionMaxSec });
+    if (ttl <= 0) return null;
+    return mintSessionCookie({
+      sub: user.sub, email: user.email, groups: user.groups, role: user.role,
+      name: displayName(user), epoch: user.sessionEpoch, authAt,
+      ...(held.user.authenticatedAt !== undefined ? { authenticatedAt: held.user.authenticatedAt } : {}),
+    }, secrets.session, secure, ttl);
+  };
   /** Removes one sign-in, or answers why not. Returns the account as it
    *  stands after the removal, or null when an error was sent; the caller
    *  sends the 204.
@@ -3823,7 +3854,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!me) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const after = await unlinkFor(res, me, me, ctx.params.idp as string, ctx.params.subjectHash as string, 'self');
     if (!after) return;
-    res.writeHead(204, { 'set-cookie': stayingSignedIn(after) });
+    const staying = stayingSignedIn(req, after);
+    res.writeHead(204, staying ? { 'set-cookie': staying } : {});
     res.end();
   });
 
@@ -3877,7 +3909,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
     const after = await unlinkFor(res, actor, target, ctx.params.idp as string, ctx.params.subjectHash as string, 'admin');
     if (!after) return;
-    res.writeHead(204, after.id === actor.id ? { 'set-cookie': stayingSignedIn(after) } : {}); res.end();
+    const staying = after.id === actor.id ? stayingSignedIn(req, after) : null;
+    res.writeHead(204, staying ? { 'set-cookie': staying } : {}); res.end();
   });
 
   // ── invitations (plans/74 W-ID-2) ─────────────────────────────────────────
@@ -8175,27 +8208,33 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
    * away. Each row says which way the person gets in (`via`), at what level
    * (`role`), and for a group row which group.
    *
-   * Names never fall back to an address, and the rows carry no email: a
-   * visibility group can name a group the manager is not in, and this must
-   * not become a way to read the directory. For the same reason the admins
-   * are listed by name only to a caller who may list everyone anyway (an
-   * admin or owner, as `GET /api/v1/users` asks). Another manager could
-   * otherwise make a project of their own and read off who the admins are
-   * (rbac/project-access.ts, `isProjectMember`); they learn only that admins
-   * can open it (`adminAccess: 'note'`), and a group row of theirs shows the
-   * Editor level the group gives, never a Manager level an admin role adds.
+   * Names never fall back to an address, and the rows carry no email. A
+   * project's visibility can name any group, so this must not become a way
+   * to read the directory: a caller who may not list everyone gets group rows
+   * only for the groups they are in themselves, whose people they can see
+   * anyway. For the same reason the admins are listed by name only to a
+   * caller who may list everyone (an admin or owner, as `GET /api/v1/users`
+   * asks). Another manager could otherwise make a project of their own and
+   * read off who the admins are (rbac/project-access.ts, `isProjectMember`);
+   * they learn only that admins can open it (`adminAccess: 'note'`), and a
+   * group row of theirs shows the level the group itself gives (the same rule
+   * as `projectAccess`, with no admin role and no `project.manage` lift),
+   * never a Manager level an admin role adds.
    */
   const EFFECTIVE_ROWS_MAX = 200;
   const effectiveAccessFor = async (caller: UserRecord, project: ProjectRecord, listed: ReadonlySet<string>, grants: Grant[]) => {
     const seesDirectory = caller.role === 'admin' || caller.role === 'owner';
-    const groups = project.visibility === 'private' ? [] : project.visibility.groups;
+    const visible = project.visibility === 'private' ? [] : project.visibility.groups;
+    const groups = seesDirectory ? visible : visible.filter((g) => caller.groups.includes(g));
     const rows: Array<{ userId: string; name: string; role: ProjectAccess; via: 'group' | 'admin'; group?: string; isMe?: true }> = [];
     for (const u of await store.listUsers()) {
       if (listed.has(u.id) || u.disabledAt) continue;
       const group = groups.find((g) => u.groups.includes(g));
       const admin = u.role === 'admin' || u.role === 'owner';
       if (!group && !(admin && seesDirectory)) continue;
-      const role: ProjectAccess = seesDirectory ? effectiveProjectAccess(u, project, null, grants) : 'editor';
+      const role: ProjectAccess = seesDirectory
+        ? effectiveProjectAccess(u, project, null, grants)
+        : projectAccess({ ...u, role: 'member' }, project, null);
       if (role === 'none') continue;
       rows.push({
         userId: u.id, name: nameWithoutEmail(u), role, ...(group ? { via: 'group' as const, group } : { via: 'admin' as const }),
@@ -8215,6 +8254,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!gate) return;
     const { user, project, access, grants } = gate;
     const manager = accessAtLeast(access, 'manager');
+    // Whether this caller may hand the project on: exactly the test
+    // `PATCH /api/v1/projects/:id` applies to `ownerId` (the owner, or a
+    // holder of project.manage), so Lolly offers Make owner only where the
+    // transfer would be accepted.
+    const canTransfer = project.ownerId === user.id
+      || evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'project.manage', ['*'], grants);
     const rows = (await store.listProjectMembers(project.id)).filter((m) => m.userId !== project.ownerId);
     const people = new Map((await store.getUsersByIds([project.ownerId, ...rows.map((m) => m.userId)])).map((u) => [u.id, u]));
     // Emails are for managers only, and so is a name that would fall back to
@@ -8281,7 +8326,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       : null;
     const requests = manager ? await projectRequestsFor(user, project) : null;
     sendJson(res, 200, {
-      myRole: access, members, ...(effective ?? {}), ...(invitations ? { invitations } : {}), ...(requests ? { requests } : {}),
+      myRole: access, canTransfer, members, ...(effective ?? {}), ...(invitations ? { invitations } : {}), ...(requests ? { requests } : {}),
     }, { 'cache-control': 'no-store' });
   });
 

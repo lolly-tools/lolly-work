@@ -45,7 +45,7 @@ access the project cannot take away:
 
 | Row | `via` | `role` | Who sees it |
 |---|---|---|---|
-| Someone in one of the project's visibility groups | `group`, with `group` naming it | Editor, the level a group gives; their full level for an admin or owner caller | the project's managers |
+| Someone in one of the project's visibility groups | `group`, with `group` naming it | The level the group gives; their full level for an admin or owner caller | the project's managers who are in that group, or are an admin or owner |
 | A workspace admin or owner who is not otherwise on the project | `admin` | Editor, or Manager while they hold `project.manage` | managers who are themselves an admin or owner |
 
 The rows never carry an email address, and names never fall back to one. A manager who is
@@ -54,9 +54,14 @@ who they are: anyone who may create a project manages it, so listing the admins 
 would show any member what `GET /api/v1/users` refuses them. The same caller sees a group
 row at the Editor level the group gives, never a Manager level an admin role adds, which
 would point the admins out the same way. Disabled accounts are left out, and the list stops
-at 200 people (`effectiveTruncated: true`). Group rows do show the names of a group's
-people to a manager who made a project visible to that group; the collaborator suggestions
-for a session in that project already offer the same names.
+at 200 people (`effectiveTruncated: true`). A project can be made visible to any group, so
+group rows are listed only for the groups the caller is in themselves (an admin or owner
+sees them all): making a project visible to a group never reads that group's people out.
+
+The list also says whether the caller may hand the project on (`canTransfer`), by the same
+test the transfer applies: the project's owner, or a holder of `project.manage`. Lolly
+offers Make owner only then, so an admin denied `project.manage` is not offered it and a
+member granted it is.
 
 Handing a project on (`PATCH /api/v1/projects/:id` with `ownerId`, the owner or a holder of
 `project.manage`) keeps the previous owner on it as a Manager, audited as
