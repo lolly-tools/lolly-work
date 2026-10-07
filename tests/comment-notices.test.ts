@@ -187,6 +187,55 @@ test('S-6: a writer over the actor cap records nothing, is audited, and the cap 
     'three notices from before the restart plus two more pass a limit of four');
 });
 
+test('S-22: a mention that was capped or failed still notifies on a later edit of the same message, and only once', async () => {
+  const c = await crowd(2);
+  const [ana, ben] = c.people as [UserRecord, UserRecord];
+  const written = c.message('m', c.actor);
+  const event = { session: c.session, project: c.project, thread: c.thread([written]), message: written, actor: c.actor, mentioned: [ana.id], kind: 'create' as const };
+  // Over the writer's cap: nothing is written, and the send is not used up.
+  assert.equal((await recordCommentNotices(c.deps(createActorCap({ limit: 0 })), event)).notified, false);
+  assert.deepEqual(await c.store.listCommentNotices(ana.id), []);
+  assert.deepEqual(c.audits.map((a) => a.action), ['comment.notice.capped']);
+  // The writer edits the message and keeps the mention: now Ana is told, once.
+  const edit = { ...event, kind: 'edit' as const };
+  assert.equal((await recordCommentNotices(c.deps(), edit)).notified, true);
+  assert.deepEqual((await c.store.listCommentNotices(ana.id)).map((n) => [n.kind, n.count, n.messageId]), [['mention', 1, 'm']]);
+  assert.equal((await recordCommentNotices(c.deps(), edit)).notified, true);
+  assert.deepEqual((await c.store.listCommentNotices(ana.id)).map((n) => n.count), [1], 'still once per message');
+
+  // A failed notice write does not use the send up either.
+  const failing = new Proxy(c.store, {
+    get(target, key, receiver) {
+      if (key === 'upsertCommentNotice') return async () => { throw new Error('notice table unavailable'); };
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  assert.equal((await recordCommentNotices({ ...c.deps(), store: failing }, { ...edit, mentioned: [ana.id, ben.id] })).notified, false);
+  assert.deepEqual(await c.store.listCommentNotices(ben.id), []);
+  assert.equal(c.audits.at(-1)?.action, 'comment.notice.failed');
+  assert.equal((await recordCommentNotices(c.deps(), { ...edit, mentioned: [ana.id, ben.id] })).notified, true);
+  assert.deepEqual((await c.store.listCommentNotices(ben.id)).map((n) => [n.kind, n.count]), [['mention', 1]], 'Ben is told on the next edit');
+  assert.deepEqual((await c.store.listCommentNotices(ana.id)).map((n) => n.count), [1], 'Ana was told already');
+});
+
+test('every notice write prunes the person\'s expired notices, an update as well as a new row', async () => {
+  const c = await crowd(1);
+  const person = c.people[0]!;
+  const old = new Date(Date.now() - 40 * 86_400_000).toISOString();
+  assert.equal(await c.store.createCommentThread({ ...c.thread([c.message('o1', c.actor)]), id: 't_old', createdAt: old, updatedAt: old }), 'created');
+  await c.store.upsertCommentNotice({ userId: person.id, threadId: 't_old', sessionId: 's', projectId: 'p', kind: 'reply', actorId: c.actor.id,
+    messageId: 'o1', at: old, mentioned: false });
+  await c.store.upsertCommentNotice({ userId: person.id, threadId: 't', sessionId: 's', projectId: 'p', kind: 'reply', actorId: c.actor.id,
+    messageId: 'stored', at: new Date().toISOString(), mentioned: false });
+  assert.equal((await c.store.listCommentNotices(person.id)).length, 2);
+  const written = c.message('m2', c.actor);
+  const result = await recordCommentNotices(c.deps(), { session: c.session, project: c.project, thread: c.thread([c.message('stored', person), written]),
+    message: written, actor: c.actor, mentioned: [], kind: 'reply' });
+  assert.equal(result.notified, true);
+  assert.deepEqual((await c.store.listCommentNotices(person.id)).map((n) => [n.threadId, n.count]), [['t', 2]],
+    'the reply updated the row in t, and the 40-day-old notice in t_old went');
+});
+
 test('S-22: the 31st comment write in a minute is refused with retry-after, per person', async () => {
   const w = await world();
   try {

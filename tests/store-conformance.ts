@@ -1784,6 +1784,13 @@ async function runCommentReadsAndNoticesConformance(store: Store): Promise<void>
   assert.deepEqual(await store.recordMentionSends('thr_cn_b', 'm4', [reader.id], t(52)), [reader.id]);
   assert.deepEqual(await store.recordMentionSends('thr_cn_none', 'm4', [reader.id], t(52)), []);
   assert.deepEqual(await store.recordMentionSends('thr_cn_a', 'm8', [], t(52)), []);
+  // Forgetting a send (its notice was never written) lets that message tell the
+  // person again; only the named people of that one message are forgotten.
+  assert.equal(await store.forgetMentionSends('thr_cn_b', 'm4', [reader.id, reader.id, 'usr_cn_none']), 1);
+  assert.equal(await store.forgetMentionSends('thr_cn_a', 'm9', [reader.id]), 0);
+  assert.equal(await store.forgetMentionSends('thr_cn_a', 'm4', []), 0);
+  assert.deepEqual(await store.recordMentionSends('thr_cn_b', 'm4', [reader.id], t(53)), [reader.id], 'a forgotten send can be recorded again');
+  assert.deepEqual(await store.recordMentionSends('thr_cn_a', 'm4', [reader.id], t(53)), [], 'another message keeps its sends');
 
   // Threads by ids: one read, in the order first given, unknown ids skipped.
   const [threadA, threadC] = [await store.getCommentThread('thr_cn_a'), await store.getCommentThread('thr_cn_c')];
