@@ -27,8 +27,8 @@ import { readShotCred } from './shot-provenance.ts';
 import { CONSOLE_ASSET_HEADERS, consoleDocumentHeaders } from './console-headers.ts';
 import { mintToken, verifyToken } from '../iam/tokens.ts';
 import {
-  GUEST_COOKIE, SESSION_COOKIE, clearCookie, guestActor, mintGuestCookie, mintSessionCookie, parseCookies, readPrincipal,
-  type Principal, type SessionUser,
+  GUEST_COOKIE, SESSION_COOKIE, clearCookie, guestActor, mintGuestCookie, mintSessionCookie, parseCookies, readMemberSession, readPrincipal,
+  sessionRenewal, type Principal, type SessionUser,
 } from '../iam/sessions.ts';
 import { buildAuthorizeUrl, discover, exchangeCode, mapClaims, pkcePair, verifyIdToken, fetchJwks, kidOf, type MappedIdentity } from '../iam/oidc.ts';
 import { displayName, resolveMember } from '../iam/member.ts';
@@ -291,6 +291,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   const fetchImpl = deps.fetchImpl ?? fetch;
   const secure = config.instance.baseUrl.startsWith('https:');
   const sessionTtlSec = config.policy.sessionTtlHours * 3600;
+  // Sliding renewal's cap (plans/75 RENEW); absent equals the TTL, which leaves renewal off.
+  const sessionMaxSec = (config.policy.sessionMaxHours ?? config.policy.sessionTtlHours) * 3600;
   const router = createRouter();
   const agentRequests = createProjectRequests(router);
   const metrics = deps.metrics ?? createMetrics();
@@ -3713,6 +3715,28 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!updated) return sendError(res, 404, 'NOT_FOUND', 'no such user');
     await audit(`user:${actor.id}`, 'user.sessions.revoked', `user:${updated.id}`);
     sendJson(res, 200, userWire(updated));
+  });
+
+  // "Sign out on all devices" (plans/75 G18): the same epoch bump, for the
+  // person's own sessions, from any of them. A lost phone or a shared computer
+  // is signed out on its next request, and so is this browser, whose cookie is
+  // cleared here as logout clears it. Only a signed-in person's own cookie
+  // reaches it: a service token or an agent acting for someone has no session
+  // of theirs to end. Five an hour per person, since each one also signs out
+  // every app and device the person uses.
+  const revokeOwnSessionsQuota = createWindowQuota(5, 3_600_000);
+  router.add('POST', '/api/v1/me/revoke-sessions', async (req, res) => {
+    const me = agentRequests.principal(req) ? null : await resolveMember(store, req.headers.cookie, sessionVerify);
+    if (!me) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+    if (!revokeOwnSessionsQuota.take(me.id)) {
+      res.setHeader('retry-after', '3600');
+      return sendError(res, 429, 'RATE_LIMITED', 'you signed out on all devices several times this hour; try again later');
+    }
+    const updated = await store.bumpSessionEpoch(me.id);
+    if (!updated) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+    await audit(`user:${me.id}`, 'user.sessions.revoked', `user:${me.id}`, { self: true });
+    res.writeHead(204, { 'cache-control': 'no-store', 'set-cookie': [clearCookie(SESSION_COOKIE, secure), clearCookie(GUEST_COOKIE, secure)] });
+    res.end();
   });
 
   // ── linked sign-ins (plans/74, "One person, many sign-ins") ───────────────
@@ -7794,9 +7818,18 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
     await store.putProject(next);
     // The new owner is on the project now, so an invitation to it is done.
+    // The previous owner stays on it as a Manager (plans/75 G15): handing a
+    // project on is not leaving it, and they can still leave or be removed.
+    // A disabled previous owner is not kept, so offboarding (disable, then
+    // transfer) does not leave a row a later re-enable would bring back.
     if (next.ownerId !== project.ownerId) {
       const owner = await store.getUser(next.ownerId);
       if (owner) await closeMemberInvitations(next, owner, `user:${user.id}`);
+      const previous = await store.getUser(project.ownerId);
+      if (previous && !previous.disabledAt) {
+        await store.putProjectMember({ projectId: next.id, userId: previous.id, role: 'manager', addedBy: `user:${user.id}`, addedAt: new Date().toISOString() });
+        await audit(`user:${user.id}`, 'project.member.add', `project:${next.id}`, { userId: previous.id, role: 'manager', via: 'transfer' });
+      }
     }
     await audit(`user:${user.id}`, 'project.update', `project:${next.id}`, {
       visibility: next.visibility, archived: Boolean(next.archivedAt),
@@ -8133,23 +8166,72 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     return out;
   };
 
+  /**
+   * Who else can open a project without a row on it (plans/75 G15): the
+   * people in one of its visibility groups, and the workspace's admins and
+   * owners, who can open every project. Listed for the project's managers
+   * only, beside the owner and member rows, never inside them, so an older
+   * Lolly offers no role select or Remove for access a project cannot take
+   * away. Each row says which way the person gets in (`via`), at what level
+   * (`role`), and for a group row which group.
+   *
+   * Names never fall back to an address, and the rows carry no email: a
+   * visibility group can name a group the manager is not in, and this must
+   * not become a way to read the directory. For the same reason the admins
+   * are listed by name only to a caller who may list everyone anyway (an
+   * admin or owner, as `GET /api/v1/users` asks). Another manager could
+   * otherwise make a project of their own and read off who the admins are
+   * (rbac/project-access.ts, `isProjectMember`); they learn only that admins
+   * can open it (`adminAccess: 'note'`), and a group row of theirs shows the
+   * Editor level the group gives, never a Manager level an admin role adds.
+   */
+  const EFFECTIVE_ROWS_MAX = 200;
+  const effectiveAccessFor = async (caller: UserRecord, project: ProjectRecord, listed: ReadonlySet<string>, grants: Grant[]) => {
+    const seesDirectory = caller.role === 'admin' || caller.role === 'owner';
+    const groups = project.visibility === 'private' ? [] : project.visibility.groups;
+    const rows: Array<{ userId: string; name: string; role: ProjectAccess; via: 'group' | 'admin'; group?: string; isMe?: true }> = [];
+    for (const u of await store.listUsers()) {
+      if (listed.has(u.id) || u.disabledAt) continue;
+      const group = groups.find((g) => u.groups.includes(g));
+      const admin = u.role === 'admin' || u.role === 'owner';
+      if (!group && !(admin && seesDirectory)) continue;
+      const role: ProjectAccess = seesDirectory ? effectiveProjectAccess(u, project, null, grants) : 'editor';
+      if (role === 'none') continue;
+      rows.push({
+        userId: u.id, name: nameWithoutEmail(u), role, ...(group ? { via: 'group' as const, group } : { via: 'admin' as const }),
+        ...(u.id === caller.id ? { isMe: true as const } : {}),
+      });
+    }
+    rows.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()) || (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0));
+    return {
+      effective: rows.slice(0, EFFECTIVE_ROWS_MAX),
+      ...(rows.length > EFFECTIVE_ROWS_MAX ? { effectiveTruncated: true } : {}),
+      adminAccess: seesDirectory ? 'listed' as const : 'note' as const,
+    };
+  };
+
   router.add('GET', '/api/v1/projects/:id/members', async (req, res, ctx) => {
     const gate = await projectGate(req, res, ctx.params.id as string, 'viewer');
     if (!gate) return;
-    const { user, project, access } = gate;
+    const { user, project, access, grants } = gate;
     const manager = accessAtLeast(access, 'manager');
     const rows = (await store.listProjectMembers(project.id)).filter((m) => m.userId !== project.ownerId);
     const people = new Map((await store.getUsersByIds([project.ownerId, ...rows.map((m) => m.userId)])).map((u) => [u.id, u]));
     // Emails are for managers only, and so is a name that would fall back to
     // one: `displayName` returns the address for an account with no name.
     // `isMe` marks the caller's own row, so Lolly can word leaving the
-    // project, or lowering your own role, as what it is.
+    // project, or lowering your own role, as what it is. `via` says the row
+    // is the owner or an explicit member; the other ways in are `effective`.
     const person = (userId: string, role: ProjectAccess, addedAt: string) => {
       const u = people.get(userId);
       const name = u ? (manager ? displayName(u) : nameWithoutEmail(u)) : userId;
-      return { userId, name, ...(manager && u ? { email: u.email } : {}), role, addedAt, ...(userId === user.id ? { isMe: true } : {}) };
+      return {
+        userId, name, ...(manager && u ? { email: u.email } : {}), role, via: userId === project.ownerId ? 'owner' as const : 'member' as const,
+        addedAt, ...(userId === user.id ? { isMe: true } : {}),
+      };
     };
     const members = [person(project.ownerId, 'owner', project.createdAt), ...rows.map((m) => person(m.userId, m.role, m.addedAt))];
+    const effective = manager ? await effectiveAccessFor(user, project, new Set(members.map((m) => m.userId)), grants) : null;
     // An invitation for an address someone on the project already holds is
     // not listed when accepting it would change nothing: that person is in,
     // and is shown once, as a member. Adding a member closes such
@@ -8199,7 +8281,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       : null;
     const requests = manager ? await projectRequestsFor(user, project) : null;
     sendJson(res, 200, {
-      myRole: access, members, ...(invitations ? { invitations } : {}), ...(requests ? { requests } : {}),
+      myRole: access, members, ...(effective ?? {}), ...(invitations ? { invitations } : {}), ...(requests ? { requests } : {}),
     }, { 'cache-control': 'no-store' });
   });
 
@@ -9749,6 +9831,35 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     return false;
   };
 
+  // Sliding session renewal (plans/75 RENEW, iam/sessions.ts `sessionRenewal`).
+  // A member who keeps working is not sent back to sign in every
+  // `sessionTtlHours`: once a session is past half its lifetime, the next
+  // request that qualifies carries a fresh cookie, up to `sessionMaxHours` after
+  // the sign-in that started it. Each renewal asks again what a sign-in would:
+  // a live, enabled account at the token's epoch (`resolveMember`, so a
+  // disable or a "sign out on all devices" stops it) and still admitted
+  // (`stillAdmitted`, so leaving the lists or a revoked accepted invitation
+  // stops it). Only writes and the documents the apps poll qualify (the
+  // session, org-config and the inbox): their responses are private and never
+  // stored by a shared cache, which a Set-Cookie must not reach. A route that
+  // sets its own cookie (sign-in, logout) replaces this one.
+  const RENEWING_READS = new Set(['/api/auth/session', '/api/v1/org-config', '/api/v1/inbox']);
+  const renewedSessionCookie = async (req: IncomingMessage, pathname: string): Promise<string | null> => {
+    const method = req.method ?? 'GET';
+    const read = method === 'GET' || method === 'HEAD';
+    if (!pathname.startsWith('/api/') || method === 'OPTIONS' || (read && !RENEWING_READS.has(pathname))) return null;
+    const session = readMemberSession(req.headers.cookie, sessionVerify);
+    const renewal = session && sessionRenewal(session, { ttlSec: sessionTtlSec, maxSec: sessionMaxSec });
+    if (!session || !renewal) return null;
+    const user = await resolveMember(store, req.headers.cookie, sessionVerify);
+    if (!user || user.sub !== session.user.sub || !(await stillAdmitted(user))) return null;
+    return mintSessionCookie({
+      sub: user.sub, email: user.email, groups: user.groups, role: user.role, name: displayName(user),
+      epoch: user.sessionEpoch, authAt: renewal.authAt,
+      ...(session.user.authenticatedAt !== undefined ? { authenticatedAt: session.user.authenticatedAt } : {}),
+    }, secrets.session, secure, renewal.ttlSec);
+  };
+
   return async (req, res) => {
     if (devCors(req, res)) return;
     // Fleet: every tagged request feeds the version histogram (plans/10 §1).
@@ -9821,6 +9932,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         return;
       }
     }
+    // A renewal that cannot be decided (the store is down) is skipped: the
+    // session stays as it was and the next request asks again.
+    const renewed = await renewedSessionCookie(req, pathname).catch(() => null);
+    if (renewed) res.setHeader('set-cookie', renewed);
     try {
       const matched = await brand.run(async () => {
         res.setHeader('x-lolly-brand-revision', brand.current()!.revision);

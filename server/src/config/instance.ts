@@ -193,6 +193,14 @@ export interface InstanceConfig {
      *  reached Work. Once received, roles/groups are resolved live; disable
      *  and session-epoch bumps revoke tokens on the next member request. */
     sessionTtlHours: number;
+    /** Sliding renewal cap (plans/75 RENEW), in hours from the sign-in that
+     *  started a session. A member request in the second half of a session's
+     *  `sessionTtlHours` gets a fresh cookie while the person is still a live,
+     *  admitted member, but never one that ends later than this many hours
+     *  after that sign-in; then they sign in again. Absent means
+     *  `sessionTtlHours`, which turns renewal off. Must be at least
+     *  `sessionTtlHours` and at most 720. */
+    sessionMaxHours?: number;
     /** Catalog submit (plans/31 section 3) - the ORG policy half, so it belongs
      *  beside the other things an org tunes. Open to authors by default: anyone
      *  holding `catalog.submit` submits and the asset goes live immediately.
@@ -816,6 +824,10 @@ export function parseConfig(json: string): InstanceConfig {
   const ttl = cfg.policy.sessionTtlHours;
   if (typeof ttl !== 'number' || !Number.isFinite(ttl) || ttl <= 0 || ttl > 720) {
     throw new Error(`invalid sessionTtlHours: ${ttl} (must be > 0 and <= 720)`);
+  }
+  const maxHours = cfg.policy.sessionMaxHours;
+  if (maxHours !== undefined && (typeof maxHours !== 'number' || !Number.isFinite(maxHours) || maxHours < ttl || maxHours > 720)) {
+    throw new Error(`invalid sessionMaxHours: ${maxHours} (must be >= sessionTtlHours and <= 720)`);
   }
   const iv = cfg.audit.headLog.intervalMinutes;
   if (!Number.isInteger(iv) || iv < 0) throw new Error(`invalid audit.headLog.intervalMinutes: ${iv}`);

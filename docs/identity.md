@@ -7,13 +7,43 @@ there is no session table.
 
 | Principal | Cookie | Comes from | Lives |
 |---|---|---|---|
-| Member | `lw_session` | OIDC sign-in, reverse-proxy sign-in, or the dev provider | `policy.sessionTtlHours` (default 12h) |
+| Member | `lw_session` | OIDC sign-in, reverse-proxy sign-in, or the dev provider | `policy.sessionTtlHours` (default 12h), renewed while in use up to `policy.sessionMaxHours` ([session length](#session-length-and-renewal)) |
 | Guest | `lw_guest` | admission through a guest-edit link | the remaining lifetime of that link |
 
 Cookies are `HttpOnly`, `SameSite=Lax`, `Path=/`, and `Secure` whenever `instance.baseUrl`
 is https. A member session wins when both cookies are present. Every token carries a `typ`
 domain in its signed payload, so a session token can never be replayed as a guest token, a
 link signature or an OAuth state.
+
+### Session length and renewal
+
+A member session lasts `policy.sessionTtlHours`. With `policy.sessionMaxHours` set, a person
+who keeps working is not sent back to sign in at the end of it (plans/75 RENEW):
+
+- Each session cookie carries `authAt`, when the sign-in (or the device approval) that
+  started it happened. A cookie minted before `authAt` existed counts from its sign-in
+  time, which every sign-in but the dev provider's records, or else from when it was
+  issued.
+- Once a session is past half its lifetime, the next request that qualifies gets a fresh
+  cookie for another `sessionTtlHours`, with the same `authAt`. Qualifying requests are
+  every API write and reads of the documents the apps poll: `GET /api/auth/session`,
+  `GET /api/v1/org-config` and `GET /api/v1/inbox`. Their responses are private and never
+  kept by a shared cache, which a `Set-Cookie` must not reach. Pages, assets and other reads
+  never renew.
+- A renewal never reaches past `authAt + sessionMaxHours`: the last one is cut short, and
+  after that the person signs in again. A renewal that would add less than a minute is
+  skipped.
+- Each renewal asks again what a sign-in would: the account must be enabled, the cookie
+  must be at the account's current session epoch, and the person must still be admitted
+  (the lists, or an invitation that is not revoked; the check the device-code flow uses).
+  A revoked, disabled or no longer admitted person gets no new cookie, so their session
+  ends when the current cookie does, or at once for a disable or an epoch bump.
+- A renewal is not a sign-in: the time of the last completed sign-in, which passkey
+  changes ask for, does not move.
+- `sessionMaxHours` is optional. Absent, it equals `sessionTtlHours`, and nothing is
+  renewed. It must be at least `sessionTtlHours` and at most 720. A typical setting keeps
+  the TTL short and the cap at a few days, for example `sessionTtlHours: 12` with
+  `sessionMaxHours: 72`.
 
 ## OIDC SSO
 
@@ -40,7 +70,8 @@ the org user record through `claimMap`.
   issuer works; open and sovereign providers are first-class.
 
 Routes: `GET /api/auth/config` (what the sign-in screen needs), `GET /api/auth/login`,
-`GET /api/auth/callback`, `GET /api/auth/session`, `POST /api/auth/logout`, and for
+`GET /api/auth/callback`, `GET /api/auth/session`, `POST /api/auth/logout`,
+`POST /api/v1/me/revoke-sessions` ([sign out on all devices](#offboarding-disable-and-revocation)), and for
 [email and password](#email-and-password) `POST /api/auth/password/login` and
 `GET`/`POST /api/auth/password/set`.
 
@@ -944,6 +975,15 @@ to ride out. SCIM `active=false` (above) composes exactly this. Two further note
 - Revocation is **per user, not per session**: the epoch kills all of a person's sessions at
   once (there is no list of individual sessions to revoke one of). `bumpSessionEpoch` is the
   same lever for a "sign everyone-of-this-person out" without disabling them.
+- **Sign out on all devices** is that lever in each person's own hands (plans/75 G18):
+  `POST /api/v1/me/revoke-sessions` bumps the caller's own epoch, so every session they
+  hold, in any browser or app, ends on its next request, and it clears this browser's
+  cookies as logout does (`204`). It takes the person's own session cookie only: a
+  service token or an agent acting for someone gets `401`. Five calls an hour per person
+  (`429 RATE_LIMITED`, `retry-after`). Audited as `user.sessions.revoked` with the person
+  as both actor and subject and payload `{ self: true }`; the admin route
+  (`POST /api/v1/users/:id/revoke-sessions`, `grant.edit`) writes the same action without
+  it. A plain logout still ends only the browser it is sent from.
 - A group or role change is **immediate for API authorization**: `requireAction` resolves
   the live user record on every request and ignores the role baked into the cookie. What
   waits for the next token mint is only the role the shell's own token *claims*; lowering
