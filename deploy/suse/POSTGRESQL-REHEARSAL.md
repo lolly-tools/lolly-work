@@ -66,7 +66,9 @@ The chart runs PostgreSQL as UID 1000 and overrides the image entrypoint and
 `PGDATA` with `/mnt/postgresql/data/pgdata`. Test its actual mounted scripts,
 data ownership, TLS key ownership and certificate SANs. The profile gives the
 pod group 1000 and mounts a bounded 8 MiB socket directory at `/run/postgresql`
-so UID 1000 can create its Unix socket. A direct Docker
+so UID 1000 can create its Unix socket. It also drops Linux capabilities, uses
+the runtime seccomp profile and disables service-account token mounting. Test
+actual restricted namespace admission before promotion. A direct Docker
 entrypoint boot with `/var/lib/postgresql/18/docker` does not test that chart
 contract. The profile references existing auth, registry and TLS Secrets;
 changing a Secret after initialization does not automatically rotate existing

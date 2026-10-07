@@ -34,6 +34,10 @@ tls:
 metrics:
   enabled: false
 
+serviceAccount:
+  enabled: true
+  automountServiceAccountToken: false
+
 persistence:
   enabled: true
   accessModes:
@@ -46,6 +50,8 @@ persistence:
 podSecurityContext:
   fsGroup: 1000
   fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
 
 podTemplates:
   volumes:
@@ -55,6 +61,13 @@ podTemplates:
         sizeLimit: 8Mi
   containers:
     postgresql:
+      securityContext:
+        allowPrivilegeEscalation: false
+        runAsNonRoot: true
+        runAsUser: 1000
+        capabilities:
+          drop:
+            - ALL
       volumeMounts:
         socket:
           enabled: true
