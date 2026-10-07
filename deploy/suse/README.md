@@ -8,6 +8,11 @@ does not migrate an instance or change DNS.
 
 ## Choose the cluster and storage
 
+The [K3s operator workflow](K3S-OPERATOR.md) provides pinned candidate bootstrap,
+restricted host/provider preflight and credential-safe cluster checks for both
+UpCloud and Evroc. It stages only a fresh dedicated host, keeps Compose available
+and requires actual recovery/application acceptance before cutover.
+
 | Profile | Intended starting point | Acceptance required |
 |---|---|---|
 | K3s on openSUSE or SLES | A small team; one application owner and optional bounded render worker | Host image, supported versions, sign-in, shared editing, render load and restore |
