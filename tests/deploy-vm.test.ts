@@ -423,6 +423,16 @@ test('bootstrap-opensuse.sh writes only the one empty second disk, and only when
     return result;
   };
 
+  // A reviewed image pin remains a read-only plan and malformed pins stop before disk inspection.
+  const pinnedPlan = run(['--sha256', 'a'.repeat(64)]);
+  assert.equal(pinnedPlan.status, 0);
+  assert.match(pinnedPlan.stdout, new RegExp('Reviewed SHA-256: ' + 'a'.repeat(64)));
+  for (const args of [['--sha256'], ['--sha256', 'bad'], ['--sha256', 'A'.repeat(64)]]) {
+    const rejected = run(args);
+    assert.equal(rejected.status, 1);
+    assert.match(rejected.stderr, /requires the reviewed lowercase SHA-256/);
+  }
+
   // The plan: the one empty disk is named, and nothing is written.
   const plan = run([]);
   assert.equal(plan.status, 0, plan.stderr);

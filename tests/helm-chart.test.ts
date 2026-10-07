@@ -46,6 +46,23 @@ const deployment = (out: string, worker = false) => manifests(out).find(doc =>
   doc?.kind === 'Deployment' && (doc.metadata.labels?.['app.kubernetes.io/component'] === 'render-worker') === worker);
 const SMALL = ['-f', `${CHART}/values-small-suse.yaml`];
 
+test('control-plane Service never selects render workers or migration pods and keeps upgrade selectors stable', { skip: noHelm }, () => {
+  const r = render([...SECRETS, ...WORKER]); assert.ok(r.ok, r.err);
+  const docs = manifests(r.out), app = deployment(r.out), worker = deployment(r.out, true);
+  const service = docs.find(d => d.kind === 'Service' && d.metadata.labels?.['app.kubernetes.io/component'] !== 'render-worker');
+  const job = docs.find(d => d.kind === 'Job');
+  const matches = (labels: Record<string, string>) => Object.entries(service.spec.selector)
+    .every(([key, value]) => labels[key] === value);
+  assert.ok(matches(app.spec.template.metadata.labels));
+  assert.ok(!matches(worker.spec.template.metadata.labels), 'member traffic must not reach the browser worker');
+  assert.ok(!matches(job.spec.template.metadata.labels), 'migration pods are not application endpoints');
+  assert.equal(app.spec.selector.matchLabels['app.kubernetes.io/component'], undefined,
+    'existing Deployment immutable selectors stay upgrade-compatible');
+  const override = render([...SECRETS, '--set-json', 'podLabels={"app.kubernetes.io/component":"render-worker"}']);
+  assert.equal(override.ok, false);
+  assert.match(override.err, /component is reserved/);
+});
+
 test('chart lints clean', { skip: noHelm }, () => {
   const r = spawnSync('helm', ['lint', CHART], { encoding: 'utf8' });
   assert.equal(r.status, 0, r.stdout + r.stderr);
@@ -155,7 +172,13 @@ test('worker NetworkPolicy: control-plane ingress only, egress to DNS and public
   assert.ok(np, 'worker policy renders when enabled');
   assert.match(np!, /podSelector:\s*matchLabels:[\s\S]*?app\.kubernetes\.io\/component: render-worker/, 'selects the worker pods');
   assert.match(np!, /policyTypes:\s*- Ingress\s*- Egress/, 'restricts both directions');
-  assert.match(np!, /key: app\.kubernetes\.io\/component\s*operator: DoesNotExist[\s\S]*?port: 8791/, 'ingress only from control-plane pods, on the worker port');
+  const parsed = manifests(r.out).find(doc => doc?.kind === 'NetworkPolicy' && doc.metadata.name.endsWith('render-worker'));
+  const selector = parsed.spec.ingress[0].from[0].podSelector.matchLabels;
+  const matches = (labels: Record<string, string>) => Object.entries(selector).every(([key, value]) => labels[key] === value);
+  assert.ok(matches(deployment(r.out).spec.template.metadata.labels), 'render dispatch must accept the actual control-plane labels');
+  assert.ok(!matches(deployment(r.out, true).spec.template.metadata.labels), 'workers cannot dispatch authenticated renders to each other');
+  assert.ok(!matches(manifests(r.out).find(doc => doc?.kind === 'Job').spec.template.metadata.labels), 'migration pods cannot dispatch renders');
+  assert.equal(parsed.spec.ingress[0].ports[0].port, 8791);
   for (const cidr of ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16', '127.0.0.0/8', '100.64.0.0/10', 'fc00::/7', 'fe80::/10']) {
     assert.ok(np!.includes(`- ${cidr}`), `${cidr} carved out of public egress`);
   }
@@ -338,4 +361,98 @@ test('unused volume bounds do not change the light topology', { skip: noHelm }, 
   assert.ok(r.ok, r.err);
   assert.equal(deployment(r.out, true), undefined);
   assert.equal(deployment(r.out).spec.template.spec.initContainers, undefined);
+});
+
+test('PostgreSQL CA reaches application and migration Job without reaching the browser worker', { skip: noHelm }, () => {
+  const volumes = [{ name: 'postgres-ca', configMap: { name: 'lolly-postgres-ca' } }];
+  const mounts = [{ name: 'postgres-ca', mountPath: '/etc/lolly/postgres', readOnly: true }];
+  const r = render([...SECRETS, ...WORKER,
+    '--set-json', `extraVolumes=${JSON.stringify(volumes)}`,
+    '--set-json', `extraVolumeMounts=${JSON.stringify(mounts)}`,
+    '--set-json', `migrate.extraVolumes=${JSON.stringify(volumes)}`,
+    '--set-json', `migrate.extraVolumeMounts=${JSON.stringify(mounts)}`,
+  ]);
+  assert.ok(r.ok, r.err);
+  const job = manifests(r.out).find(doc => doc?.kind === 'Job');
+  for (const pod of [deployment(r.out).spec.template.spec, job.spec.template.spec]) {
+    assert.deepEqual(pod.volumes.find((volume: { name: string }) => volume.name === 'postgres-ca'), volumes[0]);
+    assert.deepEqual(pod.containers[0].volumeMounts.find((mount: { name: string }) => mount.name === 'postgres-ca'), mounts[0]);
+    assert.ok(pod.volumes.some((volume: { name: string }) => volume.name === 'tmp'), 'scratch remains available');
+    assert.ok(pod.containers[0].env.some((env: { name: string }) => env.name === 'DATABASE_URL' && 'valueFrom' in env));
+  }
+  const browser = deployment(r.out, true).spec.template.spec;
+  assert.ok(!browser.volumes.some((volume: { name: string }) => volume.name === 'postgres-ca'));
+  assert.ok(!browser.containers[0].env.some((env: { name: string }) => env.name === 'DATABASE_URL'));
+});
+
+test('migration-specific mounts are opt-in and evaluation never creates a migration Job', { skip: noHelm }, () => {
+  const defaults = render(SECRETS);
+  assert.ok(defaults.ok, defaults.err);
+  const pod = manifests(defaults.out).find(doc => doc?.kind === 'Job').spec.template.spec;
+  assert.deepEqual(pod.volumes, [{ name: 'tmp', emptyDir: {} }]);
+  assert.deepEqual(pod.containers[0].volumeMounts, [{ name: 'tmp', mountPath: '/tmp' }]);
+  const evalProfile = render(['-f', `${CHART}/values-eval.yaml`,
+    '--set-json', 'migrate.extraVolumes=[{"name":"postgres-ca","configMap":{"name":"ca"}}]',
+    '--set-json', 'migrate.extraVolumeMounts=[{"name":"postgres-ca","mountPath":"/etc/lolly/postgres","readOnly":true}]',
+  ]);
+  assert.ok(evalProfile.ok, evalProfile.err);
+  assert.ok(!manifests(evalProfile.out).some(doc => doc?.kind === 'Job'));
+});
+
+test('fresh-install migration hooks use an existing account and keep cleanup ordering independent of the app account', { skip: noHelm }, () => {
+  const r = render(SECRETS);
+  assert.ok(r.ok, r.err);
+  const docs = manifests(r.out);
+  const job = docs.find(doc => doc?.kind === 'Job');
+  const app = deployment(r.out).spec.template.spec;
+  const account = docs.find(doc => doc?.kind === 'ServiceAccount');
+  assert.equal(job.spec.template.spec.serviceAccountName, 'default');
+  assert.equal(app.serviceAccountName, account.metadata.name);
+  assert.notEqual(job.spec.template.spec.serviceAccountName, app.serviceAccountName,
+    'the pre-install hook cannot wait for an ordinary resource Helm creates after hooks');
+  assert.equal(job.spec.template.spec.automountServiceAccountToken, false);
+  assert.equal(job.metadata.annotations['helm.sh/hook'], 'pre-install,pre-upgrade');
+  assert.equal(job.metadata.annotations['helm.sh/hook-delete-policy'], 'before-hook-creation');
+  const secret = docs.find(doc => doc?.kind === 'Secret');
+  assert.ok(Number(secret.metadata.annotations['helm.sh/hook-weight']) < Number(job.metadata.annotations['helm.sh/hook-weight']));
+  assert.equal(docs.filter(doc => doc?.kind === 'ServiceAccount').length, 1,
+    'only the ordinary app account is managed; no orphan hook account');
+  assert.equal(account.metadata.annotations?.['helm.sh/hook'], undefined);
+
+  const reused = render([...SECRETS, '--set', 'serviceAccount.create=false', '--set', 'serviceAccount.name=precreated-work']);
+  assert.ok(reused.ok, reused.err);
+  assert.equal(manifests(reused.out).find(doc => doc?.kind === 'Job').spec.template.spec.serviceAccountName, 'precreated-work');
+  assert.equal(deployment(reused.out).spec.template.spec.serviceAccountName, 'precreated-work');
+  assert.ok(!manifests(reused.out).some(doc => doc?.kind === 'ServiceAccount'));
+
+  const separate = render([...SECRETS, '--set', 'migrate.serviceAccountName=precreated-migration']);
+  assert.ok(separate.ok, separate.err);
+  assert.equal(manifests(separate.out).find(doc => doc?.kind === 'Job').spec.template.spec.serviceAccountName, 'precreated-migration');
+  assert.equal(deployment(separate.out).spec.template.spec.serviceAccountName, app.serviceAccountName);
+});
+
+test('worker DNS trust is namespace-scoped and HTTPS-only egress excludes special IPv6 addresses', { skip: noHelm }, () => {
+  const active = [...SECRETS, ...WORKER, '--set', 'renderWorker.networkPolicy.enabled=true'];
+  const r = render([...SMALL, ...active]);
+  assert.ok(r.ok, r.err);
+  const policy = manifests(r.out).find(doc => doc?.kind === 'NetworkPolicy' && doc.metadata.name.endsWith('render-worker'));
+  const dns = policy.spec.egress.find((rule: { ports: { port: number }[] }) => rule.ports.some(port => port.port === 53));
+  assert.deepEqual(dns.to, [{ namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' } }, podSelector: { matchLabels: { 'k8s-app': 'kube-dns' } } }]);
+  const publicRule = policy.spec.egress.find((rule: { to: { ipBlock?: { cidr: string } }[] }) => rule.to.some(peer => peer.ipBlock?.cidr === '::/0'));
+  assert.deepEqual(publicRule.ports, [{ protocol: 'TCP', port: 443 }]);
+  const ipv6 = publicRule.to.find((peer: { ipBlock: { cidr: string } }) => peer.ipBlock.cidr === '::/0').ipBlock;
+  for (const range of ['::/128', '::1/128', '::fffe:0:0/95', 'fc00::/7', 'fe80::/10']) assert.ok(ipv6.except.includes(range));
+  assert.ok(!ipv6.except.includes('::ffff:0:0/96'), 'Kubernetes rejects the mapped IPv4 exception under an IPv6 CIDR');
+  const disabled = render([...active, '--set-json', 'renderWorker.networkPolicy.publicPorts=[]']);
+  assert.ok(disabled.ok, disabled.err);
+  const closed = manifests(disabled.out).find(doc => doc?.kind === 'NetworkPolicy' && doc.metadata.name.endsWith('render-worker'));
+  assert.ok(!closed.spec.egress.some((rule: { to: { ipBlock?: unknown }[] }) => rule.to.some(peer => peer.ipBlock)));
+  for (const value of ['null', '443', '[22]', '["443"]', '[true]']) {
+    const invalid = render([...active, '--set-json', `renderWorker.networkPolicy.publicPorts=${value}`]);
+    assert.equal(invalid.ok, false, value);
+    assert.match(invalid.err, /networkPolicy.publicPorts/);
+  }
+  const unscopedDns = render([...active, '--set-json', 'renderWorker.networkPolicy.dnsNamespaceLabels=null']);
+  assert.equal(unscopedDns.ok, false);
+  assert.match(unscopedDns.err, /dnsNamespaceLabels/);
 });

@@ -250,9 +250,16 @@ renderWorker:
   #       ports: [{ protocol: TCP, port: 8080 }]
   networkPolicy:
     enabled: false
+    # CoreDNS namespace and pod selectors must both match. Do not trust DNS
+    # labels on pods in arbitrary namespaces.
+    dnsNamespaceLabels:
+      kubernetes.io/metadata.name: kube-system
     # Labels of your cluster DNS pods (CoreDNS on RKE2 and most distributions).
     dnsPodLabels:
       k8s-app: kube-dns
+    # Reviewed public web ports. Use [443] for HTTPS-only deployments or []
+    # to disable public egress; private shell access belongs in extraEgress.
+    publicPorts: [80, 443]
     extraEgress: []
   resources:
     requests: { cpu: 250m, memory: 512Mi }
@@ -310,6 +317,12 @@ c2pa:
 # skipped migrations fails loud instead of serving a half-migrated database.
 migrate:
   enabled: true
+  # Existing ServiceAccount for the pre-install/pre-upgrade Job. Empty uses the
+  # existing namespace default when the chart creates the app account later;
+  # with serviceAccount.create=false it reuses that operator-provided account.
+  # Migrations need no Kubernetes API privileges. Custom accounts must exist
+  # before installation, including any workload-identity annotations/bindings.
+  serviceAccountName: ""
   # Command the hook Job runs. Must apply pending migrations against DATABASE_URL.
   # Override if your image places the runner elsewhere (see the image note above).
   command: ["pnpm", "run", "migrate"]
@@ -319,6 +332,11 @@ migrate:
   resources:
     requests: { cpu: 50m, memory: 128Mi }
     limits: { cpu: "1", memory: 512Mi }
+  # Job-only trusted material, such as a PostgreSQL CA ConfigMap. Mount the
+  # same CA path on the application with top-level extraVolumes/Mounts.
+  # These do not reach the browser worker or inherit private shell/pack mounts.
+  extraVolumes: []
+  extraVolumeMounts: []
 
 # ── Pack (brand catalog assets) ─────────────────────────────────────────────
 # The instance serves its catalog from a "pack" on disk (config.instance.pack,

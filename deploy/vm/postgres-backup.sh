@@ -28,11 +28,16 @@ case "$file" in /*) ;; *) file="$PWD/$file" ;; esac
 command -v pg_restore >/dev/null || die "Install PostgreSQL client tools."
 
 digest() {
+  local output
   if command -v sha256sum >/dev/null; then
-    sha256sum "$1" | awk '{print $1}'
+    output=$(sha256sum "$1") || return
   else
-    shasum -a 256 "$1" | awk '{print $1}'
+    output=$(shasum -a 256 "$1") || return
   fi
+  output=${output%% *}
+  # Hash tools prefix escaped filenames with a backslash.
+  output=${output#\\}
+  printf '%s\n' "$output"
 }
 verify() {
   [ -f "$file" ] && [ ! -L "$file" ] || die "Backup must be a regular file."

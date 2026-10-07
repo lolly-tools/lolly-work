@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -52,6 +53,15 @@ test('backup publishes a verified private archive and refuses overwrites', () =>
   const calls = readFileSync(f.calls, 'utf8');
   assert.match(calls, /dump --no-password --format=custom --no-owner --no-privileges/);
   assert.doesNotMatch(calls, /postgres:\/\/|password=/);
+});
+
+test('checksum extraction supports escaped filenames without an awk dependency', () => {
+  const f = fixture();
+  const file = join(f.dir, 'backup\\with newline\n.dump');
+  const backup = f.run(['backup', file]);
+  assert.equal(backup.status, 0, backup.stderr);
+  assert.equal(readFileSync(`${file}.sha256`, 'utf8').trim(), createHash('sha256').update(readFileSync(file)).digest('hex'));
+  assert.equal(f.run(['verify', file]).status, 0);
 });
 
 test('a failed dump publishes nothing and cleans temporary files', () => {

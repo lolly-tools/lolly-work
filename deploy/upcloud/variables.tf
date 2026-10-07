@@ -39,6 +39,16 @@ variable "root_disk_gb" {
   }
 }
 
+variable "root_disk_tier" {
+  description = "Select and price the root storage explicitly; Standard suits a cost-conscious Starter candidate."
+  type        = string
+  default     = "maxiops"
+  validation {
+    condition     = contains(["standard", "maxiops"], var.root_disk_tier)
+    error_message = "Use standard or maxiops for the boot disk."
+  }
+}
+
 variable "ssh_user" {
   description = "Image's cloud-init login account (sles for the openSUSE Leap image)."
   type        = string
@@ -67,4 +77,33 @@ variable "labels" {
   description = "Additional inventory labels."
   type        = map(string)
   default     = {}
+}
+
+variable "ephemeral_port_range" {
+  description = "Measured Linux ip_local_port_range for stateless response rules; keep below-hosted and NodePort ports excluded."
+  type        = object({ start = number, end = number })
+  default     = { start = 32768, end = 60999 }
+  validation {
+    condition     = var.ephemeral_port_range.start >= 32768 && var.ephemeral_port_range.end <= 65535 && var.ephemeral_port_range.start <= var.ephemeral_port_range.end && floor(var.ephemeral_port_range.start) == var.ephemeral_port_range.start && floor(var.ephemeral_port_range.end) == var.ephemeral_port_range.end
+    error_message = "Use the measured integer ephemeral range between 32768 and 65535; never include application, Kubernetes API or NodePort ports."
+  }
+}
+
+variable "dns_resolver_cidrs" {
+  description = "Measured DNS resolver addresses, each an exact IPv4 /32 or IPv6 /128; required for stateless DNS responses."
+  type        = set(string)
+  validation {
+    condition     = length(var.dns_resolver_cidrs) > 0 && alltrue([for network in var.dns_resolver_cidrs : can(cidrhost(network, 0)) && can(regex(strcontains(network, ":") ? "/128$" : "/32$", network))])
+    error_message = "Provide each actual DNS resolver as a single-host /32 or /128 CIDR."
+  }
+}
+
+variable "ntp_server_cidrs" {
+  description = "Optional measured time server addresses, each an exact /32 or /128; qualify the client's actual UDP response destination separately."
+  type        = set(string)
+  default     = []
+  validation {
+    condition     = alltrue([for network in var.ntp_server_cidrs : can(cidrhost(network, 0)) && can(regex(strcontains(network, ":") ? "/128$" : "/32$", network))])
+    error_message = "Time server response rules require single-host /32 or /128 CIDRs."
+  }
 }

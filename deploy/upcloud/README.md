@@ -32,7 +32,11 @@ Copy `terraform.tfvars.example` to `terraform.tfvars`. Set a qualified image UUI
 the image's login account, actual public SSH keys and administrator CIDRs. The
 module creates a single public IPv4 interface. IPv6 firewall rules are prepared,
 but the module does not allocate an IPv6 interface. The disk defaults to 80 GB and
-cannot be smaller than 50 GB. The example plan is a starting point for a small
+cannot be smaller than 50 GB. `root_disk_tier` defaults to `maxiops`, preserving
+previous deployments. Set it explicitly to `standard` for a qualified Starter
+candidate and confirm both plan and disk pricing with your account. A disk that
+exceeds the plan's included quota can be billed for its full size; do not estimate
+its price as only the bytes above that quota. The example plan is a starting point for a small
 private instance; qualify its capacity before adding public APIs or a database.
 
 API credentials belong in the provider's environment variables, such as
@@ -57,6 +61,23 @@ a no-change plan against its actual disks, network interfaces and firewall.
 
 TCP 80 and TCP/UDP 443 are public for HTTP, HTTPS, ACME and HTTP/3. SSH accepts only
 the configured administrator source ranges. ICMP is permitted for network control.
+UpCloud's [public firewall is stateless](https://upcloud.com/docs/products/networking/firewall/).
+It also needs inbound response rules for outgoing traffic. This module permits
+TCP responses from source ports 80/443 to the measured `ephemeral_port_range`,
+and TCP/UDP responses from port 53 on each exact `dns_resolver_cidrs` address.
+DNS resolvers are required inputs; measure `/etc/resolv.conf` rather than assuming
+the example applies to every image. Optional `ntp_server_cidrs` permit UDP replies
+from port 123 on exact time servers. Check the time client's actual local port;
+this rule does not support clients that bind their outgoing requests to port 123.
+Read `/proc/sys/net/ipv4/ip_local_port_range` on the host before applying and
+after OS changes. The allowed range starts above Kubernetes NodePort ports.
+
+These packet rules cannot establish that a reply belongs to a connection. An
+active stateful host firewall must allow established/related traffic and reject
+unsolicited traffic to the ephemeral range. Do not open that range as hosted
+ports in firewalld. Verify DNS, HTTPS, time synchronization and rejection of
+unsolicited packets after the cloud rules propagate and before loading secrets.
+
 All other inbound traffic is dropped. PostgreSQL, Work, render and relay ports stay
 behind Caddy and the container network. Docker-published ports still need explicit
 loopback binding; the cloud firewall is an additional boundary.
@@ -79,3 +100,18 @@ complete. A local disk snapshot alone does not replace a tested, independent bac
 - [UpCloud firewall provider schema](https://github.com/UpCloudLtd/terraform-provider-upcloud/blob/v5.45.0/docs/resources/firewall_rules.md)
 - [OpenTofu test command](https://opentofu.org/docs/cli/commands/test/)
 - [Terraform provider dependency locks](https://developer.hashicorp.com/terraform/language/files/dependency-lock)
+
+## Stage openSUSE when no cloud template is available
+
+Use the guarded two-disk procedure in `deploy/vm/README.md` on a new candidate.
+Record the official openSUSE image checksum in the candidate review and pass
+`--sha256 <reviewed-hash>` to `bootstrap-opensuse.sh`. It checks both that pin
+and the published checksum before writing the one verified empty disk. Existing
+production disks are never bootstrap targets. Preserve the temporary system
+disk until the new OS has booted and key-only access is verified.
+
+Where the provider supports it, create the candidate on the utility network
+first and configure its restricted SSH/default-deny firewall before adding a
+public interface. Wait for firewall propagation and verify the actual rules
+and external reachability before loading application credentials. Keep all
+Kubernetes, database, worker and internal application ports private.

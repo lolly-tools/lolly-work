@@ -11,12 +11,13 @@ images:
   postgresql:
     registry: dp.apps.rancher.io
     repository: containers/postgresql
-    tag: "17.11-22.3"
-    digest: "sha256:86d2c922014118dcb965295a344c058916829d4137f33659d6a636032df8073a"
+    tag: "18.6-16.3"
+    digest: "sha256:24210933acadcefb3775a122818d5d3b888fe5b2687eaa5b0e0867bd82a211d6"
 
 nodeCount: 1
 auth:
-  database: lollywork
+  # Create the destination explicitly with builtin C.UTF-8; see POSTGRESQL-REHEARSAL.md.
+  database: ""
   username: lollywork
   existingSecret: lolly-postgres-auth
   passwordKey: password
@@ -33,6 +34,12 @@ tls:
 metrics:
   enabled: false
 
+serviceAccount:
+  enabled: true
+  # The AppCo chart's empty name resolves to the namespace default account.
+  name: lolly-postgres
+  automountServiceAccountToken: false
+
 persistence:
   enabled: true
   accessModes:
@@ -42,9 +49,31 @@ persistence:
     requests:
       storage: 16Gi
 
+podSecurityContext:
+  fsGroup: 1000
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
 podTemplates:
+  volumes:
+    socket:
+      enabled: true
+      emptyDir:
+        sizeLimit: 8Mi
   containers:
     postgresql:
+      securityContext:
+        allowPrivilegeEscalation: false
+        runAsNonRoot: true
+        runAsUser: 1000
+        capabilities:
+          drop:
+            - ALL
+      volumeMounts:
+        socket:
+          enabled: true
+          mountPath: /run/postgresql
       resources:
         requests:
           cpu: 100m

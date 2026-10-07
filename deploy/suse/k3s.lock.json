@@ -1,0 +1,18 @@
+{
+  "version": "v1.34.12+k3s1",
+  "kubernetesMinor": "1.34",
+  "architecture": "amd64",
+  "releaseUrl": "https://github.com/k3s-io/k3s/releases/tag/v1.34.12%2Bk3s1",
+  "releasePublishedAt": "2026-09-30T16:09:32Z",
+  "releaseCommit": "47b4749964eb62628618bedad32eeacfc9eebbae",
+  "binary": {
+    "url": "https://github.com/k3s-io/k3s/releases/download/v1.34.12%2Bk3s1/k3s",
+    "sha256": "ef1df26b26276c0f6d962391c94e12f9362d1f1e30ec7a7926e9ddb84b0d66ce"
+  },
+  "installer": {
+    "url": "https://raw.githubusercontent.com/k3s-io/k3s/47b4749964eb62628618bedad32eeacfc9eebbae/install.sh",
+    "sha256": "40b487f0d8ef4f5d1bf422e7bb6228cc7789c40ecc66c5ab067d396bbee9816e"
+  },
+  "checksumSource": "https://github.com/k3s-io/k3s/releases/download/v1.34.12%2Bk3s1/sha256sum-amd64.txt",
+  "checkedAt": "2026-10-07"
+}
