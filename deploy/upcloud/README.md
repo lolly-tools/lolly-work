@@ -61,6 +61,23 @@ a no-change plan against its actual disks, network interfaces and firewall.
 
 TCP 80 and TCP/UDP 443 are public for HTTP, HTTPS, ACME and HTTP/3. SSH accepts only
 the configured administrator source ranges. ICMP is permitted for network control.
+UpCloud's [public firewall is stateless](https://upcloud.com/docs/products/networking/firewall/).
+It also needs inbound response rules for outgoing traffic. This module permits
+TCP responses from source ports 80/443 to the measured `ephemeral_port_range`,
+and TCP/UDP responses from port 53 on each exact `dns_resolver_cidrs` address.
+DNS resolvers are required inputs; measure `/etc/resolv.conf` rather than assuming
+the example applies to every image. Optional `ntp_server_cidrs` permit UDP replies
+from port 123 on exact time servers. Check the time client's actual local port;
+this rule does not support clients that bind their outgoing requests to port 123.
+Read `/proc/sys/net/ipv4/ip_local_port_range` on the host before applying and
+after OS changes. The allowed range starts above Kubernetes NodePort ports.
+
+These packet rules cannot establish that a reply belongs to a connection. An
+active stateful host firewall must allow established/related traffic and reject
+unsolicited traffic to the ephemeral range. Do not open that range as hosted
+ports in firewalld. Verify DNS, HTTPS, time synchronization and rejection of
+unsolicited packets after the cloud rules propagate and before loading secrets.
+
 All other inbound traffic is dropped. PostgreSQL, Work, render and relay ports stay
 behind Caddy and the container network. Docker-published ports still need explicit
 loopback binding; the cloud firewall is an additional boundary.
