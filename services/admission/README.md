@@ -49,14 +49,15 @@ names are still verified. `ADMISSION_PORT` defaults to 8443. Never put these
 secret bytes in source, image layers, command arguments or release reports.
 
 The 16 protocol/HTTP/snapshot tests also run through the root test suite without
-installing Redis dependencies into Work. Two integration tests additionally
+installing Redis dependencies into Work. Three integration tests additionally
 require `ADMISSION_TEST_FIXTURE` and `ADMISSION_TEST_HTTPS_PORT`. They expect a
-fresh isolated local Redis with verified TLS, authentication, DB 0 and DB 1;
+fresh isolated local Redis with verified TLS, authentication, and empty
+DB 0/1/3/4 test databases;
 they write synthetic counters. Do not point them at a shared or production store.
 The fixture contains protected `redis-url.txt`, `tls.crt`, `tls.key`,
 `mcp-token.txt` and `ca-token.txt`. Integration checks cover concurrent Lua
 increments, deadlines, the budget pair, an empty-destination import and the
-actual HTTPS process. AppCo amd64, Kubernetes storage/security/network and
+actual HTTPS process and protected operator CLI/hash guards. AppCo amd64, Kubernetes storage/security/network and
 restart/recovery acceptance remain deployment qualifications.
 
 ## Counter transfer
