@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import ssl
 import subprocess
 import sys
 import urllib.error
@@ -25,10 +26,22 @@ COMPONENTS = frozenset({"work", "public-web", "public-mcp", "public-ca", "public
 IMAGE = re.compile(r"[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}\Z")
 NAME = re.compile(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\Z")
 PROTECTED_DEPLOYMENT = re.compile(r"(?:^|-)(?:edge|caddy|postgres|postgresql|database)(?:-|$)")
+RESERVED_NAMESPACES = frozenset({"kube-system", "kube-public", "kube-node-lease"})
+PROTECTED_ROLES = frozenset({"edge", "database", "postgres", "postgresql", "storage", "cluster-dns"})
 
 
 class Refusal(RuntimeError):
     """An identity, review or application boundary was not satisfied."""
+
+
+class ApplyFailure(Refusal):
+    """Keep partial application evidence when acceptance or a later patch fails."""
+
+    def __init__(self, reason, applied, attempted, phase):
+        super().__init__(reason)
+        self.applied = copy.deepcopy(applied)
+        self.attempted = copy.deepcopy(attempted)
+        self.phase = phase
 
 
 def require(condition, message):
@@ -117,6 +130,7 @@ def validate_target(target):
             require(isinstance(component[key], str) and bool(NAME.fullmatch(component[key])), f"Invalid {key}")
         for key in ("namespaceUID", "deploymentUID"):
             nonempty(component[key], key)
+        require(component["namespace"] not in RESERVED_NAMESPACES, "Kubernetes system namespaces are excluded")
         require(not PROTECTED_DEPLOYMENT.search(component["deployment"]), "Edge and database deployments are excluded")
         pair = (component["namespace"], component["deployment"])
         require(pair not in deployments, "Each Deployment may be owned by only one component")
@@ -191,6 +205,8 @@ def check_deployment(component, kube):
     value = kube.get("deployment", component["deployment"], component["namespace"])
     require(value["metadata"]["uid"] == component["deploymentUID"], "Wrong Deployment UID")
     require(not value["metadata"].get("deletionTimestamp"), "Deployment is being deleted")
+    require(value["metadata"].get("labels", {}).get("app.kubernetes.io/component") not in PROTECTED_ROLES,
+            "Edge, database and storage resource roles are excluded")
     require(all(value["metadata"].get("labels", {}).get(k) == v for k, v in component.get("requiredLabels", {}).items()),
             "Deployment ownership labels changed")
     require(value["spec"].get("replicas", 1) > 0, "Deployment has no running replicas")
@@ -297,7 +313,10 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 def health_check(url):
     # No credentials, cookies, redirect following or response-body logging.
     try:
-        with urllib.request.build_opener(NoRedirect()).open(url, timeout=15) as response:
+        # Standard SSL_CERT_FILE / SSL_CERT_DIR select a trusted CA bundle;
+        # hostname and certificate verification are never disabled.
+        context = ssl.create_default_context()
+        with urllib.request.build_opener(NoRedirect(), urllib.request.HTTPSHandler(context=context)).open(url, timeout=15) as response:
             require(response.status == 200, "HTTPS health check did not return 200")
     except (OSError, urllib.error.URLError) as exc:
         raise Refusal("HTTPS health check failed; inspect the configured URL") from exc
@@ -316,30 +335,41 @@ def apply_plan(target, plan, reviewed_hash, kube, timeout=180, health=health_che
         if "patch" in record:
             require(value["metadata"]["resourceVersion"] == record["resourceVersion"], "Resource version changed; make and review a new plan")
             guard_result(value, kube.patch(component, record["patch"], True), index, record["image"])
-    applied = []
-    for record in plan["updates"]:
-        component = target["components"][record["component"]]
-        # Repeat identity and concurrency checks immediately before each mutation.
-        check_cluster(target, kube)
-        before, index = check_deployment(component, kube)
-        require(before["metadata"]["resourceVersion"] == record["resourceVersion"], "Resource version changed before patch; stop and re-plan")
-        result = kube.patch(component, record["patch"], False)
-        applied.append({"component": record["component"], "beforeImage": record["beforeImage"], "image": record["image"]})
-        guard_result(before, result, index, record["image"])
-        print(json.dumps({"phase": "patched", **applied[-1]}), flush=True)
-    for record in plan["updates"]:
-        component = target["components"][record["component"]]
-        kube.rollout(component, timeout)
-        value, index = check_deployment(component, kube)
-        require(value["spec"]["template"]["spec"]["containers"][index]["image"] == record["image"], "Image changed during rollout")
-        require(protected_spec(value, index) == record["protectedSpecSha256"], "Protected fields changed during rollout")
-        status = value.get("status", {})
-        replicas = value["spec"].get("replicas", 1)
-        require(status.get("observedGeneration", 0) >= value["metadata"].get("generation", 1)
-                and status.get("updatedReplicas", 0) == replicas and status.get("availableReplicas", 0) == replicas
-                and status.get("replicas", 0) == replicas, "Deployment rollout is not fully Ready")
-        for url in component.get("healthURLs", []):
-            health(url)
+    applied, attempted, phase = [], [], "pre-patch"
+    try:
+        for record in plan["updates"]:
+            component = target["components"][record["component"]]
+            # Repeat identity and concurrency checks immediately before each mutation.
+            phase = "pre-patch:" + record["component"]
+            check_cluster(target, kube)
+            before, index = check_deployment(component, kube)
+            require(before["metadata"]["resourceVersion"] == record["resourceVersion"], "Resource version changed before patch; stop and re-plan")
+            change = {"component": record["component"], "beforeImage": record["beforeImage"], "image": record["image"]}
+            phase = "patch:" + record["component"]
+            attempted.append(change)
+            print(json.dumps({"phase": "patch-attempt", **change}), flush=True)
+            result = kube.patch(component, record["patch"], False)
+            applied.append(change)
+            guard_result(before, result, index, record["image"])
+            print(json.dumps({"phase": "patched", **change}), flush=True)
+        for record in plan["updates"]:
+            component = target["components"][record["component"]]
+            phase = "rollout:" + record["component"]
+            kube.rollout(component, timeout)
+            value, index = check_deployment(component, kube)
+            require(value["spec"]["template"]["spec"]["containers"][index]["image"] == record["image"], "Image changed during rollout")
+            require(protected_spec(value, index) == record["protectedSpecSha256"], "Protected fields changed during rollout")
+            status = value.get("status", {})
+            replicas = value["spec"].get("replicas", 1)
+            require(status.get("observedGeneration", 0) >= value["metadata"].get("generation", 1)
+                    and status.get("updatedReplicas", 0) == replicas and status.get("availableReplicas", 0) == replicas
+                    and status.get("replicas", 0) == replicas, "Deployment rollout is not fully Ready")
+            phase = "https-health:" + record["component"]
+            for url in component.get("healthURLs", []):
+                health(url)
+    except (Refusal, OSError, ValueError, KeyError, TypeError, IndexError) as exc:
+        reason = str(exc) if isinstance(exc, Refusal) else "Invalid resource response during apply"
+        raise ApplyFailure(reason, applied, attempted, phase) from exc
     return {"result": "UPDATED" if applied else "NO_CHANGE", "reviewedPlanSha256": reviewed_hash,
             "updated": applied, "unchanged": [r["component"] for r in plan["unchanged"]],
             "databaseRollback": False}
@@ -379,8 +409,11 @@ def main(argv=None):
     except (Refusal, OSError, ValueError, KeyError, TypeError) as exc:
         # Do not expose credentials or full API responses in error messages.
         message = str(exc) if isinstance(exc, Refusal) else "Invalid input or resource response; inspect the named files/resources"
-        print(json.dumps({"result": "REFUSED", "reason": message,
-                          "note": "Earlier successful patches remain applied if a later patch or acceptance check fails; no automatic rollback."}), file=sys.stderr)
+        failure = {"result": "REFUSED", "reason": message,
+                   "note": "Earlier patches remain applied; a failed transport may also have committed its last patch. Inspect patch attempts; no automatic rollback."}
+        if isinstance(exc, ApplyFailure):
+            failure.update(updated=exc.applied, patchAttempts=exc.attempted, failedPhase=exc.phase, databaseRollback=False)
+        print(json.dumps(failure), file=sys.stderr)
         return 1
 
 

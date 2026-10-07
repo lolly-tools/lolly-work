@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 sys.dont_write_bytecode = True
@@ -119,6 +120,13 @@ class MultiKube(FakeKube):
                 return result
             finally:
                 self.value = saved
+        return super().patch(component, patch, dry_run)
+
+
+class PartialFailureKube(MultiKube):
+    def patch(self, component, patch, dry_run):
+        if component["deployment"] == "lolly-web" and not dry_run:
+            raise update.Refusal("Second patch transport failed")
         return super().patch(component, patch, dry_run)
 
 
@@ -294,6 +302,58 @@ class UpdateTests(unittest.TestCase):
         with self.assertRaises(update.Refusal):
             update.apply_plan(self.target, plan, update.digest(plan), kube)
         self.assertEqual(kube.writes, [])
+
+    def test_reserved_namespace_and_actual_protected_role_refuse(self):
+        for namespace in update.RESERVED_NAMESPACES:
+            with self.subTest(namespace=namespace):
+                t = target()
+                t["components"]["work"]["namespace"] = namespace
+                with self.assertRaises(update.Refusal):
+                    update.make_plan(t, release(), self.kube)
+        for role in update.PROTECTED_ROLES:
+            with self.subTest(role=role):
+                self.kube.value["metadata"]["labels"]["app.kubernetes.io/component"] = role
+                with self.assertRaises(update.Refusal):
+                    self.plan()
+        self.assertEqual(self.kube.writes + self.kube.dry_runs, [])
+
+    def test_partial_apply_reports_success_and_uncertain_attempt_without_rollback(self):
+        self.target["components"]["public-web"] = copy.deepcopy(self.target["components"]["work"])
+        self.target["components"]["public-web"].update(deployment="lolly-web", deploymentUID="web-uid", healthURLs=[])
+        r = release()
+        r["updates"].append({"component": "public-web", "expectedImage": OLD, "image": NEW})
+        kube = PartialFailureKube()
+        plan = update.make_plan(self.target, r, kube)
+        with self.assertRaises(update.ApplyFailure) as raised:
+            update.apply_plan(self.target, plan, update.digest(plan), kube)
+        failure = raised.exception
+        self.assertEqual([r["component"] for r in failure.applied], ["work"])
+        self.assertEqual([r["component"] for r in failure.attempted], ["work", "public-web"])
+        self.assertEqual(failure.phase, "patch:public-web")
+        self.assertEqual(kube.value["spec"]["template"]["spec"]["containers"][0]["image"], NEW)
+        self.assertEqual(kube.second["spec"]["template"]["spec"]["containers"][0]["image"], OLD)
+        self.assertEqual(len(kube.writes), 1)
+
+    def test_health_failure_keeps_update_and_reports_phase(self):
+        plan = self.plan()
+        def failed_health(url):
+            raise update.Refusal("HTTPS health failed")
+        with self.assertRaises(update.ApplyFailure) as raised:
+            update.apply_plan(self.target, plan, update.digest(plan), self.kube, health=failed_health)
+        self.assertEqual(raised.exception.phase, "https-health:work")
+        self.assertEqual(len(raised.exception.applied), 1)
+        self.assertEqual(self.kube.value["spec"]["template"]["spec"]["containers"][0]["image"], NEW)
+
+    def test_https_uses_standard_verified_ssl_context(self):
+        context = update.ssl.create_default_context()
+        self.assertTrue(context.check_hostname)
+        self.assertEqual(context.verify_mode, update.ssl.CERT_REQUIRED)
+        with patch.object(update.ssl, "create_default_context", return_value=context) as create, \
+             patch.object(update.urllib.request, "build_opener") as build:
+            build.return_value.open.return_value.__enter__.return_value.status = 200
+            update.health_check("https://work.example/healthz")
+            create.assert_called_once_with()
+            self.assertIs(build.call_args.args[1]._context, context)
 
 
 if __name__ == "__main__":

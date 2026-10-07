@@ -34,6 +34,9 @@ names are excluded. Optional `requiredLabels` further bind ownership. Optional
 normal certificate verification and no redirects. They are checked after an
 actual rollout, in addition to Deployment readiness. Choose an application
 health endpoint, not a sign-in URL that redirects.
+Kubernetes system namespaces and resources carrying an edge, database or storage
+component label are also refused, even if a target mistakenly aliases them as
+an application component.
 
 ### Operating through SSH
 
@@ -149,6 +152,11 @@ version after review, make and review a new plan. The helper waits for every
 changed Deployment, verifies its image and full replica readiness, then checks
 its configured HTTPS health URLs. Extend `--rollout-timeout` from the default
 180 seconds up to 1800 seconds for an intentionally slower deployment.
+Python uses its standard trusted CA configuration. If an operator machine's
+Python installation lacks system trust, point `SSL_CERT_FILE` or `SSL_CERT_DIR`
+at the existing trusted system CA bundle, for example
+`SSL_CERT_FILE=/etc/ssl/cert.pem` on macOS. Certificate and hostname verification
+remain enabled; there is no insecure TLS option.
 
 ## Release ownership, rollback and limits
 
@@ -156,7 +164,10 @@ Coordinate concurrent operators. A set of multiple application patches is not an
 atomic transaction. If a later patch, rollout or health check fails, earlier
 successful patches remain applied; the helper reports failure and performs no
 automatic rollback. Its phase output identifies each successfully patched
-component. Inspect those named resources, preserve any new data and decide the
+component. Structured failure output includes confirmed updates, every patch
+attempt and the failed phase. A transport failure can happen after the API
+committed its last patch, so inspect all patch attempts, not only confirmed
+responses. Inspect those named resources, preserve any new data and decide the
 next reviewed release. Do not respond by replaying a full infrastructure install.
 
 For an application-only rollback, create a new release with `expectedImage` set
@@ -172,12 +183,122 @@ environment values/release record, and coordinate any reconciler before applying
 an image patch. Otherwise a later Helm upgrade or reconciliation could restore
 the old image. Keep infrastructure upgrades as a separate reviewed operation.
 
-Pack and web-shell asset changes are also separate release inputs. Preserve
-their contracts with the application. Never mount an active production asset
-PVC into a staging Pod: SELinux can relabel it even when mounted read-only.
-Stream a snapshot through the existing owning Pod into a separate target claim,
-verify it there and use the asset promotion workflow. This helper intentionally
-cannot change PVC references, volumes, configuration or secrets.
+## Publish mounted shell and tool content separately
+
+An image update changes files baked into that image. A volume mounted over those
+files keeps its existing contents. Inspect the Deployment's `volumeMounts`,
+`volumes` and configured `instance.shellDir` / `instance.pack` before choosing the
+release path. Work's `/admin` console is baked into its server image. A mounted
+Lolly web shell or private tool pack is a separate release input. The public
+Lolly `deploy/docker/web.Dockerfile` bakes the signed shell/tools/catalog into its
+image, but model data mounted over `/models` remains separate.
+
+Use Lolly's signed `pnpm run build:web:release` / `deploy/docker/web.Dockerfile`
+workflow from an isolated checkout with the intended profile and existing
+catalog signing-key/public-pin pair. The signing key is a BuildKit secret, never
+an image argument or copied file. Follow
+[Lolly's signed web-image guide](https://github.com/lolly-tools/lolly/blob/main/deploy/docker/README.md).
+For a Work instance pack, materialize and inspect its matching profile:
+
+```sh
+node scripts/build-instance-pack.ts \
+  --lolly /isolated/qualified-lolly-checkout --profile suse \
+  --out /protected/new-instance-pack
+node scripts/inspect-pack.ts /protected/new-instance-pack
+```
+
+`build-instance-pack.ts` records the source commit and initialized submodule
+commits, refuses dirty source by default and validates the resulting real files
+against the vendored engine. Server per-caller signing remains responsible for
+the served tool index. Preserve the configured signing key, verification pin,
+engine contract, brand state and source-reference compatibility. A changed
+engine pin or Work configuration needs its own reviewed release.
+
+For new installations, the existing chart supports immutable `shell.image`
+and `pack.image` references with per-Pod `emptyDir` copies. Build the shell image
+with `/shell/index.html` and the pack image with the tree under `/pack`; set
+`shell.enabled: true`, `shell.type: emptyDir`, `shell.image`, `pack.type: emptyDir`
+and `pack.image`, matching the configured mount paths. Pin both images by digest.
+See [SMALL-SUSE.md](SMALL-SUSE.md) and the copy-init-container contracts in
+`values.yaml`. Updating those init images is a separately reviewed application
+Deployment change; the image-only helper does not alter init containers or volume
+configuration. Never use a copy init container to overwrite an active shared PVC.
+
+### Existing PVC installations: a reviewed single-volume promotion
+
+This maintained manual workflow changes only the owned application's shell or
+pack claim. It does not provision cloud infrastructure. There is currently no
+generic automated PVC-content promoter. Site-specific historical migration
+scripts are not a reusable release command.
+
+1. Build and qualify the signed shell/pack outside production. Create a distinct
+   candidate PVC in the application's namespace and populate it with a bounded
+   candidate-only staging Pod. Never mount the active PVC in that Pod: SELinux
+   may relabel it even read-only. If previous content is needed, stream a read-only
+   snapshot through the existing owning application Pod into the separate claim.
+2. Verify the candidate's exact source/content hashes, signatures, pin and engine
+   compatibility. For a shell release, retain and verify previously published
+   hashed JavaScript chunks so existing tabs can still fetch them. Record the
+   candidate PVC UID and release evidence. Stop the staging Pod before promotion;
+   leave the qualified candidate Bound and the previous claim retained.
+3. Run the site's production preflight. Using the same explicit kubeconfig and
+   context as the application target, verify cluster/node/namespace and Deployment
+   UIDs. Capture the current Deployment resource version, owned volume index and
+   current claim name/UID. Verify the owned application container mounts this
+   volume read-only. Keep any resource snapshots in a mode-600 operator directory;
+   they can contain configuration and must not be printed or committed.
+4. Verify that the new PVC still has the reviewed UID, is Bound, is a filesystem
+   volume and is in that namespace. Query active Pods server-side with
+   `--field-selector=status.phase!=Succeeded,status.phase!=Failed`; refuse if any
+   references the candidate claim. Include deleting Pods until they terminate.
+   Review controllers/jobs for future candidate mounts, and coordinate exclusive
+   ownership. Do not force-detach a claim or relax SELinux/security settings.
+5. Prepare the exact JSON Patch below with the reviewed values. Server-side dry
+   run it, then compare the before/after Deployment specs with only this claim
+   name normalized. Every other field must match, including other claims, images,
+   secrets, security, replicas, resources, selectors and strategy. Reject admission
+   changes outside that one claim. Review the patch and content evidence together.
+6. Immediately before apply, repeat the identities, candidate UID/Bound status and
+   active-mount checks. Apply this same reviewed JSON Patch, then wait for the
+   existing Deployment's rollout and verify the new claim and Ready replica.
+   Do not run a full-chart apply or restart unrelated components. Kubernetes can
+   guard the Deployment atomically, but a PVC check and Deployment patch are not
+   one transaction; keep candidate-PVC writers and deletion controllers fenced.
+7. Validate normal HTTPS UI, signature loading, exports and a previously open tab's
+   lazy chunks. Test collaboration/reconnect and durable project/asset visibility.
+   Retain the previous claim and release evidence. A failure leaves any successful
+   patch applied; choose a fresh reviewed forward fix or rollback.
+
+The patch is deliberately one `replace`; all preceding operations are tests:
+
+```json
+[
+  {"op":"test","path":"/metadata/uid","value":"REVIEWED_DEPLOYMENT_UID"},
+  {"op":"test","path":"/metadata/namespace","value":"REVIEWED_NAMESPACE"},
+  {"op":"test","path":"/metadata/resourceVersion","value":"FRESH_RESOURCE_VERSION"},
+  {"op":"test","path":"/spec/template/spec/volumes/2/name","value":"pack"},
+  {"op":"test","path":"/spec/template/spec/volumes/2/persistentVolumeClaim/claimName","value":"previous-qualified-pack"},
+  {"op":"replace","path":"/spec/template/spec/volumes/2/persistentVolumeClaim/claimName","value":"new-qualified-pack"}
+]
+```
+
+The example index `2` and volume name `pack` are placeholders, not discovery rules.
+Use the actual unique named volume; shell promotion uses its own index/name. A
+stale resource version refuses; regenerate and review the patch. Through the
+authorized kubectl route, the bounded mutation is:
+
+```sh
+kubectl --kubeconfig /protected/production.kubeconfig \
+  --context reviewed-production-context --namespace reviewed-namespace \
+  patch deployment reviewed-application --type=json \
+  --patch-file /protected/reviewed-asset-patch.json --dry-run=server
+# After the checks and review above, repeat with only --dry-run=server removed.
+```
+
+For rollback, verify the retained previous PVC's UID and contents, recapture the
+Deployment resource version and prepare a new one-claim patch whose tested current
+claim is the promoted claim. Preserve new project/database writes. Never copy
+old files over the current live claim or undo a database to roll back a shell.
 
 Test the updater locally without a cluster:
 
