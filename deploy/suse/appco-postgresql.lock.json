@@ -7,17 +7,36 @@
   },
   "image": {
     "repository": "dp.apps.rancher.io/containers/postgresql",
-    "tag": "17.11-22.3",
-    "digest": "sha256:86d2c922014118dcb965295a344c058916829d4137f33659d6a636032df8073a",
-    "platforms": ["linux/amd64", "linux/arm64/v8"]
+    "tag": "18.6-16.3",
+    "digest": "sha256:24210933acadcefb3775a122818d5d3b888fe5b2687eaa5b0e0867bd82a211d6",
+    "platforms": [
+      "linux/amd64",
+      "linux/arm64/v8"
+    ],
+    "platformDigests": {
+      "linux/amd64": "sha256:c79d507876f09c2a707d425828291c070ea34537f3a9c22e9fb2ee86e5e937f5",
+      "linux/arm64/v8": "sha256:32d0d615169599960b0e3c5aa145ad07ed06cee6e08edb51df0aa22d9483166b"
+    }
   },
   "qualification": {
     "registryAccess": "verified",
-    "imageMetadata": "verified; manifest bytes match registry digest",
-    "chartRender": "verified with appco-postgresql.yaml",
+    "imageMetadata": "verified; index, amd64 manifest and config bytes match registry digests",
+    "chartRender": "verified with PostgreSQL 18 appco-postgresql.yaml",
     "schema": "verified using strict Kubernetes 1.34.0 schemas",
-    "containerBoot": "pending",
-    "restore": "pending",
-    "productionMigration": "not performed"
+    "containerBoot": "verified on linux/arm64 rootless Podman with chart entrypoint, UID 1000, owned data/socket mounts and TLS; amd64 and Kubernetes CSI pending",
+    "restore": "verified real PostgreSQL 18.6 read-only source snapshot on linux/arm64; 12 critical table counts/data digests and uploaded blob bytes match; repeat restore refused",
+    "productionMigration": "not performed",
+    "signatures": "verified with official Cosign 3.1.3: index, amd64, arm64, chart and each image architecture SPDX/SLSA v1; offline transparency checks passed",
+    "sbomVulnerabilityPolicy": "pending",
+    "migrationNames": "verified all 49 candidate filenames against source names, unchanged source snapshot aggregate and restored migration records",
+    "applicationAcceptance": "pending Work login, shared assets, collaboration, agents, render and export on the candidate"
+  },
+  "sourceCompatibility": {
+    "requiredMajor": 18,
+    "encoding": "UTF8",
+    "localeProvider": "builtin",
+    "locale": "C.UTF-8",
+    "observedAt": "2026-10-07T07:12:06.614Z",
+    "sourceInspection": "read-only metadata; no export or production mutation"
   }
 }
