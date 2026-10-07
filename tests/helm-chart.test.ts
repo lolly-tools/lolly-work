@@ -172,7 +172,13 @@ test('worker NetworkPolicy: control-plane ingress only, egress to DNS and public
   assert.ok(np, 'worker policy renders when enabled');
   assert.match(np!, /podSelector:\s*matchLabels:[\s\S]*?app\.kubernetes\.io\/component: render-worker/, 'selects the worker pods');
   assert.match(np!, /policyTypes:\s*- Ingress\s*- Egress/, 'restricts both directions');
-  assert.match(np!, /key: app\.kubernetes\.io\/component\s*operator: DoesNotExist[\s\S]*?port: 8791/, 'ingress only from control-plane pods, on the worker port');
+  const parsed = manifests(r.out).find(doc => doc?.kind === 'NetworkPolicy' && doc.metadata.name.endsWith('render-worker'));
+  const selector = parsed.spec.ingress[0].from[0].podSelector.matchLabels;
+  const matches = (labels: Record<string, string>) => Object.entries(selector).every(([key, value]) => labels[key] === value);
+  assert.ok(matches(deployment(r.out).spec.template.metadata.labels), 'render dispatch must accept the actual control-plane labels');
+  assert.ok(!matches(deployment(r.out, true).spec.template.metadata.labels), 'workers cannot dispatch authenticated renders to each other');
+  assert.ok(!matches(manifests(r.out).find(doc => doc?.kind === 'Job').spec.template.metadata.labels), 'migration pods cannot dispatch renders');
+  assert.equal(parsed.spec.ingress[0].ports[0].port, 8791);
   for (const cidr of ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16', '127.0.0.0/8', '100.64.0.0/10', 'fc00::/7', 'fe80::/10']) {
     assert.ok(np!.includes(`- ${cidr}`), `${cidr} carved out of public egress`);
   }

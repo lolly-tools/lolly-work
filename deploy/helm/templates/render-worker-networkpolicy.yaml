@@ -31,14 +31,12 @@ spec:
     - Ingress
     - Egress
   ingress:
-    # Only the control plane's own pods (this release, no component label) dispatch renders.
+    # Only the control plane's own pods dispatch renders.
     - from:
         - podSelector:
             matchLabels:
               {{- include "lolly-work.selectorLabels" . | nindent 14 }}
-            matchExpressions:
-              - key: app.kubernetes.io/component
-                operator: DoesNotExist
+              app.kubernetes.io/component: control-plane
       ports:
         - protocol: TCP
           port: {{ .Values.renderWorker.service.port }}
