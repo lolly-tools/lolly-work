@@ -27,7 +27,7 @@ import { createMemoryStore } from '../server/src/store/memory.ts';
 import { buildApp } from '../server/src/api/app.ts';
 import { createCollabGateway, type CollabGateway } from '../server/src/collab/gateway.ts';
 import { hashServiceSecret } from '../server/src/iam/service-tokens.ts';
-import type { SessionRecord, Store, UserRecord } from '../server/src/store/types.ts';
+import { VERSION_RESTORE_KEEP, versionRetentionDrops, type SessionRecord, type SessionVersionRow, type SessionVersionWrite, type Store, type UserRecord } from '../server/src/store/types.ts';
 
 const SECRETS = { session: 'versions-route-session', link: 'versions-route-link' };
 const PEOPLE = ['alice', 'bob', 'vic', 'mona', 'noname'] as const;
@@ -35,6 +35,7 @@ type Person = typeof PEOPLE[number];
 
 interface Harness {
   store: ReturnType<typeof createMemoryStore>;
+  config: ReturnType<typeof parseConfig>;
   base: string;
   server: Server;
   collab?: CollabGateway;
@@ -42,7 +43,8 @@ interface Harness {
   users: Map<Person, UserRecord>;
 }
 
-async function harness(withGateway: boolean, policy: Record<string, unknown> = {}): Promise<Harness> {
+async function harness(withGateway: boolean, policy: Record<string, unknown> = {},
+  wrap?: (store: ReturnType<typeof createMemoryStore>) => ReturnType<typeof createMemoryStore>): Promise<Harness> {
   const pack = await mkdtemp(join(tmpdir(), 'lw-version-routes-'));
   await mkdir(join(pack, 'catalog', 'tools'), { recursive: true });
   await writeFile(join(pack, 'catalog', 'tools', 'index.json'), JSON.stringify({ version: 1, tools: [] }));
@@ -61,7 +63,8 @@ async function harness(withGateway: boolean, policy: Record<string, unknown> = {
       { email: 'noname@corp.test', groups: ['team'] },
     ] },
   }));
-  const store = createMemoryStore();
+  const raw = createMemoryStore();
+  const store = wrap ? wrap(raw) : raw;
   const collab = withGateway ? createCollabGateway({ config, store, secrets: SECRETS }) : undefined;
   const app = buildApp({ config, store, secrets: SECRETS, ...(collab ? { versionRooms: collab.versions } : {}) });
   const server = createServer((req, res) => void app(req, res));
@@ -83,7 +86,16 @@ async function harness(withGateway: boolean, policy: Record<string, unknown> = {
   for (const [name, role] of [['bob', 'editor'], ['vic', 'viewer'], ['mona', 'manager'], ['noname', 'editor']] as const) {
     await store.putProjectMember({ projectId: 'prj_v', userId: users.get(name)!.id, role, addedBy: alice.id, addedAt: now });
   }
-  return { store, base, server, ...(collab ? { collab } : {}), cookies, users };
+  return { store, config, base, server, ...(collab ? { collab } : {}), cookies, users };
+}
+
+/** The same store and people behind a new app: a restart, so the in-process
+ *  replay cache and locks start empty. */
+async function restarted(h: Harness): Promise<Harness> {
+  const app = buildApp({ config: h.config, store: h.store, secrets: SECRETS });
+  const server = createServer((req, res) => void app(req, res));
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  return { ...h, server, base: `http://127.0.0.1:${(server.address() as { port: number }).port}` };
 }
 
 async function closeHarness(h: Harness): Promise<void> {
@@ -372,6 +384,130 @@ test('request ids: a named save and a restore with one id are independent; concu
   }
   const saveAudit = audit.find((e) => e.action === 'session.version.save');
   assert.deepEqual(saveAudit?.payload, { versionId: firstId, labelLength: 'Shared id'.length });
+});
+
+/** A store whose 'restore' row writes answer 'version-space' while `failRestoreRows`
+ *  is set, and which deletes `deleteAfterBefore` (a manager deleting the version
+ *  being restored) right after a 'before' row is written. */
+function flakyVersions() {
+  const knobs = { failRestoreRows: false, deleteAfterBefore: undefined as { sessionId: string; id: string } | undefined };
+  const wrap = (raw: ReturnType<typeof createMemoryStore>) => new Proxy(raw, {
+    get(target, key, receiver) {
+      if (key !== 'putSessionVersion') return Reflect.get(target, key, receiver);
+      return async (v: SessionVersionWrite) => {
+        if (v.kind === 'restore' && knobs.failRestoreRows) return 'version-space';
+        const put = await target.putSessionVersion(v);
+        const gone = knobs.deleteAfterBefore;
+        if (v.kind === 'before' && gone) { knobs.deleteAfterBefore = undefined; await target.deleteSessionVersion(gone.sessionId, gone.id); }
+        return put;
+      };
+    },
+  });
+  return { knobs, wrap };
+}
+
+const closeServer = async (h: Harness): Promise<void> => {
+  h.server.closeAllConnections();
+  await new Promise<void>((resolve) => h.server.close(() => resolve()));
+};
+
+type RestoreBody = { revision: number; live: boolean; restored: string | null; before: string; skipped: string[]; vetoed: string[] };
+
+test('a repeated restore after a restart: a committed restore whose restore row failed answers from its before row and never runs twice', async () => {
+  const { knobs, wrap } = flakyVersions();
+  const h = await harness(false, {}, wrap);
+  try {
+    const s = await sessionIn(h, 'ses_orphan', { title: 'Then', slides: [] });
+    const versionId = await savedId(h, s.id);
+    await h.store.putSession({ ...(await h.store.getSession(s.id))!, inputs: { title: 'Now', slides: [] }, rev: 2 });
+    const requestId = rid();
+    knobs.failRestoreRows = true;
+    const first = await restore(h, 'bob', s.id, versionId, requestId);
+    assert.equal(first.status, 200, await first.clone().text());
+    const body = await first.json() as RestoreBody;
+    assert.equal(body.restored, null, 'the restore row did not fit');
+    assert.deepEqual([(await h.store.getSession(s.id))!.inputs.title, (await h.store.getSession(s.id))!.rev], ['Then', 3], 'the restore committed');
+    knobs.failRestoreRows = false;
+
+    const again = await restarted(h);
+    try {
+      const repeat = await restore(again, 'bob', s.id, versionId, requestId);
+      assert.equal(repeat.status, 200, await repeat.clone().text());
+      assert.deepEqual(await repeat.json(), { revision: 3, live: false, restored: null, before: body.before, skipped: [], vetoed: [] },
+        'answered from the earlier before row');
+      assert.equal((await h.store.getSessionVersion(s.id, body.before))?.kind, 'before', 'the Undo target of the committed restore is kept');
+      assert.equal((await h.store.getSession(s.id))!.rev, 3, 'the restore did not run a second time');
+      assert.deepEqual((await h.store.listSessionVersions(s.id, { limit: 100 })).map((v) => v.kind).sort(), ['before', 'named']);
+      // Undo still works from it.
+      const undo = await restore(again, 'bob', s.id, body.before);
+      assert.equal(undo.status, 200, await undo.clone().text());
+      assert.equal((await h.store.getSession(s.id))!.inputs.title, 'Now');
+    } finally { await closeServer(again); }
+  } finally { await closeHarness(h); }
+});
+
+test('a repeated restore whose earlier attempt never committed removes that before row and runs once more', async () => {
+  const h = cas;
+  const s = await sessionIn(h, 'ses_orphan_uncommitted', { title: 'Then', slides: [] });
+  const versionId = await savedId(h, s.id);
+  const now = (await h.store.putSession({ ...(await h.store.getSession(s.id))!, inputs: { title: 'Now', slides: [] }, rev: 2 }), await h.store.getSession(s.id))!;
+  // What a process that stopped between its 'before' row and its commit leaves behind.
+  const requestId = rid();
+  const orphan = await h.store.putSessionVersion({ sessionId: s.id, rev: now.rev, kind: 'before', inputs: now.inputs, meta: now.meta, contributors: [],
+    createdBy: h.users.get('bob')!.id, requestId });
+  assert.ok(typeof orphan === 'object' && orphan.created);
+  const res = await restore(h, 'bob', s.id, versionId, requestId);
+  assert.equal(res.status, 200, await res.clone().text());
+  const body = await res.json() as RestoreBody;
+  assert.notEqual(body.before, orphan.version.id);
+  assert.equal(await h.store.getSessionVersion(s.id, orphan.version.id), null, 'the orphan went');
+  assert.equal((await h.store.getSessionVersion(s.id, body.restored!))?.beforeId, body.before);
+  assert.deepEqual([(await h.store.getSession(s.id))!.inputs.title, (await h.store.getSession(s.id))!.rev], ['Then', 3]);
+});
+
+test('the version being restored survives the restore\'s own retention; one deleted meanwhile still gets a restore row', async () => {
+  const { knobs, wrap } = flakyVersions();
+  const h = await harness(true, {}, wrap);
+  try {
+    // An automatic version past the retention age: the next write's rules would remove it.
+    const s = await sessionIn(h, 'ses_keep_target', { title: 'Now', slides: [] });
+    const old = await h.store.putSessionVersion({ sessionId: s.id, rev: 1, kind: 'auto', inputs: { title: 'Long ago', slides: [] }, meta: {},
+      contributors: [], at: new Date(Date.now() - 400 * 86_400_000).toISOString() });
+    assert.ok(typeof old === 'object' && old.created);
+    const res = await restore(h, 'bob', s.id, old.version.id);
+    assert.equal(res.status, 200, await res.clone().text());
+    const body = await res.json() as RestoreBody;
+    const row = await h.store.getSessionVersion(s.id, body.restored!);
+    assert.deepEqual([row?.kind, row?.restoredFrom, row?.beforeId], ['restore', old.version.id, body.before], 'the restore row names the version it restored');
+    assert.equal((await h.store.getSession(s.id))!.inputs.title, 'Long ago');
+
+    // A manager deletes the version while it is being restored: the restore stands, and its row says where it came from no more.
+    const t = await sessionIn(h, 'ses_target_deleted', { title: 'Now', slides: [] });
+    const target = await savedId(h, t.id, 'Going');
+    await h.store.putSession({ ...(await h.store.getSession(t.id))!, inputs: { title: 'Later', slides: [] }, rev: 2 });
+    knobs.deleteAfterBefore = { sessionId: t.id, id: target };
+    const raced = await restore(h, 'bob', t.id, target);
+    assert.equal(raced.status, 200, await raced.clone().text());
+    const racedBody = await raced.json() as RestoreBody;
+    assert.equal(await h.store.getSessionVersion(t.id, target), null);
+    const racedRow = await h.store.getSessionVersion(t.id, racedBody.restored!);
+    assert.deepEqual([racedRow?.kind, racedRow?.restoredFrom, racedRow?.beforeId], ['restore', undefined, racedBody.before], 'paired with its before row');
+  } finally { await closeHarness(h); }
+});
+
+test('retention: a before row with no restore row counts as a restore, and kept ids are never removed', () => {
+  const at = (minute: number): string => new Date(Date.UTC(2026, 9, 1, 0, minute)).toISOString();
+  const rows: SessionVersionRow[] = [];
+  for (let i = 0; i < VERSION_RESTORE_KEEP; i++) {
+    rows.push({ id: `b${i}`, sessionId: 's', kind: 'before', digest: `d${i}`, at: at(10 + i * 2) });
+    rows.push({ id: `r${i}`, sessionId: 's', kind: 'restore', digest: `e${i}`, at: at(11 + i * 2), beforeId: `b${i}` });
+  }
+  const orphan: SessionVersionRow = { id: 'b_orphan', sessionId: 's', kind: 'before', digest: 'o', at: at(0) };
+  assert.deepEqual(versionRetentionDrops([...rows, orphan], at(1000)), ['b_orphan'], 'the oldest of 201 restores is the unpaired before row');
+  assert.deepEqual(versionRetentionDrops(rows, at(1000)), [], '200 paired restores all stay');
+  const newest: SessionVersionRow = { ...orphan, id: 'b_new', at: at(999) };
+  assert.deepEqual(versionRetentionDrops([...rows, newest], at(1000)).sort(), ['b0', 'r0'], 'a new unpaired before row pushes out the oldest pair');
+  assert.deepEqual(versionRetentionDrops([...rows, orphan], at(1000), new Set(['b_orphan'])), [], 'a kept id stays');
 });
 
 test('a REST save writes a save version; one that changed nothing adds no row; GET /revisions still answers', async () => {

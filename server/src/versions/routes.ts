@@ -218,13 +218,15 @@ export function registerVersionRoutes(router: ReturnType<typeof createRouter>, d
     if (!target) return { status: 404, error: 'NOT_FOUND', message: 'This version is no longer available.' };
 
     for (let attempt = 0; ; attempt++) {
-      let createdBefore: string | undefined;
+      let createdBefore: { id: string; rev: number } | undefined;
       const beforeCommit = async (before: RestoreBefore): Promise<string> => {
+        // `keep`: this write's own retention and space eviction never remove the
+        // version being restored, so the restore row can still name it.
         const put = await d.store.putSessionVersion({ sessionId, rev: before.revision, kind: 'before', inputs: before.inputs, meta: before.meta,
-          contributors: [], createdBy: g.user.id, requestId });
+          contributors: [], createdBy: g.user.id, requestId, keep: [target.id] });
         if (put === 'version-space' || put === 'version-limit') throw new RestoreError('VERSION_SPACE', 'History is full. Ask a manager to delete old versions.');
         if (!put.created) throw new RestoreError('REPEATED', 'This restore was already asked for.', put.version.id);
-        createdBefore = put.version.id;
+        createdBefore = { id: put.version.id, rev: before.revision };
         return put.version.id;
       };
       let result: VersionRestoreResult;
@@ -233,9 +235,13 @@ export function registerVersionRoutes(router: ReturnType<typeof createRouter>, d
           ? await d.rooms.restore({ sessionId, user: g.user, target, beforeCommit })
           : await restoreByCas({ store: d.store, policy: restorePolicy }, { sessionId, user: g.user, target, beforeCommit });
       } catch (error) {
-        // Nothing was committed: a 'before' row this attempt wrote is not a
-        // version anyone can use, so it goes (no restore row points at it yet).
-        if (createdBefore) await d.store.deleteSessionVersion(sessionId, createdBefore).catch(() => false);
+        // A 'before' row this attempt wrote goes when the document is still at
+        // its revision, which proves nothing was committed. Otherwise a commit
+        // may have happened before the failure, and the row is that restore's
+        // Undo; it stays, and the retention rules remove it in its turn.
+        if (createdBefore && !await committedSince(sessionId, createdBefore.rev)) {
+          await d.store.deleteSessionVersion(sessionId, createdBefore.id).catch(() => false);
+        }
         if (error instanceof RestoreError && error.code === 'REPEATED' && error.beforeId) {
           const earlier = await restoreRowFor(sessionId, error.beforeId);
           if (earlier) {
@@ -243,19 +249,28 @@ export function registerVersionRoutes(router: ReturnType<typeof createRouter>, d
             remember(replayKey, body);
             return { body };
           }
-          // An earlier attempt with this id stopped before it finished: its
-          // 'before' row is an orphan. Remove it and run the restore once more.
-          await d.store.deleteSessionVersion(sessionId, error.beforeId);
-          if (attempt === 0) continue;
+          // An earlier request with this id wrote its 'before' row and no restore
+          // row. If the document moved on from that row, that restore may have
+          // committed (its restore row failed, or the process stopped), so the
+          // row is its Undo: answer with it, never delete it. If the document
+          // is still at that revision nothing was committed: remove the orphan
+          // and run the restore once more.
+          const orphan = await d.store.getSessionVersion(sessionId, error.beforeId);
+          if (orphan && await committedSince(sessionId, orphan.rev)) {
+            const body = answer(orphan.rev + 1, false, null, orphan.id, [], []);
+            remember(replayKey, body);
+            return { body };
+          }
+          if (attempt === 0) {
+            if (orphan) await d.store.deleteSessionVersion(sessionId, orphan.id);
+            continue;
+          }
         }
         return failure(error);
       }
       let restored: string | null = null;
       try {
-        const put = await d.store.putSessionVersion({ sessionId, rev: result.revision, kind: 'restore', inputs: result.inputs, meta: result.meta,
-          contributors: [{ id: g.user.id, kind: 'user', edits: 1 }], createdBy: g.user.id, restoredFrom: target.id, beforeId: result.beforeId, requestId });
-        // The document is already restored; a full history only costs the row.
-        restored = typeof put === 'string' ? null : put.version.id;
+        restored = await restoreRow(sessionId, g.user.id, requestId, target.id, result);
       } catch (error) {
         console.error(`[lolly-work] restore version row failed for ${sessionId}:`, (error as Error)?.message ?? error);
       }
@@ -275,6 +290,34 @@ export function registerVersionRoutes(router: ReturnType<typeof createRouter>, d
   const remember = (replayKey: string, body: Record<string, unknown>): void => {
     replays.set(replayKey, { at: Date.now(), body });
     if (replays.size > RESTORE_REPLAY_MAX) replays.delete(replays.keys().next().value as string);
+  };
+
+  /** Whether the session's revision is no longer `rev`: something was committed
+   *  after a 'before' row taken at `rev`. A session that is gone counts as not. */
+  const committedSince = async (sessionId: string, rev: number): Promise<boolean> => {
+    const current = await d.store.getSession(sessionId).catch(() => null);
+    return !!current && !current.deletedAt && current.rev !== rev;
+  };
+
+  /**
+   * Write the 'restore' row from the stored result and return its id. The
+   * document is already restored, so the row is written even when the version
+   * restored from, or the 'before' row, went meanwhile (a manager deleted it):
+   * then without that reference. Null when it does not fit (VERSION_SPACE); the
+   * unpaired 'before' row is then removed by the retention rules in its turn.
+   */
+  const restoreRow = async (sessionId: string, userId: string, requestId: string, targetId: string, result: VersionRestoreResult): Promise<string | null> => {
+    const write = (refs: { restoredFrom?: string; beforeId?: string }) => d.store.putSessionVersion({ sessionId, rev: result.revision, kind: 'restore',
+      inputs: result.inputs, meta: result.meta, contributors: [{ id: userId, kind: 'user', edits: 1 }], createdBy: userId, requestId, keep: [targetId], ...refs });
+    let put;
+    try {
+      put = await write({ restoredFrom: targetId, beforeId: result.beforeId });
+    } catch (error) {
+      if ((error as Error)?.message !== 'version-reference') throw error;
+      const [from, before] = await Promise.all([d.store.getSessionVersion(sessionId, targetId), d.store.getSessionVersion(sessionId, result.beforeId)]);
+      put = await write({ ...(from ? { restoredFrom: targetId } : {}), ...(before ? { beforeId: result.beforeId } : {}) });
+    }
+    return typeof put === 'string' ? null : put.version.id;
   };
 
   /** The restore row an earlier request wrote with this 'before' row, if any. */

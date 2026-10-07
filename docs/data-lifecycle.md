@@ -105,7 +105,10 @@ Retention, applied whenever a version is written:
 
 - automatic, closing and saved versions: the newest 50 are kept, plus the newest
   one of each day for the previous 30 days, and none older than 365 days;
-- restores: the newest 200 are kept, each with the version it replaced;
+- restores: the newest 200 are kept, each with the version it replaced. A replaced
+  version whose restore row could not be written (history full, or the server
+  stopped) counts as one of those 200 on its own. A restore never removes the
+  version it restores from;
 - named versions: up to 20 per person and 100 per document, kept until a project
   manager deletes them;
 - space: one document's versions may hold at most 100 MiB of distinct content and

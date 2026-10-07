@@ -1670,7 +1670,7 @@ function createMemoryVersions(sessions: ReadonlyMap<string, SessionRecord>): Pic
           return latest ? { version: summary(latest), created: false } : 'version-space';
         }
         if (plan.contentIsNew) contents.set(contentKey(w.sessionId, content.digest), { sessionId: w.sessionId, digest: content.digest, inputs: structuredClone(w.inputs), bytes: content.bytes });
-        const { inputs: _inputs, ...fields } = w;
+        const { inputs: _inputs, keep: _keep, ...fields } = w;
         const stored: Stored = { ...structuredClone(fields), id, digest: content.digest };
         versions.set(id, stored);
         drop(plan.drops);

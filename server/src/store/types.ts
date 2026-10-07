@@ -588,7 +588,13 @@ export interface SessionVersionSummary {
   bytes: number; at: string;
 }
 export interface SessionVersion extends SessionVersionSummary { inputs: Record<string, unknown>; meta: Record<string, unknown> }
-export type SessionVersionWrite = Omit<SessionVersion, 'id' | 'bytes' | 'at'> & { at?: string; requestId?: string };
+export type SessionVersionWrite = Omit<SessionVersion, 'id' | 'bytes' | 'at'> & {
+  at?: string; requestId?: string;
+  /** Versions of the same session this write's retention and space eviction
+   *  must leave in place (a restore keeps the version it restores from). Not
+   *  stored. */
+  keep?: string[];
+};
 /** What `putSessionVersion` did. `created: false` means an earlier row answers
  *  the write: the same request id, the same content as the latest version, or an
  *  automatic version skipped for space (the latest version is returned). */
@@ -682,6 +688,7 @@ export function normalizeSessionVersionWrite(v: SessionVersionWrite, now = new D
   if (v.label !== undefined && (typeof v.label !== 'string' || [...v.label].length < 1 || [...v.label].length > VERSION_LABEL_MAX)) throw new TypeError('version-label');
   if (!plainObject(v.inputs) || !plainObject(v.meta) || !Array.isArray(v.contributors)) throw new TypeError('version-shape');
   for (const ref of [v.createdBy, v.restoredFrom, v.beforeId, v.requestId]) if (ref !== undefined && (typeof ref !== 'string' || !ref)) throw new TypeError('version-reference');
+  if (v.keep !== undefined && (!Array.isArray(v.keep) || v.keep.some((id) => typeof id !== 'string' || !id))) throw new TypeError('version-keep');
   const at = v.at === undefined ? now : new Date(v.at);
   if (!Number.isFinite(at.getTime())) throw new TypeError('version-at');
   const contributors = v.contributors.flatMap((c): SessionVersionContributor[] => {
@@ -696,6 +703,7 @@ export function normalizeSessionVersionWrite(v: SessionVersionWrite, now = new D
     ...(v.restoredFrom !== undefined ? { restoredFrom: v.restoredFrom } : {}),
     ...(v.beforeId !== undefined ? { beforeId: v.beforeId } : {}),
     ...(v.requestId !== undefined ? { requestId: v.requestId } : {}),
+    ...(v.keep !== undefined ? { keep: [...v.keep] } : {}),
     at: at.toISOString(),
   };
 }
@@ -714,10 +722,12 @@ export const newestVersionFirst = (a: Pick<SessionVersionRow, 'id' | 'at'>, b: P
  * `refIso` (the time of the write being made). auto, close and save rows older
  * than VERSION_MAX_AGE_DAYS go; younger ones stay while they are among the newest
  * VERSION_RECENT_KEEP or are the newest of their UTC day within VERSION_DAILY_DAYS.
- * Restore rows beyond the newest VERSION_RESTORE_KEEP go with their 'before' rows.
- * Named and 'before' rows are never chosen by these rules, nor is `keepId`.
+ * Restore rows beyond the newest VERSION_RESTORE_KEEP go with their 'before' rows;
+ * a 'before' row no restore row points at (its restore never wrote one) counts
+ * as a restore of its own, so it goes in its turn too. Named rows are never
+ * chosen by these rules, nor is any id in `keep`.
  */
-export function versionRetentionDrops(rows: SessionVersionRow[], refIso: string, keepId?: string): string[] {
+export function versionRetentionDrops(rows: SessionVersionRow[], refIso: string, keep: ReadonlySet<string> = new Set()): string[] {
   const ref = Date.parse(refIso);
   const oldest = new Date(ref - VERSION_MAX_AGE_DAYS * DAY_MS).toISOString();
   const dayFloor = new Date(ref - VERSION_DAILY_DAYS * DAY_MS).toISOString().slice(0, 10);
@@ -729,11 +739,13 @@ export function versionRetentionDrops(rows: SessionVersionRow[], refIso: string,
     days.add(day);
     if (r.at < oldest || (i >= VERSION_RECENT_KEEP && !dailyKeep)) drops.add(r.id);
   });
-  rows.filter((r) => r.kind === 'restore').sort(newestVersionFirst).slice(VERSION_RESTORE_KEEP).forEach((r) => {
-    drops.add(r.id);
-    if (r.beforeId) drops.add(r.beforeId);
-  });
-  drops.delete(keepId ?? '');
+  const paired = new Set(rows.flatMap((r) => (r.kind === 'restore' && r.beforeId ? [r.beforeId] : [])));
+  rows.filter((r) => r.kind === 'restore' || (r.kind === 'before' && !paired.has(r.id))).sort(newestVersionFirst)
+    .slice(VERSION_RESTORE_KEEP).forEach((r) => {
+      drops.add(r.id);
+      if (r.beforeId) drops.add(r.beforeId);
+    });
+  for (const id of keep) drops.delete(id);
   return [...drops];
 }
 
@@ -741,18 +753,18 @@ export function versionRetentionDrops(rows: SessionVersionRow[], refIso: string,
  * The oldest auto, close and save rows to remove so that at least `need` bytes of
  * content are freed. Content is shared, so a content's bytes count as freed only
  * when no remaining row uses it. `rows` are every row whose content is counted
- * (any kind); rows in `exclude` are treated as already gone. Null when even
- * removing every such row would not free enough.
+ * (any kind); rows in `exclude` are treated as already gone, and rows in `keep`
+ * are never chosen. Null when even removing every such row would not free enough.
  */
 export function versionEvictionPlan(rows: SessionVersionRow[], bytesOf: (sessionId: string, digest: string) => number,
-  need: number, exclude: ReadonlySet<string>): string[] | null {
+  need: number, exclude: ReadonlySet<string>, keep: ReadonlySet<string> = new Set()): string[] | null {
   if (need <= 0) return [];
   const key = (r: SessionVersionRow): string => `${r.sessionId} ${r.digest}`;
   const users = new Map<string, number>();
   for (const r of rows) if (!exclude.has(r.id)) users.set(key(r), (users.get(key(r)) ?? 0) + 1);
   const drops: string[] = [];
   let freed = 0;
-  for (const r of rows.filter((x) => RECYCLABLE_KINDS.has(x.kind) && !exclude.has(x.id)).sort(newestVersionFirst).reverse()) {
+  for (const r of rows.filter((x) => RECYCLABLE_KINDS.has(x.kind) && !exclude.has(x.id) && !keep.has(x.id)).sort(newestVersionFirst).reverse()) {
     drops.push(r.id);
     const left = (users.get(key(r)) ?? 1) - 1;
     users.set(key(r), left);
@@ -808,7 +820,9 @@ export async function planSessionVersionPut(w: SessionVersionWrite & { at: strin
   const row: SessionVersionRow = { id: newId, sessionId: w.sessionId, kind: w.kind, digest: content.digest, at: w.at,
     ...(w.createdBy !== undefined ? { createdBy: w.createdBy } : {}), ...(w.requestId !== undefined ? { requestId: w.requestId } : {}),
     ...(w.beforeId !== undefined ? { beforeId: w.beforeId } : {}) };
-  const drops = new Set(versionRetentionDrops([...state.rows, row], w.at, newId));
+  // The new row, and any version the write names in `keep`, survive this write.
+  const keep = new Set([newId, ...(w.keep ?? [])]);
+  const drops = new Set(versionRetentionDrops([...state.rows, row], w.at, keep));
   const contentIsNew = !state.contents.has(content.digest);
   if (!contentIsNew) return { action: 'insert', contentIsNew, drops: [...drops] };
 
@@ -820,7 +834,7 @@ export async function planSessionVersionPut(w: SessionVersionWrite & { at: strin
   };
   const sessionNeed = sessionKept() + content.bytes - limits.sessionMaxBytes;
   if (sessionNeed > 0) {
-    const plan = versionEvictionPlan(state.rows, (_s, digest) => state.contents.get(digest) ?? 0, sessionNeed, drops);
+    const plan = versionEvictionPlan(state.rows, (_s, digest) => state.contents.get(digest) ?? 0, sessionNeed, drops, keep);
     if (!plan) return over();
     for (const id of plan) drops.add(id);
   }
@@ -829,7 +843,7 @@ export async function planSessionVersionPut(w: SessionVersionWrite & { at: strin
   const instanceNeed = (await state.instanceBytes()) - (sessionTotal - sessionKept()) + content.bytes - limits.instanceMaxBytes;
   if (instanceNeed > 0) {
     const instance = await state.instanceRows();
-    const plan = versionEvictionPlan(instance.rows, (s, digest) => instance.contents.get(`${s} ${digest}`) ?? 0, instanceNeed, drops);
+    const plan = versionEvictionPlan(instance.rows, (s, digest) => instance.contents.get(`${s} ${digest}`) ?? 0, instanceNeed, drops, keep);
     if (!plan) return over();
     for (const id of plan) drops.add(id);
   }

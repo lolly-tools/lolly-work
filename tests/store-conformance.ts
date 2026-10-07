@@ -32,7 +32,7 @@ async function runSessionVersionsConformance(store: Store): Promise<void> {
   const session = (id: string) => store.putSession({ id, projectId: 'prj_ver', toolId: 'versions-tool', toolVersion: '1.0.0',
     inputs: { title: id }, meta: {}, createdBy: owner.id, updatedBy: owner.id, rev: 1, updatedAt: now });
   const sessions = ['ses_v_inst1', 'ses_v_inst2', 'ses_v_space', 'ses_v_evict', 'ses_v_main', 'ses_v_named', 'ses_v_pair',
-    'ses_v_keep', 'ses_v_old', 'ses_v_restore', 'ses_v_collab'];
+    'ses_v_keep', 'ses_v_old', 'ses_v_restore', 'ses_v_collab', 'ses_v_protect', 'ses_v_protect2'];
   for (const id of sessions) await session(id);
   /** Inputs whose canonical JSON is exactly `bytes` long ('{"p":""}' is 8). */
   const sized = (bytes: number, tag: string): Record<string, unknown> => ({ p: tag + 'x'.repeat(bytes - 8 - tag.length) });
@@ -86,6 +86,13 @@ async function runSessionVersionsConformance(store: Store): Promise<void> {
   assert.deepEqual(await ids('ses_v_evict'), [n2.id, n1.id], 'named versions are never removed for space');
   assert.equal(await put(write('ses_v_evict', 'named', sized(40, 'n3'), { label: 'N3', createdBy: editor.id })), 'version-space');
   assert.equal(await store.getSessionVersion('ses_v_evict', e1.id), null);
+  // A version the write names in `keep` is never chosen to make room.
+  const k1 = made(await put(write('ses_v_protect2', 'auto', sized(40, 'k1'))), 'k1');
+  made(await put(write('ses_v_protect2', 'auto', sized(40, 'k2'))), 'k2');
+  const kb = made(await put(write('ses_v_protect2', 'before', sized(40, 'kb'), { createdBy: owner.id, keep: [k1.id] })), 'a before row that needs room');
+  assert.deepEqual(await ids('ses_v_protect2'), [kb.id, k1.id], 'the kept oldest version stays; the next one made room');
+  assert.equal(await put(write('ses_v_protect2', 'before', sized(40, 'kc'), { createdBy: owner.id, keep: [k1.id] })), 'version-space',
+    'nothing that is not kept is left to remove');
   store.configureVersionLimits({});
   assert.throws(() => store.configureVersionLimits({ sessionMaxBytes: 0 }), RangeError);
 
@@ -137,6 +144,7 @@ async function runSessionVersionsConformance(store: Store): Promise<void> {
   await assert.rejects(put(write('ses_v_nope', 'auto', { a: 7 })), /session-gone/);
   await assert.rejects(put(write('ses_v_main', 'restore', { a: 7 }, { restoredFrom: a.id })), /version-reference/, 'a version of another document');
   await assert.rejects(put(write('ses_v_main', 'restore', { a: 7 }, { beforeId: 'ver_unknown' })), /version-reference/);
+  await assert.rejects(put(write('ses_v_main', 'auto', { a: 7 }, { keep: [''] })), TypeError);
 
   // Paging.
   const all = await ids('ses_v_main');
@@ -191,6 +199,13 @@ async function runSessionVersionsConformance(store: Store): Promise<void> {
   made(await put(write('ses_v_old', 'auto', { o: 2 }, { at: day(-500, 1) })), 'old automatic');
   const late = made(await put(write('ses_v_old', 'auto', { o: 3 }, { at: day(-134, 0) })), 'a year later');
   assert.deepEqual(await ids('ses_v_old'), [late.id, oldNamed.id], 'automatic versions older than 365 days go; named ones stay');
+  // ...unless the write keeps them (a restore keeps the version it restores from).
+  const protectedOld = made(await put(write('ses_v_protect', 'auto', { k: 1 }, { at: day(-500, 0) })), 'old automatic');
+  made(await put(write('ses_v_protect', 'before', { k: 2 }, { createdBy: owner.id, at: day(-134, 0), keep: [protectedOld.id] })), 'a write that keeps it');
+  assert.ok((await ids('ses_v_protect')).includes(protectedOld.id), 'kept past the age limit by that write');
+  made(await put(write('ses_v_protect', 'auto', { k: 3 }, { at: day(-134, 1) })), 'a write that keeps nothing');
+  assert.equal((await ids('ses_v_protect')).includes(protectedOld.id), false, 'and removed by the next one');
+  assert.equal((await store.listSessionVersions('ses_v_protect', { limit: 10 })).some((v) => 'keep' in v), false, 'keep is not stored');
 
   // Restore rows: the newest 200 stay, each older one goes with its before row.
   for (let i = 0; i <= VERSION_RESTORE_KEEP; i++) {
