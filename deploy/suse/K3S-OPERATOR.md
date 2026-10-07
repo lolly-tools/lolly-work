@@ -325,8 +325,27 @@ the actual mounted content and edge routing configuration before exposing it;
 the inspector does not prove that a reviewed directory contains only public
 data or that the process opens only its declared ports.
 
-Record the exact node InternalIP as Work's reviewed proxy peer, for example
-`10.4.27.58`, and prove the actual upstream socket peer before configuring trust.
+Keep the edge's upstream source bind fixed to the exact node InternalIP, for
+example `10.4.27.58`. Measure the socket peer observed by each public API and
+private Work service before configuring proxy trust. A ClusterIP connection can
+translate that bind to the node's CNI gateway: the candidate's preliminary
+host-bound probe observed `10.42.0.1`, with current `cni0` address `10.42.0.1/24`
+and node pod CIDR `10.42.0.0/24`. This host probe does not qualify actual Caddy
+traffic. Repeat the measurement through the actual edge and complete Work
+trusted-proxy checks before acceptance.
+
+The qualifier accepts a separate gateway peer only with a fresh, private receipt
+whose SHA-256 is acknowledged in the edge review. Its exact peer must match the
+current `cni0` IPv4 gateway and that interface's prefix must match the reviewed
+node's current pod CIDR within the configured `10.42.0.0/16` range. Pass
+`--edge-peer-measurement /private/edge-peer-measurement.json`; the qualifier reads
+current interface/node facts itself. Keep `upstreamSourceAddress` equal to
+`nodePrivateIp`, set `workTrustedProxyPeer` to the exact observed gateway and set
+`peerMeasurementSha256` to the receipt's actual digest. Address ingress within
+the pod range is then limited to that gateway `/32`; use namespace/pod selectors
+for other pods. Direct node peers retain the original review contract without
+this optional receipt.
+
 Do not trust the entire pod/service CIDR. Host-network traffic is not reliably
 governed by Kubernetes NetworkPolicy; provider/host rules, actual denied-port
 tests and edge routing/credential isolation remain independent acceptance.
@@ -350,6 +369,28 @@ only names, references and explicit public mounts, never credential values:
   "secretRefs": ["edge-registry"]
 }
 ```
+
+The translated-peer receipt is a 0600 regular JSON file, not a symlink. Record
+the actual measurement rather than copying these example addresses or digest:
+
+```json
+{
+  "observedAt": "REPLACE_WITH_CURRENT_UTC_ISO_TIMESTAMP",
+  "requestSourceBind": "10.4.27.58",
+  "observedPodSocketPeer": "10.42.0.1",
+  "serviceClusterIP": "REPLACE_WITH_MEASURED_CLUSTERIP",
+  "actualCaddySocketQualified": false,
+  "hostNetworkEquivalentHostProbe": true,
+  "noSecretsOrTokens": true,
+  "probeManifestSha256": "REPLACE_WITH_ACTUAL_64_HEX_PROBE_DIGEST"
+}
+```
+
+Receipt and review must both be current within 24 hours. Preserve the
+`actualCaddySocketQualified: false` distinction for a preliminary host-bound
+probe; only a new receipt from the actual Caddy request can mark that field
+true. The inspection report records this distinction and still leaves
+application trust, routing, denied-port and complete cutover gates outstanding.
 
 If a public content host mount is necessary, each reviewed entry is exactly
 `{"path":"/opt/lolly-public/shell","type":"Directory","mountPath":"/srv/shell","readOnly":true}`.

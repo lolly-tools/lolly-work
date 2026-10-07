@@ -7,28 +7,63 @@ source "$K3S_QUALIFY_DIR/k3s-bootstrap.sh"
 
 validate_edge_files() {
   python3 -I - "$@" <<'PY'
-import datetime,ipaddress,json,os,re,sys
-stage,private,public,edge,review=sys.argv[1:]
+import datetime,hashlib,ipaddress,json,os,re,stat,sys
+stage,private,public,edge,review=sys.argv[1:6]
+measurement=sys.argv[6] if len(sys.argv)>6 else ''
 def need(ok,message):
     if not ok: raise SystemExit('k3s edge qualification: '+message)
 def read(name):
     with open(stage+'/'+name+'.json') as f: return json.load(f)
+def exact_ip(value,message):
+    try: address=ipaddress.IPv4Address(value)
+    except (ValueError,TypeError): need(False,message)
+    need(str(address)==value,message)
+    return address
 expected=json.load(open(review))
 need(edge not in [private,public,'default'] and not edge.startswith('kube-'),'edge namespace must be distinct and nonreserved')
 need(expected['namespace']==edge and expected['hostNetworkDirectPorts'] is True,'explicit edge exception acknowledgement required')
 reviewed=datetime.datetime.fromisoformat(expected['reviewedAt'].replace('Z','+00:00'))
 need(reviewed.tzinfo and 0 <= (datetime.datetime.now(datetime.timezone.utc)-reviewed).total_seconds() <= 86400,'edge review must be current within 24 hours')
-peer=ipaddress.IPv4Address(expected['nodePrivateIp'])
-need(any(peer in ipaddress.ip_network(c) for c in ['10.0.0.0/8','172.16.0.0/12','192.168.0.0/16']),'edge peer must be private IPv4')
-need(not any(peer in ipaddress.ip_network(c) for c in ['10.42.0.0/16','10.43.0.0/16']),'edge peer may not use the pod/service ranges')
-need(expected['workTrustedProxyPeer']==str(peer),'Work trust must name the exact stable edge peer, not a CIDR')
+bind=exact_ip(expected['nodePrivateIp'],'edge bind must be exact IPv4')
+need(any(bind in ipaddress.ip_network(c) for c in ['10.0.0.0/8','172.16.0.0/12','192.168.0.0/16']),'edge bind must be private IPv4')
+need(not any(bind in ipaddress.ip_network(c) for c in ['10.42.0.0/16','10.43.0.0/16']),'edge bind may not use the pod/service ranges')
+peer=exact_ip(expected['workTrustedProxyPeer'],'Work trust must name one exact IPv4 peer, not a CIDR')
 need(re.fullmatch(r'[^\s@]+@sha256:[a-f0-9]{64}',expected['image']),'edge image needs an immutable digest')
 namespace=read(edge+'-namespace');labels=namespace['metadata'].get('labels',{})
 for kind,value in [('enforce','privileged'),('audit','restricted'),('warn','restricted')]:
     need(labels.get('pod-security.kubernetes.io/'+kind)==value,'edge PSA exception must retain restricted audit/warn')
     need(labels.get('pod-security.kubernetes.io/'+kind+'-version')=='v1.34','edge PSA versions must be pinned')
 node=read('edge-node');need(node['metadata']['name']==expected['nodeName'],'edge node identity differs')
-need(any(a.get('type')=='InternalIP' and a.get('address')==str(peer) for a in node['status'].get('addresses',[])),'edge private peer is not the node InternalIP')
+need(any(a.get('type')=='InternalIP' and a.get('address')==str(bind) for a in node['status'].get('addresses',[])),'edge bind is not the node InternalIP')
+peer_mode='node-internal-ip';peer_receipt={'status':'actual-socket-measurement-not-supplied'}
+if peer!=bind:
+    need(measurement,'a translated proxy peer requires a current measurement receipt')
+    need(expected.get('upstreamSourceAddress')==str(bind),'translated peer review must preserve the fixed edge upstream bind')
+    info=os.lstat(measurement)
+    need(stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode)==0o600 and info.st_size<=65536,'peer measurement must be a small 0600 regular file')
+    raw=open(measurement,'rb').read();digest=hashlib.sha256(raw).hexdigest()
+    need(expected.get('peerMeasurementSha256')==digest,'peer measurement differs from the reviewed receipt hash')
+    measured=json.loads(raw)
+    observed=datetime.datetime.fromisoformat(measured['observedAt'].replace('Z','+00:00'))
+    need(observed.tzinfo and 0 <= (datetime.datetime.now(datetime.timezone.utc)-observed).total_seconds() <= 86400,'peer measurement must be current within 24 hours')
+    need(measured.get('requestSourceBind')==str(bind) and measured.get('observedPodSocketPeer')==str(peer),'peer measurement bind/socket differs from review')
+    service=exact_ip(measured.get('serviceClusterIP'),'peer measurement needs an exact ClusterIP')
+    need(service in ipaddress.ip_network('10.43.0.0/16'),'peer measurement must target this cluster Service range')
+    need(measured.get('noSecretsOrTokens') is True,'peer measurement must explicitly contain no secrets or tokens')
+    actual=measured.get('actualCaddySocketQualified')
+    need(isinstance(actual,bool) and (actual or measured.get('hostNetworkEquivalentHostProbe') is True),'peer measurement must identify actual Caddy or a preliminary host-bound probe')
+    need(re.fullmatch(r'[a-f0-9]{64}',measured.get('probeManifestSha256','')),'peer measurement needs its probe manifest digest')
+    pod_range=ipaddress.ip_network(node['spec']['podCIDR'])
+    need(pod_range.version==4 and pod_range.subnet_of(ipaddress.ip_network('10.42.0.0/16')),'edge node pod range differs from configured K3s range')
+    gateways=[a for link in read('edge-cni') if link.get('ifname')=='cni0' for a in link.get('addr_info',[]) if a.get('family')=='inet' and a.get('scope')=='global']
+    need(len(gateways)==1,'edge node must have one current cni0 IPv4 gateway')
+    gateway=gateways[0];gateway_ip=exact_ip(gateway.get('local'),'cni0 gateway must be exact IPv4')
+    need(gateway_ip==peer and ipaddress.ip_network(str(gateway_ip)+'/'+str(gateway['prefixlen']),strict=False)==pod_range,'translated trust must equal the actual cni0 gateway within the node pod range')
+    peer_mode='measured-cni-gateway'
+    peer_receipt={'status':'actual-caddy-probe' if actual else 'preliminary-host-bound-probe','sha256':digest,
+     'observedAt':measured['observedAt'],'actualCaddySocketQualified':actual,'nodePodCidr':str(pod_range)}
+else:
+    need(not measurement,'peer measurement is only supported for a separately reviewed CNI gateway peer')
 pods=read(edge+'-pods')['items'];need(len(pods)==1,'edge namespace must contain exactly one release pod')
 pod=pods[0];spec=pod['spec'];status=pod['status']
 need(pod['metadata']['name']==expected['podName'] and spec.get('nodeName')==expected['nodeName'],'edge pod/node differs from review')
@@ -83,8 +118,8 @@ for env in container.get('env',[]):
 for env in container.get('envFrom',[]):
     if 'secretRef' in env: refs.add(env['secretRef']['name'])
 need(refs.issubset(set(expected['secretRefs'])),'edge Secret reference is outside its review')
-summary={'status':'explicit-edge-exception-inspected','namespace':edge,'image':expected['image'],'nodePrivateIp':str(peer),
- 'workTrustedProxyPeer':expected['workTrustedProxyPeer'],'networkPolicyApplies':False,
+summary={'status':'explicit-edge-exception-inspected','namespace':edge,'image':expected['image'],'nodePrivateIp':str(bind),
+ 'workTrustedProxyPeer':str(peer),'proxyPeerMode':peer_mode,'peerMeasurement':peer_receipt,'networkPolicyApplies':False,
  'remainingAcceptance':['actual Work socket peer/trust verification','reviewed public edge routing and credential isolation','external dual-stack denied-port and host listener verification']}
 with open(stage+'/edge-summary.json','w') as f: json.dump(summary,f)
 print('Explicit edge exception inspected; actual peer/routing/external firewall acceptance remains.')
@@ -102,6 +137,7 @@ def read(name):
 need(private!=public,'public and private namespaces must differ')
 need(all(n!='default' and not n.startswith('kube-') for n in [private,public]),'reserved namespaces refused')
 lock=json.load(open(images));need(set(lock)=={private,public},'image/secret allowlist must name exactly both namespaces')
+edge_summary=read('edge-summary') if os.path.exists(stage+'/edge-summary.json') else {'status':'not-requested'}
 server=read('version')['serverVersion']['gitVersion'];need(server==version,'server differs from pinned version')
 namespaces={n['metadata']['name']:n for n in read('namespaces')['items']}
 for namespace in [private,public]:
@@ -127,6 +163,8 @@ for namespace in [private,public]:
                             need(labels.get('kubernetes.io/metadata.name') in [public,'kube-system'],'public egress to another namespace refused')
                     if 'ipBlock' in peer:
                         network=ipaddress.ip_network(peer['ipBlock']['cidr'])
+                        if direction=='ingress' and edge_summary.get('proxyPeerMode')=='measured-cni-gateway' and network.version==4 and network.overlaps(ipaddress.ip_network('10.42.0.0/16')):
+                            need(str(network)==edge_summary['workTrustedProxyPeer']+'/32' and not peer['ipBlock'].get('except'),'pod-range address ingress must be only the measured CNI gateway /32; use namespace/pod selectors for other pods')
                         if network.prefixlen==0:
                             need(direction=='egress','unrestricted address ingress refused')
                             need(all(p.get('port')==443 and p.get('protocol','TCP')=='TCP' for p in rule['ports']),'broad external egress must be HTTPS only')
@@ -181,7 +219,7 @@ for namespace in [private,public]:
         need(not service['spec'].get('externalIPs'),'application externalIPs refused')
 report={'status':'automatic-cluster-checks-passed','promotionReady':False,'version':version,
  'namespaces':[private,public],'images':{n:lock[n]['images'] for n in [private,public]},
- 'edgeInspection':read('edge-summary') if os.path.exists(stage+'/edge-summary.json') else {'status':'not-requested'},
+ 'edgeInspection':edge_summary,
  'remainingAcceptance':['independent snapshot plus server-token backup and fresh-host restore',
  'exact signed shell/catalog and application source binding','external TLS and complete public route/model/relay parity',
  'authenticated sign-in, collaboration, agents, DAM originals, shared uploads and render load',
@@ -192,14 +230,14 @@ PY
 }
 
 qualify_main() {
-  local private= public= probe= images= output= kubeconfig= context= interface= provider= review= edge= edge_review=
+  local private= public= probe= images= output= kubeconfig= context= interface= provider= review= edge= edge_review= edge_measurement=
   while [[ $# -gt 0 ]]; do
     [[ $# -ge 2 ]] || fail 'option requires a value'
     case $1 in
       --namespace) private=$2 ;; --public-namespace) public=$2 ;; --probe-pod) probe=$2 ;;
       --image-review) images=$2 ;; --output) output=$2 ;; --kubeconfig) kubeconfig=$2 ;;
       --context) context=$2 ;; --interface) interface=$2 ;; --provider) provider=$2 ;; --provider-review) review=$2 ;;
-      --edge-namespace) edge=$2 ;; --edge-review) edge_review=$2 ;;
+      --edge-namespace) edge=$2 ;; --edge-review) edge_review=$2 ;; --edge-peer-measurement) edge_measurement=$2 ;;
       *) fail "unknown qualification option: $1" ;;
     esac
     shift 2
@@ -208,10 +246,11 @@ qualify_main() {
   [[ $private =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && $public =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && $probe =~ ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$ ]] || fail 'invalid Kubernetes name'
   [[ $private != default && $public != default && $private != kube-* && $public != kube-* ]] || fail 'reserved namespaces refused'
   [[ -z $edge && -z $edge_review || -n $edge && -n $edge_review ]] || fail 'edge namespace and review must be provided together'
+  [[ -z $edge_measurement || -n $edge && -n $edge_review ]] || fail 'peer measurement requires an edge namespace and review'
   if [[ -n $edge ]]; then
     [[ $edge =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && $edge != "$private" && $edge != "$public" && $edge != default && $edge != kube-* ]] || fail 'edge namespace must be distinct and nonreserved'
   fi
-  python3 -I - "$kubeconfig" "$images" "$edge_review" <<'PY'
+  python3 -I - "$kubeconfig" "$images" "$edge_review" "$edge_measurement" <<'PY'
 import os,stat,sys
 for p in sys.argv[1:]:
     if not p: continue
@@ -257,7 +296,10 @@ name=json.load(open(sys.argv[1]))['nodeName'];assert re.fullmatch(r'[a-z0-9]([-a
 PY
 )
     "${kube[@]}" get node "$edge_node" -o json > "$K3S_QUALIFY_STAGE/edge-node.json"
-    validate_edge_files "$K3S_QUALIFY_STAGE" "$private" "$public" "$edge" "$edge_review"
+    if [[ -n $edge_measurement ]]; then
+      ip -j -4 address show dev cni0 > "$K3S_QUALIFY_STAGE/edge-cni.json"
+    fi
+    validate_edge_files "$K3S_QUALIFY_STAGE" "$private" "$public" "$edge" "$edge_review" "$edge_measurement"
   fi
   # No token is read. CoreDNS readiness proves its API cache is ready; this lookup
   # proves the default-deny Work namespace can still resolve cluster DNS.

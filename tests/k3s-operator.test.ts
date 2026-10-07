@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -445,7 +445,9 @@ function edgeFixture() {
     hostNetworkDirectPorts: true,
     nodeName: 'candidate',
     nodePrivateIp: '10.4.27.58',
+    upstreamSourceAddress: '10.4.27.58',
     workTrustedProxyPeer: '10.4.27.58',
+    peerMeasurementSha256: '',
     podName: 'edge-pod',
     containerName: 'edge',
     serviceAccountName: 'edge',
@@ -521,19 +523,43 @@ function edgeFixture() {
     },
     'edge-node': {
       metadata: { name: 'candidate' },
+      spec: { podCIDR: '10.42.0.0/24' },
       status: { addresses: [{ type: 'InternalIP', address: '10.4.27.58' }] },
     },
+    'edge-cni': [
+      { ifname: 'cni0', addr_info: [{ family: 'inet', scope: 'global', local: '10.42.0.1', prefixlen: 24 }] },
+    ],
   };
   return { data, review, pod, container: first(pod.spec.containers) };
 }
 
-function validateEdgeFixture(dir: string, fixture: ReturnType<typeof edgeFixture>) {
+function peerMeasurement() {
+  return {
+    observedAt: new Date().toISOString(),
+    requestSourceBind: '10.4.27.58',
+    observedPodSocketPeer: '10.42.0.1',
+    serviceClusterIP: '10.43.240.222',
+    actualCaddySocketQualified: false,
+    hostNetworkEquivalentHostProbe: true,
+    noSecretsOrTokens: true,
+    probeManifestSha256: 'c'.repeat(64),
+  };
+}
+
+function validateEdgeFixture(
+  dir: string,
+  fixture: ReturnType<typeof edgeFixture>,
+  measurement?: ReturnType<typeof peerMeasurement>,
+) {
   for (const [name, value] of Object.entries(fixture.data))
     writeFileSync(join(dir, `${name}.json`), JSON.stringify(value), { mode: 0o600 });
   writeFileSync(join(dir, 'edge-review.json'), JSON.stringify(fixture.review), { mode: 0o600 });
-  return bash('source "$K3S_TEST_QUALIFY"; validate_edge_files "$1" work public edge "$1/edge-review.json"', [
-    dir,
-  ]);
+  const file = measurement ? join(dir, 'peer-measurement.json') : '';
+  if (measurement) writeFileSync(file, JSON.stringify(measurement), { mode: 0o600 });
+  return bash(
+    'source "$K3S_TEST_QUALIFY"; validate_edge_files "$1" work public edge "$1/edge-review.json" "$2"',
+    [dir, file],
+  );
 }
 
 test('separate edge exception verifies the exact non-root host listener and fixed private peer', () =>
@@ -544,6 +570,139 @@ test('separate edge exception verifies the exact non-root host listener and fixe
     assert.equal(summary.workTrustedProxyPeer, '10.4.27.58');
     assert.equal(summary.networkPolicyApplies, false);
     assert.ok(summary.remainingAcceptance.length >= 3);
+  }));
+
+function measuredEdgeFixture() {
+  const fixture = edgeFixture();
+  const measurement = peerMeasurement();
+  fixture.review.workTrustedProxyPeer = measurement.observedPodSocketPeer;
+  fixture.review.peerMeasurementSha256 = createHash('sha256')
+    .update(JSON.stringify(measurement))
+    .digest('hex');
+  return { fixture, measurement };
+}
+
+test('translated proxy trust is limited to the current measured CNI gateway while the edge bind stays fixed', () =>
+  sandbox((dir) => {
+    const { fixture, measurement } = measuredEdgeFixture();
+    const result = validateEdgeFixture(dir, fixture, measurement);
+    assert.equal(result.status, 0, result.stderr);
+    const summary = JSON.parse(readFileSync(join(dir, 'edge-summary.json'), 'utf8'));
+    assert.equal(summary.nodePrivateIp, '10.4.27.58');
+    assert.equal(summary.workTrustedProxyPeer, '10.42.0.1');
+    assert.equal(summary.proxyPeerMode, 'measured-cni-gateway');
+    assert.equal(summary.peerMeasurement.nodePodCidr, '10.42.0.0/24');
+    assert.equal(summary.peerMeasurement.actualCaddySocketQualified, false);
+    assert.equal(summary.peerMeasurement.status, 'preliminary-host-bound-probe');
+    assert.ok(summary.remainingAcceptance.includes('actual Work socket peer/trust verification'));
+  }));
+
+test('actual Caddy peer receipt is distinguished from the preliminary host probe without declaring cutover', () =>
+  sandbox((dir) => {
+    const { fixture, measurement } = measuredEdgeFixture();
+    measurement.actualCaddySocketQualified = true;
+    measurement.hostNetworkEquivalentHostProbe = false;
+    fixture.review.peerMeasurementSha256 = createHash('sha256')
+      .update(JSON.stringify(measurement))
+      .digest('hex');
+    const result = validateEdgeFixture(dir, fixture, measurement);
+    assert.equal(result.status, 0, result.stderr);
+    const summary = JSON.parse(readFileSync(join(dir, 'edge-summary.json'), 'utf8'));
+    assert.equal(summary.peerMeasurement.status, 'actual-caddy-probe');
+    assert.equal(summary.peerMeasurement.actualCaddySocketQualified, true);
+    assert.ok(summary.remainingAcceptance.length >= 3);
+  }));
+
+const invalidMeasuredEdges: Record<
+  string,
+  (fixture: ReturnType<typeof edgeFixture>, measurement: ReturnType<typeof peerMeasurement>) => void
+> = {
+  'missing reviewed digest': (f) => {
+    f.review.peerMeasurementSha256 = '';
+  },
+  'changed fixed bind': (f) => {
+    f.review.upstreamSourceAddress = '10.4.27.59';
+  },
+  'stale measurement': (_, m) => {
+    m.observedAt = '2020-01-01T00:00:00Z';
+  },
+  'another bound node': (_, m) => {
+    m.requestSourceBind = '10.4.27.59';
+  },
+  'different socket peer': (_, m) => {
+    m.observedPodSocketPeer = '10.42.0.2';
+  },
+  'non-gateway pod address': (f, m) => {
+    f.review.workTrustedProxyPeer = '10.42.0.2';
+    m.observedPodSocketPeer = '10.42.0.2';
+  },
+  'different CNI interface': (f) => {
+    first(f.data['edge-cni']).ifname = 'other0';
+  },
+  'changed current gateway': (f) => {
+    first(first(f.data['edge-cni']).addr_info).local = '10.42.0.2';
+  },
+  'CNI prefix mismatch': (f) => {
+    first(first(f.data['edge-cni']).addr_info).prefixlen = 16;
+  },
+  'node pod range mismatch': (f) => {
+    f.data['edge-node'].spec.podCIDR = '10.42.1.0/24';
+  },
+  'node outside configured pod range': (f) => {
+    f.data['edge-node'].spec.podCIDR = '192.168.0.0/24';
+  },
+  'second gateway': (f) => {
+    first(f.data['edge-cni']).addr_info.push({
+      family: 'inet',
+      scope: 'global',
+      local: '10.42.0.2',
+      prefixlen: 24,
+    });
+  },
+  'non-Service probe': (_, m) => {
+    m.serviceClusterIP = '10.4.27.59';
+  },
+  'missing privacy acknowledgement': (_, m) => {
+    m.noSecretsOrTokens = false;
+  },
+  'unidentified probe': (_, m) => {
+    m.hostNetworkEquivalentHostProbe = false;
+  },
+  'missing probe digest': (_, m) => {
+    m.probeManifestSha256 = '';
+  },
+};
+for (const [name, change] of Object.entries(invalidMeasuredEdges))
+  test(`translated proxy qualification refuses ${name}`, () =>
+    sandbox((dir) => {
+      const { fixture, measurement } = measuredEdgeFixture();
+      change(fixture, measurement);
+      if (name !== 'missing reviewed digest')
+        fixture.review.peerMeasurementSha256 = createHash('sha256')
+          .update(JSON.stringify(measurement))
+          .digest('hex');
+      assert.notEqual(validateEdgeFixture(dir, fixture, measurement).status, 0);
+    }));
+
+test('translated proxy qualification refuses an absent, changed or public measurement receipt', () =>
+  sandbox((dir) => {
+    const { fixture, measurement } = measuredEdgeFixture();
+    assert.notEqual(validateEdgeFixture(dir, fixture).status, 0);
+    assert.equal(validateEdgeFixture(dir, fixture, measurement).status, 0);
+    const check = () =>
+      bash(
+        'source "$K3S_TEST_QUALIFY"; validate_edge_files "$1" work public edge "$1/edge-review.json" "$1/peer-measurement.json"',
+        [dir],
+      );
+    writeFileSync(join(dir, 'peer-measurement.json'), JSON.stringify({ ...measurement, changed: true }));
+    assert.notEqual(check().status, 0);
+    writeFileSync(join(dir, 'peer-measurement.json'), JSON.stringify(measurement));
+    chmodSync(join(dir, 'peer-measurement.json'), 0o644);
+    assert.notEqual(check().status, 0);
+    rmSync(join(dir, 'peer-measurement.json'));
+    writeFileSync(join(dir, 'private-receipt.json'), JSON.stringify(measurement), { mode: 0o600 });
+    symlinkSync(join(dir, 'private-receipt.json'), join(dir, 'peer-measurement.json'));
+    assert.notEqual(check().status, 0);
   }));
 
 const invalidEdges: Record<string, (fixture: ReturnType<typeof edgeFixture>) => void> = {
@@ -685,6 +844,7 @@ type Fixture = {
         spec: {
           podSelector: Record<string, string>;
           policyTypes: string[];
+          ingress?: Array<{ from?: Peer[]; ports?: Array<{ port: number; protocol: string }> }>;
           egress?: Array<{ to?: Peer[]; ports?: Array<{ port: number; protocol: string }> }>;
         };
       }>;
@@ -785,6 +945,54 @@ test('cluster checks pass bounded fixtures while explicitly refusing to claim pr
     assert.ok(report.remainingAcceptance.length >= 5);
     assert.equal(statSync(join(dir, 'result.json')).mode & 0o777, 0o600);
   }));
+
+test('measured CNI ingress allows only the gateway /32 while keeping namespace selectors and default deny', () =>
+  sandbox((dir) => {
+    const { fixture, measurement } = measuredEdgeFixture();
+    assert.equal(validateEdgeFixture(dir, fixture, measurement).status, 0);
+    const data = clusterFixture();
+    for (const namespace of ['work', 'public'] as const)
+      data[`${namespace}-policies`].items.push({
+        spec: {
+          podSelector: { app: 'server' },
+          policyTypes: ['Ingress'],
+          ingress: [
+            {
+              from: [{ ipBlock: { cidr: '10.42.0.1/32' } }],
+              ports: [{ protocol: 'TCP', port: 8787 }],
+            },
+            {
+              from: [
+                {
+                  namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': namespace } },
+                  podSelector: { app: 'worker' },
+                },
+              ],
+              ports: [{ protocol: 'TCP', port: 8787 }],
+            },
+          ],
+        },
+      });
+    assert.equal(validateFixture(dir, data).status, 0);
+    assert.equal(JSON.parse(readFileSync(join(dir, 'result.json'), 'utf8')).promotionReady, false);
+  }));
+
+for (const cidr of ['10.42.0.0/16', '10.42.0.0/24', '10.42.0.2/32', '10.0.0.0/8'])
+  for (const namespace of ['work', 'public'] as const)
+    test(`measured gateway review refuses ${namespace} pod-range address ingress ${cidr}`, () =>
+      sandbox((dir) => {
+        const { fixture, measurement } = measuredEdgeFixture();
+        assert.equal(validateEdgeFixture(dir, fixture, measurement).status, 0);
+        const data = clusterFixture();
+        data[`${namespace}-policies`].items.push({
+          spec: {
+            podSelector: { app: 'server' },
+            policyTypes: ['Ingress'],
+            ingress: [{ from: [{ ipBlock: { cidr } }], ports: [{ protocol: 'TCP', port: 8787 }] }],
+          },
+        });
+        assert.notEqual(validateFixture(dir, data).status, 0);
+      }));
 
 test('qualification receipt never overwrites existing evidence', () =>
   sandbox((dir) => {
