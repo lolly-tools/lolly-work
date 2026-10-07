@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const renderer = fileURLToPath(new URL('../deploy/suse/postgres-backup-cronjob.py', import.meta.url));
@@ -60,5 +63,42 @@ test('backup rendering refuses mutable images and invalid resource names before 
   }
   for (const option of ['--namespace', '--connection-secret', '--upload-secret']) {
     const r = render([option, '../escape']); assert.notEqual(r.status, 0); assert.equal(r.stdout, '');
+  }
+});
+
+test('backup retries transient connection refusal but never dumps after permanent failure or unencrypted TLS', () => {
+  const r = render(); assert.equal(r.status, 0, r.stderr);
+  const command: string = JSON.parse(r.stdout).spec.jobTemplate.spec.template.spec.initContainers[0].command[2];
+  for (const [failures, tls, attempts, shouldDump] of [[2, 't', 3, true], [20, 't', 10, false], [0, 'f', 1, false]] as const) {
+    const dir = mkdtempSync(join(tmpdir(), 'lw-backup-preflight-'));
+    try {
+      const bin = join(dir, 'bin'), connection = join(dir, 'connection'), scratch = join(dir, 'scratch');
+      mkdirSync(bin); mkdirSync(connection); mkdirSync(scratch);
+      writeFileSync(join(connection, 'pg_service.conf'), '[backup]\nhost=example.invalid\n');
+      writeFileSync(join(connection, 'pgpass'), 'private-password-marker\n');
+      const count = join(dir, 'attempts'), marker = join(dir, 'dumped'); writeFileSync(count, '0');
+      writeFileSync(join(bin, 'psql'), `#!/usr/bin/env bash
+set -eu
+n=$(cat "$ATTEMPTS_FILE"); n=$((n+1)); printf '%s\\n' "$n" > "$ATTEMPTS_FILE"
+test "$PGCONNECT_TIMEOUT" = 5
+if [ "$n" -le "$FAKE_FAILURES" ]; then printf '%s\\n' 'private-password-marker' >&2; exit 2; fi
+printf '%s\\n' "$FAKE_TLS"
+`);
+      writeFileSync(join(bin, 'sleep'), '#!/bin/sh\nexit 0\n');
+      const helper = join(dir, 'helper.sh');
+      writeFileSync(helper, '#!/usr/bin/env bash\nset -eu\nprintf "%s\\n" "$PGOPTIONS" > "$DUMP_MARKER"\n');
+      for (const path of [join(bin, 'psql'), join(bin, 'sleep'), helper]) chmodSync(path, 0o700);
+      const isolated = command.replaceAll('/run/postgres-backup', connection)
+        .replaceAll('/tmp/', `${scratch}/`).replaceAll('/operator/postgres-backup.sh', helper);
+      const result = spawnSync('bash', ['-c', isolated], { encoding: 'utf8', env: {
+        ...process.env, PATH: `${bin}:${process.env.PATH}`, ATTEMPTS_FILE: count,
+        DUMP_MARKER: marker, FAKE_FAILURES: String(failures), FAKE_TLS: tls,
+      } });
+      assert.equal(result.status, shouldDump ? 0 : 1, result.stderr);
+      assert.equal(Number(readFileSync(count, 'utf8')), attempts);
+      assert.equal(existsSync(marker), shouldDump);
+      assert.doesNotMatch(result.stdout + result.stderr, /private-password-marker/);
+      if (shouldDump) assert.match(readFileSync(marker, 'utf8'), /default_transaction_read_only=on/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   }
 });

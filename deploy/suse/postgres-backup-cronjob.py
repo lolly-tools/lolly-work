@@ -36,9 +36,14 @@ cp /run/postgres-backup/pgpass /tmp/pgpass
 chmod 600 /tmp/pg_service.conf /tmp/pgpass
 export PGSERVICEFILE=/tmp/pg_service.conf PGPASSFILE=/tmp/pgpass PGSERVICE=backup
 export PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=300000 -c lock_timeout=5000'
-if ! tls=$(psql --no-password -X -qAt --set=ON_ERROR_STOP=1 --command='SELECT ssl FROM pg_stat_ssl WHERE pid=pg_backend_pid()' 2>/tmp/preflight.log); then
-  printf '%s\\n' 'Database backup TLS preflight failed.' >&2; exit 1
-fi
+export PGCONNECT_TIMEOUT=5
+tls=''
+# Service and NetworkPolicy convergence can briefly refuse a fresh pod's socket.
+# Retry connections finitely; a connected, unencrypted session still fails closed.
+for attempt in {1..10}; do
+  if tls=$(PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=5000 -c lock_timeout=1000' psql --no-password -X -qAt --set=ON_ERROR_STOP=1 --command='SELECT ssl FROM pg_stat_ssl WHERE pid=pg_backend_pid()' 2>/tmp/preflight.log); then break; fi
+  if [ "$attempt" -lt 10 ]; then sleep 2; fi
+done
 if [ "$tls" != t ]; then printf '%s\\n' 'Database backup requires TLS.' >&2; exit 1; fi
 if ! bash /operator/postgres-backup.sh backup /archive/database.dump >/tmp/backup.log 2>&1; then
   printf '%s\\n' 'Database snapshot or checksum failed.' >&2; exit 1
