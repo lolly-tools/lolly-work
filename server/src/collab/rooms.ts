@@ -23,6 +23,7 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { encodeCanvasAsset } from '@lolly-tools/core/canvas-asset-v1';
+import { commentId } from '@lolly-tools/core/canvas-review-v1';
 import { canvasAssetCheckpoint, canvasAssetOps } from './asset-wire.ts';
 import { PRESENCE_VERSION, readPresenceFrame, sanitizePresenceState } from '@lolly-tools/core/collab-presence-v1';
 import type { PresenceFrame, PresenceState } from '@lolly-tools/core/collab-presence-v1';
@@ -167,7 +168,14 @@ export type ServerFrame =
   | { t: 'claims'; claims: CanvasClaim[] }
   | { t: 'claim-result'; requestId: string; claim?: CanvasClaim; reason?: string; blockedBy?: string }
   | { t: 'receipt'; batchId: string; durableRevision: number; acceptedIds: string[]; rejectedIds: string[]; checkpoint?: CanvasCheckpoint; serverClock?: number }
-  | { t: 'error'; code: string; message: string; inputs?: string[] };
+  | { t: 'error'; code: string; message: string; inputs?: string[] }
+  /** A review thread in this session changed (plan 76 M4). Ids and the thread's
+   *  revision only, never text: a peer fetches that one thread through the
+   *  comment routes, which check access again. See `Room.notifyComment`. */
+  | { t: 'comment'; threadId: string; revision: number };
+
+/** The live comment event (`ServerFrame` `comment`), as `notifyComment` takes it. */
+export type CommentEventFrame = Extract<ServerFrame, { t: 'comment' }>;
 
 export interface RoomMember {
   /** Set only by the server's invitation-backed agent bridge. */
@@ -196,6 +204,12 @@ export interface RoomMember {
    *  member, because that is the whole point of "the same room, not a separate
    *  mechanism". */
   readonly guestLinkId?: string;
+  /** True when the gateway admitted this seat as a PERSON who may read the
+   *  session's comments, so it receives `comment` frames. Decided at admission
+   *  and again at the gateway's periodic seat re-check, which may clear it. The
+   *  room only reads the flag: it holds no policy (see the module header).
+   *  Guest and agent seats never receive comment frames, whatever this says. */
+  commentView?: boolean;
   readonly send: (frame: ServerFrame) => void;
   readonly disconnect?: () => void;
 }
@@ -1087,6 +1101,29 @@ export class Room implements RoomWriteback {
     }
   }
 
+  /**
+   * Tell the people in this room that one review thread changed, after the
+   * comment write was saved (plan 76 M4). Each recipient then fetches only that
+   * thread, through the comment routes and their access check.
+   *
+   * The frame is REBUILT from its two fields, so no caller can add text, a name
+   * or anything else to it, and an invalid thread id or revision sends nothing.
+   * Only seats with `commentView` receive it; a guest or agent seat never does,
+   * even with the flag set. Returns how many seats were sent the frame.
+   */
+  notifyComment(event: CommentEventFrame): number {
+    const { threadId, revision } = event;
+    if (this.closed || !commentId(threadId) || !Number.isSafeInteger(revision) || revision < 1) return 0;
+    const frame: CommentEventFrame = { t: 'comment', threadId, revision };
+    let sent = 0;
+    for (const m of this.members.values()) {
+      if (m.commentView !== true || m.agentId !== undefined || m.guestLinkId !== undefined) continue;
+      m.send(frame);
+      sent++;
+    }
+    return sent;
+  }
+
   private entry(m: RoomMember): RosterEntry {
     const presence = this.presenceOf.get(m.id);
     return {
@@ -1227,6 +1264,16 @@ export class RoomRegistry {
 
   size(): number {
     return this.rooms.size;
+  }
+
+  /** The open room for this session, or undefined. Unlike `acquire` it never
+   *  opens, seeds or waits for a room, and it leaves the empty-room clock alone:
+   *  a caller that only has something to tell the people already in a room
+   *  (`Room.notifyComment`) must not create one or keep one alive. A room that
+   *  lost its database lease is not returned. */
+  peek(sessionId: string): Room | undefined {
+    const room = this.rooms.get(sessionId);
+    return room?.available ? room : undefined;
   }
 
   /** A live snapshot of every room this registry holds - the admin console's
