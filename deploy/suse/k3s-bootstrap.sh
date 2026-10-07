@@ -97,15 +97,17 @@ PY
 }
 
 validate_network() {
-  local interface=$1 zone service port state target permanent_target rich forwards trusted_interfaces trusted_sources permanent_trusted_sources active_zones services ports permanent_services permanent_ports permanent_rich permanent_forwards permanent_trusted_interfaces permanent_zone
+  local interface=$1 zone service port state target runtime_zone permanent_target rich forwards trusted_interfaces trusted_sources permanent_trusted_sources active_zones services ports permanent_services permanent_ports permanent_rich permanent_forwards permanent_trusted_interfaces permanent_zone
   [[ $interface =~ ^[a-zA-Z0-9_.:-]+$ ]] || fail 'invalid public interface'
   state=$(firewall-cmd --state) || fail 'cannot inspect firewall state'
   [[ $state == running ]] || fail 'firewalld must remain active'
   zone=$(firewall-cmd --get-zone-of-interface="$interface") || fail 'cannot inspect interface zone'
   [[ -n $zone && $zone != 'no zone' && $zone != trusted ]] || fail 'public interface needs a restricted zone'
-  target=$(firewall-cmd --zone="$zone" --get-target) || fail 'cannot inspect public target'
+  runtime_zone=$(firewall-cmd --zone="$zone" --list-all) || fail 'cannot inspect runtime public zone'
+  target=$(printf '%s\n' "$runtime_zone" | awk '$1 == "target:" {count++; if (NF == 2) target=$2} END {if (count != 1 || target == "") exit 1; print target}') || fail 'cannot inspect runtime public target'
   permanent_target=$(firewall-cmd --permanent --zone="$zone" --get-target) || fail 'cannot inspect permanent target'
-  [[ -n $target && -n $permanent_target && $target != ACCEPT && $permanent_target != ACCEPT ]] || fail 'public zone may not accept all traffic'
+  [[ $target == "$permanent_target" ]] || fail 'runtime/permanent public targets differ'
+  case $target in default|DROP|REJECT) ;; *) fail 'public zone target must refuse unsolicited traffic' ;; esac
   rich=$(firewall-cmd --zone="$zone" --list-rich-rules) || fail 'cannot inspect public rules'
   forwards=$(firewall-cmd --zone="$zone" --list-forward-ports) || fail 'cannot inspect public forwarding'
   services=$(firewall-cmd --zone="$zone" --list-services) || fail 'cannot inspect public services'

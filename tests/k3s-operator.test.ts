@@ -198,7 +198,8 @@ if(mode==='command-error')process.exit(2);
 if(a.includes('--state'))v='running';
 else if(a.includes('--get-zone-of-interface'))v='public';
 else if(a.includes('--get-active-zones'))v='public\\n  interfaces: ens3\\ntrusted\\n  sources: 10.42.0.0/16 10.43.0.0/16';
-else if(a.includes('--get-target'))v=mode==='accept'?'ACCEPT':'default';
+else if(a.includes('--get-target')){if(!a.includes('--permanent'))process.exit(2);v=mode==='accept'?'ACCEPT':mode==='unknown-target'?'unexpected':mode==='target-mismatch'||mode==='drop'?'DROP':mode==='reject'?'REJECT':'default';}
+else if(a.includes('--list-all'))v=mode==='missing-target'?'public':mode==='duplicate-target'?'public\\n  target: default\\n  target: default':'public\\n  target: '+(mode==='accept'?'ACCEPT':mode==='unknown-target'?'unexpected':mode==='drop'?'DROP':mode==='reject'?'REJECT':'default');
 else if(a.includes('--list-rich-rules'))v=mode==='rich'?'rule family=ipv4 accept':'';
 else if(a.includes('--list-forward-ports'))v=mode==='forward'?'port=8443:proto=tcp:toport=6443':'';
 else if(a.includes('--list-interfaces'))v=mode==='trusted-interface'?'ens3':'';
@@ -214,7 +215,7 @@ if(v)console.log(v);process.exit(status);\n`,
   return { PATH: `${dir}:${process.env.PATH}` };
 }
 
-for (const mode of ['safe', 'http3'])
+for (const mode of ['safe', 'http3', 'drop', 'reject'])
   test(`restricted firewall keeps pod/service paths in ${mode} profile`, () =>
     sandbox((dir) => {
       const result = bash('source "$K3S_TEST_BOOTSTRAP"; validate_network ens3', [], firewall(dir, mode));
@@ -223,6 +224,10 @@ for (const mode of ['safe', 'http3'])
 
 for (const mode of [
   'accept',
+  'missing-target',
+  'duplicate-target',
+  'target-mismatch',
+  'unknown-target',
   'rich',
   'forward',
   'trusted-interface',
