@@ -517,7 +517,9 @@ export async function seedStore(store: Store, now = Date.now()): Promise<SeedRes
       id: 'demo-dam-large', kind: 'mock', label: 'Demo Large DAM', managedBy: 'db', enabled: true,
       options: { generate: { count: largeDam, svgEvery: 2 } },
       mapping: { defaultType: 'image' },
-      exposure: { tier: 'reference' },
+      // On-demand, as a real DAM is: a member can place one of these assets in a
+      // tool, and the bytes load when picked.
+      exposure: { tier: 'on-demand' },
       sync: { ttlSeconds: 3600 },
       createdAt: nowIso, updatedAt: nowIso, state: { assetCount: 0 },
     });

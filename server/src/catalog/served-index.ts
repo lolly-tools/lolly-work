@@ -73,6 +73,10 @@ export interface ServedIndexDeps {
   pagedThreshold?: number;
   /** Visibility keys kept at once (least recently used goes first). */
   maxKeys?: number;
+  /** Serialized feed bytes kept across all keys. The parsed index each key
+   *  also holds is a few times this size, so a DAM-sized feed with many
+   *  distinct group sets is bounded by memory, not only by key count. */
+  maxBytes?: number;
 }
 
 export interface ServedIndexer {
@@ -135,17 +139,27 @@ function withSort(result: Omit<ServedIndex, 'sorted'>): ServedIndex {
 
 export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
   const now = deps.now ?? Date.now;
-  const maxKeys = deps.maxKeys ?? 32;
+  const maxKeys = deps.maxKeys ?? 16;
+  const maxBytes = deps.maxBytes ?? 256 * 1024 * 1024;
   const threshold = deps.pagedThreshold ?? 2000;
   const memo = new Map<string, { fingerprint: string; staleAt: number; result: ServedIndex }>();
   const paged = new Map<string, { basedOn: string; result: ServedIndex }>();
   const inflight = new Map<string, Promise<ServedIndex>>();
   let compositions = 0;
 
+  // Least recently used goes first once a map holds more than maxKeys keys
+  // or, together with the other map, more than maxBytes of feed. The entry
+  // just stored always stays, so one oversized feed is still served.
+  const heldBytes = (): number => {
+    let total = 0;
+    for (const v of memo.values()) total += v.result.bytes.length;
+    for (const v of paged.values()) total += v.result.bytes.length;
+    return total;
+  };
   const remember = <V>(map: Map<string, V>, key: string, value: V): void => {
     map.delete(key);
     map.set(key, value);
-    while (map.size > maxKeys) map.delete(map.keys().next().value as string);
+    while (map.size > 1 && (map.size > maxKeys || heldBytes() > maxBytes)) map.delete(map.keys().next().value as string);
   };
 
   const providerStamp = (frags: FragmentView[]): string =>

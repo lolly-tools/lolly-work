@@ -62,6 +62,21 @@ test('the feed composes once per input state and recomposes on a store change', 
   assert.equal(served.compositions(), 2, 'time alone does not recompose without a pending flip');
 });
 
+test('the memo is bounded by feed bytes as well as by key count', async () => {
+  const clock = Date.parse('2026-06-01T00:00:00.000Z');
+  const { pack, store } = await setup(() => clock);
+  const federation = createFederation({ store, now: () => clock });
+  const one = await createServedIndex({ pack: () => pack, store, federation, now: () => clock }).forCaller({ groups: ['a'] });
+  // Room for one feed only: a second visibility key evicts the first.
+  const served = createServedIndex({ pack: () => pack, store, federation, now: () => clock, maxBytes: one.bytes.length + 10 });
+  await served.forCaller({ groups: ['a'] });
+  await served.forCaller({ groups: ['b'] });
+  await served.forCaller({ groups: ['b'] });
+  assert.equal(served.compositions(), 2, 'the most recent key stays');
+  await served.forCaller({ groups: ['a'] });
+  assert.equal(served.compositions(), 3, 'the older key was evicted to stay inside the byte budget');
+});
+
 test('a pending lifecycle flip ends the memo at the flip instant', async () => {
   let clock = Date.parse('2026-06-01T00:00:00.000Z');
   const { store, served } = await setup(() => clock);
