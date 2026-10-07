@@ -148,6 +148,34 @@ test('worker topology: /readyz readiness vs /healthz liveness, concurrency env, 
   assert.match(dep!, /^\s*replicas:/m, 'without the HPA, the Deployment owns its replica count');
 });
 
+test('render browser requires HTTPS or explicit loopback while the worker API stays private', { skip: noHelm }, () => {
+  const enabled = ['--set', 'renderWorker.enabled=true', '--set', 'renderWorker.secret=cccc'];
+  for (const base of ['https://lolly.ing', 'https://shell.internal:8443/lolly',
+    'https://[2001:db8::1]:8443', 'http://localhost:8787', 'http://127.0.0.1:8787', 'http://[::1]:8787']) {
+    const r = render([...SECRETS, ...enabled, '--set-json', `renderWorker.webBase=${JSON.stringify(base)}`,
+      '--set-string', 'config.render.worker.url=http://lolly-lolly-work-render-worker:8791']);
+    assert.ok(r.ok, `${base}: ${r.err}`);
+    const env = deployment(r.out, true).spec.template.spec.containers[0].env;
+    assert.equal(env.find(item => item.name === 'LOLLY_WEB_BASE').value, base);
+    const cfg = JSON.parse(manifests(r.out).find(d => d.kind === 'ConfigMap').data['instance.json']);
+    assert.equal(cfg.render.worker.url, 'http://lolly-lolly-work-render-worker:8791');
+  }
+  for (const base of ['', 'http://lolly-work.lolly-private.svc.cluster.local', 'http://10.4.27.58:8787',
+    'http://lolly.ing', 'http://localhost.evil.test', 'http://127.1', 'http://2130706433',
+    'ftp://lolly.ing', '//lolly.ing', 'https://owner:secret@lolly.ing',
+    'https://lolly.ing?token=secret', 'https://lolly.ing#fragment', 'https://lolly.ing\\evil',
+    ' https://lolly.ing', 'https://', 'https://lolly.ing:bad', 'https://lolly.ing:65536']) {
+    const r = render([...SECRETS, ...enabled, '--set-json', `renderWorker.webBase=${JSON.stringify(base)}`]);
+    assert.equal(r.ok, false, base);
+    assert.match(r.err, /renderWorker.webBase must be a HTTPS shell URL/);
+    assert.ok(!r.err.includes('owner:secret'), 'refusal must not echo URL credentials');
+  }
+  const nonString = render([...SECRETS, ...WORKER, '--set', 'renderWorker.webBase=true']);
+  assert.equal(nonString.ok, false); assert.match(nonString.err, /renderWorker.webBase must be a HTTPS shell URL/);
+  assert.ok(render([...SECRETS, '--set-string', 'renderWorker.webBase=http://unused-service']).ok,
+    'disabled workers do not change the default and evaluation topology');
+});
+
 test('values-eval renders the one-command tyre-kick: no migrate Job, one replica, hooks fast path on, default ingress class', { skip: noHelm }, () => {
   // The field-demo contract (docs/deployment.md "Evaluation in one command",
   // verified live on k3s 2026-08-11): no Postgres ⇒ the migrate Job must NOT
