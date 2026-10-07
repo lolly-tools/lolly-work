@@ -1,25 +1,22 @@
-# Vercel trial deploy (lolly.work)
+# Optional Vercel deployment
 
-> **Hosted production changed on 7 October 2026.** lolly.ing and lolly.tools
-> run on UpCloud/K3s with PostgreSQL on that host. Vercel is no longer their
+> **Hosted production changed on 7 October 2026.** lolly.ing, lolly.tools and
+> the public lolly.work evaluation demo run on UpCloud/K3s. The private
+> workspace uses PostgreSQL on that host; the demo uses a separate, ephemeral
+> memory store. Vercel is no longer their
 > production or rollback target. See [current hosted production](../../docs/deployment.md#current-hosted-production).
-> The separate lolly.work demo is being moved to UpCloud after acceptance.
 > This repository's CI no longer deploys to Vercel on pushes to main. The
 > adapter and packaging checks below remain available for an explicitly chosen
 > generic Vercel instance. Vercel project Git integrations must be disabled
 > separately when retiring an existing hosted project.
 
-The "Vercel trial (interim, decided 2026-07-21)" shape. A deploy *target* for the same code the Helm chart and `deploy/compose/` run — not
-a second product. Trial-grade: EU data region, opt-in telemetry attribution.
+This adapter packages the same application used by the Helm chart and
+`deploy/compose/` for a separately configured Vercel instance. The instructions
+use example domains; replace them with domains and projects you control.
 
-> **Demo host, not a sovereign deployment.** Vercel (+ the Cloud Run render worker in §4a)
-> host the public **lolly.work** demo and the blank-brand starter — a convenience to get a
-> public URL up fast. They are **temporary**: the demo + blank brand move to a trusted
-> **European sovereign cloud** (likely **Evroc**; partnership in progress). For a governed
-> sovereign deployment, use the **SUSE stack** — **SLES + SUSE Rancher Prime** (paid) or
-> **openSUSE Leap + Rancher Community** (free) — via `deploy/helm` (`docs/deployment.md` →
-> *Sovereignty*): no US hyperscaler, no `gcloud`, no Vercel. A US team may be happy on Vercel;
-> a sovereignty customer never touches it.
+For a sovereign deployment, use the [SUSE deployment options](../../docs/deployment.md#hosting-and-operating-system-choices)
+with SLES and SUSE Rancher Prime, or openSUSE Leap and Rancher Community.
+The Vercel adapter has the function-runtime limits described below.
 
 **How it builds:** `vercel.json` sets one `buildCommand` → `scripts/build-vercel-fn.mjs`,
 which esbuild-bundles the app into a plain-JS function, packages the pinned engine's public
@@ -45,20 +42,20 @@ The check uses an isolated evaluation fixture with no inherited database or inst
 credentials. A local macOS build can run this check locally; only the Linux build is
 suitable for uploading to Vercel.
 
-**Deploy:** `vercel deploy --prod` from a linked checkout — it uploads the working tree and
-runs the buildCommand on Vercel. (Git-connected auto-deploy works too, but only once the
-build files are committed to the branch.)
+**Deploy:** `vercel deploy --prod` from a checkout linked to your separate project
+uploads the working tree and runs the buildCommand on Vercel. Git-connected
+deployment is an opt-in setting for that project.
 
 ## 1. Create the project
 
-Create a **new, separate** Vercel project for this — **never** the OSS `bt` project
-(parent plan §7.5). From this repo:
+Create a new Vercel project for your instance. Keep the retired hosted Lolly
+projects fenced. From this repo:
 
 ```bash
 vercel link            # when prompted, choose "Create a new project"
 ```
 
-Name it something like `lolly-work` (distinct from any OSS project). Root Directory
+Name it something like `my-lolly-work`. Root Directory
 stays the repo root (`.`) — the wrapper lives at `/vercel.json` + `/api`, not a subdir.
 
 ## 2. Environment variables
@@ -70,7 +67,7 @@ Set these on the Vercel project (Project Settings → Environment Variables, or
 |---|---|---|
 | `LW_SESSION_SECRET` | yes (prod) | session/guest/state token HMAC key |
 | `LW_LINK_SECRET` | yes (prod) | share/embed/download/guest-edit link signatures |
-| `LW_CONFIG_JSON` | yes | the whole `instance.json` as one JSON string. Unset, the function uses a gated, dev-disabled placeholder (`api/_lib/bootstrap.ts`) whose `deployment.mode` is `auto`, which counts as production whenever the function sees `NODE_ENV=production` (expect that on Vercel). In production the placeholder fails the storage and identity checks, the function refuses to boot, every request (`/healthz` included) answers 500, and the function log names each failed check by id. Only a config that sets `"deployment": { "mode": "evaluation" }` boots without a database and answers `/healthz`. **For the public demo sandbox, use `deploy/vercel/lolly-work.config.json` verbatim** (see section 5): it wires the bundled demo pack, `open` render access, the four passwordless demo personas and evaluation mode |
+| `LW_CONFIG_JSON` | yes | the whole `instance.json` as one JSON string. Unset, the function uses a gated, dev-disabled placeholder (`api/_lib/bootstrap.ts`) whose `deployment.mode` is `auto`, which counts as production whenever the function sees `NODE_ENV=production` (expect that on Vercel). In production the placeholder fails the storage and identity checks, the function refuses to boot, every request (`/healthz` included) answers 500, and the function log names each failed check by id. Only a config that sets `"deployment": { "mode": "evaluation" }` boots without a database and answers `/healthz`. For your evaluation sandbox, copy `deploy/vercel/lolly-work.config.json` and replace `instance.baseUrl` with your own URL (see section 5): it wires the bundled demo pack, `open` render access, the four passwordless demo personas and evaluation mode |
 | `DATABASE_URL` | yes for real data | Neon Postgres, **EU region**, via the Vercel Marketplace integration (`vercel:marketplace` skill, or Storage tab → Marketplace Database Providers → Neon). Unset **+ `dev.enabled`** → in-memory store **seeded with the full demo fixture** (governance + activity + mock live rooms — §5), so a signed-in visitor lands on populated dashboards; per-instance-ephemeral, so it re-seeds on every cold start and resets on redeploy. Unset **+ no `dev.enabled`** → bare in-memory store (smoke tests only) |
 | `LW_IDP_CLIENT_SECRET` | if the IdP needs one | OIDC confidential client secret |
 | `LW_BASE_URL` | no | only used by the built-in fallback config's placeholder `instance.baseUrl` |
@@ -80,7 +77,7 @@ than minting ephemeral dev secrets — by design.
 
 ## 3. Domain
 
-Point **lolly.work** at this project (Project Settings → Domains). Make sure
+Add your own domain, for example **work.example.com**, to this project (Project Settings → Domains). Make sure
 `LW_CONFIG_JSON`'s `instance.baseUrl` matches whatever domain a given deployment answers
 on (production vs. preview URLs differ) — it drives OIDC redirect URIs and the
 session/guest cookie `Secure` flag.
@@ -117,15 +114,14 @@ The Vercel function can't run Chromium, so today `/render/*.png` uses the in-pro
 fallback. To move rasterisation onto the single Chromium worker (one renderer,
 one provenance path, and it lets resvg be dropped), point the function at a running worker.
 
-1. **Run the worker — the preferred host is your RKE2/Kubernetes cluster** (decided
-   2026-08-11: SUSE runs no hyperscaler worker; the demo shares the production fleet):
+1. **Run the worker in your RKE2/Kubernetes cluster:**
    enable it in the Helm chart —
 
    ```yaml
    # deploy/helm values
    renderWorker:
      enabled: true
-     webBase: https://lolly.tools        # /render (hooked tools) drives this shell
+     webBase: https://shell.example.com # /render (hooked tools) drives your shell
      maxConcurrent: 4                    # per-pod cap → 503 RENDER_BUSY + /readyz flip
    ```
 
@@ -141,7 +137,7 @@ one provenance path, and it lets resvg be dropped), point the function at a runn
    SECRET=$(openssl rand -hex 32)
    gcloud run deploy lolly-render-worker \
      --source workers/render --region europe-west1 --allow-unauthenticated \
-     --set-env-vars "LW_RENDER_WORKER_SECRET=$SECRET,LOLLY_WEB_BASE=https://lolly.tools" \
+     --set-env-vars "LW_RENDER_WORKER_SECRET=$SECRET,LOLLY_WEB_BASE=https://shell.example.com" \
      --cpu 2 --memory 2Gi --min-instances 1        # min-1 avoids a cold browser launch
    ```
 
@@ -165,8 +161,10 @@ one provenance path, and it lets resvg be dropped), point the function at a runn
 With **no `shellDir`** and **`dev.enabled`**, `/` serves a self-contained demo landing
 (`server/src/lib/demo-landing.ts`): a "public testing sandbox" banner, one-click
 passwordless sign-in for each `dev.users` persona (→ `/api/auth/dev`), a link into the
-governed admin console (`/admin`), and live `GET /render/*` examples. `deploy/vercel/lolly-work.config.json`
-is the ready-to-paste `LW_CONFIG_JSON` for it:
+governed admin console (`/admin`), and live `GET /render/*` examples.
+`deploy/vercel/lolly-work.config.json` is the evaluation fixture. Copy it to
+`instance.vercel.json`, replace `instance.baseUrl` with `https://work.example.com`
+or your own URL, and use the edited file as `LW_CONFIG_JSON`:
 
 - `instance.pack: "packs/demo"` — the bundled Tier-A pack (qr-code, mesh-gradient, colour-palette).
 - `policy.defaultAccessMode: "open"` — `/render` + `/catalog` are public (the MCP GET surface); `/admin` + governance APIs still enforce RBAC.
@@ -188,8 +186,8 @@ consistently populated and nothing persists.
 **Security:** this is passwordless sign-in on a public origin — anyone can enter as any
 persona, including admin, and the in-memory store resets on redeploy. It only appears when
 `dev.enabled` is true (a real IdP deploy never sets it). Keep nothing real or sensitive on
-this instance. To set it: `vercel env add LW_CONFIG_JSON` and paste the file's contents
-(or `vercel env add LW_CONFIG_JSON < deploy/vercel/lolly-work.config.json`).
+this instance. To set it: `vercel env add LW_CONFIG_JSON` and paste the edited file's
+contents (or `vercel env add LW_CONFIG_JSON < instance.vercel.json`).
 
 The demo config sets `"deployment": { "mode": "evaluation" }`. It has to: `api/_lib/bootstrap.ts`
 runs the same production setup checks as `server/src/main.ts`, and with `mode` left at
@@ -207,7 +205,7 @@ memory store and `open` access as production failures and refuses to boot. Updat
 > The recipe below is only for a separately configured Vercel instance.
 
 One Vercel project can serve a private, sign-in gated Lolly on its own domain: the Lolly app
-(the web shell) is proxied from a public shell origin such as `https://lolly.tools`, and every
+(the web shell) is proxied from your public shell origin such as `https://shell.example.com`, and every
 control-plane path (`/api/*`, `/catalog/*`, tool files, `/admin`, sign-in) is answered by this
 function, all on one origin so the session cookie reaches both. The code is the same as the
 demo; three build-time variables and a production `LW_CONFIG_JSON` make the difference.
@@ -251,10 +249,11 @@ the app. `SHELL_SW_BYPASS_PREFIXES` in `scripts/vercel-routes.ts` is the list, a
 this repository (or `LOLLY_DIR`), against that `sw.js`. A new navigable top-level route needs
 adding to both.
 
-The OSS deployment at lolly.tools redirects requests whose `Host` is one of its parked
-`lolly.*` domains. After the first deploy, check that a proxied page answers `200` rather than a
-redirect: `curl -sI https://<your domain>/ | head -1`. Check also that a query string reaches
-both sides, for example `curl -s 'https://<your domain>/healthz?probe=1'` and a shell URL with
+The shell origin must serve the forwarded host rather than redirecting it to a
+different domain. After the first deploy, check a normal page request:
+`curl -fsS -o /dev/null -w '%{http_code}\n' https://work.example.com/`.
+Check also that a query string reaches both sides, for example
+`curl -fsS 'https://work.example.com/healthz?probe=1'` and a shell URL with
 `?` parameters.
 
 ### Build-time variables
@@ -263,7 +262,7 @@ Set these for the Production environment so the build on Vercel sees them.
 
 | Var | Example | What |
 |---|---|---|
-| `LW_SHELL_ORIGIN` | `https://lolly.tools` | the shell origin to proxy. Must be `https` with no path, query or fragment; the build stops otherwise. Unset: the demo catch-all |
+| `LW_SHELL_ORIGIN` | `https://shell.example.com` | the shell origin to proxy. Must be `https` with no path, query or fragment; the build stops otherwise. Unset: the demo catch-all |
 | `LW_PACK_DIR` | `packs/my-instance` | a pack inside this repository, bundled into the function as real files (symbolic links are copied as their targets and the build fails if any remain). A brand-profile pack (with `brands/`) has its active catalog materialised the way `packs/demo` is. Point `instance.pack` at the same path |
 | `LW_FUNCTION_REGION` | `fra1` | one or more Vercel region ids, comma separated, written to the function's `.vc-config.json` as `regions` (the Build Output API field, checked against Vercel's docs on 2026-10-02). Hobby runs one region. Setting the project's Function Region in the dashboard instead works too |
 
@@ -284,8 +283,8 @@ Packs are data and are not committed (`packs/*` is ignored, except `packs/demo`)
 from a clean Lolly checkout at the commit the shell origin runs:
 
 ```bash
-git -C ../lolly checkout <commit>      # the revision lolly.tools is serving
-node scripts/build-instance-pack.ts --lolly ../lolly --profile lolly-start \
+git -C ../lolly worktree add --detach ../lolly-shell-source <commit>
+node scripts/build-instance-pack.ts --lolly ../lolly-shell-source --profile lolly-start \
   --out packs/my-instance --exclude og
 ```
 
@@ -375,7 +374,7 @@ that way.
 ### Deploy
 
 ```bash
-vercel link                                   # a new project, never the OSS one
+vercel link                                   # your separate instance project
 vercel env add LW_SHELL_ORIGIN production     # and the other variables above
 vercel deploy --prod --archive=tgz
 ```
