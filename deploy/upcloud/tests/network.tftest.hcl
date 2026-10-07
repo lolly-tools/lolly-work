@@ -52,6 +52,56 @@ run "reject_broad_dns" {
   expect_failures = [var.dns_resolver_cidrs]
 }
 
+run "randomized_pod_dns_snat" {
+  command = plan
+  variables { dns_response_port_range = { start = 1024, end = 65535 } }
+  assert {
+    condition     = length(local.dns_response_rules) == 4 && alltrue([for rule in local.dns_response_rules : contains(["tcp", "udp"], rule.protocol) && rule.source_address_start == rule.source_address_end && contains(["94.237.127.9", "2001:db8::53"], rule.source_address_start) && rule.source_port_start == "53" && rule.source_port_end == "53" && rule.destination_port_start == "1024" && rule.destination_port_end == "65535"])
+    error_message = "Randomized DNS SNAT needs only exact trusted resolver TCP/UDP53 return rules."
+  }
+  assert {
+    condition     = alltrue([for rule in local.http_response_rules : rule.destination_port_start == "32768" && rule.destination_port_end == "60999"]) && alltrue([for rule in local.firewall_rules : lookup(rule, "destination_port_start", "") != "1024" || (lookup(rule, "source_port_start", "") == "53" && lookup(rule, "source_port_end", "") == "53" && lookup(rule, "source_address_start", "") == lookup(rule, "source_address_end", "") && contains(["94.237.127.9", "2001:db8::53"], lookup(rule, "source_address_start", "")))])
+    error_message = "A dedicated DNS range must never widen HTTP or any-source service return paths."
+  }
+  assert {
+    condition     = length(local.web_rules) == 6 && alltrue([for rule in local.web_rules : contains(["80", "443"], rule.destination_port_start)]) && length(local.ssh_rules) == 2 && local.ssh_rules[0].source_address_start == "192.0.2.10" && local.firewall_rules[length(local.firewall_rules) - 2].action == "drop"
+    error_message = "Hosted web, administrator SSH and unmatched inbound denial must stay unchanged."
+  }
+}
+
+run "reject_privileged_dns_return_ports" {
+  command = plan
+  variables { dns_response_port_range = { start = 1023, end = 65535 } }
+  expect_failures = [var.dns_response_port_range]
+}
+
+run "reject_reversed_dns_return_ports" {
+  command = plan
+  variables { dns_response_port_range = { start = 65535, end = 1024 } }
+  expect_failures = [var.dns_response_port_range]
+}
+
+run "reject_fractional_dns_return_ports" {
+  command = plan
+  variables { dns_response_port_range = { start = 1024.5, end = 65535 } }
+  expect_failures = [var.dns_response_port_range]
+}
+
+run "reject_excess_dns_return_ports" {
+  command = plan
+  variables { dns_response_port_range = { start = 1024, end = 65536 } }
+  expect_failures = [var.dns_response_port_range]
+}
+
+run "reject_broad_dns_with_dedicated_return_range" {
+  command = plan
+  variables {
+    dns_resolver_cidrs      = ["2001:db8::/64"]
+    dns_response_port_range = { start = 1024, end = 65535 }
+  }
+  expect_failures = [var.dns_resolver_cidrs]
+}
+
 run "reject_missing_dns" {
   command = plan
   variables { dns_resolver_cidrs = [] }
