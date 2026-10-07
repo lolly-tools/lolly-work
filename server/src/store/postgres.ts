@@ -2682,7 +2682,8 @@ function createPostgresVersions(pool: PgPool): Pick<Store, VersionMethods> {
         const plan = await planSessionVersionPut(w, id, content, {
           rows: mine,
           contents: new Map(stored.rows.map((r) => [r.digest as string, Number(r.bytes)])),
-          instanceBytes: async () => Number((await client.query('select coalesce(sum(bytes), 0)::bigint as n from session_version_contents')).rows[0]!.n),
+          // One row, kept by migration 0053's triggers.
+          instanceBytes: async () => Number((await client.query('select coalesce((select bytes from session_version_totals where id), 0)::bigint as n')).rows[0]!.n),
           instanceRows: async () => {
             const rows = (await client.query(`select ${VERSION_ROW_COLUMNS} from session_versions`)).rows.map(versionRowFromRow);
             const all = (await client.query('select session_id, digest, bytes from session_version_contents')).rows;

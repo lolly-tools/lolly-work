@@ -785,7 +785,9 @@ export type SessionVersionPutPlan =
   | { action: 'insert'; contentIsNew: boolean; drops: string[] };
 
 /** What the planner reads. `rows` and `contents` (digest to bytes) are the
- *  document's own; the instance totals are read only when new content is near a cap. */
+ *  document's own. `instanceBytes` is read for every write of new content, so a
+ *  driver answers it cheaply (Postgres reads one row its triggers keep);
+ *  `instanceRows` is read only when new content would pass the instance cap. */
 export interface SessionVersionPutState {
   rows: SessionVersionRow[];
   contents: ReadonlyMap<string, number>;
