@@ -77,6 +77,9 @@ import { agentActor, agentAttribution } from '../agents/attribution.ts';
 import { registerAgentRoutes } from '../agents/routes.ts';
 import { createProjectRequests } from '../agents/project-requests.ts';
 import type { AgentRoomBridge } from '../agents/types.ts';
+import type { VersionRoomBridge } from '../versions/restore.ts';
+import { recordSaveVersion } from '../versions/recorder.ts';
+import { registerVersionRoutes } from '../versions/routes.ts';
 import { mintRenderRead, renderReader } from '../render/read-ticket.ts';
 import { projectFilesEnabled, removeUploadsBy } from '../projects/files.ts';
 import { buildShareMessage, createWindowQuota, mergeInvitationProject, nameWithoutEmail, roleAbove } from '../projects/sharing.ts';
@@ -223,6 +226,11 @@ export interface AppDeps {
    *  like `agentRooms`, so this module never imports the gateway; undefined on Vercel,
    *  where GET comments then reports `features.events: false`. */
   roomEvents?: (sessionId: string, frame: { t: 'comment'; threadId: string; revision: number }) => void;
+  /** Version restores through the live room (plan 76 M4): main.ts wires the
+   *  gateway's `collab.versions`, the `agentRooms` pattern, so this module never
+   *  imports the gateway. Undefined on Vercel, where a restore is a
+   *  compare-and-swap of the session row instead (versions/restore.ts). */
+  versionRooms?: VersionRoomBridge;
   config: InstanceConfig;
   store: Store;
   secrets: Secrets;
@@ -7931,7 +7939,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       await audit(`user:${user.id}`, 'session.conflict', `session:${fresh.id}`, { rev: fresh.rev, sentRev: body.rev, toolId: fresh.toolId });
       return sendJson(res, 409, { error: { code: 'CONFLICT', message: `session is at rev ${fresh.rev}, you sent ${body.rev}` }, current: await conflictCurrent(fresh, user.id) });
     }
-    await store.appendSessionRevision({ sessionId: next.id, rev: next.rev, inputs, meta, actor: revisionActor(req, user), at: now });
+    const saver = revisionActor(req, user);
+    await store.appendSessionRevision({ sessionId: next.id, rev: next.rev, inputs, meta, actor: saver, at: now });
+    // A REST save is a version too (plan 76 M4), including the save a shell
+    // retries after merging a 409; the store skips one that changed nothing.
+    await recordSaveVersion(store, next, user.id, saver.startsWith('agent:') ? { id: saver.slice('agent:'.length), kind: 'agent' } : { id: user.id, kind: 'user' });
     await audit(`user:${user.id}`, 'session.update', `session:${next.id}`, { rev: next.rev, projectId: next.projectId, toolId: next.toolId });
     sendJson(res, 200, sessionFull(next));
   });
@@ -7960,9 +7972,15 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!mayDelete) {
       return sendError(res, 403, 'FORBIDDEN', 'only the session creator, the project owner or a holder of project.manage can delete this session');
     }
-    if (session.deletedAt) return sendJson(res, 200, { ok: true, alreadyDeleted: true });
+    // Sessions have no undelete, so their versions go in the same request
+    // (plan 76 M4). A repeated DELETE finishes the job if the first stopped.
+    if (session.deletedAt) {
+      await store.deleteSessionVersions(session.id);
+      return sendJson(res, 200, { ok: true, alreadyDeleted: true });
+    }
     const now = new Date().toISOString();
     await store.putSession({ ...session, deletedAt: now, updatedBy: user.id, updatedAt: now });
+    await store.deleteSessionVersions(session.id);
     await audit(`user:${user.id}`, 'session.delete', `session:${session.id}`, { projectId: session.projectId, toolId: session.toolId });
     sendJson(res, 200, { ok: true });
   });
@@ -8579,6 +8597,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   };
 
   registerCommentRoutes(router, { config, store, memberOf, audit, sessionFor: collabSessionFor, people, roomEvents: deps.roomEvents });
+  registerVersionRoutes(router, { config, store, memberOf, audit, sessionFor: collabSessionFor, rooms: deps.versionRooms,
+    toolInputs: toolId => readToolInputs(config.instance.pack, toolId) });
 
   // Invite autocomplete. Read-access only - an OBSERVER may look up who else
   // could watch, which is the same disclosure they already get from the room's

@@ -39,6 +39,8 @@ async function exercise(store: Store) {
   const gateway = createCollabGateway({ config, store, secrets: { session: 'test-session', link: 'test-link' } });
   const blobs = createMemoryBlobStore();
   app = buildApp({ config, store, blobs, agentRooms: gateway.agents, secrets: { session: 'test-session', link: 'test-link' } });
+  // Live edits are attributed when the room closes (plan 76 M4); checked after the drain.
+  let edited = { sessionId: '', agentId: '' };
   const cookie = (user: UserRecord) => mintSessionCookie({ sub: user.sub, email: user.email, name: user.sub, groups: user.groups, role: user.role, epoch: user.sessionEpoch }, 'test-session', false).split(';')[0]!;
   const http = (user: UserRecord, method: string, path: string, body?: unknown) => fetch(base + path, { method, headers: { cookie: cookie(user), connection: 'close', ...(body ? { 'content-type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
   const invite = async (user: UserRecord, role = 'editor') => {
@@ -78,8 +80,7 @@ async function exercise(store: Store) {
     assert.notEqual(before.agent.id, other.agent.id, 'room connections have separate identities');
     const changed = await value(b, 'apply_document_ops', { sessionId: first.id, expectedRevision: before.revision, batchId: 'title', ops: [{ k: 'param', key: 'title', value: 'By the team' }] });
     assert.equal(changed.docState.params.title, 'By the team');
-    const editRevision = (await store.getSession(first.id))!.rev;
-    assert.equal((await store.listSessionRevisions(first.id)).find(revision => revision.rev === editRevision)?.actor, `agent:${b.agent.id}`);
+    edited = { sessionId: first.id, agentId: b.agent.id };
     assert.ok((await store.listAudit()).some(event => event.action === 'collab.join' && event.actor === `agent:${b.agent.id}` && event.payload?.sessionId === first.id && event.payload?.invitedBy === `user:${colleague.id}`));
     const retry = await value(a, 'create_session', { requestId: 'first', name: 'First', toolId: 'design' });
     assert.equal(retry.id, first.id); assert.equal(retry.replayed, true); assert.equal((await store.getSession(first.id))?.inputs.title, 'By the team');
@@ -142,6 +143,11 @@ async function exercise(store: Store) {
   } finally {
     await gateway.drain(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(pack, { recursive: true, force: true });
   }
+  // Only the colleague's agent edited the first document, so the room's one
+  // revision names it, and the version written when the room closed counts it.
+  assert.equal((await store.listSessionRevisions(edited.sessionId))[0]?.actor, `agent:${edited.agentId}`);
+  const [closed] = await store.listSessionVersions(edited.sessionId, { limit: 1 });
+  assert.deepEqual(closed?.contributors.map(c => [c.kind, c.id]), [['agent', edited.agentId]]);
 }
 
 test('project agents create shared documents, folders and verified assets with current scoped access (memory)', () => exercise(Object.assign(createMemoryStore(), { storageKind: 'postgres' as const })));

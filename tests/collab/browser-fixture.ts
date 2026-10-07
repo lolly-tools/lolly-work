@@ -54,6 +54,8 @@ export async function createWorkBrowserFixture(ossDir: string, viteOrigin: strin
   const gateway = createCollabGateway({ config, store, secrets, pingIntervalMs: 1000 });
   const app = buildApp({ config, store, secrets, listCollabRooms: () => gateway.snapshot(),
     ...(options.renderWorker ? { onRenderRunner: (runner: RenderRunner) => { renders = runner; runner.start(); } } : {}),
+    // As main.ts: version restores go through the live room (plan 76 M4).
+    versionRooms: gateway.versions,
   });
   const sockets = new Set<Duplex>();
   let suspended = false;
