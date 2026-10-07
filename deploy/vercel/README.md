@@ -1,5 +1,14 @@
 # Vercel trial deploy (lolly.work)
 
+> **Hosted production changed on 7 October 2026.** lolly.ing and lolly.tools
+> run on UpCloud/K3s with PostgreSQL on that host. Vercel is no longer their
+> production or rollback target. See [current hosted production](../../docs/deployment.md#current-hosted-production).
+> The separate lolly.work demo is being moved to UpCloud after acceptance.
+> This repository's CI no longer deploys to Vercel on pushes to main. The
+> adapter and packaging checks below remain available for an explicitly chosen
+> generic Vercel instance. Vercel project Git integrations must be disabled
+> separately when retiring an existing hosted project.
+
 The "Vercel trial (interim, decided 2026-07-21)" shape. A deploy *target* for the same code the Helm chart and `deploy/compose/` run — not
 a second product. Trial-grade: EU data region, opt-in telemetry attribution.
 
@@ -190,17 +199,12 @@ memory store and `open` access as production failures and refuses to boot. Updat
 
 ## 6. Private instance with the Lolly app
 
-> **lolly.ing moved to a VM** (`deploy/vm/README.md`): Caddy and the long-lived server, which
-> runs the live co-editing gateway, against the same Neon database. The Vercel project
-> `lolly-ing` stays deployed as the rollback: point the `A @` and `A www` records back at
-> 76.76.21.21 and it serves again, provided its production deployment was built from this
-> code or later (the VM runbook's step 8; `/api/v1/instance` then reports an `engineVersion`,
-> an older build `null`). An older build takes its migration lock over the pooled
-> `DATABASE_URL`, so cold starts hang until the function timeout, and it tells the Lolly app
-> to open live rooms. Keep its `LW_SESSION_SECRET` and `LW_LINK_SECRET` equal
-> to the VM's, since the session secret also keys the audit log's MACs. Vercel cannot take the
-> gateway's place behind a rewrite: a rewrite to another origin carries no WebSocket and is cut
-> at 120 s.
+> **Historical lolly.ing migration.** The earlier Compose deployment shared a
+> Neon database with its Vercel predecessor. The 7 October 2026 cutover replaced
+> that arrangement with UpCloud/K3s and local PostgreSQL. Old database access is
+> fenced; returning DNS to Vercel would lose the current collaboration runtime
+> and new workspace writes. Do not restore it or replay the old rollback.
+> The recipe below is only for a separately configured Vercel instance.
 
 One Vercel project can serve a private, sign-in gated Lolly on its own domain: the Lolly app
 (the web shell) is proxied from a public shell origin such as `https://lolly.tools`, and every
