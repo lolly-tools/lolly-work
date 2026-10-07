@@ -88,8 +88,8 @@ printf '%s\\n' "$FAKE_TLS"
       const helper = join(dir, 'helper.sh');
       writeFileSync(helper, '#!/usr/bin/env bash\nset -eu\nprintf "%s\\n" "$PGOPTIONS" > "$DUMP_MARKER"\n');
       for (const path of [join(bin, 'psql'), join(bin, 'sleep'), helper]) chmodSync(path, 0o700);
-      const isolated = command.replaceAll('/run/postgres-backup', connection)
-        .replaceAll('/tmp/', `${scratch}/`).replaceAll('/operator/postgres-backup.sh', helper);
+      const isolated = command.replaceAll('/tmp/', `${scratch}/`)
+        .replaceAll('/run/postgres-backup', connection).replaceAll('/operator/postgres-backup.sh', helper);
       const result = spawnSync('bash', ['-c', isolated], { encoding: 'utf8', env: {
         ...process.env, PATH: `${bin}:${process.env.PATH}`, ATTEMPTS_FILE: count,
         DUMP_MARKER: marker, FAKE_FAILURES: String(failures), FAKE_TLS: tls,
