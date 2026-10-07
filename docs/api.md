@@ -769,6 +769,55 @@ Limits are 100 threads per session, 50 messages per thread, 4,000 characters per
 message and 64 KB per stored thread. Message bodies are plain text. Attribution and
 timestamps come from the server; audit records contain identifiers, not message text.
 
+### Session versions
+
+Saved versions of a document (plan 76 milestone 4). What is kept, and for how long, is
+in [data lifecycle](data-lifecycle.md#session-versions). Every route needs a signed-in
+person (a service token gets `401`), current session read access (`404`, `403`, `410`
+as for the session) and `session.view`. Saving and restoring also need editor access
+and `session.edit` (`403 READ_ONLY`) and a project that is not archived
+(`409 PROJECT_ARCHIVED`). Deleting needs a manager of the project (`403 FORBIDDEN`).
+
+| Route | Result |
+|---|---|
+| `GET /api/v1/sessions/:id/versions?limit=&before=` | `200 { versions, before? }`, newest first. `limit` is 1 to 100 (30 by default); `before` is a version id to page on from, and the answer carries one when a full page came back. `cache-control: private, no-store` |
+| `GET /api/v1/sessions/:id/versions/:versionId` | `200 { version }` with its `inputs` and `meta` |
+| `POST /api/v1/sessions/:id/versions` | Save the document as it is stored now, with a name: `{ label, requestId }`, a label of 1 to 120 characters. `201 { version }`; the same `requestId` again answers `200` with the first version. Audited `session.version.save` |
+| `POST /api/v1/sessions/:id/versions/:versionId/restore` | Restore it: `{ requestId }`. `200 { revision, live, restored, before, skipped, vetoed }`, below |
+| `DELETE /api/v1/sessions/:id/versions/:versionId` | Delete it, with its restore pair. `200 { deleted: true }`. Audited `session.version.delete` |
+
+A version is `{ id, sessionId, rev, kind, label?, contributors, createdBy?, createdByName?,
+restoredFrom?, beforeId?, bytes, at }`. `kind` is `auto`, `close`, `save`, `named`,
+`restore` or `before` (the document a restore replaced). `contributors` are
+`{ id, kind, edits, name }` for the people and agents who edited since the version
+before it; guests are counted together as one entry named "Guest". Names never carry
+an email address.
+
+**Restore.** On the long-lived server a restore goes through the document's live room,
+which it opens when none is open, as one batch that everyone in the room receives, and
+it needs `collab.join` (`403`). The restoring person's own write checks apply: an input
+they may not change keeps its value and is named in `vetoed`, and an input the tool
+does not declare, or of the wrong type, is named in `skipped`. On a serverless deploy
+it is a compare-and-swap on the session row. Two versions record it, with the same
+`requestId`: the `before` version, the document it replaced, which Undo restores, and
+the `restore` version, the document it produced. In the answer, `before` is the id to
+restore for Undo, `restored` is the restore version's id (or `null` when history had
+no room for it), `revision` is the session's revision after it and `live` says whether
+anyone else was in the room. The same `requestId` again answers with the first result.
+Comments are never changed. The audit entry `session.restore` holds ids and counts.
+
+Saves and restores share one limit per person: 10 a minute and 60 an hour
+(`429 RATE_LIMITED`, `retry-after` in seconds).
+
+| Code | Status | When |
+|---|---|---|
+| `VERSION_LIMIT` | 409 | a named save past 20 per person or 100 per document |
+| `VERSION_SPACE` | 409 | a named save, or the `before` version of a restore, does not fit the space caps (100 MiB per document; `policy.versions.maxBytes` for the instance) |
+| `RESTORE_INCOMPLETE` | 409 | the document cannot take every change of the version (a ceiling such as the number of objects); nothing was changed |
+| `SESSION_CHANGED` | 409 | the document kept changing while restoring, or it is open on another server; try again |
+| `NOT_FOUND` | 404 | the version is not one of this session's |
+| `INVALID_INPUT` | 400 | a missing or malformed `label`, `requestId`, `limit` or `before` |
+
 ## Telemetry, activity, audit, fleet, system
 
 | Route | Action |
