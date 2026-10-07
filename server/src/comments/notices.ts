@@ -20,7 +20,12 @@
  *   audited (`comment.notice.capped`).
  * - A mention notifies a person once per message: `recordMentionSends`
  *   remembers who was told, so removing and adding `@Name` again in later edits
- *   never notifies twice.
+ *   never notifies twice. A send that ends without a written notice (over a
+ *   cap, refused at the write, or a failure) is forgotten again, so a later
+ *   edit that still mentions the person can tell them.
+ * - Each notice written, new or updated, prunes the person's notices past
+ *   `NOTICE_KEEP` and older than `NOTICE_MAX_AGE_MS`; the inbox read prunes the
+ *   old ones too (inbox/comment-notices.ts).
  * - Rows hold ids only. The inbox builds the title, the excerpt and the names
  *   when it is read, so an edited or deleted message, or an erased person's
  *   name, never stays behind in someone's inbox.
@@ -134,12 +139,17 @@ function participants(thread: CommentThread): string[] {
 export async function recordCommentNotices(d: NoticeDeps, e: NoticeEvent): Promise<NoticeResult> {
   const done = (notified: boolean, mailed: Promise<void> = Promise.resolve()): NoticeResult => ({ notified, mailed });
   const resource = `session:${e.session.id}`, actor = `user:${e.actor.id}`;
+  // The mention sends this write recorded, and those whose notice was written.
+  // `finally` forgets the rest, so a cap or a failure never uses up a person's
+  // one notice for this message.
+  let fresh = new Set<string>();
+  const told = new Set<string>();
   try {
     // With notices off nobody is told, so a mention says so.
     if (d.config.policy.comments?.notices === false) return done(!e.mentioned.length);
     const nowMs = (d.now ?? Date.now)(), at = new Date(nowMs).toISOString();
     const mentioned = e.mentioned.filter((id) => id !== e.actor.id);
-    const fresh = new Set(mentioned.length ? await d.store.recordMentionSends(e.thread.id, e.message.id, mentioned, at) : []);
+    fresh = new Set(mentioned.length ? await d.store.recordMentionSends(e.thread.id, e.message.id, mentioned, at) : []);
     const others = e.kind === 'reply' ? participants(e.thread) : [];
     const wanted = [...new Set([...mentioned.filter((id) => fresh.has(id)), ...others])].filter((id) => id !== e.actor.id);
     const notified = wanted.length <= NOTICE_FANOUT_LIMIT;
@@ -164,8 +174,11 @@ export async function recordCommentNotices(d: NoticeDeps, e: NoticeEvent): Promi
         userId: user.id, threadId: e.thread.id, sessionId: e.session.id, projectId: e.project.id,
         kind: isMention ? 'mention' : 'reply', actorId: e.actor.id, messageId: e.message.id, at, mentioned: isMention,
       });
-      if (result !== 'created') continue;
+      if (isMention) told.add(user.id);
+      // An updated row can leave older ones of the person's behind, so every
+      // write prunes, not only a new row.
       await d.store.pruneCommentNotices(user.id, NOTICE_KEEP, prunedBefore);
+      if (result !== 'created') continue;
       if (isMention && d.people) {
         const parts = mentionMailParts({
           actorName: nameWithoutEmail(e.actor), instance: d.config.instance.name,
@@ -179,5 +192,8 @@ export async function recordCommentNotices(d: NoticeDeps, e: NoticeEvent): Promi
   } catch {
     try { await d.audit(actor, 'comment.notice.failed', resource, { threadId: e.thread.id, messageId: e.message.id }); } catch { /* audit is best effort here too */ }
     return done(false);
+  } finally {
+    const untold = [...fresh].filter((id) => !told.has(id));
+    if (untold.length) await d.store.forgetMentionSends(e.thread.id, e.message.id, untold).catch(() => 0);
   }
 }

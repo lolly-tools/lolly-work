@@ -2367,6 +2367,13 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       const fresh = new Set(rows.map((r) => r.user_id as string));
       return unique.filter((id) => fresh.has(id));
     },
+    async forgetMentionSends(threadId, messageId, userIds) {
+      const unique = [...new Set(userIds)];
+      if (!unique.length) return 0;
+      const { rowCount } = await pool.query('delete from comment_mention_sends where thread_id = $1 and message_id = $2 and user_id = any($3::text[])',
+        [threadId, messageId, unique]);
+      return rowCount ?? 0;
+    },
     async putSession(session) {
       const result = await pool.query(
         `insert into sessions (id, project_id, tool_id, tool_version, inputs, meta,

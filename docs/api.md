@@ -108,7 +108,7 @@ in on the instance and export the pack, or connect from the desktop app.
 
 | Route | Action | Notes |
 |---|---|---|
-| `GET /api/v1/org-config` | member | the one document a shell polls; ETag'd on policy version and `inboxUnread`, the same count `GET /api/v1/inbox` answers as `unread` |
+| `GET /api/v1/org-config` | member | the one document a shell polls; ETag'd on policy version and `inboxUnread`, the same count `GET /api/v1/inbox` answers as `unread` for the same `X-Lolly-Client` (its shell and engine selectors apply to both) |
 | `GET /api/v1/org-config/preview?groups=a,b` | `policy.edit` | what a member in those groups would receive |
 
 ## Catalog
@@ -483,8 +483,10 @@ its own title from `data` and its own link from `data.sessionId` and `data.threa
 Each notice is checked again on every read with the rule the comments routes use: the
 caller can still open the session, `session.view` and `comment.view` hold, and
 `policy.comments.enabled` and `policy.comments.notices` are not `false`. A notice that
-fails a grant or the policy is hidden and kept, and is removed after 30 days. One whose
-session is deleted, or whose project the caller can no longer reach, is deleted. Notices
+fails a grant or the policy is hidden and kept until it is 30 days old; after that the
+next read of the inbox (or of org-config) removes it, as does the next notice written for
+the person. One whose session is deleted, or whose project the caller can no longer reach,
+is deleted. Notices
 are never emailed today; see `policy.comments` under [Canvas comments](#canvas-comments).
 
 ## Links and rendering
@@ -720,7 +722,8 @@ disabled, with `collab.join`, `session.view` and `comment.view`), never the writ
 account, and stores each as `{ id, name }` with the name from its own records. A mention
 never grants access. An edit without `mentions` keeps the earlier mentions whose `@Name`
 is still in the text. Each person is told about a message once, however often an edit
-removes and adds them again.
+removes and adds them again. Someone who was not told (over a limit below, or a failure)
+is told by a later edit that still mentions them.
 
 **Notices.** After a write is saved, the people it concerns get an inbox notice: the
 people mentioned, and for a reply the thread's author and everyone who wrote a message in

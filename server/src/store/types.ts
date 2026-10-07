@@ -659,6 +659,11 @@ export interface Store extends RenderStore, PasskeyStore {
    *  return only those never recorded before, in the order given. Unknown
    *  people and an unknown thread are skipped. */
   recordMentionSends(threadId: string, messageId: string, userIds: string[], at: string): Promise<string[]>;
+  /** Forget that these people were told about a mention in this message, for
+   *  sends recorded by a write that then wrote them no notice (over a cap,
+   *  refused, or failed), so a later edit of the message can still tell them.
+   *  Returns how many went. */
+  forgetMentionSends(threadId: string, messageId: string, userIds: string[]): Promise<number>;
 
   configureRoleGroups(mapping: RoleGroups): void;
   readonly storageKind: 'memory' | 'postgres';

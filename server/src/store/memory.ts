@@ -1475,6 +1475,11 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
         mentionSends.set(key, stamp); return true;
       });
     },
+    async forgetMentionSends(threadId, messageId, userIds) {
+      let n = 0;
+      for (const userId of new Set(userIds)) if (mentionSends.delete(JSON.stringify([threadId, messageId, userId]))) n++;
+      return n;
+    },
     async putSession(session) {
       if ((collabOwners.get(session.id)?.until ?? 0) > Date.now()) throw new Error('collab-active');
       sessions.set(session.id, session);

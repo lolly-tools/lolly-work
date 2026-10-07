@@ -16,8 +16,10 @@
  *   the predicate runs once per document, never once per notice.
  * - A notice whose document is gone, or whose project the person can no
  *   longer reach at all, is deleted: it cannot come back. One hidden by a
- *   grant or by the instance policy is kept (the 30-day prune removes it), so
- *   lifting the refusal shows it again.
+ *   grant or by the instance policy is kept, so lifting the refusal shows it
+ *   again, until it is older than `NOTICE_MAX_AGE_MS`: every read prunes those,
+ *   because a hidden notice is never written again and so never pruned by a
+ *   write (comments/notices.ts).
  * - The threads come from one `getCommentThreadsByIds` read and the actors'
  *   names from one `getUsersByIds` read. No query runs per notice.
  * - The server's text is English (plans/75 C20). Lolly renders its own
@@ -27,7 +29,7 @@
 import type { CommentThread } from '@lolly-tools/core/canvas-review-v1';
 import { sessionLabel } from '../collab/invites.ts';
 import { mayReceiveNotices } from '../comments/access.ts';
-import { threadLink } from '../comments/notices.ts';
+import { NOTICE_KEEP, NOTICE_MAX_AGE_MS, threadLink } from '../comments/notices.ts';
 import type { InstanceConfig } from '../config/instance.ts';
 import { nameWithoutEmail } from '../projects/sharing.ts';
 import type { Grant } from '../rbac/evaluate.ts';
@@ -49,6 +51,7 @@ export type CommentInboxMessage = Omit<Message, 'kind'> & { kind: 'comment' };
 export interface InboxNoticeDeps {
   store: Store;
   config: Pick<InstanceConfig, 'instance' | 'policy'>;
+  now?: () => number;
 }
 
 /** A notice the person may see now, with the document it points into. */
@@ -58,17 +61,23 @@ const clip = (text: string, max: number): string => Array.from(text).slice(0, ma
 
 /**
  * The person's notices that pass `mayReceiveNotices` now, newest first. Rows
- * for a document that is gone, or a project the person can no longer reach,
- * are deleted as a side effect (best effort: a failed delete only means they
- * are tried again on the next read). `grants` may be passed by a caller that
- * already holds them.
+ * older than `NOTICE_MAX_AGE_MS`, rows for a document that is gone, and rows
+ * for a project the person can no longer reach are deleted as a side effect
+ * (best effort: a failed delete only means they are tried again on the next
+ * read). `grants` may be passed by a caller that already holds them.
  */
 export async function accessibleNotices(d: InboxNoticeDeps, user: UserRecord, o: { grants?: Grant[] } = {}): Promise<AccessibleNotice[]> {
-  // Off for the whole instance: every notice is hidden, and none is deleted.
+  const listed = await d.store.listCommentNotices(user.id);
+  if (!listed.length) return [];
+  // The age limit holds while notices are hidden or switched off too. Only a
+  // read that finds an expired row writes anything.
+  const cutoff = (d.now ?? Date.now)() - NOTICE_MAX_AGE_MS;
+  const notices = listed.filter((n) => Date.parse(n.createdAt) >= cutoff);
+  if (notices.length < listed.length) await d.store.pruneCommentNotices(user.id, NOTICE_KEEP, new Date(cutoff).toISOString()).catch(() => 0);
+  // Off for the whole instance: every notice is hidden, and none is deleted
+  // before its time.
   const policy = d.config.policy.comments;
-  if (policy?.enabled === false || policy?.notices === false) return [];
-  const notices = await d.store.listCommentNotices(user.id);
-  if (!notices.length) return [];
+  if (policy?.enabled === false || policy?.notices === false || !notices.length) return [];
   const sessionIds = [...new Set(notices.map((n) => n.sessionId))];
   const [sessions, grants, memberships] = await Promise.all([
     Promise.all(sessionIds.map((id) => d.store.getSession(id))),

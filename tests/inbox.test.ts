@@ -341,12 +341,55 @@ async function lostSubjects(store: Store) {
   } finally { await w.close(); }
 }
 
+/** The 30-day limit holds on read: a notice hidden by the policy is never
+ *  written again, so the inbox read prunes it once it is too old. */
+async function expiry(store: Store) {
+  const w = await commentWorld(store);
+  try {
+    await w.write('ben', w.comments, { id: 't1', messageId: 'm1', anchor: w.anchor, body: 'Look', mentions: [w.id('cat')] });
+    const old = new Date(Date.now() - 31 * 86_400_000).toISOString();
+    assert.equal(await w.store.createCommentThread({ id: 't_old', sessionId: 'session', anchor: { kind: 'canvas', surface: 'page', x: 1, y: 1 },
+      authorId: w.id('ben'), authorName: 'Ben', revision: 1, createdAt: old, updatedAt: old,
+      messages: [{ id: 'o1', authorId: w.id('ben'), authorName: 'Ben', body: 'Old', createdAt: old }] }), 'created');
+    await w.store.upsertCommentNotice({ userId: w.id('cat'), threadId: 't_old', sessionId: 'session', projectId: 'project', kind: 'reply',
+      actorId: w.id('ben'), messageId: 'o1', at: old, mentioned: false });
+    const stored = async () => (await w.store.listCommentNotices(w.id('cat'))).map((n) => n.threadId).sort();
+    assert.deepEqual(await stored(), ['t1', 't_old']);
+    // Notices off: everything is hidden, nothing is written, and the old row still goes.
+    w.config.policy.comments = { enabled: true, notices: false };
+    assert.deepEqual([(await w.notices('cat')).length, await w.unread('cat')], [0, 0]);
+    assert.deepEqual(await stored(), ['t1'], 'the notice older than 30 days is removed on read; the current one is kept');
+    w.config.policy.comments = { enabled: true };
+    assert.deepEqual((await w.notices('cat')).map((m) => m.data!.threadId), ['t1']);
+  } finally { await w.close(); }
+}
+
+test('org-config counts what GET /inbox shows to the same client: shell and engine selectors apply to both', async () => {
+  const w = await commentWorld();
+  try {
+    await w.store.putMessage({ id: 'desktop-only', kind: 'upgrade', severity: 'info', audience: { groups: ['*'], shells: ['tauri'], maxEngine: '1.99.0' },
+      title: 'A desktop update is ready' });
+    await w.write('ben', w.comments, { id: 't1', messageId: 'm1', anchor: w.anchor, body: 'Look', mentions: [w.id('cat')] });
+    const counts = async (client?: string) => {
+      const headers: Record<string, string> = client ? { 'x-lolly-client': client } : {};
+      const inbox = await (await w.call('cat', 'GET', '/api/v1/inbox', undefined, headers)).json() as InboxBody;
+      const org = await (await w.call('cat', 'GET', '/api/v1/org-config', undefined, headers)).json() as { inboxUnread: number };
+      return [inbox.unread, org.inboxUnread];
+    };
+    assert.deepEqual(await counts(), [1, 1], 'no client header: the shell-targeted message is in neither');
+    assert.deepEqual(await counts('tauri/2.1.0 engine/1.60.0'), [2, 2], 'the desktop shell sees it in both');
+    assert.deepEqual(await counts('tauri/2.1.0 engine/2.0.0'), [1, 1], 'past its engine range in neither');
+    assert.deepEqual(await counts('web/1.0.0 engine/1.60.0'), [1, 1]);
+  } finally { await w.close(); }
+});
+
 const pgUrl = process.env.LW_TEST_DATABASE_URL;
 const onPostgres = { skip: !pgUrl && 'set LW_TEST_DATABASE_URL to run' };
 for (const [name, body] of [
   ['comment notices in the inbox: built when read, no stale text, ETag, unread and the cn_ acknowledgement (S-4, S-24)', noticeLifecycle],
   ['S-3: one predicate at read; a refused notice is hidden and inboxUnread falls; a lost document or project deletes it', readPredicate],
   ['S-12: share, invite and request messages hide once their subject is out of reach', lostSubjects],
+  ['a notice older than 30 days is removed on read, even while notices are off', expiry],
 ] as const) {
   test(`${name} (memory)`, () => body(createMemoryStore()));
   test(`${name} (postgres)`, onPostgres, () => withFreshPostgres(pgUrl!, body));

@@ -2197,12 +2197,13 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // Assembled once, here, for BOTH the caller's own poll and the admin
   // preview-as-group tool - so a preview can never drift from what a member
   // actually receives (the projection is the same function, same store reads).
-  const buildOrgConfigFor = async (subject: UserRecord) => {
+  const buildOrgConfigFor = async (subject: UserRecord, client: { shell?: string; engine?: string } = {}) => {
     const overlays = await brandRules.project(brand.current() ?? await brand.snapshot(), subject.groups);
     const grants = await store.listGrants();
-    // The inbox's own count: the messages it shows and the comment notices
-    // that pass `mayReceiveNotices` now (plan 76 M4).
-    const unread = (await inboxMessages(subject, grants)).length + (await accessibleNotices({ store, config }, subject, { grants })).length;
+    // The inbox's own count for the same client (its shell and engine
+    // selectors): the messages it shows and the comment notices that pass
+    // `mayReceiveNotices` now (plan 76 M4).
+    const unread = (await inboxMessages(subject, grants, client)).length + (await accessibleNotices({ store, config }, subject, { grants })).length;
     const flagGovernance = await store.listFlagGovernance();
     const injectables = new Map((await store.listInjectables()).map((r) => [r.id, r]));
     const toolInputs = new Map<string, Array<{ id: string }> | null>();
@@ -2224,9 +2225,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     metrics.orgConfigPoll(); // the fleet heartbeat - counts 200 and 304
+    const client = parseClientHeader(req.headers['x-lolly-client'] as string | undefined);
     let payload;
     try {
-      payload = { ...await buildOrgConfigFor(user), branding: { revision: brand.current()!.revision, sourceId: brand.current()!.source.id } };
+      payload = { ...await buildOrgConfigFor(user, { ...(client?.shell ? { shell: client.shell } : {}), ...(client?.engine ? { engine: client.engine } : {}) }),
+        branding: { revision: brand.current()!.revision, sourceId: brand.current()!.source.id } };
     } catch (err) {
       metrics.orgConfigError();
       throw err;
