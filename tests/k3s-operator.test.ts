@@ -12,6 +12,12 @@ const bootstrap = join(root, 'deploy/suse/k3s-bootstrap.sh');
 const qualify = join(root, 'deploy/suse/k3s-qualify.sh');
 const lock = JSON.parse(readFileSync(join(root, 'deploy/suse/k3s.lock.json'), 'utf8'));
 
+function first<T>(items: T[]): T {
+  const item = items[0];
+  assert.ok(item, 'expected fixture item');
+  return item;
+}
+
 function bash(code: string, args: string[] = [], env: Record<string, string> = {}) {
   return spawnSync('bash', ['-c', code, 'test', ...args], {
     encoding: 'utf8',
@@ -370,21 +376,21 @@ test('qualification receipt never overwrites existing evidence', () =>
 
 const invalidFixtures: Record<string, (data: Fixture) => void> = {
   'floating image': (d) => {
-    d['work-pods'].items[0].spec.containers[0].image = 'registry.example/lolly:latest';
+    first(first(d['work-pods'].items).spec.containers).image = 'registry.example/lolly:latest';
   },
   'inline credential': (d) => {
-    d['work-pods'].items[0].spec.containers[0].env = [{ name: 'DATABASE_URL', value: 'credential-sentinel' }];
+    first(first(d['work-pods'].items).spec.containers).env = [{ name: 'DATABASE_URL', value: 'credential-sentinel' }];
   },
   'cross-role secret': (d) => {
-    d['public-pods'].items[0].spec.containers[0].env = [
+    first(first(d['public-pods'].items).spec.containers).env = [
       { name: 'LW_SESSION_SECRET', valueFrom: { secretKeyRef: { name: 'work-secret', key: 'session' } } },
     ];
   },
   'service-account token': (d) => {
-    d['work-accounts'].items[0].automountServiceAccountToken = true;
+    first(d['work-accounts'].items).automountServiceAccountToken = true;
   },
   'public NodePort': (d) => {
-    d['public-services'].items[0].spec.type = 'NodePort';
+    first(d['public-services'].items).spec.type = 'NodePort';
   },
   'missing default deny': (d) => {
     d['public-policies'].items.shift();
@@ -419,10 +425,10 @@ const invalidFixtures: Record<string, (data: Fixture) => void> = {
     });
   },
   'unready pod': (d) => {
-    d['work-pods'].items[0].status.conditions[0].status = 'False';
+    first(first(d['work-pods'].items).status.conditions).status = 'False';
   },
   'host filesystem': (d) => {
-    d['work-pods'].items[0].spec.volumes = [{ hostPath: { path: '/' } }];
+    first(d['work-pods'].items).spec.volumes = [{ hostPath: { path: '/' } }];
   },
   'different server version': (d) => {
     d.version.serverVersion.gitVersion = 'v1.37.1+k3s1';
