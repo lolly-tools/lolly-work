@@ -155,7 +155,9 @@ export function eligibleInvitees(opts: {
     .filter((u) => u.id !== opts.callerId
       && mayJoinSession(u, opts.project, opts.grants, byUser.get(u.id) ?? null)
       && (opts.include ? opts.include(u) : true))
-    .map((u) => ({ id: u.id, name: nameWithoutEmail(u) }))
+    // Stored accounts always carry an address; a partial record without one
+    // is named 'Member' rather than failing the whole list.
+    .map((u) => ({ id: u.id, name: nameWithoutEmail({ firstname: u.firstname, lastname: u.lastname, email: u.email ?? '' }) }))
     .filter((row) => matchesQuery(row.name, q))
     .sort((a, b) => (a.name.toLowerCase() < b.name.toLowerCase() ? -1
       : a.name.toLowerCase() > b.name.toLowerCase() ? 1

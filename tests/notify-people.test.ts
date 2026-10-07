@@ -159,6 +159,7 @@ test('mention mail: no comment text ever, and the document title only with email
     const people = createPeopleNotifier({ store, config: cfg, notifier });
     const message = { id: 'm1', authorId: ana.id, authorName: 'Ana', body: `@Ben ${secret}`, createdAt: now, mentions: [{ id: ben.id, name: 'Ben' }] };
     const thread = { id: 't', sessionId: 's', anchor: { kind: 'canvas' as const, surface: 'page', x: 0, y: 0 }, authorId: ana.id, authorName: 'Ana', revision: 1, createdAt: now, updatedAt: now, messages: [message] };
+    assert.equal(await store.createCommentThread(thread), 'created');
     const deps = { store, config: cfg, people, cap: createActorCap(), audit: async () => undefined };
     const session = (await store.getSession('s'))!, project = (await store.getProject('p'))!;
     const result = await recordCommentNotices(deps, { session, project, thread, message, actor: ana, mentioned: [ben.id], kind: 'create' });

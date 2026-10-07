@@ -106,12 +106,14 @@ test('mentions and replies notify the right people, once per thread, with ids on
   } finally { await w.close(); }
 });
 
-test('S-5: one row per person and thread, and the 1001st update does not fail', async () => {
-  const store = createMemoryStore();
-  const write = { userId: 'usr_a', threadId: 't', sessionId: 's', projectId: 'p', kind: 'reply' as const, actorId: 'usr_b', messageId: 'm', mentioned: false };
-  assert.equal(await store.upsertCommentNotice({ ...write, at: new Date().toISOString() }), 'created');
-  for (let i = 0; i < 1000; i++) assert.equal(await store.upsertCommentNotice({ ...write, at: new Date().toISOString() }), 'updated');
-  const rows = await store.listCommentNotices('usr_a');
+test('S-5: one row per person and thread, a retry counts nothing, and the 1001st update does not fail', async () => {
+  const c = await crowd(1);
+  const write = { userId: c.people[0]!.id, threadId: 't', sessionId: 's', projectId: 'p', kind: 'reply' as const, actorId: c.actor.id, mentioned: false };
+  assert.equal(await c.store.upsertCommentNotice({ ...write, messageId: 'm0', at: new Date().toISOString() }), 'created');
+  assert.equal(await c.store.upsertCommentNotice({ ...write, messageId: 'm0', at: new Date().toISOString() }), 'updated');
+  assert.equal((await c.store.listCommentNotices(c.people[0]!.id))[0]!.count, 1, 'the same message again is a retry');
+  for (let i = 1; i <= 1000; i++) assert.equal(await c.store.upsertCommentNotice({ ...write, messageId: `m${i}`, at: new Date().toISOString() }), 'updated');
+  const rows = await c.store.listCommentNotices(c.people[0]!.id);
   assert.equal(rows.length, 1);
   assert.equal(rows[0]!.count, 1000);
 });
@@ -135,6 +137,8 @@ async function crowd(n: number) {
   const message = (id: string, author: UserRecord): CommentMessage => ({ id, authorId: author.id, authorName: 'x', body: SECRET, createdAt: now });
   const thread = (messages: CommentMessage[]): CommentThread => ({ id: 't', sessionId: 's', anchor: { kind: 'canvas', surface: 'page', x: 0, y: 0 },
     authorId: actor.id, authorName: 'actor', revision: messages.length, createdAt: now, updatedAt: now, messages });
+  // The notice and mention-send rows reference a stored thread.
+  assert.equal(await store.createCommentThread(thread([message('stored', actor)])), 'created');
   const session = (await store.getSession('s'))!, project = (await store.getProject('p'))!;
   return { store, actor, people, audits, deps, message, thread, session, project };
 }
