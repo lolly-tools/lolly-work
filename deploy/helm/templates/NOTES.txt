@@ -1,6 +1,6 @@
 lolly-work {{ .Chart.AppVersion }} — release "{{ .Release.Name }}" installed in namespace "{{ .Release.Namespace }}".
 
-Replicas:   {{ .Values.replicaCount }} (stateless; LW_AUTO_MIGRATE=false — the migrate hook owns the schema)
+Replicas:   {{ .Values.replicaCount }} (one writable collaboration owner; the migrate hook owns the schema)
 Image:      {{ include "lolly-work.image" . }}
 Secrets:    {{ if .Values.existingSecret }}existing secret "{{ .Values.existingSecret }}" (Mode B){{ else }}chart-managed secret "{{ include "lolly-work.secretName" . }}" (Mode A){{ end }}
 Database:   {{ if .Values.database.existingSecret }}DATABASE_URL from secret "{{ .Values.database.existingSecret }}" key "{{ .Values.database.existingSecretKey }}"{{ else if .Values.database.url }}provided inline (chart secret){{ else if .Values.existingSecret }}expected in existing secret "{{ .Values.existingSecret }}" key DATABASE_URL{{ else }}NOT SET — server will use the in-memory store (evaluation only; state lost on restart, not shared across replicas). Set database.url or existingSecret for real use.{{ end }}
@@ -12,8 +12,8 @@ Migrations ran as a pre-install/pre-upgrade hook Job. Check it with:
 {{- else if or .Values.database.url .Values.database.existingSecret .Values.existingSecret }}
 
 WARNING: migrate.enabled=false with a database configured. The pods fall back to
-applying DDL at boot, which races across replicas. Set migrate.enabled=true (the
-Job owns the schema) for anything with more than one replica.
+applying DDL at boot. Set migrate.enabled=true so the Job owns the schema.
+Multiple writable collaboration replicas remain unsupported.
 {{- else }}
 
 No migrate Job and no database: the in-memory store has no schema. State resets
@@ -41,7 +41,7 @@ config.instance.pack at a subdirectory of {{ .Values.pack.mountPath }}.
 {{- else }}
 
 Pack mounted at {{ .Values.pack.mountPath }} (type={{ .Values.pack.type }}). Confirm
-config.instance.pack resolves inside it (currently "{{ .Values.config.instance.pack | default "see --set-file config" }}").
+config.instance.pack resolves inside it (currently "{{ if kindIs "string" .Values.config }}see --set-file config{{ else }}{{ .Values.config.instance.pack | default "see --set-file config" }}{{ end }}").
 {{- end }}
 
 {{- if .Values.shell.enabled }}
