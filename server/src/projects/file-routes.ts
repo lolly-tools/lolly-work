@@ -31,6 +31,8 @@ interface Dependencies {
   requireAction(req: IncomingMessage, res: ServerResponse, action: string): Promise<UserRecord | null>;
   projectAccessOf(user: UserRecord, project: NonNullable<Awaited<ReturnType<Store['getProject']>>>): Promise<ProjectAccess>;
   audit(actor: string, action: string, subject: string, payload: Record<string, unknown>): Promise<unknown>;
+  /** The person a render worker reads one file for (render/read-ticket.ts); admits nothing but the file read route. */
+  renderFileReader?(req: IncomingMessage, projectId: string): Promise<UserRecord | null>;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -50,7 +52,7 @@ export function registerProjectFileRoutes(router: ReturnType<typeof createRouter
   const gate = async (req: IncomingMessage, res: ServerResponse, projectId: string, mode: 'read' | 'write' | 'delete'): Promise<{ user: UserRecord; access: ProjectAccess } | null> => {
     if (!projectFilesEnabled(d.config, d.store)) { sendError(res, 404, 'NOT_FOUND', 'project files are off'); return null; }
     const write = mode === 'write';
-    const user = write ? await d.requireAction(req, res, 'session.create') : await d.memberOf(req);
+    const user = write ? await d.requireAction(req, res, 'session.create') : await d.memberOf(req) ?? (mode === 'read' ? await d.renderFileReader?.(req, projectId) ?? null : null);
     if (!user) { if (!write) sendError(res, 401, 'UNAUTHORIZED', 'sign in first'); return null; }
     // A service token passes requireAction, but a file names the person who
     // uploaded it and the read routes take people only.

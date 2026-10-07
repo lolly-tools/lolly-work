@@ -102,6 +102,14 @@ async function getBrowser(): Promise<Browser> {
   return browserP;
 }
 
+/** Whether a same-origin request carries the render read credential as a project
+ *  file read: GET or HEAD of /api/v1/projects/<project>/files/<file>, the one API
+ *  route a render ticket opens besides /api/auth/config (plan 76 M4j). Never the
+ *  file list, an upload part, finalize or delete. Exported for its unit test. */
+export function projectFileRead(method: string, pathname: string): boolean {
+  return (method === 'GET' || method === 'HEAD') && /^\/api\/v1\/projects\/[^/]+\/files\/[^/]+$/.test(pathname);
+}
+
 function exportUrl(toolId: string, query: string, overrides: Record<string, unknown>): string {
   const params = new URLSearchParams(query); // parses the shared param contract (incl. packed z=)
   // Policy-baked locked values win - appended after, so they override the query.
@@ -164,7 +172,7 @@ async function renderSvg(job: { toolId: string; query: string; overrides: Record
       const url = new URL(raw);
       const readPath = /^(\/catalog\/|\/tools\/|\/api\/auth\/config$)/.test(url.pathname);
       if (url.origin !== new URL(WEB_BASE).origin) return route.continue();
-      if (readPath && job.readToken && !/^\/(catalog|tools)(\/|$)/.test(url.pathname)) {
+      if (job.readToken && (readPath && !/^\/(catalog|tools)(\/|$)/.test(url.pathname) || projectFileRead(route.request().method(), url.pathname))) {
         const response = await route.fetch({ maxRedirects: 0, headers: { ...route.request().headers(), 'x-lw-render-read': job.readToken } });
         return route.fulfill({ response });
       }

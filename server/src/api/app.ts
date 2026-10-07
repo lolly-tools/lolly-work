@@ -77,7 +77,7 @@ import { agentActor, agentAttribution } from '../agents/attribution.ts';
 import { registerAgentRoutes } from '../agents/routes.ts';
 import { createProjectRequests } from '../agents/project-requests.ts';
 import type { AgentRoomBridge } from '../agents/types.ts';
-import { mintRenderRead, renderReader } from '../render/read-ticket.ts';
+import { createRenderFileReader, mintRenderRead, renderFileScope, renderReader } from '../render/read-ticket.ts';
 import { projectFilesEnabled, removeUploadsBy } from '../projects/files.ts';
 import { buildShareMessage, createWindowQuota, mergeInvitationProject, nameWithoutEmail, roleAbove } from '../projects/sharing.ts';
 import { approversFor, closeRequestsOnAccess } from '../access/requests.ts';
@@ -275,13 +275,16 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   });
   const brandRules = createBrandRuleService(brand, store, deploymentConfig.dev.enabled);
   const config = { ...deploymentConfig, instance: { ...deploymentConfig.instance, get pack() { return brand.root(); } } };
-  const renderTool = (...args: Parameters<typeof renderToolUnscoped>) => {
+  // `submitter`: the person the render is for. The worker may then read the
+  // project files its inputs name, while that person can see them (plan 76 M4j).
+  const renderTool = (...args: [...Parameters<typeof renderToolUnscoped>, submitter?: UserRecord | null]) => {
     const run = async () => {
       const snap = brand.current()!;
       const policyHash = brandPolicyHash([...args[1].overlays]);
       const managedRules = await managedRuleContext(snap, args[1].toolId, args[1].format === 'jpeg' ? 'jpg' : args[1].format);
+      const files = args[2] && args[0].worker && projectFilesEnabled(config, store) ? await renderFileScope({ store, projectAccessOf }, args[1].query, args[2]) : undefined;
       const out = await renderToolUnscoped({ ...args[0], brandRevision: snap.revision, managedRules,
-        workerReadToken: mintRenderRead(args[1].principal?.groups ?? [], snap.revision, secrets.link) }, args[1]);
+        workerReadToken: mintRenderRead(args[1].principal?.groups ?? [], snap.revision, secrets.link, files) }, args[1]);
       if ((await brand.snapshot()).revision !== snap.revision || brandPolicyHash([...await store.listOverlays()]) !== policyHash) throw new BrandError('Brand or organisation policy changed during rendering. Retry with the current revision.', 409, 'BRAND_REVISION_CHANGED');
       if (managedRules) await sourceRules(snap);
       return out;
@@ -7695,7 +7698,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     ...(s.deletedAt ? { deletedAt: s.deletedAt } : {}),
   });
 
-  registerProjectFileRoutes(router, { config, store, blobs, memberOf, requireAction, projectAccessOf, audit });
+  registerProjectFileRoutes(router, { config, store, blobs, memberOf, requireAction, projectAccessOf, audit, renderFileReader: createRenderFileReader({ secret: linkVerify, store, projectAccessOf }) });
   registerProjectFolderRoutes(router, { store, memberOf, requireAction, projectAccessOf, audit });
   registerAgentRoutes(router, { store, config, blobs, memberOf, projectAccessOf, audit, origin: config.instance.baseUrl, rooms: deps.agentRooms, projectRequest: agentRequests.run });
 
@@ -8814,7 +8817,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         verification: record.request.verification,
         production: record.request.production,
         principal: { groups: caller.groups }, profile: caller.profile, overlays: await store.listOverlays(),
-      });
+      }, caller.user);
       signal.throwIfAborted();
       await currentRenderCaller(record.principal, record.request);
       return result;
@@ -8890,7 +8893,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
           if (index >= rows.length) return;
           let result: Awaited<ReturnType<typeof renderTool>> | null = null; let error: unknown;
           for (let attempt = 0; attempt <= retries && !result; attempt++) {
-            try { result = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer: await getC2paSigner(), hostedResolver: hostedAssetResolverFor(caller.groups) }, { toolId: body.toolId as string, format: body.format as string, query: queryFromInputs(rows[index]!), principal: { groups: caller.groups }, profile: caller.profile, overlays }); }
+            try { result = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer: await getC2paSigner(), hostedResolver: hostedAssetResolverFor(caller.groups) }, { toolId: body.toolId as string, format: body.format as string, query: queryFromInputs(rows[index]!), principal: { groups: caller.groups }, profile: caller.profile, overlays }, caller.user); }
             catch (caught) { error = caught; }
           }
           if (result) { retainedBytes += result.bytes.byteLength; if (retainedBytes > 128 * 1024 * 1024) throw new Error('Batch output exceeds 128 MB. Split the batch.'); }
@@ -8921,7 +8924,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       if (typeof body.toolId !== 'string' || typeof body.format !== 'string' || !await automationMayRender(caller, body.toolId)) throw new Error('export.server required.');
       const rendered = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer: await getC2paSigner(), hostedResolver: context.hostedResolver }, {
         toolId: body.toolId, format: body.format, query: queryFromInputs((body.inputs ?? {}) as Record<string, unknown>), principal: { groups: caller.groups }, profile: caller.profile, overlays: await store.listOverlays(),
-      });
+      }, caller.user);
       signal.throwIfAborted(); return { mime: rendered.mime, bytes: rendered.bytes };
     }
     if (job.verb === 'package') {
@@ -9036,7 +9039,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         toolId, format, query: queryFromInputs((body.inputs ?? {}) as Record<string, unknown>),
         principal: caller.user ? { groups: caller.user.groups } : { groups: [] }, profile: caller.profile,
         overlays: await store.listOverlays(),
-      });
+      }, caller.user);
       return result;
     };
     const wantsAsync = ctx.url.searchParams.get('async') === '1' || /respond-async/i.test(String(req.headers.prefer ?? ''));
@@ -9162,7 +9165,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         principal: user ? { groups: user.groups } : { groups: [] },
         profile: renderProfileOf(user),
         overlays,
-      });
+      }, user);
       const etag = `"r-${result.cacheKey.slice(0, 16)}"`;
       if (!result.evidence?.brandRules && req.headers['if-none-match'] === etag) {
         res.writeHead(304, { etag });
