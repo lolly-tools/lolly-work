@@ -215,6 +215,19 @@ if(v)console.log(v);process.exit(status);\n`,
   return { PATH: `${dir}:${process.env.PATH}` };
 }
 
+test('qualification commands use the verified binary independently of the sudo path', () => {
+  const source = readFileSync(qualify, 'utf8');
+  assert.ok(source.includes('verify_file /usr/local/bin/k3s "$binary_sha"'));
+  assert.ok(source.includes('encryption_status=$(/usr/local/bin/k3s secrets-encrypt status)'));
+  assert.ok(
+    source.includes(
+      'local kube=(/usr/local/bin/k3s kubectl --kubeconfig "$kubeconfig" --context "$context")',
+    ),
+  );
+  assert.ok(!source.includes('encryption_status=$(k3s '));
+  assert.ok(!source.includes('local kube=(kubectl '));
+});
+
 function selinux(dir: string, mode: string) {
   const log = join(dir, 'selinux-calls.jsonl');
   for (const tool of ['rpm', 'semodule', 'matchpathcon', 'restorecon', 'getenforce']) {

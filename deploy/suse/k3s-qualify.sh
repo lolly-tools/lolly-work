@@ -224,9 +224,9 @@ PY
   read -r version binary_url binary_sha installer_url installer_sha < <(read_release_lock)
   verify_file /usr/local/bin/k3s "$binary_sha"
   local encryption_status
-  encryption_status=$(k3s secrets-encrypt status) || fail 'cannot inspect Secret encryption'
+  encryption_status=$(/usr/local/bin/k3s secrets-encrypt status) || fail 'cannot inspect Secret encryption'
   [[ $encryption_status == *'Encryption Status: Enabled'* && $encryption_status == *'All hashes match'* ]] || fail 'Kubernetes Secret encryption is disabled or inconsistent'
-  local kube=(kubectl --kubeconfig "$kubeconfig" --context "$context")
+  local kube=(/usr/local/bin/k3s kubectl --kubeconfig "$kubeconfig" --context "$context")
   local endpoint
   endpoint=$("${kube[@]}" config view --minify -o 'jsonpath={.clusters[0].cluster.server}')
   [[ $endpoint == https://127.0.0.1:6443 ]] || fail 'qualifier must target this host through an isolated loopback kubeconfig'

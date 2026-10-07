@@ -185,9 +185,9 @@ Review config/unit, then explicitly start only the candidate:
 ```sh
 sudo systemctl cat k3s
 sudo systemctl enable --now k3s
-sudo k3s kubectl wait node --all --for=condition=Ready --timeout=180s
-sudo k3s kubectl rollout status deployment/coredns -n kube-system --timeout=120s
-sudo k3s secrets-encrypt status
+sudo /usr/local/bin/k3s kubectl wait node --all --for=condition=Ready --timeout=180s
+sudo /usr/local/bin/k3s kubectl rollout status deployment/coredns -n kube-system --timeout=120s
+sudo /usr/local/bin/k3s secrets-encrypt status
 ```
 
 Confirm pod API/DNS, denied ports, encryption and reboot behavior before release
@@ -197,6 +197,10 @@ and use a dedicated SSH tunnel/context for remote administration. Never give
 cluster-admin credentials to application agents. See
 [cluster access](https://docs.k3s.io/cluster-access); if using another local tunnel
 port, edit only this isolated kubeconfig.
+
+The qualifier uses the checksum-verified `/usr/local/bin/k3s` directly for both
+encryption and kubectl. SUSE's default sudo path can omit `/usr/local/bin`; do
+not change the global path or use a different kubectl binary to work around it.
 
 ## Install reviewed releases with scoped credentials
 
@@ -396,7 +400,7 @@ qualify an installed edge or replace its separate acceptance.
 
 ## Recovery, upgrades and Compose rollback
 
-Run `sudo k3s etcd-snapshot save --name before-rehearsal` and retain the exact
+Run `sudo /usr/local/bin/k3s etcd-snapshot save --name before-rehearsal` and retain the exact
 snapshot **plus server token**, configuration and lock off-node in approved
 encrypted custody. Local snapshot retention is not an independent backup.
 The server token decrypts bootstrap material; never print it or publish it in a
