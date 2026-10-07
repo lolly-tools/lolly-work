@@ -7,8 +7,9 @@
 import assert from 'node:assert/strict';
 import { verifyChain } from '../server/src/audit/chain.ts';
 import { createApproval, type Chain } from '../server/src/approvals/engine.ts';
+import type { CommentThread } from '@lolly-tools/core/canvas-review-v1';
 import type { Message } from '../server/src/inbox/target.ts';
-import type { Store } from '../server/src/store/types.ts';
+import { COMMENT_NOTICE_COUNT_MAX, commentNoticeId, type CommentNoticeWrite, type Store } from '../server/src/store/types.ts';
 import { PROJECT_FILE_OVERHEAD_BYTES, type ProjectFileRecord } from '../server/src/projects/files.ts';
 import { runErasureConformance } from './erasure-conformance.ts';
 
@@ -1617,5 +1618,197 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.deepEqual((await store.closeAccessRequests({ kind: 'switch', invitationId: 'inv_14', email: 'joiner@example.com' },
     { status: 'superseded', at: reqDay(1), by: 'user:u1' }, reqDay(1))).map((r) => r.id), ['req_s1']);
 
+  await runCommentReadsAndNoticesConformance(store);
   await runErasureConformance(store);
+}
+
+/** Comment reads, inbox notices and mention sends (plan 76 M4, migrations 0051
+ *  and 0052): the max rule, the floor recorded once, one coalesced notice per
+ *  person and thread, the count cap, prune, delete by its own person only,
+ *  mention sends recorded once, threads by ids, and erasure (S-14). */
+async function runCommentReadsAndNoticesConformance(store: Store): Promise<void> {
+  const base = Date.now() - 2 * 86_400_000;
+  const t = (minutes: number): string => new Date(base + minutes * 60_000).toISOString();
+  const pause = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 5));
+  const user = (sub: string) => store.upsertUserBySub({ sub, email: `${sub}@example.invalid`, groups: [], role: 'member' });
+  const owner = await user('cn-owner'), reader = await user('cn-reader'), actor = await user('cn-actor');
+  const other = await user('cn-other'), pruned = await user('cn-pruned');
+  await store.putProject({ id: 'prj_cn', name: 'Review', visibility: 'private', ownerId: owner.id, createdAt: t(0) });
+  for (const id of ['ses_cn1', 'ses_cn2']) {
+    await store.putSession({ id, projectId: 'prj_cn', toolId: 'poster', toolVersion: '1.0.0', inputs: {}, meta: {},
+      createdBy: owner.id, updatedBy: owner.id, rev: 1, updatedAt: t(0) });
+  }
+  const thread = (id: string, sessionId: string): CommentThread => ({
+    id, sessionId, anchor: { kind: 'canvas', surface: 'page-1', x: 10, y: 20 }, authorId: actor.id, authorName: 'Ana',
+    revision: 1, createdAt: t(0), updatedAt: t(0),
+    messages: [{ id: 'm1', authorId: actor.id, authorName: 'Ana', body: 'First note', createdAt: t(0) }],
+  });
+  for (const [id, sessionId] of [['thr_cn_a', 'ses_cn1'], ['thr_cn_b', 'ses_cn1'], ['thr_cn_c', 'ses_cn2'],
+    ['thr_cn_p1', 'ses_cn2'], ['thr_cn_p2', 'ses_cn2'], ['thr_cn_p3', 'ses_cn2'], ['thr_cn_p4', 'ses_cn2']] as const) {
+    assert.equal(await store.createCommentThread(thread(id, sessionId)), 'created');
+  }
+
+  // Reads: the floor is recorded once per person and document; a read time
+  // only moves forward and never past now; other documents' threads are ignored.
+  const before = Date.now();
+  const first = await store.readCommentState(reader.id, 'ses_cn1');
+  assert.deepEqual(first.reads, {});
+  assert.ok(Date.parse(first.floorAt) >= before - 1 && Date.parse(first.floorAt) <= Date.now(), 'the floor is the current time');
+  await pause();
+  assert.equal((await store.readCommentState(reader.id, 'ses_cn1')).floorAt, first.floorAt, 'the floor is recorded once');
+  for (const [userId, sessionId] of [[reader.id, 'ses_cn_none'], ['usr_cn_none', 'ses_cn1']] as const) {
+    const a = await store.readCommentState(userId, sessionId);
+    await pause();
+    const b = await store.readCommentState(userId, sessionId);
+    assert.deepEqual(b.reads, {});
+    assert.ok(Date.parse(b.floorAt) > Date.parse(a.floorAt), 'an unknown person or document records no floor');
+  }
+  await store.markCommentsRead(reader.id, 'ses_cn1', [
+    { threadId: 'thr_cn_a', at: t(10) },
+    { threadId: 'thr_cn_c', at: t(10) }, // another document's thread
+    { threadId: 'thr_cn_none', at: t(10) },
+    { threadId: 'thr_cn_b', at: 'not a time' },
+  ]);
+  assert.deepEqual((await store.readCommentState(reader.id, 'ses_cn1')).reads, { thr_cn_a: t(10) });
+  await store.markCommentsRead(reader.id, 'ses_cn1', [{ threadId: 'thr_cn_a', at: t(5) }]);
+  assert.deepEqual((await store.readCommentState(reader.id, 'ses_cn1')).reads, { thr_cn_a: t(10) }, 'an earlier time never lowers a read');
+  await store.markCommentsRead(reader.id, 'ses_cn1', [
+    { threadId: 'thr_cn_a', at: t(20) }, { threadId: 'thr_cn_a', at: t(15) }, { threadId: 'thr_cn_b', at: t(12) },
+  ]);
+  assert.deepEqual((await store.readCommentState(reader.id, 'ses_cn1')).reads, { thr_cn_a: t(20), thr_cn_b: t(12) },
+    'the latest of repeated entries wins');
+  const beforeFuture = Date.now();
+  await store.markCommentsRead(reader.id, 'ses_cn1', [{ threadId: 'thr_cn_b', at: new Date(Date.now() + 86_400_000).toISOString() }]);
+  const clamped = Date.parse((await store.readCommentState(reader.id, 'ses_cn1')).reads.thr_cn_b!);
+  assert.ok(clamped >= beforeFuture - 1 && clamped <= Date.now(), 'a read time is never later than now');
+  assert.deepEqual((await store.readCommentState(other.id, 'ses_cn1')).reads, {}, 'reads are private to each person');
+  assert.deepEqual((await store.readCommentState(reader.id, 'ses_cn2')).reads, {}, 'reads belong to their document');
+  await store.markCommentsRead('usr_cn_none', 'ses_cn1', [{ threadId: 'thr_cn_a', at: t(10) }]);
+  await store.markCommentsRead(reader.id, 'ses_cn1', []);
+
+  // Notices: one row per (person, thread). A retry of the same message keeps
+  // the count; a new message adds one and moves the row to its time; a mention
+  // stays a mention.
+  const write = (over: Partial<CommentNoticeWrite>): CommentNoticeWrite => ({
+    userId: reader.id, threadId: 'thr_cn_a', sessionId: 'ses_cn1', projectId: 'prj_cn', kind: 'reply',
+    actorId: actor.id, messageId: 'm2', at: t(30), mentioned: false, ...over,
+  });
+  const readerA = commentNoticeId(reader.id, 'thr_cn_a');
+  assert.match(readerA, /^cn_[0-9a-f]{24}$/);
+  assert.notEqual(commentNoticeId(other.id, 'thr_cn_a'), readerA);
+  const notice = async (userId: string, threadId: string) =>
+    (await store.listCommentNotices(userId)).find((n) => n.threadId === threadId);
+  assert.equal(await store.upsertCommentNotice(write({})), 'created');
+  assert.deepEqual(await store.listCommentNotices(reader.id), [{
+    id: readerA, userId: reader.id, threadId: 'thr_cn_a', sessionId: 'ses_cn1', projectId: 'prj_cn', kind: 'reply',
+    actorId: actor.id, messageId: 'm2', count: 1, createdAt: t(30),
+  }], 'a notice holds ids, a count and a time');
+  assert.equal(await store.upsertCommentNotice(write({ at: t(31) })), 'updated');
+  assert.equal((await notice(reader.id, 'thr_cn_a'))?.count, 1, 'a retry of the same message does not raise the count');
+  assert.equal((await notice(reader.id, 'thr_cn_a'))?.createdAt, t(30));
+  assert.equal(await store.upsertCommentNotice(write({ messageId: 'm3', actorId: other.id, at: t(40) })), 'updated');
+  assert.deepEqual(await notice(reader.id, 'thr_cn_a'), {
+    id: readerA, userId: reader.id, threadId: 'thr_cn_a', sessionId: 'ses_cn1', projectId: 'prj_cn', kind: 'reply',
+    actorId: other.id, messageId: 'm3', count: 2, createdAt: t(40),
+  });
+  await store.upsertCommentNotice(write({ messageId: 'm4', at: t(50), mentioned: true }));
+  assert.equal((await notice(reader.id, 'thr_cn_a'))?.kind, 'mention');
+  await store.upsertCommentNotice(write({ messageId: 'm5', actorId: other.id, at: t(60) }));
+  assert.equal((await notice(reader.id, 'thr_cn_a'))?.kind, 'mention', 'a mention stays a mention');
+  await store.upsertCommentNotice(write({ messageId: 'm6', actorId: other.id, at: t(45) }));
+  assert.equal((await notice(reader.id, 'thr_cn_a'))?.count, 5);
+  assert.equal((await notice(reader.id, 'thr_cn_a'))?.createdAt, t(60), 'an older message never moves the notice back');
+  await store.upsertCommentNotice(write({ messageId: 'm6', actorId: other.id, at: t(45), mentioned: true }));
+  assert.equal((await notice(reader.id, 'thr_cn_a'))?.count, 5);
+  assert.equal(await store.upsertCommentNotice(write({ userId: other.id, at: t(35), mentioned: true })), 'created');
+  assert.equal((await notice(other.id, 'thr_cn_a'))?.kind, 'mention', 'a first write can be a mention');
+
+  // The count stops at its cap and later updates still succeed.
+  for (let i = 0; i <= COMMENT_NOTICE_COUNT_MAX; i++) {
+    await store.upsertCommentNotice(write({ threadId: 'thr_cn_b', messageId: `c${i}`, at: t(100) }));
+  }
+  assert.equal((await notice(reader.id, 'thr_cn_b'))?.count, COMMENT_NOTICE_COUNT_MAX);
+  assert.equal(await store.upsertCommentNotice(write({ threadId: 'thr_cn_b', messageId: 'c-last', at: t(100) })), 'updated');
+  assert.equal((await notice(reader.id, 'thr_cn_b'))?.count, COMMENT_NOTICE_COUNT_MAX);
+
+  // A notice needs a real person, thread, document and project.
+  await assert.rejects(store.upsertCommentNotice(write({ threadId: 'thr_cn_none' })));
+  await assert.rejects(store.upsertCommentNotice(write({ userId: 'usr_cn_none' })));
+  await assert.rejects(store.upsertCommentNotice(write({ threadId: 'thr_cn_c', sessionId: 'ses_cn_none' })));
+  await assert.rejects(store.upsertCommentNotice(write({ threadId: 'thr_cn_c', sessionId: 'ses_cn2', projectId: 'prj_cn_none' })));
+  assert.equal(await notice(reader.id, 'thr_cn_c'), undefined);
+
+  // Newest first, then by id; the limit applies.
+  await store.upsertCommentNotice(write({ threadId: 'thr_cn_c', sessionId: 'ses_cn2', messageId: 'm1', at: t(100) }));
+  const sameTime = [commentNoticeId(reader.id, 'thr_cn_b'), commentNoticeId(reader.id, 'thr_cn_c')].sort().reverse();
+  assert.deepEqual((await store.listCommentNotices(reader.id)).map((n) => n.id), [...sameTime, readerA]);
+  assert.deepEqual((await store.listCommentNotices(reader.id, 1)).map((n) => n.id), [sameTime[0]]);
+
+  // The actor backstop counts the notices whose newest event the actor caused.
+  assert.equal(await store.countNoticesByActorSince(actor.id, t(0)), 3);
+  assert.equal(await store.countNoticesByActorSince(actor.id, t(36)), 2);
+  assert.equal(await store.countNoticesByActorSince(other.id, t(0)), 1);
+  assert.equal(await store.countNoticesByActorSince('usr_cn_none', t(0)), 0);
+
+  // Delete: only ever the given person's rows, and nothing for an empty filter.
+  assert.equal(await store.deleteCommentNotices(other.id, { ids: [readerA], threadIds: ['thr_cn_b'], sessionIds: ['ses_cn2'] }), 0,
+    "another person's ids delete nothing");
+  assert.equal(await store.deleteCommentNotices(reader.id, {}), 0);
+  assert.equal(await store.deleteCommentNotices(reader.id, { ids: [], threadIds: [], sessionIds: [] }), 0);
+  assert.equal((await store.listCommentNotices(reader.id)).length, 3);
+  assert.equal(await store.deleteCommentNotices(reader.id, { threadIds: ['thr_cn_b'] }), 1);
+  assert.equal(await store.deleteCommentNotices(reader.id, { sessionIds: ['ses_cn2'] }), 1);
+  assert.equal(await store.deleteCommentNotices(reader.id, { ids: [readerA, 'cn_none'] }), 1);
+  assert.deepEqual(await store.listCommentNotices(reader.id), []);
+  assert.equal((await store.listCommentNotices(other.id)).length, 1, "the other person's notice is kept");
+  assert.equal(await store.upsertCommentNotice(write({ messageId: 'm7', at: t(70) })), 'created', 'a reply after an ack is a new notice');
+  assert.equal((await notice(reader.id, 'thr_cn_a'))?.count, 1);
+
+  // Prune: keep the newest `keep` and nothing older than the cutoff.
+  for (const [threadId, at] of [['thr_cn_p1', t(-50 * 1440)], ['thr_cn_p2', t(10)], ['thr_cn_p3', t(20)], ['thr_cn_p4', t(30)]] as const) {
+    await store.upsertCommentNotice(write({ userId: pruned.id, threadId, sessionId: 'ses_cn2', at }));
+  }
+  assert.equal(await store.pruneCommentNotices(pruned.id, 2, t(-30 * 1440)), 2);
+  assert.deepEqual((await store.listCommentNotices(pruned.id)).map((n) => n.threadId), ['thr_cn_p4', 'thr_cn_p3']);
+  assert.equal(await store.pruneCommentNotices(pruned.id, 5, t(25)), 1);
+  assert.deepEqual((await store.listCommentNotices(pruned.id)).map((n) => n.threadId), ['thr_cn_p4']);
+  assert.equal((await store.listCommentNotices(reader.id)).length, 1, "prune leaves other people's notices alone");
+  await assert.rejects(store.pruneCommentNotices(pruned.id, Number.NaN, t(0)), RangeError, 'a bad keep count deletes nothing');
+  await assert.rejects(store.pruneCommentNotices(pruned.id, -1, t(0)), RangeError);
+  assert.equal((await store.listCommentNotices(pruned.id, Number.NaN)).length, 1, 'a bad limit reads as the default');
+
+  // Mention sends: each person once per message, in the order given; unknown
+  // people and threads are skipped; a message id belongs to its thread.
+  assert.deepEqual(await store.recordMentionSends('thr_cn_a', 'm4', [reader.id, other.id, reader.id, 'usr_cn_none'], t(50)), [reader.id, other.id]);
+  assert.deepEqual(await store.recordMentionSends('thr_cn_a', 'm4', [other.id, owner.id], t(51)), [owner.id]);
+  assert.deepEqual(await store.recordMentionSends('thr_cn_b', 'm4', [reader.id], t(52)), [reader.id]);
+  assert.deepEqual(await store.recordMentionSends('thr_cn_none', 'm4', [reader.id], t(52)), []);
+  assert.deepEqual(await store.recordMentionSends('thr_cn_a', 'm8', [], t(52)), []);
+
+  // Threads by ids: one read, in the order first given, unknown ids skipped.
+  const [threadA, threadC] = [await store.getCommentThread('thr_cn_a'), await store.getCommentThread('thr_cn_c')];
+  assert.deepEqual(await store.getCommentThreadsByIds(['thr_cn_c', 'thr_cn_none', 'thr_cn_a', 'thr_cn_c']), [threadC, threadA]);
+  assert.deepEqual(await store.getCommentThreadsByIds([]), []);
+
+  // Deleting a person removes their reads and received notices.
+  const leaving = await user('cn-leaving');
+  await store.upsertCommentNotice(write({ userId: leaving.id, threadId: 'thr_cn_c', sessionId: 'ses_cn2', actorId: owner.id, at: t(80) }));
+  await store.markCommentsRead(leaving.id, 'ses_cn2', [{ threadId: 'thr_cn_c', at: t(80) }]);
+  assert.equal(await store.deleteUser(leaving.id), true);
+  assert.deepEqual(await store.listCommentNotices(leaving.id), []);
+  assert.deepEqual((await store.readCommentState(leaving.id, 'ses_cn2')).reads, {});
+
+  // S-14: erasure removes the person's reads, received notices and mention
+  // sends, and the notices they caused; shared threads are unchanged.
+  await store.upsertCommentNotice(write({ userId: other.id, threadId: 'thr_cn_b', actorId: owner.id, messageId: 'm9', at: t(90) }));
+  assert.deepEqual(await store.eraseUserAccount(reader.id), { status: 'erased', scrubbed: 0 }, 'comment state never blocks erasure');
+  assert.deepEqual(await store.listCommentNotices(reader.id), []);
+  assert.deepEqual((await store.readCommentState(reader.id, 'ses_cn1')).reads, {});
+  assert.deepEqual(await store.recordMentionSends('thr_cn_a', 'm4', [other.id, owner.id], t(53)), [], "other people's mention sends are kept");
+  assert.deepEqual(await store.eraseUserAccount(actor.id), { status: 'erased', scrubbed: 0 });
+  assert.deepEqual((await store.listCommentNotices(other.id)).map((n) => n.threadId), ['thr_cn_b'], 'the notices the actor caused are gone');
+  assert.deepEqual(await store.listCommentNotices(pruned.id), []);
+  assert.equal(await store.countNoticesByActorSince(actor.id, t(-100 * 1440)), 0);
+  assert.deepEqual(await store.getCommentThread('thr_cn_a'), threadA, 'shared threads are unchanged');
+  assert.deepEqual(await store.getCommentThreadsByIds(['thr_cn_a', 'thr_cn_c']), [threadA, threadC]);
 }

@@ -41,7 +41,8 @@ import {
 import { createPostgresPasskeys } from '../iam/passkeys/postgres.ts';
 import { createPostgresRenderStore } from '../renders/postgres.ts';
 import {
-  SESSION_REVISION_LIMIT, effectiveGroups,
+  COMMENT_NOTICE_COUNT_MAX, SESSION_REVISION_LIMIT, commentNoticeId, effectiveGroups, noticeKeepCount, noticeListLimit,
+  type CommentNotice, type CommentNoticeWrite,
   type AccessRequestMatch, type AccessRequestRecord, type ProjectMemberRole,
   type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type ListUsersPageOpts, type LocalGroupRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type UserIdentityRecord,
   type ScimTokenRecord, type SessionRecord, type SessionRevision, type Store, type SubmitQuotaRow, type UserRecord,
@@ -73,6 +74,13 @@ function documentAgentFromRow(r: Record<string, unknown>): DocumentAgentRecord {
 function projectAgentFromRow(r: Record<string, unknown>): ProjectAgentRecord {
   const { sessionId: _sessionId, ...record } = documentAgentFromRow(r);
   return record;
+}
+
+/** One comment_notices row -> notice (migration 0052). */
+function commentNoticeFromRow(r: Record<string, unknown>): CommentNotice {
+  return { id: r.id as string, userId: r.user_id as string, threadId: r.thread_id as string, sessionId: r.session_id as string,
+    projectId: r.project_id as string, kind: r.kind as CommentNotice['kind'], actorId: r.actor_id as string,
+    messageId: r.message_id as string, count: Number(r.count), createdAt: new Date(r.created_at as string).toISOString() };
 }
 
 /** An invitation's projects as stored: only the known keys. */
@@ -327,6 +335,25 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       createdAt: new Date(r.created_at as string).toISOString(),
       lastSeenAt: new Date(r.last_seen_at as string).toISOString(),
     };
+  };
+
+  /** One attempt at the comment notice upsert (`upsertCommentNotice`). */
+  const upsertCommentNoticeOnce = async (n: CommentNoticeWrite): Promise<'created' | 'updated'> => {
+    const { rows } = await pool.query(`insert into comment_notices
+        (id, user_id, thread_id, session_id, project_id, kind, actor_id, message_id, count, created_at)
+      values ($1, $2, $3, $4, $5, $6, $7, $8, 1, $9)
+      on conflict (user_id, thread_id) do update set
+        kind = case when excluded.kind = 'mention' or comment_notices.kind = 'mention' then 'mention' else excluded.kind end,
+        count = case when comment_notices.message_id = excluded.message_id then comment_notices.count
+                     else least(comment_notices.count + 1, $10) end,
+        actor_id = case when comment_notices.message_id = excluded.message_id then comment_notices.actor_id else excluded.actor_id end,
+        created_at = case when comment_notices.message_id = excluded.message_id then comment_notices.created_at
+                          else greatest(comment_notices.created_at, excluded.created_at) end,
+        message_id = excluded.message_id
+      returning (xmax = 0) as inserted`,
+    [commentNoticeId(n.userId, n.threadId), n.userId, n.threadId, n.sessionId, n.projectId, n.mentioned ? 'mention' : n.kind,
+      n.actorId, n.messageId, new Date(n.at).toISOString(), COMMENT_NOTICE_COUNT_MAX]);
+    return rows[0]?.inserted ? 'created' : 'updated';
   };
 
   const getLinkById = async (id: string): Promise<LinkRecord | null> => {
@@ -1460,6 +1487,9 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         const deleted = await client.query('delete from users where id = $1 returning email', [id]);
         if (!deleted.rowCount) { await client.query('rollback'); return { status: 'not-found' }; }
         const scrubbed = await client.query('update telemetry_events set user_id = null where user_id = $1', [id]);
+        // The person's comment reads, received notices and mention sends went
+        // with their row; the notices they caused go too (actor_id has no key).
+        await client.query('delete from comment_notices where actor_id = $1', [id]);
         // Invitations hold the email, and an accepted one keeps admitting it:
         // the rows this account accepted go with it, and other rows for the
         // address go too unless another account still carries that email.
@@ -2260,6 +2290,91 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         and exists (select 1 from sessions where id = $2 and deleted_at is null)`,
         [thread.id, thread.sessionId, thread.revision, JSON.stringify(thread), thread.updatedAt, expectedRevision]);
       return result.rowCount === 1;
+    },
+    async getCommentThreadsByIds(ids) {
+      const unique = [...new Set(ids)];
+      if (!unique.length) return [];
+      const { rows } = await pool.query('select id, data from canvas_comment_threads where id = any($1::text[])', [unique]);
+      const byId = new Map(rows.map((row) => [row.id as string, row.data as CommentThread]));
+      return unique.flatMap((id) => byId.has(id) ? [byId.get(id)!] : []);
+    },
+    async readCommentState(userId, sessionId) {
+      const now = new Date().toISOString();
+      await pool.query(`insert into canvas_comment_read_floors (user_id, session_id, floor_at)
+        select $1::text, $2::text, $3::timestamptz
+         where exists (select 1 from users where id = $1) and exists (select 1 from sessions where id = $2)
+        on conflict (user_id, session_id) do nothing`, [userId, sessionId, now]);
+      const [floor, reads] = await Promise.all([
+        pool.query('select floor_at from canvas_comment_read_floors where user_id = $1 and session_id = $2', [userId, sessionId]),
+        pool.query('select thread_id, read_at from canvas_comment_reads where user_id = $1 and session_id = $2', [userId, sessionId]),
+      ]);
+      return {
+        reads: Object.fromEntries(reads.rows.map((r) => [r.thread_id as string, new Date(r.read_at as string).toISOString()])),
+        floorAt: floor.rows[0] ? new Date(floor.rows[0].floor_at as string).toISOString() : now,
+      };
+    },
+    async markCommentsRead(userId, sessionId, entries) {
+      // One entry per thread (the latest), never later than now: a duplicate
+      // would make the upsert touch one row twice, which Postgres refuses.
+      const now = Date.now(), latest = new Map<string, number>();
+      for (const { threadId, at } of entries) {
+        const ms = Math.min(Date.parse(at), now);
+        if (typeof threadId === 'string' && Number.isFinite(ms)) latest.set(threadId, Math.max(latest.get(threadId) ?? ms, ms));
+      }
+      if (!latest.size) return;
+      await pool.query(`insert into canvas_comment_reads (user_id, thread_id, session_id, read_at)
+        select $1::text, t.id, t.session_id, e.at
+          from unnest($3::text[], $4::timestamptz[]) as e(thread_id, at)
+          join canvas_comment_threads t on t.id = e.thread_id and t.session_id = $2
+         where exists (select 1 from users where id = $1)
+        on conflict (user_id, thread_id) do update set read_at = excluded.read_at
+         where canvas_comment_reads.read_at < excluded.read_at`,
+      [userId, sessionId, [...latest.keys()], [...latest.values()].map((ms) => new Date(ms).toISOString())]);
+    },
+    async upsertCommentNotice(n) {
+      // A retry of the same message changes nothing but the mention upgrade.
+      // The id is derived from (user, thread), so the table has two unique
+      // indexes on one key; a racing first insert can trip the one that is not
+      // the conflict target. The next attempt then finds the row and updates it.
+      for (let attempt = 0; ; attempt++) {
+        try { return await upsertCommentNoticeOnce(n); } catch (error) {
+          if ((error as { code?: string }).code !== '23505' || attempt >= 2) throw error;
+        }
+      }
+    },
+    async listCommentNotices(userId, limit) {
+      const { rows } = await pool.query(
+        'select * from comment_notices where user_id = $1 order by created_at desc, id collate "C" desc limit $2',
+        [userId, noticeListLimit(limit)]);
+      return rows.map(commentNoticeFromRow);
+    },
+    async deleteCommentNotices(userId, by) {
+      const ids = by.ids ?? [], threadIds = by.threadIds ?? [], sessionIds = by.sessionIds ?? [];
+      if (!ids.length && !threadIds.length && !sessionIds.length) return 0;
+      const { rowCount } = await pool.query(`delete from comment_notices where user_id = $1
+        and (id = any($2::text[]) or thread_id = any($3::text[]) or session_id = any($4::text[]))`, [userId, ids, threadIds, sessionIds]);
+      return rowCount ?? 0;
+    },
+    async countNoticesByActorSince(actorId, sinceIso) {
+      const { rows } = await pool.query('select count(*)::int as n from comment_notices where actor_id = $1 and created_at >= $2',
+        [actorId, new Date(sinceIso).toISOString()]);
+      return Number(rows[0]?.n ?? 0);
+    },
+    async pruneCommentNotices(userId, keep, olderThanIso) {
+      const { rowCount } = await pool.query(`delete from comment_notices where user_id = $1 and (created_at < $3 or id not in (
+          select id from comment_notices where user_id = $1 order by created_at desc, id collate "C" desc limit $2))`,
+      [userId, noticeKeepCount(keep), new Date(olderThanIso).toISOString()]);
+      return rowCount ?? 0;
+    },
+    async recordMentionSends(threadId, messageId, userIds, at) {
+      const stamp = new Date(at).toISOString(), unique = [...new Set(userIds)];
+      if (!unique.length) return [];
+      const { rows } = await pool.query(`insert into comment_mention_sends (thread_id, message_id, user_id, at)
+        select $1::text, $2::text, u.id, $4::timestamptz from users u
+         where u.id = any($3::text[]) and exists (select 1 from canvas_comment_threads where id = $1)
+        on conflict do nothing returning user_id`, [threadId, messageId, unique, stamp]);
+      const fresh = new Set(rows.map((r) => r.user_id as string));
+      return unique.filter((id) => fresh.has(id));
     },
     async putSession(session) {
       const result = await pool.query(

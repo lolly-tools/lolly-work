@@ -36,7 +36,8 @@ import type { DeliveryRecord } from '../delivery/types.ts';
 import { createMemoryPasskeys } from '../iam/passkeys/memory.ts';
 import { createMemoryRenderStore } from '../renders/memory.ts';
 import {
-  SESSION_REVISION_LIMIT, effectiveGroups,
+  COMMENT_NOTICE_COUNT_MAX, SESSION_REVISION_LIMIT, commentNoticeId, effectiveGroups, noticeKeepCount, noticeListLimit,
+  type CommentNotice,
   type AccessRequestAnswer, type AccessRequestMatch, type AccessRequestRecord,
   type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type LocalGroupRecord, type NewInvitationRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ScimTokenRecord, type UserIdentityRecord,
   type SessionRecord, type SessionRevision, type Store, type SubmitQuotaRow, type UserRecord,
@@ -147,6 +148,21 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const projectMembers = new Map<string, ProjectMemberRecord>();
   const memberKey = (projectId: string, userId: string): string => `${projectId} ${userId}`;
   const commentThreads = new Map<string, CommentThread>();
+  // Comment reads and notices (migrations 0051, 0052), keyed like their primary keys.
+  const commentReads = new Map<string, { userId: string; threadId: string; sessionId: string; readAt: string }>(); // `${userId} ${threadId}`
+  const commentReadFloors = new Map<string, string>(); // `${userId} ${sessionId}` -> floor
+  const commentNotices = new Map<string, CommentNotice>(); // by id
+  const mentionSends = new Map<string, string>(); // JSON [threadId, messageId, userId] -> at
+  const noticeOrder = (a: CommentNotice, b: CommentNotice): number =>
+    Date.parse(b.createdAt) - Date.parse(a.createdAt) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
+  /** Postgres cascades a person's reads, floors, received notices and mention
+   *  sends away with their row; erasure also deletes the notices they caused. */
+  const forgetCommentState = (userId: string, asActor: boolean): void => {
+    for (const [k, r] of commentReads) if (r.userId === userId) commentReads.delete(k);
+    for (const k of commentReadFloors.keys()) if (k.startsWith(`${userId} `)) commentReadFloors.delete(k);
+    for (const [k, n] of commentNotices) if (n.userId === userId || (asActor && n.actorId === userId)) commentNotices.delete(k);
+    for (const k of mentionSends.keys()) if ((JSON.parse(k) as string[])[2] === userId) mentionSends.delete(k);
+  };
   const sessions = new Map<string, SessionRecord>();
   const sessionRevisions = new Map<string, SessionRevision[]>(); // sessionId -> ascending by rev
   const collabOwners = new Map<string, { owner: string; until: number }>();
@@ -859,6 +875,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
           for (const [key, r] of documentAgents) if (r.userId === id || r.createdBy === id) documentAgents.delete(key);
           for (const [key, r] of projectAgents) if (r.createdBy === id) projectAgents.delete(key);
           for (const key of agentCreations.keys()) if (!projectAgents.has(JSON.parse(key)[0])) agentCreations.delete(key);
+          forgetCommentState(id, false);
           return true;
         }
       }
@@ -882,6 +899,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       }
       users.delete(user.sub);
       passkeys.forgetUser(id);
+      forgetCommentState(id, true);
       for (const [key, r] of documentAgents) if (r.userId === id || r.createdBy === id) documentAgents.delete(key);
       for (const [key, r] of projectAgents) if (r.createdBy === id) projectAgents.delete(key);
       for (const key of agentCreations.keys()) if (!projectAgents.has(JSON.parse(key)[0])) agentCreations.delete(key);
@@ -1387,6 +1405,79 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       const previous = commentThreads.get(thread.id);
       if (!previous || previous.sessionId !== thread.sessionId || previous.revision !== expectedRevision || sessions.get(thread.sessionId)?.deletedAt) return false;
       commentThreads.set(thread.id, structuredClone(thread)); return true;
+    },
+    async getCommentThreadsByIds(ids) {
+      return [...new Set(ids)].flatMap((id) => { const thread = commentThreads.get(id); return thread ? [structuredClone(thread)] : []; });
+    },
+    async readCommentState(userId, sessionId) {
+      const now = new Date().toISOString(), key = `${userId} ${sessionId}`;
+      if (!commentReadFloors.has(key) && userById(userId) && sessions.has(sessionId)) commentReadFloors.set(key, now);
+      const reads = [...commentReads.values()].filter((r) => r.userId === userId && r.sessionId === sessionId);
+      return { reads: Object.fromEntries(reads.map((r) => [r.threadId, r.readAt])), floorAt: commentReadFloors.get(key) ?? now };
+    },
+    async markCommentsRead(userId, sessionId, entries) {
+      if (!userById(userId)) return;
+      const now = Date.now();
+      for (const { threadId, at } of entries) {
+        const thread = commentThreads.get(threadId), ms = Math.min(Date.parse(at), now);
+        if (!thread || thread.sessionId !== sessionId || !Number.isFinite(ms)) continue;
+        const key = `${userId} ${threadId}`, prev = commentReads.get(key);
+        if (prev && Date.parse(prev.readAt) >= ms) continue;
+        commentReads.set(key, { userId, threadId, sessionId, readAt: new Date(ms).toISOString() });
+      }
+    },
+    async upsertCommentNotice(n) {
+      const at = new Date(n.at).toISOString();
+      if (!userById(n.userId) || !commentThreads.has(n.threadId) || !sessions.has(n.sessionId) || !projects.has(n.projectId))
+        throw new Error('comment-notice-reference');
+      const id = commentNoticeId(n.userId, n.threadId), prev = commentNotices.get(id);
+      const kind = n.mentioned || prev?.kind === 'mention' ? 'mention' : n.kind;
+      if (!prev) {
+        commentNotices.set(id, { id, userId: n.userId, threadId: n.threadId, sessionId: n.sessionId, projectId: n.projectId,
+          kind, actorId: n.actorId, messageId: n.messageId, count: 1, createdAt: at });
+        return 'created';
+      }
+      commentNotices.set(id, prev.messageId === n.messageId ? { ...prev, kind } : {
+        ...prev, kind, actorId: n.actorId, messageId: n.messageId, count: Math.min(prev.count + 1, COMMENT_NOTICE_COUNT_MAX),
+        createdAt: Date.parse(at) > Date.parse(prev.createdAt) ? at : prev.createdAt,
+      });
+      return 'updated';
+    },
+    async listCommentNotices(userId, limit) {
+      return [...commentNotices.values()].filter((n) => n.userId === userId).sort(noticeOrder)
+        .slice(0, noticeListLimit(limit)).map((n) => ({ ...n }));
+    },
+    async deleteCommentNotices(userId, by) {
+      const ids = new Set(by.ids ?? []), threads = new Set(by.threadIds ?? []), sessionIds = new Set(by.sessionIds ?? []);
+      let n = 0;
+      for (const [k, row] of commentNotices) {
+        if (row.userId !== userId || !(ids.has(row.id) || threads.has(row.threadId) || sessionIds.has(row.sessionId))) continue;
+        commentNotices.delete(k); n++;
+      }
+      return n;
+    },
+    async countNoticesByActorSince(actorId, sinceIso) {
+      const since = Date.parse(new Date(sinceIso).toISOString());
+      return [...commentNotices.values()].filter((n) => n.actorId === actorId && Date.parse(n.createdAt) >= since).length;
+    },
+    async pruneCommentNotices(userId, keep, olderThanIso) {
+      const cutoff = Date.parse(new Date(olderThanIso).toISOString()), kept = noticeKeepCount(keep);
+      const rows = [...commentNotices.values()].filter((n) => n.userId === userId).sort(noticeOrder);
+      let n = 0;
+      rows.forEach((row, i) => {
+        if (i < kept && Date.parse(row.createdAt) >= cutoff) return;
+        commentNotices.delete(row.id); n++;
+      });
+      return n;
+    },
+    async recordMentionSends(threadId, messageId, userIds, at) {
+      const stamp = new Date(at).toISOString();
+      if (!commentThreads.has(threadId)) return [];
+      return [...new Set(userIds)].filter((userId) => {
+        const key = JSON.stringify([threadId, messageId, userId]);
+        if (!userById(userId) || mentionSends.has(key)) return false;
+        mentionSends.set(key, stamp); return true;
+      });
     },
     async putSession(session) {
       if ((collabOwners.get(session.id)?.until ?? 0) > Date.now()) throw new Error('collab-active');

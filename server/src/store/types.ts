@@ -31,6 +31,7 @@ import type { PasskeyStore } from '../iam/passkeys/types.ts';
 import type { RenderStore } from '../renders/types.ts';
 import type { ProjectFileLimits, ProjectFileRecord, ProjectFileReservation } from '../projects/files.ts';
 import type { ProjectAccess } from '../rbac/project-access.ts';
+import { sha256Hex } from '../lib/crypto.ts';
 
 export interface UserRecord {
   id: string;
@@ -848,11 +849,88 @@ export interface SubmitQuotaRow {
   updatedAt: string;
 }
 
+/** One person's read state for one document's comments (plan 76 M4, migration
+ *  0051). `reads` maps a thread id to the time it was last read; a message
+ *  older than its thread's read time, or older than `floorAt`, counts as read.
+ *  Private to the person. */
+export interface CommentReadState { reads: Record<string, string>; floorAt: string }
+
+/** One inbox notice per person per thread (migration 0052). It holds ids and a
+ *  count only: the inbox builds the title, excerpt and names when it is read. */
+export interface CommentNotice {
+  id: string; userId: string; threadId: string; sessionId: string; projectId: string;
+  kind: 'mention' | 'reply'; actorId: string; messageId: string; count: number; createdAt: string;
+}
+/** A notice write. `at` becomes `createdAt`; `mentioned` makes the row a
+ *  mention, and a mention row stays one. */
+export type CommentNoticeWrite = Omit<CommentNotice, 'id' | 'count' | 'createdAt'> & { at: string; mentioned: boolean };
+
+/** The highest `count` a notice reaches; later updates keep it there. */
+export const COMMENT_NOTICE_COUNT_MAX = 1000;
+/** How many notices `listCommentNotices` returns when no limit is given. */
+export const COMMENT_NOTICE_LIST_LIMIT = 200;
+
+/** The id of a person's notice for a thread: `cn_` and the first 24 hex
+ *  characters of sha256(`<userId> <threadId>`). Both drivers derive it, so a
+ *  retried write updates the same row. */
+export function commentNoticeId(userId: string, threadId: string): string {
+  return `cn_${sha256Hex(`${userId} ${threadId}`).slice(0, 24)}`;
+}
+/** `listCommentNotices`' row limit: the default when absent or not a number. */
+export function noticeListLimit(limit: number | undefined): number {
+  return typeof limit === 'number' && Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : COMMENT_NOTICE_LIST_LIMIT;
+}
+/** `pruneCommentNotices`' keep count. A count that is not a whole number of
+ *  zero or more is refused, so a bad argument never deletes a whole inbox. */
+export function noticeKeepCount(keep: number): number {
+  if (!Number.isSafeInteger(keep) || keep < 0) throw new RangeError('keep must be a whole number of zero or more');
+  return keep;
+}
+
 export interface Store extends RenderStore, PasskeyStore {
   getCommentThread(id: string): Promise<CommentThread | null>;
   listCommentThreads(sessionId: string): Promise<CommentThread[]>;
   createCommentThread(thread: CommentThread): Promise<'created' | 'exists' | 'limit'>;
   casCommentThread(thread: CommentThread, expectedRevision: number): Promise<boolean>;
+  /** The threads with these ids, in the order first given; unknown ids are
+   *  skipped. One read, for the inbox. */
+  getCommentThreadsByIds(ids: string[]): Promise<CommentThread[]>;
+
+  // Comment reads and inbox notices (plan 76 M4, migrations 0051 and 0052).
+  /** The person's read times for this document's threads. The first call for
+   *  a (person, document) pair records the floor at the current time; later
+   *  calls return that floor unchanged. An unknown person or document records
+   *  nothing and reports the current time as the floor. */
+  readCommentState(userId: string, sessionId: string): Promise<CommentReadState>;
+  /** Mark threads read: each read time becomes the later of the stored one and
+   *  `at` (never later than now). Threads that are not in this document, and
+   *  entries with an invalid time, are ignored. */
+  markCommentsRead(userId: string, sessionId: string, entries: { threadId: string; at: string }[]): Promise<void>;
+  /** Insert or update the person's notice for the thread. An update with a new
+   *  `messageId` adds one to `count` (up to COMMENT_NOTICE_COUNT_MAX) and moves
+   *  the notice to `at` when that is later; a retry with the same `messageId`
+   *  leaves the count as it is. `kind` becomes 'mention' when `mentioned` is
+   *  true or the row is already a mention. Throws when the person, thread,
+   *  document or project does not exist. */
+  upsertCommentNotice(n: CommentNoticeWrite): Promise<'created' | 'updated'>;
+  /** The person's notices, newest first (then by id), at most `limit`
+   *  (default COMMENT_NOTICE_LIST_LIMIT). */
+  listCommentNotices(userId: string, limit?: number): Promise<CommentNotice[]>;
+  /** Delete the person's notices that match any of the given ids, threads or
+   *  documents. Only that person's rows; with nothing given, nothing goes.
+   *  Returns how many went. */
+  deleteCommentNotices(userId: string, by: { ids?: string[]; threadIds?: string[]; sessionIds?: string[] }): Promise<number>;
+  /** Notices whose newest event this actor caused at or after `sinceIso`. The
+   *  database backstop for the in-memory per-actor cap. */
+  countNoticesByActorSince(actorId: string, sinceIso: string): Promise<number>;
+  /** Delete the person's notices beyond the newest `keep` and those older than
+   *  `olderThanIso`. Returns how many went. */
+  pruneCommentNotices(userId: string, keep: number, olderThanIso: string): Promise<number>;
+  /** Record that these people were told about a mention in this message, and
+   *  return only those never recorded before, in the order given. Unknown
+   *  people and an unknown thread are skipped. */
+  recordMentionSends(threadId: string, messageId: string, userIds: string[], at: string): Promise<string[]>;
+
   configureRoleGroups(mapping: RoleGroups): void;
   readonly storageKind: 'memory' | 'postgres';
   readonly brandPersistence: 'durable' | 'ephemeral';
