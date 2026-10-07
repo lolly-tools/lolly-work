@@ -14,6 +14,7 @@ internal load balancer) needs an extraEgress rule for it, and so does any origin
 list in LW_RENDER_ALLOWED_ORIGINS.
 */ -}}
 {{- if and .Values.renderWorker.enabled .Values.renderWorker.networkPolicy.enabled -}}
+{{- include "lolly-work.validateWorkerNetworkPolicy" . -}}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -43,7 +44,9 @@ spec:
           port: {{ .Values.renderWorker.service.port }}
   egress:
     - to:
-        - namespaceSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.renderWorker.networkPolicy.dnsNamespaceLabels | nindent 14 }}
           podSelector:
             matchLabels:
               {{- toYaml .Values.renderWorker.networkPolicy.dnsPodLabels | nindent 14 }}
@@ -54,6 +57,7 @@ spec:
           port: 53
     # Public addresses only: the private, shared-address, loopback, link-local (cloud
     # metadata) and unspecified ranges are carved out, the same set egress.ts refuses.
+    {{- with .Values.renderWorker.networkPolicy.publicPorts }}
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
@@ -64,18 +68,32 @@ spec:
               - 127.0.0.0/8
               - 169.254.0.0/16
               - 172.16.0.0/12
+              - 192.0.0.0/24
+              - 192.0.2.0/24
               - 192.168.0.0/16
+              - 198.18.0.0/15
+              - 198.51.100.0/24
+              - 203.0.113.0/24
+              - 224.0.0.0/4
+              - 240.0.0.0/4
         - ipBlock:
             cidr: ::/0
             except:
+              - ::/128
               - ::1/128
+              - ::ffff:0:0/96
+              - 64:ff9b::/96
+              - 100::/64
+              - 2001:db8::/32
               - fc00::/7
               - fe80::/10
+              - ff00::/8
       ports:
+        {{- range . }}
         - protocol: TCP
-          port: 443
-        - protocol: TCP
-          port: 80
+          port: {{ . }}
+        {{- end }}
+    {{- end }}
     {{- with .Values.renderWorker.networkPolicy.extraEgress }}
     {{- toYaml . | nindent 4 }}
     {{- end }}

@@ -407,3 +407,28 @@ test('fresh-install migration hooks use an existing account and keep cleanup ord
   assert.equal(manifests(separate.out).find(doc => doc?.kind === 'Job').spec.template.spec.serviceAccountName, 'precreated-migration');
   assert.equal(deployment(separate.out).spec.template.spec.serviceAccountName, app.serviceAccountName);
 });
+
+test('worker DNS trust is namespace-scoped and HTTPS-only egress excludes special IPv6 addresses', { skip: noHelm }, () => {
+  const active = [...SECRETS, ...WORKER, '--set', 'renderWorker.networkPolicy.enabled=true'];
+  const r = render([...SMALL, ...active]);
+  assert.ok(r.ok, r.err);
+  const policy = manifests(r.out).find(doc => doc?.kind === 'NetworkPolicy' && doc.metadata.name.endsWith('render-worker'));
+  const dns = policy.spec.egress.find((rule: { ports: { port: number }[] }) => rule.ports.some(port => port.port === 53));
+  assert.deepEqual(dns.to, [{ namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' } }, podSelector: { matchLabels: { 'k8s-app': 'kube-dns' } } }]);
+  const publicRule = policy.spec.egress.find((rule: { to: { ipBlock?: { cidr: string } }[] }) => rule.to.some(peer => peer.ipBlock?.cidr === '::/0'));
+  assert.deepEqual(publicRule.ports, [{ protocol: 'TCP', port: 443 }]);
+  const ipv6 = publicRule.to.find((peer: { ipBlock: { cidr: string } }) => peer.ipBlock.cidr === '::/0').ipBlock;
+  for (const range of ['::/128', '::1/128', '::ffff:0:0/96', 'fc00::/7', 'fe80::/10']) assert.ok(ipv6.except.includes(range));
+  const disabled = render([...active, '--set-json', 'renderWorker.networkPolicy.publicPorts=[]']);
+  assert.ok(disabled.ok, disabled.err);
+  const closed = manifests(disabled.out).find(doc => doc?.kind === 'NetworkPolicy' && doc.metadata.name.endsWith('render-worker'));
+  assert.ok(!closed.spec.egress.some((rule: { to: { ipBlock?: unknown }[] }) => rule.to.some(peer => peer.ipBlock)));
+  for (const value of ['null', '443', '[22]', '["443"]', '[true]']) {
+    const invalid = render([...active, '--set-json', `renderWorker.networkPolicy.publicPorts=${value}`]);
+    assert.equal(invalid.ok, false, value);
+    assert.match(invalid.err, /networkPolicy.publicPorts/);
+  }
+  const unscopedDns = render([...active, '--set-json', 'renderWorker.networkPolicy.dnsNamespaceLabels=null']);
+  assert.equal(unscopedDns.ok, false);
+  assert.match(unscopedDns.err, /dnsNamespaceLabels/);
+});

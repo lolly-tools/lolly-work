@@ -44,6 +44,9 @@ renderWorker:
     limits: { cpu: "2", memory: 2Gi, ephemeral-storage: 2Gi }
   tmp:
     sizeLimit: 1Gi
+  networkPolicy:
+    # Enable only with reviewed private shell/DNS rules for the target cluster.
+    publicPorts: [443]
   autoscaling:
     enabled: false
     minReplicas: 1

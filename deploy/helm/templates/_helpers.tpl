@@ -67,6 +67,30 @@ ServiceAccount name to use.
 {{- end }}
 {{- end }}
 
+{{/* Avoid DNS trust across namespaces and accidental port-unrestricted rules. */}}
+{{- define "lolly-work.validateWorkerNetworkPolicy" -}}
+{{- $policy := .Values.renderWorker.networkPolicy -}}
+{{- range $name := list "dnsNamespaceLabels" "dnsPodLabels" -}}
+{{- $labels := get $policy $name -}}
+{{- if or (not (kindIs "map" $labels)) (not $labels) -}}
+{{- fail (printf "renderWorker.networkPolicy.%s must be a nonempty label map" $name) -}}
+{{- end -}}
+{{- range $labels -}}
+{{- if or (not (kindIs "string" .)) (not .) -}}
+{{- fail (printf "renderWorker.networkPolicy.%s requires nonempty string label values" $name) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if not (kindIs "slice" $policy.publicPorts) -}}
+{{- fail "renderWorker.networkPolicy.publicPorts must be a list of numeric 80/443 ports, or []" -}}
+{{- end -}}
+{{- range $policy.publicPorts -}}
+{{- if or (kindIs "string" .) (not (regexMatch "^(80|443)$" (printf "%v" .))) -}}
+{{- fail "renderWorker.networkPolicy.publicPorts supports only numeric 80/443 ports" -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
 {{/*
 Container image reference. A digest takes precedence over the optional tag.
 */}}

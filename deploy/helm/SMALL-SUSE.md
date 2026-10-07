@@ -50,6 +50,16 @@ The optional worker is limited to one concurrent browser render, one replica,
 shell location. Worker `nodeSelector`, `tolerations`, `affinity` and
 `topologySpreadConstraints` allow placement on separate capacity later.
 
+When worker network policy is enabled, DNS trust is limited to both the configured
+namespace labels (default `kube-system`) and pod labels (default `kube-dns`). The
+small profile limits public egress to HTTPS on port 443. Base values also permit
+HTTP on port 80 for compatibility; `publicPorts: []` disables public web egress.
+Private shell access requires a narrow `extraEgress` rule. For a namespace-wide
+default-deny deployment, add an explicitly scoped namespace DNS allowance and
+set the app policy's `allowAllEgress=false` before adding reviewed destination
+rules. Network policies add permissions, so an unrestricted second rule would
+undo a narrower rule. Verify actual DNS, proxy and renderer traffic on the cluster.
+
 Worker HPA remains off and is capped at two replicas in this profile. HPA creates
 pods; it does not provision cloud nodes and still needs metrics and spare CPU,
 memory and disk. Qualify rendering and saturation behavior before enabling it.

@@ -250,9 +250,16 @@ renderWorker:
   #       ports: [{ protocol: TCP, port: 8080 }]
   networkPolicy:
     enabled: false
+    # CoreDNS namespace and pod selectors must both match. Do not trust DNS
+    # labels on pods in arbitrary namespaces.
+    dnsNamespaceLabels:
+      kubernetes.io/metadata.name: kube-system
     # Labels of your cluster DNS pods (CoreDNS on RKE2 and most distributions).
     dnsPodLabels:
       k8s-app: kube-dns
+    # Reviewed public web ports. Use [443] for HTTPS-only deployments or []
+    # to disable public egress; private shell access belongs in extraEgress.
+    publicPorts: [80, 443]
     extraEgress: []
   resources:
     requests: { cpu: 250m, memory: 512Mi }
