@@ -300,6 +300,44 @@ test('a restore cancels every editing claim and drops what authorize refuses', a
   } finally { await room.quiesce(); }
 });
 
+test('a refused restore keeps every editing claim: it changes nothing, claims included', async () => {
+  const store = createMemoryStore();
+  const { session, user } = await documentOf(store, 'keepclaims', { title: 'Draft', slides: [{ id: 's1', heading: 'One' }] });
+  const room = await Room.open(session, undefined, store);
+  const holder = seat('holder', user.id, { interactionVersion: 1 });
+  const other = seat('other', user.id, { interactionVersion: 1 });
+  const restorer = seat('restore_4', user.id, { hidden: true });
+  for (const s of [holder, other, restorer]) room.join(s);
+  try {
+    const target = { kind: 'text' as const, collection: 'slides', ids: ['s1'], field: 'heading' };
+    assert.ok('claim' in await room.requestClaim(holder, 'acquire', target));
+    const mark = holder.sent.length;
+    const version = { title: 'Version', slides: [{ id: 's1', heading: 'Restored' }] };
+    const befores: RestoreBefore[] = [];
+    // Past a ceiling (RESTORE_INCOMPLETE), refused by the person's own write
+    // checks (READ_ONLY), and refused for space by the 'before' write.
+    const rows = Array.from({ length: MAX_BOXES_PER_COLLECTION + 1 }, (_, i) => ({ id: i ? `r${i}` : 's1', heading: `${i}` }));
+    await assert.rejects(room.restoreInputs(restorer, { ...version, slides: rows }, acceptAll(befores)),
+      (error: unknown) => error instanceof RoomRestoreError && error.code === 'RESTORE_INCOMPLETE');
+    await assert.rejects(room.restoreInputs(restorer, version, {
+      authorize: async () => { throw new RestoreError('READ_ONLY', 'you can view this session but not change it'); },
+      beforeCommit: acceptAll(befores).beforeCommit,
+    }), (error: unknown) => error instanceof RestoreError && error.code === 'READ_ONLY');
+    await assert.rejects(room.restoreInputs(restorer, version, {
+      authorize: acceptAll(befores).authorize,
+      beforeCommit: async () => { throw new RestoreError('VERSION_SPACE', 'History is full.'); },
+    }), (error: unknown) => error instanceof RestoreError && error.code === 'VERSION_SPACE');
+    assert.deepEqual(befores, []);
+    assert.deepEqual(holder.sent.slice(mark).filter((f) => f.t === 'claims'), [], 'nobody is told a claim went');
+    assert.deepEqual(await room.requestClaim(other, 'acquire', target), { reason: 'claimed', blockedBy: 'holder' }, 'the claim still holds');
+    assert.equal((await store.getSession(session.id))?.rev, session.rev, 'nothing committed');
+    // A restore that does commit still cancels it.
+    const outcome = await room.restoreInputs(restorer, version, acceptAll(befores));
+    assert.equal(outcome.committed, true);
+    assert.deepEqual(holder.sent.slice(mark).filter((f): f is Extract<ServerFrame, { t: 'claims' }> => f.t === 'claims').at(-1)?.claims, []);
+  } finally { await room.quiesce(); }
+});
+
 // ── through the gateway's versions bridge, over real sockets ──────────────────
 
 const SECRETS = { session: 'versions-session', link: 'versions-link' };

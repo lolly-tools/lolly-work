@@ -872,14 +872,17 @@ export class Room implements RoomWriteback {
    *
    *   (a) read the stored row, which is the document at `durableRevision`;
    *   (b) that row is the 'before' state;
-   *   (c) cancel every editing claim, so nobody's gesture is half-overwritten;
-   *   (d) plan the ops (`restorePlan`);
-   *   (e) `authorize` them for the restoring person: locked inputs are vetoed,
+   *   (c) plan the ops (`restorePlan`);
+   *   (d) `authorize` them for the restoring person: locked inputs are vetoed,
    *       undeclared or wrong-lane ones skipped;
-   *   (f) check every remaining op against the document's ceilings, counted as
+   *   (e) check every remaining op against the document's ceilings, counted as
    *       the commit counts them; one refusal stops the restore with nothing
    *       written (`RESTORE_INCOMPLETE`), never half a version;
-   *   (g) `beforeCommit` writes the 'before' version; a refusal stops here too;
+   *   (f) `beforeCommit` writes the 'before' version; a refusal stops here too;
+   *   (g) cancel every editing claim, so nobody's gesture is half-overwritten.
+   *       Only now: a restore refused at (d) to (f) changes nothing, claims
+   *       included. Claims are granted on this same queue, so none can start
+   *       between the checks and the commit;
    *   (h) commit the ops as one durable batch from `seat`, with clocks above
    *       every register so the version wins, and send them to the peers.
    *
@@ -894,7 +897,6 @@ export class Room implements RoomWriteback {
       const session = await store.getSession(this.sessionId);
       if (!session || session.deletedAt) throw new Error('session-gone');
       if (session.rev !== this.durableRevision) throw new RoomRestoreError('SESSION_CHANGED', 'The document changed while restoring.');
-      this.claims.clear();
       const plan = restorePlan(this.doc, session.inputs, target, { client: seat.id, clock: 0 });
       const verdict = await hooks.authorize(plan.ops);
       if (this.closed) throw new Error('collab-owner-lost');
@@ -904,7 +906,10 @@ export class Room implements RoomWriteback {
       const beforeId = await hooks.beforeCommit({ inputs: session.inputs, meta: session.meta, revision: session.rev });
       if (this.closed) throw new Error('collab-owner-lost');
       const fresh = verdict.accepted.map((op, i) => ({ ...op, origin: { client: seat.id, clock: this.serverClock + i + 1 } }));
-      if (fresh.length) await this.commitOps(seat, fresh, [], { version: false });
+      if (fresh.length) {
+        this.claims.clear();
+        await this.commitOps(seat, fresh, [], { version: false });
+      }
       const after = fresh.length ? await store.getSession(this.sessionId) : session;
       let live = false;
       for (const member of this.members.values()) if (!member.hidden) live = true;
