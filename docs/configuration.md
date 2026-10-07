@@ -441,8 +441,10 @@ carries them, switching email on takes these steps:
 
 1. **Pick a provider** that gives you an SMTP relay on port 587 with STARTTLS and its own
    DNS records, such as Postmark, or Amazon SES. The sender address needs no mailbox.
-2. **Configure** the relay in `instance.json` and redeploy (`deploy/vm/push.sh` for
-   lolly.ing):
+2. **Configure** the relay in `instance.json` and apply it through your instance's
+   reviewed deployment route. lolly.ing uses UpCloud/K3s; its old
+   `deploy/vm/push.sh` route is historical (see
+   [current hosted production](deployment.md#current-hosted-production)):
 
    ```json
    "notify": {
@@ -452,7 +454,9 @@ carries them, switching email on takes these steps:
    ```
 
    Put the relay password or token in `LW_SMTP_PASSWORD` in the server's environment
-   (`/opt/lolly-ing/.env` on the lolly.ing VM), never in the file. `secure: false`
+   through your deployment's secret store, never in the configuration file.
+   On Kubernetes, use the existing instance Secret; the former
+   `/opt/lolly-ing/.env` is not the current lolly.ing configuration. `secure: false`
    with port 587 takes STARTTLS when the relay offers it; use `secure: true` only for
    port 465.
 3. **Publish the DNS records** the provider shows, in the domain's DNS. For lolly.ing that

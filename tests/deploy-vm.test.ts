@@ -531,14 +531,14 @@ test('bootstrap-opensuse.sh checks the download and the disk again before writin
   assert.ok(at('if [ "$overwrite" = 1 ] && [ "$confirm" = 1 ]; then') < at('apt-get install -y'), '--overwrite never with --yes');
 });
 
-test('the runbook brings the Vercel rollback up to this code before the DNS cut', () => {
+test('the historical runbook records qualifying Vercel before the former DNS cut', () => {
   // A build from before plan 74's boot fixes hangs its cold starts on a migration
   // lock the Neon pooler keeps: DNS back at it would be no rollback at all.
   const readme = read('README.md');
   const redeploy = readme.indexOf('vercel deploy --prod');
   assert.ok(redeploy > 0 && redeploy < readme.indexOf('**Cut DNS.**'), 'redeploy Vercel, then cut DNS');
   assert.ok(readme.indexOf('LW_BACKGROUND_POLL_MS production') < readme.indexOf('**Cut DNS.**'));
-  const rollback = readme.slice(readme.indexOf('## Rollback'), readme.indexOf('## Operating'));
+  const rollback = readme.slice(readme.indexOf('## Historical VM rollback'), readme.indexOf('## Operating'));
   assert.match(rollback, /--resolve lolly\.ing:443:76\.76\.21\.21 https:\/\/lolly\.ing\/api\/v1\/instance/);
   assert.match(rollback, /engineVersion/);
 });

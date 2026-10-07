@@ -1,0 +1,56 @@
+# Review exact namespaces/labels from the rendered owning releases before use.
+# The namespace's default deny remains effective when a selector does not match.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: admission-default-deny, namespace: lolly-admission}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: admission-dns, namespace: lolly-admission}
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: admission-public-callers, namespace: lolly-admission}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: lolly-admission, app.kubernetes.io/component: adapter}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: REVIEWED_PUBLIC_NAMESPACE}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: REVIEWED_PUBLIC_APP}
+            matchExpressions: [{key: REVIEWED_COMPONENT_LABEL, operator: In, values: [mcp, ca]}]
+      ports: [{protocol: TCP, port: 8443}]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: redis, app.kubernetes.io/instance: admission-redis}
+      ports: [{protocol: TCP, port: 6379}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: admission-redis-client, namespace: lolly-admission}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: redis, app.kubernetes.io/instance: admission-redis}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: lolly-admission, app.kubernetes.io/component: adapter}
+      ports: [{protocol: TCP, port: 6379}]

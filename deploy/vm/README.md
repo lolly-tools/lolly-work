@@ -1,14 +1,23 @@
-# lolly.ing on one VM
+# Single VM kit (historical lolly.ing deployment)
 
-lolly.ing runs on the existing UpCloud VM under openSUSE Leap 16.0. Caddy terminates
-TLS. The lolly-work server serves the native web shell, control plane and live co-editing
-gateway; the Chromium render worker runs alongside it. Neon Postgres holds workspace
-records and permission-checked blobs. The current deployment uses a paid Neon plan.
+> **Production changed on 7 October 2026.** lolly.ing and lolly.tools now run
+> on UpCloud/K3s with PostgreSQL 18.6 on that host. Read
+> [current hosted production](../../docs/deployment.md#current-hosted-production)
+> and the reviewed instance deployment handoff before selecting a target.
+> This kit supports separately configured VM instances; its lolly.ing commands,
+> paths and migration steps below describe the former deployment. Do not run
+> its push, secret rotation, service restart or DNS rollback steps against either
+> production domain. The old Work, worker and relay remain stopped and their
+> database access fenced; that host provides SSH access and verified HTTPS
+> forwarding to the current host.
 
-The shell is a signed, qualified build mounted at `/app/shell/current`; it is no longer
-proxied from lolly.tools. lolly.tools still hosts the public shell and the OSS CA, Penpot,
-MCP and image-fetch API routes that lolly.ing proxies. These remain separate from the
-private workspace catalog.
+## Former lolly.ing topology
+
+The former UpCloud VM used openSUSE Leap 16.0, Caddy, the Work server, live relay
+and Chromium worker under Compose. Neon held workspace records and
+permission-checked blobs. Its signed shell was mounted at `/app/shell/current`;
+public CA, Penpot, MCP and image-fetch routes were proxied to lolly.tools.
+The diagram records that old topology, rather than the current Kubernetes release.
 
 ```
 browser -> https://lolly.ing -> Caddy (:443)
@@ -87,7 +96,7 @@ UpCloud or Evroc image or move a public domain.
 | `secrets.sh` | writes `/opt/lolly-ing/.env` (mode 0600) over ssh; run it yourself, it asks for each secret without echo |
 | `push.sh` | deploys this checkout: pack, checks, source, build, restart, reload, health |
 | `smoke.sh` | checks the VM by IP with `curl --resolve`, before and after DNS points at it |
-| `rotate-secrets.sh` | replaces `LW_SESSION_SECRET` and `LW_LINK_SECRET` with new values on the VM and on the Vercel rollback together; run it yourself |
+| `rotate-secrets.sh` | historical paired VM/Vercel rotation; do not run it against the current production instance |
 
 ## Why the server starts as Debian
 
@@ -115,9 +124,9 @@ Three things about the Leap image shape the kit:
 
 ## Keeping database usage bounded
 
-The current paid plan removes the Free-plan quota that interrupted testing. Preserve the
-existing account, autosuspend settings and usage alerts; an alert is not a hard spending
-cap. Current plan terms and limits belong in the Neon account, rather than this runbook.
+For a separately configured instance using Neon, preserve its account,
+autosuspend settings and usage alerts; an alert is not a hard spending cap.
+Current plan terms and limits belong in that account, rather than this runbook.
 The server should still avoid queries on a clock:
 
 - `LW_BACKGROUND_POLL_MS=0` (the compose default): the render and automation runners look for
@@ -130,7 +139,7 @@ The server should still avoid queries on a clock:
 - Pools close a connection after 30 s idle and give up connecting after 15 s
   (`server/src/store/pg-options.ts`).
 
-What still wakes the database: people using lolly.ing (including a browser tab left open that
+What wakes a configured database: people using the instance (including a browser tab left open that
 polls), a daily provider-credential check, and requests to the server. Native shell requests
 also pass through the design-system state loader. Use a TCP/TLS check for frequent uptime
 monitoring; schedule HTTP readiness probes sparingly so they do not prevent autosuspend.
@@ -218,8 +227,9 @@ overlay can intentionally pin its own hostname.
 
 ## Runbook
 
-These steps describe provisioning a new VM and the original DNS transition. The existing
-lolly.ing VM already serves the native shell. For an update, use the qualified artifact
+These steps record provisioning a new VM and the original lolly.ing DNS transition.
+They must not be replayed against the current production domains. For an update
+to a separately configured VM instance, use the qualified artifact
 with `LOLLY_SHELL_DIST`, explicit `LOLLY_DIR` and the intended `LOLLY_REV`, preserve private
 config/secrets and the live-relay overlay, and follow the Native web shell section below.
 Rehearse a rollback to a retained native release before retiring an earlier one.
@@ -360,7 +370,7 @@ public IPv4 address. Your ssh key is `~/.ssh/id_ed25519.pub`.
    `DATABASE_URL_UNPOOLED` comes with the Neon integration; migrations run over it. Against
    Vercel, `smoke.sh` passes every check but `/ws/collab/<id>` and `www`, which only the VM
    answers. DNS still points at Vercel, so this build serves lolly.ing until step 10.
-9. **Lower the DNS TTL.** At Namecheap, set the TTL of the `A @` and `A www` records (today
+9. **Lower the DNS TTL.** At Namecheap, set the TTL of the `A @` and `A www` records (then
    76.76.21.21, Vercel) to 5 minutes, then wait for the old TTL to pass before step 10. Doing
    this at the start of the runbook saves the wait.
 10. **Cut DNS.** At Namecheap, point `A @` and `A www` at `<ip>` (replace 76.76.21.21; a `www`
@@ -417,6 +427,10 @@ until step 14, is the way back.
 
 ### Session and link secrets
 
+The Vercel rollback and paired secret rotation below are historical. They do not
+apply to the current UpCloud/K3s instance. Follow its reviewed deployment and
+[audit key rotation](../../docs/audit.md#rotating-the-session-secret) procedure.
+
 Use the same `LW_SESSION_SECRET` and `LW_LINK_SECRET` as the Vercel project. The session
 secret also derives the key of the audit log's MACs: rows written with one key fail
 verification under another, so the console and `/api/v1/audit/head` would report the chain
@@ -435,7 +449,12 @@ see [docs/audit.md](../../docs/audit.md#rotating-the-session-secret)). If it sto
 reports the state of the VM and of each Vercel variable; running it again starts over. Everyone signs
 in again and issued share links stop verifying.
 
-## Rollback
+## Historical VM rollback
+
+These paths and the DNS probe describe the former lolly.ing deployment. They
+are not a rollback procedure for the current K3s runtime. Its recovery must
+preserve writes in the current PostgreSQL database and use the reviewed instance
+handoff, retained releases and verified backups.
 
 For a shell-only rollback, first verify the retained release and its signed catalog. Switch
 `/opt/lolly-ing/shell/current` to that immutable release with a temporary symlink and atomic
