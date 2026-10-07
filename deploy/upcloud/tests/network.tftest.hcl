@@ -57,3 +57,21 @@ run "reject_missing_key" {
   variables { ssh_public_keys = [] }
   expect_failures = [var.ssh_public_keys]
 }
+
+run "explicit_standard_candidate_storage" {
+  command = plan
+  variables {
+    plan           = "STARTER-4xCPU-8GB"
+    root_disk_tier = "standard"
+  }
+  assert {
+    condition     = upcloud_server.lolly.plan == "STARTER-4xCPU-8GB" && upcloud_server.lolly.template[0].tier == "standard" && upcloud_server.lolly.template[0].encrypt && upcloud_server.lolly.template[0].size == 80
+    error_message = "A Standard candidate must keep the selected plan, encryption and 80 GB capacity."
+  }
+}
+
+run "reject_archive_boot_storage" {
+  command = plan
+  variables { root_disk_tier = "archive" }
+  expect_failures = [var.root_disk_tier]
+}

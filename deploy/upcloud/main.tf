@@ -10,6 +10,7 @@ resource "upcloud_server" "lolly" {
   template {
     storage = var.template_uuid
     size    = var.root_disk_gb
+    tier    = var.root_disk_tier
     encrypt = true
   }
   login {

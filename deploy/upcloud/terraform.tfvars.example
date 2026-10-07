@@ -7,3 +7,4 @@ ssh_allowed_cidrs = ["192.0.2.10/32"]
 zone             = "de-fra1"
 plan             = "CLOUDNATIVE-2xCPU-4GB"
 root_disk_gb     = 80
+root_disk_tier   = "maxiops"

@@ -13,6 +13,7 @@
 #   ssh root@<ip> 'bash -s' < deploy/vm/bootstrap-opensuse.sh              # the plan; writes nothing
 #   ssh root@<ip> 'bash -s -- /dev/vdb' < deploy/vm/bootstrap-opensuse.sh  # write the disk the plan named
 #
+#   --sha256 <hash>  also require the exact image checksum reviewed before creating the host
 #   --tumbleweed  openSUSE Tumbleweed instead of Leap 16.0 (its user is opensuse, not sles)
 #   --yes         write the one empty disk found, without naming it
 #   <device>      write this disk, which must be the one empty disk found
@@ -33,11 +34,17 @@ set -euo pipefail
 # command below that reads standard input cannot swallow the rest.
 {
 die() { echo "bootstrap-opensuse.sh: $*" >&2; exit 1; }
-usage='usage: bootstrap-opensuse.sh [--tumbleweed] [--overwrite] [--yes | /dev/<disk>]'
+usage='usage: bootstrap-opensuse.sh [--tumbleweed] [--sha256 <reviewed-hash>] [--overwrite] [--yes | /dev/<disk>]'
 
-flavour=leap confirm=0 device='' overwrite=0
+flavour=leap confirm=0 device='' overwrite=0 reviewed_checksum=''
 while [ $# -gt 0 ]; do
   case "$1" in
+    --sha256)
+      [ $# -ge 2 ] || die "--sha256 requires the reviewed lowercase SHA-256; $usage"
+      reviewed_checksum=$2
+      [[ "$reviewed_checksum" =~ ^[0-9a-f]{64}$ ]] || die "--sha256 requires the reviewed lowercase SHA-256; $usage"
+      shift
+      ;;
     --tumbleweed) flavour=tumbleweed ;;
     --leap) flavour=leap ;;
     --yes) confirm=1 ;;
@@ -166,6 +173,7 @@ else
 fi
 cat <<EOF
 Plan:
+  Reviewed SHA-256: ${reviewed_checksum:-not supplied; official checksum still required}
   1. apt-get install qemu-utils curl
   2. download $base/$image
      into $work
@@ -200,6 +208,9 @@ curl -fL --retry 3 --retry-delay 5 -o "$work/$image" "$base/$image" </dev/null
 # so compare the hash itself rather than run sha256sum -c on the file.
 expected=$(awk 'length($1) == 64 && $1 ~ /^[0-9a-f]+$/ { print $1; exit }' "$work/$image.sha256")
 [ -n "$expected" ] || die "no SHA-256 in $base/$image.sha256. Nothing written"
+if [ -n "$reviewed_checksum" ] && [ "$expected" != "$reviewed_checksum" ]; then
+  die "the published image checksum changed since review. Nothing written"
+fi
 echo "$expected  $work/$image" | sha256sum -c - || die "the download does not match $base/$image.sha256. Nothing written"
 
 info=$(qemu-img info "$work/$image") || die "qemu-img cannot read the download. Nothing written"

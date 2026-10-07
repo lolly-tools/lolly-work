@@ -39,6 +39,16 @@ variable "root_disk_gb" {
   }
 }
 
+variable "root_disk_tier" {
+  description = "Select and price the root storage explicitly; Standard suits a cost-conscious Starter candidate."
+  type        = string
+  default     = "maxiops"
+  validation {
+    condition     = contains(["standard", "maxiops"], var.root_disk_tier)
+    error_message = "Use standard or maxiops for the boot disk."
+  }
+}
+
 variable "ssh_user" {
   description = "Image's cloud-init login account (sles for the openSUSE Leap image)."
   type        = string
