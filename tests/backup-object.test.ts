@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   openArchive,
   publishRestore,
@@ -22,6 +24,21 @@ const creds = {
   access_key_id: "fixture00000001",
   secret_access_key: "fixture-secret-not-a-real-credential",
 };
+
+test("a projected ConfigMap-style CLI symlink executes and refuses invalid input instead of succeeding silently", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "lolly-backup-cli-"));
+  try {
+    const entry = join(dir, "operator.ts");
+    await symlink(fileURLToPath(new URL("../scripts/backup-object.ts", import.meta.url)), entry);
+    const result = spawnSync(process.execPath, [entry, "invalid-command"], { encoding: "utf8", timeout: 10_000 });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /Backup failed/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("sealed backups recover exact binary bytes with randomized authenticated encryption", () => {
   const input = randomBytes(200_000);

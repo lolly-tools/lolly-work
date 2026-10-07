@@ -273,7 +273,7 @@ export async function main(args: string[]): Promise<void> {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(await realpath(resolve(process.argv[1]))).href) {
   main(process.argv.slice(2)).catch(() => {
     process.stderr.write(
       "Backup failed; no credentials or unverified restore output were printed. Inspect job status and the private operator inputs.\n",
