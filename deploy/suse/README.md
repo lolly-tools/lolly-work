@@ -158,13 +158,16 @@ the database on a separate Helm release so an application removal does not also
 remove its database. Keep the ordinary Work chart independent of Collection
 registry access; external PostgreSQL remains its default.
 
-The checked-in `appco-postgresql.yaml` is a pinned candidate for chart 0.8.0
-with a PostgreSQL 17.11 image override. The chart's current default is PostgreSQL
-18; the override keeps this candidate on Work's existing PostgreSQL 17 line.
-`appco-postgresql.lock.json` records the chart OCI digest, archive SHA-256 and
-verified multi-architecture image digest. Registry inspection, strict Helm lint,
-rendered Secret/resource contracts and Kubernetes 1.34 schema checks passed.
-Container boot, workload capacity and restore remain pending.
+The checked-in `appco-postgresql.yaml` pins chart 0.8.0 and PostgreSQL 18.6.
+A read-only inventory found the existing migration source already runs
+PostgreSQL 18.6; the earlier PG17 candidate cannot receive that source dump.
+`appco-postgresql.lock.json` records the chart OCI/archive checksums, the image
+index and both architecture digests. Official Cosign verification, strict Helm
+lint and Kubernetes 1.34 schemas passed. A native arm64 rehearsal booted as
+UID1000 with TLS and restored a consistent source snapshot; all twelve critical
+table data checks and all 49 migration names matched. This does not qualify
+amd64, Kubernetes storage, application behavior or production migration.
+Follow [the guarded PostgreSQL rehearsal](POSTGRESQL-REHEARSAL.md) for those checks.
 
 Pull that exact chart using your isolated registry login, then compare the
 archive SHA-256 to the lock file before rendering. This example assumes the
@@ -189,7 +192,11 @@ Provide `application-collection` as the registry pull Secret,
 `server.key` and `ca.crt`. Change those names in your instance values when needed.
 The app user is `lollywork`, separate from the PostgreSQL superuser. The
 profile enables TLS, uses existing Secrets, requests 16 GiB persistent storage
-and sets database resource budgets. It creates no password-bearing Secret,
+and sets database resource budgets. `auth.database` stays empty: create the
+candidate database explicitly from `template0` with the source-compatible
+UTF8, built-in locale provider and `C.UTF-8` locale before restoring. A bounded
+socket volume and `fsGroup: 1000` let the non-root entrypoint write its socket
+and persistent data. It creates no password-bearing Secret,
 exporter or privileged volume-permission helper. Review the StorageClass,
 certificate names/permissions, access policy and recovery before installation.
 Use a `verify-full` Work connection with the correct trust chain and database
