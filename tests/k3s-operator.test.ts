@@ -92,6 +92,75 @@ test('host inspection refuses adopting an existing Compose or cluster owner', ()
   );
 });
 
+function policyScaffold() {
+  return {
+    path: '/var/lib/rancher/k3s',
+    canonical: '/var/lib/rancher/k3s',
+    entries: [
+      '',
+      'agent',
+      'agent/containerd',
+      'agent/containerd/io.containerd.snapshotter.v1.overlayfs',
+      'agent/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots',
+      'data',
+    ].map((relative) => ({ relative, type: 'directory', uid: 0, mode: 0o755 })),
+  };
+}
+
+test('SUSE policy may prepare only its exact empty root-owned directory scaffold', () => {
+  const result = bash('source "$K3S_TEST_BOOTSTRAP"; validate_policy_scaffold_entries "$1"', [
+    JSON.stringify(policyScaffold()),
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+});
+
+const invalidScaffolds: Record<string, (fixture: ReturnType<typeof policyScaffold>) => void> = {
+  'initialized file': (f) => {
+    f.entries.push({ relative: 'data/cluster.db', type: 'other', uid: 0, mode: 0o600 });
+  },
+  symlink: (f) => {
+    first(f.entries).type = 'other';
+  },
+  'symlink parent': (f) => {
+    f.canonical = '/srv/shared-k3s';
+  },
+  'wrong owner': (f) => {
+    first(f.entries).uid = 1000;
+  },
+  'writable directory': (f) => {
+    first(f.entries).mode = 0o777;
+  },
+  'unexpected directory': (f) => {
+    f.entries.push({ relative: 'server', type: 'directory', uid: 0, mode: 0o700 });
+  },
+};
+for (const [name, change] of Object.entries(invalidScaffolds))
+  test(`policy scaffold refuses ${name}`, () => {
+    const fixture = policyScaffold();
+    change(fixture);
+    assert.notEqual(
+      bash('source "$K3S_TEST_BOOTSTRAP"; validate_policy_scaffold_entries "$1"', [JSON.stringify(fixture)])
+        .status,
+      0,
+    );
+  });
+
+test('data path exception refuses a missing policy RPM before reading the filesystem', () => {
+  const result = bash(
+    'source "$K3S_TEST_BOOTSTRAP"; rpm() { return 1; }; validate_policy_scaffold /var/lib/rancher/k3s',
+  );
+  assert.notEqual(result.status, 0);
+  assert.ok(result.stderr.includes('installed SUSE k3s-selinux'));
+});
+
+test('data path exception refuses an unrelated policy RPM vendor', () => {
+  const result = bash(
+    'source "$K3S_TEST_BOOTSTRAP"; rpm() { if [[ "$*" == "-q k3s-selinux" ]]; then return 0; fi; printf "%s" "Other vendor"; }; validate_policy_scaffold /var/lib/rancher/k3s',
+  );
+  assert.notEqual(result.status, 0);
+  assert.ok(result.stderr.includes('reviewed SUSE policy RPM'));
+});
+
 test('caller Python optimization cannot disable configuration safety checks', () => {
   const result = bash('source "$K3S_TEST_BOOTSTRAP"; emit_config 1.2.3.4 rehearsal', [], {
     PYTHONOPTIMIZE: '2',

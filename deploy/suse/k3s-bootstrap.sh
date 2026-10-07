@@ -164,6 +164,41 @@ validate_existing_units() {
   if printf '%s\n' "$1" | grep -Eq '^(k3s|rke2|docker|caddy)'; then fail 'existing application/cluster units are refused'; fi
 }
 
+validate_policy_scaffold_entries() {
+  python3 -I - "$1" <<'PY'
+import json,sys
+d=json.loads(sys.argv[1])
+assert d['path']==d['canonical']=='/var/lib/rancher/k3s', 'policy scaffold must be the literal K3s data path'
+allowed={'','agent','agent/containerd','agent/containerd/io.containerd.snapshotter.v1.overlayfs','agent/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots','data'}
+entries=d['entries'];assert entries and entries[0]['relative']=='', 'scaffold root metadata required'
+assert len({e['relative'] for e in entries})==len(entries), 'duplicate scaffold metadata refused'
+for e in entries:
+    assert e['relative'] in allowed and e['type']=='directory', 'initialized or unexpected cluster state refused'
+    assert e['uid']==0 and not e['mode'] & 0o022, 'policy scaffold must be root-owned and not writable by others'
+PY
+}
+
+validate_policy_scaffold() {
+  [[ $1 == /var/lib/rancher/k3s ]] || fail 'only the SUSE K3s policy scaffold can be inspected'
+  rpm -q k3s-selinux >/dev/null || fail 'existing data path needs the installed SUSE k3s-selinux policy'
+  local metadata vendor
+  vendor=$(rpm -q --qf '%{VENDOR}' k3s-selinux) || fail 'cannot inspect policy RPM vendor'
+  [[ $vendor == 'SUSE LLC <https://www.suse.com/>' ]] || fail 'scaffold exception requires the reviewed SUSE policy RPM'
+  metadata=$(python3 -I - "$1" <<'PY'
+import json,os,stat,sys
+root=sys.argv[1];entries=[];pending=[root]
+while pending:
+    path=pending.pop();s=os.lstat(path)
+    directory=stat.S_ISDIR(s.st_mode)
+    entries.append({'relative':os.path.relpath(path,root) if path!=root else '', 'type':'directory' if directory else 'other', 'uid':s.st_uid,'mode':stat.S_IMODE(s.st_mode)})
+    if directory:
+        pending.extend(sorted((e.path for e in os.scandir(path)),reverse=True))
+print(json.dumps({'path':root,'canonical':os.path.realpath(root),'entries':entries}))
+PY
+) || fail 'cannot inspect policy scaffold metadata'
+  validate_policy_scaffold_entries "$metadata"
+}
+
 host_preflight() {
   [[ $(uname -s) == Linux && $(uname -m) == x86_64 ]] || fail 'only the amd64 Linux candidate is supported'
   [[ $EUID -eq 0 ]] || fail 'host preflight/install requires root'
@@ -175,7 +210,10 @@ host_preflight() {
   osid=$(. /etc/os-release; printf '%s' "$ID")
   case $osid in sles|opensuse-leap|opensuse-tumbleweed) ;; *) fail 'reviewed SLES/openSUSE host required; transactional hosts need their own installer' ;; esac
   for path in /etc/rancher/k3s /var/lib/rancher/k3s /var/lib/rancher/rke2 /usr/local/bin/k3s; do
-    [[ ! -e $path && ! -L $path ]] || fail 'existing cluster state is refused'
+    if [[ -e $path || -L $path ]]; then
+      if [[ $path == /var/lib/rancher/k3s ]]; then validate_policy_scaffold "$path";
+      else fail 'existing cluster state is refused'; fi
+    fi
   done
   if command -v k3s >/dev/null; then fail 'existing K3s binary is refused'; fi
   local units listeners

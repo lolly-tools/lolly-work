@@ -30,6 +30,16 @@ matching `k3s-selinux` policy package; the configuration then enables SELinux.
 Permissive SELinux is refused. Disabled SELinux is an existing OS posture, not an
 action taken by the helper; review AppArmor separately. This is not CIS certification.
 
+The signed SUSE policy RPM may create and label an empty K3s data scaffold before
+the binary is installed. The helper permits only its exact directory tree
+(`agent/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots` and `data`)
+with the policy RPM installed, literal nonsymlink path, root ownership and no
+group/world write bits. Its installed vendor must match the reviewed SUSE RPM;
+the operator must still install it through the signed OS repository. Every
+file, link, unexpected directory or existing
+configuration/binary/unit remains refused. This exception preserves the policy
+labels; it neither deletes initialized data nor adopts another cluster.
+
 K3s needs an API listener reachable from pods. The helper keeps normal listener
 and advertise semantics; **administrative reachability** is firewall-scoped with
 SSH-tunnel access. Binding the entire listener to loopback could break the
@@ -131,6 +141,13 @@ Measure actual DNS/HTTPS/time functionality and independently test unsolicited
 return-range traffic before qualification. For Evroc inspect its actual chosen
 network controls; do not assume UpCloud semantics. If those controls are
 stateless, use the same explicit return-review fields and host checks.
+
+For fixed NTP peers, retain the measured vendor-pool baseline and explicit peer
+selection, observe actual local UDP acquisition ports and record Chrony source
+health plus `NTPSynchronized=yes`. Fixed peers require ongoing health checks;
+pool rotation is not automatically supported by exact-host return rules.
+Review replacement peers and refresh the provider rules/receipt before changing
+the Chrony configuration. Never broaden time-server sources to restore sync.
 
 ## Stage, review and start
 
