@@ -116,6 +116,7 @@ in on the instance and export the pack, or connect from the desktop app.
 | Route | Action | Notes |
 |---|---|---|
 | `GET /catalog/*` | per access mode | pack blobs, lifecycle-gated |
+| `GET /api/v1/catalog/assets` | per access mode | one page of the caller's feed: `q`, `source`, `section`, `collection`, `tag`, `type`, `cursor`, `limit`; returns `{ assets, total, nextCursor, facets, version }` ([large catalogs](catalog.md#large-catalogs)) |
 | `GET /api/v1/catalog/assets/*` | per access mode | asset feed / entries |
 | `GET /api/v1/catalog/search` | `catalog.read` | live fan-out to search-capable providers |
 | `PUT /api/v1/catalog/assets/<id>/meta` | `catalog.edit` | org-defined field values and `replacedBy` on any asset the caller sees; `name`/`description`/`tags` on `inst/*` only |

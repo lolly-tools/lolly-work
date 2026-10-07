@@ -94,6 +94,9 @@ import {
   type AssetFormatEntry, type AssetIndex, type AssetIndexEntry, type AssetState, type LifecycleRow,
 } from '../catalog/lifecycle.ts';
 import { buildFragment, callerSeesProvider, createFederation, credentialContext, mapProviderAsset, passesExposure } from '../catalog/federation.ts';
+import { createServedIndex } from '../catalog/served-index.ts';
+import { createExtCache, extCacheKey } from '../catalog/ext-cache.ts';
+import { browseAssets, normalisedQuery, parseBrowseQuery } from '../catalog/asset-browse.ts';
 import { providerDrift } from '../catalog/drift.ts';
 import { applyCredentialsToIndex, detectCredential, type CredentialRow } from '../catalog/credentials.ts';
 import {
@@ -444,11 +447,16 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const v = p.credentialRef ? process.env[p.credentialRef] : undefined;
     if (v) configSecrets.set(p.id, v);
   }
+  // Sizing for DAM-scale catalogs (config/instance.ts `catalogServing`).
+  const serving = config.catalogServing ?? {
+    maxProviderAssets: 100_000, pagedProviderThreshold: 2000, extCache: { maxBytes: 64 * 1024 * 1024, maxItemBytes: 2 * 1024 * 1024 },
+  };
   const federation = createFederation({
     store,
     ...(secrets.credential ? { credentialSecret: secrets.credential } : {}),
     configSecrets,
     ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    maxProviderAssets: serving.maxProviderAssets,
   });
   const providersReady: Promise<void> = (async () => {
     const now = new Date().toISOString();
@@ -465,6 +473,21 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   })().catch((err) => {
     console.error('catalog provider config upsert failed:', (err as Error).message);
   });
+  // The composed asset feed, memoised per caller visibility (catalog/served-index.ts),
+  // and the bounded cache of federated bytes (catalog/ext-cache.ts).
+  const servedIndex = createServedIndex({
+    pack: () => config.instance.pack, store, federation, ready: providersReady, pagedThreshold: serving.pagedProviderThreshold,
+  });
+  const extCache = createExtCache(serving.extCache);
+  /** Whether a conditional request already holds `etag` (a list, `*`, or weak forms). */
+  const etagMatches = (req: IncomingMessage, etag: string): boolean => {
+    const header = req.headers['if-none-match'];
+    if (!header) return false;
+    return header.split(',').some((t) => {
+      const tag = t.trim();
+      return tag === '*' || tag.replace(/^W\//, '') === etag;
+    });
+  };
 
   // ── outbound delivery destinations ──────────────────────────────────────
   // Fixed, config-managed targets only in v1. This is intentionally a second
@@ -4906,9 +4929,16 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // After the exit's cutover, an old ext/* blob URL (baked into already-rendered
     // SVGs and live sessions) resolves through a persistent alias to the new
     // inst/* path - nothing that referenced the federated identity breaks (plans/27 §5).
+    // An aliased request may carry the `?v=<entry version>` an ext/* tile URL
+    // adds for caching; that is not an instance version number, so the inst
+    // branch below ignores a `v` it cannot read on an aliased request.
+    let aliasedFromExt = false;
     if (rel.startsWith('ext/')) {
       const aliased = await store.getAlias(rel);
-      if (aliased) rel = aliased;
+      if (aliased) {
+        rel = aliased;
+        aliasedFromExt = true;
+      }
     }
     // Instance-owned blobs stream from the BlobStore: /catalog/inst/<id>/<format>.
     if (rel.startsWith(INST_PREFIX)) {
@@ -4941,7 +4971,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       // the head for everyone else, and a pinned copy does not have to break
       // for a brand refresh to land.
       let blobId = rec.blobs[formatRef];
-      const wantedVersion = ctx.url.searchParams.get('v');
+      const askedVersion = ctx.url.searchParams.get('v');
+      const wantedVersion = aliasedFromExt && askedVersion !== null && !/^[1-9]\d*$/.test(askedVersion) ? null : askedVersion;
       if (wantedVersion !== null) {
         const n = Number(wantedVersion);
         if (!Number.isInteger(n) || n < 1) return sendError(res, 400, 'INVALID_INPUT', 'v must be a version number');
@@ -5020,6 +5051,34 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
           }
         }
       }
+      // The fragment entry names this file's format and the entry version.
+      // The version keys the byte cache and the ETag, so a change in the DAM
+      // is a miss; `?v=<version>` from a client that already holds the current
+      // version earns an immutable cache lifetime.
+      const fragEntry = await federation.entry(assetId);
+      const entryVersion = typeof fragEntry?.version === 'string' && fragEntry.version ? fragEntry.version : '';
+      const fileEntry = fragEntry?.formats?.find((f) => f.url === `/catalog/${assetId}/${formatRef}`);
+      const declaredSvg = !filePreview && (fileEntry?.format === 'svg' || /\.svg$/i.test(typeof fileEntry?.filename === 'string' ? fileEntry.filename : ''));
+      const cacheKey = entryVersion && !convertedPreview
+        ? extCacheKey({ provider: providerId, remoteId, formatRef, preview: filePreview, version: entryVersion })
+        : '';
+      const etag = cacheKey ? `"x${sha256Hex(cacheKey).slice(0, 32)}"` : '';
+      const bytesCache = ctx.url.searchParams.get('v') === entryVersion && entryVersion
+        ? 'private, max-age=31536000, immutable' : 'private, max-age=300';
+      if (etag && etagMatches(req, etag)) {
+        res.writeHead(304, { etag, 'cache-control': bytesCache });
+        res.end();
+        return;
+      }
+      const cached = cacheKey ? extCache.get(cacheKey) : undefined;
+      if (cached) {
+        res.writeHead(200, {
+          'content-type': cached.contentType, ...INERT_BYTES,
+          'cache-control': bytesCache, etag, 'content-length': String(cached.bytes.length),
+        });
+        res.end(cached.bytes);
+        return;
+      }
       try {
         const driver = federation.instantiate(rec);
         if (filePreview && !driver.resolveFilePreview) return sendError(res, 404, 'NOT_FOUND', 'this provider has no file preview');
@@ -5042,13 +5101,20 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
           res.end();
           return;
         }
+        // A DAM often labels an SVG as a generic download. Naming the file for
+        // what the fragment says lets an <img> draw the SVG; INERT_BYTES keeps
+        // the bytes script-free and sandboxed when opened directly.
+        const servedType = declaredSvg ? 'image/svg+xml' : blob.contentType;
         res.writeHead(200, {
-          'content-type': blob.contentType,
+          'content-type': servedType,
           ...INERT_BYTES,
-          'cache-control': 'private, max-age=300',
+          'cache-control': bytesCache,
+          ...(etag ? { etag } : {}),
           ...(blob.size !== undefined ? { 'content-length': String(blob.size) } : {}),
         });
-        Readable.fromWeb(blob.body as import('node:stream/web').ReadableStream<Uint8Array>).pipe(res);
+        const body = Readable.fromWeb(blob.body as import('node:stream/web').ReadableStream<Uint8Array>);
+        if (cacheKey) body.pipe(extCache.tee(cacheKey, servedType)).pipe(res);
+        else body.pipe(res);
       } catch {
         return sendError(res, 502, 'PROVIDER_UNAVAILABLE', 'the upstream provider did not return this asset');
       }
@@ -5098,6 +5164,27 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         return;
       }
     }
+    // The asset feed: composed per caller from the pack, federated sources,
+    // instance assets and every governance overlay, memoised until an input
+    // changes (catalog/served-index.ts). The ETag lets an unchanged feed cost
+    // a 304; `no-cache` keeps every client revalidating. `?paged=1` leaves
+    // large providers out for the paged browse route to serve instead.
+    if (rel === 'assets/index.json') {
+      await providersReady;
+      const served = await servedIndex.forCaller({ groups: user?.groups ?? [], paged: ctx.url.searchParams.get('paged') === '1' });
+      if (served.status === 'missing') return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
+      if (etagMatches(req, served.etag)) {
+        res.writeHead(304, { etag: served.etag, 'cache-control': 'private, no-cache' });
+        res.end();
+        return;
+      }
+      res.writeHead(200, {
+        'content-type': served.status === 'composed' ? 'application/json; charset=utf-8' : contentType(rel),
+        'cache-control': 'private, no-cache', etag: served.etag,
+      });
+      res.end(served.bytes);
+      return;
+    }
     const filePath = join(config.instance.pack, 'catalog', rel);
     let bytes: Buffer;
     try {
@@ -5105,49 +5192,15 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     } catch {
       return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
     }
-    if (rel === 'assets/index.json') {
-      try {
-        const index = JSON.parse(bytes.toString('utf8')) as AssetIndex;
-        await providersReady;
-        // Federate before lifecycle so expire/revoke rows on ext/* ids gate
-        // federated entries exactly like pack entries.
-        const federated = await federation.composeIndex(index, user?.groups ?? []);
-        const [rows, creds, instAssets, metas, fieldDefs] = await Promise.all([
-          store.listLifecycle(), store.listCredentials(), store.listInstanceAssets(),
-          store.listAssetMeta(), store.listCatalogFields(),
-        ]);
-        // Org-defined values ride the feed as an additive `fields` bag on the
-        // entries that carry any (plans/31 section 4). It folds over pack,
-        // federated and instance entries alike, because the overlay is keyed by
-        // catalog id rather than by which of the three produced the entry.
-        const composed = composeAssetMeta(
-          composeInstanceAssets(federated, instAssets, user?.groups ?? []), metas, fieldDefs,
-        );
-        const gated = applyLifecycleToIndex(composed, rows, Date.now());
-        // Collections ride the SAME feed as an additive `collections` key
-        // (plans/31 §5), folded last so a member that lifecycle just dropped is
-        // already absent from the ids it can reference. A deployment with no
-        // collections serves a byte-identical index, which is what lets the OSS
-        // catalog view light up its Collections section later with no server
-        // change and a public build render unchanged.
-        const withCollections = composeCollections(
-          applyCredentialsToIndex(gated, creds), await store.listCollections(), user?.groups ?? [],
-        );
-        return sendJson(res, 200, withCollections, { 'cache-control': 'private, no-cache' });
-      } catch {
-        /* not the expected shape — serve raw below */
-      }
-    } else {
-      // Any other catalog file: if it's a format entry owned by an asset
-      // whose lifecycle blocks it (revoked, scheduled, or expired-and-hidden),
-      // the blob dies too - a guessed/cached URL doesn't bypass the feed.
-      const assetId = (await loadAssetPathMap(config.instance.pack)).get(rel);
-      if (assetId) {
-        const { state, blocked } = await catalogBytesGate(assetId, false);
-        if (blocked) {
-          const message = state === 'revoked' ? 'this asset has been revoked' : state === 'scheduled' ? 'this asset is not yet published' : 'this asset has expired';
-          return sendError(res, 410, 'ASSET_EXPIRED', message);
-        }
+    // Any other catalog file: if it's a format entry owned by an asset
+    // whose lifecycle blocks it (revoked, scheduled, or expired-and-hidden),
+    // the blob dies too - a guessed/cached URL doesn't bypass the feed.
+    const assetId = (await loadAssetPathMap(config.instance.pack)).get(rel);
+    if (assetId) {
+      const { state, blocked } = await catalogBytesGate(assetId, false);
+      if (blocked) {
+        const message = state === 'revoked' ? 'this asset has been revoked' : state === 'scheduled' ? 'this asset is not yet published' : 'this asset has expired';
+        return sendError(res, 410, 'ASSET_EXPIRED', message);
       }
     }
     res.writeHead(200, {
@@ -5595,6 +5648,30 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // the asset's lifecycle row + resolved state. 404 when the id is in neither.
   // The id carries slashes (e.g. 'suse/tokens/brand'), so it rides the trailing
   // wildcard, same as the lifecycle admin route.
+  // ── paged asset browse (catalog/asset-browse.ts) ──────────────────────────
+  // One page of the caller's feed at a time, filtered and faceted, for a
+  // client that should not mirror a DAM-sized catalog. Registered before the
+  // inspect wildcard below, which would otherwise match the bare path.
+  router.add('GET', '/api/v1/catalog/assets', async (req, res, ctx) => {
+    const user = await memberOf(req) ?? renderReader(req, brand.current()!.revision, linkVerify);
+    const p = principalOf(req);
+    if (config.policy.defaultAccessMode === 'gated' && !user && p?.kind !== 'guest') {
+      return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
+    }
+    const query = parseBrowseQuery(ctx.url.searchParams);
+    if ('error' in query) return sendError(res, 400, 'INVALID_INPUT', query.error);
+    await providersReady;
+    const served = await servedIndex.forCaller({ groups: user?.groups ?? [] });
+    const etag = `"b${sha256Hex(`${served.version}\n${normalisedQuery(query)}`).slice(0, 32)}"`;
+    if (etagMatches(req, etag)) {
+      res.writeHead(304, { etag, 'cache-control': 'private, no-cache' });
+      res.end();
+      return;
+    }
+    const metaById = query.q ? new Map((await store.listAssetMeta()).map((m) => [m.assetId, m])) : new Map();
+    sendJson(res, 200, browseAssets(served, query, metaById), { 'cache-control': 'private, no-cache', etag });
+  });
+
   router.add('GET', '/api/v1/catalog/assets/*', async (req, res, ctx) => {
     const user = await memberOf(req);
     const p = principalOf(req);
@@ -6977,6 +7054,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       lastSyncAt: rec.state.lastSyncAt ?? null,
       lastError: rec.state.lastError ?? null,
       assetCount: rec.state.assetCount,
+      // A sync that stopped at a cap says so wherever the operator looks.
+      ...(rec.state.fragment?.truncated ? { truncated: true } : {}),
+      ...(rec.state.fragment?.notes?.length ? { notes: rec.state.fragment.notes } : {}),
     },
   });
 
@@ -6996,6 +7076,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       if (v === undefined) continue;
       if (!v || typeof v !== 'object' || Array.isArray(v)) return { error: `${key} must be an object` };
       (out as Record<string, unknown>)[key] = v;
+    }
+    const maxAssets = (out.sync as Record<string, unknown> | undefined)?.maxAssets;
+    if (maxAssets !== undefined && (typeof maxAssets !== 'number' || !Number.isInteger(maxAssets) || maxAssets < 1 || maxAssets > 10_000_000)) {
+      return { error: 'sync.maxAssets must be a whole number, 1-10000000' };
     }
     return out;
   };
@@ -7335,6 +7419,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         ok: true, assetCount: fragment.assets.length, syncedAt: fragment.syncedAt, hash: fragment.hash,
         ...(fragment.skipped ? { skipped: fragment.skipped } : {}),
         ...(fragment.notes?.length ? { notes: fragment.notes } : {}),
+        ...(fragment.truncated ? { truncated: true } : {}),
       });
     } catch (err) {
       sendError(res, 502, 'PROVIDER_UNAVAILABLE', `sync failed: ${(err as Error).message}`);
@@ -7441,7 +7526,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const rec = await store.getProvider(ctx.params.id as string);
     if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such provider');
     try {
-      const fragment = await buildFragment(rec, federation.instantiate(rec), Date.now);
+      const fragment = await buildFragment(rec, federation.instantiate(rec), Date.now, { maxAssets: serving.maxProviderAssets });
       const report = providerDrift(rec.id, fragment.assets, await store.listInstanceAssets());
       sendJson(res, 200, report, { 'cache-control': 'no-store' });
     } catch (err) {
@@ -7510,9 +7595,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const user = await requireAction(req, res, 'catalog.read'); if (!user) return;
     await providersReady;
     const fragments = await federation.fragments();
-    const composed = await federation.composeIndex({}, user.groups);
-    const visible = applyLifecycleToIndex(composed, await store.listLifecycle(), Date.now());
-    const sources = visibleSourceStatuses(await store.listProviders(), fragments, user.groups, new Set((visible.assets ?? []).map(a => a.id)));
+    // The memoised feed already holds what this caller is served, lifecycle
+    // applied; the provider rows are read without their large fragments.
+    const visible = (await servedIndex.forCaller({ groups: user.groups })).index;
+    const sources = visibleSourceStatuses(await store.listProviders({ includeFragment: false }), fragments, user.groups, new Set((visible.assets ?? []).map(a => a.id)));
     const canManage = evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'catalog.provider.manage', ['*'], await store.listGrants());
     sendJson(res, 200, { sources, canManage, scope: user.id }, { 'cache-control': 'private, no-store' });
   });
@@ -7537,30 +7623,17 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const limit = Math.min(Math.max(Number(ctx.url.searchParams.get('limit') ?? 50) || 50, 1), 200);
     await providersReady;
 
-    // Local pass: pack index + synced fragments, lifecycle-applied.
-    let index: AssetIndex = {};
-    try {
-      index = JSON.parse(await readFile(join(config.instance.pack, 'catalog', 'assets', 'index.json'), 'utf8')) as AssetIndex;
-    } catch {
-      /* no pack index — federated-only instances still search */
-    }
+    // Local pass: the caller's memoised feed (pack index + synced fragments +
+    // instance assets, lifecycle-applied; catalog/served-index.ts). A pack with
+    // no index still composes, so federated-only instances still search.
     const lifecycleRows = await store.listLifecycle();
     const lifecycleById = new Map(lifecycleRows.map((r) => [r.assetId, r]));
-    // The overlay is loaded once and kept: `composeAssetMeta` folds its fields
-    // and supersession onto the feed entries, and the haystack below folds its
-    // OCR text (which is kept OFF the feed) in beside them (plans/31 §7).
+    // The overlay is loaded here too: the feed carries its fields and
+    // supersession, and the haystack below folds its OCR text (which is kept
+    // OFF the feed) in beside them (plans/31 section 7).
     const metas = await store.listAssetMeta();
     const metaById = new Map(metas.map((m) => [m.assetId, m]));
-    const withInstance = composeAssetMeta(
-      composeInstanceAssets(
-        await federation.composeIndex(index, user.groups), await store.listInstanceAssets(), user.groups,
-      ),
-      metas, await store.listCatalogFields(),
-    );
-    const composed = applyCredentialsToIndex(
-      applyLifecycleToIndex(withInstance, lifecycleRows, Date.now()),
-      await store.listCredentials(),
-    );
+    const composed = (await servedIndex.forCaller({ groups: user.groups })).index;
     // The haystack folds the org's own field values (plans/31 section 4) and
     // the asset's on-device OCR text (section 7) alongside id, name, description
     // and tags: a value an org files an asset under, or a word printed on the

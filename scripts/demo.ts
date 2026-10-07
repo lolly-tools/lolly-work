@@ -506,6 +506,23 @@ export async function seedStore(store: Store, now = Date.now()): Promise<SeedRes
     createdAt: nowIso, updatedAt: nowIso, state: { assetCount: 0 },
   });
 
+  // 4c. A large mock DAM for scale checks, seeded only when
+  // LW_DEMO_MOCK_ASSETS names a count: that many synthetic assets, half SVG
+  // and half PNG, every blob a real small image of its declared type
+  // (server/src/catalog/providers/mock-generate.ts). Off by default so the
+  // ordinary demo stays small.
+  const largeDam = Math.min(200_000, Math.max(0, Math.floor(Number(process.env.LW_DEMO_MOCK_ASSETS ?? 0) || 0)));
+  if (largeDam) {
+    await store.putProvider({
+      id: 'demo-dam-large', kind: 'mock', label: 'Demo Large DAM', managedBy: 'db', enabled: true,
+      options: { generate: { count: largeDam, svgEvery: 2 } },
+      mapping: { defaultType: 'image' },
+      exposure: { tier: 'reference' },
+      sync: { ttlSeconds: 3600 },
+      createdAt: nowIso, updatedAt: nowIso, state: { assetCount: 0 },
+    });
+  }
+
   // 5. Messages.
   for (const m of demoMessages()) await store.putMessage(m);
 

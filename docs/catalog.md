@@ -563,6 +563,49 @@ catalog version, so a refresh ripples through render-cache invalidation.
 `GET /api/v1/catalog/search` fans out live to providers that support server-side search,
 through the same exposure gates.
 
+One sync federates at most 100000 assets from a provider. Set `sync.maxAssets` on the
+provider (or `catalogServing.maxProviderAssets` for the whole instance) to move that limit. A
+walk that stops at the limit with more left upstream is marked `truncated` and carries a note
+naming the setting: the sync result, the provider record (`state.truncated`, `state.notes`)
+and `GET /api/v1/catalog/sources` all show the mark, so a silent shortfall cannot happen.
+Providers with no cached fragment yet sync three at a time.
+
+### Large catalogs
+
+The feed at `/catalog/assets/index.json` is composed once per input state and per caller
+visibility, then served again until the pack, a provider fragment, a governance row or a
+lifecycle date changes. Each response carries an `ETag`; a client that sends it back in
+`If-None-Match` gets `304 Not Modified` while nothing changed.
+
+A shell that should not mirror a DAM-sized source asks for `index.json?paged=1`. Providers
+holding more than `catalogServing.pagedProviderThreshold` assets (default 2000) then leave
+`assets` and appear under `pagedProviders: [{ id, label, count }]`, where `count` is what
+this caller would see after lifecycle. Without `paged=1` the feed is unchanged.
+
+`GET /api/v1/catalog/assets` browses the same feed one page at a time:
+
+| Param | Meaning |
+|---|---|
+| `q` | case-insensitive text over id, name, description, tags, org field values and extracted text |
+| `source` | a provider id, `pack` or `instance` |
+| `section`, `collection` | a provider section or collection name |
+| `tag`, `type` | an exact tag or catalog type |
+| `limit` | page size, default 100, at most 500 |
+| `cursor` | the `nextCursor` of the previous page |
+
+The answer is `{ assets, total, nextCursor, facets, version }`. Entries have the same shape as
+the feed's, sorted by name and then id; `total` counts every match; `facets` counts the
+matches by `sources`, `sections`, `collections`, `tags` (top 50) and `types`; `version` is
+the feed version the page came from. The cursor names the last entry returned, so a walk
+neither skips nor repeats an entry when the catalog changes part way through.
+
+Federated bytes (`/catalog/ext/...`) are kept in a bounded memory cache keyed by the entry's
+version (`catalogServing.extCache`, 64 MiB in total and 2 MiB per item by default), after
+every visibility and lifecycle check has passed. A file the fragment declares as SVG is
+served as `image/svg+xml` whatever label the upstream gives it, still under the same
+sandboxing headers as every stored file. A request carrying `?v=<entry version>` that matches
+the current version may be cached by the browser as immutable.
+
 ### The exit - materialize a source into your own store
 
 Federation keeps the DAM as the source of truth. When you want to *leave* a DAM (contract

@@ -163,6 +163,22 @@ test('(d) cutover is owner-gated: it migrates identity, aliases old ext URLs, an
   assert.ok((await store.listAudit()).some((e) => e.action === 'catalog.provider.cutover'));
 });
 
+test('(d2) an aliased ext URL ignores a ?v= entry version it cannot read as an instance version', async () => {
+  // A shell adds `?v=<16-hex entry version>` to ext tile URLs for caching. After
+  // cutover the same URL resolves through the alias into the inst branch, whose
+  // own `v` means a version NUMBER; the fragment version must not turn into a 400.
+  const designer = await login('designer@test');
+  const res = await fetch(`${base}/catalog/ext/dam4/a1/att1?v=0123456789abcdef`, { headers: { cookie: designer } });
+  assert.equal(res.status, 200);
+  assert.equal(await res.text(), 'mock:dam4:a1:att1');
+  // A real version number still selects that version through the alias.
+  assert.equal((await fetch(`${base}/catalog/ext/dam4/a1/att1?v=1`, { headers: { cookie: designer } })).status, 200);
+  // The inst path itself keeps refusing a v it cannot read.
+  const inst = (await feedIds(designer)).find((i) => i.startsWith('inst/')) as string;
+  const direct = await fetch(`${base}/catalog/${inst}/png?v=abc`, { headers: { cookie: designer } });
+  assert.equal(direct.status, 400);
+});
+
 test('(f) two formats sharing a name are materialized to DISTINCT blobs — no overwrite, no byte loss', async () => {
   const admin = await login('admin@test');
   const owner = await login('owner@test');
