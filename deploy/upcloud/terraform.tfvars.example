@@ -11,4 +11,6 @@ root_disk_tier   = "maxiops"
 # Replace these with measured resolver addresses and ip_local_port_range.
 dns_resolver_cidrs = ["94.237.127.9/32", "94.237.40.9/32"]
 ephemeral_port_range = { start = 32768, end = 60999 }
+# For reviewed K3s randomized pod SNAT, only replies from these exact DNS peers:
+# dns_response_port_range = { start = 1024, end = 65535 }
 ntp_server_cidrs = []

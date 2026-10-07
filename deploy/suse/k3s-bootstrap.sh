@@ -61,20 +61,40 @@ if d['provider']=='upcloud':
     assert d['statelessFirewall'] is True, 'UpCloud public/utility firewall is stateless'
 if d.get('statelessFirewall'):
     assert d['hostConnectionTrackingRequired'] is True, 'stateless return traffic requires host connection tracking'
-    ports=d['kernelEphemeralPortRange'];assert isinstance(ports['start'],int) and isinstance(ports['end'],int) and 32768 <= ports['start'] <= ports['end'] <= 65535, 'return range must exclude control-plane and NodePorts'
+    def port_range(value,minimum):
+        assert isinstance(value,dict) and set(value)=={'start','end'}, 'return range needs only start/end'
+        assert type(value['start']) is int and type(value['end']) is int and minimum <= value['start'] <= value['end'] <= 65535, 'invalid return range'
+        return value
+    ports=port_range(d['kernelEphemeralPortRange'],32768)
+    dns_ports=port_range(d.get('dnsReturnPortRange',ports),1024)
+    trusted_dns=None
+    if 'dnsReturnPortRange' in d or 'trustedDnsResolverCidrs' in d:
+        peers=d.get('trustedDnsResolverCidrs')
+        assert isinstance(peers,list) and peers and len(peers)==len(set(peers)), 'dedicated DNS return range needs an explicit trusted resolver list'
+        trusted_dns=set()
+        for peer in peers:
+            network=ipaddress.ip_network(peer)
+            assert network.prefixlen==network.max_prefixlen, 'trusted DNS resolvers must be exact hosts'
+            trusted_dns.add(str(network))
     returns=d['statelessReturnRules'];assert returns, 'review actual stateless return rules'
-    protocols=set()
+    protocols=set();dns_coverage=set()
     for rule in returns:
         assert rule['family'] in ['IPv4','IPv6'] and rule['protocol'] in ['tcp','udp']
-        assert rule['destinationPortRange']==ports and rule['sourceCidrs']
+        assert rule['destinationPortRange']==(dns_ports if rule['sourcePort']==53 else ports), 'only trusted DNS replies can use the dedicated range'
+        assert isinstance(rule['sourceCidrs'],list) and rule['sourceCidrs'], 'explicit return peers required'
         assert (rule['protocol'],rule['sourcePort']) in [('tcp',80),('tcp',443),('tcp',53),('udp',53),('udp',123)], 'unreviewed return protocol/port'
         for cidr in rule['sourceCidrs']:
             network=ipaddress.ip_network(cidr)
             assert network.version==(4 if rule['family']=='IPv4' else 6)
             if rule['sourcePort'] in [53,123]:
                 assert network.prefixlen==network.max_prefixlen, 'resolver/time peers must be exact hosts'
+            if rule['sourcePort']==53:
+                assert trusted_dns is None or str(network) in trusted_dns, 'DNS return peer is not a trusted resolver'
+                dns_coverage.add((str(network),rule['protocol']))
         protocols.add((rule['protocol'],rule['sourcePort']))
     assert {('tcp',443),('tcp',53),('udp',53)}.issubset(protocols), 'HTTPS and UDP/TCP resolver return paths must be reviewed'
+    if trusted_dns is not None:
+        assert dns_coverage=={(peer,protocol) for peer in trusted_dns for protocol in ['tcp','udp']}, 'every trusted resolver needs both UDP and TCP return rules'
 assert d['sshSourceCidrs']
 for c in d['sshSourceCidrs']:
     n=ipaddress.ip_network(c)

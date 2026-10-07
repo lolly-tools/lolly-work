@@ -55,12 +55,13 @@ locals {
     destination_port_start = tostring(var.ephemeral_port_range.start), destination_port_end = tostring(var.ephemeral_port_range.end),
     comment                = "HTTP response packets; host connection tracking required"
   }]])
+  dns_response_port_range = coalesce(var.dns_response_port_range, var.ephemeral_port_range)
   dns_response_rules = flatten([for network in sort(tolist(var.dns_resolver_cidrs)) : [for protocol in ["tcp", "udp"] : {
     action                 = "accept", direction = "in", protocol = protocol,
     family                 = strcontains(network, ":") ? "IPv6" : "IPv4",
     source_address_start   = cidrhost(network, 0), source_address_end = cidrhost(network, 0),
     source_port_start      = "53", source_port_end = "53",
-    destination_port_start = tostring(var.ephemeral_port_range.start), destination_port_end = tostring(var.ephemeral_port_range.end),
+    destination_port_start = tostring(local.dns_response_port_range.start), destination_port_end = tostring(local.dns_response_port_range.end),
     comment                = "Exact DNS resolver responses; host connection tracking required"
   }]])
   ntp_response_rules = [for network in sort(tolist(var.ntp_server_cidrs)) : {

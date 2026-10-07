@@ -98,6 +98,16 @@ variable "dns_resolver_cidrs" {
   }
 }
 
+variable "dns_response_port_range" {
+  description = "Optional separately reviewed DNS reply destination range for randomized pod SNAT. Only TCP/UDP source port 53 from dns_resolver_cidrs uses it; null preserves ephemeral_port_range. Requires a stateful host firewall."
+  type        = object({ start = number, end = number })
+  default     = null
+  validation {
+    condition     = var.dns_response_port_range == null ? true : var.dns_response_port_range.start >= 1024 && var.dns_response_port_range.end <= 65535 && var.dns_response_port_range.start <= var.dns_response_port_range.end && floor(var.dns_response_port_range.start) == var.dns_response_port_range.start && floor(var.dns_response_port_range.end) == var.dns_response_port_range.end
+    error_message = "Use an explicitly reviewed integer DNS return range between 1024 and 65535; trusted resolver source port 53 and stateful host rejection of unsolicited packets remain required."
+  }
+}
+
 variable "ntp_server_cidrs" {
   description = "Optional measured time server addresses, each an exact /32 or /128; qualify the client's actual UDP response destination separately."
   type        = set(string)
