@@ -2104,6 +2104,10 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       const { rowCount } = await pool.query('delete from project_files where id = $1', [id]);
       return (rowCount ?? 0) > 0;
     },
+    async renameProjectFile(projectId, id, name) {
+      const { rowCount } = await pool.query('update project_files set name = $3 where project_id = $1 and id = $2 and ready = true', [projectId, id, name]);
+      return (rowCount ?? 0) === 1;
+    },
     async listSessionsUsingProjectFile(projectId, fileId) {
       // The match runs in the database, so no session document leaves it.
       const { rows } = await pool.query(
