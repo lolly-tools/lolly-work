@@ -170,6 +170,8 @@ const backgroundPollMs = parseBackgroundPollMs(process.env.LW_BACKGROUND_POLL_MS
 if (backgroundPollMs !== undefined) console.log(`[lolly-work] background poll ${backgroundPollMs === 0 ? 'off (work runs on submission)' : `every ${backgroundPollMs} ms`}`);
 let renderRunner: RenderRunner | undefined;
 const app = buildApp({ config, store, secrets, blobs, listCollabRooms: () => collab.snapshot(), projectPresence: id => collab.projectPresence(id), nearby, agentRooms: collab.agents,
+  // A saved comment write tells the people in that session's live room (plan 76 M4).
+  roomEvents: (id, frame) => collab.notifyComment(id, frame),
   onRenderRunner: (runner) => { renderRunner = runner; },
   ...(backgroundPollMs !== undefined ? { backgroundPollMs } : {}),
 });

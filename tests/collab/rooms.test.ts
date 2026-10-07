@@ -26,7 +26,7 @@ import type { CanvasOp } from '@lolly-tools/core/canvas-op-v1';
 import type { SessionRecord } from '../../server/src/store/types.ts';
 import {
   MAX_BOXES_PER_COLLECTION, MAX_COLLECTIONS_PER_ROOM, MAX_PARAMS_PER_ROOM, MAX_TRACKED_CLIENTS,
-  Room, RoomRegistry, type RoomMember, type ServerFrame,
+  Room, RoomRegistry, type CommentEventFrame, type RoomMember, type ServerFrame,
 } from '../../server/src/collab/rooms.ts';
 
 const now = new Date().toISOString();
@@ -201,4 +201,92 @@ test('seeded row identity is a collection key, not a mutable field', async () =>
   assert.equal(Object.hasOwn(row, 'id'), false);
   assert.equal(row.x, 10);
   assert.equal(row.label, 'kept');
+});
+
+// ── live comment events (plan 76 M4, S-9) ─────────────────────────────────────
+
+const commenter = (id: string, extra: Partial<RoomMember> = {}): RoomMember & { sent: ServerFrame[] } =>
+  Object.assign(seatOf(id), { commentView: true }, extra);
+const commentFrames = (seat: { sent: ServerFrame[] }) => seat.sent.filter((f) => f.t === 'comment');
+
+test('RoomRegistry.peek returns only an open room and never opens or keeps one', async () => {
+  const registry = new RoomRegistry(undefined, 1_000);
+  assert.equal(registry.peek('ses_caps'), undefined, 'nothing is open yet');
+  assert.equal(registry.size(), 0, 'and asking did not open a room');
+
+  const room = await registry.acquire(sessionOf());
+  assert.equal(registry.peek('ses_caps'), room);
+  assert.equal(registry.peek('ses_other'), undefined);
+
+  // `acquire` resets the empty-room clock; `peek` must not, or telling a room
+  // about a comment would keep an empty room (and its unwritten document) alive.
+  await registry.sweep(0);
+  assert.equal(registry.peek('ses_caps'), room);
+  assert.deepEqual(await registry.sweep(1_000), [room], 'the empty room is still swept on time');
+  assert.equal(registry.peek('ses_caps'), undefined, 'a disposed room is not returned');
+});
+
+test('a comment event reaches only people admitted with commentView, never guest or agent seats', async () => {
+  const room = await Room.open(sessionOf());
+  const reader = commenter('reader');
+  const observer = commenter('observer', { role: 'observer' });
+  const denied = commenter('denied', { commentView: false });
+  const unset = seatOf('unset');
+  const guest = commenter('guest', { guestLinkId: 'lnk_guest' });
+  const agent = commenter('agent', { agentId: 'agt_helper' });
+  for (const seat of [reader, observer, denied, unset, guest, agent]) room.join(seat);
+
+  assert.equal(room.notifyComment({ t: 'comment', threadId: 'th_1', revision: 3 }), 2);
+  for (const seat of [reader, observer]) {
+    assert.deepEqual(commentFrames(seat), [{ t: 'comment', threadId: 'th_1', revision: 3 }]);
+  }
+  for (const seat of [denied, unset, guest, agent]) {
+    assert.deepEqual(commentFrames(seat), [], `${seat.id} receives no comment frame`);
+  }
+});
+
+test('a comment frame carries the thread id and revision only, whatever the caller passes', async () => {
+  const room = await Room.open(sessionOf());
+  const reader = commenter('reader');
+  room.join(reader);
+  // Extra fields cannot ride along: the room rebuilds the frame from its two fields.
+  const noisy = { t: 'comment' as const, threadId: 'th_2', revision: 1, body: 'Please fix the logo', authorName: 'Ana', email: 'ana@corp' };
+  assert.equal(room.notifyComment(noisy), 1);
+  const [frame] = commentFrames(reader);
+  assert.deepEqual(frame, { t: 'comment', threadId: 'th_2', revision: 1 });
+  assert.deepEqual(Object.keys(frame ?? {}).sort(), ['revision', 't', 'threadId']);
+});
+
+test('an invalid thread id or revision sends nothing', async () => {
+  const room = await Room.open(sessionOf());
+  const reader = commenter('reader');
+  room.join(reader);
+  const invalid = [
+    { threadId: '', revision: 1 }, { threadId: 'has space', revision: 1 }, { threadId: 'x'.repeat(81), revision: 1 },
+    { threadId: '../th', revision: 1 }, { threadId: 'th_3', revision: 0 }, { threadId: 'th_3', revision: -1 },
+    { threadId: 'th_3', revision: 1.5 }, { threadId: 'th_3', revision: Number.NaN }, { threadId: 'th_3', revision: 2 ** 53 },
+  ];
+  for (const event of invalid) assert.equal(room.notifyComment({ t: 'comment', ...event }), 0, JSON.stringify(event));
+  // Untyped input, as a JSON body would arrive.
+  assert.equal(room.notifyComment(JSON.parse('{"t":"comment","threadId":42,"revision":"1"}') as CommentEventFrame), 0);
+  assert.deepEqual(commentFrames(reader), []);
+});
+
+test('commentView is read at send time; a departed seat and a closed room receive nothing', async () => {
+  const room = await Room.open(sessionOf());
+  const reader = commenter('reader');
+  const leaver = commenter('leaver');
+  room.join(reader);
+  room.join(leaver);
+  room.leave(leaver.id);
+
+  reader.commentView = false; // the gateway's re-check cleared it
+  assert.equal(room.notifyComment({ t: 'comment', threadId: 'th_4', revision: 1 }), 0);
+  reader.commentView = true;
+  assert.equal(room.notifyComment({ t: 'comment', threadId: 'th_4', revision: 2 }), 1);
+  assert.deepEqual(commentFrames(reader), [{ t: 'comment', threadId: 'th_4', revision: 2 }]);
+  assert.deepEqual(commentFrames(leaver), []);
+
+  await room.quiesce();
+  assert.equal(room.notifyComment({ t: 'comment', threadId: 'th_4', revision: 3 }), 0, 'a closed room tells nobody');
 });
