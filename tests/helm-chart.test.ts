@@ -339,3 +339,39 @@ test('unused volume bounds do not change the light topology', { skip: noHelm }, 
   assert.equal(deployment(r.out, true), undefined);
   assert.equal(deployment(r.out).spec.template.spec.initContainers, undefined);
 });
+
+test('PostgreSQL CA reaches application and migration Job without reaching the browser worker', { skip: noHelm }, () => {
+  const volumes = [{ name: 'postgres-ca', configMap: { name: 'lolly-postgres-ca' } }];
+  const mounts = [{ name: 'postgres-ca', mountPath: '/etc/lolly/postgres', readOnly: true }];
+  const r = render([...SECRETS, ...WORKER,
+    '--set-json', `extraVolumes=${JSON.stringify(volumes)}`,
+    '--set-json', `extraVolumeMounts=${JSON.stringify(mounts)}`,
+    '--set-json', `migrate.extraVolumes=${JSON.stringify(volumes)}`,
+    '--set-json', `migrate.extraVolumeMounts=${JSON.stringify(mounts)}`,
+  ]);
+  assert.ok(r.ok, r.err);
+  const job = manifests(r.out).find(doc => doc?.kind === 'Job');
+  for (const pod of [deployment(r.out).spec.template.spec, job.spec.template.spec]) {
+    assert.deepEqual(pod.volumes.find((volume: { name: string }) => volume.name === 'postgres-ca'), volumes[0]);
+    assert.deepEqual(pod.containers[0].volumeMounts.find((mount: { name: string }) => mount.name === 'postgres-ca'), mounts[0]);
+    assert.ok(pod.volumes.some((volume: { name: string }) => volume.name === 'tmp'), 'scratch remains available');
+    assert.ok(pod.containers[0].env.some((env: { name: string }) => env.name === 'DATABASE_URL' && 'valueFrom' in env));
+  }
+  const browser = deployment(r.out, true).spec.template.spec;
+  assert.ok(!browser.volumes.some((volume: { name: string }) => volume.name === 'postgres-ca'));
+  assert.ok(!browser.containers[0].env.some((env: { name: string }) => env.name === 'DATABASE_URL'));
+});
+
+test('migration-specific mounts are opt-in and evaluation never creates a migration Job', { skip: noHelm }, () => {
+  const defaults = render(SECRETS);
+  assert.ok(defaults.ok, defaults.err);
+  const pod = manifests(defaults.out).find(doc => doc?.kind === 'Job').spec.template.spec;
+  assert.deepEqual(pod.volumes, [{ name: 'tmp', emptyDir: {} }]);
+  assert.deepEqual(pod.containers[0].volumeMounts, [{ name: 'tmp', mountPath: '/tmp' }]);
+  const evalProfile = render(['-f', `${CHART}/values-eval.yaml`,
+    '--set-json', 'migrate.extraVolumes=[{"name":"postgres-ca","configMap":{"name":"ca"}}]',
+    '--set-json', 'migrate.extraVolumeMounts=[{"name":"postgres-ca","mountPath":"/etc/lolly/postgres","readOnly":true}]',
+  ]);
+  assert.ok(evalProfile.ok, evalProfile.err);
+  assert.ok(!manifests(evalProfile.out).some(doc => doc?.kind === 'Job'));
+});

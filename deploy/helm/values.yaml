@@ -319,6 +319,11 @@ migrate:
   resources:
     requests: { cpu: 50m, memory: 128Mi }
     limits: { cpu: "1", memory: 512Mi }
+  # Job-only trusted material, such as a PostgreSQL CA ConfigMap. Mount the
+  # same CA path on the application with top-level extraVolumes/Mounts.
+  # These do not reach the browser worker or inherit private shell/pack mounts.
+  extraVolumes: []
+  extraVolumeMounts: []
 
 # ── Pack (brand catalog assets) ─────────────────────────────────────────────
 # The instance serves its catalog from a "pack" on disk (config.instance.pack,
