@@ -186,3 +186,20 @@ test('the ext byte cache keeps items under the limits and drops the least recent
   off.put('a', { bytes: Buffer.from('a'), contentType: 'x' });
   assert.equal(off.get('a'), undefined, 'maxBytes 0 turns the cache off');
 });
+
+test('hiding a tag is an input: the next read recomposes without it, and showing it again brings it back', async () => {
+  const clock = Date.parse('2026-06-01T00:00:00.000Z');
+  const { store, served } = await setup(() => clock);
+  const before = await served.forCaller({ groups: ['design'] });
+  const tagOf = (index: typeof before.index) => (index.assets ?? []).flatMap((e) => (e.tags as string[] | undefined) ?? []).find((t) => !t.startsWith('provider:'));
+  const tag = tagOf(before.index);
+  assert.ok(tag, 'the mock DAM carries tags');
+  await store.putCatalogTagRule({ scope: '*', hidden: [tag!] });
+  const hidden = await served.forCaller({ groups: ['design'] });
+  assert.equal(served.compositions(), 2, 'a tag rule moves the fingerprint');
+  assert.notEqual(hidden.etag, before.etag);
+  assert.ok(!(hidden.index.assets ?? []).some((e) => ((e.tags as string[] | undefined) ?? []).some((t) => t.toLowerCase() === tag!.toLowerCase())), 'the tag is gone from every entry');
+  await store.deleteCatalogTagRule('*');
+  const shown = await served.forCaller({ groups: ['design'] });
+  assert.equal(shown.etag, before.etag, 'the same feed as before the rule');
+});
