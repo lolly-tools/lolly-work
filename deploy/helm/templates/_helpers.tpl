@@ -229,6 +229,9 @@ Guardrail: in Mode A (no existingSecret, no database.existingSecret) the two
 required signing secrets must be provided, or the deploy is silently insecure.
 */}}
 {{- define "lolly-work.validate" -}}
+{{- if hasKey .Values.podLabels "app.kubernetes.io/component" -}}
+{{- fail "podLabels.app.kubernetes.io/component is reserved for control-plane and worker traffic isolation." -}}
+{{- end -}}
 {{- if ne (int .Values.replicaCount) 1 -}}
 {{- fail "The combined collab deployment requires replicaCount=1 until room routing is supported." -}}
 {{- end -}}

@@ -50,6 +50,15 @@ The optional worker is limited to one concurrent browser render, one replica,
 shell location. Worker `nodeSelector`, `tolerations`, `affinity` and
 `topologySpreadConstraints` allow placement on separate capacity later.
 
+The Work Service selects only pods with `app.kubernetes.io/component: control-plane`.
+Worker and migration pods keep separate component labels and cannot receive member
+traffic through that Service. This component label is reserved. Existing Deployment
+selectors remain unchanged because Kubernetes makes them immutable; when a worker
+is enabled, `kubectl exec deployment/<release>` can still choose its pod. Select
+the exact application pod using both `app.kubernetes.io/instance=<release>` and
+`app.kubernetes.io/component=control-plane`, then execute against that pod name.
+Upgrades still use the existing `Recreate` drain and need a maintenance window.
+
 When worker network policy is enabled, DNS trust is limited to both the configured
 namespace labels (default `kube-system`) and pod labels (default `kube-dns`). The
 small profile limits public egress to HTTPS on port 443. Base values also permit

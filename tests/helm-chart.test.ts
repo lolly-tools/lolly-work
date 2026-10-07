@@ -46,6 +46,23 @@ const deployment = (out: string, worker = false) => manifests(out).find(doc =>
   doc?.kind === 'Deployment' && (doc.metadata.labels?.['app.kubernetes.io/component'] === 'render-worker') === worker);
 const SMALL = ['-f', `${CHART}/values-small-suse.yaml`];
 
+test('control-plane Service never selects render workers or migration pods and keeps upgrade selectors stable', { skip: noHelm }, () => {
+  const r = render([...SECRETS, ...WORKER]); assert.ok(r.ok, r.err);
+  const docs = manifests(r.out), app = deployment(r.out), worker = deployment(r.out, true);
+  const service = docs.find(d => d.kind === 'Service' && d.metadata.labels?.['app.kubernetes.io/component'] !== 'render-worker');
+  const job = docs.find(d => d.kind === 'Job');
+  const matches = (labels: Record<string, string>) => Object.entries(service.spec.selector)
+    .every(([key, value]) => labels[key] === value);
+  assert.ok(matches(app.spec.template.metadata.labels));
+  assert.ok(!matches(worker.spec.template.metadata.labels), 'member traffic must not reach the browser worker');
+  assert.ok(!matches(job.spec.template.metadata.labels), 'migration pods are not application endpoints');
+  assert.equal(app.spec.selector.matchLabels['app.kubernetes.io/component'], undefined,
+    'existing Deployment immutable selectors stay upgrade-compatible');
+  const override = render([...SECRETS, '--set-json', 'podLabels={"app.kubernetes.io/component":"render-worker"}']);
+  assert.equal(override.ok, false);
+  assert.match(override.err, /component is reserved/);
+});
+
 test('chart lints clean', { skip: noHelm }, () => {
   const r = spawnSync('helm', ['lint', CHART], { encoding: 'utf8' });
   assert.equal(r.status, 0, r.stdout + r.stderr);
