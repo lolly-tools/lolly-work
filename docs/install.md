@@ -29,9 +29,10 @@ persona (admin / brand-lead / marketer / contractor), the governed admin console
 `/admin`, and live tool renders over a plain GET (`/render/qr-code.svg?url=...`). State is
 in-memory and resets on redeploy; it holds nothing real.
 
-> The demo is hosted on Vercel today purely for convenience; it is **not** the deployment
-> model and will move to a **European sovereign cloud** (likely Evroc). For a real
-> deployment, especially a sovereign one, you self-host: see section 7 and
+> The demo runs on **UpCloud in Frankfurt**, using openSUSE Leap and K3s, in an
+> isolated evaluation namespace. Its personas, assets and room activity are sample
+> data; private workspaces use separate storage, identity and real collaboration.
+> For your own instance on UpCloud, evroc or another cloud, see section 7 and
 > [deployment](deployment.md).
 
 ## Prerequisites

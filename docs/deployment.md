@@ -22,10 +22,11 @@ is fenced. That host is retained for SSH access and verified HTTPS forwarding
 to the current host. Do not replay its Compose, Neon or Vercel rollback commands,
 restore its database access, or point production DNS at those old targets.
 
-The **lolly.work** evaluation demo is a separate migration. Its automatic
-Vercel deployment from this repository's CI has been retired; its UpCloud
-replacement must pass acceptance before its DNS changes. Optional generic
-Vercel adapters remain qualified in CI for operators who choose that target.
+The **lolly.work** evaluation demo also runs on that UpCloud host, in its own
+namespace with ephemeral sample data, separate keys and network isolation from
+private workspaces. Its automatic Vercel deployment from this repository's CI has
+been retired. Optional generic Vercel adapters remain qualified in CI for
+operators who choose that target.
 
 | Shape | Where used | Schema owner | Pack / shell |
 |---|---|---|---|
@@ -348,7 +349,9 @@ bundled into the function, so Tier-A (SVG + resvg PNG) renders in-process. What'
 absent: no large real pack mount, no Chromium (Tier-B jpg/pdf), the 1.9 GB Lolly
 web shell is not served (the demo landing at `/` stands in), and **no real WebSocket collab**
 (the Rooms panel shows mock rooms; live editing is the sovereign Helm deploy's ws gateway - 
-see `deploy/vercel/WS-SPIKE.md`). Live at **lolly.work**; runbook: `deploy/vercel/README.md`.
+see `deploy/vercel/WS-SPIKE.md`). This adapter is optional; the hosted **lolly.work**
+evaluation now uses the isolated UpCloud/K3s workload described above. Adapter
+runbook: `deploy/vercel/README.md`.
 
 ## Verifying the images
 
