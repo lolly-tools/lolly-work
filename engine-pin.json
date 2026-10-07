@@ -1,11 +1,11 @@
 {
-  "generatedFrom": "f6096cd05c73bca024b0e32cc3221f120d9a0c22",
+  "generatedFrom": "abc9c4d1bc6e5020a5e572f72c27a35c1e02a318",
   "note": "Pin manifest - a consumer verifies vendored content against contentHash. tarballSha256 is informational (gzip is not reproducible).",
   "core": {
     "version": "1.0.0",
     "tarball": "lolly-tools-core-1.0.0.tgz",
-    "tarballSha256": "ec77710d28b9d46044310526afe30c22ba8aede944c3ebf13e161309dd89d83b",
-    "contentHash": "85b5c52d7d901464ddcbbae6bc61e2e3820b0f38d58e0a6a9c096633f12a5f40"
+    "tarballSha256": "0aad1483ced698a2b3e4bd5bda236aae61cb79a646c605ec6e5e8b9d6f9b3227",
+    "contentHash": "dc039b8ac34a7828bbad49c6a5cf5cb15cba43ab547fad92984a9c9b64408c52"
   },
   "engine": {
     "version": "1.244.0",
@@ -20,7 +20,7 @@
     "brand-system-v1.schema.json": "19f653283b83e99ecdc4ea98014828dcb5e660633f86cb0772387a02d89378ca",
     "canonical-aliases.json": "3b008b3d5c2936cd68246d736b0de877e98d5a37939645928ef55380aff7cc29",
     "canonical-inputs.json": "8747d7dea7721ae0a6a0fce9e58ce188dd86faab94c44a15304fc70042095e22",
-    "canvas-op.schema.json": "1064a68336522ef3eb33bd11f02e3672e1d9604e1da1da4de64015805e14f3cf",
+    "canvas-op.schema.json": "c9cfbdd56a0e6c1dd81ddebe5ac7b9e4fc8ce5a789c708123b069b523eb15e60",
     "chart-v1.schema.json": "7bc73ce09be779f9ba04ad7c2a0f872f5c663dc39558c81a74bf8295b272e822",
     "check-report-v1.schema.json": "907111ca5c75d11b72e90c087e884a9ca2312e526125b9db1953641a0c341561",
     "content-inventory-v1.schema.json": "fc6e0a75509e4c6fb6b3709be65fb600528b7e3064ad6be25e21246879b349c6",
