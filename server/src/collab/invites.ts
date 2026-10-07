@@ -52,7 +52,7 @@
  * rules are testable as data → data, and neither can quietly grow a query.
  */
 import { sha256Hex } from '../lib/crypto.ts';
-import { displayName } from '../iam/member.ts';
+import { nameWithoutEmail } from '../projects/sharing.ts';
 import { isProjectMember, type ProjectMembership } from '../rbac/project-access.ts';
 import { mayJoinCollab, type Grant, type Role } from '../rbac/evaluate.ts';
 import type { Message } from '../inbox/target.ts';
@@ -70,7 +70,9 @@ export const MAX_QUERY_CHARS = 64;
 
 /** What the autocomplete returns per person: an id to invite and a name to show.
  *  No email - matching the approver search's disclosure exactly. Being invitable
- *  is not a reason to hand a colleague's address to whoever typed two letters. */
+ *  is not a reason to hand a colleague's address to whoever typed two letters.
+ *  The name is `nameWithoutEmail` (projects/sharing.ts), which never falls back
+ *  to the address: `displayName` does, and stays on manager-only surfaces. */
 export interface Invitee {
   id: string;
   name: string;
@@ -141,14 +143,19 @@ export function eligibleInvitees(opts: {
   callerId: string;
   q?: string;
   limit?: number;
+  /** A further test each person must pass, applied before the cap so
+   *  `truncated` stays true to what the caller may see (the comment people
+   *  list passes the comment read rule here). */
+  include?: (u: UserRecord) => boolean;
 }): { invitees: Invitee[]; truncated: boolean } {
   const q = normalizeQuery(opts.q);
   const limit = Math.max(1, Math.min(opts.limit ?? INVITEE_LIMIT, INVITEE_LIMIT));
   const byUser = new Map((opts.memberships ?? []).filter((m) => m.projectId === opts.project.id).map((m) => [m.userId, m]));
   const matched = opts.users
     .filter((u) => u.id !== opts.callerId
-      && mayJoinSession(u, opts.project, opts.grants, byUser.get(u.id) ?? null))
-    .map((u) => ({ id: u.id, name: displayName(u) }))
+      && mayJoinSession(u, opts.project, opts.grants, byUser.get(u.id) ?? null)
+      && (opts.include ? opts.include(u) : true))
+    .map((u) => ({ id: u.id, name: nameWithoutEmail(u) }))
     .filter((row) => matchesQuery(row.name, q))
     .sort((a, b) => (a.name.toLowerCase() < b.name.toLowerCase() ? -1
       : a.name.toLowerCase() > b.name.toLowerCase() ? 1

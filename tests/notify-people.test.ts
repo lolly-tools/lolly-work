@@ -2,7 +2,7 @@
  * The people-notice seam (plans/74 invite spec 2.10, decision D5): every
  * notice reaches the inbox; nothing is emailed until email is switched on
  * and the sender can confirm delivery, so no result ever claims a mail that
- * was not sent.
+ * was not sent. Comment mentions use the same seam (plan 76 milestone 4).
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -10,6 +10,7 @@ import { parseConfig } from '../server/src/config/instance.ts';
 import type { Message } from '../server/src/inbox/target.ts';
 import { createNotifier, type Notifier } from '../server/src/notify/notify.ts';
 import { createPeopleNotifier } from '../server/src/notify/people.ts';
+import { createActorCap, mentionMailParts, recordCommentNotices } from '../server/src/comments/notices.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
 
 const config = (notify: unknown = undefined) => parseConfig(JSON.stringify({
@@ -105,4 +106,72 @@ test('mail reports what the relay said, never more', async () => {
   assert.equal(await createPeopleNotifier({ store, config: on, notifier: confirming(false).n }).mail('sam@example.com', { subject: 's', text: 't' }, 'join-approved'), 'failed');
   assert.equal(await createPeopleNotifier({ store, config: on, notifier: confirming(new Error('relay down')).n }).mail('sam@example.com', { subject: 's', text: 't' }, 'join-approved'), 'failed');
   assert.equal(await createPeopleNotifier({ store, config: on, notifier: ok.n }).mail('not-an-address', { subject: 's', text: 't' }, 'join-approved'), 'failed');
+});
+
+// ── Comment mentions (plan 76 milestone 4, S-7) ─────────────────────────────
+// A mention may be mailed to the person's verified address once email is on.
+// The mail never carries the comment text, and names the document only when
+// the operator opts in with policy.comments.emailTitles.
+
+test('mailUser answers off while email is off, and mails only a verified, enabled account', async () => {
+  const store = createMemoryStore();
+  const at = new Date().toISOString();
+  const vera = await store.upsertUserBySub({ sub: 'v', email: 'vera@example.com', groups: [], role: 'member' });
+  await store.linkIdentity({ identitySub: 'gh:v', userId: vera.id, idp: 'gh', email: 'vera@example.com', emailVerified: true, linkedAt: at });
+  const una = await store.upsertUserBySub({ sub: 'u', email: 'una@example.com', groups: [], role: 'member' });
+  const off = createPeopleNotifier({ store, config: config({ smtp: SMTP }), notifier: confirming().n });
+  assert.equal(await off.mailUser(vera.id, { subject: 's', text: 't' }, 'mention'), 'off', 'no SMTP switched on, no mail');
+  const { n, sent } = confirming();
+  const on = createPeopleNotifier({ store, config: config({ smtp: SMTP, people: { email: true } }), notifier: n });
+  assert.equal(await on.mailUser(vera.id, { subject: 'Ana mentioned you on lolly.ing', text: 't' }, 'mention'), 'sent');
+  assert.equal(await on.mailUser(una.id, { subject: 's', text: 't' }, 'mention'), 'failed', 'no verified address');
+  assert.equal(await on.mailUser('usr_gone', { subject: 's', text: 't' }, 'mention'), 'failed');
+  await store.setUserDisabled(vera.id, at);
+  assert.equal(await on.mailUser(vera.id, { subject: 's', text: 't' }, 'mention'), 'failed', 'a disabled account is not mailed');
+  assert.deepEqual(sent.map((m) => m.to), ['vera@example.com']);
+});
+
+test('mention mail: no comment text ever, and the document title only with emailTitles', async () => {
+  const plain = mentionMailParts({ actorName: 'Ana', instance: 'lolly.ing', url: 'https://lolly.ing/#/team/s?thread=t', label: 'Spring poster', emailTitles: false });
+  assert.deepEqual(plain, { subject: 'Ana mentioned you on lolly.ing', text: 'Ana mentioned you on lolly.ing.\n\nOpen the thread: https://lolly.ing/#/team/s?thread=t\n' });
+  const titled = mentionMailParts({ actorName: 'Ana', instance: 'lolly.ing', url: 'u', label: 'Spring poster', emailTitles: true });
+  assert.equal(titled.subject, 'Ana mentioned you in Spring poster');
+  assert.equal(titled.text, 'Ana mentioned you in Spring poster on lolly.ing.\n\nOpen the thread: u\n');
+
+  // End to end through the notice writer, with email on and a relay that confirms.
+  const secret = 'the launch date is the ninth';
+  for (const emailTitles of [false, true]) {
+    const store = createMemoryStore();
+    const now = new Date().toISOString();
+    const ana = await store.upsertUserBySub({ sub: 'a', email: 'ana@example.com', firstname: 'Ana', groups: [], role: 'member' });
+    const ben = await store.upsertUserBySub({ sub: 'b', email: 'ben@example.com', firstname: 'Ben', groups: [], role: 'member' });
+    await store.linkIdentity({ identitySub: 'gh:b', userId: ben.id, idp: 'gh', email: 'ben@example.com', emailVerified: true, linkedAt: now });
+    await store.putProject({ id: 'p', ownerId: ana.id, name: 'P', visibility: 'private', createdAt: now, updatedAt: now });
+    await store.putProjectMember({ projectId: 'p', userId: ben.id, role: 'editor', addedBy: ana.id, addedAt: now });
+    await store.putSession({ id: 's', projectId: 'p', toolId: 'design', toolVersion: '1', inputs: {}, meta: { label: 'Spring poster' }, createdBy: ana.id, updatedBy: ana.id, rev: 1, updatedAt: now });
+    const cfg = parseConfig(JSON.stringify({ instance: { name: 'lolly.ing', baseUrl: 'https://lolly.ing' },
+      policy: { defaultAccessMode: 'open', comments: { enabled: true, emailTitles } }, notify: { smtp: SMTP, people: { email: true } } }));
+    const mails: Array<{ subject: string; text: string }> = [];
+    const notifier: Notifier & { emailNow(to: string, subject: string, text: string): Promise<boolean> } = {
+      email() { throw new Error('never send and forget'); }, event() {}, async idle() {},
+      async emailNow(_to, subject, text) { mails.push({ subject, text }); return true; },
+    };
+    const people = createPeopleNotifier({ store, config: cfg, notifier });
+    const message = { id: 'm1', authorId: ana.id, authorName: 'Ana', body: `@Ben ${secret}`, createdAt: now, mentions: [{ id: ben.id, name: 'Ben' }] };
+    const thread = { id: 't', sessionId: 's', anchor: { kind: 'canvas' as const, surface: 'page', x: 0, y: 0 }, authorId: ana.id, authorName: 'Ana', revision: 1, createdAt: now, updatedAt: now, messages: [message] };
+    const deps = { store, config: cfg, people, cap: createActorCap(), audit: async () => undefined };
+    const session = (await store.getSession('s'))!, project = (await store.getProject('p'))!;
+    const result = await recordCommentNotices(deps, { session, project, thread, message, actor: ana, mentioned: [ben.id], kind: 'create' });
+    await result.mailed;
+    assert.equal(mails.length, 1);
+    assert.ok(!mails[0]!.subject.includes(secret) && !mails[0]!.text.includes(secret), 'the comment text never reaches a mail');
+    assert.equal(mails[0]!.text.includes('Spring poster'), emailTitles, `title in the mail only when emailTitles is ${emailTitles}`);
+    assert.match(mails[0]!.text, /Open the thread: https:\/\/lolly\.ing\/#\/team\/s\?thread=t\n$/);
+    // A reply by Ben tells Ana in the inbox, and is never mailed.
+    const reply = { id: 'm2', authorId: ben.id, authorName: 'Ben', body: 'ok', createdAt: now };
+    await store.linkIdentity({ identitySub: 'gh:a', userId: ana.id, idp: 'gh', email: 'ana@example.com', emailVerified: true, linkedAt: now });
+    await (await recordCommentNotices(deps, { session, project, thread: { ...thread, revision: 2, messages: [message, reply] }, message: reply, actor: ben, mentioned: [], kind: 'reply' })).mailed;
+    assert.equal(mails.length, 1, 'replies are not emailed');
+    assert.equal((await store.listCommentNotices(ana.id)).length, 1);
+  }
 });

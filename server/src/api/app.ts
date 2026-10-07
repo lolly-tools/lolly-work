@@ -218,6 +218,11 @@ function pinnedEngineVersion(): string | null {
 
 export interface AppDeps {
   agentRooms?: AgentRoomBridge;
+  /** Live comment events (plan 76 M4): main.ts wires `(id, f) => collab.notifyComment(id, f)`
+   *  so peers in the session's room fetch only the changed thread. A plain function,
+   *  like `agentRooms`, so this module never imports the gateway; undefined on Vercel,
+   *  where GET comments then reports `features.events: false`. */
+  roomEvents?: (sessionId: string, frame: { t: 'comment'; threadId: string; revision: number }) => void;
   config: InstanceConfig;
   store: Store;
   secrets: Secrets;
@@ -8573,7 +8578,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     return { session, project, access };
   };
 
-  registerCommentRoutes(router, { config, store, memberOf, audit, sessionFor: collabSessionFor });
+  registerCommentRoutes(router, { config, store, memberOf, audit, sessionFor: collabSessionFor, people, roomEvents: deps.roomEvents });
 
   // Invite autocomplete. Read-access only - an OBSERVER may look up who else
   // could watch, which is the same disclosure they already get from the room's
