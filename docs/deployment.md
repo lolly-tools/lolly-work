@@ -162,8 +162,20 @@ Things to know before you install:
   you pin, the dist can't silently age in a PVC.
 - **`renderWorker.enabled` defaults to `false`** - hooked/HTML-heavy tools `501` until the
   worker exists. When you enable it, also set `config.render.worker.url` to the worker
-  Service and `renderWorker.webBase` to a served web shell, and prefer a sandboxed
+  Service and `renderWorker.webBase` to the canonical HTTPS web shell with trusted
+  TLS, and prefer a sandboxed
   `runtimeClassName` (gVisor/Kata) - that tier renders the least-trusted content.
+  The browser needs a [secure context](https://www.w3.org/TR/secure-contexts/)
+  for Web Crypto. A HTTP cluster Service URL is suitable for the HMAC worker API,
+  but fails as the browser's shell base. HTTP shell bases are accepted only for
+  explicit `localhost`, `127.0.0.1` or `[::1]` development. Provide a URL without
+  credentials, query strings or fragments; an optional base path is supported.
+  Keep certificate validation enabled and arrange certificate renewal at the edge.
+  For a public HTTPS origin, allow DNS and public TCP 443 egress. A private HTTPS
+  edge needs both a declared origin and a narrowly scoped egress rule for its real
+  address and port. Verify a complete authenticated Work render, poll its durable
+  status and compare the downloaded output's size and SHA-256; a direct raster
+  request or healthy worker probe does not exercise shell export or read tickets.
 - **Behind an ingress, set `config.rateLimit.trustedProxyHops: 1`**, or per-IP limits see
   only the ingress IP.
 

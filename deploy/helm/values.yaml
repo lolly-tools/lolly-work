@@ -196,15 +196,18 @@ secrets:
 # hooked tools 501 until it's enabled. When enabled, ALSO set
 # config.render.worker.url (above) to this service — e.g.
 #   http://RELEASE-lolly-work-render-worker:8791
-# and point renderWorker.webBase at a served Lolly web shell (the OSS web
-# deployment) that the worker drives.
+# and point renderWorker.webBase at the canonical HTTPS Lolly web shell that
+# the worker drives. The browser page needs a secure context for Web Crypto.
 renderWorker:
   enabled: false
   # Shared HMAC key — MUST match config.render.worker on the app side; the chart
   # puts it in the same Secret so both the app and the worker read it. When empty
   # AND renderWorker.enabled, a guardrail fails the render (openssl rand -hex 32).
   secret: ""
-  # The web shell the worker drives (LOLLY_WEB_BASE). Required when enabled.
+  # Required when enabled: canonical HTTPS shell URL with trusted TLS.
+  # HTTP is accepted only for localhost/127.0.0.1/[::1] development, not cluster
+  # Service URLs. This is separate from the private HMAC worker API above.
+  # No credentials, query string or fragment; an optional base path is supported.
   webBase: ""
   # What a rendered page may reach (plans/58 WP0): the shell above, these origins, and
   # otherwise public addresses only. List an origin here only when a tool must reach it
