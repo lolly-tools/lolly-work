@@ -29,8 +29,11 @@ test('task navigation and its mobile picker expose only permitted sections; sear
     search.value = 'assets'; search.dispatchEvent(new p.w.Event('input'));
     assert.equal(nav.querySelector('a[href="#/users"]').hidden, true);
     assert.equal(nav.querySelector('a[href="#/providers"]').hidden, false, 'a task-group name also matches its sections');
+    const navigated = new Promise<void>(resolve => {
+      p.w.addEventListener('hashchange', () => resolve(), { once: true });
+    });
     search.dispatchEvent(new p.w.KeyboardEvent('keydown', { key: 'Enter' }));
-    await new Promise(resolve => setTimeout(resolve, 5));
+    await navigated;
     assert.equal(p.w.location.hash, '#/providers');
     search.value = 'no such section'; search.dispatchEvent(new p.w.Event('input'));
     assert.equal(nav.querySelector('.nav-empty').hidden, false);
