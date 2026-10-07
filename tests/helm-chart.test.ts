@@ -375,3 +375,35 @@ test('migration-specific mounts are opt-in and evaluation never creates a migrat
   assert.ok(evalProfile.ok, evalProfile.err);
   assert.ok(!manifests(evalProfile.out).some(doc => doc?.kind === 'Job'));
 });
+
+test('fresh-install migration hooks use an existing account and keep cleanup ordering independent of the app account', { skip: noHelm }, () => {
+  const r = render(SECRETS);
+  assert.ok(r.ok, r.err);
+  const docs = manifests(r.out);
+  const job = docs.find(doc => doc?.kind === 'Job');
+  const app = deployment(r.out).spec.template.spec;
+  const account = docs.find(doc => doc?.kind === 'ServiceAccount');
+  assert.equal(job.spec.template.spec.serviceAccountName, 'default');
+  assert.equal(app.serviceAccountName, account.metadata.name);
+  assert.notEqual(job.spec.template.spec.serviceAccountName, app.serviceAccountName,
+    'the pre-install hook cannot wait for an ordinary resource Helm creates after hooks');
+  assert.equal(job.spec.template.spec.automountServiceAccountToken, false);
+  assert.equal(job.metadata.annotations['helm.sh/hook'], 'pre-install,pre-upgrade');
+  assert.equal(job.metadata.annotations['helm.sh/hook-delete-policy'], 'before-hook-creation');
+  const secret = docs.find(doc => doc?.kind === 'Secret');
+  assert.ok(Number(secret.metadata.annotations['helm.sh/hook-weight']) < Number(job.metadata.annotations['helm.sh/hook-weight']));
+  assert.equal(docs.filter(doc => doc?.kind === 'ServiceAccount').length, 1,
+    'only the ordinary app account is managed; no orphan hook account');
+  assert.equal(account.metadata.annotations?.['helm.sh/hook'], undefined);
+
+  const reused = render([...SECRETS, '--set', 'serviceAccount.create=false', '--set', 'serviceAccount.name=precreated-work']);
+  assert.ok(reused.ok, reused.err);
+  assert.equal(manifests(reused.out).find(doc => doc?.kind === 'Job').spec.template.spec.serviceAccountName, 'precreated-work');
+  assert.equal(deployment(reused.out).spec.template.spec.serviceAccountName, 'precreated-work');
+  assert.ok(!manifests(reused.out).some(doc => doc?.kind === 'ServiceAccount'));
+
+  const separate = render([...SECRETS, '--set', 'migrate.serviceAccountName=precreated-migration']);
+  assert.ok(separate.ok, separate.err);
+  assert.equal(manifests(separate.out).find(doc => doc?.kind === 'Job').spec.template.spec.serviceAccountName, 'precreated-migration');
+  assert.equal(deployment(separate.out).spec.template.spec.serviceAccountName, app.serviceAccountName);
+});

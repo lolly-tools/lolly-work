@@ -310,6 +310,12 @@ c2pa:
 # skipped migrations fails loud instead of serving a half-migrated database.
 migrate:
   enabled: true
+  # Existing ServiceAccount for the pre-install/pre-upgrade Job. Empty uses the
+  # existing namespace default when the chart creates the app account later;
+  # with serviceAccount.create=false it reuses that operator-provided account.
+  # Migrations need no Kubernetes API privileges. Custom accounts must exist
+  # before installation, including any workload-identity annotations/bindings.
+  serviceAccountName: ""
   # Command the hook Job runs. Must apply pending migrations against DATABASE_URL.
   # Override if your image places the runner elsewhere (see the image note above).
   command: ["pnpm", "run", "migrate"]

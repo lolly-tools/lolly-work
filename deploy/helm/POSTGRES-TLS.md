@@ -32,3 +32,11 @@ The Job-only mount settings preserve the default migration command and scratch
 volume. They do not inherit private shell or pack mounts. The render worker
 receives neither the database URL nor the CA volume. Test the rendered objects
 and actual database TLS connection before promoting the instance.
+
+The pre-install migration Job uses an already-existing service account. By
+default it uses the namespace's `default` account while Helm later creates the
+application account. With `serviceAccount.create=false` it reuses the supplied
+account. Set `migrate.serviceAccountName` for a separate existing account with
+the required workload-identity annotations or bindings. Create that account
+before installation. No extra hook-owned account is created or left behind;
+the Job keeps token mounting disabled under the chart's default settings.

@@ -56,6 +56,17 @@ ServiceAccount name to use.
 {{- end }}
 {{- end }}
 
+{{/* A pre-install Job cannot depend on the app ServiceAccount created later. */}}
+{{- define "lolly-work.migrateServiceAccountName" -}}
+{{- if .Values.migrate.serviceAccountName }}
+{{- .Values.migrate.serviceAccountName }}
+{{- else if not .Values.serviceAccount.create }}
+{{- include "lolly-work.serviceAccountName" . }}
+{{- else }}
+{{- "default" }}
+{{- end }}
+{{- end }}
+
 {{/*
 Container image reference. A digest takes precedence over the optional tag.
 */}}

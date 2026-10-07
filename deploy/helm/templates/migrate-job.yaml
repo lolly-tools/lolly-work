@@ -35,7 +35,7 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      serviceAccountName: {{ include "lolly-work.serviceAccountName" . }}
+      serviceAccountName: {{ include "lolly-work.migrateServiceAccountName" . }}
       automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
