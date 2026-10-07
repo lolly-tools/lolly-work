@@ -36,6 +36,8 @@ metrics:
 
 serviceAccount:
   enabled: true
+  # The AppCo chart's empty name resolves to the namespace default account.
+  name: lolly-postgres
   automountServiceAccountToken: false
 
 persistence:

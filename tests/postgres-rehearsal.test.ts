@@ -132,7 +132,7 @@ test('AppCo image is pinned to PostgreSQL 18 and database creation is delegated 
   assert.match(profile, /database: ""/);
   assert.match(profile, /existingSecret: lolly-postgres-auth/);
   assert.match(profile, /enabled: true\n  existingSecret: lolly-postgres-tls/);
-  assert.match(profile, /serviceAccount:\n  enabled: true\n  automountServiceAccountToken: false/);
+  assert.match(profile, /serviceAccount:\n  enabled: true\n(?:  #[^\n]*\n)*  name: lolly-postgres\n  automountServiceAccountToken: false/);
   assert.match(profile, /seccompProfile:\n    type: RuntimeDefault/);
   assert.match(profile, /capabilities:\n          drop:\n            - ALL/);
 });

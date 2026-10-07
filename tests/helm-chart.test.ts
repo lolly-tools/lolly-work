@@ -418,7 +418,8 @@ test('worker DNS trust is namespace-scoped and HTTPS-only egress excludes specia
   const publicRule = policy.spec.egress.find((rule: { to: { ipBlock?: { cidr: string } }[] }) => rule.to.some(peer => peer.ipBlock?.cidr === '::/0'));
   assert.deepEqual(publicRule.ports, [{ protocol: 'TCP', port: 443 }]);
   const ipv6 = publicRule.to.find((peer: { ipBlock: { cidr: string } }) => peer.ipBlock.cidr === '::/0').ipBlock;
-  for (const range of ['::/128', '::1/128', '::ffff:0:0/96', 'fc00::/7', 'fe80::/10']) assert.ok(ipv6.except.includes(range));
+  for (const range of ['::/128', '::1/128', '::fffe:0:0/95', 'fc00::/7', 'fe80::/10']) assert.ok(ipv6.except.includes(range));
+  assert.ok(!ipv6.except.includes('::ffff:0:0/96'), 'Kubernetes rejects the mapped IPv4 exception under an IPv6 CIDR');
   const disabled = render([...active, '--set-json', 'renderWorker.networkPolicy.publicPorts=[]']);
   assert.ok(disabled.ok, disabled.err);
   const closed = manifests(disabled.out).find(doc => doc?.kind === 'NetworkPolicy' && doc.metadata.name.endsWith('render-worker'));

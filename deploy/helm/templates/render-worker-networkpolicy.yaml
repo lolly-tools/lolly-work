@@ -81,7 +81,8 @@ spec:
             except:
               - ::/128
               - ::1/128
-              - ::ffff:0:0/96
+              # The covering IPv6 parent avoids Kubernetes parsing mapped96 as IPv4.
+              - ::fffe:0:0/95
               - 64:ff9b::/96
               - 100::/64
               - 2001:db8::/32
