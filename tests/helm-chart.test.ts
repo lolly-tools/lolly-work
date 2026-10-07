@@ -156,7 +156,7 @@ test('render browser requires HTTPS or explicit loopback while the worker API st
       '--set-string', 'config.render.worker.url=http://lolly-lolly-work-render-worker:8791']);
     assert.ok(r.ok, `${base}: ${r.err}`);
     const env = deployment(r.out, true).spec.template.spec.containers[0].env;
-    assert.equal(env.find(item => item.name === 'LOLLY_WEB_BASE').value, base);
+    assert.equal(env.find((item: { name: string; value: string }) => item.name === 'LOLLY_WEB_BASE').value, base);
     const cfg = JSON.parse(manifests(r.out).find(d => d.kind === 'ConfigMap').data['instance.json']);
     assert.equal(cfg.render.worker.url, 'http://lolly-lolly-work-render-worker:8791');
   }
