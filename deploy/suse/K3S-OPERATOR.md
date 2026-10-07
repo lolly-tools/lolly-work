@@ -30,6 +30,16 @@ matching `k3s-selinux` policy package; the configuration then enables SELinux.
 Permissive SELinux is refused. Disabled SELinux is an existing OS posture, not an
 action taken by the helper; review AppArmor separately. This is not CIS certification.
 
+An installed RPM alone does not prove its module loaded. Preflight verifies the
+RPM, loaded `k3s` module and expected executable/snapshot contexts. If the signed
+SUSE package script did not activate its intact policy, inspect the error and
+explicitly load only `/usr/share/selinux/packages/k3s.pp` with `semodule -X 200 -i`
+while remaining Enforcing. Do not generate a permissive policy from denied calls.
+Staging applies `restorecon` only to the binary, generated service and K3s data
+tree, then checks labels and Enforcing again before any first start. The upstream
+installer's skipped RPM path also skips its executable labelling, so this
+readback is required even when the policy package was installed separately.
+
 The signed SUSE policy RPM may create and label an empty K3s data scaffold before
 the binary is installed. The helper permits only its exact directory tree
 (`agent/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots` and `data`)

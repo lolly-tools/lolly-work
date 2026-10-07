@@ -215,6 +215,64 @@ if(v)console.log(v);process.exit(status);\n`,
   return { PATH: `${dir}:${process.env.PATH}` };
 }
 
+function selinux(dir: string, mode: string) {
+  const log = join(dir, 'selinux-calls.jsonl');
+  for (const tool of ['rpm', 'semodule', 'matchpathcon', 'restorecon', 'getenforce']) {
+    const file = join(dir, tool);
+    writeFileSync(
+      file,
+      `#!${process.execPath}\nconst fs=require('node:fs');const a=process.argv.slice(2);const tool=${JSON.stringify(tool)};const mode=${JSON.stringify(mode)};
+fs.appendFileSync(${JSON.stringify(log)},JSON.stringify({tool,args:a})+'\\n');
+if(tool==='rpm')process.exit(mode==='modified-rpm'?1:0);
+if(tool==='semodule'){if(mode==='module-query-error')process.exit(2);console.log(mode==='missing-module'?'200 container pp':'200 container pp\\n200 k3s pp');}
+if(tool==='matchpathcon'){if(mode==='context-query-error')process.exit(2);if(a.includes('-V'))process.exit(mode==='readback-failure'?1:0);console.log('system_u:object_r:'+(mode==='wrong-context'?'var_lib_t':a.some(x=>x.endsWith('/snapshots'))?'container_file_t':'container_runtime_exec_t')+':s0');}
+if(tool==='restorecon')process.exit(mode==='restore-failure'?1:0);
+if(tool==='getenforce')console.log(mode==='permissive'?'Permissive':'Enforcing');\n`,
+    );
+    chmodSync(file, 0o700);
+  }
+  return { PATH: `${dir}:${process.env.PATH}` };
+}
+
+test('enforcing staging verifies the loaded package policy and applies only its exact paths', () =>
+  sandbox((dir) => {
+    const result = bash('source "$K3S_TEST_BOOTSTRAP"; label_installed_selinux', [], selinux(dir, 'safe'));
+    assert.equal(result.status, 0, result.stderr);
+    const calls = readFileSync(join(dir, 'selinux-calls.jsonl'), 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { tool: string; args: string[] });
+    const restore = calls.find((call) => call.tool === 'restorecon');
+    assert.ok(restore);
+    assert.deepEqual(restore.args, [
+      '-R',
+      '/usr/local/bin/k3s',
+      '/etc/systemd/system/k3s.service',
+      '/var/lib/rancher/k3s',
+    ]);
+    assert.ok(calls.some((call) => call.tool === 'matchpathcon' && call.args.includes('-V')));
+    const source = readFileSync(bootstrap, 'utf8');
+    assert.ok(
+      source.indexOf('run_verified_installer "$version"') < source.indexOf('then label_installed_selinux'),
+    );
+  }));
+
+for (const mode of [
+  'modified-rpm',
+  'missing-module',
+  'module-query-error',
+  'context-query-error',
+  'wrong-context',
+  'restore-failure',
+  'readback-failure',
+  'permissive',
+])
+  test(`enforcing staging refuses ${mode}`, () =>
+    sandbox((dir) => {
+      const result = bash('source "$K3S_TEST_BOOTSTRAP"; label_installed_selinux', [], selinux(dir, mode));
+      assert.notEqual(result.status, 0);
+    }));
+
 for (const mode of ['safe', 'http3', 'drop', 'reject'])
   test(`restricted firewall keeps pod/service paths in ${mode} profile`, () =>
     sandbox((dir) => {

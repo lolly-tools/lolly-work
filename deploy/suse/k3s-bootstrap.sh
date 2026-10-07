@@ -201,6 +201,29 @@ PY
   validate_policy_scaffold_entries "$metadata"
 }
 
+validate_selinux_policy() {
+  local tool modules path context expected
+  for tool in semodule matchpathcon restorecon; do
+    command -v "$tool" >/dev/null || fail "missing SELinux prerequisite: $tool"
+  done
+  rpm -V k3s-selinux >/dev/null || fail 'installed K3s policy RPM has been modified'
+  modules=$(semodule -lfull) || fail 'cannot inspect loaded SELinux modules'
+  printf '%s\n' "$modules" | awk '$2 == "k3s" {found=1} END {exit !found}' || fail 'installed K3s SELinux module is not loaded'
+  for path in /usr/local/bin/k3s /var/lib/rancher/k3s/data/current/bin/runc /var/lib/rancher/k3s/agent/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots; do
+    expected=container_runtime_exec_t
+    if [[ $path == */snapshots ]]; then expected=container_file_t; fi
+    context=$(matchpathcon -n "$path") || fail 'cannot inspect package-owned SELinux context'
+    [[ $context == *":${expected}:"* ]] || fail 'loaded K3s policy does not declare the required context'
+  done
+}
+
+label_installed_selinux() {
+  validate_selinux_policy
+  restorecon -R /usr/local/bin/k3s /etc/systemd/system/k3s.service /var/lib/rancher/k3s || fail 'cannot apply installed K3s policy contexts'
+  matchpathcon -V /usr/local/bin/k3s /etc/systemd/system/k3s.service /var/lib/rancher/k3s/agent/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots || fail 'installed K3s context readback failed'
+  [[ $(getenforce) == Enforcing ]] || fail 'SELinux must remain enforcing after staging'
+}
+
 host_preflight() {
   [[ $(uname -s) == Linux && $(uname -m) == x86_64 ]] || fail 'only the amd64 Linux candidate is supported'
   [[ $EUID -eq 0 ]] || fail 'host preflight/install requires root'
@@ -238,7 +261,7 @@ PY
   SELINUX=false
   if command -v getenforce >/dev/null; then
     case $(getenforce) in
-      Enforcing) rpm -q k3s-selinux >/dev/null || fail 'install/review the matching SELinux policy first'; SELINUX=true ;;
+      Enforcing) rpm -q k3s-selinux >/dev/null || fail 'install/review the matching SELinux policy first'; validate_selinux_policy; SELINUX=true ;;
       Disabled) ;;
       *) fail 'permissive/unknown SELinux posture is refused' ;;
     esac
@@ -292,6 +315,7 @@ main() {
   install -m 0600 "$stage/config.yaml" /etc/rancher/k3s/config.yaml
   install -m 0755 "$stage/k3s" /usr/local/bin/k3s
   run_verified_installer "$version" "$stage/install.sh"
+  if [[ $SELINUX == true ]]; then label_installed_selinux; fi
   printf '%s\n' 'Pinned K3s staged disabled and stopped. Review config/unit, then follow K3S-OPERATOR.md to start and qualify only this candidate.'
 }
 
