@@ -28,12 +28,25 @@ import { resolveInvitePolicy } from '../policy/invites.ts';
 import { resolveSharingPolicy, type SharingPolicy } from '../policy/sharing.ts';
 import { nameWithoutEmail } from '../projects/sharing.ts';
 import {
-  accessAtLeast, grantLive, isInstanceMember, mayShareProject, projectAccessRank, type ProjectAccess,
+  accessAtLeast, grantLive, isInstanceMember, mayShareProject, projectAccessRank, projectRelation, type ProjectAccess,
+  type ProjectMembership,
 } from '../rbac/project-access.ts';
 import {
   PROJECT_MEMBER_ROLES, type ProjectGroupGrant, type ProjectMemberRole, type ProjectRecord, type ProjectSharing,
-  type ShareGroupRecord, type Store, type UserRecord,
+  type ProjectUserStateRecord, type ShareGroupRecord, type Store, type UserRecord,
 } from '../store/types.ts';
+
+/** The fields a project list row adds so a shell can keep its Projects view to
+ *  the person's own work: why they can open the project, its general access, and
+ *  their own choice to pin or hide it, with when they last opened it. */
+export function projectListing(user: UserRecord, project: ProjectRecord, membership: ProjectMembership, state: ProjectUserStateRecord | undefined) {
+  return {
+    via: projectRelation(user, project, membership),
+    audience: project.sharing?.general?.audience ?? 'restricted',
+    ...(state?.listed ? { listed: state.listed } : {}),
+    ...(state?.lastOpenedAt ? { lastOpenedAt: state.lastOpenedAt } : {}),
+  };
+}
 
 interface Dependencies {
   config: InstanceConfig;
@@ -262,6 +275,26 @@ export function registerShareRoutes(router: ReturnType<typeof createRouter>, d: 
       settings: next.sharing?.settings ?? {},
     });
     sendJson(res, 200, await shareState(next, await d.projectAccessOf(user, next)), NO_STORE);
+  });
+
+  // The person's own Projects list: record an open, or pin or hide a project.
+  router.add('POST', '/api/v1/projects/:id/opened', async (req, res, ctx) => {
+    const admitted = await projectFor(req, res, ctx.params.id as string);
+    if (!admitted) return;
+    const state = await d.store.putProjectUserState(admitted.user.id, admitted.project.id, { lastOpenedAt: new Date().toISOString() });
+    sendJson(res, 200, { lastOpenedAt: state.lastOpenedAt, ...(state.listed ? { listed: state.listed } : {}) }, NO_STORE);
+  });
+
+  router.add('PUT', '/api/v1/projects/:id/listing', async (req, res, ctx) => {
+    const admitted = await projectFor(req, res, ctx.params.id as string);
+    if (!admitted) return;
+    const body = (await readJson(req)) as { listed?: unknown } | null;
+    const listed = body?.listed;
+    if (listed !== null && listed !== 'pinned' && listed !== 'hidden') {
+      return sendError(res, 400, 'INVALID_INPUT', 'listed must be pinned, hidden or null', { field: 'listed' });
+    }
+    const state = await d.store.putProjectUserState(admitted.user.id, admitted.project.id, { listed });
+    sendJson(res, 200, { ...(state.listed ? { listed: state.listed } : {}), ...(state.lastOpenedAt ? { lastOpenedAt: state.lastOpenedAt } : {}) }, NO_STORE);
   });
 
   router.add('PUT', '/api/v1/projects/:id/members/:userId/expiry', async (req, res, ctx) => {

@@ -305,7 +305,8 @@ test('(b3) credential expiry, automation jobs, deliveries and render resources f
   assert.equal(files[at + 21], '0048_passkeys.sql', 'passkeys follow project folders');
   assert.equal(files[at + 22], '0049_document_agents.sql', 'document agents follow passkeys');
   assert.equal(files[at + 23], '0050_project_agents.sql', 'project agents follow document agents');
-  assert.equal(files.at(-1), '0060_share_ladder.sql', 'the sharing ladder is the newest migration');
+  assert.equal(files[at + 24], '0060_share_ladder.sql', 'the sharing ladder follows project agents');
+  assert.equal(files.at(-1), '0061_project_user_state.sql', 'each person\'s own project list state is the newest migration');
   assert.match(await readFile(`${dir}/0027_credential_expiry.sql`, 'utf8'), /add column credential_expires_at/);
   assert.match(await readFile(`${dir}/0028_automation_jobs.sql`, 'utf8'), /create table automation_jobs/);
   assert.match(await readFile(`${dir}/0029_deliveries.sql`, 'utf8'), /create table deliveries/);

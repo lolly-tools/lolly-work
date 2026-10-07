@@ -6,7 +6,7 @@ import { initialBrandState } from '../brand/state.ts';
 import type { CollabReceipt } from './types.ts';
 import type { ProjectFolderRecord } from './types.ts';
 import type { DocumentAgentRecord, ProjectAgentRecord } from './types.ts';
-import type { ShareGroupRecord } from './types.ts';
+import type { ProjectUserStateRecord, ShareGroupRecord } from './types.ts';
 /**
  * In-memory Store - dev, tests, and the evaluation container's default.
  * Postgres driver lands beside this (migrations/0001_init.sql is the schema).
@@ -50,6 +50,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const users = new Map<string, UserRecord>(); // by sub
   const localGroups = new Map<string, LocalGroupRecord>(); // registry, by name
   const shareGroups = new Map<string, ShareGroupRecord>(); // user-made groups (0060), by id
+  const projectUserState = new Map<string, ProjectUserStateRecord>(); // per-person project view (0061)
   const scimTokens = new Map<string, ScimTokenRecord>(); // SCIM provisioning bearers, by id
   const apiTokens = new Map<string, ApiTokenRecord>(); // service tokens (plans/35), by id
   const documentAgents = new Map<string, DocumentAgentRecord>();
@@ -1541,6 +1542,20 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       const next: UserRecord = { ...u, shareGroups: [...new Set(ids.filter(Boolean))] };
       users.set(u.sub, next);
       return mapped(next);
+    },
+    async listProjectUserState(userId) {
+      // Rows go with the person and with the project, as the foreign keys do in Postgres.
+      return [...projectUserState.values()]
+        .filter((r) => r.userId === userId && userById(userId) && projects.has(r.projectId))
+        .map((r) => ({ ...r }));
+    },
+    async putProjectUserState(userId, projectId, change) {
+      const key = `${userId} ${projectId}`;
+      const next: ProjectUserStateRecord = { ...(projectUserState.get(key) ?? { userId, projectId }) };
+      if (change.listed !== undefined) { if (change.listed) next.listed = change.listed; else delete next.listed; }
+      if (change.lastOpenedAt) next.lastOpenedAt = change.lastOpenedAt;
+      projectUserState.set(key, next);
+      return { ...next };
     },
   };
 }

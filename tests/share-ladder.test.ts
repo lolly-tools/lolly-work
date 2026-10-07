@@ -401,3 +401,65 @@ test('postgres keeps parity for the sharing ladder', { skip: !process.env.LW_TES
     assert.equal((await store.getUser(b.id))!.shareGroups, undefined);
   });
 });
+
+// ── each person's own Projects list (lolly plan 299 section 6) ───────────────
+
+test('projectRelation names the strongest relationship, never the instance audience as yours', async () => {
+  const { projectRelation } = await import('../server/src/rbac/project-access.ts');
+  const p = project({ visibility: { groups: ['team'] }, sharing: { general: { audience: 'instance', role: 'viewer' }, groups: [{ kind: 'custom', id: 'sg_a', role: 'viewer' }] } });
+  assert.equal(projectRelation(user({ id: 'owner' }), p, null, NOW), 'owner');
+  assert.equal(projectRelation(user(), p, { projectId: 'p1', userId: 'u1', role: 'viewer' }, NOW), 'member');
+  assert.equal(projectRelation(user({ groups: ['team'] }), p, null, NOW), 'group');
+  assert.equal(projectRelation(user({ shareGroups: ['sg_a'] }), p, null, NOW), 'custom-group');
+  assert.equal(projectRelation(user(), p, null, NOW), 'everyone');
+  assert.equal(projectRelation(user({ role: 'admin' }), project(), null, NOW), 'admin');
+  assert.equal(projectRelation(user(), project(), null, NOW), 'none');
+  const ended = { projectId: 'p1', userId: 'u1', role: 'editor' as const, expiresAt: '2026-10-01T00:00:00Z' };
+  assert.equal(projectRelation(user(), p, ended, NOW), 'everyone', 'an ended membership is not a relationship');
+});
+
+test('the project list says why and carries each person’s own pin, hide and last open', async () => {
+  const env = await boot();
+  await env.as('alice@test', 'PUT', `/api/v1/projects/${env.projectId}/sharing`, { general: { audience: 'instance', role: 'viewer' } });
+  const row = async (email: string) => (await env.as(email, 'GET', '/api/v1/projects')).json.projects.find((p: { id: string }) => p.id === env.projectId);
+  assert.equal((await row('alice@test')).via, 'owner');
+  assert.equal((await row('eddie@test')).via, 'member');
+  assert.equal((await row('gina@test')).via, 'group');
+  const dee = await row('dee@test');
+  assert.equal(dee.via, 'everyone');
+  assert.equal(dee.audience, 'instance');
+  assert.equal(dee.listed, undefined);
+  assert.equal(dee.lastOpenedAt, undefined);
+
+  const opened = await env.as('dee@test', 'POST', `/api/v1/projects/${env.projectId}/opened`);
+  assert.equal(opened.status, 200);
+  assert.ok(Date.parse((await row('dee@test')).lastOpenedAt) > 0);
+  assert.equal((await row('eddie@test')).lastOpenedAt, undefined, 'one person’s open is theirs alone');
+
+  assert.equal((await env.as('dee@test', 'PUT', `/api/v1/projects/${env.projectId}/listing`, { listed: 'pinned' })).status, 200);
+  assert.equal((await row('dee@test')).listed, 'pinned');
+  assert.equal((await env.as('dee@test', 'PUT', `/api/v1/projects/${env.projectId}/listing`, { listed: 'hidden' })).status, 200);
+  assert.equal((await row('dee@test')).listed, 'hidden');
+  await env.as('dee@test', 'POST', `/api/v1/projects/${env.projectId}/opened`);
+  assert.equal((await row('dee@test')).listed, 'hidden', 'opening again does not undo a hide');
+  assert.equal((await env.as('dee@test', 'PUT', `/api/v1/projects/${env.projectId}/listing`, { listed: null })).status, 200);
+  assert.equal((await row('dee@test')).listed, undefined);
+  assert.equal((await env.as('dee@test', 'PUT', `/api/v1/projects/${env.projectId}/listing`, { listed: 'starred' })).status, 400);
+  assert.equal((await env.as('olly@test', 'POST', '/api/v1/projects/prj_nope/opened')).status, 404);
+  await env.as('alice@test', 'PUT', `/api/v1/projects/${env.projectId}/sharing`, { general: { audience: 'restricted' } });
+  assert.equal((await env.as('dee@test', 'POST', `/api/v1/projects/${env.projectId}/opened`)).status, 404, 'no access, no record');
+});
+
+test('postgres keeps per-person project state', { skip: !process.env.LW_TEST_DATABASE_URL }, async () => {
+  await withFreshPostgres(process.env.LW_TEST_DATABASE_URL!, async (store) => {
+    const a = await store.upsertUserBySub({ sub: 'a', email: 'a@test', groups: [], role: 'member' });
+    await store.putProject({ id: 'prj_1', name: 'P', visibility: 'private', ownerId: a.id, createdAt: '2026-10-07T00:00:00.000Z' });
+    const first = await store.putProjectUserState(a.id, 'prj_1', { lastOpenedAt: '2026-10-07T10:00:00.000Z' });
+    assert.deepEqual(first, { userId: a.id, projectId: 'prj_1', lastOpenedAt: '2026-10-07T10:00:00.000Z' });
+    await store.putProjectUserState(a.id, 'prj_1', { listed: 'pinned' });
+    const both = await store.putProjectUserState(a.id, 'prj_1', { lastOpenedAt: '2026-10-07T11:00:00.000Z' });
+    assert.deepEqual(both, { userId: a.id, projectId: 'prj_1', listed: 'pinned', lastOpenedAt: '2026-10-07T11:00:00.000Z' });
+    await store.putProjectUserState(a.id, 'prj_1', { listed: null });
+    assert.deepEqual(await store.listProjectUserState(a.id), [{ userId: a.id, projectId: 'prj_1', lastOpenedAt: '2026-10-07T11:00:00.000Z' }]);
+  });
+});

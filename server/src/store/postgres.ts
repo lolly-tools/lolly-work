@@ -39,7 +39,7 @@ import { createPostgresRenderStore } from '../renders/postgres.ts';
 import {
   SESSION_REVISION_LIMIT, effectiveGroups,
   type AccessRequestMatch, type AccessRequestRecord, type ProjectMemberRole,
-  type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type ListUsersPageOpts, type LocalGroupRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ShareGroupRecord, type UserIdentityRecord,
+  type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type ListUsersPageOpts, type LocalGroupRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ProjectUserStateRecord, type ShareGroupRecord, type UserIdentityRecord,
   type ScimTokenRecord, type SessionRecord, type SessionRevision, type Store, type SubmitQuotaRow, type UserRecord,
 } from './types.ts';
 
@@ -473,6 +473,13 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     createdBy: r.created_by as string,
     createdAt: new Date(r.created_at as string).toISOString(),
     ...(r.updated_at ? { updatedAt: new Date(r.updated_at as string).toISOString() } : {}),
+  });
+
+  const projectUserStateFromRow = (r: Record<string, unknown>): ProjectUserStateRecord => ({
+    userId: r.user_id as string,
+    projectId: r.project_id as string,
+    ...(r.listed ? { listed: r.listed as 'pinned' | 'hidden' } : {}),
+    ...(r.last_opened_at ? { lastOpenedAt: new Date(r.last_opened_at as string).toISOString() } : {}),
   });
 
   const projectMemberFromRow = (r: Record<string, unknown>): ProjectMemberRecord => ({
@@ -2528,6 +2535,23 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         'update users set share_groups = $2::jsonb where id = $1 returning *', [userId, JSON.stringify([...new Set(ids.filter(Boolean))])],
       );
       return rows[0] ? userFromRow(rows[0]) : null;
+    },
+    async listProjectUserState(userId) {
+      const { rows } = await pool.query('select * from project_user_state where user_id = $1', [userId]);
+      return rows.map(projectUserStateFromRow);
+    },
+    async putProjectUserState(userId, projectId, change) {
+      const listedGiven = change.listed !== undefined;
+      const { rows } = await pool.query(
+        `insert into project_user_state (user_id, project_id, listed, last_opened_at)
+         values ($1, $2, $3, $4)
+         on conflict (user_id, project_id) do update set
+           listed = case when $5 then excluded.listed else project_user_state.listed end,
+           last_opened_at = coalesce(excluded.last_opened_at, project_user_state.last_opened_at)
+         returning *`,
+        [userId, projectId, change.listed ?? null, change.lastOpenedAt ?? null, listedGiven],
+      );
+      return projectUserStateFromRow(rows[0]!);
     },
 
     async pendingMigrations() {

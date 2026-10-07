@@ -504,6 +504,15 @@ export interface ShareGroupRecord {
   updatedAt?: string;
 }
 
+/** One person's own view of a project (migration 0061): pinned into their list,
+ *  hidden from it, and when they last opened it. Private to that person. */
+export interface ProjectUserStateRecord {
+  userId: string;
+  projectId: string;
+  listed?: 'pinned' | 'hidden';
+  lastOpenedAt?: string;
+}
+
 export interface ProjectMemberRecord {
   projectId: string;
   userId: string;
@@ -1232,4 +1241,9 @@ export interface Store extends RenderStore, PasskeyStore {
   listShareGroupMembers(id: string): Promise<UserRecord[]>;
   /** Replace a user's share group ids. Returns the updated record, or null. */
   setUserShareGroups(userId: string, ids: string[]): Promise<UserRecord | null>;
+  /** Every project this person has pinned, hidden or opened (migration 0061). */
+  listProjectUserState(userId: string): Promise<ProjectUserStateRecord[]>;
+  /** Merge a change into one person's state for one project. `listed: null`
+   *  clears the choice. */
+  putProjectUserState(userId: string, projectId: string, change: { listed?: 'pinned' | 'hidden' | null; lastOpenedAt?: string }): Promise<ProjectUserStateRecord>;
 }

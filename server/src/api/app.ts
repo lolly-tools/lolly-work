@@ -73,6 +73,7 @@ import {
 } from '../scim/resources.ts';
 import { evaluate, grantDecision, denialCode, mayEditCollab, ownerOnlyAction, roleFromGroups, type Grant, type Role, ROLES } from '../rbac/evaluate.ts';
 import { accessAtLeast, configureSharingLimits, effectiveProjectAccess, type ProjectAccess } from '../rbac/project-access.ts';
+import { projectListing } from '../access/share-routes.ts';
 import { registerProjectFileRoutes } from '../projects/file-routes.ts';
 import { registerProjectFolderRoutes } from '../projects/folder-routes.ts';
 import { agentActor, agentAttribution } from '../agents/attribution.ts';
@@ -7729,15 +7730,21 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const includeArchived = ctx.url.searchParams.get('archived') === '1';
-    const [all, stats, memberships, grants] = await Promise.all([
+    const [all, stats, memberships, grants, states] = await Promise.all([
       store.listProjects(), store.projectSessionStats(), store.listUserProjectMemberships(user.id), store.listGrants(),
+      store.listProjectUserState(user.id),
     ]);
     const mine = new Map(memberships.map((m) => [m.projectId, m]));
+    const own = new Map(states.map((s) => [s.projectId, s]));
     const visible = all
       .map((p) => ({ p, role: effectiveProjectAccess(user, p, mine.get(p.id) ?? null, grants) }))
       .filter(({ p, role }) => role !== 'none' && (includeArchived || !p.archivedAt));
     const names = await namesFor(visible.map(({ p }) => projectActivity(p, stats).updatedBy));
-    sendJson(res, 200, { projects: visible.map(({ p, role }) => projectRow(p, stats, role, names)) });
+    // `via`, `listed` and `lastOpenedAt` let the shell keep a project shared with
+    // everyone out of a person's list until they choose it (lolly plan 299).
+    sendJson(res, 200, { projects: visible.map(({ p, role }) => ({
+      ...projectRow(p, stats, role, names), ...projectListing(user, p, mine.get(p.id) ?? null, own.get(p.id)),
+    })) });
   });
 
   router.add('POST', '/api/v1/projects', async (req, res) => {

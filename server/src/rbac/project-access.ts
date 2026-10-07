@@ -140,6 +140,28 @@ export function projectAccess(user: UserRecord, project: ProjectRecord, membersh
   return access;
 }
 
+/** Why someone can open a project, strongest relationship first. `everyone` is the
+ *  instance-wide audience and `admin` the instance admin's view of every project:
+ *  neither makes a project one of theirs, so neither puts it in their Projects
+ *  list on its own (lolly plan 299 section 6). */
+export type ProjectRelation = 'owner' | 'member' | 'group' | 'custom-group' | 'everyone' | 'admin' | 'none';
+
+export function projectRelation(user: UserRecord, project: ProjectRecord, membership?: ProjectMembership, now: number = Date.now()): ProjectRelation {
+  if (project.ownerId === user.id) return 'owner';
+  if (membershipRole(user, project, membership, now) !== 'none') return 'member';
+  const visible = project.visibility === 'private' ? [] : project.visibility.groups;
+  const grants = project.sharing?.groups ?? [];
+  for (const name of visible) {
+    if (!user.groups.includes(name)) continue;
+    const grant = grants.find((g) => g.kind === 'directory' && g.name === name);
+    if (!grant || grantLive(grant.expiresAt, now)) return 'group';
+  }
+  if (limits.customGroups && grants.some((g) => g.kind === 'custom' && user.shareGroups?.includes(g.id) && grantLive(g.expiresAt, now))) return 'custom-group';
+  if (audienceRole(user, project) !== 'none') return 'everyone';
+  if (user.role === 'admin' || user.role === 'owner') return 'admin';
+  return 'none';
+}
+
 /**
  * Whether someone at `access` may comment on the project's documents. A
  * commenter or higher always may; a viewer may unless a manager has turned

@@ -495,7 +495,9 @@ separate from the existing `/api/v1/batch` job/ZIP contract.
 
 | Route | Action |
 |---|---|
-| `GET /api/v1/projects` | member: projects they own, were added to, or share a group with (admins all). Archived projects are left out unless you pass `?archived=1`. Rows carry `myRole`, `updatedAt` and `updatedByName` |
+| `GET /api/v1/projects` | member: every project they can open (admins all), including projects shared with everyone on the instance. Archived projects are left out unless you pass `?archived=1`. Rows carry `myRole`, `updatedAt`, `updatedByName`, `via` (why they can open it: `owner`, `member`, `group`, `custom-group`, `everyone` or `admin`), `audience` (`restricted` or `instance`), and their own `listed` (`pinned` or `hidden`) and `lastOpenedAt`. A shell lists a project as the person's own when `via` is a relationship, or when they pinned it or opened it recently and did not hide it; the rest is found by browsing |
+| `POST /api/v1/projects/:id/opened` | viewer - records that the caller opened the project, for their own recent list; `200 { lastOpenedAt, listed? }`. Visible to nobody else and never used for who viewed what |
+| `PUT /api/v1/projects/:id/listing` | viewer - body `{ listed: "pinned" \| "hidden" \| null }`: keep the project in the caller's own list, keep it out, or follow the default |
 | `POST /api/v1/projects` | `project.create` |
 | `PATCH /api/v1/projects/:id` | manager of the project or `project.manage` - name, visibility, archive; `ownerId` (transfer to an enabled member; audited `project.transfer`) needs the owner or `project.manage` |
 | `GET /api/v1/projects/:id/folders` | viewer; `{ folders: [{ id, projectId, parentId, name, createdAt, createdBy, items: [{ kind, ref }] }] }` |
