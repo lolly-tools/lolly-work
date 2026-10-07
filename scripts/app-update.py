@@ -22,12 +22,13 @@ import urllib.request
 
 
 COMPONENTS = frozenset({"work", "public-web", "public-mcp", "public-ca", "public-penpot",
-                        "public-demo", "render-worker", "live-relay"})
+                        "public-demo", "render-worker", "live-relay", "admission-rest"})
 IMAGE = re.compile(r"[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}\Z")
 NAME = re.compile(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\Z")
-PROTECTED_DEPLOYMENT = re.compile(r"(?:^|-)(?:edge|caddy|postgres|postgresql|database)(?:-|$)")
+PROTECTED_DEPLOYMENT = re.compile(r"(?:^|-)(?:edge|caddy|postgres|postgresql|database|redis|valkey)(?:-|$)")
 RESERVED_NAMESPACES = frozenset({"kube-system", "kube-public", "kube-node-lease"})
-PROTECTED_ROLES = frozenset({"edge", "database", "postgres", "postgresql", "storage", "cluster-dns"})
+PROTECTED_ROLES = frozenset({"edge", "database", "postgres", "postgresql", "redis", "valkey", "storage", "cluster-dns"})
+ADMISSION_LABELS = {"app.kubernetes.io/name": "lolly-admission", "app.kubernetes.io/component": "adapter"}
 
 
 class Refusal(RuntimeError):
@@ -138,6 +139,10 @@ def validate_target(target):
         labels = component.get("requiredLabels", {})
         require(isinstance(labels, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in labels.items()),
                 "requiredLabels must be a string mapping")
+        if name == "admission-rest":
+            require(component["deployment"] == "admission-adapter" and component["container"] == "adapter" and
+                    all(labels.get(k) == v for k, v in ADMISSION_LABELS.items()),
+                    "admission-rest owns only the labeled admission-adapter application container")
         urls = component.get("healthURLs", [])
         require(isinstance(urls, list) and all(isinstance(u, str) and u.startswith("https://") for u in urls),
                 "Health URLs must use HTTPS")
@@ -205,8 +210,10 @@ def check_deployment(component, kube):
     value = kube.get("deployment", component["deployment"], component["namespace"])
     require(value["metadata"]["uid"] == component["deploymentUID"], "Wrong Deployment UID")
     require(not value["metadata"].get("deletionTimestamp"), "Deployment is being deleted")
-    require(value["metadata"].get("labels", {}).get("app.kubernetes.io/component") not in PROTECTED_ROLES,
-            "Edge, database and storage resource roles are excluded")
+    for labels in (value["metadata"].get("labels", {}), value["spec"]["template"].get("metadata", {}).get("labels", {})):
+        require(all(labels.get(k) not in PROTECTED_ROLES for k in
+                    ("app.kubernetes.io/component", "app.kubernetes.io/name")),
+                "Edge, database and storage resource roles are excluded")
     require(all(value["metadata"].get("labels", {}).get(k) == v for k, v in component.get("requiredLabels", {}).items()),
             "Deployment ownership labels changed")
     require(value["spec"].get("replicas", 1) > 0, "Deployment has no running replicas")

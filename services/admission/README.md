@@ -39,6 +39,28 @@ The container uses the pinned SUSE BCI Node 24 base and a non-root UID 1000.
 Publish and resolve an immutable digest before deploying. The main Work image
 does not include this service or its dependencies. No engine build is needed.
 
+The admission qualification workflow builds an amd64 OCI archive on pull
+requests with only `contents: read`. It boots the exact exported runtime config
+as UID 1000 on a read-only filesystem, checks verified HTTPS/Redis TLS, role
+refusals, outage 503 responses and synthetic AOF counters across restart. The
+isolated CI fixture uses the runner's upstream Redis package; AppCo amd64 and
+Kubernetes storage/ACL/network acceptance still require separate qualification.
+The seven-day `admission-amd64-<workflow-sha>` artifact includes archive SHA-256,
+OCI manifest/config digests and source/run identities. Review that evidence
+before importing the archive, then remove the recreatable transport copy.
+
+After merge, an explicit `workflow_dispatch` with `publish=true` and the exact
+reviewed main `source_sha` may publish `ghcr.io/<owner>/lolly-admission`. Only
+that main-only job receives `packages: write` and signing `id-token: write`;
+pull request jobs receive neither and no production credentials. Publication
+uses `GITHUB_TOKEN` without a wider PAT fallback, boots the published digest,
+then signs that digest using the workflow's OIDC identity. It never deploys.
+Verify the digest/signature/provenance and site qualifications before use.
+
+Subsequent adapter image changes use the narrow `admission-rest` application
+component in [the app update guide](../../deploy/helm/APP-UPDATES.md). The Redis
+store, counters, ACLs and volumes remain a separate owned operation.
+
 Required configuration consists of `ADMISSION_TLS_KEY_FILE`,
 `ADMISSION_TLS_CERT_FILE`, `ADMISSION_MCP_TOKEN_FILE`, `ADMISSION_CA_TOKEN_FILE`
 and `ADMISSION_REDIS_URL_FILE`. The two tokens must be different and contain at

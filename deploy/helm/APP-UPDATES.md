@@ -26,7 +26,7 @@ and should have mode 600. Refresh identities only after a separately reviewed
 cluster or resource replacement. A stale identity fails closed.
 
 The allowed component names are `work`, `public-web`, `public-mcp`, `public-ca`,
-`public-penpot`, `public-demo`, `render-worker` and `live-relay`. Map only the
+`public-penpot`, `public-demo`, `render-worker`, `live-relay` and `admission-rest`. Map only the
 Deployments this operator owns. Each Deployment may appear once; the helper
 changes one named container in it. Edge and database components and Deployment
 names are excluded. Optional `requiredLabels` further bind ownership. Optional
@@ -37,6 +37,17 @@ health endpoint, not a sign-in URL that redirects.
 Kubernetes system namespaces and resources carrying an edge, database or storage
 component label are also refused, even if a target mistakenly aliases them as
 an application component.
+
+The optional `admission-rest` component owns only Deployment `admission-adapter`,
+container `adapter`, with mandatory Deployment metadata ownership labels
+`app.kubernetes.io/name=lolly-admission` and
+`app.kubernetes.io/component=adapter` in `requiredLabels`. It updates the HTTPS
+application image while preserving its TLS, tokens and Redis configuration.
+Redis and Valkey Deployment names and database labels are excluded; this path
+cannot upgrade the backing store, replace its volume or import counters. Record
+the dedicated namespace/Deployment UIDs only after separately qualifying that
+optional service. A new helper version still needs your site's reviewed source
+pin update before a protected production shortcut can use the new component.
 
 ### Operating through SSH
 

@@ -167,6 +167,40 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(result["result"], "NO_CHANGE")
         self.assertEqual(self.kube.dry_runs + self.kube.writes + self.kube.rollouts, [])
 
+    def test_admission_rest_owns_only_adapter_image_with_identity_labels(self):
+        owned = self.target["components"].pop("work")
+        owned.update(deployment="admission-adapter", container="adapter", requiredLabels=update.ADMISSION_LABELS.copy())
+        self.target["components"]["admission-rest"] = owned
+        self.kube.value["metadata"].update(name="admission-adapter", labels=update.ADMISSION_LABELS.copy())
+        self.kube.value["spec"]["template"]["spec"]["containers"][0]["name"] = "adapter"
+        r = release(); r["updates"][0]["component"] = "admission-rest"
+        before = update.protected_spec(self.kube.value, 0)
+        plan = update.make_plan(self.target, r, self.kube)
+        update.apply_plan(self.target, plan, update.digest(plan), self.kube, health=lambda _: None)
+        self.assertEqual(update.protected_spec(self.kube.value, 0), before)
+        self.assertEqual(len(self.kube.writes), 1)
+        for field, value in (("deployment", "admission-redis"), ("container", "redis"),
+                             ("requiredLabels", {})):
+            wrong = copy.deepcopy(self.target)
+            wrong["components"]["admission-rest"][field] = value
+            with self.subTest(field=field), self.assertRaises(update.Refusal):
+                update.validate_target(wrong)
+
+    def test_redis_and_valkey_resources_cannot_be_aliased_as_applications(self):
+        for name in ("admission-redis", "cache-valkey"):
+            wrong = copy.deepcopy(self.target); wrong["components"]["work"]["deployment"] = name
+            with self.subTest(name=name), self.assertRaises(update.Refusal):
+                update.make_plan(wrong, release(), self.kube)
+        for location in ("deployment", "pod"):
+            for field in ("app.kubernetes.io/component", "app.kubernetes.io/name"):
+                for role in ("redis", "valkey"):
+                    kube = FakeKube()
+                    labels = kube.value["metadata"]["labels"] if location == "deployment" else kube.value["spec"]["template"]["metadata"]["labels"]
+                    labels[field] = role
+                    with self.subTest(location=location, field=field, role=role), self.assertRaises(update.Refusal):
+                        update.make_plan(self.target, release(), kube)
+                    self.assertEqual(kube.writes + kube.dry_runs, [])
+
     def test_wrong_cluster_node_namespace_and_deployment_uids_refuse(self):
         for field in ("cluster_uid", "node_uid", "namespace_uid"):
             with self.subTest(field=field):
