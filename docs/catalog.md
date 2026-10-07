@@ -603,8 +603,10 @@ Federated bytes (`/catalog/ext/...`) are kept in a bounded memory cache keyed by
 version (`catalogServing.extCache`, 64 MiB in total and 2 MiB per item by default), after
 every visibility and lifecycle check has passed. A file the fragment declares as SVG is
 served as `image/svg+xml` whatever label the upstream gives it, still under the same
-sandboxing headers as every stored file. A request carrying `?v=<entry version>` that matches
-the current version may be cached by the browser as immutable.
+sandboxing headers as every stored file. The browser keeps federated bytes for five minutes
+and then revalidates them against the ETag, which costs no bytes while the entry is unchanged.
+They are never cached as immutable: they sit behind access checks, so a person who loses
+access must not keep a copy that stays valid.
 
 ### The exit - materialize a source into your own store
 

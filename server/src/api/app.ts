@@ -5053,8 +5053,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       }
       // The fragment entry names this file's format and the entry version.
       // The version keys the byte cache and the ETag, so a change in the DAM
-      // is a miss; `?v=<version>` from a client that already holds the current
-      // version earns an immutable cache lifetime.
+      // is a miss. The browser keeps the bytes for five minutes and then asks
+      // again, which the ETag answers with a 304: provider bytes sit behind
+      // access checks, so a person who loses access must not keep a cached copy
+      // that stays valid for longer (plan 80 D6).
       const fragEntry = await federation.entry(assetId);
       const entryVersion = typeof fragEntry?.version === 'string' && fragEntry.version ? fragEntry.version : '';
       const fileEntry = fragEntry?.formats?.find((f) => f.url === `/catalog/${assetId}/${formatRef}`);
@@ -5063,8 +5065,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         ? extCacheKey({ provider: providerId, remoteId, formatRef, preview: filePreview, version: entryVersion })
         : '';
       const etag = cacheKey ? `"x${sha256Hex(cacheKey).slice(0, 32)}"` : '';
-      const bytesCache = ctx.url.searchParams.get('v') === entryVersion && entryVersion
-        ? 'private, max-age=31536000, immutable' : 'private, max-age=300';
+      const bytesCache = 'private, max-age=300';
       if (etag && etagMatches(req, etag)) {
         res.writeHead(304, { etag, 'cache-control': bytesCache });
         res.end();

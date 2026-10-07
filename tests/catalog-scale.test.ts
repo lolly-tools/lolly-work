@@ -205,12 +205,14 @@ test('federated bytes: SVG named as SVG, cached by entry version, 304 and immuta
   assert.equal(mockCalls.get('big')?.blob, before + 1, 'the second request came from the cache');
   assert.equal((await get(svgUrl, { 'if-none-match': etag })).status, 304);
 
+  // Even a request naming the current version is kept for five minutes, not
+  // forever: losing access to a provider must not leave a long-lived browser copy.
   const pinned = await get(`${svgUrl}?v=${svgEntry.version}`);
-  assert.equal(pinned.headers.get('cache-control'), 'private, max-age=31536000, immutable');
+  assert.equal(pinned.headers.get('cache-control'), 'private, max-age=300');
   await pinned.arrayBuffer();
-  const wrong = await get(`${svgUrl}?v=0000000000000000`);
-  assert.equal(wrong.headers.get('cache-control'), 'private, max-age=300', 'a stale version is not immutable');
-  await wrong.arrayBuffer();
+  const revalidated = await get(`${svgUrl}?v=${svgEntry.version}`, { 'if-none-match': etag });
+  assert.equal(revalidated.status, 304, 'revalidating after the five minutes costs no bytes');
+  assert.equal(revalidated.headers.get('cache-control'), 'private, max-age=300');
 
   const png = await get(pngEntry.formats.find((f) => f.format === 'png')?.url as string);
   assert.equal(png.headers.get('content-type'), 'image/png');
