@@ -11,7 +11,7 @@ import { registerCommentRoutes } from '../comments/routes.ts';
  * the cache-key/link contracts they'll honour are already fixed
  * (render/cache-key.ts, links/sign.ts).
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, join, normalize, resolve as resolvePath, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -170,7 +170,8 @@ import { RenderResourceError, type RenderSpec } from '../renders/types.ts';
 import { createHostedAssetResolver, optimizeHostedAsset, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
 import { resolveBindingRows, type DataBinding } from '../automation/bindings.ts';
 import { resolveC2paSigner } from '../render/c2pa-signer.ts';
-import { CATALOG_INDEX_REL, CATALOG_SIG_REL, createCatalogSigning, servedToolIndexBytes } from '../catalog/signing.ts';
+import { CATALOG_INDEX_REL, CATALOG_SIG_REL, callerCanSeeTool, createCatalogSigning, servedToolIndexBytes } from '../catalog/signing.ts';
+import { publicCard, shellStubFor } from '../shell/share-cards.ts';
 import { isToolKeyedCatalogPath, servedToolSidecar } from '../catalog/tool-sidecars.ts';
 import type { ProvenanceDoc, ProvenanceIngredient } from '../render/provenance.ts';
 import type { Profile } from '../render/contract.ts';
@@ -4891,6 +4892,36 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     return drop.length;
   };
 
+  // ── the Lolly web shell's files (instance.shellDir) ─────────────────────
+  // Defined ahead of the routes because two of them hand over to it: the bare
+  // `/tools` gallery route (the `/tools/*` file route below also matches it) and
+  // the SPA fallback registered last. Absent shellDir → null, and neither does.
+  const shellDir = config.instance.shellDir;
+  const serveShell = shellDir ? async (res: ServerResponse, rel: string): Promise<void> => {
+    const clean = normalize(rel.replace(/^\/+/, '')).replace(/^(\.\.[/\\])+/, '');
+    if (clean.includes('..')) return sendError(res, 400, 'INVALID_INPUT', 'bad path');
+    // A path ending in a file extension is a real asset. Anything else is an SPA
+    // route: a tool or a view answers the shell build's landing stub, whose head
+    // carries that page's share card (shell/share-cards.ts); every other route
+    // answers index.html, and the shell routes from there. Docs paths never get
+    // here: serveShellDocs answers them first, from the same info/ pages.
+    const asset = /\.[a-z0-9]+$/i.test(clean);
+    const target = clean === '.well-known/lolly.json' ? 'info/well-known-lolly.json'
+      : asset && clean ? clean : (shellStubFor(clean, (r) => existsSync(join(shellDir, r))) ?? 'index.html');
+    try {
+      const bytes = await readFile(join(shellDir, target));
+      res.writeHead(200, {
+        ...shellSecurityHeaders(rel),
+        'content-type': contentType(target),
+        'cache-control': asset ? 'public, max-age=300' : 'no-cache',
+      });
+      res.end(bytes);
+    } catch {
+      // Missing real asset → 404; a missing index means the shellDir is wrong.
+      sendError(res, 404, 'NOT_FOUND', asset ? 'no such file' : 'shell index not found: check instance.shellDir');
+    }
+  } : null;
+
   // ── tool files (pack mount, the tool index's own per-caller visibility) ────
   // The shell fetches `/tools/<id>/<file>` from its own origin. Served from the
   // pack so the files agree with the tool index (the pack's, filtered per caller)
@@ -4899,6 +4930,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // same absence the index shows. A guest may fetch the tool its link opens.
   // `tools` is a reserved prefix below, so the dist's copy is never consulted.
   router.add('GET', '/tools/*', async (req, res, ctx) => {
+    // The bare `/tools` is the app's gallery route, not a tool file.
+    if (!ctx.params['*'] && serveShell) return serveShell(res, 'tools');
     const user = await memberOf(req) ?? renderReader(req, brand.current()!.revision, linkVerify);
     const p = principalOf(req);
     if (config.policy.defaultAccessMode === 'gated' && !user && p?.kind !== 'guest') {
@@ -4926,6 +4959,37 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   const serveCatalog: Handler = async (req, res, ctx) => {
     const user = await memberOf(req) ?? renderReader(req, brand.current()!.revision, linkVerify);
     const p = principalOf(req);
+    // Share cards answer before the sign-in gate: a link unfurler never signs in.
+    // A tool's card follows the tool's own visibility for this caller, so a card
+    // for a tool hidden from some groups is never public; only a card every caller
+    // may see is marked cacheable by shared caches. The pack's copy wins; instance
+    // packs usually exclude catalog/og, so the shell build's copy serves otherwise.
+    const card = publicCard(normalize(ctx.params['*'] ?? ''));
+    if (card) {
+      let everyone = true;
+      if (card.kind === 'tool') {
+        const overlays = await store.listOverlays();
+        const caller = { overlays, groups: user?.groups ?? [], ...(p?.kind === 'guest' ? { guestToolId: p.guest.toolId } : {}) };
+        if (!callerCanSeeTool(caller, card.toolId)) return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
+        everyone = toolVisibleTo(overlays.get(card.toolId), []);
+      }
+      for (const root of [config.instance.pack, ...(shellDir ? [shellDir] : [])]) {
+        let bytes: Buffer;
+        try {
+          bytes = await readFile(join(root, 'catalog', card.rel));
+        } catch {
+          continue;
+        }
+        res.writeHead(200, {
+          'content-type': contentType(card.rel),
+          'cache-control': everyone ? 'public, max-age=3600' : 'private, no-cache',
+          'x-content-type-options': 'nosniff',
+        });
+        res.end(bytes);
+        return;
+      }
+      return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
+    }
     if (config.policy.defaultAccessMode === 'gated' && !user && p?.kind !== 'guest') {
       return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
     }
@@ -9879,9 +9943,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // so every API/console/catalog/render/link route wins; only unmatched GETs
   // reach public docs or the SPA fallback. Absent shellDir means these routes
   // are not added. HEAD handles only public docs, never private GET handlers.
-  const shellDir = config.instance.shellDir;
+  // serveShell is defined above the tool file routes, which also use it.
   const RESERVED_PREFIX = /^(api|catalog|tools|render|l|admin|scim|healthz|activate|connect)(\/|$)/;
-  if (shellDir) {
+  if (shellDir && serveShell) {
     const serveShellDocs = async (req: IncomingMessage, res: ServerResponse, rel: string): Promise<boolean> => {
       const doc = shellDocsPath(rel);
       if (!doc) return false;
@@ -9920,26 +9984,6 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       } catch { /* A missing shell mount is a missing public document. */ }
       sendError(res, 404, 'NOT_FOUND', 'no such public document');
       return true;
-    };
-    const serveShell = async (res: ServerResponse, rel: string): Promise<void> => {
-      const clean = normalize(rel.replace(/^\/+/, '')).replace(/^(\.\.[/\\])+/, '');
-      if (clean.includes('..')) return sendError(res, 400, 'INVALID_INPUT', 'bad path');
-      // A path ending in a file extension is a real asset; anything else is an
-      // SPA route → index.html (the shell hash-routes from there).
-      const asset = /\.[a-z0-9]+$/i.test(clean);
-      const target = clean === '.well-known/lolly.json' ? 'info/well-known-lolly.json' : asset && clean ? clean : 'index.html';
-      try {
-        const bytes = await readFile(join(shellDir, target));
-        res.writeHead(200, {
-          ...shellSecurityHeaders(rel),
-          'content-type': contentType(target),
-          'cache-control': target === 'index.html' ? 'no-cache' : 'public, max-age=300',
-        });
-        res.end(bytes);
-      } catch {
-        // Missing real asset → 404; a missing index means the shellDir is wrong.
-        sendError(res, 404, 'NOT_FOUND', asset ? 'no such file' : 'shell index not found — check instance.shellDir');
-      }
     };
     router.add('GET', '/info/media/agent-collaboration-review.mp4', (_req, res) => {
       res.writeHead(307, { location: '/review/agent-collaboration-review.mp4', 'cache-control': 'public, max-age=300' });
