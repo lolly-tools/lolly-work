@@ -57,6 +57,8 @@ would point the admins out the same way. Disabled accounts are left out, and the
 at 200 people (`effectiveTruncated: true`). A project can be made visible to any group, so
 group rows are listed only for the groups the caller is in themselves (an admin or owner
 sees them all): making a project visible to a group never reads that group's people out.
+People who reach the project through a user-made group or the instance-wide audience
+(`policy.sharing`) are not listed here yet; the project's share settings show those grants.
 
 The list also says whether the caller may hand the project on (`canTransfer`), by the same
 test the transfer applies: the project's owner, or a holder of `project.manage`. Lolly

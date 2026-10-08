@@ -83,7 +83,12 @@ before reporting.
   kill early. Per **user**, sign-out-everywhere exists: disabling an account,
   or `POST /api/v1/users/:id/revoke-sessions`, bumps the user's session epoch
   and every prior token fails its next request. The residual is scoped to one
-  token vs all of a user's, bounded by `policy.sessionTtlHours` (default 12h).
+  token vs all of a user's, bounded by `policy.sessionTtlHours` (default 12h)
+  while renewal is off. With `policy.sessionMaxHours` set, a cookie in use is
+  renewed after half its lifetime, so the bound for one token is
+  `sessionMaxHours` after the sign-in that started its chain. Each renewal
+  re-checks the account, its epoch and admission, and a person ends all of
+  their own sessions with `POST /api/v1/me/revoke-sessions`.
 - **CSRF stance is `SameSite=Lax` plus a site check.** All cookies are
   `HttpOnly; SameSite=Lax` (plus `Secure` on https instances). There is no
   per-request CSRF token; a cookie-authenticated mutation is refused before

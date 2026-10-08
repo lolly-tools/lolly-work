@@ -177,6 +177,7 @@ See [email and password](identity.md#email-and-password) for the flow.
 | `sharing.maxGrantDays` | *unset* | the longest end date a membership or group grant may carry, in whole days (1 to 3660). Unset means no limit |
 | `versions.maxBytes` | `1073741824` | bytes of saved-version content all documents together may hold (1 GiB); one document may hold at most 100 MiB. Over it the oldest automatic versions are removed first, then a named save or a restore answers `409 VERSION_SPACE`. See [data lifecycle](data-lifecycle.md#session-versions) |
 | `sessionTtlHours` | `12` | member session lifetime (token `exp` and cookie `Max-Age`); must be > 0 and ≤ 720 |
+| `sessionMaxHours` | *unset* | the longest a session chain may run after the sign-in that started it, with sliding renewal on. Unset equals `sessionTtlHours`, which turns renewal off. When set it must be ≥ `sessionTtlHours` and ≤ 720. A session past half its TTL gets a fresh cookie on the next API write or poll of the session, org-config or inbox, never past `authAt + sessionMaxHours`. A device approved at `/activate`, and the browser kept signed in after removing a sign-in, continue the approving chain under the same cap; with renewal off that cap is `sessionTtlHours` from the sign-in, so a device approved late in a browser session gets only that session's remaining time. See [identity](identity.md#session-length-and-renewal) |
 | `submit.maxBytes` | `67108864` | per-file cap on a catalog submission (64 MiB, matching publish-out). Over it: `413 PAYLOAD_TOO_LARGE` |
 | `submit.chain` | *unset* | approval chain id gating submissions. Unset means no review: a submitted asset is live the moment it is stored. Set to a chain that does not exist, submissions are refused (`503 SUBMIT_CHAIN_MISSING`) rather than published unreviewed |
 | `submit.quota.bytes` | `0` | cumulative byte ceiling per group; `0` is unlimited |
@@ -247,7 +248,9 @@ want to bound blob growth - see
 [catalog](catalog.md#versions).
 
 Shorter `sessionTtlHours` bounds token lifetime if a directory change has not yet reached
-Work. Once Work receives a group/role change, authorization uses the live record on each
+Work. With `sessionMaxHours` set, a cookie in use is renewed up to that cap, but each
+renewal checks the account, its session epoch and admission again first, so a person who
+left the lists stops at the end of their current cookie. Once Work receives a group/role change, authorization uses the live record on each
 request. Account disable and a session-epoch bump revoke existing member tokens on their
 next authenticated request. Token expiry does not replace the offboarding integration.
 

@@ -48,7 +48,11 @@ who keeps working is not sent back to sign in at the end of it (plans/75 RENEW):
   in with a cookie in the same chain, cut the same way; past the cap that browser signs in
   again too.
 - `sessionMaxHours` is optional. Absent, it equals `sessionTtlHours`, and nothing is
-  renewed. It must be at least `sessionTtlHours` and at most 720. A typical setting keeps
+  renewed. The chain still holds with renewal off: a device approved at `/activate` gets
+  only the approving browser's remaining time, at most `sessionTtlHours` from its sign-in,
+  where it used to get a full `sessionTtlHours` of its own. A CLI or desktop sign-in
+  approved late in a browser session therefore ends sooner; signing in again in the
+  browser first gives it the full lifetime. It must be at least `sessionTtlHours` and at most 720. A typical setting keeps
   the TTL short and the cap at a few days, for example `sessionTtlHours: 12` with
   `sessionMaxHours: 72`.
 
