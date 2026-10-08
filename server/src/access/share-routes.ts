@@ -26,7 +26,7 @@ import type { InstanceConfig } from '../config/instance.ts';
 import { randomId } from '../lib/crypto.ts';
 import { resolveInvitePolicy } from '../policy/invites.ts';
 import { resolveSharingPolicy, type SharingPolicy } from '../policy/sharing.ts';
-import { nameWithoutEmail } from '../projects/sharing.ts';
+import { createWindowQuota, nameWithoutEmail } from '../projects/sharing.ts';
 import {
   accessAtLeast, grantLive, isInstanceMember, mayShareProject, projectAccessRank, projectRelation, type ProjectAccess,
   type ProjectMembership,
@@ -64,6 +64,10 @@ export const SHARE_GROUP_MEMBER_LIMIT = 500;
 export const SHARE_GROUPS_PER_OWNER = 100;
 const PEOPLE_LIMIT = 20;
 const PEOPLE_PROJECT_SCAN = 50;
+/** People lookups one person may make a minute (as `comment-people`). An exact
+ *  address answers whether that address has an account here, so the lookup is
+ *  metered like the other people searches. */
+export const SHARE_PEOPLE_PER_MINUTE = 60;
 const DAY_MS = 86_400_000;
 const GROUP_NAME = /^[^\u0000-\u001f]{1,128}$/;
 const NO_STORE = { 'cache-control': 'private, no-store' };
@@ -102,6 +106,7 @@ const isAdmin = (user: UserRecord): boolean => user.role === 'admin' || user.rol
 export function registerShareRoutes(router: ReturnType<typeof createRouter>, d: Dependencies): void {
   const policy = (): SharingPolicy => resolveSharingPolicy(d.config.policy.sharing);
   const allowedRoles = (): ProjectMemberRole[] => resolveInvitePolicy(d.config.policy.invites).projectRoles;
+  const peopleQuota = createWindowQuota(SHARE_PEOPLE_PER_MINUTE, 60_000);
 
   async function projectFor(req: IncomingMessage, res: ServerResponse, id: string) {
     const user = await d.memberOf(req);
@@ -301,7 +306,10 @@ export function registerShareRoutes(router: ReturnType<typeof createRouter>, d: 
     const admitted = await projectFor(req, res, ctx.params.id as string);
     if (!admitted) return;
     const { user, project, access } = admitted;
-    if (!mayShareProject(project, access)) return sendError(res, 403, 'FORBIDDEN', 'you cannot change who has access to this project');
+    // An end date in a minute is a removal, and removing someone is a
+    // manager's call (DELETE .../members/:userId), so editors who may share
+    // still cannot set one.
+    if (!accessAtLeast(access, 'manager')) return sendError(res, 403, 'FORBIDDEN', 'only a project manager can change when someone\'s access ends');
     const targetId = ctx.params.userId as string;
     if (targetId === project.ownerId) return sendError(res, 409, 'PROJECT_OWNER', 'the owner has no end date');
     const body = (await readJson(req)) as { expiresAt?: unknown } | null;
@@ -312,9 +320,6 @@ export function registerShareRoutes(router: ReturnType<typeof createRouter>, d: 
     if (!ends.ok) return sendError(res, 400, 'INVALID_INPUT', ends.message, { field: 'expiresAt' });
     const existing = await d.store.getProjectMember(project.id, targetId);
     if (!existing) return sendError(res, 404, 'NOT_FOUND', 'no such member on this project');
-    if (existing.role === 'manager' && !accessAtLeast(access, 'manager')) {
-      return sendError(res, 403, 'FORBIDDEN', 'only a project manager can change manager access');
-    }
     const updated = await d.store.setProjectMemberExpiry(project.id, targetId, ends.at ?? null);
     if (!updated) return sendError(res, 404, 'NOT_FOUND', 'no such member on this project');
     await d.audit(`user:${user.id}`, 'project.member.expiry', `project:${project.id}`, { userId: targetId, expiresAt: ends.at ?? null });
@@ -393,6 +398,15 @@ export function registerShareRoutes(router: ReturnType<typeof createRouter>, d: 
   router.add('GET', '/api/v1/share-groups/people', async (req, res, ctx) => {
     const user = await d.memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+    // Suggestions exist to fill a user-made group, so they follow the same
+    // gates: a member of this instance (never a guest or a service token),
+    // while the instance allows those groups.
+    if (!isInstanceMember(user)) return sendError(res, 403, 'FORBIDDEN', 'people suggestions are for members of this instance');
+    if (!policy().customGroups) return sendError(res, 403, 'GROUPS_OFF', 'this instance does not allow user-made groups');
+    if (!peopleQuota.take(user.id)) {
+      res.setHeader('retry-after', '60');
+      return sendError(res, 429, 'RATE_LIMITED', 'too many people lookups; try again in a minute');
+    }
     const q = (ctx.url.searchParams.get('q') ?? '').trim().toLowerCase().slice(0, 120);
     const people: { id: string; name: string }[] = [];
     if (q.includes('@')) {
@@ -429,9 +443,7 @@ export function registerShareRoutes(router: ReturnType<typeof createRouter>, d: 
       createdBy: user.id, createdAt: new Date().toISOString(),
     };
     await d.store.putShareGroup(group);
-    for (const person of [user, ...people]) {
-      await d.store.setUserShareGroups(person.id, [...(person.shareGroups ?? []), group.id]);
-    }
+    for (const person of [user, ...people]) await d.store.addUserShareGroup(person.id, group.id);
     await d.audit(`user:${user.id}`, 'share-group.create', `share-group:${group.id}`, { name, members: people.length + 1 });
     sendJson(res, 201, await summary(group, 'owner'));
   });
@@ -492,10 +504,11 @@ export function registerShareRoutes(router: ReturnType<typeof createRouter>, d: 
       }
       next.managers = [...new Set(body.managers as string[])].filter((m) => m !== group.ownerId);
     }
-    for (const person of fresh) await d.store.setUserShareGroups(person.id, [...(person.shareGroups ?? []), group.id]);
+    // One id added or removed in place: writing back a list read earlier
+    // could undo a change made to another group in the meantime.
+    for (const person of fresh) await d.store.addUserShareGroup(person.id, group.id);
     for (const id of remove as string[]) {
-      const person = members.find((m) => m.id === id);
-      if (person) await d.store.setUserShareGroups(person.id, (person.shareGroups ?? []).filter((g) => g !== group.id));
+      if (members.some((m) => m.id === id)) await d.store.removeUserShareGroup(id, group.id);
     }
     next.managers = next.managers.filter((m) => !(remove as string[]).includes(m));
     await d.store.putShareGroup(next);

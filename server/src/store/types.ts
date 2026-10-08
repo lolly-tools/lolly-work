@@ -1250,7 +1250,9 @@ export interface Store extends RenderStore, PasskeyStore {
   /** Every project this user is an explicit member of: one read for a list. */
   listUserProjectMemberships(userId: string): Promise<ProjectMemberRecord[]>;
   /** Insert, or change the role of an existing row. `addedBy`/`addedAt` of an
-   *  existing row are kept: they record who first added the person. */
+   *  existing row are kept: they record who first added the person. The end
+   *  date is always `rec.expiresAt`, so a row written without one has none:
+   *  re-granting a membership that ended restores it. */
   putProjectMember(rec: ProjectMemberRecord): Promise<void>;
   /** Change the role of an EXISTING row only; returns the updated row, or
    *  null (writing nothing) when there is no such row. Never inserts, so a
@@ -1333,6 +1335,14 @@ export interface Store extends RenderStore, PasskeyStore {
   listShareGroupMembers(id: string): Promise<UserRecord[]>;
   /** Replace a user's share group ids. Returns the updated record, or null. */
   setUserShareGroups(userId: string, ids: string[]): Promise<UserRecord | null>;
+  /** Add one share group id to a user's row in place, while that group exists
+   *  (no-op if already there). Returns the updated record, or null when there
+   *  is no such user or group. Unlike `setUserShareGroups` it never writes back
+   *  a list read earlier, so concurrent changes to other groups survive. */
+  addUserShareGroup(userId: string, groupId: string): Promise<UserRecord | null>;
+  /** Take one share group id off a user's row in place. Returns the updated
+   *  record, or null when there is no such user. */
+  removeUserShareGroup(userId: string, groupId: string): Promise<UserRecord | null>;
   /** Every project this person has pinned, hidden or opened (migration 0061). */
   listProjectUserState(userId: string): Promise<ProjectUserStateRecord[]>;
   /** Merge a change into one person's state for one project. `listed: null`

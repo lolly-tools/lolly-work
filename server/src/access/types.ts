@@ -113,7 +113,7 @@ export interface ProjectRequestWire {
   userId: string;
   name: string;
   email: string;
-  role: 'viewer' | 'editor';
+  role: 'viewer' | 'commenter' | 'editor';
   currentRole: ProjectAccess;
   note?: string;
   createdAt: string;

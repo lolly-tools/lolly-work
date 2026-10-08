@@ -463,3 +463,133 @@ test('postgres keeps per-person project state', { skip: !process.env.LW_TEST_DAT
     assert.deepEqual(await store.listProjectUserState(a.id), [{ userId: a.id, projectId: 'prj_1', lastOpenedAt: '2026-10-07T11:00:00.000Z' }]);
   });
 });
+
+// ── review fixes before merge (lolly-work PR #79) ────────────────────────────
+
+test('viewers comment only while the project lets them, and the server enforces it', async () => {
+  const env = await boot();
+  const alice = await env.userId('alice@test');
+  for (const [email, role] of [['dee@test', 'viewer'], ['olly@test', 'commenter']] as const) {
+    await env.store.putProjectMember({ projectId: env.projectId, userId: await env.userId(email), role, addedBy: 'user:seed', addedAt: '2026-10-01T00:00:00Z' });
+  }
+  const now = new Date().toISOString();
+  await env.store.putSession({ id: 'ses_review', projectId: env.projectId, toolId: 'design', toolVersion: '1', inputs: {}, meta: {},
+    createdBy: alice, updatedBy: alice, rev: 1, updatedAt: now });
+  const path = '/api/v1/sessions/ses_review/comments';
+  const comment = (id: string) => ({ id, messageId: `${id}-m`, anchor: { kind: 'canvas', surface: 'page', x: 1, y: 2 }, body: `About ${id}` });
+  assert.equal((await env.as('dee@test', 'GET', path)).json.permissions.create, true, 'viewers comment by default');
+  const first = await env.as('dee@test', 'POST', path, comment('c1'));
+  assert.equal(first.status, 201);
+
+  assert.equal((await env.as('mona@test', 'PUT', `/api/v1/projects/${env.projectId}/sharing`, { settings: { viewersCanComment: false } })).status, 200);
+  const read = await env.as('dee@test', 'GET', path);
+  assert.equal(read.status, 200, 'a viewer still reads the comments');
+  assert.equal(read.json.permissions.create, false);
+  assert.equal((await env.as('dee@test', 'POST', path, comment('c2'))).status, 403);
+  const reply = await env.as('dee@test', 'POST', `${path}/c1`, { revision: first.json.thread.revision, action: 'reply', messageId: 'c1-r', body: 'More' });
+  assert.equal(reply.status, 403);
+  assert.equal((await env.as('dee@test', 'GET', '/api/v1/sessions/ses_review/comment-people')).status, 403);
+  assert.equal((await env.as('olly@test', 'POST', path, comment('c3'))).status, 201, 'a commenter always comments');
+});
+
+test('an ended membership is restored by sharing again, and a raise keeps a live end date', async () => {
+  const env = await boot();
+  const eddie = await env.userId('eddie@test');
+  await env.store.setProjectMemberExpiry(env.projectId, eddie, new Date(Date.now() - 1000).toISOString());
+  assert.equal(await roleIn(env, 'eddie@test'), null);
+  const again = await env.as('mona@test', 'POST', `/api/v1/projects/${env.projectId}/invite`, { emails: ['eddie@test'], role: 'viewer' });
+  assert.equal(again.status, 200);
+  assert.equal(again.json.results[0].status, 'added', 'an ended row is not "already" on the project');
+  assert.equal(await roleIn(env, 'eddie@test'), 'viewer');
+  assert.equal((await env.store.getProjectMember(env.projectId, eddie))!.expiresAt, undefined, 'the old end date is gone');
+
+  const soon = new Date(Date.now() + 86_400_000).toISOString();
+  await env.store.setProjectMemberExpiry(env.projectId, eddie, soon);
+  const raise = await env.as('mona@test', 'POST', `/api/v1/projects/${env.projectId}/invite`, { emails: ['eddie@test'], role: 'editor' });
+  assert.equal(raise.json.results[0].status, 'added');
+  const row = await env.store.getProjectMember(env.projectId, eddie);
+  assert.equal(row!.role, 'editor');
+  assert.equal(row!.expiresAt, soon, 'a raise keeps the end date a manager set');
+});
+
+test('a commenter request reaches managers as one, and an ended manager cannot answer it', async () => {
+  const env = await boot();
+  const mona = await env.userId('mona@test');
+  await env.store.setProjectMemberExpiry(env.projectId, mona, new Date(Date.now() - 1000).toISOString());
+  assert.equal((await env.as('dee@test', 'POST', `/api/v1/projects/${env.projectId}/access-requests`, { role: 'commenter' })).status, 202);
+  const members = await env.as('alice@test', 'GET', `/api/v1/projects/${env.projectId}/members`);
+  assert.equal(members.json.requests.length, 1);
+  assert.equal(members.json.requests[0].role, 'commenter');
+  const answer = await env.as('mona@test', 'POST', `/api/v1/access-requests/${members.json.requests[0].id}/approve`, {});
+  assert.ok(answer.status === 403 || answer.status === 404, `an ended manager is not an approver (got ${answer.status})`);
+  assert.equal(await roleIn(env, 'dee@test'), null);
+});
+
+test('people suggestions follow the group policy and are metered per person', async () => {
+  const off = await boot({ policy: { sharing: { customGroups: false } } });
+  assert.equal((await off.as('alice@test', 'GET', '/api/v1/share-groups/people?q=mo')).json.error.code, 'GROUPS_OFF');
+  const env = await boot();
+  const address = `/api/v1/share-groups/people?q=${encodeURIComponent('dee@test')}`;
+  for (let i = 0; i < 60; i++) assert.equal((await env.as('alice@test', 'GET', address)).status, 200);
+  const limited = await env.as('alice@test', 'GET', address);
+  assert.equal(limited.status, 429);
+  assert.equal(limited.json.error.code, 'RATE_LIMITED');
+  assert.equal((await env.as('mona@test', 'GET', address)).status, 200, 'the limit is per person');
+});
+
+test('only a manager sets end dates on members, even where editors may share', async () => {
+  const env = await boot();
+  assert.equal((await env.as('mona@test', 'PUT', `/api/v1/projects/${env.projectId}/sharing`, { settings: { editorsCanShare: true } })).status, 200);
+  const dee = await env.userId('dee@test');
+  await env.store.putProjectMember({ projectId: env.projectId, userId: dee, role: 'editor', addedBy: 'user:seed', addedAt: '2026-10-01T00:00:00Z' });
+  const path = `/api/v1/projects/${env.projectId}/members/${dee}/expiry`;
+  const soon = new Date(Date.now() + 60_000).toISOString();
+  assert.equal((await env.as('eddie@test', 'PUT', path, { expiresAt: soon })).status, 403, 'an end date a minute away is a removal');
+  assert.equal((await env.as('mona@test', 'PUT', path, { expiresAt: soon })).status, 200);
+});
+
+test('the older visibility PATCH drops a group grant along with its group', async () => {
+  const env = await boot();
+  const sharing = `/api/v1/projects/${env.projectId}/sharing`;
+  assert.equal((await env.as('alice@test', 'PUT', sharing, { grants: [{ principal: { kind: 'group', name: 'team' }, role: 'manager' }] })).status, 200);
+  assert.equal(await roleIn(env, 'gina@test'), 'manager');
+  assert.equal((await env.as('alice@test', 'PATCH', `/api/v1/projects/${env.projectId}`, { visibility: 'private' })).status, 200);
+  assert.equal((await env.store.getProject(env.projectId))!.sharing, undefined);
+  assert.equal(await roleIn(env, 'gina@test'), null);
+  assert.equal((await env.as('alice@test', 'PATCH', `/api/v1/projects/${env.projectId}`, { visibility: { groups: ['team'] } })).status, 200);
+  assert.equal(await roleIn(env, 'gina@test'), 'editor', 'back at editor, never the old manager grant');
+});
+
+async function groupIdsInPlace(store: Store) {
+  const a = await store.upsertUserBySub({ sub: 'a', email: 'a@test', groups: [], role: 'member' });
+  for (const id of ['sg_1', 'sg_2']) await store.putShareGroup({ id, name: id, ownerId: a.id, managers: [], createdBy: a.id, createdAt: '2026-10-07T00:00:00.000Z' });
+  assert.deepEqual((await store.addUserShareGroup(a.id, 'sg_1'))!.shareGroups, ['sg_1']);
+  // Another request adds sg_2 while this one removes sg_1: neither undoes the other.
+  await Promise.all([store.addUserShareGroup(a.id, 'sg_2'), store.removeUserShareGroup(a.id, 'sg_1')]);
+  assert.deepEqual((await store.getUser(a.id))!.shareGroups ?? [], ['sg_2']);
+  assert.deepEqual((await store.addUserShareGroup(a.id, 'sg_2'))!.shareGroups, ['sg_2'], 'adding twice keeps one');
+  assert.equal(await store.addUserShareGroup(a.id, 'sg_gone'), null, 'no id for a group that does not exist');
+  assert.equal(await store.addUserShareGroup('nobody', 'sg_2'), null);
+  assert.deepEqual((await store.removeUserShareGroup(a.id, 'sg_2'))!.shareGroups ?? [], []);
+}
+
+test('share group membership changes one id in place (memory)', () => groupIdsInPlace(createMemoryStore()));
+test('share group membership changes one id in place (postgres)', { skip: !process.env.LW_TEST_DATABASE_URL }, async () => {
+  await withFreshPostgres(process.env.LW_TEST_DATABASE_URL!, groupIdsInPlace);
+});
+
+test('postgres: re-granting an ended membership clears its end date, a raise keeps a live one', { skip: !process.env.LW_TEST_DATABASE_URL }, async () => {
+  await withFreshPostgres(process.env.LW_TEST_DATABASE_URL!, async (store) => {
+    const a = await store.upsertUserBySub({ sub: 'a', email: 'a@test', groups: [], role: 'member' });
+    const b = await store.upsertUserBySub({ sub: 'b', email: 'b@test', groups: [], role: 'member' });
+    await store.putProject({ id: 'prj_1', name: 'P', visibility: 'private', ownerId: a.id, createdAt: '2026-10-07T00:00:00.000Z' });
+    const base = { projectId: 'prj_1', userId: b.id, addedBy: 'user:a', addedAt: '2026-10-07T00:00:00.000Z' };
+    await store.putProjectMember({ ...base, role: 'viewer', expiresAt: '2026-10-08T00:00:00.000Z' });
+    await store.putProjectMember({ ...base, role: 'viewer' });
+    assert.equal((await store.getProjectMember('prj_1', b.id))!.expiresAt, undefined);
+    await store.putProjectMember({ ...base, role: 'editor', expiresAt: '2027-01-01T00:00:00.000Z' });
+    const row = (await store.getProjectMember('prj_1', b.id))!;
+    assert.equal(row.role, 'editor');
+    assert.equal(row.expiresAt, '2027-01-01T00:00:00.000Z');
+  });
+});

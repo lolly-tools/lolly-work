@@ -1399,7 +1399,9 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     async putProjectMember(rec) {
       const k = memberKey(rec.projectId, rec.userId);
       const prev = projectMembers.get(k);
-      projectMembers.set(k, prev ? { ...prev, role: rec.role } : { ...rec });
+      const next: ProjectMemberRecord = prev ? { ...prev, role: rec.role } : { ...rec };
+      if (rec.expiresAt) next.expiresAt = rec.expiresAt; else delete next.expiresAt;
+      projectMembers.set(k, next);
     },
     async updateProjectMemberRole(projectId, userId, role) {
       const k = memberKey(projectId, userId);
@@ -1653,6 +1655,21 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       const u = userById(userId);
       if (!u) return null;
       const next: UserRecord = { ...u, shareGroups: [...new Set(ids.filter(Boolean))] };
+      users.set(u.sub, next);
+      return mapped(next);
+    },
+    async addUserShareGroup(userId, groupId) {
+      const u = userById(userId);
+      if (!u || !shareGroups.has(groupId)) return null;
+      if (u.shareGroups?.includes(groupId)) return mapped(u);
+      const next: UserRecord = { ...u, shareGroups: [...(u.shareGroups ?? []), groupId] };
+      users.set(u.sub, next);
+      return mapped(next);
+    },
+    async removeUserShareGroup(userId, groupId) {
+      const u = userById(userId);
+      if (!u) return null;
+      const next: UserRecord = { ...u, shareGroups: (u.shareGroups ?? []).filter((g) => g !== groupId) };
       users.set(u.sub, next);
       return mapped(next);
     },

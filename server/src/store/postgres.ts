@@ -2276,7 +2276,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       await pool.query(
         `insert into project_members (project_id, user_id, role, added_by, added_at, expires_at)
          values ($1, $2, $3, $4, $5, $6)
-         on conflict (project_id, user_id) do update set role = excluded.role`,
+         on conflict (project_id, user_id) do update set role = excluded.role, expires_at = excluded.expires_at`,
         [rec.projectId, rec.userId, rec.role, rec.addedBy, rec.addedAt, rec.expiresAt ?? null],
       );
     },
@@ -2676,6 +2676,20 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       const { rows } = await pool.query(
         'update users set share_groups = $2::jsonb where id = $1 returning *', [userId, JSON.stringify([...new Set(ids.filter(Boolean))])],
       );
+      return rows[0] ? userFromRow(rows[0]) : null;
+    },
+    async addUserShareGroup(userId, groupId) {
+      // Appends in one statement, and only while the group exists, so a group
+      // deleted in the meantime leaves no id behind.
+      const { rows } = await pool.query(
+        `update users set share_groups = case when share_groups @> jsonb_build_array($2::text) then share_groups
+           else share_groups || jsonb_build_array($2::text) end
+         where id = $1 and exists (select 1 from share_groups where id = $2) returning *`, [userId, groupId],
+      );
+      return rows[0] ? userFromRow(rows[0]) : null;
+    },
+    async removeUserShareGroup(userId, groupId) {
+      const { rows } = await pool.query('update users set share_groups = share_groups - $2::text where id = $1 returning *', [userId, groupId]);
       return rows[0] ? userFromRow(rows[0]) : null;
     },
     async listProjectUserState(userId) {
