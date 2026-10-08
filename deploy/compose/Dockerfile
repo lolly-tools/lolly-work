@@ -47,7 +47,7 @@ COPY scripts ./scripts
 # This uses a temporary memory store, with no instance credentials or database.
 # Verify the manifests inside the image as well, so source integrity checks
 # remain available to operators without a separately mounted checkout.
-RUN node scripts/verify-engine-pin.ts && node scripts/check-release-capabilities.ts
+RUN node scripts/console-assets.ts && node scripts/verify-engine-pin.ts && node scripts/check-release-capabilities.ts
 # Mount point for the instance's tool pack (instance.json `pack`, default
 # ./packs/demo). compose/Helm bind it read-only; empty here by design —
 # EXCEPT the demo pack (252 KB), always aboard so an evaluation install with no

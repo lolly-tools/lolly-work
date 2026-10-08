@@ -30,7 +30,7 @@ test('SUSE candidate uses one immutable BCI base and installs native dependencie
 
 test('SUSE image preserves every default release input and both built-in gates', () => {
   assert.deepEqual(instructions(candidate, 'COPY'), instructions(baseline, 'COPY'));
-  const gates = 'RUN node scripts/verify-engine-pin.ts && node scripts/check-release-capabilities.ts';
+  const gates = 'RUN node scripts/console-assets.ts && node scripts/verify-engine-pin.ts && node scripts/check-release-capabilities.ts';
   assert.ok(candidate.includes(gates));
   assert.ok(candidate.indexOf(gates) > candidate.indexOf('COPY scripts ./scripts'));
   const pins = candidate.indexOf('COPY tsconfig.json engine-pin.json content-resolver-pin.json');

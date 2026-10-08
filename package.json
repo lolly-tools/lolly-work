@@ -12,9 +12,11 @@
     "node": ">=24"
   },
   "scripts": {
+    "prestart": "node scripts/console-assets.ts --check",
     "start": "node server/src/main.ts",
     "migrate": "node scripts/migrate.ts",
     "migrate:status": "node scripts/migrate.ts --check",
+    "predemo": "node scripts/console-assets.ts --check",
     "demo": "node scripts/demo.ts",
     "cli": "node cli/lw.ts",
     "verify:engine-pin": "node scripts/verify-engine-pin.ts",
@@ -24,7 +26,9 @@
     "check:setup": "node scripts/check-setup.ts",
     "sbom": "node scripts/build-sbom.ts",
     "release:yunohost": "node scripts/yunohost-release.ts",
-    "pretest": "node scripts/verify-engine-pin.ts",
+    "console:build": "node scripts/console-assets.ts",
+    "console:check": "node scripts/console-assets.ts --check",
+    "pretest": "node scripts/verify-engine-pin.ts && node scripts/console-assets.ts --check",
     "test": "node --test \"tests/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
     "check:docs-vernacular": "node scripts/check-docs-vernacular.ts",

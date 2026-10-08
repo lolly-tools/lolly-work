@@ -6,10 +6,23 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
+import vm from 'node:vm';
+import { spawnSync } from 'node:child_process';
 import { buildApp } from '../server/src/api/app.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
 import { parseConfig } from '../server/src/config/instance.ts';
 import { mintSessionCookie } from '../server/src/iam/sessions.ts';
+import { checkConsoleAssets, consoleAssetPlan, CONSOLE_DIR } from './console-assets.ts';
+import { loadConsoleModuleGraph } from './console-module-check.ts';
+
+// Native module linking is opt-in in Node 24. Keep the existing image/operator
+// command usable, without enabling experimental VM APIs in the running server.
+if (!vm.SourceTextModule) {
+  const child = spawnSync(process.execPath, ['--experimental-vm-modules', ...process.argv.slice(1)], { stdio: 'inherit', timeout: 60_000 });
+  if (child.error) throw child.error;
+  process.exit(child.status ?? 1);
+}
+checkConsoleAssets();
 
 const require = createRequire(import.meta.url);
 const { JSDOM } = require('jsdom');
@@ -25,7 +38,17 @@ try {
   await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve));
   const address = server.address(); assert.ok(address && typeof address === 'object');
   const base = `http://127.0.0.1:${address.port}`;
-  const source = (await readFile(new URL('../console/app.js', import.meta.url), 'utf8')).replace(/^import .*;$/gm, '').replace(/\nboot\(\);\s*$/, '');
+  const htmlResponse = await fetch(base + '/admin/');
+  assert.equal(htmlResponse.status, 200);
+  assert.equal(htmlResponse.headers.get('cache-control'), 'no-cache');
+  const html = await htmlResponse.text();
+  assert.equal(html, consoleAssetPlan().html, 'served HTML must match the generated console entry');
+  const stylesheet = /<link\b[^>]*\bhref="(\/admin\/styles\.css\?v=[a-f0-9]{64})"/.exec(html);
+  assert.ok(stylesheet, 'shipped HTML must select the current stylesheet');
+  const css = await fetch(base + stylesheet[1]);
+  assert.equal(css.status, 200);
+  assert.equal(css.headers.get('cache-control'), 'no-cache');
+  assert.equal(await css.text(), await readFile(join(CONSOLE_DIR, 'styles.css'), 'utf8'));
   // Plan 76 milestone 4 (R2): the version routes the shell's History feature-detects.
   // An unknown session route answers 404, so a 401 shows the route is in this build.
   assert.equal((await fetch(base + '/api/v1/sessions/release-check/version-missing')).status, 404, 'an unknown session route must answer 404');
@@ -61,16 +84,46 @@ try {
     assert.equal(session.console.views.agents, permitted, `${role} console must advertise correct agent access`);
     assert.equal((await fetch(base + '/api/v1/agents/activity', { headers: { cookie } })).status, permitted ? 200 : 403);
     assert.equal((await fetch(base + '/api/v1/projects/release-check/presence', { headers: { cookie } })).status, permitted ? 200 : 403, 'project presence route must exist and enforce membership');
-    const dom = new JSDOM('<div id="app"></div><div id="live"></div><div id="tip"></div>', { url: base + '/admin#/agents', runScripts: 'outside-only' });
+    const dom = new JSDOM(html, { url: base + '/admin/#/agents', runScripts: 'outside-only' });
     try {
       dom.window.matchMedia = () => ({ matches: false });
-      dom.window.eval(source + '\nwindow.checkNavigation = s => { session = s; return consoleNavigation("agents"); };');
-      const nav = dom.window.checkNavigation(session);
+      dom.window.fetch = (path: string, options: Parameters<typeof fetch>[1] = {}) => fetch(new URL(path, base), {
+        ...options, headers: { ...options.headers, cookie },
+      });
+      const entry = await loadConsoleModuleGraph({ html, base, context: dom.getInternalVMContext(), read: async url => {
+        const response = await fetch(url);
+        assert.equal(response.status, 200, `HTML-selected module must be shipped: ${new URL(url).pathname}`);
+        assert.equal(response.headers.get('cache-control'), 'no-cache', 'imported modules must revalidate after an update');
+        const source = await response.text();
+        assert.equal(source, await readFile(join(CONSOLE_DIR, decodeURIComponent(new URL(url).pathname.slice('/admin/'.length))), 'utf8'), 'served module bytes must match the console source');
+        return source;
+      } });
+      const browser = entry.namespace as unknown as {
+        setReleaseSession: (session: unknown) => void;
+        consoleNavigation: (view: string) => { querySelector: (selector: string) => unknown };
+        renderProjectDetail: (main: unknown, id: string, name: string) => Promise<void>;
+        actSessionObj: (id: string) => { getAttribute: (name: string) => string };
+      };
+      browser.setReleaseSession(session);
+      const nav = browser.consoleNavigation('agents');
       assert.equal(!!nav.querySelector('a[href="#/agents"]'), permitted, `${role} must see the correct desktop navigation`);
       assert.equal(!!nav.querySelector('option[value="agents"]'), permitted, `${role} must see the correct mobile navigation`);
+      assert.equal(browser.actSessionObj('ses_release').getAttribute('href'), '/#/team/ses_release', 'saved-session links must open shared documents');
+      if (role === 'owner') {
+        const main = dom.window.document.createElement('main'); dom.window.document.body.append(main);
+        await browser.renderProjectDetail(main, 'release-check', 'Release check');
+        assert.ok(main.textContent.includes('Prepare to move this project'), 'HTML-selected project view must include transfer preparation');
+        const preview = [...main.querySelectorAll('button')].find((button: any) => button.textContent === 'Preview transfer');
+        assert.ok(preview, 'HTML-selected project view must offer Preview transfer');
+        preview.click();
+        const deadline = Date.now() + 5000;
+        while (!main.textContent.includes('Transfer preview ready.') && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+        assert.ok(main.textContent.includes('Transfer preview ready.'), 'shipped module must render the authenticated metadata preview');
+        assert.ok(main.textContent.includes('this JSON cannot restore a project'), 'preview must preserve its incomplete-inventory explanation');
+      }
     } finally { dom.window.close(); }
   }
-  console.log('PASS release capabilities: owner/admin agent API and desktop/mobile navigation; member and anonymous access refused; comment and sign-out-everywhere routes present');
+  console.log('PASS release capabilities: HTML-selected module graph and project transfer preview; saved-session links; owner/admin agent API and navigation; member/anonymous access refused; comment and sign-out routes present');
 } finally {
   if (server) { server.closeAllConnections(); await new Promise<void>(resolve => server!.close(() => resolve())); }
   await rm(pack, { recursive: true, force: true });

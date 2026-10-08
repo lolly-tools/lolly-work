@@ -20,6 +20,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { functionPrefixes, parseRegions, parseShellOrigin, vcFunctionConfig, vercelRoutes } from './vercel-routes.ts';
 import { incompletePackReason } from './build-instance-pack.ts';
+import { buildConsoleAssets } from './console-assets.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = join(ROOT, '.vercel', 'output');
@@ -61,6 +62,7 @@ const PACK_REL = env('LW_PACK_DIR') && (() => {
   return rel.split(sep).join('/');
 })();
 
+buildConsoleAssets();
 console.log('▶ clean', OUT);
 rmSync(OUT, { recursive: true, force: true });
 mkdirSync(FUNC, { recursive: true });
