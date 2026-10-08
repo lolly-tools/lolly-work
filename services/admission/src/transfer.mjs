@@ -108,7 +108,7 @@ export async function run(argv) {
     const original = new Map(snapshot.records.map(r => [r.key, r]));
     for (const value of verified.records) {
       const before = original.get(value.key);
-      requireCondition(before && value.value === before.value && Math.abs(value.expiresAtMs - before.expiresAtMs) <= 50);
+      requireCondition(before && value.value === before.value && value.expiresAtMs === before.expiresAtMs);
       original.delete(value.key);
     }
     requireCondition([...original.values()].every(v => v.expiresAtMs <= verified.capturedAtMs));

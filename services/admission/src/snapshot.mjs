@@ -8,10 +8,13 @@ export const SNAPSHOT_LUA = [
   "local t=redis.call('TIME')",
   'local r={t}',
   'for i,k in ipairs(KEYS) do',
+  "local kind=redis.call('TYPE',k).ok",
+  "if kind~='string' and kind~='none' then return redis.error_reply('invalid counter type') end",
   "local v=redis.call('GET',k)",
-  "local p=redis.call('PTTL',k)",
+  "local p=redis.call('PEXPIRETIME',k)",
   'r[#r+1]={v or false,p}',
   'end',
+  "r[#r+1]=redis.call('TIME')",
   'return r',
 ].join('\n');
 
@@ -23,13 +26,13 @@ export const IMPORT_LUA = [
   "local t=redis.call('TIME')",
   'local now=tonumber(t[1])*1000+math.floor(tonumber(t[2])/1000)',
   'for i,k in ipairs(KEYS) do',
-  'local v=ARGV[(i-1)*2+1];local d=tonumber(ARGV[(i-1)*2+2])',
-  "if not v or not string.match(v,'^%d+$') or not d then return redis.error_reply('invalid snapshot') end",
+  'local v=ARGV[(i-1)*2+1];local ds=ARGV[(i-1)*2+2];local d=tonumber(ds)',
+  "if not v or not string.match(v,'^%d+$') or (#v>1 and string.sub(v,1,1)=='0') or #v>19 or (#v==19 and v>'9223372036854775807') or not ds or not string.match(ds,'^[1-9]%d*$') or #ds>16 or not d or d>9007199254740991 or d~=math.floor(d) then return redis.error_reply('invalid snapshot') end",
   'end',
   'local imported=0;local expired=0',
   'for i,k in ipairs(KEYS) do',
-  'local d=tonumber(ARGV[(i-1)*2+2]);local ttl=math.floor(d-now)',
-  "if ttl>0 then redis.call('SET',k,ARGV[(i-1)*2+1],'PX',ttl,'NX');imported=imported+1 else expired=expired+1 end",
+  'local ds=ARGV[(i-1)*2+2];local d=tonumber(ds)',
+  "if d>now then redis.call('SET',k,ARGV[(i-1)*2+1],'PXAT',ds,'NX');imported=imported+1 else expired=expired+1 end",
   'end',
   'return {imported,expired}',
 ].join('\n');
@@ -62,20 +65,36 @@ export function validateSnapshot(snapshot, now = Date.now()) {
 }
 
 export function parseSnapshotReply(keys, reply, metadata) {
-  requireCondition(Array.isArray(reply) && reply.length === keys.length + 1 &&
-    Array.isArray(reply[0]) && reply[0].length === 2);
-  const capturedAtMs = Number(reply[0][0]) * 1000 + Math.floor(Number(reply[0][1]) / 1000);
+  requireCondition(Array.isArray(reply) && reply.length === keys.length + 2);
+  const timeMs = value => {
+    requireCondition(Array.isArray(value) && value.length === 2 &&
+      value.every(v => typeof v === 'string' && /^(0|[1-9][0-9]*)$/.test(v)));
+    const seconds = Number(value[0]), micros = Number(value[1]);
+    const ms = seconds * 1000 + Math.floor(micros / 1000);
+    requireCondition(Number.isSafeInteger(seconds) && Number.isSafeInteger(micros) &&
+      micros < 1_000_000 && Number.isSafeInteger(ms) && ms > 0);
+    return ms;
+  };
+  const beforeMs = timeMs(reply[0]);
+  const capturedAtMs = timeMs(reply.at(-1));
+  requireCondition(capturedAtMs >= beforeMs && capturedAtMs - beforeMs <= 1000);
   const records = [];
   keys.forEach((key, i) => {
     const entry = reply[i + 1];
     requireCondition(Array.isArray(entry) && entry.length === 2);
-    const [value, ttl] = entry;
-    if (value === null || value === false || ttl === -2) return;
-    // A live counter without an expiry is malformed; it must not silently gain
-    // a fresh window during migration. A zero TTL has already elapsed.
-    requireCondition(Number.isSafeInteger(ttl) && ttl >= 0);
-    if (ttl === 0) return;
-    records.push({ key, value, expiresAtMs: capturedAtMs + ttl });
+    const [value, expiresAtMs] = entry;
+    const missing = value === null || value === false;
+    if (missing || expiresAtMs === -2) {
+      requireCondition(missing && expiresAtMs === -2); return;
+    }
+    requireCondition(typeof value === 'string' && /^(0|[1-9][0-9]*)$/.test(value) &&
+      value.length <= 19 && BigInt(value) <= 9223372036854775807n &&
+      counterKind(key) && (counterKind(key) !== 'rate' || value !== '0'));
+    // PEXPIRETIME is the server's stored deadline. TIME brackets freshness;
+    // it never reconstructs or renews an expiry from a sampled relative TTL.
+    requireCondition(Number.isSafeInteger(expiresAtMs) && expiresAtMs > 0);
+    if (expiresAtMs <= capturedAtMs) return;
+    records.push({ key, value, expiresAtMs });
   });
   return validateSnapshot({ version: 1, ...metadata, capturedAtMs, records });
 }

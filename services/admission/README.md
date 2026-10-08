@@ -86,9 +86,12 @@ restart/recovery acceptance remain deployment qualifications.
 
 `src/transfer.mjs` is an operator tool, not an HTTP endpoint. It exports only
 the existing rate counters and MCP daily totals. It preserves integer strings
-and absolute expiry deadlines obtained by one atomic Redis `GET`/`PTTL`/`TIME`
-Lua snapshot after bounded `SCAN` discovery. The discovery and separate source
-and target are **not** one atomic transaction. All admission writers must be
+and exact stored expiry deadlines obtained by an atomic Redis `GET`/`PEXPIRETIME`
+Lua snapshot with bracketing `TIME` reads after bounded `SCAN` discovery.
+Redis 7 or newer is required. Import uses `SET ... PXAT` with those original
+absolute deadlines; elapsed time never becomes a renewed relative TTL.
+Discovery and transfer between stores are **not** one atomic transaction.
+All admission writers must be
 quiesced through the final export, import and consumer switch, including old
 Vercel functions and requests arriving through cached DNS. Drain and finish
 in-flight usage records before taking the snapshot. A live mirror alone cannot
