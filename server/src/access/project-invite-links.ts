@@ -22,7 +22,7 @@ interface InviteLinksKit {
   memberOf(req: IncomingMessage): Promise<UserRecord | null>;
   projectGate(req: IncomingMessage, res: ServerResponse, id: string, min: ProjectAccess): Promise<{ user: UserRecord; project: ProjectRecord; grants: Grant[] } | null>;
   projectAccessOf(user: UserRecord, project: ProjectRecord, grants?: Grant[]): Promise<ProjectAccess>;
-  shareProjectWith(project: ProjectRecord, user: UserRecord, role: 'viewer' | 'editor', actor: ShareActor, via: 'invite'): Promise<'added' | 'already'>;
+  shareProjectWith(project: ProjectRecord, user: UserRecord, role: 'viewer' | 'commenter' | 'editor', actor: ShareActor, via: 'invite'): Promise<'added' | 'already'>;
   issueInvitation(actor: UserRecord, input: IssueInvitationInput): Promise<IssueInvitationResult>;
   formToken(req: IncomingMessage): { nonce: string; cookie: string };
   formTokenOk(req: IncomingMessage, token: string | null): boolean;
@@ -54,7 +54,7 @@ export function registerProjectInviteLinks(router: ReturnType<typeof createRoute
     const gate = await kit.projectGate(req, res, ctx.params.id!, 'manager'); if (!gate) return;
     if (gate.project.archivedAt) return sendError(res, 409, 'PROJECT_ARCHIVED', 'restore the project first');
     const body = await readJson(req) as { role?: unknown; sessionId?: unknown } | null;
-    if (body?.role !== 'editor' && body?.role !== 'viewer') return sendError(res, 400, 'INVALID_INPUT', 'choose editor or viewer');
+    if (body?.role !== 'editor' && body?.role !== 'commenter' && body?.role !== 'viewer') return sendError(res, 400, 'INVALID_INPUT', 'choose editor, commenter or viewer');
     const role = body.role;
     if (!policy().projectRoles.includes(role)) return sendError(res, 403, 'ROLE_NOT_ALLOWED', 'this role is unavailable');
     if (body.sessionId !== undefined && typeof body.sessionId !== 'string') return sendError(res, 400, 'INVALID_INPUT', 'sessionId must be a document id');
@@ -100,7 +100,7 @@ export function registerProjectInviteLinks(router: ReturnType<typeof createRoute
     const sig = ctx.url.searchParams.get('s') ?? '', value = await load(ctx.params.id!, sig); if (!value) return dead(res);
     const user = await kit.memberOf(req), { nonce, cookie } = kit.formToken(req);
     const fields = { id: value.link.id, sig, csrf: nonce };
-    const intro = `<p>${esc(nameWithoutEmail(value.issuer))} invited you to ${esc(value.project.name)} as ${value.target.role === 'editor' ? 'an editor' : 'a viewer'}.</p>`;
+    const intro = `<p>${esc(nameWithoutEmail(value.issuer))} invited you to ${esc(value.project.name)} as ${value.target.role === 'editor' ? 'an editor' : value.target.role === 'commenter' ? 'a commenter' : 'a viewer'}.</p>`;
     if (user) {
       const already = accessAtLeast(await kit.projectAccessOf(user, value.project), value.target.role);
       return send(res, 200, `Join ${value.project.name}`, intro + (already ? actionLink(destination(value), 'Open project')

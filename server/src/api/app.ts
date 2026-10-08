@@ -2,6 +2,8 @@ import { WorkerError } from '../render/worker-client.ts';
 import { createFilePreview, readPreviewInput, PREVIEW_INPUT_LIMIT } from '../catalog/file-preview.ts';
 import { visibleSourceStatuses } from '../catalog/source-status.ts';
 import { registerCommentRoutes } from '../comments/routes.ts';
+import { registerShareRoutes } from '../access/share-routes.ts';
+import { resolveSharingPolicy } from '../policy/sharing.ts';
 /**
  * The lolly-work HTTP app - auth, org-config, telemetry, inbox, links,
  * catalog serving, fleet. Plain (req, res) handler (see router.ts) so it
@@ -11,7 +13,7 @@ import { registerCommentRoutes } from '../comments/routes.ts';
  * the cache-key/link contracts they'll honour are already fixed
  * (render/cache-key.ts, links/sign.ts).
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, join, normalize, resolve as resolvePath, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,8 +29,8 @@ import { readShotCred } from './shot-provenance.ts';
 import { CONSOLE_ASSET_HEADERS, consoleDocumentHeaders } from './console-headers.ts';
 import { mintToken, verifyToken } from '../iam/tokens.ts';
 import {
-  GUEST_COOKIE, SESSION_COOKIE, clearCookie, guestActor, mintGuestCookie, mintSessionCookie, parseCookies, readPrincipal,
-  type Principal, type SessionUser,
+  GUEST_COOKIE, SESSION_COOKIE, chainTtlSec, clearCookie, guestActor, mintGuestCookie, mintSessionCookie, parseCookies, readMemberSession,
+  readPrincipal, sessionChainStart, sessionRenewal, type Principal, type SessionUser,
 } from '../iam/sessions.ts';
 import { buildAuthorizeUrl, discover, exchangeCode, mapClaims, pkcePair, verifyIdToken, fetchJwks, kidOf, type MappedIdentity } from '../iam/oidc.ts';
 import { displayName, resolveMember } from '../iam/member.ts';
@@ -70,14 +72,18 @@ import {
   scimErrorBody, scimList, userToScim,
 } from '../scim/resources.ts';
 import { evaluate, grantDecision, denialCode, mayEditCollab, ownerOnlyAction, roleFromGroups, type Grant, type Role, ROLES } from '../rbac/evaluate.ts';
-import { accessAtLeast, effectiveProjectAccess, type ProjectAccess } from '../rbac/project-access.ts';
+import { accessAtLeast, canSeeProject, configureSharingLimits, effectiveProjectAccess, grantLive, projectAccess, type ProjectAccess } from '../rbac/project-access.ts';
+import { projectListing } from '../access/share-routes.ts';
 import { registerProjectFileRoutes } from '../projects/file-routes.ts';
 import { registerProjectFolderRoutes } from '../projects/folder-routes.ts';
 import { agentActor, agentAttribution } from '../agents/attribution.ts';
 import { registerAgentRoutes } from '../agents/routes.ts';
 import { createProjectRequests } from '../agents/project-requests.ts';
 import type { AgentRoomBridge } from '../agents/types.ts';
-import { mintRenderRead, renderReader } from '../render/read-ticket.ts';
+import type { VersionRoomBridge } from '../versions/restore.ts';
+import { recordSaveVersion } from '../versions/recorder.ts';
+import { registerVersionRoutes } from '../versions/routes.ts';
+import { createRenderFileReader, mintRenderRead, renderFileScope, renderReader } from '../render/read-ticket.ts';
 import { projectFilesEnabled, removeUploadsBy } from '../projects/files.ts';
 import { buildShareMessage, createWindowQuota, mergeInvitationProject, nameWithoutEmail, roleAbove } from '../projects/sharing.ts';
 import { approversFor, closeRequestsOnAccess } from '../access/requests.ts';
@@ -94,6 +100,9 @@ import {
   type AssetFormatEntry, type AssetIndex, type AssetIndexEntry, type AssetState, type LifecycleRow,
 } from '../catalog/lifecycle.ts';
 import { buildFragment, callerSeesProvider, createFederation, credentialContext, mapProviderAsset, passesExposure } from '../catalog/federation.ts';
+import { createServedIndex } from '../catalog/served-index.ts';
+import { createExtCache, extCacheKey } from '../catalog/ext-cache.ts';
+import { browseAssets, normalisedQuery, parseBrowseQuery } from '../catalog/asset-browse.ts';
 import { providerDrift } from '../catalog/drift.ts';
 import { applyCredentialsToIndex, detectCredential, type CredentialRow } from '../catalog/credentials.ts';
 import {
@@ -106,6 +115,7 @@ import {
   versionsToTrim, versionView, type AssetVersionRecord,
 } from '../catalog/versions.ts';
 import { listSubmissions, settleSubmission, submitAsset } from '../catalog/submit.ts';
+import { isDataSubmissionType } from '../catalog/submit-data.ts';
 import {
   applyDescriptivePatch, applyFieldPatch, composeAssetMeta, descriptiveTouched, extractedHaystack,
   fieldHaystack, normalizeCatalogField, normalizeExtractedText, parseDescriptivePatch, servedFields,
@@ -116,6 +126,10 @@ import {
   type CollectionRecord,
 } from '../catalog/collections.ts';
 import { materializeProvider, materializeAsset, cutoverProvider, pinAsset } from '../catalog/materialize.ts';
+import {
+  applyTagRules, hideEntryTags, loadTagRules, normalizeHiddenTags, tagCensus, validTagScope,
+  INSTANCE_SCOPE, type CatalogTagRule, type CensusInput,
+} from '../catalog/tag-rules.ts';
 import { verifyLollyExport, extractProvenance } from '../catalog/publish.ts';
 import { createBrandService, BrandError } from '../brand/service.ts';
 import { createBrandRuleService } from '../brand/rule-service.ts';
@@ -162,7 +176,8 @@ import { RenderResourceError, type RenderSpec } from '../renders/types.ts';
 import { createHostedAssetResolver, optimizeHostedAsset, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
 import { resolveBindingRows, type DataBinding } from '../automation/bindings.ts';
 import { resolveC2paSigner } from '../render/c2pa-signer.ts';
-import { CATALOG_INDEX_REL, CATALOG_SIG_REL, createCatalogSigning, servedToolIndexBytes } from '../catalog/signing.ts';
+import { CATALOG_INDEX_REL, CATALOG_SIG_REL, callerCanSeeTool, createCatalogSigning, servedToolIndexBytes } from '../catalog/signing.ts';
+import { publicCard, shellStubFor } from '../shell/share-cards.ts';
 import { isToolKeyedCatalogPath, servedToolSidecar } from '../catalog/tool-sidecars.ts';
 import type { ProvenanceDoc, ProvenanceIngredient } from '../render/provenance.ts';
 import type { Profile } from '../render/contract.ts';
@@ -170,6 +185,7 @@ import { ScryptBusyError, hashPassword, randomId, sameString, scryptQueueFull, s
 import { demoLandingHtml } from '../lib/demo-landing.ts';
 import { sanitizeEvent, summarize, type RawEvent } from '../telemetry/ingest.ts';
 import { targetedMessages, type Message } from '../inbox/target.ts';
+import { accessibleNotices, listAccessibleNotices } from '../inbox/comment-notices.ts';
 import { parseClientHeader } from '../fleet/client-header.ts';
 import { verifyChain, deriveAuditMacKey } from '../audit/chain.ts';
 import { createLogger, requestId } from '../observability/log.ts';
@@ -218,6 +234,16 @@ function pinnedEngineVersion(): string | null {
 
 export interface AppDeps {
   agentRooms?: AgentRoomBridge;
+  /** Live comment events (plan 76 M4): main.ts wires `(id, f) => collab.notifyComment(id, f)`
+   *  so peers in the session's room fetch only the changed thread. A plain function,
+   *  like `agentRooms`, so this module never imports the gateway; undefined on Vercel,
+   *  where GET comments then reports `features.events: false`. */
+  roomEvents?: (sessionId: string, frame: { t: 'comment'; threadId: string; revision: number }) => void;
+  /** Version restores through the live room (plan 76 M4): main.ts wires the
+   *  gateway's `collab.versions`, the `agentRooms` pattern, so this module never
+   *  imports the gateway. Undefined on Vercel, where a restore is a
+   *  compare-and-swap of the session row instead (versions/restore.ts). */
+  versionRooms?: VersionRoomBridge;
   config: InstanceConfig;
   store: Store;
   secrets: Secrets;
@@ -264,6 +290,7 @@ export interface AppDeps {
 export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   const { config: deploymentConfig, store, secrets, listCollabRooms, nearby } = deps;
   store.configureRoleGroups(deploymentConfig.idp.roleGroups);
+  configureSharingLimits(resolveSharingPolicy(deploymentConfig.policy.sharing));
   const blobs = deps.blobs ?? createMemoryBlobStore();
   const brand = createBrandService(deploymentConfig, store, blobs, {
     ...(productionMode(deploymentConfig) ? { inspectSource: async (source: string) => {
@@ -275,13 +302,16 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   });
   const brandRules = createBrandRuleService(brand, store, deploymentConfig.dev.enabled);
   const config = { ...deploymentConfig, instance: { ...deploymentConfig.instance, get pack() { return brand.root(); } } };
-  const renderTool = (...args: Parameters<typeof renderToolUnscoped>) => {
+  // `submitter`: the person the render is for. The worker may then read the
+  // project files its inputs name, while that person can see them (plan 76 M4j).
+  const renderTool = (...args: [...Parameters<typeof renderToolUnscoped>, submitter?: UserRecord | null]) => {
     const run = async () => {
       const snap = brand.current()!;
       const policyHash = brandPolicyHash([...args[1].overlays]);
       const managedRules = await managedRuleContext(snap, args[1].toolId, args[1].format === 'jpeg' ? 'jpg' : args[1].format);
+      const files = args[2] && args[0].worker && projectFilesEnabled(config, store) ? await renderFileScope({ store, projectAccessOf }, args[1].query, args[2]) : undefined;
       const out = await renderToolUnscoped({ ...args[0], brandRevision: snap.revision, managedRules,
-        workerReadToken: mintRenderRead(args[1].principal?.groups ?? [], snap.revision, secrets.link) }, args[1]);
+        workerReadToken: mintRenderRead(args[1].principal?.groups ?? [], snap.revision, secrets.link, files) }, args[1]);
       if ((await brand.snapshot()).revision !== snap.revision || brandPolicyHash([...await store.listOverlays()]) !== policyHash) throw new BrandError('Brand or organisation policy changed during rendering. Retry with the current revision.', 409, 'BRAND_REVISION_CHANGED');
       if (managedRules) await sourceRules(snap);
       return out;
@@ -291,6 +321,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   const fetchImpl = deps.fetchImpl ?? fetch;
   const secure = config.instance.baseUrl.startsWith('https:');
   const sessionTtlSec = config.policy.sessionTtlHours * 3600;
+  // Sliding renewal's cap (plans/75 RENEW); absent equals the TTL, which leaves renewal off.
+  const sessionMaxSec = (config.policy.sessionMaxHours ?? config.policy.sessionTtlHours) * 3600;
   const router = createRouter();
   const agentRequests = createProjectRequests(router);
   const metrics = deps.metrics ?? createMetrics();
@@ -444,11 +476,16 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const v = p.credentialRef ? process.env[p.credentialRef] : undefined;
     if (v) configSecrets.set(p.id, v);
   }
+  // Sizing for DAM-scale catalogs (config/instance.ts `catalogServing`).
+  const serving = config.catalogServing ?? {
+    maxProviderAssets: 100_000, pagedProviderThreshold: 2000, extCache: { maxBytes: 64 * 1024 * 1024, maxItemBytes: 2 * 1024 * 1024 },
+  };
   const federation = createFederation({
     store,
     ...(secrets.credential ? { credentialSecret: secrets.credential } : {}),
     configSecrets,
     ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    maxProviderAssets: serving.maxProviderAssets,
   });
   const providersReady: Promise<void> = (async () => {
     const now = new Date().toISOString();
@@ -465,6 +502,21 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   })().catch((err) => {
     console.error('catalog provider config upsert failed:', (err as Error).message);
   });
+  // The composed asset feed, memoised per caller visibility (catalog/served-index.ts),
+  // and the bounded cache of federated bytes (catalog/ext-cache.ts).
+  const servedIndex = createServedIndex({
+    pack: () => config.instance.pack, store, federation, ready: providersReady, pagedThreshold: serving.pagedProviderThreshold,
+  });
+  const extCache = createExtCache(serving.extCache);
+  /** Whether a conditional request already holds `etag` (a list, `*`, or weak forms). */
+  const etagMatches = (req: IncomingMessage, etag: string): boolean => {
+    const header = req.headers['if-none-match'];
+    if (!header) return false;
+    return header.split(',').some((t) => {
+      const tag = t.trim();
+      return tag === '*' || tag.replace(/^W\//, '') === etag;
+    });
+  };
 
   // ── outbound delivery destinations ──────────────────────────────────────
   // Fixed, config-managed targets only in v1. This is intentionally a second
@@ -2124,8 +2176,20 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       await audit('anonymous', 'auth.denied', 'session', { provider: 'device', reason: 'not-admitted', email: user.email.trim().toLowerCase() });
       return sendJson(res, 200, { status: 'denied' });
     }
+    // A device session is a new cookie in the approver's own chain (plans/75
+    // RENEW), never a new chain: it carries the approving session's `authAt`
+    // and ends no later than `authAt + sessionMaxHours`, so approving a code
+    // from a browser near its cap cannot extend the person's access without
+    // the IdP. An approval without a chain start (none is written that way)
+    // is refused.
+    const ttl = typeof claim.user.authAt === 'number'
+      ? chainTtlSec(claim.user.authAt, { ttlSec: sessionTtlSec, maxSec: sessionMaxSec }) : 0;
+    if (ttl <= 0) {
+      await audit('anonymous', 'auth.denied', 'session', { provider: 'device', reason: 'session-max', email: user.email.trim().toLowerCase() });
+      return sendJson(res, 200, { status: 'denied' });
+    }
     await audit(`user:${user.id}`, 'auth.login', 'session', { provider: 'device' });
-    const setCookie = mintSessionCookie(claim.user, secrets.session, secure, sessionTtlSec);
+    const setCookie = mintSessionCookie(claim.user, secrets.session, secure, ttl);
     res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': setCookie });
     res.end(JSON.stringify({ status: 'approved', cookie: setCookie.split(';')[0] }));
   });
@@ -2179,9 +2243,15 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       if (ok) await audit(`user:${me.id}`, 'auth.device.deny', 'session', { code: normalizeUserCode(code) });
       return render(activateDoneHtml(config.instance.name, ok ? 'denied' : 'unknown'));
     }
+    // The approval carries the approving session's chain start and sign-in
+    // time, read from its own cookie by the rule renewal follows, so the
+    // device's session continues that chain instead of starting a new one.
+    const held = readMemberSession(req.headers.cookie, sessionVerify);
+    if (!held || held.user.sub !== me.sub) return render(activateSignedOutHtml(config.instance.name, loginPathFor('/activate') ?? '/'));
     const approved = await deviceAuth.approve(code, {
       sub: me.sub, email: me.email, groups: me.groups, role: me.role,
-      name: displayName(me), epoch: me.sessionEpoch,
+      name: displayName(me), epoch: me.sessionEpoch, authAt: sessionChainStart(held, sessionTtlSec),
+      ...(held.user.authenticatedAt !== undefined ? { authenticatedAt: held.user.authenticatedAt } : {}),
     });
     if (approved) await audit(`user:${me.id}`, 'auth.device.approve', 'session', { code: normalizeUserCode(code) });
     render(activateDoneHtml(config.instance.name, approved ? 'approved' : 'unknown'));
@@ -2191,11 +2261,13 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // Assembled once, here, for BOTH the caller's own poll and the admin
   // preview-as-group tool - so a preview can never drift from what a member
   // actually receives (the projection is the same function, same store reads).
-  const buildOrgConfigFor = async (subject: UserRecord) => {
+  const buildOrgConfigFor = async (subject: UserRecord, client: { shell?: string; engine?: string } = {}) => {
     const overlays = await brandRules.project(brand.current() ?? await brand.snapshot(), subject.groups);
-    const acked = await store.acksFor(subject.id);
-    const unread = targetedMessages(await store.listMessages(), { groups: subject.groups, userId: subject.id }, acked).length;
     const grants = await store.listGrants();
+    // The inbox's own count for the same client (its shell and engine
+    // selectors): the messages it shows and the comment notices that pass
+    // `mayReceiveNotices` now (plan 76 M4).
+    const unread = (await inboxMessages(subject, grants, client)).length + (await accessibleNotices({ store, config }, subject, { grants })).length;
     const flagGovernance = await store.listFlagGovernance();
     const injectables = new Map((await store.listInjectables()).map((r) => [r.id, r]));
     const toolInputs = new Map<string, Array<{ id: string }> | null>();
@@ -2217,9 +2289,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     metrics.orgConfigPoll(); // the fleet heartbeat - counts 200 and 304
+    const client = parseClientHeader(req.headers['x-lolly-client'] as string | undefined);
     let payload;
     try {
-      payload = { ...await buildOrgConfigFor(user), branding: { revision: brand.current()!.revision, sourceId: brand.current()!.source.id } };
+      payload = { ...await buildOrgConfigFor(user, { ...(client?.shell ? { shell: client.shell } : {}), ...(client?.engine ? { engine: client.engine } : {}) }),
+        branding: { revision: brand.current()!.revision, sourceId: brand.current()!.source.id } };
     } catch (err) {
       metrics.orgConfigError();
       throw err;
@@ -2302,23 +2376,68 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   });
 
   // ── inbox ─────────────────────────────────────────────────────────────────
+  /**
+   * The messages this person is shown: targeted at them, not acknowledged,
+   * and still about something they can reach (plan 76 M4). A project share or
+   * a live-collab invite is hidden once they can no longer see its project, an
+   * invite also once its session is deleted, and a project access request once
+   * they no longer manage that project. Hidden, not deleted: a message comes
+   * back if the access does. Other kinds, and messages without the ids to
+   * check, are shown as before.
+   */
+  const inboxMessages = async (user: UserRecord, grants: Grant[], client: { shell?: string; engine?: string } = {}): Promise<Message[]> => {
+    const acked = await store.acksFor(user.id);
+    const targeted = targetedMessages(await store.listMessages(), {
+      groups: user.groups,
+      userId: user.id,
+      ...(client.shell ? { shell: client.shell } : {}),
+      ...(client.engine ? { engineVersion: client.engine } : {}),
+    }, acked);
+    const projectOf = (m: Message): string | undefined =>
+      m.kind === 'share' || m.kind === 'collab' || (m.kind === 'request' && m.data?.['requestKind'] === 'project') ? m.data?.['projectId'] : undefined;
+    const sessionOf = (m: Message): string | undefined => (m.kind === 'collab' ? m.data?.['sessionId'] : undefined);
+    const projectIds = [...new Set(targeted.flatMap((m) => projectOf(m) ?? []))];
+    const sessionIds = [...new Set(targeted.flatMap((m) => sessionOf(m) ?? []))];
+    if (!projectIds.length && !sessionIds.length) return targeted;
+    const [projects, sessions, memberships] = await Promise.all([
+      Promise.all(projectIds.map((id) => store.getProject(id))),
+      Promise.all(sessionIds.map((id) => store.getSession(id))),
+      store.listUserProjectMemberships(user.id),
+    ]);
+    const projectById = new Map(projects.flatMap((p) => (p ? [[p.id, p] as const] : [])));
+    const liveSessions = new Set(sessions.flatMap((s) => (s && !s.deletedAt ? [s.id] : [])));
+    const memberOfProject = new Map(memberships.map((m) => [m.projectId, m]));
+    return targeted.filter((m) => {
+      const sessionId = sessionOf(m);
+      if (sessionId && !liveSessions.has(sessionId)) return false;
+      const projectId = projectOf(m);
+      if (!projectId) return true;
+      const project = projectById.get(projectId);
+      const membership = memberOfProject.get(projectId) ?? null;
+      if (!project) return false;
+      return m.kind === 'request'
+        ? accessAtLeast(effectiveProjectAccess(user, project, membership, grants), 'manager')
+        : canSeeProject(user, project, membership);
+    });
+  };
+
   // The shell asks again when its tab regains focus and once a minute while
   // it is visible (plans/74 invite spec R5), so a quiet read is a 304. The
   // ETag is a hash of exactly what this caller is shown: a new message, an
-  // acknowledgement, an edit or a message reaching its end all move it.
-  // `unread` counts the messages shown, which are the ones not yet
-  // acknowledged, the same count org-config carries as `inboxUnread`.
+  // acknowledgement, an edit or a message reaching its end all move it, and so
+  // does a comment notice arriving, changing or being acknowledged. `unread`
+  // counts the messages and notices shown, the same count org-config carries
+  // as `inboxUnread`.
   router.add('GET', '/api/v1/inbox', async (req, res) => {
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const client = parseClientHeader(req.headers['x-lolly-client'] as string | undefined);
-    const acked = await store.acksFor(user.id);
-    const msgs = targetedMessages(await store.listMessages(), {
-      groups: user.groups,
-      userId: user.id,
-      ...(client?.shell ? { shell: client.shell } : {}),
-      ...(client?.engine ? { engineVersion: client.engine } : {}),
-    }, acked);
+    const grants = await store.listGrants();
+    const [shown, notices] = await Promise.all([
+      inboxMessages(user, grants, { ...(client?.shell ? { shell: client.shell } : {}), ...(client?.engine ? { engine: client.engine } : {}) }),
+      listAccessibleNotices({ store, config }, user, { grants }),
+    ]);
+    const msgs = [...shown, ...notices];
     const etag = `"ib-${sha256Hex(JSON.stringify(msgs)).slice(0, 16)}"`;
     const headers = { etag, 'cache-control': 'private, no-cache' };
     const asked = String(req.headers['if-none-match'] ?? '').split(',').map((t) => t.trim().replace(/^W\//, ''));
@@ -2330,10 +2449,15 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     sendJson(res, 200, { messages: msgs, unread: msgs.length }, headers);
   });
 
+  // A comment notice (`cn_…`) is a row of its own: acknowledging it deletes
+  // the caller's row and nobody else's, and never writes the message-ack
+  // table, so the next reply in that thread shows a notice again.
   router.add('POST', '/api/v1/inbox/:id/ack', async (req, res, ctx) => {
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
-    await store.ackMessage(ctx.params.id as string, user.id);
+    const id = ctx.params.id as string;
+    if (id.startsWith('cn_')) await store.deleteCommentNotices(user.id, { ids: [id] });
+    else await store.ackMessage(id, user.id);
     sendJson(res, 200, { ok: true });
   });
 
@@ -3715,6 +3839,28 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     sendJson(res, 200, userWire(updated));
   });
 
+  // "Sign out on all devices" (plans/75 G18): the same epoch bump, for the
+  // person's own sessions, from any of them. A lost phone or a shared computer
+  // is signed out on its next request, and so is this browser, whose cookie is
+  // cleared here as logout clears it. Only a signed-in person's own cookie
+  // reaches it: a service token or an agent acting for someone has no session
+  // of theirs to end. Five an hour per person, since each one also signs out
+  // every app and device the person uses.
+  const revokeOwnSessionsQuota = createWindowQuota(5, 3_600_000);
+  router.add('POST', '/api/v1/me/revoke-sessions', async (req, res) => {
+    const me = agentRequests.principal(req) ? null : await resolveMember(store, req.headers.cookie, sessionVerify);
+    if (!me) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+    if (!revokeOwnSessionsQuota.take(me.id)) {
+      res.setHeader('retry-after', '3600');
+      return sendError(res, 429, 'RATE_LIMITED', 'you signed out on all devices several times this hour; try again later');
+    }
+    const updated = await store.bumpSessionEpoch(me.id);
+    if (!updated) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+    await audit(`user:${me.id}`, 'user.sessions.revoked', `user:${me.id}`, { self: true });
+    res.writeHead(204, { 'cache-control': 'no-store', 'set-cookie': [clearCookie(SESSION_COOKIE, secure), clearCookie(GUEST_COOKIE, secure)] });
+    res.end();
+  });
+
   // ── linked sign-ins (plans/74, "One person, many sign-ins") ───────────────
   // A person lists and removes their own; an admin or owner does the same for
   // anyone from the console. A sign-in is addressed by idp plus subjectHash
@@ -3741,11 +3887,24 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     return { all, wire: all.map((r) => identityWire(r, user, all, idpLabel(r.idp))) };
   };
   /** A fresh session cookie for a person whose own action just ended every
-   *  session of theirs, so the device they acted from stays signed in. */
-  const stayingSignedIn = (user: UserRecord): string => mintSessionCookie({
-    sub: user.sub, email: user.email, groups: user.groups, role: user.role,
-    name: displayName(user), epoch: user.sessionEpoch, authenticatedAt: Date.now(),
-  }, secrets.session, secure, sessionTtlSec);
+   *  session of theirs, so the browser they acted from stays signed in. It
+   *  continues the chain of the cookie the request carried (plans/75 RENEW):
+   *  the same `authAt` and sign-in time, cut at `authAt + sessionMaxHours`,
+   *  because removing a sign-in is not a sign-in. Null, and the person signs
+   *  in again, when the request carried no session cookie of theirs or the
+   *  chain has reached its cap. */
+  const stayingSignedIn = (req: IncomingMessage, user: UserRecord): string | null => {
+    const held = readMemberSession(req.headers.cookie, sessionVerify);
+    if (!held || held.user.sub !== user.sub) return null;
+    const authAt = sessionChainStart(held, sessionTtlSec);
+    const ttl = chainTtlSec(authAt, { ttlSec: sessionTtlSec, maxSec: sessionMaxSec });
+    if (ttl <= 0) return null;
+    return mintSessionCookie({
+      sub: user.sub, email: user.email, groups: user.groups, role: user.role,
+      name: displayName(user), epoch: user.sessionEpoch, authAt,
+      ...(held.user.authenticatedAt !== undefined ? { authenticatedAt: held.user.authenticatedAt } : {}),
+    }, secrets.session, secure, ttl);
+  };
   /** Removes one sign-in, or answers why not. Returns the account as it
    *  stands after the removal, or null when an error was sent; the caller
    *  sends the 204.
@@ -3799,7 +3958,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!me) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const after = await unlinkFor(res, me, me, ctx.params.idp as string, ctx.params.subjectHash as string, 'self');
     if (!after) return;
-    res.writeHead(204, { 'set-cookie': stayingSignedIn(after) });
+    const staying = stayingSignedIn(req, after);
+    res.writeHead(204, staying ? { 'set-cookie': staying } : {});
     res.end();
   });
 
@@ -3853,7 +4013,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
     const after = await unlinkFor(res, actor, target, ctx.params.idp as string, ctx.params.subjectHash as string, 'admin');
     if (!after) return;
-    res.writeHead(204, after.id === actor.id ? { 'set-cookie': stayingSignedIn(after) } : {}); res.end();
+    const staying = after.id === actor.id ? stayingSignedIn(req, after) : null;
+    res.writeHead(204, staying ? { 'set-cookie': staying } : {}); res.end();
   });
 
   // ── invitations (plans/74 W-ID-2) ─────────────────────────────────────────
@@ -4863,6 +5024,36 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     return drop.length;
   };
 
+  // ── the Lolly web shell's files (instance.shellDir) ─────────────────────
+  // Defined ahead of the routes because two of them hand over to it: the bare
+  // `/tools` gallery route (the `/tools/*` file route below also matches it) and
+  // the SPA fallback registered last. Absent shellDir → null, and neither does.
+  const shellDir = config.instance.shellDir;
+  const serveShell = shellDir ? async (res: ServerResponse, rel: string): Promise<void> => {
+    const clean = normalize(rel.replace(/^\/+/, '')).replace(/^(\.\.[/\\])+/, '');
+    if (clean.includes('..')) return sendError(res, 400, 'INVALID_INPUT', 'bad path');
+    // A path ending in a file extension is a real asset. Anything else is an SPA
+    // route: a tool or a view answers the shell build's landing stub, whose head
+    // carries that page's share card (shell/share-cards.ts); every other route
+    // answers index.html, and the shell routes from there. Docs paths never get
+    // here: serveShellDocs answers them first, from the same info/ pages.
+    const asset = /\.[a-z0-9]+$/i.test(clean);
+    const target = clean === '.well-known/lolly.json' ? 'info/well-known-lolly.json'
+      : asset && clean ? clean : (shellStubFor(clean, (r) => existsSync(join(shellDir, r))) ?? 'index.html');
+    try {
+      const bytes = await readFile(join(shellDir, target));
+      res.writeHead(200, {
+        ...shellSecurityHeaders(rel),
+        'content-type': contentType(target),
+        'cache-control': asset ? 'public, max-age=300' : 'no-cache',
+      });
+      res.end(bytes);
+    } catch {
+      // Missing real asset → 404; a missing index means the shellDir is wrong.
+      sendError(res, 404, 'NOT_FOUND', asset ? 'no such file' : 'shell index not found: check instance.shellDir');
+    }
+  } : null;
+
   // ── tool files (pack mount, the tool index's own per-caller visibility) ────
   // The shell fetches `/tools/<id>/<file>` from its own origin. Served from the
   // pack so the files agree with the tool index (the pack's, filtered per caller)
@@ -4871,6 +5062,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // same absence the index shows. A guest may fetch the tool its link opens.
   // `tools` is a reserved prefix below, so the dist's copy is never consulted.
   router.add('GET', '/tools/*', async (req, res, ctx) => {
+    // The bare `/tools` is the app's gallery route, not a tool file.
+    if (!ctx.params['*'] && serveShell) return serveShell(res, 'tools');
     const user = await memberOf(req) ?? renderReader(req, brand.current()!.revision, linkVerify);
     const p = principalOf(req);
     if (config.policy.defaultAccessMode === 'gated' && !user && p?.kind !== 'guest') {
@@ -4898,6 +5091,37 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   const serveCatalog: Handler = async (req, res, ctx) => {
     const user = await memberOf(req) ?? renderReader(req, brand.current()!.revision, linkVerify);
     const p = principalOf(req);
+    // Share cards answer before the sign-in gate: a link unfurler never signs in.
+    // A tool's card follows the tool's own visibility for this caller, so a card
+    // for a tool hidden from some groups is never public; only a card every caller
+    // may see is marked cacheable by shared caches. The pack's copy wins; instance
+    // packs usually exclude catalog/og, so the shell build's copy serves otherwise.
+    const card = publicCard(normalize(ctx.params['*'] ?? ''));
+    if (card) {
+      let everyone = true;
+      if (card.kind === 'tool') {
+        const overlays = await store.listOverlays();
+        const caller = { overlays, groups: user?.groups ?? [], ...(p?.kind === 'guest' ? { guestToolId: p.guest.toolId } : {}) };
+        if (!callerCanSeeTool(caller, card.toolId)) return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
+        everyone = toolVisibleTo(overlays.get(card.toolId), []);
+      }
+      for (const root of [config.instance.pack, ...(shellDir ? [shellDir] : [])]) {
+        let bytes: Buffer;
+        try {
+          bytes = await readFile(join(root, 'catalog', card.rel));
+        } catch {
+          continue;
+        }
+        res.writeHead(200, {
+          'content-type': contentType(card.rel),
+          'cache-control': everyone ? 'public, max-age=3600' : 'private, no-cache',
+          'x-content-type-options': 'nosniff',
+        });
+        res.end(bytes);
+        return;
+      }
+      return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
+    }
     if (config.policy.defaultAccessMode === 'gated' && !user && p?.kind !== 'guest') {
       return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
     }
@@ -4906,9 +5130,16 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // After the exit's cutover, an old ext/* blob URL (baked into already-rendered
     // SVGs and live sessions) resolves through a persistent alias to the new
     // inst/* path - nothing that referenced the federated identity breaks (plans/27 §5).
+    // An aliased request may carry the `?v=<entry version>` an ext/* tile URL
+    // adds for caching; that is not an instance version number, so the inst
+    // branch below ignores a `v` it cannot read on an aliased request.
+    let aliasedFromExt = false;
     if (rel.startsWith('ext/')) {
       const aliased = await store.getAlias(rel);
-      if (aliased) rel = aliased;
+      if (aliased) {
+        rel = aliased;
+        aliasedFromExt = true;
+      }
     }
     // Instance-owned blobs stream from the BlobStore: /catalog/inst/<id>/<format>.
     if (rel.startsWith(INST_PREFIX)) {
@@ -4941,7 +5172,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       // the head for everyone else, and a pinned copy does not have to break
       // for a brand refresh to land.
       let blobId = rec.blobs[formatRef];
-      const wantedVersion = ctx.url.searchParams.get('v');
+      const askedVersion = ctx.url.searchParams.get('v');
+      const wantedVersion = aliasedFromExt && askedVersion !== null && !/^[1-9]\d*$/.test(askedVersion) ? null : askedVersion;
       if (wantedVersion !== null) {
         const n = Number(wantedVersion);
         if (!Number.isInteger(n) || n < 1) return sendError(res, 400, 'INVALID_INPUT', 'v must be a version number');
@@ -5020,6 +5252,35 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
           }
         }
       }
+      // The fragment entry names this file's format and the entry version.
+      // The version keys the byte cache and the ETag, so a change in the DAM
+      // is a miss. The browser keeps the bytes for five minutes and then asks
+      // again, which the ETag answers with a 304: provider bytes sit behind
+      // access checks, so a person who loses access must not keep a cached copy
+      // that stays valid for longer (plan 80 D6).
+      const fragEntry = await federation.entry(assetId);
+      const entryVersion = typeof fragEntry?.version === 'string' && fragEntry.version ? fragEntry.version : '';
+      const fileEntry = fragEntry?.formats?.find((f) => f.url === `/catalog/${assetId}/${formatRef}`);
+      const declaredSvg = !filePreview && (fileEntry?.format === 'svg' || /\.svg$/i.test(typeof fileEntry?.filename === 'string' ? fileEntry.filename : ''));
+      const cacheKey = entryVersion && !convertedPreview
+        ? extCacheKey({ provider: providerId, remoteId, formatRef, preview: filePreview, version: entryVersion })
+        : '';
+      const etag = cacheKey ? `"x${sha256Hex(cacheKey).slice(0, 32)}"` : '';
+      const bytesCache = 'private, max-age=300';
+      if (etag && etagMatches(req, etag)) {
+        res.writeHead(304, { etag, 'cache-control': bytesCache });
+        res.end();
+        return;
+      }
+      const cached = cacheKey ? extCache.get(cacheKey) : undefined;
+      if (cached) {
+        res.writeHead(200, {
+          'content-type': cached.contentType, ...INERT_BYTES,
+          'cache-control': bytesCache, etag, 'content-length': String(cached.bytes.length),
+        });
+        res.end(cached.bytes);
+        return;
+      }
       try {
         const driver = federation.instantiate(rec);
         if (filePreview && !driver.resolveFilePreview) return sendError(res, 404, 'NOT_FOUND', 'this provider has no file preview');
@@ -5042,13 +5303,20 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
           res.end();
           return;
         }
+        // A DAM often labels an SVG as a generic download. Naming the file for
+        // what the fragment says lets an <img> draw the SVG; INERT_BYTES keeps
+        // the bytes script-free and sandboxed when opened directly.
+        const servedType = declaredSvg ? 'image/svg+xml' : blob.contentType;
         res.writeHead(200, {
-          'content-type': blob.contentType,
+          'content-type': servedType,
           ...INERT_BYTES,
-          'cache-control': 'private, max-age=300',
+          'cache-control': bytesCache,
+          ...(etag ? { etag } : {}),
           ...(blob.size !== undefined ? { 'content-length': String(blob.size) } : {}),
         });
-        Readable.fromWeb(blob.body as import('node:stream/web').ReadableStream<Uint8Array>).pipe(res);
+        const body = Readable.fromWeb(blob.body as import('node:stream/web').ReadableStream<Uint8Array>);
+        if (cacheKey) body.pipe(extCache.tee(cacheKey, servedType)).pipe(res);
+        else body.pipe(res);
       } catch {
         return sendError(res, 502, 'PROVIDER_UNAVAILABLE', 'the upstream provider did not return this asset');
       }
@@ -5098,6 +5366,27 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         return;
       }
     }
+    // The asset feed: composed per caller from the pack, federated sources,
+    // instance assets and every governance overlay, memoised until an input
+    // changes (catalog/served-index.ts). The ETag lets an unchanged feed cost
+    // a 304; `no-cache` keeps every client revalidating. `?paged=1` leaves
+    // large providers out for the paged browse route to serve instead.
+    if (rel === 'assets/index.json') {
+      await providersReady;
+      const served = await servedIndex.forCaller({ groups: user?.groups ?? [], paged: ctx.url.searchParams.get('paged') === '1' });
+      if (served.status === 'missing') return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
+      if (etagMatches(req, served.etag)) {
+        res.writeHead(304, { etag: served.etag, 'cache-control': 'private, no-cache' });
+        res.end();
+        return;
+      }
+      res.writeHead(200, {
+        'content-type': served.status === 'composed' ? 'application/json; charset=utf-8' : contentType(rel),
+        'cache-control': 'private, no-cache', etag: served.etag,
+      });
+      res.end(served.bytes);
+      return;
+    }
     const filePath = join(config.instance.pack, 'catalog', rel);
     let bytes: Buffer;
     try {
@@ -5105,49 +5394,15 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     } catch {
       return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
     }
-    if (rel === 'assets/index.json') {
-      try {
-        const index = JSON.parse(bytes.toString('utf8')) as AssetIndex;
-        await providersReady;
-        // Federate before lifecycle so expire/revoke rows on ext/* ids gate
-        // federated entries exactly like pack entries.
-        const federated = await federation.composeIndex(index, user?.groups ?? []);
-        const [rows, creds, instAssets, metas, fieldDefs] = await Promise.all([
-          store.listLifecycle(), store.listCredentials(), store.listInstanceAssets(),
-          store.listAssetMeta(), store.listCatalogFields(),
-        ]);
-        // Org-defined values ride the feed as an additive `fields` bag on the
-        // entries that carry any (plans/31 section 4). It folds over pack,
-        // federated and instance entries alike, because the overlay is keyed by
-        // catalog id rather than by which of the three produced the entry.
-        const composed = composeAssetMeta(
-          composeInstanceAssets(federated, instAssets, user?.groups ?? []), metas, fieldDefs,
-        );
-        const gated = applyLifecycleToIndex(composed, rows, Date.now());
-        // Collections ride the SAME feed as an additive `collections` key
-        // (plans/31 §5), folded last so a member that lifecycle just dropped is
-        // already absent from the ids it can reference. A deployment with no
-        // collections serves a byte-identical index, which is what lets the OSS
-        // catalog view light up its Collections section later with no server
-        // change and a public build render unchanged.
-        const withCollections = composeCollections(
-          applyCredentialsToIndex(gated, creds), await store.listCollections(), user?.groups ?? [],
-        );
-        return sendJson(res, 200, withCollections, { 'cache-control': 'private, no-cache' });
-      } catch {
-        /* not the expected shape — serve raw below */
-      }
-    } else {
-      // Any other catalog file: if it's a format entry owned by an asset
-      // whose lifecycle blocks it (revoked, scheduled, or expired-and-hidden),
-      // the blob dies too - a guessed/cached URL doesn't bypass the feed.
-      const assetId = (await loadAssetPathMap(config.instance.pack)).get(rel);
-      if (assetId) {
-        const { state, blocked } = await catalogBytesGate(assetId, false);
-        if (blocked) {
-          const message = state === 'revoked' ? 'this asset has been revoked' : state === 'scheduled' ? 'this asset is not yet published' : 'this asset has expired';
-          return sendError(res, 410, 'ASSET_EXPIRED', message);
-        }
+    // Any other catalog file: if it's a format entry owned by an asset
+    // whose lifecycle blocks it (revoked, scheduled, or expired-and-hidden),
+    // the blob dies too - a guessed/cached URL doesn't bypass the feed.
+    const assetId = (await loadAssetPathMap(config.instance.pack)).get(rel);
+    if (assetId) {
+      const { state, blocked } = await catalogBytesGate(assetId, false);
+      if (blocked) {
+        const message = state === 'revoked' ? 'this asset has been revoked' : state === 'scheduled' ? 'this asset is not yet published' : 'this asset has expired';
+        return sendError(res, 410, 'ASSET_EXPIRED', message);
       }
     }
     res.writeHead(200, {
@@ -5595,6 +5850,30 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // the asset's lifecycle row + resolved state. 404 when the id is in neither.
   // The id carries slashes (e.g. 'suse/tokens/brand'), so it rides the trailing
   // wildcard, same as the lifecycle admin route.
+  // ── paged asset browse (catalog/asset-browse.ts) ──────────────────────────
+  // One page of the caller's feed at a time, filtered and faceted, for a
+  // client that should not mirror a DAM-sized catalog. Registered before the
+  // inspect wildcard below, which would otherwise match the bare path.
+  router.add('GET', '/api/v1/catalog/assets', async (req, res, ctx) => {
+    const user = await memberOf(req) ?? renderReader(req, brand.current()!.revision, linkVerify);
+    const p = principalOf(req);
+    if (config.policy.defaultAccessMode === 'gated' && !user && p?.kind !== 'guest') {
+      return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
+    }
+    const query = parseBrowseQuery(ctx.url.searchParams);
+    if ('error' in query) return sendError(res, 400, 'INVALID_INPUT', query.error);
+    await providersReady;
+    const served = await servedIndex.forCaller({ groups: user?.groups ?? [] });
+    const etag = `"b${sha256Hex(`${served.version}\n${normalisedQuery(query)}`).slice(0, 32)}"`;
+    if (etagMatches(req, etag)) {
+      res.writeHead(304, { etag, 'cache-control': 'private, no-cache' });
+      res.end();
+      return;
+    }
+    const metaById = query.q ? new Map((await store.listAssetMeta()).map((m) => [m.assetId, m])) : new Map();
+    sendJson(res, 200, browseAssets(served, query, metaById), { 'cache-control': 'private, no-cache', etag });
+  });
+
   router.add('GET', '/api/v1/catalog/assets/*', async (req, res, ctx) => {
     const user = await memberOf(req);
     const p = principalOf(req);
@@ -5733,6 +6012,111 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     await store.deleteCatalogField(id);
     await audit(`user:${user.id}`, 'catalog.field.delete', `catalog-field:${id}`, { before });
     sendJson(res, 200, { ok: true, id });
+  });
+
+  // ── hidden tags (plan 299, catalog/tag-rules.ts) ──────────────────────────
+  // Hiding the instance-wide list is `policy.edit`, the gate the field
+  // definitions use, because it is how the org's taxonomy reads. One
+  // provider's list is `catalog.provider.manage`, the gate the rest of that
+  // provider's mapping already has. Either right opens the census.
+  const tagRightsOf = async (user: UserRecord): Promise<{ instance: boolean; providers: boolean }> => {
+    const grants = await store.listGrants();
+    const pctx = { userId: user.id, groups: user.groups, role: user.role as Role };
+    return {
+      instance: evaluate(pctx, 'policy.edit', ['*'], grants),
+      providers: evaluate(pctx, 'catalog.provider.manage', ['*'], grants),
+    };
+  };
+
+  /**
+   * Every label the catalog carries, counted per source and UNHIDDEN, with the
+   * rules that hide each one right now. `?provider=<id>` narrows the census to
+   * one provider's entries. Counts come from what is already held - the pack
+   * index, live instance assets and each provider's last synced fragment - so
+   * reading the census never calls a provider.
+   */
+  router.add('GET', '/api/v1/catalog/tags', async (req, res, ctx) => {
+    const user = await memberOf(req);
+    if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+    const rights = await tagRightsOf(user);
+    if (!rights.instance && !rights.providers) return sendError(res, 403, 'FORBIDDEN', 'hiding tags needs policy.edit or catalog.provider.manage');
+    await providersReady;
+    const only = (ctx.url.searchParams.get('provider') ?? '').trim();
+    const providers = await store.listProviders({ includeFragment: false });
+    if (only && !providers.some((p) => p.id === only)) return sendError(res, 404, 'NOT_FOUND', 'no such provider');
+    const inputs: CensusInput[] = [];
+    if (!only) {
+      try {
+        const pack = JSON.parse(await readFile(join(config.instance.pack, 'catalog', 'assets', 'index.json'), 'utf8')) as AssetIndex;
+        inputs.push({ source: 'pack', entries: pack.assets ?? [] });
+      } catch { /* a federated-only instance has no pack index */ }
+      const records = (await store.listInstanceAssets()).filter((r) => (r.exited || !r.origin) && submissionServable(r));
+      inputs.push({ source: 'instance', entries: records.map((r) => r.entry) });
+    }
+    for (const { rec, fragment } of await federation.fragments()) {
+      if (!only || rec.id === only) inputs.push({ source: rec.id, entries: fragment.assets });
+    }
+    const rules = await store.listCatalogTagRules();
+    const rows = tagCensus(inputs, rules, providers);
+    const LIMIT = 5000;
+    sendJson(res, 200, {
+      rules,
+      providers: providers.map((p) => ({
+        id: p.id, label: p.label, managedBy: p.managedBy, enabled: p.enabled,
+        assetCount: p.state.assetCount,
+        declared: Array.isArray(p.mapping.hiddenTags) ? p.mapping.hiddenTags : [],
+      })),
+      canEdit: rights,
+      total: rows.length,
+      tags: rows.slice(0, LIMIT),
+      ...(rows.length > LIMIT ? { truncated: true } : {}),
+    }, { 'cache-control': 'private, no-store' });
+  });
+
+  /**
+   * Change one scope's hidden list. `hidden` replaces it; `hide` and `show`
+   * edit it, which is what the console's per-row toggles and bulk buttons
+   * send so two admins working the same list do not overwrite each other.
+   * `show` removes a pattern spelled the same way, without regard to case.
+   * Takes effect on the next index read: the rules are applied when the
+   * index is served, so nothing re-syncs.
+   */
+  router.add('PUT', '/api/v1/catalog/tags/rules', async (req, res) => {
+    const user = await memberOf(req);
+    if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+    const body = (await readJson(req)) as Record<string, unknown> | null;
+    const scope = typeof body?.scope === 'string' ? body.scope.trim() : '';
+    if (!validTagScope(scope)) return sendError(res, 400, 'INVALID_INPUT', 'scope must be * or provider:<id>');
+    const rights = await tagRightsOf(user);
+    if (scope === INSTANCE_SCOPE ? !rights.instance : !rights.providers) {
+      return sendError(res, 403, 'FORBIDDEN', scope === INSTANCE_SCOPE ? 'needs policy.edit' : 'needs catalog.provider.manage');
+    }
+    await providersReady;
+    if (scope !== INSTANCE_SCOPE && !(await store.getProvider(scope.slice('provider:'.length)))) {
+      return sendError(res, 404, 'NOT_FOUND', 'no such provider');
+    }
+    const before = (await store.listCatalogTagRules()).find((r) => r.scope === scope) ?? null;
+    let wanted: unknown;
+    if (body?.hidden !== undefined) {
+      if (body.hide !== undefined || body.show !== undefined) return sendError(res, 400, 'INVALID_INPUT', 'send hidden, or hide and show, not both');
+      wanted = body.hidden;
+    } else {
+      const hide = body?.hide ?? [];
+      const show = body?.show ?? [];
+      if (!Array.isArray(hide) || !Array.isArray(show)) return sendError(res, 400, 'INVALID_INPUT', 'hide and show must be lists of tags');
+      if (!hide.length && !show.length) return sendError(res, 400, 'INVALID_INPUT', 'nothing to change');
+      const drop = new Set(show.filter((t): t is string => typeof t === 'string').map((t) => t.trim().toLowerCase()));
+      wanted = [...(before?.hidden ?? []).filter((t) => !drop.has(t.toLowerCase())), ...hide];
+    }
+    const hidden = normalizeHiddenTags(wanted);
+    if ('error' in hidden) return sendError(res, 400, 'INVALID_INPUT', hidden.error);
+    const next: CatalogTagRule = { scope, hidden, updatedBy: `user:${user.id}`, updatedAt: new Date().toISOString() };
+    if (hidden.length) await store.putCatalogTagRule(next);
+    else await store.deleteCatalogTagRule(scope);
+    await audit(`user:${user.id}`, 'catalog.tags.update', `catalog-tags:${scope}`, {
+      before: before?.hidden ?? [], after: hidden,
+    });
+    sendJson(res, 200, { ok: true, rule: hidden.length ? next : { scope, hidden: [] } }, { 'cache-control': 'no-store' });
   });
 
   /**
@@ -6304,6 +6688,19 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     store, blobs, policy: config.policy.submit,
     ...(config.submit.scanHook ? { scanHook: config.submit.scanHook } : {}),
     ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    // A template or user tool must seed a tool this pack has (plan 299). The
+    // same manifest reader the policy editor uses answers it, plus the name
+    // the review queue shows.
+    toolLookup: async (toolId: string) => {
+      const inputs = await readToolManifestInputs(toolId);
+      if (!inputs) return null;
+      let name: string | undefined;
+      try {
+        const manifest = JSON.parse(await readFile(join(config.instance.pack, 'tools', toolId, 'tool.json'), 'utf8')) as { name?: unknown };
+        if (typeof manifest.name === 'string') name = manifest.name;
+      } catch { /* the inputs read already proved the file is there */ }
+      return { inputs: inputs.map((i) => String(i.id)), ...(name ? { name } : {}) };
+    },
   });
 
   /** The console/CLI view of one submission: the record's own descriptive entry
@@ -6333,6 +6730,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       ...(s.decidedBy ? { decidedBy: s.decidedBy } : {}),
       ...(s.decidedAt ? { decidedAt: s.decidedAt } : {}),
       ...(s.comment ? { comment: s.comment } : {}),
+      // A template or user tool (plan 299): what it seeds, for the reviewer.
+      ...(s.data ? { data: s.data } : {}),
+      ...(s.collectionId ? { collectionId: s.collectionId } : {}),
+      ...(s.joinedCollection ? { joinedCollection: s.joinedCollection } : {}),
+      ...(s.clientRef ? { clientRef: s.clientRef } : {}),
+      ...(s.note ? { note: s.note } : {}),
       // The org's own metadata (plans/31 section 4), so the review queue shows
       // and edits the same taxonomy the published asset will carry.
       ...(Object.keys(fields).length ? { fields } : {}),
@@ -6369,6 +6772,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const action = settled.state === 'live' ? 'catalog.approve-submission' : 'catalog.return-submission';
     await audit(`user:${actorId}`, action, `catalog:${settled.record.id}`, {
       approvalId: approval.id, ...(settled.comment ? { comment: settled.comment } : {}),
+      ...(settled.collection ? { collection: settled.collection } : {}),
     });
     const submitterId = (settled.record.submission?.by ?? '').replace(/^user:/, '');
     if (!submitterId) return true;
@@ -6435,7 +6839,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       }
     }
     const name = (ctx.url.searchParams.get('name') ?? '').trim();
-    if (!name && !target) return sendError(res, 400, 'INVALID_INPUT', 'name query param required');
+    // A template or user tool names itself in its JSON (plan 299), so only a
+    // file has to be named by the caller.
+    const declaredType = (ctx.url.searchParams.get('type') ?? '').trim();
+    if (!name && !target && !isDataSubmissionType(declaredType)) return sendError(res, 400, 'INVALID_INPUT', 'name query param required');
     const maxBytes = config.policy.submit.maxBytes;
     let bytes: Buffer;
     try {
@@ -6451,8 +6858,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const declaredGroups = list('groups');
     const outsider = declaredGroups.filter((g) => !user.groups.includes(g));
     if (outsider.length) return sendError(res, 403, 'FORBIDDEN', `you are not in ${outsider.join(', ')}, so you cannot submit into it`);
-    const type = (ctx.url.searchParams.get('type') ?? '').trim();
+    const type = declaredType;
     if (type && !/^[a-z0-9-]{1,32}$/i.test(type)) return sendError(res, 400, 'INVALID_INPUT', 'type must be a short slug');
+    const toolIdParam = (ctx.url.searchParams.get('toolId') ?? '').trim();
+    const clientRef = (ctx.url.searchParams.get('clientRef') ?? '').trim();
 
     const outcome = await submitAsset(submitDeps(), {
       bytes,
@@ -6465,6 +6874,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       ...(declaredGroups.length ? { groups: declaredGroups } : {}),
       ...(req.headers['content-type'] ? { contentType: req.headers['content-type'] } : {}),
       submitter: { id: user.id, groups: user.groups },
+      ...(toolIdParam ? { toolId: toolIdParam } : {}),
+      ...(clientRef ? { clientRef } : {}),
     });
 
     if (!outcome.ok) {
@@ -6476,7 +6887,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       // A misconfigured review chain is the instance's fault, not the
       // submitter's, so it reads as unavailable rather than as a bad request.
       const status = outcome.code === 'QUOTA_EXCEEDED' ? 409
-        : outcome.code === 'SCAN_REJECTED' ? 422
+        : outcome.code === 'SCAN_REJECTED' || outcome.code === 'INVALID_SUBMISSION' ? 422
           : outcome.code === 'SUBMIT_CHAIN_MISSING' ? 503 : 502;
       return sendError(res, status, outcome.code, outcome.detail);
     }
@@ -6519,6 +6930,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       scan: outcome.scan,
       credential: outcome.credential,
       formats: (outcome.record.entry.formats ?? []).map((f) => f.format),
+      type: outcome.record.entry.type ?? null,
       ...(outcome.version ? { version: outcome.version } : {}),
       ...(trimmed ? { trimmed } : {}),
       ...(outcome.approval ? { approvalId: outcome.approval.id } : {}),
@@ -6604,7 +7016,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // two surfaces edit exactly these four fields - here, before publication,
     // and the asset editor afterwards (plans/31 section 4). They differ in when
     // they apply and in which keys they allow, never in what a name may be.
-    const parsed = parseDescriptivePatch(body, rec.entry, ['name', 'type', 'description', 'tags']);
+    // A template or user tool keeps its kind: retyping one would serve JSON
+    // to shells that expect a picture (plan 299).
+    const parsed = parseDescriptivePatch(body, rec.entry, rec.submission.data ? ['name', 'description', 'tags'] : ['name', 'type', 'description', 'tags']);
+    if (rec.submission.data && body.type !== undefined && body.type !== rec.entry.type) {
+      return sendError(res, 400, 'INVALID_INPUT', `a ${rec.submission.data.kind} keeps its type`);
+    }
     if ('error' in parsed) return sendError(res, 400, 'INVALID_INPUT', parsed.error);
     const before: Record<string, unknown> = { ...parsed.before };
     const after: Record<string, unknown> = { ...parsed.after };
@@ -6647,8 +7064,29 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         updatedBy: `user:${user.id}`, updatedAt: new Date().toISOString(),
       };
     }
+    // The collection this asset joins once it is approved (plan 299). Choosing
+    // one is curation of a named set, so it asks the collection right rather
+    // than the review right, and only a collection the caller can see is a
+    // choice. `null` clears an earlier choice.
+    let collectionId = rec.submission.collectionId;
+    if (body.collectionId !== undefined) {
+      if (!(await requireAction(req, res, 'catalog.collection.manage'))) return;
+      if (body.collectionId === null || body.collectionId === '') collectionId = undefined;
+      else {
+        const wanted = typeof body.collectionId === 'string' ? body.collectionId.trim() : '';
+        const collection = wanted ? await store.getCollection(wanted) : null;
+        if (!collection || !collectionVisible(collection, user.groups)) return sendError(res, 404, 'NOT_FOUND', 'no such collection');
+        collectionId = collection.id;
+      }
+      before.collectionId = rec.submission.collectionId ?? null;
+      after.collectionId = collectionId ?? null;
+    }
     if (!Object.keys(after).length) return sendError(res, 400, 'INVALID_INPUT', 'nothing to change');
-    const next: InstanceAssetRecord = { ...rec, entry: applyDescriptivePatch(rec.entry, parsed) };
+    const { collectionId: _prior, ...submissionRest } = rec.submission;
+    const next: InstanceAssetRecord = {
+      ...rec, entry: applyDescriptivePatch(rec.entry, parsed),
+      submission: { ...submissionRest, ...(collectionId ? { collectionId } : {}) },
+    };
     await store.putInstanceAsset(next);
     if ((after.fields !== undefined || after.extractedText !== undefined) && meta) await store.putAssetMeta(meta);
     await audit(`user:${user.id}`, 'catalog.edit-submission', `catalog:${rec.id}`, { before, after, relation });
@@ -6977,6 +7415,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       lastSyncAt: rec.state.lastSyncAt ?? null,
       lastError: rec.state.lastError ?? null,
       assetCount: rec.state.assetCount,
+      // A sync that stopped at a cap says so wherever the operator looks.
+      ...(rec.state.fragment?.truncated ? { truncated: true } : {}),
+      ...(rec.state.fragment?.notes?.length ? { notes: rec.state.fragment.notes } : {}),
     },
   });
 
@@ -6996,6 +7437,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       if (v === undefined) continue;
       if (!v || typeof v !== 'object' || Array.isArray(v)) return { error: `${key} must be an object` };
       (out as Record<string, unknown>)[key] = v;
+    }
+    const maxAssets = (out.sync as Record<string, unknown> | undefined)?.maxAssets;
+    if (maxAssets !== undefined && (typeof maxAssets !== 'number' || !Number.isInteger(maxAssets) || maxAssets < 1 || maxAssets > 10_000_000)) {
+      return { error: 'sync.maxAssets must be a whole number, 1-10000000' };
     }
     return out;
   };
@@ -7335,6 +7780,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         ok: true, assetCount: fragment.assets.length, syncedAt: fragment.syncedAt, hash: fragment.hash,
         ...(fragment.skipped ? { skipped: fragment.skipped } : {}),
         ...(fragment.notes?.length ? { notes: fragment.notes } : {}),
+        ...(fragment.truncated ? { truncated: true } : {}),
       });
     } catch (err) {
       sendError(res, 502, 'PROVIDER_UNAVAILABLE', `sync failed: ${(err as Error).message}`);
@@ -7441,7 +7887,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const rec = await store.getProvider(ctx.params.id as string);
     if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such provider');
     try {
-      const fragment = await buildFragment(rec, federation.instantiate(rec), Date.now);
+      const fragment = await buildFragment(rec, federation.instantiate(rec), Date.now, { maxAssets: serving.maxProviderAssets });
       const report = providerDrift(rec.id, fragment.assets, await store.listInstanceAssets());
       sendJson(res, 200, report, { 'cache-control': 'no-store' });
     } catch (err) {
@@ -7510,9 +7956,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const user = await requireAction(req, res, 'catalog.read'); if (!user) return;
     await providersReady;
     const fragments = await federation.fragments();
-    const composed = await federation.composeIndex({}, user.groups);
-    const visible = applyLifecycleToIndex(composed, await store.listLifecycle(), Date.now());
-    const sources = visibleSourceStatuses(await store.listProviders(), fragments, user.groups, new Set((visible.assets ?? []).map(a => a.id)));
+    // The memoised feed already holds what this caller is served, lifecycle
+    // applied; the provider rows are read without their large fragments.
+    const visible = (await servedIndex.forCaller({ groups: user.groups })).index;
+    const sources = visibleSourceStatuses(await store.listProviders({ includeFragment: false }), fragments, user.groups, new Set((visible.assets ?? []).map(a => a.id)));
     const canManage = evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'catalog.provider.manage', ['*'], await store.listGrants());
     sendJson(res, 200, { sources, canManage, scope: user.id }, { 'cache-control': 'private, no-store' });
   });
@@ -7537,30 +7984,17 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const limit = Math.min(Math.max(Number(ctx.url.searchParams.get('limit') ?? 50) || 50, 1), 200);
     await providersReady;
 
-    // Local pass: pack index + synced fragments, lifecycle-applied.
-    let index: AssetIndex = {};
-    try {
-      index = JSON.parse(await readFile(join(config.instance.pack, 'catalog', 'assets', 'index.json'), 'utf8')) as AssetIndex;
-    } catch {
-      /* no pack index — federated-only instances still search */
-    }
+    // Local pass: the caller's memoised feed (pack index + synced fragments +
+    // instance assets, lifecycle-applied; catalog/served-index.ts). A pack with
+    // no index still composes, so federated-only instances still search.
     const lifecycleRows = await store.listLifecycle();
     const lifecycleById = new Map(lifecycleRows.map((r) => [r.assetId, r]));
-    // The overlay is loaded once and kept: `composeAssetMeta` folds its fields
-    // and supersession onto the feed entries, and the haystack below folds its
-    // OCR text (which is kept OFF the feed) in beside them (plans/31 §7).
+    // The overlay is loaded here too: the feed carries its fields and
+    // supersession, and the haystack below folds its OCR text (which is kept
+    // OFF the feed) in beside them (plans/31 section 7).
     const metas = await store.listAssetMeta();
     const metaById = new Map(metas.map((m) => [m.assetId, m]));
-    const withInstance = composeAssetMeta(
-      composeInstanceAssets(
-        await federation.composeIndex(index, user.groups), await store.listInstanceAssets(), user.groups,
-      ),
-      metas, await store.listCatalogFields(),
-    );
-    const composed = applyCredentialsToIndex(
-      applyLifecycleToIndex(withInstance, lifecycleRows, Date.now()),
-      await store.listCredentials(),
-    );
+    const composed = (await servedIndex.forCaller({ groups: user.groups })).index;
     // The haystack folds the org's own field values (plans/31 section 4) and
     // the asset's on-device OCR text (section 7) alongside id, name, description
     // and tags: a value an org files an asset under, or a word printed on the
@@ -7582,6 +8016,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const missed: string[] = [];
     const live = (await store.listProviders({ includeFragment: false })).filter((rec) =>
       rec.enabled && callerSeesProvider(rec, user.groups));
+    // Live results lose hidden tags the same way the feed's entries do.
+    const tagRules = await loadTagRules(store);
     await Promise.all(live.map(async (rec) => {
       try {
         const provider = federation.instantiate(rec);
@@ -7592,7 +8028,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
           // Live results pass the SAME gates as synced fragments: the admin's
           // exposure slice, then this instance's lifecycle overlays.
           if (!passesExposure(rec, a)) continue;
-          const entry = mapProviderAsset(rec, a);
+          const entry = hideEntryTags(mapProviderAsset(rec, a), tagRules);
           const row = lifecycleById.get(entry.id);
           const { state, upstreamExpired } = combinedState(row, entryWindow(entry), Date.now());
           if (state === 'revoked' || state === 'scheduled' || (state === 'expired' && (upstreamExpired || row?.onExpiry !== 'warn'))) continue;
@@ -7695,8 +8131,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     ...(s.deletedAt ? { deletedAt: s.deletedAt } : {}),
   });
 
-  registerProjectFileRoutes(router, { config, store, blobs, memberOf, requireAction, projectAccessOf, audit });
+  registerProjectFileRoutes(router, { config, store, blobs, memberOf, requireAction, projectAccessOf, audit, renderFileReader: createRenderFileReader({ secret: linkVerify, store, projectAccessOf }) });
   registerProjectFolderRoutes(router, { store, memberOf, requireAction, projectAccessOf, audit });
+  registerShareRoutes(router, { config, store, memberOf, requireAction, projectAccessOf, audit });
   registerAgentRoutes(router, { store, config, blobs, memberOf, projectAccessOf, audit, origin: config.instance.baseUrl, rooms: deps.agentRooms, projectRequest: agentRequests.run });
 
   router.add('GET', '/api/v1/projects/:id/presence', async (req, res, ctx) => {
@@ -7725,15 +8162,21 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const includeArchived = ctx.url.searchParams.get('archived') === '1';
-    const [all, stats, memberships, grants] = await Promise.all([
+    const [all, stats, memberships, grants, states] = await Promise.all([
       store.listProjects(), store.projectSessionStats(), store.listUserProjectMemberships(user.id), store.listGrants(),
+      store.listProjectUserState(user.id),
     ]);
     const mine = new Map(memberships.map((m) => [m.projectId, m]));
+    const own = new Map(states.map((s) => [s.projectId, s]));
     const visible = all
       .map((p) => ({ p, role: effectiveProjectAccess(user, p, mine.get(p.id) ?? null, grants) }))
       .filter(({ p, role }) => role !== 'none' && (includeArchived || !p.archivedAt));
     const names = await namesFor(visible.map(({ p }) => projectActivity(p, stats).updatedBy));
-    sendJson(res, 200, { projects: visible.map(({ p, role }) => projectRow(p, stats, role, names)) });
+    // `via`, `listed` and `lastOpenedAt` let the shell keep a project shared with
+    // everyone out of a person's list until they choose it (lolly plan 299).
+    sendJson(res, 200, { projects: visible.map(({ p, role }) => ({
+      ...projectRow(p, stats, role, names), ...projectListing(user, p, mine.get(p.id) ?? null, own.get(p.id)),
+    })) });
   });
 
   router.add('POST', '/api/v1/projects', async (req, res) => {
@@ -7770,7 +8213,21 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const body = (await readJson(req)) as { name?: string; visibility?: unknown; archived?: boolean; ownerId?: unknown } | null;
     const next: ProjectRecord = { ...project, updatedAt: new Date().toISOString(), updatedBy: user.id };
     if (typeof body?.name === 'string' && body.name.trim()) next.name = body.name.slice(0, 200);
-    if (body?.visibility !== undefined) next.visibility = normalizeVisibility(body.visibility);
+    if (body?.visibility !== undefined) {
+      next.visibility = normalizeVisibility(body.visibility);
+      // A directory group's grant (lolly plan 299) lives only while the group is
+      // in visibility, as PUT .../sharing keeps it. Dropping the group here drops
+      // its grant, so adding it back later starts at editor, never at a role it
+      // held before (manager, say).
+      const kept = next.visibility === 'private' ? [] : next.visibility.groups;
+      const grants = project.sharing?.groups;
+      const live = grants?.filter((g) => g.kind !== 'directory' || kept.includes(g.name));
+      if (project.sharing && grants && live && live.length !== grants.length) {
+        const sharing = { ...project.sharing };
+        if (live.length) sharing.groups = live; else delete sharing.groups;
+        if (Object.keys(sharing).length) next.sharing = sharing; else delete next.sharing;
+      }
+    }
     if (body?.archived === true) next.archivedAt = new Date().toISOString();
     else if (body?.archived === false) delete next.archivedAt;
     // Ownership transfer (plans/36 §1) - the offboarding answer erasure was
@@ -7794,9 +8251,18 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
     await store.putProject(next);
     // The new owner is on the project now, so an invitation to it is done.
+    // The previous owner stays on it as a Manager (plans/75 G15): handing a
+    // project on is not leaving it, and they can still leave or be removed.
+    // A disabled previous owner is not kept, so offboarding (disable, then
+    // transfer) does not leave a row a later re-enable would bring back.
     if (next.ownerId !== project.ownerId) {
       const owner = await store.getUser(next.ownerId);
       if (owner) await closeMemberInvitations(next, owner, `user:${user.id}`);
+      const previous = await store.getUser(project.ownerId);
+      if (previous && !previous.disabledAt) {
+        await store.putProjectMember({ projectId: next.id, userId: previous.id, role: 'manager', addedBy: `user:${user.id}`, addedAt: new Date().toISOString() });
+        await audit(`user:${user.id}`, 'project.member.add', `project:${next.id}`, { userId: previous.id, role: 'manager', via: 'transfer' });
+      }
     }
     await audit(`user:${user.id}`, 'project.update', `project:${next.id}`, {
       visibility: next.visibility, archived: Boolean(next.archivedAt),
@@ -7926,7 +8392,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       await audit(`user:${user.id}`, 'session.conflict', `session:${fresh.id}`, { rev: fresh.rev, sentRev: body.rev, toolId: fresh.toolId });
       return sendJson(res, 409, { error: { code: 'CONFLICT', message: `session is at rev ${fresh.rev}, you sent ${body.rev}` }, current: await conflictCurrent(fresh, user.id) });
     }
-    await store.appendSessionRevision({ sessionId: next.id, rev: next.rev, inputs, meta, actor: revisionActor(req, user), at: now });
+    const saver = revisionActor(req, user);
+    await store.appendSessionRevision({ sessionId: next.id, rev: next.rev, inputs, meta, actor: saver, at: now });
+    // A REST save is a version too (plan 76 M4), including the save a shell
+    // retries after merging a 409; the store skips one that changed nothing.
+    await recordSaveVersion(store, next, user.id, saver.startsWith('agent:') ? { id: saver.slice('agent:'.length), kind: 'agent' } : { id: user.id, kind: 'user' });
     await audit(`user:${user.id}`, 'session.update', `session:${next.id}`, { rev: next.rev, projectId: next.projectId, toolId: next.toolId });
     sendJson(res, 200, sessionFull(next));
   });
@@ -7955,9 +8425,15 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!mayDelete) {
       return sendError(res, 403, 'FORBIDDEN', 'only the session creator, the project owner or a holder of project.manage can delete this session');
     }
-    if (session.deletedAt) return sendJson(res, 200, { ok: true, alreadyDeleted: true });
+    // Sessions have no undelete, so their versions go in the same request
+    // (plan 76 M4). A repeated DELETE finishes the job if the first stopped.
+    if (session.deletedAt) {
+      await store.deleteSessionVersions(session.id);
+      return sendJson(res, 200, { ok: true, alreadyDeleted: true });
+    }
     const now = new Date().toISOString();
     await store.putSession({ ...session, deletedAt: now, updatedBy: user.id, updatedAt: now });
+    await store.deleteSessionVersions(session.id);
     await audit(`user:${user.id}`, 'session.delete', `session:${session.id}`, { projectId: session.projectId, toolId: session.toolId });
     sendJson(res, 200, { ok: true });
   });
@@ -8017,7 +8493,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   /**
    * Give an existing account a role on the project, or raise the one it has.
    * Never lowers a role: asking for less than someone already has is
-   * 'already', and lowering is an explicit PATCH.
+   * 'already', and lowering is an explicit PATCH. A membership whose end date
+   * has passed gives no access, so it counts as no membership here: a share,
+   * an accepted invitation or an approved request restores the person at the
+   * role asked for, with no end date. A raise keeps a live end date.
    *
    * The inbox message goes out only when the person was not on the project
    * (a raise is not news worth a message), and a dismissal is never cleared:
@@ -8045,14 +8524,16 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // 'already' closes invitations too, which tidies a row left open before
     // this rule existed the next time someone shares with the person.
     if (project.ownerId === target.id) { await closeMemberInvitations(project, target, actor.principal); return 'already'; }
-    const existing = await store.getProjectMember(project.id, target.id);
+    const stored = await store.getProjectMember(project.id, target.id);
+    const existing = stored && grantLive(stored.expiresAt, Date.now()) ? stored : null;
     if (existing && !roleAbove(role, existing.role)) {
       await closeMemberInvitations(project, target, actor.principal);
       await closeRequestsOnAccess(accessDeps, { projectId: project.id, userId: target.id, role: existing.role }, actor.principal);
       return 'already';
     }
     const addedAt = new Date().toISOString();
-    await store.putProjectMember({ projectId: project.id, userId: target.id, role, addedBy: actor.principal, addedAt });
+    await store.putProjectMember({ projectId: project.id, userId: target.id, role, addedBy: actor.principal, addedAt,
+      ...(existing?.expiresAt ? { expiresAt: existing.expiresAt } : {}) });
     let messageHeld = false;
     if (!existing && target.id !== actor.userId && opts.message !== false) {
       if (shareMessageQuota.take(actor.principal)) {
@@ -8065,7 +8546,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       }
     }
     await audit(actor.principal, 'project.member.add', `project:${project.id}`, {
-      userId: target.id, role, via, ...(existing ? { from: existing.role } : {}), ...(messageHeld ? { message: 'held' } : {}),
+      userId: target.id, role, via, ...(existing ? { from: existing.role } : {}), ...(stored && !existing ? { restored: true } : {}),
+      ...(messageHeld ? { message: 'held' } : {}),
     });
     await closeMemberInvitations(project, target, actor.principal);
     await closeRequestsOnAccess(accessDeps, { projectId: project.id, userId: target.id, role }, actor.principal);
@@ -8125,7 +8607,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       const session = r.viaSessionId ? await store.getSession(r.viaSessionId) : null;
       out.push({
         id: r.id, userId: who.id, name: nameWithoutEmail(who), email: r.email,
-        role: r.role === 'editor' ? 'editor' : 'viewer', currentRole: r.currentRole ?? 'none',
+        role: r.role === 'editor' || r.role === 'commenter' ? r.role : 'viewer', currentRole: r.currentRole ?? 'none',
         ...(r.note ? { note: r.note } : {}), createdAt: r.createdAt,
         ...(session && session.projectId === project.id && !session.deletedAt ? { viaSession: { id: session.id, name: labelOf(session) } } : {}),
       });
@@ -8133,23 +8615,84 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     return out;
   };
 
+  /**
+   * Who else can open a project without a row on it (plans/75 G15): the
+   * people in one of its visibility groups, and the workspace's admins and
+   * owners, who can open every project. Listed for the project's managers
+   * only, beside the owner and member rows, never inside them, so an older
+   * Lolly offers no role select or Remove for access a project cannot take
+   * away. Each row says which way the person gets in (`via`), at what level
+   * (`role`), and for a group row which group.
+   *
+   * Names never fall back to an address, and the rows carry no email. A
+   * project's visibility can name any group, so this must not become a way
+   * to read the directory: a caller who may not list everyone gets group rows
+   * only for the groups they are in themselves, whose people they can see
+   * anyway. For the same reason the admins are listed by name only to a
+   * caller who may list everyone (an admin or owner, as `GET /api/v1/users`
+   * asks). Another manager could otherwise make a project of their own and
+   * read off who the admins are (rbac/project-access.ts, `isProjectMember`);
+   * they learn only that admins can open it (`adminAccess: 'note'`), and a
+   * group row of theirs shows the level the group itself gives (the same rule
+   * as `projectAccess`, with no admin role and no `project.manage` lift),
+   * never a Manager level an admin role adds.
+   */
+  const EFFECTIVE_ROWS_MAX = 200;
+  const effectiveAccessFor = async (caller: UserRecord, project: ProjectRecord, listed: ReadonlySet<string>, grants: Grant[]) => {
+    const seesDirectory = caller.role === 'admin' || caller.role === 'owner';
+    const visible = project.visibility === 'private' ? [] : project.visibility.groups;
+    const groups = seesDirectory ? visible : visible.filter((g) => caller.groups.includes(g));
+    const rows: Array<{ userId: string; name: string; role: ProjectAccess; via: 'group' | 'admin'; group?: string; isMe?: true }> = [];
+    for (const u of await store.listUsers()) {
+      if (listed.has(u.id) || u.disabledAt) continue;
+      const group = groups.find((g) => u.groups.includes(g));
+      const admin = u.role === 'admin' || u.role === 'owner';
+      if (!group && !(admin && seesDirectory)) continue;
+      const role: ProjectAccess = seesDirectory
+        ? effectiveProjectAccess(u, project, null, grants)
+        : projectAccess({ ...u, role: 'member' }, project, null);
+      if (role === 'none') continue;
+      rows.push({
+        userId: u.id, name: nameWithoutEmail(u), role, ...(group ? { via: 'group' as const, group } : { via: 'admin' as const }),
+        ...(u.id === caller.id ? { isMe: true as const } : {}),
+      });
+    }
+    rows.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()) || (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0));
+    return {
+      effective: rows.slice(0, EFFECTIVE_ROWS_MAX),
+      ...(rows.length > EFFECTIVE_ROWS_MAX ? { effectiveTruncated: true } : {}),
+      adminAccess: seesDirectory ? 'listed' as const : 'note' as const,
+    };
+  };
+
   router.add('GET', '/api/v1/projects/:id/members', async (req, res, ctx) => {
     const gate = await projectGate(req, res, ctx.params.id as string, 'viewer');
     if (!gate) return;
-    const { user, project, access } = gate;
+    const { user, project, access, grants } = gate;
     const manager = accessAtLeast(access, 'manager');
+    // Whether this caller may hand the project on: exactly the test
+    // `PATCH /api/v1/projects/:id` applies to `ownerId` (the owner, or a
+    // holder of project.manage), so Lolly offers Make owner only where the
+    // transfer would be accepted.
+    const canTransfer = project.ownerId === user.id
+      || evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'project.manage', ['*'], grants);
     const rows = (await store.listProjectMembers(project.id)).filter((m) => m.userId !== project.ownerId);
     const people = new Map((await store.getUsersByIds([project.ownerId, ...rows.map((m) => m.userId)])).map((u) => [u.id, u]));
     // Emails are for managers only, and so is a name that would fall back to
     // one: `displayName` returns the address for an account with no name.
     // `isMe` marks the caller's own row, so Lolly can word leaving the
-    // project, or lowering your own role, as what it is.
+    // project, or lowering your own role, as what it is. `via` says the row
+    // is the owner or an explicit member; the other ways in are `effective`.
     const person = (userId: string, role: ProjectAccess, addedAt: string) => {
       const u = people.get(userId);
       const name = u ? (manager ? displayName(u) : nameWithoutEmail(u)) : userId;
-      return { userId, name, ...(manager && u ? { email: u.email } : {}), role, addedAt, ...(userId === user.id ? { isMe: true } : {}) };
+      return {
+        userId, name, ...(manager && u ? { email: u.email } : {}), role, via: userId === project.ownerId ? 'owner' as const : 'member' as const,
+        addedAt, ...(userId === user.id ? { isMe: true } : {}),
+      };
     };
     const members = [person(project.ownerId, 'owner', project.createdAt), ...rows.map((m) => person(m.userId, m.role, m.addedAt))];
+    const effective = manager ? await effectiveAccessFor(user, project, new Set(members.map((m) => m.userId)), grants) : null;
     // An invitation for an address someone on the project already holds is
     // not listed when accepting it would change nothing: that person is in,
     // and is shown once, as a member. Adding a member closes such
@@ -8199,7 +8742,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       : null;
     const requests = manager ? await projectRequestsFor(user, project) : null;
     sendJson(res, 200, {
-      myRole: access, members, ...(invitations ? { invitations } : {}), ...(requests ? { requests } : {}),
+      myRole: access, canTransfer, members, ...(effective ?? {}), ...(invitations ? { invitations } : {}), ...(requests ? { requests } : {}),
     }, { 'cache-control': 'no-store' });
   });
 
@@ -8573,7 +9116,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     return { session, project, access };
   };
 
-  registerCommentRoutes(router, { config, store, memberOf, audit, sessionFor: collabSessionFor });
+  registerCommentRoutes(router, { config, store, memberOf, audit, sessionFor: collabSessionFor, people, roomEvents: deps.roomEvents });
+  registerVersionRoutes(router, { config, store, memberOf, audit, sessionFor: collabSessionFor, rooms: deps.versionRooms,
+    toolInputs: toolId => readToolInputs(config.instance.pack, toolId) });
 
   // Invite autocomplete. Read-access only - an OBSERVER may look up who else
   // could watch, which is the same disclosure they already get from the room's
@@ -8814,7 +9359,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         verification: record.request.verification,
         production: record.request.production,
         principal: { groups: caller.groups }, profile: caller.profile, overlays: await store.listOverlays(),
-      });
+      }, caller.user);
       signal.throwIfAborted();
       await currentRenderCaller(record.principal, record.request);
       return result;
@@ -8890,7 +9435,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
           if (index >= rows.length) return;
           let result: Awaited<ReturnType<typeof renderTool>> | null = null; let error: unknown;
           for (let attempt = 0; attempt <= retries && !result; attempt++) {
-            try { result = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer: await getC2paSigner(), hostedResolver: hostedAssetResolverFor(caller.groups) }, { toolId: body.toolId as string, format: body.format as string, query: queryFromInputs(rows[index]!), principal: { groups: caller.groups }, profile: caller.profile, overlays }); }
+            try { result = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer: await getC2paSigner(), hostedResolver: hostedAssetResolverFor(caller.groups) }, { toolId: body.toolId as string, format: body.format as string, query: queryFromInputs(rows[index]!), principal: { groups: caller.groups }, profile: caller.profile, overlays }, caller.user); }
             catch (caught) { error = caught; }
           }
           if (result) { retainedBytes += result.bytes.byteLength; if (retainedBytes > 128 * 1024 * 1024) throw new Error('Batch output exceeds 128 MB. Split the batch.'); }
@@ -8921,7 +9466,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       if (typeof body.toolId !== 'string' || typeof body.format !== 'string' || !await automationMayRender(caller, body.toolId)) throw new Error('export.server required.');
       const rendered = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer: await getC2paSigner(), hostedResolver: context.hostedResolver }, {
         toolId: body.toolId, format: body.format, query: queryFromInputs((body.inputs ?? {}) as Record<string, unknown>), principal: { groups: caller.groups }, profile: caller.profile, overlays: await store.listOverlays(),
-      });
+      }, caller.user);
       signal.throwIfAborted(); return { mime: rendered.mime, bytes: rendered.bytes };
     }
     if (job.verb === 'package') {
@@ -9036,7 +9581,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         toolId, format, query: queryFromInputs((body.inputs ?? {}) as Record<string, unknown>),
         principal: caller.user ? { groups: caller.user.groups } : { groups: [] }, profile: caller.profile,
         overlays: await store.listOverlays(),
-      });
+      }, caller.user);
       return result;
     };
     const wantsAsync = ctx.url.searchParams.get('async') === '1' || /respond-async/i.test(String(req.headers.prefer ?? ''));
@@ -9162,7 +9707,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         principal: user ? { groups: user.groups } : { groups: [] },
         profile: renderProfileOf(user),
         overlays,
-      });
+      }, user);
       const etag = `"r-${result.cacheKey.slice(0, 16)}"`;
       if (!result.evidence?.brandRules && req.headers['if-none-match'] === etag) {
         res.writeHead(304, { etag });
@@ -9639,9 +10184,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // so every API/console/catalog/render/link route wins; only unmatched GETs
   // reach public docs or the SPA fallback. Absent shellDir means these routes
   // are not added. HEAD handles only public docs, never private GET handlers.
-  const shellDir = config.instance.shellDir;
+  // serveShell is defined above the tool file routes, which also use it.
   const RESERVED_PREFIX = /^(api|catalog|tools|render|l|admin|scim|healthz|activate|connect)(\/|$)/;
-  if (shellDir) {
+  if (shellDir && serveShell) {
     const serveShellDocs = async (req: IncomingMessage, res: ServerResponse, rel: string): Promise<boolean> => {
       const doc = shellDocsPath(rel);
       if (!doc) return false;
@@ -9680,26 +10225,6 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       } catch { /* A missing shell mount is a missing public document. */ }
       sendError(res, 404, 'NOT_FOUND', 'no such public document');
       return true;
-    };
-    const serveShell = async (res: ServerResponse, rel: string): Promise<void> => {
-      const clean = normalize(rel.replace(/^\/+/, '')).replace(/^(\.\.[/\\])+/, '');
-      if (clean.includes('..')) return sendError(res, 400, 'INVALID_INPUT', 'bad path');
-      // A path ending in a file extension is a real asset; anything else is an
-      // SPA route → index.html (the shell hash-routes from there).
-      const asset = /\.[a-z0-9]+$/i.test(clean);
-      const target = clean === '.well-known/lolly.json' ? 'info/well-known-lolly.json' : asset && clean ? clean : 'index.html';
-      try {
-        const bytes = await readFile(join(shellDir, target));
-        res.writeHead(200, {
-          ...shellSecurityHeaders(rel),
-          'content-type': contentType(target),
-          'cache-control': target === 'index.html' ? 'no-cache' : 'public, max-age=300',
-        });
-        res.end(bytes);
-      } catch {
-        // Missing real asset → 404; a missing index means the shellDir is wrong.
-        sendError(res, 404, 'NOT_FOUND', asset ? 'no such file' : 'shell index not found — check instance.shellDir');
-      }
     };
     router.add('GET', '/info/media/agent-collaboration-review.mp4', (_req, res) => {
       res.writeHead(307, { location: '/review/agent-collaboration-review.mp4', 'cache-control': 'public, max-age=300' });
@@ -9747,6 +10272,35 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       return true;
     }
     return false;
+  };
+
+  // Sliding session renewal (plans/75 RENEW, iam/sessions.ts `sessionRenewal`).
+  // A member who keeps working is not sent back to sign in every
+  // `sessionTtlHours`: once a session is past half its lifetime, the next
+  // request that qualifies carries a fresh cookie, up to `sessionMaxHours` after
+  // the sign-in that started it. Each renewal asks again what a sign-in would:
+  // a live, enabled account at the token's epoch (`resolveMember`, so a
+  // disable or a "sign out on all devices" stops it) and still admitted
+  // (`stillAdmitted`, so leaving the lists or a revoked accepted invitation
+  // stops it). Only writes and the documents the apps poll qualify (the
+  // session, org-config and the inbox): their responses are private and never
+  // stored by a shared cache, which a Set-Cookie must not reach. A route that
+  // sets its own cookie (sign-in, logout) replaces this one.
+  const RENEWING_READS = new Set(['/api/auth/session', '/api/v1/org-config', '/api/v1/inbox']);
+  const renewedSessionCookie = async (req: IncomingMessage, pathname: string): Promise<string | null> => {
+    const method = req.method ?? 'GET';
+    const read = method === 'GET' || method === 'HEAD';
+    if (!pathname.startsWith('/api/') || method === 'OPTIONS' || (read && !RENEWING_READS.has(pathname))) return null;
+    const session = readMemberSession(req.headers.cookie, sessionVerify);
+    const renewal = session && sessionRenewal(session, { ttlSec: sessionTtlSec, maxSec: sessionMaxSec });
+    if (!session || !renewal) return null;
+    const user = await resolveMember(store, req.headers.cookie, sessionVerify);
+    if (!user || user.sub !== session.user.sub || !(await stillAdmitted(user))) return null;
+    return mintSessionCookie({
+      sub: user.sub, email: user.email, groups: user.groups, role: user.role, name: displayName(user),
+      epoch: user.sessionEpoch, authAt: renewal.authAt,
+      ...(session.user.authenticatedAt !== undefined ? { authenticatedAt: session.user.authenticatedAt } : {}),
+    }, secrets.session, secure, renewal.ttlSec);
   };
 
   return async (req, res) => {
@@ -9821,6 +10375,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         return;
       }
     }
+    // A renewal that cannot be decided (the store is down) is skipped: the
+    // session stays as it was and the next request asks again.
+    const renewed = await renewedSessionCookie(req, pathname).catch(() => null);
+    if (renewed) res.setHeader('set-cookie', renewed);
     try {
       const matched = await brand.run(async () => {
         res.setHeader('x-lolly-brand-revision', brand.current()!.revision);

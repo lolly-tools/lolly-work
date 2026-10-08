@@ -18,6 +18,7 @@ import { destinationAvailableTo, destinationDescriptor, destinationVersion } fro
 import type { ConfigDeliveryDestination, DeliveryDestinationDescriptor } from '../delivery/types.ts';
 import { invitePolicyForClient, mayInviteNewPeople, resolveInvitePolicy } from './invites.ts';
 import type { ProjectMemberRole } from '../store/types.ts';
+import { resolveSharingPolicy, type InstanceShareRole } from './sharing.ts';
 
 /** Actions whose yes/no the shell needs to render honest controls (e.g. the
  *  export button becoming "Save / Request approval"). Evaluated server-side;
@@ -38,6 +39,9 @@ const CLIENT_ACTIONS = [
   // The shell's "Save to a team project" offers "New project" only when this
   // is true; POST /api/v1/projects stays the boundary.
   'project.create',
+  // "New group" in the share dialog (lolly plan 299); off when the instance
+  // turns user-made groups off. POST /api/v1/share-groups stays the boundary.
+  'group.create',
   'collab.join', 'collab.edit',
   // plans/31 §3: the shell's "Submit to this instance" affordance on a user's
   // own uploads is dormant by ABSENCE - a public build sees no org-config at
@@ -92,7 +96,12 @@ export interface OrgConfigPayload {
    *  routes accept any group name and stay the boundary. `projectFiles` says
    *  whether shared project files (plans/74) are on: policy allows them and
    *  the store keeps them. When false the file routes answer 404. */
-  sharing: { groups: string[]; projectFiles: boolean };
+  sharing: {
+    groups: string[]; projectFiles: boolean;
+    /** The sharing limits (lolly plan 299 M1, `policy.sharing`), so the share
+     *  dialog offers only what the server accepts. */
+    instance: { enabled: boolean; maxRole: InstanceShareRole }; customGroups: boolean; maxGrantDays: number | null;
+  };
   /** The invite limits (plans/74 `policy.invites`), so the shell offers only
    *  the roles and domains the server accepts and a truthful expiry. Whether
    *  this caller may invite new people at all is `can['user.invite']`.
@@ -188,7 +197,7 @@ export function policyVersionOf(
    *  (`instance.homeView`). Absent for
    *  callers that hash policy only, so their versions are unchanged. */
   deployment?: {
-    invites: unknown; guestLinks: boolean; liveCollab?: false; projectFiles?: true; home?: 'tools' | 'projects'; homeUrl?: string;
+    invites: unknown; guestLinks: boolean; sharing?: unknown; liveCollab?: false; projectFiles?: true; home?: 'tools' | 'projects'; homeUrl?: string;
     passwordSignIn?: true; projectRequests?: false;
   },
 ): string {
@@ -300,6 +309,7 @@ export function assembleOrgConfig(opts: {
   const principal = { userId: user.id, groups: user.groups, role: user.role as Role };
   const profilePolicy = defaultProfilePolicy(user);
   const sharingGroups = sharingGroupsOf(user.groups, config.idp?.roleGroups);
+  const sharingPolicy = resolveSharingPolicy(config.policy.sharing);
   const tools: OrgConfigPayload['tools'] = {};
   for (const [toolId, overlay] of overlays) {
     // Visibility is overlay OR an explicit per-user/group tool.use ALLOW grant
@@ -382,6 +392,8 @@ export function assembleOrgConfig(opts: {
   // viewer/service principals honest and hides a dead affordance when no
   // destination is configured or exposed.
   can['delivery.create'] = destinations.length > 0;
+  // User-made groups can be switched off for the whole instance.
+  if (!sharingPolicy.customGroups) can['group.create'] = false;
   return {
     ai: resolveAiPolicy(config.policy.ai, flagGovernance),
     instance: { name: config.instance.name },
@@ -397,7 +409,11 @@ export function assembleOrgConfig(opts: {
     profilePolicy,
     tools,
     can,
-    sharing: { groups: sharingGroups, projectFiles: opts.projectFiles === true },
+    sharing: {
+      groups: sharingGroups, projectFiles: opts.projectFiles === true,
+      instance: { enabled: sharingPolicy.instanceAudience, maxRole: sharingPolicy.instanceMaxRole },
+      customGroups: sharingPolicy.customGroups, maxGrantDays: sharingPolicy.maxGrantDays,
+    },
     invites,
     requests: { project: projectRequests },
     render,
@@ -426,6 +442,8 @@ export function assembleOrgConfig(opts: {
       { groups: user.groups, role: user.role, sharingGroups },
       {
         invites: invitePolicy, guestLinks: config.policy.guestLinks?.enabled !== false,
+        // The sharing limits are part of the payload (lolly plan 299 M1).
+        sharing: sharingPolicy,
         // Only present when off, so deployments with a gateway keep their version.
         ...(opts.liveCollab === false ? { liveCollab: false } : {}),
         // Only present when on, so deployments without shared files keep theirs.

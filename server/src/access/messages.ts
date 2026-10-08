@@ -73,12 +73,12 @@ const later = (ctx: NoticeContext, days: number): string => new Date(Date.parse(
 const data = (fields: Record<string, string | undefined>): Record<string, string> =>
   Object.fromEntries(Object.entries(fields).filter((e): e is [string, string] => typeof e[1] === 'string' && e[1] !== ''));
 
-/** "view", "edit" or "manage": what the role lets you do to a project. */
-const VERB: Record<ProjectMemberRole, string> = { viewer: 'view', editor: 'edit', manager: 'manage' };
-/** "view access", "edit access", "manager access". */
-const ACCESS: Record<ProjectMemberRole, string> = { viewer: 'view', editor: 'edit', manager: 'manager' };
-/** "as a Viewer", "as an Editor", "as a Manager". */
-const AS_ROLE: Record<ProjectMemberRole, string> = { viewer: 'a Viewer', editor: 'an Editor', manager: 'a Manager' };
+/** "view", "comment on", "edit" or "manage": what the role lets you do to a project. */
+const VERB: Record<ProjectMemberRole, string> = { viewer: 'view', commenter: 'comment on', editor: 'edit', manager: 'manage' };
+/** "view access", "comment access", "edit access", "manager access". */
+const ACCESS: Record<ProjectMemberRole, string> = { viewer: 'view', commenter: 'comment', editor: 'edit', manager: 'manager' };
+/** "as a Viewer", "as a Commenter", "as an Editor", "as a Manager". */
+const AS_ROLE: Record<ProjectMemberRole, string> = { viewer: 'a Viewer', commenter: 'a Commenter', editor: 'an Editor', manager: 'a Manager' };
 
 /** The requester's name: the name from their sign-in, else the start of their address. */
 export function requesterName(req: Pick<AccessRequestRecord, 'name' | 'email'>): string {

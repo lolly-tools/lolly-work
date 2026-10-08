@@ -24,7 +24,7 @@ import { join } from 'node:path';
 import { parseConfig } from '../../server/src/config/instance.ts';
 import { createMemoryStore } from '../../server/src/store/memory.ts';
 import { buildApp } from '../../server/src/api/app.ts';
-import { INVITEE_LIMIT, MAX_TITLE_CHARS, buildInviteMessage, inviteMessageId } from '../../server/src/collab/invites.ts';
+import { INVITEE_LIMIT, MAX_TITLE_CHARS, buildInviteMessage, eligibleInvitees, inviteMessageId } from '../../server/src/collab/invites.ts';
 
 let server: Server;
 let base = '';
@@ -429,4 +429,27 @@ test('the invite link is the team route: same-origin when no app URL is set, one
   assert.equal(buildInviteMessage({ ...base, appBase: 'https://app.example/' }).cta?.url, 'https://app.example/#/team/ses_a%2Fb');
   // The tool id never reaches the link: the shell takes it from the session record.
   assert.ok(!buildInviteMessage({ ...base, appBase: '' }).cta?.url.includes('poster'));
+});
+
+// S-17 (plan 76 milestone 4): `displayName` falls back to the whole address,
+// so the autocomplete names people with `nameWithoutEmail` instead. Runs after
+// the audit test above; it adds a person and invites nobody.
+test('a person known only by an address is offered without it', async () => {
+  const nameless = await store.upsertUserBySub({ sub: 'corp:x', email: 'x@corp', groups: ['team-eng'], role: 'member' });
+  const res = await call(cookies['alice'] as string, 'GET', `/api/v1/collab/invitees?sessionId=${sessionId}&q=x`);
+  assert.equal(res.status, 200);
+  const text = await res.text();
+  assert.ok(!text.includes('@'), `no address anywhere in the body: ${text}`);
+  assert.deepEqual((JSON.parse(text) as { invitees: InviteeRow[] }).invitees, [{ id: nameless.id, name: 'x' }]);
+
+  // `include` filters before the cap, so `truncated` describes what is shown.
+  const project = { id: 'p', ownerId: 'owner', name: 'P', visibility: { groups: ['g'] }, createdAt: '', updatedAt: '' };
+  const users = Array.from({ length: 22 }, (_, i) => ({ id: `u${i}`, sub: `s${i}`, email: `u${i}@corp`, idpGroups: ['g'], localGroups: [],
+    groups: ['g'], role: 'member', sessionEpoch: 0, createdAt: '', lastSeenAt: '' }));
+  const all = eligibleInvitees({ users, project, grants: [], callerId: 'owner' });
+  assert.equal(all.truncated, true);
+  assert.ok(all.invitees.every((row) => !row.name.includes('@')));
+  const some = eligibleInvitees({ users, project, grants: [], callerId: 'owner', include: (u) => Number(u.id.slice(1)) < 20 });
+  assert.equal(some.invitees.length, 20);
+  assert.equal(some.truncated, false);
 });

@@ -30,6 +30,8 @@ export async function createWorkBrowserFixture(ossDir: string, viteOrigin: strin
       { email: 'alice@test', name: 'Alice', groups: ['team'] },
       { email: 'bob@test', name: 'Bob', groups: ['team'] },
       { email: 'viewer@test', name: 'Viewer', groups: ['team'] },
+      // In another group: cannot open the team's project, so never suggested or notified (plan 76 M4).
+      { email: 'outsider@test', name: 'Outsider', groups: ['outside'] },
     ] },
   }));
   const store = options.store ?? createMemoryStore(), secrets = { session: 'browser-session-test', link: 'browser-link-test', ...(options.renderWorker ? { renderWorker: options.renderWorker.secret } : {}) };
@@ -53,7 +55,11 @@ export async function createWorkBrowserFixture(ossDir: string, viteOrigin: strin
   let renders: RenderRunner | undefined;
   const gateway = createCollabGateway({ config, store, secrets, pingIntervalMs: 1000 });
   const app = buildApp({ config, store, secrets, listCollabRooms: () => gateway.snapshot(),
+    // As main.ts: a saved comment write tells the people in the session's live room.
+    roomEvents: (id, frame) => gateway.notifyComment(id, frame),
     ...(options.renderWorker ? { onRenderRunner: (runner: RenderRunner) => { renders = runner; runner.start(); } } : {}),
+    // As main.ts: version restores go through the live room (plan 76 M4).
+    versionRooms: gateway.versions,
   });
   const sockets = new Set<Duplex>();
   let suspended = false;
@@ -80,7 +86,7 @@ export async function createWorkBrowserFixture(ossDir: string, viteOrigin: strin
     return response.headers.getSetCookie().find(cookie => cookie.startsWith('lw_session='))!.split(';')[0]!;
   };
   const cookies = new Map<string, string>();
-  for (const email of ['admin@test', 'alice@test', 'bob@test', 'viewer@test']) cookies.set(email, await login(email));
+  for (const email of ['admin@test', 'alice@test', 'bob@test', 'viewer@test', 'outsider@test']) cookies.set(email, await login(email));
   const user = async (email: string) => (await store.listUsers()).find(user => user.email === email)!;
   const api = async (path: string, body: unknown) => {
     const response = await fetch(`${base}${path}`, { method: 'POST', headers: { cookie: cookies.get('admin@test')!, 'content-type': 'application/json' }, body: JSON.stringify(body) });

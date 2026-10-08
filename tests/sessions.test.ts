@@ -565,7 +565,7 @@ test('org-config: sharing.groups and can[project.create], and a group change mov
   assert.ok(etag);
   const oc = await first.json() as { sharing: { groups: string[] }; can: Record<string, boolean> };
   // Shared project files are off on the memory store (projects/files.ts).
-  assert.deepEqual(oc.sharing, { groups: ['team-eng'], projectFiles: false });
+  assert.deepEqual(oc.sharing, { groups: ['team-eng'], projectFiles: false, instance: { enabled: true, maxRole: 'commenter' }, customGroups: true, maxGrantDays: null });
   assert.equal(oc.can['project.create'], true);
 
   // A quiet poll stays a 304.

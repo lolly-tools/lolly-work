@@ -42,6 +42,10 @@ const ROLE_ACTIONS: Record<Role, string[]> = (() => {
     'session.create', 'session.edit', 'session.delete', 'session.share',
     'comment.resolve', 'comment.moderate',
     'project.create',
+    // Members make their own groups to share with (lolly plan 299 M1); the
+    // instance can switch that off (`policy.sharing.customGroups`) or deny it
+    // per group with a grant.
+    'group.create',
     'export.download', 'export.request',
     // Sending to an organization target is a member workflow once an owner has
     // configured and exposed that fixed target. Per-destination grants/groups

@@ -151,6 +151,9 @@ logically-equal states hash identically:
 - org-defined catalog metadata **definitions** (`catalogFields`) - the fields an org files its
   assets under ([catalog](catalog.md#org-defined-metadata)). The definitions are policy; the
   per-asset values are not, and never appear in the document
+- hidden catalog tags (`tagRules`), one entry per scope: `*` for the whole catalog or
+  `provider:<id>` for one provider ([catalog](catalog.md#hiding-tags)). The key is left out
+  when nothing is hidden, so an earlier export hashes the same
 
 ```bash
 lw export --out governance.json                # GET /api/v1/config/export

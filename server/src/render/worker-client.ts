@@ -15,7 +15,9 @@ export interface WorkerConfig { url: string; secret: string; timeoutMs: number }
 
 export interface WorkerEvidence { inputs?: Record<string, string>; version: 1; requestSha256: string; outputSha256: string; resources: { url: string; sha256: string; size: number }[]; limitations: string[] }
 export interface WorkerJob {
-  /** Short-lived catalog-only credential, never a member session. */
+  /** Short-lived render ticket, never a member session. It reads the catalog
+   *  and, when it carries a file scope, the listed files of one project while
+   *  the person who submitted the render can still see them. */
   readToken?: string;
   evidence?: boolean;
   inputIds?: string[];

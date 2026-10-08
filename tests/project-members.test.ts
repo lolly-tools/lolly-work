@@ -459,7 +459,7 @@ test('org-config: can[user.invite] follows the tier, can[session.edit], invite l
   assert.equal(admin.can['user.invite'], true);
   assert.equal(admin.can['session.edit'], true);
   assert.equal(admin.can['link.create-guest'], true);
-  assert.deepEqual(admin.invites, { domains: [], maxTtlHours: 720, projectRoles: ['viewer', 'editor', 'manager'], passwordSetup: false, passwordDomains: [] });
+  assert.deepEqual(admin.invites, { domains: [], maxTtlHours: 720, projectRoles: ['viewer', 'commenter', 'editor', 'manager'], passwordSetup: false, passwordDomains: [] });
   const member = await oc('alice@test');
   assert.equal(member.can['user.invite'], false, 'admins tier by default');
   assert.equal(member.can['session.edit'], true);
@@ -1096,4 +1096,145 @@ test('org-config: invites.passwordSetup follows password sign-in, the role and u
   assert.notEqual(v(config()), v(config({ policy: { requests: { project: false, join: false, ttlDays: 14, joinOpenMax: 50 } } })));
   assert.equal(v(config()), v(config({ policy: { requests: { project: true, join: true, ttlDays: 7, joinOpenMax: 10 } } })),
     'what the shell does not read leaves it alone');
+});
+
+// ── effective access and handing a project on (plans/75 G15) ───────────────
+
+type EffectiveRow = { userId: string; name: string; role: string; via: string; group?: string; isMe?: boolean; email?: string };
+const effectiveOf = async (env: Env, as: string, projectId: string) => {
+  const r = await env.as(as, 'GET', `/api/v1/projects/${projectId}/members`);
+  assert.equal(r.status, 200, `${as} lists people`);
+  return r.json as { members: Array<{ userId: string; role: string; via?: string }>; effective?: EffectiveRow[]; effectiveTruncated?: boolean; adminAccess?: string };
+};
+
+test('people: group and admin access appear as their own rows, for managers only, without an address', async () => {
+  const env = await boot();
+  const projectId = await seedProject(env);
+  const [gina, admin, owner, alice] = await Promise.all(['gina@test', 'admin@test', 'owner@test', 'alice@test'].map((e) => env.userId(e)));
+  // A group member whose name would fall back to an address, one who is
+  // disabled, and one who is also an admin.
+  const nameless = await env.store.upsertUserBySub({ sub: 'proxy:grp', email: 'grp@corp.example', groups: ['team'], role: 'member' });
+  const parked = await env.store.upsertUserBySub({ sub: 'proxy:parked', email: 'parked@corp.example', groups: ['team'], role: 'member', firstname: 'Parked' });
+  await env.store.setUserDisabled(parked.id, new Date().toISOString());
+  const boss = await env.store.upsertUserBySub({ sub: 'proxy:boss', email: 'boss@corp.example', groups: ['team', 'admin'], role: 'admin', firstname: 'Bea', lastname: 'Boss' });
+
+  // Members carry where their access comes from.
+  const asOwner = await effectiveOf(env, 'alice@test', projectId);
+  assert.deepEqual([asOwner.members[0]!.role, asOwner.members[0]!.via], ['owner', 'owner']);
+  assert.deepEqual(new Set(asOwner.members.slice(1).map((m) => m.via)), new Set(['member']));
+
+  // A manager who is no admin and not in the group learns nothing about who
+  // is in it: a visibility group can name any group, and the people list
+  // must not read the directory out for whoever made the project. They get
+  // only a note that admins can open the project too.
+  for (const as of ['alice@test', 'mona@test']) {
+    const body = await effectiveOf(env, as, projectId);
+    assert.equal(body.adminAccess, 'note');
+    assert.deepEqual(body.effective, [], `${as}: no rows for a group they are not in, and no admin rows`);
+  }
+  // A guessed group shows nothing either, however it was named.
+  const guessed = (await env.as('alice@test', 'POST', '/api/v1/projects', { name: 'Probe', visibility: { groups: ['team', 'admin'] } })).json.id as string;
+  assert.deepEqual((await effectiveOf(env, 'alice@test', guessed)).effective, [], 'making a project visible to a group does not list its people');
+
+  // An admin may list everyone anyway, so the admins are listed by name, at
+  // the level they have; their own row is marked.
+  const asAdmin = await effectiveOf(env, 'admin@test', projectId);
+  assert.equal(asAdmin.adminAccess, 'listed');
+  assert.deepEqual(asAdmin.effective!.map((r) => [r.userId, r.role, r.via, r.isMe ?? false]), [
+    [admin, 'manager', 'admin', true], [boss.id, 'manager', 'group', false], [gina, 'editor', 'group', false],
+    [nameless.id, 'editor', 'group', false], [owner, 'manager', 'admin', false],
+  ]);
+
+  // Editors and viewers see neither.
+  for (const as of ['eddie@test', 'vic@test', 'gina@test']) {
+    const body = await effectiveOf(env, as, projectId);
+    assert.deepEqual([body.effective, body.adminAccess], [undefined, undefined], `${as} sees no effective rows`);
+  }
+
+  // A manager who is in the group sees its people, whose names they can see
+  // anyway, at the level the group gives: never a Manager level an admin role
+  // adds, which would point the admins out.
+  await env.store.putProjectMember({ projectId, userId: gina!, role: 'manager', addedBy: 'user:seed', addedAt: new Date().toISOString() });
+  const asGroupManager = await effectiveOf(env, 'gina@test', projectId);
+  assert.equal(asGroupManager.adminAccess, 'note');
+  assert.deepEqual(asGroupManager.effective!.map((r) => [r.name, r.role, r.via, r.group]), [
+    ['Bea Boss', 'editor', 'group', 'team'], ['grp', 'editor', 'group', 'team'],
+  ], 'group rows by name; no admin rows; no Manager level an admin role adds');
+  assert.deepEqual(asGroupManager.effective!.map((r) => r.userId), [boss.id, nameless.id]);
+  assert.ok(asGroupManager.effective!.every((r) => !('email' in r) && !r.name.includes('@')), 'no addresses');
+  assert.ok(!asGroupManager.effective!.some((r) => r.userId === parked.id || r.userId === alice || r.userId === gina), 'disabled people and members are not repeated');
+  assert.equal(asGroupManager.effectiveTruncated, undefined);
+
+  // An admin denied project.manage acts as an editor on the project: no rows for them, and
+  // the owner sees them at that level.
+  const denyAdmin: Grant = { principal: `user:${admin}`, action: 'project.manage', resource: '*', effect: 'deny' };
+  await env.store.putGrant(denyAdmin);
+  try {
+    assert.equal((await effectiveOf(env, 'admin@test', projectId)).effective, undefined);
+    const asWorkspaceOwner = await effectiveOf(env, 'owner@test', projectId);
+    assert.deepEqual(asWorkspaceOwner.effective!.find((r) => r.userId === admin), { userId: admin, name: 'Ada Admin', role: 'editor', via: 'admin' });
+  } finally {
+    await env.store.deleteGrant(denyAdmin);
+  }
+
+  // A private project has no group rows, and a long group list is capped.
+  const lone = (await env.as('alice@test', 'POST', '/api/v1/projects', { name: 'Solo' })).json.id as string;
+  assert.deepEqual((await effectiveOf(env, 'alice@test', lone)).effective, []);
+  for (let i = 0; i < 205; i++) {
+    await env.store.upsertUserBySub({ sub: `proxy:crowd${i}`, email: `crowd${i}@corp.example`, groups: ['team'], role: 'member', firstname: `Crowd ${String(i).padStart(3, '0')}` });
+  }
+  const crowded = await effectiveOf(env, 'gina@test', projectId);
+  assert.equal(crowded.effective!.length, 200);
+  assert.equal(crowded.effectiveTruncated, true);
+});
+
+onBothStores('handing a project on keeps the previous owner as a Manager', async (store) => {
+  const env = await boot({}, {}, store);
+  const [alice, dee] = [await env.userId('alice@test'), await env.userId('dee@test')];
+  const projectId = (await env.as('alice@test', 'POST', '/api/v1/projects', { name: 'Handover' })).json.id as string;
+  assert.equal((await env.as('alice@test', 'PATCH', `/api/v1/projects/${projectId}`, { ownerId: dee })).status, 200);
+  assert.equal((await env.store.getProject(projectId))?.ownerId, dee);
+  assert.equal((await env.store.getProjectMember(projectId, alice))?.role, 'manager');
+  const people = await effectiveOf(env, 'alice@test', projectId);
+  assert.deepEqual(people.members.map((m) => [m.userId, m.role, m.via]), [[dee, 'owner', 'owner'], [alice, 'manager', 'member']]);
+  const added = (await env.store.listAudit()).find((e) => e.action === 'project.member.add' && e.subject === `project:${projectId}`);
+  assert.deepEqual(added?.payload, { userId: alice, role: 'manager', via: 'transfer' });
+  // Still a manager: alice can manage people, but handing it on again is the new owner's call.
+  assert.equal((await env.as('alice@test', 'PATCH', `/api/v1/projects/${projectId}`, { ownerId: alice })).status, 403);
+  // Who may hand it on is said in the list, by the test the transfer itself
+  // applies: the owner, or a holder of project.manage, never a member manager.
+  const transfers = async (email: string) => (await effectiveOf(env, email, projectId) as { canTransfer?: boolean }).canTransfer;
+  assert.equal(await transfers('dee@test'), true, 'the owner');
+  assert.equal(await transfers('alice@test'), false, 'a member manager');
+  assert.equal(await transfers('owner@test'), true, 'a holder of project.manage');
+  // An admin denied project.manage who is a Manager on the project may not hand
+  // it on, and is not offered to: the list and the transfer agree.
+  const admin = await env.userId('admin@test');
+  await env.store.putProjectMember({ projectId, userId: admin, role: 'manager', addedBy: 'user:seed', addedAt: new Date().toISOString() });
+  const denyAdmin: Grant = { principal: `user:${admin}`, action: 'project.manage', resource: '*', effect: 'deny' };
+  await env.store.putGrant(denyAdmin);
+  try {
+    assert.equal(await transfers('admin@test'), false, 'project.manage denied');
+    assert.equal((await env.as('admin@test', 'PATCH', `/api/v1/projects/${projectId}`, { ownerId: admin })).status, 403);
+  } finally {
+    await env.store.deleteGrant(denyAdmin);
+  }
+  // A member granted project.manage is offered it, and the transfer is accepted.
+  const grantAlice: Grant = { principal: `user:${alice}`, action: 'project.manage', resource: '*', effect: 'allow' };
+  await env.store.putGrant(grantAlice);
+  try {
+    assert.equal(await transfers('alice@test'), true, 'project.manage granted');
+  } finally {
+    await env.store.deleteGrant(grantAlice);
+  }
+  // She can leave like any member.
+  assert.equal((await env.as('alice@test', 'DELETE', `/api/v1/projects/${projectId}/members/${alice}`)).status, 204);
+
+  // A disabled previous owner is not kept: offboarding leaves no row to come back.
+  const parked = await env.store.upsertUserBySub({ sub: 'proxy:gone', email: 'gone@corp.example', groups: [], role: 'member' });
+  const theirs = 'prj_offboard';
+  await env.store.putProject({ id: theirs, name: 'Offboard', visibility: 'private', ownerId: parked.id, createdAt: new Date().toISOString() });
+  await env.store.setUserDisabled(parked.id, new Date().toISOString());
+  assert.equal((await env.as('owner@test', 'PATCH', `/api/v1/projects/${theirs}`, { ownerId: dee })).status, 200);
+  assert.equal(await env.store.getProjectMember(theirs, parked.id), null);
 });
