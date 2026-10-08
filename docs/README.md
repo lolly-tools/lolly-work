@@ -42,6 +42,7 @@ any Lolly deployment. The console links there when this deploy serves or points 
 | [governance](governance.md) | Tool overlays, input locking, profile policy, feature flags, policy-as-code |
 | [ai-policy](ai-policy.md) | Managed AI approval ceiling, operator switch, execution guards and lease expiry |
 | [data-lifecycle](data-lifecycle.md) | Data inventory, account-erasure preview, retained references and rights-workflow limits |
+| [project transfer preview](project-portability.md) | Read-only inventory, file/history coverage, access mapping and future transfer boundaries |
 | [catalog](catalog.md) | Brand packs, providers, exposure slices, expiry and stop-sharing |
 | [offboarding](offboarding.md) | Leaving a DAM: pin early, the Canto/Image Relay fork, exit readiness per vendor |
 | [approvals](approvals.md) | Chains, rules, separation of duties |
@@ -77,7 +78,7 @@ Connecting your first one end to end, with commands:
 
 | Doc | What it covers |
 |---|---|
-| [operations](operations.md) | Migrations, HA, secret rotation, backup, limits, monitoring, upgrades |
+| [operations](operations.md) | Migrations, collaboration drain, secret rotation, backup, limits, monitoring, application updates |
 | [telemetry](telemetry.md) | What is recorded, what never is, attribution consent, dashboards |
 | [audit](audit.md) | The hash-chained record, verification, anchoring the head off-box |
 | [production evidence](production-readiness.md) | Read-only configuration checks, staging probes and unresolved review evidence |

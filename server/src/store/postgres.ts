@@ -42,7 +42,8 @@ import {
 import { createPostgresPasskeys } from '../iam/passkeys/postgres.ts';
 import { createPostgresRenderStore } from '../renders/postgres.ts';
 import {
-  COMMENT_NOTICE_COUNT_MAX, SESSION_REVISION_LIMIT, commentNoticeId, effectiveGroups, noticeKeepCount, noticeListLimit,
+  COMMENT_NOTICE_COUNT_MAX, SESSION_REVISION_LIMIT, commentNoticeId, effectiveGroups, noticeKeepCount, noticeListLimit, validateProjectTransferMetadataLimits,
+  type ProjectTransferMetadata,
   type CommentNotice, type CommentNoticeWrite,
   type AccessRequestMatch, type AccessRequestRecord, type ProjectMemberRole,
   type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type ListUsersPageOpts, type LocalGroupRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ProjectUserStateRecord, type ShareGroupRecord, type UserIdentityRecord,
@@ -2063,6 +2064,38 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     async listProjects() {
       const { rows } = await pool.query('select * from projects order by created_at desc');
       return rows.map(projectFromRow);
+    },
+    async observeProjectTransferMetadata(projectId, limits) {
+      const bounds = validateProjectTransferMetadataLimits(limits);
+      // Separate limited SELECTs deliberately make no snapshot-consistency
+      // promise. Do not load session meta, asset configuration or part bodies.
+      const [sessions, files, folders, members, links] = await Promise.all([
+        pool.query(`select id, project_id, tool_id, tool_version, rev, updated_at from sessions
+          where project_id=$1 and deleted_at is null order by id collate "C" limit $2`, [projectId, bounds.sessions + 1]),
+        pool.query(`select id, project_id, size, checksum, content_type, jsonb_array_length(parts) as part_count from project_files
+          where project_id=$1 and ready order by id collate "C" limit $2`, [projectId, bounds.files + 1]),
+        pool.query(`select id, project_id, parent_id from project_folders
+          where project_id=$1 order by id collate "C" limit $2`, [projectId, bounds.folders + 1]),
+        pool.query(`select project_id, user_id, role, expires_at from project_members
+          where project_id=$1 order by user_id collate "C" limit $2`, [projectId, bounds.members + 1]),
+        pool.query(`select folder_id, kind, ref from project_folder_items
+          where project_id=$1 order by folder_id collate "C", kind collate "C", ref collate "C" limit $2`, [projectId, bounds.sessions + bounds.files + 1]),
+      ]);
+      const observed: ProjectTransferMetadata = {
+        sessions: sessions.rows.map(row => ({ id: row.id as string, projectId: row.project_id as string, toolId: row.tool_id as string,
+          toolVersion: row.tool_version as string, rev: Number(row.rev), updatedAt: new Date(row.updated_at as string).toISOString() })),
+        files: files.rows.map(row => ({ id: row.id as string, projectId: row.project_id as string, size: Number(row.size),
+          checksum: row.checksum as string, contentType: row.content_type as string, partCount: Number(row.part_count) })),
+        folders: folders.rows.map(row => ({ id: row.id as string, projectId: row.project_id as string, parentId: row.parent_id as string | null, items: [] })),
+        members: members.rows.map(row => ({ projectId: row.project_id as string, userId: row.user_id as string, role: row.role as ProjectMemberRole,
+          ...(row.expires_at ? { expiresAt: new Date(row.expires_at as string).toISOString() } : {}) })),
+        folderLinksTruncated: links.rows.length > bounds.sessions + bounds.files,
+      };
+      const byId = new Map(observed.folders.map(row => [row.id, row]));
+      for (const row of links.rows.slice(0, bounds.sessions + bounds.files)) {
+        byId.get(row.folder_id as string)?.items.push({ kind: row.kind as 'session' | 'file', ref: row.ref as string });
+      }
+      return observed;
     },
     async putProjectFolder(folder) {
       const result = await pool.query(`insert into project_folders (id,project_id,parent_id,name,created_at,created_by)

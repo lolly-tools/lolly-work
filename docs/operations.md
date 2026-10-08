@@ -1,6 +1,7 @@
 # Operations runbook
 
-Day-two work: schema, replicas, backup, limits, monitoring, upgrades.
+Day-two work: schema ownership, collaboration drain, backup, limits, monitoring
+and upgrades. Keep application releases separate from infrastructure relocation.
 
 ![Broadcast messages - announcements and notices targeted by group, shell and engine version](shots/broadcast-messages.svg)
 
@@ -11,7 +12,7 @@ Two drivers behind one seam, both passing a single shared conformance suite:
 | Driver | When | Notes |
 |---|---|---|
 | memory | no `DATABASE_URL` | evaluation only - state dies with the process and replicas do not share it |
-| Postgres 16/17 | `DATABASE_URL` set | the production driver |
+| PostgreSQL | `DATABASE_URL` set | durable records and database-backed blobs; use the selected deployment profile's qualified version |
 
 ```bash
 pnpm run migrate            # apply pending migrations
@@ -23,25 +24,32 @@ GET /api/v1/system/migrations      # pending list - owner-gated (instance.config
 Migrations are `migrations/*.sql`, applied in filename order, tracked in
 `schema_migrations`, each file in its own transaction.
 
-### Single node vs HA
+### Who applies migrations
 
 - **Single node** (local, Compose): leave `LW_AUTO_MIGRATE` unset. The server applies pending
   migrations at boot - one command, no separate step.
-- **HA / multiple replicas**: set `LW_AUTO_MIGRATE=false`. No replica runs DDL (concurrent
-  auto-migrate races), and the server **refuses to start on a pending schema**. A single
+- **Helm with its migration Job**: `migrate.enabled=true` sets
+  `LW_AUTO_MIGRATE=false`. The application does not run DDL and **refuses to start
+  on a pending schema**. A single
   migrate Job owns the schema - the Helm chart wires this as a pre-install/pre-upgrade hook
   that must succeed before new pods roll, so a skipped migration fails loudly instead of
   serving a half-migrated database.
 
-### Replicas
+### Collaboration ownership and replacement
 
-The app holds no local state: sessions, guests and state tokens are HMAC-signed and all
-durable data is in Postgres, so replicas are interchangeable **provided every replica shares
-the same `LW_SESSION_SECRET` and `LW_LINK_SECRET`**. That is why the chart refuses to
-generate them: a per-replica secret would fail signature checks and log everyone out on
-every rollout.
+The current combined HTTP/WebSocket application keeps one writable collaboration
+owner. The chart refuses `replicaCount` other than one until room routing and
+operation ordering are supported. PostgreSQL persistence, a multi-node cluster
+or ingress affinity does not make writable replicas interchangeable or establish
+application HA. Independent render workers can scale after workload testing.
 
-The render cache is per-process (an in-process LRU). Replicas simply warm independently.
+The default `Recreate` strategy and 60-second termination grace period allow the
+old owner to drain sockets and release room leases before replacement. Expect a
+brief reconnect window and qualify reconnect with an existing client. Acknowledged
+edits are durable; unacknowledged edits remain in client outboxes. Stable
+`LW_SESSION_SECRET` and `LW_LINK_SECRET` values must be retained across restarts
+and releases. They are not generated per Pod. The render cache is per-process
+and warms again after replacement.
 
 ## Secret rotation
 
@@ -87,27 +95,42 @@ allows inline styles for the console's existing controls and theme.
 
 ## Backup and restore
 
-Postgres is the durable state - with one carve-out: under `blobs.driver: "s3"` the byte
-content of instance assets (and the hosted instance pack) lives in the object store, so
-that bucket's versioning/replication is part of the backup story too. Under the default
-`pg` driver the blobs are in Postgres and one backup covers everything. Back Postgres up
-with your normal practice (point-in-time recovery if you have it) and keep two things
-beside it:
+The database covers durable records and, under `blobs.driver: "pg"`, stored asset
+bytes. It is one part of a complete restore:
 
-- the current `instance.json` (config, safe to keep in git - it holds no secrets), and
-- an exported governance document (`lw export`), which is the reproducible half of the
-  deploy.
+| Recovery input | Preserve and verify |
+|---|---|
+| PostgreSQL | Consistent dump or tested point-in-time recovery, checksum, schema/release identity and an independent restore |
+| S3-compatible blobs | The selected bucket's referenced bytes/versions and separately tested recovery; a database dump does not include them |
+| Configuration and governance | Current `instance.json` and `lw export`, with the destination URL, identity/provider and permission mappings reviewed |
+| Keys and credentials | Protected recovery copies of signing, provider-sealing and other required keys, separately from non-secret configuration |
+| Pack, shell and engine | Exact release manifests/digests, engine contract, configured private pack and any artifact/source bytes needed to reproduce the signed release |
+| External sources | Reconnect permissions and required provider-held originals; references are not copies of external bytes |
 
-The pack and the shell dist are build artefacts you can rebuild; recording *which* versions
-were in service matters more than backing up the bytes. The server prints the audit head
+Keep off-host custody and the decryption keys independently recoverable. A
+successful upload or Kubernetes Job is not a tested restore. The optional
+[encrypted PostgreSQL backup workflow](https://github.com/lolly-tools/lolly-work/blob/main/deploy/suse/POSTGRESQL-BACKUPS.md)
+starts suspended and requires independent GET/decryption and a disposable-database
+restore before enabling its schedule. Its bounded archive size must fit your
+actual database. YunoHost's package backup includes its app/data directories and
+database; protect that archive and qualify its separate
+[install/upgrade/restore lifecycle](cloud-deployment.md#yunohost-qualification).
+
+Published build artifacts can be rebuilt only while the exact source, dependencies,
+signing custody and private assets remain available. Preserve required private
+pack bytes and any release that cannot be reproduced. The server prints the audit head
 to stdout at boot and hourly. Configure and verify collection into an independently
 retained external log system; printing alone does not preserve it outside this deployment.
 Keep a snapshot beside the backup too ([audit](audit.md)).
 
-Restore drill: fresh database → run migrations → `LW_SEED_CONFIG=./governance.json` →
-mount the same pack → point at the same IdP. Provider credentials must be re-entered (they
-are sealed under `LW_CREDENTIAL_SECRET`, so keeping that key is what makes a restore
-credential-complete).
+Restore into a distinct empty target, verify the database/blob bytes, apply the
+reviewed schema and release, restore configuration/keys and mount the matching
+pack/shell. Preserve or explicitly rebind identity callbacks and provider access.
+Stored provider credentials need their original `LW_CREDENTIAL_SECRET`; without
+it they must be re-entered. Check owner and viewer/editor sign-in, shared uploaded
+assets, document/agent permissions, live editing/reconnect and representative
+exports. Record the restore scope and elapsed time. A new-host drill and HA
+qualification are separate from recovering a dump on an existing cluster.
 
 ## Rate limiting
 
@@ -283,11 +306,28 @@ supported path.
 
 ## Upgrades
 
-1. Read the migration list in the release and run `pnpm run migrate:status` against production.
-2. Roll the image. On the HA path the migrate Job runs first and must succeed.
-3. Watch `/healthz` readiness - a pod refusing to start on a pending schema is the guard
-   working, not a flake.
-4. Check `lw audit head` and the chain gauge afterwards.
+Choose the release operation before changing anything:
+
+| Change | Workflow |
+|---|---|
+| Qualified application image only, with compatible schema/configuration | [Guarded app-only update](https://github.com/lolly-tools/lolly-work/blob/main/deploy/helm/APP-UPDATES.md): explicit target, before/after digests, dry-run plan and reviewed apply |
+| Database schema | Independent backup and migration review; Helm's pre-upgrade migration Job must succeed before the new application serves traffic |
+| Mounted shell/pack, engine contract or instance configuration | Separate content/configuration release and matching compatibility/signature checks; an application image cannot replace mounted files |
+| Database, storage, DNS, cluster or host | Infrastructure/migration runbook and independent recovery; the app-only helper does not perform this move |
+| YunoHost package | Its package upgrade/backup lifecycle, with review of custom configuration and actual Linux qualification |
+
+For every release, retain the previous qualified artifacts and inspect pending
+migrations with `pnpm run migrate:status`. The image-only helper never runs the
+Helm migration Job or database migrations. Complete any required schema operation
+before applying that image plan. Record the same digest in Helm/GitOps desired
+values so reconciliation cannot restore a stale image.
+
+After replacement, check Deployment readiness and `/readyz`, then sign-in,
+collaboration reconnect and the enabled exports. `/healthz` proves process
+liveness, not database or deployment readiness. Check `lw audit head` and the
+chain gauge. A failed or ambiguous update needs current-resource inspection and
+a fresh reviewed forward fix or application rollback; do not replay a stale
+plan or restore an older database over new writes.
 
 ### The engine pin
 

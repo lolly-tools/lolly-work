@@ -562,6 +562,28 @@ export const SESSION_REVISION_LIMIT = 20;
 /** A session as a listing shows it: every field but the document itself. */
 export type SessionSummary = Omit<SessionRecord, 'inputs'>;
 
+/** Fixed ceilings for a metadata-only project transfer observation. */
+export const PROJECT_TRANSFER_METADATA_MAX_LIMITS = Object.freeze({ sessions: 200, files: 2000, folders: 1000, members: 2000 });
+export interface ProjectTransferMetadataLimits { sessions: number; files: number; folders: number; members: number }
+export interface ProjectTransferMetadata {
+  sessions: Array<Pick<SessionSummary, 'id' | 'projectId' | 'toolId' | 'toolVersion' | 'rev' | 'updatedAt'>>;
+  files: Array<{ id: string; projectId: string; size: number; checksum: string; contentType: string; partCount: number }>;
+  folders: Array<{ id: string; projectId: string; parentId: string | null; items: Array<{ kind: 'session' | 'file'; ref: string }> }>;
+  members: Array<Pick<ProjectMemberRecord, 'projectId' | 'userId' | 'role' | 'expiresAt'>>;
+  folderLinksTruncated: boolean;
+}
+
+/** Copy validated bounds before any store read; callers cannot raise ceilings. */
+export function validateProjectTransferMetadataLimits(limits: ProjectTransferMetadataLimits): ProjectTransferMetadataLimits {
+  const bounded = {} as ProjectTransferMetadataLimits;
+  for (const key of Object.keys(PROJECT_TRANSFER_METADATA_MAX_LIMITS) as Array<keyof ProjectTransferMetadataLimits>) {
+    const value = limits?.[key];
+    if (!Number.isInteger(value) || value < 1 || value > PROJECT_TRANSFER_METADATA_MAX_LIMITS[key]) throw new RangeError('Invalid project transfer metadata limit');
+    bounded[key] = value;
+  }
+  return bounded;
+}
+
 /** Live (untombstoned) sessions in one project: how many, and the newest edit. */
 export interface ProjectSessionStats {
   projectId: string;
@@ -1477,6 +1499,10 @@ export interface Store extends RenderStore, PasskeyStore {
   putProject(project: ProjectRecord): Promise<void>;
   getProject(id: string): Promise<ProjectRecord | null>;
   listProjects(): Promise<ProjectRecord[]>;
+  /** Bounded projected metadata only. Each lane returns at most limit + 1
+   *  rows for over-limit detection; folder links have a separate global bound.
+   *  These independent reads do not form a consistent project snapshot. */
+  observeProjectTransferMetadata(projectId: string, limits: ProjectTransferMetadataLimits): Promise<ProjectTransferMetadata>;
   putProjectFolder(folder: ProjectFolderRecord): Promise<void>;
   listProjectFolders(projectId: string): Promise<ProjectFolderRecord[]>;
   /** Remove a container, moving its contents and child folders to its parent. */

@@ -38,7 +38,8 @@ import type { DeliveryRecord } from '../delivery/types.ts';
 import { createMemoryPasskeys } from '../iam/passkeys/memory.ts';
 import { createMemoryRenderStore } from '../renders/memory.ts';
 import {
-  COMMENT_NOTICE_COUNT_MAX, SESSION_REVISION_LIMIT, commentNoticeId, effectiveGroups, noticeKeepCount, noticeListLimit,
+  COMMENT_NOTICE_COUNT_MAX, SESSION_REVISION_LIMIT, commentNoticeId, effectiveGroups, noticeKeepCount, noticeListLimit, validateProjectTransferMetadataLimits,
+  type ProjectTransferMetadata,
   type CommentNotice,
   type AccessRequestAnswer, type AccessRequestMatch, type AccessRequestRecord,
   type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type LocalGroupRecord, type NewInvitationRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ScimTokenRecord, type UserIdentityRecord,
@@ -1260,6 +1261,51 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     },
     async listProjects() {
       return [...projects.values()];
+    },
+    async observeProjectTransferMetadata(projectId, limits) {
+      const bounds = validateProjectTransferMetadataLimits(limits);
+      const observed: ProjectTransferMetadata = { sessions: [], files: [], folders: [], members: [], folderLinksTruncated: false };
+      // Stop each lane after its sentinel row; never spread or clone a record
+      // that carries document metadata, asset configuration or file parts.
+      for (const row of sessions.values()) {
+        if (row.projectId !== projectId || row.deletedAt) continue;
+        observed.sessions.push({ id: row.id, projectId: row.projectId, toolId: row.toolId, toolVersion: row.toolVersion, rev: row.rev, updatedAt: row.updatedAt });
+        if (observed.sessions.length > bounds.sessions) break;
+      }
+      for (const row of projectFiles.values()) {
+        if (row.projectId !== projectId || !row.ready) continue;
+        observed.files.push({ id: row.id, projectId: row.projectId, size: row.size, checksum: row.checksum, contentType: row.contentType, partCount: row.parts.length });
+        if (observed.files.length > bounds.files) break;
+      }
+      for (const row of projectFolders.values()) {
+        if (row.projectId !== projectId) continue;
+        observed.folders.push({ id: row.id, projectId: row.projectId, parentId: row.parentId, items: [] });
+        if (observed.folders.length > bounds.folders) break;
+      }
+      for (const row of projectMembers.values()) {
+        if (row.projectId !== projectId) continue;
+        observed.members.push({ projectId: row.projectId, userId: row.userId, role: row.role, ...(row.expiresAt ? { expiresAt: row.expiresAt } : {}) });
+        if (observed.members.length > bounds.members) break;
+      }
+      const linkLimit = bounds.sessions + bounds.files;
+      const links: Array<{ folderId: string; kind: 'session' | 'file'; ref: string }> = [];
+      links: for (const folder of projectFolders.values()) {
+        if (folder.projectId !== projectId) continue;
+        for (const item of folder.items) {
+          links.push({ folderId: folder.id, kind: item.kind, ref: item.ref });
+          if (links.length > linkLimit) break links;
+        }
+      }
+      const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
+      observed.sessions.sort((a, b) => compare(a.id, b.id));
+      observed.files.sort((a, b) => compare(a.id, b.id));
+      observed.folders.sort((a, b) => compare(a.id, b.id));
+      observed.members.sort((a, b) => compare(a.userId, b.userId));
+      links.sort((a, b) => compare(a.folderId, b.folderId) || compare(a.kind, b.kind) || compare(a.ref, b.ref));
+      const folders = new Map(observed.folders.map(row => [row.id, row]));
+      for (const link of links.slice(0, linkLimit)) folders.get(link.folderId)?.items.push({ kind: link.kind, ref: link.ref });
+      observed.folderLinksTruncated = links.length > linkLimit;
+      return observed;
     },
     async putProjectFolder(folder) {
       const old = projectFolders.get(folder.id);

@@ -92,6 +92,8 @@ the reproducible shell and pack copies.
 Before promotion, verify exact signed releases, authenticated image pulls,
 configuration and migration wiring, TLS, WebSocket reconnect/drain, agents and
 asset access, render fidelity and busy responses, and backup/restore on the actual
-cluster. The Helm charts do not yet cover every service in the current public
-Vercel topology or the deployed separate relay; complete that parity before a
-public hosting cutover. See `DAY-ONE-RKE2.md` for the render verification ladder.
+cluster. This Work chart does not install all public Lolly services or the
+separate relay; those are independent deployment choices. Current lolly.ing and
+lolly.tools use the reviewed UpCloud/K3s instance handoff, not a Vercel cutover
+procedure. A new Work installation needs no Vercel account. See
+[DAY-ONE-RKE2.md](DAY-ONE-RKE2.md) for the reference render verification ladder.
