@@ -90,7 +90,7 @@ test('file rename requires editing access and preserves bytes, identity and chec
   const path = `/api/v1/projects/${b.projectId}/files/${file.id}`;
   assert.equal((await b.call('viewer', 'PATCH', path, { name: 'No.png' })).status, 403);
   assert.equal((await b.call('outside', 'PATCH', path, { name: 'No.png' })).status, 403);
-  for (const name of ['', 'x'.repeat(201), 'bad\nname']) assert.equal((await b.call('editor', 'PATCH', path, { name })).status, 400);
+  for (const name of ['', '   ', 'x'.repeat(201), 'bad\nname', 'bad\x7fname', 'a\ud800', '\udc00b', 42]) assert.equal((await b.call('editor', 'PATCH', path, { name })).status, 400);
   assert.equal((await b.call('editor', 'PATCH', path, { name: '  Final poster.png  ' })).status, 200);
   const renamed = await b.store.getProjectFile(file.id);
   assert.equal(renamed?.name, 'Final poster.png'); assert.equal(renamed?.checksum, file.checksum); assert.equal(renamed?.id, file.id);

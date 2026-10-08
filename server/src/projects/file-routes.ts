@@ -19,7 +19,7 @@ import { randomId } from '../lib/crypto.ts';
 import { nameWithoutEmail } from './sharing.ts';
 import {
   activeProjectFile, fileChecksum, filePartBlobId, projectFileExpiry, projectFileInput, projectFilePolicy, projectFilesEnabled, projectFileWire,
-  removeProjectFile, sweepExpiredProjectFiles, PROJECT_FILE_PART_BYTES, PROJECT_FILE_PENDING_FILES, PROJECT_FILE_PENDING_LIMIT,
+  removeProjectFile, sweepExpiredProjectFiles, validProjectFileName, PROJECT_FILE_PART_BYTES, PROJECT_FILE_PENDING_FILES, PROJECT_FILE_PENDING_LIMIT,
   type ProjectFileRecord,
 } from './files.ts';
 
@@ -248,8 +248,9 @@ export function registerProjectFileRoutes(router: ReturnType<typeof createRouter
     const project = await d.store.getProject(ctx.params.id!);
     if (!project) return sendError(res, 404, 'NOT_FOUND', 'no such project');
     const body = await readJson(req) as { name?: unknown } | null;
-    const name = typeof body?.name === 'string' ? body.name.trim() : '';
-    if (!name || name.length > 200 || /[\u0000-\u001f]/.test(name)) return sendError(res, 400, 'INVALID_INPUT', 'a file name of 1 to 200 characters is required');
+    // The same rule as an upload's name (files.ts), so a renamed file stays downloadable.
+    if (!validProjectFileName(body?.name)) return sendError(res, 400, 'INVALID_INPUT', 'a file name of 1 to 200 characters, without control characters, is required');
+    const name = body.name.trim();
     if (!await d.store.renameProjectFile(project.id, ctx.params.fileId!, name)) return sendError(res, 404, 'NOT_FOUND', 'no such ready file');
     await d.audit(`user:${gated.user.id}`, 'project.file-rename', `project:${project.id}`, { fileId: ctx.params.fileId });
     sendJson(res, 200, { name });

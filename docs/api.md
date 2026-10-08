@@ -563,6 +563,7 @@ route here answers `404 NOT_FOUND` with the message `project files are off`.
 | `PUT /api/v1/projects/:id/files/:fileId/parts/:n` | the uploader | `204`; the body is part `n`'s bytes |
 | `POST /api/v1/projects/:id/files/:fileId/finalize` | the uploader | `200 { file }` with `ready: true`; repeating it is harmless |
 | `GET /api/v1/projects/:id/files/:fileId` | viewer | the bytes, as an attachment, `private, no-store` |
+| `PATCH /api/v1/projects/:id/files/:fileId` | editor and `session.edit`, project not archived; a person, so a service token gets `403` | `200 { name }`; the body is `{ name }`, 1 to 200 characters with no control characters. The bytes, id and checksum do not change, so sessions that use the file keep working. `400 INVALID_INPUT` for a bad name, `403` without editor access, `404` for an unknown or unfinished file or a file in another project |
 | `DELETE /api/v1/projects/:id/files/:fileId` | the uploader, or manager and up | `204`; on an unfinished upload this cancels it |
 
 The begin body is `{ name, size, checksum, contentType, parts: [{ size, checksum }], asset }`,
@@ -596,8 +597,9 @@ plus 4096 bytes for its database rows.
 | `RATE_LIMITED` | 429 | download: this person already downloaded twice `instanceBudgetBytes` today, as counted by this server process; `retry-after` gives the seconds to wait |
 
 Errors keep the usual `{ "error": { "code", "message" } }` shape. Finishing an upload is
-audited as `project.file-upload`, a delete or cancel as `project.file-delete` (with
-`forced: true` and the session ids when `?force=1` was needed). An unfinished upload more
+audited as `project.file-upload`, a rename as `project.file-rename` (with the `fileId`), a delete
+or cancel as `project.file-delete` (with `forced: true` and the session ids when `?force=1` was
+needed). An unfinished upload more
 than an hour past its expiry is removed, parts first, when someone next begins an upload (up to
 50 at a time) and by `POST /api/v1/retention/run` (up to 500), whose answer then carries
 `projectFilesSwept`. The long-lived server also sweeps them at boot and daily, whatever the
