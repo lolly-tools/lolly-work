@@ -1,10 +1,18 @@
 # Day one on RKE2 — enabling the render worker
 
-The cluster lands ~2026-08-29 (18 days after the 2026-08-11 decision that SUSE's worker
-is an RKE2 Helm pod, never a hyperscaler service). Everything below the "already proven
-blind" line was validated without a cluster; day one is the short list after it.
+Use this reference acceptance checklist after installing Work on your selected
+K3s/RKE2 cluster. It does not install RKE2 or qualify its host/version/storage
+matrix. Current lolly.ing and lolly.tools run on UpCloud/K3s; their reviewed
+instance handoff is separate from these generic commands. A new installation
+does not require Vercel. Start with the
+[platform-team workflow](../suse/PLATFORM-TEAMS.md) and
+[production installation](../../docs/install.md#7b-production).
 
-## Already proven blind (do not re-derive)
+## Existing source and container checks
+
+The checks below establish their stated source/container scope. Repeat the
+cluster-specific acceptance with your selected images, pack, identity and
+storage; neither CI nor the earlier macOS rehearsal certifies a new RKE2 release.
 
 - `helm lint` clean; all three topologies (`light`, worker, worker+HPA) render and pass
   `kubeconform -strict` — pinned in CI by `tests/helm-chart.test.ts` (skips where helm is
@@ -25,7 +33,8 @@ blind" line was validated without a cluster; day one is the short list after it.
   the container's `/render` drove the real lolly.tools shell (hooked path, 18 KB SVG);
   saturation at `LW_RENDER_MAX_CONCURRENT=2` under 6 concurrent rasterises answered
   **2×200 / 4×503 `RENDER_BUSY` + `Retry-After: 2`** with `/readyz` observed 503 mid-burst
-  and 200 after. Day one re-proves none of this — only the cluster-specific list below.
+  and 200 after. Retain this historical evidence and verify the selected cluster's
+  end-to-end render and saturation behavior below.
 
 ## Day one, in order
 
@@ -41,7 +50,7 @@ blind" line was validated without a cluster; day one is the short list after it.
    ```yaml
    renderWorker:
      enabled: true
-     webBase: https://lolly.tools     # the shell /render drives for hooked tools
+     webBase: https://tools.example.org  # your qualified HTTPS shell origin
      # maxConcurrent: 4               # per-pod cap; scale replicas/HPA, not this
      autoscaling:
        enabled: true                  # CPU-target; drops static replicas
@@ -70,13 +79,20 @@ blind" line was validated without a cluster; day one is the short list after it.
      `Retry-After`, pod drops from Endpoints, recovers when a slot frees.
    - Fidelity side-by-side vs resvg on the demo tools (an open item).
 
-5. **Demo cutover**: expose the worker Service through the ingress (the
-   HMAC is the auth), set the Vercel project's `LW_RENDER_WORKER_SECRET` + `render.worker.url`
-   to the ingress URL, redeploy, update `deploy/vercel/README.md` + `docs/deployment.md`
-   (which still say "Tier-A resvg PNG in-process").
+5. **Choose the worker connection.** For Work on the same cluster, keep the worker
+   API on its private Service and use the matching shared render credential and
+   in-cluster `render.worker.url`. Its `webBase` is a separately qualified HTTPS
+   shell origin. Verify the complete authenticated Work-to-worker export path.
+   An intentionally selected external instance, including the optional generic
+   Vercel adapter, needs its own reviewed TLS/network/credential route; use that
+   instance's runbook. Exposing or redeploying an external worker is not a
+   prerequisite for an ordinary K3s/RKE2 Work release or the current production
+   domains.
 
-6. **Then** phases 3–4: widen formats, and once fidelity is signed off, remove
-   resvg + `LW_RENDER_LEGACY_RESVG` and make `deps.worker` required.
+6. **Record the accepted capabilities.** Check org-config's advertised formats
+   and qualify each required export with the selected pack. Removing a render
+   implementation or making the worker mandatory is a separate application-code
+   change, not an installation step.
 
 ## Images
 
@@ -85,8 +101,10 @@ provenance-attested and cosign-signed:
 `ghcr.io/lolly-tools/lolly-work-server:0.2.0` and
 `ghcr.io/lolly-tools/lolly-work-render-worker:0.2.0`. The chart's empty
 `image.tag`/`renderWorker.image.tag` default to `appVersion` (= `0.2.0`, kept in step with
-`package.json`), so a plain install pulls exactly these. Bump both together and re-tag before
-launch so the runbook keeps pulling the latest signed build. If the GHCR packages are private in your org, add an
+`package.json`). This records the historical release, not a current registry pull
+or cluster qualification. Select compatible signed application and worker
+images, pin `image.digest` and `renderWorker.image.digest`, and retain their
+qualification evidence. If the GHCR packages are private in your org, add an
 `imagePullSecret` (or mirror into the SUSE registry — preferable air-gap posture anyway).
 
 ## What only the cluster can prove

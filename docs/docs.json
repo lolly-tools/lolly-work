@@ -286,7 +286,7 @@
         {
           "slug": "operations",
           "title": "Operations runbook",
-          "summary": "Migrations, HA, backup, rate limits, metrics, upgrades, engine pin."
+          "summary": "Migrations, collaboration drain, backup, rate limits, metrics, guarded upgrades and engine pin."
         },
         {
           "slug": "production-readiness",
@@ -302,6 +302,11 @@
           "slug": "audit",
           "title": "Audit log",
           "summary": "The hash-chained record, verification, and anchoring the head off-box."
+        },
+        {
+          "slug": "project-portability",
+          "title": "Project transfer preview",
+          "summary": "Read-only project inventory, access mapping, file and history coverage, and preparation for moving work between instances."
         }
       ]
     },

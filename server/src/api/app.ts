@@ -76,6 +76,7 @@ import { accessAtLeast, canSeeProject, configureSharingLimits, effectiveProjectA
 import { projectListing } from '../access/share-routes.ts';
 import { registerProjectFileRoutes } from '../projects/file-routes.ts';
 import { registerProjectFolderRoutes } from '../projects/folder-routes.ts';
+import { registerProjectTransferInventoryRoutes } from '../projects/transfer-inventory.ts';
 import { agentActor, agentAttribution } from '../agents/attribution.ts';
 import { registerAgentRoutes } from '../agents/routes.ts';
 import { createProjectRequests } from '../agents/project-requests.ts';
@@ -8133,6 +8134,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
 
   registerProjectFileRoutes(router, { config, store, blobs, memberOf, requireAction, projectAccessOf, audit, renderFileReader: createRenderFileReader({ secret: linkVerify, store, projectAccessOf }) });
   registerProjectFolderRoutes(router, { store, memberOf, requireAction, projectAccessOf, audit });
+  registerProjectTransferInventoryRoutes(router, { store, memberOf, requireAction, projectAccessOf, delegated: req => !!agentRequests.principal(req) });
   registerShareRoutes(router, { config, store, memberOf, requireAction, projectAccessOf, audit });
   registerAgentRoutes(router, { store, config, blobs, memberOf, projectAccessOf, audit, origin: config.instance.baseUrl, rooms: deps.agentRooms, projectRequest: agentRequests.run });
 

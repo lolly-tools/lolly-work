@@ -22,19 +22,17 @@
 # The production path is the DEFAULT values.yaml + docs/deployment.md.
 # ══════════════════════════════════════════════════════════════════════════════
 
-# One replica: the memory store is per-process — replicas would each hold their
-# own world. (Production default is 2 over Postgres.)
+# One replica: the memory store is per-process, and the current combined
+# collaboration chart requires one owner in production as well.
 replicaCount: 1
 
-# No database block at all ⇒ the server runs its in-memory store (values.yaml
-# "evaluation only" path). Graduate this install in place with:
-#
-#   helm upgrade lolly-work deploy/helm -f deploy/helm/values-eval.yaml \
-#     --set database.url='postgres://user:pass@host:5432/lollywork'
-#
-# With migrate.enabled still false the single pod applies DDL at boot, which is
-# correct at replicaCount 1. Going multi-replica means also setting
-# migrate.enabled=true so the hook Job owns the schema instead.
+# No database block: the server uses memory. Adding DATABASE_URL does not copy
+# memory records into PostgreSQL or make these values production-ready: dev
+# sign-in, known signing keys, evaluation mode and migrate.enabled=false remain.
+# Start a separate reviewed production release from the default chart and your
+# environment values, with real identity, dev=false, mode=production, fresh
+# existing Secrets, durable storage, TLS and the reviewed migration hook.
+# See docs/install.md section 7b. Do not merge this file into that release.
 
 secrets:
   # Eval-grade, deliberately unremarkable. Rotate into existingSecret for
@@ -94,8 +92,8 @@ pack:
 
 ingress:
   enabled: true
-  className: ""   # empty ⇒ the cluster's default class: Traefik on k3s,
-                  # ingress-nginx on RKE2 — no per-distro values needed
+  className: ""   # empty uses the cluster's configured default ingress class;
+                  # verify that controller separately on the selected platform
   hosts:
     - host: ""    # empty host ⇒ match any — curl the node/LB IP and go
       paths:

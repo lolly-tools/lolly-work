@@ -15,7 +15,7 @@
  * enabled, and `--cookie 'lw_session=…'` pastes a browser session directly.
  */
 import { parseArgs } from 'node:util';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, fchmodSync, fsyncSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -155,6 +155,65 @@ function out(value: unknown): void {
   if (values.json) console.log(JSON.stringify(value, null, 2));
 }
 
+interface ProjectTransferPreview {
+  schema: 'lolly-project-transfer-inventory-v1';
+  mode: 'preview';
+  readOnly: true;
+  snapshotConsistent: false;
+  complete: false;
+  importReady: false;
+  observedAt: string;
+  project: { id: string; name: string; archived: boolean };
+  counts: { folders: number; sessions: number; files: number; declaredFileBytes: number; explicitMembers: number; omittedSessions: number };
+  warnings: string[];
+}
+
+/** Keep a refused preview's response body out of terminal output. */
+async function projectTransferPreview(id: string): Promise<ProjectTransferPreview> {
+  const res = await response(`/api/v1/projects/${encodeURIComponent(id)}/transfer-inventory`);
+  if (!res.ok) {
+    const explanation = res.status === 401 ? 'sign in with lw login; this preview accepts a person\'s session, not an agent or service token'
+      : res.status === 403 ? 'use a person\'s session with project manager access and project.manage permission; agent/service tokens and denied grants are refused'
+      : res.status === 404 ? 'check the project id and your access; this instance may need a release that supports transfer previews'
+      : res.status === 413 ? 'the project exceeds the preview limits; use an operator-reviewed inventory for a larger project'
+      : res.status === 429 ? 'too many preview requests; wait before trying again'
+      : 'the preview could not be completed; check the instance status before trying again';
+    fail(`transfer preview refused (${res.status}): ${explanation}`);
+  }
+  const result = await res.json().catch(() => null) as ProjectTransferPreview | null;
+  if (!result || result.schema !== 'lolly-project-transfer-inventory-v1' || result.mode !== 'preview'
+    || result.readOnly !== true || result.snapshotConsistent !== false || result.complete !== false || result.importReady !== false
+    || typeof result.observedAt !== 'string' || result.project?.id !== id || typeof result.project.name !== 'string'
+    || typeof result.project.archived !== 'boolean' || !result.counts
+    || !['folders', 'sessions', 'files', 'declaredFileBytes', 'explicitMembers', 'omittedSessions'].every(key => {
+      const value = result.counts[key as keyof ProjectTransferPreview['counts']];
+      return Number.isSafeInteger(value) && value >= 0;
+    }) || !Array.isArray(result.warnings) || !result.warnings.every(w => typeof w === 'string' && /^[A-Z][A-Z0-9_]{0,79}$/.test(w))) {
+    fail('the instance returned an unsupported transfer preview; update the CLI and server to compatible releases');
+  }
+  return result;
+}
+
+/** A preview copy is private and can only be created at a new file path. */
+function saveTransferPreview(path: string, json: string): void {
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    fchmodSync(descriptor, 0o600);
+    writeFileSync(descriptor, json);
+    fsyncSync(descriptor);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    const explanation = code === 'EEXIST' || code === 'ELOOP' ? 'the path already exists or is a symbolic link; choose a new file path'
+      : code === 'ENOENT' ? 'the parent folder does not exist; create it first or choose another folder'
+      : code === 'EACCES' || code === 'EPERM' ? 'the folder is not writable; choose a folder you can write to'
+      : 'check the destination and any incomplete copy, then choose a new file path';
+    fail(`cannot save transfer preview to ${JSON.stringify(path)}: ${explanation}`);
+  } finally {
+    if (descriptor !== undefined) { try { closeSync(descriptor); } catch { /* The write failure is reported above. */ } }
+  }
+}
+
 /** The kinds `lw providers auth` can drive end to end. Every other OAuth kind
  *  here (canto, imagerelay, optimizely-cmp) is live-verify-pending: its
  *  authorize/token endpoints are taken from vendor documentation and have not
@@ -218,6 +277,28 @@ async function promptHidden(prompt: string): Promise<string> {
 const [cmd, sub] = positionals;
 
 switch (cmd) {
+  case 'projects': {
+    const id = positionals[2];
+    if (sub !== 'transfer-preview' || !id || !/^[A-Za-z0-9_-]{1,80}$/.test(id) || positionals.length !== 3) {
+      fail('usage: lw projects transfer-preview <project-id> [--json] [--out new-file.json]');
+    }
+    if (values.out !== undefined && !values.out.trim()) fail('--out needs a new file path');
+    const preview = await projectTransferPreview(id);
+    const json = JSON.stringify(preview, null, 2) + '\n';
+    if (values.out !== undefined) saveTransferPreview(values.out, json);
+    if (values.json) process.stdout.write(json);
+    else {
+      const counts = preview.counts;
+      console.log(`Transfer preview: ${JSON.stringify(preview.project.name)} (${preview.project.id})${preview.project.archived ? ' [archived]' : ''}`);
+      console.log(`${counts.folders} folders · ${counts.sessions} sessions · ${counts.files} ready files · ${counts.declaredFileBytes} declared file bytes · ${counts.explicitMembers} explicit members`);
+      if (counts.omittedSessions) console.log(`${counts.omittedSessions} sessions omitted by access policy.`);
+      console.log('Read-only inventory. Not a consistent snapshot or an import-ready export.');
+      console.log('Asset dependencies, full history, file bytes and destination identities still need review.');
+      if (preview.warnings.includes('LIVE_COLLABORATION')) console.log('Live collaboration was observed; keep editors connected and arrange a separate migration window.');
+      if (values.out !== undefined) console.log(`Saved private preview to ${JSON.stringify(values.out)}.`);
+    }
+    break;
+  }
   case 'renders':
   case 'render-batches': {
     const batch = cmd === 'render-batches';
@@ -1429,12 +1510,13 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   login --email <dev-user>   sign in via the dev provider
   login --cookie 'lw_session=…'   store a browser session
   whoami · summary · fleet · fleet installs · audit verify|head
-  tokens [create --label <l> --role <r> | revoke <id>]   service tokens for automation (LW_TOKEN / --token authenticates any command)
+  tokens [create --label <l> --role <r> | revoke <id>]   service tokens for automation (LW_TOKEN / --token takes precedence; member workflows need login)
   invite add <email...> [--group g]... [--expires <ISO>]   let these addresses sign in; prints the sign-in address to share
   invite ls [--all] · invite rm <id>   open invitations (--all adds revoked ones); revoke one
   retention run              apply the stated retention policy and sweep expired uploads now (both also run daily on the long-lived server)
   users erase-preview <id>   read-only reference counts and account-erasure scope (owner)
   users erase <id>           atomic account-row removal + telemetry de-attribution (owner; retained references block it)
+  projects transfer-preview <id> [--json] [--out new-file.json]   read-only project inventory (signed-in manager; not an export/import)
   brand                      inspect design-system sources and permissions
   brand preview <action> <source-id> [--replacement <id>]  review an impact as JSON
   brand apply <preview.json> apply that reviewed revision

@@ -11,6 +11,7 @@
 
 import { brandSourcesCard, catalogTokensAsset } from './brand-admin.js';
 import { brandRulesCard } from './brand-rules.js';
+import { projectTransferCard } from './project-transfer.js';
 import { createToolPolicyEditor } from './tool-policy-editor.js';
 import { setupView, tokensView } from './setup.js';
 import { createChainEditor } from './chains.js';
@@ -5292,6 +5293,12 @@ async function renderProjectDetail(main, projectId, projectName) {
     el('h1', {}, projectName),
     el('p', { class: 'sub' }, 'Every saved session in this project, and a multi-edit to set inputs across a whole tool at once.'),
     sessionsCard,
+    projectTransferCard(projectId, { el, api, download: (value, filename) => {
+      const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2) + '\n'], { type: 'application/json' }));
+      const link = el('a', { href: url, download: filename });
+      document.body.append(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } }),
     toolIds.length
       ? multiEditPanel(main, projectId, projectName, toolIds)
       : el('div', { class: 'card stack' }, el('h2', {}, 'Multi-edit'), el('p', { class: 'empty' }, 'Add sessions to this project to enable multi-edit.')));

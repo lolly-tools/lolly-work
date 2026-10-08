@@ -1,8 +1,8 @@
 # Installing
 
-From nothing to a **running, configured, governed instance** - on a workstation (SLES /
-openSUSE Leap / macOS), a single VM, or Kubernetes. Every command here is meant to be
-copy-pasted as written.
+Choose a **shared Lolly Work instance**, a disposable evaluation, or a deployment
+on your existing platform. Commands with registry, hostname or file placeholders
+need your reviewed values before you run them.
 
 After the first owner can sign in, use [Guided customer setup](customer-setup.md) or
 **Customer setup** in the console for configuration files, identity checks and a checked sample.
@@ -12,15 +12,23 @@ After the first owner can sign in, use [Guided customer setup](customer-setup.md
 | Just look, install nothing | [Hosted demo](#0-hosted-demo-zero-install) | 0 min |
 | Evaluate locally | [1. Local demo](#1-local-demo) | 2 min |
 | Evaluate on a cluster | [7a. Kubernetes eval](#7a-evaluate-on-a-cluster) | 5 min |
-| Run a real single-host deploy | [5. Container (Compose)](#5-container-compose) | 15 min |
-| Run it on a YunoHost box, signed in with its accounts | [6. Bare metal → YunoHost](#yunohost) | 10 min |
-| Run it in production | [7b. Kubernetes production](#7b-production) | 30 min |
+| Run a small shared instance on one host | [5. Container (Compose)](#5-container-compose) | Allow time for identity, TLS and recovery checks |
+| Use an existing K3s/RKE2 or other Kubernetes platform | [7b. Kubernetes production](#7b-production) and [platform deployment](platform-deployment.md) | Depends on the existing platform |
+| Prepare a new SLES/openSUSE host | [Platform deployment](platform-deployment.md) | Host and cluster qualification required |
+| Use YunoHost accounts on a home or small-team box | [6. Bare metal → YunoHost](#yunohost) | Package qualification pending |
 | Drive it from a terminal | [8. The CLI](#8-the-cli) | - |
 | Connect a DAM or a bucket | [9. Connect a source](#9-connect-a-source) | 10 min |
 
-The server is **zero-build**: it runs TypeScript directly on Node, no compile step, no
-external assets. Sections 1 to 4 are the same for every shape - do them first, then pick
-one shape from 5, 6 or 7. Section 9 is the last leg for every shape.
+Work's server runs TypeScript directly on Node. Source-based installations use
+sections 2 to 4 for configuration, persistence and secrets. Container operators
+do not need a host Node installation, and existing platform teams can start at
+section 7b. YunoHost manages its own runtime and sign-in; no Kubernetes is needed.
+
+A full browser workspace also needs the matching Lolly web shell and tool pack.
+The default Helm profile serves the console/API, with the shell disabled. Choose
+the signed shell/pack delivery in your instance values rather than assuming a
+Ready server provides the editing interface. After installation, use section 9
+when connecting a catalog source.
 
 ## 0. Hosted demo (zero install)
 
@@ -37,8 +45,10 @@ in-memory and resets on redeploy; it holds nothing real.
 
 ## Prerequisites
 
-**Node 24+** for everything. The server runs `.ts` sources directly via Node's native
-type-stripping, so there is no build step, but that needs a modern Node.
+**Node 24+** is the server runtime. Install it on the host only for source-based
+local or systemd deployment. Compose/Kubernetes images include it; YunoHost's
+package supplies its runtime. The server runs `.ts` sources through Node's native
+type-stripping.
 
 | | macOS | SLES / openSUSE Leap |
 |---|---|---|
@@ -57,9 +67,11 @@ nvm install 24 && nvm use 24
 
 Verify: `node -v` prints `v24.x`.
 
-**PostgreSQL 16 or 17** for anything that keeps state (section 3). Not needed for section 1 or a
-first look at section 2 - without a database the in-memory store runs and everything resets on
-restart. Compose (section 5) and the Helm eval install bring their own; systemd (section 6) does not.
+**PostgreSQL** is required for durable state (section 3). Compose brings PostgreSQL
+17; the optional [SUSE profile](../deploy/suse/README.md) pins Application Collection
+PostgreSQL 18.6 with its own qualification and recovery requirements. Systemd and
+production Helm need a separately managed database. Local and Helm evaluations
+use memory by default: they bring no durable database and reset on restart.
 
 **One more tool, only for the shape you pick.** Sections 1, 2 and 6 need nothing beyond
 the above:
@@ -109,8 +121,9 @@ and render plane work in all three.
 
 ## 2. Your first real instance
 
-This is the configuration every real shape uses. Do it locally first - the file you produce
-here is what section 5, section 6 and section 7 deploy.
+This source-based walkthrough teaches the configuration used by Compose,
+systemd and Helm. Running it locally is optional for an existing platform team;
+prepare the reviewed production configuration before following section 7b.
 
 ```bash
 pnpm install                              # once per checkout, before anything runs
@@ -479,6 +492,15 @@ The package keeps the API, share links, render links and the instance card
 reachable for non-browser clients (the `lw` CLI, MCP, SCIM, an open-source Lolly
 client connecting to this instance), because the server authenticates those itself.
 
+The package has repository contracts and static linting; actual Linux
+install/upgrade/backup/restore qualification remains pending. Treat this as a
+package evaluation path until a release records those checks. The
+[YunoHost qualification guide](cloud-deployment.md#yunohost-qualification) lists
+the required run. Its current package does not provision a Chromium worker;
+available exports depend on the installed tool pack and renderer configuration.
+Keep an independent protected copy of the YunoHost backup and test restoration,
+sign-in, a shared uploaded asset and an invited edit before storing team work.
+
 ## 7. Kubernetes (Helm)
 
 ![Rancher](img/rancher-icon.svg) ![k3s](img/k3s-icon-color.svg) ![Helm](img/helm-icon-color.svg)
@@ -567,19 +589,32 @@ Never point `baseUrl` at an `https:` URL that is not actually served over TLS: t
 flag is derived from that string, and a browser silently drops a `Secure` cookie sent over
 plain HTTP, so sign-in loops back to the gate forever while `curl` still works.
 
-Every choice in `values-eval.yaml` is commented with what it trades. Graduate the same
-install in place by adding a database:
+### Moving from evaluation to production
 
-```bash
-helm upgrade lolly-work deploy/helm -f deploy/helm/values-eval.yaml \
-  --set image.repository=<registry>/lolly-work-server --set image.tag=0.2.0 \
-  --set database.url='postgres://user:pass@host:5432/lollywork'
-```
+Adding `DATABASE_URL` only changes storage for future writes. It does not copy
+the running memory store's projects, sessions or other records into PostgreSQL.
+Do not use `values-eval.yaml` for a real team: it retains passwordless personas,
+known evaluation signing secrets and evaluation mode, even with a database.
+
+Prepare a separate production release using section 7b and fresh reviewed
+environment values. Set `deployment.mode: production`, turn development sign-in
+off, register the real identity provider and first owner, use new stable signing
+keys from an existing Secret, and configure the durable database, migration Job,
+canonical HTTPS URL, ingress/TLS and matching shell/pack. Keep one collaboration
+owner. An existing evaluation namespace/release needs an explicit reviewed
+transition, not a database-only upgrade or reused evaluation values. This guide
+does not provide an automatic memory-to-PostgreSQL content migration.
 
 ### 7b. Production
 
-For production, `deploy/helm/values.yaml` is the one file you edit (heavily commented).
-Author `instance.json` first (section 2), with a real `idp.issuer` and `instance.baseUrl` matching
+For production, start from the chart defaults and keep your overrides in a
+reviewed environment file; do not edit or merge `values-eval.yaml`. Existing
+K3s/RKE2/Rancher platforms keep their normal cluster lifecycle. Select the exact
+kubeconfig, context and namespace for every Helm/kubectl command below; the
+examples assume you have selected that reviewed destination.
+
+Author `instance.json` first (section 2), with `deployment.mode: production`,
+`dev.enabled: false`, a real `idp.issuer` and `instance.baseUrl` matching
 the ingress host - the pods refuse to start on a gated instance with neither an issuer nor
 the dev provider:
 
@@ -590,8 +625,10 @@ kubectl create secret generic lolly-work-secrets \
   --from-literal=LW_LINK_SECRET="$(openssl rand -hex 32)"
 
 helm install lolly-work deploy/helm \
-  --set image.repository=<registry>/lolly-work-server --set image.tag=0.2.0 \
+  -f /path/to/reviewed-production-values.yaml \
+  --set image.repository=<registry>/lolly-work-server --set image.digest=sha256:<qualified-digest> \
   --set existingSecret=lolly-work-secrets \
+  --set migrate.enabled=true \
   --set-file config=instance.json
 ```
 
@@ -599,6 +636,13 @@ Migrations run as a pre-install/upgrade Job; the pack and shell mount as volumes
 `ServiceMonitor`, `NetworkPolicy`, ingress and an optional Chromium render-worker tier ship
 in the chart. Values reference and the per-key notes:
 [deployment](deployment.md#kubernetes-helm---the-production-path).
+
+The reviewed environment file supplies ingress/TLS, image-pull credentials and
+the shell/pack delivery appropriate to a full workspace or deliberate API-only
+instance. Use the [small SUSE profile](../deploy/helm/SMALL-SUSE.md) for bounded
+resource defaults, not as a complete identity, database or content configuration.
+Use your platform's Secret provisioning for credentials; keep Secret values out
+of configuration files and release records.
 
 Verify it, remembering that this instance is **your** `instance.json`, so its name, its
 personas and its sign-in provider are the ones you authored in section 2:
@@ -608,6 +652,7 @@ kubectl get pods -l app.kubernetes.io/name=lolly-work        # wait for Running
 kubectl logs job/lolly-work-migrate                          # the schema Job must have succeeded
 kubectl port-forward svc/lolly-work 8787:80 &                # Service port is 80, container 8787
 curl -s http://localhost:8787/healthz                        # your instance.name, accessMode gated
+curl -s http://localhost:8787/readyz                         # actual store/deployment readiness
 ```
 
 `8787:80` is not a typo: `service.port` is `80` and `targetPort` is the container's `8787`.
@@ -617,6 +662,14 @@ curl -s http://localhost:8787/healthz                        # your instance.nam
 With `dev.enabled: false` (which section 2 told you to set before exposing anything) there is no
 `/api/auth/dev` here: sign in through your IdP at `https://<your-host>/admin`. The first
 owner arrives the SSO way, from the table in section 2.
+
+Before accepting the instance, test real HTTPS sign-in, a viewer/editor invitation,
+an uploaded asset on another device, editing/reconnect, delegated-agent permissions
+and the exports you enable. Restore an independent backup into a separate target
+and repeat those checks. See [operations](operations.md#backup-and-restore) for
+backup coverage. Later image-only releases use the
+[guarded application update workflow](https://github.com/lolly-tools/lolly-work/blob/main/deploy/helm/APP-UPDATES.md);
+database migrations and infrastructure/content changes remain separate operations.
 
 ## 8. The CLI
 

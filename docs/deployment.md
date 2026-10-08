@@ -98,11 +98,11 @@ operational, not functional:
 - **Datastore:** k3s defaults to SQLite - fine for a single server node; a multi-server
   HA control plane needs k3s's embedded etcd (a provisioning choice Rancher makes for
   you), same as RKE2 always does.
-- **Ingress:** leave `ingress.className` empty and the cluster default serves it (Traefik
-  on k3s, ingress-nginx on RKE2). One caveat: the multi-replica live-collab sticky-room
-  annotation in `values.yaml` is nginx's path-hash - Traefik's plain-Ingress affinity is
-  cookie-per-client, which does not converge a room's members onto one pod. On k3s run
-  collab single-replica (the current posture anyway) or install ingress-nginx.
+- **Ingress:** an empty `ingress.className` uses the cluster's configured default.
+  Verify the controller and TLS configuration on your selected K3s/RKE2 platform.
+  Keep one writable collaboration owner on every supported cluster. The reserved
+  multi-replica affinity settings do not enable room routing, and installing a
+  different ingress controller does not bypass the chart's single-owner limit.
 - **Edge headroom:** the light topology (no Chromium) is the edge default - the eval
   install below requests 100m/192Mi. The render worker wants ~2 GB per pod; on small
   boxes leave it off (hooked tools answer 501 and shells are told upfront) or point
@@ -122,11 +122,14 @@ working, console at `/admin`. Every choice in `values-eval.yaml` is commented wi
 trades, including `config.instance.baseUrl`, which must match the URL a browser actually
 uses or the session cookie's `Secure` flag will be wrong.
 
-Graduate the evaluation by adding durable PostgreSQL and enabling the migration
-hook with `migrate.enabled=true`. Keep one writable application replica: the chart
-refuses multiple collaboration owners until room routing and operation ordering
-are qualified. Independent render workers can scale after capacity testing. See
-[install section 7a](install.md#7a-evaluate-on-a-cluster).
+For a real team, prepare a separate production release from the chart defaults
+and reviewed environment values. Adding PostgreSQL does not transfer existing
+memory records or replace evaluation sign-in, known keys and evaluation mode.
+Do not merge `values-eval.yaml` into that production release. Follow
+[the transition checklist](install.md#moving-from-evaluation-to-production) and
+[production installation](install.md#7b-production). Keep one writable application
+replica until room routing and operation ordering are qualified. Independent
+render workers can scale after capacity testing.
 
 GHCR is private today, so add `imagePullSecrets`, build and push your own image (see the
 production notes below), or side-load: `docker save` + `k3d image import` /
@@ -147,7 +150,7 @@ and collect evidence from staging before production promotion.
 the values reference and the list of things to know before you run it.
 
 What the chart gives you: one application replica by default, non-root/read-only-rootfs/dropped-caps
-pod defaults, `/healthz` liveness+readiness, an Ingress template, an optional
+pod defaults, `/healthz` liveness and `/readyz` readiness, an Ingress template, an optional
 ServiceMonitor, an optional NetworkPolicy, a pack volume, a shell volume, an optional
 Chromium render-worker tier, and a migrate Job that owns the schema.
 
