@@ -33,17 +33,19 @@ import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type { Browser, BrowserContext, BrowserContextOptions } from 'playwright-core';
 import { createSemaphore } from './semaphore.ts';
 import { declaredOrigins, egressChecker } from './egress.ts';
+import { renderWebBase } from './web-base.ts';
 
 const PORT = Number(process.env.PORT ?? 8791);
 const SECRET = process.env.LW_RENDER_WORKER_SECRET ?? '';
-const WEB_BASE = (process.env.LOLLY_WEB_BASE ?? '').replace(/\/$/, '');
 const TS_SKEW_MS = Number(process.env.LW_RENDER_TS_SKEW_MS ?? 5 * 60 * 1000);
 const NAV_TIMEOUT_MS = Number(process.env.LW_RENDER_NAV_TIMEOUT_MS ?? 30_000);
 const EXPORT_TIMEOUT_MS = Number(process.env.LW_RENDER_EXPORT_TIMEOUT_MS ?? 20_000);
 const MAX_CONCURRENT = Number(process.env.LW_RENDER_MAX_CONCURRENT ?? 4);
 
 if (!SECRET) { console.error('[render-worker] LW_RENDER_WORKER_SECRET is required'); process.exit(1); }
-if (!WEB_BASE) { console.error('[render-worker] LOLLY_WEB_BASE is required (a served Lolly web shell)'); process.exit(1); }
+let WEB_BASE: string;
+try { WEB_BASE = renderWebBase(process.env.LOLLY_WEB_BASE ?? ''); }
+catch (err) { console.error(`[render-worker] ${(err as Error).message}`); process.exit(1); }
 // What a rendered page may reach (plans/58 WP0, ./egress.ts): the shell, the operator's
 // declared origins, and otherwise public addresses only. A malformed entry stops the
 // worker here rather than failing every render later.

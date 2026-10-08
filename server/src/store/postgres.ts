@@ -27,6 +27,7 @@ import type { LifecycleRow, OnExpiry } from '../catalog/lifecycle.ts';
 import type { CredentialRow } from '../catalog/credentials.ts';
 import type { InstanceAssetRecord } from '../catalog/instance-assets.ts';
 import type { AssetMetaRecord, CatalogFieldDef } from '../catalog/asset-meta.ts';
+import type { CatalogTagRule } from '../catalog/tag-rules.ts';
 import { sortCollections, type CollectionRecord } from '../catalog/collections.ts';
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderFragment, ProviderKind, ProviderRecord } from '../catalog/providers/types.ts';
@@ -34,12 +35,17 @@ import type { DeliveryRecord } from '../delivery/types.ts';
 import type { ProjectAccess } from '../rbac/project-access.ts';
 import type { ProjectFolderRecord } from './types.ts';
 import type { DocumentAgentRecord, ProjectAgentRecord } from './types.ts';
+import {
+  newestVersionFirst, normalizeSessionVersionWrite, planSessionVersionPut, resolveVersionLimits, sessionVersionContent, sessionVersionId, versionListLimit,
+  type SessionVersionLimits, type SessionVersionPut, type SessionVersionRow, type SessionVersionSummary,
+} from './types.ts';
 import { createPostgresPasskeys } from '../iam/passkeys/postgres.ts';
 import { createPostgresRenderStore } from '../renders/postgres.ts';
 import {
-  SESSION_REVISION_LIMIT, effectiveGroups,
+  COMMENT_NOTICE_COUNT_MAX, SESSION_REVISION_LIMIT, commentNoticeId, effectiveGroups, noticeKeepCount, noticeListLimit,
+  type CommentNotice, type CommentNoticeWrite,
   type AccessRequestMatch, type AccessRequestRecord, type ProjectMemberRole,
-  type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type ListUsersPageOpts, type LocalGroupRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type UserIdentityRecord,
+  type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type ListUsersPageOpts, type LocalGroupRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ProjectUserStateRecord, type ShareGroupRecord, type UserIdentityRecord,
   type ScimTokenRecord, type SessionRecord, type SessionRevision, type Store, type SubmitQuotaRow, type UserRecord,
 } from './types.ts';
 
@@ -69,6 +75,13 @@ function documentAgentFromRow(r: Record<string, unknown>): DocumentAgentRecord {
 function projectAgentFromRow(r: Record<string, unknown>): ProjectAgentRecord {
   const { sessionId: _sessionId, ...record } = documentAgentFromRow(r);
   return record;
+}
+
+/** One comment_notices row -> notice (migration 0052). */
+function commentNoticeFromRow(r: Record<string, unknown>): CommentNotice {
+  return { id: r.id as string, userId: r.user_id as string, threadId: r.thread_id as string, sessionId: r.session_id as string,
+    projectId: r.project_id as string, kind: r.kind as CommentNotice['kind'], actorId: r.actor_id as string,
+    messageId: r.message_id as string, count: Number(r.count), createdAt: new Date(r.created_at as string).toISOString() };
 }
 
 /** An invitation's projects as stored: only the known keys. */
@@ -128,7 +141,8 @@ function accessRequestFromRow(r: Record<string, unknown>): AccessRequestRecord {
 }
 
 const REQUEST_ROLES_AT_MOST: Record<ProjectMemberRole, ProjectMemberRole[]> = {
-  viewer: ['viewer'], editor: ['viewer', 'editor'], manager: ['viewer', 'editor', 'manager'],
+  viewer: ['viewer'], commenter: ['viewer', 'commenter'], editor: ['viewer', 'commenter', 'editor'],
+  manager: ['viewer', 'commenter', 'editor', 'manager'],
 };
 
 /** The WHERE clause for `closeAccessRequests`: live open rows matching every
@@ -256,6 +270,11 @@ const PROJECT_FILES_LOCK_KEY = 0x1011_0005;
  *  Two-key locks live apart from the one-key locks above, and the value is
  *  distinct from them anyway. */
 const PASSWORD_LINK_LOCK_KEY = 0x1011_0006;
+/** Serializes session version writes and deletes (plan 76 M4, migration 0053), so
+ *  the per-document rules and the instance-wide space cap see every committed
+ *  version. Writes are rare (at most one automatic version per document per two
+ *  minutes), so one lock for the instance costs nothing that matters. */
+const SESSION_VERSIONS_LOCK_KEY = 0x1011_0007;
 
 // Appends a `column = $n` clause + its bound value - shared by the two
 // filtered list queries below so the param-numbering logic lives in one place.
@@ -317,7 +336,27 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       sessionEpoch: Number(r.session_epoch ?? 0),
       createdAt: new Date(r.created_at as string).toISOString(),
       lastSeenAt: new Date(r.last_seen_at as string).toISOString(),
+      ...(Array.isArray(r.share_groups) && r.share_groups.length ? { shareGroups: r.share_groups as string[] } : {}),
     };
+  };
+
+  /** One attempt at the comment notice upsert (`upsertCommentNotice`). */
+  const upsertCommentNoticeOnce = async (n: CommentNoticeWrite): Promise<'created' | 'updated'> => {
+    const { rows } = await pool.query(`insert into comment_notices
+        (id, user_id, thread_id, session_id, project_id, kind, actor_id, message_id, count, created_at)
+      values ($1, $2, $3, $4, $5, $6, $7, $8, 1, $9)
+      on conflict (user_id, thread_id) do update set
+        kind = case when excluded.kind = 'mention' or comment_notices.kind = 'mention' then 'mention' else excluded.kind end,
+        count = case when comment_notices.message_id = excluded.message_id then comment_notices.count
+                     else least(comment_notices.count + 1, $10) end,
+        actor_id = case when comment_notices.message_id = excluded.message_id then comment_notices.actor_id else excluded.actor_id end,
+        created_at = case when comment_notices.message_id = excluded.message_id then comment_notices.created_at
+                          else greatest(comment_notices.created_at, excluded.created_at) end,
+        message_id = excluded.message_id
+      returning (xmax = 0) as inserted`,
+    [commentNoticeId(n.userId, n.threadId), n.userId, n.threadId, n.sessionId, n.projectId, n.mentioned ? 'mention' : n.kind,
+      n.actorId, n.messageId, new Date(n.at).toISOString(), COMMENT_NOTICE_COUNT_MAX]);
+    return rows[0]?.inserted ? 'created' : 'updated';
   };
 
   const getLinkById = async (id: string): Promise<LinkRecord | null> => {
@@ -423,6 +462,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     ...(r.archived_at ? { archivedAt: new Date(r.archived_at as string).toISOString() } : {}),
     ...(r.updated_at ? { updatedAt: new Date(r.updated_at as string).toISOString() } : {}),
     ...(r.updated_by ? { updatedBy: r.updated_by as string } : {}),
+    ...(r.sharing ? { sharing: r.sharing as ProjectRecord['sharing'] } : {}),
   });
 
   const identityFromRow = (r: Record<string, unknown>): UserIdentityRecord => ({
@@ -457,12 +497,35 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     ...(r.used_at ? { usedAt: new Date(r.used_at as string).toISOString() } : {}),
   });
 
+  /** Share groups with managers whose accounts are gone filtered out, so an
+   *  erased manager never reads back (the owner column clears on its own). */
+  const SHARE_GROUP_SELECT = `select g.*, coalesce((select jsonb_agg(m) from jsonb_array_elements_text(g.managers) m
+    where exists (select 1 from users u where u.id = m)), '[]'::jsonb) as live_managers from share_groups g`;
+  const shareGroupFromRow = (r: Record<string, unknown>): ShareGroupRecord => ({
+    id: r.id as string,
+    name: r.name as string,
+    ...(r.description ? { description: r.description as string } : {}),
+    ownerId: (r.owner_id as string | null) ?? null,
+    managers: (r.live_managers as string[]) ?? [],
+    createdBy: r.created_by as string,
+    createdAt: new Date(r.created_at as string).toISOString(),
+    ...(r.updated_at ? { updatedAt: new Date(r.updated_at as string).toISOString() } : {}),
+  });
+
+  const projectUserStateFromRow = (r: Record<string, unknown>): ProjectUserStateRecord => ({
+    userId: r.user_id as string,
+    projectId: r.project_id as string,
+    ...(r.listed ? { listed: r.listed as 'pinned' | 'hidden' } : {}),
+    ...(r.last_opened_at ? { lastOpenedAt: new Date(r.last_opened_at as string).toISOString() } : {}),
+  });
+
   const projectMemberFromRow = (r: Record<string, unknown>): ProjectMemberRecord => ({
     projectId: r.project_id as string,
     userId: r.user_id as string,
     role: r.role as ProjectMemberRecord['role'],
     addedBy: r.added_by as string,
     addedAt: new Date(r.added_at as string).toISOString(),
+    ...(r.expires_at ? { expiresAt: new Date(r.expires_at as string).toISOString() } : {}),
   });
 
   const sessionFromRow = (r: Record<string, unknown>): SessionRecord => ({
@@ -1451,6 +1514,9 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         const deleted = await client.query('delete from users where id = $1 returning email', [id]);
         if (!deleted.rowCount) { await client.query('rollback'); return { status: 'not-found' }; }
         const scrubbed = await client.query('update telemetry_events set user_id = null where user_id = $1', [id]);
+        // The person's comment reads, received notices and mention sends went
+        // with their row; the notices they caused go too (actor_id has no key).
+        await client.query('delete from comment_notices where actor_id = $1', [id]);
         // Invitations hold the email, and an accepted one keeps admitting it:
         // the rows this account accepted go with it, and other rows for the
         // address go too unless another account still carries that email.
@@ -1823,6 +1889,21 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     async deleteCatalogField(id) {
       await pool.query('delete from catalog_field_defs where id = $1', [id]);
     },
+    // Hidden tags (migrations/0065): one row per scope, the rule as jsonb.
+    async listCatalogTagRules() {
+      const { rows } = await pool.query('select rule from catalog_tag_rules order by scope asc');
+      return rows.map((r) => r.rule as CatalogTagRule);
+    },
+    async putCatalogTagRule(rule) {
+      await pool.query(
+        `insert into catalog_tag_rules (scope, rule, updated_at) values ($1, $2::jsonb, now())
+         on conflict (scope) do update set rule = excluded.rule, updated_at = now()`,
+        [rule.scope, JSON.stringify(rule)],
+      );
+    },
+    async deleteCatalogTagRule(scope) {
+      await pool.query('delete from catalog_tag_rules where scope = $1', [scope]);
+    },
     async getAssetMeta(assetId) {
       const { rows } = await pool.query('select record from catalog_asset_meta where asset_id = $1', [assetId]);
       return rows[0] ? (rows[0].record as AssetMetaRecord) : null;
@@ -1964,14 +2045,15 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     // projects + sessions (migrations/0004_sessions.sql)
     async putProject(project) {
       await pool.query(
-        `insert into projects (id, name, visibility, owner_id, created_at, archived_at, updated_at, updated_by)
-         values ($1, $2, $3::jsonb, $4, $5, $6, $7, $8)
+        `insert into projects (id, name, visibility, owner_id, created_at, archived_at, updated_at, updated_by, sharing)
+         values ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9::jsonb)
          on conflict (id) do update set
            name = excluded.name, visibility = excluded.visibility,
            owner_id = excluded.owner_id, archived_at = excluded.archived_at,
-           updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
+           updated_at = excluded.updated_at, updated_by = excluded.updated_by, sharing = excluded.sharing`,
         [project.id, project.name, JSON.stringify(project.visibility), project.ownerId,
-         project.createdAt, project.archivedAt ?? null, project.updatedAt ?? null, project.updatedBy ?? null],
+         project.createdAt, project.archivedAt ?? null, project.updatedAt ?? null, project.updatedBy ?? null,
+         project.sharing ? JSON.stringify(project.sharing) : null],
       );
     },
     async getProject(id) {
@@ -2104,6 +2186,10 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       const { rowCount } = await pool.query('delete from project_files where id = $1', [id]);
       return (rowCount ?? 0) > 0;
     },
+    async renameProjectFile(projectId, id, name) {
+      const { rowCount } = await pool.query('update project_files set name = $3 where project_id = $1 and id = $2 and ready = true', [projectId, id, name]);
+      return (rowCount ?? 0) === 1;
+    },
     async listSessionsUsingProjectFile(projectId, fileId) {
       // The match runs in the database, so no session document leaves it.
       const { rows } = await pool.query(
@@ -2197,10 +2283,10 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     },
     async putProjectMember(rec) {
       await pool.query(
-        `insert into project_members (project_id, user_id, role, added_by, added_at)
-         values ($1, $2, $3, $4, $5)
-         on conflict (project_id, user_id) do update set role = excluded.role`,
-        [rec.projectId, rec.userId, rec.role, rec.addedBy, rec.addedAt],
+        `insert into project_members (project_id, user_id, role, added_by, added_at, expires_at)
+         values ($1, $2, $3, $4, $5, $6)
+         on conflict (project_id, user_id) do update set role = excluded.role, expires_at = excluded.expires_at`,
+        [rec.projectId, rec.userId, rec.role, rec.addedBy, rec.addedAt, rec.expiresAt ?? null],
       );
     },
     async updateProjectMemberRole(projectId, userId, role) {
@@ -2251,6 +2337,98 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         and exists (select 1 from sessions where id = $2 and deleted_at is null)`,
         [thread.id, thread.sessionId, thread.revision, JSON.stringify(thread), thread.updatedAt, expectedRevision]);
       return result.rowCount === 1;
+    },
+    async getCommentThreadsByIds(ids) {
+      const unique = [...new Set(ids)];
+      if (!unique.length) return [];
+      const { rows } = await pool.query('select id, data from canvas_comment_threads where id = any($1::text[])', [unique]);
+      const byId = new Map(rows.map((row) => [row.id as string, row.data as CommentThread]));
+      return unique.flatMap((id) => byId.has(id) ? [byId.get(id)!] : []);
+    },
+    async readCommentState(userId, sessionId) {
+      const now = new Date().toISOString();
+      await pool.query(`insert into canvas_comment_read_floors (user_id, session_id, floor_at)
+        select $1::text, $2::text, $3::timestamptz
+         where exists (select 1 from users where id = $1) and exists (select 1 from sessions where id = $2)
+        on conflict (user_id, session_id) do nothing`, [userId, sessionId, now]);
+      const [floor, reads] = await Promise.all([
+        pool.query('select floor_at from canvas_comment_read_floors where user_id = $1 and session_id = $2', [userId, sessionId]),
+        pool.query('select thread_id, read_at from canvas_comment_reads where user_id = $1 and session_id = $2', [userId, sessionId]),
+      ]);
+      return {
+        reads: Object.fromEntries(reads.rows.map((r) => [r.thread_id as string, new Date(r.read_at as string).toISOString()])),
+        floorAt: floor.rows[0] ? new Date(floor.rows[0].floor_at as string).toISOString() : now,
+      };
+    },
+    async markCommentsRead(userId, sessionId, entries) {
+      // One entry per thread (the latest), never later than now: a duplicate
+      // would make the upsert touch one row twice, which Postgres refuses.
+      const now = Date.now(), latest = new Map<string, number>();
+      for (const { threadId, at } of entries) {
+        const ms = Math.min(Date.parse(at), now);
+        if (typeof threadId === 'string' && Number.isFinite(ms)) latest.set(threadId, Math.max(latest.get(threadId) ?? ms, ms));
+      }
+      if (!latest.size) return;
+      await pool.query(`insert into canvas_comment_reads (user_id, thread_id, session_id, read_at)
+        select $1::text, t.id, t.session_id, e.at
+          from unnest($3::text[], $4::timestamptz[]) as e(thread_id, at)
+          join canvas_comment_threads t on t.id = e.thread_id and t.session_id = $2
+         where exists (select 1 from users where id = $1)
+        on conflict (user_id, thread_id) do update set read_at = excluded.read_at
+         where canvas_comment_reads.read_at < excluded.read_at`,
+      [userId, sessionId, [...latest.keys()], [...latest.values()].map((ms) => new Date(ms).toISOString())]);
+    },
+    async upsertCommentNotice(n) {
+      // A retry of the same message changes nothing but the mention upgrade.
+      // The id is derived from (user, thread), so the table has two unique
+      // indexes on one key; a racing first insert can trip the one that is not
+      // the conflict target. The next attempt then finds the row and updates it.
+      for (let attempt = 0; ; attempt++) {
+        try { return await upsertCommentNoticeOnce(n); } catch (error) {
+          if ((error as { code?: string }).code !== '23505' || attempt >= 2) throw error;
+        }
+      }
+    },
+    async listCommentNotices(userId, limit) {
+      const { rows } = await pool.query(
+        'select * from comment_notices where user_id = $1 order by created_at desc, id collate "C" desc limit $2',
+        [userId, noticeListLimit(limit)]);
+      return rows.map(commentNoticeFromRow);
+    },
+    async deleteCommentNotices(userId, by) {
+      const ids = by.ids ?? [], threadIds = by.threadIds ?? [], sessionIds = by.sessionIds ?? [];
+      if (!ids.length && !threadIds.length && !sessionIds.length) return 0;
+      const { rowCount } = await pool.query(`delete from comment_notices where user_id = $1
+        and (id = any($2::text[]) or thread_id = any($3::text[]) or session_id = any($4::text[]))`, [userId, ids, threadIds, sessionIds]);
+      return rowCount ?? 0;
+    },
+    async countNoticesByActorSince(actorId, sinceIso) {
+      const { rows } = await pool.query('select count(*)::int as n from comment_notices where actor_id = $1 and created_at >= $2',
+        [actorId, new Date(sinceIso).toISOString()]);
+      return Number(rows[0]?.n ?? 0);
+    },
+    async pruneCommentNotices(userId, keep, olderThanIso) {
+      const { rowCount } = await pool.query(`delete from comment_notices where user_id = $1 and (created_at < $3 or id not in (
+          select id from comment_notices where user_id = $1 order by created_at desc, id collate "C" desc limit $2))`,
+      [userId, noticeKeepCount(keep), new Date(olderThanIso).toISOString()]);
+      return rowCount ?? 0;
+    },
+    async recordMentionSends(threadId, messageId, userIds, at) {
+      const stamp = new Date(at).toISOString(), unique = [...new Set(userIds)];
+      if (!unique.length) return [];
+      const { rows } = await pool.query(`insert into comment_mention_sends (thread_id, message_id, user_id, at)
+        select $1::text, $2::text, u.id, $4::timestamptz from users u
+         where u.id = any($3::text[]) and exists (select 1 from canvas_comment_threads where id = $1)
+        on conflict do nothing returning user_id`, [threadId, messageId, unique, stamp]);
+      const fresh = new Set(rows.map((r) => r.user_id as string));
+      return unique.filter((id) => fresh.has(id));
+    },
+    async forgetMentionSends(threadId, messageId, userIds) {
+      const unique = [...new Set(userIds)];
+      if (!unique.length) return 0;
+      const { rowCount } = await pool.query('delete from comment_mention_sends where thread_id = $1 and message_id = $2 and user_id = any($3::text[])',
+        [threadId, messageId, unique]);
+      return rowCount ?? 0;
     },
     async putSession(session) {
       const result = await pool.query(
@@ -2393,7 +2571,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       const client = await pool.connect();
       try {
         await client.query('begin');
-        const locked = await client.query(`select rev, meta from sessions where id=$1 and rev=$2 and deleted_at is null
+        const locked = await client.query(`select rev from sessions where id=$1 and rev=$2 and deleted_at is null
           and collab_owner=$3 and collab_lease_until>clock_timestamp() for update`, [batch.sessionId, batch.expectedRev, batch.owner]);
         if (!locked.rows[0]) throw new Error('collab-owner-conflict');
         const rev = batch.expectedRev + 1, at = new Date().toISOString();
@@ -2412,10 +2590,6 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         }
         for (const r of batch.receipts) await client.query(`insert into collab_receipts(session_id,principal,id,digest,accepted,revision) values($1,$2,$3,$4,$5,$6)`,
           [batch.sessionId, batch.principal, r.id, r.digest, r.accepted, rev]);
-        await client.query('insert into session_revisions(session_id,rev,inputs,meta,actor,at) values($1,$2,$3::jsonb,$4::jsonb,$5,$6)',
-          [batch.sessionId, rev, JSON.stringify(batch.inputs), JSON.stringify(locked.rows[0].meta), batch.actor, at]);
-        await client.query(`delete from session_revisions where session_id=$1 and rev not in
-          (select rev from session_revisions where session_id=$1 order by rev desc limit $2)`, [batch.sessionId, SESSION_REVISION_LIMIT]);
         await client.query('commit');
         return rev;
       } catch (error) { await client.query('rollback'); throw error; }
@@ -2463,12 +2637,242 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     async deleteCollabSnapshot(sessionId) {
       await pool.query('delete from collab_room_snapshots where session_id = $1', [sessionId]);
     },
+    ...createPostgresVersions(pool),
+
+    // The sharing ladder (migration 0060; lolly plan 299 M1).
+    async setProjectMemberExpiry(projectId, userId, expiresAt) {
+      const { rows } = await pool.query(
+        'update project_members set expires_at = $3 where project_id = $1 and user_id = $2 returning *', [projectId, userId, expiresAt],
+      );
+      return rows[0] ? projectMemberFromRow(rows[0]) : null;
+    },
+    async listShareGroups() {
+      const { rows } = await pool.query(`${SHARE_GROUP_SELECT} order by g.name, g.id`);
+      return rows.map(shareGroupFromRow);
+    },
+    async getShareGroup(id) {
+      const { rows } = await pool.query(`${SHARE_GROUP_SELECT} where g.id = $1`, [id]);
+      return rows[0] ? shareGroupFromRow(rows[0]) : null;
+    },
+    async putShareGroup(group) {
+      await pool.query(
+        `insert into share_groups (id, name, description, owner_id, managers, created_by, created_at, updated_at)
+         values ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
+         on conflict (id) do update set name = excluded.name, description = excluded.description,
+           owner_id = excluded.owner_id, managers = excluded.managers, updated_at = excluded.updated_at`,
+        [group.id, group.name, group.description ?? null, group.ownerId, JSON.stringify(group.managers),
+         group.createdBy, group.createdAt, group.updatedAt ?? null],
+      );
+    },
+    async deleteShareGroup(id) {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        await client.query('delete from share_groups where id = $1', [id]);
+        await client.query("update users set share_groups = share_groups - $1::text where share_groups @> jsonb_build_array($1::text)", [id]);
+        await client.query('commit');
+      } catch (error) { await client.query('rollback'); throw error; }
+      finally { client.release(); }
+    },
+    async listShareGroupMembers(id) {
+      const { rows } = await pool.query("select * from users where share_groups @> jsonb_build_array($1::text) order by id", [id]);
+      return rows.map(userFromRow);
+    },
+    async setUserShareGroups(userId, ids) {
+      const { rows } = await pool.query(
+        'update users set share_groups = $2::jsonb where id = $1 returning *', [userId, JSON.stringify([...new Set(ids.filter(Boolean))])],
+      );
+      return rows[0] ? userFromRow(rows[0]) : null;
+    },
+    async addUserShareGroup(userId, groupId) {
+      // Appends in one statement, and only while the group exists, so a group
+      // deleted in the meantime leaves no id behind.
+      const { rows } = await pool.query(
+        `update users set share_groups = case when share_groups @> jsonb_build_array($2::text) then share_groups
+           else share_groups || jsonb_build_array($2::text) end
+         where id = $1 and exists (select 1 from share_groups where id = $2) returning *`, [userId, groupId],
+      );
+      return rows[0] ? userFromRow(rows[0]) : null;
+    },
+    async removeUserShareGroup(userId, groupId) {
+      const { rows } = await pool.query('update users set share_groups = share_groups - $2::text where id = $1 returning *', [userId, groupId]);
+      return rows[0] ? userFromRow(rows[0]) : null;
+    },
+    async listProjectUserState(userId) {
+      const { rows } = await pool.query('select * from project_user_state where user_id = $1', [userId]);
+      return rows.map(projectUserStateFromRow);
+    },
+    async putProjectUserState(userId, projectId, change) {
+      const listedGiven = change.listed !== undefined;
+      const { rows } = await pool.query(
+        `insert into project_user_state (user_id, project_id, listed, last_opened_at)
+         values ($1, $2, $3, $4)
+         on conflict (user_id, project_id) do update set
+           listed = case when $5 then excluded.listed else project_user_state.listed end,
+           last_opened_at = coalesce(excluded.last_opened_at, project_user_state.last_opened_at)
+         returning *`,
+        [userId, projectId, change.listed ?? null, change.lastOpenedAt ?? null, listedGiven],
+      );
+      return projectUserStateFromRow(rows[0]!);
+    },
 
     async pendingMigrations() {
       return pendingAgainst(pool); // read-only; safe on a pending schema
     },
     async close() {
       await pool.end();
+    },
+  };
+}
+
+const iso = (value: unknown): string => new Date(value as string).toISOString();
+const VERSION_SUMMARY_COLUMNS = 'v.id, v.session_id, v.rev, v.kind, v.label, v.contributors, v.created_by, v.restored_from, v.before_id, v.at, c.bytes';
+const VERSIONS_WITH_CONTENT = 'session_versions v join session_version_contents c on c.session_id = v.session_id and c.digest = v.digest';
+const VERSION_ROW_COLUMNS = 'id, session_id, kind, digest, at, created_by, request_id, before_id';
+
+function versionSummaryFromRow(r: Record<string, unknown>): SessionVersionSummary {
+  return {
+    id: r.id as string, sessionId: r.session_id as string, rev: Number(r.rev), kind: r.kind as SessionVersionSummary['kind'],
+    ...(r.label !== null && r.label !== undefined ? { label: r.label as string } : {}),
+    contributors: (r.contributors as SessionVersionSummary['contributors']) ?? [],
+    ...(r.created_by ? { createdBy: r.created_by as string } : {}),
+    ...(r.restored_from ? { restoredFrom: r.restored_from as string } : {}),
+    ...(r.before_id ? { beforeId: r.before_id as string } : {}),
+    bytes: Number(r.bytes), at: iso(r.at),
+  };
+}
+
+function versionRowFromRow(r: Record<string, unknown>): SessionVersionRow {
+  return {
+    id: r.id as string, sessionId: r.session_id as string, kind: r.kind as SessionVersionRow['kind'], digest: r.digest as string, at: iso(r.at),
+    ...(r.created_by !== null && r.created_by !== undefined ? { createdBy: r.created_by as string } : {}),
+    ...(r.request_id !== null && r.request_id !== undefined ? { requestId: r.request_id as string } : {}),
+    ...(r.before_id ? { beforeId: r.before_id as string } : {}),
+  };
+}
+
+type VersionMethods = 'configureVersionLimits' | 'putSessionVersion' | 'listSessionVersions' | 'getSessionVersion' | 'deleteSessionVersion' | 'deleteSessionVersions';
+
+/**
+ * Session versions (plan 76 M4 R2, migration 0053). Every write and delete holds
+ * SESSION_VERSIONS_LOCK_KEY for its transaction, reads the document's rows, and
+ * applies the shared `planSessionVersionPut`, so the memory driver keeps the same
+ * rules. Contents no version uses any more are deleted in the same transaction.
+ */
+function createPostgresVersions(pool: PgPool): Pick<Store, VersionMethods> {
+  let limits: SessionVersionLimits = resolveVersionLimits({});
+  const locked = async <T>(work: (client: PgClient) => Promise<T>): Promise<T> => {
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+      await client.query('select pg_advisory_xact_lock($1)', [SESSION_VERSIONS_LOCK_KEY]);
+      const result = await work(client);
+      await client.query('commit');
+      return result;
+    } catch (error) {
+      await client.query('rollback');
+      throw error;
+    } finally { client.release(); }
+  };
+  /** Delete the versions with these ids; returns the sessions they belonged to.
+   *  The foreign keys unset references to them. */
+  const dropVersions = async (client: PgClient, ids: string[]): Promise<string[]> => {
+    if (!ids.length) return [];
+    const { rows } = await client.query('delete from session_versions where id = any($1::text[]) returning session_id', [ids]);
+    return [...new Set(rows.map((r) => r.session_id as string))];
+  };
+  const dropUnusedContents = async (client: PgClient, sessionIds: string[]): Promise<void> => {
+    if (!sessionIds.length) return;
+    await client.query(`delete from session_version_contents c where c.session_id = any($1::text[])
+      and not exists (select 1 from session_versions v where v.session_id = c.session_id and v.digest = c.digest)`, [sessionIds]);
+  };
+  const summaryById = async (client: PgClient, id: string): Promise<SessionVersionSummary> => {
+    const { rows } = await client.query(`select ${VERSION_SUMMARY_COLUMNS} from ${VERSIONS_WITH_CONTENT} where v.id = $1`, [id]);
+    return versionSummaryFromRow(rows[0]!);
+  };
+
+  return {
+    configureVersionLimits(next) { limits = resolveVersionLimits(next); },
+    async putSessionVersion(input) {
+      const w = normalizeSessionVersionWrite(input);
+      const content = sessionVersionContent(w.inputs);
+      return locked(async (client): Promise<SessionVersionPut> => {
+        const session = await client.query('select deleted_at from sessions where id = $1', [w.sessionId]);
+        if (!session.rows[0] || session.rows[0].deleted_at) throw new Error('session-gone');
+        const mine = (await client.query(`select ${VERSION_ROW_COLUMNS} from session_versions where session_id = $1`, [w.sessionId])).rows.map(versionRowFromRow);
+        for (const ref of [w.restoredFrom, w.beforeId]) if (ref !== undefined && !mine.some((r) => r.id === ref)) throw new Error('version-reference');
+        const stored = await client.query('select digest, bytes from session_version_contents where session_id = $1', [w.sessionId]);
+        const id = sessionVersionId();
+        const plan = await planSessionVersionPut(w, id, content, {
+          rows: mine,
+          contents: new Map(stored.rows.map((r) => [r.digest as string, Number(r.bytes)])),
+          // One row, kept by migration 0053's triggers.
+          instanceBytes: async () => Number((await client.query('select coalesce((select bytes from session_version_totals where id), 0)::bigint as n')).rows[0]!.n),
+          instanceRows: async () => {
+            const rows = (await client.query(`select ${VERSION_ROW_COLUMNS} from session_versions`)).rows.map(versionRowFromRow);
+            const all = (await client.query('select session_id, digest, bytes from session_version_contents')).rows;
+            return { rows, contents: new Map(all.map((r) => [`${r.session_id as string} ${r.digest as string}`, Number(r.bytes)])) };
+          },
+        }, limits);
+        if (plan.action === 'refuse') return plan.reason;
+        if (plan.action === 'return') return { version: await summaryById(client, plan.id), created: false };
+        if (plan.action === 'skip') {
+          const latest = mine.sort(newestVersionFirst)[0];
+          return latest ? { version: await summaryById(client, latest.id), created: false } : 'version-space';
+        }
+        if (plan.contentIsNew) {
+          await client.query(`insert into session_version_contents (session_id, digest, inputs, bytes) values ($1, $2, $3::jsonb, $4)
+            on conflict (session_id, digest) do nothing`, [w.sessionId, content.digest, JSON.stringify(w.inputs), content.bytes]);
+        }
+        await client.query(`insert into session_versions (id, session_id, rev, kind, label, digest, meta, contributors,
+            created_by, restored_from, before_id, request_id, at)
+          values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10, $11, $12, $13)`,
+        [id, w.sessionId, w.rev, w.kind, w.label ?? null, content.digest, JSON.stringify(w.meta), JSON.stringify(w.contributors),
+          w.createdBy ?? null, w.restoredFrom ?? null, w.beforeId ?? null, w.requestId ?? null, w.at]);
+        const touched = await dropVersions(client, plan.drops);
+        await dropUnusedContents(client, [...new Set([w.sessionId, ...touched])]);
+        return { version: await summaryById(client, id), created: true };
+      });
+    },
+    async listSessionVersions(sessionId, opts) {
+      const limit = versionListLimit(opts.limit);
+      if (opts.before === undefined) {
+        const { rows } = await pool.query(`select ${VERSION_SUMMARY_COLUMNS} from ${VERSIONS_WITH_CONTENT}
+          where v.session_id = $1 order by v.at desc, v.id collate "C" desc limit $2`, [sessionId, limit]);
+        return rows.map(versionSummaryFromRow);
+      }
+      // One statement, so the cursor row and the page are read together. A cursor
+      // that is not a version of this session matches no row, so the page is empty.
+      const { rows } = await pool.query(`with b as (select at, id from session_versions where session_id = $1 and id = $2)
+        select ${VERSION_SUMMARY_COLUMNS} from ${VERSIONS_WITH_CONTENT}, b
+         where v.session_id = $1 and (v.at < b.at or (v.at = b.at and v.id collate "C" < b.id collate "C"))
+         order by v.at desc, v.id collate "C" desc limit $3`, [sessionId, opts.before, limit]);
+      return rows.map(versionSummaryFromRow);
+    },
+    async getSessionVersion(sessionId, id) {
+      const { rows } = await pool.query(`select ${VERSION_SUMMARY_COLUMNS}, v.meta, c.inputs from ${VERSIONS_WITH_CONTENT}
+        where v.session_id = $1 and v.id = $2`, [sessionId, id]);
+      const r = rows[0];
+      return r ? { ...versionSummaryFromRow(r), inputs: (r.inputs as Record<string, unknown>) ?? {}, meta: (r.meta as Record<string, unknown>) ?? {} } : null;
+    },
+    async deleteSessionVersion(sessionId, id) {
+      return locked(async (client) => {
+        // The row, its own 'before' row, and any rows whose 'before' it is: the
+        // subquery reads the table as it was before this statement.
+        const { rows } = await client.query(`delete from session_versions where session_id = $1 and (id = $2 or before_id = $2
+            or id = (select before_id from session_versions where session_id = $1 and id = $2))
+          returning id`, [sessionId, id]);
+        if (!rows.some((r) => r.id === id)) return false;
+        await dropUnusedContents(client, [sessionId]);
+        return true;
+      });
+    },
+    async deleteSessionVersions(sessionId) {
+      return locked(async (client) => {
+        const gone = await client.query('delete from session_versions where session_id = $1', [sessionId]);
+        await client.query('delete from session_version_contents where session_id = $1', [sessionId]);
+        return gone.rowCount ?? 0;
+      });
     },
   };
 }

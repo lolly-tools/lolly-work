@@ -459,7 +459,7 @@ test('org-config: can[user.invite] follows the tier, can[session.edit], invite l
   assert.equal(admin.can['user.invite'], true);
   assert.equal(admin.can['session.edit'], true);
   assert.equal(admin.can['link.create-guest'], true);
-  assert.deepEqual(admin.invites, { domains: [], maxTtlHours: 720, projectRoles: ['viewer', 'editor', 'manager'], passwordSetup: false, passwordDomains: [] });
+  assert.deepEqual(admin.invites, { domains: [], maxTtlHours: 720, projectRoles: ['viewer', 'commenter', 'editor', 'manager'], passwordSetup: false, passwordDomains: [] });
   const member = await oc('alice@test');
   assert.equal(member.can['user.invite'], false, 'admins tier by default');
   assert.equal(member.can['session.edit'], true);

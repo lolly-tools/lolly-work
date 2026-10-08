@@ -1334,7 +1334,7 @@ switch (cmd) {
     if (!values.json) {
       const s = r.applied ?? r.diff ?? {};
       console.log(`${r.dryRun ? 'dry-run' : 'applied'} · ${r.hash.slice(0, 16)}`);
-      for (const cat of ['grants', 'overlays', 'chains', 'providers', 'featureFlags'] as const) {
+      for (const cat of ['grants', 'overlays', 'chains', 'providers', 'featureFlags', 'catalogFields', 'tagRules'] as const) {
         const c = s[cat];
         if (c) console.log(`  ${cat.padEnd(13)} +${c.create} ~${c.update} -${c.delete} (=${c.unchanged})`);
       }

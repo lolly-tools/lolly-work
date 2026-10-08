@@ -17,6 +17,8 @@ import { createChainEditor } from './chains.js';
 import { createProviderSetup } from './provider-setup.js';
 import { createOAuthProviderSetup } from './provider-oauth-setup.js';
 import { compareValues } from './table-sort.js';
+import { createTagPanel } from './catalog-tags.js';
+import { createSubmitPanel } from './catalog-submit.js';
 import { buildThemeMaps, themeFromTokens, resolveCssColor } from './brand-theme.js';
 
 const $app = document.getElementById('app');
@@ -2225,7 +2227,16 @@ function orgFieldRows(defs, values) {
  * publishing it would be the worst of the three possible behaviours; the edit
  * stays its own audited call either way.
  */
-function renderSubmissionReview(s, host, opener, fieldDefs) {
+/** A template or user tool, in words: "Template for Design, 12 values". */
+function dataSubmissionSummary(d) {
+  const tool = d.toolName ? `${d.toolName} (${d.toolId})` : d.toolId;
+  const what = d.kind === 'template' ? `Template for ${tool}` : `Tool built on ${tool}`;
+  const values = `${d.valueCount} value${d.valueCount === 1 ? '' : 's'}`;
+  const extra = d.undeclared ? `, ${d.undeclared} not declared by the tool` : '';
+  return `${what}, ${values}${extra}`;
+}
+
+function renderSubmissionReview(s, host, opener, fieldDefs, collections = null) {
   const short = String(s.id).replace(/^inst\//, '');
   const err = errSpan();
   const mine = s.relation === 'mine';
@@ -2235,7 +2246,7 @@ function renderSubmissionReview(s, host, opener, fieldDefs) {
   const pending = s.state === 'submitted';
 
   const nameInput = el('input', { type: 'text', value: s.name ?? '' });
-  const typeInput = el('input', { type: 'text', value: s.type ?? '' });
+  const typeInput = el('input', { type: 'text', value: s.type ?? '', ...(s.data ? { readonly: '', title: 'A template or user tool keeps its type' } : {}) });
   const tagsInput = el('input', { type: 'text', value: (s.tags ?? []).join(', ') });
   const descInput = el('input', { type: 'text', value: s.description ?? '' });
   const comment = el('input', { type: 'text', placeholder: 'Why (required to return)', 'aria-label': `Comment on ${s.name}` });
@@ -2247,6 +2258,14 @@ function renderSubmissionReview(s, host, opener, fieldDefs) {
   // before publishing it rather than in a second pass afterwards.
   const org = orgFieldEditor(fieldDefs, s.fields);
 
+  // The collection it joins once approved (plan 299). Offered only to a
+  // reviewer who may curate collections, and only while it waits.
+  const collectionSel = collections && pending
+    ? el('select', { 'aria-label': `Collection for ${s.name}` },
+        el('option', { value: '' }, 'No collection'),
+        ...collections.map((c) => el('option', { value: c.id, ...(c.id === s.collectionId ? { selected: '' } : {}) }, c.name)))
+    : null;
+
   const edited = () => {
     const body = {};
     if (nameInput.value.trim() !== (s.name ?? '')) body.name = nameInput.value.trim();
@@ -2256,6 +2275,7 @@ function renderSubmissionReview(s, host, opener, fieldDefs) {
     if (tags.join(',') !== (s.tags ?? []).join(',')) body.tags = tags;
     const fields = org.read();
     if (Object.keys(fields).length) body.fields = fields;
+    if (collectionSel && collectionSel.value !== (s.collectionId ?? '')) body.collectionId = collectionSel.value || null;
     return body;
   };
   const saveEdits = async () => {
@@ -2309,6 +2329,9 @@ function renderSubmissionReview(s, host, opener, fieldDefs) {
           cell('Submitted by', s.byName),
           cell('Submitted', when(s.at)),
           cell('File', [s.contentType, dims, fmtBytes(s.size)].filter(Boolean).join(' · ')),
+          s.data ? cell('What it is', dataSubmissionSummary(s.data)) : null,
+          s.note ? cell('Note from the submitter', s.note) : null,
+          s.joinedCollection ? cell('Collection', (collections ?? []).find((c) => c.id === s.joinedCollection)?.name ?? s.joinedCollection) : null,
           cell('Exposure', s.groups === '*' || !s.groups?.length ? 'every member' : s.groups.join(', ')),
           cell('Checksum', el('span', { class: 'mono trunc', title: s.checksum }, String(s.checksum ?? '').slice(0, 16)))))),
     el('div', { class: 'stack' },
@@ -2319,6 +2342,7 @@ function renderSubmissionReview(s, host, opener, fieldDefs) {
               'Correct it before it is published - name, type, tags and description only. The bytes and the exposure the submitter chose are not editable here, and every change is audited with its before and after.'),
             el('div', { class: 'formrow' }, field('Name', nameInput), field('Type', typeInput)),
             el('div', { class: 'formrow' }, field('Tags (comma-separated)', tagsInput), field('Description', descInput)),
+            collectionSel ? el('div', { class: 'formrow' }, field('Add to collection when approved', collectionSel)) : null,
             org.node ? el('h3', { class: 'detail-h' }, 'Org fields') : null,
             org.node,
             el('p', {}, saveBtn))
@@ -2366,10 +2390,14 @@ async function submissionQueue() {
   // The org's field DEFINITIONS, fetched once for the whole queue: an instance
   // that defines none gets the panel it had before.
   const fieldDefs = await api('/api/v1/catalog/fields').then((r) => r.fields ?? []).catch(() => []);
+  // Collections a reviewer may add the asset to on approval (plan 299).
+  const collections = canAction('catalog.collection.manage')
+    ? await api('/api/v1/catalog/collections').then((r) => r.collections ?? []).catch(() => null)
+    : null;
 
   const panelHost = el('div', { class: 'stack' });
   const open = (s, opener) => {
-    panelHost.replaceChildren(renderSubmissionReview(s, panelHost, opener, fieldDefs));
+    panelHost.replaceChildren(renderSubmissionReview(s, panelHost, opener, fieldDefs, collections));
     scrollIntoViewMotionSafe(panelHost);
   };
 
@@ -2383,7 +2411,7 @@ async function submissionQueue() {
       el('td', {}, s.name, el('div', { class: 'muted mono' }, s.id)),
       el('td', {}, s.byName, el('div', { class: 'muted' }, s.relation === 'mine' ? 'your submission' : 'waiting on you')),
       whenCell(s.at),
-      el('td', { class: 'muted' }, [s.contentType, dims, fmtBytes(s.size)].filter(Boolean).join(' · ')),
+      el('td', { class: 'muted' }, s.data ? dataSubmissionSummary(s.data) : [s.contentType, dims, fmtBytes(s.size)].filter(Boolean).join(' · ')),
       el('td', {}, el('span', { class: `status ${s.state === 'live' ? 'live' : s.state === 'returned' ? 'revoked' : 'review'}` }, s.state === 'live' ? 'published' : s.state === 'returned' ? 'returned' : 'waiting on review')),
       el('td', {}, openBtn));
   };
@@ -2849,11 +2877,31 @@ async function viewCatalog(main) {
   const hdr = await activityHeader('Catalog changes per day — providers, injectables and lifecycle.', [
     { key: 'a', label: 'Changes', match: ['catalog.'] },
   ]);
+  // Submit (plans/31 section 3, plan 299): the console's own upload door to
+  // the route the CLI and the app use. Opens in place above the tables.
+  const submitHost = el('div', {});
+  const submitAction = canAction('catalog.submit') ? el('button', { class: 'primary page-action', type: 'button', onclick: () => {
+    const panel = createSubmitPanel({ el, field, toast, onClose: () => { submitHost.replaceChildren(); submitAction.focus(); }, onSubmitted: (r) => { if (r.state === 'submitted') setTimeout(route, 1500); } });
+    submitHost.replaceChildren(panel.element);
+    scrollIntoViewMotionSafe(submitHost);
+    panel.focus();
+  } }, navIcon('catalog'), 'Submit an asset') : null;
+  // Hidden tags (plan 299): the census loads only when the card is opened.
+  const tagsCard = canAction('policy.edit') ? (() => {
+    const panel = createTagPanel('*', { el, field, api, toast });
+    const card = el('details', { class: 'card tag-card' }, el('summary', {}, 'Tags'), panel.element);
+    let loaded = false;
+    card.addEventListener('toggle', () => { if (card.open && !loaded) { loaded = true; void panel.load(); } });
+    return card;
+  })() : null;
   main.append(
-    el('h1', {}, 'Catalog'),
-    el('p', { class: 'sub' }, 'Every asset this deployment serves, with a thumbnail, its expiry and its revocation state. Inspect an asset for its full metadata and a larger preview. Revoking an asset, or hiding it on expiry, drops it from the feed at once. It stays listed here, without its catalog metadata, so you can still manage it.'),
+    el('div', { class: 'page-heading' }, el('div', {}, el('h1', {}, 'Catalog'),
+      el('p', { class: 'sub' }, 'Every asset this deployment serves, with a thumbnail, its expiry and its revocation state. Inspect an asset for its full metadata and a larger preview. Revoking an asset, or hiding it on expiry, drops it from the feed at once. It stays listed here, without its catalog metadata, so you can still manage it.')),
+      submitAction),
     ...(hdr ? [hdr] : []),
+    submitHost,
     ...(queue ? [queue] : []),
+    ...(tagsCard ? [tagsCard] : []),
     ...(collections ? [collections] : []),
     el('div', { class: 'card' },
       el('h2', {}, 'Served assets'),
@@ -2967,6 +3015,7 @@ function providerRow(p, panels) {
   const toggleBtn = el('button', { class: p.enabled ? 'danger' : '' }, p.enabled ? 'Disable' : 'Enable');
   toggleBtn.onclick = busy(toggleBtn, () => api(`/api/v1/catalog/providers/${p.id}/${p.enabled ? 'disable' : 'enable'}`, { method: 'POST' }), p.enabled ? `Disabled ${p.label}` : `Enabled ${p.label}`);
   const keyBtn = el('button', { onclick: () => panels.showCredential(p) }, p.credential ? 'Replace key' : 'Set key');
+  const tagsBtn = el('button', { onclick: () => panels.showTags(p) }, 'Tags');
 
   // Two-click arm/confirm delete, disabled-only server-side anyway.
   const delBtn = armConfirmButton({ class: 'danger' }, 'Delete', 'Really delete?', async (disarm) => {
@@ -2992,8 +3041,10 @@ function providerRow(p, panels) {
             p.credential.expiresInDays <= 0 ? 'cred EXPIRED' : `expires in ${p.credential.expiresInDays}d`)
         : null),
     el('td', {}, managed
-      ? el('span', { class: 'muted' }, 'via instance.json')
+      ? el('div', { class: 'lc-actions' }, el('span', { class: 'muted' }, 'via instance.json'),
+          canAction('catalog.provider.manage') ? tagsBtn : null)
       : el('div', { class: 'lc-actions' },
+          canAction('catalog.provider.manage') ? tagsBtn : null,
           canAction('catalog.provider.manage') ? syncBtn : null,
           guidedOAuth && canAction('catalog.provider.manage') ? el('button', { onclick: () => panels.showGuided(p) }, p.enabled ? 'Review setup' : 'Continue setup') : null,
           canAction('catalog.provider.credential') ? (guidedOAuth ? (p.enabled ? toggleBtn : null) : [keyBtn, toggleBtn]) : null,
@@ -3077,7 +3128,16 @@ async function viewProviders(main, params = new URLSearchParams()) {
     scrollIntoViewMotionSafe(panelHost);
     panelHost.querySelector('h2').focus({ preventScroll: true });
   });
-  const panels = { showCredential, showGuided };
+  // Hidden tags for one provider (plan 299): the same panel the Catalog view
+  // opens for the whole instance, scoped to this provider's assets.
+  const showTags = (p) => openPanel(() => {
+    const panel = createTagPanel(`provider:${p.id}`, { el, field, api, toast, onClose: () => panelHost.replaceChildren() });
+    panelHost.replaceChildren(panel.element);
+    scrollIntoViewMotionSafe(panelHost);
+    panel.focus();
+    void panel.load();
+  });
+  const panels = { showCredential, showGuided, showTags };
 
   // Configure → test (dry-run preview, nothing persisted) → create, prefilled
   // for the integration the admin picked. This is exactly the old add-form logic

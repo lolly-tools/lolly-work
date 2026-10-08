@@ -78,6 +78,15 @@ export interface ProviderMapping {
   /** Fold provider sections/folders into entry tags (default true). */
   sectionTags?: boolean;
   /**
+   * Labels this provider's entries never show: exact tags or `prefix*`
+   * patterns, matched without regard to case, applied to tags, sections and
+   * collections when the index is served (catalog/tag-rules.ts). The asset
+   * itself stays in the feed; `exposure.excludeTags` is the knob that drops
+   * one. This is the declarative form for a provider instance.json manages;
+   * the console writes the same list as a tag rule instead.
+   */
+  hiddenTags?: string[];
+  /**
    * For DAMs that model availability as custom metadata rather than native
    * fields (Image Relay terms, IntelligenceBank custom fields - plans/27 §9):
    * the upstream field names a driver reads the availability window from.
@@ -103,6 +112,10 @@ export interface ProviderExposure {
 export interface ProviderSyncConfig {
   /** Fragment cache TTL before a background refresh (default 300). */
   ttlSeconds?: number;
+  /** Most assets one sync federates from this provider. Absent: the instance
+   *  default, `catalogServing.maxProviderAssets` (100000). A walk that stops
+   *  here says so on the fragment (`truncated` plus a note). */
+  maxAssets?: number;
 }
 
 /** One provider's mapped slice of the feed - cached in-process and persisted
@@ -118,6 +131,9 @@ export interface ProviderFragment {
   /** Driver diagnostics from the walk: a guessed key that never matched, each
    *  naming the constant to edit and its runbook page. */
   notes?: string[];
+  /** True when the walk stopped at a cap (`sync.maxAssets` or the page ceiling)
+   *  with more upstream left unread. Absent when the walk reached the end. */
+  truncated?: boolean;
 }
 
 /** Runtime state - written by sync, never by admins. */

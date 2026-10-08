@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 /**
  * The collab WebSocket gateway - `/ws/collab/:sessionId` (OSS plans/100 §7
  * items 1/5/6/7, lolly-work plans/14 §6).
@@ -78,6 +78,24 @@ import { createHash } from 'node:crypto';
  * hands the raw frame to `room.relayPresence`, and rooms.ts imports no policy
  * module, so presence structurally cannot be authorized (plans/100 §7 item 5).
  *
+ * LIVE COMMENT EVENTS (plan 76 M4). After a saved comment write, the HTTP app
+ * calls `notifyComment` (injected into it by main.ts as `roomEvents`), which
+ * sends `{ t: 'comment', threadId, revision }` to the people in that session's
+ * room, if one is open. Who receives it is decided here, never in the room: a
+ * member seat records `commentView` from `mayReadComments`, the same predicate
+ * the comment routes use, at admission and again on the heartbeat re-check.
+ * Guest seats never record it, and agent seats are seated by the agent bridge
+ * without it, so neither receives comment frames.
+ *
+ * VERSION RESTORES (plan 76 M4). `versions` is the bridge the HTTP app restores
+ * a saved version through (injected as `AppDeps.versionRooms`, like `agents`).
+ * It opens the session's room if none is open, seats a hidden server seat for
+ * the restoring person and runs `Room.restoreInputs`, whose op check is the SAME
+ * veto a person's own gesture gets (`memberOpsAuthz` + `vetoOps`, over
+ * versions/restore.ts `inputWriteRefusal`). The seat holds no writer seat, is in
+ * no roster and receives no comment frames; the room closes behind it when
+ * nobody else is in it.
+ *
  * THE DESIGN-SYSTEM GATE (OSS plans/186 §3.10, which calls it the fourth gate
  * beside the three policy ones). A room hosted here runs under exactly ONE
  * design system: the one this deployment governs. Two people editing the same
@@ -122,9 +140,14 @@ import { accessAtLeast, effectiveProjectAccess, type ProjectMembership } from '.
 import { createBrandService } from '../brand/service.ts';
 import { createMemoryBlobStore } from '../blobs/memory.ts';
 import { mayCreateGuestLinks, mayEditCollab, mayJoinCollab, type Grant, type Role } from '../rbac/evaluate.ts';
-import { resolveInputAccess, type ResolvedAccess, type ToolOverlay, inputIsGoverned } from '../policy/overlay.ts';
+import type { ToolOverlay } from '../policy/overlay.ts';
 import { readToolInputs } from '../policy/tool-inputs.ts';
 import { randomId } from '../lib/crypto.ts';
+import { mayReadComments } from '../comments/access.ts';
+import {
+  RestoreError, VETO_REFUSALS, inputWriteRefusal,
+  type InputWritePolicy, type InputWriteRefusal, type VersionRestoreArgs, type VersionRestoreResult, type VersionRoomBridge,
+} from '../versions/restore.ts';
 import { createAgentRooms } from '../agents/rooms.ts';
 import { agentStanding } from '../agents/access.ts';
 import type { AgentRoomBridge } from '../agents/types.ts';
@@ -132,8 +155,8 @@ import { interactionKey, readClaimTarget } from '@lolly-tools/core/canvas-intera
 import {
   MAX_OPS_PER_MESSAGE, MAX_ROW_FIELDS, MAX_SCALAR_CHARS, PRESENCE_FRAMES_PER_SEC,
   WRITER_CAP, WRITER_CAP_PER_USER,
-  Room, RoomRegistry, isSafeKey,
-  type JoinNotice, type MemberRole, type RoomMember, type RoomSnapshot, type ServerFrame,
+  Room, RoomRegistry, RoomRestoreError, isSafeKey,
+  type CommentEventFrame, type JoinNotice, type MemberRole, type RoomMember, type RoomSnapshot, type ServerFrame,
 } from './rooms.ts';
 import { createRoomPersistence } from './persistence.ts';
 import {
@@ -236,6 +259,16 @@ export const ERR = {
   UNKNOWN_FRAME: 'UNKNOWN_FRAME',
 } as const;
 
+/** The typed error frame for each refusal of the shared write rule. */
+const REFUSAL_CODES: Record<InputWriteRefusal, string> = {
+  unknown: ERR.UNKNOWN_INPUT,
+  'wrong-lane': ERR.WRONG_LANE,
+  locked: ERR.INPUT_LOCKED,
+  hidden: ERR.INPUT_HIDDEN,
+  'not-allowed': ERR.INPUT_NOT_ALLOWED,
+};
+const VETO_CODES: ReadonlySet<string> = new Set([...VETO_REFUSALS].map((refusal) => REFUSAL_CODES[refusal]));
+
 export interface CollabGatewayDeps {
   config: InstanceConfig;
   store: Store;
@@ -248,6 +281,9 @@ export interface CollabGatewayDeps {
 
 export interface CollabGateway {
   agents: AgentRoomBridge;
+  /** Version restores through the live room (plan 76 M4), injected into the
+   *  HTTP app as `AppDeps.versionRooms`. */
+  versions: VersionRoomBridge;
   /** Returns false when the path is not ours - the caller destroys the socket.
    *  True means the gateway has taken ownership (auth continues async). */
   handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): boolean;
@@ -260,6 +296,11 @@ export interface CollabGateway {
    *  `RoomRegistry.list`. */
   snapshot(): RoomSnapshot[];
   projectPresence(projectId: string): import('./rooms.ts').SessionPresenceSnapshot[];
+  /** Tell the people in this session's open room that a review thread changed
+   *  (plan 76 M4): the HTTP app's `roomEvents`, wired by main.ts. Never opens a
+   *  room (`RoomRegistry.peek`). Returns how many seats were sent the frame; 0
+   *  when no room is open or the frame is invalid. See `Room.notifyComment`. */
+  notifyComment(sessionId: string, frame: CommentEventFrame): number;
   /** Quiesce every live room into a session revision and audit its rollup - 
    *  orderly shutdown (plans/14 §6). `close()` starts this best-effort; a host
    *  that wants the writes to LAND awaits this before exiting. */
@@ -766,7 +807,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
    *  acting as an own-property whitelist (plans/100 §11.21). When the tool is not
    *  in this instance's pack the id list is unavailable and the whitelist is
    *  skipped - the overlay veto still applies. */
-  interface OpsAuthz {
+  interface OpsAuthz extends InputWritePolicy {
     /** The groups the overlay veto resolves against. A member's effective
      *  membership; for a guest, the synthetic `[GUEST_GROUP]` of plans/02 §8 - 
      *  which is the operator's real lever over what a guest may touch, and the
@@ -836,28 +877,40 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
     ),
   });
 
-  const authorizeMemberOps = async (ctx: Admitted): Promise<OpsAuthz | null> => {
-    const { id: sessionId, projectId, toolId } = ctx.session;
+  /**
+   * A member's `OpsAuthz`, every row read fresh in one parallel batch: the shared
+   * authorize helper behind both a person's own gesture (`authorizeMemberOps`)
+   * and a version restore they ask for (`versions`, plan 76 M4), so a restore
+   * passes exactly the checks the same person's edit would. `who` resolves the
+   * person (from the socket's cookie, or by id for a restore); null from it, or
+   * a failed room gate, answers null.
+   */
+  const memberOpsAuthz = async (
+    who: Promise<UserRecord | null>, ref: Pick<SessionRecord, 'id' | 'projectId' | 'toolId'>, principalId: string,
+  ): Promise<OpsAuthz | null> => {
     const [user, overlays, grants, inputs, session, project, membership] = await Promise.all([
-      resolveMember(store, ctx.cookie, sessionVerify),
+      who,
       store.listOverlays(),
       store.listGrants(),
-      brand.snapshot().then(snap => readToolInputs(snap.source.root, toolId)),
-      store.getSession(sessionId),
-      store.getProject(projectId),
-      store.getProjectMember(projectId, ctx.identity.principalId),
+      brand.snapshot().then(snap => readToolInputs(snap.source.root, ref.toolId)),
+      store.getSession(ref.id),
+      store.getProject(ref.projectId),
+      store.getProjectMember(ref.projectId, principalId),
     ]);
-    // Gate 1 (a live member) is `resolveMember` answering at all; gates 2–3 are
+    // Gate 1 (a live member) is `who` answering at all; gates 2–3 are
     // `seatAllows`, the same decision `admit()` and the heartbeat re-check make.
     if (!user || !seatAllows(user, session, project, grants, membership)) return null;
     return {
       groups: user.groups,
       mayEdit: seatMayEdit(user, project, grants, membership),
-      overlay: overlays.get(toolId),
+      overlay: overlays.get(ref.toolId),
       isGuest: false,
       ...declaredOf(inputs),
     };
   };
+
+  const authorizeMemberOps = (ctx: Admitted): Promise<OpsAuthz | null> =>
+    memberOpsAuthz(resolveMember(store, ctx.cookie, sessionVerify), ctx.session, ctx.identity.principalId);
 
   /**
    * The guest half of the per-gesture re-authorization - the SAME discipline
@@ -981,8 +1034,12 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
    * "may this person be here" is exactly the drift this file keeps refusing to
    * introduce. A guest observer is re-checked on the same tick and for the same
    * reason: a revoked link must reach the seat that never sends anything.
+   *
+   * It also re-decides `commentView` from the same rows, so a member who loses
+   * comment access while staying in the room stops receiving comment frames on
+   * the next tick. A guest never has it.
    */
-  const seatValid = async (ctx: Admitted): Promise<{ mayEdit: boolean } | null> => {
+  const seatValid = async (ctx: Admitted): Promise<{ mayEdit: boolean; commentView: boolean } | null> => {
     const { id: sessionId, projectId } = ctx.session;
     if (ctx.identity.kind === 'guest') {
       const { linkId } = ctx.identity;
@@ -992,7 +1049,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
       if (!seat) return null;
       // An idle guest observer has no gesture to lose the seat on - the inviter
       // check has to ride the same keepalive the link's own liveness does.
-      return (await guestInviterStanding(seat.link)) !== null ? { mayEdit: seat.role === 'writer' } : null;
+      return (await guestInviterStanding(seat.link)) !== null ? { mayEdit: seat.role === 'writer', commentView: false } : null;
     }
     const [user, grants, session, project, membership] = await Promise.all([
       resolveMember(store, ctx.cookie, sessionVerify),
@@ -1001,8 +1058,11 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
       store.getProject(projectId),
       store.getProjectMember(projectId, ctx.identity.principalId),
     ]);
-    if (!user || !seatAllows(user, session, project, grants, membership)) return null;
-    return { mayEdit: seatMayEdit(user, project, grants, membership) };
+    if (!user || !session || !project || !seatAllows(user, session, project, grants, membership)) return null;
+    return {
+      mayEdit: seatMayEdit(user, project, grants, membership),
+      commentView: mayReadComments({ user, session, project, membership, grants, config }).ok,
+    };
   };
 
   /**
@@ -1025,7 +1085,6 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
     policy: OpsAuthz,
     live: Room,
   ): { accepted: CanvasOp[]; rejected: Rejection[] } => {
-    const groups = policy.groups;
     const accepted: CanvasOp[] = [];
     const rejected: Rejection[] = [];
     for (const op of ops) {
@@ -1034,52 +1093,26 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
         rejected.push({ code: ERR.COLLECTION_REQUIRED, input: '' });
         continue;
       }
-      if (policy.declared && !policy.declared.has(input)) {
-        rejected.push({ code: ERR.UNKNOWN_INPUT, input });
+      // The declared-input whitelist, the lane check and the overlay, as one
+      // rule shared with version restores (versions/restore.ts). The declared
+      // type is the lane, checked only when the manifest states one: an input
+      // with no declared type keeps the pre-lane behaviour, because a pack that
+      // predates this is not an attack. A guest that matches no rule for a
+      // visibly GOVERNED input (some rule exists for it, just not one naming
+      // `guests` or `*`) is locked out rather than inheriting the member-side
+      // fallback: plans/02 §8 sold guests "the narrowest input surface of
+      // anyone", and an operator's ordinary authoring pattern - scoping a lock
+      // to the groups who actually edit the tool - must not silently open that
+      // same field to the one principal outside every group. An input with NO
+      // rules at all stays editable for a guest as for anyone else. 'hidden'
+      // behaves at least as strictly as 'locked' (overlay.ts §checkParams):
+      // naming an input you cannot see is probing. A box op scoped to a
+      // choice-governed input is refused OUTRIGHT: an allow-list is a set of
+      // scalar values, so no collection write is inside it.
+      const refusal = inputWriteRefusal(policy, input, op.k === 'param' ? { lane: 'param', value: op.value } : { lane: 'box' });
+      if (refusal) {
+        rejected.push({ code: REFUSAL_CODES[refusal], input });
         continue;
-      }
-      // The declared type is the lane. It is only checked when the manifest states
-      // one; an input with no declared type keeps the pre-lane behaviour rather
-      // than being refused, because a pack that predates this is not an attack.
-      const type = policy.types.get(input);
-      if (type !== undefined && (op.k === 'param') === (type === 'blocks')) {
-        rejected.push({ code: ERR.WRONG_LANE, input });
-        continue;
-      }
-      const resolved = resolveInputAccess(policy.overlay, input, groups);
-      // A guest that matches no rule for this input does NOT inherit the
-      // member-side fallback when the input is visibly GOVERNED (some rule
-      // exists for it, just not one naming `guests` or `*`): plans/02 §8 sold
-      // guests as capable of "the narrowest input surface of anyone", and an
-      // operator's ordinary authoring pattern - scoping a lock to the groups
-      // who actually edit the tool - must not silently open that same field to
-      // the one principal outside every group on the instance. An input with
-      // NO rules at all is unaffected: a genuinely ungoverned field stays
-      // editable for a guest exactly as it does for anyone else.
-      const access: ResolvedAccess = (policy.isGuest && resolved.level === 'editable'
-        && inputIsGoverned(policy.overlay, input))
-        ? { level: 'locked' }
-        : resolved;
-      if (access.level === 'locked') {
-        rejected.push({ code: ERR.INPUT_LOCKED, input });
-        continue;
-      }
-      if (access.level === 'hidden') {
-        // 'hidden' behaves at least as strictly as 'locked' (overlay.ts §checkParams):
-        // naming an input you cannot see is probing.
-        rejected.push({ code: ERR.INPUT_HIDDEN, input });
-        continue;
-      }
-      if (access.level === 'choice' && access.allow) {
-        // The render path already refuses an out-of-set param (INPUT_NOT_ALLOWED);
-        // a live room must not be the way around it. A box op scoped to a
-        // choice-governed input is refused OUTRIGHT rather than value-checked:
-        // an allow-list is a set of scalar values, so there is no reading of it
-        // under which a collection write is inside the set.
-        if (op.k !== 'param' || !access.allow.some((a) => a === op.value)) {
-          rejected.push({ code: ERR.INPUT_NOT_ALLOWED, input });
-          continue;
-        }
       }
       // Last, because it is the only check that depends on room STATE: an op that
       // would grow the document past one of its ceilings is refused rather than
@@ -1237,6 +1270,9 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
     //    check and org-config's can['collab.edit'] both call (evaluate.ts). No
     //    grant is not a refusal: the member joins as an observer (plans/14 §6).
     const mayEdit = seatMayEdit(user, project, grants, membership);
+    // Not a gate: whether this seat receives live comment events, decided by the
+    // predicate the comment routes use. The heartbeat re-check decides it again.
+    const commentView = mayReadComments({ user, session, project, membership, grants, config }).ok;
 
     // 5. the DESIGN-SYSTEM gate (OSS plans/186 §3.10). Last of the gates on
     //    purpose: the message names this instance's active brand profile, and
@@ -1262,6 +1298,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
       },
       session,
       mayEdit,
+      commentView,
       cookie: req.headers.cookie,
     }));
   };
@@ -1336,6 +1373,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
       },
       session,
       mayEdit: seat.role === 'writer',
+      commentView: false,
       cookie: req.headers.cookie,
     }));
   };
@@ -1350,6 +1388,9 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
     identity: SeatIdentity;
     session: SessionRecord;
     mayEdit: boolean;
+    /** Whether the seat receives live comment events (`RoomMember.commentView`).
+     *  Always false for a guest. */
+    commentView: boolean;
     cookie: string | undefined;
   }
 
@@ -1431,8 +1472,9 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
       if (member) {
         void seatValid(ctx)
           .then((seat) => {
-            if (!seat) ws.close(CLOSE.UNAUTHORIZED, 'this session is no longer valid');
-            else if (!seat.mayEdit && member) room?.demote(member);
+            if (!seat) return void ws.close(CLOSE.UNAUTHORIZED, 'this session is no longer valid');
+            if (member) member.commentView = seat.commentView;
+            if (!seat.mayEdit && member) room?.demote(member);
           })
           .catch(onHandlerError);
       }
@@ -1517,6 +1559,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
         interactionVersion: raw['interactionVersion'] === 1 ? 1 : undefined,
         opVersion: compatible ? opVersion : CANVAS_OP_VERSION,
         ...(ctx.identity.kind === 'guest' ? { guestLinkId: ctx.identity.linkId } : {}),
+        commentView: ctx.identity.kind === 'member' && ctx.commentView,
         send,
         disconnect: () => ws.close(CLOSE.GOING_AWAY, 'room owner lost'),
       };
@@ -1742,6 +1785,73 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
     },
   });
 
+  /**
+   * One restore attempt through the session's room (plan 76 M4 2.8 step 4). The
+   * room is opened if none is (so a restore can never race a room's creation the
+   * way a compare-and-swap would), a hidden seat is taken for the restoring
+   * person, and `Room.restoreInputs` runs on the room's document queue with the
+   * person's own live write checks. The seat leaves afterwards, and the room
+   * quiesces if nobody else is in it.
+   */
+  const restoreInRoom = async (args: VersionRestoreArgs): Promise<VersionRestoreResult> => {
+    if (closing) throw new RestoreError('SESSION_CHANGED', 'The server is closing. Try again.');
+    const session = await store.getSession(args.sessionId);
+    if (!session || session.deletedAt) throw new RestoreError('SESSION_GONE', 'this session was deleted');
+    let room: Room;
+    try {
+      room = await registry.acquire(session);
+    } catch (error) {
+      const message = (error as Error)?.message;
+      if (message === 'collab-room-owned') throw new RestoreError('SESSION_CHANGED', 'The document is open on another server. Try again.');
+      if (message === 'session-gone') throw new RestoreError('SESSION_GONE', 'this session was deleted');
+      throw error;
+    }
+    const seat: RoomMember = {
+      id: `restore_${randomUUID()}`, userId: args.user.id, name: displayName(args.user), role: 'writer', hidden: true,
+      opVersion: CANVAS_OP_VERSION, send: () => {},
+    };
+    room.join(seat);
+    try {
+      const outcome = await room.restoreInputs(seat, args.target.inputs, {
+        authorize: async (ops) => {
+          const person = store.getUser(args.user.id).then((user) => (user && !user.disabledAt ? user : null));
+          const policy = await memberOpsAuthz(person, session, args.user.id);
+          if (!policy) throw new RestoreError('FORBIDDEN', 'you can no longer open this session');
+          if (!policy.mayEdit) throw new RestoreError('READ_ONLY', 'you can view this session but not change it');
+          const { accepted, rejected } = vetoOps(ops, policy, room);
+          return {
+            accepted,
+            vetoed: rejected.filter((r) => VETO_CODES.has(r.code)).map((r) => r.input),
+            skipped: rejected.filter((r) => !VETO_CODES.has(r.code) && r.code !== ERR.DOC_FULL && r.input).map((r) => r.input),
+            full: rejected.some((r) => r.code === ERR.DOC_FULL),
+          };
+        },
+        beforeCommit: args.beforeCommit,
+      });
+      return { revision: outcome.revision, live: outcome.live, skipped: outcome.skipped, vetoed: outcome.vetoed,
+        beforeId: outcome.beforeId, inputs: outcome.inputs, meta: outcome.meta };
+    } finally {
+      room.leave(seat.id);
+      if (room.size === 0) await disposeIfEmpty(room);
+    }
+  };
+
+  const versions: VersionRoomBridge = {
+    async restore(args) {
+      // The room checks the stored row is the document it holds; a mismatch can
+      // only come from losing the lease, so the attempt is retried in a fresh room.
+      for (let attempt = 1; ; attempt++) {
+        try {
+          return await restoreInRoom(args);
+        } catch (error) {
+          if (error instanceof RoomRestoreError && error.code === 'SESSION_CHANGED' && attempt < 3) continue;
+          if (error instanceof RoomRestoreError) throw new RestoreError(error.code, error.message);
+          throw error;
+        }
+      }
+    },
+  };
+
   const drain = async (): Promise<void> => {
     closing = true;
     await agents.close();
@@ -1759,6 +1869,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
 
   return {
     agents,
+    versions,
     handleUpgrade(req, socket, head) {
       // The WHOLE body is guarded, not just the async half. main.ts calls this
       // synchronously from `server.on('upgrade')`, so anything that throws here
@@ -1795,6 +1906,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
     rooms: () => registry.size(),
     snapshot: () => registry.list(),
     projectPresence: projectId => registry.projectPresence(projectId),
+    notifyComment: (sessionId, frame) => registry.peek(sessionId)?.notifyComment(frame) ?? 0,
     drain,
     close() {
       clearInterval(sweeper);

@@ -22,7 +22,9 @@
  * transaction path instead. Registry acquisition waits for disposal to drain.
  */
 import { createHash, randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { encodeCanvasAsset } from '@lolly-tools/core/canvas-asset-v1';
+import { commentId } from '@lolly-tools/core/canvas-review-v1';
 import { canvasAssetCheckpoint, canvasAssetOps } from './asset-wire.ts';
 import { PRESENCE_VERSION, readPresenceFrame, sanitizePresenceState } from '@lolly-tools/core/collab-presence-v1';
 import type { PresenceFrame, PresenceState } from '@lolly-tools/core/collab-presence-v1';
@@ -33,6 +35,7 @@ import {
   ReferenceCanvasDoc,
   damageToOps,
   isOpSendableTo,
+  laneForField,
   CANVAS_OP_VERSION,
 } from '@lolly-tools/core/canvas-op-v1';
 import type {
@@ -47,9 +50,10 @@ import type {
 } from '@lolly-tools/core/canvas-op-v1';
 import type { SessionRecord, Store } from '../store/types.ts';
 import {
-  COLLAB_ACTOR, EMPTY_GRACE_MS, SNAPSHOT_EVERY_BATCHES, SNAPSHOT_EVERY_OPS, docToInputs,
+  COLLAB_ACTOR, EMPTY_GRACE_MS, SNAPSHOT_EVERY_BATCHES, SNAPSHOT_EVERY_OPS, docToInputs, revisionActorFor, roomWriterKey,
 } from './persistence.ts';
 import type { QuiesceResult, RoomPersistence, RoomWriteback, RoomWriter } from './persistence.ts';
+import { createVersionRecorder, type VersionRecorder } from '../versions/recorder.ts';
 
 // ── caps + limits (OSS plans/100 §7 item 5, §11.21) ───────────────────────────
 
@@ -167,7 +171,14 @@ export type ServerFrame =
   | { t: 'claims'; claims: CanvasClaim[] }
   | { t: 'claim-result'; requestId: string; claim?: CanvasClaim; reason?: string; blockedBy?: string }
   | { t: 'receipt'; batchId: string; durableRevision: number; acceptedIds: string[]; rejectedIds: string[]; checkpoint?: CanvasCheckpoint; serverClock?: number }
-  | { t: 'error'; code: string; message: string; inputs?: string[] };
+  | { t: 'error'; code: string; message: string; inputs?: string[] }
+  /** A review thread in this session changed (plan 76 M4). Ids and the thread's
+   *  revision only, never text: a peer fetches that one thread through the
+   *  comment routes, which check access again. See `Room.notifyComment`. */
+  | { t: 'comment'; threadId: string; revision: number };
+
+/** The live comment event (`ServerFrame` `comment`), as `notifyComment` takes it. */
+export type CommentEventFrame = Extract<ServerFrame, { t: 'comment' }>;
 
 export interface RoomMember {
   /** Set only by the server's invitation-backed agent bridge. */
@@ -196,6 +207,17 @@ export interface RoomMember {
    *  member, because that is the whole point of "the same room, not a separate
    *  mechanism". */
   readonly guestLinkId?: string;
+  /** True when the gateway admitted this seat as a PERSON who may read the
+   *  session's comments, so it receives `comment` frames. Decided at admission
+   *  and again at the gateway's periodic seat re-check, which may clear it. The
+   *  room only reads the flag: it holds no policy (see the module header).
+   *  Guest and agent seats never receive comment frames, whatever this says. */
+  commentView?: boolean;
+  /** A server seat nobody else sees (plan 76 M4: a version restore). It is not
+   *  in the roster, its join and leave are not announced, it holds no WRITER_CAP
+   *  seat and it never receives comment frames. It still counts towards `size`,
+   *  so the room cannot close under it. */
+  readonly hidden?: boolean;
   readonly send: (frame: ServerFrame) => void;
   readonly disconnect?: () => void;
 }
@@ -417,6 +439,104 @@ function blockRows(inputId: string, value: unknown): Map<BoxId, BoxRow> | null {
   return rows;
 }
 
+// ── restoring a version (plan 76 M4) ─────────────────────────────────────────
+
+/** What a restore must change, as ops over the room's current document. */
+export interface RestorePlan {
+  ops: CanvasOp[];
+  /** Input ids the room cannot set to the version's value: an input the
+   *  document cannot express (`seedOpsFromInputs` reports it unsynced), one the
+   *  version does not have (a live room cannot remove an input), or one stored
+   *  in the other lane. They keep their current value. */
+  skipped: string[];
+}
+
+/**
+ * The ops that turn the room's document into `target` (a version's inputs).
+ * Scalars become `param` ops when they differ. A blocks input becomes the
+ * contract's own `damageToOps` diff of its collection, so additions, removals,
+ * field edits and the paint order all come out in the shape clients make. A row
+ * the version has but the document removed is added back; as the document still
+ * holds the removed row's fields, any content field the version's row lacks is
+ * cleared to null, as a field removed by an edit would be.
+ *
+ * `stored` is the session row the document projects onto; it decides what a
+ * skipped input would have changed. Every op carries `origin` and is given its
+ * final clock when committed.
+ */
+export function restorePlan(doc: ReferenceCanvasDoc, stored: Record<string, unknown>, target: Record<string, unknown>, origin: OpOrigin): RestorePlan {
+  const state = doc.state();
+  const tombstones = new Map(doc.checkpoint().collections.map(([col, boxes]) =>
+    [col, new Map(boxes.filter(([, box]) => box.alive?.value === false).map(([id, box]) => [id, box.fields]))]));
+  const ops: CanvasOp[] = [];
+  const skipped = new Set<string>();
+  const differs = (key: string): boolean => !isDeepStrictEqual(stored[key], target[key]);
+  for (const key of Object.keys(stored)) if (!Object.hasOwn(target, key)) skipped.add(key);
+  for (const key of seedOpsFromInputs(target).unsynced) if (differs(key)) skipped.add(key);
+  for (const key of Object.keys(target).sort()) {
+    if (skipped.has(key) || !isSafeKey(key)) continue;
+    const value = target[key];
+    const collection = state.collections?.get(key);
+    if (isScalar(value)) {
+      if (typeof value === 'string' && value.length > MAX_SCALAR_CHARS) continue; // reported unsynced above
+      if (collection) { if (differs(key)) skipped.add(key); continue; }
+      if (!state.params.has(key) || !isDeepStrictEqual(state.params.get(key), value)) ops.push({ k: 'param', key, value, origin });
+      continue;
+    }
+    const rows = blockRows(key, value);
+    if (!rows) continue;
+    if (state.params.has(key) && !collection) { if (differs(key)) skipped.add(key); continue; }
+    // An empty list the document never held cannot be made by an op.
+    if (!rows.size && !collection) { if (differs(key)) skipped.add(key); continue; }
+    const prev = new Map<BoxId, BoxRow>((collection?.order ?? []).map(id => [id, collection!.boxes.get(id) ?? {}]));
+    const removed = tombstones.get(key);
+    for (const op of damageToOps(prev, rows, origin, DEFAULT_GEOMETRY_FIELDS, key)) {
+      ops.push(op);
+      const old = op.k === 'add' ? removed?.get(op.id) : undefined;
+      if (op.k !== 'add' || !old) continue;
+      for (const [field, reg] of old) {
+        if (Object.hasOwn(op.row, field) || reg.value === null || laneForField(field, DEFAULT_GEOMETRY_FIELDS) === 'geometry') continue;
+        ops.push({ k: 'field', id: op.id, field, value: null, origin, col: key });
+      }
+    }
+  }
+  return { ops, skipped: [...skipped].sort() };
+}
+
+/** Why a restore stopped before committing; the route maps each to a status. */
+export class RoomRestoreError extends Error {
+  readonly code: 'RESTORE_INCOMPLETE' | 'SESSION_CHANGED';
+  constructor(code: RoomRestoreError['code'], message: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
+/** The checks a restore runs inside the room, supplied by the gateway. */
+export interface RoomRestoreHooks {
+  /** The restoring person's live write checks over `ops` (the gateway's shared
+   *  veto). `vetoed` and `skipped` name inputs whose ops were dropped; `full` is
+   *  true when an op would pass one of the document's ceilings. Throws when the
+   *  person may no longer edit at all. */
+  authorize(ops: CanvasOp[]): Promise<{ accepted: CanvasOp[]; vetoed: string[]; skipped: string[]; full: boolean }>;
+  /** Write the 'before' version from exactly the document being replaced, and
+   *  return its id. A throw commits nothing. */
+  beforeCommit(before: { inputs: Record<string, unknown>; meta: Record<string, unknown>; revision: number }): Promise<string>;
+}
+
+/** What `Room.restoreInputs` did. `inputs` and `meta` are the stored row after it. */
+export interface RoomRestoreOutcome {
+  revision: number;
+  /** Whether anyone else was in the room to see it. */
+  live: boolean;
+  committed: boolean;
+  skipped: string[];
+  vetoed: string[];
+  beforeId: string;
+  inputs: Record<string, unknown>;
+  meta: Record<string, unknown>;
+}
+
 // ── presence sanitation (NO policy - see the structural rule) ─────────────────
 
 /** Legacy state adapter retained for integrations; new traffic uses the shared envelope. */
@@ -467,12 +587,19 @@ export class Room implements RoomWriteback {
    *  freshly-built snapshot and admission is a per-op question. */
   private readonly paramKeys = new Set<string>();
   private readonly boxIds = new Map<string, Set<BoxId>>();
-  /** The last principal whose ops were accepted. A MEMBER becomes
-   *  `SessionRecord.updatedBy` on quiesce, because that column is a FK to a real
-   *  user and 'collab' is not one; a GUEST cannot be (it is not a user row) and is
-   *  attributed on the revision instead. persistence.ts `RoomWriter` owns that
-   *  split - the room only has to remember which kind of writer it saw. */
-  private lastWriter: RoomWriter | null = null;
+  /** The principals whose ops were accepted since the last write-back, one
+   *  entry each, oldest write first. The quiesce revision is attributed from them
+   *  (persistence.ts `revisionActorFor`: the one writer, else 'collab'). A MEMBER
+   *  becomes `SessionRecord.updatedBy` on the input-snapshot path, because that
+   *  column is a FK to a real user and 'collab' is not one; a GUEST cannot be (it
+   *  is not a user row) and is attributed on the revision instead. persistence.ts
+   *  `RoomWriter` owns that split - the room only has to remember who it saw. */
+  private readonly writers = new Map<string, RoomWriter>();
+  /** Automatic and closing versions (versions/recorder.ts); store-backed rooms only. */
+  private recorder?: VersionRecorder;
+  /** Set when another process took the database lease: this room then writes
+   *  no revision and no version on its way out, because it no longer owns them. */
+  private leaseLost = false;
 
   private readonly persistence: RoomPersistence | undefined;
   private batchesSinceSnapshot = 0;
@@ -562,6 +689,7 @@ export class Room implements RoomWriteback {
       room.serverClock = checkpoint.clock;
       room.durableRevision = current.rev;
       room.store = store;
+      room.recorder = createVersionRecorder({ store, sessionId: session.id });
       room.leaseTimer = setInterval(() => {
         void store.claimCollab(session.id, room.owner, 30_000).then(ok => {
           if (room.closed && ok) return store.releaseCollab(session.id, room.owner);
@@ -574,9 +702,66 @@ export class Room implements RoomWriteback {
   }
   private loseLease(): void {
     this.closed = true;
+    this.leaseLost = true;
+    this.recorder?.dispose();
     clearInterval(this.claimTimer); this.claims.clear();
     clearInterval(this.leaseTimer);
     for (const member of this.members.values()) member.disconnect?.();
+  }
+
+  /** Remember an accepted write by `from` for the revision and the versions. */
+  private noteWriter(from: RoomMember, edits: number, version: boolean): void {
+    const writer: RoomWriter = from.agentId ? { kind: 'agent', agentId: from.agentId, userId: from.userId }
+      : from.guestLinkId ? { kind: 'guest', linkId: from.guestLinkId } : { kind: 'member', userId: from.userId };
+    const key = roomWriterKey(writer);
+    this.writers.delete(key);
+    this.writers.set(key, writer);
+    if (version) this.recorder?.touch(writer, edits);
+  }
+
+  /**
+   * Commit already-approved ops as the next durable revision: the shared tail of
+   * `applyBatch` and `restoreInputs`. The session row gets the document's full
+   * projection, the journal (or a compacting checkpoint) the ops, and peers the
+   * ops once the transaction is in. Returns false when the commit was saved but
+   * the room lost its lease meanwhile, so nothing was applied or told here.
+   */
+  private async commitOps(from: RoomMember, fresh: CanvasOp[], receipts: Array<{ id: string; digest: string; accepted: boolean }>,
+    options: { version: boolean }): Promise<boolean> {
+    const store = this.store!;
+    const candidate = this.doc.fork();
+    candidate.applyRemotePatch(fresh);
+    const session = await store.getSession(this.sessionId);
+    if (!session || session.deletedAt) throw new Error('session-gone');
+    const state = candidate.state();
+    const inputs = docToInputs(state, session.inputs, new Set([...state.params.keys(), ...(state.collections?.keys() ?? [])]));
+    const journalBytes = Buffer.byteLength(JSON.stringify(fresh));
+    // Bound the recovery tail by transactions, operations, bytes and active
+    // time. Idle rooms need no timer: the next commit performs compaction.
+    const compact = this.needsCheckpoint || this.journalBatches + 1 >= 128 || this.journalOps + fresh.length >= 4096
+      || this.journalBytes + journalBytes >= 1024 * 1024 || Date.now() - this.checkpointAt >= 30_000;
+    this.durableRevision = await store.commitCollab({ sessionId: this.sessionId, owner: this.owner, principal: from.userId,
+      expectedRev: this.durableRevision, inputs, ...(compact ? { checkpoint: candidate.checkpoint() } : {}), ops: fresh, receipts,
+      actor: from.agentId ? `agent:${from.agentId}` : from.guestLinkId ? `guest:${from.guestLinkId}` : COLLAB_ACTOR, updatedBy: from.guestLinkId ? session.updatedBy : from.userId });
+    this.noteWriter(from, 1, options.version);
+    if (this.closed) return false;
+    this.doc = candidate;
+    if (compact) {
+      this.needsCheckpoint = false;
+      this.journalBatches = this.journalOps = this.journalBytes = 0;
+      this.checkpointAt = Date.now();
+    } else {
+      this.journalBatches++;
+      this.journalOps += fresh.length;
+      this.journalBytes += journalBytes;
+    }
+    for (const op of fresh) this.recordOp(op, from.userId);
+    for (const peer of this.members.values()) {
+      if (peer.id === from.id) continue;
+      const sendable = canvasAssetOps(fresh.filter(op => isOpSendableTo(op, peer.opVersion)), peer.interactionVersion);
+      if (sendable.length) peer.send({ t: 'ops', ops: sendable, from: from.id });
+    }
+    return true;
   }
 
   /** Serialize across ALL connections. Nothing is applied or broadcast until the database commits. */
@@ -634,37 +819,8 @@ export class Room implements RoomWriteback {
           expectedRev: this.durableRevision, receipts: novel });
         if (this.closed) throw new Error('collab-owner-lost');
       } else if (novel.length) {
-        const candidate = this.doc.fork();
-        candidate.applyRemotePatch(fresh);
-        const session = await store.getSession(this.sessionId);
-        if (!session || session.deletedAt) throw new Error('session-gone');
-        const state = candidate.state();
-        const inputs = docToInputs(state, session.inputs, new Set([...state.params.keys(), ...(state.collections?.keys() ?? [])]));
-        const journalBytes = Buffer.byteLength(JSON.stringify(fresh));
-        // Bound the recovery tail by transactions, operations, bytes and active
-        // time. Idle rooms need no timer: the next commit performs compaction.
-        const compact = this.needsCheckpoint || this.journalBatches + 1 >= 128 || this.journalOps + fresh.length >= 4096
-          || this.journalBytes + journalBytes >= 1024 * 1024 || Date.now() - this.checkpointAt >= 30_000;
-        this.durableRevision = await store.commitCollab({ sessionId: this.sessionId, owner: this.owner, principal: from.userId,
-          expectedRev: this.durableRevision, inputs, ...(compact ? { checkpoint: candidate.checkpoint() } : {}), ops: fresh, receipts: novel,
-          actor: from.agentId ? `agent:${from.agentId}` : from.guestLinkId ? `guest:${from.guestLinkId}` : COLLAB_ACTOR, updatedBy: from.guestLinkId ? session.updatedBy : from.userId });
-        if (this.closed) throw new Error('collab-owner-lost');
-        this.doc = candidate;
-        if (compact) {
-          this.needsCheckpoint = false;
-          this.journalBatches = this.journalOps = this.journalBytes = 0;
-          this.checkpointAt = Date.now();
-        } else {
-          this.journalBatches++;
-          this.journalOps += fresh.length;
-          this.journalBytes += journalBytes;
-        }
-        for (const op of fresh) this.recordOp(op, from.userId);
-        for (const peer of this.members.values()) {
-          if (peer.id === from.id) continue;
-          const sendable = canvasAssetOps(fresh.filter(op => isOpSendableTo(op, peer.opVersion)), peer.interactionVersion);
-          if (sendable.length) peer.send({ t: 'ops', ops: sendable, from: from.id });
-        }
+        // An accepted batch is one edit for the automatic versions.
+        if (!await this.commitOps(from, fresh, novel, { version: true })) throw new Error('collab-owner-lost');
       }
       const acceptedIds: string[] = [], rejectedIds: string[] = [];
       for (const r of records) ((previous.get(r.id)?.accepted ?? r.accepted) ? acceptedIds : rejectedIds).push(r.id);
@@ -689,7 +845,7 @@ export class Room implements RoomWriteback {
 
   writerCount(): number {
     let n = 0;
-    for (const m of this.members.values()) if (m.role === 'writer') n++;
+    for (const m of this.members.values()) if (m.role === 'writer' && !m.hidden) n++;
     return n;
   }
 
@@ -709,6 +865,87 @@ export class Room implements RoomWriteback {
     return run;
   }
 
+  /**
+   * Restore a version's inputs as ONE batch through this room (plan 76 M4), so
+   * everyone in it sees the restore like any other edit and the same write
+   * checks apply. Runs on the document queue, after every earlier edit:
+   *
+   *   (a) read the stored row, which is the document at `durableRevision`;
+   *   (b) that row is the 'before' state;
+   *   (c) plan the ops (`restorePlan`);
+   *   (d) `authorize` them for the restoring person: locked inputs are vetoed,
+   *       undeclared or wrong-lane ones skipped;
+   *   (e) check every remaining op against the document's ceilings, counted as
+   *       the commit counts them; one refusal stops the restore with nothing
+   *       written (`RESTORE_INCOMPLETE`), never half a version;
+   *   (f) `beforeCommit` writes the 'before' version; a refusal stops here too;
+   *   (g) cancel every editing claim, so nobody's gesture is half-overwritten.
+   *       Only now: a restore refused at (d) to (f) changes nothing, claims
+   *       included. Claims are granted on this same queue, so none can start
+   *       between the checks and the commit;
+   *   (h) commit the ops as one durable batch from `seat`, with clocks above
+   *       every register so the version wins, and send them to the peers.
+   *
+   * The automatic versions do not count the restore as an edit: the restore's
+   * own version row records it.
+   */
+  restoreInputs(seat: RoomMember, target: Record<string, unknown>, hooks: RoomRestoreHooks): Promise<RoomRestoreOutcome> {
+    const run = this.writes.then(async (): Promise<RoomRestoreOutcome> => {
+      const store = this.store;
+      if (!store || this.closed) throw new Error('collab-storage-unavailable');
+      if (this.members.get(seat.id) !== seat) throw new Error('collab-seat-missing');
+      const session = await store.getSession(this.sessionId);
+      if (!session || session.deletedAt) throw new Error('session-gone');
+      if (session.rev !== this.durableRevision) throw new RoomRestoreError('SESSION_CHANGED', 'The document changed while restoring.');
+      const plan = restorePlan(this.doc, session.inputs, target, { client: seat.id, clock: 0 });
+      const verdict = await hooks.authorize(plan.ops);
+      if (this.closed) throw new Error('collab-owner-lost');
+      if (verdict.full || !this.fits(verdict.accepted)) {
+        throw new RoomRestoreError('RESTORE_INCOMPLETE', 'The document cannot take every change of this version.');
+      }
+      const beforeId = await hooks.beforeCommit({ inputs: session.inputs, meta: session.meta, revision: session.rev });
+      if (this.closed) throw new Error('collab-owner-lost');
+      const fresh = verdict.accepted.map((op, i) => ({ ...op, origin: { client: seat.id, clock: this.serverClock + i + 1 } }));
+      if (fresh.length) {
+        this.claims.clear();
+        await this.commitOps(seat, fresh, [], { version: false });
+      }
+      const after = fresh.length ? await store.getSession(this.sessionId) : session;
+      let live = false;
+      for (const member of this.members.values()) if (!member.hidden) live = true;
+      return {
+        revision: this.durableRevision, live, committed: fresh.length > 0,
+        skipped: [...new Set([...plan.skipped, ...verdict.skipped])].sort(), vetoed: [...new Set(verdict.vetoed)].sort(), beforeId,
+        inputs: after?.inputs ?? session.inputs, meta: after?.meta ?? session.meta,
+      };
+    });
+    this.writes = run.then(() => {}, () => {});
+    return run;
+  }
+
+  /** Would the document take every op in `ops` together? The same reservation
+   *  `applyBatch` makes, plus the id rules a client's op is parsed against. */
+  private fits(ops: readonly CanvasOp[]): boolean {
+    const params = new Set(this.paramKeys);
+    const boxes = new Map([...this.boxIds].map(([col, ids]) => [col, new Set(ids)]));
+    for (const op of ops) {
+      if (op.k === 'param') {
+        if (!isSafeKey(op.key) || !params.has(op.key) && params.size >= MAX_PARAMS_PER_ROOM) return false;
+        params.add(op.key);
+        continue;
+      }
+      if (op.col === undefined || !isSafeKey(op.col) || !isSafeKey(op.id)) return false;
+      let ids = boxes.get(op.col);
+      if (!ids) {
+        if (boxes.size >= MAX_COLLECTIONS_PER_ROOM) return false;
+        ids = new Set(); boxes.set(op.col, ids);
+      }
+      if (!ids.has(op.id) && ids.size >= MAX_BOXES_PER_COLLECTION) return false;
+      ids.add(op.id);
+    }
+    return true;
+  }
+
   demote(member: RoomMember): void {
     if (this.members.get(member.id) !== member || member.role === 'observer') return;
     member.role = 'observer';
@@ -719,7 +956,7 @@ export class Room implements RoomWriteback {
   /** Writer seats this user already holds - the per-user half of WRITER_CAP. */
   writerCountFor(userId: string): number {
     let n = 0;
-    for (const m of this.members.values()) if (m.role === 'writer' && m.userId === userId) n++;
+    for (const m of this.members.values()) if (m.role === 'writer' && !m.hidden && m.userId === userId) n++;
     return n;
   }
 
@@ -796,7 +1033,7 @@ export class Room implements RoomWriteback {
     this.joinedAtOf.set(member.id, Date.now());
     this.seenUsers.add(member.userId);
     const you = this.entry(member);
-    this.broadcast({ t: 'peer-join', member: you }, member.id);
+    if (!member.hidden) this.broadcast({ t: 'peer-join', member: you }, member.id);
     return {
       claims: this.claims.list(),
       roster,
@@ -809,11 +1046,12 @@ export class Room implements RoomWriteback {
   }
 
   leave(memberId: string): void {
-    if (!this.members.delete(memberId)) return;
+    const member = this.members.get(memberId);
+    if (!member || !this.members.delete(memberId)) return;
     this.claims.release(memberId);
     this.joinedAtOf.delete(memberId);
     this.presenceOf.delete(memberId);
-    this.broadcast({ t: 'peer-leave', id: memberId });
+    if (!member.hidden) this.broadcast({ t: 'peer-leave', id: memberId });
   }
 
   /**
@@ -847,9 +1085,7 @@ export class Room implements RoomWriteback {
     });
     if (!fresh.length) return; // a pure replay: converged already, and nobody needs to hear it again
     for (const op of fresh) this.ingestOp(op, from.userId);
-    this.lastWriter = from.agentId ? { kind: 'agent', agentId: from.agentId, userId: from.userId } : from.guestLinkId
-      ? { kind: 'guest', linkId: from.guestLinkId }
-      : { kind: 'member', userId: from.userId };
+    this.noteWriter(from, 1, false);
     for (const peer of this.members.values()) {
       if (peer.id === from.id) continue;
       const sendable = canvasAssetOps(fresh.filter((op) => isOpSendableTo(op, peer.opVersion)), peer.interactionVersion);
@@ -903,6 +1139,11 @@ export class Room implements RoomWriteback {
     const previous = this.presenceOf.get(from.id);
     let frame = readPresenceFrame(raw, { ...from, from: from.id, epoch: from.id, seq: (previous?.seq ?? 0) + 1 });
     if (!frame || previous && frame.seq <= previous.seq) return;
+    // A guest never presents (plan 76 M4): followers follow a presenter's slide,
+    // and an invited stranger must not be able to steer the room's view.
+    if (from.guestLinkId !== undefined && frame.state && Object.hasOwn(frame.state, 'presenting')) {
+      frame = { ...frame, state: Object.fromEntries(Object.entries(frame.state).filter(([key]) => key !== 'presenting')) as PresenceState };
+    }
     if (frame.state?.preview && !this.claims.preview(from.id, frame.state.preview)) {
       const { preview: _preview, ...state } = frame.state;
       frame = { ...frame, state };
@@ -961,7 +1202,23 @@ export class Room implements RoomWriteback {
     this.closed = true;
     clearInterval(this.claimTimer); this.claims.clear();
     clearInterval(this.leaseTimer);
-    if (this.store) { await this.writes; await this.store.releaseCollab(this.sessionId, this.owner); return { written: this.opTotal > 0, rev: this.durableRevision }; }
+    if (this.store) {
+      const store = this.store;
+      await this.writes;
+      try {
+        // Every batch is already in the session row. What closing adds is the one
+        // revision older shells read as history, and a version of the changes not
+        // yet in one - both while this room still holds the lease, so no other
+        // writer can move the row between the read and the write.
+        await this.appendQuiesceRevision(store);
+        await this.recorder?.close();
+      } catch (error) {
+        console.error(`[lolly-work] collab close write failed for ${this.sessionId}:`, (error as Error)?.message ?? error);
+      } finally {
+        await store.releaseCollab(this.sessionId, this.owner);
+      }
+      return { written: this.opTotal > 0, rev: this.durableRevision };
+    }
     const persistence = this.persistence;
     if (!persistence) return null;
     // Let any in-flight snapshot land first - otherwise it could rewrite the
@@ -969,8 +1226,24 @@ export class Room implements RoomWriteback {
     // "recover" work that is already a revision.
     await this.writes;
     return persistence.quiesce(this.sessionId, this, {
-      ops: this.opTotal, actor: this.lastWriter, baseRev: this.baseRev,
+      ops: this.opTotal, writers: [...this.writers.values()], baseRev: this.baseRev,
     });
+  }
+
+  /**
+   * The quiesce revision of a store-backed room (plan 76 M4). `commitCollab`
+   * writes no `session_revisions` row per batch, so `GET .../revisions` (read by
+   * older shells) would otherwise never show live work: the room appends ONE
+   * revision of the stored row when it accepted any op since the last one,
+   * attributed by `revisionActorFor`. A room that only read writes nothing.
+   */
+  private async appendQuiesceRevision(store: Store): Promise<void> {
+    if (!this.writers.size || this.leaseLost) return;
+    const session = await store.getSession(this.sessionId);
+    if (!session || session.deletedAt) return;
+    await store.appendSessionRevision({ sessionId: this.sessionId, rev: session.rev, inputs: session.inputs, meta: session.meta,
+      actor: revisionActorFor(this.writers.values()), at: new Date().toISOString() });
+    this.writers.clear();
   }
 
   /** Resolve once every snapshot write enqueued so far has settled. The cadence
@@ -1047,6 +1320,7 @@ export class Room implements RoomWriteback {
   snapshotForProject(): SessionPresenceSnapshot {
     const peers = new Map<string, SessionPresenceSnapshot['peers'][number]>();
     for (const member of this.members.values()) {
+      if (member.hidden) continue;
       const presence = this.presenceOf.get(member.id);
       const color = presence?.state?.color;
       const old = peers.get(member.userId);
@@ -1076,7 +1350,7 @@ export class Room implements RoomWriteback {
    *  roster. */
   roster(): RosterEntry[] {
     const out: RosterEntry[] = [];
-    for (const m of this.members.values()) out.push(this.entry(m));
+    for (const m of this.members.values()) if (!m.hidden) out.push(this.entry(m));
     return out;
   }
 
@@ -1085,6 +1359,29 @@ export class Room implements RoomWriteback {
       if (m.id === exceptId) continue;
       m.send(frame);
     }
+  }
+
+  /**
+   * Tell the people in this room that one review thread changed, after the
+   * comment write was saved (plan 76 M4). Each recipient then fetches only that
+   * thread, through the comment routes and their access check.
+   *
+   * The frame is REBUILT from its two fields, so no caller can add text, a name
+   * or anything else to it, and an invalid thread id or revision sends nothing.
+   * Only seats with `commentView` receive it; a guest or agent seat never does,
+   * even with the flag set. Returns how many seats were sent the frame.
+   */
+  notifyComment(event: CommentEventFrame): number {
+    const { threadId, revision } = event;
+    if (this.closed || !commentId(threadId) || !Number.isSafeInteger(revision) || revision < 1) return 0;
+    const frame: CommentEventFrame = { t: 'comment', threadId, revision };
+    let sent = 0;
+    for (const m of this.members.values()) {
+      if (m.commentView !== true || m.hidden || m.agentId !== undefined || m.guestLinkId !== undefined) continue;
+      m.send(frame);
+      sent++;
+    }
+    return sent;
   }
 
   private entry(m: RoomMember): RosterEntry {
@@ -1229,6 +1526,16 @@ export class RoomRegistry {
     return this.rooms.size;
   }
 
+  /** The open room for this session, or undefined. Unlike `acquire` it never
+   *  opens, seeds or waits for a room, and it leaves the empty-room clock alone:
+   *  a caller that only has something to tell the people already in a room
+   *  (`Room.notifyComment`) must not create one or keep one alive. A room that
+   *  lost its database lease is not returned. */
+  peek(sessionId: string): Room | undefined {
+    const room = this.rooms.get(sessionId);
+    return room?.available ? room : undefined;
+  }
+
   /** A live snapshot of every room this registry holds - the admin console's
    *  Rooms panel (OSS plans/100 §7, plans/14 §6). Each entry is a COPY
    *  (`Room.snapshotForAdmin`); nothing here exposes a room, a member, or the
@@ -1239,7 +1546,7 @@ export class RoomRegistry {
 
   projectPresence(projectId: string): SessionPresenceSnapshot[] {
     return [...this.rooms.values()].filter(room => room.projectId === projectId && room.size > 0 && room.available)
-      .map(room => room.snapshotForProject());
+      .map(room => room.snapshotForProject()).filter(snapshot => snapshot.peers.length > 0);
   }
 
   private async open(session: SessionRecord): Promise<Room> {

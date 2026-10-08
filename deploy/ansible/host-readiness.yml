@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: MPL-2.0
+---
+- name: Inspect selected SUSE deployment hosts
+  hosts: lolly_candidates
+  gather_facts: false
+  serial: 1
+  vars:
+    lolly_selected_profile: "{{ lolly_host_profile | default('k3s') }}"
+  tasks:
+    - name: Require an exact selected host identity and supported profile
+      ansible.builtin.assert:
+        that:
+          - lolly_expected_host is defined
+          - lolly_expected_host is match('^[a-zA-Z0-9][a-zA-Z0-9.-]*$')
+          - lolly_selected_profile in ['k3s', 'rke2', 'podman-build']
+        quiet: true
+    - name: Run the shared read-only host gate
+      ansible.builtin.script:
+        cmd: >-
+          {{ (playbook_dir ~ '/../suse/host-readiness.py') | quote }}
+          --profile {{ lolly_selected_profile | quote }}
+          --expect-host {{ lolly_expected_host | quote }}
+        executable: python3
+      become: "{{ lolly_selected_profile != 'podman-build' }}"
+      check_mode: false
+      changed_when: false
+      register: lolly_readiness
+    - name: Show the credential-free host receipt
+      ansible.builtin.debug:
+        msg: "{{ lolly_readiness.stdout | from_json }}"

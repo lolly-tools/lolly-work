@@ -7,10 +7,247 @@
 import assert from 'node:assert/strict';
 import { verifyChain } from '../server/src/audit/chain.ts';
 import { createApproval, type Chain } from '../server/src/approvals/engine.ts';
+import type { CommentThread } from '@lolly-tools/core/canvas-review-v1';
 import type { Message } from '../server/src/inbox/target.ts';
-import type { Store } from '../server/src/store/types.ts';
+import { COMMENT_NOTICE_COUNT_MAX, commentNoticeId, type CommentNoticeWrite, type Store } from '../server/src/store/types.ts';
 import { PROJECT_FILE_OVERHEAD_BYTES, type ProjectFileRecord } from '../server/src/projects/files.ts';
 import { runErasureConformance } from './erasure-conformance.ts';
+
+import { ReferenceCanvasDoc } from '@lolly-tools/core/canvas-op-v1';
+import { VERSION_LABEL_MAX, VERSION_NAMED_PER_PERSON, VERSION_NAMED_PER_SESSION, VERSION_RESTORE_KEEP,
+  type SessionVersionPut, type SessionVersionSummary, type SessionVersionWrite } from '../server/src/store/types.ts';
+
+/**
+ * Session versions (plan 76 M4 R2, migration 0053): space caps (per document and
+ * per instance, shared contents counted once), dedupe, idempotency with the kind
+ * in the key, the named limits (S-21 store part), restore and 'before' pairs,
+ * retention of automatic and restore rows, paging, session deletion, and
+ * commitCollab writing no revision. Runs on a store with no versions yet.
+ */
+async function runSessionVersionsConformance(store: Store): Promise<void> {
+  const user = (sub: string) => store.upsertUserBySub({ sub, email: `${sub}@example.invalid`, groups: [], role: 'member' });
+  const owner = await user('ver-owner'), editor = await user('ver-editor');
+  const now = new Date().toISOString();
+  await store.putProject({ id: 'prj_ver', name: 'Versions', visibility: 'private', ownerId: owner.id, createdAt: now });
+  const session = (id: string) => store.putSession({ id, projectId: 'prj_ver', toolId: 'versions-tool', toolVersion: '1.0.0',
+    inputs: { title: id }, meta: {}, createdBy: owner.id, updatedBy: owner.id, rev: 1, updatedAt: now });
+  const sessions = ['ses_v_inst1', 'ses_v_inst2', 'ses_v_space', 'ses_v_evict', 'ses_v_main', 'ses_v_named', 'ses_v_pair',
+    'ses_v_keep', 'ses_v_old', 'ses_v_restore', 'ses_v_collab', 'ses_v_protect', 'ses_v_protect2'];
+  for (const id of sessions) await session(id);
+  /** Inputs whose canonical JSON is exactly `bytes` long ('{"p":""}' is 8). */
+  const sized = (bytes: number, tag: string): Record<string, unknown> => ({ p: tag + 'x'.repeat(bytes - 8 - tag.length) });
+  const write = (sessionId: string, kind: SessionVersionWrite['kind'], inputs: Record<string, unknown>, extra: Partial<SessionVersionWrite> = {}): SessionVersionWrite =>
+    ({ sessionId, rev: 1, kind, inputs, meta: {}, contributors: [], ...extra });
+  const put = (w: SessionVersionWrite) => store.putSessionVersion(w);
+  const made = (result: SessionVersionPut, why: string): SessionVersionSummary => {
+    assert.ok(typeof result === 'object' && result.created, `${why}: created`);
+    return result.version;
+  };
+  const ids = async (sessionId: string) => (await store.listSessionVersions(sessionId, { limit: 100 })).map((v) => v.id);
+
+  // Instance cap first, while the instance holds no other versions: new content
+  // past it removes the oldest automatic version anywhere, then refuses.
+  store.configureVersionLimits({ sessionMaxBytes: 1000, instanceMaxBytes: 100 });
+  const i1 = made(await put(write('ses_v_inst1', 'auto', sized(40, 'i1'))), 'first automatic');
+  const i2 = made(await put(write('ses_v_inst2', 'auto', sized(40, 'i2'))), 'second automatic');
+  made(await put(write('ses_v_inst2', 'named', sized(40, 'n1'), { label: 'One', createdBy: owner.id })), 'named past the instance cap');
+  assert.deepEqual(await ids('ses_v_inst1'), [], 'the oldest automatic version in the instance made room');
+  assert.equal(await store.getSessionVersion('ses_v_inst1', i1.id), null);
+  made(await put(write('ses_v_inst1', 'named', sized(40, 'n2'), { label: 'Two', createdBy: owner.id })), 'and again');
+  assert.equal(await store.getSessionVersion('ses_v_inst2', i2.id), null);
+  assert.equal(await put(write('ses_v_inst1', 'named', sized(40, 'n3'), { label: 'Three', createdBy: owner.id })), 'version-space',
+    'nothing automatic is left to remove');
+  assert.equal(await store.deleteSessionVersions('ses_v_inst1'), 1);
+  assert.equal(await store.deleteSessionVersions('ses_v_inst2'), 1);
+
+  // Per-document cap, with shared content counted once.
+  store.configureVersionLimits({ sessionMaxBytes: 100 });
+  const a = made(await put(write('ses_v_space', 'named', sized(60, 'a'), { label: 'A', createdBy: owner.id })), 'A');
+  made(await put(write('ses_v_space', 'named', sized(30, 'b'), { label: 'B', createdBy: owner.id })), 'B');
+  assert.equal(await put(write('ses_v_space', 'named', sized(20, 'c'), { label: 'C', createdBy: owner.id })), 'version-space');
+  assert.equal(await put(write('ses_v_space', 'restore', sized(20, 'c'), { createdBy: owner.id })), 'version-space');
+  assert.equal(await put(write('ses_v_space', 'before', sized(20, 'c'), { createdBy: owner.id })), 'version-space');
+  const again = made(await put(write('ses_v_space', 'named', sized(60, 'a'), { label: 'A again', createdBy: owner.id })),
+    'the same content again needs no new space');
+  assert.equal(again.bytes, a.bytes);
+  const skipped = await put(write('ses_v_space', 'auto', sized(20, 'd')));
+  assert.ok(typeof skipped === 'object' && !skipped.created && skipped.version.id === again.id,
+    'an automatic version that does not fit is skipped and the latest answers');
+  assert.equal(await put(write('ses_v_main', 'auto', sized(101, 'big'))), 'version-space',
+    'an automatic version too big for an empty document has no latest to answer with');
+
+  // New content past the cap first removes this document's oldest automatic versions.
+  const e1 = made(await put(write('ses_v_evict', 'auto', sized(40, 'e1'))), 'e1');
+  const e2 = made(await put(write('ses_v_evict', 'close', sized(40, 'e2'))), 'e2');
+  const e3 = made(await put(write('ses_v_evict', 'save', sized(40, 'e3'), { createdBy: editor.id })), 'e3');
+  assert.deepEqual(await ids('ses_v_evict'), [e3.id, e2.id], 'e1 made room');
+  const n1 = made(await put(write('ses_v_evict', 'named', sized(40, 'n1'), { label: 'N1', createdBy: editor.id })), 'n1');
+  const n2 = made(await put(write('ses_v_evict', 'named', sized(40, 'n2'), { label: 'N2', createdBy: editor.id })), 'n2');
+  assert.deepEqual(await ids('ses_v_evict'), [n2.id, n1.id], 'named versions are never removed for space');
+  assert.equal(await put(write('ses_v_evict', 'named', sized(40, 'n3'), { label: 'N3', createdBy: editor.id })), 'version-space');
+  assert.equal(await store.getSessionVersion('ses_v_evict', e1.id), null);
+  // A version the write names in `keep` is never chosen to make room.
+  const k1 = made(await put(write('ses_v_protect2', 'auto', sized(40, 'k1'))), 'k1');
+  made(await put(write('ses_v_protect2', 'auto', sized(40, 'k2'))), 'k2');
+  const kb = made(await put(write('ses_v_protect2', 'before', sized(40, 'kb'), { createdBy: owner.id, keep: [k1.id] })), 'a before row that needs room');
+  assert.deepEqual(await ids('ses_v_protect2'), [kb.id, k1.id], 'the kept oldest version stays; the next one made room');
+  assert.equal(await put(write('ses_v_protect2', 'before', sized(40, 'kc'), { createdBy: owner.id, keep: [k1.id] })), 'version-space',
+    'nothing that is not kept is left to remove');
+  store.configureVersionLimits({});
+  assert.throws(() => store.configureVersionLimits({ sessionMaxBytes: 0 }), RangeError);
+
+  // Round trip, contributor normalising and dedupe.
+  const first = made(await put(write('ses_v_main', 'auto', { b: 2, a: 1 }, {
+    rev: 4, meta: { label: 'Draft' },
+    contributors: [{ id: owner.id, kind: 'user', edits: 3 }, { id: 'link_secret', kind: 'guest', edits: 2 },
+      { id: 'agt_1', kind: 'agent', edits: -1 }, { id: '', kind: 'user', edits: 1 }, { id: 'x', kind: 'robot', edits: 1 } as never],
+  })), 'first');
+  assert.match(first.id, /^ver_[0-9a-hjkmnp-tv-z]{16}$/);
+  assert.deepEqual({ ...first, id: '', at: '' }, {
+    id: '', sessionId: 'ses_v_main', rev: 4, kind: 'auto', bytes: Buffer.byteLength('{"a":1,"b":2}'), at: '',
+    contributors: [{ id: owner.id, kind: 'user', edits: 3 }, { id: 'guest', kind: 'guest', edits: 2 }, { id: 'agt_1', kind: 'agent', edits: 0 }],
+  }, 'a guest is stored without its link id; unknown kinds and empty ids are dropped');
+  const full = await store.getSessionVersion('ses_v_main', first.id);
+  assert.deepEqual([full?.inputs, full?.meta, full?.contributors], [{ a: 1, b: 2 }, { label: 'Draft' }, first.contributors]);
+  assert.equal(await store.getSessionVersion('ses_v_space', first.id), null, 'another document cannot read it');
+  for (const kind of ['auto', 'close', 'save'] as const) {
+    const same = await put(write('ses_v_main', kind, { a: 1, b: 2 }, { createdBy: kind === 'save' ? owner.id : undefined }));
+    assert.ok(typeof same === 'object' && !same.created && same.version.id === first.id, `${kind}: same content as the latest is not stored again`);
+  }
+  const named = made(await put(write('ses_v_main', 'named', { a: 1, b: 2 }, { label: 'Kept', createdBy: owner.id })), 'named always creates');
+  assert.equal(named.label, 'Kept');
+  const deduped = await put(write('ses_v_main', 'auto', { a: 1, b: 2 }));
+  assert.ok(typeof deduped === 'object' && !deduped.created && deduped.version.id === named.id, 'the latest answers, whatever its kind');
+  const changed = made(await put(write('ses_v_main', 'auto', { a: 2 })), 'new content');
+  assert.deepEqual(await ids('ses_v_main'), [changed.id, named.id, first.id], 'newest first');
+
+  // Idempotency on (session, person, kind, request id).
+  const req = made(await put(write('ses_v_main', 'named', { a: 3 }, { label: 'Req', createdBy: owner.id, requestId: 'req-1' })), 'request');
+  const replay = await put(write('ses_v_main', 'named', { a: 4 }, { label: 'Other', createdBy: owner.id, requestId: 'req-1' }));
+  assert.ok(typeof replay === 'object' && !replay.created && replay.version.id === req.id, 'a repeated request answers with its row');
+  const restoreSameRequest = made(await put(write('ses_v_main', 'restore', { a: 3 }, { createdBy: owner.id, requestId: 'req-1', restoredFrom: named.id })),
+    'S-25: the same request id for a restore is another row');
+  assert.notEqual(restoreSameRequest.id, req.id);
+  made(await put(write('ses_v_main', 'named', { a: 3 }, { label: 'Req', createdBy: editor.id, requestId: 'req-1' })), 'another person');
+  const racers = await Promise.all([1, 2, 3].map(() => put(write('ses_v_main', 'restore', { a: 5 }, { createdBy: editor.id, requestId: 'req-race' }))));
+  assert.equal(racers.filter((r) => typeof r === 'object' && r.created).length, 1, 'S-25: concurrent identical restores make one row');
+  assert.equal(new Set(racers.map((r) => typeof r === 'object' ? r.version.id : r)).size, 1);
+
+  // Validation the schema enforces, in both drivers.
+  await assert.rejects(put(write('ses_v_main', 'named', { a: 6 }, { label: '' })), TypeError);
+  await assert.rejects(put(write('ses_v_main', 'named', { a: 6 }, { label: 'x'.repeat(VERSION_LABEL_MAX + 1) })), TypeError);
+  made(await put(write('ses_v_main', 'named', { a: 6 }, { label: '\u{1F642}'.repeat(VERSION_LABEL_MAX), createdBy: owner.id })),
+    'the label limit counts characters, not UTF-16 units');
+  await assert.rejects(put(write('ses_v_main', 'bogus' as never, { a: 7 })), TypeError);
+  await assert.rejects(put(write('ses_v_main', 'auto', { a: 7 }, { rev: -1 })), TypeError);
+  await assert.rejects(put(write('ses_v_main', 'auto', [] as never)), TypeError);
+  await assert.rejects(put(write('ses_v_nope', 'auto', { a: 7 })), /session-gone/);
+  await assert.rejects(put(write('ses_v_main', 'restore', { a: 7 }, { restoredFrom: a.id })), /version-reference/, 'a version of another document');
+  await assert.rejects(put(write('ses_v_main', 'restore', { a: 7 }, { beforeId: 'ver_unknown' })), /version-reference/);
+  await assert.rejects(put(write('ses_v_main', 'auto', { a: 7 }, { keep: [''] })), TypeError);
+
+  // Paging.
+  const all = await ids('ses_v_main');
+  const page1 = await store.listSessionVersions('ses_v_main', { limit: 2 });
+  const page2 = await store.listSessionVersions('ses_v_main', { limit: 2, before: page1.at(-1)!.id });
+  assert.deepEqual([...page1, ...page2].map((v) => v.id), all.slice(0, 4));
+  assert.deepEqual(await store.listSessionVersions('ses_v_main', { limit: 2, before: a.id }), [], 'a cursor from another document');
+  assert.equal((await store.listSessionVersions('ses_v_main', { limit: 0 })).length, 1, 'the limit is at least one');
+  assert.equal((await store.listSessionVersions('ses_v_main', { limit: Number.NaN })).length, Math.min(all.length, 30));
+
+  // Named limits (S-21): 20 per person per document, 100 per document.
+  for (let i = 0; i < VERSION_NAMED_PER_PERSON; i++) made(await put(write('ses_v_named', 'named', { i }, { label: `L${i}`, createdBy: owner.id })), `named ${i}`);
+  assert.equal(await put(write('ses_v_named', 'named', { i: 'over' }, { label: 'Over', createdBy: owner.id })), 'version-limit');
+  for (let p = 1; p * VERSION_NAMED_PER_PERSON < VERSION_NAMED_PER_SESSION; p++) {
+    for (let i = 0; i < VERSION_NAMED_PER_PERSON; i++) {
+      made(await put(write('ses_v_named', 'named', { p, i }, { label: `P${p}`, createdBy: `usr_named_${p}` })), `person ${p} named ${i}`);
+    }
+  }
+  assert.equal(await put(write('ses_v_named', 'named', { i: 'full' }, { label: 'Full', createdBy: 'usr_named_new' })), 'version-limit');
+  made(await put(write('ses_v_named', 'auto', { i: 'auto' })), 'other kinds are not limited by it');
+
+  // Restore and 'before' pairs delete together, from either side.
+  const target = made(await put(write('ses_v_pair', 'named', { t: 1 }, { label: 'Target', createdBy: owner.id })), 'target');
+  const before1 = made(await put(write('ses_v_pair', 'before', { t: 2 }, { createdBy: owner.id })), 'before 1');
+  const restore1 = made(await put(write('ses_v_pair', 'restore', { t: 1 }, { createdBy: owner.id, restoredFrom: target.id, beforeId: before1.id })), 'restore 1');
+  assert.deepEqual([restore1.restoredFrom, restore1.beforeId], [target.id, before1.id]);
+  const before2 = made(await put(write('ses_v_pair', 'before', { t: 3 }, { createdBy: owner.id })), 'before 2');
+  const restore2 = made(await put(write('ses_v_pair', 'restore', { t: 1 }, { createdBy: owner.id, restoredFrom: target.id, beforeId: before2.id })), 'restore 2');
+  assert.equal(await store.deleteSessionVersion('ses_v_main', restore1.id), false, 'not a version of that document');
+  assert.equal(await store.deleteSessionVersion('ses_v_pair', restore1.id), true);
+  assert.deepEqual(await ids('ses_v_pair'), [restore2.id, before2.id, target.id], 'a restore row takes its before row with it');
+  assert.equal(await store.deleteSessionVersion('ses_v_pair', before2.id), true);
+  assert.deepEqual(await ids('ses_v_pair'), [target.id], 'and a before row takes its restore row');
+  assert.equal(await store.deleteSessionVersion('ses_v_pair', before2.id), false, 'a row deletes once');
+  const before3 = made(await put(write('ses_v_pair', 'before', { t: 4 }, { createdBy: owner.id })), 'before 3');
+  const restore3 = made(await put(write('ses_v_pair', 'restore', { t: 1 }, { createdBy: owner.id, restoredFrom: target.id, beforeId: before3.id })), 'restore 3');
+  assert.equal(await store.deleteSessionVersion('ses_v_pair', target.id), true);
+  const orphan = (await store.listSessionVersions('ses_v_pair', { limit: 10 })).find((v) => v.id === restore3.id);
+  assert.deepEqual([orphan?.restoredFrom, orphan?.beforeId], [undefined, before3.id], 'deleting the source leaves the restore row without it');
+  assert.deepEqual((await store.getSessionVersion('ses_v_pair', restore3.id))?.inputs, { t: 1 }, 'its shared content stays');
+
+  // Retention of auto, close and save, judged at each write's time: the newest
+  // 50, plus the newest of each UTC day within 30 days, never past 365 days.
+  const day = (offset: number, minutes: number): string => new Date(Date.UTC(2026, 4, 1 + offset, 0, minutes)).toISOString();
+  for (let d = -39; d <= -1; d++) made(await put(write('ses_v_keep', 'auto', { d }, { at: day(d, 720) })), `day ${d}`);
+  for (let m = 1; m <= 55; m++) made(await put(write('ses_v_keep', m % 3 ? 'auto' : m % 2 ? 'close' : 'save', { m }, { at: day(0, m) })), `minute ${m}`);
+  const kept = await store.listSessionVersions('ses_v_keep', { limit: 100 });
+  assert.equal(kept.length, 50 + 30);
+  assert.deepEqual(kept.slice(0, 50).map((v) => v.at), Array.from({ length: 50 }, (_, i) => day(0, 55 - i)), 'the newest 50');
+  assert.deepEqual(kept.slice(50).map((v) => v.at), Array.from({ length: 30 }, (_, i) => day(-1 - i, 720)), 'one a day for 30 days');
+  const oldNamed = made(await put(write('ses_v_old', 'named', { o: 1 }, { label: 'Old', createdBy: owner.id, at: day(-500, 0) })), 'old named');
+  made(await put(write('ses_v_old', 'auto', { o: 2 }, { at: day(-500, 1) })), 'old automatic');
+  const late = made(await put(write('ses_v_old', 'auto', { o: 3 }, { at: day(-134, 0) })), 'a year later');
+  assert.deepEqual(await ids('ses_v_old'), [late.id, oldNamed.id], 'automatic versions older than 365 days go; named ones stay');
+  // ...unless the write keeps them (a restore keeps the version it restores from).
+  const protectedOld = made(await put(write('ses_v_protect', 'auto', { k: 1 }, { at: day(-500, 0) })), 'old automatic');
+  made(await put(write('ses_v_protect', 'before', { k: 2 }, { createdBy: owner.id, at: day(-134, 0), keep: [protectedOld.id] })), 'a write that keeps it');
+  assert.ok((await ids('ses_v_protect')).includes(protectedOld.id), 'kept past the age limit by that write');
+  made(await put(write('ses_v_protect', 'auto', { k: 3 }, { at: day(-134, 1) })), 'a write that keeps nothing');
+  assert.equal((await ids('ses_v_protect')).includes(protectedOld.id), false, 'and removed by the next one');
+  assert.equal((await store.listSessionVersions('ses_v_protect', { limit: 10 })).some((v) => 'keep' in v), false, 'keep is not stored');
+
+  // Restore rows: the newest 200 stay, each older one goes with its before row.
+  for (let i = 0; i <= VERSION_RESTORE_KEEP; i++) {
+    const b = made(await put(write('ses_v_restore', 'before', { b: i }, { createdBy: owner.id, at: day(0, i * 2) })), `before ${i}`);
+    made(await put(write('ses_v_restore', 'restore', { r: i }, { createdBy: owner.id, beforeId: b.id, at: day(0, i * 2 + 1) })), `restore ${i}`);
+  }
+  const restores = await store.listSessionVersions('ses_v_restore', { limit: 100, before: undefined });
+  assert.deepEqual(restores.slice(0, 2).map((v) => v.kind), ['restore', 'before']);
+  let rows: SessionVersionSummary[] = [], cursor: string | undefined;
+  for (;;) {
+    const page = await store.listSessionVersions('ses_v_restore', { limit: 100, ...(cursor ? { before: cursor } : {}) });
+    rows = [...rows, ...page];
+    if (page.length < 100) break;
+    cursor = page.at(-1)!.id;
+  }
+  assert.equal(rows.length, 2 * VERSION_RESTORE_KEEP);
+  assert.deepEqual(rows.slice(-2).map((v) => v.at), [day(0, 3), day(0, 2)], 'the oldest pair went together');
+
+  // A live room's commit writes no revision row; quiesce owns that.
+  const live = (await store.getSession('ses_v_collab'))!;
+  const history = await store.listSessionRevisions('ses_v_collab');
+  assert.equal(await store.claimCollab('ses_v_collab', 'versions-room', 30_000), true);
+  const rev = await store.commitCollab({ sessionId: 'ses_v_collab', owner: 'versions-room', principal: owner.id, expectedRev: live.rev,
+    inputs: { title: 'live' }, checkpoint: new ReferenceCanvasDoc().checkpoint(), ops: [], receipts: [{ id: 'v-op', digest: 'd', accepted: true }],
+    actor: 'collab', updatedBy: owner.id });
+  assert.equal(rev, live.rev + 1);
+  assert.deepEqual((await store.getSession('ses_v_collab'))?.inputs, { title: 'live' });
+  assert.deepEqual(await store.listSessionRevisions('ses_v_collab'), history, 'no revision row per accepted batch');
+  await store.releaseCollab('ses_v_collab', 'versions-room');
+
+  // Deleting a document's versions removes them and their contents.
+  const counts = await Promise.all(sessions.map((id) => store.deleteSessionVersions(id)));
+  assert.ok(counts.every((n) => Number.isInteger(n)));
+  for (const id of sessions) assert.deepEqual(await ids(id), [], id);
+  assert.equal(await store.getSessionVersion('ses_v_pair', restore3.id), null);
+  store.configureVersionLimits({ instanceMaxBytes: 50 });
+  made(await put(write('ses_v_main', 'named', sized(50, 'z'), { label: 'Z', createdBy: owner.id })), 'every content went with its versions');
+  assert.equal(await store.deleteSessionVersions('ses_v_main'), 1);
+  store.configureVersionLimits({});
+  await store.putSession({ ...live, rev: rev, inputs: { title: 'live' }, deletedAt: now });
+  await assert.rejects(put(write('ses_v_collab', 'auto', { gone: true })), /session-gone/, 'a deleted document takes no versions');
+}
 
 export async function runStoreConformance(store: Store): Promise<void> {
   // users: upsert by sub, re-upsert updates in place
@@ -675,6 +912,19 @@ export async function runStoreConformance(store: Store): Promise<void> {
   await store.deleteCatalogField('campaign');
   assert.deepEqual((await store.listCatalogFields()).map((f) => f.id), ['region']);
 
+  // Hidden tags (plan 299, migrations/0065): one rule per scope, listed by
+  // scope, and a put over the same scope replaces the rule whole.
+  assert.deepEqual(await store.listCatalogTagRules(), []);
+  await store.putCatalogTagRule({ scope: 'provider:dam1', hidden: ['legal:*'], updatedBy: 'user:usr_1', updatedAt: '2026-10-07T00:00:00.000Z' });
+  await store.putCatalogTagRule({ scope: '*', hidden: ['Internal', 'approved-*'] });
+  assert.deepEqual((await store.listCatalogTagRules()).map((r) => [r.scope, r.hidden]), [['*', ['Internal', 'approved-*']], ['provider:dam1', ['legal:*']]]);
+  assert.equal((await store.listCatalogTagRules())[1]?.updatedBy, 'user:usr_1');
+  await store.putCatalogTagRule({ scope: '*', hidden: ['Archive'] });
+  assert.deepEqual((await store.listCatalogTagRules())[0]?.hidden, ['Archive'], 'put is an upsert');
+  await store.deleteCatalogTagRule('*');
+  await store.deleteCatalogTagRule('provider:dam1');
+  assert.deepEqual(await store.listCatalogTagRules(), []);
+
   // Values are an overlay keyed by CATALOG ASSET ID, which is the whole reason
   // it is its own table: all three id shapes take one - an instance asset, a
   // federated ext/* asset whose record belongs to a DAM, and a pack asset whose
@@ -1135,6 +1385,8 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.equal(revs[0]?.rev, 3, 'newest first');
   assert.deepEqual(revs[0]?.inputs, { title: 'Hi3' });
 
+  await runSessionVersionsConformance(store);
+
   // collab room snapshots (plans/14 §6): at most one per session, put REPLACES
   // (there is no update log), delete is idempotent, and `inputs` round-trips
   // structurally - nested blocks rows included, since that is the whole payload.
@@ -1394,5 +1646,204 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.deepEqual((await store.closeAccessRequests({ kind: 'switch', invitationId: 'inv_14', email: 'joiner@example.com' },
     { status: 'superseded', at: reqDay(1), by: 'user:u1' }, reqDay(1))).map((r) => r.id), ['req_s1']);
 
+  await runCommentReadsAndNoticesConformance(store);
   await runErasureConformance(store);
+}
+
+/** Comment reads, inbox notices and mention sends (plan 76 M4, migrations 0051
+ *  and 0052): the max rule, the floor recorded once, one coalesced notice per
+ *  person and thread, the count cap, prune, delete by its own person only,
+ *  mention sends recorded once, threads by ids, and erasure (S-14). */
+async function runCommentReadsAndNoticesConformance(store: Store): Promise<void> {
+  const base = Date.now() - 2 * 86_400_000;
+  const t = (minutes: number): string => new Date(base + minutes * 60_000).toISOString();
+  const pause = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 5));
+  const user = (sub: string) => store.upsertUserBySub({ sub, email: `${sub}@example.invalid`, groups: [], role: 'member' });
+  const owner = await user('cn-owner'), reader = await user('cn-reader'), actor = await user('cn-actor');
+  const other = await user('cn-other'), pruned = await user('cn-pruned');
+  await store.putProject({ id: 'prj_cn', name: 'Review', visibility: 'private', ownerId: owner.id, createdAt: t(0) });
+  for (const id of ['ses_cn1', 'ses_cn2']) {
+    await store.putSession({ id, projectId: 'prj_cn', toolId: 'poster', toolVersion: '1.0.0', inputs: {}, meta: {},
+      createdBy: owner.id, updatedBy: owner.id, rev: 1, updatedAt: t(0) });
+  }
+  const thread = (id: string, sessionId: string): CommentThread => ({
+    id, sessionId, anchor: { kind: 'canvas', surface: 'page-1', x: 10, y: 20 }, authorId: actor.id, authorName: 'Ana',
+    revision: 1, createdAt: t(0), updatedAt: t(0),
+    messages: [{ id: 'm1', authorId: actor.id, authorName: 'Ana', body: 'First note', createdAt: t(0) }],
+  });
+  for (const [id, sessionId] of [['thr_cn_a', 'ses_cn1'], ['thr_cn_b', 'ses_cn1'], ['thr_cn_c', 'ses_cn2'],
+    ['thr_cn_p1', 'ses_cn2'], ['thr_cn_p2', 'ses_cn2'], ['thr_cn_p3', 'ses_cn2'], ['thr_cn_p4', 'ses_cn2']] as const) {
+    assert.equal(await store.createCommentThread(thread(id, sessionId)), 'created');
+  }
+
+  // Reads: the floor is recorded once per person and document; a read time
+  // only moves forward and never past now; other documents' threads are ignored.
+  const before = Date.now();
+  const first = await store.readCommentState(reader.id, 'ses_cn1');
+  assert.deepEqual(first.reads, {});
+  assert.ok(Date.parse(first.floorAt) >= before - 1 && Date.parse(first.floorAt) <= Date.now(), 'the floor is the current time');
+  await pause();
+  assert.equal((await store.readCommentState(reader.id, 'ses_cn1')).floorAt, first.floorAt, 'the floor is recorded once');
+  for (const [userId, sessionId] of [[reader.id, 'ses_cn_none'], ['usr_cn_none', 'ses_cn1']] as const) {
+    const a = await store.readCommentState(userId, sessionId);
+    await pause();
+    const b = await store.readCommentState(userId, sessionId);
+    assert.deepEqual(b.reads, {});
+    assert.ok(Date.parse(b.floorAt) > Date.parse(a.floorAt), 'an unknown person or document records no floor');
+  }
+  await store.markCommentsRead(reader.id, 'ses_cn1', [
+    { threadId: 'thr_cn_a', at: t(10) },
+    { threadId: 'thr_cn_c', at: t(10) }, // another document's thread
+    { threadId: 'thr_cn_none', at: t(10) },
+    { threadId: 'thr_cn_b', at: 'not a time' },
+  ]);
+  assert.deepEqual((await store.readCommentState(reader.id, 'ses_cn1')).reads, { thr_cn_a: t(10) });
+  await store.markCommentsRead(reader.id, 'ses_cn1', [{ threadId: 'thr_cn_a', at: t(5) }]);
+  assert.deepEqual((await store.readCommentState(reader.id, 'ses_cn1')).reads, { thr_cn_a: t(10) }, 'an earlier time never lowers a read');
+  await store.markCommentsRead(reader.id, 'ses_cn1', [
+    { threadId: 'thr_cn_a', at: t(20) }, { threadId: 'thr_cn_a', at: t(15) }, { threadId: 'thr_cn_b', at: t(12) },
+  ]);
+  assert.deepEqual((await store.readCommentState(reader.id, 'ses_cn1')).reads, { thr_cn_a: t(20), thr_cn_b: t(12) },
+    'the latest of repeated entries wins');
+  const beforeFuture = Date.now();
+  await store.markCommentsRead(reader.id, 'ses_cn1', [{ threadId: 'thr_cn_b', at: new Date(Date.now() + 86_400_000).toISOString() }]);
+  const clamped = Date.parse((await store.readCommentState(reader.id, 'ses_cn1')).reads.thr_cn_b!);
+  assert.ok(clamped >= beforeFuture - 1 && clamped <= Date.now(), 'a read time is never later than now');
+  assert.deepEqual((await store.readCommentState(other.id, 'ses_cn1')).reads, {}, 'reads are private to each person');
+  assert.deepEqual((await store.readCommentState(reader.id, 'ses_cn2')).reads, {}, 'reads belong to their document');
+  await store.markCommentsRead('usr_cn_none', 'ses_cn1', [{ threadId: 'thr_cn_a', at: t(10) }]);
+  await store.markCommentsRead(reader.id, 'ses_cn1', []);
+
+  // Notices: one row per (person, thread). A retry of the same message keeps
+  // the count; a new message adds one and moves the row to its time; a mention
+  // stays a mention.
+  const write = (over: Partial<CommentNoticeWrite>): CommentNoticeWrite => ({
+    userId: reader.id, threadId: 'thr_cn_a', sessionId: 'ses_cn1', projectId: 'prj_cn', kind: 'reply',
+    actorId: actor.id, messageId: 'm2', at: t(30), mentioned: false, ...over,
+  });
+  const readerA = commentNoticeId(reader.id, 'thr_cn_a');
+  assert.match(readerA, /^cn_[0-9a-f]{24}$/);
+  assert.notEqual(commentNoticeId(other.id, 'thr_cn_a'), readerA);
+  const notice = async (userId: string, threadId: string) =>
+    (await store.listCommentNotices(userId)).find((n) => n.threadId === threadId);
+  assert.equal(await store.upsertCommentNotice(write({})), 'created');
+  assert.deepEqual(await store.listCommentNotices(reader.id), [{
+    id: readerA, userId: reader.id, threadId: 'thr_cn_a', sessionId: 'ses_cn1', projectId: 'prj_cn', kind: 'reply',
+    actorId: actor.id, messageId: 'm2', count: 1, createdAt: t(30),
+  }], 'a notice holds ids, a count and a time');
+  assert.equal(await store.upsertCommentNotice(write({ at: t(31) })), 'updated');
+  assert.equal((await notice(reader.id, 'thr_cn_a'))?.count, 1, 'a retry of the same message does not raise the count');
+  assert.equal((await notice(reader.id, 'thr_cn_a'))?.createdAt, t(30));
+  assert.equal(await store.upsertCommentNotice(write({ messageId: 'm3', actorId: other.id, at: t(40) })), 'updated');
+  assert.deepEqual(await notice(reader.id, 'thr_cn_a'), {
+    id: readerA, userId: reader.id, threadId: 'thr_cn_a', sessionId: 'ses_cn1', projectId: 'prj_cn', kind: 'reply',
+    actorId: other.id, messageId: 'm3', count: 2, createdAt: t(40),
+  });
+  await store.upsertCommentNotice(write({ messageId: 'm4', at: t(50), mentioned: true }));
+  assert.equal((await notice(reader.id, 'thr_cn_a'))?.kind, 'mention');
+  await store.upsertCommentNotice(write({ messageId: 'm5', actorId: other.id, at: t(60) }));
+  assert.equal((await notice(reader.id, 'thr_cn_a'))?.kind, 'mention', 'a mention stays a mention');
+  await store.upsertCommentNotice(write({ messageId: 'm6', actorId: other.id, at: t(45) }));
+  assert.equal((await notice(reader.id, 'thr_cn_a'))?.count, 5);
+  assert.equal((await notice(reader.id, 'thr_cn_a'))?.createdAt, t(60), 'an older message never moves the notice back');
+  await store.upsertCommentNotice(write({ messageId: 'm6', actorId: other.id, at: t(45), mentioned: true }));
+  assert.equal((await notice(reader.id, 'thr_cn_a'))?.count, 5);
+  assert.equal(await store.upsertCommentNotice(write({ userId: other.id, at: t(35), mentioned: true })), 'created');
+  assert.equal((await notice(other.id, 'thr_cn_a'))?.kind, 'mention', 'a first write can be a mention');
+
+  // The count stops at its cap and later updates still succeed.
+  for (let i = 0; i <= COMMENT_NOTICE_COUNT_MAX; i++) {
+    await store.upsertCommentNotice(write({ threadId: 'thr_cn_b', messageId: `c${i}`, at: t(100) }));
+  }
+  assert.equal((await notice(reader.id, 'thr_cn_b'))?.count, COMMENT_NOTICE_COUNT_MAX);
+  assert.equal(await store.upsertCommentNotice(write({ threadId: 'thr_cn_b', messageId: 'c-last', at: t(100) })), 'updated');
+  assert.equal((await notice(reader.id, 'thr_cn_b'))?.count, COMMENT_NOTICE_COUNT_MAX);
+
+  // A notice needs a real person, thread, document and project.
+  await assert.rejects(store.upsertCommentNotice(write({ threadId: 'thr_cn_none' })));
+  await assert.rejects(store.upsertCommentNotice(write({ userId: 'usr_cn_none' })));
+  await assert.rejects(store.upsertCommentNotice(write({ threadId: 'thr_cn_c', sessionId: 'ses_cn_none' })));
+  await assert.rejects(store.upsertCommentNotice(write({ threadId: 'thr_cn_c', sessionId: 'ses_cn2', projectId: 'prj_cn_none' })));
+  assert.equal(await notice(reader.id, 'thr_cn_c'), undefined);
+
+  // Newest first, then by id; the limit applies.
+  await store.upsertCommentNotice(write({ threadId: 'thr_cn_c', sessionId: 'ses_cn2', messageId: 'm1', at: t(100) }));
+  const sameTime = [commentNoticeId(reader.id, 'thr_cn_b'), commentNoticeId(reader.id, 'thr_cn_c')].sort().reverse();
+  assert.deepEqual((await store.listCommentNotices(reader.id)).map((n) => n.id), [...sameTime, readerA]);
+  assert.deepEqual((await store.listCommentNotices(reader.id, 1)).map((n) => n.id), [sameTime[0]]);
+
+  // The actor backstop counts the notices whose newest event the actor caused.
+  assert.equal(await store.countNoticesByActorSince(actor.id, t(0)), 3);
+  assert.equal(await store.countNoticesByActorSince(actor.id, t(36)), 2);
+  assert.equal(await store.countNoticesByActorSince(other.id, t(0)), 1);
+  assert.equal(await store.countNoticesByActorSince('usr_cn_none', t(0)), 0);
+
+  // Delete: only ever the given person's rows, and nothing for an empty filter.
+  assert.equal(await store.deleteCommentNotices(other.id, { ids: [readerA], threadIds: ['thr_cn_b'], sessionIds: ['ses_cn2'] }), 0,
+    "another person's ids delete nothing");
+  assert.equal(await store.deleteCommentNotices(reader.id, {}), 0);
+  assert.equal(await store.deleteCommentNotices(reader.id, { ids: [], threadIds: [], sessionIds: [] }), 0);
+  assert.equal((await store.listCommentNotices(reader.id)).length, 3);
+  assert.equal(await store.deleteCommentNotices(reader.id, { threadIds: ['thr_cn_b'] }), 1);
+  assert.equal(await store.deleteCommentNotices(reader.id, { sessionIds: ['ses_cn2'] }), 1);
+  assert.equal(await store.deleteCommentNotices(reader.id, { ids: [readerA, 'cn_none'] }), 1);
+  assert.deepEqual(await store.listCommentNotices(reader.id), []);
+  assert.equal((await store.listCommentNotices(other.id)).length, 1, "the other person's notice is kept");
+  assert.equal(await store.upsertCommentNotice(write({ messageId: 'm7', at: t(70) })), 'created', 'a reply after an ack is a new notice');
+  assert.equal((await notice(reader.id, 'thr_cn_a'))?.count, 1);
+
+  // Prune: keep the newest `keep` and nothing older than the cutoff.
+  for (const [threadId, at] of [['thr_cn_p1', t(-50 * 1440)], ['thr_cn_p2', t(10)], ['thr_cn_p3', t(20)], ['thr_cn_p4', t(30)]] as const) {
+    await store.upsertCommentNotice(write({ userId: pruned.id, threadId, sessionId: 'ses_cn2', at }));
+  }
+  assert.equal(await store.pruneCommentNotices(pruned.id, 2, t(-30 * 1440)), 2);
+  assert.deepEqual((await store.listCommentNotices(pruned.id)).map((n) => n.threadId), ['thr_cn_p4', 'thr_cn_p3']);
+  assert.equal(await store.pruneCommentNotices(pruned.id, 5, t(25)), 1);
+  assert.deepEqual((await store.listCommentNotices(pruned.id)).map((n) => n.threadId), ['thr_cn_p4']);
+  assert.equal((await store.listCommentNotices(reader.id)).length, 1, "prune leaves other people's notices alone");
+  await assert.rejects(store.pruneCommentNotices(pruned.id, Number.NaN, t(0)), RangeError, 'a bad keep count deletes nothing');
+  await assert.rejects(store.pruneCommentNotices(pruned.id, -1, t(0)), RangeError);
+  assert.equal((await store.listCommentNotices(pruned.id, Number.NaN)).length, 1, 'a bad limit reads as the default');
+
+  // Mention sends: each person once per message, in the order given; unknown
+  // people and threads are skipped; a message id belongs to its thread.
+  assert.deepEqual(await store.recordMentionSends('thr_cn_a', 'm4', [reader.id, other.id, reader.id, 'usr_cn_none'], t(50)), [reader.id, other.id]);
+  assert.deepEqual(await store.recordMentionSends('thr_cn_a', 'm4', [other.id, owner.id], t(51)), [owner.id]);
+  assert.deepEqual(await store.recordMentionSends('thr_cn_b', 'm4', [reader.id], t(52)), [reader.id]);
+  assert.deepEqual(await store.recordMentionSends('thr_cn_none', 'm4', [reader.id], t(52)), []);
+  assert.deepEqual(await store.recordMentionSends('thr_cn_a', 'm8', [], t(52)), []);
+  // Forgetting a send (its notice was never written) lets that message tell the
+  // person again; only the named people of that one message are forgotten.
+  assert.equal(await store.forgetMentionSends('thr_cn_b', 'm4', [reader.id, reader.id, 'usr_cn_none']), 1);
+  assert.equal(await store.forgetMentionSends('thr_cn_a', 'm9', [reader.id]), 0);
+  assert.equal(await store.forgetMentionSends('thr_cn_a', 'm4', []), 0);
+  assert.deepEqual(await store.recordMentionSends('thr_cn_b', 'm4', [reader.id], t(53)), [reader.id], 'a forgotten send can be recorded again');
+  assert.deepEqual(await store.recordMentionSends('thr_cn_a', 'm4', [reader.id], t(53)), [], 'another message keeps its sends');
+
+  // Threads by ids: one read, in the order first given, unknown ids skipped.
+  const [threadA, threadC] = [await store.getCommentThread('thr_cn_a'), await store.getCommentThread('thr_cn_c')];
+  assert.deepEqual(await store.getCommentThreadsByIds(['thr_cn_c', 'thr_cn_none', 'thr_cn_a', 'thr_cn_c']), [threadC, threadA]);
+  assert.deepEqual(await store.getCommentThreadsByIds([]), []);
+
+  // Deleting a person removes their reads and received notices.
+  const leaving = await user('cn-leaving');
+  await store.upsertCommentNotice(write({ userId: leaving.id, threadId: 'thr_cn_c', sessionId: 'ses_cn2', actorId: owner.id, at: t(80) }));
+  await store.markCommentsRead(leaving.id, 'ses_cn2', [{ threadId: 'thr_cn_c', at: t(80) }]);
+  assert.equal(await store.deleteUser(leaving.id), true);
+  assert.deepEqual(await store.listCommentNotices(leaving.id), []);
+  assert.deepEqual((await store.readCommentState(leaving.id, 'ses_cn2')).reads, {});
+
+  // S-14: erasure removes the person's reads, received notices and mention
+  // sends, and the notices they caused; shared threads are unchanged.
+  await store.upsertCommentNotice(write({ userId: other.id, threadId: 'thr_cn_b', actorId: owner.id, messageId: 'm9', at: t(90) }));
+  assert.deepEqual(await store.eraseUserAccount(reader.id), { status: 'erased', scrubbed: 0 }, 'comment state never blocks erasure');
+  assert.deepEqual(await store.listCommentNotices(reader.id), []);
+  assert.deepEqual((await store.readCommentState(reader.id, 'ses_cn1')).reads, {});
+  assert.deepEqual(await store.recordMentionSends('thr_cn_a', 'm4', [other.id, owner.id], t(53)), [], "other people's mention sends are kept");
+  assert.deepEqual(await store.eraseUserAccount(actor.id), { status: 'erased', scrubbed: 0 });
+  assert.deepEqual((await store.listCommentNotices(other.id)).map((n) => n.threadId), ['thr_cn_b'], 'the notices the actor caused are gone');
+  assert.deepEqual(await store.listCommentNotices(pruned.id), []);
+  assert.equal(await store.countNoticesByActorSince(actor.id, t(-100 * 1440)), 0);
+  assert.deepEqual(await store.getCommentThread('thr_cn_a'), threadA, 'shared threads are unchanged');
+  assert.deepEqual(await store.getCommentThreadsByIds(['thr_cn_a', 'thr_cn_c']), [threadA, threadC]);
 }

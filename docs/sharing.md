@@ -411,12 +411,26 @@ name and never by email to anyone who could not already see the address:
 | `invite-accepted` | each person who invited them (at most 5) | "Sam accepted your invitation", with **Open** (the project) or **Open People** (the console) |
 | `invite-skipped` | the invitee | "Your invitation to Brand refresh no longer works", when the person who added the project can no longer add people to it, or the project was archived |
 | `welcome` | the invitee, on accepting | "Welcome to lolly.ing", with the inviter and, for a project, its name, the role and **Open** |
+| `comment-mention` | a person mentioned in a comment | "Ana mentioned you in Spring poster", with the start of the newest message and **Open thread** |
+| `comment-reply` | the people in a comment thread when someone replies | "Ana replied in Spring poster", or "New replies in Spring poster: 3", with **Open thread** |
 
 A request notice has `kind: "request"` and severity `action`; the others have
 `kind: "notice"`. Each carries `data.at`, the time it happened, and the ids a client needs
 (`requestId`, `projectId`, `invitationId` and so on). A request notice disappears when the
 request is answered, withdrawn, superseded or expires. The others stay until dismissed, and
 an answer or acceptance notice for 30 days at most.
+
+Comment notices (`kind: "comment"`, id `cn_…`) work differently. There is one per person
+per thread, updated as replies arrive. It stores no text and no names: the inbox writes
+the title, the excerpt and the names each time it is read, so an edited or deleted
+message never lingers there. It is shown only while the person can still open the
+document and read its comments. Dismissing it removes it, and the next reply brings it
+back. Reading the thread in Lolly removes it too. The [API reference](api.md#approvals-and-inbox)
+has the details.
+
+The inbox also stops showing a share or a collaboration invite once the person can no
+longer see its project (an invite also once its session is deleted), and a project access
+request once they no longer manage that project.
 
 `GET /api/v1/inbox` answers with an `ETag` and an `unread` count, and `304` when nothing
 changed, so Lolly checks it when the tab comes back into view (at most once a minute) and
@@ -470,6 +484,7 @@ which, and while files are off every file route answers `404`.
 |---|---|
 | anyone who can see the project (viewer and up) | list the project's files and download them |
 | editor and up, with `session.create` | upload a file; the project must not be archived. Service tokens cannot |
+| editor and up, with `session.edit` | rename a finished file; the bytes and id stay the same, so sessions that use the file still open. The project must not be archived. Service tokens cannot |
 | the person who uploaded the file | delete it, or cancel their own unfinished upload |
 | manager and up (owner, manager member, `project.manage`) | delete any file in the project |
 
@@ -498,7 +513,8 @@ small hosted Postgres, which holds the file bytes as well. The file list reports
 Deleting a file that a live session in the project still uses is refused with
 `409 FILE_IN_USE`, naming those sessions; that session would otherwise open without it. A
 manager can delete it anyway with `?force=1`. Every finished upload is audited as
-`project.file-upload` and every delete or cancel as `project.file-delete`. A person's
+`project.file-upload`, every rename as `project.file-rename` and every delete or cancel as
+`project.file-delete`. A person's
 finished files block erasing their account, like their sessions do; their unfinished
 uploads are removed when the account is erased. The
 [API reference](api.md#project-files) lists the routes.
@@ -519,6 +535,11 @@ with the saved inputs and remembers the revision for the next save. The link car
 the session id, and opening one needs the same visibility as reading the session through the
 API. A signed-out reader goes through the sign-in gate first and returns to the session
 afterwards. Collaboration invites in the inbox use this link too.
+
+A link to a comment thread adds `?thread=<threadId>`:
+`<app>/#/team/<sessionId>?thread=<threadId>`. Lolly opens the session, connects and shows
+that thread. The link grants nothing: someone who cannot open the session sees the usual
+refusal and can ask for access, and the thread opens once access is approved.
 
 ### When two people save the same session
 

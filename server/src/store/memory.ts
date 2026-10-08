@@ -6,6 +6,11 @@ import { initialBrandState } from '../brand/state.ts';
 import type { CollabReceipt } from './types.ts';
 import type { ProjectFolderRecord } from './types.ts';
 import type { DocumentAgentRecord, ProjectAgentRecord } from './types.ts';
+import {
+  newestVersionFirst, normalizeSessionVersionWrite, planSessionVersionPut, resolveVersionLimits, sessionVersionContent, sessionVersionId, versionListLimit,
+  type SessionVersion, type SessionVersionLimits, type SessionVersionPut, type SessionVersionRow, type SessionVersionSummary,
+} from './types.ts';
+import type { ProjectUserStateRecord, ShareGroupRecord } from './types.ts';
 /**
  * In-memory Store - dev, tests, and the evaluation container's default.
  * Postgres driver lands beside this (migrations/0001_init.sql is the schema).
@@ -25,6 +30,7 @@ import type { LifecycleRow } from '../catalog/lifecycle.ts';
 import type { CredentialRow } from '../catalog/credentials.ts';
 import type { InstanceAssetRecord } from '../catalog/instance-assets.ts';
 import { sortFields, type AssetMetaRecord, type CatalogFieldDef } from '../catalog/asset-meta.ts';
+import type { CatalogTagRule } from '../catalog/tag-rules.ts';
 import { sortCollections, type CollectionRecord } from '../catalog/collections.ts';
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderRecord } from '../catalog/providers/types.ts';
@@ -32,7 +38,8 @@ import type { DeliveryRecord } from '../delivery/types.ts';
 import { createMemoryPasskeys } from '../iam/passkeys/memory.ts';
 import { createMemoryRenderStore } from '../renders/memory.ts';
 import {
-  SESSION_REVISION_LIMIT, effectiveGroups,
+  COMMENT_NOTICE_COUNT_MAX, SESSION_REVISION_LIMIT, commentNoticeId, effectiveGroups, noticeKeepCount, noticeListLimit,
+  type CommentNotice,
   type AccessRequestAnswer, type AccessRequestMatch, type AccessRequestRecord,
   type ApiTokenRecord, type AutomationJobRecord, type CollabSnapshot, type DeviceCodeRecord, type FleetRow, type InstallRow, type InvitationRecord, type LocalGroupRecord, type NewInvitationRecord, type PasswordAttempt, type PasswordCredentialRecord, type PasswordLinkRecord, type ProjectMemberRecord, type ProjectRecord, type ScimTokenRecord, type UserIdentityRecord,
   type SessionRecord, type SessionRevision, type Store, type SubmitQuotaRow, type UserRecord,
@@ -48,6 +55,8 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   let brandState = initialBrandState();
   const users = new Map<string, UserRecord>(); // by sub
   const localGroups = new Map<string, LocalGroupRecord>(); // registry, by name
+  const shareGroups = new Map<string, ShareGroupRecord>(); // user-made groups (0060), by id
+  const projectUserState = new Map<string, ProjectUserStateRecord>(); // per-person project view (0061)
   const scimTokens = new Map<string, ScimTokenRecord>(); // SCIM provisioning bearers, by id
   const apiTokens = new Map<string, ApiTokenRecord>(); // service tokens (plans/35), by id
   const documentAgents = new Map<string, DocumentAgentRecord>();
@@ -62,6 +71,13 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     for (const u of users.values()) if (u.id === id) return u;
     return undefined;
   };
+  /** A share group as Postgres would return it after an erasure: an owner
+   *  whose account is gone reads as null and gone managers drop out. */
+  const liveShareGroup = (g: ShareGroupRecord): ShareGroupRecord => ({
+    ...structuredClone(g),
+    ownerId: g.ownerId && userById(g.ownerId) ? g.ownerId : null,
+    managers: g.managers.filter((m) => userById(m)),
+  });
   const passkeys = createMemoryPasskeys(userById);
   const copyInvitation = (r: InvitationRecord): InvitationRecord => ({
     ...r, groups: [...r.groups], projects: (r.projects ?? []).map((p) => ({ ...p })),
@@ -76,7 +92,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   // Access requests (migration 0044). A row is "live open" while its status
   // is open and its expiry is after `now`; the key is the partial unique
   // index's (kind, email, project, invitation).
-  const REQUEST_ROLE_RANK: Record<string, number> = { viewer: 1, editor: 2, manager: 3 };
+  const REQUEST_ROLE_RANK: Record<string, number> = { viewer: 1, commenter: 2, editor: 3, manager: 4 };
   const liveOpen = (r: AccessRequestRecord, now: string): boolean =>
     r.status === 'open' && Date.parse(r.expiresAt) > Date.parse(now);
   const requestKey = (r: Pick<AccessRequestRecord, 'kind' | 'email' | 'projectId' | 'invitationId'>): string =>
@@ -129,6 +145,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const aliases = new Map<string, string>();
   const submitQuota = new Map<string, SubmitQuotaRow>();
   const catalogFields = new Map<string, CatalogFieldDef>();
+  const tagRules = new Map<string, CatalogTagRule>();
   const assetMeta = new Map<string, AssetMetaRecord>();
   const collections = new Map<string, CollectionRecord>();
   /** `${assetId} ${version}` (space-joined) - the composite key migration 0020 makes a
@@ -143,6 +160,21 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const projectMembers = new Map<string, ProjectMemberRecord>();
   const memberKey = (projectId: string, userId: string): string => `${projectId} ${userId}`;
   const commentThreads = new Map<string, CommentThread>();
+  // Comment reads and notices (migrations 0051, 0052), keyed like their primary keys.
+  const commentReads = new Map<string, { userId: string; threadId: string; sessionId: string; readAt: string }>(); // `${userId} ${threadId}`
+  const commentReadFloors = new Map<string, string>(); // `${userId} ${sessionId}` -> floor
+  const commentNotices = new Map<string, CommentNotice>(); // by id
+  const mentionSends = new Map<string, string>(); // JSON [threadId, messageId, userId] -> at
+  const noticeOrder = (a: CommentNotice, b: CommentNotice): number =>
+    Date.parse(b.createdAt) - Date.parse(a.createdAt) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
+  /** Postgres cascades a person's reads, floors, received notices and mention
+   *  sends away with their row; erasure also deletes the notices they caused. */
+  const forgetCommentState = (userId: string, asActor: boolean): void => {
+    for (const [k, r] of commentReads) if (r.userId === userId) commentReads.delete(k);
+    for (const k of commentReadFloors.keys()) if (k.startsWith(`${userId} `)) commentReadFloors.delete(k);
+    for (const [k, n] of commentNotices) if (n.userId === userId || (asActor && n.actorId === userId)) commentNotices.delete(k);
+    for (const k of mentionSends.keys()) if ((JSON.parse(k) as string[])[2] === userId) mentionSends.delete(k);
+  };
   const sessions = new Map<string, SessionRecord>();
   const sessionRevisions = new Map<string, SessionRevision[]>(); // sessionId -> ascending by rev
   const collabOwners = new Map<string, { owner: string; until: number }>();
@@ -855,6 +887,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
           for (const [key, r] of documentAgents) if (r.userId === id || r.createdBy === id) documentAgents.delete(key);
           for (const [key, r] of projectAgents) if (r.createdBy === id) projectAgents.delete(key);
           for (const key of agentCreations.keys()) if (!projectAgents.has(JSON.parse(key)[0])) agentCreations.delete(key);
+          forgetCommentState(id, false);
           return true;
         }
       }
@@ -878,6 +911,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       }
       users.delete(user.sub);
       passkeys.forgetUser(id);
+      forgetCommentState(id, true);
       for (const [key, r] of documentAgents) if (r.userId === id || r.createdBy === id) documentAgents.delete(key);
       for (const [key, r] of projectAgents) if (r.createdBy === id) projectAgents.delete(key);
       for (const key of agentCreations.keys()) if (!projectAgents.has(JSON.parse(key)[0])) agentCreations.delete(key);
@@ -1102,6 +1136,16 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     async deleteCatalogField(id) {
       catalogFields.delete(id);
     },
+    async listCatalogTagRules() {
+      return [...tagRules.values()].sort((a, b) => (a.scope < b.scope ? -1 : a.scope > b.scope ? 1 : 0))
+        .map((r) => ({ ...r, hidden: [...r.hidden] }));
+    },
+    async putCatalogTagRule(rule) {
+      tagRules.set(rule.scope, { ...rule, hidden: [...rule.hidden] });
+    },
+    async deleteCatalogTagRule(scope) {
+      tagRules.delete(scope);
+    },
     async getAssetMeta(assetId) {
       return assetMeta.get(assetId) ?? null;
     },
@@ -1295,6 +1339,11 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       f.ready = true;
       return true;
     },
+    async renameProjectFile(projectId, id, name) {
+      const file = projectFiles.get(id);
+      if (!file || file.projectId !== projectId || !file.ready) return false;
+      file.name = name; return true;
+    },
     async deleteProjectFile(id) { return projectFiles.delete(id); },
     async listSessionsUsingProjectFile(projectId, fileId) {
       const needle = projectFileAssetId(fileId);
@@ -1354,7 +1403,9 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     async putProjectMember(rec) {
       const k = memberKey(rec.projectId, rec.userId);
       const prev = projectMembers.get(k);
-      projectMembers.set(k, prev ? { ...prev, role: rec.role } : { ...rec });
+      const next: ProjectMemberRecord = prev ? { ...prev, role: rec.role } : { ...rec };
+      if (rec.expiresAt) next.expiresAt = rec.expiresAt; else delete next.expiresAt;
+      projectMembers.set(k, next);
     },
     async updateProjectMemberRole(projectId, userId, role) {
       const k = memberKey(projectId, userId);
@@ -1383,6 +1434,84 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       const previous = commentThreads.get(thread.id);
       if (!previous || previous.sessionId !== thread.sessionId || previous.revision !== expectedRevision || sessions.get(thread.sessionId)?.deletedAt) return false;
       commentThreads.set(thread.id, structuredClone(thread)); return true;
+    },
+    async getCommentThreadsByIds(ids) {
+      return [...new Set(ids)].flatMap((id) => { const thread = commentThreads.get(id); return thread ? [structuredClone(thread)] : []; });
+    },
+    async readCommentState(userId, sessionId) {
+      const now = new Date().toISOString(), key = `${userId} ${sessionId}`;
+      if (!commentReadFloors.has(key) && userById(userId) && sessions.has(sessionId)) commentReadFloors.set(key, now);
+      const reads = [...commentReads.values()].filter((r) => r.userId === userId && r.sessionId === sessionId);
+      return { reads: Object.fromEntries(reads.map((r) => [r.threadId, r.readAt])), floorAt: commentReadFloors.get(key) ?? now };
+    },
+    async markCommentsRead(userId, sessionId, entries) {
+      if (!userById(userId)) return;
+      const now = Date.now();
+      for (const { threadId, at } of entries) {
+        const thread = commentThreads.get(threadId), ms = Math.min(Date.parse(at), now);
+        if (!thread || thread.sessionId !== sessionId || !Number.isFinite(ms)) continue;
+        const key = `${userId} ${threadId}`, prev = commentReads.get(key);
+        if (prev && Date.parse(prev.readAt) >= ms) continue;
+        commentReads.set(key, { userId, threadId, sessionId, readAt: new Date(ms).toISOString() });
+      }
+    },
+    async upsertCommentNotice(n) {
+      const at = new Date(n.at).toISOString();
+      if (!userById(n.userId) || !commentThreads.has(n.threadId) || !sessions.has(n.sessionId) || !projects.has(n.projectId))
+        throw new Error('comment-notice-reference');
+      const id = commentNoticeId(n.userId, n.threadId), prev = commentNotices.get(id);
+      const kind = n.mentioned || prev?.kind === 'mention' ? 'mention' : n.kind;
+      if (!prev) {
+        commentNotices.set(id, { id, userId: n.userId, threadId: n.threadId, sessionId: n.sessionId, projectId: n.projectId,
+          kind, actorId: n.actorId, messageId: n.messageId, count: 1, createdAt: at });
+        return 'created';
+      }
+      commentNotices.set(id, prev.messageId === n.messageId ? { ...prev, kind } : {
+        ...prev, kind, actorId: n.actorId, messageId: n.messageId, count: Math.min(prev.count + 1, COMMENT_NOTICE_COUNT_MAX),
+        createdAt: Date.parse(at) > Date.parse(prev.createdAt) ? at : prev.createdAt,
+      });
+      return 'updated';
+    },
+    async listCommentNotices(userId, limit) {
+      return [...commentNotices.values()].filter((n) => n.userId === userId).sort(noticeOrder)
+        .slice(0, noticeListLimit(limit)).map((n) => ({ ...n }));
+    },
+    async deleteCommentNotices(userId, by) {
+      const ids = new Set(by.ids ?? []), threads = new Set(by.threadIds ?? []), sessionIds = new Set(by.sessionIds ?? []);
+      let n = 0;
+      for (const [k, row] of commentNotices) {
+        if (row.userId !== userId || !(ids.has(row.id) || threads.has(row.threadId) || sessionIds.has(row.sessionId))) continue;
+        commentNotices.delete(k); n++;
+      }
+      return n;
+    },
+    async countNoticesByActorSince(actorId, sinceIso) {
+      const since = Date.parse(new Date(sinceIso).toISOString());
+      return [...commentNotices.values()].filter((n) => n.actorId === actorId && Date.parse(n.createdAt) >= since).length;
+    },
+    async pruneCommentNotices(userId, keep, olderThanIso) {
+      const cutoff = Date.parse(new Date(olderThanIso).toISOString()), kept = noticeKeepCount(keep);
+      const rows = [...commentNotices.values()].filter((n) => n.userId === userId).sort(noticeOrder);
+      let n = 0;
+      rows.forEach((row, i) => {
+        if (i < kept && Date.parse(row.createdAt) >= cutoff) return;
+        commentNotices.delete(row.id); n++;
+      });
+      return n;
+    },
+    async recordMentionSends(threadId, messageId, userIds, at) {
+      const stamp = new Date(at).toISOString();
+      if (!commentThreads.has(threadId)) return [];
+      return [...new Set(userIds)].filter((userId) => {
+        const key = JSON.stringify([threadId, messageId, userId]);
+        if (!userById(userId) || mentionSends.has(key)) return false;
+        mentionSends.set(key, stamp); return true;
+      });
+    },
+    async forgetMentionSends(threadId, messageId, userIds) {
+      let n = 0;
+      for (const userId of new Set(userIds)) if (mentionSends.delete(JSON.stringify([threadId, messageId, userId]))) n++;
+      return n;
     },
     async putSession(session) {
       if ((collabOwners.get(session.id)?.until ?? 0) > Date.now()) throw new Error('collab-active');
@@ -1473,8 +1602,6 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
         collabJournal.set(session.id, [...(collabJournal.get(session.id) ?? []), { revision: rev, ops }]);
       }
       for (const r of batch.receipts) collabReceipts.set(receiptKey(session.id, batch.principal, r.id), { ...r, revision: rev });
-      const revisions = sessionRevisions.get(session.id) ?? [];
-      sessionRevisions.set(session.id, [...revisions, { sessionId: session.id, rev, inputs, meta: session.meta, actor: batch.actor, at }].slice(-SESSION_REVISION_LIMIT));
       return rev;
     },
     async commitCollabReceipts(batch) {
@@ -1495,6 +1622,188 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     },
     async deleteCollabSnapshot(sessionId) {
       collabSnapshots.delete(sessionId);
+    },
+
+    // The sharing ladder (migration 0060; lolly plan 299 M1).
+    async setProjectMemberExpiry(projectId, userId, expiresAt) {
+      const k = memberKey(projectId, userId);
+      const prev = projectMembers.get(k);
+      if (!prev) return null;
+      const next: ProjectMemberRecord = { ...prev };
+      if (expiresAt) next.expiresAt = expiresAt; else delete next.expiresAt;
+      projectMembers.set(k, next);
+      return { ...next };
+    },
+    async listShareGroups() {
+      return [...shareGroups.values()].map(liveShareGroup).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : a.id < b.id ? -1 : 1));
+    },
+    async getShareGroup(id) {
+      const g = shareGroups.get(id);
+      return g ? liveShareGroup(g) : null;
+    },
+    async putShareGroup(group) {
+      shareGroups.set(group.id, structuredClone(group));
+    },
+    async deleteShareGroup(id) {
+      shareGroups.delete(id);
+      for (const u of users.values()) {
+        if (u.shareGroups?.includes(id)) users.set(u.sub, { ...u, shareGroups: u.shareGroups.filter((g) => g !== id) });
+      }
+    },
+    async listShareGroupMembers(id) {
+      return [...users.values()].filter((u) => u.shareGroups?.includes(id)).map(mapped);
+    },
+    async setUserShareGroups(userId, ids) {
+      const u = userById(userId);
+      if (!u) return null;
+      const next: UserRecord = { ...u, shareGroups: [...new Set(ids.filter(Boolean))] };
+      users.set(u.sub, next);
+      return mapped(next);
+    },
+    async addUserShareGroup(userId, groupId) {
+      const u = userById(userId);
+      if (!u || !shareGroups.has(groupId)) return null;
+      if (u.shareGroups?.includes(groupId)) return mapped(u);
+      const next: UserRecord = { ...u, shareGroups: [...(u.shareGroups ?? []), groupId] };
+      users.set(u.sub, next);
+      return mapped(next);
+    },
+    async removeUserShareGroup(userId, groupId) {
+      const u = userById(userId);
+      if (!u) return null;
+      const next: UserRecord = { ...u, shareGroups: (u.shareGroups ?? []).filter((g) => g !== groupId) };
+      users.set(u.sub, next);
+      return mapped(next);
+    },
+    async listProjectUserState(userId) {
+      // Rows go with the person and with the project, as the foreign keys do in Postgres.
+      return [...projectUserState.values()]
+        .filter((r) => r.userId === userId && userById(userId) && projects.has(r.projectId))
+        .map((r) => ({ ...r }));
+    },
+    async putProjectUserState(userId, projectId, change) {
+      const key = `${userId} ${projectId}`;
+      const next: ProjectUserStateRecord = { ...(projectUserState.get(key) ?? { userId, projectId }) };
+      if (change.listed !== undefined) { if (change.listed) next.listed = change.listed; else delete next.listed; }
+      if (change.lastOpenedAt) next.lastOpenedAt = change.lastOpenedAt;
+      projectUserState.set(key, next);
+      return { ...next };
+    },
+    ...createMemoryVersions(sessions),
+  };
+}
+
+type VersionMethods = 'configureVersionLimits' | 'putSessionVersion' | 'listSessionVersions' | 'getSessionVersion' | 'deleteSessionVersion' | 'deleteSessionVersions';
+
+/**
+ * Session versions (plan 76 M4 R2): the memory twin of migration 0053's two
+ * tables. Writes run one at a time, as the Postgres driver's lock makes them, and
+ * the rules are the shared `planSessionVersionPut`.
+ */
+function createMemoryVersions(sessions: ReadonlyMap<string, SessionRecord>): Pick<Store, VersionMethods> {
+  type Stored = Omit<SessionVersion, 'inputs' | 'bytes'> & { digest: string; requestId?: string };
+  const versions = new Map<string, Stored>(); // by id
+  const contents = new Map<string, { sessionId: string; digest: string; inputs: Record<string, unknown>; bytes: number }>(); // `${sessionId} ${digest}`
+  const contentKey = (sessionId: string, digest: string): string => `${sessionId} ${digest}`;
+  let limits: SessionVersionLimits = resolveVersionLimits({});
+  let writes: Promise<unknown> = Promise.resolve();
+  const serial = <T>(work: () => Promise<T>): Promise<T> => {
+    const run = writes.then(work);
+    writes = run.catch(() => undefined);
+    return run;
+  };
+  const rowOf = (v: Stored): SessionVersionRow => ({ id: v.id, sessionId: v.sessionId, kind: v.kind, digest: v.digest, at: v.at,
+    ...(v.createdBy !== undefined ? { createdBy: v.createdBy } : {}), ...(v.requestId !== undefined ? { requestId: v.requestId } : {}),
+    ...(v.beforeId !== undefined ? { beforeId: v.beforeId } : {}) });
+  const summary = (v: Stored): SessionVersionSummary => ({
+    id: v.id, sessionId: v.sessionId, rev: v.rev, kind: v.kind, ...(v.label !== undefined ? { label: v.label } : {}),
+    contributors: structuredClone(v.contributors), ...(v.createdBy !== undefined ? { createdBy: v.createdBy } : {}),
+    ...(v.restoredFrom !== undefined ? { restoredFrom: v.restoredFrom } : {}), ...(v.beforeId !== undefined ? { beforeId: v.beforeId } : {}),
+    bytes: contents.get(contentKey(v.sessionId, v.digest))?.bytes ?? 0, at: v.at,
+  });
+  const own = (sessionId: string): Stored[] => [...versions.values()].filter((v) => v.sessionId === sessionId);
+  /** Delete versions as Postgres would: references to them become unset, then
+   *  the contents no version uses any more go. */
+  const drop = (ids: Iterable<string>): number => {
+    const gone = new Set(ids), touched = new Set<string>();
+    let count = 0;
+    for (const id of gone) {
+      const v = versions.get(id);
+      if (!v) continue;
+      touched.add(v.sessionId); versions.delete(id); count++;
+    }
+    for (const v of versions.values()) {
+      if (v.restoredFrom !== undefined && gone.has(v.restoredFrom)) delete v.restoredFrom;
+      if (v.beforeId !== undefined && gone.has(v.beforeId)) delete v.beforeId;
+    }
+    const used = new Set([...versions.values()].map((v) => contentKey(v.sessionId, v.digest)));
+    for (const [key, c] of contents) if (touched.has(c.sessionId) && !used.has(key)) contents.delete(key);
+    return count;
+  };
+
+  return {
+    configureVersionLimits(next) { limits = resolveVersionLimits(next); },
+    putSessionVersion(input) {
+      return serial(async (): Promise<SessionVersionPut> => {
+        const w = normalizeSessionVersionWrite(input);
+        const session = sessions.get(w.sessionId);
+        if (!session || session.deletedAt) throw new Error('session-gone');
+        for (const ref of [w.restoredFrom, w.beforeId]) if (ref !== undefined && versions.get(ref)?.sessionId !== w.sessionId) throw new Error('version-reference');
+        const content = sessionVersionContent(w.inputs);
+        const id = sessionVersionId();
+        const mine = own(w.sessionId);
+        const plan = await planSessionVersionPut(w, id, content, {
+          rows: mine.map(rowOf),
+          contents: new Map([...contents.values()].filter((c) => c.sessionId === w.sessionId).map((c) => [c.digest, c.bytes])),
+          instanceBytes: async () => [...contents.values()].reduce((sum, c) => sum + c.bytes, 0),
+          instanceRows: async () => ({ rows: [...versions.values()].map(rowOf), contents: new Map([...contents].map(([key, c]) => [key, c.bytes])) }),
+        }, limits);
+        if (plan.action === 'refuse') return plan.reason;
+        if (plan.action === 'return') return { version: summary(versions.get(plan.id)!), created: false };
+        if (plan.action === 'skip') {
+          const latest = mine.sort(newestVersionFirst)[0];
+          return latest ? { version: summary(latest), created: false } : 'version-space';
+        }
+        if (plan.contentIsNew) contents.set(contentKey(w.sessionId, content.digest), { sessionId: w.sessionId, digest: content.digest, inputs: structuredClone(w.inputs), bytes: content.bytes });
+        const { inputs: _inputs, keep: _keep, ...fields } = w;
+        const stored: Stored = { ...structuredClone(fields), id, digest: content.digest };
+        versions.set(id, stored);
+        drop(plan.drops);
+        return { version: summary(stored), created: true };
+      });
+    },
+    async listSessionVersions(sessionId, opts) {
+      const rows = own(sessionId).sort(newestVersionFirst);
+      let start = 0;
+      if (opts.before !== undefined) {
+        start = rows.findIndex((v) => v.id === opts.before) + 1;
+        if (start === 0) return [];
+      }
+      return rows.slice(start, start + versionListLimit(opts.limit)).map(summary);
+    },
+    async getSessionVersion(sessionId, id) {
+      const v = versions.get(id);
+      if (!v || v.sessionId !== sessionId) return null;
+      const inputs = contents.get(contentKey(sessionId, v.digest))?.inputs ?? {};
+      return { ...summary(v), inputs: structuredClone(inputs), meta: structuredClone(v.meta) };
+    },
+    deleteSessionVersion(sessionId, id) {
+      return serial(async () => {
+        const v = versions.get(id);
+        if (!v || v.sessionId !== sessionId) return false;
+        const ids = new Set([id]);
+        if (v.beforeId !== undefined) ids.add(v.beforeId);
+        for (const r of versions.values()) if (r.sessionId === sessionId && r.beforeId === id) ids.add(r.id);
+        drop(ids);
+        return true;
+      });
+    },
+    deleteSessionVersions(sessionId) {
+      return serial(async () => {
+        const count = drop(own(sessionId).map((v) => v.id));
+        for (const [key, c] of contents) if (c.sessionId === sessionId) contents.delete(key);
+        return count;
+      });
     },
   };
 }

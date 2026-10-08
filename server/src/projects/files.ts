@@ -97,7 +97,13 @@ export function projectFilesEnabled(config: Pick<InstanceConfig, 'policy'>, stor
 }
 
 /** Control characters, and half an emoji, which Postgres refuses inside JSON. */
-const UNSAFE_TEXT = /[\x00-\x1f\x7f]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+export const UNSAFE_TEXT = /[\x00-\x1f\x7f]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+
+/** A file name an upload or a rename accepts: 1 to 200 characters, not blank, with
+ *  no control character or half an emoji. The download route encodes the name with
+ *  encodeURIComponent, which throws on half an emoji. */
+export const validProjectFileName = (name: unknown): name is string =>
+  typeof name === 'string' && !!name.trim() && name.length <= 200 && !UNSAFE_TEXT.test(name);
 
 /** What the instance keeps beside a file's bytes, from what the shell's
  *  org/team-files.ts `describe` sends: its kind, format, size in pixels and
@@ -122,7 +128,7 @@ export function projectFileInput(value: unknown): Pick<ProjectFileRecord, 'name'
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const v = value as Record<string, unknown>;
   const digest = (s: unknown): s is string => typeof s === 'string' && /^[a-f0-9]{64}$/.test(s);
-  if (typeof v.name !== 'string' || !v.name.trim() || v.name.length > 200 || UNSAFE_TEXT.test(v.name)) return null;
+  if (!validProjectFileName(v.name)) return null;
   if (!Number.isSafeInteger(v.size) || (v.size as number) < 1 || (v.size as number) > PROJECT_FILE_MAX_BYTES || !digest(v.checksum)) return null;
   if (typeof v.contentType !== 'string' || !/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i.test(v.contentType) || v.contentType.length > 100) return null;
   if (!Array.isArray(v.parts) || v.parts.length !== Math.ceil((v.size as number) / PROJECT_FILE_PART_BYTES)) return null;

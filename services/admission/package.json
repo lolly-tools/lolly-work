@@ -1,0 +1,15 @@
+{
+  "name": "@lolly-tools/admission",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MPL-2.0",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "start": "node src/main.mjs",
+    "test": "node --test test/*.test.mjs",
+    "transfer": "node src/transfer.mjs"
+  },
+  "dependencies": { "@redis/client": "5.12.1" },
+  "packageManager": "pnpm@11.26.0"
+}

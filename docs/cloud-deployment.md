@@ -27,6 +27,11 @@ moving a public host must not publish private packs, uploaded assets or member c
 
 ## SUSE Kubernetes and dependency images
 
+The [platform deployment guide](platform-deployment.md) provides separate
+starting points for readers, IT operators and release developers, including
+on-premises and other cloud foundations, host readiness, Ansible/Salt and
+rootless Podman image builds.
+
 The optional [SUSE deployment runbook](../deploy/suse/README.md) covers a small
 K3s profile, RKE2 for larger operational requirements, provider CSI storage and
 Longhorn for qualified multi-node storage. Both cloud foundations can host these
