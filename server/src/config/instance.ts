@@ -22,6 +22,7 @@ import { DELIVERY_DESTINATION_KINDS, type ConfigDeliveryDestination } from '../d
 import { AUTH_PARAM_ALLOWLIST, type ClaimMap } from '../iam/oidc.ts';
 import type { AdmissionPolicy, EmailVerification } from '../iam/admission.ts';
 import type { RoleGroups } from '../rbac/evaluate.ts';
+import { validateSharingPolicy } from '../policy/sharing.ts';
 
 /** A deploy-time (GitOps/air-gap) provider entry - upserted at boot with
  *  managedBy:'config' and read-only in the control-plane API (plans/17 §4).
@@ -237,6 +238,10 @@ export interface InstanceConfig {
     /** Access requests (plans/75 G13): who may ask for what, and for how
      *  long a request stays open. See `RequestPolicy`. */
     requests: RequestPolicy;
+    /** Sharing limits (lolly plan 299 M1): the instance-wide audience, its
+     *  role ceiling, user-made groups and the longest grant. Absent: every
+     *  default (see `policy/sharing.ts`). */
+    sharing?: import('../policy/sharing.ts').SharingPolicyConfig;
   };
   render: {
     /**
@@ -286,6 +291,28 @@ export interface InstanceConfig {
    *  env var holds. Optional LDAP lookup fills attributes and groups. */
   proxyAuth: ProxyAuthConfig;
   catalogProviders: ConfigCatalogProvider[];
+  /**
+   * How the catalog feed and federated bytes behave at DAM scale (tens of
+   * thousands of assets). Instance config rather than org policy: these are
+   * sizing knobs for this process, and every value has a working default.
+   *
+   * - `maxProviderAssets`: most assets one provider sync federates, unless the
+   *   provider's own `sync.maxAssets` says otherwise. A walk that stops here
+   *   marks the fragment truncated and says so in the sources view.
+   * - `pagedProviderThreshold`: a provider with more assets than this is left
+   *   out of `assets/index.json?paged=1` and listed under `pagedProviders`, so
+   *   a client can browse that provider through `GET /api/v1/catalog/assets`
+   *   instead of mirroring the whole source. Requests without `paged=1` are unchanged.
+   * - `extCache`: an in-memory cache of federated bytes (originals and
+   *   thumbnails) keyed by the entry version, so a grid of DAM thumbnails does
+   *   not refetch upstream on every view. `maxBytes` 0 turns it off; an item
+   *   larger than `maxItemBytes` streams through uncached.
+   */
+  catalogServing: {
+    maxProviderAssets: number;
+    pagedProviderThreshold: number;
+    extCache: { maxBytes: number; maxItemBytes: number };
+  };
   /**
    * Fixed organization-owned outbound targets. Credentials are per-entry env
    * refs, never part of org-config; personal device targets do not enter this
@@ -565,6 +592,11 @@ const DEFAULTS: InstanceConfig = {
     directory: null,
   },
   catalogProviders: [],
+  catalogServing: {
+    maxProviderAssets: 100_000,
+    pagedProviderThreshold: 2000,
+    extCache: { maxBytes: 64 * 1024 * 1024, maxItemBytes: 2 * 1024 * 1024 },
+  },
   delivery: { maxBytes: 64 * 1024 * 1024, destinations: [] },
   blobs: { driver: 'pg' },
   notify: { people: { email: false } },
@@ -863,6 +895,7 @@ export function parseConfig(json: string): InstanceConfig {
   }
   if (files.uploadTtlHours > 720) throw new Error(`invalid policy.projectFiles.uploadTtlHours: ${files.uploadTtlHours} (at most 720)`);
   validateRequestPolicy(cfg.policy.requests);
+  validateSharingPolicy(cfg.policy.sharing);
   // Additional IdPs (plans/36 §3): defaults applied, then validated hard - a
   // half-described issuer would fail at sign-in, in front of the person.
   if (cfg.idp.pending !== undefined && (!Array.isArray(cfg.idp.pending) || cfg.idp.pending.length > 8 || cfg.idp.pending.some(name => typeof name !== 'string' || !name.trim() || name.length > 80))) throw new Error('idp.pending must be a list of at most eight short provider names');
@@ -996,6 +1029,17 @@ export function parseConfig(json: string): InstanceConfig {
     seen.add(p.id);
     if (!PROVIDER_KINDS.includes(p.kind)) throw new Error(`unknown catalog provider kind: ${p.kind}`);
     if (!p.label) throw new Error(`catalog provider ${p.id} needs a label`);
+  }
+  const cs = cfg.catalogServing;
+  const wholeIn = (v: unknown, min: number, max: number): boolean => typeof v === 'number' && Number.isInteger(v) && v >= min && v <= max;
+  if (!wholeIn(cs.maxProviderAssets, 1, 10_000_000)) throw new Error(`invalid catalogServing.maxProviderAssets: ${cs.maxProviderAssets} (a whole number, 1-10000000)`);
+  if (!wholeIn(cs.pagedProviderThreshold, 1, 10_000_000)) throw new Error(`invalid catalogServing.pagedProviderThreshold: ${cs.pagedProviderThreshold} (a whole number, 1-10000000)`);
+  if (!cs.extCache || !wholeIn(cs.extCache.maxBytes, 0, 4 * 1024 ** 3) || !wholeIn(cs.extCache.maxItemBytes, 0, 256 * 1024 ** 2)) {
+    throw new Error('catalogServing.extCache needs whole-number maxBytes (0-4 GiB, 0 turns the cache off) and maxItemBytes (0-256 MiB)');
+  }
+  for (const p of cfg.catalogProviders) {
+    const m: unknown = p.sync?.maxAssets;
+    if (m !== undefined && !wholeIn(m, 1, 10_000_000)) throw new Error(`catalog provider ${p.id} sync.maxAssets must be a whole number, 1-10000000`);
   }
   if (!Number.isFinite(cfg.delivery.maxBytes) || cfg.delivery.maxBytes <= 0) {
     throw new Error(`invalid delivery.maxBytes: ${cfg.delivery.maxBytes}`);

@@ -26,8 +26,9 @@ A running web UI + CLI, dead easy. The one install guide is
   **openSUSE Leap + Rancher Community** (free): SUSE's reproducible builds + governed EU (Prague)
   supply chain, air-gappable, no US hyperscaler (`docs/deployment.md` → *Sovereignty*).
 
-The hosted demo runs on Vercel today for convenience only (moving to a European sovereign cloud);
-it is never the deployment model. Prerequisites and per-OS steps (SLES / openSUSE Leap / macOS)
+The hosted demo runs on UpCloud in Frankfurt, on openSUSE Leap and K3s, in a
+separate evaluation namespace. Its sample data resets on restart; it is never the
+production deployment model. Prerequisites and per-OS steps (SLES / openSUSE Leap / macOS)
 are in [`docs/install.md`](docs/install.md); the full operator set is in `docs/` (below).
 
 ## Documentation

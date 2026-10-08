@@ -160,7 +160,7 @@ See [email and password](identity.md#email-and-password) for the flow.
 | `invites.allow` | `admins` | who may invite **new** people by email, from inside Lolly or from the console and `lw invite add`: `owners` (instance owners), `admins` (holders of `user.invite`: admins and owners by default) or `members` (any member not denied `user.invite`). Inviting through a project also needs manager on that project |
 | `invites.domains` | `[]` | when not empty, a new address must be at one of these domains (a leading `@` is dropped, matching is case-insensitive) |
 | `invites.maxTtlHours` | `720` | how long an invitation made from a project stays open; at most 8784 (366 days) |
-| `invites.projectRoles` | all three | which project roles may be given by invitation or role change: any of `viewer`, `editor`, `manager` |
+| `invites.projectRoles` | all four | which project roles may be given by invitation, role change or group grant: any of `viewer`, `commenter`, `editor`, `manager`. A commenter reads and comments but never changes artwork |
 | `invites.passwordDomains` | `[]` | domains whose people usually sign in with email and password, the same rule as `domains`. When every address on a console or project invite is at one of them, "Can set a password" starts ticked, so the invite link also sets the password. It only suggests: the tick stays an admin's choice. See [setting a password from the link](identity.md#setting-a-password-from-the-link) |
 | `requests.project` | `true` | members may ask for access to a project or session link they cannot open, and viewers may ask to edit. See [asking for access](sharing.md#asking-for-access) |
 | `requests.join` | `false` | a person who signed in but is not admitted may ask the admins to let them in, from the refusal page. Off by default, because it lets anyone who can sign in somewhere reach the admins. See [asking to join](identity.md#asking-to-join) |
@@ -171,6 +171,10 @@ See [email and password](identity.md#email-and-password) for the flow.
 | `comments.mentions` | `true` | `@` mentions in comments and the `comment-people` list behind them; `false` stores no mentions and refuses that list. See [canvas comments](api.md#canvas-comments) |
 | `comments.notices` | `true` | inbox notices for mentions and replies; `false` writes none and hides the ones already written (they are still removed at 30 days) |
 | `comments.emailTitles` | `false` | name the document in mention email. Off, a private document's title is not sent to a mail provider. Mention email itself is a seam that is off in this release |
+| `sharing.instance.enabled` | `true` | whether a project may be shared with everyone signed in to this instance (never guests or service tokens). `false` also stops shares made before the change |
+| `sharing.instance.maxRole` | `commenter` | the highest role that audience may get: `viewer`, `commenter` or `editor`. Lowering it lowers existing shares too |
+| `sharing.customGroups` | `true` | whether members may make their own groups (`group.create`) and share projects with them. These groups never count as directory groups for grants |
+| `sharing.maxGrantDays` | *unset* | the longest end date a membership or group grant may carry, in whole days (1 to 3660). Unset means no limit |
 | `versions.maxBytes` | `1073741824` | bytes of saved-version content all documents together may hold (1 GiB); one document may hold at most 100 MiB. Over it the oldest automatic versions are removed first, then a named save or a restore answers `409 VERSION_SPACE`. See [data lifecycle](data-lifecycle.md#session-versions) |
 | `sessionTtlHours` | `12` | member session lifetime (token `exp` and cookie `Max-Age`); must be > 0 and ≤ 720 |
 | `submit.maxBytes` | `67108864` | per-file cap on a catalog submission (64 MiB, matching publish-out). Over it: `413 PAYLOAD_TOO_LARGE` |
@@ -445,8 +449,10 @@ carries them, switching email on takes these steps:
 
 1. **Pick a provider** that gives you an SMTP relay on port 587 with STARTTLS and its own
    DNS records, such as Postmark, or Amazon SES. The sender address needs no mailbox.
-2. **Configure** the relay in `instance.json` and redeploy (`deploy/vm/push.sh` for
-   lolly.ing):
+2. **Configure** the relay in `instance.json` and apply it through your instance's
+   reviewed deployment route. lolly.ing uses UpCloud/K3s; its old
+   `deploy/vm/push.sh` route is historical (see
+   [current hosted production](deployment.md#current-hosted-production)):
 
    ```json
    "notify": {
@@ -456,7 +462,9 @@ carries them, switching email on takes these steps:
    ```
 
    Put the relay password or token in `LW_SMTP_PASSWORD` in the server's environment
-   (`/opt/lolly-ing/.env` on the lolly.ing VM), never in the file. `secure: false`
+   through your deployment's secret store, never in the configuration file.
+   On Kubernetes, use the existing instance Secret; the former
+   `/opt/lolly-ing/.env` is not the current lolly.ing configuration. `secure: false`
    with port 587 takes STARTTLS when the relay offers it; use `secure: true` only for
    port 465.
 3. **Publish the DNS records** the provider shows, in the domain's DNS. For lolly.ing that
@@ -497,7 +505,27 @@ Deploy-time (GitOps / air-gap) provider entries, upserted at boot as `managedBy:
 and read-only in the API. Each entry: `id` (lowercase, dash-separated), `kind`, `label`,
 optional `credentialRef` (the *name* of the env var holding the secret), `enabled`,
 `options`, `mapping`, `exposure`, `sync`. Duplicate ids, unknown kinds and missing labels
-are startup errors. See [catalog](catalog.md).
+are startup errors. A provider's `sync.maxAssets` (a whole number) caps how many assets one
+sync federates from that provider. See [catalog](catalog.md).
+
+## `catalogServing`
+
+Sizing for catalogs with tens of thousands of assets. Every key has a working default.
+
+| Key | Default | What |
+|---|---|---|
+| `maxProviderAssets` | `100000` | most assets one provider sync federates, unless the provider sets `sync.maxAssets`. A walk that stops here is marked truncated |
+| `pagedProviderThreshold` | `2000` | providers larger than this leave `assets/index.json?paged=1` and are listed under `pagedProviders` |
+| `extCache.maxBytes` | `67108864` (64 MiB) | memory for cached federated bytes; `0` turns the cache off |
+| `extCache.maxItemBytes` | `2097152` (2 MiB) | larger files stream through uncached |
+
+See [large catalogs](catalog.md#large-catalogs).
+
+`mapping.hiddenTags` lists labels this provider's assets never show: exact tags or prefixes
+ending in `*`, matched without regard to case. It is applied when the index is served, so a
+change takes effect at the next restart with no re-sync; the console's Tags panel shows these
+as set in instance.json. A database-managed provider takes the same list from the console
+instead ([hiding tags](catalog.md#hiding-tags)).
 
 ## Environment variables
 
@@ -541,6 +569,7 @@ sessions die on restart. In production (`NODE_ENV=production`) their absence thr
 | `NODE_ENV` | - | `production` makes secret checks fail-closed |
 | `LW_TEST_DATABASE_URL` | - | enables the Postgres conformance leg in `pnpm test` |
 | `LOLLY_OSS_DIR` | `../lolly` | where `pnpm run demo` finds the built OSS web shell |
+| `LW_DEMO_MOCK_ASSETS` | - | `pnpm run demo` only: also seeds a mock provider, `demo-dam-large`, with this many synthetic assets (half SVG, half PNG, up to 200000) for checking the shell against a large catalog |
 
 ## Changing configuration
 

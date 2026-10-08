@@ -5,6 +5,29 @@ configuration and secrets arrive, who applies migrations, and whether the pack,
 shell, collaboration gateway and Chromium worker are present. UpCloud and Evroc
 provide repeatable VM foundations for the shared application deployment.
 
+## Current hosted production
+
+Since 7 October 2026, **lolly.ing** and **lolly.tools**, including their `www`
+aliases, run on the same UpCloud host with openSUSE Leap 16.0 and K3s. Work,
+the render worker and live relay are separate Kubernetes workloads. PostgreSQL
+18.6 runs on that host; the public shell, APIs and managed HTTPS edge also run
+there. These two domains no longer use Vercel or Neon for their live runtime.
+Read the [SUSE deployment guide](../deploy/suse/README.md) and
+[small Kubernetes profile](../deploy/helm/SMALL-SUSE.md) for the reusable kits.
+The reviewed instance deployment handoff defines the actual host, cluster,
+secrets, persistent volumes and pinned release; a generic example is not that handoff.
+
+The former lolly.ing Compose services remain stopped and their database access
+is fenced. That host is retained for SSH access and verified HTTPS forwarding
+to the current host. Do not replay its Compose, Neon or Vercel rollback commands,
+restore its database access, or point production DNS at those old targets.
+
+The **lolly.work** evaluation demo also runs on that UpCloud host, in its own
+namespace with ephemeral sample data, separate keys and network isolation from
+private workspaces. Its automatic Vercel deployment from this repository's CI has
+been retired. Optional generic Vercel adapters remain qualified in CI for
+operators who choose that target.
+
 | Shape | Where used | Schema owner | Pack / shell |
 |---|---|---|---|
 | Local (`node server/src/main.ts`) | development, evaluation | boot auto-migrate | local paths |
@@ -12,7 +35,7 @@ provide repeatable VM foundations for the shared application deployment.
 | Helm (`deploy/helm/`) | Kubernetes / Rancher, one collaboration owner | pre-install/upgrade Job | volumes you mount |
 | YunoHost (`deploy/yunohost/`) | a self-hosting box, sign-in with its accounts | boot auto-migrate | seeded from the shell into the app's data directory |
 | Vercel (`vercel.json` + `scripts/build-vercel-fn.mjs`) | trial / pilot / public demo | Neon + external migrate | demo pack bundled; shell not served |
-| Single VM with Caddy (`deploy/vm/`) | one small team on its own domain, with live co-editing | boot auto-migrate over the direct URL | pack mounted read-only; a signed shell served natively when configured, otherwise proxied through Caddy. lolly.ing uses native shell serving |
+| Single VM with Caddy (`deploy/vm/`) | one small team on its own domain, with live co-editing | boot auto-migrate over the direct URL | pack mounted read-only; a signed shell served natively when configured, otherwise proxied through Caddy |
 | Vercel private instance (the same build with `LW_SHELL_ORIGIN`, `LW_PACK_DIR`) | a small, sign-in gated team on its own domain | Neon, migrated at cold start | pack from `scripts/build-instance-pack.ts` bundled; a public shell proxied onto the same origin, catalog signed per caller with `LW_CATALOG_SIGNING_KEY`; no live co-editing. See `deploy/vercel/README.md`, section 6 |
 
 ## Render topologies - the default is Chromium-free
@@ -265,7 +288,11 @@ The shell is not mounted by default (console + API only). A commented-out mount 
 access mode, `instance.shellDir` with a missing or stale dist stops boot
 (`LW_ALLOW_STALE_SHELL=1` to override).
 
-## Single VM with Caddy (lolly.ing)
+## Single VM with Caddy
+
+This kit remains available for new instances. Its lolly.ing example records the
+former Compose deployment; the current hosted production uses K3s as described
+above. Do not use the old example to update either production domain.
 
 For repeatable VM creation, the [UpCloud and Evroc guide](cloud-deployment.md) covers
 the OpenTofu/Terraform modules, credential-free qualification and the optional
@@ -274,7 +301,7 @@ database and existing public API proxy.
 
 `deploy/vm/` runs a private instance on one server: Caddy for TLS and routing, the
 lolly-work server built from `deploy/compose/Dockerfile` (it runs the live co-editing gateway
-in process), and a managed Postgres outside the VM (Neon for lolly.ing) holding the records
+in process), and a configured Postgres database holding the records
 and the blobs. With `instance.shellDir`, Caddy sends static shell requests to the
 Work server for native signed-shell serving. Otherwise it proxies the public shell
 with the session cookie removed. Public OSS API functions continue through the
@@ -289,7 +316,7 @@ updates, keys-only ssh),
 `secrets.sh` (the env file over ssh, mode 0600, no value printed), `push.sh` (a clean
 source export, the pack and the configuration, then build, restart and reload), and
 `smoke.sh` (checks by IP with `curl --resolve`, before and after the DNS cut). The runbook,
-including the rollback to Vercel, is `deploy/vm/README.md`.
+including historical migration details, is `deploy/vm/README.md`.
 
 Two settings matter on a database that scales to zero. `LW_BACKGROUND_POLL_MS=0` stops the
 render and automation runners from polling every second (work still runs at boot, on
@@ -322,7 +349,9 @@ bundled into the function, so Tier-A (SVG + resvg PNG) renders in-process. What'
 absent: no large real pack mount, no Chromium (Tier-B jpg/pdf), the 1.9 GB Lolly
 web shell is not served (the demo landing at `/` stands in), and **no real WebSocket collab**
 (the Rooms panel shows mock rooms; live editing is the sovereign Helm deploy's ws gateway - 
-see `deploy/vercel/WS-SPIKE.md`). Live at **lolly.work**; runbook: `deploy/vercel/README.md`.
+see `deploy/vercel/WS-SPIKE.md`). This adapter is optional; the hosted **lolly.work**
+evaluation now uses the isolated UpCloud/K3s workload described above. Adapter
+runbook: `deploy/vercel/README.md`.
 
 ## Verifying the images
 

@@ -26,7 +26,7 @@ import { sha256Hex } from '../lib/crypto.ts';
 import type { PeopleNotifier } from '../notify/people.ts';
 import { createWindowQuota } from '../projects/sharing.ts';
 import type { Store, UserRecord, SessionRecord, ProjectRecord } from '../store/types.ts';
-import { accessAtLeast, type ProjectAccess } from '../rbac/project-access.ts';
+import { accessAtLeast, mayCommentOn, type ProjectAccess } from '../rbac/project-access.ts';
 import { mayReadComments } from './access.ts';
 import { eligibleMentionIds, mentionName, mentionsStillInBody, readMentionRequest } from './mentions.ts';
 import { createActorCap, recordCommentNotices } from './notices.ts';
@@ -92,8 +92,10 @@ export function registerCommentRoutes(router: ReturnType<typeof createRouter>, d
     if (!read.ok && read.reason === 'forbidden') { sendError(res, 403, 'FORBIDDEN', 'Comment access required.'); return null; }
     const enabled = read.ok, can = read.ok ? read.can : () => false;
     const writable = enabled && !found.project.archivedAt;
+    // A viewer comments only while the project keeps "Viewers can comment" on
+    // (rbac/project-access.ts mayCommentOn); a commenter or higher always may.
     return { ...found, user, grants, enabled, permissions: { userId: user.id,
-      create: writable && can('comment.create'), editOwn: writable && can('comment.edit'),
+      create: writable && can('comment.create') && mayCommentOn(found.project, found.access), editOwn: writable && can('comment.edit'),
       resolveAny: writable && accessAtLeast(found.access, 'editor') && can('comment.resolve'),
       deleteAny: writable && accessAtLeast(found.access, 'manager') && can('comment.moderate') } };
   };

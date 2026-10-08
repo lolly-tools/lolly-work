@@ -19,7 +19,7 @@ import { randomId } from '../lib/crypto.ts';
 import { nameWithoutEmail } from './sharing.ts';
 import {
   activeProjectFile, fileChecksum, filePartBlobId, projectFileExpiry, projectFileInput, projectFilePolicy, projectFilesEnabled, projectFileWire,
-  removeProjectFile, sweepExpiredProjectFiles, PROJECT_FILE_PART_BYTES, PROJECT_FILE_PENDING_FILES, PROJECT_FILE_PENDING_LIMIT,
+  removeProjectFile, sweepExpiredProjectFiles, validProjectFileName, PROJECT_FILE_PART_BYTES, PROJECT_FILE_PENDING_FILES, PROJECT_FILE_PENDING_LIMIT,
   type ProjectFileRecord,
 } from './files.ts';
 
@@ -45,12 +45,13 @@ const DOWNLOAD_BUDGETS_PER_DAY = 2;
 
 export function registerProjectFileRoutes(router: ReturnType<typeof createRouter>, d: Dependencies): void {
   /** read: viewer. write: `session.create` plus editor, and not archived.
+   *  rename uses `session.edit` with the same project access.
    *  delete: viewer here; the route then wants the uploader or a manager.
    *  Every mode wants a signed-in person, never a service token. */
-  const gate = async (req: IncomingMessage, res: ServerResponse, projectId: string, mode: 'read' | 'write' | 'delete'): Promise<{ user: UserRecord; access: ProjectAccess } | null> => {
+  const gate = async (req: IncomingMessage, res: ServerResponse, projectId: string, mode: 'read' | 'write' | 'rename' | 'delete'): Promise<{ user: UserRecord; access: ProjectAccess } | null> => {
     if (!projectFilesEnabled(d.config, d.store)) { sendError(res, 404, 'NOT_FOUND', 'project files are off'); return null; }
-    const write = mode === 'write';
-    const user = write ? await d.requireAction(req, res, 'session.create') : await d.memberOf(req);
+    const write = mode === 'write' || mode === 'rename';
+    const user = write ? await d.requireAction(req, res, mode === 'rename' ? 'session.edit' : 'session.create') : await d.memberOf(req);
     if (!user) { if (!write) sendError(res, 401, 'UNAUTHORIZED', 'sign in first'); return null; }
     // A service token passes requireAction, but a file names the person who
     // uploaded it and the read routes take people only.
@@ -241,6 +242,18 @@ export function registerProjectFileRoutes(router: ReturnType<typeof createRouter
       'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`, 'x-content-type-options': 'nosniff',
       'cache-control': 'private, no-store', etag: `"${file.checksum}"` });
     Readable.from(bytes()).on('error', () => res.destroy()).pipe(res);
+  });
+  router.add('PATCH', '/api/v1/projects/:id/files/:fileId', async (req, res, ctx) => {
+    const gated = await gate(req, res, ctx.params.id!, 'rename'); if (!gated) return;
+    const project = await d.store.getProject(ctx.params.id!);
+    if (!project) return sendError(res, 404, 'NOT_FOUND', 'no such project');
+    const body = await readJson(req) as { name?: unknown } | null;
+    // The same rule as an upload's name (files.ts), so a renamed file stays downloadable.
+    if (!validProjectFileName(body?.name)) return sendError(res, 400, 'INVALID_INPUT', 'a file name of 1 to 200 characters, without control characters, is required');
+    const name = body.name.trim();
+    if (!await d.store.renameProjectFile(project.id, ctx.params.fileId!, name)) return sendError(res, 404, 'NOT_FOUND', 'no such ready file');
+    await d.audit(`user:${gated.user.id}`, 'project.file-rename', `project:${project.id}`, { fileId: ctx.params.fileId });
+    sendJson(res, 200, { name });
   });
   // Delete a ready file, or cancel an unfinished upload. A ready file that a
   // live session in the project still uses is refused unless a manager says

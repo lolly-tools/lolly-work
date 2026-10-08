@@ -12,7 +12,7 @@ import { canonicalJson, hmac, macEquals, sha256Hex } from '../lib/crypto.ts';
 export type LinkKind = 'share' | 'embed' | 'download' | 'guest-edit' | 'project-invite';
 
 export interface LinkTarget {
-  projectInvite?: { projectId: string; role: 'editor' | 'viewer'; allowNewPeople: boolean };
+  projectInvite?: { projectId: string; role: 'editor' | 'commenter' | 'viewer'; allowNewPeople: boolean };
   toolId?: string;
   sessionId?: string;
   /**

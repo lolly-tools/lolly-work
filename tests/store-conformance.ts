@@ -912,6 +912,19 @@ export async function runStoreConformance(store: Store): Promise<void> {
   await store.deleteCatalogField('campaign');
   assert.deepEqual((await store.listCatalogFields()).map((f) => f.id), ['region']);
 
+  // Hidden tags (plan 299, migrations/0065): one rule per scope, listed by
+  // scope, and a put over the same scope replaces the rule whole.
+  assert.deepEqual(await store.listCatalogTagRules(), []);
+  await store.putCatalogTagRule({ scope: 'provider:dam1', hidden: ['legal:*'], updatedBy: 'user:usr_1', updatedAt: '2026-10-07T00:00:00.000Z' });
+  await store.putCatalogTagRule({ scope: '*', hidden: ['Internal', 'approved-*'] });
+  assert.deepEqual((await store.listCatalogTagRules()).map((r) => [r.scope, r.hidden]), [['*', ['Internal', 'approved-*']], ['provider:dam1', ['legal:*']]]);
+  assert.equal((await store.listCatalogTagRules())[1]?.updatedBy, 'user:usr_1');
+  await store.putCatalogTagRule({ scope: '*', hidden: ['Archive'] });
+  assert.deepEqual((await store.listCatalogTagRules())[0]?.hidden, ['Archive'], 'put is an upsert');
+  await store.deleteCatalogTagRule('*');
+  await store.deleteCatalogTagRule('provider:dam1');
+  assert.deepEqual(await store.listCatalogTagRules(), []);
+
   // Values are an overlay keyed by CATALOG ASSET ID, which is the whole reason
   // it is its own table: all three id shapes take one - an instance asset, a
   // federated ext/* asset whose record belongs to a DAM, and a pack asset whose

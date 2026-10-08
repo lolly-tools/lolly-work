@@ -308,7 +308,8 @@ test('(b3) credential expiry, automation jobs, deliveries and render resources f
   assert.equal(files[at + 24], '0051_canvas_comment_reads.sql', 'comment read state follows project agents');
   assert.equal(files[at + 25], '0052_comment_notices.sql', 'comment notices follow comment read state');
   assert.equal(files[at + 26], '0053_session_versions.sql', 'session versions follow comment notices');
-  assert.equal(files.at(-1), '0053_session_versions.sql', 'session versions are the newest migration');
+  assert.equal(files[at + 27], '0060_share_ladder.sql', 'the sharing ladder follows session versions');
+  assert.equal(files[at + 28], '0061_project_user_state.sql', 'each person\'s own project list state follows the sharing ladder');
   assert.match(await readFile(`${dir}/0027_credential_expiry.sql`, 'utf8'), /add column credential_expires_at/);
   assert.match(await readFile(`${dir}/0028_automation_jobs.sql`, 'utf8'), /create table automation_jobs/);
   assert.match(await readFile(`${dir}/0029_deliveries.sql`, 'utf8'), /create table deliveries/);

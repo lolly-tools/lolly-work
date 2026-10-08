@@ -116,6 +116,7 @@ in on the instance and export the pack, or connect from the desktop app.
 | Route | Action | Notes |
 |---|---|---|
 | `GET /catalog/*` | per access mode | pack blobs, lifecycle-gated |
+| `GET /api/v1/catalog/assets` | per access mode | one page of the caller's feed: `q`, `source`, `section`, `collection`, `tag`, `type`, `cursor`, `limit`; returns `{ assets, total, nextCursor, facets, version }` ([large catalogs](catalog.md#large-catalogs)) |
 | `GET /api/v1/catalog/assets/*` | per access mode | asset feed / entries |
 | `GET /api/v1/catalog/search` | `catalog.read` | live fan-out to search-capable providers |
 | `PUT /api/v1/catalog/assets/<id>/meta` | `catalog.edit` | org-defined field values and `replacedBy` on any asset the caller sees; `name`/`description`/`tags` on `inst/*` only |
@@ -125,6 +126,8 @@ in on the instance and export the pack, or connect from the desktop app.
 | `GET /catalog/inst/<id>/<format>?v=N` | per access mode | a prior version's bytes, through every gate the head answers to |
 | `GET /api/v1/catalog/fields` | `catalog.read` | the org's field definitions, plus a `canEdit` bit for honest UI |
 | `PUT/DELETE /api/v1/catalog/fields/<id>` | `policy.edit` | define or retire one field; the definitions also ride the governance document |
+| `GET /api/v1/catalog/tags[?provider=<id>]` | `policy.edit` or `catalog.provider.manage` | every label the catalog carries, counted per source, with the rules hiding each one |
+| `PUT /api/v1/catalog/tags/rules` | `policy.edit` (scope `*`), `catalog.provider.manage` (scope `provider:<id>`) | `{ scope, hidden }` replaces a hidden-tag list, `{ scope, hide, show }` edits it; applied when the index is served |
 | `GET /api/v1/catalog/collections` | `catalog.collection.manage` | the curator's view: every set as curated |
 | `GET/PUT/DELETE /api/v1/catalog/collections/<id>` | `catalog.collection.manage` | create, edit or remove one set; a `PUT` refuses any member the curator cannot see |
 | `GET /api/v1/catalog/lifecycle` | `catalog.expire` | all lifecycle rows |
@@ -142,10 +145,11 @@ The [design-system administration contract](design-system-administration.md#revi
 | Route | Action | Notes |
 |---|---|---|
 | `POST /api/v1/catalog/submit?name=…` | `catalog.submit` | raw bytes in the body; `201` for a new asset, `200` with `duplicate: true` for identical bytes |
+| `POST /api/v1/catalog/submit?type=template\|user-tool` | `catalog.submit` | a template or user tool as JSON; `toolId=` names the tool when the body does not; `422 INVALID_SUBMISSION` when the JSON or its tool is not one this pack can serve; `clientRef=` is echoed on the submission |
 | `POST /api/v1/catalog/submit?assetId=inst/…&note=…` | `catalog.edit` | the same pipeline, landing as the next VERSION of an existing asset; `groups`/`type`/`tags`/`description` are refused here and belong to `…/meta` |
 | `GET /api/v1/catalog/submissions` | `catalog.read` | the caller's own submissions plus the ones open on a step their groups may act on |
 | `GET /api/v1/catalog/submissions/:id/bytes` | `catalog.read` | preview before publication - submitter and reviewer only |
-| `PATCH /api/v1/catalog/submissions/:id` | `catalog.read` | correct a pending submission's `name`/`type`/`tags`/`description` and its org `fields`; `409` once it has settled |
+| `PATCH /api/v1/catalog/submissions/:id` | `catalog.read` | correct a pending submission's `name`/`type`/`tags`/`description` and its org `fields`, and (with `catalog.collection.manage`) the `collectionId` it joins on approval; `409` once it has settled |
 | `POST /api/v1/catalog/submissions/:id/act` | member (the approvals engine gates it) | `approve` publishes, `reject` returns with the comment |
 
 Refusals: `413 PAYLOAD_TOO_LARGE` over `policy.submit.maxBytes`, `409 QUOTA_EXCEEDED`,
@@ -529,9 +533,11 @@ separate from the existing `/api/v1/batch` job/ZIP contract.
 
 | Route | Action |
 |---|---|
-| `GET /api/v1/projects` | member: projects they own, were added to, or share a group with (admins all). Archived projects are left out unless you pass `?archived=1`. Rows carry `myRole`, `updatedAt` and `updatedByName` |
+| `GET /api/v1/projects` | member: every project they can open (admins all), including projects shared with everyone on the instance. Archived projects are left out unless you pass `?archived=1`. Rows carry `myRole`, `updatedAt`, `updatedByName`, `via` (why they can open it: `owner`, `member`, `group`, `custom-group`, `everyone` or `admin`), `audience` (`restricted` or `instance`), and their own `listed` (`pinned` or `hidden`) and `lastOpenedAt`. A shell lists a project as the person's own when `via` is a relationship, or when they pinned it or opened it recently and did not hide it; the rest is found by browsing |
+| `POST /api/v1/projects/:id/opened` | viewer - records that the caller opened the project, for their own recent list; `200 { lastOpenedAt, listed? }`. Visible to nobody else and never used for who viewed what |
+| `PUT /api/v1/projects/:id/listing` | viewer - body `{ listed: "pinned" \| "hidden" \| null }`: keep the project in the caller's own list, keep it out, or follow the default |
 | `POST /api/v1/projects` | `project.create` |
-| `PATCH /api/v1/projects/:id` | manager of the project or `project.manage` - name, visibility, archive; `ownerId` (transfer to an enabled member; audited `project.transfer`) needs the owner or `project.manage` |
+| `PATCH /api/v1/projects/:id` | manager of the project or `project.manage` - name, visibility, archive; `ownerId` (transfer to an enabled member; audited `project.transfer`) needs the owner or `project.manage`. A directory group taken out of `visibility` loses its sharing role too, so adding it back starts at editor |
 | `GET /api/v1/projects/:id/folders` | viewer; `{ folders: [{ id, projectId, parentId, name, createdAt, createdBy, items: [{ kind, ref }] }] }` |
 | `POST /api/v1/projects/:id/folders` | editor and `session.edit`, project not archived; `{ name, parentId? }`; `201 { folder }`. An omitted or null parent creates a folder at the project root |
 | `PATCH /api/v1/projects/:id/folders/:folderId` | editor and `session.edit`; `{ name }` renames a folder |
@@ -543,6 +549,13 @@ separate from the existing `/api/v1/batch` job/ZIP contract.
 | `GET /api/v1/projects/:id/members` | viewer - `{ myRole, members: [{ userId, name, email?, role, addedAt, isMe? }], invitations?, requests? }`; `email`, `invitations` and `requests` for managers only; `isMe: true` marks the caller's own row. `invitations` lists the pending invitations that carry the project and those that expired in the last 30 days: `{ id, email, role, createdAt, expiresAt?, status: pending \| expired, openedAt?, invitedByName?, passwordSetup, link? }`, where `link` is the invite link for this project's entry, while pending. `requests` lists the open requests for the project: `{ id, userId, name, email, role, currentRole, note?, createdAt, viaSession?: { id, name } }` |
 | `POST /api/v1/projects/:id/invite` | manager - body `{ emails, role, passwordSetup? }`; `200 { results: [{ email, status: added \| invited \| already \| refused, reason?, invitationId?, link?, expiresAt? }], link, message }`. A result's `link` is that address's own invite link for this project; the top-level `link` is `<appUrl or baseUrl>/#/team/project/<id>`. `message: { workspace, inviter, providers, note? }` is what Lolly needs to compose an invite message. `passwordSetup` is honoured only for an admin or owner with `user.invite` while a `password` entry is configured. New addresses follow `policy.invites`. A caller without `user.invite` may send 100 addresses an hour (`429 RATE_LIMITED`). Reasons are listed in [sharing](sharing.md#inviting-people) |
 | `PATCH /api/v1/projects/:id/members/:userId` | manager - body `{ role }`; `409` for the owner |
+| `PUT /api/v1/projects/:id/members/:userId/expiry` | manager - body `{ expiresAt }`, an ISO time in the future or `null` to clear; within `policy.sharing.maxGrantDays`. A membership past its end date gives no access and stays listed so it can be extended; sharing with the person again, an accepted invitation or an approved request also restores it, with no end date. Editors who may share cannot set end dates: an end date a minute away is a removal, and removal is for managers. `409` for the owner |
+| `GET /api/v1/projects/:id/sharing` | viewer - `{ general: { audience: restricted \| instance, role }, grants: [{ principal: { kind: group, name } \| { kind: custom-group, id, name, memberCount }, role, expiresAt? }], expiries, settings: { viewersCanComment, viewersCanExport, editorsCanShare }, policy: { audiences, instanceMaxRole, roles, customGroups, maxGrantDays? }, canManage }`. `expiries` maps member ids to end dates, for managers only. `viewersCanComment: false` stops viewers creating comments and replies (`403`). `viewersCanExport` is advice to shells only: a viewer can render on their own device, so the server cannot enforce it. Read by `@lolly-tools/core/sharing-v1` `readShareState` |
+| `PUT /api/v1/projects/:id/sharing` | manager, or an editor when `settings.editorsCanShare` is on - any of `{ general, grants, settings }`. `grants` replaces every group grant; a directory group leaves the project's visibility when it leaves `grants`. Only a manager gives or takes manager access or changes `editorsCanShare`. `403 AUDIENCE_NOT_ALLOWED` / `ROLE_NOT_ALLOWED` / `GROUPS_OFF` follow `policy.sharing` and `policy.invites.projectRoles`; audited `project.sharing` |
+| `GET /api/v1/share-groups` | member - the groups the caller owns, manages or belongs to: `{ groups: [{ id, name, description?, memberCount, myRole: owner \| manager \| member }], enabled }` |
+| `POST /api/v1/share-groups` | `group.create` - body `{ name, description?, add?: [userId \| email] }`; the caller becomes the owner. People must be ones the caller already shares a project or group with, or an exact address of an enabled member. At most 100 owned groups and 500 people a group |
+| `GET /api/v1/share-groups/people?q=…` | member of the instance (not a guest or a service token), while `policy.sharing.customGroups` is on (`403 GROUPS_OFF`) - suggestions for adding people: `{ people: [{ id, name }], truncated }`, drawn only from the caller's projects and groups (an exact address also matches). Never carries an address. At most 60 lookups a minute per person (`429 RATE_LIMITED`) |
+| `GET/PATCH/DELETE /api/v1/share-groups/:id` | members read `{ …summary, members: [{ id, name, role }] }`; the owner and managers `PATCH { name?, description?, add?, remove? }`, the owner also `{ managers }`, and any member may `PATCH { remove: [own id] }` to leave; the owner or an admin deletes. Audited `share-group.*` |
 | `DELETE /api/v1/projects/:id/members/:userId` | manager, or the member themselves; `204` |
 | `DELETE /api/v1/projects/:id/invitations/:invitationId` | manager - takes the project off the invitation; a project-made invitation (`createdVia: "project"`) left with no project is revoked, a console invitation never is; `204` |
 | `POST /api/v1/projects/:id/invitations/:invitationId/link` | manager, for an invitation that carries this project - New link: `200 { link, expiresAt }`. Every earlier link for the invitation stops working, the console's included. 10 a day per invitation, then `429 RATE_LIMITED` |
@@ -554,8 +567,9 @@ separate from the existing `/api/v1/batch` job/ZIP contract.
 | `GET /api/v1/collab/rooms` | `telemetry.view` - live room census for the console |
 | `GET/POST /api/v1/collab/nearby` | `collab.join` - the nearby-discovery handover lane |
 
-Roles on a project (viewer, editor, manager, owner) are described in
-[sharing](sharing.md#people-and-roles). A viewer asked to write gets `403 READ_ONLY`;
+Roles on a project (viewer, commenter, editor, manager, owner) are described in
+[sharing](sharing.md#people-and-roles). A commenter reads and comments like a viewer and
+never changes artwork. A viewer or commenter asked to write gets `403 READ_ONLY`;
 someone who cannot see the project gets `403 FORBIDDEN`.
 
 **Session writes are compare-and-set, never last-writer-wins.** `PUT` requires the `rev`
@@ -594,6 +608,7 @@ route here answers `404 NOT_FOUND` with the message `project files are off`.
 | `PUT /api/v1/projects/:id/files/:fileId/parts/:n` | the uploader | `204`; the body is part `n`'s bytes |
 | `POST /api/v1/projects/:id/files/:fileId/finalize` | the uploader | `200 { file }` with `ready: true`; repeating it is harmless |
 | `GET /api/v1/projects/:id/files/:fileId` | viewer | the bytes, as an attachment, `private, no-store` |
+| `PATCH /api/v1/projects/:id/files/:fileId` | editor and `session.edit`, project not archived; a person, so a service token gets `403` | `200 { name }`; the body is `{ name }`, 1 to 200 characters with no control characters. The bytes, id and checksum do not change, so sessions that use the file keep working. `400 INVALID_INPUT` for a bad name, `403` without editor access, `404` for an unknown or unfinished file or a file in another project |
 | `DELETE /api/v1/projects/:id/files/:fileId` | the uploader, or manager and up | `204`; on an unfinished upload this cancels it |
 
 The begin body is `{ name, size, checksum, contentType, parts: [{ size, checksum }], asset }`,
@@ -627,8 +642,9 @@ plus 4096 bytes for its database rows.
 | `RATE_LIMITED` | 429 | download: this person already downloaded twice `instanceBudgetBytes` today, as counted by this server process; `retry-after` gives the seconds to wait |
 
 Errors keep the usual `{ "error": { "code", "message" } }` shape. Finishing an upload is
-audited as `project.file-upload`, a delete or cancel as `project.file-delete` (with
-`forced: true` and the session ids when `?force=1` was needed). An unfinished upload more
+audited as `project.file-upload`, a rename as `project.file-rename` (with the `fileId`), a delete
+or cancel as `project.file-delete` (with `forced: true` and the session ids when `?force=1` was
+needed). An unfinished upload more
 than an hour past its expiry is removed, parts first, when someone next begins an upload (up to
 50 at a time) and by `POST /api/v1/retention/run` (up to 500), whose answer then carries
 `projectFilesSwept`. The long-lived server also sweeps them at boot and daily, whatever the

@@ -484,6 +484,7 @@ which, and while files are off every file route answers `404`.
 |---|---|
 | anyone who can see the project (viewer and up) | list the project's files and download them |
 | editor and up, with `session.create` | upload a file; the project must not be archived. Service tokens cannot |
+| editor and up, with `session.edit` | rename a finished file; the bytes and id stay the same, so sessions that use the file still open. The project must not be archived. Service tokens cannot |
 | the person who uploaded the file | delete it, or cancel their own unfinished upload |
 | manager and up (owner, manager member, `project.manage`) | delete any file in the project |
 
@@ -512,7 +513,8 @@ small hosted Postgres, which holds the file bytes as well. The file list reports
 Deleting a file that a live session in the project still uses is refused with
 `409 FILE_IN_USE`, naming those sessions; that session would otherwise open without it. A
 manager can delete it anyway with `?force=1`. Every finished upload is audited as
-`project.file-upload` and every delete or cancel as `project.file-delete`. A person's
+`project.file-upload`, every rename as `project.file-rename` and every delete or cancel as
+`project.file-delete`. A person's
 finished files block erasing their account, like their sessions do; their unfinished
 uploads are removed when the account is erased. The
 [API reference](api.md#project-files) lists the routes.
