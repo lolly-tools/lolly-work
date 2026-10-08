@@ -78,6 +78,15 @@ import { createHash } from 'node:crypto';
  * hands the raw frame to `room.relayPresence`, and rooms.ts imports no policy
  * module, so presence structurally cannot be authorized (plans/100 §7 item 5).
  *
+ * LIVE COMMENT EVENTS (plan 76 M4). After a saved comment write, the HTTP app
+ * calls `notifyComment` (injected into it by main.ts as `roomEvents`), which
+ * sends `{ t: 'comment', threadId, revision }` to the people in that session's
+ * room, if one is open. Who receives it is decided here, never in the room: a
+ * member seat records `commentView` from `mayReadComments`, the same predicate
+ * the comment routes use, at admission and again on the heartbeat re-check.
+ * Guest seats never record it, and agent seats are seated by the agent bridge
+ * without it, so neither receives comment frames.
+ *
  * THE DESIGN-SYSTEM GATE (OSS plans/186 §3.10, which calls it the fourth gate
  * beside the three policy ones). A room hosted here runs under exactly ONE
  * design system: the one this deployment governs. Two people editing the same
@@ -125,6 +134,7 @@ import { mayCreateGuestLinks, mayEditCollab, mayJoinCollab, type Grant, type Rol
 import { resolveInputAccess, type ResolvedAccess, type ToolOverlay, inputIsGoverned } from '../policy/overlay.ts';
 import { readToolInputs } from '../policy/tool-inputs.ts';
 import { randomId } from '../lib/crypto.ts';
+import { mayReadComments } from '../comments/access.ts';
 import { createAgentRooms } from '../agents/rooms.ts';
 import { agentStanding } from '../agents/access.ts';
 import type { AgentRoomBridge } from '../agents/types.ts';
@@ -133,7 +143,7 @@ import {
   MAX_OPS_PER_MESSAGE, MAX_ROW_FIELDS, MAX_SCALAR_CHARS, PRESENCE_FRAMES_PER_SEC,
   WRITER_CAP, WRITER_CAP_PER_USER,
   Room, RoomRegistry, isSafeKey,
-  type JoinNotice, type MemberRole, type RoomMember, type RoomSnapshot, type ServerFrame,
+  type CommentEventFrame, type JoinNotice, type MemberRole, type RoomMember, type RoomSnapshot, type ServerFrame,
 } from './rooms.ts';
 import { createRoomPersistence } from './persistence.ts';
 import {
@@ -260,6 +270,11 @@ export interface CollabGateway {
    *  `RoomRegistry.list`. */
   snapshot(): RoomSnapshot[];
   projectPresence(projectId: string): import('./rooms.ts').SessionPresenceSnapshot[];
+  /** Tell the people in this session's open room that a review thread changed
+   *  (plan 76 M4): the HTTP app's `roomEvents`, wired by main.ts. Never opens a
+   *  room (`RoomRegistry.peek`). Returns how many seats were sent the frame; 0
+   *  when no room is open or the frame is invalid. See `Room.notifyComment`. */
+  notifyComment(sessionId: string, frame: CommentEventFrame): number;
   /** Quiesce every live room into a session revision and audit its rollup - 
    *  orderly shutdown (plans/14 §6). `close()` starts this best-effort; a host
    *  that wants the writes to LAND awaits this before exiting. */
@@ -981,8 +996,12 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
    * "may this person be here" is exactly the drift this file keeps refusing to
    * introduce. A guest observer is re-checked on the same tick and for the same
    * reason: a revoked link must reach the seat that never sends anything.
+   *
+   * It also re-decides `commentView` from the same rows, so a member who loses
+   * comment access while staying in the room stops receiving comment frames on
+   * the next tick. A guest never has it.
    */
-  const seatValid = async (ctx: Admitted): Promise<{ mayEdit: boolean } | null> => {
+  const seatValid = async (ctx: Admitted): Promise<{ mayEdit: boolean; commentView: boolean } | null> => {
     const { id: sessionId, projectId } = ctx.session;
     if (ctx.identity.kind === 'guest') {
       const { linkId } = ctx.identity;
@@ -992,7 +1011,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
       if (!seat) return null;
       // An idle guest observer has no gesture to lose the seat on - the inviter
       // check has to ride the same keepalive the link's own liveness does.
-      return (await guestInviterStanding(seat.link)) !== null ? { mayEdit: seat.role === 'writer' } : null;
+      return (await guestInviterStanding(seat.link)) !== null ? { mayEdit: seat.role === 'writer', commentView: false } : null;
     }
     const [user, grants, session, project, membership] = await Promise.all([
       resolveMember(store, ctx.cookie, sessionVerify),
@@ -1001,8 +1020,11 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
       store.getProject(projectId),
       store.getProjectMember(projectId, ctx.identity.principalId),
     ]);
-    if (!user || !seatAllows(user, session, project, grants, membership)) return null;
-    return { mayEdit: seatMayEdit(user, project, grants, membership) };
+    if (!user || !session || !project || !seatAllows(user, session, project, grants, membership)) return null;
+    return {
+      mayEdit: seatMayEdit(user, project, grants, membership),
+      commentView: mayReadComments({ user, session, project, membership, grants, config }).ok,
+    };
   };
 
   /**
@@ -1237,6 +1259,9 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
     //    check and org-config's can['collab.edit'] both call (evaluate.ts). No
     //    grant is not a refusal: the member joins as an observer (plans/14 §6).
     const mayEdit = seatMayEdit(user, project, grants, membership);
+    // Not a gate: whether this seat receives live comment events, decided by the
+    // predicate the comment routes use. The heartbeat re-check decides it again.
+    const commentView = mayReadComments({ user, session, project, membership, grants, config }).ok;
 
     // 5. the DESIGN-SYSTEM gate (OSS plans/186 §3.10). Last of the gates on
     //    purpose: the message names this instance's active brand profile, and
@@ -1262,6 +1287,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
       },
       session,
       mayEdit,
+      commentView,
       cookie: req.headers.cookie,
     }));
   };
@@ -1336,6 +1362,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
       },
       session,
       mayEdit: seat.role === 'writer',
+      commentView: false,
       cookie: req.headers.cookie,
     }));
   };
@@ -1350,6 +1377,9 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
     identity: SeatIdentity;
     session: SessionRecord;
     mayEdit: boolean;
+    /** Whether the seat receives live comment events (`RoomMember.commentView`).
+     *  Always false for a guest. */
+    commentView: boolean;
     cookie: string | undefined;
   }
 
@@ -1431,8 +1461,9 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
       if (member) {
         void seatValid(ctx)
           .then((seat) => {
-            if (!seat) ws.close(CLOSE.UNAUTHORIZED, 'this session is no longer valid');
-            else if (!seat.mayEdit && member) room?.demote(member);
+            if (!seat) return void ws.close(CLOSE.UNAUTHORIZED, 'this session is no longer valid');
+            if (member) member.commentView = seat.commentView;
+            if (!seat.mayEdit && member) room?.demote(member);
           })
           .catch(onHandlerError);
       }
@@ -1517,6 +1548,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
         interactionVersion: raw['interactionVersion'] === 1 ? 1 : undefined,
         opVersion: compatible ? opVersion : CANVAS_OP_VERSION,
         ...(ctx.identity.kind === 'guest' ? { guestLinkId: ctx.identity.linkId } : {}),
+        commentView: ctx.identity.kind === 'member' && ctx.commentView,
         send,
         disconnect: () => ws.close(CLOSE.GOING_AWAY, 'room owner lost'),
       };
@@ -1795,6 +1827,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
     rooms: () => registry.size(),
     snapshot: () => registry.list(),
     projectPresence: projectId => registry.projectPresence(projectId),
+    notifyComment: (sessionId, frame) => registry.peek(sessionId)?.notifyComment(frame) ?? 0,
     drain,
     close() {
       clearInterval(sweeper);

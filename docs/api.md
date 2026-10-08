@@ -108,7 +108,7 @@ in on the instance and export the pack, or connect from the desktop app.
 
 | Route | Action | Notes |
 |---|---|---|
-| `GET /api/v1/org-config` | member | the one document a shell polls; ETag'd on policy version |
+| `GET /api/v1/org-config` | member | the one document a shell polls; ETag'd on policy version and `inboxUnread`, the same count `GET /api/v1/inbox` answers as `unread` for the same `X-Lolly-Client` (its shell and engine selectors apply to both) |
 | `GET /api/v1/org-config/preview?groups=a,b` | `policy.edit` | what a member in those groups would receive |
 
 ## Catalog
@@ -448,8 +448,8 @@ disable + session-epoch bump. Group membership maps to each user's local groups.
 | `GET /api/v1/approvals/approvers` | member |
 | `POST /api/v1/approvals/:id/act` | `approval.act` |
 | `POST /api/v1/approvals/:id/withdraw` | member (submitter) |
-| `GET /api/v1/inbox` | member - `{ messages, unread }` with `ETag: "ib-<16 hex>"` and `cache-control: private, no-cache`; a matching `If-None-Match` answers `304`, so a shell can check often for one header |
-| `POST /api/v1/inbox/:id/ack` | member |
+| `GET /api/v1/inbox` | member - `{ messages, unread }` with `ETag: "ib-<16 hex>"` and `cache-control: private, no-cache`; a matching `If-None-Match` answers `304`, so a shell can check often for one header. `messages` holds the caller's messages and comment notices; `unread` counts both, and the tag moves when either changes |
+| `POST /api/v1/inbox/:id/ack` | member - dismisses the message for the caller. For a comment notice (`cn_…`) it deletes the caller's own notice row and nothing else, so the next reply in that thread shows a notice again |
 | `GET/POST /api/v1/messages` | `message.send` |
 
 Message targeting is groups × shell selectors × engine-version range. Besides the
@@ -458,6 +458,40 @@ messages, `request` (someone asks for access and you may answer) and `notice` (a
 answer to your request, an accepted invitation, a welcome, an invitation entry that no
 longer works). `data.kind` names which, and `data.at` is when it happened; the kinds
 are listed in [sharing](sharing.md#notices).
+
+The inbox hides a message whose subject the caller can no longer reach: a project share
+or a live-collab invite once they cannot see the project, an invite also once its session
+is deleted, and an access request for a project once they no longer manage it. Hidden is
+not deleted: the message comes back if the access does.
+
+Comment notices (plan 76 milestone 4) appear in the same list. There is one per person
+per thread, updated as replies arrive, and it is built when the inbox is read:
+
+```json
+{ "id": "cn_<24 hex>", "kind": "comment", "severity": "info",
+  "title": "Ana mentioned you in Spring poster",
+  "body": "<the first 140 characters of the newest message someone else wrote and nobody deleted>",
+  "cta": { "label": "Open thread", "url": "<appUrl>/#/team/<sessionId>?thread=<threadId>" },
+  "data": { "kind": "comment-mention", "sessionId": "...", "projectId": "...", "threadId": "...",
+            "actorName": "Ana", "label": "Spring poster", "count": "1", "at": "<iso>" },
+  "dismissible": true }
+```
+
+`data.kind` is `comment-mention` or `comment-reply`. A reply notice that counts several
+replies is titled "New replies in Spring poster: 3". `actorName` is the person's name,
+never an address, and `Member` when the account is gone. With no message by someone else
+left, `body` is "This comment is no longer available." `appUrl` is `instance.appUrl`, or
+empty when the app is served from this origin. The text is English; a client should build
+its own title from `data` and its own link from `data.sessionId` and `data.threadId`.
+
+Each notice is checked again on every read with the rule the comments routes use: the
+caller can still open the session, `session.view` and `comment.view` hold, and
+`policy.comments.enabled` and `policy.comments.notices` are not `false`. A notice that
+fails a grant or the policy is hidden and kept until it is 30 days old; after that the
+next read of the inbox (or of org-config) removes it, as does the next notice written for
+the person. One whose session is deleted, or whose project the caller can no longer reach,
+is deleted. Notices
+are never emailed today; see `policy.comments` under [Canvas comments](#canvas-comments).
 
 ## Links and rendering
 
@@ -545,7 +579,8 @@ closes.
 `invitees` autocompletes over **eligible principals only** - project membership
 plus `collab.join`, never the directory, and the admin/owner "sees every
 project" bypass does not make someone invitable. Prefix match on display name,
-capped, self excluded, no email addresses. `invites` enforces the same predicate
+capped, self excluded, no email addresses: a person is named by first and last name, or
+by the part of their address before the "@". `invites` enforces the same predicate
 server-side and delivers through the inbox (`kind: "collab"`, `data.sessionId`
 for the deep link); re-inviting refreshes the pending message instead of adding
 a second.
@@ -655,14 +690,73 @@ Clients that do not negotiate this version continue to use the existing protocol
 ### Canvas comments
 
 Comments survive after the live room closes and have their own revisions. Every
-request requires current session and comment read access. Service accounts cannot
-post as people. `policy.comments.enabled: false` disables review on the instance.
+request requires a signed-in person (a service token gets `401`), current session read
+access (`404`, `403`, `410` as for the session) and `session.view` plus `comment.view`
+over the session (`403`). That one rule also decides who gets comment notices in the
+inbox and who gets live comment events. `policy.comments.enabled: false` disables review
+on the instance.
 
 | Route | Result |
 |---|---|
-| `GET /api/v1/sessions/:id/comments` | Threads and current comment permissions |
-| `POST /api/v1/sessions/:id/comments` | Create a thread using `id`, `messageId`, `anchor` and `body` |
-| `POST /api/v1/sessions/:id/comments/:threadId` | `reply`, `edit`, `delete`, `resolve` or `reopen`, with the current thread `revision` |
+| `GET /api/v1/sessions/:id/comments` | `{ enabled, permissions, threads, reads, readFloor, notices, features }`, below. `ETag: "cm-<24 hex>"` and `cache-control: private, no-store`; a matching `If-None-Match` answers `304` |
+| `GET /api/v1/sessions/:id/comments/:threadId` | `{ thread, readAt? }`, one thread, for a client that heard a live event. `404` when the thread is not in this session |
+| `POST /api/v1/sessions/:id/comments` | Create a thread using `id`, `messageId`, `anchor`, `body` and optional `mentions`; `201 { thread, notified }` |
+| `POST /api/v1/sessions/:id/comments/:threadId` | `reply`, `edit`, `delete`, `resolve` or `reopen`, with the current thread `revision`; `reply` and `edit` take optional `mentions`; `200 { thread, notified }` |
+| `POST /api/v1/sessions/:id/comment-reads` | Mark threads read for the caller: `{ threadIds?, at? }`, at most 100 ids, every thread in the session when `threadIds` is absent, `at` an ISO time (now by default, never later than now). Deletes the caller's notices for those threads. `200 { readAt, count }`; `404` when an id is not a thread in this session |
+| `GET /api/v1/sessions/:id/comment-people?q=` | Who the caller may mention: `200 { people: [{ id, name }], truncated }`, at most 20, prefix match on the name (`q` up to 64 characters), sorted, caller excluded, never an address. Only for someone who may comment here; `403` when commenting or mentions are off |
+
+The listing's fields:
+
+- `enabled`: false when comments are off for the instance; `threads` is then empty and
+  `readFloor` is absent.
+- `reads`: `{ threadId: iso }`, when the caller last read each thread. `readFloor`: when
+  the caller first listed this session's comments; messages older than it count as read.
+  A thread is unread when it has a message by someone else, not deleted, newer than its
+  read time (or the floor), or when its id is in `notices`.
+- `notices`: the ids of threads in this session for which the caller has an inbox notice.
+- `features`: `{ mentions, reads: true, events, thread: true }`. `mentions` follows
+  `policy.comments.mentions`. `events` is true where live comment events run (the
+  long-lived server); a client then polls less often. It is false on a serverless deploy.
+
+Read state is private to each person: no route reads or changes anyone else's, and a
+thread from another session is `404` on every route that names one.
+
+**Mentions.** `mentions` is a list of at most 10 person ids (`400 INVALID_INPUT`
+otherwise). The server keeps only the people who can open the session and read its
+comments (an owner, an explicit member or a member of one of the project's groups, not
+disabled, with `collab.join`, `session.view` and `comment.view`), never the writer and never a service
+account, and stores each as `{ id, name }` with the name from its own records. A mention
+never grants access. An edit without `mentions` keeps the earlier mentions whose `@Name`
+is still in the text. Each person is told about a message once, however often an edit
+removes and adds them again. Someone who was not told (over a limit below, or a failure)
+is told by a later edit that still mentions them.
+
+**Notices.** After a write is saved, the people it concerns get an inbox notice: the
+people mentioned, and for a reply the thread's author and everyone who wrote a message in
+it that is not deleted, never the writer. Resolving, reopening and deleting tell nobody.
+At most 50 people per message, and one writer causes at most 120 notices in 10 minutes.
+`notified` is false when someone who should have been told was not (over either limit,
+someone mentioned while notices are off, or a failure, which is audited as
+`comment.notice.failed`); the comment itself is saved either way. See
+[the inbox](#approvals-and-inbox) for how a notice reads.
+
+**Live events.** Where `features.events` is true, each saved create, reply, edit,
+delete, resolve and reopen sends `{ "t": "comment", "threadId": "…", "revision": n }` on
+the [collab socket](#the-collab-socket) to every seat of a person in the room who may
+read comments, the writer's own tabs included. Guests and agents get none. The frame
+carries no text; a client fetches the one thread.
+
+**Limits.** Per person: comment writes (every create and every action) 30 a minute and
+300 an hour; `comment-reads` 120 a minute; `comment-people` 60 a minute. Past a limit the
+answer is `429 RATE_LIMITED` with `retry-after` in seconds (3600 when the hourly write
+limit is the one reached, otherwise 60).
+
+**Policy.** `policy.comments` takes `enabled` (default true), `mentions` (default true;
+false stores no mentions and refuses `comment-people`), `notices` (default true; false
+writes no notices and hides the existing ones) and `emailTitles` (default false). Mention
+email is a seam that is off in this release. When it is switched on, a new mention is
+mailed as "Ana mentioned you on <workspace>" with a link to the thread, never the comment
+text, and names the document only with `emailTitles: true`. Replies are not mailed.
 
 Viewers may comment when `comment.create` permits it, without gaining artwork
 editing rights. People may edit or delete their own messages with `comment.edit`.
@@ -726,6 +820,7 @@ timestamps come from the server; audit records contain identifiers, not message 
 | `CONFLICT` | 409 | stale session `rev` - the body's `current` is the server session to rebase on |
 | `LINK_EXPIRED` / `LINK_REVOKED` | 410 | self-explanatory |
 | `INPUT_LOCKED` | 422 | a locked input was supplied by the caller |
+| `RATE_LIMITED` | 429 | too many requests of one kind from one person; `retry-after` gives the seconds to wait |
 | `INVALID_INPUT` | 400 | an automation request is missing or has malformed required fields |
 | `DOCUMENT_API_ERROR` | 400 | the requested compile/inspect/diff/measure/optimise/package operation could not be performed |
 | `DATA_BINDING_ERROR` | 400 | a live JSON/CSV provider binding could not resolve, parse, query or validate |

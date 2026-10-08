@@ -70,7 +70,7 @@ import {
   scimErrorBody, scimList, userToScim,
 } from '../scim/resources.ts';
 import { evaluate, grantDecision, denialCode, mayEditCollab, ownerOnlyAction, roleFromGroups, type Grant, type Role, ROLES } from '../rbac/evaluate.ts';
-import { accessAtLeast, effectiveProjectAccess, type ProjectAccess } from '../rbac/project-access.ts';
+import { accessAtLeast, canSeeProject, effectiveProjectAccess, type ProjectAccess } from '../rbac/project-access.ts';
 import { registerProjectFileRoutes } from '../projects/file-routes.ts';
 import { registerProjectFolderRoutes } from '../projects/folder-routes.ts';
 import { agentActor, agentAttribution } from '../agents/attribution.ts';
@@ -179,6 +179,7 @@ import { ScryptBusyError, hashPassword, randomId, sameString, scryptQueueFull, s
 import { demoLandingHtml } from '../lib/demo-landing.ts';
 import { sanitizeEvent, summarize, type RawEvent } from '../telemetry/ingest.ts';
 import { targetedMessages, type Message } from '../inbox/target.ts';
+import { accessibleNotices, listAccessibleNotices } from '../inbox/comment-notices.ts';
 import { parseClientHeader } from '../fleet/client-header.ts';
 import { verifyChain, deriveAuditMacKey } from '../audit/chain.ts';
 import { createLogger, requestId } from '../observability/log.ts';
@@ -227,6 +228,11 @@ function pinnedEngineVersion(): string | null {
 
 export interface AppDeps {
   agentRooms?: AgentRoomBridge;
+  /** Live comment events (plan 76 M4): main.ts wires `(id, f) => collab.notifyComment(id, f)`
+   *  so peers in the session's room fetch only the changed thread. A plain function,
+   *  like `agentRooms`, so this module never imports the gateway; undefined on Vercel,
+   *  where GET comments then reports `features.events: false`. */
+  roomEvents?: (sessionId: string, frame: { t: 'comment'; threadId: string; revision: number }) => void;
   config: InstanceConfig;
   store: Store;
   secrets: Secrets;
@@ -2220,11 +2226,13 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // Assembled once, here, for BOTH the caller's own poll and the admin
   // preview-as-group tool - so a preview can never drift from what a member
   // actually receives (the projection is the same function, same store reads).
-  const buildOrgConfigFor = async (subject: UserRecord) => {
+  const buildOrgConfigFor = async (subject: UserRecord, client: { shell?: string; engine?: string } = {}) => {
     const overlays = await brandRules.project(brand.current() ?? await brand.snapshot(), subject.groups);
-    const acked = await store.acksFor(subject.id);
-    const unread = targetedMessages(await store.listMessages(), { groups: subject.groups, userId: subject.id }, acked).length;
     const grants = await store.listGrants();
+    // The inbox's own count for the same client (its shell and engine
+    // selectors): the messages it shows and the comment notices that pass
+    // `mayReceiveNotices` now (plan 76 M4).
+    const unread = (await inboxMessages(subject, grants, client)).length + (await accessibleNotices({ store, config }, subject, { grants })).length;
     const flagGovernance = await store.listFlagGovernance();
     const injectables = new Map((await store.listInjectables()).map((r) => [r.id, r]));
     const toolInputs = new Map<string, Array<{ id: string }> | null>();
@@ -2246,9 +2254,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     metrics.orgConfigPoll(); // the fleet heartbeat - counts 200 and 304
+    const client = parseClientHeader(req.headers['x-lolly-client'] as string | undefined);
     let payload;
     try {
-      payload = { ...await buildOrgConfigFor(user), branding: { revision: brand.current()!.revision, sourceId: brand.current()!.source.id } };
+      payload = { ...await buildOrgConfigFor(user, { ...(client?.shell ? { shell: client.shell } : {}), ...(client?.engine ? { engine: client.engine } : {}) }),
+        branding: { revision: brand.current()!.revision, sourceId: brand.current()!.source.id } };
     } catch (err) {
       metrics.orgConfigError();
       throw err;
@@ -2331,23 +2341,68 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   });
 
   // ── inbox ─────────────────────────────────────────────────────────────────
+  /**
+   * The messages this person is shown: targeted at them, not acknowledged,
+   * and still about something they can reach (plan 76 M4). A project share or
+   * a live-collab invite is hidden once they can no longer see its project, an
+   * invite also once its session is deleted, and a project access request once
+   * they no longer manage that project. Hidden, not deleted: a message comes
+   * back if the access does. Other kinds, and messages without the ids to
+   * check, are shown as before.
+   */
+  const inboxMessages = async (user: UserRecord, grants: Grant[], client: { shell?: string; engine?: string } = {}): Promise<Message[]> => {
+    const acked = await store.acksFor(user.id);
+    const targeted = targetedMessages(await store.listMessages(), {
+      groups: user.groups,
+      userId: user.id,
+      ...(client.shell ? { shell: client.shell } : {}),
+      ...(client.engine ? { engineVersion: client.engine } : {}),
+    }, acked);
+    const projectOf = (m: Message): string | undefined =>
+      m.kind === 'share' || m.kind === 'collab' || (m.kind === 'request' && m.data?.['requestKind'] === 'project') ? m.data?.['projectId'] : undefined;
+    const sessionOf = (m: Message): string | undefined => (m.kind === 'collab' ? m.data?.['sessionId'] : undefined);
+    const projectIds = [...new Set(targeted.flatMap((m) => projectOf(m) ?? []))];
+    const sessionIds = [...new Set(targeted.flatMap((m) => sessionOf(m) ?? []))];
+    if (!projectIds.length && !sessionIds.length) return targeted;
+    const [projects, sessions, memberships] = await Promise.all([
+      Promise.all(projectIds.map((id) => store.getProject(id))),
+      Promise.all(sessionIds.map((id) => store.getSession(id))),
+      store.listUserProjectMemberships(user.id),
+    ]);
+    const projectById = new Map(projects.flatMap((p) => (p ? [[p.id, p] as const] : [])));
+    const liveSessions = new Set(sessions.flatMap((s) => (s && !s.deletedAt ? [s.id] : [])));
+    const memberOfProject = new Map(memberships.map((m) => [m.projectId, m]));
+    return targeted.filter((m) => {
+      const sessionId = sessionOf(m);
+      if (sessionId && !liveSessions.has(sessionId)) return false;
+      const projectId = projectOf(m);
+      if (!projectId) return true;
+      const project = projectById.get(projectId);
+      const membership = memberOfProject.get(projectId) ?? null;
+      if (!project) return false;
+      return m.kind === 'request'
+        ? accessAtLeast(effectiveProjectAccess(user, project, membership, grants), 'manager')
+        : canSeeProject(user, project, membership);
+    });
+  };
+
   // The shell asks again when its tab regains focus and once a minute while
   // it is visible (plans/74 invite spec R5), so a quiet read is a 304. The
   // ETag is a hash of exactly what this caller is shown: a new message, an
-  // acknowledgement, an edit or a message reaching its end all move it.
-  // `unread` counts the messages shown, which are the ones not yet
-  // acknowledged, the same count org-config carries as `inboxUnread`.
+  // acknowledgement, an edit or a message reaching its end all move it, and so
+  // does a comment notice arriving, changing or being acknowledged. `unread`
+  // counts the messages and notices shown, the same count org-config carries
+  // as `inboxUnread`.
   router.add('GET', '/api/v1/inbox', async (req, res) => {
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const client = parseClientHeader(req.headers['x-lolly-client'] as string | undefined);
-    const acked = await store.acksFor(user.id);
-    const msgs = targetedMessages(await store.listMessages(), {
-      groups: user.groups,
-      userId: user.id,
-      ...(client?.shell ? { shell: client.shell } : {}),
-      ...(client?.engine ? { engineVersion: client.engine } : {}),
-    }, acked);
+    const grants = await store.listGrants();
+    const [shown, notices] = await Promise.all([
+      inboxMessages(user, grants, { ...(client?.shell ? { shell: client.shell } : {}), ...(client?.engine ? { engine: client.engine } : {}) }),
+      listAccessibleNotices({ store, config }, user, { grants }),
+    ]);
+    const msgs = [...shown, ...notices];
     const etag = `"ib-${sha256Hex(JSON.stringify(msgs)).slice(0, 16)}"`;
     const headers = { etag, 'cache-control': 'private, no-cache' };
     const asked = String(req.headers['if-none-match'] ?? '').split(',').map((t) => t.trim().replace(/^W\//, ''));
@@ -2359,10 +2414,15 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     sendJson(res, 200, { messages: msgs, unread: msgs.length }, headers);
   });
 
+  // A comment notice (`cn_…`) is a row of its own: acknowledging it deletes
+  // the caller's row and nobody else's, and never writes the message-ack
+  // table, so the next reply in that thread shows a notice again.
   router.add('POST', '/api/v1/inbox/:id/ack', async (req, res, ctx) => {
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
-    await store.ackMessage(ctx.params.id as string, user.id);
+    const id = ctx.params.id as string;
+    if (id.startsWith('cn_')) await store.deleteCommentNotices(user.id, { ids: [id] });
+    else await store.ackMessage(id, user.id);
     sendJson(res, 200, { ok: true });
   });
 
@@ -8877,7 +8937,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     return { session, project, access };
   };
 
-  registerCommentRoutes(router, { config, store, memberOf, audit, sessionFor: collabSessionFor });
+  registerCommentRoutes(router, { config, store, memberOf, audit, sessionFor: collabSessionFor, people, roomEvents: deps.roomEvents });
 
   // Invite autocomplete. Read-access only - an OBSERVER may look up who else
   // could watch, which is the same disclosure they already get from the room's

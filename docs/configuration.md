@@ -168,6 +168,9 @@ See [email and password](identity.md#email-and-password) for the flow.
 | `requests.joinOpenMax` | `50` | whole number, 1 to 1000. The most requests to join and to use another account for an invitation that may be open at once across the instance; past it, new ones are held (the person sees the same page, nothing is stored) |
 | `nearby.enabled` | `true` | instance-mediated "nearby" presence: the `collab.nearby` capability bit and both `/api/v1/collab/nearby` routes. `false` keeps the whole surface dark fleet-wide |
 | `comments.enabled` | `true` | durable canvas review; `false` disables reading and writing comment threads without changing session access |
+| `comments.mentions` | `true` | `@` mentions in comments and the `comment-people` list behind them; `false` stores no mentions and refuses that list. See [canvas comments](api.md#canvas-comments) |
+| `comments.notices` | `true` | inbox notices for mentions and replies; `false` writes none and hides the ones already written (they are still removed at 30 days) |
+| `comments.emailTitles` | `false` | name the document in mention email. Off, a private document's title is not sent to a mail provider. Mention email itself is a seam that is off in this release |
 | `sessionTtlHours` | `12` | member session lifetime (token `exp` and cookie `Max-Age`); must be > 0 and ≤ 720 |
 | `submit.maxBytes` | `67108864` | per-file cap on a catalog submission (64 MiB, matching publish-out). Over it: `413 PAYLOAD_TOO_LARGE` |
 | `submit.chain` | *unset* | approval chain id gating submissions. Unset means no review: a submitted asset is live the moment it is stored. Set to a chain that does not exist, submissions are refused (`503 SUBMIT_CHAIN_MISSING`) rather than published unreviewed |

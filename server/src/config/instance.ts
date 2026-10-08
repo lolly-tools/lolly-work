@@ -172,7 +172,16 @@ export interface InstanceConfig {
     linkedStandingDays?: number;
   } & IdpConstraints;
   policy: {
-    comments?: { enabled: boolean };
+    comments?: {
+      enabled: boolean;
+      /** Mentions in comments and the people list behind them (plan 76 M4). Absent = on. */
+      mentions?: boolean;
+      /** Inbox notices for mentions and replies. Absent = on. */
+      notices?: boolean;
+      /** Name the document in mention mail. Absent = off: a private document's
+       *  title is not sent to a mail provider unless the operator says so. */
+      emailTitles?: boolean;
+    };
     /** Managed AI is off unless both this approval ceiling and the audited
      * operator flag allow it. A personal shell preference cannot enable it. */
     ai: import('../policy/ai.ts').AiConfig;
@@ -855,6 +864,10 @@ export function parseConfig(json: string): InstanceConfig {
     if (!Number.isInteger(v) || v < 0) throw new Error(`invalid policy.retention.${k}: ${v} (days, 0 = keep forever)`);
   }
   if (cfg.policy.comments !== undefined && (typeof cfg.policy.comments !== 'object' || cfg.policy.comments === null || typeof cfg.policy.comments.enabled !== 'boolean')) throw new Error('policy.comments.enabled must be true or false');
+  for (const key of ['mentions', 'notices', 'emailTitles'] as const) {
+    const value = cfg.policy.comments?.[key];
+    if (value !== undefined && typeof value !== 'boolean') throw new Error(`policy.comments.${key} must be true or false`);
+  }
   const files = cfg.policy.projectFiles;
   if (!files || typeof files !== 'object' || Array.isArray(files)) throw new Error('policy.projectFiles must be an object');
   if (typeof files.enabled !== 'boolean') throw new Error('policy.projectFiles.enabled must be true or false');
