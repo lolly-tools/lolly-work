@@ -8,6 +8,11 @@ does not migrate an instance or change DNS.
 
 ## Choose the cluster and storage
 
+The [platform-team workflow](PLATFORM-TEAMS.md) connects the provider-neutral
+host readiness gate, Ansible/Salt adapters, existing guarded K3s installation,
+Work Helm release and recovery acceptance. It also documents BCI/Podman image
+builds and the remaining RKE2/Quadlet qualification boundaries.
+
 The [K3s operator workflow](K3S-OPERATOR.md) provides pinned candidate bootstrap,
 restricted host/provider preflight and credential-safe cluster checks for both
 UpCloud and Evroc. It stages only a fresh dedicated host, keeps Compose available
@@ -217,3 +222,11 @@ source identities. Collection publishes
 [signature and attestation verification instructions](https://docs.apps.rancher.io/developer-toolkit/verify-signatures-with-cosign).
 Mirror only the chosen application and dependency versions; no new registry
 service is required for a connected small deployment.
+
+## Optional WebAssembly tracks
+
+See [WebAssembly and Kubewarden choices](../../docs/wasm-deployment.md) for
+Rancher-managed admission policies and a separate WIT/WASI component evaluation.
+Current profiles keep their qualified OCI workloads and containerd default
+handler. A controller, RuntimeClass or component canary needs its own isolated
+qualification before any production rollout.

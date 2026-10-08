@@ -173,7 +173,16 @@ export interface InstanceConfig {
     linkedStandingDays?: number;
   } & IdpConstraints;
   policy: {
-    comments?: { enabled: boolean };
+    comments?: {
+      enabled: boolean;
+      /** Mentions in comments and the people list behind them (plan 76 M4). Absent = on. */
+      mentions?: boolean;
+      /** Inbox notices for mentions and replies. Absent = on. */
+      notices?: boolean;
+      /** Name the document in mention mail. Absent = off: a private document's
+       *  title is not sent to a mail provider unless the operator says so. */
+      emailTitles?: boolean;
+    };
     /** Managed AI is off unless both this approval ceiling and the audited
      * operator flag allow it. A personal shell preference cannot enable it. */
     ai: import('../policy/ai.ts').AiConfig;
@@ -278,6 +287,28 @@ export interface InstanceConfig {
    *  env var holds. Optional LDAP lookup fills attributes and groups. */
   proxyAuth: ProxyAuthConfig;
   catalogProviders: ConfigCatalogProvider[];
+  /**
+   * How the catalog feed and federated bytes behave at DAM scale (tens of
+   * thousands of assets). Instance config rather than org policy: these are
+   * sizing knobs for this process, and every value has a working default.
+   *
+   * - `maxProviderAssets`: most assets one provider sync federates, unless the
+   *   provider's own `sync.maxAssets` says otherwise. A walk that stops here
+   *   marks the fragment truncated and says so in the sources view.
+   * - `pagedProviderThreshold`: a provider with more assets than this is left
+   *   out of `assets/index.json?paged=1` and listed under `pagedProviders`, so
+   *   a client can browse that provider through `GET /api/v1/catalog/assets`
+   *   instead of mirroring the whole source. Requests without `paged=1` are unchanged.
+   * - `extCache`: an in-memory cache of federated bytes (originals and
+   *   thumbnails) keyed by the entry version, so a grid of DAM thumbnails does
+   *   not refetch upstream on every view. `maxBytes` 0 turns it off; an item
+   *   larger than `maxItemBytes` streams through uncached.
+   */
+  catalogServing: {
+    maxProviderAssets: number;
+    pagedProviderThreshold: number;
+    extCache: { maxBytes: number; maxItemBytes: number };
+  };
   /**
    * Fixed organization-owned outbound targets. Credentials are per-entry env
    * refs, never part of org-config; personal device targets do not enter this
@@ -556,6 +587,11 @@ const DEFAULTS: InstanceConfig = {
     directory: null,
   },
   catalogProviders: [],
+  catalogServing: {
+    maxProviderAssets: 100_000,
+    pagedProviderThreshold: 2000,
+    extCache: { maxBytes: 64 * 1024 * 1024, maxItemBytes: 2 * 1024 * 1024 },
+  },
   delivery: { maxBytes: 64 * 1024 * 1024, destinations: [] },
   blobs: { driver: 'pg' },
   notify: { people: { email: false } },
@@ -833,6 +869,10 @@ export function parseConfig(json: string): InstanceConfig {
     if (!Number.isInteger(v) || v < 0) throw new Error(`invalid policy.retention.${k}: ${v} (days, 0 = keep forever)`);
   }
   if (cfg.policy.comments !== undefined && (typeof cfg.policy.comments !== 'object' || cfg.policy.comments === null || typeof cfg.policy.comments.enabled !== 'boolean')) throw new Error('policy.comments.enabled must be true or false');
+  for (const key of ['mentions', 'notices', 'emailTitles'] as const) {
+    const value = cfg.policy.comments?.[key];
+    if (value !== undefined && typeof value !== 'boolean') throw new Error(`policy.comments.${key} must be true or false`);
+  }
   const files = cfg.policy.projectFiles;
   if (!files || typeof files !== 'object' || Array.isArray(files)) throw new Error('policy.projectFiles must be an object');
   if (typeof files.enabled !== 'boolean') throw new Error('policy.projectFiles.enabled must be true or false');
@@ -979,6 +1019,17 @@ export function parseConfig(json: string): InstanceConfig {
     seen.add(p.id);
     if (!PROVIDER_KINDS.includes(p.kind)) throw new Error(`unknown catalog provider kind: ${p.kind}`);
     if (!p.label) throw new Error(`catalog provider ${p.id} needs a label`);
+  }
+  const cs = cfg.catalogServing;
+  const wholeIn = (v: unknown, min: number, max: number): boolean => typeof v === 'number' && Number.isInteger(v) && v >= min && v <= max;
+  if (!wholeIn(cs.maxProviderAssets, 1, 10_000_000)) throw new Error(`invalid catalogServing.maxProviderAssets: ${cs.maxProviderAssets} (a whole number, 1-10000000)`);
+  if (!wholeIn(cs.pagedProviderThreshold, 1, 10_000_000)) throw new Error(`invalid catalogServing.pagedProviderThreshold: ${cs.pagedProviderThreshold} (a whole number, 1-10000000)`);
+  if (!cs.extCache || !wholeIn(cs.extCache.maxBytes, 0, 4 * 1024 ** 3) || !wholeIn(cs.extCache.maxItemBytes, 0, 256 * 1024 ** 2)) {
+    throw new Error('catalogServing.extCache needs whole-number maxBytes (0-4 GiB, 0 turns the cache off) and maxItemBytes (0-256 MiB)');
+  }
+  for (const p of cfg.catalogProviders) {
+    const m: unknown = p.sync?.maxAssets;
+    if (m !== undefined && !wholeIn(m, 1, 10_000_000)) throw new Error(`catalog provider ${p.id} sync.maxAssets must be a whole number, 1-10000000`);
   }
   if (!Number.isFinite(cfg.delivery.maxBytes) || cfg.delivery.maxBytes <= 0) {
     throw new Error(`invalid delivery.maxBytes: ${cfg.delivery.maxBytes}`);

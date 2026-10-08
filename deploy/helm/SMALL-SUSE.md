@@ -45,10 +45,17 @@ blob store, not an `emptyDir` or release image.
 
 The optional worker is limited to one concurrent browser render, one replica,
 1Gi of `/tmp` and 2Gi of ephemeral storage. To enable it, provide its reviewed
-`webBase`, shared `LW_RENDER_WORKER_SECRET`, and matching
+canonical HTTPS `webBase` with trusted TLS, shared `LW_RENDER_WORKER_SECRET`, and matching
 `config.render.worker.url`. Review network policy and allowed origins for the real
 shell location. Worker `nodeSelector`, `tolerations`, `affinity` and
 `topologySpreadConstraints` allow placement on separate capacity later.
+
+The worker browser needs Web Crypto in a secure context. A HTTP cluster Service
+is suitable for `config.render.worker.url`, the private HMAC API, but not for
+`webBase`. HTTP is accepted only for explicit localhost/127.0.0.1/[::1] local
+development. Keep TLS certificate validation enabled, renew the edge certificate
+and verify a complete Work render through shell export and scoped read tickets.
+Readiness and direct rasterisation alone do not prove that path.
 
 The Work Service selects only pods with `app.kubernetes.io/component: control-plane`.
 Worker and migration pods keep separate component labels and cannot receive member

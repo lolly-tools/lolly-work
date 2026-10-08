@@ -84,6 +84,24 @@ function metadata(bytes: Uint8Array, name = 'cover.png') {
   return { name, contentType: 'image/png', size: bytes.length, checksum: fileChecksum(bytes), parts, asset: { type: 'raster', format: 'png' } };
 }
 const errorOf = async (r: Response) => ((await r.json()) as { error: { code: string; message: string; sessions?: unknown } }).error;
+
+test('file rename requires editing access and preserves bytes, identity and checksum', async () => {
+  const b = await boot(), bytes = new Uint8Array([3, 4, 5]), file = await b.upload('alice', bytes);
+  const path = `/api/v1/projects/${b.projectId}/files/${file.id}`;
+  assert.equal((await b.call('viewer', 'PATCH', path, { name: 'No.png' })).status, 403);
+  assert.equal((await b.call('outside', 'PATCH', path, { name: 'No.png' })).status, 403);
+  for (const name of ['', '   ', 'x'.repeat(201), 'bad\nname', 'bad\x7fname', 'a\ud800', '\udc00b', 42]) assert.equal((await b.call('editor', 'PATCH', path, { name })).status, 400);
+  assert.equal((await b.call('editor', 'PATCH', path, { name: '  Final poster.png  ' })).status, 200);
+  const renamed = await b.store.getProjectFile(file.id);
+  assert.equal(renamed?.name, 'Final poster.png'); assert.equal(renamed?.checksum, file.checksum); assert.equal(renamed?.id, file.id);
+  const download = await b.call('viewer', 'GET', path);
+  assert.match(download.headers.get('content-disposition')!, /Final%20poster.png/);
+  assert.deepEqual(new Uint8Array(await download.arrayBuffer()), bytes);
+  const otherProject = await b.newProject('Other');
+  assert.equal((await b.call('alice', 'PATCH', `/api/v1/projects/${otherProject}/files/${file.id}`, { name: 'Wrong.png' })).status, 404);
+  const pending = await b.upload('alice', bytes, b.projectId, false);
+  assert.equal((await b.call('alice', 'PATCH', `/api/v1/projects/${b.projectId}/files/${pending.id}`, { name: 'Pending.png' })).status, 404);
+});
 /** A record written straight to the store, for states the routes never make. */
 const record = (id: string, projectId: string, createdBy: string, size: number, expiresAt: number): ProjectFileRecord => ({
   id, projectId, name: `${id}.png`, size, checksum: 'c'.repeat(64), contentType: 'image/png',

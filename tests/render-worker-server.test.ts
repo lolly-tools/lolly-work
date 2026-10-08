@@ -29,7 +29,7 @@ before(async () => {
   // LW_RENDER_MAX_CONCURRENT=1 is what makes a second overlapping request
   // deterministically hit the busy path below (no timing races to get there).
   process.env.LW_RENDER_WORKER_SECRET = SECRET;
-  process.env.LOLLY_WEB_BASE = 'http://web.test';
+  process.env.LOLLY_WEB_BASE = 'https://web.test';
   process.env.LW_RENDER_MAX_CONCURRENT = '1';
   process.env.PORT = '0';
   const mod = await import('../workers/render/src/server.ts');
@@ -146,9 +146,9 @@ function stubRenderBrowser(onContextOpen: () => void, hold: Promise<void>) {
         },
         async route(_pattern: string, handler: (route: any) => Promise<void>) {
           for (const [url, expected] of [
-            ['http://web.test/models/ocr/model.onnx', 'abort'],
+            ['https://web.test/models/ocr/model.onnx', 'abort'],
             ['https://models.test/weights.gguf', 'abort'],
-            ['http://web.test/assets/app.js', 'continue'],
+            ['https://web.test/assets/app.js', 'continue'],
           ]) {
             let action = '';
             await handler({ request: () => ({ url: () => url }),
@@ -334,7 +334,7 @@ test('worker response signs observed resource bytes and the dispatched request',
     route: async () => {}, close: async () => {}, addInitScript: async () => {},
     newPage: async () => ({
       on: (_event: string, fn: (response: unknown) => void) => { listener = fn; }, off: () => {},
-      goto: async () => { listener?.({ headers: () => ({ 'content-length': String(source.length) }), body: async () => source, url: () => 'http://web.test/tools/card/template.html' }); },
+      goto: async () => { listener?.({ headers: () => ({ 'content-length': String(source.length) }), body: async () => source, url: () => 'https://web.test/tools/card/template.html' }); },
       waitForEvent: async () => ({ createReadStream: async () => (async function* () { yield Buffer.from(svg); })(), delete: async () => {} }),
     }),
   }) }));
@@ -354,7 +354,7 @@ test('render read credentials stay on the instance catalog and do not follow red
   setBrowserGetter(async () => ({ newContext: async () => ({
     addInitScript: async () => {}, close: async () => {},
     route: async (_pattern: string, handler: (route: any) => Promise<void>) => {
-      for (const path of ['http://web.test/api/auth/config', 'http://web.test/catalog/assets/index.json', 'http://web.test/tools/design/tool.json', 'http://web.test/api/v1/projects', 'https://example.com/catalog/assets/index.json']) {
+      for (const path of ['https://web.test/api/auth/config', 'https://web.test/catalog/assets/index.json', 'https://web.test/tools/design/tool.json', 'https://web.test/api/v1/projects', 'https://example.com/catalog/assets/index.json']) {
         const response = { headers: () => ({ 'x-lolly-brand-revision': 'rev' }), status: () => 200 };
         await handler({ request: () => ({ url: () => path, headers: () => ({ accept: '*/*' }) }),
           fetch: async (options: any) => { assert.equal(options.maxRedirects, 0); assert.equal(options.headers['x-lw-render-read'], 'read-token'); fetched.push(path); return response; },
@@ -367,6 +367,6 @@ test('render read credentials stay on the instance catalog and do not follow red
   const body = JSON.stringify({ toolId: 'design', query: '', overrides: {}, format: 'svg', brandRevision: 'rev', readToken: 'read-token', ts: Date.now() });
   const res = await fetch(base+'/render', { method: 'POST', headers: sign(body), body });
   assert.equal(res.status, 200, JSON.stringify(await res.json()));
-  assert.deepEqual(fetched, ['http://web.test/api/auth/config', 'http://web.test/catalog/assets/index.json', 'http://web.test/tools/design/tool.json']);
-  assert.deepEqual(continued, ['http://web.test/api/v1/projects', 'https://example.com/catalog/assets/index.json']);
+  assert.deepEqual(fetched, ['https://web.test/api/auth/config', 'https://web.test/catalog/assets/index.json', 'https://web.test/tools/design/tool.json']);
+  assert.deepEqual(continued, ['https://web.test/api/v1/projects', 'https://example.com/catalog/assets/index.json']);
 });

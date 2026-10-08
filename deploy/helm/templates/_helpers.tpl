@@ -67,6 +67,29 @@ ServiceAccount name to use.
 {{- end }}
 {{- end }}
 
+{{/* Browser pages need Web Crypto; the private worker API is a separate URL. */}}
+{{- define "lolly-work.validateWorkerWebBase" -}}
+{{- $base := .Values.renderWorker.webBase -}}
+{{- $message := "renderWorker.webBase must be a HTTPS shell URL with trusted TLS, or HTTP localhost/127.0.0.1/[::1] for local development; credentials, query strings and fragments are not supported" -}}
+{{- if or (not (kindIs "string" $base)) (not $base) -}}
+{{- fail $message -}}
+{{- end -}}
+{{- if or (not (regexMatch "^https?://([A-Za-z0-9.-]+|\\[[0-9A-Fa-f:]+\\])(:[0-9]+)?(/[^?#]*)?$" $base)) (regexMatch "[?#\\\\[:space:]]" $base) -}}
+{{- fail $message -}}
+{{- end -}}
+{{- $url := urlParse $base -}}
+{{- $host := get $url "host" -}}
+{{- if or (get $url "error") (not $host) (get $url "userinfo") -}}
+{{- fail $message -}}
+{{- end -}}
+{{- if and (eq (get $url "scheme") "http") (not (regexMatch "^(localhost|127[.]0[.]0[.]1|\\[::1\\])(:[0-9]+)?$" $host)) -}}
+{{- fail $message -}}
+{{- end -}}
+{{- if and (regexMatch ":[0-9]+$" $host) (gt (atoi (regexFind "[0-9]+$" $host)) 65535) -}}
+{{- fail $message -}}
+{{- end -}}
+{{- end }}
+
 {{/* Avoid DNS trust across namespaces and accidental port-unrestricted rules. */}}
 {{- define "lolly-work.validateWorkerNetworkPolicy" -}}
 {{- $policy := .Values.renderWorker.networkPolicy -}}

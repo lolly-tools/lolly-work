@@ -1,0 +1,10 @@
+# Public host metadata only. Keep private inventories outside the repository.
+all:
+  children:
+    lolly_candidates:
+      hosts:
+        rehearsal:
+          ansible_host: 192.0.2.10
+          ansible_user: sles
+          lolly_expected_host: lolly-rehearsal
+          lolly_host_profile: k3s

@@ -10,6 +10,7 @@
  */
 import { sha256Hex } from '../lib/crypto.ts';
 import type { AssetIndex, AssetIndexEntry } from './lifecycle.ts';
+import type { DataSubmissionSummary } from './submit-data.ts';
 
 /** Prefix every instance-owned asset id carries; also the blob route mount. */
 export const INST_PREFIX = 'inst/';
@@ -61,6 +62,19 @@ export interface AssetSubmission {
   decidedAt?: string;
   /** The reviewer's comment, carried onto a return so the submitter reads why. */
   comment?: string;
+  /** A template or user tool (plan 299): what the JSON seeds, so a reviewer
+   *  reads "Template for Design, 12 values" where a picture would show. */
+  data?: DataSubmissionSummary;
+  /** The collection a reviewer chose for this asset while it waited (plan
+   *  299). Applied when the submission goes live, never before: a collection
+   *  lists only what members can be served. */
+  collectionId?: string;
+  /** The collection it actually joined on approval, when it did. */
+  joinedCollection?: string;
+  /** The submitting client's own reference for what it sent, echoed back. */
+  clientRef?: string;
+  /** What the submitter told the reviewer. */
+  note?: string;
 }
 
 export interface InstanceAssetRecord {
