@@ -10,19 +10,19 @@ function fixture() {
 }
 test('atomic snapshot retains counter strings and original absolute expiry', () => {
   const s = fixture(), time = [String(Math.floor(s.capturedAtMs / 1000)), String((s.capturedAtMs % 1000) * 1000)];
-  const parsed = parseSnapshotReply([key], [time, ['123', 5000]], {
+  const parsed = parseSnapshotReply([key], [time, ['123', s.capturedAtMs + 5000], time], {
     sourceHost: s.sourceHost, exportedAtMs: s.exportedAtMs, quiescenceSha256: s.quiescenceSha256,
   });
   assert.deepEqual(parsed, s);
   assert.deepEqual(importArguments(parsed), { keys: [key], arguments: ['123', String(s.capturedAtMs + 5000)] });
-  assert.ok(SNAPSHOT_LUA.includes("redis.call('TIME')") && SNAPSHOT_LUA.includes("redis.call('PTTL',k)"));
+  assert.ok(SNAPSHOT_LUA.includes("redis.call('TIME')") && SNAPSHOT_LUA.includes("redis.call('PEXPIRETIME',k)"));
 });
 test('expired keys are omitted and live keys without TTL refuse migration', () => {
   const s = fixture(), t = [String(Math.floor(s.capturedAtMs / 1000)), String(s.capturedAtMs % 1000 * 1000)];
   const meta = { sourceHost: s.sourceHost, exportedAtMs: s.exportedAtMs, quiescenceSha256: s.quiescenceSha256 };
-  assert.equal(parseSnapshotReply([key], [t, [null, -2]], meta).records.length, 0);
-  assert.equal(parseSnapshotReply([key], [t, ['1', 0]], meta).records.length, 0);
-  assert.throws(() => parseSnapshotReply([key], [t, ['1', -1]], meta));
+  assert.equal(parseSnapshotReply([key], [t, [null, -2], t], meta).records.length, 0);
+  assert.equal(parseSnapshotReply([key], [t, ['1', s.capturedAtMs], t], meta).records.length, 0);
+  assert.throws(() => parseSnapshotReply([key], [t, ['1', -1], t], meta));
 });
 test('snapshot rejects duplicates, private keys, invalid values, renewed TTLs and extra fields', () => {
   for (const change of [s => s.records.push(s.records[0]), s => s.records[0].key = 'private:secret',
@@ -39,7 +39,7 @@ test('stale snapshots and source/target clock skew refuse import', () => {
 test('64-bit counters are preserved exactly and import protects an empty candidate', () => {
   const s = fixture(); s.records[0].value = '9223372036854775807'; assert.equal(validateSnapshot(s), s);
   assert.ok(IMPORT_LUA.indexOf("redis.call('DBSIZE')") < IMPORT_LUA.indexOf("redis.call('SET'"));
-  assert.ok(IMPORT_LUA.includes("'PX',ttl,'NX'") && IMPORT_LUA.includes('d-now'));
+  assert.ok(IMPORT_LUA.includes("'PXAT',ds,'NX'") && !IMPORT_LUA.includes('d-now'));
 });
 
 test('source scanning deduplicates keys before one atomic snapshot, and unknown keys refuse', async () => {
@@ -47,7 +47,8 @@ test('source scanning deduplicates keys before one atomic snapshot, and unknown 
   const command = async body => {
     calls.push(body);
     if (body[0] === 'SCAN') return ['0', body[3] === 'lolly:rl:*' ? [key, key] : []];
-    return [[String(Math.floor(s.capturedAtMs / 1000)), String(s.capturedAtMs % 1000 * 1000)], ['123', 5000]];
+    const t = [String(Math.floor(s.capturedAtMs / 1000)), String(s.capturedAtMs % 1000 * 1000)];
+    return [t, ['123', s.capturedAtMs + 5000], t];
   };
   const value = await sourceSnapshot({ command, sourceHost: s.sourceHost, quiescenceSha256: s.quiescenceSha256, now: () => s.exportedAtMs });
   assert.equal(value.records.length, 1); assert.equal(calls.length, 3);
