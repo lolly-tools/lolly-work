@@ -14,6 +14,7 @@ vendor/lolly
 /node_modules
 **/node_modules
 /plans
+/.worktrees
 /scratch
 /.scratch
 /artifacts
