@@ -18,6 +18,7 @@ import { normalizeOverlay, type ToolOverlay } from './overlay.ts';
 import { normalizeChain, type Chain } from '../approvals/engine.ts';
 import { normalizeFlagGovernance, isGovernableFlag, type FlagDefault, type FlagVisibility } from './feature-flags.ts';
 import { normalizeCatalogField, type CatalogFieldDef } from '../catalog/asset-meta.ts';
+import { normalizeHiddenTags, validTagScope } from '../catalog/tag-rules.ts';
 import { PROVIDER_KINDS, type ProviderKind, type ProviderMapping, type ProviderExposure, type ProviderSyncConfig } from '../catalog/providers/types.ts';
 
 export const CONFIG_DOC_KIND = 'lolly-work/config';
@@ -60,7 +61,14 @@ export interface ConfigDocument {
    *  grants that govern who may fill it in. The VALUES are never here - they
    *  are per-asset data, not policy. */
   catalogFields: CatalogFieldDef[];
+  /** Hidden catalog tags (plan 299), one entry per scope (`*` or
+   *  `provider:<id>`). Optional, and omitted when an instance hides nothing,
+   *  so a document exported before this key existed still hashes the same. */
+  tagRules?: TagRuleExport[];
 }
+
+/** A hidden-tag rule minus its runtime stamps (who changed it, when). */
+export interface TagRuleExport { scope: string; hidden: string[] }
 
 // ── canonical serialization ───────────────────────────────────────────────────
 
@@ -103,11 +111,18 @@ export async function buildConfigDocument(store: Store): Promise<ConfigDocument>
     .map((g) => ({ id: g.id, ...(g.default ? { default: g.default } : {}), ...(g.visibility ? { visibility: g.visibility } : {}) }))
     .sort((a, b) => (a.id < b.id ? -1 : 1));
   const catalogFields = [...await store.listCatalogFields()].sort((a, b) => (a.id < b.id ? -1 : 1));
+  const tagRules: TagRuleExport[] = (await store.listCatalogTagRules())
+    .filter((r) => r.hidden.length)
+    .map((r) => ({ scope: r.scope, hidden: [...r.hidden] }))
+    .sort((a, b) => (a.scope < b.scope ? -1 : 1));
   const providers: ProviderExport[] = (await store.listProviders())
     .filter((p) => p.managedBy === 'db')
     .map((p) => ({ id: p.id, kind: p.kind, label: p.label, options: p.options, mapping: p.mapping, exposure: p.exposure, sync: p.sync }))
     .sort((a, b) => (a.id < b.id ? -1 : 1));
-  return { kind: CONFIG_DOC_KIND, version: CONFIG_DOC_VERSION, exportedAt: new Date().toISOString(), grants, overlays, chains, providers, featureFlags, catalogFields };
+  return {
+    kind: CONFIG_DOC_KIND, version: CONFIG_DOC_VERSION, exportedAt: new Date().toISOString(),
+    grants, overlays, chains, providers, featureFlags, catalogFields, ...(tagRules.length ? { tagRules } : {}),
+  };
 }
 
 // ── validation ──────────────────────────────────────────────────────────────
@@ -181,6 +196,19 @@ export function validateConfigDocument(raw: unknown): { doc: ConfigDocument } | 
     catalogFields.push(norm);
   });
 
+  const tagRules: TagRuleExport[] = [];
+  if (raw.tagRules !== undefined && !Array.isArray(raw.tagRules)) errors.push('tagRules must be an array');
+  const seenScopes = new Set<string>();
+  (Array.isArray(raw.tagRules) ? raw.tagRules : []).forEach((r, i) => {
+    if (!isObj(r) || typeof r.scope !== 'string') return void errors.push(`tagRules[${i}]: scope required`);
+    if (!validTagScope(r.scope)) return void errors.push(`tagRules[${i}]: scope must be * or provider:<id>`);
+    if (seenScopes.has(r.scope)) return void errors.push(`tagRules[${i}] (${r.scope}): scope listed twice`);
+    seenScopes.add(r.scope);
+    const hidden = normalizeHiddenTags(r.hidden);
+    if ('error' in hidden) return void errors.push(`tagRules[${i}] (${r.scope}): ${hidden.error}`);
+    tagRules.push({ scope: r.scope, hidden });
+  });
+
   const providers: ProviderExport[] = [];
   const rawProviders = Array.isArray(raw.providers) ? raw.providers : [];
   if (raw.providers !== undefined && !Array.isArray(raw.providers)) errors.push('providers must be an array');
@@ -205,7 +233,10 @@ export function validateConfigDocument(raw: unknown): { doc: ConfigDocument } | 
   });
 
   if (errors.length) return { errors };
-  return { doc: { kind: CONFIG_DOC_KIND, version: CONFIG_DOC_VERSION, grants, overlays, chains, providers, featureFlags, catalogFields } };
+  return { doc: {
+    kind: CONFIG_DOC_KIND, version: CONFIG_DOC_VERSION, grants, overlays, chains, providers, featureFlags, catalogFields,
+    ...(tagRules.length ? { tagRules } : {}),
+  } };
 }
 
 // ── diff ───────────────────────────────────────────────────────────────────
@@ -218,6 +249,7 @@ export interface ConfigDiff {
   providers: CategoryDiff<ProviderExport>;
   featureFlags: CategoryDiff<FlagExport>;
   catalogFields: CategoryDiff<CatalogFieldDef>;
+  tagRules: CategoryDiff<TagRuleExport>;
   conflicts: string[];
 }
 
@@ -247,6 +279,7 @@ export function diffConfigDocument(current: ConfigDocument, incoming: ConfigDocu
     providers: keyedDiff(current.providers, incoming.providers, (p) => p.id, false, opts.prune),
     featureFlags: keyedDiff(current.featureFlags, incoming.featureFlags, (f) => f.id, false, opts.prune),
     catalogFields: keyedDiff(current.catalogFields, incoming.catalogFields, (f) => f.id, false, opts.prune),
+    tagRules: keyedDiff(current.tagRules ?? [], incoming.tagRules ?? [], (r) => r.scope, false, opts.prune),
     conflicts,
   };
 }
@@ -260,7 +293,7 @@ export function requiredActions(diff: ConfigDiff): { actions: string[]; ownerOnl
   // Only a NEW or PRUNED owner-only grant escalates the requirement - re-applying
   // a doc that already contains such a grant (unchanged) is not owner-gated.
   for (const g of [...diff.grants.create, ...diff.grants.delete]) if (ownerOnlyAction(g.action)) ownerOnly = true;
-  if (changed(diff.overlays).length || changed(diff.chains).length || changed(diff.featureFlags).length || changed(diff.catalogFields).length) a.add('policy.edit');
+  if (changed(diff.overlays).length || changed(diff.chains).length || changed(diff.featureFlags).length || changed(diff.catalogFields).length || changed(diff.tagRules).length) a.add('policy.edit');
   if (changed(diff.providers).length) a.add('catalog.provider.manage');
   return { actions: [...a], ownerOnly };
 }
@@ -304,6 +337,14 @@ export async function commitConfigApply(store: Store, diff: ConfigDiff, actorId:
   // a taxonomy change is not a licence to destroy the data filed under it.
   for (const f of diff.catalogFields.delete) await store.deleteCatalogField(f.id);
 
+  for (const r of [...diff.tagRules.create, ...diff.tagRules.update]) {
+    const hidden = normalizeHiddenTags(r.hidden);
+    if (validTagScope(r.scope) && !('error' in hidden)) {
+      await store.putCatalogTagRule({ scope: r.scope, hidden, updatedBy: `user:${actorId}`, updatedAt: now });
+    }
+  }
+  for (const r of diff.tagRules.delete) await store.deleteCatalogTagRule(r.scope);
+
   if (changed(diff.providers).length) {
     const existing = new Map((await store.listProviders()).map((p) => [p.id, p]));
     for (const p of diff.providers.create) {
@@ -338,6 +379,7 @@ export function diffSummary(diff: ConfigDiff): Record<string, unknown> {
     providers: count(diff.providers),
     featureFlags: count(diff.featureFlags),
     catalogFields: count(diff.catalogFields),
+    tagRules: count(diff.tagRules),
     conflicts: diff.conflicts,
   };
 }

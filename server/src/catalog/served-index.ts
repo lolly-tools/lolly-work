@@ -28,6 +28,7 @@ import type { Store } from '../store/types.ts';
 import { callerSeesProvider, composeFederated, type Federation, type FragmentView } from './federation.ts';
 import { applyLifecycleToIndex, type AssetIndex, type AssetIndexEntry, type LifecycleRow } from './lifecycle.ts';
 import { composeInstanceAssets } from './instance-assets.ts';
+import { applyTagRules, compileTagRules } from './tag-rules.ts';
 import { composeAssetMeta } from './asset-meta.ts';
 import { applyCredentialsToIndex } from './credentials.ts';
 import { composeCollections } from './collections.ts';
@@ -179,13 +180,18 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
       /* no pack index: federated-only instances still compose */
     }
     const frags = await deps.federation.fragments();
-    const [rows, creds, instAssets, metas, fieldDefs, collections] = await Promise.all([
+    const [rows, creds, instAssets, metas, fieldDefs, collections, tagRuleRows, providerRecs] = await Promise.all([
       deps.store.listLifecycle(), deps.store.listCredentials(), deps.store.listInstanceAssets(),
       deps.store.listAssetMeta(), deps.store.listCatalogFields(), deps.store.listCollections(),
+      deps.store.listCatalogTagRules(), deps.store.listProviders({ includeFragment: false }),
     ]);
+    // Hidden tags (catalog/tag-rules.ts) are an input too: hiding or showing one
+    // moves the fingerprint, so the next read composes afresh with no re-sync.
+    const tagRules = compileTagRules(tagRuleRows, providerRecs);
     const fingerprint = sha256Hex([
       packStamp, providerStamp(frags), JSON.stringify(rows), JSON.stringify(creds), JSON.stringify(instAssets),
       JSON.stringify(metas), JSON.stringify(fieldDefs), JSON.stringify(collections),
+      JSON.stringify(tagRuleRows), JSON.stringify(providerRecs.map((p) => [p.id, p.mapping?.hiddenTags ?? []])),
     ].join('\n'));
     const t = now();
     const hit = memo.get(key);
@@ -216,7 +222,9 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
         // (plans/31 section 5), folded last so a member that lifecycle just
         // dropped is already absent from the ids it can reference. A
         // deployment with no collections serves a byte-identical index.
-        return { composed: composeCollections(applyCredentialsToIndex(gated, creds), collections, groups), staleAt };
+        // Hidden tags come off last, so a label an admin hid is neither shown nor
+        // matched by search or the paged browse, which all read this feed.
+        return { composed: applyTagRules(composeCollections(applyCredentialsToIndex(gated, creds), collections, groups), tagRules), staleAt };
       };
       let raw: Buffer | null = null;
       try {

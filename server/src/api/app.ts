@@ -109,6 +109,7 @@ import {
   versionsToTrim, versionView, type AssetVersionRecord,
 } from '../catalog/versions.ts';
 import { listSubmissions, settleSubmission, submitAsset } from '../catalog/submit.ts';
+import { isDataSubmissionType } from '../catalog/submit-data.ts';
 import {
   applyDescriptivePatch, applyFieldPatch, composeAssetMeta, descriptiveTouched, extractedHaystack,
   fieldHaystack, normalizeCatalogField, normalizeExtractedText, parseDescriptivePatch, servedFields,
@@ -119,6 +120,10 @@ import {
   type CollectionRecord,
 } from '../catalog/collections.ts';
 import { materializeProvider, materializeAsset, cutoverProvider, pinAsset } from '../catalog/materialize.ts';
+import {
+  applyTagRules, hideEntryTags, loadTagRules, normalizeHiddenTags, tagCensus, validTagScope,
+  INSTANCE_SCOPE, type CatalogTagRule, type CensusInput,
+} from '../catalog/tag-rules.ts';
 import { verifyLollyExport, extractProvenance } from '../catalog/publish.ts';
 import { createBrandService, BrandError } from '../brand/service.ts';
 import { createBrandRuleService } from '../brand/rule-service.ts';
@@ -5813,6 +5818,111 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     sendJson(res, 200, { ok: true, id });
   });
 
+  // ── hidden tags (plan 299, catalog/tag-rules.ts) ──────────────────────────
+  // Hiding the instance-wide list is `policy.edit`, the gate the field
+  // definitions use, because it is how the org's taxonomy reads. One
+  // provider's list is `catalog.provider.manage`, the gate the rest of that
+  // provider's mapping already has. Either right opens the census.
+  const tagRightsOf = async (user: UserRecord): Promise<{ instance: boolean; providers: boolean }> => {
+    const grants = await store.listGrants();
+    const pctx = { userId: user.id, groups: user.groups, role: user.role as Role };
+    return {
+      instance: evaluate(pctx, 'policy.edit', ['*'], grants),
+      providers: evaluate(pctx, 'catalog.provider.manage', ['*'], grants),
+    };
+  };
+
+  /**
+   * Every label the catalog carries, counted per source and UNHIDDEN, with the
+   * rules that hide each one right now. `?provider=<id>` narrows the census to
+   * one provider's entries. Counts come from what is already held - the pack
+   * index, live instance assets and each provider's last synced fragment - so
+   * reading the census never calls a provider.
+   */
+  router.add('GET', '/api/v1/catalog/tags', async (req, res, ctx) => {
+    const user = await memberOf(req);
+    if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+    const rights = await tagRightsOf(user);
+    if (!rights.instance && !rights.providers) return sendError(res, 403, 'FORBIDDEN', 'hiding tags needs policy.edit or catalog.provider.manage');
+    await providersReady;
+    const only = (ctx.url.searchParams.get('provider') ?? '').trim();
+    const providers = await store.listProviders({ includeFragment: false });
+    if (only && !providers.some((p) => p.id === only)) return sendError(res, 404, 'NOT_FOUND', 'no such provider');
+    const inputs: CensusInput[] = [];
+    if (!only) {
+      try {
+        const pack = JSON.parse(await readFile(join(config.instance.pack, 'catalog', 'assets', 'index.json'), 'utf8')) as AssetIndex;
+        inputs.push({ source: 'pack', entries: pack.assets ?? [] });
+      } catch { /* a federated-only instance has no pack index */ }
+      const records = (await store.listInstanceAssets()).filter((r) => (r.exited || !r.origin) && submissionServable(r));
+      inputs.push({ source: 'instance', entries: records.map((r) => r.entry) });
+    }
+    for (const { rec, fragment } of await federation.fragments()) {
+      if (!only || rec.id === only) inputs.push({ source: rec.id, entries: fragment.assets });
+    }
+    const rules = await store.listCatalogTagRules();
+    const rows = tagCensus(inputs, rules, providers);
+    const LIMIT = 5000;
+    sendJson(res, 200, {
+      rules,
+      providers: providers.map((p) => ({
+        id: p.id, label: p.label, managedBy: p.managedBy, enabled: p.enabled,
+        assetCount: p.state.assetCount,
+        declared: Array.isArray(p.mapping.hiddenTags) ? p.mapping.hiddenTags : [],
+      })),
+      canEdit: rights,
+      total: rows.length,
+      tags: rows.slice(0, LIMIT),
+      ...(rows.length > LIMIT ? { truncated: true } : {}),
+    }, { 'cache-control': 'private, no-store' });
+  });
+
+  /**
+   * Change one scope's hidden list. `hidden` replaces it; `hide` and `show`
+   * edit it, which is what the console's per-row toggles and bulk buttons
+   * send so two admins working the same list do not overwrite each other.
+   * `show` removes a pattern spelled the same way, without regard to case.
+   * Takes effect on the next index read: the rules are applied when the
+   * index is served, so nothing re-syncs.
+   */
+  router.add('PUT', '/api/v1/catalog/tags/rules', async (req, res) => {
+    const user = await memberOf(req);
+    if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+    const body = (await readJson(req)) as Record<string, unknown> | null;
+    const scope = typeof body?.scope === 'string' ? body.scope.trim() : '';
+    if (!validTagScope(scope)) return sendError(res, 400, 'INVALID_INPUT', 'scope must be * or provider:<id>');
+    const rights = await tagRightsOf(user);
+    if (scope === INSTANCE_SCOPE ? !rights.instance : !rights.providers) {
+      return sendError(res, 403, 'FORBIDDEN', scope === INSTANCE_SCOPE ? 'needs policy.edit' : 'needs catalog.provider.manage');
+    }
+    await providersReady;
+    if (scope !== INSTANCE_SCOPE && !(await store.getProvider(scope.slice('provider:'.length)))) {
+      return sendError(res, 404, 'NOT_FOUND', 'no such provider');
+    }
+    const before = (await store.listCatalogTagRules()).find((r) => r.scope === scope) ?? null;
+    let wanted: unknown;
+    if (body?.hidden !== undefined) {
+      if (body.hide !== undefined || body.show !== undefined) return sendError(res, 400, 'INVALID_INPUT', 'send hidden, or hide and show, not both');
+      wanted = body.hidden;
+    } else {
+      const hide = body?.hide ?? [];
+      const show = body?.show ?? [];
+      if (!Array.isArray(hide) || !Array.isArray(show)) return sendError(res, 400, 'INVALID_INPUT', 'hide and show must be lists of tags');
+      if (!hide.length && !show.length) return sendError(res, 400, 'INVALID_INPUT', 'nothing to change');
+      const drop = new Set(show.filter((t): t is string => typeof t === 'string').map((t) => t.trim().toLowerCase()));
+      wanted = [...(before?.hidden ?? []).filter((t) => !drop.has(t.toLowerCase())), ...hide];
+    }
+    const hidden = normalizeHiddenTags(wanted);
+    if ('error' in hidden) return sendError(res, 400, 'INVALID_INPUT', hidden.error);
+    const next: CatalogTagRule = { scope, hidden, updatedBy: `user:${user.id}`, updatedAt: new Date().toISOString() };
+    if (hidden.length) await store.putCatalogTagRule(next);
+    else await store.deleteCatalogTagRule(scope);
+    await audit(`user:${user.id}`, 'catalog.tags.update', `catalog-tags:${scope}`, {
+      before: before?.hidden ?? [], after: hidden,
+    });
+    sendJson(res, 200, { ok: true, rule: hidden.length ? next : { scope, hidden: [] } }, { 'cache-control': 'no-store' });
+  });
+
   /**
    * Edit one asset's metadata: `PUT /api/v1/catalog/assets/<id>/meta`.
    *
@@ -6382,6 +6492,19 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     store, blobs, policy: config.policy.submit,
     ...(config.submit.scanHook ? { scanHook: config.submit.scanHook } : {}),
     ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    // A template or user tool must seed a tool this pack has (plan 299). The
+    // same manifest reader the policy editor uses answers it, plus the name
+    // the review queue shows.
+    toolLookup: async (toolId: string) => {
+      const inputs = await readToolManifestInputs(toolId);
+      if (!inputs) return null;
+      let name: string | undefined;
+      try {
+        const manifest = JSON.parse(await readFile(join(config.instance.pack, 'tools', toolId, 'tool.json'), 'utf8')) as { name?: unknown };
+        if (typeof manifest.name === 'string') name = manifest.name;
+      } catch { /* the inputs read already proved the file is there */ }
+      return { inputs: inputs.map((i) => String(i.id)), ...(name ? { name } : {}) };
+    },
   });
 
   /** The console/CLI view of one submission: the record's own descriptive entry
@@ -6411,6 +6534,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       ...(s.decidedBy ? { decidedBy: s.decidedBy } : {}),
       ...(s.decidedAt ? { decidedAt: s.decidedAt } : {}),
       ...(s.comment ? { comment: s.comment } : {}),
+      // A template or user tool (plan 299): what it seeds, for the reviewer.
+      ...(s.data ? { data: s.data } : {}),
+      ...(s.collectionId ? { collectionId: s.collectionId } : {}),
+      ...(s.joinedCollection ? { joinedCollection: s.joinedCollection } : {}),
+      ...(s.clientRef ? { clientRef: s.clientRef } : {}),
+      ...(s.note ? { note: s.note } : {}),
       // The org's own metadata (plans/31 section 4), so the review queue shows
       // and edits the same taxonomy the published asset will carry.
       ...(Object.keys(fields).length ? { fields } : {}),
@@ -6447,6 +6576,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const action = settled.state === 'live' ? 'catalog.approve-submission' : 'catalog.return-submission';
     await audit(`user:${actorId}`, action, `catalog:${settled.record.id}`, {
       approvalId: approval.id, ...(settled.comment ? { comment: settled.comment } : {}),
+      ...(settled.collection ? { collection: settled.collection } : {}),
     });
     const submitterId = (settled.record.submission?.by ?? '').replace(/^user:/, '');
     if (!submitterId) return true;
@@ -6513,7 +6643,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       }
     }
     const name = (ctx.url.searchParams.get('name') ?? '').trim();
-    if (!name && !target) return sendError(res, 400, 'INVALID_INPUT', 'name query param required');
+    // A template or user tool names itself in its JSON (plan 299), so only a
+    // file has to be named by the caller.
+    const declaredType = (ctx.url.searchParams.get('type') ?? '').trim();
+    if (!name && !target && !isDataSubmissionType(declaredType)) return sendError(res, 400, 'INVALID_INPUT', 'name query param required');
     const maxBytes = config.policy.submit.maxBytes;
     let bytes: Buffer;
     try {
@@ -6529,8 +6662,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const declaredGroups = list('groups');
     const outsider = declaredGroups.filter((g) => !user.groups.includes(g));
     if (outsider.length) return sendError(res, 403, 'FORBIDDEN', `you are not in ${outsider.join(', ')}, so you cannot submit into it`);
-    const type = (ctx.url.searchParams.get('type') ?? '').trim();
+    const type = declaredType;
     if (type && !/^[a-z0-9-]{1,32}$/i.test(type)) return sendError(res, 400, 'INVALID_INPUT', 'type must be a short slug');
+    const toolIdParam = (ctx.url.searchParams.get('toolId') ?? '').trim();
+    const clientRef = (ctx.url.searchParams.get('clientRef') ?? '').trim();
 
     const outcome = await submitAsset(submitDeps(), {
       bytes,
@@ -6543,6 +6678,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       ...(declaredGroups.length ? { groups: declaredGroups } : {}),
       ...(req.headers['content-type'] ? { contentType: req.headers['content-type'] } : {}),
       submitter: { id: user.id, groups: user.groups },
+      ...(toolIdParam ? { toolId: toolIdParam } : {}),
+      ...(clientRef ? { clientRef } : {}),
     });
 
     if (!outcome.ok) {
@@ -6554,7 +6691,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       // A misconfigured review chain is the instance's fault, not the
       // submitter's, so it reads as unavailable rather than as a bad request.
       const status = outcome.code === 'QUOTA_EXCEEDED' ? 409
-        : outcome.code === 'SCAN_REJECTED' ? 422
+        : outcome.code === 'SCAN_REJECTED' || outcome.code === 'INVALID_SUBMISSION' ? 422
           : outcome.code === 'SUBMIT_CHAIN_MISSING' ? 503 : 502;
       return sendError(res, status, outcome.code, outcome.detail);
     }
@@ -6597,6 +6734,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       scan: outcome.scan,
       credential: outcome.credential,
       formats: (outcome.record.entry.formats ?? []).map((f) => f.format),
+      type: outcome.record.entry.type ?? null,
       ...(outcome.version ? { version: outcome.version } : {}),
       ...(trimmed ? { trimmed } : {}),
       ...(outcome.approval ? { approvalId: outcome.approval.id } : {}),
@@ -6682,7 +6820,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // two surfaces edit exactly these four fields - here, before publication,
     // and the asset editor afterwards (plans/31 section 4). They differ in when
     // they apply and in which keys they allow, never in what a name may be.
-    const parsed = parseDescriptivePatch(body, rec.entry, ['name', 'type', 'description', 'tags']);
+    // A template or user tool keeps its kind: retyping one would serve JSON
+    // to shells that expect a picture (plan 299).
+    const parsed = parseDescriptivePatch(body, rec.entry, rec.submission.data ? ['name', 'description', 'tags'] : ['name', 'type', 'description', 'tags']);
+    if (rec.submission.data && body.type !== undefined && body.type !== rec.entry.type) {
+      return sendError(res, 400, 'INVALID_INPUT', `a ${rec.submission.data.kind} keeps its type`);
+    }
     if ('error' in parsed) return sendError(res, 400, 'INVALID_INPUT', parsed.error);
     const before: Record<string, unknown> = { ...parsed.before };
     const after: Record<string, unknown> = { ...parsed.after };
@@ -6725,8 +6868,29 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         updatedBy: `user:${user.id}`, updatedAt: new Date().toISOString(),
       };
     }
+    // The collection this asset joins once it is approved (plan 299). Choosing
+    // one is curation of a named set, so it asks the collection right rather
+    // than the review right, and only a collection the caller can see is a
+    // choice. `null` clears an earlier choice.
+    let collectionId = rec.submission.collectionId;
+    if (body.collectionId !== undefined) {
+      if (!(await requireAction(req, res, 'catalog.collection.manage'))) return;
+      if (body.collectionId === null || body.collectionId === '') collectionId = undefined;
+      else {
+        const wanted = typeof body.collectionId === 'string' ? body.collectionId.trim() : '';
+        const collection = wanted ? await store.getCollection(wanted) : null;
+        if (!collection || !collectionVisible(collection, user.groups)) return sendError(res, 404, 'NOT_FOUND', 'no such collection');
+        collectionId = collection.id;
+      }
+      before.collectionId = rec.submission.collectionId ?? null;
+      after.collectionId = collectionId ?? null;
+    }
     if (!Object.keys(after).length) return sendError(res, 400, 'INVALID_INPUT', 'nothing to change');
-    const next: InstanceAssetRecord = { ...rec, entry: applyDescriptivePatch(rec.entry, parsed) };
+    const { collectionId: _prior, ...submissionRest } = rec.submission;
+    const next: InstanceAssetRecord = {
+      ...rec, entry: applyDescriptivePatch(rec.entry, parsed),
+      submission: { ...submissionRest, ...(collectionId ? { collectionId } : {}) },
+    };
     await store.putInstanceAsset(next);
     if ((after.fields !== undefined || after.extractedText !== undefined) && meta) await store.putAssetMeta(meta);
     await audit(`user:${user.id}`, 'catalog.edit-submission', `catalog:${rec.id}`, { before, after, relation });
@@ -7656,6 +7820,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const missed: string[] = [];
     const live = (await store.listProviders({ includeFragment: false })).filter((rec) =>
       rec.enabled && callerSeesProvider(rec, user.groups));
+    // Live results lose hidden tags the same way the feed's entries do.
+    const tagRules = await loadTagRules(store);
     await Promise.all(live.map(async (rec) => {
       try {
         const provider = federation.instantiate(rec);
@@ -7666,7 +7832,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
           // Live results pass the SAME gates as synced fragments: the admin's
           // exposure slice, then this instance's lifecycle overlays.
           if (!passesExposure(rec, a)) continue;
-          const entry = mapProviderAsset(rec, a);
+          const entry = hideEntryTags(mapProviderAsset(rec, a), tagRules);
           const row = lifecycleById.get(entry.id);
           const { state, upstreamExpired } = combinedState(row, entryWindow(entry), Date.now());
           if (state === 'revoked' || state === 'scheduled' || (state === 'expired' && (upstreamExpired || row?.onExpiry !== 'warn'))) continue;
