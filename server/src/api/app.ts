@@ -4890,7 +4890,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       res.end(bytes);
     } catch {
       // Missing real asset → 404; a missing index means the shellDir is wrong.
-      sendError(res, 404, 'NOT_FOUND', asset ? 'no such file' : 'shell index not found — check instance.shellDir');
+      sendError(res, 404, 'NOT_FOUND', asset ? 'no such file' : 'shell index not found: check instance.shellDir');
     }
   } : null;
 
@@ -4938,12 +4938,13 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // packs usually exclude catalog/og, so the shell build's copy serves otherwise.
     const card = publicCard(normalize(ctx.params['*'] ?? ''));
     if (card) {
+      let everyone = true;
       if (card.kind === 'tool') {
         const overlays = await store.listOverlays();
         const caller = { overlays, groups: user?.groups ?? [], ...(p?.kind === 'guest' ? { guestToolId: p.guest.toolId } : {}) };
         if (!callerCanSeeTool(caller, card.toolId)) return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
+        everyone = toolVisibleTo(overlays.get(card.toolId), []);
       }
-      const everyone = card.kind === 'view' || toolVisibleTo((await store.listOverlays()).get(card.toolId), []);
       for (const root of [config.instance.pack, ...(shellDir ? [shellDir] : [])]) {
         let bytes: Buffer;
         try {

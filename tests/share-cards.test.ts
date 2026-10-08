@@ -110,7 +110,7 @@ async function instance() {
   return `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
 }
 
-test('signed out on a gated instance: stubs, the Tools view and public cards answer; the rest stays gated', async () => {
+test('gated instance: signed out, stubs, the Tools view and public cards answer and the rest stays gated; a hidden tool card is private', async () => {
   const base = await instance();
   const get = async (path: string) => {
     const res = await fetch(base + path);
@@ -134,6 +134,15 @@ test('signed out on a gated instance: stubs, the Tools view and public cards ans
 
   // A tool hidden from callers without the staff group: no public card.
   assert.equal((await get('/catalog/og/staff-tool.png')).status, 404);
+  // A member who may see that tool gets its card, marked private so a shared
+  // cache never hands it on to a caller who may not.
+  const login = await fetch(`${base}/api/auth/dev?email=${encodeURIComponent('member@test')}`, { redirect: 'manual' });
+  const cookie = login.headers.getSetCookie().find((c) => c.startsWith('lw_session='))?.split(';')[0];
+  assert.ok(cookie, 'dev sign-in sets a session');
+  const staffCard = await fetch(`${base}/catalog/og/staff-tool.png`, { headers: { cookie } });
+  assert.equal(staffCard.status, 200);
+  assert.equal(await staffCard.text(), 'staff-card');
+  assert.equal(staffCard.headers.get('cache-control'), 'private, no-cache');
   // Everything else under /catalog keeps the sign-in gate.
   assert.equal((await get('/catalog/tools/index.json')).status, 401);
   assert.equal((await get('/catalog/og/.og-sigs.json')).status, 401);
