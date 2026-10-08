@@ -35,6 +35,48 @@ roles and where they come from are in [sharing](sharing.md#people-and-roles). In
 people from a project follows `policy.invites.allow` rather than `user.invite` alone; see
 [sharing](sharing.md#invite-policy).
 
+### Who can see who has access
+
+A project's people list (`GET /api/v1/projects/:id/members`) marks each row with where the
+access comes from (plans/75 G15). Everyone on the project sees the owner (`via: 'owner'`)
+and the explicit members (`via: 'member'`); only the project's managers also see the other
+ways in, in a separate `effective` list, so no client offers a role select or Remove for
+access the project cannot take away:
+
+| Row | `via` | `role` | Who sees it |
+|---|---|---|---|
+| Someone in one of the project's visibility groups | `group`, with `group` naming it | The level the group gives; their full level for an admin or owner caller | the project's managers who are in that group, or are an admin or owner |
+| A workspace admin or owner who is not otherwise on the project | `admin` | Editor, or Manager while they hold `project.manage` | managers who are themselves an admin or owner |
+
+The rows never carry an email address, and names never fall back to one. A manager who is
+not an admin learns only that admins can open the project (`adminAccess: 'note'`), never
+who they are: anyone who may create a project manages it, so listing the admins there
+would show any member what `GET /api/v1/users` refuses them. The same caller sees a group
+row at the Editor level the group gives, never a Manager level an admin role adds, which
+would point the admins out the same way. Disabled accounts are left out, and the list stops
+at 200 people (`effectiveTruncated: true`). A project can be made visible to any group, so
+group rows are listed only for the groups the caller is in themselves (an admin or owner
+sees them all): making a project visible to a group never reads that group's people out.
+People who reach the project through a user-made group or the instance-wide audience
+(`policy.sharing`) are not listed here yet; the project's share settings show those grants.
+
+The list also says whether the caller may hand the project on (`canTransfer`), by the same
+test the transfer applies: the project's owner, or a holder of `project.manage`. Lolly
+offers Make owner only then, so an admin denied `project.manage` is not offered it and a
+member granted it is.
+
+Handing a project on (`PATCH /api/v1/projects/:id` with `ownerId`, the owner or a holder of
+`project.manage`) keeps the previous owner on it as a Manager, audited as
+`project.member.add` with `via: 'transfer'`, unless their account is disabled: offboarding
+(disable, then transfer) leaves no row that re-enabling them would bring back.
+
+### Sign out on all devices
+
+Any signed-in member may end every session of their own, in every browser and app, with
+`POST /api/v1/me/revoke-sessions`. It needs no grant and acts on nobody else; see
+[identity](identity.md#offboarding-disable-and-revocation). Ending someone else's sessions
+stays the admin `POST /api/v1/users/:id/revoke-sessions` (`grant.edit`).
+
 Five actions stay **owner-only** on purpose: an admin can shape a catalog provider and even
 materialize its bytes into the instance's own store, but only an owner puts a credential in
 it or flips its kill switch (including the exit's cutover), only an owner changes deploy

@@ -46,6 +46,10 @@ try {
     ['POST', '/api/v1/sessions/release-check/comment-reads'],
     ['GET', '/api/v1/sessions/release-check/comment-people'],
   ] as const) assert.equal((await fetch(base + path, { method })).status, 401, `${method} ${path} must exist and refuse anonymous access`);
+  // Plan 76 milestone 4 (W5, plans/75 G18): sign out on all devices. An
+  // unknown route under /api/v1/me answers 404, so a 401 shows it is in this build.
+  assert.equal((await fetch(base + '/api/v1/me/revoke-sessions-missing', { method: 'POST' })).status, 404, 'an unknown /api/v1/me route must answer 404');
+  assert.equal((await fetch(base + '/api/v1/me/revoke-sessions', { method: 'POST' })).status, 401, 'POST /api/v1/me/revoke-sessions must exist and refuse anonymous access');
   for (const role of ['owner', 'admin', 'member'] as const) {
     const user = await store.upsertUserBySub({ sub: role, email: `${role}@release.invalid`, groups: [role], role });
     if (role === 'owner') await store.putProject({ id: 'release-check', name: 'Release check', ownerId: user.id, visibility: 'private', createdAt: new Date().toISOString() });
@@ -66,7 +70,7 @@ try {
       assert.equal(!!nav.querySelector('option[value="agents"]'), permitted, `${role} must see the correct mobile navigation`);
     } finally { dom.window.close(); }
   }
-  console.log('PASS release capabilities: owner/admin agent API and desktop/mobile navigation; member and anonymous access refused; comment routes present');
+  console.log('PASS release capabilities: owner/admin agent API and desktop/mobile navigation; member and anonymous access refused; comment and sign-out-everywhere routes present');
 } finally {
   if (server) { server.closeAllConnections(); await new Promise<void>(resolve => server!.close(() => resolve())); }
   await rm(pack, { recursive: true, force: true });

@@ -215,6 +215,24 @@ remove someone with `DELETE` on the same path. Anyone may remove themselves, whi
 leave a project; the caller's own row in the members list carries `isMe: true` for that. The
 owner has no member role and cannot be removed; hand the project on first.
 
+Each row says where its access comes from: `via: 'owner'` or `via: 'member'`. Managers also
+get `effective`, a separate list of the people who can open the project without a row on
+it: members of one of its visibility groups (`via: 'group'`, with the group's name) and
+workspace admins and owners (`via: 'admin'`). They are kept apart from `members` so a
+client offers no role select or Remove on them: that access comes from a group or a
+workspace role, and changes in the project's visibility and share settings or in the
+directory. They carry no email, and a manager who is not an admin or
+owner sees group rows only for groups they are in and learns only that admins can open the
+project (`adminAccess: 'note'`), never who they are. People who reach the project through
+a user-made group or the instance-wide audience are not in this list yet; the share
+settings show those grants. The full rules are in
+[permissions](permissions.md#who-can-see-who-has-access).
+
+Handing a project on (`ownerId`) keeps the previous owner on it as a manager, audited as
+`project.member.add` with `via: 'transfer'`, so they can still work there, leave, or be
+removed. A previous owner whose account is disabled is not kept: offboarding (disable,
+then transfer) leaves no row that re-enabling the account would bring back.
+
 Live editing follows the same roles: a viewer joins a room as an observer, and only an
 editor or higher holds a writer seat or invites others into the room. A guest-edit link to
 a session needs editor on its project, at the mint and again on every gesture and keepalive
