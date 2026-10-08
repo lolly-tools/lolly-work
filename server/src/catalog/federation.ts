@@ -23,9 +23,24 @@ export function credentialContext(providerId: string): string {
 }
 
 const DEFAULT_TTL_SECONDS = 300;
-/** Hard page cap per sync - a runaway upstream can't wedge a request cycle.
- *  100/page (driver-side) × 50 pages = 5k assets; log-worthy when hit. */
-const MAX_PAGES = 50;
+/** Most assets one provider federates unless its `sync.maxAssets` or the
+ *  instance's `catalogServing.maxProviderAssets` says otherwise. Large enough
+ *  for a real DAM estate; a walk that stops here says so on the fragment. */
+export const DEFAULT_MAX_PROVIDER_ASSETS = 100_000;
+/** Cold providers synced at once when the feed finds several with no cached
+ *  fragment (a fresh boot): enough to overlap slow upstreams, few enough that
+ *  a large estate does not open a connection per provider. */
+const COLD_SYNC_CONCURRENCY = 3;
+
+/**
+ * The page ceiling for one walk, derived from the asset cap: a driver that
+ * keeps answering with `next` but few or no assets (a runaway upstream) still
+ * stops. Twenty assets a page on average is well under every driver's page
+ * size, so an honest walk reaches the asset cap first.
+ */
+export function pageCeiling(maxAssets: number): number {
+  return Math.max(50, Math.ceil(maxAssets / 20));
+}
 
 /** Use file formats when a DAM reports a broad native type such as generic_files. */
 export function providerAssetType(asset: ProviderAssetRef): string {
@@ -106,21 +121,52 @@ export function callerSeesProvider(rec: ProviderRecord, callerGroups: string[]):
   return groups.some((g) => callerGroups.includes(g));
 }
 
-export async function buildFragment(rec: ProviderRecord, provider: CatalogProvider, now: () => number): Promise<ProviderFragment> {
+/** The asset cap for one provider: its own `sync.maxAssets` when that is a
+ *  positive whole number, else the instance default. */
+export function maxAssetsFor(rec: ProviderRecord, instanceDefault = DEFAULT_MAX_PROVIDER_ASSETS): number {
+  const own = rec.sync?.maxAssets;
+  return typeof own === 'number' && Number.isInteger(own) && own > 0 ? own : instanceDefault;
+}
+
+export async function buildFragment(
+  rec: ProviderRecord, provider: CatalogProvider, now: () => number,
+  opts: { maxAssets?: number } = {},
+): Promise<ProviderFragment> {
   const assets: AssetIndexEntry[] = [];
   // What the driver could not map, and what it wants the operator to know
   // (plans/33 §5): a sync that quietly federates none of a full page is the
   // failure most likely to cost an afternoon, so both travel with the fragment.
   let skipped = 0;
   const notes: string[] = [];
+  const maxAssets = maxAssetsFor(rec, opts.maxAssets);
+  const maxPages = pageCeiling(maxAssets);
+  // A cap that stops the walk with more upstream left is never silent: the
+  // fragment carries `truncated` and a note the sources view and the sync
+  // result both show, naming the setting that moves the cap.
+  let truncated = false;
   let cursor: string | undefined;
-  for (let page = 0; page < MAX_PAGES; page++) {
+  for (let page = 0; ; page++) {
+    if (page >= maxPages) {
+      truncated = true;
+      notes.push(`Stopped after ${maxPages} pages with more left upstream; the provider kept returning pages with few assets. Raise sync.maxAssets if this source really holds more.`);
+      break;
+    }
     const batch = await provider.listAssets(cursor);
     for (const a of batch.assets) {
-      if (passesExposure(rec, a)) assets.push(mapProviderAsset(rec, a));
+      if (!passesExposure(rec, a)) continue;
+      if (assets.length >= maxAssets) {
+        truncated = true;
+        break;
+      }
+      assets.push(mapProviderAsset(rec, a));
     }
     skipped += batch.skipped ?? 0;
     for (const n of batch.notes ?? []) if (!notes.includes(n)) notes.push(n);
+    if (!truncated && assets.length >= maxAssets && batch.next) truncated = true;
+    if (truncated) {
+      notes.push(`Stopped after ${maxAssets} assets with more left upstream. Raise sync.maxAssets on this provider (or catalogServing.maxProviderAssets for the instance) to federate more.`);
+      break;
+    }
     if (!batch.next) break;
     cursor = batch.next;
   }
@@ -130,7 +176,41 @@ export async function buildFragment(rec: ProviderRecord, provider: CatalogProvid
     hash: sha256Hex(canonicalJson(assets)).slice(0, 16),
     ...(skipped ? { skipped } : {}),
     ...(notes.length ? { notes } : {}),
+    ...(truncated ? { truncated: true } : {}),
   };
+}
+
+export interface FragmentView { rec: ProviderRecord; fragment: ProviderFragment; stale: boolean }
+
+/**
+ * Append the caller-visible fragments onto a served index. Pure, so the served
+ * feed (served-index.ts) can fingerprint the exact fragments it composes from
+ * instead of asking the federation twice. `exclude` leaves named providers out
+ * of `assets` (the paged feed lists them separately).
+ */
+export function composeFederated(
+  index: AssetIndex, frags: FragmentView[], callerGroups: string[], exclude?: ReadonlySet<string>,
+): AssetIndex {
+  const visible = frags.filter(({ rec }) => callerSeesProvider(rec, callerGroups));
+  if (!visible.length) return index;
+  const included = exclude?.size ? visible.filter((f) => !exclude.has(f.rec.id)) : visible;
+  const assets = [...(index.assets ?? []), ...included.flatMap((f) => f.fragment.assets)];
+  const staleProviders = visible.filter((f) => f.stale).map((f) => f.rec.id);
+  return { ...index, assets, ...(staleProviders.length ? { staleProviders } : {}) };
+}
+
+/** Run `tasks` with at most `limit` in flight, results in input order. */
+async function boundedAll<T>(tasks: Array<() => Promise<T>>, limit: number): Promise<T[]> {
+  const out = new Array<T>(tasks.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < tasks.length) {
+      const i = next++;
+      out[i] = await (tasks[i] as () => Promise<T>)();
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, worker));
+  return out;
 }
 
 export interface FederationDeps extends ProviderDeps {
@@ -141,6 +221,8 @@ export interface FederationDeps extends ProviderDeps {
   /** Config-managed providers' credentials, resolved from env at boot. */
   configSecrets?: Map<string, string>;
   now?: () => number;
+  /** Instance default asset cap per provider (`catalogServing.maxProviderAssets`). */
+  maxProviderAssets?: number;
 }
 
 export interface Federation {
@@ -153,7 +235,7 @@ export interface Federation {
   sync(rec: ProviderRecord): Promise<ProviderFragment>;
   /** Enabled providers' fragments for feed composition - cached, refreshed in
    *  the background past TTL, last-good on failure. Never throws. */
-  fragments(): Promise<Array<{ rec: ProviderRecord; fragment: ProviderFragment; stale: boolean }>>;
+  fragments(): Promise<FragmentView[]>;
   /** Append caller-visible federated entries onto a served index. */
   composeIndex(index: AssetIndex, callerGroups: string[]): Promise<AssetIndex>;
   /** Combined fragment hash - folded into catalogVersion so provider refreshes
@@ -164,6 +246,9 @@ export interface Federation {
    *  restrictive-wins with the local lifecycle row (plans/27 §2). Undefined for
    *  a pack id, an unknown id, or a provider with no availability API. */
   availabilityWindow(assetId: string): Promise<AvailabilityWindow | undefined>;
+  /** The cached fragment entry for a federated asset id (its formats and
+   *  version), or undefined. A map lookup, built once per fragment. */
+  entry(assetId: string): Promise<AssetIndexEntry | undefined>;
   /** Drop a provider's cached fragment (disable/delete/credential change). */
   invalidate(providerId: string): void;
 }
@@ -185,7 +270,7 @@ export function createFederation(deps: FederationDeps): Federation {
 
   const sync = async (rec: ProviderRecord): Promise<ProviderFragment> => {
     try {
-      const fragment = await buildFragment(rec, instantiate(rec), now);
+      const fragment = await buildFragment(rec, instantiate(rec), now, deps.maxProviderAssets ? { maxAssets: deps.maxProviderAssets } : {});
       cache.set(rec.id, { fragment, fetchedAt: now(), stale: false });
       await deps.store.putProviderState(rec.id, {
         lastSyncAt: fragment.syncedAt,
@@ -215,36 +300,61 @@ export function createFederation(deps: FederationDeps): Federation {
   };
 
   const fragments: Federation['fragments'] = async () => {
-    const out: Array<{ rec: ProviderRecord; fragment: ProviderFragment; stale: boolean }> = [];
-    for (let rec of await deps.store.listProviders({ includeFragment: false })) {
-      if (!rec.enabled) continue;
-      const ttlMs = (rec.sync.ttlSeconds ?? DEFAULT_TTL_SECONDS) * 1000;
-      const cached = cache.get(rec.id);
+    // Slots keep the store's provider order (the feed's asset order) while the
+    // cold ones load concurrently, a few at a time.
+    const slots: Array<FragmentView | null> = [];
+    const cold: Array<() => Promise<void>> = [];
+    for (const listed of await deps.store.listProviders({ includeFragment: false })) {
+      if (!listed.enabled) continue;
+      const ttlMs = (listed.sync.ttlSeconds ?? DEFAULT_TTL_SECONDS) * 1000;
+      const cached = cache.get(listed.id);
       if (cached) {
-        if (now() - cached.fetchedAt > ttlMs) refreshInBackground(rec);
-        out.push({ rec, fragment: cached.fragment, stale: cached.stale });
+        if (now() - cached.fetchedAt > ttlMs) refreshInBackground(listed);
+        slots.push({ rec: listed, fragment: cached.fragment, stale: cached.stale });
         continue;
       }
-      // Only a cold fragment cache needs its persisted index. Recheck the
-      // provider after the second read in case it was disabled or removed.
-      const full = await deps.store.getProvider(rec.id);
-      if (!full?.enabled) continue;
-      rec = full;
-      // Cold cache: last-good from the store if it has one (serve stale,
-      // refresh behind), else a blocking first sync (best-effort).
-      if (rec.state.fragment) {
-        cache.set(rec.id, { fragment: rec.state.fragment, fetchedAt: 0, stale: true });
-        refreshInBackground(rec);
-        out.push({ rec, fragment: rec.state.fragment, stale: true });
-        continue;
-      }
-      try {
-        out.push({ rec, fragment: await sync(rec), stale: false });
-      } catch {
-        // Never built successfully and upstream is down: nothing to serve yet.
-      }
+      const slot = slots.push(null) - 1;
+      cold.push(async () => {
+        // Only a cold fragment cache needs its persisted index. Recheck the
+        // provider after the second read in case it was disabled or removed.
+        const rec = await deps.store.getProvider(listed.id);
+        if (!rec?.enabled) return;
+        // Cold cache: last-good from the store if it has one (serve stale,
+        // refresh behind), else a blocking first sync (best-effort).
+        if (rec.state.fragment) {
+          cache.set(rec.id, { fragment: rec.state.fragment, fetchedAt: 0, stale: true });
+          refreshInBackground(rec);
+          slots[slot] = { rec, fragment: rec.state.fragment, stale: true };
+          return;
+        }
+        try {
+          slots[slot] = { rec, fragment: await sync(rec), stale: false };
+        } catch {
+          // Never built successfully and upstream is down: nothing to serve yet.
+        }
+      });
     }
-    return out;
+    if (cold.length) await boundedAll(cold, COLD_SYNC_CONCURRENCY);
+    return slots.filter((s): s is FragmentView => s !== null);
+  };
+
+  // Id lookups into a fragment, built on first use and dropped with the fragment.
+  const entryMaps = new WeakMap<ProviderFragment, Map<string, AssetIndexEntry>>();
+  const entryIn = (fragment: ProviderFragment, assetId: string): AssetIndexEntry | undefined => {
+    let map = entryMaps.get(fragment);
+    if (!map) {
+      map = new Map(fragment.assets.map((a) => [a.id, a]));
+      entryMaps.set(fragment, map);
+    }
+    return map.get(assetId);
+  };
+  const entry = async (assetId: string): Promise<AssetIndexEntry | undefined> => {
+    if (!assetId.startsWith(EXT_PREFIX)) return undefined;
+    for (const { rec, fragment } of await fragments()) {
+      if (!assetId.startsWith(`${EXT_PREFIX}${rec.id}/`)) continue;
+      return entryIn(fragment, assetId);
+    }
+    return undefined;
   };
 
   return {
@@ -253,11 +363,7 @@ export function createFederation(deps: FederationDeps): Federation {
     sync,
     fragments,
     async composeIndex(index, callerGroups) {
-      const frags = (await fragments()).filter(({ rec }) => callerSeesProvider(rec, callerGroups));
-      if (!frags.length) return index;
-      const assets = [...(index.assets ?? []), ...frags.flatMap((f) => f.fragment.assets)];
-      const staleProviders = frags.filter((f) => f.stale).map((f) => f.rec.id);
-      return { ...index, assets, ...(staleProviders.length ? { staleProviders } : {}) };
+      return composeFederated(index, await fragments(), callerGroups);
     },
     async version() {
       const frags = await fragments();
@@ -265,14 +371,10 @@ export function createFederation(deps: FederationDeps): Federation {
       return sha256Hex(frags.map((f) => `${f.rec.id}:${f.fragment.hash}`).join('|')).slice(0, 16);
     },
     async availabilityWindow(assetId) {
-      if (!assetId.startsWith(EXT_PREFIX)) return undefined;
-      for (const { rec, fragment } of await fragments()) {
-        if (!assetId.startsWith(`${EXT_PREFIX}${rec.id}/`)) continue;
-        const entry = fragment.assets.find((a) => a.id === assetId);
-        return entry ? entryWindow(entry) : undefined;
-      }
-      return undefined;
+      const found = await entry(assetId);
+      return found ? entryWindow(found) : undefined;
     },
+    entry,
     invalidate(providerId) {
       cache.delete(providerId);
     },

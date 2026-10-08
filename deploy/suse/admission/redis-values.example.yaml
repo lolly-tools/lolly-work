@@ -1,0 +1,57 @@
+# AppCo chart 2.8.0 review example. Render and qualify before any installation.
+# Secrets are deliberately referenced, never generated or embedded here.
+architecture: standalone
+nodeCount: 1
+images:
+  redis:
+    registry: dp.apps.rancher.io
+    repository: containers/redis
+    digest: sha256:f2e6e6457f6661b1a4383fa140b22d1ddd2d0d831dd79d7052e0120c70e373d3
+global:
+  imagePullSecrets: [application-collection]
+auth:
+  enabled: true
+  existingSecret: admission-redis-auth
+  passwordKey: password
+tls:
+  enabled: true
+  authClients: false # Password/ACL authentication still required over verified TLS.
+  existingSecret: admission-redis-tls
+  certFilename: tls.crt
+  keyFilename: tls.key
+  caCertFilename: ca.crt
+configuration: |
+  appendonly yes
+  appendfsync always
+  no-appendfsync-on-rewrite no
+  maxmemory 64mb
+  maxmemory-policy noeviction
+persistence:
+  enabled: true
+  resources:
+    requests:
+      storage: 2Gi
+podSecurityContext:
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+containerSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+podTemplates:
+  automountServiceAccountToken: false
+  containers:
+    redis:
+      resources:
+        requests: {cpu: 100m, memory: 128Mi}
+        limits: {cpu: 300m, memory: 256Mi}
+service:
+  type: ClusterIP
+metrics:
+  enabled: false
+networkPolicy:
+  enabled: false # Supply reviewed default-deny + exact adapter-only rules separately.

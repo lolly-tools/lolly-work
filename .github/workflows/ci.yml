@@ -13,9 +13,8 @@
 #                merge).
 #   package    — server and render-worker container images must build;
 #                nothing is pushed here, release.yml does that.
-# After all four gates pass on a push to main (never on a PR), `deploy` ships the
-# committed state to Vercel production (aliases www.lolly.work). It no-ops with a
-# warning until the VERCEL_TOKEN repo secret is set.
+# CI qualifies source and optional deployment adapters; it does not deploy.
+# Production releases use the reviewed UpCloud/K3s deployment handoff.
 name: CI
 
 on:
@@ -180,7 +179,7 @@ jobs:
   # Build only, no registry login, nothing pushed.
   package:
     name: container image builds (${{ matrix.image }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -194,32 +193,46 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
       - name: Build the image (no push)
-        run: docker build -f ${{ matrix.dockerfile }} ${{ matrix.context }}
-
-  # Deploy — only after every gate above passes, and only on a push to main (PRs
-  # never deploy). Remote build: Vercel runs the vercel.json buildCommand, exactly
-  # like a manual `vercel --prod`, so CI doesn't have to reproduce the native
-  # @resvg/jsdom bundle. VERCEL_ORG_ID/PROJECT_ID are public identifiers, not
-  # secrets; only VERCEL_TOKEN is a secret. Until that secret is set the step
-  # no-ops with a warning (never a red gate), so push-to-deploy is opt-in.
-  deploy:
-    name: deploy (vercel prod)
-    needs: [test, typecheck, audit, package]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    env:
-      VERCEL_ORG_ID: team_6XAaRitEb6CnNoNPwI3pI6hb
-      VERCEL_PROJECT_ID: prj_35faMWKpIv5tWrDGSLwkzY7MFhIG
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Deploy to Vercel production
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
-          if [ -z "$VERCEL_TOKEN" ]; then
-            echo "::warning::VERCEL_TOKEN secret not set — skipping auto-deploy. Add it in Settings → Secrets and variables → Actions to enable push-to-deploy."
-            exit 0
-          fi
-          npx --yes vercel@latest deploy --prod --yes --token="$VERCEL_TOKEN"
+          docker buildx build --platform linux/amd64 --provenance=false --sbom=false \
+            --file ${{ matrix.dockerfile }} --tag lolly-${{ matrix.image }}:ci \
+            --label org.opencontainers.image.revision=$GITHUB_SHA \
+            --output type=docker --output "type=oci,dest=$RUNNER_TEMP/${{ matrix.image }}.oci.tar" \
+            ${{ matrix.context }}
+      - name: Qualify native server rendering and release contracts
+        if: matrix.image == 'server'
+        run: |
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,size=256m \
+            --cap-drop ALL --security-opt no-new-privileges --memory 1g --cpus 1 \
+            --entrypoint node lolly-server:ci --input-type=module -e '
+              import assert from "node:assert/strict";
+              import { Resvg } from "@resvg/resvg-js";
+              import sharp from "sharp";
+              assert.equal(process.getuid(),1000); assert.equal(process.arch,"x64");
+              const png=new Resvg("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"13\" height=\"7\"><rect width=\"13\" height=\"7\" fill=\"green\"/></svg>").render().asPng();
+              const metadata=await sharp(png).metadata();assert.equal(metadata.width,13);assert.equal(metadata.height,7);
+              assert.ok((await sharp(png).jpeg().toBuffer()).length>0);
+            '
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,size=256m \
+            --cap-drop ALL --security-opt no-new-privileges --memory 1g --cpus 1 \
+            --entrypoint node lolly-server:ci scripts/verify-engine-pin.ts
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,size=256m \
+            --cap-drop ALL --security-opt no-new-privileges --memory 1g --cpus 1 \
+            --entrypoint node lolly-server:ci scripts/check-release-capabilities.ts
+      - name: Bind the booted image to its offline transport
+        run: |
+          docker image inspect lolly-${{ matrix.image }}:ci --format '{{json .}}' > "$RUNNER_TEMP/${{ matrix.image }}-image.json"
+          sha256sum "$RUNNER_TEMP/${{ matrix.image }}.oci.tar" > "$RUNNER_TEMP/${{ matrix.image }}.oci.tar.sha256"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: qualified-${{ matrix.image }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/${{ matrix.image }}.oci.tar
+            ${{ runner.temp }}/${{ matrix.image }}.oci.tar.sha256
+            ${{ runner.temp }}/${{ matrix.image }}-image.json
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error

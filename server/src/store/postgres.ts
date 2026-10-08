@@ -27,6 +27,7 @@ import type { LifecycleRow, OnExpiry } from '../catalog/lifecycle.ts';
 import type { CredentialRow } from '../catalog/credentials.ts';
 import type { InstanceAssetRecord } from '../catalog/instance-assets.ts';
 import type { AssetMetaRecord, CatalogFieldDef } from '../catalog/asset-meta.ts';
+import type { CatalogTagRule } from '../catalog/tag-rules.ts';
 import { sortCollections, type CollectionRecord } from '../catalog/collections.ts';
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderFragment, ProviderKind, ProviderRecord } from '../catalog/providers/types.ts';
@@ -1822,6 +1823,21 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     },
     async deleteCatalogField(id) {
       await pool.query('delete from catalog_field_defs where id = $1', [id]);
+    },
+    // Hidden tags (migrations/0065): one row per scope, the rule as jsonb.
+    async listCatalogTagRules() {
+      const { rows } = await pool.query('select rule from catalog_tag_rules order by scope asc');
+      return rows.map((r) => r.rule as CatalogTagRule);
+    },
+    async putCatalogTagRule(rule) {
+      await pool.query(
+        `insert into catalog_tag_rules (scope, rule, updated_at) values ($1, $2::jsonb, now())
+         on conflict (scope) do update set rule = excluded.rule, updated_at = now()`,
+        [rule.scope, JSON.stringify(rule)],
+      );
+    },
+    async deleteCatalogTagRule(scope) {
+      await pool.query('delete from catalog_tag_rules where scope = $1', [scope]);
     },
     async getAssetMeta(assetId) {
       const { rows } = await pool.query('select record from catalog_asset_meta where asset_id = $1', [assetId]);

@@ -441,8 +441,10 @@ carries them, switching email on takes these steps:
 
 1. **Pick a provider** that gives you an SMTP relay on port 587 with STARTTLS and its own
    DNS records, such as Postmark, or Amazon SES. The sender address needs no mailbox.
-2. **Configure** the relay in `instance.json` and redeploy (`deploy/vm/push.sh` for
-   lolly.ing):
+2. **Configure** the relay in `instance.json` and apply it through your instance's
+   reviewed deployment route. lolly.ing uses UpCloud/K3s; its old
+   `deploy/vm/push.sh` route is historical (see
+   [current hosted production](deployment.md#current-hosted-production)):
 
    ```json
    "notify": {
@@ -452,7 +454,9 @@ carries them, switching email on takes these steps:
    ```
 
    Put the relay password or token in `LW_SMTP_PASSWORD` in the server's environment
-   (`/opt/lolly-ing/.env` on the lolly.ing VM), never in the file. `secure: false`
+   through your deployment's secret store, never in the configuration file.
+   On Kubernetes, use the existing instance Secret; the former
+   `/opt/lolly-ing/.env` is not the current lolly.ing configuration. `secure: false`
    with port 587 takes STARTTLS when the relay offers it; use `secure: true` only for
    port 465.
 3. **Publish the DNS records** the provider shows, in the domain's DNS. For lolly.ing that
@@ -493,7 +497,27 @@ Deploy-time (GitOps / air-gap) provider entries, upserted at boot as `managedBy:
 and read-only in the API. Each entry: `id` (lowercase, dash-separated), `kind`, `label`,
 optional `credentialRef` (the *name* of the env var holding the secret), `enabled`,
 `options`, `mapping`, `exposure`, `sync`. Duplicate ids, unknown kinds and missing labels
-are startup errors. See [catalog](catalog.md).
+are startup errors. A provider's `sync.maxAssets` (a whole number) caps how many assets one
+sync federates from that provider. See [catalog](catalog.md).
+
+## `catalogServing`
+
+Sizing for catalogs with tens of thousands of assets. Every key has a working default.
+
+| Key | Default | What |
+|---|---|---|
+| `maxProviderAssets` | `100000` | most assets one provider sync federates, unless the provider sets `sync.maxAssets`. A walk that stops here is marked truncated |
+| `pagedProviderThreshold` | `2000` | providers larger than this leave `assets/index.json?paged=1` and are listed under `pagedProviders` |
+| `extCache.maxBytes` | `67108864` (64 MiB) | memory for cached federated bytes; `0` turns the cache off |
+| `extCache.maxItemBytes` | `2097152` (2 MiB) | larger files stream through uncached |
+
+See [large catalogs](catalog.md#large-catalogs).
+
+`mapping.hiddenTags` lists labels this provider's assets never show: exact tags or prefixes
+ending in `*`, matched without regard to case. It is applied when the index is served, so a
+change takes effect at the next restart with no re-sync; the console's Tags panel shows these
+as set in instance.json. A database-managed provider takes the same list from the console
+instead ([hiding tags](catalog.md#hiding-tags)).
 
 ## Environment variables
 
@@ -537,6 +561,7 @@ sessions die on restart. In production (`NODE_ENV=production`) their absence thr
 | `NODE_ENV` | - | `production` makes secret checks fail-closed |
 | `LW_TEST_DATABASE_URL` | - | enables the Postgres conformance leg in `pnpm test` |
 | `LOLLY_OSS_DIR` | `../lolly` | where `pnpm run demo` finds the built OSS web shell |
+| `LW_DEMO_MOCK_ASSETS` | - | `pnpm run demo` only: also seeds a mock provider, `demo-dam-large`, with this many synthetic assets (half SVG, half PNG, up to 200000) for checking the shell against a large catalog |
 
 ## Changing configuration
 
