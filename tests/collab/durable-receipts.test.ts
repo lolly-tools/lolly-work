@@ -143,12 +143,13 @@ async function refusedBatches(store: Store): Promise<void> {
   const observer: RoomMember = { id: 'observer', userId: viewer.id, name: 'Viewer', role: 'observer', opVersion: '1.1.0', send: f => sent.push(f) };
   const lastReceipt = () => { const f = sent.at(-1); assert.ok(f?.t === 'receipt'); return f; };
   const room = await Room.open(session, undefined, store);
+  let history: Awaited<ReturnType<Store['listSessionRevisions']>> = [];
   try {
     room.join(writer); room.join(observer);
     const edit: CanvasOp = { k: 'param', key: 'title', value: 'by author', origin: { client: 'writer', clock: 1 } };
     await room.applyBatch(writer, 'edit', ['edit'], [edit], new Set([edit]));
     const before = (await store.getSession(session.id))!;
-    const history = await store.listSessionRevisions(session.id);
+    history = await store.listSessionRevisions(session.id);
     const head = (await store.getCollabCheckpoint(session.id))!;
     assert.equal(before.rev, 2);
     const unchanged = async (why: string) => {
@@ -184,7 +185,8 @@ async function refusedBatches(store: Store): Promise<void> {
     assert.deepEqual(lastReceipt().rejectedIds, ['vetoed-op']);
     await unchanged('vetoed batch');
 
-    // A mixed batch commits one revision, as before.
+    // A mixed batch commits the accepted op to the session row. Since plan 76 M4
+    // a live batch adds no revision row; the room appends one when it closes.
     const keep: CanvasOp = { k: 'param', key: 'title', value: 'mixed', origin: { client: 'writer', clock: 3 } };
     const drop: CanvasOp = { k: 'param', key: 'locked', value: 'still no', origin: { client: 'writer', clock: 3 } };
     await room.applyBatch(writer, 'mixed', ['keep', 'drop'], [keep, drop], new Set([keep]));
@@ -192,14 +194,15 @@ async function refusedBatches(store: Store): Promise<void> {
     assert.deepEqual([mixed.durableRevision, mixed.acceptedIds, mixed.rejectedIds], [3, ['keep'], ['drop']]);
     const after = (await store.getSession(session.id))!;
     assert.deepEqual([after.rev, after.inputs.title, after.updatedBy], [3, 'mixed', author.id]);
-    const revisions = await store.listSessionRevisions(session.id);
-    assert.equal(revisions.length, history.length + 1);
-    assert.deepEqual([revisions[0]!.rev, revisions[0]!.actor], [3, 'collab']);
+    assert.deepEqual(await store.listSessionRevisions(session.id), history, 'a live batch adds no revision row');
 
     // The old refusal still replays after the session moved on.
     await room.applyBatch(observer, 'viewer-batch', ['viewer-op'], [attempt], new Set());
     assert.deepEqual([lastReceipt().durableRevision, lastReceipt().rejectedIds], [3, ['viewer-op']]);
   } finally { await room.quiesce(); }
+  const revisions = await store.listSessionRevisions(session.id);
+  assert.equal(revisions.length, history.length + 1, 'closing the room appends one revision');
+  assert.deepEqual([revisions[0]!.rev, revisions[0]!.actor], [3, author.id], 'named for the one person whose edits it holds');
   const recovered = await Room.open(session, undefined, store);
   try { assert.equal(recovered.snapshot().params.title, 'mixed', 'the journal stays contiguous across refusals'); }
   finally { await recovered.quiesce(); }

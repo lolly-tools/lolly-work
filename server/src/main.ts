@@ -172,6 +172,8 @@ let renderRunner: RenderRunner | undefined;
 const app = buildApp({ config, store, secrets, blobs, listCollabRooms: () => collab.snapshot(), projectPresence: id => collab.projectPresence(id), nearby, agentRooms: collab.agents,
   // A saved comment write tells the people in that session's live room (plan 76 M4).
   roomEvents: (id, frame) => collab.notifyComment(id, frame),
+  // Version restores go through the live room, like an agent's edits (plan 76 M4).
+  versionRooms: collab.versions,
   onRenderRunner: (runner) => { renderRunner = runner; },
   ...(backgroundPollMs !== undefined ? { backgroundPollMs } : {}),
 });

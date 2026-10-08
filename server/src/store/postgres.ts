@@ -35,6 +35,10 @@ import type { DeliveryRecord } from '../delivery/types.ts';
 import type { ProjectAccess } from '../rbac/project-access.ts';
 import type { ProjectFolderRecord } from './types.ts';
 import type { DocumentAgentRecord, ProjectAgentRecord } from './types.ts';
+import {
+  newestVersionFirst, normalizeSessionVersionWrite, planSessionVersionPut, resolveVersionLimits, sessionVersionContent, sessionVersionId, versionListLimit,
+  type SessionVersionLimits, type SessionVersionPut, type SessionVersionRow, type SessionVersionSummary,
+} from './types.ts';
 import { createPostgresPasskeys } from '../iam/passkeys/postgres.ts';
 import { createPostgresRenderStore } from '../renders/postgres.ts';
 import {
@@ -266,6 +270,11 @@ const PROJECT_FILES_LOCK_KEY = 0x1011_0005;
  *  Two-key locks live apart from the one-key locks above, and the value is
  *  distinct from them anyway. */
 const PASSWORD_LINK_LOCK_KEY = 0x1011_0006;
+/** Serializes session version writes and deletes (plan 76 M4, migration 0053), so
+ *  the per-document rules and the instance-wide space cap see every committed
+ *  version. Writes are rare (at most one automatic version per document per two
+ *  minutes), so one lock for the instance costs nothing that matters. */
+const SESSION_VERSIONS_LOCK_KEY = 0x1011_0007;
 
 // Appends a `column = $n` clause + its bound value - shared by the two
 // filtered list queries below so the param-numbering logic lives in one place.
@@ -2562,7 +2571,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       const client = await pool.connect();
       try {
         await client.query('begin');
-        const locked = await client.query(`select rev, meta from sessions where id=$1 and rev=$2 and deleted_at is null
+        const locked = await client.query(`select rev from sessions where id=$1 and rev=$2 and deleted_at is null
           and collab_owner=$3 and collab_lease_until>clock_timestamp() for update`, [batch.sessionId, batch.expectedRev, batch.owner]);
         if (!locked.rows[0]) throw new Error('collab-owner-conflict');
         const rev = batch.expectedRev + 1, at = new Date().toISOString();
@@ -2581,10 +2590,6 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         }
         for (const r of batch.receipts) await client.query(`insert into collab_receipts(session_id,principal,id,digest,accepted,revision) values($1,$2,$3,$4,$5,$6)`,
           [batch.sessionId, batch.principal, r.id, r.digest, r.accepted, rev]);
-        await client.query('insert into session_revisions(session_id,rev,inputs,meta,actor,at) values($1,$2,$3::jsonb,$4::jsonb,$5,$6)',
-          [batch.sessionId, rev, JSON.stringify(batch.inputs), JSON.stringify(locked.rows[0].meta), batch.actor, at]);
-        await client.query(`delete from session_revisions where session_id=$1 and rev not in
-          (select rev from session_revisions where session_id=$1 order by rev desc limit $2)`, [batch.sessionId, SESSION_REVISION_LIMIT]);
         await client.query('commit');
         return rev;
       } catch (error) { await client.query('rollback'); throw error; }
@@ -2632,6 +2637,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     async deleteCollabSnapshot(sessionId) {
       await pool.query('delete from collab_room_snapshots where session_id = $1', [sessionId]);
     },
+    ...createPostgresVersions(pool),
 
     // The sharing ladder (migration 0060; lolly plan 299 M1).
     async setProjectMemberExpiry(projectId, userId, expiresAt) {
@@ -2715,6 +2721,158 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     },
     async close() {
       await pool.end();
+    },
+  };
+}
+
+const iso = (value: unknown): string => new Date(value as string).toISOString();
+const VERSION_SUMMARY_COLUMNS = 'v.id, v.session_id, v.rev, v.kind, v.label, v.contributors, v.created_by, v.restored_from, v.before_id, v.at, c.bytes';
+const VERSIONS_WITH_CONTENT = 'session_versions v join session_version_contents c on c.session_id = v.session_id and c.digest = v.digest';
+const VERSION_ROW_COLUMNS = 'id, session_id, kind, digest, at, created_by, request_id, before_id';
+
+function versionSummaryFromRow(r: Record<string, unknown>): SessionVersionSummary {
+  return {
+    id: r.id as string, sessionId: r.session_id as string, rev: Number(r.rev), kind: r.kind as SessionVersionSummary['kind'],
+    ...(r.label !== null && r.label !== undefined ? { label: r.label as string } : {}),
+    contributors: (r.contributors as SessionVersionSummary['contributors']) ?? [],
+    ...(r.created_by ? { createdBy: r.created_by as string } : {}),
+    ...(r.restored_from ? { restoredFrom: r.restored_from as string } : {}),
+    ...(r.before_id ? { beforeId: r.before_id as string } : {}),
+    bytes: Number(r.bytes), at: iso(r.at),
+  };
+}
+
+function versionRowFromRow(r: Record<string, unknown>): SessionVersionRow {
+  return {
+    id: r.id as string, sessionId: r.session_id as string, kind: r.kind as SessionVersionRow['kind'], digest: r.digest as string, at: iso(r.at),
+    ...(r.created_by !== null && r.created_by !== undefined ? { createdBy: r.created_by as string } : {}),
+    ...(r.request_id !== null && r.request_id !== undefined ? { requestId: r.request_id as string } : {}),
+    ...(r.before_id ? { beforeId: r.before_id as string } : {}),
+  };
+}
+
+type VersionMethods = 'configureVersionLimits' | 'putSessionVersion' | 'listSessionVersions' | 'getSessionVersion' | 'deleteSessionVersion' | 'deleteSessionVersions';
+
+/**
+ * Session versions (plan 76 M4 R2, migration 0053). Every write and delete holds
+ * SESSION_VERSIONS_LOCK_KEY for its transaction, reads the document's rows, and
+ * applies the shared `planSessionVersionPut`, so the memory driver keeps the same
+ * rules. Contents no version uses any more are deleted in the same transaction.
+ */
+function createPostgresVersions(pool: PgPool): Pick<Store, VersionMethods> {
+  let limits: SessionVersionLimits = resolveVersionLimits({});
+  const locked = async <T>(work: (client: PgClient) => Promise<T>): Promise<T> => {
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+      await client.query('select pg_advisory_xact_lock($1)', [SESSION_VERSIONS_LOCK_KEY]);
+      const result = await work(client);
+      await client.query('commit');
+      return result;
+    } catch (error) {
+      await client.query('rollback');
+      throw error;
+    } finally { client.release(); }
+  };
+  /** Delete the versions with these ids; returns the sessions they belonged to.
+   *  The foreign keys unset references to them. */
+  const dropVersions = async (client: PgClient, ids: string[]): Promise<string[]> => {
+    if (!ids.length) return [];
+    const { rows } = await client.query('delete from session_versions where id = any($1::text[]) returning session_id', [ids]);
+    return [...new Set(rows.map((r) => r.session_id as string))];
+  };
+  const dropUnusedContents = async (client: PgClient, sessionIds: string[]): Promise<void> => {
+    if (!sessionIds.length) return;
+    await client.query(`delete from session_version_contents c where c.session_id = any($1::text[])
+      and not exists (select 1 from session_versions v where v.session_id = c.session_id and v.digest = c.digest)`, [sessionIds]);
+  };
+  const summaryById = async (client: PgClient, id: string): Promise<SessionVersionSummary> => {
+    const { rows } = await client.query(`select ${VERSION_SUMMARY_COLUMNS} from ${VERSIONS_WITH_CONTENT} where v.id = $1`, [id]);
+    return versionSummaryFromRow(rows[0]!);
+  };
+
+  return {
+    configureVersionLimits(next) { limits = resolveVersionLimits(next); },
+    async putSessionVersion(input) {
+      const w = normalizeSessionVersionWrite(input);
+      const content = sessionVersionContent(w.inputs);
+      return locked(async (client): Promise<SessionVersionPut> => {
+        const session = await client.query('select deleted_at from sessions where id = $1', [w.sessionId]);
+        if (!session.rows[0] || session.rows[0].deleted_at) throw new Error('session-gone');
+        const mine = (await client.query(`select ${VERSION_ROW_COLUMNS} from session_versions where session_id = $1`, [w.sessionId])).rows.map(versionRowFromRow);
+        for (const ref of [w.restoredFrom, w.beforeId]) if (ref !== undefined && !mine.some((r) => r.id === ref)) throw new Error('version-reference');
+        const stored = await client.query('select digest, bytes from session_version_contents where session_id = $1', [w.sessionId]);
+        const id = sessionVersionId();
+        const plan = await planSessionVersionPut(w, id, content, {
+          rows: mine,
+          contents: new Map(stored.rows.map((r) => [r.digest as string, Number(r.bytes)])),
+          // One row, kept by migration 0053's triggers.
+          instanceBytes: async () => Number((await client.query('select coalesce((select bytes from session_version_totals where id), 0)::bigint as n')).rows[0]!.n),
+          instanceRows: async () => {
+            const rows = (await client.query(`select ${VERSION_ROW_COLUMNS} from session_versions`)).rows.map(versionRowFromRow);
+            const all = (await client.query('select session_id, digest, bytes from session_version_contents')).rows;
+            return { rows, contents: new Map(all.map((r) => [`${r.session_id as string} ${r.digest as string}`, Number(r.bytes)])) };
+          },
+        }, limits);
+        if (plan.action === 'refuse') return plan.reason;
+        if (plan.action === 'return') return { version: await summaryById(client, plan.id), created: false };
+        if (plan.action === 'skip') {
+          const latest = mine.sort(newestVersionFirst)[0];
+          return latest ? { version: await summaryById(client, latest.id), created: false } : 'version-space';
+        }
+        if (plan.contentIsNew) {
+          await client.query(`insert into session_version_contents (session_id, digest, inputs, bytes) values ($1, $2, $3::jsonb, $4)
+            on conflict (session_id, digest) do nothing`, [w.sessionId, content.digest, JSON.stringify(w.inputs), content.bytes]);
+        }
+        await client.query(`insert into session_versions (id, session_id, rev, kind, label, digest, meta, contributors,
+            created_by, restored_from, before_id, request_id, at)
+          values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10, $11, $12, $13)`,
+        [id, w.sessionId, w.rev, w.kind, w.label ?? null, content.digest, JSON.stringify(w.meta), JSON.stringify(w.contributors),
+          w.createdBy ?? null, w.restoredFrom ?? null, w.beforeId ?? null, w.requestId ?? null, w.at]);
+        const touched = await dropVersions(client, plan.drops);
+        await dropUnusedContents(client, [...new Set([w.sessionId, ...touched])]);
+        return { version: await summaryById(client, id), created: true };
+      });
+    },
+    async listSessionVersions(sessionId, opts) {
+      const limit = versionListLimit(opts.limit);
+      if (opts.before === undefined) {
+        const { rows } = await pool.query(`select ${VERSION_SUMMARY_COLUMNS} from ${VERSIONS_WITH_CONTENT}
+          where v.session_id = $1 order by v.at desc, v.id collate "C" desc limit $2`, [sessionId, limit]);
+        return rows.map(versionSummaryFromRow);
+      }
+      // One statement, so the cursor row and the page are read together. A cursor
+      // that is not a version of this session matches no row, so the page is empty.
+      const { rows } = await pool.query(`with b as (select at, id from session_versions where session_id = $1 and id = $2)
+        select ${VERSION_SUMMARY_COLUMNS} from ${VERSIONS_WITH_CONTENT}, b
+         where v.session_id = $1 and (v.at < b.at or (v.at = b.at and v.id collate "C" < b.id collate "C"))
+         order by v.at desc, v.id collate "C" desc limit $3`, [sessionId, opts.before, limit]);
+      return rows.map(versionSummaryFromRow);
+    },
+    async getSessionVersion(sessionId, id) {
+      const { rows } = await pool.query(`select ${VERSION_SUMMARY_COLUMNS}, v.meta, c.inputs from ${VERSIONS_WITH_CONTENT}
+        where v.session_id = $1 and v.id = $2`, [sessionId, id]);
+      const r = rows[0];
+      return r ? { ...versionSummaryFromRow(r), inputs: (r.inputs as Record<string, unknown>) ?? {}, meta: (r.meta as Record<string, unknown>) ?? {} } : null;
+    },
+    async deleteSessionVersion(sessionId, id) {
+      return locked(async (client) => {
+        // The row, its own 'before' row, and any rows whose 'before' it is: the
+        // subquery reads the table as it was before this statement.
+        const { rows } = await client.query(`delete from session_versions where session_id = $1 and (id = $2 or before_id = $2
+            or id = (select before_id from session_versions where session_id = $1 and id = $2))
+          returning id`, [sessionId, id]);
+        if (!rows.some((r) => r.id === id)) return false;
+        await dropUnusedContents(client, [sessionId]);
+        return true;
+      });
+    },
+    async deleteSessionVersions(sessionId) {
+      return locked(async (client) => {
+        const gone = await client.query('delete from session_versions where session_id = $1', [sessionId]);
+        await client.query('delete from session_version_contents where session_id = $1', [sessionId]);
+        return gone.rowCount ?? 0;
+      });
     },
   };
 }

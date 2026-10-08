@@ -52,15 +52,18 @@ async function exerciseJournal(store: Store) {
     assert.equal(compacted.revision, 130, 'cadence survives restart');
     assert.equal(compacted.headRevision, 131);
     assert.deepEqual((await store.getCollabJournal(session.id, 0)).map(row => row.revision), [131]);
+    // Live batches write no revision row (plan 76 M4); each room appended one
+    // when it closed. The second room is still open, so only the first shows.
     const history = await store.listSessionRevisions(session.id);
-    assert.equal(history.length, 20);
-    assert.equal(history[0]!.rev, 131);
-    assert.equal(history.at(-1)!.rev, 112);
-    assert.deepEqual(history[0]!.inputs, (await store.getSession(session.id))!.inputs);
+    assert.deepEqual(history.map(row => row.rev), [70]);
+    assert.equal(history[0]!.actor, peer.userId, 'one person wrote, so the revision names them');
     await apply(room, peer, 2, false);
     assert.equal((await store.getSession(session.id))!.rev, 131, 'compaction keeps immutable receipts for old outbox retries');
     assert.equal((await store.getCollabReceipts(session.id, peer.userId, ['op-2']))[0]!.accepted, true);
     await room.quiesce();
+    const closed = await store.listSessionRevisions(session.id);
+    assert.deepEqual(closed.map(row => row.rev), [131, 70], 'closing the second room appended its one revision');
+    assert.deepEqual(closed[0]!.inputs, (await store.getSession(session.id))!.inputs);
     const current = (await store.getSession(session.id))!;
     assert.equal(await store.casSession({ ...current, inputs: { ...current.inputs, title: 'REST replacement' }, rev: current.rev + 1 }, current.rev), true);
     room = await Room.open(session, undefined, store);
@@ -84,8 +87,11 @@ test('journal recovery, compaction, receipt retention and normal saves (Postgres
     const { default: pg } = await import('pg');
     const db = new pg.Client({ connectionString: process.env.LW_TEST_DATABASE_URL }); await db.connect();
     try {
+      // One revision per closed room (plan 76 M4), not one per batch: three rooms
+      // closed, so three rows exist on disk, as many as a read returns.
       const result = await db.query('select count(*)::int as count from session_revisions where session_id=$1', ['journal-session']);
-      assert.equal(result.rows[0].count, 20, 'history is physically bounded, not only limited when read');
+      assert.equal(result.rows[0].count, 3, 'no revision row per live batch');
+      assert.equal(result.rows[0].count, (await store.listSessionRevisions('journal-session')).length);
     } finally { await db.end(); }
   }));
 

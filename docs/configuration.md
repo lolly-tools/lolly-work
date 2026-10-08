@@ -175,6 +175,7 @@ See [email and password](identity.md#email-and-password) for the flow.
 | `sharing.instance.maxRole` | `commenter` | the highest role that audience may get: `viewer`, `commenter` or `editor`. Lowering it lowers existing shares too |
 | `sharing.customGroups` | `true` | whether members may make their own groups (`group.create`) and share projects with them. These groups never count as directory groups for grants |
 | `sharing.maxGrantDays` | *unset* | the longest end date a membership or group grant may carry, in whole days (1 to 3660). Unset means no limit |
+| `versions.maxBytes` | `1073741824` | bytes of saved-version content all documents together may hold (1 GiB); one document may hold at most 100 MiB. Over it the oldest automatic versions are removed first, then a named save or a restore answers `409 VERSION_SPACE`. See [data lifecycle](data-lifecycle.md#session-versions) |
 | `sessionTtlHours` | `12` | member session lifetime (token `exp` and cookie `Max-Age`); must be > 0 and ≤ 720 |
 | `submit.maxBytes` | `67108864` | per-file cap on a catalog submission (64 MiB, matching publish-out). Over it: `413 PAYLOAD_TOO_LARGE` |
 | `submit.chain` | *unset* | approval chain id gating submissions. Unset means no review: a submitted asset is live the moment it is stored. Set to a chain that does not exist, submissions are refused (`503 SUBMIT_CHAIN_MISSING`) rather than published unreviewed |

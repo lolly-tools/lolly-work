@@ -10,6 +10,7 @@ the processing record and rights workflow, not a completed privacy assessment.
 | `users`, directory/SCIM and local group membership | Subject/email/name/title, groups, roles, consent and access state | IdP/SCIM is authoritative for managed identity; disable/revoke first. Account erasure removes the local identity row only when references permit. Directory access must also be removed to prevent re-provisioning. |
 | `grants`, API/SCIM tokens, device sign-in codes | Authorization principals, credential digests, short-lived sign-in payloads | Revoke/rotate through the identity/token procedures. Review principal references and directory copies separately. Never include live tokens in an access report. |
 | `projects`, `sessions`, `session_revisions`, `collab_room_snapshots` | Shared work, arbitrary inputs and metadata, authorship and collaboration history | Transfer business ownership where appropriate. Archiving or session tombstoning retains records and references; it is not erasure. Review shared rights, history and holds before deletion. |
+| `session_versions`, `session_version_contents`, `session_version_totals` (plan 76 milestone 4) | Saved versions of a document: its inputs and metadata at that point (stored once per document and content), a kind (automatic, closing, saved, named, restore or the state a restore replaced), an optional name, who created it, and the ids and edit counts of the people and agents who edited since the previous version. Guests are counted together, with no link id | Removed by the retention rules and by a project manager, and all at once when the document is deleted. See [Session versions](#session-versions). Shared records: erasing an account leaves them, and the ids they hold, in place. |
 | `project_files` and their parts (`project-file/<id>/<n>` in the blob store) | Files members upload into a team project (often images, possibly personal content and embedded metadata), their names, declared digests, the shell's asset description (kind, format, size in pixels and name) and the uploader | A finished file stays until its uploader or a project manager deletes it; deleting removes the parts, then the row. An unfinished upload expires 15 minutes after its last accepted part, and at the latest after `policy.projectFiles.uploadTtlHours` (24 by default). Once it is an hour past expiry it is removed, parts first, at the next upload or retention run, and by the long-lived server's sweep at boot and daily. A finished file blocks account erasure of its uploader; unfinished uploads are removed by the erasure. Copies already downloaded to members' devices stay there. |
 | `canvas_comment_reads`, `canvas_comment_read_floors` (plan 76 milestone 4) | Per person: when they last read each comment thread, and when they first listed a session's comments (older messages count as read). Shown to nobody else | Deleted with the account, the thread or the session row. Never blocks account erasure. |
 | `comment_notices` | One inbox notice per person per thread: the ids of the person, thread, session, project, the person who caused the newest event and that message, a kind (mention or reply), a count and the time of the newest event. No comment text and no names: the inbox builds those when it is read | Deleted when the person dismisses it or reads the thread, and when the inbox finds the session deleted or the project out of the person's reach. One hidden by a grant or a policy is kept until it is 30 days old. Notices older than 30 days are removed the next time the person's inbox is read (Lolly checks it once a minute while it is open) or a notice is written for them, and every notice written also removes all but the person's newest 200. Deleted with the account, the thread, the session or the project row. Erasing an account also deletes the notices it caused in other people's inboxes. Never blocks erasure. |
@@ -87,3 +88,47 @@ Apart from removing expired unfinished project-file uploads, no new retention
 durations or automatic content deletion were introduced. The
 service owner and Privacy must approve the schedule, processing record, assessment
 outcomes and the treatment of employee data.
+
+## Session versions
+
+A document's history keeps two things. `session_revisions` holds the newest 20
+whole-document revisions that older shells read. `session_versions` holds the
+versions people see in History: written 2 minutes after live editing pauses (or
+every 10 minutes while it continues), when a live document closes, on every save
+over the API, when someone saves a named version, and twice for each restore (the
+state it replaced, which Undo restores, and the state it produced). A version's
+content is stored once per document and content (`session_version_contents`), so
+repeated states cost no extra bytes, and an automatic version whose content equals
+the newest version is not written at all. `session_version_totals` is one row with
+the instance's total of that content, which the instance cap reads; it holds no
+document data.
+
+Retention, applied whenever a version is written:
+
+- automatic, closing and saved versions: the newest 50 are kept, plus the newest
+  one of each day for the previous 30 days, and none older than 365 days;
+- restores: the newest 200 are kept, each with the version it replaced. A replaced
+  version whose restore row could not be written (history full, or the server
+  stopped) counts as one of those 200 on its own. A restore never removes the
+  version it restores from;
+- named versions: up to 20 per person and 100 per document, kept until a project
+  manager deletes them;
+- space: one document's versions may hold at most 100 MiB of distinct content and
+  the instance's at most `policy.versions.maxBytes` (1 GiB by default). When a new
+  version would pass either cap the oldest automatic versions go first; if that is
+  not enough, a named save or a restore is refused (`409 VERSION_SPACE`) and an
+  automatic version is skipped.
+
+Content no version uses any more is deleted with the last version that used it.
+Deleting a document deletes all its versions and their content in the same
+request, because a deleted document cannot be restored. A project manager can
+delete one version (and its restore pair) at any time; the deletion is audited
+with the version's id and kind.
+
+Versions hold no email address: the API names people with their first and last
+name (or the part of their email before the `@`), agents with their label and
+guests as "Guest". Audit entries for saves, restores and deletions hold ids and
+counts only, never inputs or names.
+
+Source anchors: `migrations/0053_session_versions.sql`, `server/src/versions/`,
+`server/src/collab/rooms.ts` and the version blocks of `server/src/store/types.ts`.
