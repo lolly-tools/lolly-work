@@ -759,7 +759,7 @@ function fleetChartRows(clients) {
 // session → deep into that tool in Lolly (with the session's settings); a
 // project → its Lolly folder; a governance object → its console view. Clicking a
 // date or a type filters the feed. Deep-link targets:
-//   app (Lolly, served at /):  tool → /t/<id> · session → /t/<tool>?session=<id>
+//   app (Lolly, served at /): tool → /t/<id> · saved session → /#/team/<id>
 //                              project → /#/p/<id>
 //   console (hash routes):     person → #/users?focus=<id> · link → #/links · etc.
 // Reader-facing names for the audit categories. The keys below are code
@@ -804,8 +804,7 @@ function actAnchor(href, label, title) { return el('a', { class: 'act-obj', href
 // Deep links into the Lolly app (real navigation away from the console).
 function actToolObj(id) { return actAnchor(lollyHref(`/t/${encodeURIComponent(id)}`), id, `Open ${id} in Lolly`); }
 function actSessionObj(id, toolId) {
-  const href = toolId ? lollyHref(`/t/${encodeURIComponent(toolId)}?session=${encodeURIComponent(id)}`) : '#/projects';
-  return actAnchor(href, actShort(id), toolId ? 'Open this session in Lolly' : 'Open in Projects');
+  return actAnchor(lollySessionHref(id), actShort(id), 'Open this session in Lolly');
 }
 function actProjectObj(id) { return actAnchor(lollyHref(`/#/p?team=${encodeURIComponent(id)}`), actShort(id), 'Open this project in Lolly'); }
 // Console deep links (hash → routed in-place).
@@ -1300,7 +1299,7 @@ async function viewAgents(main) {
       el('td', {}, agentClientCell(a.client, a.clientReportedAt)),
       el('td', {}, a.invitedBy ? actUserObj(a.invitedBy.id, { [a.invitedBy.id]: a.invitedBy.name }) : 'Former member'),
       el('td', {}, ...(a.project ? [el('a', { href: lollyHref(`/#/p?team=${encodeURIComponent(a.project.id)}`) }, a.project.name)] : ['Unavailable project']),
-        ...(a.session ? [el('div', { class: 'muted' }, a.session.toolId ? el('a', { href: lollyHref(`/t/${encodeURIComponent(a.session.toolId)}?session=${encodeURIComponent(a.session.id)}`) }, a.session.name) : a.session.name)] : [])),
+        ...(a.session ? [el('div', { class: 'muted' }, el('a', { href: lollySessionHref(a.session.id) }, a.session.name))] : [])),
       el('td', {}, a.role ? `${a.role === 'editor' ? 'Editor' : 'Viewer'} · ${a.scope === 'document' ? 'document' : 'project'}` : 'Unknown'),
       el('td', {}, el('span', { class: 'agent-state', title: 'Current access is checked again on every tool call.' }, AGENT_STATUS[a.status] || a.status),
         el('div', { class: 'muted' }, a.connected === null ? 'Room presence unavailable' : a.connected ? 'In a document room' : 'Not in a document room'),
@@ -6170,6 +6169,7 @@ const PUBLIC_VIEWS = new Set(['docs', 'verify']);
 // set (dev Vite server, split deploy). Read off /healthz at boot.
 let lollyAppUrl = '';
 function lollyHref(path) { return `${lollyAppUrl}${path}`; }
+function lollySessionHref(id) { return lollyHref(`/#/team/${encodeURIComponent(id)}`); }
 
 // The real, theme-paired brand wordmark for the rail/gate, or null when the pack
 // ships none (blank packs keep the generic CSS mark). Both variants render and

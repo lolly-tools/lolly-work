@@ -103,6 +103,16 @@ pnpm test             # node:test over tests/ (Postgres conformance runs when LW
 pnpm run typecheck    # tsc --noEmit (needs devDependencies installed)
 ```
 
+When changing console assets, run `pnpm console:build` and commit the updated
+`console/index.html`. Its revision URLs are derived from the entire console source
+tree, including imported modules and styles. `pnpm console:check` refuses stale
+references; normal tests, direct start and YunoHost releases run that check.
+Both container profiles and the optional Vercel package generate the same URLs.
+Assets remain ordinary ES modules with `no-cache` revalidation; there are no
+manually maintained bundle copies. The image release probe loads the entry
+selected by the HTML, follows its imports, and exercises a transfer preview in
+an isolated authenticated memory-store fixture.
+
 **Admin console:** `http://localhost:8787/admin` - dashboards (activity, top tools,
 formats, fleet), links, messages, audit (hash-chain view), people, and **Docs** (this
 repo's `docs/`, rendered in-console). Light/dark, no build step, no external assets.

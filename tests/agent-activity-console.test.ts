@@ -26,6 +26,33 @@ test('agent activity names the agent, links its inviter and renders labels as te
   } finally { dom.window.close(); }
 });
 
+test('saved-session links retain document identity across activity, agents and split shell origins', async () => {
+  const dom = new JSDOM('<div id="app"></div><div id="live"></div><div id="tip"></div>', { url: 'https://work.test/admin', runScripts: 'outside-only' });
+  try {
+    const w = dom.window; w.matchMedia = () => ({ matches: false });
+    w.requestAnimationFrame = (fn: () => void) => setTimeout(fn, 0);
+    w.eval(source + '\nwindow.links = { actSessionObj, actToolObj, actProjectObj, activityLine, viewAgents, setOrigin: value => { lollyAppUrl = value; } };');
+    for (const origin of ['', 'https://shell.test']) {
+      w.links.setOrigin(origin);
+      assert.equal(w.links.actSessionObj('ses_one /?#', 'design').getAttribute('href'), `${origin}/#/team/ses_one%20%2F%3F%23`);
+      assert.equal(w.links.actSessionObj('ses_without_tool').getAttribute('href'), `${origin}/#/team/ses_without_tool`);
+      assert.equal(w.links.actToolObj('design').getAttribute('href'), `${origin}/t/design`);
+      assert.equal(w.links.actProjectObj('project one').getAttribute('href'), `${origin}/#/p?team=project%20one`);
+      const activity = w.document.createElement('div');
+      activity.append(...w.links.activityLine({ action: 'agent.connect', subject: 'session:ses_existing', actor: { kind: 'agent', name: 'Helper' }, payload: {} }).flat(Infinity));
+      assert.equal(activity.querySelector('a[href*="/team/"]')?.getAttribute('href'), `${origin}/#/team/ses_existing`);
+    }
+    w.fetch = async () => ({ status: 200, ok: true, json: async () => ({
+      summary: { agentsUsed: 1, toolCalls: 0, succeeded: 0, partial: 0, rejected: 0, connected: 0, invited: 1, revoked: 0, acceptedOps: 0, rejectedOps: 0 },
+      updatedAt: '2026-01-01T00:00:00Z', timeline: [], names: {}, agents: [{ id: 'agent', label: 'Helper', project: { id: 'prj_one', name: 'Project' }, session: { id: 'ses_existing', name: 'Existing document' }, status: 'active', connected: false, calls: 0, lastActivity: '2026-01-01T00:00:00Z' }],
+    }) });
+    const main = w.document.createElement('main'); w.document.body.append(main);
+    await w.links.viewAgents(main);
+    assert.equal(main.querySelector('a[href*="/team/"]')?.getAttribute('href'), 'https://shell.test/#/team/ses_existing', 'agent rows must open an existing shared document even without tool metadata');
+    assert.equal(main.querySelector('a[href*="?session="]'), null);
+  } finally { dom.window.close(); }
+});
+
 
 test('client badges distinguish all families, keep model separate and never render supplied icons or markup', () => {
   const dom = new JSDOM('<div id="app"></div><div id="live"></div><div id="tip"></div>', { url: 'https://work.test/admin', runScripts: 'outside-only' });

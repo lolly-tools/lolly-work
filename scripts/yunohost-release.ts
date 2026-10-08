@@ -26,6 +26,7 @@ import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeF
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkConsoleAssets } from './console-assets.ts';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 export const MANIFEST = join(ROOT, 'deploy', 'yunohost', 'manifest.toml');
@@ -131,6 +132,7 @@ function run(cmd: string, args: string[], input?: Buffer): Buffer {
 export function archiveHead(version: string, outFile: string): void {
   const dirty = run('git', ['status', '--porcelain']).toString().trim();
   if (dirty) throw new Error(`working tree is dirty - commit first; a release tarball is a commit:\n${dirty}`);
+  checkConsoleAssets();
   const tar = run('git', ['archive', '--format=tar', `--prefix=lolly-work-${version}/`, 'HEAD', ...EXCLUDED.map((d) => `:(exclude)${d}`)]);
   // Deterministic gzip (no name, mtime 0) so the same commit gives the same bytes.
   const gz = run('gzip', ['-9', '-n'], tar);

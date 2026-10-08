@@ -9,6 +9,7 @@ import { createRequire } from 'node:module';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { FUNCTION_PREFIX_BASELINE, functionPrefixes, parseRegions, parseShellOrigin, resolveRoute, vcFunctionConfig, vercelRoutes } from './vercel-routes.ts';
+import { checkConsoleAssets, consoleAssetPlan } from './console-assets.ts';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 assert.equal(process.features.require_module, false, 'Run pnpm run check:vercel to exercise the hosted require(ESM) restriction');
@@ -124,10 +125,18 @@ try {
   // engine-pin.json is bundled, so the manifest names the engine this build serves.
   const manifest = await request('/api/v1/instance'); assert.equal(manifest.status, 200);
   assert.equal((await manifest.json()).engineVersion, JSON.parse(readFileSync(join(root, 'engine-pin.json'), 'utf8')).engine.version);
-  const shell = await request('/admin'); assert.equal(shell.status, 200); assert.match(await shell.text(), /app\.js/);
-  for (const name of ['app.js', 'provider-setup.js', 'provider-oauth-setup.js']) {
+  const consoleDir = join(func, 'console');
+  checkConsoleAssets(consoleDir);
+  const assets = consoleAssetPlan(consoleDir);
+  const shell = await request('/admin'); assert.equal(shell.status, 200); assert.equal(await shell.text(), assets.html);
+  for (const name of assets.files.filter(name => /\.(?:js|css)$/.test(name))) {
     const module = await request(`/admin/${name}`); assert.equal(module.status, 200);
+    assert.equal(module.headers.get('cache-control'), 'no-cache');
     assert.equal(await module.text(), readFileSync(join(root, 'console', name), 'utf8'));
+  }
+  for (const path of [`/admin/app.js?v=${assets.revision}`, `/admin/styles.css?v=${assets.revision}`]) {
+    const selected = await request(path); assert.equal(selected.status, 200);
+    assert.equal(await selected.text(), readFileSync(join(consoleDir, new URL(path, 'https://console.invalid').pathname.slice('/admin/'.length)), 'utf8'));
   }
   const login = await request('/api/auth/dev?email=owner%40fixture.test', { redirect: 'manual' });
   assert.equal(login.status, 302);
