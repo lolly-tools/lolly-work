@@ -2,6 +2,8 @@ import { WorkerError } from '../render/worker-client.ts';
 import { createFilePreview, readPreviewInput, PREVIEW_INPUT_LIMIT } from '../catalog/file-preview.ts';
 import { visibleSourceStatuses } from '../catalog/source-status.ts';
 import { registerCommentRoutes } from '../comments/routes.ts';
+import { registerShareRoutes } from '../access/share-routes.ts';
+import { resolveSharingPolicy } from '../policy/sharing.ts';
 /**
  * The lolly-work HTTP app - auth, org-config, telemetry, inbox, links,
  * catalog serving, fleet. Plain (req, res) handler (see router.ts) so it
@@ -70,7 +72,8 @@ import {
   scimErrorBody, scimList, userToScim,
 } from '../scim/resources.ts';
 import { evaluate, grantDecision, denialCode, mayEditCollab, ownerOnlyAction, roleFromGroups, type Grant, type Role, ROLES } from '../rbac/evaluate.ts';
-import { accessAtLeast, canSeeProject, effectiveProjectAccess, type ProjectAccess } from '../rbac/project-access.ts';
+import { accessAtLeast, canSeeProject, configureSharingLimits, effectiveProjectAccess, grantLive, type ProjectAccess } from '../rbac/project-access.ts';
+import { projectListing } from '../access/share-routes.ts';
 import { registerProjectFileRoutes } from '../projects/file-routes.ts';
 import { registerProjectFolderRoutes } from '../projects/folder-routes.ts';
 import { agentActor, agentAttribution } from '../agents/attribution.ts';
@@ -279,6 +282,7 @@ export interface AppDeps {
 export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   const { config: deploymentConfig, store, secrets, listCollabRooms, nearby } = deps;
   store.configureRoleGroups(deploymentConfig.idp.roleGroups);
+  configureSharingLimits(resolveSharingPolicy(deploymentConfig.policy.sharing));
   const blobs = deps.blobs ?? createMemoryBlobStore();
   const brand = createBrandService(deploymentConfig, store, blobs, {
     ...(productionMode(deploymentConfig) ? { inspectSource: async (source: string) => {
@@ -8061,6 +8065,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
 
   registerProjectFileRoutes(router, { config, store, blobs, memberOf, requireAction, projectAccessOf, audit });
   registerProjectFolderRoutes(router, { store, memberOf, requireAction, projectAccessOf, audit });
+  registerShareRoutes(router, { config, store, memberOf, requireAction, projectAccessOf, audit });
   registerAgentRoutes(router, { store, config, blobs, memberOf, projectAccessOf, audit, origin: config.instance.baseUrl, rooms: deps.agentRooms, projectRequest: agentRequests.run });
 
   router.add('GET', '/api/v1/projects/:id/presence', async (req, res, ctx) => {
@@ -8089,15 +8094,21 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const includeArchived = ctx.url.searchParams.get('archived') === '1';
-    const [all, stats, memberships, grants] = await Promise.all([
+    const [all, stats, memberships, grants, states] = await Promise.all([
       store.listProjects(), store.projectSessionStats(), store.listUserProjectMemberships(user.id), store.listGrants(),
+      store.listProjectUserState(user.id),
     ]);
     const mine = new Map(memberships.map((m) => [m.projectId, m]));
+    const own = new Map(states.map((s) => [s.projectId, s]));
     const visible = all
       .map((p) => ({ p, role: effectiveProjectAccess(user, p, mine.get(p.id) ?? null, grants) }))
       .filter(({ p, role }) => role !== 'none' && (includeArchived || !p.archivedAt));
     const names = await namesFor(visible.map(({ p }) => projectActivity(p, stats).updatedBy));
-    sendJson(res, 200, { projects: visible.map(({ p, role }) => projectRow(p, stats, role, names)) });
+    // `via`, `listed` and `lastOpenedAt` let the shell keep a project shared with
+    // everyone out of a person's list until they choose it (lolly plan 299).
+    sendJson(res, 200, { projects: visible.map(({ p, role }) => ({
+      ...projectRow(p, stats, role, names), ...projectListing(user, p, mine.get(p.id) ?? null, own.get(p.id)),
+    })) });
   });
 
   router.add('POST', '/api/v1/projects', async (req, res) => {
@@ -8134,7 +8145,21 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const body = (await readJson(req)) as { name?: string; visibility?: unknown; archived?: boolean; ownerId?: unknown } | null;
     const next: ProjectRecord = { ...project, updatedAt: new Date().toISOString(), updatedBy: user.id };
     if (typeof body?.name === 'string' && body.name.trim()) next.name = body.name.slice(0, 200);
-    if (body?.visibility !== undefined) next.visibility = normalizeVisibility(body.visibility);
+    if (body?.visibility !== undefined) {
+      next.visibility = normalizeVisibility(body.visibility);
+      // A directory group's grant (lolly plan 299) lives only while the group is
+      // in visibility, as PUT .../sharing keeps it. Dropping the group here drops
+      // its grant, so adding it back later starts at editor, never at a role it
+      // held before (manager, say).
+      const kept = next.visibility === 'private' ? [] : next.visibility.groups;
+      const grants = project.sharing?.groups;
+      const live = grants?.filter((g) => g.kind !== 'directory' || kept.includes(g.name));
+      if (project.sharing && grants && live && live.length !== grants.length) {
+        const sharing = { ...project.sharing };
+        if (live.length) sharing.groups = live; else delete sharing.groups;
+        if (Object.keys(sharing).length) next.sharing = sharing; else delete next.sharing;
+      }
+    }
     if (body?.archived === true) next.archivedAt = new Date().toISOString();
     else if (body?.archived === false) delete next.archivedAt;
     // Ownership transfer (plans/36 §1) - the offboarding answer erasure was
@@ -8381,7 +8406,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   /**
    * Give an existing account a role on the project, or raise the one it has.
    * Never lowers a role: asking for less than someone already has is
-   * 'already', and lowering is an explicit PATCH.
+   * 'already', and lowering is an explicit PATCH. A membership whose end date
+   * has passed gives no access, so it counts as no membership here: a share,
+   * an accepted invitation or an approved request restores the person at the
+   * role asked for, with no end date. A raise keeps a live end date.
    *
    * The inbox message goes out only when the person was not on the project
    * (a raise is not news worth a message), and a dismissal is never cleared:
@@ -8409,14 +8437,16 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // 'already' closes invitations too, which tidies a row left open before
     // this rule existed the next time someone shares with the person.
     if (project.ownerId === target.id) { await closeMemberInvitations(project, target, actor.principal); return 'already'; }
-    const existing = await store.getProjectMember(project.id, target.id);
+    const stored = await store.getProjectMember(project.id, target.id);
+    const existing = stored && grantLive(stored.expiresAt, Date.now()) ? stored : null;
     if (existing && !roleAbove(role, existing.role)) {
       await closeMemberInvitations(project, target, actor.principal);
       await closeRequestsOnAccess(accessDeps, { projectId: project.id, userId: target.id, role: existing.role }, actor.principal);
       return 'already';
     }
     const addedAt = new Date().toISOString();
-    await store.putProjectMember({ projectId: project.id, userId: target.id, role, addedBy: actor.principal, addedAt });
+    await store.putProjectMember({ projectId: project.id, userId: target.id, role, addedBy: actor.principal, addedAt,
+      ...(existing?.expiresAt ? { expiresAt: existing.expiresAt } : {}) });
     let messageHeld = false;
     if (!existing && target.id !== actor.userId && opts.message !== false) {
       if (shareMessageQuota.take(actor.principal)) {
@@ -8429,7 +8459,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       }
     }
     await audit(actor.principal, 'project.member.add', `project:${project.id}`, {
-      userId: target.id, role, via, ...(existing ? { from: existing.role } : {}), ...(messageHeld ? { message: 'held' } : {}),
+      userId: target.id, role, via, ...(existing ? { from: existing.role } : {}), ...(stored && !existing ? { restored: true } : {}),
+      ...(messageHeld ? { message: 'held' } : {}),
     });
     await closeMemberInvitations(project, target, actor.principal);
     await closeRequestsOnAccess(accessDeps, { projectId: project.id, userId: target.id, role }, actor.principal);
@@ -8489,7 +8520,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       const session = r.viaSessionId ? await store.getSession(r.viaSessionId) : null;
       out.push({
         id: r.id, userId: who.id, name: nameWithoutEmail(who), email: r.email,
-        role: r.role === 'editor' ? 'editor' : 'viewer', currentRole: r.currentRole ?? 'none',
+        role: r.role === 'editor' || r.role === 'commenter' ? r.role : 'viewer', currentRole: r.currentRole ?? 'none',
         ...(r.note ? { note: r.note } : {}), createdAt: r.createdAt,
         ...(session && session.projectId === project.id && !session.deletedAt ? { viaSession: { id: session.id, name: labelOf(session) } } : {}),
       });

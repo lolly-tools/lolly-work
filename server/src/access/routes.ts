@@ -238,8 +238,8 @@ export function registerAccessRoutes(router: ReturnType<typeof createRouter>, d:
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
     const body = (await readJson(req, 16 * 1024)) as { role?: unknown; note?: unknown } | null;
     if (!body || typeof body !== 'object' || Array.isArray(body)) return sendError(res, 400, 'INVALID_INPUT', 'body must be a JSON object');
-    if (body.role !== 'viewer' && body.role !== 'editor') {
-      return sendError(res, 400, 'INVALID_INPUT', 'role must be viewer or editor', { field: 'role' });
+    if (body.role !== 'viewer' && body.role !== 'commenter' && body.role !== 'editor') {
+      return sendError(res, 400, 'INVALID_INPUT', 'role must be viewer, commenter or editor', { field: 'role' });
     }
     if (body.note !== undefined && body.note !== null && typeof body.note !== 'string') {
       return sendError(res, 400, 'INVALID_INPUT', 'note must be text', { field: 'note' });

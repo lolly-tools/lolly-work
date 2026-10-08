@@ -25,7 +25,7 @@
 import type { InstanceConfig } from '../config/instance.ts';
 import { randomId } from '../lib/crypto.ts';
 import { mayInviteNewPeople, resolveInvitePolicy } from '../policy/invites.ts';
-import { accessAtLeast, effectiveProjectAccess } from '../rbac/project-access.ts';
+import { accessAtLeast, effectiveProjectAccess, grantLive } from '../rbac/project-access.ts';
 import type {
   AccessRequestAnswer, AccessRequestKind, AccessRequestMatch, AccessRequestRecord, InvitationRecord, ProjectMemberRole, ProjectRecord, UserRecord,
 } from '../store/types.ts';
@@ -235,9 +235,12 @@ export async function requestStateFor(
   return { ...(open ? { open } : {}), ...(lastDeclined ? { lastDeclined } : {}) };
 }
 
-/** The owner and the managers of a project, as accounts. */
+/** The owner and the managers of a project, as accounts. A manager whose
+ *  membership has ended is not one. */
 async function projectManagers(d: RequestDeps, project: ProjectRecord): Promise<UserRecord[]> {
-  const ids = [project.ownerId, ...(await d.store.listProjectMembers(project.id)).filter((m) => m.role === 'manager').map((m) => m.userId)];
+  const nowMs = d.now();
+  const ids = [project.ownerId, ...(await d.store.listProjectMembers(project.id))
+    .filter((m) => m.role === 'manager' && grantLive(m.expiresAt, nowMs)).map((m) => m.userId)];
   const users = await Promise.all([...new Set(ids)].map((id) => d.store.getUser(id)));
   return users.filter((u): u is UserRecord => !!u);
 }
