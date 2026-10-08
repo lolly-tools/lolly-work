@@ -1087,6 +1087,8 @@ export interface Store extends RenderStore, PasskeyStore {
   touchProjectFile(id: string, expiresAt: string): Promise<boolean>;
   /** Mark ready. False when unknown, or when an unfinished upload has expired. */
   completeProjectFile(id: string): Promise<boolean>;
+  /** Rename a ready file without changing its bytes, checksum or references. */
+  renameProjectFile(projectId: string, id: string, name: string): Promise<boolean>;
   /** The row only; the caller deletes the parts first. False when unknown. */
   deleteProjectFile(id: string): Promise<boolean>;
   /** Live sessions of the project whose inputs mention the file's asset id

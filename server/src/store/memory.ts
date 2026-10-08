@@ -1307,6 +1307,11 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       f.ready = true;
       return true;
     },
+    async renameProjectFile(projectId, id, name) {
+      const file = projectFiles.get(id);
+      if (!file || file.projectId !== projectId || !file.ready) return false;
+      file.name = name; return true;
+    },
     async deleteProjectFile(id) { return projectFiles.delete(id); },
     async listSessionsUsingProjectFile(projectId, fileId) {
       const needle = projectFileAssetId(fileId);
