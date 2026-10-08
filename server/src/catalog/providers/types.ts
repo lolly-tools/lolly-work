@@ -103,6 +103,10 @@ export interface ProviderExposure {
 export interface ProviderSyncConfig {
   /** Fragment cache TTL before a background refresh (default 300). */
   ttlSeconds?: number;
+  /** Most assets one sync federates from this provider. Absent: the instance
+   *  default, `catalogServing.maxProviderAssets` (100000). A walk that stops
+   *  here says so on the fragment (`truncated` plus a note). */
+  maxAssets?: number;
 }
 
 /** One provider's mapped slice of the feed - cached in-process and persisted
@@ -118,6 +122,9 @@ export interface ProviderFragment {
   /** Driver diagnostics from the walk: a guessed key that never matched, each
    *  naming the constant to edit and its runbook page. */
   notes?: string[];
+  /** True when the walk stopped at a cap (`sync.maxAssets` or the page ceiling)
+   *  with more upstream left unread. Absent when the walk reached the end. */
+  truncated?: boolean;
 }
 
 /** Runtime state - written by sync, never by admins. */

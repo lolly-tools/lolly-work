@@ -6,6 +6,8 @@ export function visibleSourceStatuses(records: ProviderRecord[], fragments: Arra
   return records.filter(rec => rec.enabled && callerSeesProvider(rec, groups)).map(rec => {
     const cached = byId.get(rec.id);
     return { id: rec.id, label: rec.label, status: rec.state.lastError ? cached ? 'stale' : 'unavailable' : cached ? cached.stale ? 'stale' : 'current' : 'pending',
-      ...(cached ? { count: cached.fragment.assets.filter(a => visibleIds.has(a.id)).length, lastSyncedAt: cached.fragment.syncedAt } : {}) };
+      ...(cached ? { count: cached.fragment.assets.filter(a => visibleIds.has(a.id)).length, lastSyncedAt: cached.fragment.syncedAt } : {}),
+      // The walk stopped at a cap with more left upstream (federation.ts).
+      ...(cached?.fragment.truncated ? { truncated: true } : {}) };
   });
 }

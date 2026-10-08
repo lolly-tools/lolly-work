@@ -497,7 +497,21 @@ Deploy-time (GitOps / air-gap) provider entries, upserted at boot as `managedBy:
 and read-only in the API. Each entry: `id` (lowercase, dash-separated), `kind`, `label`,
 optional `credentialRef` (the *name* of the env var holding the secret), `enabled`,
 `options`, `mapping`, `exposure`, `sync`. Duplicate ids, unknown kinds and missing labels
-are startup errors. See [catalog](catalog.md).
+are startup errors. A provider's `sync.maxAssets` (a whole number) caps how many assets one
+sync federates from that provider. See [catalog](catalog.md).
+
+## `catalogServing`
+
+Sizing for catalogs with tens of thousands of assets. Every key has a working default.
+
+| Key | Default | What |
+|---|---|---|
+| `maxProviderAssets` | `100000` | most assets one provider sync federates, unless the provider sets `sync.maxAssets`. A walk that stops here is marked truncated |
+| `pagedProviderThreshold` | `2000` | providers larger than this leave `assets/index.json?paged=1` and are listed under `pagedProviders` |
+| `extCache.maxBytes` | `67108864` (64 MiB) | memory for cached federated bytes; `0` turns the cache off |
+| `extCache.maxItemBytes` | `2097152` (2 MiB) | larger files stream through uncached |
+
+See [large catalogs](catalog.md#large-catalogs).
 
 ## Environment variables
 
@@ -541,6 +555,7 @@ sessions die on restart. In production (`NODE_ENV=production`) their absence thr
 | `NODE_ENV` | - | `production` makes secret checks fail-closed |
 | `LW_TEST_DATABASE_URL` | - | enables the Postgres conformance leg in `pnpm test` |
 | `LOLLY_OSS_DIR` | `../lolly` | where `pnpm run demo` finds the built OSS web shell |
+| `LW_DEMO_MOCK_ASSETS` | - | `pnpm run demo` only: also seeds a mock provider, `demo-dam-large`, with this many synthetic assets (half SVG, half PNG, up to 200000) for checking the shell against a large catalog |
 
 ## Changing configuration
 
