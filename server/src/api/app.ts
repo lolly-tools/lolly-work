@@ -11,7 +11,7 @@ import { registerCommentRoutes } from '../comments/routes.ts';
  * the cache-key/link contracts they'll honour are already fixed
  * (render/cache-key.ts, links/sign.ts).
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, join, normalize, resolve as resolvePath, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -94,6 +94,9 @@ import {
   type AssetFormatEntry, type AssetIndex, type AssetIndexEntry, type AssetState, type LifecycleRow,
 } from '../catalog/lifecycle.ts';
 import { buildFragment, callerSeesProvider, createFederation, credentialContext, mapProviderAsset, passesExposure } from '../catalog/federation.ts';
+import { createServedIndex } from '../catalog/served-index.ts';
+import { createExtCache, extCacheKey } from '../catalog/ext-cache.ts';
+import { browseAssets, normalisedQuery, parseBrowseQuery } from '../catalog/asset-browse.ts';
 import { providerDrift } from '../catalog/drift.ts';
 import { applyCredentialsToIndex, detectCredential, type CredentialRow } from '../catalog/credentials.ts';
 import {
@@ -106,6 +109,7 @@ import {
   versionsToTrim, versionView, type AssetVersionRecord,
 } from '../catalog/versions.ts';
 import { listSubmissions, settleSubmission, submitAsset } from '../catalog/submit.ts';
+import { isDataSubmissionType } from '../catalog/submit-data.ts';
 import {
   applyDescriptivePatch, applyFieldPatch, composeAssetMeta, descriptiveTouched, extractedHaystack,
   fieldHaystack, normalizeCatalogField, normalizeExtractedText, parseDescriptivePatch, servedFields,
@@ -116,6 +120,10 @@ import {
   type CollectionRecord,
 } from '../catalog/collections.ts';
 import { materializeProvider, materializeAsset, cutoverProvider, pinAsset } from '../catalog/materialize.ts';
+import {
+  applyTagRules, hideEntryTags, loadTagRules, normalizeHiddenTags, tagCensus, validTagScope,
+  INSTANCE_SCOPE, type CatalogTagRule, type CensusInput,
+} from '../catalog/tag-rules.ts';
 import { verifyLollyExport, extractProvenance } from '../catalog/publish.ts';
 import { createBrandService, BrandError } from '../brand/service.ts';
 import { createBrandRuleService } from '../brand/rule-service.ts';
@@ -162,7 +170,8 @@ import { RenderResourceError, type RenderSpec } from '../renders/types.ts';
 import { createHostedAssetResolver, optimizeHostedAsset, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
 import { resolveBindingRows, type DataBinding } from '../automation/bindings.ts';
 import { resolveC2paSigner } from '../render/c2pa-signer.ts';
-import { CATALOG_INDEX_REL, CATALOG_SIG_REL, createCatalogSigning, servedToolIndexBytes } from '../catalog/signing.ts';
+import { CATALOG_INDEX_REL, CATALOG_SIG_REL, callerCanSeeTool, createCatalogSigning, servedToolIndexBytes } from '../catalog/signing.ts';
+import { publicCard, shellStubFor } from '../shell/share-cards.ts';
 import { isToolKeyedCatalogPath, servedToolSidecar } from '../catalog/tool-sidecars.ts';
 import type { ProvenanceDoc, ProvenanceIngredient } from '../render/provenance.ts';
 import type { Profile } from '../render/contract.ts';
@@ -450,11 +459,16 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const v = p.credentialRef ? process.env[p.credentialRef] : undefined;
     if (v) configSecrets.set(p.id, v);
   }
+  // Sizing for DAM-scale catalogs (config/instance.ts `catalogServing`).
+  const serving = config.catalogServing ?? {
+    maxProviderAssets: 100_000, pagedProviderThreshold: 2000, extCache: { maxBytes: 64 * 1024 * 1024, maxItemBytes: 2 * 1024 * 1024 },
+  };
   const federation = createFederation({
     store,
     ...(secrets.credential ? { credentialSecret: secrets.credential } : {}),
     configSecrets,
     ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    maxProviderAssets: serving.maxProviderAssets,
   });
   const providersReady: Promise<void> = (async () => {
     const now = new Date().toISOString();
@@ -471,6 +485,21 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   })().catch((err) => {
     console.error('catalog provider config upsert failed:', (err as Error).message);
   });
+  // The composed asset feed, memoised per caller visibility (catalog/served-index.ts),
+  // and the bounded cache of federated bytes (catalog/ext-cache.ts).
+  const servedIndex = createServedIndex({
+    pack: () => config.instance.pack, store, federation, ready: providersReady, pagedThreshold: serving.pagedProviderThreshold,
+  });
+  const extCache = createExtCache(serving.extCache);
+  /** Whether a conditional request already holds `etag` (a list, `*`, or weak forms). */
+  const etagMatches = (req: IncomingMessage, etag: string): boolean => {
+    const header = req.headers['if-none-match'];
+    if (!header) return false;
+    return header.split(',').some((t) => {
+      const tag = t.trim();
+      return tag === '*' || tag.replace(/^W\//, '') === etag;
+    });
+  };
 
   // ── outbound delivery destinations ──────────────────────────────────────
   // Fixed, config-managed targets only in v1. This is intentionally a second
@@ -4923,6 +4952,36 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     return drop.length;
   };
 
+  // ── the Lolly web shell's files (instance.shellDir) ─────────────────────
+  // Defined ahead of the routes because two of them hand over to it: the bare
+  // `/tools` gallery route (the `/tools/*` file route below also matches it) and
+  // the SPA fallback registered last. Absent shellDir → null, and neither does.
+  const shellDir = config.instance.shellDir;
+  const serveShell = shellDir ? async (res: ServerResponse, rel: string): Promise<void> => {
+    const clean = normalize(rel.replace(/^\/+/, '')).replace(/^(\.\.[/\\])+/, '');
+    if (clean.includes('..')) return sendError(res, 400, 'INVALID_INPUT', 'bad path');
+    // A path ending in a file extension is a real asset. Anything else is an SPA
+    // route: a tool or a view answers the shell build's landing stub, whose head
+    // carries that page's share card (shell/share-cards.ts); every other route
+    // answers index.html, and the shell routes from there. Docs paths never get
+    // here: serveShellDocs answers them first, from the same info/ pages.
+    const asset = /\.[a-z0-9]+$/i.test(clean);
+    const target = clean === '.well-known/lolly.json' ? 'info/well-known-lolly.json'
+      : asset && clean ? clean : (shellStubFor(clean, (r) => existsSync(join(shellDir, r))) ?? 'index.html');
+    try {
+      const bytes = await readFile(join(shellDir, target));
+      res.writeHead(200, {
+        ...shellSecurityHeaders(rel),
+        'content-type': contentType(target),
+        'cache-control': asset ? 'public, max-age=300' : 'no-cache',
+      });
+      res.end(bytes);
+    } catch {
+      // Missing real asset → 404; a missing index means the shellDir is wrong.
+      sendError(res, 404, 'NOT_FOUND', asset ? 'no such file' : 'shell index not found: check instance.shellDir');
+    }
+  } : null;
+
   // ── tool files (pack mount, the tool index's own per-caller visibility) ────
   // The shell fetches `/tools/<id>/<file>` from its own origin. Served from the
   // pack so the files agree with the tool index (the pack's, filtered per caller)
@@ -4931,6 +4990,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // same absence the index shows. A guest may fetch the tool its link opens.
   // `tools` is a reserved prefix below, so the dist's copy is never consulted.
   router.add('GET', '/tools/*', async (req, res, ctx) => {
+    // The bare `/tools` is the app's gallery route, not a tool file.
+    if (!ctx.params['*'] && serveShell) return serveShell(res, 'tools');
     const user = await memberOf(req) ?? renderReader(req, brand.current()!.revision, linkVerify);
     const p = principalOf(req);
     if (config.policy.defaultAccessMode === 'gated' && !user && p?.kind !== 'guest') {
@@ -4958,6 +5019,37 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   const serveCatalog: Handler = async (req, res, ctx) => {
     const user = await memberOf(req) ?? renderReader(req, brand.current()!.revision, linkVerify);
     const p = principalOf(req);
+    // Share cards answer before the sign-in gate: a link unfurler never signs in.
+    // A tool's card follows the tool's own visibility for this caller, so a card
+    // for a tool hidden from some groups is never public; only a card every caller
+    // may see is marked cacheable by shared caches. The pack's copy wins; instance
+    // packs usually exclude catalog/og, so the shell build's copy serves otherwise.
+    const card = publicCard(normalize(ctx.params['*'] ?? ''));
+    if (card) {
+      let everyone = true;
+      if (card.kind === 'tool') {
+        const overlays = await store.listOverlays();
+        const caller = { overlays, groups: user?.groups ?? [], ...(p?.kind === 'guest' ? { guestToolId: p.guest.toolId } : {}) };
+        if (!callerCanSeeTool(caller, card.toolId)) return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
+        everyone = toolVisibleTo(overlays.get(card.toolId), []);
+      }
+      for (const root of [config.instance.pack, ...(shellDir ? [shellDir] : [])]) {
+        let bytes: Buffer;
+        try {
+          bytes = await readFile(join(root, 'catalog', card.rel));
+        } catch {
+          continue;
+        }
+        res.writeHead(200, {
+          'content-type': contentType(card.rel),
+          'cache-control': everyone ? 'public, max-age=3600' : 'private, no-cache',
+          'x-content-type-options': 'nosniff',
+        });
+        res.end(bytes);
+        return;
+      }
+      return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
+    }
     if (config.policy.defaultAccessMode === 'gated' && !user && p?.kind !== 'guest') {
       return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
     }
@@ -4966,9 +5058,16 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // After the exit's cutover, an old ext/* blob URL (baked into already-rendered
     // SVGs and live sessions) resolves through a persistent alias to the new
     // inst/* path - nothing that referenced the federated identity breaks (plans/27 §5).
+    // An aliased request may carry the `?v=<entry version>` an ext/* tile URL
+    // adds for caching; that is not an instance version number, so the inst
+    // branch below ignores a `v` it cannot read on an aliased request.
+    let aliasedFromExt = false;
     if (rel.startsWith('ext/')) {
       const aliased = await store.getAlias(rel);
-      if (aliased) rel = aliased;
+      if (aliased) {
+        rel = aliased;
+        aliasedFromExt = true;
+      }
     }
     // Instance-owned blobs stream from the BlobStore: /catalog/inst/<id>/<format>.
     if (rel.startsWith(INST_PREFIX)) {
@@ -5001,7 +5100,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       // the head for everyone else, and a pinned copy does not have to break
       // for a brand refresh to land.
       let blobId = rec.blobs[formatRef];
-      const wantedVersion = ctx.url.searchParams.get('v');
+      const askedVersion = ctx.url.searchParams.get('v');
+      const wantedVersion = aliasedFromExt && askedVersion !== null && !/^[1-9]\d*$/.test(askedVersion) ? null : askedVersion;
       if (wantedVersion !== null) {
         const n = Number(wantedVersion);
         if (!Number.isInteger(n) || n < 1) return sendError(res, 400, 'INVALID_INPUT', 'v must be a version number');
@@ -5080,6 +5180,35 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
           }
         }
       }
+      // The fragment entry names this file's format and the entry version.
+      // The version keys the byte cache and the ETag, so a change in the DAM
+      // is a miss. The browser keeps the bytes for five minutes and then asks
+      // again, which the ETag answers with a 304: provider bytes sit behind
+      // access checks, so a person who loses access must not keep a cached copy
+      // that stays valid for longer (plan 80 D6).
+      const fragEntry = await federation.entry(assetId);
+      const entryVersion = typeof fragEntry?.version === 'string' && fragEntry.version ? fragEntry.version : '';
+      const fileEntry = fragEntry?.formats?.find((f) => f.url === `/catalog/${assetId}/${formatRef}`);
+      const declaredSvg = !filePreview && (fileEntry?.format === 'svg' || /\.svg$/i.test(typeof fileEntry?.filename === 'string' ? fileEntry.filename : ''));
+      const cacheKey = entryVersion && !convertedPreview
+        ? extCacheKey({ provider: providerId, remoteId, formatRef, preview: filePreview, version: entryVersion })
+        : '';
+      const etag = cacheKey ? `"x${sha256Hex(cacheKey).slice(0, 32)}"` : '';
+      const bytesCache = 'private, max-age=300';
+      if (etag && etagMatches(req, etag)) {
+        res.writeHead(304, { etag, 'cache-control': bytesCache });
+        res.end();
+        return;
+      }
+      const cached = cacheKey ? extCache.get(cacheKey) : undefined;
+      if (cached) {
+        res.writeHead(200, {
+          'content-type': cached.contentType, ...INERT_BYTES,
+          'cache-control': bytesCache, etag, 'content-length': String(cached.bytes.length),
+        });
+        res.end(cached.bytes);
+        return;
+      }
       try {
         const driver = federation.instantiate(rec);
         if (filePreview && !driver.resolveFilePreview) return sendError(res, 404, 'NOT_FOUND', 'this provider has no file preview');
@@ -5102,13 +5231,20 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
           res.end();
           return;
         }
+        // A DAM often labels an SVG as a generic download. Naming the file for
+        // what the fragment says lets an <img> draw the SVG; INERT_BYTES keeps
+        // the bytes script-free and sandboxed when opened directly.
+        const servedType = declaredSvg ? 'image/svg+xml' : blob.contentType;
         res.writeHead(200, {
-          'content-type': blob.contentType,
+          'content-type': servedType,
           ...INERT_BYTES,
-          'cache-control': 'private, max-age=300',
+          'cache-control': bytesCache,
+          ...(etag ? { etag } : {}),
           ...(blob.size !== undefined ? { 'content-length': String(blob.size) } : {}),
         });
-        Readable.fromWeb(blob.body as import('node:stream/web').ReadableStream<Uint8Array>).pipe(res);
+        const body = Readable.fromWeb(blob.body as import('node:stream/web').ReadableStream<Uint8Array>);
+        if (cacheKey) body.pipe(extCache.tee(cacheKey, servedType)).pipe(res);
+        else body.pipe(res);
       } catch {
         return sendError(res, 502, 'PROVIDER_UNAVAILABLE', 'the upstream provider did not return this asset');
       }
@@ -5158,6 +5294,27 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         return;
       }
     }
+    // The asset feed: composed per caller from the pack, federated sources,
+    // instance assets and every governance overlay, memoised until an input
+    // changes (catalog/served-index.ts). The ETag lets an unchanged feed cost
+    // a 304; `no-cache` keeps every client revalidating. `?paged=1` leaves
+    // large providers out for the paged browse route to serve instead.
+    if (rel === 'assets/index.json') {
+      await providersReady;
+      const served = await servedIndex.forCaller({ groups: user?.groups ?? [], paged: ctx.url.searchParams.get('paged') === '1' });
+      if (served.status === 'missing') return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
+      if (etagMatches(req, served.etag)) {
+        res.writeHead(304, { etag: served.etag, 'cache-control': 'private, no-cache' });
+        res.end();
+        return;
+      }
+      res.writeHead(200, {
+        'content-type': served.status === 'composed' ? 'application/json; charset=utf-8' : contentType(rel),
+        'cache-control': 'private, no-cache', etag: served.etag,
+      });
+      res.end(served.bytes);
+      return;
+    }
     const filePath = join(config.instance.pack, 'catalog', rel);
     let bytes: Buffer;
     try {
@@ -5165,49 +5322,15 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     } catch {
       return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
     }
-    if (rel === 'assets/index.json') {
-      try {
-        const index = JSON.parse(bytes.toString('utf8')) as AssetIndex;
-        await providersReady;
-        // Federate before lifecycle so expire/revoke rows on ext/* ids gate
-        // federated entries exactly like pack entries.
-        const federated = await federation.composeIndex(index, user?.groups ?? []);
-        const [rows, creds, instAssets, metas, fieldDefs] = await Promise.all([
-          store.listLifecycle(), store.listCredentials(), store.listInstanceAssets(),
-          store.listAssetMeta(), store.listCatalogFields(),
-        ]);
-        // Org-defined values ride the feed as an additive `fields` bag on the
-        // entries that carry any (plans/31 section 4). It folds over pack,
-        // federated and instance entries alike, because the overlay is keyed by
-        // catalog id rather than by which of the three produced the entry.
-        const composed = composeAssetMeta(
-          composeInstanceAssets(federated, instAssets, user?.groups ?? []), metas, fieldDefs,
-        );
-        const gated = applyLifecycleToIndex(composed, rows, Date.now());
-        // Collections ride the SAME feed as an additive `collections` key
-        // (plans/31 §5), folded last so a member that lifecycle just dropped is
-        // already absent from the ids it can reference. A deployment with no
-        // collections serves a byte-identical index, which is what lets the OSS
-        // catalog view light up its Collections section later with no server
-        // change and a public build render unchanged.
-        const withCollections = composeCollections(
-          applyCredentialsToIndex(gated, creds), await store.listCollections(), user?.groups ?? [],
-        );
-        return sendJson(res, 200, withCollections, { 'cache-control': 'private, no-cache' });
-      } catch {
-        /* not the expected shape — serve raw below */
-      }
-    } else {
-      // Any other catalog file: if it's a format entry owned by an asset
-      // whose lifecycle blocks it (revoked, scheduled, or expired-and-hidden),
-      // the blob dies too - a guessed/cached URL doesn't bypass the feed.
-      const assetId = (await loadAssetPathMap(config.instance.pack)).get(rel);
-      if (assetId) {
-        const { state, blocked } = await catalogBytesGate(assetId, false);
-        if (blocked) {
-          const message = state === 'revoked' ? 'this asset has been revoked' : state === 'scheduled' ? 'this asset is not yet published' : 'this asset has expired';
-          return sendError(res, 410, 'ASSET_EXPIRED', message);
-        }
+    // Any other catalog file: if it's a format entry owned by an asset
+    // whose lifecycle blocks it (revoked, scheduled, or expired-and-hidden),
+    // the blob dies too - a guessed/cached URL doesn't bypass the feed.
+    const assetId = (await loadAssetPathMap(config.instance.pack)).get(rel);
+    if (assetId) {
+      const { state, blocked } = await catalogBytesGate(assetId, false);
+      if (blocked) {
+        const message = state === 'revoked' ? 'this asset has been revoked' : state === 'scheduled' ? 'this asset is not yet published' : 'this asset has expired';
+        return sendError(res, 410, 'ASSET_EXPIRED', message);
       }
     }
     res.writeHead(200, {
@@ -5655,6 +5778,30 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // the asset's lifecycle row + resolved state. 404 when the id is in neither.
   // The id carries slashes (e.g. 'suse/tokens/brand'), so it rides the trailing
   // wildcard, same as the lifecycle admin route.
+  // ── paged asset browse (catalog/asset-browse.ts) ──────────────────────────
+  // One page of the caller's feed at a time, filtered and faceted, for a
+  // client that should not mirror a DAM-sized catalog. Registered before the
+  // inspect wildcard below, which would otherwise match the bare path.
+  router.add('GET', '/api/v1/catalog/assets', async (req, res, ctx) => {
+    const user = await memberOf(req) ?? renderReader(req, brand.current()!.revision, linkVerify);
+    const p = principalOf(req);
+    if (config.policy.defaultAccessMode === 'gated' && !user && p?.kind !== 'guest') {
+      return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
+    }
+    const query = parseBrowseQuery(ctx.url.searchParams);
+    if ('error' in query) return sendError(res, 400, 'INVALID_INPUT', query.error);
+    await providersReady;
+    const served = await servedIndex.forCaller({ groups: user?.groups ?? [] });
+    const etag = `"b${sha256Hex(`${served.version}\n${normalisedQuery(query)}`).slice(0, 32)}"`;
+    if (etagMatches(req, etag)) {
+      res.writeHead(304, { etag, 'cache-control': 'private, no-cache' });
+      res.end();
+      return;
+    }
+    const metaById = query.q ? new Map((await store.listAssetMeta()).map((m) => [m.assetId, m])) : new Map();
+    sendJson(res, 200, browseAssets(served, query, metaById), { 'cache-control': 'private, no-cache', etag });
+  });
+
   router.add('GET', '/api/v1/catalog/assets/*', async (req, res, ctx) => {
     const user = await memberOf(req);
     const p = principalOf(req);
@@ -5793,6 +5940,111 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     await store.deleteCatalogField(id);
     await audit(`user:${user.id}`, 'catalog.field.delete', `catalog-field:${id}`, { before });
     sendJson(res, 200, { ok: true, id });
+  });
+
+  // ── hidden tags (plan 299, catalog/tag-rules.ts) ──────────────────────────
+  // Hiding the instance-wide list is `policy.edit`, the gate the field
+  // definitions use, because it is how the org's taxonomy reads. One
+  // provider's list is `catalog.provider.manage`, the gate the rest of that
+  // provider's mapping already has. Either right opens the census.
+  const tagRightsOf = async (user: UserRecord): Promise<{ instance: boolean; providers: boolean }> => {
+    const grants = await store.listGrants();
+    const pctx = { userId: user.id, groups: user.groups, role: user.role as Role };
+    return {
+      instance: evaluate(pctx, 'policy.edit', ['*'], grants),
+      providers: evaluate(pctx, 'catalog.provider.manage', ['*'], grants),
+    };
+  };
+
+  /**
+   * Every label the catalog carries, counted per source and UNHIDDEN, with the
+   * rules that hide each one right now. `?provider=<id>` narrows the census to
+   * one provider's entries. Counts come from what is already held - the pack
+   * index, live instance assets and each provider's last synced fragment - so
+   * reading the census never calls a provider.
+   */
+  router.add('GET', '/api/v1/catalog/tags', async (req, res, ctx) => {
+    const user = await memberOf(req);
+    if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+    const rights = await tagRightsOf(user);
+    if (!rights.instance && !rights.providers) return sendError(res, 403, 'FORBIDDEN', 'hiding tags needs policy.edit or catalog.provider.manage');
+    await providersReady;
+    const only = (ctx.url.searchParams.get('provider') ?? '').trim();
+    const providers = await store.listProviders({ includeFragment: false });
+    if (only && !providers.some((p) => p.id === only)) return sendError(res, 404, 'NOT_FOUND', 'no such provider');
+    const inputs: CensusInput[] = [];
+    if (!only) {
+      try {
+        const pack = JSON.parse(await readFile(join(config.instance.pack, 'catalog', 'assets', 'index.json'), 'utf8')) as AssetIndex;
+        inputs.push({ source: 'pack', entries: pack.assets ?? [] });
+      } catch { /* a federated-only instance has no pack index */ }
+      const records = (await store.listInstanceAssets()).filter((r) => (r.exited || !r.origin) && submissionServable(r));
+      inputs.push({ source: 'instance', entries: records.map((r) => r.entry) });
+    }
+    for (const { rec, fragment } of await federation.fragments()) {
+      if (!only || rec.id === only) inputs.push({ source: rec.id, entries: fragment.assets });
+    }
+    const rules = await store.listCatalogTagRules();
+    const rows = tagCensus(inputs, rules, providers);
+    const LIMIT = 5000;
+    sendJson(res, 200, {
+      rules,
+      providers: providers.map((p) => ({
+        id: p.id, label: p.label, managedBy: p.managedBy, enabled: p.enabled,
+        assetCount: p.state.assetCount,
+        declared: Array.isArray(p.mapping.hiddenTags) ? p.mapping.hiddenTags : [],
+      })),
+      canEdit: rights,
+      total: rows.length,
+      tags: rows.slice(0, LIMIT),
+      ...(rows.length > LIMIT ? { truncated: true } : {}),
+    }, { 'cache-control': 'private, no-store' });
+  });
+
+  /**
+   * Change one scope's hidden list. `hidden` replaces it; `hide` and `show`
+   * edit it, which is what the console's per-row toggles and bulk buttons
+   * send so two admins working the same list do not overwrite each other.
+   * `show` removes a pattern spelled the same way, without regard to case.
+   * Takes effect on the next index read: the rules are applied when the
+   * index is served, so nothing re-syncs.
+   */
+  router.add('PUT', '/api/v1/catalog/tags/rules', async (req, res) => {
+    const user = await memberOf(req);
+    if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'sign in first');
+    const body = (await readJson(req)) as Record<string, unknown> | null;
+    const scope = typeof body?.scope === 'string' ? body.scope.trim() : '';
+    if (!validTagScope(scope)) return sendError(res, 400, 'INVALID_INPUT', 'scope must be * or provider:<id>');
+    const rights = await tagRightsOf(user);
+    if (scope === INSTANCE_SCOPE ? !rights.instance : !rights.providers) {
+      return sendError(res, 403, 'FORBIDDEN', scope === INSTANCE_SCOPE ? 'needs policy.edit' : 'needs catalog.provider.manage');
+    }
+    await providersReady;
+    if (scope !== INSTANCE_SCOPE && !(await store.getProvider(scope.slice('provider:'.length)))) {
+      return sendError(res, 404, 'NOT_FOUND', 'no such provider');
+    }
+    const before = (await store.listCatalogTagRules()).find((r) => r.scope === scope) ?? null;
+    let wanted: unknown;
+    if (body?.hidden !== undefined) {
+      if (body.hide !== undefined || body.show !== undefined) return sendError(res, 400, 'INVALID_INPUT', 'send hidden, or hide and show, not both');
+      wanted = body.hidden;
+    } else {
+      const hide = body?.hide ?? [];
+      const show = body?.show ?? [];
+      if (!Array.isArray(hide) || !Array.isArray(show)) return sendError(res, 400, 'INVALID_INPUT', 'hide and show must be lists of tags');
+      if (!hide.length && !show.length) return sendError(res, 400, 'INVALID_INPUT', 'nothing to change');
+      const drop = new Set(show.filter((t): t is string => typeof t === 'string').map((t) => t.trim().toLowerCase()));
+      wanted = [...(before?.hidden ?? []).filter((t) => !drop.has(t.toLowerCase())), ...hide];
+    }
+    const hidden = normalizeHiddenTags(wanted);
+    if ('error' in hidden) return sendError(res, 400, 'INVALID_INPUT', hidden.error);
+    const next: CatalogTagRule = { scope, hidden, updatedBy: `user:${user.id}`, updatedAt: new Date().toISOString() };
+    if (hidden.length) await store.putCatalogTagRule(next);
+    else await store.deleteCatalogTagRule(scope);
+    await audit(`user:${user.id}`, 'catalog.tags.update', `catalog-tags:${scope}`, {
+      before: before?.hidden ?? [], after: hidden,
+    });
+    sendJson(res, 200, { ok: true, rule: hidden.length ? next : { scope, hidden: [] } }, { 'cache-control': 'no-store' });
   });
 
   /**
@@ -6364,6 +6616,19 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     store, blobs, policy: config.policy.submit,
     ...(config.submit.scanHook ? { scanHook: config.submit.scanHook } : {}),
     ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    // A template or user tool must seed a tool this pack has (plan 299). The
+    // same manifest reader the policy editor uses answers it, plus the name
+    // the review queue shows.
+    toolLookup: async (toolId: string) => {
+      const inputs = await readToolManifestInputs(toolId);
+      if (!inputs) return null;
+      let name: string | undefined;
+      try {
+        const manifest = JSON.parse(await readFile(join(config.instance.pack, 'tools', toolId, 'tool.json'), 'utf8')) as { name?: unknown };
+        if (typeof manifest.name === 'string') name = manifest.name;
+      } catch { /* the inputs read already proved the file is there */ }
+      return { inputs: inputs.map((i) => String(i.id)), ...(name ? { name } : {}) };
+    },
   });
 
   /** The console/CLI view of one submission: the record's own descriptive entry
@@ -6393,6 +6658,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       ...(s.decidedBy ? { decidedBy: s.decidedBy } : {}),
       ...(s.decidedAt ? { decidedAt: s.decidedAt } : {}),
       ...(s.comment ? { comment: s.comment } : {}),
+      // A template or user tool (plan 299): what it seeds, for the reviewer.
+      ...(s.data ? { data: s.data } : {}),
+      ...(s.collectionId ? { collectionId: s.collectionId } : {}),
+      ...(s.joinedCollection ? { joinedCollection: s.joinedCollection } : {}),
+      ...(s.clientRef ? { clientRef: s.clientRef } : {}),
+      ...(s.note ? { note: s.note } : {}),
       // The org's own metadata (plans/31 section 4), so the review queue shows
       // and edits the same taxonomy the published asset will carry.
       ...(Object.keys(fields).length ? { fields } : {}),
@@ -6429,6 +6700,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const action = settled.state === 'live' ? 'catalog.approve-submission' : 'catalog.return-submission';
     await audit(`user:${actorId}`, action, `catalog:${settled.record.id}`, {
       approvalId: approval.id, ...(settled.comment ? { comment: settled.comment } : {}),
+      ...(settled.collection ? { collection: settled.collection } : {}),
     });
     const submitterId = (settled.record.submission?.by ?? '').replace(/^user:/, '');
     if (!submitterId) return true;
@@ -6495,7 +6767,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       }
     }
     const name = (ctx.url.searchParams.get('name') ?? '').trim();
-    if (!name && !target) return sendError(res, 400, 'INVALID_INPUT', 'name query param required');
+    // A template or user tool names itself in its JSON (plan 299), so only a
+    // file has to be named by the caller.
+    const declaredType = (ctx.url.searchParams.get('type') ?? '').trim();
+    if (!name && !target && !isDataSubmissionType(declaredType)) return sendError(res, 400, 'INVALID_INPUT', 'name query param required');
     const maxBytes = config.policy.submit.maxBytes;
     let bytes: Buffer;
     try {
@@ -6511,8 +6786,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const declaredGroups = list('groups');
     const outsider = declaredGroups.filter((g) => !user.groups.includes(g));
     if (outsider.length) return sendError(res, 403, 'FORBIDDEN', `you are not in ${outsider.join(', ')}, so you cannot submit into it`);
-    const type = (ctx.url.searchParams.get('type') ?? '').trim();
+    const type = declaredType;
     if (type && !/^[a-z0-9-]{1,32}$/i.test(type)) return sendError(res, 400, 'INVALID_INPUT', 'type must be a short slug');
+    const toolIdParam = (ctx.url.searchParams.get('toolId') ?? '').trim();
+    const clientRef = (ctx.url.searchParams.get('clientRef') ?? '').trim();
 
     const outcome = await submitAsset(submitDeps(), {
       bytes,
@@ -6525,6 +6802,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       ...(declaredGroups.length ? { groups: declaredGroups } : {}),
       ...(req.headers['content-type'] ? { contentType: req.headers['content-type'] } : {}),
       submitter: { id: user.id, groups: user.groups },
+      ...(toolIdParam ? { toolId: toolIdParam } : {}),
+      ...(clientRef ? { clientRef } : {}),
     });
 
     if (!outcome.ok) {
@@ -6536,7 +6815,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       // A misconfigured review chain is the instance's fault, not the
       // submitter's, so it reads as unavailable rather than as a bad request.
       const status = outcome.code === 'QUOTA_EXCEEDED' ? 409
-        : outcome.code === 'SCAN_REJECTED' ? 422
+        : outcome.code === 'SCAN_REJECTED' || outcome.code === 'INVALID_SUBMISSION' ? 422
           : outcome.code === 'SUBMIT_CHAIN_MISSING' ? 503 : 502;
       return sendError(res, status, outcome.code, outcome.detail);
     }
@@ -6579,6 +6858,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       scan: outcome.scan,
       credential: outcome.credential,
       formats: (outcome.record.entry.formats ?? []).map((f) => f.format),
+      type: outcome.record.entry.type ?? null,
       ...(outcome.version ? { version: outcome.version } : {}),
       ...(trimmed ? { trimmed } : {}),
       ...(outcome.approval ? { approvalId: outcome.approval.id } : {}),
@@ -6664,7 +6944,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // two surfaces edit exactly these four fields - here, before publication,
     // and the asset editor afterwards (plans/31 section 4). They differ in when
     // they apply and in which keys they allow, never in what a name may be.
-    const parsed = parseDescriptivePatch(body, rec.entry, ['name', 'type', 'description', 'tags']);
+    // A template or user tool keeps its kind: retyping one would serve JSON
+    // to shells that expect a picture (plan 299).
+    const parsed = parseDescriptivePatch(body, rec.entry, rec.submission.data ? ['name', 'description', 'tags'] : ['name', 'type', 'description', 'tags']);
+    if (rec.submission.data && body.type !== undefined && body.type !== rec.entry.type) {
+      return sendError(res, 400, 'INVALID_INPUT', `a ${rec.submission.data.kind} keeps its type`);
+    }
     if ('error' in parsed) return sendError(res, 400, 'INVALID_INPUT', parsed.error);
     const before: Record<string, unknown> = { ...parsed.before };
     const after: Record<string, unknown> = { ...parsed.after };
@@ -6707,8 +6992,29 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         updatedBy: `user:${user.id}`, updatedAt: new Date().toISOString(),
       };
     }
+    // The collection this asset joins once it is approved (plan 299). Choosing
+    // one is curation of a named set, so it asks the collection right rather
+    // than the review right, and only a collection the caller can see is a
+    // choice. `null` clears an earlier choice.
+    let collectionId = rec.submission.collectionId;
+    if (body.collectionId !== undefined) {
+      if (!(await requireAction(req, res, 'catalog.collection.manage'))) return;
+      if (body.collectionId === null || body.collectionId === '') collectionId = undefined;
+      else {
+        const wanted = typeof body.collectionId === 'string' ? body.collectionId.trim() : '';
+        const collection = wanted ? await store.getCollection(wanted) : null;
+        if (!collection || !collectionVisible(collection, user.groups)) return sendError(res, 404, 'NOT_FOUND', 'no such collection');
+        collectionId = collection.id;
+      }
+      before.collectionId = rec.submission.collectionId ?? null;
+      after.collectionId = collectionId ?? null;
+    }
     if (!Object.keys(after).length) return sendError(res, 400, 'INVALID_INPUT', 'nothing to change');
-    const next: InstanceAssetRecord = { ...rec, entry: applyDescriptivePatch(rec.entry, parsed) };
+    const { collectionId: _prior, ...submissionRest } = rec.submission;
+    const next: InstanceAssetRecord = {
+      ...rec, entry: applyDescriptivePatch(rec.entry, parsed),
+      submission: { ...submissionRest, ...(collectionId ? { collectionId } : {}) },
+    };
     await store.putInstanceAsset(next);
     if ((after.fields !== undefined || after.extractedText !== undefined) && meta) await store.putAssetMeta(meta);
     await audit(`user:${user.id}`, 'catalog.edit-submission', `catalog:${rec.id}`, { before, after, relation });
@@ -7037,6 +7343,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       lastSyncAt: rec.state.lastSyncAt ?? null,
       lastError: rec.state.lastError ?? null,
       assetCount: rec.state.assetCount,
+      // A sync that stopped at a cap says so wherever the operator looks.
+      ...(rec.state.fragment?.truncated ? { truncated: true } : {}),
+      ...(rec.state.fragment?.notes?.length ? { notes: rec.state.fragment.notes } : {}),
     },
   });
 
@@ -7056,6 +7365,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       if (v === undefined) continue;
       if (!v || typeof v !== 'object' || Array.isArray(v)) return { error: `${key} must be an object` };
       (out as Record<string, unknown>)[key] = v;
+    }
+    const maxAssets = (out.sync as Record<string, unknown> | undefined)?.maxAssets;
+    if (maxAssets !== undefined && (typeof maxAssets !== 'number' || !Number.isInteger(maxAssets) || maxAssets < 1 || maxAssets > 10_000_000)) {
+      return { error: 'sync.maxAssets must be a whole number, 1-10000000' };
     }
     return out;
   };
@@ -7395,6 +7708,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         ok: true, assetCount: fragment.assets.length, syncedAt: fragment.syncedAt, hash: fragment.hash,
         ...(fragment.skipped ? { skipped: fragment.skipped } : {}),
         ...(fragment.notes?.length ? { notes: fragment.notes } : {}),
+        ...(fragment.truncated ? { truncated: true } : {}),
       });
     } catch (err) {
       sendError(res, 502, 'PROVIDER_UNAVAILABLE', `sync failed: ${(err as Error).message}`);
@@ -7501,7 +7815,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const rec = await store.getProvider(ctx.params.id as string);
     if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such provider');
     try {
-      const fragment = await buildFragment(rec, federation.instantiate(rec), Date.now);
+      const fragment = await buildFragment(rec, federation.instantiate(rec), Date.now, { maxAssets: serving.maxProviderAssets });
       const report = providerDrift(rec.id, fragment.assets, await store.listInstanceAssets());
       sendJson(res, 200, report, { 'cache-control': 'no-store' });
     } catch (err) {
@@ -7570,9 +7884,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const user = await requireAction(req, res, 'catalog.read'); if (!user) return;
     await providersReady;
     const fragments = await federation.fragments();
-    const composed = await federation.composeIndex({}, user.groups);
-    const visible = applyLifecycleToIndex(composed, await store.listLifecycle(), Date.now());
-    const sources = visibleSourceStatuses(await store.listProviders(), fragments, user.groups, new Set((visible.assets ?? []).map(a => a.id)));
+    // The memoised feed already holds what this caller is served, lifecycle
+    // applied; the provider rows are read without their large fragments.
+    const visible = (await servedIndex.forCaller({ groups: user.groups })).index;
+    const sources = visibleSourceStatuses(await store.listProviders({ includeFragment: false }), fragments, user.groups, new Set((visible.assets ?? []).map(a => a.id)));
     const canManage = evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, 'catalog.provider.manage', ['*'], await store.listGrants());
     sendJson(res, 200, { sources, canManage, scope: user.id }, { 'cache-control': 'private, no-store' });
   });
@@ -7597,30 +7912,17 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const limit = Math.min(Math.max(Number(ctx.url.searchParams.get('limit') ?? 50) || 50, 1), 200);
     await providersReady;
 
-    // Local pass: pack index + synced fragments, lifecycle-applied.
-    let index: AssetIndex = {};
-    try {
-      index = JSON.parse(await readFile(join(config.instance.pack, 'catalog', 'assets', 'index.json'), 'utf8')) as AssetIndex;
-    } catch {
-      /* no pack index — federated-only instances still search */
-    }
+    // Local pass: the caller's memoised feed (pack index + synced fragments +
+    // instance assets, lifecycle-applied; catalog/served-index.ts). A pack with
+    // no index still composes, so federated-only instances still search.
     const lifecycleRows = await store.listLifecycle();
     const lifecycleById = new Map(lifecycleRows.map((r) => [r.assetId, r]));
-    // The overlay is loaded once and kept: `composeAssetMeta` folds its fields
-    // and supersession onto the feed entries, and the haystack below folds its
-    // OCR text (which is kept OFF the feed) in beside them (plans/31 §7).
+    // The overlay is loaded here too: the feed carries its fields and
+    // supersession, and the haystack below folds its OCR text (which is kept
+    // OFF the feed) in beside them (plans/31 section 7).
     const metas = await store.listAssetMeta();
     const metaById = new Map(metas.map((m) => [m.assetId, m]));
-    const withInstance = composeAssetMeta(
-      composeInstanceAssets(
-        await federation.composeIndex(index, user.groups), await store.listInstanceAssets(), user.groups,
-      ),
-      metas, await store.listCatalogFields(),
-    );
-    const composed = applyCredentialsToIndex(
-      applyLifecycleToIndex(withInstance, lifecycleRows, Date.now()),
-      await store.listCredentials(),
-    );
+    const composed = (await servedIndex.forCaller({ groups: user.groups })).index;
     // The haystack folds the org's own field values (plans/31 section 4) and
     // the asset's on-device OCR text (section 7) alongside id, name, description
     // and tags: a value an org files an asset under, or a word printed on the
@@ -7642,6 +7944,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const missed: string[] = [];
     const live = (await store.listProviders({ includeFragment: false })).filter((rec) =>
       rec.enabled && callerSeesProvider(rec, user.groups));
+    // Live results lose hidden tags the same way the feed's entries do.
+    const tagRules = await loadTagRules(store);
     await Promise.all(live.map(async (rec) => {
       try {
         const provider = federation.instantiate(rec);
@@ -7652,7 +7956,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
           // Live results pass the SAME gates as synced fragments: the admin's
           // exposure slice, then this instance's lifecycle overlays.
           if (!passesExposure(rec, a)) continue;
-          const entry = mapProviderAsset(rec, a);
+          const entry = hideEntryTags(mapProviderAsset(rec, a), tagRules);
           const row = lifecycleById.get(entry.id);
           const { state, upstreamExpired } = combinedState(row, entryWindow(entry), Date.now());
           if (state === 'revoked' || state === 'scheduled' || (state === 'expired' && (upstreamExpired || row?.onExpiry !== 'warn'))) continue;
@@ -9699,9 +10003,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // so every API/console/catalog/render/link route wins; only unmatched GETs
   // reach public docs or the SPA fallback. Absent shellDir means these routes
   // are not added. HEAD handles only public docs, never private GET handlers.
-  const shellDir = config.instance.shellDir;
+  // serveShell is defined above the tool file routes, which also use it.
   const RESERVED_PREFIX = /^(api|catalog|tools|render|l|admin|scim|healthz|activate|connect)(\/|$)/;
-  if (shellDir) {
+  if (shellDir && serveShell) {
     const serveShellDocs = async (req: IncomingMessage, res: ServerResponse, rel: string): Promise<boolean> => {
       const doc = shellDocsPath(rel);
       if (!doc) return false;
@@ -9740,26 +10044,6 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       } catch { /* A missing shell mount is a missing public document. */ }
       sendError(res, 404, 'NOT_FOUND', 'no such public document');
       return true;
-    };
-    const serveShell = async (res: ServerResponse, rel: string): Promise<void> => {
-      const clean = normalize(rel.replace(/^\/+/, '')).replace(/^(\.\.[/\\])+/, '');
-      if (clean.includes('..')) return sendError(res, 400, 'INVALID_INPUT', 'bad path');
-      // A path ending in a file extension is a real asset; anything else is an
-      // SPA route → index.html (the shell hash-routes from there).
-      const asset = /\.[a-z0-9]+$/i.test(clean);
-      const target = clean === '.well-known/lolly.json' ? 'info/well-known-lolly.json' : asset && clean ? clean : 'index.html';
-      try {
-        const bytes = await readFile(join(shellDir, target));
-        res.writeHead(200, {
-          ...shellSecurityHeaders(rel),
-          'content-type': contentType(target),
-          'cache-control': target === 'index.html' ? 'no-cache' : 'public, max-age=300',
-        });
-        res.end(bytes);
-      } catch {
-        // Missing real asset → 404; a missing index means the shellDir is wrong.
-        sendError(res, 404, 'NOT_FOUND', asset ? 'no such file' : 'shell index not found — check instance.shellDir');
-      }
     };
     router.add('GET', '/info/media/agent-collaboration-review.mp4', (_req, res) => {
       res.writeHead(307, { location: '/review/agent-collaboration-review.mp4', 'cache-control': 'public, max-age=300' });

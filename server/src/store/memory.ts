@@ -25,6 +25,7 @@ import type { LifecycleRow } from '../catalog/lifecycle.ts';
 import type { CredentialRow } from '../catalog/credentials.ts';
 import type { InstanceAssetRecord } from '../catalog/instance-assets.ts';
 import { sortFields, type AssetMetaRecord, type CatalogFieldDef } from '../catalog/asset-meta.ts';
+import type { CatalogTagRule } from '../catalog/tag-rules.ts';
 import { sortCollections, type CollectionRecord } from '../catalog/collections.ts';
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderRecord } from '../catalog/providers/types.ts';
@@ -130,6 +131,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const aliases = new Map<string, string>();
   const submitQuota = new Map<string, SubmitQuotaRow>();
   const catalogFields = new Map<string, CatalogFieldDef>();
+  const tagRules = new Map<string, CatalogTagRule>();
   const assetMeta = new Map<string, AssetMetaRecord>();
   const collections = new Map<string, CollectionRecord>();
   /** `${assetId} ${version}` (space-joined) - the composite key migration 0020 makes a
@@ -1120,6 +1122,16 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     async deleteCatalogField(id) {
       catalogFields.delete(id);
     },
+    async listCatalogTagRules() {
+      return [...tagRules.values()].sort((a, b) => (a.scope < b.scope ? -1 : a.scope > b.scope ? 1 : 0))
+        .map((r) => ({ ...r, hidden: [...r.hidden] }));
+    },
+    async putCatalogTagRule(rule) {
+      tagRules.set(rule.scope, { ...rule, hidden: [...rule.hidden] });
+    },
+    async deleteCatalogTagRule(scope) {
+      tagRules.delete(scope);
+    },
     async getAssetMeta(assetId) {
       return assetMeta.get(assetId) ?? null;
     },
@@ -1312,6 +1324,11 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       if (!f || (!f.ready && Date.parse(f.expiresAt) <= Date.now())) return false;
       f.ready = true;
       return true;
+    },
+    async renameProjectFile(projectId, id, name) {
+      const file = projectFiles.get(id);
+      if (!file || file.projectId !== projectId || !file.ready) return false;
+      file.name = name; return true;
     },
     async deleteProjectFile(id) { return projectFiles.delete(id); },
     async listSessionsUsingProjectFile(projectId, fileId) {

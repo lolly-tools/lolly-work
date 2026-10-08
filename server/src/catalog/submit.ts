@@ -51,6 +51,8 @@ import {
 import {
   applyVersionToRecord, backfillVersionOne, nextVersionNumber, versionBlobKey, type AssetVersionRecord,
 } from './versions.ts';
+import { isDataSubmissionType, parseDataSubmission, type ToolLookup } from './submit-data.ts';
+import { MAX_MEMBERS } from './collections.ts';
 import type { SubmitPolicy, SubmitScanHook } from '../config/instance.ts';
 import type { BlobStore } from '../blobs/types.ts';
 import type { Store } from '../store/types.ts';
@@ -286,6 +288,9 @@ export interface SubmitDeps {
   scanHook?: SubmitScanHook;
   fetchImpl?: typeof fetch;
   now?: () => number;
+  /** The pack's tools, for a template or user-tool submission (submit-data.ts).
+   *  Absent means this instance takes no data submissions. */
+  toolLookup?: ToolLookup;
 }
 
 export interface SubmitInput {
@@ -311,6 +316,12 @@ export interface SubmitInput {
   groups?: string[];
   contentType?: string;
   submitter: { id: string; groups: string[] };
+  /** The tool a template seeds, when its JSON does not say (the shell's
+   *  exported template file carries the tool id in its filename only). */
+  toolId?: string;
+  /** The submitting client's own name for what it sent ('template:<id>'),
+   *  echoed back so it can show the state of its own submission. */
+  clientRef?: string;
 }
 
 export type SubmitRefusal =
@@ -319,7 +330,10 @@ export type SubmitRefusal =
   | { ok: false; code: 'SCAN_UNAVAILABLE'; detail: string }
   /** `policy.submit.chain` names a chain this instance does not have, or one
    *  with no steps. The review an org bought cannot run, so nothing is taken. */
-  | { ok: false; code: 'SUBMIT_CHAIN_MISSING'; detail: string };
+  | { ok: false; code: 'SUBMIT_CHAIN_MISSING'; detail: string }
+  /** A template or user tool whose JSON is not one this catalog can serve:
+   *  not an object, no values, or a tool the pack does not have. */
+  | { ok: false; code: 'INVALID_SUBMISSION'; detail: string };
 
 export interface SubmitAccepted {
   ok: true;
@@ -372,7 +386,7 @@ export function findByChecksum(
 export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise<SubmitOutcome> {
   const { store, blobs, policy } = deps;
   const nowIso = new Date(deps.now?.() ?? Date.now()).toISOString();
-  const size = input.bytes.length;
+  let size = input.bytes.length;
 
   const scopes = quotaScopes(input.submitter.groups);
   const capped = policy.quota.bytes > 0 || policy.quota.count > 0;
@@ -417,6 +431,26 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
     };
   }
 
+  // 1c. A template or a user tool (plan 299) is data for one of the pack's
+  //     tools. It is validated and NORMALIZED here, before the hash, so the
+  //     duplicate check, the scan hook and the store all see the bytes the
+  //     feed will serve, and a reviewer approves exactly those. A version of
+  //     an existing template answers the same check: it is the same kind of
+  //     asset, whatever the caller declared.
+  const dataKind = [input.type, input.target?.entry.type].find(isDataSubmissionType);
+  let data: Awaited<ReturnType<typeof parseDataSubmission>> | undefined;
+  if (dataKind) {
+    if (!deps.toolLookup) return { ok: false, code: 'INVALID_SUBMISSION', detail: 'this catalog takes no template submissions' };
+    data = await parseDataSubmission(dataKind, input.bytes, deps.toolLookup, {
+      ...(input.target ? {} : { name: input.name }),
+      ...(input.description ? { description: input.description } : {}),
+      ...(input.toolId ? { toolId: input.toolId } : {}),
+    });
+    if (!data.ok) return { ok: false, code: 'INVALID_SUBMISSION', detail: data.detail };
+    input = { ...input, bytes: data.bytes, name: input.target ? input.name : data.name };
+    size = input.bytes.length;
+  }
+
   // 2. Content hash, and the duplicate short-circuit. Reported, never an error:
   //    the submitter asked for these bytes to be in the catalog, and they are.
   //    Only an asset this submitter could already be handed counts as the
@@ -448,7 +482,9 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
     };
   }
 
-  const sniffed = sniffBytes(input.bytes, { ...(input.contentType ? { contentType: input.contentType } : {}), filename: input.name });
+  const sniffed: SniffResult = data?.ok
+    ? { contentType: 'application/json', format: 'json' }
+    : sniffBytes(input.bytes, { ...(input.contentType ? { contentType: input.contentType } : {}), filename: input.name });
 
   // 3. The pre-store scan hook. Before BlobStore.put, so a veto means the bytes
   //    were never written anywhere. What the hook actually did is carried
@@ -570,16 +606,24 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
     contentType: sniffed.contentType,
     ...(sniffed.width ? { width: sniffed.width } : {}),
     ...(sniffed.height ? { height: sniffed.height } : {}),
+    ...(data?.ok ? { data: data.summary } : {}),
+    ...(input.clientRef ? { clientRef: input.clientRef.slice(0, 200) } : {}),
+    // On a new asset the note is the submitter's word to the reviewer; on a
+    // version it stays on the version row, as before.
+    ...(input.note ? { note: input.note.slice(0, 500) } : {}),
   };
   const tags = [...new Set((input.tags ?? []).map((t) => t.trim()).filter(Boolean))];
   let record: InstanceAssetRecord = {
     id,
     entry: instanceAssetEntry(id, {
       name: input.name,
-      ...(input.description ? { description: input.description } : {}),
-      type: input.type || (sniffed.format === 'svg' ? 'icon' : 'image'),
+      ...(data?.ok && data.description ? { description: data.description } : input.description ? { description: input.description } : {}),
+      type: dataKind ?? (input.type || (sniffed.format === 'svg' ? 'icon' : 'image')),
       tags,
       ...(sniffed.width && sniffed.height ? { width: sniffed.width, height: sniffed.height } : {}),
+      // What a shell needs to offer a template or user tool before fetching
+      // its JSON: the tool it opens in, and how much it sets.
+      ...(data?.ok ? { meta: dataEntryMeta(data) } : {}),
     }, [{ format: sniffed.format, size: stat.size, checksum: stat.checksum }]),
     blobs: { [sniffed.format]: `${id}/${sniffed.format}` },
     ...(input.groups?.length ? { groups: input.groups } : {}),
@@ -629,6 +673,17 @@ export async function submitAsset(deps: SubmitDeps, input: SubmitInput): Promise
   };
 }
 
+/** The served `meta` of a template or user-tool entry. */
+function dataEntryMeta(data: Extract<Awaited<ReturnType<typeof parseDataSubmission>>, { ok: true }>): Record<string, unknown> {
+  const { summary } = data;
+  return {
+    [summary.kind === 'template' ? 'toolId' : 'baseToolId']: summary.toolId,
+    valueCount: summary.valueCount,
+    ...(data.icon ? { icon: data.icon } : {}),
+    ...(data.formats?.length ? { toolFormats: data.formats } : {}),
+  };
+}
+
 /** Move a stored submission to `live` and mint its lifecycle row, which is what
  *  gives the console its expire/hold/revoke controls over the new asset from
  *  the first moment rather than only after someone sets a window. */
@@ -651,6 +706,26 @@ export interface SubmissionDecision {
   record: InstanceAssetRecord;
   state: 'live' | 'returned';
   comment?: string;
+  /** The collection the asset joined on approval, when a reviewer chose one. */
+  collection?: string;
+}
+
+/**
+ * Add a newly live asset to the collection its reviewer chose (plan 299). At
+ * the end, so a curated order is never disturbed, and only when the collection
+ * still exists and has room: a collection deleted while the submission waited
+ * is the curator's decision standing, not an error to undo.
+ */
+async function joinChosenCollection(store: Store, record: InstanceAssetRecord, nowIso: string): Promise<string | undefined> {
+  const chosen = record.submission?.collectionId;
+  if (!chosen) return undefined;
+  const collection = await store.getCollection(chosen);
+  if (!collection) return undefined;
+  if (!collection.members.includes(record.id)) {
+    if (collection.members.length >= MAX_MEMBERS) return undefined;
+    await store.putCollection({ ...collection, members: [...collection.members, record.id], updatedAt: nowIso });
+  }
+  return chosen;
 }
 
 /**
@@ -673,7 +748,13 @@ export async function settleSubmission(store: Store, approval: Approval, nowIso:
   const comment = last?.comment;
   const decidedBy = last ? `user:${last.actor}` : undefined;
   if (approval.state === 'approved') {
-    return { record: await goLive(store, record, nowIso, decidedBy, comment), state: 'live', ...(comment ? { comment } : {}) };
+    let live = await goLive(store, record, nowIso, decidedBy, comment);
+    const collection = await joinChosenCollection(store, live, nowIso);
+    if (collection) {
+      live = { ...live, submission: { ...(live.submission as AssetSubmission), joinedCollection: collection } };
+      await store.putInstanceAsset(live);
+    }
+    return { record: live, state: 'live', ...(comment ? { comment } : {}), ...(collection ? { collection } : {}) };
   }
   if (approval.state !== 'rejected' && approval.state !== 'withdrawn') return null;
   const next: InstanceAssetRecord = {

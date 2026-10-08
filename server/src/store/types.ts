@@ -21,6 +21,7 @@ import type { LifecycleRow } from '../catalog/lifecycle.ts';
 import type { CredentialRow } from '../catalog/credentials.ts';
 import type { InstanceAssetRecord } from '../catalog/instance-assets.ts';
 import type { AssetMetaRecord, CatalogFieldDef } from '../catalog/asset-meta.ts';
+import type { CatalogTagRule } from '../catalog/tag-rules.ts';
 import type { CollectionRecord } from '../catalog/collections.ts';
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderRecord, ProviderState } from '../catalog/providers/types.ts';
@@ -1064,6 +1065,12 @@ export interface Store extends RenderStore, PasskeyStore {
    *  bag filters to live definitions, so retiring one hides its values and
    *  re-adding it brings them back, which a cascading delete could never do. */
   deleteCatalogField(id: string): Promise<void>;
+  // hidden tags (plan 299, migrations/0065): one rule per scope, `*` for the
+  // whole instance and `provider:<id>` for one provider's entries. Policy, so
+  // the policy document exports and applies them beside the field definitions.
+  listCatalogTagRules(): Promise<CatalogTagRule[]>;
+  putCatalogTagRule(rule: CatalogTagRule): Promise<void>;
+  deleteCatalogTagRule(scope: string): Promise<void>;
   getAssetMeta(assetId: string): Promise<AssetMetaRecord | null>;
   putAssetMeta(rec: AssetMetaRecord): Promise<void>;
   listAssetMeta(): Promise<AssetMetaRecord[]>;
@@ -1163,6 +1170,8 @@ export interface Store extends RenderStore, PasskeyStore {
   touchProjectFile(id: string, expiresAt: string): Promise<boolean>;
   /** Mark ready. False when unknown, or when an unfinished upload has expired. */
   completeProjectFile(id: string): Promise<boolean>;
+  /** Rename a ready file without changing its bytes, checksum or references. */
+  renameProjectFile(projectId: string, id: string, name: string): Promise<boolean>;
   /** The row only; the caller deletes the parts first. False when unknown. */
   deleteProjectFile(id: string): Promise<boolean>;
   /** Live sessions of the project whose inputs mention the file's asset id
