@@ -795,7 +795,7 @@ test("a guest's write-back names the guest on the revision, and leaves updated_b
   assert.notEqual(revs[0]?.actor, adminId);
 });
 
-test("a member's write-back is unchanged by any of this — still 'collab', still their user id", async () => {
+test("a member's write-back names the one member who wrote, and keeps their user id", async () => {
   const seed = await makeSession(aliceCookie, projectId, { title: 'member only' });
   const alice = new Client(seed, aliceCookie);
   await alice.join();
@@ -806,7 +806,9 @@ test("a member's write-back is unchanged by any of this — still 'collab', stil
 
   await until(async () => ((await store.listSessionRevisions(seed)).length > 0));
   const revs = await store.listSessionRevisions(seed);
-  assert.equal(revs[0]?.actor, COLLAB_ACTOR);
+  // Plan 76 M4: one writer since the last write-back is named; several are 'collab'.
+  assert.equal(revs[0]?.actor, aliceId);
+  assert.notEqual(revs[0]?.actor, COLLAB_ACTOR);
   assert.equal((await store.getSession(seed))?.updatedBy, aliceId);
 });
 

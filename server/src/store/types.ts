@@ -1,5 +1,7 @@
 import type { CommentThread } from '@lolly-tools/core/canvas-review-v1';
 import type { CanvasCheckpoint, CanvasOp } from '@lolly-tools/core/canvas-op-v1';
+import { createHash, randomInt } from 'node:crypto';
+import { canonicalJson } from '../lib/crypto.ts';
 /**
  * Storage interface - the seam that keeps deploy targets honest (plans/01):
  * memory (dev/tests) now, Postgres next; the Vercel trial and the Helm chart
@@ -21,6 +23,7 @@ import type { LifecycleRow } from '../catalog/lifecycle.ts';
 import type { CredentialRow } from '../catalog/credentials.ts';
 import type { InstanceAssetRecord } from '../catalog/instance-assets.ts';
 import type { AssetMetaRecord, CatalogFieldDef } from '../catalog/asset-meta.ts';
+import type { CatalogTagRule } from '../catalog/tag-rules.ts';
 import type { CollectionRecord } from '../catalog/collections.ts';
 import type { AssetVersionRecord } from '../catalog/versions.ts';
 import type { ProviderRecord, ProviderState } from '../catalog/providers/types.ts';
@@ -29,6 +32,7 @@ import type { PasskeyStore } from '../iam/passkeys/types.ts';
 import type { RenderStore } from '../renders/types.ts';
 import type { ProjectFileLimits, ProjectFileRecord, ProjectFileReservation } from '../projects/files.ts';
 import type { ProjectAccess } from '../rbac/project-access.ts';
+import { sha256Hex } from '../lib/crypto.ts';
 
 export interface UserRecord {
   id: string;
@@ -53,6 +57,10 @@ export interface UserRecord {
   sessionEpoch: number;
   createdAt: string;
   lastSeenAt: string;
+  /** Ids of the user-made share groups this person belongs to (migration 0060).
+   *  Kept apart from `groups` on purpose: `groups` feeds RBAC grants, and a
+   *  group any member can create must never grant an instance action. */
+  shareGroups?: string[];
 }
 
 /** A local group definition (the registry). IdP groups are NOT registered -
@@ -431,6 +439,9 @@ export interface ProjectRecord {
   id: string;
   name: string;
   visibility: 'private' | { groups: string[] };
+  /** What a manager set in the share dialog (migration 0060). Absent means
+   *  restricted, with visibility groups acting as editors, as before. */
+  sharing?: ProjectSharing;
   ownerId: string;
   createdAt: string;
   archivedAt?: string;
@@ -460,14 +471,58 @@ export interface DocumentAgentRecord {
 export type ProjectAgentRecord = Omit<DocumentAgentRecord, 'sessionId' | 'projectAgentId'>;
 
 /** A person's explicit role on one project (plans/74, migration 0040). The
- *  project's owner never has one. viewer reads, editor also writes sessions,
- *  manager also renames, shares, archives and manages the people. */
-export type ProjectMemberRole = 'viewer' | 'editor' | 'manager';
-export const PROJECT_MEMBER_ROLES: readonly ProjectMemberRole[] = ['viewer', 'editor', 'manager'];
+ *  project's owner never has one. viewer reads, commenter also comments
+ *  (migration 0060), editor also writes sessions, manager also renames,
+ *  shares, archives and manages the people. */
+export type ProjectMemberRole = 'viewer' | 'commenter' | 'editor' | 'manager';
+export const PROJECT_MEMBER_ROLES: readonly ProjectMemberRole[] = ['viewer', 'commenter', 'editor', 'manager'];
+
+/** Who a project reaches without being named (lolly plan 299 section 4.3).
+ *  `instance` is every signed-in member of this instance, never a guest. A
+ *  public audience arrives with public links (plan 299 M2). */
+export type GeneralAudience = 'restricted' | 'instance';
+/** One group's role on a project. A directory group (IdP or local) is named;
+ *  a user-made share group is identified by id. A directory grant applies
+ *  only while the group is also in the project's visibility, so the older
+ *  visibility edit keeps removing access as it always did. */
+export type ProjectGroupGrant =
+  | { kind: 'directory'; name: string; role: ProjectMemberRole; expiresAt?: string }
+  | { kind: 'custom'; id: string; role: ProjectMemberRole; expiresAt?: string };
+export interface ProjectSharing {
+  general?: { audience: GeneralAudience; role: ProjectMemberRole };
+  groups?: ProjectGroupGrant[];
+  settings?: { viewersCanComment?: boolean; viewersCanExport?: boolean; editorsCanShare?: boolean };
+}
+
+/** A group a member made themselves (migration 0060). Membership lives on
+ *  the user row (`UserRecord.shareGroups`); the owner and managers may change
+ *  it. `ownerId` is null once the owner's account is erased. */
+export interface ShareGroupRecord {
+  id: string;
+  name: string;
+  description?: string;
+  ownerId: string | null;
+  managers: string[];
+  createdBy: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+/** One person's own view of a project (migration 0061): pinned into their list,
+ *  hidden from it, and when they last opened it. Private to that person. */
+export interface ProjectUserStateRecord {
+  userId: string;
+  projectId: string;
+  listed?: 'pinned' | 'hidden';
+  lastOpenedAt?: string;
+}
+
 export interface ProjectMemberRecord {
   projectId: string;
   userId: string;
   role: ProjectMemberRole;
+  /** The membership ends at this ISO time (migration 0060). Absent: no end. */
+  expiresAt?: string;
   /** 'user:<id>' (or a principal) who added the row. */
   addedBy: string;
   addedAt: string;
@@ -564,6 +619,291 @@ export interface CollabSnapshot {
   updatedAt: string;
 }
 
+// Session versions (plan 76 M4 R2, migration 0053). A version is a meaningful
+// state of a document, kept apart from the 20-row revision window. Its content
+// is stored once per document and digest, so repeated states cost no extra bytes.
+
+/** auto: written after a pause in live editing. close: when a live room closes.
+ *  save: a REST save. named: a person saved it with a name. restore: the state a
+ *  restore produced. before: the state a restore replaced, paired with its
+ *  restore row. */
+export type SessionVersionKind = 'auto' | 'close' | 'save' | 'named' | 'restore' | 'before';
+export const SESSION_VERSION_KINDS: readonly SessionVersionKind[] = ['auto', 'close', 'save', 'named', 'restore', 'before'];
+/** Who edited a version, and how many accepted edits each made. Guests are
+ *  counted together as one entry with the id 'guest'; no link id is stored. */
+export interface SessionVersionContributor { id: string; kind: 'user' | 'agent' | 'guest'; edits: number }
+export interface SessionVersionSummary {
+  id: string; sessionId: string; rev: number; kind: SessionVersionKind; label?: string;
+  contributors: SessionVersionContributor[]; createdBy?: string; restoredFrom?: string; beforeId?: string;
+  /** Size of the version's content (canonical inputs JSON), shared with any
+   *  other version of the same document that has the same content. */
+  bytes: number; at: string;
+}
+export interface SessionVersion extends SessionVersionSummary { inputs: Record<string, unknown>; meta: Record<string, unknown> }
+export type SessionVersionWrite = Omit<SessionVersion, 'id' | 'bytes' | 'at'> & {
+  at?: string; requestId?: string;
+  /** Versions of the same session this write's retention and space eviction
+   *  must leave in place (a restore keeps the version it restores from). Not
+   *  stored. */
+  keep?: string[];
+};
+/** What `putSessionVersion` did. `created: false` means an earlier row answers
+ *  the write: the same request id, the same content as the latest version, or an
+ *  automatic version skipped for space (the latest version is returned). */
+export type SessionVersionPut = { version: SessionVersionSummary; created: boolean } | 'version-limit' | 'version-space';
+/** Space caps on version content, counted over distinct contents. */
+export interface SessionVersionLimits { sessionMaxBytes: number; instanceMaxBytes: number }
+
+/** The most content one document's versions may hold. */
+export const VERSION_SESSION_MAX_BYTES = 100 * 1024 * 1024;
+/** The most content the whole instance's versions may hold, unless
+ *  `configureVersionLimits` sets another (`policy.versions.maxBytes`). */
+export const VERSION_INSTANCE_MAX_BYTES = 1024 * 1024 * 1024;
+/** Named versions: per person per document, and per document. */
+export const VERSION_NAMED_PER_PERSON = 20;
+export const VERSION_NAMED_PER_SESSION = 100;
+/** Restore rows kept per document (each with its paired 'before' row). */
+export const VERSION_RESTORE_KEEP = 200;
+/** auto, close and save rows: the newest this many are kept... */
+export const VERSION_RECENT_KEEP = 50;
+/** ...and the newest one of each UTC day within this many days... */
+export const VERSION_DAILY_DAYS = 30;
+/** ...and, whichever rule keeps them, none older than this many days. */
+export const VERSION_MAX_AGE_DAYS = 365;
+export const VERSION_LABEL_MAX = 120;
+/** `listSessionVersions` page size: the default and the most allowed. */
+export const VERSION_LIST_DEFAULT = 30;
+export const VERSION_LIST_MAX = 100;
+
+const VERSION_ID_ALPHABET = '0123456789abcdefghjkmnpqrstvwxyz';
+const RECYCLABLE_KINDS: ReadonlySet<SessionVersionKind> = new Set(['auto', 'close', 'save']);
+const DAY_MS = 86_400_000;
+let lastVersionMs = 0;
+let lastVersionSeq = 0;
+
+const base32 = (value: number, length: number): string => {
+  let out = '';
+  for (let i = 0; i < length; i++) {
+    out = VERSION_ID_ALPHABET[value % 32]! + out;
+    value = Math.floor(value / 32);
+  }
+  return out;
+};
+
+/** The caps `configureVersionLimits` sets: each given field, or its default. */
+export function resolveVersionLimits(limits: Partial<SessionVersionLimits>): SessionVersionLimits {
+  const pick = (value: number | undefined, fallback: number): number => {
+    if (value === undefined) return fallback;
+    if (!Number.isSafeInteger(value) || value <= 0) throw new RangeError('version limits must be whole numbers above zero');
+    return value;
+  };
+  return { sessionMaxBytes: pick(limits.sessionMaxBytes, VERSION_SESSION_MAX_BYTES), instanceMaxBytes: pick(limits.instanceMaxBytes, VERSION_INSTANCE_MAX_BYTES) };
+}
+
+/** `listSessionVersions`' page size: VERSION_LIST_DEFAULT when not a number,
+ *  else the whole part kept between 1 and VERSION_LIST_MAX. */
+export function versionListLimit(limit: number): number {
+  return Number.isFinite(limit) ? Math.min(VERSION_LIST_MAX, Math.max(1, Math.floor(limit))) : VERSION_LIST_DEFAULT;
+}
+
+/** `ver_` and 16 base32 characters: 10 of time, then 6 that count up within one
+ *  millisecond from a random start. Ids made by one process therefore sort in the
+ *  order they were made, which breaks ties between versions with the same `at`. */
+export function sessionVersionId(now = Date.now()): string {
+  if (now > lastVersionMs) {
+    lastVersionMs = now;
+    lastVersionSeq = randomInt(2 ** 29);
+  } else if (++lastVersionSeq >= 2 ** 30) {
+    lastVersionMs += 1;
+    lastVersionSeq = randomInt(2 ** 29);
+  }
+  return `ver_${base32(lastVersionMs, 10)}${base32(lastVersionSeq, 6)}`;
+}
+
+/** The digest and size of a version's content: sha256 and byte length of the
+ *  canonical (key-sorted) JSON of the inputs. */
+export function sessionVersionContent(inputs: Record<string, unknown>): { digest: string; bytes: number } {
+  const json = canonicalJson(inputs);
+  return { digest: createHash('sha256').update(json).digest('hex'), bytes: Buffer.byteLength(json) };
+}
+
+const plainObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** A version write in the shape both drivers store, or a thrown error for a
+ *  write the database would refuse. Contributors keep only their known fields,
+ *  and a guest is always stored as the one id 'guest'. */
+export function normalizeSessionVersionWrite(v: SessionVersionWrite, now = new Date()): SessionVersionWrite & { at: string } {
+  if (typeof v.sessionId !== 'string' || !v.sessionId) throw new TypeError('version-session');
+  if (!SESSION_VERSION_KINDS.includes(v.kind)) throw new TypeError('version-kind');
+  if (!Number.isSafeInteger(v.rev) || v.rev < 0) throw new TypeError('version-rev');
+  if (v.label !== undefined && (typeof v.label !== 'string' || [...v.label].length < 1 || [...v.label].length > VERSION_LABEL_MAX)) throw new TypeError('version-label');
+  if (!plainObject(v.inputs) || !plainObject(v.meta) || !Array.isArray(v.contributors)) throw new TypeError('version-shape');
+  for (const ref of [v.createdBy, v.restoredFrom, v.beforeId, v.requestId]) if (ref !== undefined && (typeof ref !== 'string' || !ref)) throw new TypeError('version-reference');
+  if (v.keep !== undefined && (!Array.isArray(v.keep) || v.keep.some((id) => typeof id !== 'string' || !id))) throw new TypeError('version-keep');
+  const at = v.at === undefined ? now : new Date(v.at);
+  if (!Number.isFinite(at.getTime())) throw new TypeError('version-at');
+  const contributors = v.contributors.flatMap((c): SessionVersionContributor[] => {
+    if (!plainObject(c) || !['user', 'agent', 'guest'].includes(c.kind as string) || typeof c.id !== 'string' || !c.id) return [];
+    const edits = Number.isSafeInteger(c.edits) && (c.edits as number) >= 0 ? c.edits as number : 0;
+    return [{ id: c.kind === 'guest' ? 'guest' : c.id, kind: c.kind as SessionVersionContributor['kind'], edits }];
+  });
+  return {
+    sessionId: v.sessionId, rev: v.rev, kind: v.kind, inputs: v.inputs, meta: v.meta, contributors,
+    ...(v.label !== undefined ? { label: v.label } : {}),
+    ...(v.createdBy !== undefined ? { createdBy: v.createdBy } : {}),
+    ...(v.restoredFrom !== undefined ? { restoredFrom: v.restoredFrom } : {}),
+    ...(v.beforeId !== undefined ? { beforeId: v.beforeId } : {}),
+    ...(v.requestId !== undefined ? { requestId: v.requestId } : {}),
+    ...(v.keep !== undefined ? { keep: [...v.keep] } : {}),
+    at: at.toISOString(),
+  };
+}
+
+/** The facts the version rules read about one stored row. */
+export interface SessionVersionRow {
+  id: string; sessionId: string; kind: SessionVersionKind; digest: string; at: string;
+  createdBy?: string; requestId?: string; beforeId?: string;
+}
+/** Newest first: by `at`, then by id. */
+export const newestVersionFirst = (a: Pick<SessionVersionRow, 'id' | 'at'>, b: Pick<SessionVersionRow, 'id' | 'at'>): number =>
+  a.at < b.at ? 1 : a.at > b.at ? -1 : a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+
+/**
+ * The rows the retention rules remove from one document's versions, judged at
+ * `refIso` (the time of the write being made). auto, close and save rows older
+ * than VERSION_MAX_AGE_DAYS go; younger ones stay while they are among the newest
+ * VERSION_RECENT_KEEP or are the newest of their UTC day within VERSION_DAILY_DAYS.
+ * Restore rows beyond the newest VERSION_RESTORE_KEEP go with their 'before' rows;
+ * a 'before' row no restore row points at (its restore never wrote one) counts
+ * as a restore of its own, so it goes in its turn too. Named rows are never
+ * chosen by these rules, nor is any id in `keep`.
+ */
+export function versionRetentionDrops(rows: SessionVersionRow[], refIso: string, keep: ReadonlySet<string> = new Set()): string[] {
+  const ref = Date.parse(refIso);
+  const oldest = new Date(ref - VERSION_MAX_AGE_DAYS * DAY_MS).toISOString();
+  const dayFloor = new Date(ref - VERSION_DAILY_DAYS * DAY_MS).toISOString().slice(0, 10);
+  const drops = new Set<string>();
+  const days = new Set<string>();
+  rows.filter((r) => RECYCLABLE_KINDS.has(r.kind)).sort(newestVersionFirst).forEach((r, i) => {
+    const day = r.at.slice(0, 10);
+    const dailyKeep = !days.has(day) && day >= dayFloor;
+    days.add(day);
+    if (r.at < oldest || (i >= VERSION_RECENT_KEEP && !dailyKeep)) drops.add(r.id);
+  });
+  const paired = new Set(rows.flatMap((r) => (r.kind === 'restore' && r.beforeId ? [r.beforeId] : [])));
+  rows.filter((r) => r.kind === 'restore' || (r.kind === 'before' && !paired.has(r.id))).sort(newestVersionFirst)
+    .slice(VERSION_RESTORE_KEEP).forEach((r) => {
+      drops.add(r.id);
+      if (r.beforeId) drops.add(r.beforeId);
+    });
+  for (const id of keep) drops.delete(id);
+  return [...drops];
+}
+
+/**
+ * The oldest auto, close and save rows to remove so that at least `need` bytes of
+ * content are freed. Content is shared, so a content's bytes count as freed only
+ * when no remaining row uses it. `rows` are every row whose content is counted
+ * (any kind); rows in `exclude` are treated as already gone, and rows in `keep`
+ * are never chosen. Null when even removing every such row would not free enough.
+ */
+export function versionEvictionPlan(rows: SessionVersionRow[], bytesOf: (sessionId: string, digest: string) => number,
+  need: number, exclude: ReadonlySet<string>, keep: ReadonlySet<string> = new Set()): string[] | null {
+  if (need <= 0) return [];
+  const key = (r: SessionVersionRow): string => `${r.sessionId} ${r.digest}`;
+  const users = new Map<string, number>();
+  for (const r of rows) if (!exclude.has(r.id)) users.set(key(r), (users.get(key(r)) ?? 0) + 1);
+  const drops: string[] = [];
+  let freed = 0;
+  for (const r of rows.filter((x) => RECYCLABLE_KINDS.has(x.kind) && !exclude.has(x.id) && !keep.has(x.id)).sort(newestVersionFirst).reverse()) {
+    drops.push(r.id);
+    const left = (users.get(key(r)) ?? 1) - 1;
+    users.set(key(r), left);
+    if (left === 0) freed += bytesOf(r.sessionId, r.digest);
+    if (freed >= need) return drops;
+  }
+  return null;
+}
+
+/** What a driver does with one version write, decided by `planSessionVersionPut`.
+ *  `return`: answer with that existing row (`created: false`). `skip`: an
+ *  automatic version that does not fit; answer with the latest row. `insert`:
+ *  store the row (and its content when new) and delete `drops`. */
+export type SessionVersionPutPlan =
+  | { action: 'return'; id: string }
+  | { action: 'refuse'; reason: 'version-limit' | 'version-space' }
+  | { action: 'skip' }
+  | { action: 'insert'; contentIsNew: boolean; drops: string[] };
+
+/** What the planner reads. `rows` and `contents` (digest to bytes) are the
+ *  document's own. `instanceBytes` is read for every write of new content, so a
+ *  driver answers it cheaply (Postgres reads one row its triggers keep);
+ *  `instanceRows` is read only when new content would pass the instance cap. */
+export interface SessionVersionPutState {
+  rows: SessionVersionRow[];
+  contents: ReadonlyMap<string, number>;
+  instanceBytes(): Promise<number>;
+  instanceRows(): Promise<{ rows: SessionVersionRow[]; contents: ReadonlyMap<string, number> }>;
+}
+
+/**
+ * The version rules, shared by both drivers, which call it with the document's
+ * rows read under their write lock and then apply the plan in the same
+ * transaction. In order: a repeated request id answers with its row; an auto,
+ * close or save write whose content equals the latest version's answers with that
+ * version; the named limits; then retention, and for new content the space caps,
+ * which first remove the oldest auto, close and save rows (of this document, then
+ * of the instance) and otherwise refuse a named, restore or before write and skip
+ * an automatic one.
+ */
+export async function planSessionVersionPut(w: SessionVersionWrite & { at: string }, newId: string,
+  content: { digest: string; bytes: number }, state: SessionVersionPutState, limits: SessionVersionLimits): Promise<SessionVersionPutPlan> {
+  if (w.requestId !== undefined) {
+    const same = state.rows.find((r) => r.requestId === w.requestId && r.kind === w.kind && r.createdBy === w.createdBy);
+    if (same) return { action: 'return', id: same.id };
+  }
+  const recyclable = RECYCLABLE_KINDS.has(w.kind);
+  const latest = [...state.rows].sort(newestVersionFirst)[0];
+  if (recyclable && latest?.digest === content.digest) return { action: 'return', id: latest.id };
+  if (w.kind === 'named') {
+    const named = state.rows.filter((r) => r.kind === 'named');
+    if (named.length >= VERSION_NAMED_PER_SESSION || named.filter((r) => r.createdBy === w.createdBy).length >= VERSION_NAMED_PER_PERSON)
+      return { action: 'refuse', reason: 'version-limit' };
+  }
+  const row: SessionVersionRow = { id: newId, sessionId: w.sessionId, kind: w.kind, digest: content.digest, at: w.at,
+    ...(w.createdBy !== undefined ? { createdBy: w.createdBy } : {}), ...(w.requestId !== undefined ? { requestId: w.requestId } : {}),
+    ...(w.beforeId !== undefined ? { beforeId: w.beforeId } : {}) };
+  // The new row, and any version the write names in `keep`, survive this write.
+  const keep = new Set([newId, ...(w.keep ?? [])]);
+  const drops = new Set(versionRetentionDrops([...state.rows, row], w.at, keep));
+  const contentIsNew = !state.contents.has(content.digest);
+  if (!contentIsNew) return { action: 'insert', contentIsNew, drops: [...drops] };
+
+  const over = (): SessionVersionPutPlan => recyclable ? { action: 'skip' } : { action: 'refuse', reason: 'version-space' };
+  const sessionTotal = [...state.contents.values()].reduce((a, b) => a + b, 0);
+  const sessionKept = (): number => {
+    const live = new Set(state.rows.filter((r) => !drops.has(r.id)).map((r) => r.digest));
+    return [...state.contents].reduce((sum, [digest, bytes]) => sum + (live.has(digest) ? bytes : 0), 0);
+  };
+  const sessionNeed = sessionKept() + content.bytes - limits.sessionMaxBytes;
+  if (sessionNeed > 0) {
+    const plan = versionEvictionPlan(state.rows, (_s, digest) => state.contents.get(digest) ?? 0, sessionNeed, drops, keep);
+    if (!plan) return over();
+    for (const id of plan) drops.add(id);
+  }
+  // Only this document's rows have been dropped so far, so the instance has lost
+  // exactly what this document has.
+  const instanceNeed = (await state.instanceBytes()) - (sessionTotal - sessionKept()) + content.bytes - limits.instanceMaxBytes;
+  if (instanceNeed > 0) {
+    const instance = await state.instanceRows();
+    const plan = versionEvictionPlan(instance.rows, (s, digest) => instance.contents.get(`${s} ${digest}`) ?? 0, instanceNeed, drops, keep);
+    if (!plan) return over();
+    for (const id of plan) drops.add(id);
+  }
+  return { action: 'insert', contentIsNew, drops: [...drops] };
+}
+
 /**
  * One per-group catalog-submit quota counter (plans/31 section 3). `scope` is a
  * group name, or '*' for a submitter who belongs to no group at all. A
@@ -577,11 +917,93 @@ export interface SubmitQuotaRow {
   updatedAt: string;
 }
 
+/** One person's read state for one document's comments (plan 76 M4, migration
+ *  0051). `reads` maps a thread id to the time it was last read; a message
+ *  older than its thread's read time, or older than `floorAt`, counts as read.
+ *  Private to the person. */
+export interface CommentReadState { reads: Record<string, string>; floorAt: string }
+
+/** One inbox notice per person per thread (migration 0052). It holds ids and a
+ *  count only: the inbox builds the title, excerpt and names when it is read. */
+export interface CommentNotice {
+  id: string; userId: string; threadId: string; sessionId: string; projectId: string;
+  kind: 'mention' | 'reply'; actorId: string; messageId: string; count: number; createdAt: string;
+}
+/** A notice write. `at` becomes `createdAt`; `mentioned` makes the row a
+ *  mention, and a mention row stays one. */
+export type CommentNoticeWrite = Omit<CommentNotice, 'id' | 'count' | 'createdAt'> & { at: string; mentioned: boolean };
+
+/** The highest `count` a notice reaches; later updates keep it there. */
+export const COMMENT_NOTICE_COUNT_MAX = 1000;
+/** How many notices `listCommentNotices` returns when no limit is given. */
+export const COMMENT_NOTICE_LIST_LIMIT = 200;
+
+/** The id of a person's notice for a thread: `cn_` and the first 24 hex
+ *  characters of sha256(`<userId> <threadId>`). Both drivers derive it, so a
+ *  retried write updates the same row. */
+export function commentNoticeId(userId: string, threadId: string): string {
+  return `cn_${sha256Hex(`${userId} ${threadId}`).slice(0, 24)}`;
+}
+/** `listCommentNotices`' row limit: the default when absent or not a number. */
+export function noticeListLimit(limit: number | undefined): number {
+  return typeof limit === 'number' && Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : COMMENT_NOTICE_LIST_LIMIT;
+}
+/** `pruneCommentNotices`' keep count. A count that is not a whole number of
+ *  zero or more is refused, so a bad argument never deletes a whole inbox. */
+export function noticeKeepCount(keep: number): number {
+  if (!Number.isSafeInteger(keep) || keep < 0) throw new RangeError('keep must be a whole number of zero or more');
+  return keep;
+}
+
 export interface Store extends RenderStore, PasskeyStore {
   getCommentThread(id: string): Promise<CommentThread | null>;
   listCommentThreads(sessionId: string): Promise<CommentThread[]>;
   createCommentThread(thread: CommentThread): Promise<'created' | 'exists' | 'limit'>;
   casCommentThread(thread: CommentThread, expectedRevision: number): Promise<boolean>;
+  /** The threads with these ids, in the order first given; unknown ids are
+   *  skipped. One read, for the inbox. */
+  getCommentThreadsByIds(ids: string[]): Promise<CommentThread[]>;
+
+  // Comment reads and inbox notices (plan 76 M4, migrations 0051 and 0052).
+  /** The person's read times for this document's threads. The first call for
+   *  a (person, document) pair records the floor at the current time; later
+   *  calls return that floor unchanged. An unknown person or document records
+   *  nothing and reports the current time as the floor. */
+  readCommentState(userId: string, sessionId: string): Promise<CommentReadState>;
+  /** Mark threads read: each read time becomes the later of the stored one and
+   *  `at` (never later than now). Threads that are not in this document, and
+   *  entries with an invalid time, are ignored. */
+  markCommentsRead(userId: string, sessionId: string, entries: { threadId: string; at: string }[]): Promise<void>;
+  /** Insert or update the person's notice for the thread. An update with a new
+   *  `messageId` adds one to `count` (up to COMMENT_NOTICE_COUNT_MAX) and moves
+   *  the notice to `at` when that is later; a retry with the same `messageId`
+   *  leaves the count as it is. `kind` becomes 'mention' when `mentioned` is
+   *  true or the row is already a mention. Throws when the person, thread,
+   *  document or project does not exist. */
+  upsertCommentNotice(n: CommentNoticeWrite): Promise<'created' | 'updated'>;
+  /** The person's notices, newest first (then by id), at most `limit`
+   *  (default COMMENT_NOTICE_LIST_LIMIT). */
+  listCommentNotices(userId: string, limit?: number): Promise<CommentNotice[]>;
+  /** Delete the person's notices that match any of the given ids, threads or
+   *  documents. Only that person's rows; with nothing given, nothing goes.
+   *  Returns how many went. */
+  deleteCommentNotices(userId: string, by: { ids?: string[]; threadIds?: string[]; sessionIds?: string[] }): Promise<number>;
+  /** Notices whose newest event this actor caused at or after `sinceIso`. The
+   *  database backstop for the in-memory per-actor cap. */
+  countNoticesByActorSince(actorId: string, sinceIso: string): Promise<number>;
+  /** Delete the person's notices beyond the newest `keep` and those older than
+   *  `olderThanIso`. Returns how many went. */
+  pruneCommentNotices(userId: string, keep: number, olderThanIso: string): Promise<number>;
+  /** Record that these people were told about a mention in this message, and
+   *  return only those never recorded before, in the order given. Unknown
+   *  people and an unknown thread are skipped. */
+  recordMentionSends(threadId: string, messageId: string, userIds: string[], at: string): Promise<string[]>;
+  /** Forget that these people were told about a mention in this message, for
+   *  sends recorded by a write that then wrote them no notice (over a cap,
+   *  refused, or failed), so a later edit of the message can still tell them.
+   *  Returns how many went. */
+  forgetMentionSends(threadId: string, messageId: string, userIds: string[]): Promise<number>;
+
   configureRoleGroups(mapping: RoleGroups): void;
   readonly storageKind: 'memory' | 'postgres';
   readonly brandPersistence: 'durable' | 'ephemeral';
@@ -981,6 +1403,12 @@ export interface Store extends RenderStore, PasskeyStore {
    *  bag filters to live definitions, so retiring one hides its values and
    *  re-adding it brings them back, which a cascading delete could never do. */
   deleteCatalogField(id: string): Promise<void>;
+  // hidden tags (plan 299, migrations/0065): one rule per scope, `*` for the
+  // whole instance and `provider:<id>` for one provider's entries. Policy, so
+  // the policy document exports and applies them beside the field definitions.
+  listCatalogTagRules(): Promise<CatalogTagRule[]>;
+  putCatalogTagRule(rule: CatalogTagRule): Promise<void>;
+  deleteCatalogTagRule(scope: string): Promise<void>;
   getAssetMeta(assetId: string): Promise<AssetMetaRecord | null>;
   putAssetMeta(rec: AssetMetaRecord): Promise<void>;
   listAssetMeta(): Promise<AssetMetaRecord[]>;
@@ -1080,6 +1508,8 @@ export interface Store extends RenderStore, PasskeyStore {
   touchProjectFile(id: string, expiresAt: string): Promise<boolean>;
   /** Mark ready. False when unknown, or when an unfinished upload has expired. */
   completeProjectFile(id: string): Promise<boolean>;
+  /** Rename a ready file without changing its bytes, checksum or references. */
+  renameProjectFile(projectId: string, id: string, name: string): Promise<boolean>;
   /** The row only; the caller deletes the parts first. False when unknown. */
   deleteProjectFile(id: string): Promise<boolean>;
   /** Live sessions of the project whose inputs mention the file's asset id
@@ -1107,7 +1537,9 @@ export interface Store extends RenderStore, PasskeyStore {
   /** Every project this user is an explicit member of: one read for a list. */
   listUserProjectMemberships(userId: string): Promise<ProjectMemberRecord[]>;
   /** Insert, or change the role of an existing row. `addedBy`/`addedAt` of an
-   *  existing row are kept: they record who first added the person. */
+   *  existing row are kept: they record who first added the person. The end
+   *  date is always `rec.expiresAt`, so a row written without one has none:
+   *  re-granting a membership that ended restores it. */
   putProjectMember(rec: ProjectMemberRecord): Promise<void>;
   /** Change the role of an EXISTING row only; returns the updated row, or
    *  null (writing nothing) when there is no such row. Never inserts, so a
@@ -1166,7 +1598,9 @@ export interface Store extends RenderStore, PasskeyStore {
   getCollabJournal(sessionId: string, afterRevision: number): Promise<{ revision: number; ops: CanvasOp[] }[]>;
   getCollabReceipts(sessionId: string, principal: string, ids: string[]): Promise<CollabReceipt[]>;
   /** Atomically compare owner + revision, save projection, journal/checkpoint and
-   * receipts, and append bounded history. A checkpoint compacts its covered journal. */
+   * receipts. A checkpoint compacts its covered journal. It writes no
+   * `session_revisions` row: live history is kept as session versions, and the
+   * room's quiesce appends one revision. */
   commitCollab(batch: CollabCommit): Promise<number>;
   /** Store the receipts of a batch that accepted nothing, fenced like `commitCollab`
    * (owner, live lease, `expectedRev`, not deleted). Each receipt records `expectedRev`.
@@ -1177,4 +1611,59 @@ export interface Store extends RenderStore, PasskeyStore {
   getCollabSnapshot(sessionId: string): Promise<CollabSnapshot | null>;
   /** Unknown id is a no-op. */
   deleteCollabSnapshot(sessionId: string): Promise<void>;
+
+  // Session versions (plan 76 M4 R2, migration 0053).
+  /** Set the space caps; a field left out goes back to its default
+   *  (VERSION_SESSION_MAX_BYTES, VERSION_INSTANCE_MAX_BYTES). Throws on a value
+   *  that is not a whole number above zero. */
+  configureVersionLimits(limits: Partial<SessionVersionLimits>): void;
+  /**
+   * Write a version, applying every rule of `planSessionVersionPut` in one
+   * transaction. Idempotent on (session, createdBy, kind, requestId). Returns
+   * 'version-limit' for a named version past VERSION_NAMED_PER_PERSON or
+   * VERSION_NAMED_PER_SESSION, and 'version-space' for a named, restore or before
+   * version that does not fit; an automatic one that does not fit answers with the
+   * latest version (`created: false`), or 'version-space' when there is none.
+   * Throws `session-gone` for an unknown or deleted session, `version-reference`
+   * when `restoredFrom` or `beforeId` is not a version of the same session, and a
+   * TypeError for a write the schema refuses (kind, label, rev, shape).
+   */
+  putSessionVersion(v: SessionVersionWrite): Promise<SessionVersionPut>;
+  /** Newest first (by `at`, then id), at most `limit` (1 to VERSION_LIST_MAX).
+   *  `before` is a version id: the page starts after it. An id that is not a
+   *  version of this session gives an empty page. */
+  listSessionVersions(sessionId: string, opts: { before?: string; limit: number }): Promise<SessionVersionSummary[]>;
+  /** With its inputs and meta; null when the id is not a version of this session. */
+  getSessionVersion(sessionId: string, id: string): Promise<SessionVersion | null>;
+  /** Delete one version, and its pair: a restore row's 'before' row, or the
+   *  restore rows of a 'before' row. False when it is not a version of this session. */
+  deleteSessionVersion(sessionId: string, id: string): Promise<boolean>;
+  /** Delete every version and content of the session; returns how many versions went. */
+  deleteSessionVersions(sessionId: string): Promise<number>;
+
+  // The sharing ladder (migration 0060; lolly plan 299 M1, lolly-work plan 79).
+  /** Set (ISO) or clear (null) a membership's end date. Null when no such row. */
+  setProjectMemberExpiry(projectId: string, userId: string, expiresAt: string | null): Promise<ProjectMemberRecord | null>;
+  listShareGroups(): Promise<ShareGroupRecord[]>;
+  getShareGroup(id: string): Promise<ShareGroupRecord | null>;
+  putShareGroup(group: ShareGroupRecord): Promise<void>;
+  /** Delete the group and take its id off every member's row. */
+  deleteShareGroup(id: string): Promise<void>;
+  /** The users whose `shareGroups` include `id`. */
+  listShareGroupMembers(id: string): Promise<UserRecord[]>;
+  /** Replace a user's share group ids. Returns the updated record, or null. */
+  setUserShareGroups(userId: string, ids: string[]): Promise<UserRecord | null>;
+  /** Add one share group id to a user's row in place, while that group exists
+   *  (no-op if already there). Returns the updated record, or null when there
+   *  is no such user or group. Unlike `setUserShareGroups` it never writes back
+   *  a list read earlier, so concurrent changes to other groups survive. */
+  addUserShareGroup(userId: string, groupId: string): Promise<UserRecord | null>;
+  /** Take one share group id off a user's row in place. Returns the updated
+   *  record, or null when there is no such user. */
+  removeUserShareGroup(userId: string, groupId: string): Promise<UserRecord | null>;
+  /** Every project this person has pinned, hidden or opened (migration 0061). */
+  listProjectUserState(userId: string): Promise<ProjectUserStateRecord[]>;
+  /** Merge a change into one person's state for one project. `listed: null`
+   *  clears the choice. */
+  putProjectUserState(userId: string, projectId: string, change: { listed?: 'pinned' | 'hidden' | null; lastOpenedAt?: string }): Promise<ProjectUserStateRecord>;
 }

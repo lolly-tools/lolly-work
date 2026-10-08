@@ -72,11 +72,34 @@ this rule does not support clients that bind their outgoing requests to port 123
 Read `/proc/sys/net/ipv4/ip_local_port_range` on the host before applying and
 after OS changes. The allowed range starts above Kubernetes NodePort ports.
 
+For a K3s/Flannel pod path, measure the translated DNS source ports as well as
+the host range. A masquerade rule using `--random-fully` can select a DNS source
+port below `ip_local_port_range`, so a cold lookup can time out while a retry
+with a different port succeeds. The [Flannel configuration source](https://github.com/flannel-io/flannel/blob/master/main.go)
+documents its fully randomized masquerade mode; the
+[Linux NAT documentation](https://man7.org/linux/man-pages/man8/iptables-extensions.8.html)
+describes randomized source-port mapping. Retain actual packet metadata and
+resolver measurements before widening a return rule.
+
+Set `dns_response_port_range = { start = 1024, end = 65535 }` only for that
+reviewed path. The default is `null`, which preserves the existing measured
+host range. The separate range applies only to TCP/UDP source port 53 from the
+exact trusted resolver `/32` or `/128` inputs. HTTP and NTP return rules still
+use `ephemeral_port_range`; administrator SSH, hosted web ports and unmatched
+inbound denial are unchanged. Do not broaden resolver CIDRs or the generic
+HTTP return range to repair pod DNS. Include the dedicated range and trusted
+resolver list in the [K3s provider review](../suse/K3S-OPERATOR.md#prepare-the-candidate-and-its-network)
+before qualification.
+
 These packet rules cannot establish that a reply belongs to a connection. An
-active stateful host firewall must allow established/related traffic and reject
-unsolicited traffic to the ephemeral range. Do not open that range as hosted
+active stateful host firewall must allow `ESTABLISHED,RELATED` traffic and reject
+unsolicited `NEW` traffic to both return ranges. Inspect the actual stateful
+rules; a provider receipt alone does not prove this gate. Do not open either range as hosted
 ports in firewalld. Verify DNS, HTTPS, time synchronization and rejection of
 unsolicited packets after the cloud rules propagate and before loading secrets.
+For randomized pod DNS, also qualify cold pod lookups and bounded low/high source
+port queries to each trusted resolver over UDP and TCP. A warm-cache lookup alone
+does not exercise the external reply path.
 
 All other inbound traffic is dropped. PostgreSQL, Work, render and relay ports stay
 behind Caddy and the container network. Docker-published ports still need explicit

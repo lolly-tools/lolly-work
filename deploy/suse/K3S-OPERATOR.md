@@ -105,10 +105,12 @@ proof of cloud state. A review older than 24 hours is refused:
   "statelessFirewall": true,
   "hostConnectionTrackingRequired": true,
   "kernelEphemeralPortRange": {"start": 32768, "end": 60999},
+  "dnsReturnPortRange": {"start": 1024, "end": 65535},
+  "trustedDnsResolverCidrs": ["REPLACE_WITH_MEASURED_RESOLVER_IP/32"],
   "statelessReturnRules": [
     {"family":"IPv4","protocol":"tcp","sourcePort":443,"sourceCidrs":["0.0.0.0/0"],"destinationPortRange":{"start":32768,"end":60999}},
-    {"family":"IPv4","protocol":"tcp","sourcePort":53,"sourceCidrs":["REPLACE_WITH_MEASURED_RESOLVER_IP/32"],"destinationPortRange":{"start":32768,"end":60999}},
-    {"family":"IPv4","protocol":"udp","sourcePort":53,"sourceCidrs":["REPLACE_WITH_MEASURED_RESOLVER_IP/32"],"destinationPortRange":{"start":32768,"end":60999}}
+    {"family":"IPv4","protocol":"tcp","sourcePort":53,"sourceCidrs":["REPLACE_WITH_MEASURED_RESOLVER_IP/32"],"destinationPortRange":{"start":1024,"end":65535}},
+    {"family":"IPv4","protocol":"udp","sourcePort":53,"sourceCidrs":["REPLACE_WITH_MEASURED_RESOLVER_IP/32"],"destinationPortRange":{"start":1024,"end":65535}}
   ]
 }
 ```
@@ -138,19 +140,44 @@ measured resolver hosts:
 ```
 
 Read `/proc/sys/net/ipv4/ip_local_port_range` on the actual candidate. The
-reviewed return range must match it, start at 32768 or above and exclude
+reviewed generic HTTP/NTP return range must match it, start at 32768 or above and exclude
 control-plane, database and standard NodePort destinations. TCP source 80/443
 may use global peers; DNS source 53 and optional UDP NTP source 123 require exact
 reviewed `/32` or `/128` peers. Do not substitute a guessed resolver/time pool.
 All return rules are included in the provider rules hash, separately from
 `publicTcpPorts` and optional `publicUdpPorts` for hosted services.
 
-Keep the host firewall stateful and do not open its ephemeral destination range:
-it must accept established replies while refusing unsolicited connections.
+K3s/Flannel masquerading may use `--random-fully` and translate a pod DNS request
+to a source port below the host's `ip_local_port_range`. This can produce a slow
+cold lookup followed by a fast retry when the provider admits only the host
+range. Measure the actual translated ports and exact resolver addresses. The
+reviewed DNS exception in the example uses `dnsReturnPortRange` 1024 through
+65535 and `trustedDnsResolverCidrs`; only TCP/UDP replies from source port 53 on
+those exact `/32` or `/128` hosts can use it. Every trusted resolver requires
+both UDP and TCP reply rules. The bootstrap rejects untrusted/broad DNS peers,
+privileged or invalid ranges, and HTTP/NTP rules that use the DNS range.
+In the [UpCloud module](../upcloud/README.md#network-boundaries), set the matching
+`dns_response_port_range` explicitly. Omitting the dedicated fields preserves
+the older host-range review; use that only after qualifying the actual pod NAT
+path. Do not change the measured kernel range or weaken generic return guards.
+
+Keep the host firewall stateful and do not open either return destination range:
+its actual `ESTABLISHED,RELATED` rule must admit replies while unsolicited `NEW`
+traffic remains refused. The broader DNS provider rule can overlap application,
+API and NodePort numbers because only a trusted resolver's port 53 can reach
+that packet gate; host connection tracking must still reject a new connection.
+The runtime/permanent firewalld hosted-port guard continues to refuse opening
+these ranges. Inspect the actual conntrack rules and retain the independent
+unsolicited-packet test results before qualifying the exception.
 Measure actual DNS/HTTPS/time functionality and independently test unsolicited
 return-range traffic before qualification. For Evroc inspect its actual chosen
 network controls; do not assume UpCloud semantics. If those controls are
 stateless, use the same explicit return-review fields and host checks.
+DNS qualification must include cold pod lookups and bounded UDP/TCP queries
+from an unprivileged low source port and a port within the measured host range
+to each trusted resolver. A cached cluster lookup alone does not prove that the
+randomized external reply path works. Preserve only packet metadata in the
+review evidence; DNS payloads, credentials and provider account IDs are unnecessary.
 
 For fixed NTP peers, retain the measured vendor-pool baseline and explicit peer
 selection, observe actual local UDP acquisition ports and record Chrony source

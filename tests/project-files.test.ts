@@ -14,6 +14,7 @@ import {
   scheduleProjectFileSweep, type ProjectFilePolicy, type ProjectFileRecord,
 } from '../server/src/projects/files.ts';
 import { withFreshPostgres } from './pg-test-schema.ts';
+import { mintRenderRead } from '../server/src/render/read-ticket.ts';
 
 const pgUrl = process.env.LW_TEST_DATABASE_URL;
 const HOUR = 60 * 60 * 1000;
@@ -84,6 +85,24 @@ function metadata(bytes: Uint8Array, name = 'cover.png') {
   return { name, contentType: 'image/png', size: bytes.length, checksum: fileChecksum(bytes), parts, asset: { type: 'raster', format: 'png' } };
 }
 const errorOf = async (r: Response) => ((await r.json()) as { error: { code: string; message: string; sessions?: unknown } }).error;
+
+test('file rename requires editing access and preserves bytes, identity and checksum', async () => {
+  const b = await boot(), bytes = new Uint8Array([3, 4, 5]), file = await b.upload('alice', bytes);
+  const path = `/api/v1/projects/${b.projectId}/files/${file.id}`;
+  assert.equal((await b.call('viewer', 'PATCH', path, { name: 'No.png' })).status, 403);
+  assert.equal((await b.call('outside', 'PATCH', path, { name: 'No.png' })).status, 403);
+  for (const name of ['', '   ', 'x'.repeat(201), 'bad\nname', 'bad\x7fname', 'a\ud800', '\udc00b', 42]) assert.equal((await b.call('editor', 'PATCH', path, { name })).status, 400);
+  assert.equal((await b.call('editor', 'PATCH', path, { name: '  Final poster.png  ' })).status, 200);
+  const renamed = await b.store.getProjectFile(file.id);
+  assert.equal(renamed?.name, 'Final poster.png'); assert.equal(renamed?.checksum, file.checksum); assert.equal(renamed?.id, file.id);
+  const download = await b.call('viewer', 'GET', path);
+  assert.match(download.headers.get('content-disposition')!, /Final%20poster.png/);
+  assert.deepEqual(new Uint8Array(await download.arrayBuffer()), bytes);
+  const otherProject = await b.newProject('Other');
+  assert.equal((await b.call('alice', 'PATCH', `/api/v1/projects/${otherProject}/files/${file.id}`, { name: 'Wrong.png' })).status, 404);
+  const pending = await b.upload('alice', bytes, b.projectId, false);
+  assert.equal((await b.call('alice', 'PATCH', `/api/v1/projects/${b.projectId}/files/${pending.id}`, { name: 'Pending.png' })).status, 404);
+});
 /** A record written straight to the store, for states the routes never make. */
 const record = (id: string, projectId: string, createdBy: string, size: number, expiresAt: number): ProjectFileRecord => ({
   id, projectId, name: `${id}.png`, size, checksum: 'c'.repeat(64), contentType: 'image/png',
@@ -558,4 +577,61 @@ test('the long-lived server sweeps expired uploads at boot and on its timer, and
   const broken = scheduleProjectFileSweep(failing, blobs, { log });
   try { await broken.first; } finally { broken.stop(); }
   assert.deepEqual(errors, ['[lolly-work] project-file sweep failed: database unavailable'], 'logged, not thrown');
+});
+
+// Render worker reads (plan 76 M4j, render/read-ticket.ts). A ticket names one
+// project, its file ids and the person who submitted the render.
+test('a render ticket reads a listed file for its submitter and opens no other file route', async () => {
+  const { store, base, cookies, projectId, newProject, upload, userId } = await boot();
+  const bytes = new Uint8Array(PROJECT_FILE_PART_BYTES + 5).fill(42);
+  const listed = await upload('editor', bytes), unlisted = await upload('editor', new Uint8Array([1, 2, 3]));
+  const other = await newProject('Other uploads'), elsewhere = await upload('editor', new Uint8Array([4]), other);
+  const viewer = await userId('viewer');
+  const ticket = (ids: string[], who = viewer, project = projectId) => mintRenderRead([], 'rev', 'file-link', { projectId: project, ids, userId: who });
+  const token = ticket([listed.id]);
+  const read = (path: string, method = 'GET', key = token, who = '', body?: unknown) => fetch(base + path, {
+    method, headers: { 'x-lw-render-read': key, ...(who ? { cookie: cookies.get(who)! } : {}),
+      ...(body === undefined ? {} : { 'content-type': body instanceof Uint8Array ? 'application/octet-stream' : 'application/json' }) },
+    ...(body === undefined ? {} : { body: body instanceof Uint8Array ? body : JSON.stringify(body) }),
+  });
+  const root = `/api/v1/projects/${projectId}/files`;
+  const got = await read(`${root}/${listed.id}`);
+  assert.equal(got.status, 200);
+  assert.deepEqual(new Uint8Array(await got.arrayBuffer()), bytes, 'every part, verified');
+  assert.match(got.headers.get('content-disposition')!, /^attachment/);
+  assert.equal(got.headers.get('cache-control'), 'private, no-store');
+  // Refused: another project's path, an unlisted file, the list, and every write or delete.
+  assert.equal((await read(`/api/v1/projects/${other}/files/${elsewhere.id}`)).status, 401);
+  assert.equal((await read(`/api/v1/projects/${other}/files/${elsewhere.id}`, 'GET', ticket([elsewhere.id], viewer, other))).status, 200, 'its own ticket');
+  assert.equal((await read(`/api/v1/projects/${other}/files/${elsewhere.id}`, 'GET', ticket([elsewhere.id], await userId('outside'), other))).status, 401, 'a submitter who cannot see that project');
+  assert.equal((await read(`${root}/${unlisted.id}`)).status, 401);
+  assert.equal((await read(root)).status, 401);
+  assert.equal((await read(root, 'POST', token, '', metadata(new Uint8Array([1])))).status, 401);
+  assert.equal((await read(`${root}/${listed.id}/parts/0`, 'PUT', token, '', new Uint8Array([1]))).status, 401);
+  assert.equal((await read(`${root}/${listed.id}/finalize`, 'POST', token, '', {})).status, 401);
+  assert.equal((await read(`${root}/${listed.id}`, 'DELETE')).status, 401);
+  assert.ok(await store.getProjectFile(listed.id), 'nothing was deleted');
+  // A person's own cookie decides for them; the ticket adds nothing to it.
+  assert.equal((await read(`${root}/${listed.id}`, 'GET', token, 'outside')).status, 403);
+  // The submitter is read again on every request.
+  await store.setUserDisabled(viewer, new Date().toISOString());
+  assert.equal((await read(`${root}/${listed.id}`)).status, 401, 'disabled');
+  await store.setUserDisabled(viewer, null);
+  assert.equal((await read(`${root}/${listed.id}`)).status, 200);
+  await store.deleteProjectMember(projectId, viewer);
+  assert.equal((await read(`${root}/${listed.id}`)).status, 401, 'removed from the project after minting');
+  assert.equal((await read(`${root}/${listed.id}`, 'GET', ticket([listed.id], await userId('outside')))).status, 401, 'never had access');
+});
+
+test('a render ticket\u2019s reads count toward the submitter\u2019s daily download allowance', async () => {
+  // The allowance is two instance budgets a day: 4 reads of this file fit, the 5th does not.
+  const { base, call, projectId, upload, userId } = await boot({ policy: { maxFileBytes: 8000, instanceBudgetBytes: 10_000, projectBudgetBytes: 10_000 } });
+  const file = await upload('editor', new Uint8Array(5000).fill(3));
+  const token = mintRenderRead([], 'rev', 'file-link', { projectId, ids: [file.id], userId: await userId('viewer') });
+  const path = `/api/v1/projects/${projectId}/files/${file.id}`;
+  for (let n = 0; n < 3; n++) assert.equal((await call('viewer', 'GET', path)).status, 200);
+  assert.equal((await fetch(base + path, { headers: { 'x-lw-render-read': token } })).status, 200);
+  const refused = await fetch(base + path, { headers: { 'x-lw-render-read': token } });
+  assert.equal(refused.status, 429);
+  assert.ok(Number(refused.headers.get('retry-after')) > 0);
 });

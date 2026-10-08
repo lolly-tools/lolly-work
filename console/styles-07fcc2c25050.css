@@ -1,5 +1,5 @@
 @import url("./theme.css");
-@import url("./shell-controls-30043bad862c.css");
+@import url("./shell-controls-07fcc2c25050.css");
 
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
@@ -1362,6 +1362,15 @@ html.account-inspector-open { overflow: hidden; }
 .provider-connect > summary, .provider-search > summary { cursor: pointer; font-size: var(--ui-type-title); font-weight: 600; }
 .provider-connect[open] > summary, .provider-search[open] > summary { margin-bottom: var(--sp-7); }
 .provider-search > .card { padding: 0; margin: 0; border: 0; }
+/* Hidden tags (plan 299): the Catalog view's card and the provider panel. */
+.tag-card > summary { cursor: pointer; font-size: var(--ui-type-title); font-weight: 600; }
+.tag-card[open] > summary { margin-bottom: var(--sp-7); }
+.tag-card > .card { padding: 0; margin: 0; border: 0; }
+.tag-card > .card > .list-bar:first-child { display: none; }
+.tag-panel .tag-name { font-weight: 600; overflow-wrap: anywhere; }
+.tag-panel .tag-tools > div { flex: 1 1 180px; }
+.tag-panel .tag-bulk:has(> span:first-child:empty) { justify-content: flex-end; }
+.tag-panel .chip .link-btn { margin-left: 6px; background: none; border: 0; padding: 0; font: inherit; }
 @media (forced-colors: active) { :root input.field-check, :root input.field-radio { appearance: auto; background: none; border: revert; } }
 
 /* Grant authoring uses the shell field scale and a short readable rule preview. */

@@ -20,7 +20,7 @@ import type { Store } from '../store/types.ts';
 import type { Notifier } from './notify.ts';
 
 /** Which notice a mail belongs to, for the per-kind caps email will bring. */
-export type MailKind = 'invitation' | 'request' | 'answer' | 'accepted' | 'join-approved';
+export type MailKind = 'invitation' | 'request' | 'answer' | 'accepted' | 'join-approved' | 'mention' | 'reply';
 export interface MailParts { subject: string; text: string; fromName?: string }
 export type MailResult = 'off' | 'sent' | 'held' | 'failed';
 
@@ -36,6 +36,10 @@ export interface PeopleNotifier {
    *  requester). 'off' when `emailOn` is false. `sender` is the principal the
    *  mail is sent for, which the email caps count by. */
   mail(to: string, parts: MailParts, kind: MailKind, sender?: string): Promise<MailResult>;
+  /** Mail an account at its verified address (a comment mention, plan 76
+   *  milestone 4). 'off' when `emailOn` is false; 'failed' when the account
+   *  is disabled or has no verified address. */
+  mailUser(userId: string, parts: MailParts, kind: MailKind): Promise<MailResult>;
 }
 
 /** A notifier that can say whether the relay took a mail. The plain one
@@ -85,5 +89,10 @@ export function createPeopleNotifier(d: { store: Store; config: InstanceConfig; 
       }
     },
     mail,
+    async mailUser(userId, parts, kind) {
+      if (!emailOn) return 'off';
+      const to = await verifiedAddress(userId);
+      return to ? mail(to, parts, kind) : 'failed';
+    },
   };
 }

@@ -205,7 +205,7 @@ else if(a.includes('--list-forward-ports'))v=mode==='forward'?'port=8443:proto=t
 else if(a.includes('--list-interfaces'))v=mode==='trusted-interface'?'ens3':'';
 else if(a.includes('--list-sources'))v=mode==='global-source'?'0.0.0.0/0 10.42.0.0/16 10.43.0.0/16':'10.42.0.0/16 10.43.0.0/16';
 else if(a.includes('--list-services'))v='ssh http https';
-else if(a.includes('--list-ports'))v=mode==='node-port'?'30000-32767/tcp':mode==='permanent-api'&&a.includes('--permanent')?'6443/tcp':mode==='http3'?'443/udp':mode==='vpn'?'8472/udp':'';
+else if(a.includes('--list-ports'))v=mode==='node-port'?'30000-32767/tcp':mode==='permanent-api'&&a.includes('--permanent')?'6443/tcp':mode==='http3'?'443/udp':mode==='vpn'?'8472/udp':mode==='dns-return-open'?'1024-65535/udp':'';
 else if(a.includes('--query-source'))status=mode==='pod-closed'?1:0;
 else if(a.includes('--query-port'))status=mode==='query-error'?2:mode==='api'&&a.includes('6443')?0:1;
 else status=2;
@@ -310,6 +310,7 @@ for (const mode of [
   'command-error',
   'query-error',
   'vpn',
+  'dns-return-open',
 ]) {
   test(`firewall guard refuses ${mode}`, () =>
     sandbox((dir) => {
@@ -417,6 +418,98 @@ test('UpCloud return review matches actual kernel ports and refuses broad resolv
       0,
     );
   }));
+
+function randomizedDnsReview(dir: string) {
+  const file = providerReview(dir);
+  const record = JSON.parse(readFileSync(file, 'utf8'));
+  record.dnsReturnPortRange = { start: 1024, end: 65535 };
+  record.trustedDnsResolverCidrs = ['94.237.127.9/32', '2001:db8::53/128'];
+  record.statelessReturnRules = [
+    record.statelessReturnRules[0],
+    ...record.trustedDnsResolverCidrs.flatMap((network: string) =>
+      ['tcp', 'udp'].map((protocol) => ({
+        family: network.includes(':') ? 'IPv6' : 'IPv4',
+        protocol,
+        sourcePort: 53,
+        sourceCidrs: [network],
+        destinationPortRange: { start: 1024, end: 65535 },
+      })),
+    ),
+  ];
+  writeFileSync(file, JSON.stringify(record));
+  return { file, record };
+}
+
+test('reviewed randomized DNS SNAT keeps exact resolver TCP/UDP peers and the actual HTTP kernel range', () =>
+  sandbox((dir) => {
+    const { file } = randomizedDnsReview(dir);
+    const result = bash('source "$K3S_TEST_BOOTSTRAP"; validate_provider_review "$1" upcloud; validate_ephemeral_range "$1" "32768 60999"', [file]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.notEqual(bash('source "$K3S_TEST_BOOTSTRAP"; validate_ephemeral_range "$1" "1024 65535"', [file]).status, 0);
+  }));
+
+test('caller Python optimization cannot bypass trusted DNS peers or port bounds', () => sandbox((dir) => {
+  const environment = { PYTHONOPTIMIZE: '2' };
+  let fixture = randomizedDnsReview(dir);
+  assert.equal(bash('source "$K3S_TEST_BOOTSTRAP"; validate_provider_review "$1" upcloud', [fixture.file], environment).status, 0);
+  fixture.record.statelessReturnRules[1].sourceCidrs = ['0.0.0.0/0'];
+  writeFileSync(fixture.file, JSON.stringify(fixture.record));
+  assert.notEqual(bash('source "$K3S_TEST_BOOTSTRAP"; validate_provider_review "$1" upcloud', [fixture.file], environment).status, 0);
+  fixture = randomizedDnsReview(dir);
+  fixture.record.dnsReturnPortRange = { start: 1023, end: 65535 };
+  for (const rule of fixture.record.statelessReturnRules.slice(1)) rule.destinationPortRange = fixture.record.dnsReturnPortRange;
+  writeFileSync(fixture.file, JSON.stringify(fixture.record));
+  assert.notEqual(bash('source "$K3S_TEST_BOOTSTRAP"; validate_provider_review "$1" upcloud', [fixture.file], environment).status, 0);
+}));
+
+for (const [name, range] of Object.entries({
+  privileged: { start: 1023, end: 65535 },
+  zero: { start: 0, end: 65535 },
+  negative: { start: -1, end: 65535 },
+  reversed: { start: 65535, end: 1024 },
+  excess: { start: 1024, end: 65536 },
+  fractional: { start: 1024.5, end: 65535 },
+  string: { start: '1024', end: 65535 },
+  boolean: { start: true, end: 65535 },
+  extra: { start: 1024, end: 65535, hosted: true },
+})) {
+  test(`DNS return review refuses ${name} port range`, () => sandbox((dir) => {
+    const { file, record } = randomizedDnsReview(dir);
+    record.dnsReturnPortRange = range;
+    for (const rule of record.statelessReturnRules.slice(1)) rule.destinationPortRange = range;
+    writeFileSync(file, JSON.stringify(record));
+    assert.notEqual(bash('source "$K3S_TEST_BOOTSTRAP"; validate_provider_review "$1" upcloud', [file]).status, 0);
+  }));
+}
+
+for (const mutation of [
+  'missing-trusted', 'empty-trusted', 'broad-v4-trusted', 'broad-v6-trusted',
+  'untrusted-reply', 'missing-one-resolver-tcp', 'missing-one-resolver-udp',
+  'wide-http', 'wide-ntp', 'wrong-family', 'broad-reply-source',
+  'wrong-dns-source-port', 'missing-stateful-host', 'kernel-low-range',
+  'rule-range-mismatch',
+]) {
+  test(`randomized DNS return guard refuses ${mutation}`, () => sandbox((dir) => {
+    const { file, record } = randomizedDnsReview(dir);
+    if (mutation === 'missing-trusted') delete record.trustedDnsResolverCidrs;
+    if (mutation === 'empty-trusted') record.trustedDnsResolverCidrs = [];
+    if (mutation === 'broad-v4-trusted') record.trustedDnsResolverCidrs = ['94.237.127.0/24', '2001:db8::53/128'];
+    if (mutation === 'broad-v6-trusted') record.trustedDnsResolverCidrs = ['94.237.127.9/32', '2001:db8::/64'];
+    if (mutation === 'untrusted-reply') record.statelessReturnRules[1].sourceCidrs = ['94.237.40.9/32'];
+    if (mutation === 'missing-one-resolver-tcp') record.statelessReturnRules.splice(3, 1);
+    if (mutation === 'missing-one-resolver-udp') record.statelessReturnRules.splice(4, 1);
+    if (mutation === 'wide-http') record.statelessReturnRules[0].destinationPortRange = record.dnsReturnPortRange;
+    if (mutation === 'wide-ntp') record.statelessReturnRules.push({ family: 'IPv4', protocol: 'udp', sourcePort: 123, sourceCidrs: ['192.0.2.123/32'], destinationPortRange: record.dnsReturnPortRange });
+    if (mutation === 'wrong-family') record.statelessReturnRules[1].family = 'IPv6';
+    if (mutation === 'broad-reply-source') record.statelessReturnRules[1].sourceCidrs = ['0.0.0.0/0'];
+    if (mutation === 'wrong-dns-source-port') record.statelessReturnRules[1].sourcePort = 853;
+    if (mutation === 'missing-stateful-host') record.hostConnectionTrackingRequired = false;
+    if (mutation === 'kernel-low-range') record.kernelEphemeralPortRange = record.dnsReturnPortRange;
+    if (mutation === 'rule-range-mismatch') record.statelessReturnRules[1].destinationPortRange = record.kernelEphemeralPortRange;
+    writeFileSync(file, JSON.stringify(record));
+    assert.notEqual(bash('source "$K3S_TEST_BOOTSTRAP"; validate_provider_review "$1" upcloud', [file]).status, 0);
+  }));
+}
 
 test('stateful Evroc provider review does not assume UpCloud return semantics', () =>
   sandbox((dir) => {

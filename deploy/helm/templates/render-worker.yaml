@@ -4,9 +4,7 @@
 {{- fail "renderWorker.secret is required when renderWorker.enabled (or provide it via existingSecret). openssl rand -hex 32" }}
 {{- end }}
 {{- end }}
-{{- if not .Values.renderWorker.webBase }}
-{{- fail "renderWorker.webBase is required when renderWorker.enabled — a served Lolly web shell the worker drives (LOLLY_WEB_BASE)" }}
-{{- end }}
+{{- include "lolly-work.validateWorkerWebBase" . }}
 {{- $name := printf "%s-render-worker" (include "lolly-work.fullname" .) }}
 {{- $image := include "lolly-work.imageRef" (dict "image" .Values.renderWorker.image "defaultTag" .Chart.AppVersion "name" "renderWorker.image") }}
 {{- $pullSecrets := .Values.imagePullSecrets }}

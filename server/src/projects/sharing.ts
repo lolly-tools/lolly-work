@@ -9,7 +9,7 @@ import { sha256Hex } from '../lib/crypto.ts';
 import type { Message } from '../inbox/target.ts';
 import type { InvitationProject, ProjectMemberRole } from '../store/types.ts';
 
-const ROLE_RANK: Record<ProjectMemberRole, number> = { viewer: 1, editor: 2, manager: 3 };
+const ROLE_RANK: Record<ProjectMemberRole, number> = { viewer: 1, commenter: 2, editor: 3, manager: 4 };
 
 /** The higher of two project roles. */
 export function higherRole(a: ProjectMemberRole, b: ProjectMemberRole): ProjectMemberRole {

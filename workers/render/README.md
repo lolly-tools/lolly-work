@@ -35,7 +35,7 @@ The signature covers the exact request bytes; `ts` must be within ±5 min
 | var | required | meaning |
 |---|---|---|
 | `LW_RENDER_WORKER_SECRET` | ✅ | shared HMAC key (identical value on the control plane) |
-| `LOLLY_WEB_BASE` | ✅ | a served Lolly web shell the worker drives (e.g. the OSS web deployment) |
+| `LOLLY_WEB_BASE` | ✅ | canonical HTTPS Lolly shell URL with trusted TLS; HTTP only for explicit localhost/127.0.0.1/[::1] development |
 | `LW_RENDER_ALLOWED_ORIGINS` | | comma-separated origins a rendered page may reach even on a private address (an internal asset host); plain origins, no paths |
 | `PORT` | | listen port (default 8791) |
 | `LW_RENDER_NAV_TIMEOUT_MS` / `LW_RENDER_EXPORT_TIMEOUT_MS` | | per-render timeouts |
