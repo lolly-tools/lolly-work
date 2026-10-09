@@ -51,11 +51,11 @@ routes and renders a real SVG with `require(ESM)` disabled before permitting dep
 ## Engine source update, 2026-10-09
 
 The maintained source pins engine `1.248.0`, core `1.1.0` and 33 schemas from upstream
-commit `4dc90da4b7dfa70fde60c92865299a0a7ed958e0`. The consumed source hashes and
+commit `fa6779d5cc5b064bb71911c04b90f9ac16caf054`. The consumed source hashes and
 HostV1 bridge version remain verified; third-party dependency versions and the
 Handlebars `4.7.10` override are preserved.
 
-Local source checks passed with disposable PostgreSQL 17.11: 2,195 tests, 2,187 passed,
+Local source checks passed with disposable PostgreSQL 17.11: 2,214 tests, 2,206 passed,
 zero failures and eight conditional skips. Typecheck, engine pin, root/worker production
 audits and SBOM freshness also passed. These source checks do not select or deploy
 matched shell, pack, worker and engine-pin artifacts for an existing instance.
