@@ -28,7 +28,8 @@ cluster or resource replacement. A stale identity fails closed.
 The allowed component names are `work`, `public-web`, `public-mcp`, `public-ca`,
 `public-penpot`, `public-demo`, `render-worker`, `live-relay` and `admission-rest`. Map only the
 Deployments this operator owns. Each Deployment may appear once; the helper
-changes one named container in it. Edge and database components and Deployment
+changes one named regular container with version 1, or a selected set of named
+regular/init container images with version 2. Edge and database components and Deployment
 names are excluded. Optional `requiredLabels` further bind ownership. Optional
 `healthURLs` are credential-free HTTPS endpoints expected to return 200 with
 normal certificate verification and no redirects. They are checked after an
@@ -37,6 +38,43 @@ health endpoint, not a sign-in URL that redirects.
 Kubernetes system namespaces and resources carrying an edge, database or storage
 component label are also refused, even if a target mistakenly aliases them as
 an application component.
+
+### Version 2: update the server, shell and pack together
+
+Use [examples/app-update-target-v2.json](examples/app-update-target-v2.json) when
+the Deployment already uses the chart's `shell-from-image` and `pack-from-image`
+init containers to copy immutable content into per-Pod `emptyDir` volumes. The
+target replaces version 1's `container` field with `images`: an explicit allowlist
+of `{ "kind": "container", "name": "server" }` and
+`{ "kind": "initContainer", "name": "shell-from-image" }` selectors. There are
+at most 16 unique selectors per component. Names select the actual array slot;
+the same name in the regular and init arrays identifies two distinct slots.
+
+Copy [examples/app-update-release-v2.json](examples/app-update-release-v2.json)
+and supply the qualified before/after digests. A release may select a subset of
+the target's images: a frontend-only release can omit `server`; a compatible
+server, shell and pack release can include all three under `work`. Target,
+release and generated plan versions must match. The version 1 format and
+single-container behavior remain available; switching an existing operator
+target or pinned helper needs its own review.
+
+The same planning and apply commands below work for both versions. A version 2
+plan contains one record and one JSON Patch per Deployment. It tests UID,
+namespace, resource version and every selected slot's name/current image before
+replacing any images. All replacements in that Deployment are atomic, with one
+rollout and one set of health checks. Every other spec field is protected,
+including unselected image pins, commands, engine configuration, Secrets,
+resources, security, volumes and PVC references. Multiple Deployments still
+require separate patches and are not an atomic transaction.
+
+For selected init containers, the helper accepts only `emptyDir` mounts and
+read-only ConfigMap, Secret or projected inputs. It refuses PVC, hostPath, CSI,
+block-device, unknown or ambiguous volumes, including read-only durable mounts.
+This prevents an image-copy update from running against a durable shared claim.
+Version 1 regular-container updates retain their existing storage behavior.
+Version 2 changes only image fields; it does not create init containers, convert
+a PVC to `emptyDir`, replace an engine-pin ConfigMap or alter configuration.
+That initial application layout conversion is a separate reviewed operation.
 
 The optional `admission-rest` component owns only Deployment `admission-adapter`,
 container `adapter`, with mandatory Deployment metadata ownership labels
@@ -135,8 +173,8 @@ python3 scripts/app-update.py \
   --plan-out /protected/app-update-plan.json
 ```
 
-Review the component, namespace, Deployment UID, container, before/after digest,
-resource version and the displayed JSON Patch. Only a named container's image
+Review the component, namespace, Deployment UID, selected kind/name, before/after digest,
+resource version and the displayed JSON Patch. Only the selected named images
 may be replaced. The helper binds the rest of the Deployment spec to a protected
 hash, including secrets, volumes, PVC references, other containers, resources,
 security, selectors, replicas and strategy. It rejects a server-side admission
@@ -232,8 +270,25 @@ with `/shell/index.html` and the pack image with the tree under `/pack`; set
 and `pack.image`, matching the configured mount paths. Pin both images by digest.
 See [SMALL-SUSE.md](SMALL-SUSE.md) and the copy-init-container contracts in
 `values.yaml`. Updating those init images is a separately reviewed application
-Deployment change; the image-only helper does not alter init containers or volume
-configuration. Never use a copy init container to overwrite an active shared PVC.
+Deployment change. Version 2 of the image-only helper can update their existing
+image pins together; it never changes volume configuration. Never use a copy
+init container to overwrite an active shared PVC.
+
+Qualify the server, shell and pack as a compatible release before using this
+path. Run `inspect-pack.ts` against Work's actual vendored engine: a changed
+engine floor can require a new Work image, not just a new frontend. Changing a
+reported engine-pin ConfigMap does not replace the engine that Work executes.
+Preserve catalog signatures, source provenance and the normal browser/native
+release qualification. Following a reviewed main commit does not waive these
+checks or automatically deploy it.
+
+Keep previously published hashed shell assets and their dependency closure in
+the new content image for your retention window. Work serves the current shell
+directory; it does not fall back to the old Pod, image or PVC when an existing
+tab requests a lazy chunk. Verify previous asset hashes, refuse same-path/different-byte
+collisions, and retain the new index/catalog/signature as the active release.
+Check an existing tab's lazy imports and collaboration reconnect after rollout.
+Retain previous digest references for a new reviewed image-only rollback.
 
 ### Existing PVC installations: a reviewed single-volume promotion
 
@@ -316,10 +371,14 @@ Test the updater locally without a cluster:
 ```sh
 python3 tests/test_app_update.py
 python3 -O tests/test_app_update.py
+python3 tests/test_app_update_v2.py
+python3 -O tests/test_app_update_v2.py
 node --test tests/app-update.test.ts
 ```
 
 The Node test is part of the normal `pnpm test` suite. It requires `python3` on
 the test runner. The negative cases cover wrong identities, unowned components,
 unpinned images, protected changes, server admission changes, stale versions and
-applying without an exact reviewed plan. Tests do not deploy any resources.
+applying without an exact reviewed plan. Version 2 adds mixed regular/init slots,
+atomic patches, selected-init storage refusals and partial multi-Deployment
+failure receipts. Tests use synthetic Kubernetes responses and deploy no resources.

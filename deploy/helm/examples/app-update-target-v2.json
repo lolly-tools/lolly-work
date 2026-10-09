@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "transport": {
+    "type": "local",
+    "kubectl": ["kubectl"],
+    "kubeconfig": "/absolute/path/to/production.kubeconfig",
+    "context": "reviewed-production-context"
+  },
+  "clusterUID": "REPLACE_WITH_KUBE_SYSTEM_NAMESPACE_UID",
+  "node": {
+    "name": "reviewed-production-node",
+    "uid": "REPLACE_WITH_NODE_UID"
+  },
+  "components": {
+    "work": {
+      "namespace": "lolly-work",
+      "namespaceUID": "REPLACE_WITH_WORK_NAMESPACE_UID",
+      "deployment": "lolly-work",
+      "deploymentUID": "REPLACE_WITH_WORK_DEPLOYMENT_UID",
+      "images": [
+        {"kind": "container", "name": "server"},
+        {"kind": "initContainer", "name": "shell-from-image"},
+        {"kind": "initContainer", "name": "pack-from-image"}
+      ],
+      "requiredLabels": {
+        "app.kubernetes.io/name": "lolly-work"
+      },
+      "healthURLs": ["https://work.example/healthz"]
+    }
+  }
+}

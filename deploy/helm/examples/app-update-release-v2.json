@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "updates": [
+    {
+      "component": "work",
+      "images": [
+        {
+          "kind": "container",
+          "name": "server",
+          "expectedImage": "registry.example/lolly-work@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "image": "registry.example/lolly-work@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        {
+          "kind": "initContainer",
+          "name": "shell-from-image",
+          "expectedImage": "registry.example/lolly-content@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "image": "registry.example/lolly-content@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        },
+        {
+          "kind": "initContainer",
+          "name": "pack-from-image",
+          "expectedImage": "registry.example/lolly-content@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "image": "registry.example/lolly-content@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      ]
+    }
+  ]
+}

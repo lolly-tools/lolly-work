@@ -29,6 +29,7 @@ PROTECTED_DEPLOYMENT = re.compile(r"(?:^|-)(?:edge|caddy|postgres|postgresql|dat
 RESERVED_NAMESPACES = frozenset({"kube-system", "kube-public", "kube-node-lease"})
 PROTECTED_ROLES = frozenset({"edge", "database", "postgres", "postgresql", "redis", "valkey", "storage", "cluster-dns"})
 ADMISSION_LABELS = {"app.kubernetes.io/name": "lolly-admission", "app.kubernetes.io/component": "adapter"}
+IMAGE_KINDS = {"container": "containers", "initContainer": "initContainers"}
 
 
 class Refusal(RuntimeError):
@@ -94,9 +95,18 @@ def image_ref(value):
     return value
 
 
+def image_selector(value):
+    exact_keys(value, {"kind", "name"})
+    require(isinstance(value["kind"], str) and value["kind"] in IMAGE_KINDS and isinstance(value["name"], str)
+            and bool(NAME.fullmatch(value["name"])), "Invalid named image selector")
+    return value["kind"], value["name"]
+
+
 def validate_target(target):
     exact_keys(target, {"version", "transport", "clusterUID", "node", "components"})
-    require(target["version"] == 1, "Unsupported target version")
+    require(target["version"] in (1, 2), "Unsupported target version")
+    if target["version"] == 2:
+        require(type(target["version"]) is int, "Unsupported target version")
     nonempty(target["clusterUID"], "kube-system namespace UID")
     exact_keys(target["node"], {"name", "uid"})
     nonempty(target["node"]["uid"], "node UID")
@@ -125,9 +135,10 @@ def validate_target(target):
     deployments = set()
     for name, component in target["components"].items():
         require(name in COMPONENTS, f"Unowned component: {name}")
-        exact_keys(component, {"namespace", "namespaceUID", "deployment", "deploymentUID", "container"},
+        exact_keys(component, {"namespace", "namespaceUID", "deployment", "deploymentUID",
+                              "container" if target["version"] == 1 else "images"},
                    {"requiredLabels", "healthURLs"})
-        for key in ("namespace", "deployment", "container"):
+        for key in (("namespace", "deployment", "container") if target["version"] == 1 else ("namespace", "deployment")):
             require(isinstance(component[key], str) and bool(NAME.fullmatch(component[key])), f"Invalid {key}")
         for key in ("namespaceUID", "deploymentUID"):
             nonempty(component[key], key)
@@ -136,11 +147,17 @@ def validate_target(target):
         pair = (component["namespace"], component["deployment"])
         require(pair not in deployments, "Each Deployment may be owned by only one component")
         deployments.add(pair)
+        if target["version"] == 2:
+            require(isinstance(component["images"], list) and 1 <= len(component["images"]) <= 16,
+                    "An owned Deployment needs 1..16 image selectors")
+            selectors = [image_selector(value) for value in component["images"]]
+            require(len(set(selectors)) == len(selectors), "Duplicate owned image selector")
         labels = component.get("requiredLabels", {})
         require(isinstance(labels, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in labels.items()),
                 "requiredLabels must be a string mapping")
         if name == "admission-rest":
-            require(component["deployment"] == "admission-adapter" and component["container"] == "adapter" and
+            owns_adapter = component["container"] == "adapter" if target["version"] == 1 else selectors == [("container", "adapter")]
+            require(component["deployment"] == "admission-adapter" and owns_adapter and
                     all(labels.get(k) == v for k, v in ADMISSION_LABELS.items()),
                     "admission-rest owns only the labeled admission-adapter application container")
         urls = component.get("healthURLs", [])
@@ -204,7 +221,7 @@ def check_cluster(target, kube):
             "Target node is not Ready")
 
 
-def check_deployment(component, kube):
+def deployment_identity(component, kube):
     require(kube.get("namespace", component["namespace"])["metadata"]["uid"] == component["namespaceUID"],
             "Wrong namespace UID")
     value = kube.get("deployment", component["deployment"], component["namespace"])
@@ -217,6 +234,11 @@ def check_deployment(component, kube):
     require(all(value["metadata"].get("labels", {}).get(k) == v for k, v in component.get("requiredLabels", {}).items()),
             "Deployment ownership labels changed")
     require(value["spec"].get("replicas", 1) > 0, "Deployment has no running replicas")
+    return value
+
+
+def check_deployment(component, kube):
+    value = deployment_identity(component, kube)
     matches = [i for i, c in enumerate(value["spec"]["template"]["spec"]["containers"]) if c["name"] == component["container"]]
     require(len(matches) == 1, "Owned container missing or ambiguous")
     return value, matches[0]
@@ -248,6 +270,8 @@ def guard_result(value, result, index, image):
 
 def make_plan(target, release, kube):
     validate_target(target)
+    if target["version"] == 2:
+        return make_group_plan(target, release, kube)
     exact_keys(release, {"version", "updates"})
     require(release["version"] == 1 and isinstance(release["updates"], list) and release["updates"], "Empty or unsupported release")
     names = set()
@@ -281,6 +305,8 @@ def make_plan(target, release, kube):
 
 def validate_plan(target, plan, reviewed_hash):
     validate_target(target)
+    if target["version"] == 2:
+        return validate_group_plan(target, plan, reviewed_hash)
     require(isinstance(reviewed_hash, str) and re.fullmatch(r"[0-9a-f]{64}", reviewed_hash), "--apply requires --reviewed-plan-sha256")
     require(hmac.compare_digest(digest(plan), reviewed_hash), "Reviewed plan hash does not match")
     exact_keys(plan, {"version", "targetSha256", "generatedAt", "updates", "unchanged"})
@@ -312,6 +338,139 @@ def validate_plan(target, plan, reviewed_hash):
     require(bool(seen), "Empty plan")
 
 
+def init_image_storage(pod, container):
+    require(not container.get("volumeDevices"), "Selected init images cannot mount block devices")
+    for mount in container.get("volumeMounts", []):
+        matches = [volume for volume in pod.get("volumes", []) if volume.get("name") == mount.get("name")]
+        require(len(matches) == 1, "Selected init image has a missing or ambiguous volume")
+        volume = matches[0]
+        sources = set(volume) - {"name"}
+        require(sources == {"emptyDir"} or (len(sources) == 1 and sources <= {"configMap", "secret", "projected"}
+                and mount.get("readOnly") is True), "Selected init images may mount only emptyDir and read-only configuration inputs")
+
+
+def group_deployment(component, images, kube):
+    value = deployment_identity(component, kube)
+    require(value["metadata"].get("name") == component["deployment"] and
+            value["metadata"].get("namespace") == component["namespace"], "Wrong named Deployment")
+    slots = []
+    for image in images:
+        kind, name = image_selector({"kind": image["kind"], "name": image["name"]})
+        containers = value["spec"]["template"]["spec"].get(IMAGE_KINDS[kind], [])
+        matches = [i for i, container in enumerate(containers) if container["name"] == name]
+        require(len(matches) == 1 and matches[0] < 128, "Owned image slot missing or ambiguous")
+        if kind == "initContainer":
+            init_image_storage(value["spec"]["template"]["spec"], containers[matches[0]])
+        slots.append({"kind": kind, "name": name, "index": matches[0],
+                      "beforeImage": containers[matches[0]]["image"], "image": image["image"]})
+    return value, slots
+
+
+def group_protected_spec(value, images):
+    spec = copy.deepcopy(value["spec"])
+    for image in images:
+        spec["template"]["spec"][IMAGE_KINDS[image["kind"]]][image["index"]].pop("image")
+    return digest(spec)
+
+
+def group_image_patch(uid, namespace, resource_version, images):
+    patch = [{"op": "test", "path": "/metadata/uid", "value": uid},
+             {"op": "test", "path": "/metadata/namespace", "value": namespace},
+             {"op": "test", "path": "/metadata/resourceVersion", "value": resource_version}]
+    changes = []
+    for image in images:
+        path = f'/spec/template/spec/{IMAGE_KINDS[image["kind"]]}/{image["index"]}'
+        patch.extend([{"op": "test", "path": path + "/name", "value": image["name"]},
+                      {"op": "test", "path": path + "/image", "value": image["beforeImage"]}])
+        if image["beforeImage"] != image["image"]:
+            changes.append({"op": "replace", "path": path + "/image", "value": image["image"]})
+    return patch + changes
+
+
+def guard_group_result(value, result, images):
+    require(result["metadata"]["uid"] == value["metadata"]["uid"] and
+            all(result["metadata"].get(key) == value["metadata"].get(key) for key in ("name", "namespace")),
+            "Patch result changed Deployment identity")
+    for image in images:
+        actual = result["spec"]["template"]["spec"][IMAGE_KINDS[image["kind"]]][image["index"]]
+        require(actual["name"] == image["name"] and actual["image"] == image["image"], "Patch did not set requested named image")
+    require(group_protected_spec(value, images) == group_protected_spec(result, images),
+            "Patch/admission changed protected Deployment fields")
+
+
+def make_group_plan(target, release, kube):
+    exact_keys(release, {"version", "updates"})
+    require(type(release["version"]) is int and release["version"] == 2 and isinstance(release["updates"], list) and
+            1 <= len(release["updates"]) <= len(target["components"]), "Empty or unsupported grouped release")
+    names = set()
+    for request in release["updates"]:
+        exact_keys(request, {"component", "images"})
+        require(isinstance(request["component"], str) and request["component"] in target["components"] and
+                request["component"] not in names, "Unowned or duplicate component")
+        names.add(request["component"])
+        owned = {image_selector(image) for image in target["components"][request["component"]]["images"]}
+        require(isinstance(request["images"], list) and 1 <= len(request["images"]) <= len(owned), "Empty or oversized image selection")
+        selected = set()
+        for image in request["images"]:
+            exact_keys(image, {"kind", "name", "expectedImage", "image"})
+            selector = image_selector({"kind": image["kind"], "name": image["name"]})
+            require(selector in owned and selector not in selected, "Unowned or duplicate selected image")
+            selected.add(selector); image_ref(image["expectedImage"]); image_ref(image["image"])
+    check_cluster(target, kube)
+    changes, unchanged = [], []
+    for request in release["updates"]:
+        name = request["component"]; component = target["components"][name]
+        value, images = group_deployment(component, request["images"], kube)
+        for desired, image in zip(request["images"], images):
+            image_ref(image["beforeImage"])
+            require(image["beforeImage"] in (desired["expectedImage"], desired["image"]), "Current image differs from expectedImage")
+        record = {"component": name, "namespace": component["namespace"], "deployment": component["deployment"],
+                  "deploymentUID": component["deploymentUID"], "resourceVersion": value["metadata"]["resourceVersion"],
+                  "images": images, "protectedSpecSha256": group_protected_spec(value, images)}
+        if all(image["beforeImage"] == image["image"] for image in images):
+            unchanged.append(record); continue
+        record["patch"] = group_image_patch(record["deploymentUID"], record["namespace"], record["resourceVersion"], images)
+        guard_group_result(value, kube.patch(component, record["patch"], True), images)
+        changes.append(record)
+    return {"version": 2, "targetSha256": digest(target), "generatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "updates": changes, "unchanged": unchanged}
+
+
+def validate_group_plan(target, plan, reviewed_hash):
+    require(isinstance(reviewed_hash, str) and re.fullmatch(r"[0-9a-f]{64}", reviewed_hash), "--apply requires --reviewed-plan-sha256")
+    require(hmac.compare_digest(digest(plan), reviewed_hash), "Reviewed plan hash does not match")
+    exact_keys(plan, {"version", "targetSha256", "generatedAt", "updates", "unchanged"})
+    require(type(plan["version"]) is int and plan["version"] == 2 and plan["targetSha256"] == digest(target),
+            "Plan belongs to a different target")
+    require(isinstance(plan["updates"], list) and isinstance(plan["unchanged"], list), "Invalid plan entries")
+    seen = set()
+    for changing, records in ((True, plan["updates"]), (False, plan["unchanged"])):
+        for record in records:
+            exact_keys(record, {"component", "namespace", "deployment", "deploymentUID", "resourceVersion", "images", "protectedSpecSha256"},
+                       {"patch"} if changing else set())
+            name = record["component"]
+            require(isinstance(name, str) and name in target["components"] and name not in seen,
+                    "Unowned or duplicate planned component")
+            seen.add(name); component = target["components"][name]
+            require(all(record[key] == component[key] for key in ("namespace", "deployment", "deploymentUID")), "Planned resource does not match target")
+            nonempty(record["resourceVersion"], "resourceVersion")
+            require(isinstance(record["protectedSpecSha256"], str) and bool(re.fullmatch(r"[0-9a-f]{64}", record["protectedSpecSha256"])), "Invalid protected spec hash")
+            owned = {image_selector(image) for image in component["images"]}; selected = set()
+            require(isinstance(record["images"], list) and 1 <= len(record["images"]) <= len(owned), "Invalid planned image selection")
+            for image in record["images"]:
+                exact_keys(image, {"kind", "name", "index", "beforeImage", "image"})
+                selector = image_selector({"kind": image["kind"], "name": image["name"]})
+                require(selector in owned and selector not in selected, "Unowned or duplicate planned image")
+                selected.add(selector)
+                require(type(image["index"]) is int and 0 <= image["index"] < 128, "Invalid image index")
+                image_ref(image["beforeImage"]); image_ref(image["image"])
+            require(any(image["beforeImage"] != image["image"] for image in record["images"]) == changing, "Invalid unchanged record")
+            if changing:
+                require(record["patch"] == group_image_patch(record["deploymentUID"], record["namespace"], record["resourceVersion"], record["images"]),
+                        "Plan contains a protected or unexpected patch")
+    require(bool(seen), "Empty plan")
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -330,6 +489,8 @@ def health_check(url):
 
 
 def apply_plan(target, plan, reviewed_hash, kube, timeout=180, health=health_check):
+    if target.get("version") == 2:
+        return apply_group_plan(target, plan, reviewed_hash, kube, timeout, health)
     validate_plan(target, plan, reviewed_hash)
     check_cluster(target, kube)
     # Validate every image and server-side dry run before the first write.
@@ -380,6 +541,50 @@ def apply_plan(target, plan, reviewed_hash, kube, timeout=180, health=health_che
     return {"result": "UPDATED" if applied else "NO_CHANGE", "reviewedPlanSha256": reviewed_hash,
             "updated": applied, "unchanged": [r["component"] for r in plan["unchanged"]],
             "databaseRollback": False}
+
+
+def apply_group_plan(target, plan, reviewed_hash, kube, timeout, health):
+    validate_plan(target, plan, reviewed_hash); check_cluster(target, kube)
+    for record in plan["updates"] + plan["unchanged"]:
+        component = target["components"][record["component"]]
+        value, images = group_deployment(component, record["images"], kube)
+        require(images == record["images"] and group_protected_spec(value, images) == record["protectedSpecSha256"],
+                "Image slots or protected Deployment fields changed since review")
+        if "patch" in record:
+            require(value["metadata"]["resourceVersion"] == record["resourceVersion"], "Resource version changed; make and review a new plan")
+            guard_group_result(value, kube.patch(component, record["patch"], True), images)
+    applied, attempted, phase = [], [], "pre-patch"
+    try:
+        for record in plan["updates"]:
+            component = target["components"][record["component"]]; phase = "pre-patch:" + record["component"]
+            check_cluster(target, kube)
+            before, images = group_deployment(component, record["images"], kube)
+            require(before["metadata"]["resourceVersion"] == record["resourceVersion"] and images == record["images"] and
+                    group_protected_spec(before, images) == record["protectedSpecSha256"], "Deployment changed before patch; stop and re-plan")
+            change = {"component": record["component"], "images": record["images"]}
+            phase = "patch:" + record["component"]; attempted.append(change)
+            print(json.dumps({"phase": "patch-attempt", **change}), flush=True)
+            result = kube.patch(component, record["patch"], False)
+            applied.append(change); guard_group_result(before, result, images)
+            print(json.dumps({"phase": "patched", **change}), flush=True)
+        for record in plan["updates"]:
+            component = target["components"][record["component"]]; phase = "rollout:" + record["component"]
+            kube.rollout(component, timeout)
+            value, images = group_deployment(component, record["images"], kube)
+            require(all(image["beforeImage"] == image["image"] for image in images), "Image changed during rollout")
+            require(group_protected_spec(value, images) == record["protectedSpecSha256"], "Protected fields changed during rollout")
+            status = value.get("status", {}); replicas = value["spec"].get("replicas", 1)
+            require(status.get("observedGeneration", 0) >= value["metadata"].get("generation", 1) and
+                    status.get("updatedReplicas", 0) == replicas and status.get("availableReplicas", 0) == replicas and
+                    status.get("replicas", 0) == replicas, "Deployment rollout is not fully Ready")
+            phase = "https-health:" + record["component"]
+            for url in component.get("healthURLs", []):
+                health(url)
+    except (Refusal, OSError, ValueError, KeyError, TypeError, IndexError) as exc:
+        reason = str(exc) if isinstance(exc, Refusal) else "Invalid resource response during apply"
+        raise ApplyFailure(reason, applied, attempted, phase) from exc
+    return {"result": "UPDATED" if applied else "NO_CHANGE", "reviewedPlanSha256": reviewed_hash,
+            "updated": applied, "unchanged": [r["component"] for r in plan["unchanged"]], "databaseRollback": False}
 
 
 def main(argv=None):
