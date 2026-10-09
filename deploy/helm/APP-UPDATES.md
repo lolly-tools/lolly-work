@@ -144,13 +144,59 @@ silently download new tools. K3s can import a reviewed OCI archive with
 `sudo k3s ctr images import /protected/reviewed-image.tar`. Verify the imported
 digest against the release record, then delete the recreatable transport archive.
 
+## Prepare private shell and asset updates
+
+An instance serving its shell and tool pack from persistent claims needs a
+matched server, shell, pack and engine-pin release. An image update alone cannot
+update those mounted files. `scripts/prepare-private-cohort.py` checks an already
+built release locally and prepares the four selected changes together:
+
+```sh
+python3 scripts/prepare-private-cohort.py \
+  --evidence /protected/private-release-evidence.json \
+  --reviewed-evidence-sha256 REVIEWED_EVIDENCE_SHA256 \
+  --existing-public-pin-sha256 REVIEWED_PUBLIC_JWK_SHA256 \
+  --out-dir /protected/new-private-release \
+  --node /absolute/path/to/existing-node
+```
+
+Use Python 3.10 or newer and an existing Node 24 or newer. The output directory
+must be new. The command installs nothing and makes no network or cluster calls.
+It checks source and engine content, original CI and image-artifact evidence,
+the existing public catalog signature, complete file inventories, prior lazy
+application files and the previous accepted Deployment. The v1 evidence contract
+and a complete small example are in `tests/test_prepare_private_cohort.py`.
+Provider authentication and original build execution remain operator-reviewed
+inputs; the helper checks their local byte and source bindings.
+
+The protected `cohort.prepared.json` is advisory, with status
+`PREPARED_NOT_RUNTIME_QUALIFIED_NOT_APPLIED`. It is not an image-only updater
+release. Before promotion, qualify new claims and an immutable engine pin,
+stage the complete tuple without mounting active production asset claims,
+verify imported image bytes, run the site's target preflight and server dry run,
+then review the UID, resource-version and full-spec guarded atomic patch.
+Runtime, HTTPS, exports, agent access and collaboration reconnection still need
+acceptance. Any rollback must preserve new user writes. Automated evidence
+production and promotion remain separate work; this command does not deploy.
+
 ## Container pulls in CI
 
 Ordinary CI and the disposable PostgreSQL backup/restore drill pull their pinned
 Postgres 17 service from the [Docker Official Images collection on ECR Public](https://gallery.ecr.aws/docker/library/postgres).
 Packaging CI uses a [BuildKit registry mirror](https://docs.docker.com/build/buildkit/toml-configuration/)
 for Docker Hub, preserving the reviewed Node digest pins in both Dockerfiles.
-These routes avoid shared-runner anonymous Docker Hub pull limits without adding
+The packaging runner starts official BuildKit **v0.33.1** from its checksum-pinned
+[GitHub release](https://github.com/moby/buildkit/releases/tag/v0.33.1), using its
+bundled `runc` and the [Buildx remote driver over a local Unix socket](https://docs.docker.com/build/builders/drivers/remote/).
+This avoids the Docker daemon's separate `moby/buildkit` bootstrap pull, which runs
+before a BuildKit mirror can help. `scripts/ci-buildkit.sh` keeps the release,
+daemon, socket, logs and build state under `RUNNER_TEMP`; verifies the archive,
+source version and a ready OCI worker; and stops only its exact owned daemon in
+an always-run cleanup step. It uses the ephemeral Ubuntu packaging runner's
+existing `sudo` capability, installs no system tools and exposes no TCP listener.
+The helper is for this CI packaging job, not an instance deployment command.
+
+These routes reduce shared-runner Docker Hub dependencies without adding
 registry credentials. Container health, the complete tests, real worker export
 qualification and artifact verification still run. A mirror is a download route;
 it does not establish an image signature or authorize production promotion.
