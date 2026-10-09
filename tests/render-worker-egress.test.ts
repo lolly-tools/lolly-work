@@ -85,5 +85,7 @@ test('both /render and /rasterise send every request through the egress rule', (
   assert.equal(handlers.length, 2, 'two request routers');
   assert.equal(checks.length, 2, 'each consults the egress rule first');
   assert.match(src, /routeWebSocket\?\.\('\*\*'/, 'WebSockets are refused');
-  assert.match(src, /--force-webrtc-ip-handling-policy=disable_non_proxied_udp/);
+  const launch = readFileSync(new URL('../workers/render/src/browser-launch.ts', import.meta.url), 'utf8');
+  assert.match(src, /chromium\.launch\(workerBrowserOptions\(\)\)/);
+  assert.match(launch, /--force-webrtc-ip-handling-policy=disable_non_proxied_udp/);
 });

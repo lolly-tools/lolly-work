@@ -79,11 +79,15 @@ the `extraEgress` rules you add for a private shell or allowed origin.
 
 ## Packaged browser and verification
 
-The Dockerfile uses pinned Node 24 Alpine, explicitly patched OpenSSL packages
-and a pinned Alpine Chromium package driven by `playwright-core`. The executable
-is set through the server's existing `LOLLY_BROWSER_PATH` option. Update the
-browser package pin alongside its vulnerability review and real rendering tests;
-do not replace it with Playwright's glibc browser download in this musl image.
+The Dockerfile uses digest-pinned Node 24.21.0 on Debian Bookworm and installs
+the Chromium distribution matched to the worker's frozen Playwright lock. The
+browser lives at `/opt/lolly-browsers`, readable by the unprivileged runtime user.
+It includes the software graphics implementation needed by the shell's required
+WebGPU startup check. The launch uses Lolly's software WebGPU pair
+(`--enable-unsafe-webgpu`, `--use-webgpu-adapter=swiftshader`) instead of disabling
+graphics. A flag cannot compensate for a browser package missing that adapter.
+`LOLLY_BROWSER_PATH` and `LOLLY_BROWSER_CHANNEL` remain explicit operator overrides;
+remove an obsolete Alpine executable override when adopting this image.
 
 Run as the unprivileged `node` user with a read-only root filesystem, dropped
 capabilities, no-new-privileges and writable ephemeral `/tmp`. Chromium's user-data
@@ -105,3 +109,34 @@ Before promotion, exercise a real signed-shell tool export and PNG/PDF rendering
 in the built image, verify signature refusal and AI/model containment, scan that
 exact image and collect staging results. A passing health probe alone does not
 prove Chromium can start under the deployment's filesystem/security settings.
+
+CI runs the built worker's actual browser singleton against a signed shell from
+the exact `engine-pin.json` source. It builds the neutral `lolly-start` profile
+through Lolly's ordinary release wrapper and gate with a fresh test signing key;
+no instance signing key, agent credential or private brand pack is needed. The
+key remains in the preparation process and its temporary container environment,
+never in the worker image or published artifact. The test checks QR SVG/PNG through
+the gated Work API, render-read tickets, real hooks, bad HMAC refusal, context
+cancellation and loopback/model/WebSocket refusal. Its original 20-second render
+deadline remains unchanged. Existing injected-browser tests are supplementary.
+
+Run the same acceptance with a clean isolated checkout matching the engine pin,
+frozen Work and Lolly dependencies installed on Linux amd64, Node 24.21.0 and a
+local Docker socket:
+
+```sh
+docker build -t lolly-render-worker:qualification workers/render
+node scripts/qualify-render-worker-image.ts \
+  --lolly-root /path/to/isolated-matching-lolly \
+  --image lolly-render-worker:qualification
+```
+
+The command rebuilds only that isolated checkout's signed test shell. It uses
+an owned container with a read-only filesystem, temporary storage, dropped
+capabilities and no-new-privileges. It changes no Kubernetes resource or instance
+data and publishes neither the shell nor an image. Local Docker cleanup refuses
+an identity mismatch. CI currently exercises Linux amd64 with 1 GiB and one CPU;
+other architectures and production resource limits require their own acceptance.
+The worker's existing browser sandbox setting is unchanged: pod isolation remains
+its security boundary, and this graphics compatibility test makes no browser
+sandbox, physical GPU, private brand or complete production qualification claim.

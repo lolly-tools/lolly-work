@@ -34,6 +34,7 @@ import type { Browser, BrowserContext, BrowserContextOptions } from 'playwright-
 import { createSemaphore } from './semaphore.ts';
 import { declaredOrigins, egressChecker } from './egress.ts';
 import { renderWebBase } from './web-base.ts';
+import { workerBrowserOptions } from './browser-launch.ts';
 
 const PORT = Number(process.env.PORT ?? 8791);
 const SECRET = process.env.LW_RENDER_WORKER_SECRET ?? '';
@@ -88,17 +89,12 @@ let browserGetterOverride: (() => Promise<Browser>) | null = null;
 export function __setBrowserGetterForTests(fn: (() => Promise<Browser>) | null): void {
   browserGetterOverride = fn;
 }
-async function getBrowser(): Promise<Browser> {
+export async function getBrowser(): Promise<Browser> {
   if (browserGetterOverride) return browserGetterOverride();
   if (!browserP) {
     browserP = (async () => {
       const { chromium } = await import('playwright-core');
-      return chromium.launch({
-        // WebRTC can open UDP paths the request router never sees; allow only proxied ones.
-        args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--force-webrtc-ip-handling-policy=disable_non_proxied_udp'],
-        ...(process.env.LOLLY_BROWSER_PATH ? { executablePath: process.env.LOLLY_BROWSER_PATH } : {}),
-        ...(process.env.LOLLY_BROWSER_CHANNEL ? { channel: process.env.LOLLY_BROWSER_CHANNEL } : {}),
-      });
+      return chromium.launch(workerBrowserOptions());
     })().catch((err) => { browserP = null; throw err; });
   }
   return browserP;
