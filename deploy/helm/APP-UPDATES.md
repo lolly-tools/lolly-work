@@ -144,6 +144,21 @@ silently download new tools. K3s can import a reviewed OCI archive with
 `sudo k3s ctr images import /protected/reviewed-image.tar`. Verify the imported
 digest against the release record, then delete the recreatable transport archive.
 
+## Container pulls in CI
+
+Ordinary CI and the disposable PostgreSQL backup/restore drill pull their pinned
+Postgres 17 service from the [Docker Official Images collection on ECR Public](https://gallery.ecr.aws/docker/library/postgres).
+Packaging CI uses a [BuildKit registry mirror](https://docs.docker.com/build/buildkit/toml-configuration/)
+for Docker Hub, preserving the reviewed Node digest pins in both Dockerfiles.
+These routes avoid shared-runner anonymous Docker Hub pull limits without adding
+registry credentials. Container health, the complete tests, real worker export
+qualification and artifact verification still run. A mirror is a download route;
+it does not establish an image signature or authorize production promotion.
+
+This affects CI downloads only. Production storage, services and deployment image
+choices remain configured by each instance. Operators using a private mirror can
+adapt the workflow's registry route while keeping the same reviewed digest pins.
+
 ## Prepare a release from retained CI artifacts
 
 `scripts/prepare-paired-release.py` prepares the updater's existing version-2

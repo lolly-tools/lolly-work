@@ -1,6 +1,6 @@
 # Quality gate — runs on every push to main and every PR.
 # Independent gates run in parallel; every one exits non-zero on failure and BLOCKS:
-#   test       — full suite under Node 24, with a postgres:17 service so the
+#   test       — full suite under Node 24, with a pinned Postgres 17 service so the
 #                gated store conformance run (tests/store-postgres.test.ts)
 #                actually executes instead of skipping. `pretest` re-verifies
 #                the vendored engine pin (MPL "consumed unmodified" check).
@@ -39,7 +39,8 @@ jobs:
     # the service only has to provide an empty lollywork_test database.
     services:
       postgres:
-        image: postgres:17
+        # The official-image mirror avoids anonymous Docker Hub quotas on shared runners.
+        image: public.ecr.aws/docker/library/postgres:17@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3
         env:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: lollywork_test
@@ -194,6 +195,11 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          # Node base images still use their reviewed Dockerfile digest pins.
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["public.ecr.aws/docker"]
 
       - name: Build the image (no push)
         run: |
