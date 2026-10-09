@@ -135,7 +135,7 @@ def artifact_record(value, run, name, stream):
 
 def command(argv, cwd):
     result = subprocess.run(argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120, check=False)
-    reason = "Frontend release gate refused; publish the qualified supported-environment matrix before preparing a web release" if argv == ["node", "scripts/webgpu-release-gate.ts"] else "Vendored engine verification failed; qualify and preserve the private engine/core/schema pin" if argv == ["node", "scripts/verify-engine-pin.ts"] else "Read-only Git source verification failed"
+    reason = "Frontend release gate refused; publish the qualified supported browser matrix before preparing a web release" if argv == ["node", "scripts/webgpu-release-gate.ts", "--scope", "web"] else "Vendored engine verification failed; qualify and preserve the private engine/core/schema pin" if argv == ["node", "scripts/verify-engine-pin.ts"] else "Read-only Git source verification failed"
     require(result.returncode == 0 and len(result.stdout) <= LIMIT, reason)
     return result.stdout.decode().strip()
 
@@ -309,7 +309,7 @@ def prepare(value, base, pin_hash=None, runner=command):
     if "public-web" in expected:
         require(isinstance(pin_hash, str) and SHA.fullmatch(pin_hash), "Missing independently reviewed existing public pin hash")
         root, run = source_record(value["lolly"], base, runner)
-        runner(["node", "scripts/webgpu-release-gate.ts"], root)
+        runner(["node", "scripts/webgpu-release-gate.ts", "--scope", "web"], root)
         source = value["lolly"]["source"]
         candidate = run_record(file_input(value["candidateRun"], base), source, value["lolly"]["repository"], ".github/workflows/deployment-suse.yml", "workflow_dispatch")
         jobs_record(file_input(value["candidateJobs"], base), candidate, required_names=("Public chart render and schema checks", "Public VM route and security acceptance", "Reviewed main CI source", "WebGPU release gate (web shell image only)", "Opt-in native public web image (gated on the WebGPU table)"), allowed_skips=("Unsigned web shell for the MCP browser probe (never published)", "Opt-in native public service images (CA, Penpot)", "Opt-in native public MCP browser image (not gated on WebGPU)", "/info docs site (not gated on WebGPU)", "archive-qualified-images"))

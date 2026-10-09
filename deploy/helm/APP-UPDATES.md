@@ -149,8 +149,9 @@ digest against the release record, then delete the recreatable transport archive
 `scripts/prepare-paired-release.py` prepares the updater's existing version-2
 release JSON from local qualification files. Select the Work server, public web
 image, or both. Work-only preparation does not invoke the frontend WebGPU gate.
-Public-web preparation invokes Lolly's maintained gate at the exact clean source;
-a missing supported-environment table refuses preparation. Main source alone is
+Public-web preparation invokes Lolly's maintained gate with explicit web scope
+at the exact clean source. Missing qualified browser rows refuse preparation;
+pending native rows keep native releases held. Main source alone is
 not a qualified frontend release.
 
 The command makes no Kubernetes, registry or provider requests. It does not build,
@@ -366,6 +367,38 @@ tab requests a lazy chunk. Verify previous asset hashes, refuse same-path/differ
 collisions, and retain the new index/catalog/signature as the active release.
 Check an existing tab's lazy imports and collaboration reconnect after rollout.
 Retain previous digest references for a new reviewed image-only rollback.
+
+Prepare this retention locally with `scripts/retain-shell-assets.ts`. Start from
+a separately verified previous-shell snapshot and a qualified new signed shell;
+use their independently reviewed full-shell IDs from `scripts/shell-release-id.ts`.
+Keep both input trees and output parents exclusively owned and unchanged while the command runs.
+The output directory and separate receipt path must not exist, and their parent
+directories must already exist without symbolic links:
+
+```sh
+node scripts/retain-shell-assets.ts \
+  --candidate /protected/qualified-new-shell \
+  --expected-candidate-id "$REVIEWED_CANDIDATE_SHELL_ID" \
+  --previous /protected/verified-previous-shell-snapshot \
+  --expected-previous-id "$REVIEWED_PREVIOUS_SHELL_ID" \
+  --out /protected/prepared-new-shell \
+  --receipt-out /protected/prepared-new-shell.receipt.json
+```
+
+The command copies the new shell into a new local directory, then retains every
+regular file under the previous `_app/`. Identical paths deduplicate; conflicting
+bytes, overlapping trees, symbolic links and changed inputs refuse preparation.
+The new index, catalog, signature, tools, service worker and precache stay unchanged.
+The mode-600 receipt binds both input inventories, retained/copied files and the
+resulting shell ID; keep it outside the shell tree. A refusal removes only output
+whose ownership still matches. `partialOutput: true` means output remains or its
+location/ownership is uncertain: quarantine it for review rather than publishing or overwriting it.
+
+This covers bundled `_app` dependencies only. ORT, models, fonts, catalog resources,
+actual prior-tab lazy imports and collaboration reconnect still need separate
+checks. The receipt reports no runtime qualification or promotion. It does not
+build or sign a release, waive Lolly's frontend release gate, change production
+pins, create claims or replace the compatible engine/shell/pack release review.
 
 ### Existing PVC installations: a reviewed single-volume promotion
 

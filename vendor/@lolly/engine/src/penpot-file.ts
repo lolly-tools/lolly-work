@@ -32,12 +32,14 @@
  * matrices `{a..f}`, uuids strings, `null` where a record field is unset.
  * No Handlebars, no ajv, no deps. Fully node:test-able.
  */
+import type { DesignBoxRowV1 } from '@lolly-tools/core';
 import { parseSvgPath, type SubPath, type PathSegment } from './svg-path.ts';
-import { colorToHex } from './tokens.ts';
 import { makeGeomApi } from './geom-api.ts';
 import { pathBounds, pathFromSubPaths } from './geom/path.ts';
 import { sanitizeAppliedTokens, buildTokenTypeIndex, isSafeTokenPath } from './penpot-bindings.ts';
 import { clamp } from './clamp.ts';
+import { compileDesignRow } from './design-draw.ts';
+import { designDrawPenpot, isPenpotPrimitiveRow } from './design-draw-penpot.ts';
 
 // ─── constants ────────────────────────────────────────────────────────────────
 
@@ -344,52 +346,8 @@ export function seededPenpotUuid(seed = 1): () => string {
 
 // ─── colour ───────────────────────────────────────────────────────────────────
 
-/** Null-prototype on purpose: a plain literal would answer `NAMED['constructor']` and
- *  `NAMED['__proto__']` with an inherited non-string, which every caller then treats as
- *  a colour (see the `typeof` guard in {@link parsePenpotColor}). */
-const NAMED: Record<string, string> = Object.assign(Object.create(null) as Record<string, string>, {
-  black: '#000000', white: '#ffffff', red: '#ff0000', green: '#008000', blue: '#0000ff', yellow: '#ffff00',
-  cyan: '#00ffff', aqua: '#00ffff', magenta: '#ff00ff', fuchsia: '#ff00ff', gray: '#808080', grey: '#808080',
-  silver: '#c0c0c0', maroon: '#800000', olive: '#808000', lime: '#00ff00', teal: '#008080', navy: '#000080',
-  purple: '#800080', orange: '#ffa500', pink: '#ffc0cb', brown: '#a52a2a', gold: '#ffd700', indigo: '#4b0082',
-  violet: '#ee82ee', tomato: '#ff6347', coral: '#ff7f50', salmon: '#fa8072', khaki: '#f0e68c', tan: '#d2b48c',
-  beige: '#f5f5dc', ivory: '#fffff0', lavender: '#e6e6fa', crimson: '#dc143c', turquoise: '#40e0d0',
-  orchid: '#da70d6', plum: '#dda0dd', chocolate: '#d2691e', sienna: '#a0522d', wheat: '#f5deb3', snow: '#fffafa',
-  skyblue: '#87ceeb', steelblue: '#4682b4', slategray: '#708090', slategrey: '#708090', dimgray: '#696969',
-  dimgrey: '#696969', darkgray: '#a9a9a9', darkgrey: '#a9a9a9', lightgray: '#d3d3d3', lightgrey: '#d3d3d3',
-  whitesmoke: '#f5f5f5', gainsboro: '#dcdcdc', darkblue: '#00008b', darkgreen: '#006400', darkred: '#8b0000',
-  royalblue: '#4169e1', dodgerblue: '#1e90ff', deepskyblue: '#00bfff', forestgreen: '#228b22', seagreen: '#2e8b57',
-  limegreen: '#32cd32', springgreen: '#00ff7f', hotpink: '#ff69b4', deeppink: '#ff1493', firebrick: '#b22222',
-  darkorange: '#ff8c00', orangered: '#ff4500', goldenrod: '#daa520', rebeccapurple: '#663399', mintcream: '#f5fffa',
-});
-
-export interface PenpotColor { hex: string; alpha: number }
-/**
- * Read a CSS/DTCG colour into Penpot's `#rrggbb` + alpha. Accepts hex (3/4/6/8),
- * rgb[a](), hsl[a](), oklch(), the common named colours, and `var(--x, <fallback>)`
- * - for which it returns the LITERAL fallback, a stale copy of whatever the brand
- * paints today, so a caller holding a live resolver must ask that first and treat
- * this as the last resort (see `boxesToPenpotDoc`'s `color()`). `transparent`,
- * `none`, an alias `{a.b}` or anything unreadable → null, so the caller either
- * resolves it (brand tokens) or drops the paint.
- */
-export function parsePenpotColor(input: unknown): PenpotColor | null {
-  if (input == null) return null;
-  let s = String(input).trim();
-  if (!s) return null;
-  const varM = /^var\(\s*--[\w-]+\s*,\s*([\s\S]+)\)$/.exec(s);
-  if (varM) s = varM[1]!.trim();
-  if (/^var\(/.test(s) || /^\{/.test(s)) return null;
-  const lower = s.toLowerCase();
-  if (lower === 'transparent' || lower === 'none' || lower === 'currentcolor' || lower === 'inherit') return null;
-  const named = NAMED[lower];
-  if (typeof named === 'string') return { hex: named, alpha: 1 };
-  const hex = colorToHex(s);
-  if (!hex || hex === 'transparent') return null;
-  const m = /^#([0-9a-f]{6})([0-9a-f]{2})?$/i.exec(hex);
-  if (!m) return null;
-  return { hex: `#${m[1]!.toLowerCase()}`, alpha: m[2] ? parseInt(m[2], 16) / 255 : 1 };
-}
+export { parsePenpotColor, type PenpotColor } from './draw-color.ts';
+import { parsePenpotColor, type PenpotColor } from './draw-color.ts';
 
 // ─── geometry ─────────────────────────────────────────────────────────────────
 
@@ -1218,8 +1176,9 @@ export function boxesToPenpotDoc(boxesIn: unknown, o: BoxesToPenpotOptions): Pen
     return w;
   };
 
-  const effects = (b: Box, base: PenpotIrShapeBase): void => {
-    const op = clamp(fin(b.opacity, 100), 0, 100) / 100;
+  const effects = (b: Box, base: PenpotIrShapeBase): { opacity: number; rotation: number } => {
+    const opacity = clamp(fin(b.opacity, 100), 0, 100);
+    const op = opacity / 100;
     if (op < 1) base.opacity = op;
     const blend = str(b.blend);
     if (blend && blend !== 'normal' && BLEND_MODES.has(blend)) base.blend = blend;
@@ -1238,6 +1197,7 @@ export function boxesToPenpotDoc(boxesIn: unknown, o: BoxesToPenpotOptions): Pen
     if (blur > 0) base.blur = blur;
     const bgBlur = fin(b.bgBlur);
     if (bgBlur > 0) base.backgroundBlur = bgBlur;
+    return { opacity, rotation: rot };
   };
   const strokeOf = (b: Box): PenpotIrStroke[] => {
     const sc = color(b.stroke);
@@ -1276,7 +1236,7 @@ export function boxesToPenpotDoc(boxesIn: unknown, o: BoxesToPenpotOptions): Pen
     if (kind === 'audio' || kind === 'camera' || kind === 'frame') return null;
     const x = fin(b.x), y = fin(b.y), w = Math.max(1, fin(b.w, 1)), h = Math.max(1, fin(b.h, 1));
     const base: PenpotIrShapeBase = { name: nameOf(b, kind), x, y, w, h };
-    effects(b, base);
+    const effectCapture = effects(b, base);
     let shape: PenpotIrShape | null = null;
     let textHasRunColor = false;
     if (kind === 'text') {
@@ -1361,7 +1321,17 @@ export function boxesToPenpotDoc(boxesIn: unknown, o: BoxesToPenpotOptions): Pen
       const shapeKind = str(b.shape);
       const fills = fillsOf(b, w, h);
       const strokes = strokeOf(b);
-      if (shapeKind === 'ellipse' || shapeKind === 'circle') shape = { ...base, type: 'circle', fills, strokes };
+      if (isPenpotPrimitiveRow(b, shapeKind)) {
+        const stroke = strokes[0];
+        const op = compileDesignRow(b as DesignBoxRowV1, { x: 0, y: 0 }, { semantics: 'penpot-compat', penpotCompat: {
+          capture: { geometry: { x, y, w, h }, ...effectCapture, shapeKind },
+          fills: fills.map(fill => ({ kind: 'color', color: fill.color!, opacity: fill.opacity })),
+          ...(stroke ? { stroke: { color: stroke.color, opacity: stroke.opacity, width: stroke.width,
+            ...(stroke.capStart ? { cap: stroke.capStart } : {}) } } : {}),
+        } });
+        if (op.op !== 'shape') throw new Error('Penpot primitive compilation did not produce a shape.');
+        shape = { ...base, ...designDrawPenpot(op) };
+      } else if (shapeKind === 'ellipse' || shapeKind === 'circle') shape = { ...base, type: 'circle', fills, strokes };
       else shape = { ...base, type: 'rect', fills, strokes, radius: shapeKind === 'rounded' ? fin(b.radius) : shapeKind === 'pill' ? Math.min(w, h) / 2 : 0 };
     }
     // Applied-token bindings from the box's OWN source refs (plans/222): a fill/

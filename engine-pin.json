@@ -1,22 +1,22 @@
 {
-  "generatedFrom": "df2d7be31bdd119f73fcf821fb29897c0f51b87c",
+  "generatedFrom": "4dc90da4b7dfa70fde60c92865299a0a7ed958e0",
   "note": "Pin manifest - a consumer verifies vendored content against contentHash. tarballSha256 is informational (gzip is not reproducible).",
   "core": {
-    "version": "1.0.0",
-    "tarball": "lolly-tools-core-1.0.0.tgz",
-    "tarballSha256": "8d9a3547881afcf5524dcdf70d19c07c2156657454dd5e67d9797152abb14f81",
-    "contentHash": "f92b80732cd528c3af67f5e7043e957a9fd042f5bd1cf6658e68442469f25896"
+    "version": "1.1.0",
+    "tarball": "lolly-tools-core-1.1.0.tgz",
+    "tarballSha256": "7156ac6ff7e81a0dc93d2f3a1b464cba941fabfdfcfd1f57836dc6866ce57a7a",
+    "contentHash": "4f15455eb8cb14f3656205a5e28ce2eb657d5f4eca66713741d106afa821d76a"
   },
   "engine": {
-    "version": "1.245.0",
-    "tarball": "lolly-engine-1.245.0.tgz",
-    "tarballSha256": "100017a2d28c208f001fcebec5a7092f0c8f4649d29c39520769ef5dd34aba0d",
-    "contentHash": "45cb24dd548c34ef942554c7bfbbe5ab0acc330d0fbfca00f4609e9b08567ffe"
+    "version": "1.248.0",
+    "tarball": "lolly-engine-1.248.0.tgz",
+    "tarballSha256": "a3e04cd7baf8742f2714ada1ca63ad90ce38ee51b86f6216e0de00fedcaa3a6c",
+    "contentHash": "207e855df4e22b6b61734c2e64568b8b89ff2b289b4ed527f657223a07aa3e7e"
   },
   "schemas": {
     "asset-ref.schema.json": "e07d85d6db6c3a7c88190c86a4779707e2b073ce17dbaa9bb355ed2c015fcdae",
     "asset.schema.json": "c34f9bf7ee977501fb28de6826ec0a6a161dad2de23d31b7dc1f5d863e5c9c08",
-    "blocks-wire-order.json": "e0d85f289fa538cbd2df41b76830e003cbd2f61977f6d5bdb02ba46a3f5f5e09",
+    "blocks-wire-order.json": "3393a226a3bcc7b3776f7a6a6175d69ebbef6395a5e835396f252c652e8aaecb",
     "brand-system-v1.schema.json": "19f653283b83e99ecdc4ea98014828dcb5e660633f86cb0772387a02d89378ca",
     "canonical-aliases.json": "3b008b3d5c2936cd68246d736b0de877e98d5a37939645928ef55380aff7cc29",
     "canonical-inputs.json": "8747d7dea7721ae0a6a0fce9e58ce188dd86faab94c44a15304fc70042095e22",
@@ -46,6 +46,6 @@
     "text-frame-v1.schema.json": "4da9745015da8dfd75e60f7e15300604eeedd4902bca7a049d063a396455f069",
     "text-measure-v1.schema.json": "6a3b17fdc8d7d8769d723724b73dabd3d5d74c77df577480a9c42cfcb0a0e976",
     "tokens.schema.json": "012f3050656230bb609eb841c6a7e42a3cfa4088c7c3b938a561a81d3fa13dcc",
-    "tool.schema.json": "25b22749d1e12735cd3779169af83221528990fd4130310aeacdd3be134c9276"
+    "tool.schema.json": "af222e0e2c1f10c6b504d494c479e12c2ad9d0da1c618b26553753c8255e5aac"
   }
 }

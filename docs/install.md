@@ -246,8 +246,8 @@ configured server formats separately from other declared formats. It never execu
 or fetches remote assets. An optional second argument selects a source ID. With LW_CONFIG
 set, the command also uses that deployment's worker and server-rendering requirements.
 
-Work now consumes engine 1.239.0 from committed upstream source, which accepts Design's
-`^1.238.0` requirement. A configured worker or a shell containing the governance marker
+Work now consumes engine 1.248.0 and core 1.1.0 from committed upstream source, which accepts
+Design's `^1.248.0` requirement. A configured worker or a shell containing the governance marker
 does not prove an exact matched client release. Validate that release and representative
 renders before acceptance; signed release bundles and capability handshakes remain pending.
 

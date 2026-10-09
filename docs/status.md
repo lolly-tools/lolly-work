@@ -48,6 +48,18 @@ helper, runs on Node 24 and converts the affected dependency entries in the outp
 CI exercises jsdom parsing/selectors/styles, boots the packaged function, checks console/setup
 routes and renders a real SVG with `require(ESM)` disabled before permitting deployment.
 
+## Engine source update, 2026-10-09
+
+The maintained source pins engine `1.248.0`, core `1.1.0` and 33 schemas from upstream
+commit `4dc90da4b7dfa70fde60c92865299a0a7ed958e0`. The consumed source hashes and
+HostV1 bridge version remain verified; third-party dependency versions and the
+Handlebars `4.7.10` override are preserved.
+
+Local source checks passed with disposable PostgreSQL 17.11: 2,195 tests, 2,187 passed,
+zero failures and eight conditional skips. Typecheck, engine pin, root/worker production
+audits and SBOM freshness also passed. These source checks do not select or deploy
+matched shell, pack, worker and engine-pin artifacts for an existing instance.
+
 ## Verification and packaging
 
 | Area | Verified state |
@@ -55,7 +67,7 @@ routes and renders a real SVG with `require(ESM)` disabled before permitting dep
 | Setup milestone local tests | 1,142 tests; 1,123 passed, zero failures, 19 conditional skips. Postgres checks also passed in an isolated local database. |
 | CI tests | 1,159 tests; 1,153 passed, zero failures, six conditional skips with Postgres enabled. |
 | Deployment gates | Full tests and packaged function rendering, typecheck, root/worker production dependency audits, SBOM freshness, server and render-worker image builds. |
-| Engine consumption | Pinned, unmodified engine `1.239.0` and core `1.0.0`, verified before tests. Pack inspection checks manifests, required files and available server formats. |
+| Engine consumption | Pinned, unmodified engine `1.248.0` and core `1.1.0`, verified before tests. Pack inspection checks manifests, required files and available server formats. |
 | Documentation images | SVG captures of the real local console, with embedded fonts, paired light/dark variants and signed screen-capture credentials. Examples contain evaluation data. |
 | Release qualification | Passing app CI does not select or certify a matched employee-client, worker and deployment-image release for a customer. |
 
@@ -165,8 +177,8 @@ wrong path now fails loudly instead of quietly un-governing employees, which is 
 improvement - not a substitute for a delivery pipeline.
 
 ### 5. Engine pin drift (a recurring risk, currently closed)
-The vendored engine is pinned and pin-verified (`engine-pin.json`, `@lolly/engine@1.239.0`
-on 2026-10-02). The pin is re-verified as `pretest`; `engine-drift.yml` reports upstream drift
+The vendored engine is pinned and pin-verified (`engine-pin.json`, `@lolly/engine@1.248.0` and `@lolly-tools/core@1.1.0`
+from committed upstream source on 2026-10-09). The pin is re-verified as `pretest`; `engine-drift.yml` reports upstream drift
 weekly and `repin-engine` applies a reviewed snapshot. `inspect:pack` and Customer setup now
 load manifests through the installed engine and report incompatible requirements, missing
 files and unsupported server formats. A matched release still needs its client and worker

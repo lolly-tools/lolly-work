@@ -65,6 +65,14 @@ export type { TableValue, TableColumnEditor, ShowIf, InputWriteOptions } from '.
 export { parseUrlState, serializeUrlState, serializeHdr, encodeBlocksCompact, encodeTableCompact, decodeTableCompact, RESERVED, HDR_DEFAULTS, VIDEO_CODEC_STRINGS, parseVideoParams, hasVideoParams } from './url-mode.ts';
 // The `s=` state address + the still-export frame filter both shells apply (plan 112).
 export { parseFrameAddress, selectFramePage, frameFilterApplies } from './frame-address.ts';
+export {
+  PRESENT_INTERACT_DEFAULTS, PRESENT_INTERACT_MAX_BYTES, PRESENT_INTERACT_MAX_STOPS, PRESENT_INTERACT_MAX_DEPTH,
+  parsePresentInteractOpts, serialisePresentInteractOpts, parsePresentInteractDepth,
+  resolvePresentInteractDepth, resolvePresentInteractStops, pickPresentInteractStop, samplePresentInteractAuto,
+} from './present-interact.ts';
+export type {
+  PresentInteractDepth, PresentInteractOptions, PresentInteractContext, PresentInteractStop, PresentInteractAutoSample,
+} from './present-interact.ts';
 export { looksLikeTable, parseTableText, toTsv, toMarkdown, toHtmlTable } from './table-text.ts';
 export type { HdrSettings, DepthSetting, VideoUrlSettings, VideoQuality } from './url-mode.ts';
 export { LANGS, LANG_META, normalizeLang, flagEmoji, sortedLangs } from './lang.ts';
@@ -319,6 +327,22 @@ export { generatedSongSpec } from './zzfx-compose.ts';
 // an asset id has to recognise it, and they must not each invent the rule.
 export { ZZFXM_SCHEME, isZzfxmRef, parseZzfxmRef, formatZzfxmRef } from './zzfxm-ref.ts';
 export type { ZzfxmRef } from './zzfxm-ref.ts';
+// A rondocode song as an asset: its file forms, its share links and canonical
+// bytes. Reading only; rendering is a shell's, through packages/rondo (vm class).
+export {
+  RONDO_ASSET_FORMAT, RONDO_FILE_SUFFIX, RONDO_MAX_SOURCE_BYTES, RONDO_SOURCE_SCHEMA_VERSION,
+  RondoSourceError, isRondoFileName, isRondoShareLink, rondoFileName, rondoFromBytes,
+  rondoFromFile, rondoFromShareLink, rondoSourceBytes,
+} from './rondo-source.ts';
+export type { RondoLang, RondoSourceV1 } from './rondo-source.ts';
+// What a file made from a song says about itself: the source ingredient and,
+// when the file holds synthesised singing, the AI declaration (Andy, 2026-10-08).
+export {
+  RONDOCODE_URL, RONDO_SINGING_MODELS, isRondoSongIngredient, rondoCreatedAction, rondoDeclaration,
+  rondoDigitalSourceType, rondoRecordedSentence, rondoRenderFacts, rondoSilentParts, rondoSongIngredient,
+  rondoSourceId, uniqueRondoIngredients,
+} from './rondo-provenance.ts';
+export type { RondoRenderFacts } from './rondo-provenance.ts';
 export type { SongSpec, Archetype, PresetName, ScaleName } from './zzfx-compose.ts';
 // Versioned design systems (plans/97 section 6a) - here for the same reason as the two
 // id schemes above: the head/version asset-id scheme, the discovery-exclusion
@@ -505,7 +529,7 @@ export {
 export type {
   PdfXOutputIntentOptions, PdfXOutputIntentSpec, PdfXProfileFacts, PdfXXmpOptions,
 } from './pdfx.ts';
-export { buildC2paManifest, embedC2paInPdf, embedC2pa, attachC2paStore, exportActionSteps, collectAiIngredientDeclarations, C2PA_FORMATS, DIGITAL_SOURCE_TYPE, CAPTURE_SOURCE_TYPE, SCREEN_SOURCE_TYPE, GENERATED_SOURCE_TYPE, COMPOSITE_SOURCE_TYPE } from './c2pa.ts';
+export { buildC2paManifest, embedC2paInPdf, embedC2pa, attachC2paStore, exportActionSteps, collectAiIngredientDeclarations, C2PA_FORMATS, DIGITAL_SOURCE_TYPE, CAPTURE_SOURCE_TYPE, SCREEN_SOURCE_TYPE, GENERATED_SOURCE_TYPE, COMPOSITE_SOURCE_TYPE, ALGORITHMIC_SOURCE_TYPE } from './c2pa.ts';
 export type { C2paActionInput, C2paCredentialedIngredient, C2paSourceIngredient, C2paRightsRecord, C2paIngredientInput } from './c2pa.ts';
 export { LOLLY_RIGHTS_ASSERTION } from './c2pa.ts';
 export { verifyC2pa, extractC2paFromPdf, prepareC2paIngredient, prepareC2paIngredientFromStore, collectIngredients, collectIngredientRecords, extractC2paStore, parseCertificate, signedBy } from './c2pa-verify.ts';
@@ -938,7 +962,11 @@ export { parseFidelityEdits, FIDELITY_MAX_SOURCE_STRINGS, FIDELITY_MAX_RESULT_LI
 export type { CheckFidelityOptions, CheckFidelityResult } from './check-fidelity.ts';
 // Measure a plain Design text layer before it is drawn (plan 291 W5): the CSS pre-wrap
 // breaker and Chromium's line box over an injected shaper.
-export { measureDesignText, TextMeasureError, TEXT_MEASURE_DEFAULT_FONTS, TEXT_MEASURE_DEFAULTS, TEXT_MEASURE_MAX_UNITS } from './design-text-measure.ts';
+export { measureDesignText, drawDesignText, textMeasureSpecOfRow, TextMeasureError, TEXT_MEASURE_DEFAULT_FONTS, TEXT_MEASURE_DEFAULTS, TEXT_MEASURE_MAX_UNITS } from './design-text-measure.ts';
+// The measure's shaper over the host's HarfBuzz, shared by the Node and web shells (plan 295, P3d).
+export { createHostTextShaper, sfntVerticalMetrics } from './text-shaper-host.ts';
+export type { HostShaperDeps, HostShaperFace } from './text-shaper-host.ts';
+export type { DesignTextDrawV1, DesignTextDrawLineV1, DesignTextDrawRunV1 } from './design-text-measure.ts';
 export type { TextShaperV1, TextShapeRunV1, TextShapeResultV1, TextFontMetricsV1, TextMeasureErrorCode } from './design-text-measure.ts';
 export { BRAND_STYLE_PROPERTIES, summarizeBrandStyles, readBrandStyleEvidence } from './brand-evidence.ts';
 export type { BrandStyleProperty, BrandStyleValue, BrandStyleEvidence } from './brand-evidence.ts';

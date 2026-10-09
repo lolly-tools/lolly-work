@@ -125,9 +125,9 @@ class Preparation(unittest.TestCase):
             return self.sources[root.name]
         if argv == ["git", "status", "--porcelain"]:
             return ""
-        if argv == ["node", "scripts/webgpu-release-gate.ts"] and self.gate_fails:
+        if argv == ["node", "scripts/webgpu-release-gate.ts", "--scope", "web"] and self.gate_fails:
             raise m.Refusal("Missing supported-environment matrix")
-        self.assertIn(argv, [["node", "scripts/webgpu-release-gate.ts"], ["node", "scripts/verify-engine-pin.ts"]])
+        self.assertIn(argv, [["node", "scripts/webgpu-release-gate.ts", "--scope", "web"], ["node", "scripts/verify-engine-pin.ts"]])
         return "PASS"
 
     def prepare(self):
@@ -157,6 +157,11 @@ class Preparation(unittest.TestCase):
         release, _ = self.prepare()
         self.assertEqual(len(release["updates"]), 1)
         self.assertFalse(any("webgpu" in str(call) for call in self.calls))
+
+    def test_public_preparation_selects_web_scope_explicitly(self):
+        self.prepare()
+        calls = [argv for argv, _ in self.calls if "webgpu-release-gate.ts" in str(argv)]
+        self.assertEqual(calls, [("node", "scripts/webgpu-release-gate.ts", "--scope", "web")])
 
     def test_public_only_does_not_require_private_engine_equality(self):
         for key in ("work", "workArtifact", "workArtifactMetadata", "expectedEnginePin"):

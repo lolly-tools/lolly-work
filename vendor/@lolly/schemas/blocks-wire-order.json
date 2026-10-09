@@ -159,7 +159,9 @@
       "webView",
       "webLoad",
       "webCss",
-      "webHideCookies"
+      "webHideCookies",
+      "interact",
+      "interactOpts"
     ],
     "diagram-builder:nodes": [
       "shape",
@@ -302,6 +304,15 @@
       "w",
       "h",
       "n"
+    ],
+    "susecon-background:scenes": [
+      "look",
+      "colourway",
+      "framing",
+      "hold",
+      "transition",
+      "style",
+      "energy"
     ],
     "wayfinding-signage:directions": [
       "label",
