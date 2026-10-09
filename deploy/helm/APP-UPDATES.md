@@ -144,6 +144,83 @@ silently download new tools. K3s can import a reviewed OCI archive with
 `sudo k3s ctr images import /protected/reviewed-image.tar`. Verify the imported
 digest against the release record, then delete the recreatable transport archive.
 
+## Prepare a release from retained CI artifacts
+
+`scripts/prepare-paired-release.py` prepares the updater's existing version-2
+release JSON from local qualification files. Select the Work server, public web
+image, or both. Work-only preparation does not invoke the frontend WebGPU gate.
+Public-web preparation invokes Lolly's maintained gate at the exact clean source;
+a missing supported-environment table refuses preparation. Main source alone is
+not a qualified frontend release.
+
+The command makes no Kubernetes, registry or provider requests. It does not build,
+download, import, publish or deploy an image. It writes one new mode-600 release
+file and prints its canonical hash. The updater still performs fresh identity,
+current-image, protected-spec and admission checks when making the actual plan.
+
+```sh
+python3 scripts/prepare-paired-release.py \
+  --evidence /protected/preparation-evidence.json \
+  --reviewed-evidence-sha256 SHA256_OF_REVIEWED_EVIDENCE_FILE \
+  --existing-public-pin-sha256 CANONICAL_SHA256_OF_EXISTING_PUBLIC_JWK \
+  --release-out /protected/prepared-image-release.json
+```
+
+Omit the public-pin argument for Work-only preparation. The evidence object has
+`version: 1`, `target` and `expectedImages`. Every file reference is exactly
+`{"path": "/protected/local-file", "sha256": "64 lowercase hex digits"}`;
+relative paths resolve against the evidence file. `target` references an existing
+updater version-2 target. `expectedImages` maps the selected `work` and/or
+`public-web` components to their current digest references. Each selected target
+must own exactly one regular container; additional owned init images are preserved.
+
+For each selected source, include `work` or `lolly`, with exactly `root`, `source`,
+`repository`, `main`, `ciRun` and `ciJobs`. `root` is the clean isolated checkout,
+`source` its full commit and `repository` its GitHub `owner/name`. The three file
+references retain the actual GitHub main-ref, normal-CI run and complete job API
+responses, respectively. Capture jobs from the exact `/attempts/N/jobs` endpoint;
+do not combine reruns. The command verifies push/main, own repository, successful
+completion, exact source/attempt and complete job inventory. Only the existing
+`verified instance shell` skip is accepted in normal CI.
+
+Work additionally needs `expectedEnginePin`, `workArtifact` and
+`workArtifactMetadata`. The pin references the separately reviewed existing
+private `engine-pin.json`; the candidate must preserve its full core, engine and
+schema contract. The other files are the original `qualified-server-COMMIT`
+GitHub artifact ZIP and its artifact API response. The command checks the ZIP
+against GitHub's recorded digest, the OCI transport checksum, manifest/config and
+every blob and uncompressed layer digest, platform, source label, and the actual
+image's `/app/engine-pin.json`. It never imports the CI's mutable image alias.
+
+Public web additionally needs `candidateRun`, `candidateJobs`, `webArtifact`,
+`webArtifactMetadata`, `normalSourceArtifact` and `normalSourceArtifactMetadata`.
+These are the actual `deployment-suse.yml` candidate run/jobs and the original
+`public-candidate-web-receipts-attempt-N` and `normal-main-ci-source-attempt-N`
+ZIPs and artifact API responses. The source artifact binds the candidate to the
+exact successful normal CI run and attempt. Web receipts bind the published digest,
+actual signed-catalog verification, boot result and existing public JWK. The public
+and private engines may differ: updating the public shell does not replace the
+private instance's mounted shell, pack or engine pin.
+
+**Offline custody is the trust boundary.** Obtain the API responses and original
+ZIPs through authenticated GitHub reads, retain the original artifact digests,
+and review their hashes and source identities before pinning the evidence file.
+This command verifies that retained custody; it does not authenticate a local JSON
+file as GitHub, independently rerun the catalog cryptography, verify an OCI image
+signature, or establish that an old main-ref snapshot is still current. A
+self-created receipt or `signatureVerified` flag is not substitute evidence.
+Refresh main and qualification snapshots immediately before preparing a candidate,
+and retain its normal registry/signature/SBOM qualification before promotion.
+There are no production credentials or private signing keys in these inputs.
+
+Private shell/pack image promotion is explicitly unsupported by this command.
+The current maintained CI formats do not produce a qualified paired private
+shell/pack artifact. Existing PVC content requires a separately reviewed one-time
+conversion to the chart's per-Pod `emptyDir` copy topology before routine init-image
+updates can replace it. Never run a copy init container against the active PVC.
+Until that conversion and paired CI binding are qualified, use the reviewed PVC
+workflow below. A Work server update leaves all mounted content unchanged.
+
 ## Produce and review an application-only plan
 
 Create a release file with one or more explicitly owned components:
