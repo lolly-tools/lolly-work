@@ -2,6 +2,9 @@ packages:
   - vendor/@lolly-tools/core
   - vendor/@lolly/engine
 
+overrides:
+  handlebars: 4.7.10
+
 # Keep the module layout used by the renderer, native sidecar and packaging scripts.
 nodeLinker: hoisted
 engineStrict: true

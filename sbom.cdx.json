@@ -1,7 +1,7 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:7adc673f-97a5-46c7-80dc-8b1f4836ec2d",
+  "serialNumber": "urn:uuid:ed64eb74-d810-42b3-8057-146856f912b8",
   "version": 1,
   "metadata": {
     "tools": [
@@ -1995,10 +1995,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/handlebars@4.7.9",
+      "bom-ref": "pkg:npm/handlebars@4.7.10",
       "name": "handlebars",
-      "version": "4.7.9",
-      "purl": "pkg:npm/handlebars@4.7.9",
+      "version": "4.7.10",
+      "purl": "pkg:npm/handlebars@4.7.10",
       "scope": "required",
       "licenses": [
         {
@@ -2010,7 +2010,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "e04ef5134ae939a42e251d80df10d9f863351f2598bf5725479f2d0bc7a640d7907b7447ecc03349b6adf95d301bbf0b401a3a9ba6f3486fcbe2906e0ac82751"
+          "content": "3f954931533baa0067eaf8d7330f161bdb9523e9dc7f6a62ef68f875ee32cf96542cb8f6446a8b61a28e606b20cab562434b5e3ce565375b430825d7b45a972a"
         }
       ]
     },
@@ -3260,6 +3260,13 @@
       "version": "17.1.2",
       "purl": "pkg:npm/whatwg-url@17.1.2",
       "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
       "hashes": [
         {
           "alg": "SHA-512",
