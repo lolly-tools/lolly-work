@@ -30,7 +30,7 @@ import { CANVAS_OP_VERSION, ReferenceCanvasDoc, type CanvasCheckpoint, type Canv
 import { parseConfig } from '../../server/src/config/instance.ts';
 import { createMemoryStore } from '../../server/src/store/memory.ts';
 import type { SessionRecord, SessionVersion, Store, UserRecord } from '../../server/src/store/types.ts';
-import { MAX_BOXES_PER_COLLECTION, Room, RoomRestoreError, type RoomMember, type ServerFrame } from '../../server/src/collab/rooms.ts';
+import { MAX_BOXES_PER_COLLECTION, Room, RoomRegistry, RoomRestoreError, type RoomMember, type ServerFrame } from '../../server/src/collab/rooms.ts';
 import { createCollabGateway, COLLAB_WS_PREFIX, type CollabGateway } from '../../server/src/collab/gateway.ts';
 import { buildApp } from '../../server/src/api/app.ts';
 import { createVersionRecorder, VERSION_IDLE_MS, VERSION_INTERVAL_MS, type RecorderTimers } from '../../server/src/versions/recorder.ts';
@@ -194,6 +194,54 @@ test('a failed version write keeps its contributors; a deleted document gets non
 });
 
 // ── a store-backed room ───────────────────────────────────────────────────────
+
+test('drain waits for a closing room removed by the last leave', async () => {
+  const store = createMemoryStore();
+  const { session, user } = await documentOf(store, 'drain-closing', { title: 'Draft' });
+  const registry = new RoomRegistry(undefined, undefined, store);
+  const room = await registry.acquire(session);
+  const alice = seat('alice', user.id);
+  room.join(alice);
+  const edit = param('title', 'Written before shutdown', 'alice', 1);
+  await room.applyBatch(alice, 'b1', ['op1'], [edit], new Set([edit]));
+
+  let entered!: () => void, resume!: () => void;
+  const entering = new Promise<void>(resolve => { entered = resolve; });
+  const held = new Promise<void>(resolve => { resume = resolve; });
+  const putVersion = store.putSessionVersion.bind(store);
+  let versionWrites = 0;
+  store.putSessionVersion = async value => {
+    versionWrites++;
+    entered();
+    await held;
+    return putVersion(value);
+  };
+  room.leave(alice.id);
+  const disposing = registry.releaseIfEmpty(room);
+  await entering;
+  assert.equal(registry.size(), 0, 'the room is removed before its close write finishes');
+  assert.deepEqual(await store.listSessionVersions(session.id, { limit: 1 }), []);
+
+  let drained = false;
+  const draining = registry.drain().then(result => { drained = true; return result; });
+  try {
+    // The write remains blocked through this event-loop turn, regardless of
+    // memory or database latency. Shutdown must not permit the store to close.
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(drained, false, 'drain must await the already-running close write');
+  } finally {
+    resume();
+    await Promise.all([disposing, draining]);
+  }
+  assert.equal(await disposing, true);
+  assert.deepEqual(await draining, [], 'the leave owns disposal and its rollup');
+  const [closed] = await store.listSessionVersions(session.id, { limit: 1 });
+  assert.equal(closed?.kind, 'close');
+  assert.equal((await store.getSessionVersion(session.id, closed.id))?.inputs['title'], 'Written before shutdown');
+  assert.deepEqual(closed.contributors, [{ id: user.id, kind: 'user', edits: 1 }]);
+  assert.equal(versionWrites, 1, 'drain does not duplicate the close version');
+  assert.deepEqual(await registry.drain(), []);
+});
 
 test('a live room writes an auto version after the idle time and a close version when it closes', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });

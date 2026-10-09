@@ -1486,13 +1486,15 @@ export class RoomRegistry {
 
   /**
    * Quiesce and drop EVERY room, occupied or not - orderly shutdown. Returns the
-   * rooms it disposed so the caller can audit their rollups.
+   * rooms it disposed so the caller can audit their rollups. Also waits for a
+   * last-leave disposal that already removed its room but is still writing.
    */
   async drain(): Promise<Room[]> {
     const disposed: Room[] = [];
     for (const room of [...this.rooms.values()]) {
       if (await this.dispose(room)) disposed.push(room);
     }
+    await Promise.all(this.closing.values());
     return disposed;
   }
 
