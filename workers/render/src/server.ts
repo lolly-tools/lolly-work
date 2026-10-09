@@ -35,6 +35,7 @@ import { createSemaphore } from './semaphore.ts';
 import { declaredOrigins, egressChecker } from './egress.ts';
 import { renderWebBase } from './web-base.ts';
 import { workerBrowserOptions } from './browser-launch.ts';
+import { RequestLifecycle } from './request-lifecycle.ts';
 
 const PORT = Number(process.env.PORT ?? 8791);
 const SECRET = process.env.LW_RENDER_WORKER_SECRET ?? '';
@@ -119,13 +120,14 @@ function exportUrl(toolId: string, query: string, overrides: Record<string, unkn
   return `${WEB_BASE}/t/${encodeURIComponent(toolId)}?${params.toString()}`;
 }
 
-async function withContext<T>(signal: AbortSignal, options: BrowserContextOptions, run: (ctx: BrowserContext) => Promise<T>): Promise<T> {
+async function withContext<T>(signal: AbortSignal, options: BrowserContextOptions, run: (ctx: BrowserContext, requests: RequestLifecycle) => Promise<T>): Promise<T> {
   signal.throwIfAborted();
   const browser = await getBrowser();
   signal.throwIfAborted();
   const ctx = await browser.newContext(options);
+  const requests = new RequestLifecycle();
   let closing: Promise<void> | undefined;
-  const close = () => closing ??= ctx.close();
+  const close = () => { requests.close(); return closing ??= ctx.close(); };
   let rejectStopped!: (error: unknown) => void;
   const stopped = new Promise<never>((_, reject) => { rejectStopped = reject; });
   // A context can close while newPage remains pending. Cancellation settles
@@ -137,10 +139,17 @@ async function withContext<T>(signal: AbortSignal, options: BrowserContextOption
       signal.throwIfAborted();
       // A rendered page has no reason to hold a WebSocket, and the request router in
       // run() does not see them, so every one is refused (never connected to a server).
-      await ctx.routeWebSocket?.('**', (ws) => { void ws.close({ code: 1008, reason: 'refused by the render worker' }); });
-      return run(ctx);
+      await ctx.routeWebSocket?.('**', (ws) => {
+        const refuse = () => ws.close({ code: 1008, reason: 'refused by the render worker' });
+        return requests.track(refuse, refuse);
+      });
+      const output = await run(ctx, requests);
+      signal.throwIfAborted();
+      await requests.drain();
+      signal.throwIfAborted();
+      return output;
     });
-    const result = Promise.race([work, stopped]);
+    const result = Promise.race([work, stopped, requests.failure]);
     if (signal.aborted) abort();
     return await result;
   } finally {
@@ -150,7 +159,7 @@ async function withContext<T>(signal: AbortSignal, options: BrowserContextOption
 }
 
 async function renderSvg(job: { toolId: string; query: string; overrides: Record<string, unknown>; brandRevision?: string; readToken?: string; evidence?: boolean; inputIds?: string[]; requestSha256?: string }, signal: AbortSignal) {
-  return withContext(signal, { serviceWorkers: 'block', acceptDownloads: true }, async ctx => {
+  return withContext(signal, { serviceWorkers: 'block', acceptDownloads: true }, async (ctx, requests) => {
     // Server exports have no member AI lease. Keep their supported shell AI
     // paths off even if WEB_BASE points at a standalone build. Also refuse
     // model assets on the worker's network path (fresh context, no SW cache).
@@ -163,34 +172,34 @@ async function renderSvg(job: { toolId: string; query: string; overrides: Record
     const mismatchedBrand = new Promise<never>((_, reject) => { rejectBrand = reject; });
     void mismatchedBrand.catch(() => {});
     const egress = egressChecker(DECLARED_ORIGINS);
-    await ctx.route('**/*', async route => {
+    await ctx.route('**/*', route => requests.track(async () => {
       const raw = route.request().url();
       const verdict = await egress(raw);
-      if (!verdict.allow) { refused(raw, verdict.reason); return route.abort('blockedbyclient'); }
+      if (!verdict.allow) { refused(raw, verdict.reason); await route.abort('blockedbyclient'); return; }
+      signal.throwIfAborted();
       const url = new URL(raw);
       const readPath = /^(\/catalog\/|\/tools\/|\/api\/auth\/config$)/.test(url.pathname);
-      if (url.origin !== new URL(WEB_BASE).origin) return route.continue();
+      if (url.origin !== new URL(WEB_BASE).origin) { await route.continue(); return; }
       if (job.readToken && (readPath && !/^\/(catalog|tools)(\/|$)/.test(url.pathname) || projectFileRead(route.request().method(), url.pathname))) {
         const response = await route.fetch({ maxRedirects: 0, headers: { ...route.request().headers(), 'x-lw-render-read': job.readToken } });
-        return route.fulfill({ response });
+        await route.fulfill({ response }); return;
       }
-      if (!job.brandRevision || !/^\/(catalog|tools|api\/brand)(\/|$)/.test(url.pathname)) return route.continue();
-      try {
-        const response = await route.fetch({ maxRedirects: 0, headers: { ...route.request().headers(), 'x-lolly-brand-revision': job.brandRevision,
-          ...(readPath && job.readToken ? { 'x-lw-render-read': job.readToken } : {}) } });
-        if (response.headers()['x-lolly-brand-revision'] !== job.brandRevision || response.status() === 409) {
-          rejectBrand(new Error('The catalogue revision changed or the worker is not connected to this instance. Retry after refreshing.'));
-          return route.abort('failed');
-        }
-        confirmedBrand = true;
-        return route.fulfill({ response });
-      } catch (error) { rejectBrand(error as Error); return route.abort('failed'); }
-    });
+      if (!job.brandRevision || !/^\/(catalog|tools|api\/brand)(\/|$)/.test(url.pathname)) { await route.continue(); return; }
+      const response = await route.fetch({ maxRedirects: 0, headers: { ...route.request().headers(), 'x-lolly-brand-revision': job.brandRevision,
+        ...(readPath && job.readToken ? { 'x-lw-render-read': job.readToken } : {}) } });
+      if (response.headers()['x-lolly-brand-revision'] !== job.brandRevision || response.status() === 409) {
+        rejectBrand(requests.fail('The catalogue revision changed or the worker is not connected to this instance. Retry after refreshing.'));
+        await route.abort('failed'); return;
+      }
+      confirmedBrand = true;
+      await route.fulfill({ response });
+    }, () => route.abort('failed')));
     signal.throwIfAborted();
     const page = await ctx.newPage();
     signal.throwIfAborted();
     const observedInputs = await observeProductionInputs(page, job.toolId, job.evidence ? job.inputIds ?? [] : []);
     const finishEvidence = job.evidence ? observeWorkerResources(page) : undefined;
+    requests.setDeadline(Date.now() + EXPORT_TIMEOUT_MS);
     const downloadP = page.waitForEvent('download', { timeout: EXPORT_TIMEOUT_MS });
     void downloadP.catch(() => {});
     // 'commit' returns once navigation starts; the export fires later, after the
@@ -251,14 +260,15 @@ async function rasterise(job: { svg: string; format: string; width?: number }, s
   const fmt = job.format.toLowerCase();
   // This path receives a finished SVG, not an application: embedded scripts
   // must not execute, and model URLs must not acquire weights through markup.
-  return withContext(signal, { serviceWorkers: 'block', deviceScaleFactor: 1, javaScriptEnabled: false }, async ctx => {
+  return withContext(signal, { serviceWorkers: 'block', deviceScaleFactor: 1, javaScriptEnabled: false }, async (ctx, requests) => {
     const egress = egressChecker(DECLARED_ORIGINS);
-    await ctx.route('**/*', async (route) => {
+    await ctx.route('**/*', route => requests.track(async () => {
       const raw = route.request().url();
       const verdict = await egress(raw);
-      if (!verdict.allow) { refused(raw, verdict.reason); return route.abort('blockedbyclient'); }
-      return route.continue();
-    });
+      if (!verdict.allow) { refused(raw, verdict.reason); await route.abort('blockedbyclient'); return; }
+      signal.throwIfAborted();
+      await route.continue();
+    }, () => route.abort('failed')));
     signal.throwIfAborted();
     const page = await ctx.newPage();
     signal.throwIfAborted();
@@ -268,6 +278,7 @@ async function rasterise(job: { svg: string; format: string; width?: number }, s
     const html = `<!doctype html><meta charset="utf-8">`
       + `<style>*{margin:0;padding:0}html,body{background:transparent}`
       + `svg{display:block;${w ? `width:${w}px;height:auto;` : ''}}</style>${job.svg}`;
+    requests.setDeadline(Date.now() + EXPORT_TIMEOUT_MS);
     await page.setContent(html, { waitUntil: 'networkidle', timeout: EXPORT_TIMEOUT_MS });
     signal.throwIfAborted();
     if (fmt === 'pdf') {
