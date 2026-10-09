@@ -294,6 +294,11 @@
           "summary": "Read-only configuration checks, staging probes and the evidence still needed before production."
         },
         {
+          "slug": "application-release-classification",
+          "title": "Application release classification",
+          "summary": "Advisory Git comparison for web-shell changes, conservative shared-source boundaries and required release qualification."
+        },
+        {
           "slug": "telemetry",
           "title": "Telemetry and dashboards",
           "summary": "What is recorded, what never is, and how attribution consent works."
