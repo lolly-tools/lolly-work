@@ -39,6 +39,120 @@ SOURCE_NAMES = {'stage-public-shell.py', 'stage-private-shell.py', 'prepare-publ
 INPUT_KEYS = {'version', 'target', 'prepared', 'planningEvidence', 'baseline', 'publicKey', 'preflight', 'hostProbe',
               'names', 'storage', 'minimumFreeBytes', 'maximumWriteBytes', 'outputDirectory', 'node', 'sourceFiles'}
 
+# This program reads metadata through the already reviewed host transport. It
+# never repairs modes, writes a label, mounts storage or reads asset contents.
+ROOT_METADATA_SCRIPT = r'''import errno, hashlib, json, os, pathlib, stat, subprocess, sys
+def need(value):
+    if not value: raise RuntimeError("Read-only local PV root metadata refused")
+def canonical(value): return json.dumps(value,sort_keys=True,separators=(",",":")).encode()
+x=json.loads(sys.argv[1])
+need(type(x) is dict and set(x)=={"version","kubectl","clusterUID","node","claim","pv","storageClass"} and type(x["version"]) is int and x["version"]==1)
+def get(kind,name,namespace=None):
+    argv=[*x["kubectl"],"get",kind,name,"-o","json"]
+    if namespace: argv.extend(["--namespace",namespace])
+    result=subprocess.run(argv,capture_output=True,timeout=30)
+    need(result.returncode==0 and len(result.stdout)<=2*1024**2 and len(result.stderr)<=16384)
+    return json.loads(result.stdout)
+def guards():
+    need(get("namespace","kube-system")["metadata"]["uid"]==x["clusterUID"])
+    node=get("node",x["node"]["name"])
+    need(node["metadata"]["uid"]==x["node"]["uid"] and not node["metadata"].get("deletionTimestamp") and any(c.get("type")=="Ready" and c.get("status")=="True" for c in node.get("status",{}).get("conditions",[])))
+    for field in ("claim","pv","storageClass"):
+        want=x[field]; actual=get(want["kind"],want["metadata"]["name"],want["metadata"].get("namespace"))
+        need(actual.get("apiVersion")==want["apiVersion"] and actual.get("kind")==want["kind"] and all(actual.get("metadata",{}).get(k)==want["metadata"].get(k) for k in ("name","namespace","uid")) and not actual["metadata"].get("deletionTimestamp"))
+        need({k:v for k,v in actual.items() if k not in {"metadata","status"}}=={k:v for k,v in want.items() if k not in {"metadata","status"}})
+        if field!="storageClass": need(actual.get("status",{}).get("phase")=="Bound")
+guards()
+p=pathlib.Path(x["pv"]["spec"]["local"]["path"])
+need(p.is_absolute() and str(p)==x["pv"]["spec"]["local"]["path"] and ".." not in p.parts)
+paths=[*reversed(p.parents),p]
+def stamp(value): return [value.st_dev,value.st_ino,value.st_mode,value.st_uid,value.st_gid,value.st_size,value.st_mtime_ns,value.st_ctime_ns]
+before=[q.lstat() for q in paths]
+need(all(stat.S_ISDIR(v.st_mode) and not stat.S_ISLNK(v.st_mode) for v in before))
+try:
+    label=os.getxattr(p,"security.selinux",follow_symlinks=False).decode("ascii").rstrip("\0") if hasattr(os,"getxattr") else None
+    if label is None: raise OSError(errno.ENOTSUP,"xattr API unavailable")
+    need(len(label)<=256 and "\n" not in label and "\0" not in label)
+except OSError as error:
+    need(error.errno in {errno.ENODATA,errno.ENOTSUP,getattr(errno,"EOPNOTSUPP",errno.ENOTSUP)})
+    label=None
+guards()
+after=[q.lstat() for q in paths]
+need([stamp(v) for v in before]==[stamp(v) for v in after])
+def metadata(q,v): return {"path":str(q),"device":v.st_dev,"inode":v.st_ino,"mode":stat.S_IMODE(v.st_mode),"uid":v.st_uid,"gid":v.st_gid}
+print(canonical({"version":1,"status":"READ_ONLY_PUBLIC_LOCAL_PV_ROOT_METADATA_OBSERVED","clusterUID":x["clusterUID"],"node":x["node"],"claimUID":x["claim"]["metadata"]["uid"],"pvUID":x["pv"]["metadata"]["uid"],"pvSpecSha256":hashlib.sha256(canonical(x["pv"]["spec"])).hexdigest(),"root":{**metadata(p,before[-1]),"selinuxLabel":label},"ancestors":[metadata(q,v) for q,v in zip(paths[:-1],before[:-1])],"readOnly":True,"productionMutation":False}).decode())
+'''
+
+
+def validate_root_metadata(value, target, claim, pv):
+    exact(value, {'version','status','clusterUID','node','claimUID','pvUID','pvSpecSha256','root','ancestors','readOnly','productionMutation'})
+    require(type(value['version']) is int and value['version'] == 1 and value['status'] == 'READ_ONLY_PUBLIC_LOCAL_PV_ROOT_METADATA_OBSERVED'
+            and value['clusterUID'] == target['clusterUID'] and value['node'] == target['node'] and value['claimUID'] == claim['metadata']['uid']
+            and value['pvUID'] == pv['metadata']['uid'] and value['pvSpecSha256'] == cohort.digest(pv['spec'])
+            and value['readOnly'] is True and value['productionMutation'] is False, 'Actual read-only root proof identity differs')
+    root = value['root']; exact(root, {'path','device','inode','mode','uid','gid','selinuxLabel'})
+    require(root['path'] == pv['spec']['local']['path'] and all(type(root[k]) is int and root[k] >= 0 for k in ('device','inode','mode','uid','gid'))
+            and root['inode'] > 0 and root['mode'] <= 0o7777 and root['gid'] == 101 and root['mode'] & 0o770 == 0o770 and root['mode'] & 0o2000,
+            'Local PV root must already have GID 101, owner/group rwx and setgid; no repair is permitted')
+    require(root['selinuxLabel'] is None or isinstance(root['selinuxLabel'],str) and len(root['selinuxLabel']) <= 256
+            and '\n' not in root['selinuxLabel'] and '\0' not in root['selinuxLabel'], 'Invalid bounded root label metadata')
+    ancestors = value['ancestors']; paths = [str(p) for p in reversed(Path(root['path']).parents)]
+    require(isinstance(ancestors,list) and [r.get('path') for r in ancestors] == paths, 'Complete actual non-link ancestry required')
+    for row in ancestors:
+        exact(row, {'path','device','inode','mode','uid','gid'})
+        require(all(type(row[k]) is int and row[k] >= 0 for k in ('device','inode','mode','uid','gid')) and row['inode'] > 0 and row['mode'] <= 0o7777, 'Invalid original ancestor metadata')
+    return value
+
+
+def same_root(before, after):
+    # SELinux categories and ctime may change during the normal kubelet handoff;
+    # filesystem identity and DAC permissions must not. Never share MCS labels.
+    require(all(before.get(k) == after.get(k) for k in ('clusterUID','node','claimUID','pvUID','pvSpecSha256'))
+            and before['ancestors'] == after['ancestors']
+            and {k:v for k,v in before['root'].items() if k != 'selinuxLabel'} == {k:v for k,v in after['root'].items() if k != 'selinuxLabel'},
+            'PV root identity or DAC mode changed during read-only handoff')
+
+
+def root_command(guard, config):
+    encoded = cohort.canonical(config)
+    require(len(encoded) <= 64 * 1024, 'Bounded exact metadata configuration required')
+    command = ['python3','-c',ROOT_METADATA_SCRIPT,encoded.decode()]
+    t = guard.target['transport']
+    if t['type'] == 'ssh':
+        if t.get('sudo'): command = ['sudo','-n',*command]
+        command = [*guard.transport([])[:-1],private.shlex.join(command)]
+    return command
+
+
+def root_proof(ref, guard, claim, pv):
+    """Bind metadata to the exact retained read-only program and original bytes."""
+    proof = guard.inputs.file(ref); exact(proof, {'metadata','originalCommand'})
+    value = validate_root_metadata(proof['metadata'],guard.target,claim,pv)
+    command = guard.inputs.file(proof['originalCommand'])
+    require(command.get('exitCode') == 0 and command.get('timedOut') is False and command.get('readOnlyMountProbe') is False
+            and set(command.get('originals',{})) == {'stdout','stderr'}, 'Genuine original root metadata command required')
+    argv = command.get('argv'); require(isinstance(argv,list) and argv, 'Exact root command argv required')
+    inner = private.shlex.split(argv[-1]) if guard.target['transport']['type'] == 'ssh' else argv
+    if guard.target['transport'].get('sudo'): require(inner[:2] == ['sudo','-n'], 'Root reader privilege prefix differs'); inner = inner[2:]
+    require(len(inner) == 4 and inner[:3] == ['python3','-c',ROOT_METADATA_SCRIPT], 'Read-only metadata program changed')
+    config = cohort.parse_json(inner[3].encode()); exact(config, {'version','kubectl','clusterUID','node','claim','pv','storageClass'})
+    t = guard.target['transport']
+    require(type(config['version']) is int and config['version'] == 1 and config['clusterUID'] == guard.target['clusterUID'] and config['node'] == guard.target['node']
+            and config['kubectl'] == [*t['kubectl'],'--kubeconfig',t['kubeconfig'],'--context',t['context']] and argv == root_command(guard,config), 'Metadata origin/target/transport changed')
+    for role, expected in (('claim',claim),('pv',pv),('storageClass',guard.baseline['storageClass'])):
+        actual = config[role]
+        require(actual.get('apiVersion') == expected['apiVersion'] and actual.get('kind') == expected['kind']
+                and all(actual.get('metadata',{}).get(k) == expected['metadata'].get(k) for k in ('name','namespace','uid'))
+                and isinstance(actual['metadata'].get('resourceVersion'),str) and actual['metadata']['resourceVersion'] and not actual['metadata'].get('deletionTimestamp')
+                and {k:v for k,v in actual.items() if k not in {'metadata','status'}} == {k:v for k,v in expected.items() if k not in {'metadata','status'}}, 'Metadata resource identity/spec changed')
+    for name in ('stdout','stderr'):
+        original = command['originals'][name]
+        require(original.get('complete') is True and type(original.get('observedBytes')) is int and 0 <= original['observedBytes'] <= 1024**2, 'Metadata command bytes incomplete')
+        raw = guard.inputs.file({k:original[k] for k in ('path','sha256')},False).read_bytes()
+        require(len(raw) == original['observedBytes'], 'Metadata command original byte size differs')
+        require((cohort.parse_json(raw) == value) if name == 'stdout' else raw == b'', 'Metadata proof differs from actual stdout or stderr')
+    return value
+
 
 def checksum(path): return cohort.hash_file(Path(path), cohort.MAX_BYTES)[1]
 
@@ -217,12 +331,7 @@ def catalog_bytes(index, envelope_bytes, pin, catalog, files, node):
 
 
 def validate_public_pod(actual, desired, ready=False, dry_run=False):
-    """Keep explicit PVC readOnly:true exact across ordinary API defaults.
-
-    The shared stage validator handles omitted/false PVC readOnly defaults; a
-    public qualifier and production overlay explicitly use true. Verify that
-    bit first and remove it only from comparison copies for the shared validator.
-    """
+    """Preserve exact container read-only mounts and managed PVC sources."""
     copied, wanted = copy.deepcopy(actual), copy.deepcopy(desired)
     require(len(copied.get('spec',{}).get('volumes',[])) == len(wanted['spec']['volumes']), 'Exact public owner volume count required')
     for volume, expected in zip(copied['spec']['volumes'],wanted['spec']['volumes']):
@@ -263,10 +372,9 @@ def make_resources(prepared, before, target, names, storage):
                      'volumeMounts':[{'name':'tmp','mountPath':'/tmp'}]}
         volumes = [copy.deepcopy(overlay),{'name':'tmp','emptyDir':{'sizeLimit':'128Mi'}}]
         if readonly:
-            # The PVC source bit also controls kubelet fsGroup permission
-            # management; container readOnly mounts alone leave the source RW.
-            volumes[0]['persistentVolumeClaim']['readOnly'] = True
-            container['volumeMounts'] += [{'name':selected['shellVolume'],'mountPath':public.ROOT+'/'+p,'subPath':p,'readOnly':True} for p in public.PATHS]
+            # Source remains managed RW for kubelet SELinux relabeling; every
+            # container overlay mount is RO. The first mount covers the root.
+            container['volumeMounts'] += public.overlay_mounts(selected['shellVolume'])
             container['volumeMounts'].append(copy.deepcopy(config_mount)); volumes.append(copy.deepcopy(config_volume))
             for key in ('command','args'):
                 if key in server: container[key] = copy.deepcopy(server[key])
@@ -275,7 +383,7 @@ def make_resources(prepared, before, target, names, storage):
             container['volumeMounts'].append({'name':selected['shellVolume'],'mountPath':'/stage/overlay'})
         return {'apiVersion':'v1','kind':'Pod','metadata':{'name':name,'namespace':namespace,'labels':label},
                 'spec':{'nodeName':target['node']['name'],'restartPolicy':'Never','automountServiceAccountToken':False,'enableServiceLinks':False,
-                        'securityContext':{'runAsNonRoot':True,'runAsUser':101,'runAsGroup':101,'fsGroup':101,'seccompProfile':{'type':'RuntimeDefault'}},
+                        'securityContext':{'runAsNonRoot':True,'runAsUser':101,'runAsGroup':101,'fsGroup':101,**({'fsGroupChangePolicy':'OnRootMismatch'} if readonly else {}),'seccompProfile':{'type':'RuntimeDefault'}},
                         'containers':[container],'volumes':volumes}}
     return {'shellClaim':claim,'policy':{'apiVersion':'networking.k8s.io/v1','kind':'NetworkPolicy','metadata':{'name':names['policy'],'namespace':namespace,'labels':label},
                                        'spec':{'podSelector':{'matchLabels':label},'policyTypes':['Ingress','Egress']}},
@@ -468,6 +576,28 @@ class Stage(private.Stage):
         require(pv['metadata']['uid'] == ids['shellClaimPV']['metadata']['uid'] and pv['spec'] == ids['shellClaimPV']['spec'], 'New backing changed')
         return pv
 
+    def root_metadata(self, models=False):
+        """Read the whole local PV root through its reviewed host, never a Pod."""
+        pv = self.inputs.file(self.previous['modelsPV']) if models else self.verify_bindings()
+        original_claim = self.inputs.file(self.previous['modelsClaim']) if models else self.identities()['shellClaim']
+        claim = self.get('pvc',original_claim['metadata']['name'],original_claim['metadata']['namespace'])
+        require(claim['metadata']['uid'] == original_claim['metadata']['uid'], 'Root metadata claim replaced')
+        resources.bound_claim(claim,{pv['metadata']['name']:pv},self.namespace)
+        require('local' in pv['spec'] and resources.backing(pv) == ('node-path',self.target['node']['name'],pv['spec']['local']['path'])
+                and pv['spec']['storageClassName'] == self.baseline['storageClass']['metadata']['name']
+                and self.baseline['storageClass'].get('provisioner') == 'rancher.io/local-path',
+                'RootMismatch handoff requires the pinned managed local plugin and local-path provisioner; CSI and hostPath refuse')
+        sc = self.get('storageclass',self.baseline['storageClass']['metadata']['name'])
+        require(sc['metadata']['uid'] == self.baseline['storageClass']['metadata']['uid'] and not sc['metadata'].get('deletionTimestamp')
+                and {k:v for k,v in sc.items() if k != 'metadata'} == {k:v for k,v in self.baseline['storageClass'].items() if k != 'metadata'}, 'Root metadata storage class changed')
+        t = self.target['transport']
+        config = {'version':1,'kubectl':[*t['kubectl'],'--kubeconfig',t['kubeconfig'],'--context',t['context']],
+                  'clusterUID':self.target['clusterUID'],'node':self.target['node'],'claim':claim,'pv':pv,'storageClass':sc}
+        raw = self.run(root_command(self,config),timeout=240)
+        value = validate_root_metadata(cohort.parse_json(raw),self.target,claim,pv)
+        require(self.events, 'Original metadata command receipt missing')
+        return self.save(('models' if models else 'overlay')+'-root-'+uuid.uuid4().hex+'.original.json',{'metadata':value,'originalCommand':self.events[-1]})
+
     def allocate_claims(self):
         ids = self.identities(); before = self.get('pvc',ids['shellClaim']['metadata']['name'],self.namespace)
         require(before['metadata']['uid'] == ids['shellClaim']['metadata']['uid'], 'Allocation claim replaced'); private.validate_claim(before,self.desired['shellClaim'])
@@ -568,13 +698,16 @@ class Stage(private.Stage):
         retired = self.prior('retire-writer')
         def body():
             require(self.absent('pod',retired['pod']['metadata']['name']), 'Writer reappeared'); self.mount_release(retired['pod']['metadata']['uid'])
+            # A mismatched root would trigger kubelet's recursive mode changes.
+            # Observe after writer retirement and before either admission/create.
+            root = self.root_metadata()
             created = self.admitted_pod(self.desired['qualifier']); self.save('create-qualifier.original.json',created)
             self.remote(['wait','--for=condition=Ready','pod/'+created['metadata']['name'],'-n',self.namespace,'--timeout=120s'],timeout=140)
-            pod = self.owned('qualifier'); self.preflight(pod['metadata']['uid']); return {'pod':pod}
+            pod = self.owned('qualifier'); self.preflight(pod['metadata']['uid']); return {'pod':pod,'rootMetadata':root}
         return self.phase('create-qualifier',body)
 
     def qualify(self):
-        self.prior('create-qualifier')
+        created = self.prior('create-qualifier')
         def body():
             pod = self.owned('qualifier'); self.fresh(pod['metadata']['uid']); self.verify_bindings()
             static,hashes = self.full_tree(pod,self.effective.files); catalog = self.catalog(pod)
@@ -585,9 +718,12 @@ class Stage(private.Stage):
             expected = self.effective.files['index.html']; data = self.remote(['exec','-n',self.namespace,pod['metadata']['name'],'-c','stager','--','wget','-q','-O','-','http://127.0.0.1:8080/index.html'])
             require(len(data) == expected['size'] and hashlib.sha256(data).hexdigest() == expected['sha256'], 'Actual isolated Nginx HTTP body differs')
             self.fresh(pod['metadata']['uid']); self.verify_bindings()
+            root = self.root_metadata(); ids = self.identities()
+            same_root(root_proof(created['rootMetadata'],self,ids['shellClaim'],ids['shellClaimPV']),root_proof(root,self,ids['shellClaim'],ids['shellClaimPV']))
             return {'runtimeStatus':'ISOLATED_PUBLIC_SHELL_RUNTIME_VERIFIED','pod':pod,'image':self.prepared['image'],'sources':self.prepared['sources'],
                     'static':static,'hashes':hashes,'catalog':catalog,'staticManifestSha256':self.producer['shell']['manifest']['sha256'],
-                    'overlayManifestSha256':self.new.manifest_sha,'fullStaticHashesVerified':True,'publicCatalogSignatureVerified':True,'nginxLoopbackIndexVerified':True,'modelsMounted':False,'originalCommands':self.events}
+                    'overlayManifestSha256':self.new.manifest_sha,'fullStaticHashesVerified':True,'publicCatalogSignatureVerified':True,'nginxLoopbackIndexVerified':True,'modelsMounted':False,
+                    'rootMetadata':{'before':created['rootMetadata'],'after':root},'originalCommands':self.events}
         return self.phase('qualify',body)
 
     def retire(self):

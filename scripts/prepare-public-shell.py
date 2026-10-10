@@ -27,6 +27,9 @@ STATUS = "PUBLIC_SHELL_OVERLAY_PREPARED_NOT_RUNTIME_QUALIFIED_NOT_APPLIED"
 PRODUCER_STATUS = "LOCAL_PUBLIC_SHELL_UPDATE_PREPARED_UNQUALIFIED"
 SETTINGS = {"catalogTrustMode": "verified", "requireAiPolicy": False, "liveRelay": "https://lolly.tools/live", "siteUrl": "https://lolly.tools"}
 ROOT = "/usr/share/nginx/html"
+OVERLAY_ANCHOR = "/run/lolly-public-overlay"
+FS_GROUP_POLICY = "OnRootMismatch"
+PUBLIC_GROUP = 101
 PATHS = ("_app", "index.html", "precache.json", "sw.js", "portable/player.js")
 CATALOG_KEYS = {"indexSha256", "envelopeSha256", "pinCanonicalSha256", "keyId", "signedFiles"}
 BASELINE_KEYS = {"version", "imageSource", "shellSource", "image", "profile", "settings", "publicKeySha256", "publicCatalog", "staticManifest", "overlay", "deploymentSpecSha256", "deployment", "nginxConfig", "modelsClaim", "modelsPV", "policyInventory", "serviceInventory", "originalEvidence"}
@@ -36,6 +39,13 @@ PRODUCER_SOURCES = {"prepare-public-shell-update.ts", "prepare-shell-update.ts",
 
 def overlay_path(path):
     return path.startswith("_app/") or path in PATHS[1:]
+
+
+def overlay_mounts(volume):
+    # Kubelet marks a managed volume relabeled at its first container mount.
+    # Relabel the whole new overlay before resolving its serving subPaths.
+    return [{"name": volume, "mountPath": OVERLAY_ANCHOR, "readOnly": True},
+            *[{"name": volume, "mountPath": ROOT + "/" + path, "readOnly": True, "subPath": path} for path in PATHS]]
 
 
 def resource(value, api, kind, namespace=None):
@@ -165,22 +175,28 @@ def desired_spec(previous, before, selection, source, overlay_sha):
     config_volumes = [v for v in volumes if v.get("name") == config[0]["name"]]
     require(len(model_volumes) == len(config_volumes) == 1 and model_volumes[0].get("persistentVolumeClaim", {}).get("claimName") == previous["modelsName"]
             and config_volumes[0].get("configMap", {}).get("name") == previous["nginxName"], "Mounted accepted models/config resource differs")
+    require(model_volumes[0]["persistentVolumeClaim"].get("readOnly", False) is False, "Accepted model source must retain local volume management")
+    security = pod.get("securityContext", {})
+    require(all(type(security.get(key)) is int and security[key] == PUBLIC_GROUP for key in ("runAsUser", "runAsGroup", "fsGroup")), "Accepted public UID/GID/fsGroup must remain integer 101")
     require(selection["shellClaim"] not in {v.get("persistentVolumeClaim", {}).get("claimName") for v in volumes}, "New public shell claim must be distinct from every mounted claim")
     desired = copy.deepcopy(before["spec"]); selected = desired["template"]["spec"]; target = selected["containers"][0]
-    expected_mounts = [{"name": selection["shellVolume"], "mountPath": ROOT + "/" + path, "readOnly": True, "subPath": path} for path in PATHS]
+    expected_mounts = overlay_mounts(selection["shellVolume"])
     if previous["overlay"] is None:
+        require(security.get("fsGroupChangePolicy") in (None, "Always", FS_GROUP_POLICY), "Unknown accepted fsGroup policy")
         require(selection["shellVolume"] not in {v.get("name") for v in volumes}, "Bootstrap shell volume already exists")
         for m in mounts:
             path = m.get("mountPath")
-            require(isinstance(path, str) and all(path != ROOT + "/" + p and not (ROOT + "/" + p).startswith(path.rstrip("/") + "/") and not path.startswith(ROOT + "/" + p + "/") for p in PATHS), "Existing mount overlaps a selected public overlay path")
+            require(isinstance(path, str) and all(path != p and not p.startswith(path.rstrip("/") + "/") and not path.startswith(p + "/") for p in [OVERLAY_ANCHOR, *[ROOT + "/" + p for p in PATHS]]), "Existing mount overlaps a selected public overlay path")
         target["volumeMounts"] += expected_mounts
-        selected["volumes"].append({"name": selection["shellVolume"], "persistentVolumeClaim": {"claimName": selection["shellClaim"], "readOnly": True}})
+        selected["volumes"].append({"name": selection["shellVolume"], "persistentVolumeClaim": {"claimName": selection["shellClaim"]}})
+        selected["securityContext"]["fsGroupChangePolicy"] = FS_GROUP_POLICY
     else:
         old = previous["overlay"]; exact(old, {"volume", "claim", "claimUID", "manifest"})
         require(old["volume"] == selection["shellVolume"] and isinstance(old["claimUID"], str) and old["claimUID"], "Accepted public overlay tuple differs")
-        require([m for m in mounts if m.get("name") == selection["shellVolume"]] == expected_mounts, "Accepted public overlay must have exactly the five read-only mounts")
+        require(security.get("fsGroupChangePolicy") == FS_GROUP_POLICY, "Accepted public fsGroup policy differs")
+        require([m for m in mounts if m.get("name") == selection["shellVolume"]] == expected_mounts, "Accepted public overlay anchor and five read-only mounts differ")
         indexes = [i for i, v in enumerate(volumes) if v.get("name") == selection["shellVolume"]]
-        require(len(indexes) == 1 and volumes[indexes[0]] == {"name": selection["shellVolume"], "persistentVolumeClaim": {"claimName": old["claim"], "readOnly": True}}, "Accepted public overlay volume differs")
+        require(len(indexes) == 1 and volumes[indexes[0]] == {"name": selection["shellVolume"], "persistentVolumeClaim": {"claimName": old["claim"]}}, "Accepted public overlay managed source differs")
         selected["volumes"][indexes[0]]["persistentVolumeClaim"]["claimName"] = selection["shellClaim"]
     annotations = desired["template"]["metadata"].setdefault("annotations", {})
     if previous["overlay"] is not None:
@@ -279,9 +295,10 @@ def prepare(value, base, node="node", runner=shared.git_command):
                                        {"op": "test", "path": "/spec", "value": before["spec"]}, {"op": "replace", "path": "/spec", "value": desired}],
               "rollbackIntent": {"spec": before["spec"], "requiresFreshIdentityAndAcceptedCurrentSpec": True}, "compatibility": compatibility,
               "modelsClaim": models["metadata"]["name"], "modelsClaimUID": models["metadata"]["uid"], "modelsPVUID": pv["metadata"]["uid"], "nginxConfig": config["metadata"]["name"], "nginxConfigUID": config["metadata"]["uid"],
+              "selectedSpecFields": ["public overlay claim and source", "whole-overlay read-only anchor before five read-only serving mounts", "securityContext.fsGroupChangePolicy", "public shell provenance"],
               "allUnselectedSpecFieldsPreserved": True, "previousBaselineSha256": value["previous"]["sha256"], "operatorSourceFiles": operator_sources, "evidence": [{"path": str(p), "sha256": digest} for p, (_, digest) in sorted(inputs.reads.items())],
               "qualificationBoundary": {"localReviewedEvidence": True, "originAuthenticatedByThisCommand": False, "runtimeQualified": False, "productionMutation": False, "ociSignatureClaimed": False, "privateReceiptReuse": False},
-              "requiredBeforeApply": ["Reviewed complete current namespace/PV/owner/Node inventories and backing-alias proof", "Only NEW isolated overlay claim; never mount active model or shell storage into staging", "Exact accepted-image read-only Nginx/catalog/static/TLS/browser qualification", "Writer and qualifier retirement, UID deletion guards and observed mount release", "check-target immediately before each mutation, server admission proof, single-use intent and no ambiguous replay", "Fresh full-spec guarded promotion, actual owner/image/mount checks and post-promotion acceptance"]}
+              "requiredBeforeApply": ["Reviewed complete current namespace/PV/owner/Node inventories and backing-alias proof", "Only NEW isolated overlay claim; never mount active model or shell storage into staging", "Fresh local-plugin PV root GID 101, group rwx and setgid before qualifier and promotion; model root mismatch refuses without repair", "Exact accepted-image read-only Nginx/catalog/static/TLS/browser qualification", "Writer and qualifier retirement, UID deletion guards and observed mount release", "check-target immediately before each mutation, server admission proof, single-use intent and no ambiguous replay", "Fresh full-spec guarded promotion, actual owner/image/mount checks and post-promotion acceptance"]}
     inputs.unchanged(); return result, inputs
 
 

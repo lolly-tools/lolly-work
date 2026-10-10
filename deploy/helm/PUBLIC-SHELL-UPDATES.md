@@ -6,12 +6,14 @@ updates: the public server is Nginx, has no Work raw pack or private engine-pin
 mount, and serves the neutral `lolly-start` catalog. A private artifact or runtime
 receipt cannot qualify a public update.
 
-The maintained producer and offline planner are available. Public staging,
-promotion and actual owning-runtime acceptance are still separate work. Neither
-command below contacts a cluster, authenticates receipt origins, deploys, or
-turns a local build into runtime qualification. For `lolly.tools`, read the
-instance's production handoff before selecting a target. Its historical
-`candidate` host/context is the production cluster.
+The maintained producer, offline planner, stager and publisher are available.
+Start with the [ordinary frontend update guide](../../docs/frontend-updates.md)
+for the developer/operator handoff, then follow
+[public staging and promotion](PUBLIC-SHELL-PROMOTION.md). The two preparation
+commands below make no cluster calls or deployment changes and do not authenticate
+receipt origins. Local preparation is not owning-runtime acceptance. For
+`lolly.tools`, read the instance's production handoff before selecting a target.
+Its historical `candidate` host/context is the production cluster.
 
 ## One initial overlay, then small code updates
 
@@ -26,9 +28,20 @@ One new shell PVC supplies exactly these five **read-only** subPath mounts:
 | `/sw.js` | `sw.js` | Maintained service worker |
 | `/portable/player.js` | `portable/player.js` | Maintained portable player |
 
-The first plan adds one volume and these five mounts. Later plans change only its
-claim name and three public shell provenance annotations. The accepted image,
-model claim/PV/subPath, Nginx ConfigMap, all other mounts, security settings,
+The first plan adds one volume, these five serving mounts and a preceding
+whole-volume read-only anchor at `/run/lolly-public-overlay`. It selects
+`securityContext.fsGroupChangePolicy: OnRootMismatch`. The PVC source stays
+managed and writable to the kubelet; all six application mounts are read-only.
+The whole-volume anchor lets normal SELinux relabeling finish before the serving
+subpaths are resolved. Before each handoff, the maintained operator requires
+fresh whole-root metadata with GID 101, owner/group `rwx` and setgid; it also
+checks the separate model root before publication. A mismatch refuses without
+repair. This handoff supports the pinned `local` volume plugin and
+`rancher.io/local-path` provisioner; CSI and `hostPath` volumes refuse.
+
+Later plans change only the claim name and three public shell provenance
+annotations. The accepted image, model claim/PV/subPath, Nginx ConfigMap, all
+other mounts and security settings,
 resources, probes, policies, services and unselected spec fields stay exact.
 The original image remains available for rollback; a rollback needs fresh live
 identity/spec guards and its own reviewed intent.
@@ -147,9 +160,10 @@ For subsequent updates, `overlay` is
 `{volume,claim,claimUID,manifest}`. Keep the original image expectation as evidence
 item 2; add the prior public overlay plan as item 5, and provide that overlay's
 genuine `PUBLIC_SHELL_RUNTIME_AND_HTTPS_ACCEPTED` runtime receipt, effective static
-inventory and checksum list. This acceptance protocol must be implemented and
-qualified before claiming a repeated public promotion; no such live acceptance
-is produced by this offline lane.
+inventory and checksum list. The maintained publisher emits this acceptance
+protocol after its actual owning-runtime and normal-TLS checks. A repeated public
+promotion requires that genuine previous acceptance; the offline lane emits no
+live acceptance of its own.
 
 ```sh
 python3 scripts/prepare-public-shell.py \
@@ -166,10 +180,13 @@ The planner independently checks normal CI, immutable complete non-shell Git
 tree equality and the signed public catalog, rather than relying on classifier
 or local build success labels. Report-origin authentication remains false.
 
-Before application, a maintained public stager/publisher still needs fresh full
-namespace/Node/PV/backing/owner guards, allocation of only isolated new storage,
-server admission checks, same-image read-only Nginx/static/catalog qualification,
-normal verified HTTPS and browser checks, owned writer/qualifier retirement with
-observed mount release, serialized single-use intents and post-promotion owning
-runtime acceptance. Run the production `check-target.py` immediately before each
+The maintained stager and publisher perform fresh full namespace/Node/PV/backing/
+owner guards, isolated new storage allocation, server admission checks,
+same-image read-only Nginx/static/catalog qualification, exact writer/qualifier
+retirement and host mount release, single-use intents and owning-runtime/normal-TLS
+acceptance. The snapshot uses bounded gzip transport with CRC/trailer, complete
+file hashes and tar end-block validation; truncated streams refuse even when
+the command exits zero. Follow [PUBLIC-SHELL-PROMOTION.md](PUBLIC-SHELL-PROMOTION.md)
+for the reviewed execution inputs and phases. Browser and presentation checks
+remain separate. Run the production `check-target.py` immediately before each
 production mutation; an offline patch template does not replace that preflight.

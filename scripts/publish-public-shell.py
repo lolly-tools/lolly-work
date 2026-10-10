@@ -52,6 +52,10 @@ def review_retirement(proof, guard):
             and runtime.get('overlayManifestSha256') == guard.new.manifest_sha and runtime.get('staticManifestSha256') == guard.producer['shell']['manifest']['sha256']
             and all(runtime.get(k) is True for k in ('fullStaticHashesVerified','publicCatalogSignatureVerified','nginxLoopbackIndexVerified')) and runtime.get('modelsMounted') is False,
             'Complete genuine same-image qualifier proof required')
+    roots = runtime.get('rootMetadata'); exact(roots, {'before','after'})
+    claim, pv = proof['claim'], proof['pv']
+    before_root, after_root = [stage.root_proof(roots[k],guard,claim,pv) for k in ('before','after')]
+    stage.same_root(before_root,after_root)
     for role in ('writer','qualifier'):
         stage.validate_public_pod(proof[role],guard.desired[role],True)
         require(proof[role]['metadata']['name'] == guard.value['names'][role] and proof.get(role+'Absent') is True, 'Retired Pod identity differs')
@@ -109,19 +113,25 @@ def expected_owner_spec(guard):
     selected = guard.prepared['selection']; volume = selected['shellVolume']
     require(len(accepted.get('containers',[])) == 1 and accepted['containers'][0]['name'] == selected['container']
             and accepted.get('nodeName') == guard.target['node']['name'], 'Exact accepted public owner required for default-preserving derivation')
-    require({k:v for k,v in before.items() if k not in {'containers','volumes'}} == {k:v for k,v in after.items() if k not in {'containers','volumes'}}
+    before_security, after_security = before.get('securityContext',{}), after.get('securityContext',{})
+    require({k:v for k,v in before_security.items() if k != 'fsGroupChangePolicy'} == {k:v for k,v in after_security.items() if k != 'fsGroupChangePolicy'}
+            and after_security.get('fsGroupChangePolicy') == 'OnRootMismatch'
+            and {k:v for k,v in before.items() if k not in {'containers','volumes','securityContext'}} == {k:v for k,v in after.items() if k not in {'containers','volumes','securityContext'}}
             and {k:v for k,v in before['containers'][0].items() if k != 'volumeMounts'} == {k:v for k,v in after['containers'][0].items() if k != 'volumeMounts'}, 'Owner derivation cannot change an unselected Pod field')
+    accepted_security = accepted.get('securityContext',{})
+    require(all(accepted_security.get(k) == v for k,v in before_security.items()), 'Accepted owner security defaults differ')
+    expected['securityContext']['fsGroupChangePolicy'] = 'OnRootMismatch'
     require([v['name'] for v in accepted['volumes']] == [v['name'] for v in before['volumes']]
             and len(accepted['containers'][0]['volumeMounts']) == len(before['containers'][0]['volumeMounts']), 'Accepted owner mount/volume inventory differs')
     if guard.previous['overlay'] is None:
-        mounts = [{'name':volume,'mountPath':public.ROOT+'/'+path,'readOnly':True,'subPath':path} for path in public.PATHS]
-        added = {'name':volume,'persistentVolumeClaim':{'claimName':selected['shellClaim'],'readOnly':True}}
+        mounts = public.overlay_mounts(volume)
+        added = {'name':volume,'persistentVolumeClaim':{'claimName':selected['shellClaim']}}
         require(after['containers'][0]['volumeMounts'] == [*before['containers'][0]['volumeMounts'],*mounts]
-                and after['volumes'] == [*before['volumes'],added], 'Only the exact five-path bootstrap may change the full owner spec')
+                and after['volumes'] == [*before['volumes'],added], 'Only the exact anchored five-path bootstrap may change the full owner spec')
         expected['containers'][0]['volumeMounts'].extend(copy.deepcopy(mounts)); expected['volumes'].append(copy.deepcopy(added))
     else:
         indexes = [i for i,v in enumerate(before['volumes']) if v['name'] == volume]
-        require(len(indexes) == 1 and accepted['volumes'][indexes[0]] == before['volumes'][indexes[0]]
+        require(before_security.get('fsGroupChangePolicy') == 'OnRootMismatch' and len(indexes) == 1 and accepted['volumes'][indexes[0]] == before['volumes'][indexes[0]]
                 and after['containers'][0]['volumeMounts'] == before['containers'][0]['volumeMounts'], 'Accepted read-only overlay mounts/defaults differ')
         changed = copy.deepcopy(before['volumes']); changed[indexes[0]]['persistentVolumeClaim']['claimName'] = selected['shellClaim']
         require(changed == after['volumes'], 'Only the selected public claim may change after bootstrap')
@@ -211,10 +221,20 @@ class Publication:
     def patch(self, patch, dryrun):
         args = ['patch','deployment',self.guard.component['deployment'],'-n',self.guard.namespace,'--type=json','--patch',cohort.canonical(patch).decode(),'-o','json']
         if dryrun: args.append('--dry-run=server')
+        roots = self.root_metadata()
+        self.save(('dryrun' if dryrun else 'apply')+'.root-metadata.original.json',roots)
         self.preflight(); raw = self.guard.remote(args); response = cohort.parse_json(raw)
         self.save(('dryrun' if dryrun else 'apply')+'.response.original.json',response)
         require(response['metadata']['uid'] == self.guard.component['deploymentUID'] and response['spec'] == self.prepared['desiredSpec'], 'Original admission/apply response changed an unselected field')
         return response
+
+    def root_metadata(self):
+        # Model storage is never mounted by a stager. Only metadata at its whole
+        # backing root is read; mismatch refuses rather than repairing it.
+        roots = {'overlay':self.guard.root_metadata(),'models':self.guard.root_metadata(models=True)}
+        observed = [self.guard.inputs.file(roots[role])['metadata']['root'] for role in ('overlay','models')]
+        require((observed[0]['device'],observed[0]['inode']) != (observed[1]['device'],observed[1]['inode']), 'Overlay and models unexpectedly alias the same filesystem root')
+        return roots
 
     def dryrun(self):
         require(not self.out.exists(), 'New exclusive publication output required'); self.out.mkdir(mode=0o700)
@@ -258,6 +278,11 @@ class Publication:
                 data = self.static_fetcher(row['url'],row['size']); require(len(data) == row['size'] and hashlib.sha256(data).hexdigest() == row['sha256'], 'Fresh normal verified-TLS static bytes differ')
                 probes[row['url']] = {'status':200,'verifiedTlsAndHostname':True,'size':len(data),'sha256':row['sha256']}
             tls = self.save('observe.https.actual.json',{'normalVerifiedTLSRequests':probes,'trustedSystemCA':{'certificateVerification':'CERT_REQUIRED','hostnameVerification':True}})
+            root_before = updater.load_json(self.out/'apply.root-metadata.original.json'); root_after = self.root_metadata()
+            for role in ('overlay','models'):
+                claim, pv = (self.proof['claim'],self.proof['pv']) if role == 'overlay' else (self.guard.inputs.file(self.previous['modelsClaim']),self.guard.inputs.file(self.previous['modelsPV']))
+                stage.same_root(stage.root_proof(root_before[role],self.guard,claim,pv),stage.root_proof(root_after[role],self.guard,claim,pv))
+            self.save('observe.root-metadata.original.json',root_after)
             self.fresh(True,pod['metadata']['uid']); self.guard.healthy(self.guard.get('pod',pod['metadata']['name'],self.guard.namespace),self.prepared['selection']['container'])
             previous = self.accepted_previous(current,pod,replica,static,hashes,catalog,owner,tls,probes)
             return {'status':'PUBLIC_SHELL_RUNTIME_AND_HTTPS_ACCEPTED','acceptedPrevious':previous,'readOnly':True,'productionMutation':False,'remainingAcceptance':['Signed-in or full-app browser reconnection where applicable','Physical presenter/clicker and unqualified native targets']}

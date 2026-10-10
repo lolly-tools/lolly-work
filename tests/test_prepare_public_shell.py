@@ -107,15 +107,70 @@ class Public(unittest.TestCase):
     def refresh_previous(self): self.evidence["previous"] = self.file("changed-baseline", self.previous)
     def refresh_producer(self): self.evidence["producer"] = self.file("changed-producer", self.producer)
 
-    def test_bootstrap_retains_all_public_resources_and_only_adds_five_readonly_mounts(self):
+    def test_bootstrap_keeps_serving_readonly_and_selects_only_local_handoff_fields(self):
         before = self.before["spec"]["template"]["spec"]; after = self.result["desiredSpec"]["template"]["spec"]
         self.assertEqual(after["containers"][0]["image"], before["containers"][0]["image"])
         self.assertEqual(after["volumes"][:-1], before["volumes"])
-        self.assertEqual(after["containers"][0]["volumeMounts"][:-5], before["containers"][0]["volumeMounts"])
-        self.assertTrue(all(row["readOnly"] is True for row in after["containers"][0]["volumeMounts"][-5:]))
+        self.assertEqual(after["containers"][0]["volumeMounts"][:-6], before["containers"][0]["volumeMounts"])
+        self.assertTrue(all(row["readOnly"] is True for row in after["containers"][0]["volumeMounts"][-6:]))
+        self.assertEqual(after["containers"][0]["volumeMounts"][-6], {"name": self.selection["shellVolume"], "mountPath": "/run/lolly-public-overlay", "readOnly": True})
         self.assertEqual([row["subPath"] for row in after["containers"][0]["volumeMounts"][-5:]], list(m.PATHS))
+        self.assertEqual(after["volumes"][-1], {"name": self.selection["shellVolume"], "persistentVolumeClaim": {"claimName": self.selection["shellClaim"]}})
+        self.assertEqual(after["securityContext"], {**before["securityContext"], "fsGroupChangePolicy": "OnRootMismatch"})
+        restored = copy.deepcopy(after)
+        restored["containers"][0]["volumeMounts"] = restored["containers"][0]["volumeMounts"][:-6]
+        restored["volumes"] = restored["volumes"][:-1]
+        restored["securityContext"] = copy.deepcopy(before["securityContext"])
+        self.assertEqual(restored, before)
         self.assertFalse(self.result["qualificationBoundary"]["runtimeQualified"]); self.assertFalse(self.result["qualificationBoundary"]["originAuthenticatedByThisCommand"])
         self.assertEqual(self.result["sources"], {"shell": self.source, "image": self.image_source}); self.inputs.unchanged()
+
+    def test_bootstrap_preserves_other_security_defaults_and_rejects_untyped_ids(self):
+        previous = {**self.previous, "modelsName": "models", "nginxName": "nginx"}
+        before = copy.deepcopy(self.before)
+        before["spec"]["template"]["spec"]["securityContext"].update(runAsNonRoot=True, seccompProfile={"type": "RuntimeDefault"}, fsGroupChangePolicy="Always")
+        desired = m.desired_spec(previous, before, self.selection, self.source, "a" * 64)
+        self.assertEqual(desired["template"]["spec"]["securityContext"], {**before["spec"]["template"]["spec"]["securityContext"], "fsGroupChangePolicy": "OnRootMismatch"})
+        for field in ("runAsUser", "runAsGroup", "fsGroup"):
+            for value in (101.0, "101", True, None, 0):
+                with self.subTest(field=field, value=value):
+                    bad = copy.deepcopy(before); bad["spec"]["template"]["spec"]["securityContext"][field] = value
+                    with self.assertRaises(m.Refusal): m.desired_spec(previous, bad, self.selection, self.source, "a" * 64)
+        for policy in ("Unknown", False, 101, {}):
+            bad = copy.deepcopy(before); bad["spec"]["template"]["spec"]["securityContext"]["fsGroupChangePolicy"] = policy
+            with self.assertRaises(m.Refusal): m.desired_spec(previous, bad, self.selection, self.source, "a" * 64)
+
+    def test_subsequent_handoff_refuses_missing_late_or_writable_anchor_and_wrong_policy(self):
+        before = copy.deepcopy(self.before); before["spec"] = copy.deepcopy(self.result["desiredSpec"])
+        previous = {**self.previous, "shellSource": self.source, "modelsName": "models", "nginxName": "nginx", "overlay": {"volume": self.selection["shellVolume"], "claim": self.selection["shellClaim"], "claimUID": "owned-old-overlay", "manifest": self.trees["overlay"]["manifest"]}}
+        selection = {**self.selection, "shellClaim": "next-public-shell"}
+        def late_anchor(pod): pod["containers"][0]["volumeMounts"].append(pod["containers"][0]["volumeMounts"].pop(-6))
+        changes = (lambda pod: pod["containers"][0]["volumeMounts"].pop(-6), late_anchor,
+                   lambda pod: pod["containers"][0]["volumeMounts"][-6].update(readOnly=False),
+                   lambda pod: pod["containers"][0]["volumeMounts"][-6].update(subPath="_app"),
+                   lambda pod: pod["volumes"][-1]["persistentVolumeClaim"].update(readOnly=True),
+                   lambda pod: pod["securityContext"].pop("fsGroupChangePolicy"),
+                   lambda pod: pod["securityContext"].update(fsGroupChangePolicy="Always"))
+        for change in changes:
+            bad = copy.deepcopy(before); change(bad["spec"]["template"]["spec"])
+            with self.assertRaises(m.Refusal): m.desired_spec(previous, bad, selection, self.source, "a" * 64)
+
+    def test_requested_spec_cannot_weaken_anchor_management_or_security(self):
+        for mutation in (lambda v: v["template"]["spec"]["containers"][0]["volumeMounts"].pop(-6),
+                         lambda v: v["template"]["spec"]["containers"][0]["volumeMounts"][-6].update(readOnly=False),
+                         lambda v: v["template"]["spec"]["volumes"][-1]["persistentVolumeClaim"].update(readOnly=True),
+                         lambda v: v["template"]["spec"]["securityContext"].update(fsGroupChangePolicy="Always"),
+                         lambda v: v["template"]["spec"]["securityContext"].update(seccompProfile={"type": "Unconfined"})):
+            original = self.evidence["desiredSpec"]; self.patch(self.evidence, "desiredSpec", mutation); self.refuse(); self.evidence["desiredSpec"] = original
+
+    def test_bootstrap_refuses_mounts_overlapping_anchor_or_served_subpaths(self):
+        previous = {**self.previous, "modelsName": "models", "nginxName": "nginx"}
+        for mount_path in ("/run", "/run/lolly-public-overlay", "/run/lolly-public-overlay/child", m.ROOT, m.ROOT + "/_app", m.ROOT + "/_app/child"):
+            before = copy.deepcopy(self.before)
+            before["spec"]["template"]["spec"]["containers"][0]["volumeMounts"].append({"name": "rogue", "mountPath": mount_path, "readOnly": True})
+            with self.assertRaises(m.Refusal): m.desired_spec(previous, before, self.selection, self.source, "a" * 64)
+        before = copy.deepcopy(self.before); before["spec"]["template"]["spec"]["volumes"][-1]["persistentVolumeClaim"]["readOnly"] = True
+        with self.assertRaises(m.Refusal): m.desired_spec(previous, before, self.selection, self.source, "a" * 64)
 
     def test_subsequent_plan_changes_only_overlay_claim_and_shell_provenance(self):
         before = copy.deepcopy(self.before); before["spec"] = self.result["desiredSpec"]

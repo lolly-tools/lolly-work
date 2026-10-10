@@ -33,6 +33,15 @@ NODE = os.environ.get('LOLLY_TEST_NODE','node')
 REFUSALS = (m.Refusal,m.private.Refusal,m.updater.Refusal,m.resources.Refusal)
 
 
+def root_proof(target, claim, pv):
+    path=pv['spec']['local']['path']
+    def row(p): return {'path':str(p),'device':17,'inode':int(hashlib.sha256(str(p).encode()).hexdigest()[:8],16)+1,'mode':0o2770,'uid':0,'gid':101}
+    return {'version':1,'status':'READ_ONLY_PUBLIC_LOCAL_PV_ROOT_METADATA_OBSERVED','clusterUID':target['clusterUID'],'node':target['node'],
+            'claimUID':claim['metadata']['uid'],'pvUID':pv['metadata']['uid'],'pvSpecSha256':m.cohort.digest(pv['spec']),
+            'root':{**row(path),'selinuxLabel':'system_u:object_r:container_file_t:s0:c1,c2'},
+            'ancestors':[row(p) for p in reversed(Path(path).parents)],'readOnly':True,'productionMutation':False}
+
+
 def ref(path): return {'path':str(path),'sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
 
 
@@ -120,6 +129,44 @@ class CompressedArchive(unittest.TestCase):
         with self.assertRaises(m.Refusal): self.validate(raw.getvalue())
 
 
+class RootReader(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup); self.base=Path(self.tmp.name).resolve()
+        self.root=self.base/'overlay'; self.root.mkdir()
+        self.kube=self.base/'offline-kube.py'
+        self.kube.write_text('import json,sys\nx=json.loads(sys.argv[1]);a=sys.argv[2:];print(json.dumps(x[a[a.index("get")+1]]))\n')
+        self.resources={'namespace':{'metadata':{'uid':'cluster-uid'}},'node':{'metadata':{'name':'node','uid':'node-uid'},'status':{'conditions':[{'type':'Ready','status':'True'}]}}}
+        self.config={'version':1,'kubectl':[],'clusterUID':'cluster-uid','node':{'name':'node','uid':'node-uid'},
+                     'claim':{'apiVersion':'v1','kind':'PersistentVolumeClaim','metadata':{'name':'shell','namespace':'public','uid':'claim-uid','resourceVersion':'3'},'spec':{'volumeName':'pv'},'status':{'phase':'Bound'}},
+                     'pv':{'apiVersion':'v1','kind':'PersistentVolume','metadata':{'name':'pv','uid':'pv-uid','resourceVersion':'4'},'spec':{'local':{'path':str(self.root)}},'status':{'phase':'Bound'}},
+                     'storageClass':{'apiVersion':'storage.k8s.io/v1','kind':'StorageClass','metadata':{'name':'local-path','uid':'class-uid','resourceVersion':'5'},'provisioner':'rancher.io/local-path'}}
+        for field in ('claim','pv','storageClass'): self.resources[self.config[field]['kind']]=copy.deepcopy(self.config[field])
+
+    def run_reader(self):
+        x=copy.deepcopy(self.config); x['kubectl']=[sys.executable,str(self.kube),json.dumps(self.resources)]
+        return subprocess.run([sys.executable,'-B','-c',m.ROOT_METADATA_SCRIPT,m.cohort.canonical(x).decode()],capture_output=True)
+
+    def test_actual_reader_observes_existing_root_without_permissions_or_contents_changes(self):
+        self.root.chmod(0o2750); before=self.root.stat(); result=self.run_reader(); self.assertEqual(result.returncode,0,result.stderr.decode())
+        value=json.loads(result.stdout); self.assertEqual(value['root']['mode'],0o2750); self.assertEqual(value['root']['gid'],before.st_gid)
+        self.assertEqual(value['root']['inode'],before.st_ino); self.assertEqual([v['path'] for v in value['ancestors']],[str(p) for p in reversed(self.root.parents)])
+        self.assertEqual(self.root.stat(),before); self.assertEqual(list(self.root.iterdir()),[])
+
+    def test_actual_reader_refuses_symlink_leaf_and_ancestor(self):
+        other=self.base/'actual'; other.mkdir(); self.root.rmdir(); self.root.symlink_to(other,target_is_directory=True)
+        self.assertNotEqual(self.run_reader().returncode,0)
+        self.root.unlink(); parent=self.base/'link'; parent.symlink_to(other,target_is_directory=True); child=other/'nested'; child.mkdir()
+        self.config['pv']['spec']['local']['path']=str(parent/'nested'); self.resources['PersistentVolume']['spec']=copy.deepcopy(self.config['pv']['spec'])
+        self.assertNotEqual(self.run_reader().returncode,0)
+
+    def test_actual_reader_refuses_replaced_or_changed_bound_api_resources(self):
+        for field,key,value in (('PersistentVolume','uid','replacement'),('PersistentVolumeClaim','deletionTimestamp','now')):
+            old=copy.deepcopy(self.resources); self.resources[field]['metadata'][key]=value
+            self.assertNotEqual(self.run_reader().returncode,0); self.resources=old
+        self.resources['PersistentVolume']['spec']['local']['path']=str(self.base)
+        self.assertNotEqual(self.run_reader().returncode,0)
+
+
 class PublicFixture(fixture.Public):
     for _name in dir(fixture.Public):
         if _name.startswith('test_'): locals()[_name] = None
@@ -160,7 +207,7 @@ class PublicFixture(fixture.Public):
         self.target = {'version':2,'clusterUID':'fixture-cluster','node':{'name':'fixture-node','uid':'fixture-node-uid'},'transport':{'type':'local','kubectl':['/never-kubectl-offline-fixture'],'kubeconfig':'/never-read-offline-fixture','context':'fixture'},'components':components}
         claim = json.loads((self.base/self.previous['modelsClaim']['path']).read_bytes())
         self.baseline = {'version':1,'deployments':deployments,'claims':collection('PersistentVolumeClaim',[claim]),'pvs':collection('PersistentVolume',[pv]),'pods':collection('Pod',[owner]),'owner':owner,'replicaSet':replica,
-                         'storageClass':{'apiVersion':'storage.k8s.io/v1','kind':'StorageClass','metadata':{'name':'local-path','uid':'class-uid','resourceVersion':'1'},'provisioner':'fixture.local-path','volumeBindingMode':'WaitForFirstConsumer'}}
+                         'storageClass':{'apiVersion':'storage.k8s.io/v1','kind':'StorageClass','metadata':{'name':'local-path','uid':'class-uid','resourceVersion':'1'},'provisioner':'rancher.io/local-path','volumeBindingMode':'WaitForFirstConsumer'}}
         for filename in ('fixture-preflight.py','fixture-host-probe.py'):
             (self.base/filename).write_bytes(b'raise SystemExit("OFFLINE fixture must never contact a target")\n'); (self.base/filename).chmod(0o600)
         preflight,host = ref(self.base/'fixture-preflight.py'),ref(self.base/'fixture-host-probe.py')
@@ -196,43 +243,49 @@ class Boundaries(PublicFixture):
             bad = actual_pod(s.desired['qualifier'],'bad'); change(bad)
             with self.assertRaises(REFUSALS): m.validate_public_pod(bad,s.desired['qualifier'],True)
 
-    def test_qualifier_pvc_source_is_readonly_while_writer_remains_writable(self):
+    def test_qualifier_has_managed_source_whole_anchor_and_exact_readonly_mounts(self):
         s=self.stage(); selected=s.prepared['selection']; original=copy.deepcopy(s.desired)
         writer=s.desired['writer']; qualifier=s.desired['qualifier']
         self.assertEqual(writer['spec']['volumes'][0]['persistentVolumeClaim'],{'claimName':selected['shellClaim']})
-        self.assertEqual(qualifier['spec']['volumes'][0]['persistentVolumeClaim'],{'claimName':selected['shellClaim'],'readOnly':True})
+        self.assertEqual(qualifier['spec']['volumes'][0]['persistentVolumeClaim'],{'claimName':selected['shellClaim']})
+        self.assertEqual(qualifier['spec']['securityContext']['fsGroupChangePolicy'],'OnRootMismatch')
+        self.assertNotIn('fsGroupChangePolicy',writer['spec']['securityContext'])
         writer_mount=next(mt for mt in writer['spec']['containers'][0]['volumeMounts'] if mt['name']==selected['shellVolume'])
         self.assertFalse(writer_mount.get('readOnly',False))
         qualifier_mounts=[mt for mt in qualifier['spec']['containers'][0]['volumeMounts'] if mt['name']==selected['shellVolume']]
-        self.assertEqual(len(qualifier_mounts),5); self.assertTrue(all(mt['readOnly'] is True for mt in qualifier_mounts))
+        self.assertEqual(qualifier_mounts,m.public.overlay_mounts(selected['shellVolume']))
+        self.assertEqual(qualifier_mounts[0],{'name':selected['shellVolume'],'mountPath':m.public.OVERLAY_ANCHOR,'readOnly':True})
+        self.assertEqual(len(qualifier_mounts),6); self.assertTrue(all(mt['readOnly'] is True for mt in qualifier_mounts))
         self.assertEqual(s.desired,original)
         for dry_run in (False,True):
             actual=actual_pod(qualifier,'qualifier-uid')
             if dry_run:
                 del actual['metadata']['uid']; del actual['metadata']['resourceVersion']
             held=copy.deepcopy(actual); self.assertIs(m.validate_public_create(actual,qualifier,dry_run),actual); self.assertEqual(actual,held)
-            for value in (None,False):
+            for change in (lambda v:v['spec']['volumes'][0]['persistentVolumeClaim'].update(readOnly=True),
+                           lambda v:v['spec']['securityContext'].update(fsGroupChangePolicy='Always'),
+                           lambda v:v['spec']['containers'][0]['volumeMounts'].__delitem__(1),
+                           lambda v:v['spec']['containers'][0]['volumeMounts'][1].update(readOnly=False)):
                 bad=copy.deepcopy(actual)
-                if value is None: del bad['spec']['volumes'][0]['persistentVolumeClaim']['readOnly']
-                else: bad['spec']['volumes'][0]['persistentVolumeClaim']['readOnly']=value
+                change(bad)
                 with self.assertRaises(REFUSALS): m.validate_public_create(bad,qualifier,dry_run)
 
-    def test_qualifier_admission_refuses_volume_bit_removal_before_live_create(self):
+    def test_qualifier_admission_refuses_unmanaged_source_before_live_create(self):
         s=self.stage(); s.out.mkdir(); calls=[]; want=s.desired['qualifier']
         s.absent=lambda *args:True; s.verify_bindings=lambda:calls.append('bindings'); s.preflight=lambda:calls.append('preflight')
         def remote(argv,data=None):
             calls.append(argv); checked=actual_pod(want,'dry-run-uid'); del checked['metadata']['uid']; del checked['metadata']['resourceVersion']
-            del checked['spec']['volumes'][0]['persistentVolumeClaim']['readOnly']
+            checked['spec']['volumes'][0]['persistentVolumeClaim']['readOnly']=True
             return m.cohort.canonical(checked)
         s.remote=remote
         with self.assertRaises(REFUSALS): s.admitted_pod(want)
         self.assertEqual(calls[:2],['bindings','preflight']); self.assertEqual(len(calls),3)
         self.assertIn('--dry-run=server',calls[-1]); self.assertFalse((s.out/('dry-run-'+want['metadata']['name']+'.reviewed.json')).exists())
 
-    def test_qualifier_owned_readback_requires_true_and_original_uid(self):
+    def test_qualifier_owned_readback_requires_managed_source_and_original_uid(self):
         s=self.stage(); actual=actual_pod(s.desired['qualifier'],'qualifier-uid'); s.identities=lambda:{'qualifier':copy.deepcopy(actual)}
         s.get=lambda *args:copy.deepcopy(actual); self.assertEqual(s.owned('qualifier'),actual)
-        for change in (lambda p:p['spec']['volumes'][0]['persistentVolumeClaim'].update(readOnly=False),lambda p:p['metadata'].update(uid='replacement')):
+        for change in (lambda p:p['spec']['volumes'][0]['persistentVolumeClaim'].update(readOnly=True),lambda p:p['metadata'].update(uid='replacement')):
             bad=copy.deepcopy(actual); change(bad); s.get=lambda *args:bad
             with self.assertRaises(REFUSALS): s.owned('qualifier')
 
@@ -250,19 +303,45 @@ class Boundaries(PublicFixture):
         with self.assertRaises(m.Refusal): m.isolated_backing(claim,collection('PersistentVolume',[*self.baseline['pvs']['items'],pv]),'public')
         pv['spec']['local']['path']='/isolated-new'; m.isolated_backing(claim,collection('PersistentVolume',[*self.baseline['pvs']['items'],pv]),'public')
 
-    def test_stage_names_are_distinct_and_public_owner_readonly_true_is_exact(self):
+    def test_stage_names_are_distinct_and_public_owner_managed_source_is_exact(self):
         s=self.stage(); names={**s.value['names'],'writer':s.value['names']['qualifier']}
         with self.assertRaises(m.Refusal): m.make_resources(s.prepared,s.accepted_deployment,s.target,names,s.value['storage'])
         want={'apiVersion':'v1','kind':'Pod','metadata':{'name':'next-owner','namespace':'public','labels':{'app':'public'}},
               'spec':{**copy.deepcopy(s.prepared['desiredSpec']['template']['spec']),'nodeName':'fixture-node'}}
         actual=actual_pod(want,'next-owner-uid'); original=copy.deepcopy(actual)
         m.validate_public_pod(actual,want,True); self.assertEqual(actual,original)
-        index=next(i for i,v in enumerate(want['spec']['volumes']) if v.get('persistentVolumeClaim',{}).get('readOnly') is True)
-        for value in (False,None):
+        index=next(i for i,v in enumerate(want['spec']['volumes']) if v['name']==s.prepared['selection']['shellVolume'])
+        for value in (True,'false'):
             bad=copy.deepcopy(actual)
-            if value is None: del bad['spec']['volumes'][index]['persistentVolumeClaim']['readOnly']
-            else: bad['spec']['volumes'][index]['persistentVolumeClaim']['readOnly']=value
-            with self.assertRaises(m.Refusal): m.validate_public_pod(bad,want,True)
+            bad['spec']['volumes'][index]['persistentVolumeClaim']['readOnly']=value
+            with self.assertRaises(REFUSALS): m.validate_public_pod(bad,want,True)
+
+    def test_local_root_metadata_refuses_missing_group_bits_alias_and_changed_identity(self):
+        claim=self.baseline['claims']['items'][0]; pv=self.baseline['pvs']['items'][0]
+        value=root_proof(self.target,claim,pv); self.assertIs(m.validate_root_metadata(value,self.target,claim,pv),value)
+        for change in (lambda v:v['root'].update(gid=1000),lambda v:v['root'].update(mode=0o2750),lambda v:v['root'].update(mode=0o770),
+                       lambda v:v['root'].update(mode=True),lambda v:v['root'].update(path='/wrong-root'),lambda v:v.update(pvUID='replacement'),
+                       lambda v:v['ancestors'].clear(),lambda v:v.update(productionMutation=True),lambda v:v.update(extra='unreviewed')):
+            bad=copy.deepcopy(value); change(bad)
+            with self.assertRaises(m.Refusal): m.validate_root_metadata(bad,self.target,claim,pv)
+        relabeled=copy.deepcopy(value); relabeled['root']['selinuxLabel']='system_u:object_r:container_file_t:s0:c3,c4'; m.same_root(value,relabeled)
+        for key in ('mode','gid','device','inode'):
+            bad=copy.deepcopy(relabeled); bad['root'][key]+=1
+            with self.assertRaises(m.Refusal): m.same_root(value,bad)
+
+    def test_root_reader_preserves_transport_exact_local_plugin_and_original_raw_output(self):
+        s=self.stage(); s.out.mkdir(); claim=self.baseline['claims']['items'][0]; pv=self.baseline['pvs']['items'][0]; calls=[]
+        s.get=lambda kind,*args:copy.deepcopy(claim if kind=='pvc' else self.baseline['storageClass'])
+        value=root_proof(self.target,claim,pv)
+        s.events=[{'path':'synthetic-command-link','sha256':'a'*64}]
+        s.run=lambda argv,**kw:(calls.append(argv) or m.cohort.canonical(value))
+        record=s.root_metadata(models=True); self.assertEqual(json.loads(Path(record['path']).read_bytes()),{'metadata':value,'originalCommand':s.events[0]})
+        command=calls[0]; self.assertEqual(command[:3],['python3','-c',m.ROOT_METADATA_SCRIPT])
+        expected=json.loads(command[3]); self.assertEqual(expected['pv'],pv); self.assertEqual(expected['claim'],claim)
+        self.assertEqual(expected['kubectl'],['/never-kubectl-offline-fixture','--kubeconfig','/never-read-offline-fixture','--context','fixture'])
+        s.baseline['storageClass']['provisioner']='unreviewed.csi'
+        with self.assertRaises(m.Refusal): s.root_metadata(models=True)
+        self.assertEqual(len(calls),1)
 
     def test_allocation_preflight_immediately_precedes_uid_rv_spec_patch_and_global_alias_refuses(self):
         s=self.stage(); s.out.mkdir(); calls=[]

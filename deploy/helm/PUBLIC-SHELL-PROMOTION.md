@@ -81,7 +81,7 @@ available for a supervised release; they require accepted prior phase records.
 | `create` | New PVC, deny-ingress/egress policy and writer; allocation and global backing alias checks finish before a Pod mounts the claim |
 | `copy` | Read-only owning-Pod snapshot of the five old paths, exact archive validation, bounded UI delta, complete new overlay hashes |
 | `retire-writer` | UID/RV-backed deletion followed by actual Pod absence and host mount release |
-| `create-qualifier` | Same accepted image, five read-only mounts, exact accepted Nginx config, no model mount, no Service or production credentials |
+| `create-qualifier` | Verified local PV root metadata, same accepted image, whole-overlay read-only anchor followed by five read-only serving mounts, exact Nginx config, no models/Service/credentials |
 | `qualify` | Complete effective static inventory, actual catalog bytes/P-256 signature and signed-map checks, actual UID/GID and loopback Nginx entry response |
 | `retire` | Qualifier and owned policy deletion; both original Pod UIDs are absent and unmounted; new claim is retained |
 
@@ -97,6 +97,30 @@ not the 1.35 GB static image tree. It is checked before extraction; links, speci
 files, escapes, duplicate files, missing files and incorrect hashes refuse.
 The local snapshot transport preserves a 2 GiB disk floor. Full static validation
 transfers checksum text and actual catalog bytes rather than the complete tree.
+
+On SELinux hosts, the overlay PVC source stays managed (its `readOnly` source
+flag is omitted). Every container overlay mount is read-only. The first mount,
+`/run/lolly-public-overlay`, covers the whole new volume; the five serving
+`subPath` mounts follow it. This lets kubelet apply the Pod's own SELinux label
+to the complete overlay rather than only its first subPath. No shared MCS level,
+label write or host security exception is introduced.
+
+The qualifier and selected public owner use `fsGroupChangePolicy:OnRootMismatch`.
+Before the qualifier starts, and freshly before each publication dry-run/apply,
+the maintained reader checks the whole PV root through the reviewed host
+transport. It binds the cluster/node, PVC/PV UID and full specs, local plugin and
+`rancher.io/local-path` StorageClass. Every ancestor must be a directory without
+a symlink. The root must already have GID 101, owner/group `rwx` and setgid.
+Production also checks the whole existing models PV root, not its mounted
+subdirectory. A mismatch refuses; these helpers never repair permissions or
+relabel an active asset claim.
+
+Original metadata command argv/stdout/stderr are retained and bound to the
+proof. After qualification and publication, root device/inode, UID/GID and mode
+must remain unchanged, alongside complete static file hashes/modes. A normal
+Pod handoff may change its SELinux categories. This lane currently requires
+the managed local plugin: CSI drivers and direct `hostPath` PVs refuse rather
+than assuming that their fsGroup or labeling behavior matches it.
 
 Every phase creates an exclusive `*.started.json` before execution and retains
 original command stdout/stderr, API responses and failures. A partial/uncertain
@@ -128,8 +152,10 @@ python3 scripts/publish-public-shell.py check \
 Run the same reviewed command with `dryrun`, then `apply`, then `observe`.
 Each phase is exclusive. `apply` binds the freshly read Deployment UID/RV/full
 spec and replaces only the exact desired spec independently prepared by the
-public contract. Bootstrap adds exactly five read-only subPath mounts; later
-updates change only the claim and public provenance. Nginx image/config, models
+public contract. Bootstrap adds the whole-volume read-only anchor, five read-only
+subPath mounts, managed overlay source and only the selected
+`securityContext.fsGroupChangePolicy`. Later updates change only the claim and
+public provenance. Nginx image/config, models
 claim/PV/subPath, all other mounts/resources/security/probes/services/policies and
 the other eight application specifications remain unchanged.
 

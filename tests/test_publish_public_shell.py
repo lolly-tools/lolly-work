@@ -20,6 +20,15 @@ m = p.stage
 
 
 class PublicationFixture(f.PublicFixture):
+    def metadata_ref(self, name, guard, claim, pv):
+        value=f.root_proof(guard.target,claim,pv); t=guard.target['transport']
+        config={'version':1,'kubectl':[*t['kubectl'],'--kubeconfig',t['kubeconfig'],'--context',t['context']],
+                'clusterUID':guard.target['clusterUID'],'node':guard.target['node'],'claim':claim,'pv':pv,'storageClass':guard.baseline['storageClass']}
+        stdout=self.binary(name+'-stdout',m.cohort.canonical(value)+b'\n'); stderr=self.binary(name+'-stderr',b'')
+        command=self.file(name+'-command',{'exitCode':0,'timedOut':False,'argv':m.root_command(guard,config),'readOnlyMountProbe':False,
+                         'originals':{'stdout':{**stdout,'observedBytes':Path(stdout['path']).stat().st_size,'complete':True},'stderr':{**stderr,'observedBytes':0,'complete':True}}})
+        return self.file(name,{'metadata':value,'originalCommand':command})
+
     def setUp(self):
         super().setUp(); self.s = self.stage()
         self.writer = f.actual_pod(self.s.desired['writer'],'writer-uid'); self.qualifier = f.actual_pod(self.s.desired['qualifier'],'qualifier-uid')
@@ -31,11 +40,13 @@ class PublicationFixture(f.PublicFixture):
         self.static = self.file('synthetic-original-qualifier-static',static)
         self.hashes = self.binary('synthetic-derived-qualifier-hashes',''.join(row['sha256']+'  '+m.public.ROOT+'/'+path+'\n' for path,row in self.s.effective.files.items()).encode())
         catalog = self.file('synthetic-actual-catalog-check',{'catalog':self.s.prepared['catalog'],'verified':True,'actualIndexSha256':self.catalog['indexSha256'],'actualEnvelopeSha256':self.catalog['envelopeSha256'],'signedMapBoundToActualFullInventory':True})
+        root_before=self.metadata_ref('synthetic-root-before-handoff',self.s,self.claim,self.pv)
+        root_after=self.metadata_ref('synthetic-root-after-handoff',self.s,self.claim,self.pv)
         stdout,stderr = self.binary('synthetic-original-command-stdout',b'fixture bytes\n'),self.binary('synthetic-original-command-stderr',b'')
         command = self.file('synthetic-original-command',{'exitCode':0,'timedOut':False,'originals':{'stdout':{**stdout,'observedBytes':14,'complete':True},'stderr':{**stderr,'observedBytes':0,'complete':True}}})
         runtime = {'version':1,'status':'PHASE_ACCEPTED','runtimeStatus':'ISOLATED_PUBLIC_SHELL_RUNTIME_VERIFIED','inputSha256':self.s.input_sha,'operatorSha256':self.s.operator_sha,'pod':self.qualifier,'image':self.result['image'],'sources':self.result['sources'],
                    'static':self.static,'hashes':self.hashes,'catalog':catalog,'staticManifestSha256':self.producer['shell']['manifest']['sha256'],'overlayManifestSha256':self.s.new.manifest_sha,
-                   'fullStaticHashesVerified':True,'publicCatalogSignatureVerified':True,'nginxLoopbackIndexVerified':True,'modelsMounted':False,'originalCommands':[command]}
+                   'fullStaticHashesVerified':True,'publicCatalogSignatureVerified':True,'nginxLoopbackIndexVerified':True,'modelsMounted':False,'rootMetadata':{'before':root_before,'after':root_after},'originalCommands':[command]}
         def mounts(uid): return {'podUid':uid,'nodeUID':'fixture-node-uid','unmounted':True,'mountsReleased':True}
         self.proof = {'version':1,'status':'ISOLATED_PUBLIC_SHELL_ACCEPTED_AND_RETIRED','preparedSha256':self.prepared_ref['sha256'],'image':self.result['image'],'sources':self.result['sources'],'overlayManifestSha256':self.s.new.manifest_sha,'staticManifestSha256':self.producer['shell']['manifest']['sha256'],
                       'claim':self.claim,'pv':self.pv,'writer':self.writer,'qualifier':self.qualifier,'policy':self.policy,'writerMountProof':mounts('writer-uid'),'qualifierMountProof':mounts('qualifier-uid'),'writerAbsent':True,'qualifierAbsent':True,'policyAbsent':True,'mountsReleased':True,'runtime':runtime,'stageInput':self.stage_ref}
@@ -96,20 +107,58 @@ class Boundaries(PublicationFixture):
             with self.assertRaises(RuntimeError): self.publisher()
             self.proof=old
 
-    def test_retirement_qualifier_pvc_readonly_true_is_required_without_mutating_proof(self):
+    def test_retirement_qualifier_managed_source_anchor_and_root_proof_are_required(self):
         original=copy.deepcopy(self.proof)
         self.assertIs(p.review_retirement(self.proof,self.s),self.proof)
         self.assertEqual(self.proof,original)
-        self.assertTrue(self.proof['qualifier']['spec']['volumes'][0]['persistentVolumeClaim']['readOnly'])
+        self.assertNotIn('readOnly',self.proof['qualifier']['spec']['volumes'][0]['persistentVolumeClaim'])
         self.assertNotIn('readOnly',self.proof['writer']['spec']['volumes'][0]['persistentVolumeClaim'])
-        for value in (None,False):
+        for value in (True,'false'):
             bad=copy.deepcopy(self.proof); volume=bad['qualifier']['spec']['volumes'][0]['persistentVolumeClaim']
-            if value is None: del volume['readOnly']
-            else: volume['readOnly']=value
+            volume['readOnly']=value
             self.assertEqual(bad['runtime']['pod'],bad['qualifier'])
-            with self.assertRaisesRegex(m.Refusal,'Explicit read-only public PVC changed'):
+            with self.assertRaises((m.Refusal,m.private.Refusal)):
                 p.review_retirement(bad,self.s)
+        for change in (lambda v:v['runtime'].pop('rootMetadata'),lambda v:v['qualifier']['spec']['containers'][0]['volumeMounts'].__delitem__(1)):
+            bad=copy.deepcopy(self.proof); change(bad)
+            with self.assertRaises((m.Refusal,m.private.Refusal)): p.review_retirement(bad,self.s)
         self.assertEqual(self.proof,original)
+
+    def test_root_proof_requires_exact_program_target_and_actual_original_metadata_bytes(self):
+        pub=self.publisher(); ref=self.proof['runtime']['rootMetadata']['before']
+        held=pub.guard.inputs.file(ref); self.assertEqual(m.root_proof(ref,pub.guard,self.claim,self.pv),held['metadata'])
+        for change in (lambda v:v['metadata']['root'].update(mode=0o2775),lambda v:v['metadata']['root'].update(inode=999)):
+            bad=copy.deepcopy(held); change(bad); fake=self.file('synthetic-unbound-root-metadata',bad)
+            with self.assertRaises(m.Refusal): m.root_proof(fake,pub.guard,self.claim,self.pv)
+        original=pub.guard.inputs.file(held['originalCommand'])
+        for change in (lambda v:v['argv'].__setitem__(2,'print("forged label")'),lambda v:v.update(timedOut=True),
+                       lambda v:v['originals']['stdout'].update(complete=False),lambda v:v['originals']['stdout'].update(observedBytes=1)):
+            bad=copy.deepcopy(original); change(bad)
+            fake=self.file('synthetic-bad-root-command',{**held,'originalCommand':self.file('synthetic-root-command-counterexample',bad)})
+            with self.assertRaises(m.Refusal): m.root_proof(fake,pub.guard,self.claim,self.pv)
+        wrong=copy.deepcopy(original); config=json.loads(wrong['argv'][-1]); config['pv']['metadata']['uid']='wrong-pv'
+        wrong['argv'][-1]=m.cohort.canonical(config).decode()
+        fake=self.file('synthetic-wrong-root-resource',{**held,'originalCommand':self.file('synthetic-wrong-root-resource-command',wrong)})
+        with self.assertRaises(m.Refusal): m.root_proof(fake,pub.guard,self.claim,self.pv)
+
+    def test_root_mismatch_refuses_before_preflight_or_patch_and_never_repairs(self):
+        pub=self.publisher(); pub.out.mkdir(); calls=[]; pub.source_check=lambda:None
+        pub.guard.run=lambda *a,**k:calls.append('preflight'); pub.guard.remote=lambda *a,**k:calls.append('patch')
+        def roots(): calls.append('roots'); raise m.Refusal('Observed model group/mode mismatch')
+        pub.root_metadata=roots
+        with self.assertRaises(m.Refusal): pub.patch(p.patch_for(pub.prepared,self.before),True)
+        self.assertEqual(calls,['roots']); self.assertFalse((pub.out/'dryrun.response.original.json').exists())
+
+    def test_only_fs_group_policy_changes_and_actual_security_defaults_remain_exact(self):
+        pub=self.publisher(); guard=pub.guard
+        guard.owner['spec']['securityContext']['supplementalGroups']=[777]
+        expected=p.expected_owner_spec(guard)
+        self.assertEqual(expected['securityContext']['supplementalGroups'],[777]); self.assertEqual(expected['securityContext']['fsGroupChangePolicy'],'OnRootMismatch')
+        for change in (lambda v:v['securityContext'].update(fsGroup=1000),lambda v:v['securityContext'].update(seLinuxOptions={'level':'s0'}),
+                       lambda v:v['securityContext'].update(fsGroupChangePolicy='Always')):
+            prior=copy.deepcopy(guard.prepared); change(guard.prepared['desiredSpec']['template']['spec'])
+            with self.assertRaises(m.Refusal): p.expected_owner_spec(guard)
+            guard.prepared=prior
 
     def test_fresh_global_alias_added_after_stage_and_temp_holder_reappearance_refuse(self):
         pub=self.publisher(); alias=copy.deepcopy(self.pv); alias['metadata'].update(name='dormant-alias',uid='dormant-uid'); self.transport(pub,extra_pv=alias)
@@ -138,14 +187,15 @@ class Boundaries(PublicationFixture):
     def test_preflight_is_last_then_apply_once_and_original_bad_api_response_is_retained(self):
         pub=self.publisher(); pub.out.mkdir(); calls=[]
         pub.fresh=lambda *a,**kw:(copy.deepcopy(self.before),None); pub.source_check=lambda:None
+        pub.root_metadata=lambda:(calls.append('roots') or {'overlay':self.proof['runtime']['rootMetadata']['after'],'models':self.proof['runtime']['rootMetadata']['after']})
         pub.guard.run=lambda argv,**kw:calls.append('preflight')
         def remote(argv,data=None,timeout=None):
             calls.append(argv); result=copy.deepcopy(self.before); result['spec']=copy.deepcopy(self.result['desiredSpec']); result['spec']['replicas']=2; return m.cohort.canonical(result)
         pub.guard.remote=remote
         with self.assertRaises(p.Refusal): pub.phase('dryrun',lambda:{'deployment':pub.patch(p.patch_for(pub.prepared,self.before),True)})
-        self.assertEqual(calls[0],'preflight'); self.assertEqual(len(calls),2); self.assertTrue((pub.out/'dryrun.response.original.json').exists()); self.assertTrue((pub.out/'dryrun.uncertain.json').exists())
+        self.assertEqual(calls[:2],['roots','preflight']); self.assertEqual(len(calls),3); self.assertTrue((pub.out/'dryrun.response.original.json').exists()); self.assertTrue((pub.out/'dryrun.uncertain.json').exists())
         with self.assertRaises(OSError): pub.phase('dryrun',lambda:calls.append('replayed'))
-        self.assertEqual(len(calls),2)
+        self.assertEqual(len(calls),3)
 
     def test_failed_mutation_receipt_cannot_be_hidden_as_successful_readonly_observation(self):
         command={'exitCode':7,'timedOut':False,'originals':{k:{**self.binary('synthetic-failed-'+k,b''),'observedBytes':0,'complete':True} for k in ('stdout','stderr')},'readOnlyMountProbe':False,'argv':['unsafe-patch']}
@@ -235,7 +285,8 @@ class Boundaries(PublicationFixture):
         static=self.file('synthetic-next-qualifier-static',{'htmlRoot':m.public.ROOT[1:],'files':{path:{'mode':0o644,'size':row['size'],'sha256':row['sha256']} for path,row in guard.effective.files.items()}})
         hashes=self.binary('synthetic-next-derived-qualifier-hashes',''.join(row['sha256']+'  '+m.public.ROOT+'/'+path+'\n' for path,row in guard.effective.files.items()).encode())
         runtime={**self.proof['runtime'],'inputSha256':guard.input_sha,'operatorSha256':guard.operator_sha,'pod':qualifier,'sources':guard.prepared['sources'],
-                 'static':static,'hashes':hashes,'staticManifestSha256':guard.producer['shell']['manifest']['sha256'],'overlayManifestSha256':guard.new.manifest_sha}
+                 'static':static,'hashes':hashes,'staticManifestSha256':guard.producer['shell']['manifest']['sha256'],'overlayManifestSha256':guard.new.manifest_sha,
+                 'rootMetadata':{key:self.metadata_ref('synthetic-next-root-'+key,guard,next_claim,next_pv) for key in ('before','after')}}
         proof={**self.proof,'preparedSha256':prepared_ref['sha256'],'stageInput':stage_ref,'sources':guard.prepared['sources'],'claim':next_claim,'pv':next_pv,'writer':writer,'qualifier':qualifier,'policy':policy,
                'writerMountProof':{**self.proof['writerMountProof'],'podUid':'next-writer-uid'},'qualifierMountProof':{**self.proof['qualifierMountProof'],'podUid':'next-qualifier-uid'},
                'runtime':runtime,'overlayManifestSha256':guard.new.manifest_sha,'staticManifestSha256':guard.producer['shell']['manifest']['sha256']}
