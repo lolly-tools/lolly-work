@@ -13,6 +13,7 @@ a single-owner `Recreate` workspace has a brief reconnect window.
 For the usual build and one-command publication flow, start with
 [PRIVATE-SHELL-QUICKSTART.md](PRIVATE-SHELL-QUICKSTART.md). The detailed phase
 interfaces below remain available for separately reviewed staging and publication.
+For the public Nginx shell, use [PUBLIC-SHELL-QUICKSTART.md](PUBLIC-SHELL-QUICKSTART.md).
 
 ## Choose a release
 

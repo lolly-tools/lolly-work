@@ -22,6 +22,7 @@
     "verify:engine-pin": "node scripts/verify-engine-pin.ts",
     "update:shell:build": "node scripts/prepare-shell-update.ts",
     "update:shell": "python3 -B scripts/update-private-shell.py",
+    "update:public-shell": "python3 -B scripts/update-public-shell.py",
     "update:public-shell:build": "node scripts/prepare-public-shell-update.ts",
     "update:public-shell:prepare": "python3 -B scripts/prepare-public-shell.py",
     "update:shell:prepare": "python3 -B scripts/prepare-private-shell.py",
