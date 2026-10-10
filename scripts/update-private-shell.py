@@ -19,6 +19,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 
 sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
@@ -89,7 +90,8 @@ class Update:
         self.inputs = cohort.Inputs(self.profile_path.parent)
         self.profile_ref = {'path': str(self.profile_path), 'sha256': cohort.sha(profile_sha)}
         raw = self.inputs.file(self.profile_ref)
-        exact(raw, PROFILE_KEYS, {'authenticatedStaticProbe'})
+        exact(raw, PROFILE_KEYS, {'authenticatedStaticProbe', 'authenticatedCatalog', 'stageNamePrefix'})
+        require(not ('authenticatedStaticProbe' in raw and 'authenticatedCatalog' in raw), 'Select one authenticated catalogue interface')
         require(type(raw['version']) is int and raw['version'] == 1 and raw['status'] == 'REVIEWED_PRIVATE_SHELL_UPDATE_PROFILE', 'Reviewed shell profile required')
         stage.resources.name(raw['name'])
         self.profile = copy.deepcopy(raw)
@@ -103,6 +105,7 @@ class Update:
         self.mount_placeholders(self.profile['retiredMountProbe']['argv'])
         require(type(raw['sourceFiles']) is list and 1 <= len(raw['sourceFiles']) <= 500, 'Complete reviewed executable closure required')
         self.sources = [self.ref(ref, self.profile_path.parent, False) for ref in raw['sourceFiles']]
+        self.profile['sourceFiles'] = copy.deepcopy(self.sources)
         require(len({ref['path'] for ref in self.sources}) == len(self.sources), 'Duplicate source closure path')
         required = {str(HERE / filename) for filename in DEPENDENCIES} | {ref['path'] for ref in self.profile['programs'].values()}
         required |= {self.profile[key]['source']['path'] for key in ('preflight', 'retiredMountProbe')} | {self.profile['hostProbe']['path']}
@@ -111,6 +114,8 @@ class Update:
             self.profile['authenticatedStaticProbe'] = self.command(raw['authenticatedStaticProbe'], self.profile_path.parent, authenticated=True)
             require(hasattr(publisher, 'authenticated_catalog_report'), 'This helper set cannot verify gated private catalogues')
             require(all(self.profile['authenticatedStaticProbe'][key] in self.sources for key in ('source', 'input')), 'Authenticated source/input closure missing')
+        if 'authenticatedCatalog' in raw:
+            self.profile['authenticatedCatalog'] = self.catalog_policy(raw['authenticatedCatalog'])
         self.target = updater.validate_target(self.inputs.file(self.profile['target']))
         require('work' in self.target['components'], 'Private Work component required')
         self.namespace = self.target['components']['work']['namespace']
@@ -129,7 +134,58 @@ class Update:
         self.shell = self.tree(original['shell'], original_base)
         self.pack = self.tree(original['rawPack'], original_base)
         require(self.shell['manifest']['sha256'] == self.prepared['shell']['manifestSha256'] and self.pack['manifest']['sha256'] == self.prepared['rawPack']['manifestSha256'], 'Qualified artifact manifest differs')
+        if 'stageNamePrefix' in raw:
+            stage.resources.name(raw['stageNamePrefix'])
+            require(len(raw['stageNamePrefix']) <= 32, 'Bounded stage name prefix required')
+            prefix = raw['stageNamePrefix'] + '-' + self.prepared_ref['sha256'][:16]
+            self.profile['names'] = {'writer': prefix + '-writer', 'qualifier': prefix + '-check', 'policy': prefix + '-deny', 'packClaim': prefix + '-pack'}
         self.source_check()
+
+    def catalog_policy(self, value):
+        """One reviewed caller policy; release-specific refs come from assembly."""
+        exact(value, {'source', 'module', 'python', 'node', 'caller', 'migrations'})
+        result = copy.deepcopy(value)
+        for key, filename in (('source', 'probe-private-shell-catalog.py'), ('module', 'private-shell-catalog-probe.mjs')):
+            result[key] = self.ref(value[key], self.profile_path.parent, False)
+            require(result[key]['path'] == str(HERE / filename) and result[key] in self.sources, 'Maintained catalogue probe source closure missing')
+        result['migrations'] = self.ref(value['migrations'], self.profile_path.parent)
+        require(result['migrations'] in self.sources, 'Reviewed migration ledger closure missing')
+        ledger = self.inputs.file(result['migrations'])
+        require(type(ledger) is list and 1 <= len(ledger) <= 10000 and all(type(name) is str and re.fullmatch(r'[A-Za-z0-9_.-]{1,200}', name) for name in ledger)
+                and ledger == sorted(set(ledger)), 'Exact sorted migration ledger required')
+        require(type(value['python']) is str and Path(value['python']).is_absolute() and re.fullmatch(r'python3(?:\.[0-9]+)?', Path(value['python']).name), 'Explicit Python probe executable required')
+        exact(value['node'], {'path', 'version'})
+        require(type(value['node']['path']) is str and Path(value['node']['path']).is_absolute() and Path(value['node']['path']).name == 'node'
+                and type(value['node']['version']) is str and re.fullmatch(r'v24\.[0-9]+\.[0-9]+', value['node']['version']), 'Explicit Node24 syntax-check executable/version required')
+        exact(value['caller'], {'project', 'session', 'emails'})
+        for key in ('project', 'session'):
+            require(type(value['caller'][key]) is str and re.fullmatch(r'(?:prj|ses)_[A-Za-z0-9_-]{1,100}', value['caller'][key]) and value['caller'][key].startswith('prj_' if key == 'project' else 'ses_'), 'Exact approved caller project/session required')
+        emails = value['caller']['emails']
+        require(type(emails) is list and 1 <= len(emails) <= 20 and len(set(emails)) == len(emails)
+                and all(type(email) is str and email == email.lower() and re.fullmatch(r'[^\s@]{1,100}@[^\s@]{1,150}', email) for email in emails), 'Explicit authorized caller email allowlist required')
+        return result
+
+    def catalog_command(self, plan_ref, evidence_ref, baseline_ref, out, extra):
+        policy = self.profile['authenticatedCatalog']
+        refs = self.closure((*extra, plan_ref, evidence_ref, baseline_ref))
+        value = {'version': 1, 'status': 'REVIEWED_MAINTAINED_PRIVATE_CATALOG_PROBE_INPUT', 'profile': AUTH_PROFILE,
+                 'source': policy['source'], 'instanceProfile': self.profile_ref, 'prepared': self.prepared_ref,
+                 'plan': plan_ref, 'planningEvidence': evidence_ref, 'baseline': baseline_ref, 'sourceFiles': refs,
+                 'preflightReceiptPath': str(out / 'catalog.preflight.original.json')}
+        input_ref = save(out, 'catalog.probe.input.json', value)
+        command = {'profile': AUTH_PROFILE, 'source': policy['source'], 'input': input_ref,
+                   'argv': [policy['python'], '-B', policy['source']['path'], '--input', input_ref['path'], '--input-sha256', input_ref['sha256']]}
+        return command, self.closure((*extra, plan_ref, evidence_ref, baseline_ref, input_ref))
+
+    def next_profile(self, accepted, out):
+        """Advance only after the full maintained accepted-previous parser passes."""
+        previous, _ = stage.shell.previous_record(accepted, self.inputs)
+        require(previous['shellSource'] == self.prepared['sources']['lolly'] and previous['image'] == self.previous['image']
+                and previous['pack'] == self.previous['pack'] and previous['pin'] == self.previous['pin']
+                and previous['shell']['manifestSha256'] == self.shell['manifest']['sha256'], 'Accepted next profile tuple differs')
+        value = copy.deepcopy(self.profile)
+        value['previous'], value['previousShell'] = accepted, self.shell
+        return save(out, 'instance-profile.next.json', value)
 
     def ref(self, value, base, json_file=True):
         exact(value, {'path', 'sha256'})
@@ -303,6 +359,8 @@ class Update:
                        'globalPVInventoryGuarded': True}
         if 'authenticatedStaticProbe' in self.profile:
             publication['authenticatedStaticProbe'] = self.profile['authenticatedStaticProbe']
+        if 'authenticatedCatalog' in self.profile:
+            publication['authenticatedStaticProbe'], publication['sourceFiles'] = self.catalog_command(plan_ref, evidence_ref, baseline_ref, out, extra)
         publication_ref = save(out, 'publication.input.json', publication)
         execution = out / 'publication-execution'; execution.mkdir(mode=0o700)
         operator = next(ref for ref in self.sources if ref['path'] == str(HERE / 'publish-private-shell.py'))
@@ -395,10 +453,19 @@ class Update:
                                       'prepared': self.prepared_ref, 'operatorSha256': self.operator_sha, 'originAuthenticatedByThisCommand': False})
         phase = 'capture-before-stage'
         publication = None
+        timings = {}
+        started = time.monotonic()
+        def timed(label):
+            nonlocal started
+            timings[label] = time.monotonic() - started
+            save(out, label + '.timing.actual.json', {'version': 1, 'phase': label, 'elapsedSeconds': timings[label], 'origin': 'LOCAL_MONOTONIC_ELAPSED_TIME'})
+            started = time.monotonic()
         try:
             captured = self.read_capture(private_new_directory(out / phase))
+            timed(phase)
             phase = 'stage-check'
             check = self.assemble_check(captured, private_new_directory(out / phase))
+            timed(phase)
             value = self.inputs.file(check)
             phase = 'stage-run'
             self.source_check()
@@ -408,11 +475,14 @@ class Update:
                     'Maintained isolated stage returned an unexpected boundary')
             stage_ref = self.ref(staged['stage'], self.inputs.base)
             save(out, 'stage-run.actual.json', {'version': 1, 'status': 'MAINTAINED_ISOLATED_STAGE_RETIRED', 'check': check, 'result': staged})
+            timed(phase)
             phase = 'capture-after-stage'
             captured = self.read_capture(private_new_directory(out / phase))
+            timed(phase)
             phase = 'publication-plan'
             planned_ref = self.assemble_plan(check, captured, stage_ref, private_new_directory(out / phase))
             planned = self.inputs.file(planned_ref)
+            timed(phase)
             self.source_check()
             publication = publisher.Publication(planned['publicationInput']['path'], planned['publicationInput']['sha256'],
                                               planned['publicationOperator']['sha256'], planned['executionDirectory'])
@@ -421,12 +491,15 @@ class Update:
                 getattr(publication, phase)()
                 save(out, phase + '.handoff.actual.json', {'version': 1, 'status': 'MAINTAINED_PHASE_RETURNED', 'phase': phase,
                                                          'publicationInput': planned['publicationInput'], 'plan': planned_ref})
+                timed(phase)
             self.source_check()
             observed = publication.prior('observe', 'ACTUAL_PRIVATE_SHELL_OWNER_CONTENT_AND_TLS_VERIFIED_ACCEPTANCE_PENDING')
             accepted = self.ref(observed['acceptedPrevious'], self.inputs.base)
+            next_profile = self.next_profile(accepted, out)
             return save(out, 'run.actual.json', {'version': 1, 'status': 'PRIVATE_SHELL_UPDATE_RUNTIME_ACCEPTED', 'profile': self.profile_ref,
                         'prepared': self.prepared_ref, 'check': check, 'stage': stage_ref, 'plan': planned_ref, 'acceptedPrevious': accepted,
-                        'publicationInput': planned['publicationInput'], 'operatorSha256': self.operator_sha, 'productionMutation': True,
+                        'publicationInput': planned['publicationInput'], 'nextProfile': next_profile, 'operatorSha256': self.operator_sha, 'productionMutation': True,
+                        'elapsedSecondsByPhase': timings,
                         'infrastructureProvisioned': False, 'imageRebuilt': False, 'originAuthenticatedByThisCommand': False,
                         'remainingAcceptance': ['Authenticated export and document-agent canaries', 'Signed-in reconnect and visual checks']})
         except Exception as error:

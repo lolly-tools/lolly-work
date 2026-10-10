@@ -114,19 +114,40 @@ duplicate placeholders refuse; other argument values remain literal. No shell
 expansion takes place. The same reviewed mount-probe source can therefore verify
 the newly allocated Pod identities on successive releases.
 
-After acceptance, refresh the profile's `previous` and `previousShell` references
-to that release and choose unused stage names for the next prepared shell claim.
-Review and hash this small profile again. The helper assembles the resource and
-phase envelopes; operators do not need to manually compose each intermediate
-receipt. Retain the protected input files, accepted snapshot and receipts until
-their release custody is no longer needed.
+After genuine runtime acceptance, the helper writes `instance-profile.next.json`
+and links its exact hash as `nextProfile` in `run.actual.json`. It advances
+`previous` and `previousShell` only after the complete accepted-previous parser
+passes, preserving the reviewed target, unchanged image/pack/pin and caller
+policy. A failed or uncertain attempt emits no next profile. Retain both profiles,
+their original input files, accepted snapshots and receipts for release custody.
+
+Add the optional `stageNamePrefix` to derive unused writer, qualifier, policy and
+copied-pack names from each prepared artifact's hash. The selected new shell
+claim remains an explicit producer/preparer input; the facade never rewrites a
+qualified selection. With fixed `names`, review unused names for the next attempt.
+Reusing an uncertain prepared attempt is not an automatic retry.
 
 For a sign-in-gated private catalogue, add the optional reviewed
-`authenticatedStaticProbe`. See
+`authenticatedCatalog` instance policy. The helper generates each attempt's
+probe input without release-specific scripts. The existing explicit
+`authenticatedStaticProbe` command remains available. See
 [PRIVATE-SHELL-CATALOG-PROBES.md](PRIVATE-SHELL-CATALOG-PROBES.md) for the exact
 normal-TLS, per-caller index and pinned-P256 report contract. The owning Pod's
 prepared files remain independently byte-exact; a freshly generated authenticated
 envelope is verified using its own explicit profile.
+
+Each successful run records measured `elapsedSecondsByPhase` and separate
+timing receipts. Preparation and planning are constructed once per probe;
+subsequent source checks use the held inode/stat custody. This avoids repeating
+full source hashing before every read while retaining fresh resource and source
+guards before mutations. Timings are measurements of that run, not a promised
+deployment time.
+
+This command does not enable unattended following of a moving main branch.
+Select one immutable main commit with its completed normal CI and web gate,
+prepare it against the genuine current accepted baseline, then authorize one
+attempt. Browser, document-agent, export and native qualifications retain their
+own release scope.
 
 For `lolly.ing` and `lolly.tools`, the authoritative production target and
 preflight remain in `lolly-private/production/README.md` and `check-target.py`.

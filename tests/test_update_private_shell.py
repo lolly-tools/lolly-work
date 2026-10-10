@@ -292,6 +292,25 @@ class Offline(unittest.TestCase):
         accepted, _ = m.stage.shell.previous_record(value['acceptedPrevious'], m.cohort.Inputs(out))
         self.assertEqual(accepted['image'], self.f.previous['image']); self.assertEqual(accepted['pack'], self.f.previous['pack']); self.assertEqual(accepted['pin'], self.f.previous['pin'])
         self.assertFalse((out / 'run.uncertain.json').exists()); self.assertTrue(value['remainingAcceptance'])
+        next_profile = json.loads(Path(value['nextProfile']['path']).read_bytes())
+        self.assertEqual(next_profile['previous'], value['acceptedPrevious']); self.assertEqual(next_profile['previousShell'], operation.shell)
+        self.assertEqual(next_profile['sourceFiles'], operation.profile['sourceFiles'])
+        self.assertEqual(set(value['elapsedSecondsByPhase']), {'capture-before-stage', 'stage-check', 'stage-run', 'capture-after-stage', 'publication-plan', 'dryrun', 'apply', 'observe'})
+        self.assertTrue(all(type(seconds) is float and seconds >= 0 for seconds in value['elapsedSecondsByPhase'].values()))
+        # Run the complete maintained next preparation with the emitted profile
+        # and its real accepted-previous parser, retaining synthetic provenance.
+        evidence = copy.deepcopy(self.f.prepare_evidence)
+        evidence['previous'], evidence['previousShell'] = next_profile['previous'], next_profile['previousShell']
+        root = Path(operation.shell['root'])
+        manifest = json.loads(Path(operation.shell['manifest']['path']).read_bytes())
+        evidence['shell'] = self.f.tree('synthetic-next-merged', {entry['path']: (root / entry['path']).read_bytes() for entry in manifest['files']})
+        evidence['selection']['shellClaim'] = 'second-new-shell'
+        node = os.environ.get('LOLLY_TEST_NODE', 'node')
+        classified = subprocess.run([node, str(HERE / 'scripts/classify-application-release.ts'), '--repo', str(self.f.roots['lolly']),
+            '--base', self.f.sources['lolly'], '--candidate', self.f.sources['lolly']], capture_output=True, check=True)
+        evidence['classification'] = self.f.file('synthetic-next-classification', json.loads(classified.stdout))
+        result, held = m.stage.shell.prepare(evidence, self.base, self.f.public_pin_sha, node)
+        self.assertEqual(result['previousCohortSha256'], value['acceptedPrevious']['sha256']); held.unchanged()
 
     def test_explicit_run_lost_apply_stops_without_replay_or_acceptance(self):
         getter, reads, execute_stage, cls, stages, pubs = self.run_transport(lost_apply=True)
@@ -303,6 +322,7 @@ class Offline(unittest.TestCase):
         self.assertEqual(stages, ['check', 'run']); self.assertEqual(len(reads), 20)
         self.assertEqual(json.loads((out / 'run.uncertain.json').read_bytes())['phase'], 'apply')
         self.assertTrue((pubs[-1].out / 'apply.uncertain.json').exists())
+        self.assertFalse((out / 'instance-profile.next.json').exists())
         self.assertFalse((pubs[-1].out / 'observe.started.json').exists()); self.assertFalse((out / 'run.actual.json').exists())
 
     def test_explicit_run_ambiguous_stage_stops_before_new_capture_or_publication(self):
@@ -315,6 +335,16 @@ class Offline(unittest.TestCase):
         self.assertFalse((out / 'capture-after-stage').exists()); self.assertFalse((out / 'publication-plan').exists())
         self.assertEqual(json.loads((out / 'run.uncertain.json').read_bytes())['phase'], 'stage-run')
         self.assertFalse((out / 'run.actual.json').exists())
+        self.assertFalse((out / 'instance-profile.next.json').exists())
+
+    def test_stage_name_prefix_uses_prepared_identity_without_rewriting_selected_claim(self):
+        self.profile['stageNamePrefix'] = 'synthetic-private'
+        self.profile_ref = self.f.file('synthetic-derived-names-profile', self.profile)
+        operation = self.operation()
+        prefix = 'synthetic-private-' + self.prepared_ref['sha256'][:16]
+        self.assertEqual(operation.profile['names'], {'writer': prefix + '-writer', 'qualifier': prefix + '-check', 'packClaim': prefix + '-pack', 'policy': prefix + '-deny'})
+        self.assertEqual(operation.prepared['selection']['shellClaim'], 'new-shell')
+        self.assertEqual(json.loads(Path(self.profile_ref['path']).read_bytes())['names'], self.profile['names'])
 
     def test_unknown_profile_closure_auth_command_or_boolean_budget_refuses(self):
         mutations = [lambda v: v.update(version=True), lambda v: v.update(extra='unknown'), lambda v: v['sourceFiles'].pop(0),

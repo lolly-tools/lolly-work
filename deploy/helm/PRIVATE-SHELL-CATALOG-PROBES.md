@@ -15,6 +15,69 @@ checks and the prepared envelope signature remain independently mandatory.
 
 ## Configure the reviewed command
 
+For the frontend update facade, use one protected instance profile with
+`authenticatedCatalog`. The maintained probe derives its release inputs from
+the exact prepared commit, original planning evidence and current accepted
+owner. No release-specific credential script or reconciliation input is needed.
+The older `authenticatedStaticProbe` command remains supported; select one
+interface in the profile.
+
+```json
+{
+  "authenticatedCatalog": {
+    "source": {"path": "/checkout/scripts/probe-private-shell-catalog.py", "sha256": "<reviewed SHA256>"},
+    "module": {"path": "/checkout/scripts/private-shell-catalog-probe.mjs", "sha256": "<reviewed SHA256>"},
+    "python": "/usr/bin/python3",
+    "node": {"path": "/opt/node24/bin/node", "version": "v24.21.0"},
+    "migrations": {"path": "/protected/accepted-migration-ledger.json", "sha256": "<reviewed SHA256>"},
+    "caller": {
+      "project": "prj_APPROVED_EXISTING_PROJECT",
+      "session": "ses_APPROVED_EXISTING_DESIGN_SESSION",
+      "emails": ["approved-owner@example.org"]
+    }
+  },
+  "stageNamePrefix": "private-shell"
+}
+```
+
+Add the probe, module and ledger references to the profile's `sourceFiles`.
+The ledger is the exact sorted array of accepted `schema_migrations` names.
+The caller selector is an explicit authorization choice: it borrows the active
+owner of that existing project, after checking the email allowlist and a live
+design session in that project. It creates no account or invitation. A changed,
+disabled or missing owner/session refuses. Review this choice once for each
+instance; do not assume the deployment credential also authorizes any caller.
+
+The probe verifies the unchanged image and complete owning Pod defaults, exact
+Deployment/ReplicaSet chain, running process, accepted engine pin, owned server
+source hashes and migration ledger. It makes the lookup in a read-only database
+transaction inside that owner. The signed cookie stays in memory for at most
+300 seconds; receipts contain response hashes and lengths only. The same site
+preflight runs last before the owning-process execution. Normal CA and hostname
+verification are mandatory, with no redirects or TLS exceptions.
+
+Preparation's catalogue has exactly four fields: `indexSha256`,
+`envelopeSha256`, `keyId`, `signedFiles`. The mounted runtime proof has those four
+plus `publicPinSha256` and `signatureVerified`. Each is validated independently.
+For the authenticated HTTPS response, the probe computes the actual caller's
+policy-filtered index and visible file map from accepted Work code, then verifies
+the fresh pinned P-256 envelope. It does not claim that this fresh envelope has
+the same bytes as the prepared envelope.
+
+`check` on the maintained probe is offline custody and complete CommonJS
+executor syntax only. It neither borrows a cookie nor reads a target:
+
+```sh
+python3 -B scripts/probe-private-shell-catalog.py \
+  --input /protected/update/publication-plan/catalog.probe.input.json \
+  --input-sha256 REVIEWED_INPUT_SHA256 --check
+```
+
+This first maintained profile supports the Node24 Work image layout and an
+existing project owner's account. Other identity providers still work for users;
+this deployment check does not provision them or impersonate arbitrary users.
+Export, document-agent and signed-in browser canaries remain separate.
+
 Add `authenticatedStaticProbe` to the reviewed publication input. Register both
 its source and its input in `sourceFiles`, along with every operator dependency
 and any additional code/data dependency used by the probe. Keep secrets out of
