@@ -50,10 +50,13 @@ own signing/profile inputs, compatible engine/pack/pin review, old lazy-asset
 retention and owning-runtime/HTTPS/interaction acceptance.
 
 Follow [the application update guide](../deploy/helm/APP-UPDATES.md) for reviewed
-image plans and existing PVC custody. Paired private artifact preparation,
-generic private content promotion, pipeline integration and serialized
-automatic promotion remain separate work. No workflow, production credentials,
-infrastructure, database, DNS or release gate is changed by this script.
+image plans and existing PVC custody. For compatible frontend changes, use the
+[private shell quickstart](../deploy/helm/PRIVATE-SHELL-QUICKSTART.md) or the
+[public shell preparation guide](../deploy/helm/PUBLIC-SHELL-UPDATES.md).
+These paths reuse accepted images and preserve the existing engine and tool
+catalogue. Automatic promotion of moving main remains separate work. The
+classifier does not change production credentials, infrastructure, database,
+DNS or release gates.
 
 Run its disposable Git fixture tests without a cluster:
 

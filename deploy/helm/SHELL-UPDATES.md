@@ -10,6 +10,10 @@ claim mounted read-only by Work. The chart's generic deployment choices remain
 available for other layouts. The existing Deployment strategy still applies:
 a single-owner `Recreate` workspace has a brief reconnect window.
 
+For the usual build and one-command publication flow, start with
+[PRIVATE-SHELL-QUICKSTART.md](PRIVATE-SHELL-QUICKSTART.md). The detailed phase
+interfaces below remain available for separately reviewed staging and publication.
+
 ## Choose a release
 
 | Code change | Release path |

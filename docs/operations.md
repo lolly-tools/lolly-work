@@ -310,6 +310,7 @@ Choose the release operation before changing anything:
 
 | Change | Workflow |
 |---|---|
+| Compatible web frontend, with unchanged backend, engine and tools | [Shell update](https://github.com/lolly-tools/lolly-work/blob/main/deploy/helm/PRIVATE-SHELL-QUICKSTART.md): build the qualified main revision and publish with the protected instance profile; reuse the current image |
 | Qualified application image only, with compatible schema/configuration | [Guarded app-only update](https://github.com/lolly-tools/lolly-work/blob/main/deploy/helm/APP-UPDATES.md): explicit target, before/after digests, dry-run plan and reviewed apply |
 | Database schema | Independent backup and migration review; Helm's pre-upgrade migration Job must succeed before the new application serves traffic |
 | Mounted shell/pack, engine contract or instance configuration | Separate content/configuration release and matching compatibility/signature checks; an application image cannot replace mounted files |

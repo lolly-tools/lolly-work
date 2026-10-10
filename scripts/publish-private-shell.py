@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+from datetime import datetime, timezone
 import hashlib
 import importlib.util
 import json
@@ -22,6 +23,7 @@ import subprocess
 import sys
 import ssl
 import urllib.request
+import urllib.error
 from urllib.parse import urljoin, urlsplit
 
 sys.dont_write_bytecode = True
@@ -57,6 +59,7 @@ def load_module(name, path):
 
 
 updater = load_module("shell_publication_updater", HERE / "app-update.py")
+storage = load_module("shell_publication_storage", HERE / "plan-private-cohort.py")
 
 
 def held(ref, base):
@@ -167,6 +170,21 @@ def resource_guard(value):
     return result
 
 
+class DeploymentInventory:
+    """Original collection items scoped to a single fresh guard pass."""
+    def __init__(self, namespaces, deployments):
+        self.namespaces = namespaces
+        self.deployments = deployments
+
+    def get(self, kind, name, namespace=None):
+        if kind == "namespace" and namespace is None:
+            require(name in self.namespaces, "Protected namespace missing from fresh captures")
+            return self.namespaces[name]
+        require(kind == "deployment" and (namespace, name) in self.deployments,
+                "Protected Deployment missing from fresh captures")
+        return self.deployments[(namespace, name)]
+
+
 OWNER_READBACK = r"""const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
 const [shell,pack,pin,publicJwk]=process.argv.slice(1);const hash=b=>crypto.createHash('sha256').update(b).digest('hex');
 function tree(root){const files=[];let totalBytes=0;function walk(dir,prefix){
@@ -205,6 +223,75 @@ def static_fetch(url, maximum):
         return data
 
 
+AUTHENTICATED_CATALOG_PROFILE = "NORMAL_TLS_PER_CALLER_INDEX_ORACLE_AND_PINNED_P256_ENVELOPE"
+
+
+def anonymous_catalog_gate(url):
+    """Require the real sign-in gate with normal TLS and no redirects/cookies."""
+    opener = urllib.request.build_opener(updater.NoRedirect(), urllib.request.HTTPSHandler(context=ssl.create_default_context()))
+    try:
+        with opener.open(url, timeout=30):
+            raise Refusal("Anonymous private catalogue unexpectedly returned success")
+    except urllib.error.HTTPError as response:
+        try:
+            require(response.code == 401, "Private catalogue needs its literal 401 sign-in gate")
+            body = response.read(4097)
+            require(len(body) <= 4096 and json.loads(body) == {"error": {"code": "UNAUTHORIZED", "message": "this deployment is sign-in gated"}},
+                    "Private catalogue returned a different sign-in gate")
+            return {"url": url, "status": 401, "errorCode": "UNAUTHORIZED", "message": "this deployment is sign-in gated",
+                    "bytes": len(body), "sha256": hashlib.sha256(body).hexdigest(), "verifiedTlsAndHostname": True, "authentication": "none"}
+        finally:
+            response.close()
+
+
+def authenticated_catalog_report(value, context, probe, catalog, public_pin, now=None):
+    """Validate a separately reviewed probe's bounded, non-secret TLS receipt.
+
+    The caller reviews its code and credential custody. This report binds that
+    code/input and the actual owner context; it is not origin authentication.
+    Dynamic signed envelopes never claim equality to the prepared envelope.
+    """
+    exact(value, {"version", "status", "contextSha256", "inputSha256", "sourceSha256", "profile", "probes", "oracle", "tls", "scope"})
+    require(type(value["version"]) is int and value["version"] == 1 and value["status"] == "AUTHENTICATED_PRIVATE_SHELL_CATALOG_PROBE_ACCEPTED" and
+            value["contextSha256"] == digest(context) and value["inputSha256"] == probe["input"]["sha256"] and
+            value["sourceSha256"] == probe["source"]["sha256"] and value["profile"] == AUTHENTICATED_CATALOG_PROFILE,
+            "Authenticated catalogue probe belongs to another source/input/owner")
+    require(value["tls"] == {"certificateRequired": True, "hostnameVerified": True, "redirectsFollowed": False} and
+            value["tls"]["certificateRequired"] is True and value["tls"]["hostnameVerified"] is True and value["tls"]["redirectsFollowed"] is False and
+            value["scope"] == {"databaseDirectWrites": False, "documentWrites": False, "invitationWrites": False,
+                               "cookiePrinted": False, "cookiePersisted": False, "maximumSessionSeconds": 300} and
+            all(value["scope"][key] is False for key in ("databaseDirectWrites", "documentWrites", "invitationWrites", "cookiePrinted", "cookiePersisted")) and
+            type(value["scope"]["maximumSessionSeconds"]) is int,
+            "Authenticated catalogue probe scope or TLS differs")
+    oracle = value["oracle"]
+    exact(oracle, {"indexSha256", "indexBytes", "expectedIndexSha256", "envelopeSha256", "envelopeBytes", "expectedFileMapSha256",
+                   "signedFiles", "publicPinSha256", "keyId", "signedAt", "signatureVerified", "exactPerCallerIndexBytes", "exactVisibleFileMap", "sourceBindingSha256"})
+    for field in ("indexSha256", "expectedIndexSha256", "envelopeSha256", "expectedFileMapSha256", "sourceBindingSha256"):
+        require(type(oracle[field]) is str and re.fullmatch(r"[a-f0-9]{64}", oracle[field]), "Invalid authenticated oracle digest")
+    require(oracle["indexSha256"] == oracle["expectedIndexSha256"] and oracle["publicPinSha256"] == digest(public_pin) and oracle["keyId"] == catalog["keyId"] and
+            all(oracle[key] is True for key in ("signatureVerified", "exactPerCallerIndexBytes", "exactVisibleFileMap")), "Caller oracle/signature/pin is not qualified")
+    for key in ("indexBytes", "envelopeBytes", "signedFiles"):
+        require(type(oracle[key]) is int and 0 < oracle[key] <= 2 * 1024**2, "Invalid bounded authenticated response")
+    require(oracle["signedFiles"] <= catalog["signedFiles"], "Authenticated catalogue exposes an unqualified file set")
+    try:
+        signed_at = datetime.fromisoformat(oracle["signedAt"].replace("Z", "+00:00"))
+        state = selected(context["owner"]["pod"]["status"]["containerStatuses"], context["selection"]["container"])["state"]
+        started_at = datetime.fromisoformat(state["running"]["startedAt"].replace("Z", "+00:00"))
+        current = now or datetime.now(timezone.utc)
+        require(signed_at.tzinfo is not None and started_at.tzinfo is not None and started_at <= current and
+                started_at.timestamp() - 60 <= signed_at.timestamp() <= current.timestamp() + 60, "Signature time is outside the owning process lifetime")
+    except (KeyError, ValueError, TypeError, AttributeError) as error:
+        raise Refusal("Missing bounded authenticated signature time") from error
+    require(type(value["probes"]) is list and len(value["probes"]) == 2, "Two authenticated catalogue routes required")
+    for actual, path, prefix in zip(value["probes"], ("catalog/tools/index.json", "catalog/tools/index.sig.json"), ("index", "envelope")):
+        exact(actual, {"path", "url", "status", "verifiedTlsAndHostname", "authentication", "bytes", "sha256", "oracle"})
+        require(type(actual["status"]) is int and type(actual["bytes"]) is int and actual["verifiedTlsAndHostname"] is True and
+                actual == {"path": path, "url": urljoin(context["baseURL"], path), "status": 200, "verifiedTlsAndHostname": True,
+                           "authentication": "TEMPORARY_MEMORY_SESSION", "bytes": oracle[prefix + "Bytes"], "sha256": oracle[prefix + "Sha256"],
+                           "oracle": AUTHENTICATED_CATALOG_PROFILE}, "Authenticated HTTPS route/hash/oracle differs")
+    return value
+
+
 class Publication:
     """The caller reviews input/command origins; every phase keeps original bytes."""
     def __init__(self, path, checksum, operator_checksum, out, kube=None, command_runner=None, health=None, static_fetcher=None):
@@ -212,7 +299,10 @@ class Publication:
         self.path = Path(os.path.abspath(path)); self.base = self.path.parent
         self.input_ref = {"path": str(self.path), "sha256": checksum}
         self.x = read(self.input_ref, self.base)
-        exact(self.x, {"version", "status", "refs", "sourceFiles", "preflight", "retiredMountProbe"})
+        fields = {"version", "status", "refs", "sourceFiles", "preflight", "retiredMountProbe"}
+        require(type(self.x) is dict and fields <= set(self.x) <= fields | {"authenticatedStaticProbe", "globalPVInventoryGuarded"}, "Unknown publication input fields")
+        require("globalPVInventoryGuarded" not in self.x or self.x["globalPVInventoryGuarded"] is True,
+                "Global PV inventory guarding must be explicitly true")
         require(type(self.x["version"]) is int and self.x["version"] == 1 and
                 self.x["status"] == "REVIEWED_PRIVATE_SHELL_PUBLICATION_INPUT", "Reviewed publication input required")
         exact(self.x["refs"], {"plan", "planningEvidence", "target", "baseline", "shellManifest", "packManifest", "enginePin"})
@@ -309,10 +399,33 @@ class Publication:
                     Path(argv[0]).is_absolute() and re.fullmatch(r"python3(?:\.[0-9]+)?", Path(argv[0]).name) and
                     (argv[1:2] == [source_path] or argv[1:3] == ["-B", source_path]) and argv.count(source_path) == 1,
                     "Explicit Python invocation of the reviewed guard script required")
+        if "authenticatedStaticProbe" in self.x:
+            command = self.x["authenticatedStaticProbe"]
+            exact(command, {"argv", "source", "input", "profile"})
+            require(command["profile"] == AUTHENTICATED_CATALOG_PROFILE, "Unknown authenticated catalogue profile")
+            for ref in (command["source"], command["input"]):
+                held(ref, self.base)
+                require(ref in self.x["sourceFiles"], "Authenticated probe source and input need complete registered custody")
+            source_path = str(Path(os.path.abspath(self.base / command["source"]["path"])))
+            input_path = str(Path(os.path.abspath(self.base / command["input"]["path"])))
+            argv = command["argv"]
+            require(isinstance(argv, list) and argv and all(isinstance(a, str) and a and "\0" not in a for a in argv) and
+                    Path(argv[0]).is_absolute() and re.fullmatch(r"python3(?:\.[0-9]+)?", Path(argv[0]).name) and
+                    argv[1:] in ([source_path, "--input", input_path, "--input-sha256", command["input"]["sha256"]],
+                                 ["-B", source_path, "--input", input_path, "--input-sha256", command["input"]["sha256"]]),
+                    "Explicit authenticated probe invocation and hash-bound input required")
 
     def save(self, name, value):
         require(Path(name).name == name, "Owned output name required")
         data = canonical(value) + b"\n"
+        fd = os.open(self.out / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data); stream.flush(); os.fsync(stream.fileno())
+        return {"path": str(self.out / name), "sha256": hashlib.sha256(data).hexdigest()}
+
+    def save_raw(self, name, data):
+        require(Path(name).name == name and isinstance(data, bytes) and len(data) <= 32 * 1024**2,
+                "Bounded original collection bytes required")
         fd = os.open(self.out / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "wb") as stream:
             stream.write(data); stream.flush(); os.fsync(stream.fileno())
@@ -359,19 +472,32 @@ class Publication:
         owner(pod, "ReplicaSet", rs); owner(rs, "Deployment", deployment)
         require(not pod["metadata"].get("deletionTimestamp") and not rs["metadata"].get("deletionTimestamp"), "Owning runtime is deleting")
 
-    def list_resources(self, kind, namespace=None):
+    def list_resources(self, kind, namespace=None, capture=None):
         args = ["get", kind, "-o", "json"]
         if namespace is not None:
             args += ["--namespace", namespace]
-        value = json.loads(self.kube.run(args))
         expected = {"persistentvolumeclaims": "PersistentVolumeClaim", "persistentvolumes": "PersistentVolume",
-                    "pods": "Pod", "networkpolicies": "NetworkPolicy"}[kind]
-        api = "networking.k8s.io/v1" if expected == "NetworkPolicy" else "v1"
+                    "pods": "Pod", "networkpolicies": "NetworkPolicy", "deployments": "Deployment"}.get(kind)
+        require(expected is not None, "Unknown resource collection refused")
+        api = {"NetworkPolicy": "networking.k8s.io/v1", "Deployment": "apps/v1"}.get(expected, "v1")
+        raw = self.kube.run(args)
+        require(isinstance(raw, str), "Original collection stdout must be text")
+        if capture is not None:
+            self.save_raw(capture + ".stdout.original.json", raw.encode())
+        def unique(pairs):
+            result = {}
+            for key, value in pairs:
+                require(key not in result, "Duplicate resource collection JSON key")
+                result[key] = value
+            return result
+        value = json.loads(raw, object_pairs_hook=unique,
+                           parse_constant=lambda _: (_ for _ in ()).throw(Refusal("Non-finite resource collection number")))
         # kubectl may emit a generic v1/List even for a single kind. Validate the
         # complete original inventory and every item; no typed wrapper or list
         # resourceVersion is invented. Atomic writes still guard actual resource
         # UID/resourceVersion/full spec, independent of this list envelope.
-        require(isinstance(value, dict) and (value.get("apiVersion"), value.get("kind")) in {(api, expected + "List"), ("v1", "List")} and
+        require(isinstance(value, dict) and set(value) == {"apiVersion", "kind", "metadata", "items"} and
+                (value.get("apiVersion"), value.get("kind")) in {(api, expected + "List"), ("v1", "List")} and
                 isinstance(value.get("items"), list) and len(value["items"]) <= 10000 and
                 isinstance(value.get("metadata", {}), dict) and
                 type(value.get("metadata", {}).get("remainingItemCount", 0)) is int and
@@ -390,24 +516,56 @@ class Publication:
 
     def resource_checks(self, phase):
         namespace = self.plan["namespace"]
+        claim_namespaces = {namespace} | {guard["namespace"] for guard in self.plan["resourceGuards"]
+                                          if guard["kind"] == "PersistentVolumeClaim"}
+        claim_lists = {scope: self.list_resources("persistentvolumeclaims", scope, phase + ".claims-" + scope)
+                       for scope in sorted(claim_namespaces)}
+        volumes = self.list_resources("persistentvolumes", capture=phase + ".volumes")
+        captured = {(v["kind"], v["metadata"].get("namespace"), v["metadata"]["name"]): v
+                    for collection in [*claim_lists.values(), volumes] for v in collection["items"]}
         guard_keys = set()
         for expected in self.plan["resourceGuards"]:
             key = (expected["kind"], expected["namespace"], expected["name"])
             require(key not in guard_keys, "Duplicate resource guard")
             guard_keys.add(key)
-            actual = self.kube.get(expected["kind"], expected["name"], expected["namespace"])
+            if expected["kind"] == "ConfigMap":
+                actual = self.kube.get(expected["kind"], expected["name"], expected["namespace"])
+            else:
+                require(expected["kind"] in {"PersistentVolumeClaim", "PersistentVolume"} and key in captured,
+                        "Protected content resource missing from fresh captures")
+                actual = captured[key]
             require(resource_guard(actual) == expected, "Current content UID/resourceVersion/spec/data differs")
-        claims = self.list_resources("persistentvolumeclaims", namespace)
-        actual_claims = {(v["kind"], v["metadata"].get("namespace"), v["metadata"]["name"]) for v in claims["items"]}
-        expected_claims = {k for k in guard_keys if k[0] == "PersistentVolumeClaim"}
-        require(actual_claims == expected_claims, "Complete namespace claim inventory changed")
-        volumes = self.list_resources("persistentvolumes")
-        actual_volumes = {(v["kind"], None, v["metadata"]["name"]) for v in volumes["items"] if v.get("spec", {}).get("claimRef", {}).get("namespace") == namespace}
-        require(actual_volumes == {k for k in guard_keys if k[0] == "PersistentVolume"}, "Complete namespace backing volume inventory changed")
+        for scope, claims in claim_lists.items():
+            actual_claims = {(v["kind"], v["metadata"].get("namespace"), v["metadata"]["name"]) for v in claims["items"]}
+            expected_claims = {k for k in guard_keys if k[0] == "PersistentVolumeClaim" and k[1] == scope}
+            require(actual_claims == expected_claims, "Complete namespace claim inventory changed")
+        global_guard = self.x.get("globalPVInventoryGuarded") is True
+        actual_volumes = {(v["kind"], None, v["metadata"]["name"]) for v in volumes["items"]
+                          if global_guard or v.get("spec", {}).get("claimRef", {}).get("namespace") == namespace}
+        require(actual_volumes == {k for k in guard_keys if k[0] == "PersistentVolume"}, "Complete guarded backing volume inventory changed")
+        if global_guard:
+            # Every global PV is hash-custodied. Recheck the selected new shell
+            # and temporary copy against every backing, including other
+            # namespaces; distinct node scopes are distinct local storage.
+            claims = {v["metadata"]["name"]: v for v in claim_lists[namespace]["items"]}
+            pvs = {v["metadata"]["name"]: v for v in volumes["items"]}
+            try:
+                candidates = [storage.bound_claim(claims[name], pvs, namespace)
+                              for name in (self.plan["selection"]["shellClaim"], self.stage["rawPack"]["claim"])]
+                require(len({v["metadata"]["uid"] for v in candidates}) == 2, "Candidate backing volumes alias")
+                backings = {name: storage.backing(value) for name, value in pvs.items()}
+                for candidate in candidates:
+                    left = backings[candidate["metadata"]["name"]]
+                    for name, right in backings.items():
+                        if name == candidate["metadata"]["name"] or (left[0] == right[0] == "node-path" and left[1] != right[1]):
+                            continue
+                        require(not storage.overlaps(left, right), "Candidate backing aliases another global PV")
+            except (storage.Refusal, KeyError) as error:
+                raise Refusal("Complete supported isolated global backing identities required") from error
         stage_uid = self.stage["pod"]["metadata"]["uid"]
         stage_name = self.stage["pod"]["metadata"]["name"]
         policy_name = self.stage["retirement"]["policyName"]
-        pods = self.list_resources("pods", namespace)
+        pods = self.list_resources("pods", namespace, phase + ".pods")
         require(not any(p["metadata"].get("name") == stage_name or p["metadata"].get("uid") == stage_uid for p in pods["items"]),
                 "Retired stage Pod reappeared")
         writer_meta = self.writer["metadata"]
@@ -416,7 +574,7 @@ class Publication:
         temporary_pack = self.stage["rawPack"]["claim"]
         require(not any(v.get("persistentVolumeClaim", {}).get("claimName") == temporary_pack for p in pods["items"] for v in p["spec"].get("volumes", [])),
                 "Temporary staged pack has an active Pod owner")
-        policies = self.list_resources("networkpolicies", namespace)
+        policies = self.list_resources("networkpolicies", namespace, phase + ".policies")
         require(not any(p["metadata"].get("name") == policy_name or p["metadata"].get("uid") == self.stage["retirement"]["policyUID"] for p in policies["items"]),
                 "Retired stage policy reappeared")
         stdout, ref = self.command("retiredMountProbe", phase)
@@ -430,9 +588,15 @@ class Publication:
 
     def fresh(self, phase, after=False):
         self.source_check(); updater.check_cluster(self.target, self.kube)
+        namespaces, deployments = {}, {}
+        for namespace in sorted({component["namespace"] for component in self.target["components"].values()}):
+            namespaces[namespace] = self.kube.get("namespace", namespace)
+            collection = self.list_resources("deployments", namespace, phase + ".deployments-" + namespace)
+            deployments.update({(namespace, value["metadata"]["name"]): value for value in collection["items"]})
+        inventory = DeploymentInventory(namespaces, deployments)
         snapshots = {}
         for role, component in self.target["components"].items():
-            value = updater.deployment_identity(component, self.kube)
+            value = updater.deployment_identity(component, inventory)
             wanted = self.plan["desiredSpec"] if role == "work" and after else self.baseline["deployments"][role]["spec"]
             require(value["spec"] == wanted, "Current owned or protected deployment full specification differs")
             if role != "work" or not after:
@@ -471,7 +635,7 @@ class Publication:
             require(rs["metadata"]["uid"] == self.baseline["replicaSet"]["metadata"]["uid"] and rs["spec"] == self.baseline["replicaSet"]["spec"],
                     "Original ReplicaSet changed before promotion")
             self.chain(owners[0], rs, snapshots["work"])
-        self.save(phase + ".guards.original.json", {"deployments": snapshots, "pods": pods, "mountProbe": probe_ref})
+        self.save(phase + ".guards.original.json", {"deployments": snapshots, "namespaces": namespaces, "pods": pods, "mountProbe": probe_ref})
         return snapshots["work"], pods
 
     def dryrun(self):
@@ -498,6 +662,66 @@ class Publication:
                 "Committed response mismatch; reconcile without replay")
         self.save("apply.actual.json", {**self.header("ATOMIC_PRIVATE_SHELL_PATCH_COMMITTED_ACCEPTANCE_PENDING"), "response": response,
                                       "desiredSpecSha256": self.plan["desiredSpecSha256"], "productionMutation": True})
+
+    def same_observed_owner(self, phase, original):
+        deployment, pods = self.fresh(phase, after=True)
+        old_pod = original["pod"]
+        holders = [pod for pod in pods["items"] if pod["metadata"]["uid"] == old_pod["metadata"]["uid"]]
+        require(len(holders) == 1, "Authenticated probe owning Pod changed")
+        pod = holders[0]
+        rs = self.kube.get("replicaset", original["replicaSet"]["metadata"]["name"], self.plan["namespace"])
+        self.chain(pod, rs, deployment)
+        for current, previous in ((deployment, original["deployment"]), (pod, old_pod), (rs, original["replicaSet"])):
+            require(current["metadata"]["uid"] == previous["metadata"]["uid"] and current["metadata"]["name"] == previous["metadata"]["name"] and
+                    current["spec"] == previous["spec"] and not current["metadata"].get("deletionTimestamp") and
+                    all(current["metadata"].get(key, {}) == previous["metadata"].get(key, {}) for key in ("labels", "annotations")),
+                    "Authenticated probe owner specification or metadata changed")
+        state = selected(pod["status"]["containerStatuses"], self.plan["selection"]["container"])
+        old_state = selected(old_pod["status"]["containerStatuses"], self.plan["selection"]["container"])
+        require(state.get("ready") is True and type(state.get("restartCount")) is int and state["restartCount"] == 0 and
+                state.get("imageID") == old_state.get("imageID") and state.get("state") == old_state.get("state") and
+                "running" in state.get("state", {}) and pod["status"].get("phase") == "Running" and
+                any(condition.get("type") == "Ready" and condition.get("status") == "True" for condition in pod["status"].get("conditions", [])) and
+                deployment.get("status", {}).get("readyReplicas") == 1 and
+                deployment["status"].get("observedGeneration", 0) >= deployment["metadata"].get("generation", 1),
+                "Authenticated probe owner process/image/readiness changed")
+        return {"deployment": deployment, "pod": pod, "replicaSet": rs}
+
+    def authenticated_static(self, base_url, owner, owner_ref, content_ref):
+        command = self.x["authenticatedStaticProbe"]
+        gates = [anonymous_catalog_gate(urljoin(base_url, path)) for path in ("catalog/tools/index.json", "catalog/tools/index.sig.json")]
+        gates_ref = self.save("observe.anonymous-catalog-gates.original.json", {"version": 1, "probes": gates})
+        current = self.same_observed_owner("observe-before-auth", owner)
+        context = {"version": 1, "status": "ACTUAL_PRIVATE_SHELL_AUTHENTICATED_CATALOG_CONTEXT", "publicationInputSha256": self.input_ref["sha256"],
+                   "planSha256": self.refs["plan"]["sha256"], "sources": self.plan["sources"], "image": self.plan["image"], "owner": current,
+                   "ownerEvidence": owner_ref, "contentEvidence": content_ref, "selection": self.plan["selection"], "mounts": self.mounts,
+                   "baseURL": base_url, "publicPin": self.public_pin, "qualifiedCatalog": self.stage["catalog"],
+                   "shellManifest": self.refs["shellManifest"], "packManifest": self.refs["packManifest"], "enginePin": self.refs["enginePin"], "resolverPin": self.resolver_ref}
+        context_ref = self.save("observe.authenticated-catalog-context.original.json", context)
+        self.source_check()
+        # Last target call before the separately reviewed memory-session probe.
+        self.command("preflight", "observe-auth")
+        self.source_check()
+        result = self.command_runner(command["argv"], input=canonical(context).decode(), capture_output=True, text=True, timeout=300, check=False)
+        require(type(result.stdout) is str and type(result.stderr) is str and len(result.stdout.encode()) <= 1024**2 and len(result.stderr.encode()) <= 1024**2,
+                "Authenticated probe output exceeds reviewed bound")
+        output_ref = self.save("observe.authenticated-catalog-command.original.json", {"returncode": result.returncode, "stdout": result.stdout, "stderr": result.stderr})
+        require(result.returncode == 0 and result.stderr == "", "Authenticated catalogue probe failed; preserve originals without replay")
+        def unique(pairs):
+            value = {}
+            for key, item in pairs:
+                require(key not in value, "Duplicate authenticated probe JSON key")
+                value[key] = item
+            return value
+        value = json.loads(result.stdout, object_pairs_hook=unique, parse_constant=lambda _: (_ for _ in ()).throw(Refusal("Non-finite probe number")))
+        authenticated_catalog_report(value, context, command, self.stage["catalog"], self.public_pin)
+        report_ref = self.save("observe.authenticated-catalog-report.original.json", value)
+        self.same_observed_owner("observe-after-auth", owner)
+        self.source_check()
+        portable = {key: {**command[key], "path": str(Path(os.path.abspath(self.base / command[key]["path"])))} for key in ("source", "input")}
+        self.authenticated_catalog_proof = {"publicationInput": self.input_ref, **portable, "context": context_ref, "command": output_ref,
+                                            "report": report_ref, "anonymousGates": gates_ref, "profile": AUTHENTICATED_CATALOG_PROFILE}
+        return value["probes"], gates
 
     def observe(self, timeout=180):
         applied = self.prior("apply", "ATOMIC_PRIVATE_SHELL_PATCH_COMMITTED_ACCEPTANCE_PENDING")
@@ -542,13 +766,21 @@ class Publication:
         base_url = parsed.scheme + "://" + parsed.netloc + "/"
         file_map = {item["path"]: item for item in self.shell["files"]}
         static_probes = []
-        for path in ("index.html", "catalog/tools/index.json", "catalog/tools/index.sig.json"):
+        gated = "authenticatedStaticProbe" in self.x
+        for path in (("index.html",) if gated else ("index.html", "catalog/tools/index.json", "catalog/tools/index.sig.json")):
             require(path in file_map, "Missing static acceptance file")
             item = file_map[path]; url = urljoin(base_url, path)
             body = self.static_fetcher(url, item["size"])
             require(len(body) == item["size"] and hashlib.sha256(body).hexdigest() == item["sha256"], "Normal HTTPS static bytes differ from owning candidate")
             static_probes.append({"path": path, "url": url, "bytes": len(body), "sha256": hashlib.sha256(body).hexdigest(), "status": 200, "verifiedTlsAndHostname": True})
-        tls_ref = self.save("observe.static-https.original.json", {"version": 1, "probes": static_probes, "certificateRequired": True, "hostnameVerified": True})
+        tls = {"version": 1, "probes": static_probes, "certificateRequired": True, "hostnameVerified": True}
+        if gated:
+            owner = {"deployment": deployment, "pod": holder, "replicaSet": rs}
+            extra, gates = self.authenticated_static(base_url, owner, owner_ref, content_ref)
+            static_probes.extend(extra)
+            tls.update({"profile": AUTHENTICATED_CATALOG_PROFILE, "authenticatedCatalogProof": self.authenticated_catalog_proof,
+                        "unauthenticatedGates": gates, "preparedEnvelopeByteEqualityClaimed": False})
+        tls_ref = self.save("observe.static-https.original.json", tls)
         accepted_ref = self.accepted_previous(deployment, holder, rs, status, owner_ref, content_ref, tls_ref, static_probes)
         self.save("observe.actual.json", {**self.header("ACTUAL_PRIVATE_SHELL_OWNER_CONTENT_AND_TLS_VERIFIED_ACCEPTANCE_PENDING"),
                    "podUID": holder["metadata"]["uid"], "replicaSetUID": rs["metadata"]["uid"], "imageID": status["imageID"],
@@ -587,6 +819,9 @@ class Publication:
               "vendorVerification": "UNCHANGED_ACCEPTED_OCI_DIGEST_WITH_PREVIOUS_RUNTIME_CUSTODY", "catalogVerification": "FRESH_OWNING_POD_P256_AND_FULL_SHELL_PACK_HASHES"},
            "https": probes, "tls": {"certificateRequired": True, "hostnameVerified": True}, "originalEvidence": [owner_ref, content_ref, tls_ref, self.previous_ref],
            "runtimeAcceptanceScope": "IMMUTABLE_IMAGE_CONTENT_AND_NORMAL_TLS", "remainingAcceptance": ["Authenticated export and document-agent canaries", "Signed-in reconnect and visual checks"], "ociImageSignatureClaimed": False}
+        if hasattr(self, "authenticated_catalog_proof"):
+            original.update({"status": "PRIVATE_SHELL_RUNTIME_AND_AUTHENTICATED_HTTPS_ACCEPTED", "authenticatedCatalogProfile": AUTHENTICATED_CATALOG_PROFILE,
+                             "authenticatedCatalogProof": self.authenticated_catalog_proof, "unauthenticatedCatalogGated": True, "preparedCatalogHTTPSByteEqualityClaimed": False})
         original_ref = self.save("observe.acceptance.original.json", original)
         projection = {"apiVersion": deployment["apiVersion"], "kind": deployment["kind"],
                       "metadata": {key: deployment["metadata"][key] for key in ("namespace", "name", "uid", "resourceVersion")}, "spec": deployment["spec"]}

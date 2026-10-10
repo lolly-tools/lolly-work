@@ -250,7 +250,7 @@ jobs:
         timeout-minutes: 5
         env:
           LOLLY_SHELL_TEST_DEPENDENCIES: ${{ github.workspace }}/qualification-lolly/node_modules
-        run: node --test tests/prepare-shell-update.test.ts tests/retain-shell-assets.test.ts
+        run: node --test tests/prepare-shell-update.test.ts tests/prepare-public-shell-update.test.ts tests/retain-shell-assets.test.ts
       - name: Qualify built worker with matched signed shell and real browser
         if: matrix.image == 'render-worker'
         timeout-minutes: 25

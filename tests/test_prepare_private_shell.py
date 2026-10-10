@@ -112,6 +112,160 @@ class Shell(fixture.Cohort):
                     for job in value["jobs"]: job["head_sha"] = self.sources["lolly"]
             self.patch(self.evidence["lolly"], key, change)
 
+    def authenticated_fixture(self):
+        """Synthetic local protocol receipts, never production qualification."""
+        actual = json.loads((self.base / self.original_acceptance["path"]).read_bytes())
+        prior_ref = self.file("synthetic-prior-unchanged-tuple", copy.deepcopy(self.previous))
+        shell_ref, pack_ref = self.evidence["previousShell"]["manifest"], self.evidence["rawPack"]["manifest"]
+        shell, pack = [json.loads((self.base / ref["path"]).read_bytes()) for ref in (shell_ref, pack_ref)]
+        catalog = {"indexSha256": "1" * 64, "envelopeSha256": "2" * 64, "signedFiles": 2, "keyId": self.envelope["keyId"]}
+        content = {"version": 1, "shell": shell, "pack": pack, "pinSha256": self.previous["pin"]["sha256"],
+                   "catalog": {**catalog, "publicPinSha256": self.public_pin_sha, "signatureVerified": True}}
+        refs = {"pod": {"kind": "ReplicaSet", "name": "accepted-rs", "uid": "accepted-rs-uid", "controller": True},
+                "rs": {"kind": "Deployment", "name": "work", "uid": "deployment-uid", "controller": True}}
+        pod = {"metadata": {"name": "accepted-pod", "namespace": "private", "uid": "accepted-pod-uid", "ownerReferences": [refs["pod"]]},
+               "spec": copy.deepcopy(self.before["spec"]["template"]["spec"]), "status": {"phase": "Running", "conditions": [{"type": "Ready", "status": "True"}],
+               "containerStatuses": [{"name": "server", "ready": True, "restartCount": 0, "imageID": self.previous["image"], "state": {"running": {"startedAt": "2026-10-09T00:00:00Z"}}}]}}
+        owner = {"deployment": copy.deepcopy(self.before), "pod": pod,
+                 "replicaSet": {"metadata": {"name": "accepted-rs", "namespace": "private", "uid": "accepted-rs-uid", "ownerReferences": [refs["rs"]]}, "spec": {"template": self.before["spec"]["template"]}}}
+        owner_ref, content_ref = self.file("synthetic-full-owner", owner), self.file("synthetic-full-content", content)
+        source_ref = self.binary("synthetic-inert-probe.py", b"# inert synthetic protocol source\n")
+        probe_input = self.file("synthetic-probe-input", {"synthetic": True, "notProductionEvidence": True})
+        sources = {"lolly": self.previous["shellSource"], "engine": self.previous["engineSource"], "work": self.previous["workSource"], "brand": self.brand}
+        plan_ref = self.file("synthetic-auth-plan", {"desiredSpec": self.before["spec"], "sources": sources, "image": self.previous["image"],
+                             "selection": self.evidence["selection"], "deploymentUID": self.before["metadata"]["uid"]})
+        invocation = {"source": source_ref, "input": probe_input, "profile": m.AUTH_PROFILE,
+                      "argv": ["/usr/bin/python3", str(self.base / source_ref["path"]), "--input", str(self.base / probe_input["path"]), "--input-sha256", probe_input["sha256"]]}
+        publication_ref = self.file("synthetic-auth-publication-input", {"version": 1, "status": "REVIEWED_PRIVATE_SHELL_PUBLICATION_INPUT", "sourceFiles": [source_ref, probe_input], "authenticatedStaticProbe": invocation, "refs": {"plan": plan_ref}})
+        context = {"version": 1, "status": "ACTUAL_PRIVATE_SHELL_AUTHENTICATED_CATALOG_CONTEXT", "publicationInputSha256": publication_ref["sha256"], "planSha256": plan_ref["sha256"],
+                   "sources": {"lolly": self.previous["shellSource"], "engine": self.previous["engineSource"], "work": self.previous["workSource"], "brand": self.brand},
+                   "image": self.previous["image"], "owner": owner, "ownerEvidence": owner_ref, "contentEvidence": content_ref, "selection": self.evidence["selection"],
+                   "mounts": {"shellPath": "/app/shell", "packPath": "/app/pack", "pinPath": "/app/engine-pin.json"}, "baseURL": "https://private.example/",
+                   "publicPin": self.keys["public"], "qualifiedCatalog": catalog, "shellManifest": shell_ref, "packManifest": pack_ref,
+                   "enginePin": self.previous["enginePin"], "resolverPin": self.previous["resolverPin"]}
+        oracle = {"indexSha256": "5" * 64, "indexBytes": 123, "expectedIndexSha256": "5" * 64, "envelopeSha256": "6" * 64, "envelopeBytes": 456,
+                  "expectedFileMapSha256": "7" * 64, "signedFiles": 2, "publicPinSha256": self.public_pin_sha, "keyId": catalog["keyId"],
+                  "signedAt": "2026-10-09T00:00:00Z", "signatureVerified": True, "exactPerCallerIndexBytes": True, "exactVisibleFileMap": True, "sourceBindingSha256": "8" * 64}
+        probes = [{"path": path, "url": context["baseURL"] + path, "status": 200, "verifiedTlsAndHostname": True, "authentication": "TEMPORARY_MEMORY_SESSION",
+                   "bytes": oracle[prefix + "Bytes"], "sha256": oracle[prefix + "Sha256"], "oracle": m.AUTH_PROFILE}
+                  for path, prefix in (("catalog/tools/index.json", "index"), ("catalog/tools/index.sig.json", "envelope"))]
+        report = {"version": 1, "status": "AUTHENTICATED_PRIVATE_SHELL_CATALOG_PROBE_ACCEPTED", "contextSha256": m.cohort.digest(context),
+                  "inputSha256": probe_input["sha256"], "sourceSha256": source_ref["sha256"], "profile": m.AUTH_PROFILE, "probes": probes, "oracle": oracle,
+                  "tls": {"certificateRequired": True, "hostnameVerified": True, "redirectsFollowed": False},
+                  "scope": {"databaseDirectWrites": False, "documentWrites": False, "invitationWrites": False, "cookiePrinted": False, "cookiePersisted": False, "maximumSessionSeconds": 300}}
+        gates = [{"url": context["baseURL"] + path, "status": 401, "errorCode": "UNAUTHORIZED", "message": "this deployment is sign-in gated",
+                  "bytes": 82, "sha256": "9" * 64, "verifiedTlsAndHostname": True, "authentication": "none"} for path in ("catalog/tools/index.json", "catalog/tools/index.sig.json")]
+        proof = {"source": source_ref, "input": probe_input, "publicationInput": publication_ref, "context": self.file("synthetic-probe-context", context), "report": self.file("synthetic-probe-report", report),
+                 "command": self.file("synthetic-probe-command", {"returncode": 0, "stdout": json.dumps(report), "stderr": ""}),
+                 "anonymousGates": self.file("synthetic-gates", {"version": 1, "probes": gates}), "profile": m.AUTH_PROFILE}
+        actual.update({"status": m.AUTH_ACCEPTED, "shellSource": self.previous["shellSource"], "engineSource": self.previous["engineSource"],
+                       "shellManifestSha256": self.previous["shell"]["manifestSha256"], "packManifestSha256": self.previous["pack"]["manifestSha256"],
+                       "resolverPinSha256": self.previous["resolverPin"]["sha256"], "podSpecSha256": m.cohort.digest(pod["spec"]),
+                       "authenticatedCatalogProfile": m.AUTH_PROFILE, "authenticatedCatalogProof": proof, "unauthenticatedCatalogGated": True,
+                       "preparedCatalogHTTPSByteEqualityClaimed": False, "https": [{"path": "index.html", "url": context["baseURL"] + "index.html", "status": 200,
+                       "verifiedTlsAndHostname": True, "sha256": next(f["sha256"] for f in shell["files"] if f["path"] == "index.html"),
+                       "bytes": next(f["size"] for f in shell["files"] if f["path"] == "index.html")}, *probes]})
+        tls = {"version": 1, "profile": m.AUTH_PROFILE, "probes": actual["https"], "certificateRequired": True, "hostnameVerified": True,
+               "authenticatedCatalogProof": proof, "unauthenticatedGates": gates, "preparedEnvelopeByteEqualityClaimed": False}
+        actual["originalEvidence"] = [owner_ref, content_ref, self.file("synthetic-authenticated-tls", tls), prior_ref]
+        return actual, context, report
+
+    def test_authenticated_acceptance_requires_full_owner_content_and_per_caller_proof(self):
+        actual, _, _ = self.authenticated_fixture()
+        m.original_acceptance(actual, self.previous, self.before)
+        inputs = m.cohort.Inputs(self.base)
+        m.authenticated_acceptance_custody(actual, self.previous, self.before, inputs)
+        inputs.unchanged()
+        self.assertGreater(len(inputs.reads), 10)
+
+    def test_authenticated_gate_profile_scope_or_false_boolean_refuses(self):
+        actual, _, _ = self.authenticated_fixture()
+        for change in (lambda v: v.update(authenticatedCatalogProfile="unknown"), lambda v: v.update(unauthenticatedCatalogGated=1),
+                       lambda v: v.update(preparedCatalogHTTPSByteEqualityClaimed=True)):
+            wrong = copy.deepcopy(actual); change(wrong)
+            with self.assertRaises(m.Refusal): m.authenticated_acceptance_custody(wrong, self.previous, self.before, m.cohort.Inputs(self.base))
+        for change in (lambda v: v["unauthenticatedGates"][0].update(status=200), lambda v: v["unauthenticatedGates"][0].update(message="sign in first"),
+                       lambda v: v.update(preparedEnvelopeByteEqualityClaimed=True)):
+            wrong = copy.deepcopy(actual); self.patch(wrong["originalEvidence"], 2, change)
+            with self.assertRaises(m.Refusal): m.authenticated_acceptance_custody(wrong, self.previous, self.before, m.cohort.Inputs(self.base))
+
+    def test_authenticated_command_hash_context_and_owner_corruption_refuse(self):
+        actual, _, report = self.authenticated_fixture()
+        for change in (lambda v: v["pod"]["metadata"].update(uid="different-pod"), lambda v: v["pod"]["status"]["containerStatuses"][0].update(restartCount=1)):
+            wrong = copy.deepcopy(actual); self.patch(wrong["originalEvidence"], 0, change)
+            with self.assertRaises(m.Refusal): m.authenticated_acceptance_custody(wrong, self.previous, self.before, m.cohort.Inputs(self.base))
+        for change in (lambda v: v.update(contextSha256="0" * 64), lambda v: v["oracle"].update(signatureVerified=False),
+                       lambda v: v["scope"].update(cookiePrinted=True), lambda v: v["oracle"].update(indexSha256="0" * 64)):
+            wrong = copy.deepcopy(actual); changed = copy.deepcopy(report); change(changed)
+            # Keep the original command/report consistently changed: refusal
+            # must come from the oracle, not an easy stale-JSON mismatch.
+            proof = wrong["authenticatedCatalogProof"]
+            proof["report"] = self.file("synthetic-consistently-wrong-report", changed)
+            proof["command"] = self.file("synthetic-consistently-wrong-command", {"returncode": 0, "stdout": json.dumps(changed), "stderr": ""})
+            self.patch(wrong["originalEvidence"], 2, lambda v: v.update(authenticatedCatalogProof=proof))
+            with self.assertRaises(m.Refusal): m.authenticated_acceptance_custody(wrong, self.previous, self.before, m.cohort.Inputs(self.base))
+
+    def test_reconciled_profile_cannot_use_generic_accepted_proof(self):
+        actual, _, _ = self.authenticated_fixture(); actual["status"] = m.AUTH_RECONCILED
+        with self.assertRaises(m.Refusal): m.authenticated_acceptance_custody(actual, self.previous, self.before, m.cohort.Inputs(self.base))
+
+    def reconciled_fixture(self):
+        actual, context, report = self.authenticated_fixture()
+        owner_ref, content_ref = actual["originalEvidence"][:2]
+        content = json.loads((self.base / content_ref["path"]).read_bytes())
+        helper = self.binary("synthetic-readonly-helper.py", b"# synthetic read-only helper; not executed\n")
+        publisher = self.binary("synthetic-original-publisher.py", b"# synthetic original publisher; not executed\n")
+        driver = self.binary("synthetic-original-driver.mjs", b"// synthetic original inert driver\n")
+        auth_module = self.binary("synthetic-auth-module.mjs", b"// synthetic auth module\n")
+        names = ("server/src/catalog/signing.ts", "server/src/policy/overlay.ts", "server/src/store/postgres.ts", "server/src/iam/sessions.ts", "server/src/iam/tokens.ts", "server/src/lib/crypto.ts")
+        files = {name: "a" * 64 for name in names}
+        scoped = self.binary("synthetic-scoped-binding.mjs", ("export const FILES=Object.freeze(" + json.dumps(files) + ");\n").encode())
+        source_map = self.file("synthetic-owning-source-map", {key: {"sha256": value} for key, value in files.items()})
+        bindings = self.file("synthetic-owning-node-bindings", {"sourceFiles": files})
+        closure = [helper, publisher, driver, auth_module, scoped]
+        plan_ref = self.file("synthetic-reconciled-plan", {"desiredSpec": self.before["spec"], "deploymentUID": self.before["metadata"]["uid"], "sources": context["sources"], "image": self.previous["image"]})
+        publication = self.file("synthetic-reconciled-publication-input", {"sourceFiles": closure, "refs": {"plan": plan_ref, "enginePin": self.previous["enginePin"],
+                                "shellManifest": context["shellManifest"], "packManifest": context["packManifest"]}})
+        header = {"version": 1, "inputSha256": publication["sha256"], "operatorSha256": publisher["sha256"], "planSha256": plan_ref["sha256"], "sources": context["sources"], "image": self.previous["image"]}
+        response = self.file("synthetic-committed-spec-response", {"spec": self.before["spec"]})
+        originals = {"apply": self.file("synthetic-committed-apply", {**header, "status": "ATOMIC_PRIVATE_SHELL_PATCH_COMMITTED_ACCEPTANCE_PENDING", "productionMutation": True, "response": response}),
+                     "uncertain": self.file("synthetic-original-observe-refusal", {**header, "status": "REFUSED_NO_REPLAY_RECONCILE_ORIGINAL_STATE", "failureType": "HTTPError", "runtimeAcceptanceComplete": False}),
+                     "started": self.file("synthetic-original-observe-started", {**header, "status": "STARTED_NO_REPLAY", "phase": "observe"}), "owner": owner_ref, "content": content_ref}
+        envelope = self.file("synthetic-reconciliation-input", {"status": "REVIEWED_READ_ONLY_PRIVATE_SHELL_OBSERVATION_RECONCILIATION", "rootExecutionOnly": True,
+                            "limits": {"maximumProbeSeconds": 300, "runtimeDeadlineSeconds": 900, "cookieTtlSeconds": 300, "productionMutation": False, "replayOriginalObserve": False},
+                            "sourceFiles": closure, "publisher": publisher, "publicationInput": publication, "driver": driver, "scoped": scoped, "authModule": auth_module,
+                            "sourceMap": source_map, "nodeBindings": bindings, "originals": originals})
+        auth = {"version": 1, "status": "AUTHENTICATED_NORMAL_TLS_PER_CALLER_CATALOG_VERIFIED", **report["oracle"], "sourceBindingSha256": m.cohort.digest(files),
+                "cookiePrinted": False, "cookiePersisted": False, "cookieTtlSeconds": 300, "databaseDirectWrites": False, "redirectsFollowed": False,
+                "certificateRequired": True, "hostnameVerified": True, "sessionOrigin": "LITERAL_ACCEPTED_OWNING_NODE_DRIVER_OWNER_AND_MIGRATION_LOOKUP", "envelopeByteEqualityToPreparedClaimed": False}
+        auth_ref = self.file("synthetic-reconciled-authenticated-proof", auth)
+        provenance = {"origin": "EXPLICIT_READ_ONLY_OBSERVATION_RECONCILIATION_NOT_PHASE_REPLAY", "helper": helper, "input": envelope, "originalApply": originals["apply"],
+                      "originalFailure": originals["uncertain"], "originalStarted": originals["started"], "originalOwner": owner_ref, "originalContent": content_ref,
+                      "authenticatedCatalog": auth_ref, "tlsProfile": m.AUTH_PROFILE}
+        tls = json.loads((self.base / actual["originalEvidence"][2]["path"]).read_bytes())
+        del tls["authenticatedCatalogProof"]; tls["authenticatedCatalog"] = auth_ref
+        actual["originalEvidence"][2] = self.file("synthetic-reconciled-tls", tls)
+        del actual["authenticatedCatalogProof"]
+        actual.update(status=m.AUTH_RECONCILED, reconciliation=provenance)
+        return actual, envelope
+
+    def test_reconciled_acceptance_requires_original_apply_failure_source_and_authenticated_chain(self):
+        actual, _ = self.reconciled_fixture()
+        m.original_acceptance(actual, self.previous, self.before)
+        inputs = m.cohort.Inputs(self.base)
+        m.authenticated_acceptance_custody(actual, self.previous, self.before, inputs); inputs.unchanged()
+        self.assertGreater(len(inputs.reads), 15)
+
+    def test_reconciled_readonly_limits_numeric_boolean_and_fake_provenance_refuse(self):
+        actual, _ = self.reconciled_fixture()
+        for change in (lambda v: v["limits"].update(productionMutation=0), lambda v: v["limits"].update(cookieTtlSeconds=300.0),
+                       lambda v: v.update(rootExecutionOnly=False)):
+            wrong = copy.deepcopy(actual); self.patch(wrong["reconciliation"], "input", change)
+            with self.assertRaises(m.Refusal): m.authenticated_acceptance_custody(wrong, self.previous, self.before, m.cohort.Inputs(self.base))
+        for change in (lambda v: v.update(origin="REPLAY_ORIGINAL_OBSERVE"), lambda v: v.update(originalApply=self.file("synthetic-fake-apply-label", {"status": "PASS"}))):
+            wrong = copy.deepcopy(actual); change(wrong["reconciliation"])
+            with self.assertRaises(m.Refusal): m.authenticated_acceptance_custody(wrong, self.previous, self.before, m.cohort.Inputs(self.base))
+
     def test_shell_new_source_retains_engine_pack_image_and_only_three_selected_leaves(self):
         self.assertEqual(self.result["sources"]["engine"], self.engine_source)
         self.assertNotEqual(self.result["sources"]["lolly"], self.engine_source)
