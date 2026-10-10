@@ -6,6 +6,7 @@ No fixture authenticates a live CI origin or qualifies Nginx/production. Tests
 exercise maintained check CLIs and mutation ordering with in-memory transports.
 """
 import copy
+import gzip
 import hashlib
 import importlib.util
 import io
@@ -44,6 +45,79 @@ def actual_pod(want, uid):
     pod['spec'].update(dnsPolicy='ClusterFirst',schedulerName='default-scheduler',terminationGracePeriodSeconds=30,serviceAccountName='default',priority=0,preemptionPolicy='PreemptLowerPriority')
     pod['status'] = {'containerStatuses':[{'name':pod['spec']['containers'][0]['name'],'ready':True,'restartCount':0,'imageID':pod['spec']['containers'][0]['image']}]}
     return pod
+
+
+def tar_bytes(content):
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw,mode='w',format=tarfile.USTAR_FORMAT) as tar:
+        for name,data in content.items():
+            info=tarfile.TarInfo(name); info.size=len(data); info.mode=0o644; info.uid=info.gid=101
+            tar.addfile(info,io.BytesIO(data))
+    return raw.getvalue()
+
+
+class CompressedArchive(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.path=Path(self.tmp.name)/'owner.tar.gz'
+        self.content={'_app/one.js':b'first asset'*137,'catalog/tools/index.json':b'{"fixture":true}'}
+        self.expected={p:{'path':p,'size':len(b),'sha256':hashlib.sha256(b).hexdigest()} for p,b in self.content.items()}
+        self.raw=tar_bytes(self.content)
+        self.body_end=sum(512+(len(b)+511)//512*512 for b in self.content.values())
+
+    def validate(self, raw=None, compressed=None, expected=None, maximum=m.cohort.MAX_BYTES):
+        self.path.write_bytes(compressed if compressed is not None else gzip.compress(self.raw if raw is None else raw,mtime=0))
+        return m.validate_archive(self.path,self.expected if expected is None else expected,maximum)
+
+    def test_complete_single_gzip_preserves_exact_files_and_two_tar_end_blocks(self):
+        for raw in (self.raw,self.raw[:self.body_end+1024]):
+            proof=self.validate(raw)
+            self.assertEqual(proof['files'],2); self.assertEqual(proof['uncompressedBytes'],len(raw))
+            self.assertTrue(proof['gzipIntegrityVerified']); self.assertTrue(proof['tarEndBlocksVerified']); self.assertTrue(proof['fullFileHashesVerified'])
+
+    def test_omitted_whole_file_and_complete_payload_without_end_blocks_refuse(self):
+        first=512+(len(self.content['_app/one.js'])+511)//512*512
+        for raw,expected in ((self.raw[:first],self.expected),(self.raw[:first],{'_app/one.js':self.expected['_app/one.js']}),
+                             (self.raw[:self.body_end],self.expected),(self.raw[:self.body_end+512],self.expected),
+                             (self.raw[:self.body_end+1023],self.expected)):
+            with self.assertRaises(m.Refusal): self.validate(raw,expected=expected)
+        # A well-formed gzip/tar with a whole accepted file missing still refuses.
+        with self.assertRaises(m.Refusal): self.validate(tar_bytes({'_app/one.js':self.content['_app/one.js']}))
+
+    def test_truncated_gzip_tail_crc_size_and_noncompressed_input_refuse(self):
+        encoded=gzip.compress(self.raw,mtime=0)
+        crc=bytearray(encoded); crc[-8]^=1
+        size=bytearray(encoded); size[-4]^=1
+        for value in (encoded[:-1],encoded[:-8],encoded[:len(encoded)//2],bytes(crc),bytes(size),self.raw):
+            with self.assertRaises(m.Refusal): self.validate(compressed=value)
+
+    def test_extra_member_compressed_suffix_or_nonzero_tar_suffix_refuse(self):
+        encoded=gzip.compress(self.raw,mtime=0)
+        for value in (encoded+gzip.compress(b'',mtime=0),encoded+b'\0',encoded+b'foreign bytes'):
+            with self.assertRaises(m.Refusal): self.validate(compressed=value)
+        for raw in (self.raw[:self.body_end+1024]+b'foreign'+b'\0'*505,self.raw[:self.body_end]+b'\0'*(512*21)):
+            with self.assertRaises(m.Refusal): self.validate(raw)
+
+    def test_streaming_large_file_and_inflation_and_compressed_bounds(self):
+        content={'_app/large.js':b'bounded output\n'*180000}; raw=tar_bytes(content)
+        expected={p:{'path':p,'size':len(b),'sha256':hashlib.sha256(b).hexdigest()} for p,b in content.items()}
+        self.assertEqual(self.validate(raw,expected=expected)['uncompressedBytes'],len(raw))
+        with self.assertRaises(m.Refusal): self.validate(raw,expected=expected,maximum=len(raw)-1)
+        encoded=gzip.compress(self.raw,mtime=0)
+        with self.assertRaises(m.Refusal): self.validate(compressed=encoded,maximum=len(encoded)-1)
+        with self.assertRaises(m.Refusal): self.validate(compressed=gzip.compress(b'\0'*200000,mtime=0))
+
+    def test_checksum_content_padding_and_extended_header_changes_refuse(self):
+        malformed=bytearray(self.raw); malformed[0]^=1
+        content=bytearray(self.raw); content[512]^=1
+        padding=bytearray(self.raw); padding[512+len(self.content['_app/one.js'])]=1
+        for value in (bytes(malformed),bytes(content),bytes(padding)):
+            with self.assertRaises(m.Refusal): self.validate(value)
+        raw=io.BytesIO()
+        with tarfile.open(fileobj=raw,mode='w',format=tarfile.PAX_FORMAT) as tar:
+            info=tarfile.TarInfo('_app/one.js'); info.size=len(self.content['_app/one.js']); info.mode=0o644; info.pax_headers={'comment':'unreviewed'}
+            tar.addfile(info,io.BytesIO(self.content['_app/one.js']))
+        with self.assertRaises(m.Refusal): self.validate(raw.getvalue())
 
 
 class PublicFixture(fixture.Public):
@@ -210,9 +284,9 @@ class Boundaries(PublicFixture):
         self.assertTrue((s.out/'allocation.original.json').exists()); self.assertFalse((s.out/'claims.bound.actual.json').exists())
 
     def test_owner_overlay_archive_exact_bytes_and_all_link_escape_duplicate_missing_refuse(self):
-        s = self.stage(); path = self.base/'archive.tar'
+        s = self.stage(); path = self.base/'archive.tar.gz'
         def archive(change=None):
-            with tarfile.open(path,'w') as tar:
+            with tarfile.open(path,'w:gz',format=tarfile.USTAR_FORMAT) as tar:
                 for i,(p,row) in enumerate(s.old_overlay.items()):
                     info=tarfile.TarInfo(p); info.size=row['size']; info.mode=0o644
                     if change and i == 0: change(info)
@@ -223,6 +297,56 @@ class Boundaries(PublicFixture):
             with self.assertRaises((m.Refusal,KeyError)): m.validate_archive(path,s.old_overlay)
         archive()
         with self.assertRaises(m.Refusal): m.validate_archive(path,{**s.old_overlay,'_app/missing.js':{'path':'_app/missing.js','size':0,'sha256':'a'*64}})
+
+    def test_owner_snapshot_compresses_before_transport_and_keeps_truncation_originals(self):
+        s=self.stage(); s.out.mkdir(); calls=[]
+        raw=tar_bytes({p:(s.old.root/p).read_bytes() for p in s.old_overlay}); compressed=gzip.compress(raw,mtime=0)
+        s.transport=lambda argv:argv
+        def produce(argv,stdout,stderr):
+            calls.append(argv); stdout.write(compressed); stderr.write(b'original diagnostic\n')
+            child=type('Completed',(),{'returncode':0,'poll':lambda _:0})(); return child
+        with patch.object(m.subprocess,'Popen',produce),patch.object(m.shutil,'disk_usage',return_value=type('Usage',(),{'free':32*1024**3})()):
+            path,receipt=s.snapshot()
+        self.assertEqual(path.read_bytes(),compressed); self.assertIn('-czf',calls[0]); self.assertNotIn('-cf',calls[0])
+        self.assertEqual(calls[0][-len(m.public.PATHS):],list(m.public.PATHS)); self.assertEqual(path.stat().st_mode&0o777,0o600)
+        command=json.loads(Path(receipt['path']).read_bytes()); self.assertEqual(command['argv'],calls[0]); self.assertEqual(command['encoding'],'gzip')
+        self.assertTrue((s.out/'snapshot.archive-verified.actual.json').exists())
+        s.out=self.base/'truncated-output'; s.out.mkdir(); compressed=compressed[:-8]
+        with patch.object(m.subprocess,'Popen',produce),patch.object(m.shutil,'disk_usage',return_value=type('Usage',(),{'free':32*1024**3})()):
+            with self.assertRaises(m.Refusal): s.snapshot()
+        self.assertEqual((s.out/'owning-overlay.original.tar.gz').read_bytes(),compressed)
+        self.assertEqual(json.loads((s.out/'snapshot.command.actual.json').read_bytes())['exitCode'],0)
+        self.assertFalse((s.out/'snapshot.archive-verified.actual.json').exists())
+
+    def test_writer_extracts_gzip_snapshot_only_after_fresh_final_preflight(self):
+        s=self.stage(); s.out.mkdir(); calls=[]; writer=actual_pod(s.desired['writer'],'writer-uid')
+        s.prior=lambda _:None; s.owned=lambda _:writer; s.fresh=lambda _:calls.append('fresh')
+        s.full_tree=lambda *args,**kwargs:({},{}); s.verify_bindings=lambda:calls.append('bindings')
+        s.preflight=lambda _:calls.append('preflight')
+        path=self.base/'copy-fixture.tar.gz'; path.write_bytes(gzip.compress(tar_bytes({p:(s.old.root/p).read_bytes() for p in s.old_overlay}),mtime=0))
+        s.snapshot=lambda:(path,ref(path))
+        def remote(argv,data=None,timeout=None):
+            self.assertEqual(calls[-1],'preflight'); calls.append(argv)
+            if len([v for v in calls if isinstance(v,list)])==1:
+                self.assertEqual(data,path.read_bytes()); self.assertIn('-xzf',argv)
+            else: self.assertIn('-xf',argv)
+            return b''
+        s.remote=remote; s.copy()
+        self.assertEqual(len([v for v in calls if isinstance(v,list)]),2)
+
+    def test_truncated_copy_never_writes_and_retains_exclusive_failed_intent(self):
+        s=self.stage(); s.out.mkdir(); writer=actual_pod(s.desired['writer'],'writer-uid'); calls=[]
+        s.prior=lambda _:None; s.owned=lambda _:writer; s.fresh=lambda _:None; s.full_tree=lambda *args,**kwargs:({},{}); s.transport=lambda argv:argv
+        compressed=gzip.compress(tar_bytes({p:(s.old.root/p).read_bytes() for p in s.old_overlay}),mtime=0)[:-8]
+        def produce(argv,stdout,stderr):
+            calls.append(argv); stdout.write(compressed); return type('Completed',(),{'returncode':0,'poll':lambda _:0})()
+        s.remote=lambda *args,**kwargs:self.fail('No writer extraction after refused snapshot')
+        with patch.object(m.subprocess,'Popen',produce),patch.object(m.shutil,'disk_usage',return_value=type('Usage',(),{'free':32*1024**3})()):
+            with self.assertRaises(m.Refusal): s.copy()
+            with self.assertRaises(FileExistsError): s.copy()
+        self.assertEqual(len(calls),1); self.assertTrue((s.out/'copy.started.json').exists()); self.assertTrue((s.out/'copy.uncertain.json').exists())
+        self.assertFalse((s.out/'copy.actual.json').exists()); self.assertTrue((s.out/'snapshot.command.actual.json').exists())
+        self.assertEqual((s.out/'owning-overlay.original.tar.gz').read_bytes(),compressed)
 
     def test_actual_inventory_exact_sizes_hashes_modes_and_model_exclusion(self):
         s=self.stage(); raw=''.join(f"{r['size']} 644 10 0\t{r['sha256']}  ./{p}\t./{p}\n" for p,r in reversed(list(s.effective.files.items()))).encode()

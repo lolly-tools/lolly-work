@@ -21,6 +21,7 @@ import sys
 import tarfile
 import time
 import uuid
+import zlib
 sys.dont_write_bytecode = True
 
 
@@ -120,24 +121,84 @@ def inventory(raw, expected):
     return {'htmlRoot':public.ROOT[1:], 'files':{p:{'mode':modes[p], 'size':files[p]['size'], 'sha256':files[p]['sha256']} for p in sorted(files)}}
 
 
-def validate_archive(path, expected):
-    files = {}; directories = set()
+class GzipSnapshotReader:
+    """Bounded single-member decoding, including the gzip trailer after tar EOF."""
+    def __init__(self, stream, maximum):
+        self.stream, self.maximum, self.total = stream, maximum, 0
+        self.pending, self.position = b'', 0
+        self.chunks = self.decode()
+
+    def decode(self):
+        decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        while chunk := self.stream.read(1024**2):
+            while True:
+                try: data = decoder.decompress(chunk, min(1024**2, self.maximum - self.total + 1))
+                except zlib.error as error: raise Refusal('Owner gzip checksum or stream differs') from error
+                self.total += len(data)
+                require(self.total <= self.maximum, 'Owner gzip expands beyond accepted archive bound')
+                if data: yield data
+                if decoder.eof:
+                    require(not decoder.unused_data and not self.stream.read(1), 'Extra gzip member or trailing compressed bytes')
+                    return
+                chunk = decoder.unconsumed_tail
+                if not chunk and not data: break
+        require(decoder.eof, 'Owner gzip is truncated before its checksum/size trailer')
+
+    def read(self, size):
+        parts = []
+        while size:
+            if self.position == len(self.pending):
+                self.pending, self.position = next(self.chunks, b''), 0
+                if not self.pending: break
+            count = min(size, len(self.pending) - self.position)
+            parts.append(self.pending[self.position:self.position + count])
+            self.position += count; size -= count
+        return b''.join(parts)
+
+
+def validate_archive(path, expected, maximum=cohort.MAX_BYTES):
+    files = {}; directories = set(); seen_directories = set()
     for p in expected:
         parts = p.split('/')
         directories.update('/'.join(parts[:i]) for i in range(1, len(parts)))
-    with tarfile.open(path, 'r:') as archive:
-        for member in archive:
+    # One ordinary header per file/directory, exact padded bodies and at most
+    # one tar record of zero padding. No decompressed copy consumes local disk.
+    bound = sum(512 + (row['size'] + 511) // 512 * 512 for row in expected.values()) + 512 * len(directories) + 10240
+    require(type(maximum) is int and maximum > 0 and Path(path).stat().st_size <= maximum, 'Compressed owner archive exceeds bound')
+    with Path(path).open('rb') as compressed:
+        archive = GzipSnapshotReader(compressed, min(maximum, bound))
+        while True:
+            header = archive.read(512)
+            require(len(header) == 512, 'Owner tar is truncated before complete end blocks')
+            if not any(header):
+                zeros = 1
+                while tail := archive.read(512):
+                    require(len(tail) == 512 and not any(tail), 'Truncated tar padding or data after end-of-archive')
+                    zeros += 1
+                    require(zeros <= 20, 'Owner tar padding exceeds one record')
+                require(zeros >= 2, 'Owner tar requires two complete zero end blocks')
+                break
+            try: member = tarfile.TarInfo.frombuf(header, 'utf-8', 'surrogateescape')
+            except tarfile.HeaderError as error: raise Refusal('Malformed owner tar header') from error
             name = member.name.removeprefix('./').rstrip('/')
             cohort.safe_path(name)
             require(not member.pax_headers and member.uid >= 0 and member.gid >= 0, 'Unreviewed extended tar record')
-            if member.isdir(): require(name in directories, 'Unexpected archive directory'); continue
+            if member.isdir():
+                require(name in directories and name not in seen_directories and member.size == 0, 'Unexpected archive directory')
+                seen_directories.add(name); continue
             require(member.isfile() and name not in files and name in expected and member.mode in {0o644,0o755}
                     and member.size == expected[name]['size'], 'Archive link, special file, duplicate or outside path')
-            stream = archive.extractfile(member); digest = hashlib.sha256(); count = 0
-            while data := stream.read(1024**2): digest.update(data); count += len(data)
+            digest = hashlib.sha256(); count = 0
+            while count < member.size:
+                data = archive.read(min(1024**2, member.size - count))
+                require(data, 'Truncated owner tar body'); digest.update(data); count += len(data)
             require(count == member.size and digest.hexdigest() == expected[name]['sha256'], 'Actual owner archive bytes differ')
+            padding = archive.read(-member.size % 512)
+            require(len(padding) == -member.size % 512 and not any(padding), 'Truncated or nonzero owner tar body padding')
             files[name] = expected[name]
     require(files == expected, 'Archive omits accepted overlay bytes')
+    return {'format':'single-member-gzip-tar', 'files':len(files), 'uncompressedBytes':archive.total, 'compressedBytes':Path(path).stat().st_size,
+            'gzipIntegrityVerified':True, 'tarEndBlocksVerified':True, 'fullFileHashesVerified':True}
 
 
 def catalog_bytes(index, envelope_bytes, pin, catalog, files, node):
@@ -443,8 +504,9 @@ class Stage(private.Stage):
 
     def snapshot(self):
         require(shutil.disk_usage(self.out).free >= 2 * 1024**3 + self.value['maximumWriteBytes'], 'Local 2 GiB floor/overlay transport budget refused')
-        path = self.out / 'owning-overlay.original.tar'; errors = self.out / 'owning-overlay.original.stderr'
-        args = self.transport(['exec','-n',self.namespace,self.owner['metadata']['name'],'-c',self.owner_container,'--','tar','-C',public.ROOT,'-cf','-',*public.PATHS])
+        path = self.out / 'owning-overlay.original.tar.gz'; errors = self.out / 'owning-overlay.original.stderr'
+        args = self.transport(['exec','-n',self.namespace,self.owner['metadata']['name'],'-c',self.owner_container,'--','tar','-C',public.ROOT,'-czf','-',*public.PATHS])
+        started = time.monotonic()
         with path.open('xb') as stdout, errors.open('xb') as stderr:
             child = subprocess.Popen(args,stdout=stdout,stderr=stderr); failed = None
             try:
@@ -456,9 +518,11 @@ class Stage(private.Stage):
                 code = child.returncode
             except BaseException as e: failed = type(e).__name__; child.kill(); code = child.wait()
         path.chmod(0o600); errors.chmod(0o600)
-        proof = self.save('snapshot.command.actual.json',{'exitCode':code,'failureType':failed,'stdout':{'path':str(path),'sha256':checksum(path)},'stderr':{'path':str(errors),'sha256':checksum(errors)}})
+        proof = self.save('snapshot.command.actual.json',{'argv':args,'encoding':'gzip','elapsedSeconds':time.monotonic()-started,'exitCode':code,'failureType':failed,'stdout':{'path':str(path),'sha256':checksum(path)},'stderr':{'path':str(errors),'sha256':checksum(errors)}})
         require(failed is None and code == 0 and path.stat().st_size <= self.value['maximumWriteBytes'] + 8 * 1024**2, 'Owner snapshot command failed or exceeded bound')
-        validate_archive(path,self.old_overlay); return path,proof
+        verified = validate_archive(path,self.old_overlay,self.value['maximumWriteBytes'] + 8 * 1024**2)
+        self.save('snapshot.archive-verified.actual.json',{'archive':{'path':str(path),'sha256':checksum(path)},**verified})
+        return path,proof
 
     def create(self):
         require(not self.out.exists(), 'New exclusive stage output required'); self.out.mkdir(mode=0o700); self.save('resources.prepared.json',self.desired)
@@ -477,7 +541,7 @@ class Stage(private.Stage):
         def body():
             writer = self.owned('writer'); self.fresh(writer['metadata']['uid']); self.full_tree(self.owner,self.old.files,container=self.owner_container)
             archive,snapshot = self.snapshot(); self.verify_bindings(); self.owned('writer'); self.preflight(writer['metadata']['uid'])
-            self.remote(['exec','-i','-n',self.namespace,writer['metadata']['name'],'-c','stager','--','tar','-C','/stage/overlay','-xf','-'],archive.read_bytes(),timeout=600)
+            self.remote(['exec','-i','-n',self.namespace,writer['metadata']['name'],'-c','stager','--','tar','-C','/stage/overlay','-xzf','-'],archive.read_bytes(),timeout=600)
             self.full_tree(writer,self.old_overlay,'/stage/overlay')
             delta = self.out / 'overlay-delta.tar'
             with tarfile.open(delta,'x',format=tarfile.USTAR_FORMAT) as tar:
