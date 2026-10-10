@@ -210,16 +210,50 @@ def bind_prepared(inputs, prepared_ref, evidence_ref, node):
 # checksum inventory. Models are deliberately pruned; all other links/special
 # files refuse. Raw command stdout is retained before parsing or comparison.
 HASH_SCRIPT = r'''set -eu
+refuse() { printf "%s\n" "LOLLY_STATIC_HASH_SCAN_REFUSED"; exit 1; }
+trap 'rc=$?; if [ "$rc" -ne 0 ]; then printf "%s\n" "LOLLY_STATIC_HASH_SCAN_REFUSED"; fi' 0
 root=$1
-cd "$root"
-bad=$(find . -path ./models -prune -o \( ! -type d ! -type f \) -print)
-test -z "$bad"
-find . -path ./models -prune -o -type f -exec sh -eu -c 'for p do
-  before=$(stat -c "%s %a %i %Y" "$p")
-  digest=$(sha256sum "$p")
-  after=$(stat -c "%s %a %i %Y" "$p")
-  test "$before" = "$after"
-  printf "%s\t%s\t%s\n" "$before" "$digest" "$p"
+cd "$root" || refuse
+bad=$(find . -path ./models -prune -o \( ! -type d ! -type f \) -print) || refuse
+test -z "$bad" || refuse
+find . -path ./models -prune -o -type f -exec sh -eu -c '
+refuse() { printf "%s\n" "LOLLY_STATIC_HASH_SCAN_REFUSED"; exit 1; }
+trap "rc=\$?; if [ \"\$rc\" -ne 0 ]; then printf \"%s\\n\" \"LOLLY_STATIC_HASH_SCAN_REFUSED\"; fi" 0
+newline="
+"
+tab=$(printf "\t")
+for p do
+  case "$p" in *"$newline"*|*"$tab"*|*\\*) refuse ;; esac
+  test -f "$p" && test ! -L "$p" || refuse
+done
+scan_batch() {
+  before=$(stat -c "%s %a %i %Y" "$@") || refuse
+  digests=$(sha256sum "$@") || refuse
+  after=$(stat -c "%s %a %i %Y" "$@") || refuse
+  test "$before" = "$after" || refuse
+  for p do
+    test -f "$p" && test ! -L "$p" || refuse
+    test -n "$before" && test -n "$digests" || refuse
+    row=${before%%"$newline"*}
+    digest=${digests%%"$newline"*}
+    case "$before" in *"$newline"*) before=${before#*"$newline"} ;; *) before= ;; esac
+    case "$digests" in *"$newline"*) digests=${digests#*"$newline"} ;; *) digests= ;; esac
+    printf "%s\t%s\t%s\n" "$row" "$digest" "$p"
+  done
+  test -z "$before" && test -z "$digests" || refuse
+}
+# Validated newline-only splitting preserves spaces; globbing is disabled.
+IFS="$newline"
+set -f
+while [ "$#" -gt 0 ]; do
+  batch=
+  count=0
+  while [ "$#" -gt 0 ] && [ "$count" -lt 64 ]; do
+    batch="$batch$1$newline"
+    shift
+    count=$((count + 1))
+  done
+  scan_batch $batch
 done' public-hashes {} +'''
 
 
