@@ -66,7 +66,8 @@ guards()
 p=pathlib.Path(x["pv"]["spec"]["local"]["path"])
 need(p.is_absolute() and str(p)==x["pv"]["spec"]["local"]["path"] and ".." not in p.parts)
 paths=[*reversed(p.parents),p]
-def stamp(value): return [value.st_dev,value.st_ino,value.st_mode,value.st_uid,value.st_gid,value.st_size,value.st_mtime_ns,value.st_ctime_ns]
+def identity(value): return [value.st_dev,value.st_ino,value.st_mode,value.st_uid,value.st_gid]
+def stamp(value): return [*identity(value),value.st_size,value.st_mtime_ns,value.st_ctime_ns]
 before=[q.lstat() for q in paths]
 need(all(stat.S_ISDIR(v.st_mode) and not stat.S_ISLNK(v.st_mode) for v in before))
 try:
@@ -78,7 +79,8 @@ except OSError as error:
     label=None
 guards()
 after=[q.lstat() for q in paths]
-need([stamp(v) for v in before]==[stamp(v) for v in after])
+# Unrelated entries may change ancestor timestamps without changing this path.
+need([identity(v) for v in before[:-1]]==[identity(v) for v in after[:-1]] and stamp(before[-1])==stamp(after[-1]))
 def metadata(q,v): return {"path":str(q),"device":v.st_dev,"inode":v.st_ino,"mode":stat.S_IMODE(v.st_mode),"uid":v.st_uid,"gid":v.st_gid}
 print(canonical({"version":1,"status":"READ_ONLY_PUBLIC_LOCAL_PV_ROOT_METADATA_OBSERVED","clusterUID":x["clusterUID"],"node":x["node"],"claimUID":x["claim"]["metadata"]["uid"],"pvUID":x["pv"]["metadata"]["uid"],"pvSpecSha256":hashlib.sha256(canonical(x["pv"]["spec"])).hexdigest(),"root":{**metadata(p,before[-1]),"selinuxLabel":label},"ancestors":[metadata(q,v) for q,v in zip(paths[:-1],before[:-1])],"readOnly":True,"productionMutation":False}).decode())
 '''

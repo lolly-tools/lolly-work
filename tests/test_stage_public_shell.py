@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import textwrap
 import unittest
 from unittest.mock import patch
 sys.dont_write_bytecode = True
@@ -145,6 +146,58 @@ class RootReader(unittest.TestCase):
     def run_reader(self):
         x=copy.deepcopy(self.config); x['kubectl']=[sys.executable,str(self.kube),json.dumps(self.resources)]
         return subprocess.run([sys.executable,'-B','-c',m.ROOT_METADATA_SCRIPT,m.cohort.canonical(x).decode()],capture_output=True)
+
+    def during_recheck(self, action):
+        marker=self.base/'first-namespace-read'
+        self.kube.write_text('import json,sys\nfrom pathlib import Path\n'
+                             'x=json.loads(sys.argv[1]);a=sys.argv[2:];kind=a[a.index("get")+1]\n'
+                             f'marker=Path({str(marker)!r})\n'
+                             'if kind=="namespace":\n'
+                             ' if marker.exists():\n'+textwrap.indent(action,'  ')+'\n'
+                             ' else: marker.touch()\n'
+                             'print(json.dumps(x[kind]))\n')
+
+    def test_actual_reader_allows_unrelated_ancestor_entry_change_during_resource_recheck(self):
+        before=self.root.stat(); ancestor=self.base.stat(); unrelated=self.base/'unrelated'
+        self.during_recheck(f'Path({str(unrelated)!r}).mkdir()')
+        result=self.run_reader(); self.assertEqual(result.returncode,0,result.stderr.decode())
+        self.assertTrue(unrelated.is_dir()); self.assertNotEqual(self.base.stat().st_mtime_ns,ancestor.st_mtime_ns)
+        self.assertEqual(self.root.stat(),before); self.assertEqual(list(self.root.iterdir()),[])
+        value=json.loads(result.stdout); self.assertEqual(value['root']['inode'],before.st_ino)
+        self.assertEqual(value['ancestors'][-1]['inode'],ancestor.st_ino)
+
+    def test_actual_reader_refuses_ancestor_permissions_changed_during_resource_recheck(self):
+        before=self.root.stat(); ancestor=self.base.stat()
+        self.during_recheck(f'Path({str(self.base)!r}).chmod({ancestor.st_mode & 0o7777 ^ 0o010})')
+        self.assertNotEqual(self.run_reader().returncode,0)
+        self.assertEqual(self.root.stat(),before); self.assertNotEqual(self.base.stat().st_mode,ancestor.st_mode)
+
+    def test_actual_reader_refuses_ancestor_replacement_during_resource_recheck(self):
+        parent=self.base/'parent'; parent.mkdir(); self.root.rename(parent/'overlay'); self.root=parent/'overlay'
+        self.config['pv']['spec']['local']['path']=str(self.root); self.resources['PersistentVolume']['spec']=copy.deepcopy(self.config['pv']['spec'])
+        before=parent.stat(); leaf=self.root.stat(); old=self.base/'replaced-parent'
+        self.during_recheck(f'parent=Path({str(parent)!r});old=Path({str(old)!r})\n'
+                            'parent.rename(old);parent.mkdir();(old/"overlay").rename(parent/"overlay")')
+        self.assertNotEqual(self.run_reader().returncode,0)
+        self.assertNotEqual(parent.stat().st_ino,before.st_ino); self.assertEqual(self.root.stat().st_ino,leaf.st_ino)
+
+    def test_actual_reader_refuses_selected_root_entry_change_during_resource_recheck(self):
+        before=self.root.stat(); child=self.root/'unexpected'
+        self.during_recheck(f'Path({str(child)!r}).mkdir()')
+        self.assertNotEqual(self.run_reader().returncode,0)
+        self.assertTrue(child.is_dir()); self.assertEqual(self.root.stat().st_ino,before.st_ino)
+        self.assertEqual(self.root.stat().st_mode,before.st_mode)
+
+    def test_actual_reader_refuses_selected_root_permissions_changed_during_resource_recheck(self):
+        before=self.root.stat()
+        self.during_recheck(f'Path({str(self.root)!r}).chmod({before.st_mode & 0o7777 ^ 0o010})')
+        self.assertNotEqual(self.run_reader().returncode,0)
+        self.assertEqual(self.root.stat().st_ino,before.st_ino); self.assertNotEqual(self.root.stat().st_mode,before.st_mode)
+
+    def test_actual_reader_refuses_selected_root_replacement_during_resource_recheck(self):
+        before=self.root.stat(); old=self.base/'replaced-root'
+        self.during_recheck(f'root=Path({str(self.root)!r});root.rename({str(old)!r});root.mkdir()')
+        self.assertNotEqual(self.run_reader().returncode,0); self.assertNotEqual(self.root.stat().st_ino,before.st_ino)
 
     def test_actual_reader_observes_existing_root_without_permissions_or_contents_changes(self):
         self.root.chmod(0o2750); before=self.root.stat(); result=self.run_reader(); self.assertEqual(result.returncode,0,result.stderr.decode())
