@@ -25,6 +25,68 @@ Their result is a protected `shell.prepared.json` whose status explicitly says i
 has not been runtime qualified or applied. Neither a local build nor a handwritten
 success record replaces those original qualification inputs.
 
+## Assemble the preparation input without release-specific scripts
+
+`scripts/assemble-private-shell-input.py` translates an original successful local
+producer receipt into the unchanged preparer's input. It does not build, contact
+the instance or qualify its runtime. Keep the original build, web-gate, module,
+main-reference and complete normal-CI receipts; a status copied into a new JSON
+file is not a substitute.
+
+Review a preparation profile once per instance. Its exact version 1 fields are
+`PROFILE_KEYS` in [the adapter](../../scripts/assemble-private-shell-input.py).
+The profile holds the unchanged Work source and its original CI, private brand
+commit and profile, verified catalogue/AI settings and HTTPS origins, accepted
+raw-pack snapshot, container/volume selection, public P-256 pin digest and
+reviewed producer-source digest. Its `instance` names the execution profile and
+binds the target's exact hash. It contains no credentials or signing key. Use the
+current execution profile after each genuinely accepted update; the preparation
+profile can remain unchanged while its `previous` baseline advances.
+
+For each release, supply a clean immutable Lolly checkout's source record
+(`root`, `source`, `repository`, `main`, `ciRun`, `ciJobs`), the original
+`shell-update.prepared.json` and their reviewed SHA-256 digests. The source record
+uses the existing original provider formats; normal CI must be complete and
+successful, with only the established private-instance build skip permitted.
+Choose an unused shell claim and a new protected output directory:
+
+```sh
+python3 -B scripts/assemble-private-shell-input.py \
+  --preparation-profile /protected/preparation-profile.json \
+  --preparation-profile-sha256 REVIEWED_PREPARATION_PROFILE_SHA256 \
+  --instance-profile /protected/instance-profile.json \
+  --instance-profile-sha256 REVIEWED_INSTANCE_PROFILE_SHA256 \
+  --candidate /protected/main-source-record.json \
+  --candidate-sha256 REVIEWED_SOURCE_RECORD_SHA256 \
+  --producer /protected/build/shell-update.prepared.json \
+  --producer-sha256 REVIEWED_ORIGINAL_PRODUCER_SHA256 \
+  --shell-claim UNUSED_NEW_SHELL_CLAIM \
+  --operator-sha256 REVIEWED_ADAPTER_SHA256 \
+  --out-dir /protected/preparation-input-NEW_MAIN_COMMIT
+```
+
+`assembly.actual.json` links the exact `shell-input.reviewed.json` digest and the
+existing canonical public-pin digest. It keeps runtime qualification, origin
+authentication and production mutation false. Run the full maintained preparer
+next, using those exact digests:
+
+```sh
+python3 -B scripts/prepare-private-shell.py \
+  --evidence /protected/preparation-input-NEW_MAIN_COMMIT/shell-input.reviewed.json \
+  --reviewed-evidence-sha256 ASSEMBLED_EVIDENCE_SHA256 \
+  --existing-public-pin-sha256 EXISTING_CANONICAL_PUBLIC_PIN_SHA256 \
+  --node /path/to/reviewed-node-24 \
+  --out-dir /protected/new-shell-cohort
+```
+
+This still verifies every retained file, signed catalogue and unchanged
+engine/pack/image contract. The resulting `shell.prepared.json` feeds the `run`
+command below. Do not reuse an output directory or an uncertain attempt. A stale
+baseline, changed settings or incomplete CI requires new reviewed inputs; the
+adapter performs no retry and does not follow a moving main branch. Native
+release holds and post-release browser/export/document-agent canaries remain
+separate.
+
 ## IT operator: publish with the instance profile
 
 An instance profile is a protected JSON file with references and SHA-256 digests
