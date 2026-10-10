@@ -73,7 +73,7 @@ class Plan(fixture.Shell):
         v = json.loads((self.base / self.evidence[key]["path"]).read_bytes()); fn(v); self.evidence[key] = self.file("changed-" + key, v)
 
     def refused(self):
-        with self.assertRaises((m.Refusal, OSError, ValueError, KeyError, TypeError, StopIteration)):
+        with self.assertRaises((m.Refusal, m.resources.Refusal, OSError, ValueError, KeyError, TypeError, StopIteration)):
             m.plan(self.evidence, self.base)
 
     def resource(self, facts, kind, name):
@@ -97,6 +97,30 @@ class Plan(fixture.Shell):
             def change(v):
                 self.resource(v, "PersistentVolume", "pv-new-shell")["spec"]["local"]["path"] = self.resource(v, "PersistentVolume", "pv-" + name)["spec"]["local"]["path"] + "/child"
             self.mutate("resources", change); self.refused(); self.evidence = original
+
+    def test_generic_kubectl_list_preserves_original_items_and_empty_aggregate_rv(self):
+        self.mutate("resources", lambda v: v["pods"].update(kind="List", metadata={"resourceVersion": ""}))
+        original_bytes = (self.base / self.evidence["resources"]["path"]).read_bytes()
+        result, inputs = m.plan(self.evidence, self.base)
+        self.assertEqual(result["podInventoryResourceVersion"], "")
+        self.assertEqual((self.base / self.evidence["resources"]["path"]).read_bytes(), original_bytes)
+        inputs.unchanged()
+
+    def test_generic_list_incomplete_mixed_scope_or_duplicate_identity_refuses(self):
+        changes = [lambda p: p.update(apiVersion="apps/v1"), lambda p: p.update(kind="UnknownList"),
+                   lambda p: p["metadata"].update({"continue": "next"}), lambda p: p["metadata"].update(resourceVersion=None),
+                   lambda p: p["metadata"].update(remainingItemCount=1), lambda p: p["metadata"].update(remainingItemCount=True),
+                   lambda p: p["metadata"].update(remainingItemCount="0"), lambda p: p["metadata"].update(remainingItemCount=-1),
+                   lambda p: p["items"][1].update(apiVersion="apps/v1"), lambda p: p["items"][1].update(kind="ConfigMap"),
+                   lambda p: p["items"][1]["metadata"].update(namespace="other"),
+                   lambda p: p["items"][1]["metadata"].update(name=p["items"][0]["metadata"]["name"]),
+                   lambda p: p["items"][1]["metadata"].update(uid=p["items"][0]["metadata"]["uid"]),
+                   lambda p: p["items"][1]["metadata"].update(resourceVersion="")]
+        for change in changes:
+            original = copy.deepcopy(self.evidence)
+            def mutate(v):
+                v["pods"].update(kind="List", metadata={"resourceVersion": ""}); change(v["pods"])
+            self.mutate("resources", mutate); self.refused(); self.evidence = original
 
     def test_other_owner_of_accepted_content_or_live_new_shell_refuses(self):
         for claim in ("old-shell", "old-pack", "new-shell", "temporary-pack"):

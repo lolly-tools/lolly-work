@@ -143,7 +143,7 @@ class Boundaries(unittest.TestCase):
             stage.desired=simple(); stage.baseline={'storageClass':{'volumeBindingMode':'WaitForFirstConsumer'}}; calls=[]; records={}; pvs=[]
             ids={key:copy.deepcopy(stage.desired[key]) for key in ('shellClaim','packClaim','policy')}
             for key,value in ids.items(): value['metadata'].update(uid=key+'-uid',resourceVersion='10'); value['status']={'phase':'Pending'}
-            stage.identities=lambda:ids; stage.get=lambda kind,name=None,namespace=None:copy.deepcopy(next(v for v in ids.values() if v['metadata']['name']==name)) if kind=='pvc' else {'apiVersion':'v1','kind':'PersistentVolumeList','items':copy.deepcopy(pvs)}
+            stage.identities=lambda:ids; stage.get=lambda kind,name=None,namespace=None:copy.deepcopy(next(v for v in ids.values() if v['metadata']['name']==name)) if kind=='pvc' else {'apiVersion':'v1','kind':'List','metadata':{'resourceVersion':''},'items':copy.deepcopy(pvs)}
             stage.preflight=lambda *_:calls.append('preflight'); stage.verify_bindings=lambda:calls.append('isolated-bindings-before-any-pod')
             stage.save=lambda name,value:records.setdefault(name,copy.deepcopy(value))
             def remote(argv,data=None,timeout=None):
@@ -175,6 +175,41 @@ class Boundaries(unittest.TestCase):
             with self.assertRaises(OSError): stage.phase('create',stage.allocate_claims)
             self.assertEqual(len(calls),1); self.assertEqual(calls[0][0],'wait'); self.assertNotIn('Pod',str(calls))
 
+    def test_real_getters_preserve_generic_or_typed_collection_and_raw_stdout(self):
+        for selector,item_kind,namespace in (('pods','Pod','private'),('pvc','PersistentVolumeClaim','private'),('pv','PersistentVolume',None)):
+            for collection_kind in ('List',item_kind+'List'):
+                with self.subTest(selector=selector,kind=collection_kind), tempfile.TemporaryDirectory() as tmp:
+                    item={'apiVersion':'v1','kind':item_kind,'metadata':{'name':'synthetic-item','uid':'synthetic-uid','resourceVersion':'7'}}
+                    if namespace: item['metadata']['namespace']=namespace
+                    value={'apiVersion':'v1','kind':collection_kind,'metadata':{'resourceVersion':''},'items':[item]}; raw=json.dumps(value).encode()+b'\n'
+                    stage=m.Stage.__new__(m.Stage); stage.out=Path(tmp); stage.events=[]
+                    stage.transport=lambda argv:[sys.executable,'-c','import sys; sys.stdout.buffer.write('+repr(raw)+')']
+                    self.assertEqual(stage.get(selector,namespace=namespace),value)
+                    receipt=json.loads(next(stage.out.glob('command-*.json')).read_bytes())
+                    self.assertEqual(Path(receipt['originals']['stdout']['path']).read_bytes(),raw)
+                    self.assertIs(m.complete_list(value,item_kind,namespace),value)
+        empty={'apiVersion':'v1','kind':'List','metadata':{'resourceVersion':''},'items':[]}
+        self.assertIs(m.complete_list(empty,'Pod','private'),empty)
+
+    def test_missing_wrong_kind_api_scope_duplicates_or_incomplete_collections_refuse(self):
+        item={'apiVersion':'v1','kind':'Pod','metadata':{'name':'one','uid':'one-uid','namespace':'private','resourceVersion':'7'}}
+        original={'apiVersion':'v1','kind':'List','metadata':{'resourceVersion':''},'items':[item]}
+        changes=(lambda v:v.pop('items'),lambda v:v.update(apiVersion='v2'),lambda v:v.update(kind='PersistentVolumeClaimList'),
+                 lambda v:v['items'][0].pop('kind'),lambda v:v['items'][0].pop('apiVersion'),lambda v:v['items'][0].update(kind='Secret'),
+                 lambda v:v['items'][0].update(apiVersion='v2'),lambda v:v['items'][0]['metadata'].update(namespace='other'),
+                 lambda v:v['items'][0]['metadata'].pop('name'),lambda v:v['items'][0]['metadata'].pop('uid'),
+                 lambda v:v['items'].append(copy.deepcopy(v['items'][0])),lambda v:v['items'].append({**copy.deepcopy(item),'metadata':{'name':'other','uid':'one-uid','namespace':'private'}}),
+                 lambda v:v['metadata'].update({'continue':'next-token'}),lambda v:v['metadata'].update(remainingItemCount=2),lambda v:v['metadata'].update(remainingItemCount=False))
+        for change in changes:
+            with self.subTest(change=changes.index(change)):
+                value=copy.deepcopy(original); change(value)
+                with self.assertRaises((m.Refusal,m.resources.Refusal)): m.complete_list(value,'Pod','private')
+        for kind,namespace in (('Pod','private'),('PersistentVolumeClaim','private'),('PersistentVolume',None)):
+            for rv in (None,'',7):
+                value=copy.deepcopy(original); value['items'][0]['kind']=kind; value['items'][0]['metadata']['resourceVersion']=rv
+                if namespace is None: value['items'][0]['metadata'].pop('namespace')
+                with self.subTest(kind=kind,rv=rv), self.assertRaises(m.resources.Refusal): m.complete_list(value,kind,namespace)
+
 
 class Inputs(fixture.Plan):
     def setUp(self):
@@ -201,6 +236,9 @@ class Inputs(fixture.Plan):
         return m.Stage(path,file['sha256'],ref(SCRIPT)['sha256'])
 
     def test_real_cli_check_binds_preparer_output_and_never_calls_cluster_or_creates_output(self):
+        self.baseline['pods']['kind']='List'; self.baseline['pods']['metadata']['resourceVersion']=''
+        self.baseline['claims']['kind']='List'; self.baseline['claims']['metadata']['resourceVersion']=''
+        self.stage_input['baseline']=self.file('actual-generic-shape-baseline',self.baseline)
         input_ref=self.file('stage-cli-input',self.stage_input)
         result=subprocess.run([sys.executable,'-B',str(SCRIPT),'check','--inputs',str(self.base/input_ref['path']),'--sha256',input_ref['sha256'],'--operator-sha256',ref(SCRIPT)['sha256']],capture_output=True)
         self.assertEqual(result.returncode,0,result.stderr); receipt=json.loads(result.stdout)
@@ -224,6 +262,8 @@ class Inputs(fixture.Plan):
         objects.update({(r['kind'],r['metadata']['name']):r for r in self.baseline['resources']})
         stage.get=lambda kind,name=None,namespace=None:copy.deepcopy(objects[(kind,name)])
         stage.kube=stage; stage.fresh()
+        for key in (('pvc',None),('pods',None)): objects[key]['kind']='List'; objects[key]['metadata']['resourceVersion']=''
+        stage.fresh()
         original=copy.deepcopy(objects)
         for change in (lambda:objects[('pvc',None)]['items'].append({'metadata':{'name':'unexpected','uid':'foreign'}}),
                        lambda:objects[('networkpolicy','fixture-deny')]['spec'].update(egress=[{}]),

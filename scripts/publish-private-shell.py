@@ -366,14 +366,24 @@ class Publication:
         value = json.loads(self.kube.run(args))
         expected = {"persistentvolumeclaims": "PersistentVolumeClaim", "persistentvolumes": "PersistentVolume",
                     "pods": "Pod", "networkpolicies": "NetworkPolicy"}[kind]
-        require(value.get("apiVersion") == ("networking.k8s.io/v1" if expected == "NetworkPolicy" else "v1") and value.get("kind") == expected + "List" and
+        api = "networking.k8s.io/v1" if expected == "NetworkPolicy" else "v1"
+        # kubectl may emit a generic v1/List even for a single kind. Validate the
+        # complete original inventory and every item; no typed wrapper or list
+        # resourceVersion is invented. Atomic writes still guard actual resource
+        # UID/resourceVersion/full spec, independent of this list envelope.
+        require(isinstance(value, dict) and (value.get("apiVersion"), value.get("kind")) in {(api, expected + "List"), ("v1", "List")} and
                 isinstance(value.get("items"), list) and len(value["items"]) <= 10000 and
+                isinstance(value.get("metadata", {}), dict) and
+                type(value.get("metadata", {}).get("remainingItemCount", 0)) is int and
+                value.get("metadata", {}).get("remainingItemCount", 0) == 0 and
                 not value.get("metadata", {}).get("continue"), "Complete bounded Kubernetes resource list required")
         names, uids = set(), set()
         for item in value["items"]:
+            require(isinstance(item, dict) and isinstance(item.get("metadata"), dict), "Resource list item metadata required")
             metadata = item.get("metadata", {})
-            require(item.get("kind") == expected and metadata.get("namespace") == namespace and
+            require(item.get("apiVersion") == api and item.get("kind") == expected and metadata.get("namespace") == namespace and
                     isinstance(metadata.get("name"), str) and metadata["name"] and isinstance(metadata.get("uid"), str) and metadata["uid"] and
+                    isinstance(metadata.get("resourceVersion"), str) and metadata["resourceVersion"] and
                     metadata["name"] not in names and metadata["uid"] not in uids, "List resource kind, scope or identity differs")
             names.add(metadata["name"]); uids.add(metadata["uid"])
         return value

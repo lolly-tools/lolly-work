@@ -136,13 +136,22 @@ def plan(value, base):
         require(key not in keys and meta["uid"] not in uids, "Duplicate resource identity")
         keys.add(key); uids.add(meta["uid"]); {"PersistentVolumeClaim": claims, "PersistentVolume": pvs, "ConfigMap": maps}[kind][meta["name"]] = resource
     pods = facts["pods"]
-    require(isinstance(pods, dict) and pods.get("apiVersion") == "v1" and pods.get("kind") == "PodList" and not pods.get("metadata", {}).get("continue")
-            and isinstance(pods.get("items"), list) and len(pods["items"]) <= 10000, "Complete namespace PodList required")
-    resources.text(pods.get("metadata", {}).get("resourceVersion"), "PodList resource version")
+    require(isinstance(pods, dict) and pods.get("apiVersion") == "v1" and pods.get("kind") in {"PodList", "List"}
+            and isinstance(pods.get("metadata"), dict) and not pods["metadata"].get("continue")
+            and type(pods["metadata"].get("remainingItemCount", 0)) is int and pods["metadata"].get("remainingItemCount", 0) == 0
+            and isinstance(pods.get("items"), list) and len(pods["items"]) <= 10000, "Complete namespace Pod inventory required")
+    # kubectl may preserve each original typed resource in a generic v1/List
+    # whose aggregate RV is empty. Do not invent one or alter captured bytes:
+    # exact per-item identities below and fresh publication guards remain held.
+    inventory_rv = pods["metadata"].get("resourceVersion")
+    require(isinstance(inventory_rv, str) and len(inventory_rv) <= 253 and not any(ord(c) < 32 for c in inventory_rv)
+            and (pods["kind"] == "List" or inventory_rv), "Invalid Pod inventory resource version")
     active_claims = {v["persistentVolumeClaim"]["claimName"] for v in resources.active_volumes(before["spec"]["template"]["spec"]) if "persistentVolumeClaim" in v}
-    pod_uids, accepted_content_owners = set(), set()
+    pod_uids, pod_names, accepted_content_owners = set(), set(), set()
     for pod in pods["items"]:
-        meta = resources.identity(pod, "Pod", namespace); require(meta["uid"] not in pod_uids, "Duplicate Pod UID"); pod_uids.add(meta["uid"])
+        meta = resources.identity(pod, "Pod", namespace)
+        require(meta["uid"] not in pod_uids and meta["name"] not in pod_names, "Duplicate Pod identity")
+        pod_uids.add(meta["uid"]); pod_names.add(meta["name"])
         for volume in resources.active_volumes(pod.get("spec", {})):
             if "persistentVolumeClaim" in volume:
                 active_claims.add(volume["persistentVolumeClaim"]["claimName"])

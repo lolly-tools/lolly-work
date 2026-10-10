@@ -48,6 +48,22 @@ def resource_key(value):
     meta = value['metadata']; return value['kind'], meta.get('namespace', ''), meta['name']
 
 
+def complete_list(value, item_kind, namespace=None):
+    """Accept actual kubectl generic collections without inventing typed output."""
+    require(isinstance(value,dict) and set(value) == {'apiVersion','kind','metadata','items'} and value['apiVersion'] == 'v1'
+            and value['kind'] in {'List',item_kind + 'List'} and isinstance(value['metadata'],dict) and not value['metadata'].get('continue')
+            and type(value['metadata'].get('remainingItemCount',0)) is int and value['metadata'].get('remainingItemCount',0) == 0
+            and isinstance(value['items'],list) and len(value['items']) <= 100000, 'Complete known v1 collection required')
+    names, uids = set(), set()
+    for item in value['items']:
+        require(isinstance(item,dict) and item.get('apiVersion') == 'v1' and item.get('kind') == item_kind and isinstance(item.get('metadata'),dict), 'Collection item API or kind differs')
+        meta = item['metadata']; name, uid = meta.get('name'), meta.get('uid')
+        resources.name(name); resources.text(uid,'collection UID'); resources.text(meta.get('resourceVersion'),'collection item resource version')
+        require(meta.get('namespace') == namespace and name not in names and uid not in uids, 'Collection item scope or identity differs')
+        names.add(name); uids.add(uid)
+    return value
+
+
 def phase_guard(directory, name, input_sha, operator_sha):
     """Create intent before any API mutation; an existing intent forbids replay."""
     require(name in {'create', 'copy', 'retire-writer', 'create-qualifier', 'qualify', 'retire'}, 'Unknown stage phase')
@@ -194,7 +210,7 @@ class Stage:
             require(resource['kind'] in {'PersistentVolumeClaim','PersistentVolume','ConfigMap'}, 'Secret or unknown baseline resource refused')
             key = resource_key(resource); require(key not in self.baseline_resources, 'Duplicate baseline resource'); self.baseline_resources[key] = resource
         claims = self.baseline['claims']
-        require(claims.get('apiVersion') == 'v1' and claims.get('kind') == 'PersistentVolumeClaimList' and not claims.get('metadata', {}).get('continue'), 'Original complete namespace PVC inventory required')
+        complete_list(claims,'PersistentVolumeClaim',self.namespace)
         claim_map = {c['metadata']['name']:c for c in claims['items']}
         require(len(claim_map) == len(claims['items']) and all(c['metadata'].get('namespace') == self.namespace for c in claims['items']), 'Namespace PVC inventory differs')
         protected_claims = {name:r for (kind,ns,name),r in self.baseline_resources.items() if kind == 'PersistentVolumeClaim' and ns == self.namespace}
@@ -230,7 +246,7 @@ class Stage:
         self.kube = kube or self; self.events = []; self.policy_retired = False
         acceptance = self.inputs.file(self.previous['acceptance']); original = self.inputs.file(acceptance['originalEvidence'][0])
         self.owner_uid, self.replica_uid = original['podUid'], original['replicaSetUid']
-        pods = self.baseline['pods']; require(pods.get('apiVersion') == 'v1' and pods.get('kind') == 'PodList' and not pods.get('metadata', {}).get('continue'), 'Complete namespace PodList required')
+        pods = complete_list(self.baseline['pods'],'Pod',self.namespace)
         owners = [pod for pod in pods['items'] if pod['metadata']['uid'] == self.owner_uid]; require(len(owners) == 1, 'Accepted owner missing')
         self.owner = owners[0]; require(self.owner['spec']['nodeName'] == self.target['node']['name'], 'Accepted owner node differs')
         self.owner_container = self.prepared['selection']['container']
@@ -278,7 +294,12 @@ class Stage:
     def get(self, kind, name=None, namespace=None):
         args = ['get',kind,*([name] if name else []),'-o','json']
         if namespace: args += ['--namespace',namespace]
-        return cohort.parse_json(self.remote(args))
+        value = cohort.parse_json(self.remote(args))
+        if name is None:
+            item_kind = {'pods':'Pod','pod':'Pod','pvc':'PersistentVolumeClaim','pv':'PersistentVolume'}.get(kind)
+            require(item_kind is not None, 'Unknown stage collection selector')
+            complete_list(value,item_kind,namespace)
+        return value
     def absent(self, kind, name): return not self.remote(['get',kind,name,'-n',self.namespace,'--ignore-not-found','-o','json']).strip()
     def identities(self):
         for name in ('identities.actual.json','claims.bound.actual.json'):
@@ -297,7 +318,7 @@ class Stage:
             for field in ('spec','data','binaryData','immutable'):
                 require(actual.get(field) == before.get(field), 'Protected resource payload changed')
         current_claims = self.get('pvc', namespace=self.namespace)
-        require(current_claims.get('kind') == 'PersistentVolumeClaimList' and not current_claims.get('metadata',{}).get('continue'), 'Complete current PVC inventory required')
+        complete_list(current_claims,'PersistentVolumeClaim',self.namespace)
         expected_claims = {c['metadata']['name']:c['metadata']['uid'] for c in self.baseline['claims']['items']}
         ids = self.identities()
         expected_claims.update({ids[key]['metadata']['name']:ids[key]['metadata']['uid'] for key in ('shellClaim','packClaim') if key in ids})
@@ -310,7 +331,7 @@ class Stage:
         require(current_sc['metadata']['uid'] == before_sc['metadata']['uid'] and not current_sc['metadata'].get('deletionTimestamp')
                 and {k:v for k,v in current_sc.items() if k != 'metadata'} == {k:v for k,v in before_sc.items() if k != 'metadata'}, 'Storage provisioner or storage class changed')
         pods = self.get('pods', namespace=self.namespace)
-        require(pods.get('kind') == 'PodList' and not pods.get('metadata',{}).get('continue'), 'Complete namespace inventory required')
+        complete_list(pods,'Pod',self.namespace)
         owners = [pod for pod in pods['items'] if pod['metadata']['uid'] == self.owner_uid]; require(len(owners) == 1, 'Actual accepted owner missing')
         owner = owners[0]; refs = owner['metadata'].get('ownerReferences',[])
         require(len(refs) == 1 and refs[0].get('kind') == 'ReplicaSet' and refs[0].get('uid') == self.replica_uid and refs[0].get('controller') is True
@@ -348,7 +369,7 @@ class Stage:
         return actual
 
     def verify_bindings(self):
-        ids = self.identities(); pvs = self.get('pv'); require(pvs.get('apiVersion') == 'v1' and pvs.get('kind') == 'PersistentVolumeList' and not pvs.get('metadata',{}).get('continue'), 'Complete PV inventory required')
+        ids = self.identities(); pvs = complete_list(self.get('pv'),'PersistentVolume')
         maps = {pv['metadata']['name']:pv for pv in pvs['items']}; require(len(maps) == len(pvs['items']), 'Duplicate PV inventory'); bound = []
         for key in ('shellClaim','packClaim'):
             claim = self.owned(key); pv = resources.bound_claim(claim,maps,self.namespace)
@@ -379,7 +400,7 @@ class Stage:
                 require(allocated['metadata']['uid'] == before['metadata']['uid'] and allocated['metadata'].get('annotations',{}).get('volume.kubernetes.io/selected-node') == self.target['node']['name'], 'Original allocation patch response differs')
                 validate_claim(allocated,self.desired[key]); self.save('allocate-' + key + '.original.json',allocated)
             self.remote(['wait','--for=jsonpath={.status.phase}=Bound','pvc/' + before['metadata']['name'],'-n',self.namespace,'--timeout=120s'],timeout=140)
-        pvs = self.get('pv'); require(pvs.get('kind') == 'PersistentVolumeList' and not pvs.get('metadata',{}).get('continue'), 'Complete allocated PV inventory required')
+        pvs = complete_list(self.get('pv'),'PersistentVolume')
         maps = {pv['metadata']['name']:pv for pv in pvs['items']}; require(len(maps) == len(pvs['items']), 'Duplicate PV inventory')
         for key in ('shellClaim','packClaim'):
             claim = self.get('pvc',ids[key]['metadata']['name'],self.namespace); require(claim['metadata']['uid'] == ids[key]['metadata']['uid'], 'Allocated claim replaced')

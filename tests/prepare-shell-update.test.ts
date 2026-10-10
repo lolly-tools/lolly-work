@@ -3,13 +3,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { prepareShellUpdate, shellUpdateArguments, shellUpdateDelta } from '../scripts/prepare-shell-update.ts';
 import type { ShellUpdateOptions } from '../scripts/prepare-shell-update.ts';
-import { sha256, shellId, shellManifest, writeShellJson } from '../scripts/shell-update-files.ts';
+import { cloneShellFiles, sha256, shellFileCustody, shellFileStamp, shellId, shellManifest, writeShellJson } from '../scripts/shell-update-files.ts';
 import { shellReleaseId } from '../scripts/shell-release-id.ts';
 
 const work = realpathSync(join(import.meta.dirname, '..'));
@@ -100,6 +100,21 @@ test('real CLI builds with Vite and catalog crypto, retains lazy assets, and lea
   assert.equal(git(f.source, 'status', '--porcelain'), '');
   const previousEnvelope = readFileSync(join(f.previous, 'catalog/tools/index.sig.json'));
   assert.deepEqual(readFileSync(join(prepared.shell.root, 'catalog/tools/index.sig.json')), previousEnvelope);
+});
+
+test('genuine clone receipts bind full target metadata and descriptor-verified content', t => {
+  const f = fixture(t), destination = join(f.root, 'clone-custody'); mkdirSync(destination);
+  const files = shellManifest(f.previous).files;
+  const rows = cloneShellFiles(f.previous, destination, files, join(f.root, 'clone-input.json'));
+  assert.equal(rows.length, files.length);
+  for (const row of rows) {
+    const path = join(destination, row.path), actual = shellFileCustody(path);
+    const stat = lstatSync(path, { bigint: true });
+    assert.deepEqual(Object.keys(row).sort(), ['ctimeNs', 'dev', 'ino', 'mode', 'mtimeNs', 'path', 'sha256', 'size']);
+    assert.equal(`${row.dev}:${row.ino}:${row.mode}:${row.size}:${row.mtimeNs}:${row.ctimeNs}`, shellFileStamp(stat));
+    assert.equal(actual.stamp, shellFileStamp(stat)); assert.equal(actual.sha256, row.sha256); assert.equal(actual.size, row.size);
+    assert.notEqual(stat.ino, lstatSync(join(f.previous, row.path), { bigint: true }).ino);
+  }
 });
 
 test('dirty candidate and shared-contract changes refuse before output creation', t => {

@@ -8,7 +8,7 @@ import {
 import type { BigIntStats } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { cloneShellFiles } from './shell-update-files.ts';
+import { cloneShellFiles, shellFileCustody, shellFileStamp } from './shell-update-files.ts';
 
 const MAX_FILES = 100_000;
 const MAX_BYTES = 8 * 1024 * 1024 * 1024;
@@ -21,7 +21,7 @@ const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 type Identity = { dev: bigint; ino: bigint };
 type File = { path: string; size: number; sha256: string; stamp: string };
 type Snapshot = { root: string; files: File[]; directories: Map<string, Identity>; id: string; inventorySha256: string };
-type Owned = { path: string; identity: Identity; directory: boolean };
+type Owned = { path: string; identity: Identity; directory: boolean; custody?: { stamp: string; sha256: string } };
 export type RetainShellOptions = {
   candidate: string; expectedCandidateId: string;
   previous: string; expectedPreviousId: string;
@@ -37,7 +37,7 @@ function requireThat(condition: unknown, reason: string): asserts condition {
 }
 function identity(stat: BigIntStats): Identity { return { dev: stat.dev, ino: stat.ino }; }
 function matches(stat: BigIntStats, value: Identity): boolean { return stat.dev === value.dev && stat.ino === value.ino; }
-function stamp(stat: BigIntStats): string { return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`; }
+const stamp = shellFileStamp;
 function within(a: string, b: string): boolean { return a === b || b.startsWith(`${a}${sep}`); }
 function absent(path: string): boolean {
   try { lstatSync(path); return false; } catch (error) {
@@ -189,8 +189,13 @@ function cleanup(owned: Owned[]): boolean {
     try {
       const stat = lstatSync(entry.path, { bigint: true });
       if (!matches(stat, entry.identity) || (entry.directory ? !stat.isDirectory() : !stat.isFile())) { clean = false; continue; }
+      if (entry.custody) {
+        const actual = shellFileCustody(entry.path);
+        if (actual.stamp !== entry.custody.stamp || actual.sha256 !== entry.custody.sha256) { clean = false; continue; }
+      }
       const parents = owned.filter(parent => parent.directory && within(parent.path, entry.path) && parent.path !== entry.path);
       if (parents.some(parent => !matches(lstatSync(parent.path, { bigint: true }), parent.identity))) { clean = false; continue; }
+      if (entry.custody && stamp(lstatSync(entry.path, { bigint: true })) !== entry.custody.stamp) { clean = false; continue; }
       if (entry.directory) rmdirSync(entry.path); else unlinkSync(entry.path);
     } catch { clean = false; }
   }
@@ -239,19 +244,32 @@ export function retainShellAssets(options: RetainShellOptions) {
       const identities = [...cloneShellFiles(candidateRoot, out, publicFiles(candidate), `${receiptOut}.candidate-clone.json`),
         ...cloneShellFiles(previousRoot, out, retained.filter(file => !active.has(file.path)), `${receiptOut}.previous-clone.json`)];
       const cloned = new Map(identities.map(row => [row.path, row]));
+      requireThat(cloned.size === identities.length, 'Clone output contains duplicate identities.');
+      const verified = new Set<string>();
       const directories = new Set<string>();
       for (const row of identities) { const parts = row.path.split('/'); for (let i = 1; i < parts.length; i++) directories.add(parts.slice(0, i).join('/')); }
       function recordClones(relative: string): void {
         for (const name of readdirSync(join(out, relative)).sort()) {
           const path = join(out, relative, name), stat = lstatSync(path, { bigint: true });
           const leaf = relative ? `${relative}/${name}` : name, expected = cloned.get(leaf);
-          requireThat(stat.isDirectory() ? directories.has(leaf) : stat.isFile() && expected && stat.dev.toString() === expected.dev && stat.ino.toString() === expected.ino,
+          requireThat(stat.isDirectory() ? directories.has(leaf) : stat.isFile() && expected,
             'Clone output identity changed or contains an unowned entry.');
-          owned.push({ path, identity: identity(stat), directory: stat.isDirectory() });
+          let custody: Owned['custody'];
+          if (!stat.isDirectory()) {
+            requireThat(expected, 'Clone output lacks an expected custody receipt.');
+            const actual = shellFileCustody(path);
+            const expectedStamp = `${expected.dev}:${expected.ino}:${expected.mode}:${expected.size}:${expected.mtimeNs}:${expected.ctimeNs}`;
+            requireThat(stamp(stat) === expectedStamp && actual.stamp === expectedStamp && actual.size === expected.size && actual.sha256 === expected.sha256,
+              'Clone output custody changed before adoption.');
+            custody = { stamp: expectedStamp, sha256: expected.sha256 }; verified.add(leaf);
+          }
+          owned.push({ path, identity: identity(stat), directory: stat.isDirectory(), ...(custody ? { custody } : {}) });
           if (stat.isDirectory()) recordClones(leaf);
         }
       }
-      recordClones(''); uncertainClones = false;
+      recordClones('');
+      requireThat(verified.size === cloned.size && [...cloned.keys()].every(path => verified.has(path)), 'Clone output is incomplete.');
+      uncertainClones = false;
     } else {
       for (const file of candidate.files) copyFile(candidate, file, out, owned);
       for (const file of retained) if (!active.has(file.path)) copyFile(previous, file, out, owned);

@@ -312,3 +312,41 @@ test('clone output replacement is refused and preserves the competing inode', t 
   assert.equal(replaced, true); assert.equal(readFileSync(destination, 'utf8'), 'competing replacement');
   assert.equal(readFileSync(join(f.candidate, '_app/new-entry-hash.js'), 'utf8'), 'new entry');
 });
+
+test('clone adoption refuses changed bytes even when the target keeps its inode and size', t => {
+  const f = fixture(t), options = { ...f.options(), copyMode: 'clone' as const }, original = fs.readdirSync;
+  const destination = join(options.out, '_app/new-entry-hash.js'); let changed = false;
+  t.mock.method(fs, 'readdirSync', (...args: Parameters<typeof fs.readdirSync>) => {
+    if (!changed && args[0] === options.out && existsSync(destination)) {
+      changed = true; const before = lstatSync(destination, { bigint: true });
+      writeFileSync(destination, 'bad entry');
+      const after = lstatSync(destination, { bigint: true });
+      assert.equal(after.dev, before.dev); assert.equal(after.ino, before.ino); assert.equal(after.size, before.size);
+    }
+    return original(...args);
+  });
+  syncBuiltinESMExports();
+  try { assert.throws(() => retainShellAssets(options), error => error instanceof RetentionRefusal && error.partialOutput); }
+  finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+  assert.equal(changed, true); assert.equal(readFileSync(destination, 'utf8'), 'bad entry');
+  assert.equal(existsSync(options.receiptOut), false);
+});
+
+test('cleanup preserves an adopted clone changed in place before final inventory', t => {
+  const f = fixture(t), options = { ...f.options(), copyMode: 'clone' as const }, original = fs.readdirSync;
+  const destination = join(options.out, '_app/new-entry-hash.js'); let inventories = 0, changed = false;
+  t.mock.method(fs, 'readdirSync', (...args: Parameters<typeof fs.readdirSync>) => {
+    if (args[0] === options.out && ++inventories === 2) {
+      const before = lstatSync(destination, { bigint: true }); writeFileSync(destination, 'bad entry');
+      const after = lstatSync(destination, { bigint: true });
+      assert.equal(after.dev, before.dev); assert.equal(after.ino, before.ino); assert.equal(after.size, before.size);
+      changed = true;
+    }
+    return original(...args);
+  });
+  syncBuiltinESMExports();
+  try { assert.throws(() => retainShellAssets(options), error => error instanceof RetentionRefusal && error.partialOutput); }
+  finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+  assert.equal(changed, true); assert.equal(readFileSync(destination, 'utf8'), 'bad entry');
+  assert.equal(existsSync(options.receiptOut), false);
+});

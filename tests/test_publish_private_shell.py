@@ -138,11 +138,11 @@ class Phases(unittest.TestCase):
             operations += [{"op": "test", "path": change["path"], "value": change["restoreValue"]}, {"op": "replace", "path": change["path"], "value": change["expectedValue"]}]
         self.resources = []
         for name in ("old-shell", "old-pack", "new-shell"):
-            self.resources += [{"kind": "PersistentVolumeClaim", "metadata": self.meta(name, name + "-uid"),
+            self.resources += [{"apiVersion": "v1", "kind": "PersistentVolumeClaim", "metadata": self.meta(name, name + "-uid"),
                 "spec": {"volumeName": "pv-" + name, "accessModes": ["ReadWriteOnce"]}},
-                {"kind": "PersistentVolume", "metadata": self.meta("pv-" + name, "pv-" + name + "-uid", namespace=None),
+                {"apiVersion": "v1", "kind": "PersistentVolume", "metadata": self.meta("pv-" + name, "pv-" + name + "-uid", namespace=None),
                  "spec": {"claimRef": {"namespace": "team", "name": name, "uid": name + "-uid"}}}]
-        self.resources.append({"kind": "ConfigMap", "metadata": self.meta("accepted-pin", "pin-uid"), "immutable": True, "data": {"pin.json": "unchanged"}})
+        self.resources.append({"apiVersion": "v1", "kind": "ConfigMap", "metadata": self.meta("accepted-pin", "pin-uid"), "immutable": True, "data": {"pin.json": "unchanged"}})
         self.plan = {"version": 1, "status": "PLANNED_FROM_CAPTURES_NOT_DRY_RUN_NOT_APPLIED", "sources": self.sources, "image": self.image,
           "namespace": "team", "namespaceUID": "namespace-uid", "deployment": "editor", "deploymentUID": "deployment-uid", "resourceVersion": "99",
           "beforeSpecSha256": m.digest(self.before["spec"]), "desiredSpecSha256": m.digest(self.desired), "desiredSpec": self.desired,
@@ -151,7 +151,7 @@ class Phases(unittest.TestCase):
         self.rs = {"metadata": self.meta("old-rs", "old-rs-uid"), "spec": {"replicas": 1},
             "kind": "ReplicaSet"}
         self.rs["metadata"]["ownerReferences"] = [self.owner("Deployment", "editor", "deployment-uid")]
-        self.old_owner = {"metadata": self.meta("old-owner", "old-owner-uid"), "kind": "Pod",
+        self.old_owner = {"apiVersion": "v1", "metadata": self.meta("old-owner", "old-owner-uid"), "kind": "Pod",
           "spec": {**copy.deepcopy(self.before["spec"]["template"]["spec"]), "nodeName": "fixture-node"}, "status": {"phase": "Running"}}
         self.old_owner["metadata"]["ownerReferences"] = [self.owner("ReplicaSet", "old-rs", "old-rs-uid")]
         self.old_owner["metadata"]["annotations"] = self.before["spec"]["template"]["metadata"]["annotations"]
@@ -305,7 +305,7 @@ class Phases(unittest.TestCase):
         self.assertEqual(self.kube.patches, [])
 
     def test_reappeared_retired_policy_blocks_patch(self):
-        self.policies = [{"kind": "NetworkPolicy", "metadata": self.meta("retired-policy", "policy-uid")}]
+        self.policies = [{"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": self.meta("retired-policy", "policy-uid")}]
         with self.assertRaises(m.Refusal): self.publication.dryrun()
         self.assertEqual(self.kube.patches, [])
 
@@ -325,6 +325,48 @@ class Phases(unittest.TestCase):
             return json.dumps(value)
         self.kube.run = truncated
         with self.assertRaises(m.Refusal): self.publication.dryrun()
+        self.assertEqual(self.kube.patches, [])
+
+    def test_generic_kubectl_lists_preserve_original_empty_rv_and_allow_full_publication(self):
+        run = self.kube.run
+        def generic(args, timeout=60):
+            value = json.loads(run(args, timeout))
+            if args[0] == "get":
+                value.update(apiVersion="v1", kind="List", metadata={"resourceVersion": ""})
+            return json.dumps(value)
+        self.kube.run = generic
+        original = self.publication.list_resources("pods", "team")
+        self.assertEqual(original["kind"], "List")
+        self.assertEqual(original["metadata"]["resourceVersion"], "")
+        self.assertEqual(self.publication.list_resources("networkpolicies", "team")["items"], [])
+        self.publication.dryrun(); self.publication.apply(); self.publication.observe()
+        result = json.loads((self.base / "observe.actual.json").read_bytes())
+        self.assertEqual(result["status"], "ACTUAL_PRIVATE_SHELL_OWNER_CONTENT_AND_TLS_VERIFIED_ACCEPTANCE_PENDING")
+        self.assertEqual(len(self.kube.patches), 2)
+        actual = self.base / "apply.actual.json"
+        self.assertTrue(actual.exists())
+
+    def test_generic_lists_refuse_wrong_item_api_kind_scope_identity_pagination_and_duplicates(self):
+        original = json.loads(self.kube.run(["get", "pods", "-o", "json", "--namespace", "team"]))
+        original.update(apiVersion="v1", kind="List", metadata={"resourceVersion": ""})
+        mutations = [lambda v: v.update(apiVersion="apps/v1"), lambda v: v.update(kind="SecretList"),
+            lambda v: v["metadata"].update({"continue": "next-page"}),
+            lambda v: v["items"][0].update(apiVersion="apps/v1"), lambda v: v["items"][0].update(kind="Secret"),
+            lambda v: v["items"][0]["metadata"].update(namespace="another-instance"),
+            lambda v: v["items"][0]["metadata"].pop("uid"), lambda v: v["items"][0]["metadata"].update(name=""),
+            lambda v: v["items"][0]["metadata"].pop("resourceVersion"),
+            lambda v: v["items"][0]["metadata"].update(resourceVersion=""),
+            lambda v: v["items"][0]["metadata"].update(resourceVersion=1),
+            *[lambda v, count=count: v["metadata"].update(remainingItemCount=count) for count in (1, "0", False, None)],
+            lambda v: v["items"].append(copy.deepcopy(v["items"][0])),
+            lambda v: v["items"].append({**copy.deepcopy(v["items"][0]), "metadata": {**v["items"][0]["metadata"], "name": "duplicate-uid"}}),
+            lambda v: v["items"].append({**copy.deepcopy(v["items"][0]), "metadata": {**v["items"][0]["metadata"], "uid": "duplicate-name"}}),
+            lambda v: v["items"][0].update(metadata=None), lambda v: v.update(metadata=None), lambda v: v["items"].append(None)]
+        for index, mutate in enumerate(mutations):
+            with self.subTest(index=index):
+                value = copy.deepcopy(original); mutate(value)
+                self.kube.run = lambda *_args, **_kwargs: json.dumps(value)
+                with self.assertRaises(m.Refusal): self.publication.list_resources("pods", "team")
         self.assertEqual(self.kube.patches, [])
 
     def test_new_second_pack_owner_or_direct_hostpath_blocks_patch(self):

@@ -28,6 +28,33 @@ def sha(path):
     return h.hexdigest()
 
 
+def stamp(info):
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_size,
+            info.st_mtime_ns, info.st_ctime_ns)
+
+
+def guarded_sha(path, expected):
+    """Bind the recorded output identity to an unchanged descriptor and path."""
+    require(stat.S_ISREG(expected.st_mode) and not expected.st_mode & 0o022,
+            'Clone output must be a regular non-writable file')
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        require(stamp(os.fstat(fd)) == stamp(expected), 'Clone output changed before hashing')
+        h = hashlib.sha256(); total = 0
+        while True:
+            block = os.read(fd, 1024 * 1024)
+            if not block:
+                break
+            total += len(block)
+            require(total <= expected.st_size, 'Clone output grew during hashing')
+            h.update(block)
+        require(total == expected.st_size and stamp(os.fstat(fd)) == stamp(expected)
+                and stamp(path.lstat()) == stamp(expected), 'Clone output changed during hashing')
+        return h.hexdigest()
+    finally:
+        os.close(fd)
+
+
 def main():
     require(len(sys.argv) == 3, 'Expected exact clone input and SHA256')
     spec = Path(sys.argv[1]); data = spec.read_bytes()
@@ -81,11 +108,13 @@ def main():
             target.chmod(0o600); copied += 1
         remaining -= row['size']
         after = source.lstat(); actual = target.lstat()
-        require((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
-                == (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns), 'Clone source changed')
+        require(stamp(before) == stamp(after), 'Clone source changed')
         require(stat.S_ISREG(actual.st_mode) and (actual.st_dev, actual.st_ino) != (before.st_dev, before.st_ino)
-                and actual.st_size == row['size'] and sha(target) == row['sha256'], 'Clone output differs or shares an inode')
-        identities.append({'path': relative, 'dev': str(actual.st_dev), 'ino': str(actual.st_ino)})
+                and actual.st_size == row['size'] and guarded_sha(target, actual) == row['sha256'], 'Clone output differs or shares an inode')
+        identities.append({'path': relative, 'dev': str(actual.st_dev), 'ino': str(actual.st_ino),
+                           'mode': str(actual.st_mode), 'size': actual.st_size,
+                           'mtimeNs': str(actual.st_mtime_ns), 'ctimeNs': str(actual.st_ctime_ns),
+                           'sha256': row['sha256']})
     print(json.dumps({'version': 1, 'status': 'EXCLUSIVE_FILES_PREPARED', 'files': len(seen), 'clonedFiles': cloned, 'copiedFiles': copied, 'hardlinks': False, 'identities': identities}))
 
 
