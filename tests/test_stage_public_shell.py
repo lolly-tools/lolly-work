@@ -113,14 +113,54 @@ class Boundaries(PublicFixture):
     def test_models_active_shell_secrets_and_extra_mounts_never_enter_stage(self):
         s = self.stage()
         for role in ('writer','qualifier'):
-            p = s.desired[role]; m.private.validate_pod(actual_pod(p,role+'-uid'),p,True)
+            p = s.desired[role]; m.validate_public_pod(actual_pod(p,role+'-uid'),p,True)
             claims = [v['persistentVolumeClaim']['claimName'] for v in p['spec']['volumes'] if 'persistentVolumeClaim' in v]
             self.assertEqual(claims,['new-public-shell']); self.assertNotIn('env',p['spec']['containers'][0]); self.assertFalse(p['spec']['automountServiceAccountToken'])
         mounts = s.desired['qualifier']['spec']['containers'][0]['volumeMounts']
         self.assertEqual([v['subPath'] for v in mounts if 'subPath' in v and v['name']=='public-shell'],list(m.public.PATHS))
         for change in (lambda p:p['spec']['volumes'][0]['persistentVolumeClaim'].update(claimName='models'),lambda p:p['spec'].update(hostNetwork=True),lambda p:p['spec']['containers'][0].update(envFrom=[{'secretRef':{'name':'private'}}]),lambda p:p['spec']['containers'][0]['volumeMounts'][1].update(readOnly=False)):
             bad = actual_pod(s.desired['qualifier'],'bad'); change(bad)
-            with self.assertRaises(m.private.Refusal): m.private.validate_pod(bad,s.desired['qualifier'],True)
+            with self.assertRaises(REFUSALS): m.validate_public_pod(bad,s.desired['qualifier'],True)
+
+    def test_qualifier_pvc_source_is_readonly_while_writer_remains_writable(self):
+        s=self.stage(); selected=s.prepared['selection']; original=copy.deepcopy(s.desired)
+        writer=s.desired['writer']; qualifier=s.desired['qualifier']
+        self.assertEqual(writer['spec']['volumes'][0]['persistentVolumeClaim'],{'claimName':selected['shellClaim']})
+        self.assertEqual(qualifier['spec']['volumes'][0]['persistentVolumeClaim'],{'claimName':selected['shellClaim'],'readOnly':True})
+        writer_mount=next(mt for mt in writer['spec']['containers'][0]['volumeMounts'] if mt['name']==selected['shellVolume'])
+        self.assertFalse(writer_mount.get('readOnly',False))
+        qualifier_mounts=[mt for mt in qualifier['spec']['containers'][0]['volumeMounts'] if mt['name']==selected['shellVolume']]
+        self.assertEqual(len(qualifier_mounts),5); self.assertTrue(all(mt['readOnly'] is True for mt in qualifier_mounts))
+        self.assertEqual(s.desired,original)
+        for dry_run in (False,True):
+            actual=actual_pod(qualifier,'qualifier-uid')
+            if dry_run:
+                del actual['metadata']['uid']; del actual['metadata']['resourceVersion']
+            held=copy.deepcopy(actual); self.assertIs(m.validate_public_create(actual,qualifier,dry_run),actual); self.assertEqual(actual,held)
+            for value in (None,False):
+                bad=copy.deepcopy(actual)
+                if value is None: del bad['spec']['volumes'][0]['persistentVolumeClaim']['readOnly']
+                else: bad['spec']['volumes'][0]['persistentVolumeClaim']['readOnly']=value
+                with self.assertRaises(REFUSALS): m.validate_public_create(bad,qualifier,dry_run)
+
+    def test_qualifier_admission_refuses_volume_bit_removal_before_live_create(self):
+        s=self.stage(); s.out.mkdir(); calls=[]; want=s.desired['qualifier']
+        s.absent=lambda *args:True; s.verify_bindings=lambda:calls.append('bindings'); s.preflight=lambda:calls.append('preflight')
+        def remote(argv,data=None):
+            calls.append(argv); checked=actual_pod(want,'dry-run-uid'); del checked['metadata']['uid']; del checked['metadata']['resourceVersion']
+            del checked['spec']['volumes'][0]['persistentVolumeClaim']['readOnly']
+            return m.cohort.canonical(checked)
+        s.remote=remote
+        with self.assertRaises(REFUSALS): s.admitted_pod(want)
+        self.assertEqual(calls[:2],['bindings','preflight']); self.assertEqual(len(calls),3)
+        self.assertIn('--dry-run=server',calls[-1]); self.assertFalse((s.out/('dry-run-'+want['metadata']['name']+'.reviewed.json')).exists())
+
+    def test_qualifier_owned_readback_requires_true_and_original_uid(self):
+        s=self.stage(); actual=actual_pod(s.desired['qualifier'],'qualifier-uid'); s.identities=lambda:{'qualifier':copy.deepcopy(actual)}
+        s.get=lambda *args:copy.deepcopy(actual); self.assertEqual(s.owned('qualifier'),actual)
+        for change in (lambda p:p['spec']['volumes'][0]['persistentVolumeClaim'].update(readOnly=False),lambda p:p['metadata'].update(uid='replacement')):
+            bad=copy.deepcopy(actual); change(bad); s.get=lambda *args:bad
+            with self.assertRaises(REFUSALS): s.owned('qualifier')
 
     def test_generic_full_collections_refuse_partial_wrong_scope_duplicate_uid_and_missing_rv(self):
         rows = self.baseline['claims']; m.complete_list(rows,'PersistentVolumeClaim','*')
@@ -187,7 +227,7 @@ class Boundaries(PublicFixture):
     def test_actual_inventory_exact_sizes_hashes_modes_and_model_exclusion(self):
         s=self.stage(); raw=''.join(f"{r['size']} 644 10 0\t{r['sha256']}  ./{p}\t./{p}\n" for p,r in reversed(list(s.effective.files.items()))).encode()
         actual=m.inventory(raw,s.effective.files); self.assertEqual(len(actual['files']),len(s.effective.files))
-        for bad in (raw+raw.splitlines(keepends=True)[0],raw.replace(b' 644 ',b' 777 ',1),raw.replace(b'\t',b' ',1),raw.replace(b'  ./index.html',b'  ./models/model.onnx',1)):
+        for bad in (raw+raw.splitlines(keepends=True)[0],raw.replace(b' 644 ',b' 664 ',1),raw.replace(b' 644 ',b' 775 ',1),raw.replace(b' 644 ',b' 777 ',1),raw.replace(b'\t',b' ',1),raw.replace(b'  ./index.html',b'  ./models/model.onnx',1)):
             with self.assertRaises(m.Refusal): m.inventory(bad,s.effective.files)
 
     def test_actual_catalog_crypto_refuses_modified_signature_or_actual_signed_map(self):

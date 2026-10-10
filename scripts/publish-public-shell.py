@@ -53,7 +53,7 @@ def review_retirement(proof, guard):
             and all(runtime.get(k) is True for k in ('fullStaticHashesVerified','publicCatalogSignatureVerified','nginxLoopbackIndexVerified')) and runtime.get('modelsMounted') is False,
             'Complete genuine same-image qualifier proof required')
     for role in ('writer','qualifier'):
-        private.validate_pod(proof[role],guard.desired[role],True)
+        stage.validate_public_pod(proof[role],guard.desired[role],True)
         require(proof[role]['metadata']['name'] == guard.value['names'][role] and proof.get(role+'Absent') is True, 'Retired Pod identity differs')
         mount = proof[role+'MountProof']
         require(mount.get('podUid') == proof[role]['metadata']['uid'] and mount.get('nodeUID') == guard.target['node']['uid']

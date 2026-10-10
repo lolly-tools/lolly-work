@@ -96,6 +96,21 @@ class Boundaries(PublicationFixture):
             with self.assertRaises(RuntimeError): self.publisher()
             self.proof=old
 
+    def test_retirement_qualifier_pvc_readonly_true_is_required_without_mutating_proof(self):
+        original=copy.deepcopy(self.proof)
+        self.assertIs(p.review_retirement(self.proof,self.s),self.proof)
+        self.assertEqual(self.proof,original)
+        self.assertTrue(self.proof['qualifier']['spec']['volumes'][0]['persistentVolumeClaim']['readOnly'])
+        self.assertNotIn('readOnly',self.proof['writer']['spec']['volumes'][0]['persistentVolumeClaim'])
+        for value in (None,False):
+            bad=copy.deepcopy(self.proof); volume=bad['qualifier']['spec']['volumes'][0]['persistentVolumeClaim']
+            if value is None: del volume['readOnly']
+            else: volume['readOnly']=value
+            self.assertEqual(bad['runtime']['pod'],bad['qualifier'])
+            with self.assertRaisesRegex(m.Refusal,'Explicit read-only public PVC changed'):
+                p.review_retirement(bad,self.s)
+        self.assertEqual(self.proof,original)
+
     def test_fresh_global_alias_added_after_stage_and_temp_holder_reappearance_refuse(self):
         pub=self.publisher(); alias=copy.deepcopy(self.pv); alias['metadata'].update(name='dormant-alias',uid='dormant-uid'); self.transport(pub,extra_pv=alias)
         with self.assertRaises(m.Refusal): pub.guard.fresh()

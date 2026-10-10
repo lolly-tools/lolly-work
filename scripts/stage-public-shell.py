@@ -159,8 +159,8 @@ def validate_public_pod(actual, desired, ready=False, dry_run=False):
     """Keep explicit PVC readOnly:true exact across ordinary API defaults.
 
     The shared stage validator handles omitted/false PVC readOnly defaults; a
-    public production overlay explicitly uses true. Verify that bit first and
-    remove it only from comparison copies before invoking the shared validator.
+    public qualifier and production overlay explicitly use true. Verify that
+    bit first and remove it only from comparison copies for the shared validator.
     """
     copied, wanted = copy.deepcopy(actual), copy.deepcopy(desired)
     require(len(copied.get('spec',{}).get('volumes',[])) == len(wanted['spec']['volumes']), 'Exact public owner volume count required')
@@ -169,6 +169,17 @@ def validate_public_pod(actual, desired, ready=False, dry_run=False):
             require(volume.get('persistentVolumeClaim',{}).get('readOnly') is True, 'Explicit read-only public PVC changed')
             del volume['persistentVolumeClaim']['readOnly']; del expected['persistentVolumeClaim']['readOnly']
     return private.validate_pod(copied,wanted,ready,dry_run)
+
+
+def validate_public_create(actual, desired, dry_run=False):
+    """Check original create identity and the explicit read-only volume bit."""
+    checked = validate_public_pod(actual,desired,dry_run=dry_run)
+    wanted = copy.deepcopy(desired)
+    for volume in wanted['spec']['volumes']:
+        if volume.get('persistentVolumeClaim',{}).get('readOnly') is True:
+            del volume['persistentVolumeClaim']['readOnly']
+    private.validate_create(checked,wanted,dry_run)
+    return actual
 
 
 def make_resources(prepared, before, target, names, storage):
@@ -191,6 +202,9 @@ def make_resources(prepared, before, target, names, storage):
                      'volumeMounts':[{'name':'tmp','mountPath':'/tmp'}]}
         volumes = [copy.deepcopy(overlay),{'name':'tmp','emptyDir':{'sizeLimit':'128Mi'}}]
         if readonly:
+            # The PVC source bit also controls kubelet fsGroup permission
+            # management; container readOnly mounts alone leave the source RW.
+            volumes[0]['persistentVolumeClaim']['readOnly'] = True
             container['volumeMounts'] += [{'name':selected['shellVolume'],'mountPath':public.ROOT+'/'+p,'subPath':p,'readOnly':True} for p in public.PATHS]
             container['volumeMounts'].append(copy.deepcopy(config_mount)); volumes.append(copy.deepcopy(config_volume))
             for key in ('command','args'):
@@ -262,6 +276,22 @@ class Stage(private.Stage):
         bound = self.out / 'claims.bound.actual.json'
         if bound.exists(): result.update(updater.load_json(bound))
         return result
+
+    def owned(self, key):
+        ids = self.identities(); expected = ids[key]; actual = self.get(expected['kind'],expected['metadata']['name'],self.namespace)
+        require(actual['metadata']['uid'] == expected['metadata']['uid'] and not actual['metadata'].get('deletionTimestamp'), 'Owned temporary resource identity changed')
+        if actual['kind'] == 'Pod': validate_public_pod(actual,self.desired[key],True)
+        else: require(actual['spec'] == expected['spec'], 'Owned resource spec changed')
+        return actual
+
+    def admitted_pod(self, want):
+        require(self.absent('Pod',want['metadata']['name']), 'Stage Pod collision; never adopt')
+        self.verify_bindings(); self.preflight()
+        checked = cohort.parse_json(self.remote(['create','--dry-run=server','-f','-','-o','json'],cohort.canonical(want)))
+        validate_public_create(checked,want,True)
+        self.save('dry-run-' + want['metadata']['name'] + '.reviewed.json',checked)
+        self.verify_bindings(); self.preflight()
+        return validate_public_create(cohort.parse_json(self.remote(['create','-f','-','-o','json'],cohort.canonical(want))),want)
 
     def run(self, command, data=None, timeout=240):
         self.active_command = list(command)
