@@ -179,6 +179,99 @@ Runtime, HTTPS, exports, agent access and collaboration reconnection still need
 acceptance. Any rollback must preserve new user writes. Automated evidence
 production and promotion remain separate work; this command does not deploy.
 
+### Plan a prepared release on new persistent claims
+
+Once the new claims have been independently qualified and their staging Pod has
+been retired, `scripts/plan-private-cohort.py` turns the prepared cohort and
+reviewed resource captures into one atomic patch for the existing Deployment.
+It runs locally with Python 3.10 or newer, without installing dependencies or
+contacting the cluster. It creates a new protected directory containing only
+`private-cohort.plan.json`:
+
+```sh
+python3 scripts/plan-private-cohort.py \
+  --evidence /protected/private-plan-evidence.json \
+  --reviewed-evidence-sha256 REVIEWED_PLAN_EVIDENCE_SHA256 \
+  --out-dir /protected/new-private-plan
+```
+
+The plan has status `PLANNED_FROM_CAPTURES_NOT_DRY_RUN_NOT_APPLIED`. Its patch
+tests the Deployment UID, resource version and entire previous spec before
+replacing the selected server image, shell claim, pack claim, immutable pin
+ConfigMap and existing engine/shell source annotations. If the existing
+`lolly.tools/shell-release` annotation is present, it must match the accepted
+previous release; the planner replaces it with the preparer's actual
+`release-` ID. It does not add an absent annotation. Data claims, secret
+references, sidecars, security settings, labels and every other spec field are
+preserved. The inverse tuple is a reference for a new rollback review, not an
+executable rollback.
+
+The portable v1 planning envelope uses these fields. Every file reference is
+`{ "path": "captured-file.json", "sha256": "REVIEWED_SHA256" }`, with paths
+relative to the envelope directory or absolute canonical paths. Inputs must be
+bounded regular files, without symlink paths or group/other write permission.
+
+| Field | Required evidence |
+| --- | --- |
+| `version` | Integer `1`. Unknown fields or versions refuse. |
+| `cohort` | The unchanged `cohort.prepared.json` from the offline preparer. |
+| `previous` | The exact previous-cohort input bound by that prepared output. |
+| `deployment` | A fresh captured Deployment with the same UID and full before-spec. Its resource version may advance. |
+| `enginePin` | The exact engine-pin bytes already bound to the prepared cohort. |
+| `resources` | Version `1`, captured `namespace`, a `resources` list, and a complete namespace `pods` PodList without pagination. |
+| `stage` | Version `1` matched-stage report described below, with original proof references. |
+| `mounts` | Explicit `container`, `shellVolume`, `packVolume`, `pinVolume`, `shellPath`, `packPath`, `pinPath` and single-file `pinKey` selectors. |
+
+Resource facts include every active and candidate PVC, their backing PVs, and
+the old/new pin ConfigMaps with real UID and resource version. Include all
+namespace Pods, including completed Pods; the planner does not infer that a
+historical Pod released its mounts. Claims must be Bound, single-owner
+`ReadWriteOnce` filesystem volumes. Their PV claim references must match the
+exact namespace, name and claim UID. Candidate claims and pin must be absent
+from the current Deployment and all captured Pods.
+
+This first contract supports CSI PVs with explicit driver/volume handles, or
+local/hostPath PVs on one explicit hostname node affinity. It rejects duplicate
+backing identities, equal or parent/child local paths, and ambiguous node scope.
+The serving and retired staging Pods must match that local node. Active direct
+hostPath, inline CSI, ephemeral or other unreviewed storage sources refuse;
+they cannot be proved isolated by this PVC contract. PVC access modes, node
+affinity and backing-path strings are captured declarations. Storage-controller
+trust, filesystem aliases and actual provider isolation remain part of the
+operator's review.
+
+The `stage` report has status `ISOLATED_COHORT_ACCEPTED_AND_RETIRED`. It binds
+the exact `sources`, `image`, `enginePinSha256`, `engineVersion`, `coreVersion`
+and `catalog` from preparation. Its `shell` and `rawPack` repeat the complete
+prepared summaries and add `claim`/`claimUID`. Its captured `pod` must have
+consumed both full candidate trees and the selected pin. Its explicit `mounts`
+contain `shellPath`, `packPath` and `pinPath`; those reviewed staging paths may
+differ from the serving paths. The pin uses the same `pinKey` subPath. Staging
+uses one non-root container with a read-only root filesystem, no added
+capabilities, RuntimeDefault seccomp, no privilege escalation, no token, service
+links, external environment, init/ephemeral containers or image pull secrets.
+The image must already be imported (`imagePullPolicy: Never`). Volumes are
+limited to the two new claims, selected pin and ephemeral `emptyDir` storage.
+
+The stage report's `retirement` records `podUID`, `policyUID`, and true
+`podAbsent`, `policyAbsent`, `mountsReleased` facts. `originalEvidence` binds
+three to sixteen original content, runtime and retirement proof files by path
+and SHA256. Preserve failed attempts and their original reports when producing
+this adapter. The planner checks bindings; it does not execute the stage oracle,
+authenticate receipt origins, inspect the live cluster, perform a server dry
+run or establish production runtime acceptance. A complete synthetic example,
+including actual offline-preparer output, is in
+`tests/test_plan_private_cohort.py` and runs in ordinary CI under normal and
+optimized Python.
+
+Before applying, the site operator must refresh target and resource guards,
+verify the complete Pod inventory, fence candidate writers, review admission
+with a server dry run, and serialize the atomic patch. Owning runtime, signed
+catalog, HTTPS, exports, agents and reconnect checks still follow publication.
+New claim provisioning, evidence adapters, applying this plan and unattended
+main-following remain separate work. Never mount an active asset PVC in staging;
+stream a read-only snapshot through its owning Pod into the new claim instead.
+
 ## Container pulls in CI
 
 Ordinary CI and the disposable PostgreSQL backup/restore drill pull their pinned
