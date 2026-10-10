@@ -128,8 +128,8 @@ class Cohort(unittest.TestCase):
         self.evidence["build"] = self.file("build", build)
         self.evidence["webGate"] = self.file("gate", {"version": 1, "status": "PASS", "source": self.sources["lolly"], "scope": "web",
                                                       "scriptSha256": sha((lolly / "scripts/webgpu-release-gate.ts").read_bytes()), "originalReport": self.binary("gate-original", b"Original explicit --scope web report")})
-        report = {"version": 1, "engine": "1.248.0", "compatible": True, "source": "private", "revision": "a" * 64, "diagnostics": [],
-                  "tools": [{"id": "fixture", "source": "private", "valid": True, "serverFormats": ["svg"], "unavailableFormats": [], "diagnostics": [], "sourceHash": "b" * 64}]}
+        report = {"version": 1, "engine": "1.248.0", "compatible": True, "source": "mounted", "revision": "a" * 64, "diagnostics": [],
+                  "tools": [{"id": "fixture", "source": "mounted", "valid": True, "serverFormats": ["svg"], "unavailableFormats": [], "diagnostics": [], "sourceHash": "b" * 64}]}
         self.evidence["inspection"] = self.file("inspection", {"version": 1, "lollySource": self.sources["lolly"], "workSource": self.sources["work"], "enginePinSha256": self.evidence["enginePin"]["sha256"],
                                                                "packManifestSha256": self.evidence["rawPack"]["manifest"]["sha256"], "report": self.file("pack-report", report)})
         self.artifact()
@@ -342,6 +342,67 @@ class Cohort(unittest.TestCase):
 
     def test_pack_inspection_bound_to_full_manifest_and_exact_pin(self):
         self.patch(self.evidence, "inspection", lambda v: v.update({"enginePinSha256": "0" * 64})); self.refused()
+
+    def test_materialized_inspection_identity_is_independent_of_private_profile(self):
+        inspection = json.loads((self.base / self.evidence["inspection"]["path"]).read_bytes())
+        report_path = self.base / inspection["report"]["path"]
+        original = report_path.read_bytes()
+        report = json.loads(original)
+        self.assertEqual(self.evidence["profile"], "private")
+        self.assertEqual(report["source"], "mounted")
+        self.assertTrue(all(tool["source"] == "mounted" for tool in report["tools"]))
+        result, inputs = self.prepare()
+        self.assertEqual(result["profile"], "private")
+        self.assertFalse(result["qualificationBoundary"]["runtimeQualified"])
+        self.assertEqual(report_path.read_bytes(), original)
+        inputs.unchanged()
+
+    def test_materialized_inspector_refuses_profile_and_missing_source_ids(self):
+        original = self.evidence["inspection"]
+        for source in (None, "suse", "profile:suse", "private", ""):
+            with self.subTest(source=source):
+                self.evidence["inspection"] = original
+                inspection = json.loads((self.base / original["path"]).read_bytes())
+                self.patch(inspection, "report", lambda v: v.update({"source": source}))
+                self.evidence["inspection"] = self.file("wrong-source-inspection", inspection)
+                with self.assertRaisesRegex(m.Refusal, "Pack is not compatible"):
+                    self.prepare()
+
+    def test_materialized_inspector_refuses_mixed_tool_source_ids(self):
+        inspection = json.loads((self.base / self.evidence["inspection"]["path"]).read_bytes())
+        self.patch(inspection, "report", lambda v: v["tools"][0].update({"source": "suse"}))
+        self.evidence["inspection"] = self.file("mixed-source-inspection", inspection)
+        with self.assertRaisesRegex(m.Refusal, "Pack tool inspection is incomplete"):
+            self.prepare()
+
+    def test_mounted_inspector_does_not_waive_raw_profile_binding(self):
+        root = Path(self.evidence["rawPack"]["root"])
+        path = root / ".lolly-pack-source.json"
+        value = json.loads(path.read_bytes()); value["profile"] = "suse"
+        changed = raw(value); path.write_bytes(changed)
+        self.patch(self.evidence["rawPack"], "manifest", lambda v: self.adjust_manifest(v, ".lolly-pack-source.json", changed))
+        with self.assertRaisesRegex(m.Refusal, "Raw pack source stamp differs"):
+            self.prepare()
+
+    def test_mounted_inspector_does_not_waive_exact_engine(self):
+        inspection = json.loads((self.base / self.evidence["inspection"]["path"]).read_bytes())
+        self.patch(inspection, "report", lambda v: v.update({"engine": "1.247.0"}))
+        self.evidence["inspection"] = self.file("wrong-engine-inspection", inspection)
+        with self.assertRaisesRegex(m.Refusal, "Pack is not compatible"):
+            self.prepare()
+
+    def test_mounted_inspector_does_not_waive_report_or_tool_hashes(self):
+        original = self.evidence["inspection"]
+        inspection = json.loads((self.base / original["path"]).read_bytes())
+        inspection["report"]["sha256"] = "0" * 64
+        self.evidence["inspection"] = self.file("wrong-report-hash", inspection)
+        with self.assertRaisesRegex(m.Refusal, "Evidence bytes differ from review"):
+            self.prepare()
+        inspection = json.loads((self.base / original["path"]).read_bytes())
+        self.patch(inspection, "report", lambda v: v["tools"][0].update({"sourceHash": "invalid"}))
+        self.evidence["inspection"] = self.file("wrong-tool-hash", inspection)
+        with self.assertRaisesRegex(m.Refusal, "Invalid SHA256 binding"):
+            self.prepare()
 
     def test_wrong_artifact_digest_and_mutable_image_refuse(self):
         self.patch(self.evidence, "workArtifactMetadata", lambda v: v.update({"digest": "sha256:" + "0" * 64})); self.refused()

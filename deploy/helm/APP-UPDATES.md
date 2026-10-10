@@ -169,6 +169,12 @@ and a complete small example are in `tests/test_prepare_private_cohort.py`.
 Provider authentication and original build execution remain operator-reviewed
 inputs; the helper checks their local byte and source bindings.
 
+The materialized pack inspector identifies its source as `mounted`, including
+each tool's source. This is independent of the private content profile, which
+the preparer verifies against the source stamp and build receipt. Keep the
+original inspector report unchanged; passing a profile as the inspector's
+optional source-ID argument does not select that profile.
+
 The protected `cohort.prepared.json` is advisory, with status
 `PREPARED_NOT_RUNTIME_QUALIFIED_NOT_APPLIED`. It is not an image-only updater
 release. Before promotion, qualify new claims and an immutable engine pin,

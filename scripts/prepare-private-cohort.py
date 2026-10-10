@@ -420,12 +420,12 @@ def prepare(value, base, expected_public_pin, node="node", runner=git_command):
     tool_ids = [item.get("id") if isinstance(item, dict) else item for item in index["tools"]]
     require(all(isinstance(i, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", i) for i in tool_ids) and len(set(tool_ids)) == len(tool_ids), "Invalid private tool identity")
     require(type(report["version"]) is int and report["version"] == 1 and report["compatible"] is True and report["engine"] == pin["engine"]["version"]
-            and report["source"] == value["profile"] and isinstance(report["revision"], str) and SHA.fullmatch(report["revision"])
+            and report["source"] == "mounted" and isinstance(report["revision"], str) and SHA.fullmatch(report["revision"])
             and report["diagnostics"] == [] and isinstance(report["tools"], list) and len(report["tools"]) == len(tool_ids), "Pack is not compatible with the exact private engine")
     seen = set()
     for tool in report["tools"]:
         exact(tool, {"source", "id", "valid", "serverFormats", "unavailableFormats", "diagnostics", "sourceHash"}, {"requiredEngine"})
-        require(tool["id"] in tool_ids and tool["id"] not in seen and tool["source"] == value["profile"] and tool["valid"] is True
+        require(tool["id"] in tool_ids and tool["id"] not in seen and tool["source"] == "mounted" and tool["valid"] is True
                 and isinstance(tool["serverFormats"], list) and isinstance(tool["unavailableFormats"], list) and isinstance(tool["diagnostics"], list), "Pack tool inspection is incomplete")
         sha(tool["sourceHash"]); seen.add(tool["id"])
     archive = inputs.file(value["workArtifact"], False)
