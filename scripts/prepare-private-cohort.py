@@ -42,6 +42,8 @@ LOLLY_JOBS = ("secret history scan", "typecheck", "test (browser)", "validate ca
               "build + bundle budget", "api bundle drift", "render-action self-test", "npm audit (high+critical)", "opengrep (custom rules + new findings)",
               *[f"test ({shard})" for shard in ("unit:engine", "unit:web", "contracts", "security", "tools", "tauri", "conformance", "fuzz:regression")],
               *[f"test (browser {part}/4)" for part in range(1, 5)])
+EVIDENCE_KEYS = {"version", "lolly", "work", "enginePin", "resolverPin", "workArtifact", "workArtifactMetadata", "expectedWorkImage",
+                 "brand", "profile", "publicPin", "candidateShell", "previousShell", "shell", "rawPack", "build", "inspection", "webGate", "previous", "selection"}
 
 
 def canonical(value):
@@ -333,15 +335,15 @@ def catalog(shell, raw, public_pin, expected_public_pin, node):
     require(hashlib.sha256(shell.data("catalog/tools/index.json")).hexdigest() == envelope["indexHash"], "Signed catalog index differs")
     require("catalog/tools/index.sig.json" not in raw.files, "Raw Work pack must omit the build-time signature")
     for path in raw.files:
-        if path.startswith("catalog/tools/") and path.endswith("/tool.json"):
-            require(path[len("catalog/tools/"):] in envelope["files"], "Tool manifest is outside the signed catalog closure")
+        if path.startswith("tools/") and path.endswith("/tool.json"):
+            require(path[len("tools/"):] in envelope["files"], "Tool manifest is outside the signed catalog closure")
     for path, expected in envelope["files"].items():
         safe_path(path); sha(expected)
-        require(path.isascii(), "Signed catalog path needs canonical ASCII serialization")
-        leaf = "catalog/tools/" + path
+        require(path.isascii() and len(path.split("/")) >= 2, "Signed catalog path needs canonical tool-relative serialization")
+        leaf = "tools/" + path
         require(leaf in shell.files and leaf in raw.files and shell.files[leaf]["sha256"] == raw.files[leaf]["sha256"] == expected, "Signed tool bytes differ from shell/raw pack")
     for path, item in raw.files.items():
-        if path.startswith("catalog/tools/"):
+        if path.startswith(("tools/", "catalog/tools/")):
             require(path in shell.files and item == shell.files[path], "Raw tool/catalog payload differs from compiled private shell")
     require(raw.files.get("catalog/tools/index.json") == shell.files["catalog/tools/index.json"], "Raw catalog index differs")
     verify_signature(public_pin, envelope, node)
@@ -366,8 +368,7 @@ def receipt(value, required, inputs):
 
 
 def prepare(value, base, expected_public_pin, node="node", runner=git_command):
-    exact(value, {"version", "lolly", "work", "enginePin", "resolverPin", "workArtifact", "workArtifactMetadata", "expectedWorkImage",
-                  "brand", "profile", "publicPin", "candidateShell", "previousShell", "shell", "rawPack", "build", "inspection", "webGate", "previous", "selection"})
+    exact(value, EVIDENCE_KEYS)
     require(type(value["version"]) is int and value["version"] == 1, "Unsupported private cohort evidence")
     inputs = Inputs(base)
     lolly_root, lolly_run = source_record(value["lolly"], inputs, runner, "lolly")
@@ -597,6 +598,8 @@ def main():
         require(hashlib.sha256(data).hexdigest() == sha(args.reviewed_evidence_sha256), "Preparation evidence differs from review")
         result, inputs = prepare(parse_json(data), path.parent, sha(args.existing_public_pin_sha256), args.node)
         inputs.reads[path] = (identity, args.reviewed_evidence_sha256)
+        result["evidence"].append({"path": str(path), "sha256": args.reviewed_evidence_sha256})
+        result["evidence"].sort(key=lambda item: item["path"])
         result["reviewedEvidenceSha256"] = args.reviewed_evidence_sha256
         output_sha = publish(result, Path(os.path.abspath(args.out_dir)), inputs)
         print(json.dumps({"status": STATUS, "cohortSha256": output_sha, "runtimeQualified": False, "productionMutation": False}, sort_keys=True))

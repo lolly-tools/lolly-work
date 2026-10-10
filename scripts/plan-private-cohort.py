@@ -132,6 +132,40 @@ def active_volumes(pod):
     return volumes
 
 
+def cli_evidence(prepared, inputs):
+    if "reviewedEvidenceSha256" not in prepared:
+        return None
+    checksum = cohort.sha(prepared["reviewedEvidenceSha256"])
+    refs = prepared["evidence"]
+    require(isinstance(refs, list) and 1 <= len(refs) <= cohort.MAX_FILES, "Missing CLI evidence custody")
+    paths, matching = set(), []
+    for ref in refs:
+        exact(ref, {"path", "sha256"})
+        require(isinstance(ref["path"], str) and 0 < len(ref["path"]) <= 4096 and "\0" not in ref["path"], "Invalid evidence path")
+        cohort.sha(ref["sha256"])
+        require(ref["path"] not in paths, "Duplicate CLI evidence path")
+        paths.add(ref["path"])
+        if ref["sha256"] == checksum:
+            matching.append(ref)
+    require(len(matching) == 1, "CLI evidence must bind exactly one original envelope")
+    original = inputs.file(matching[0])
+    exact(original, cohort.EVIDENCE_KEYS)
+    require(type(original["version"]) is int and original["version"] == 1, "Unknown CLI evidence version")
+    for family in ("lolly", "work"):
+        exact(original[family], {"root", "source", "repository", "main", "ciRun", "ciJobs"})
+        require(original[family]["source"] == prepared["sources"][family], "CLI evidence source differs")
+    exact(original["brand"], {"path", "commit"})
+    require(original["brand"]["commit"] == prepared["sources"]["brand"] and original["profile"] == prepared["profile"]
+            and original["expectedWorkImage"] == prepared["image"], "CLI evidence profile, brand or image differs")
+    for key, field in (("enginePin", "enginePinSha256"), ("resolverPin", "resolverPinSha256"), ("previous", "previousCohortSha256")):
+        exact(original[key], {"path", "sha256"})
+        require(original[key]["sha256"] == prepared[field], "CLI evidence pin or previous cohort differs")
+    for family in ("shell", "rawPack"):
+        exact(original[family], {"root", "manifest"}); exact(original[family]["manifest"], {"path", "sha256"})
+        require(original[family]["manifest"]["sha256"] == prepared[family]["manifestSha256"], "CLI evidence content manifest differs")
+    return original
+
+
 def plan(value, base):
     exact(value, {"version", "cohort", "previous", "deployment", "resources", "stage", "enginePin", "mounts"})
     require(type(value["version"]) is int and value["version"] == 1, "Unknown planning evidence version")
@@ -139,11 +173,12 @@ def plan(value, base):
     prepared, previous, before, facts, staged, pin = [inputs.file(value[key]) for key in ("cohort", "previous", "deployment", "resources", "stage", "enginePin")]
     exact(prepared, {"version", "status", "sources", "normalCI", "image", "profile", "enginePinSha256", "resolverPinSha256", "shell", "rawPack", "catalog",
                      "previousCohortSha256", "beforeSpecSha256", "desiredSpecSha256", "desiredSpec", "guardedPatchTemplate", "inverseTupleTemplate",
-                     "allUnselectedSpecFieldsPreserved", "evidence", "qualificationBoundary", "requiredBeforeApply"})
+                     "allUnselectedSpecFieldsPreserved", "evidence", "qualificationBoundary", "requiredBeforeApply"}, {"reviewedEvidenceSha256"})
     require(prepared.get("version") == 1 and type(prepared["version"]) is int and prepared.get("status") == cohort.STATUS, "Not a maintained offline prepared cohort")
     exact(prepared["sources"], {"lolly", "work", "brand"})
     for source in prepared["sources"].values():
         cohort.commit(source)
+    original_cli = cli_evidence(prepared, inputs)
     exact(prepared["normalCI"], {"lolly", "work"})
     for ci in prepared["normalCI"].values():
         exact(ci, {"run", "attempt"}); positive(ci["run"]); positive(ci["attempt"])
@@ -181,6 +216,8 @@ def plan(value, base):
         require(len(selected) == 1 and isinstance(selected[0].get(source_kind), dict), "Incomplete prepared matched tuple")
         selection[{"shell": "shellClaim", "pack": "packClaim", "pin": "pinConfigMap"}[family]] = name(selected[0][source_kind].get(leaf))
     selection["provenance"] = {key: prepared["sources"]["lolly"] for key in SOURCE_KEYS}
+    if original_cli is not None:
+        require(original_cli["selection"] == selection, "CLI evidence selected tuple differs")
     expected, patch, inverse = cohort.change_tuple(before, previous, selection, prepared["image"], prepared["sources"]["lolly"])
     cohort.paired.updater.image_ref(prepared["image"])
     require(expected == prepared["desiredSpec"] and cohort.digest(expected) == prepared["desiredSpecSha256"], "Prepared desired-spec has partial or unselected changes")

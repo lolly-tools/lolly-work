@@ -175,6 +175,11 @@ the preparer verifies against the source stamp and build receipt. Keep the
 original inspector report unchanged; passing a profile as the inspector's
 optional source-ID argument does not select that profile.
 
+Signed tool payloads live at `tools/<tool-id>/<file>`. Envelope entries are
+relative to `tools/`; only the index and its signature live under
+`catalog/tools/`. The preparer verifies the signed bytes in both the compiled
+shell and raw pack without moving or rewriting files.
+
 The protected `cohort.prepared.json` is advisory, with status
 `PREPARED_NOT_RUNTIME_QUALIFIED_NOT_APPLIED`. It is not an image-only updater
 release. Before promotion, qualify new claims and an immutable engine pin,
@@ -227,6 +232,28 @@ bounded regular files, without symlink paths or group/other write permission.
 | `resources` | Version `1`, captured `namespace`, a `resources` list, and a complete namespace `pods` PodList without pagination. |
 | `stage` | Version `1` matched-stage report described below, with original proof references. |
 | `mounts` | Explicit `container`, `shellVolume`, `packVolume`, `pinVolume`, `shellPath`, `packPath`, `pinPath` and single-file `pinKey` selectors. |
+
+Keep the preparer's CLI output unchanged. Its `reviewedEvidenceSha256` binds
+the original preparation envelope recorded in `evidence`. The planner rechecks
+those bytes and the source, profile, image, pins, manifests and selected tuple.
+Unknown output fields refuse; removing this field or restamping the output is
+not part of the CLI workflow.
+
+Capture the complete Pod inventory through the namespace API so its kind and
+resource version remain intact:
+
+```sh
+kubectl get --raw /api/v1/namespaces/YOUR_NAMESPACE/pods > /protected/pods.json
+```
+
+Review the response before adding it to the resource facts. It must be a
+`PodList` with a nonempty resource version and no pagination; a generic `List`
+from another command does not meet this contract. Preserve that original
+response rather than supplying a kind or resource version yourself.
+If the API omits item type fields, preserve the raw response and create a
+separately reviewed projection that adds only `apiVersion: v1` and `kind: Pod`
+to those items. Keep every original item field and the outer list metadata.
+The planner requires the explicit item types; it does not infer them.
 
 Resource facts include every active and candidate PVC, their backing PVs, and
 the old/new pin ConfigMaps with real UID and resource version. Include all

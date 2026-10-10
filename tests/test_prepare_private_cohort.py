@@ -107,12 +107,13 @@ class Cohort(unittest.TestCase):
         self.public_pin_sha = m.digest(self.keys["public"])
         index = raw({"version": 1, "tools": [{"id": "fixture"}]})
         tool = raw({"id": "fixture", "engineVersion": "1.248.0"})
+        page = b"<main>Signed tool entry</main>"
         unsigned = {"alg": "ECDSA-P256-SHA256", "keyId": __import__("base64").urlsafe_b64encode(hashlib.sha256(raw(self.keys["public"])).digest()).decode().rstrip("="),
-                    "signedAt": "2026-10-09T00:00:00Z", "indexHash": sha(index), "files": {"fixture/tool.json": sha(tool)}}
+                    "signedAt": "2026-10-09T00:00:00Z", "indexHash": sha(index), "files": {"fixture/tool.json": sha(tool), "fixture/index.html": sha(page)}}
         signing = subprocess.run([NODE, "-e", "const c=require('node:crypto');let d='';process.stdin.on('data',x=>d+=x);process.stdin.on('end',()=>{const v=JSON.parse(d);const key=c.createPrivateKey({key:v.key,format:'jwk'});process.stdout.write(c.sign('sha256',Buffer.from(v.payload,'base64'),{key,dsaEncoding:'ieee-p1363'}).toString('base64url'));});"],
                                  input=raw({"key": self.keys["private"], "payload": __import__("base64").b64encode(raw(unsigned)).decode()}), capture_output=True, check=True)
         self.envelope = {**unsigned, "signature": signing.stdout.decode()}
-        common = {"index.html": b"<title>Private fixture</title>", "_app/new.js": b"new source", "catalog/tools/index.json": index, "catalog/tools/fixture/tool.json": tool,
+        common = {"index.html": b"<title>Private fixture</title>", "_app/new.js": b"new source", "catalog/tools/index.json": index, "tools/fixture/tool.json": tool, "tools/fixture/index.html": page,
                   "catalog/tools/index.sig.json": raw(self.envelope), "external/font.woff2": b"reviewed external closure"}
         previous = {"index.html": b"previous index", "_app/old.js": b"previous lazy chunk", "old-non-app.txt": b"must not retain"}
         stamp = {"version": 1, "source": "lolly", "commit": self.sources["lolly"], "profile": "private", "dirty": False,
@@ -120,7 +121,7 @@ class Cohort(unittest.TestCase):
         self.evidence["candidateShell"] = self.tree("candidate", common)
         self.evidence["previousShell"] = self.tree("previous", previous)
         self.evidence["shell"] = self.tree("prepared", {**common, "_app/old.js": previous["_app/old.js"]})
-        self.evidence["rawPack"] = self.tree("raw", {"catalog/tools/index.json": index, "catalog/tools/fixture/tool.json": tool, ".lolly-pack-source.json": raw(stamp)})
+        self.evidence["rawPack"] = self.tree("raw", {"catalog/tools/index.json": index, "tools/fixture/tool.json": tool, "tools/fixture/index.html": page, ".lolly-pack-source.json": raw(stamp)})
         build = {"version": 1, "status": "PRIVATE_WEB_BUILD_REVIEWED", "lollySource": self.sources["lolly"], "workSource": self.sources["work"], "brandCommit": self.brand, "profile": "private",
                  "enginePinSha256": self.evidence["enginePin"]["sha256"], "shellManifestSha256": self.evidence["candidateShell"]["manifest"]["sha256"],
                  "settings": {"scope": "web", "requireCatalogSignature": True, "requireAiPolicy": True, "relayOrigin": "https://private.example/live"},
@@ -301,6 +302,51 @@ class Cohort(unittest.TestCase):
             self.patch(self.evidence[name], "manifest", lambda v: self.adjust_manifest(v, "catalog/tools/index.sig.json", raw(changed)))
         self.refused()
 
+    def test_signed_payloads_use_tools_root_and_catalog_metadata_stays_separate(self):
+        self.assertEqual(self.baseline_result["catalog"]["signedFiles"], 2)
+        for name in ("candidateShell", "shell", "rawPack"):
+            root = Path(self.evidence[name]["root"])
+            self.assertTrue((root / "tools/fixture/tool.json").is_file())
+            self.assertTrue((root / "tools/fixture/index.html").is_file())
+            self.assertTrue((root / "catalog/tools/index.json").is_file())
+            self.assertFalse((root / "catalog/tools/fixture").exists())
+        self.assertTrue((Path(self.evidence["shell"]["root"]) / "catalog/tools/index.sig.json").is_file())
+        self.assertFalse((Path(self.evidence["rawPack"]["root"]) / "catalog/tools/index.sig.json").exists())
+
+    def test_altered_signed_payload_refuses_even_with_matching_full_tree_manifests(self):
+        path, changed = "tools/fixture/index.html", b"<main>Altered signed payload</main>"
+        for name in ("candidateShell", "shell", "rawPack"):
+            self.put(Path(self.evidence[name]["root"]), path, changed)
+            self.patch(self.evidence[name], "manifest", lambda v: self.adjust_manifest(v, path, changed))
+        with self.assertRaisesRegex(m.Refusal, "Signed tool bytes differ"):
+            self.prepare()
+
+    def test_legacy_catalog_payload_root_cannot_replace_signed_tools_root(self):
+        for name in ("candidateShell", "shell", "rawPack"):
+            root = Path(self.evidence[name]["root"])
+            for leaf in ("tool.json", "index.html"):
+                old = root / ("tools/fixture/" + leaf)
+                self.put(root, "catalog/tools/fixture/" + leaf, old.read_bytes()); old.unlink()
+            def move_manifest(v):
+                for item in v["files"]:
+                    if item["path"].startswith("tools/"):
+                        item["path"] = "catalog/" + item["path"]
+                v["files"].sort(key=lambda item: item["path"])
+            self.patch(self.evidence[name], "manifest", move_manifest)
+        with self.assertRaisesRegex(m.Refusal, "Signed tool bytes differ"):
+            self.prepare()
+
+    def test_unsigned_extra_tool_manifest_refuses_at_actual_tools_root(self):
+        path, data = "tools/unsigned/tool.json", raw({"id": "unsigned"})
+        for name in ("candidateShell", "shell", "rawPack"):
+            self.put(Path(self.evidence[name]["root"]), path, data)
+            def add_manifest(v):
+                v["files"].append({"path": path, "size": len(data), "sha256": sha(data)})
+                v["files"].sort(key=lambda item: item["path"]); v["totalBytes"] += len(data)
+            self.patch(self.evidence[name], "manifest", add_manifest)
+        with self.assertRaisesRegex(m.Refusal, "outside the signed catalog closure"):
+            self.prepare()
+
     @staticmethod
     def adjust_manifest(value, path, data):
         item = next(item for item in value["files"] if item["path"] == path)
@@ -313,7 +359,7 @@ class Cohort(unittest.TestCase):
         self.evidence["rawPack"]["manifest"] = original; self.put(Path(self.evidence["rawPack"]["root"]), "unlisted", b"extra"); self.refused()
 
     def test_symlink_and_special_tree_files_refuse(self):
-        root = Path(self.evidence["rawPack"]["root"]); file = root / "catalog/tools/fixture/tool.json"; file.unlink(); file.symlink_to(root / "catalog/tools/index.json"); self.refused()
+        root = Path(self.evidence["rawPack"]["root"]); file = root / "tools/fixture/tool.json"; file.unlink(); file.symlink_to(root / "catalog/tools/index.json"); self.refused()
         file.unlink(); os.mkfifo(file); self.refused()
 
     def test_unsafe_symlink_evidence_parent_refuses(self):
@@ -523,7 +569,10 @@ class Cohort(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         self.assertEqual(json.loads(result.stdout)["status"], m.STATUS)
         self.assertEqual({p.name for p in out.iterdir()}, {"cohort.prepared.json"})
-        self.assertFalse(json.loads((out / "cohort.prepared.json").read_bytes())["qualificationBoundary"]["productionMutation"])
+        prepared = json.loads((out / "cohort.prepared.json").read_bytes())
+        self.assertFalse(prepared["qualificationBoundary"]["productionMutation"])
+        self.assertEqual(prepared["reviewedEvidenceSha256"], ref["sha256"])
+        self.assertIn({"path": str(self.base / ref["path"]), "sha256": ref["sha256"]}, prepared["evidence"])
 
     def test_duplicate_json_and_unknown_build_keys_refuse(self):
         with self.assertRaises(m.Refusal): m.parse_json(b'{"x":1,"x":2}')

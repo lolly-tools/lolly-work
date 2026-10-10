@@ -417,7 +417,7 @@ class Plan(unittest.TestCase):
 
 
 class ProducerIntegration(unittest.TestCase):
-    def test_actual_offline_preparer_output_plans_without_restamping(self):
+    def test_actual_preparer_cli_output_plans_via_cli_without_restamping(self):
         # Use the maintained producer's actual Git/OCI/catalog fixture. Its
         # signing key is ephemeral fixture data, never a deployment credential.
         spec = importlib.util.spec_from_file_location("producer_fixture", Path(__file__).with_name("test_prepare_private_cohort.py"))
@@ -454,13 +454,25 @@ class ProducerIntegration(unittest.TestCase):
         resources.resource(facts, "ConfigMap", "new-pin")["data"]["engine-pin.json"] = new_pin.decode()
         facts["pods"]["items"][0]["metadata"]["namespace"] = "private"
         facts["pods"]["items"][0]["spec"] = {**copy.deepcopy(built.before["spec"]["template"]["spec"]), "nodeName": "fixture-node"}
-        actual = built.baseline_result
+        original_input = built.file("cli-original-evidence", built.evidence)
+        prepared_dir = built.base / "cli-prepared"
+        python = [sys.executable, *(["-O"] if sys.flags.optimize else [])]
+        prepare_cli = subprocess.run([*python, str(producer.m.__file__), "--evidence", str(built.base / original_input["path"]),
+                                     "--reviewed-evidence-sha256", original_input["sha256"], "--existing-public-pin-sha256", built.public_pin_sha,
+                                     "--out-dir", str(prepared_dir), "--node", producer.NODE], capture_output=True, text=True)
+        self.assertEqual(prepare_cli.returncode, 0, prepare_cli.stderr)
+        prepared_file = prepared_dir / "cohort.prepared.json"
+        prepared_bytes = prepared_file.read_bytes()
+        actual = json.loads(prepared_bytes)
+        self.assertEqual(actual["reviewedEvidenceSha256"], original_input["sha256"])
+        self.assertEqual(json.loads(prepare_cli.stdout)["cohortSha256"], hashlib.sha256(prepared_bytes).hexdigest())
+        self.assertIn({"path": str(built.base / original_input["path"]), "sha256": original_input["sha256"]}, actual["evidence"])
         stage = copy.deepcopy(resources.stage)
         stage.update(sources=actual["sources"], image=actual["image"], enginePinSha256=actual["enginePinSha256"], catalog=actual["catalog"])
         stage["shell"].update(actual["shell"]); stage["rawPack"].update(actual["rawPack"])
         stage["pod"]["metadata"]["namespace"] = "private"; stage["pod"]["spec"]["containers"][0]["image"] = actual["image"]
         stage["originalEvidence"] = [built.binary("planning-original-" + n, ("Synthetic stage " + n).encode()) for n in ("content", "runtime", "retirement")]
-        evidence = {"version": 1, "cohort": built.file("actual-prepared-cohort", actual), "previous": built.evidence["previous"],
+        evidence = {"version": 1, "cohort": {"path": str(prepared_file), "sha256": hashlib.sha256(prepared_bytes).hexdigest()}, "previous": built.evidence["previous"],
                     "deployment": built.file("current-deployment", built.before), "resources": built.file("resource-facts", facts),
                     "stage": built.file("stage-facts", stage), "enginePin": built.evidence["enginePin"],
                     "mounts": {**resources.evidence["mounts"], "shellPath": "/app/shell", "packPath": "/app/pack", "pinPath": "/app/engine-pin.json"}}
@@ -471,6 +483,68 @@ class ProducerIntegration(unittest.TestCase):
         self.assertEqual(apply_patch(built.before, result["guardedPatch"])["spec"], result["desiredSpec"])
         self.assertFalse(result["qualificationBoundary"]["runtimeQualifiedByThisCommand"])
         inputs.unchanged(); built.baseline_inputs.unchanged()
+        planning_input = built.file("cli-planning-evidence", evidence)
+        plan_dir = built.base / "cli-planned"
+        plan_cli = subprocess.run([*python, str(script), "--evidence", str(built.base / planning_input["path"]),
+                                  "--reviewed-evidence-sha256", planning_input["sha256"], "--out-dir", str(plan_dir)], capture_output=True, text=True)
+        self.assertEqual(plan_cli.returncode, 0, plan_cli.stderr)
+        planned_bytes = (plan_dir / "private-cohort.plan.json").read_bytes()
+        planned = json.loads(planned_bytes)
+        self.assertEqual(json.loads(plan_cli.stdout)["planSha256"], hashlib.sha256(planned_bytes).hexdigest())
+        self.assertEqual(planned["sourceCohortSha256"], evidence["cohort"]["sha256"])
+        self.assertEqual(planned["desiredSpec"], result["desiredSpec"])
+        self.assertIn({"path": str(built.base / original_input["path"]), "sha256": original_input["sha256"]}, planned["evidence"])
+        self.assertFalse(planned["qualificationBoundary"]["productionMutation"])
+
+        # Mutate copies of the real CLI output, not a function-only projection.
+        def reject_cohort(change, reason):
+            wrong = copy.deepcopy(actual); change(wrong)
+            rejected = {**evidence, "cohort": built.file("rejected-cli-cohort", wrong)}
+            with self.assertRaisesRegex(m.Refusal, reason):
+                m.plan(rejected, built.base)
+
+        cases = (
+            (lambda v: v.update(unknownCliField=True), "Missing or unsupported fields"),
+            (lambda v: v.update(reviewedEvidenceSha256=None), "Invalid SHA256"),
+            (lambda v: v.update(reviewedEvidenceSha256="0" * 64), "exactly one original envelope"),
+            (lambda v: v.update(evidence=[r for r in v["evidence"] if r["sha256"] != original_input["sha256"]]), "exactly one original envelope"),
+            (lambda v: v["evidence"].append({"path": str(built.base / original_input["path"]), "sha256": original_input["sha256"]}), "Duplicate CLI evidence path"),
+            (lambda v: v["evidence"].append(built.binary("same-evidence-copy", (built.base / original_input["path"]).read_bytes())), "exactly one original envelope"),
+        )
+        for change, reason in cases:
+            with self.subTest(reason=reason): reject_cohort(change, reason)
+
+        def reject_original(change, reason):
+            original = copy.deepcopy(built.evidence); change(original)
+            changed = built.file("changed-original-envelope", original)
+            def update(v):
+                v["reviewedEvidenceSha256"] = changed["sha256"]
+                v["evidence"] = [r for r in v["evidence"] if r["sha256"] != original_input["sha256"]]
+                v["evidence"].append({"path": str(built.base / changed["path"]), "sha256": changed["sha256"]})
+            reject_cohort(update, reason)
+
+        changes = (
+            (lambda v: v.update(unknownOriginalField=True), "Missing or unsupported fields"),
+            (lambda v: v["lolly"].update(source="0" * 40), "source differs"),
+            (lambda v: v["work"].update(source="0" * 40), "source differs"),
+            (lambda v: v["brand"].update(commit="0" * 40), "profile, brand or image differs"),
+            (lambda v: v.update(profile="other-private"), "profile, brand or image differs"),
+            (lambda v: v.update(expectedWorkImage="registry.example/work@sha256:" + "0" * 64), "profile, brand or image differs"),
+            (lambda v: v["enginePin"].update(sha256="0" * 64), "pin or previous cohort differs"),
+            (lambda v: v["resolverPin"].update(sha256="0" * 64), "pin or previous cohort differs"),
+            (lambda v: v["previous"].update(sha256="0" * 64), "pin or previous cohort differs"),
+            (lambda v: v["shell"]["manifest"].update(sha256="0" * 64), "content manifest differs"),
+            (lambda v: v["rawPack"]["manifest"].update(sha256="0" * 64), "content manifest differs"),
+            (lambda v: v["selection"].update(shellClaim="unreviewed-claim"), "selected tuple differs"),
+        )
+        for change, reason in changes:
+            with self.subTest(original=reason): reject_original(change, reason)
+        missing = {**evidence, "cohort": built.file("wrong-byte-envelope-ref", {**actual, "evidence": [
+            {**r, "path": str(built.base / "different-envelope.json")} if r["sha256"] == original_input["sha256"] else r for r in actual["evidence"]]})}
+        (built.base / "different-envelope.json").write_bytes(b"{}")
+        with self.assertRaisesRegex(m.Refusal, "Evidence bytes differ from review"):
+            m.plan(missing, built.base)
+        self.assertEqual(prepared_file.read_bytes(), prepared_bytes)
 
 
 if __name__ == "__main__":
