@@ -245,6 +245,12 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm -C qualification-lolly install --frozen-lockfile
+      - name: Test private shell update CLI with genuine Vite
+        if: matrix.image == 'render-worker'
+        timeout-minutes: 5
+        env:
+          LOLLY_SHELL_TEST_DEPENDENCIES: ${{ github.workspace }}/qualification-lolly/node_modules
+        run: node --test tests/prepare-shell-update.test.ts tests/retain-shell-assets.test.ts
       - name: Qualify built worker with matched signed shell and real browser
         if: matrix.image == 'render-worker'
         timeout-minutes: 25

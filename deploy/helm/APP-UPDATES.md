@@ -1,9 +1,18 @@
 # Update applications without redeploying infrastructure
 
-Change application code, qualify a new image, then update the owned Deployment's
-container image. The database, persistent assets, secrets, ingress, TLS, DNS and
-cluster stay in place. This works with K3s or RKE2 on UpCloud, evroc or another
-Kubernetes provider; there is no provider API or paid provisioning operation.
+Choose the smallest release that matches the code change. Web UI TypeScript,
+CSS and layout changes can use a compatible shell update without building an
+image. Server and native runtime changes use a qualified application image.
+Engine, schema, dependency or tool-contract changes require a matched release.
+The database, persistent assets, secrets, ingress, TLS, DNS and cluster stay in
+place. These paths work with K3s or RKE2 on UpCloud, evroc or another Kubernetes
+provider; they do not provision cloud services.
+
+For the mounted private UI, start with [the shell-only update guide](SHELL-UPDATES.md).
+It distinguishes the newer frontend source from the retained engine and Work
+sources, builds fresh application assets with the maintained Vite configuration,
+reuses verified unchanged content and retains old lazy-loaded chunks. It does
+not relabel the running image as a newer backend release.
 
 `scripts/app-update.py` plans by default. It uses Python 3.10 or newer and kubectl,
 with no Python packages to install. Applying needs the exact reviewed plan and
@@ -146,10 +155,11 @@ digest against the release record, then delete the recreatable transport archive
 
 ## Prepare private shell and asset updates
 
-An instance serving its shell and tool pack from persistent claims needs a
-matched server, shell, pack and engine-pin release. An image update alone cannot
-update those mounted files. `scripts/prepare-private-cohort.py` checks an already
-built release locally and prepares the four selected changes together:
+An image update alone cannot change a shell or tool pack hidden by persistent
+mounts. A compatible web-only change can use [the shell-only path](SHELL-UPDATES.md)
+while retaining the runtime, pack and immutable pin. When their contracts change,
+`scripts/prepare-private-cohort.py` checks an already built matched release
+locally and prepares the four selected changes together:
 
 ```sh
 python3 scripts/prepare-private-cohort.py \

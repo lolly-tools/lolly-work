@@ -277,3 +277,38 @@ test('documented six-option CLI prepares only local files and rejects duplicate 
   assert.equal(result.status, 0); assert.equal(result.stderr, '');
   assert.deepEqual(JSON.parse(result.stdout), { result: 'PREPARED', shellId: shellReleaseId(options.out), runtimeQualified: false, promotionAttempted: false });
 });
+
+test('opt-in clones retain complete lazy closure with separate inodes and unchanged default receipts', t => {
+  const f = fixture(t), options = { ...f.options(), copyMode: 'clone' as const }, before = shellReleaseId(f.previous);
+  const receipt = retainShellAssets(options);
+  assert.equal(receipt.copyMode, 'clone'); assert.equal(receipt.hardlinksUsed, false);
+  for (const path of ['index.html', 'catalog/tools/index.json', '_app/nested/engine-hash.wasm']) {
+    const source = path.startsWith('_app/nested/') ? f.previous : f.candidate;
+    assert.notEqual(lstatSync(join(options.out, path)).ino, lstatSync(join(source, path)).ino);
+  }
+  writeFileSync(join(options.out, 'catalog/tools/index.json'), 'output-only write');
+  assert.equal(readFileSync(join(f.candidate, 'catalog/tools/index.json'), 'utf8'), 'new catalog');
+  assert.equal(shellReleaseId(f.previous), before);
+});
+
+test('clone mode keeps the same collision and unsupported-mode refusals before output', t => {
+  const f = fixture(t); put(f.candidate, '_app/shared-css-hash.css', 'collision');
+  assert.throws(() => retainShellAssets({ ...f.options(), copyMode: 'clone' }), /Same-path/); assert.equal(existsSync(f.options().out), false);
+  assert.throws(() => retainShellAssets({ ...f.options(), copyMode: 'other' as 'clone' }), /Unknown/);
+});
+
+test('clone output replacement is refused and preserves the competing inode', t => {
+  const f = fixture(t), options = { ...f.options(), copyMode: 'clone' as const }, original = fs.readdirSync;
+  const destination = join(options.out, '_app/new-entry-hash.js'); let replaced = false;
+  t.mock.method(fs, 'readdirSync', (...args: Parameters<typeof fs.readdirSync>) => {
+    if (!replaced && args[0] === options.out && existsSync(destination)) {
+      replaced = true; rmSync(destination); writeFileSync(destination, 'competing replacement');
+    }
+    return original(...args);
+  });
+  syncBuiltinESMExports();
+  try { assert.throws(() => retainShellAssets(options), error => error instanceof RetentionRefusal && error.partialOutput); }
+  finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+  assert.equal(replaced, true); assert.equal(readFileSync(destination, 'utf8'), 'competing replacement');
+  assert.equal(readFileSync(join(f.candidate, '_app/new-entry-hash.js'), 'utf8'), 'new entry');
+});

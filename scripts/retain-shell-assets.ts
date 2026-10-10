@@ -8,6 +8,7 @@ import {
 import type { BigIntStats } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { cloneShellFiles } from './shell-update-files.ts';
 
 const MAX_FILES = 100_000;
 const MAX_BYTES = 8 * 1024 * 1024 * 1024;
@@ -25,6 +26,8 @@ export type RetainShellOptions = {
   candidate: string; expectedCandidateId: string;
   previous: string; expectedPreviousId: string;
   out: string; receiptOut: string;
+  /** Opt-in separate-inode clones; the established default remains a guarded copy. */
+  copyMode?: 'clone';
 };
 export class RetentionRefusal extends Error {
   partialOutput = false;
@@ -196,8 +199,9 @@ function cleanup(owned: Owned[]): boolean {
 
 export function retainShellAssets(options: RetainShellOptions) {
   const owned: Owned[] = [];
-  let uncertainReceipt = false;
+  let uncertainReceipt = false, uncertainClones = false;
   try {
+    requireThat(options.copyMode === undefined || options.copyMode === 'clone', 'Unknown local copy mode.');
     requireThat(ID.test(options.expectedCandidateId) && ID.test(options.expectedPreviousId), 'Expected shell release IDs are required.');
     const candidateRoot = regularRoot(options.candidate), previousRoot = regularRoot(options.previous);
     const out = resolve(options.out), receiptOut = resolve(options.receiptOut);
@@ -228,8 +232,30 @@ export function retainShellAssets(options: RetainShellOptions) {
     unchanged(candidate); unchanged(previous);
     requireThat(matches(lstatSync(outParent, { bigint: true }), outParentIdentity) && regularRoot(outParent) === outParent, 'Output parent ownership changed during preparation.');
     ownedDirectory(out, owned, 0o700);
-    for (const file of candidate.files) copyFile(candidate, file, out, owned);
-    for (const file of retained) if (!active.has(file.path)) copyFile(previous, file, out, owned);
+    if (options.copyMode === 'clone') {
+      // Clone plans and any incomplete batch remain visible after an uncertain failure.
+      // The clone helper never hardlinks and verifies separate destination inodes.
+      uncertainClones = true;
+      const identities = [...cloneShellFiles(candidateRoot, out, publicFiles(candidate), `${receiptOut}.candidate-clone.json`),
+        ...cloneShellFiles(previousRoot, out, retained.filter(file => !active.has(file.path)), `${receiptOut}.previous-clone.json`)];
+      const cloned = new Map(identities.map(row => [row.path, row]));
+      const directories = new Set<string>();
+      for (const row of identities) { const parts = row.path.split('/'); for (let i = 1; i < parts.length; i++) directories.add(parts.slice(0, i).join('/')); }
+      function recordClones(relative: string): void {
+        for (const name of readdirSync(join(out, relative)).sort()) {
+          const path = join(out, relative, name), stat = lstatSync(path, { bigint: true });
+          const leaf = relative ? `${relative}/${name}` : name, expected = cloned.get(leaf);
+          requireThat(stat.isDirectory() ? directories.has(leaf) : stat.isFile() && expected && stat.dev.toString() === expected.dev && stat.ino.toString() === expected.ino,
+            'Clone output identity changed or contains an unowned entry.');
+          owned.push({ path, identity: identity(stat), directory: stat.isDirectory() });
+          if (stat.isDirectory()) recordClones(leaf);
+        }
+      }
+      recordClones(''); uncertainClones = false;
+    } else {
+      for (const file of candidate.files) copyFile(candidate, file, out, owned);
+      for (const file of retained) if (!active.has(file.path)) copyFile(previous, file, out, owned);
+    }
     unchanged(candidate); unchanged(previous);
     const prepared = snapshot(out), expected = new Map(active);
     for (const file of retained) expected.set(file.path, file);
@@ -238,6 +264,7 @@ export function retainShellAssets(options: RetainShellOptions) {
     }), 'Prepared shell differs from its reviewed input files.');
     requireThat(matches(lstatSync(outParent, { bigint: true }), outParentIdentity) && regularRoot(outParent) === outParent, 'Output parent ownership changed during preparation.');
     const receipt = {
+      ...(options.copyMode ? { copyMode: options.copyMode, hardlinksUsed: false } : {}),
       version: 1, result: 'PREPARED', scope: 'previous bundled _app files only', runtimeQualified: false, promotionAttempted: false,
       candidate: { shellId: candidate.id, inventorySha256: candidate.inventorySha256, files: publicFiles(candidate) },
       previous: { shellId: previous.id, inventorySha256: previous.inventorySha256, files: publicFiles(previous) },
@@ -275,7 +302,7 @@ export function retainShellAssets(options: RetainShellOptions) {
   } catch (error) {
     const refusal = error instanceof RetentionRefusal ? error : new RetentionRefusal('Local preparation failed; review the inputs and output ownership.');
     const clean = cleanup(owned);
-    refusal.partialOutput ||= uncertainReceipt || !clean;
+    refusal.partialOutput ||= uncertainReceipt || uncertainClones || !clean;
     throw refusal;
   }
 }
