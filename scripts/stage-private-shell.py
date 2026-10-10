@@ -6,6 +6,11 @@ One reviewed input drives exclusive phases. No Deployment, Secret, database,
 provider or DNS mutation is implemented. After any uncertain command, reconcile
 read-only; never replay that phase. Temporary pack storage stays retained until
 planning/publication has consumed its original bound-PV capture.
+
+Every guard pass captures new complete Deployment collections per namespace,
+PVC collections per protected namespace and a global PV collection. Original
+response bytes stay in command receipts; no inventory survives into another
+guard pass or replaces the final production-target check before a mutation.
 """
 from __future__ import annotations
 import argparse
@@ -50,18 +55,34 @@ def resource_key(value):
 
 def complete_list(value, item_kind, namespace=None):
     """Accept actual kubectl generic collections without inventing typed output."""
-    require(isinstance(value,dict) and set(value) == {'apiVersion','kind','metadata','items'} and value['apiVersion'] == 'v1'
-            and value['kind'] in {'List',item_kind + 'List'} and isinstance(value['metadata'],dict) and not value['metadata'].get('continue')
+    item_api = {'Pod':'v1','PersistentVolumeClaim':'v1','PersistentVolume':'v1','Deployment':'apps/v1'}.get(item_kind)
+    require(item_api is not None, 'Unknown stage collection item kind')
+    require(isinstance(value,dict) and set(value) == {'apiVersion','kind','metadata','items'}
+            and ((value['kind'] == 'List' and value['apiVersion'] == 'v1') or (value['kind'] == item_kind + 'List' and value['apiVersion'] == item_api))
+            and isinstance(value['metadata'],dict) and not value['metadata'].get('continue')
             and type(value['metadata'].get('remainingItemCount',0)) is int and value['metadata'].get('remainingItemCount',0) == 0
-            and isinstance(value['items'],list) and len(value['items']) <= 100000, 'Complete known v1 collection required')
+            and isinstance(value['items'],list) and len(value['items']) <= 100000, 'Complete known Kubernetes collection required')
     names, uids = set(), set()
     for item in value['items']:
-        require(isinstance(item,dict) and item.get('apiVersion') == 'v1' and item.get('kind') == item_kind and isinstance(item.get('metadata'),dict), 'Collection item API or kind differs')
+        require(isinstance(item,dict) and item.get('apiVersion') == item_api and item.get('kind') == item_kind and isinstance(item.get('metadata'),dict), 'Collection item API or kind differs')
         meta = item['metadata']; name, uid = meta.get('name'), meta.get('uid')
         resources.name(name); resources.text(uid,'collection UID'); resources.text(meta.get('resourceVersion'),'collection item resource version')
         require(meta.get('namespace') == namespace and name not in names and uid not in uids, 'Collection item scope or identity differs')
         names.add(name); uids.add(uid)
     return value
+
+
+class DeploymentInventory:
+    """One guard pass only: reuse the existing identity checks on original items."""
+    def __init__(self, namespaces, deployments):
+        self.namespaces, self.deployments = namespaces, deployments
+
+    def get(self, kind, name, namespace=None):
+        if kind == 'namespace' and namespace is None:
+            require(name in self.namespaces, 'Protected namespace missing from fresh captures')
+            return self.namespaces[name]
+        require(kind == 'deployment' and (namespace,name) in self.deployments, 'Protected Deployment missing from fresh captures')
+        return self.deployments[(namespace,name)]
 
 
 def phase_guard(directory, name, input_sha, operator_sha):
@@ -296,7 +317,7 @@ class Stage:
         if namespace: args += ['--namespace',namespace]
         value = cohort.parse_json(self.remote(args))
         if name is None:
-            item_kind = {'pods':'Pod','pod':'Pod','pvc':'PersistentVolumeClaim','pv':'PersistentVolume'}.get(kind)
+            item_kind = {'pods':'Pod','pod':'Pod','pvc':'PersistentVolumeClaim','pv':'PersistentVolume','deployments':'Deployment','deployment':'Deployment'}.get(kind)
             require(item_kind is not None, 'Unknown stage collection selector')
             complete_list(value,item_kind,namespace)
         return value
@@ -309,16 +330,31 @@ class Stage:
 
     def fresh(self, allowed_stage_uid=None):
         updater.check_cluster(self.target, self.kube)
+        namespaces, deployments = {}, {}
+        for namespace in sorted({component['namespace'] for component in self.target['components'].values()}):
+            namespaces[namespace] = self.get('namespace',namespace)
+            captured = complete_list(self.get('deployments',namespace=namespace),'Deployment',namespace)
+            deployments.update({(namespace,item['metadata']['name']):item for item in captured['items']})
+        inventory = DeploymentInventory(namespaces,deployments)
         for component in self.target['components'].values():
-            actual = updater.deployment_identity(component, self.kube); before = self.baseline_deployments[('Deployment',component['namespace'],component['deployment'])]
+            actual = updater.deployment_identity(component, inventory); before = self.baseline_deployments[('Deployment',component['namespace'],component['deployment'])]
             require(actual['spec'] == before['spec'], 'A protected Deployment spec changed')
+
+        claim_namespaces = {self.namespace} | {value['metadata']['namespace'] for value in self.baseline_resources.values() if value['kind'] == 'PersistentVolumeClaim'}
+        claim_lists = {namespace:complete_list(self.get('pvc',namespace=namespace),'PersistentVolumeClaim',namespace) for namespace in sorted(claim_namespaces)}
+        protected = {resource_key(item):item for collection in claim_lists.values() for item in collection['items']}
+        pvs = complete_list(self.get('pv'),'PersistentVolume')
+        protected.update({resource_key(item):item for item in pvs['items']})
         for key, before in self.baseline_resources.items():
-            actual = self.get(before['kind'], before['metadata']['name'], before['metadata'].get('namespace'))
+            if before['kind'] == 'ConfigMap':
+                actual = self.get(before['kind'],before['metadata']['name'],before['metadata'].get('namespace'))
+            else:
+                require(key in protected, 'Protected resource missing from fresh captures')
+                actual = protected[key]
             require(actual['metadata']['uid'] == before['metadata']['uid'] and not actual['metadata'].get('deletionTimestamp'), 'Protected resource identity changed')
             for field in ('spec','data','binaryData','immutable'):
                 require(actual.get(field) == before.get(field), 'Protected resource payload changed')
-        current_claims = self.get('pvc', namespace=self.namespace)
-        complete_list(current_claims,'PersistentVolumeClaim',self.namespace)
+        current_claims = claim_lists[self.namespace]
         expected_claims = {c['metadata']['name']:c['metadata']['uid'] for c in self.baseline['claims']['items']}
         ids = self.identities()
         expected_claims.update({ids[key]['metadata']['name']:ids[key]['metadata']['uid'] for key in ('shellClaim','packClaim') if key in ids})
@@ -473,9 +509,26 @@ class Stage:
             require(time.monotonic() < deadline, 'Owned deletion did not finish'); time.sleep(1)
 
     def mount_release(self, uid):
-        output = cohort.parse_json(self.run([sys.executable,'-B',str(self.host_probe),'mounts','--target',str(cohort.local_path(self.value['target']['path'],self.input_path.parent)),'--pod-uid',uid]))
-        require(output.get('podUid') == uid and output.get('nodeUID') == self.target['node']['uid'] and output.get('unmounted') is True and output.get('mountsReleased') is True, 'Exact host mount-release proof required')
-        return output
+        """Observe asynchronous kubelet release; never repeat a deletion/mutation."""
+        deadline = time.monotonic() + 120
+        while True:
+            self.inputs.unchanged()
+            require(sha(self.host_probe) == self.value['hostProbe']['sha256'], 'Reviewed host mount probe changed')
+            remaining = deadline - time.monotonic()
+            require(remaining > 0, 'Exact host mount-release proof did not arrive within bound')
+            try:
+                raw = self.run([sys.executable,'-B',str(self.host_probe),'mounts','--target',str(cohort.local_path(self.value['target']['path'],self.input_path.parent)),'--pod-uid',uid],timeout=min(100,remaining))
+            except Refusal:
+                # run() has already retained this new read-only observation's
+                # original stdout/stderr and failure outcome. Mutations never
+                # enter this loop, and their exclusive phase intents persist.
+                require(time.monotonic() < deadline, 'Exact host mount-release proof did not arrive within bound')
+                time.sleep(min(2,max(0,deadline-time.monotonic())))
+                continue
+            require(time.monotonic() < deadline, 'Exact host mount-release proof did not arrive within bound')
+            output = cohort.parse_json(raw)
+            require(output.get('podUid') == uid and output.get('nodeUID') == self.target['node']['uid'] and output.get('unmounted') is True and output.get('mountsReleased') is True, 'Exact host mount-release proof required')
+            return output
 
     def phase(self, name, body):
         phase_guard(self.out,name,self.input_sha,self.operator_sha)
