@@ -14,6 +14,11 @@ sources, builds fresh application assets with the maintained Vite configuration,
 reuses verified unchanged content and retains old lazy-loaded chunks. It does
 not relabel the running image as a newer backend release.
 
+For public sites served by an accepted Nginx image, use
+[public shell preparation](PUBLIC-SHELL-UPDATES.md), then
+[isolated staging and promotion](PUBLIC-SHELL-PROMOTION.md). This updates five
+read-only UI paths while retaining the image, signed catalog and model storage.
+
 `scripts/app-update.py` plans by default. It uses Python 3.10 or newer and kubectl,
 with no Python packages to install. Applying needs the exact reviewed plan and
 its hash. It never invokes Helm, Terraform/OpenTofu, database migrations or a
