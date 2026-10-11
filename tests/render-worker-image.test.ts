@@ -12,7 +12,7 @@ import { createMemoryStore } from '../server/src/store/memory.ts';
 import { mintSessionCookie } from '../server/src/iam/sessions.ts';
 import { importCatalogSigningKey } from '../server/src/catalog/signing.ts';
 import { mintRenderRead } from '../server/src/render/read-ticket.ts';
-import { createRenderResourceHold } from './collab/render-resource-hold.ts';
+import { createRenderResourceHold, requestRenderCancellation } from './collab/render-resource-hold.ts';
 type WorkerModule = typeof import('../workers/render/src/server.ts');
 
 const skip = process.env.LOLLY_RENDER_IMAGE_TEST !== '1' && 'Run qualify-render-worker-image.ts with the built image and matched signed shell.';
@@ -227,16 +227,33 @@ test('built worker uses its actual browser for signed 1.248 QR SVG/PNG, tickets,
     const abort = new AbortController();
     const cancelBody = JSON.stringify({ toolId: 'qr-code', format: 'svg', query: new URLSearchParams({ url: `https://worker.invalid/?nonce=${randomUUID()}` }).toString(),
       overrides: {}, profile: {}, readToken, brandRevision: revision, ts: Date.now() });
-    let settled = false;
-    const pending = fetch(`${workerBase}/render`, { method: 'POST', headers: { 'content-type': 'application/json',
-      'x-lw-render-sig': createHmac('sha256', secret).update(cancelBody).digest('base64url') }, body: cancelBody, signal: abort.signal })
+    let settled = false, responseStatus: number | undefined, responseAtMs: number | undefined;
+    const cancellationAt = performance.now();
+    let readyAtMs: number | undefined, abortAtMs: number | undefined;
+    const pending = requestRenderCancellation(`${workerBase}/render`, { 'content-type': 'application/json',
+      'x-lw-render-sig': createHmac('sha256', secret).update(cancelBody).digest('base64url') }, cancelBody, abort.signal)
+      .then(status => { responseStatus = status; responseAtMs = performance.now() - cancellationAt; return status; })
       .finally(() => { settled = true; });
     const rejection = assert.rejects(pending, { name: 'AbortError' });
-    await until(async () => cancellationHold.reads > 0);
-    assert.equal(settled, false, 'The authoritative signed hook is still held before cancellation');
-    assert.equal(actualBrowser.contexts().length, 1);
-    assert.equal((await (await fetch(`${workerBase}/readyz`)).json() as { active: number }).active, 1);
-    abort.abort(); await rejection;
+    void rejection.catch(() => {});
+    try {
+      await until(async () => cancellationHold.reads > 0);
+      assert.equal(settled, false, 'The authoritative signed hook is still held before cancellation');
+      assert.equal(actualBrowser.contexts().length, 1);
+      assert.equal((await (await fetch(`${workerBase}/readyz`)).json() as { active: number }).active, 1);
+      readyAtMs = performance.now() - cancellationAt;
+      assert.equal(cancellationHold.pending, cancellationHold.reads, 'Every signed hook response is still held');
+      assert.equal(settled, false, 'The render has no response immediately before cancellation');
+      assert.equal(responseStatus, undefined, 'No worker response headers precede cancellation');
+      assert.equal(abort.signal.aborted, false);
+      abortAtMs = performance.now() - cancellationAt; abort.abort(); await rejection;
+    } catch (error) {
+      console.log(JSON.stringify({ status: 'WORKER_CANCELLATION_FAILURE_METADATA', elapsedMs: performance.now() - cancellationAt,
+        responseStatus, responseAtMs, readyAtMs, abortAtMs, signalAborted: abort.signal.aborted, settled,
+        heldReads: cancellationHold.reads, heldPending: cancellationHold.pending, heldClosed: cancellationHold.closed,
+        contexts: actualBrowser.contexts().length }));
+      throw error;
+    }
     await until(async () => (await (await fetch(`${workerBase}/readyz`)).json() as { active: number }).active === 0);
     assert.equal(actualBrowser.contexts().length, 0);
     await until(async () => cancellationHold.closed === cancellationHold.reads);

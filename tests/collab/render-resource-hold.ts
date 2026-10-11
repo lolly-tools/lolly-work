@@ -1,6 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 /** Hold the signed dependency of one render, with observable socket cleanup. */
-import type { IncomingMessage, ServerResponse } from 'node:http';
+import { request, type IncomingMessage, type ServerResponse } from 'node:http';
+
+/** Use the real socket's AbortError; response headers settle success immediately. */
+export function requestRenderCancellation(url: string, headers: Record<string, string>, body: string, signal: AbortSignal): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const req = request(url, { method: 'POST', headers, signal, agent: false }, res => {
+      res.resume(); resolve(res.statusCode ?? 0);
+    });
+    req.once('error', reject); req.end(body);
+  });
+}
 
 export function createRenderResourceHold() {
   let target: { path: string; readToken: string; revision: string } | undefined;
@@ -31,6 +41,7 @@ export function createRenderResourceHold() {
       return true;
     },
     release() { target = undefined; for (const resume of [...releases]) resume(); },
+    get pending() { return releases.size; },
     get reads() { return reads; },
     get closed() { return closed; },
   };
