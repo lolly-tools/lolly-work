@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 /** Byte-preserving delivery after a route has performed its access checks. */
 import { createHash } from 'node:crypto';
-import { readFile, realpath, stat } from 'node:fs/promises';
-import { resolve, sep } from 'node:path';
+import { lstat, readFile, readlink, realpath, stat } from 'node:fs/promises';
+import { dirname, resolve, sep } from 'node:path';
 import { brotliCompressSync, brotliDecompressSync, constants, gunzipSync, gzipSync } from 'node:zlib';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
@@ -38,13 +38,42 @@ export function preferredEncoding(header: string | string[] | undefined): 'br' |
 }
 
 const projectionRoots = new Map<string, string[]>();
+const projectionLinks = new Map<string, Array<{ name: string; root: string }>>();
 /** Only the server's source resolver can add roots for its own projection trees. */
 export async function registerProjectionRoots(root: string, sources: string[]): Promise<void> {
-  const resolved = await Promise.all(sources.map(source => realpath(source).catch(error => {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw error;
-  })));
-  projectionRoots.set(await realpath(root), resolved.filter((source): source is string => source !== null));
+  const resolved = await Promise.all(sources.map(async source => {
+    try { return { name: resolve(source), root: await realpath(source) }; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
+  }));
+  const base = await realpath(root), links = resolved.filter((source): source is { name: string; root: string } => source !== null);
+  projectionRoots.set(base, links.map(source => source.root)); projectionLinks.set(base, links);
+}
+
+/** Permit a registered projection link, then require regular physical source nodes. */
+export async function regularSourceFile(root: string, rel: string): Promise<{ path: string; modified: Date; size: number } | null> {
+  const file = await safeFile(root, rel); if (!file) return null;
+  try {
+    const base = await realpath(root);
+    const links = [...projectionLinks].filter(([projection]) => base === projection || base.startsWith(projection + sep)).flatMap(([, sources]) => sources);
+    const walk = async (start: string, parts: string[], projected: boolean): Promise<string | null> => {
+      const initial = await lstat(start); if (!initial.isDirectory() || initial.isSymbolicLink()) return null;
+      let path = start;
+      for (let i = 0; i < parts.length; i++) {
+        path = resolve(path, parts[i]!);
+        const metadata = await lstat(path);
+        if (metadata.isSymbolicLink()) {
+          if (!projected) return null;
+          const target = resolve(dirname(path), await readlink(path));
+          const source = links.filter(link => target === link.name || target.startsWith(link.name + sep)).sort((a, b) => b.name.length - a.name.length)[0];
+          if (!source) return null;
+          return walk(source.root, [...target.slice(source.name.length).split(sep).filter(Boolean), ...parts.slice(i + 1)], false);
+        }
+        if (i === parts.length - 1 ? !metadata.isFile() : !metadata.isDirectory()) return null;
+      }
+      return path;
+    };
+    return await walk(base, rel.split(/[\\/]/), links.length > 0) === file.path ? file : null;
+  } catch { return null; }
 }
 
 const fileValidators = new Map<string, { version: string; etag: string; length: number; encoding?: 'br' | 'gzip' }>();

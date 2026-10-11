@@ -30,9 +30,10 @@
  */
 import { createHash, createPrivateKey, webcrypto } from 'node:crypto';
 import { readdir, readFile, stat } from 'node:fs/promises';
+import { verifyToolCoding, type ToolIdentity } from './tool-codings.ts';
 import { join } from 'node:path';
 import { canonicalJson } from '../lib/crypto.ts';
-import { safeDirectory, safeFile } from '../api/file-delivery.ts';
+import { regularSourceFile, safeDirectory, safeFile } from '../api/file-delivery.ts';
 import { filterToolIndex, toolVisibleTo, type ToolOverlay } from '../policy/overlay.ts';
 
 /** Where the envelope is served, relative to the catalog root. */
@@ -192,6 +193,7 @@ export function packToolFileDigests(packDir: string): Promise<Record<string, str
 /** Complete safe tool trees, including binary assets and supporting libraries. */
 export async function completeToolFileDigests(packDir: string): Promise<Record<string, string>> {
   const root = join(packDir, 'tools'), files: Record<string, string> = {};
+  const identities = new Map<string, ToolIdentity>(), codings: string[] = [];
   let count = 0;
   const visit = async (rel: string, depth = 0): Promise<void> => {
     if (depth > 32) throw new Error('tool directory is too deep');
@@ -201,15 +203,26 @@ export async function completeToolFileDigests(packDir: string): Promise<Record<s
       if (++count > 100000) throw new Error('tool directory is too large');
       const path = `${rel}/${entry.name}`;
       const relative = path.slice(path.indexOf('/') + 1);
-      if (relative.startsWith('i18n/') && !SIGNED_I18N_SIDECAR.test(relative)) continue;
-      if (relative.startsWith('templates/') && !SIGNED_TEMPLATE_FILE.test(relative)) continue;
+      if (/\.(gz|br)$/.test(path) && !await regularSourceFile(root, path)) throw new Error('Tool transport sibling is not a regular source file');
       const metadata = entry.isSymbolicLink() ? await stat(join(root, path)).catch(() => null) : entry;
       if (metadata?.isDirectory()) await visit(path, depth + 1);
-      else if (metadata?.isFile() && await safeFile(root, path)) files[path] = sha256(await readFile(join(root, path)));
+      else if (metadata?.isFile() && await safeFile(root, path)) {
+        if (/\.(gz|br)$/.test(path)) { codings.push(path); continue; }
+        const bytes = await readFile(join(root, path)), digest = sha256(bytes);
+        identities.set(path, { sha256: digest, size: bytes.length });
+        if (relative.startsWith('i18n/') && !SIGNED_I18N_SIDECAR.test(relative)) continue;
+        if (relative.startsWith('templates/') && !SIGNED_TEMPLATE_FILE.test(relative)) continue;
+        files[path] = digest;
+      }
     }
   };
   for (const id of (await readdir(root).catch(() => [])).sort()) {
     if (/^[a-z0-9-]+$/i.test(id) && await safeFile(root, `${id}/tool.json`)) await visit(id);
+  }
+  for (const path of codings) {
+    const identity = identities.get(path.slice(0, -3));
+    if (!identity) throw new Error('Tool transport sibling has no identity');
+    await verifyToolCoding(root, path, identity);
   }
   return files;
 }

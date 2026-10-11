@@ -67,11 +67,42 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      # The physical lineage fixture uses the maintained Lolly signer and
+      # materializer. They are not part of the shipped engine package.
+      - name: Read matched lineage source
+        id: lineage-source
+        run: |
+          node --input-type=module - <<'JS' >> "$GITHUB_OUTPUT"
+          import { readFileSync } from 'node:fs';
+          const pin = JSON.parse(readFileSync('engine-pin.json', 'utf8'));
+          if (!/^[a-f0-9]{40}$/.test(pin.generatedFrom)) throw new Error('Invalid matched Lolly source');
+          console.log('source=' + pin.generatedFrom);
+          JS
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: lolly-tools/lolly
+          ref: ${{ steps.lineage-source.outputs.source }}
+          path: qualification-lineage
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /packages/node-shell/src/content-roots.ts
+            /packages/node-shell/src/repo-root.ts
+            /engine/src/catalog-integrity.ts
+            /engine/src/canonical-json.ts
+            /engine/src/x509.ts
+            /engine/src/bytes.ts
+            /engine/src/der-read.ts
+            /scripts/sign-catalog.ts
+            /scripts/materialize-catalog-delivery.ts
+            /scripts/verify-release-catalog.ts
+
       - name: Full test suite (postgres store un-skipped)
         env:
           # tests/store-postgres.test.ts gates on this exact variable; without
           # it the conformance run skips silently and the gate is not real.
           LW_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/lollywork_test
+          LOLLY_LINEAGE_SOURCE: ${{ github.workspace }}/qualification-lineage
         run: pnpm test
 
       - name: Build and exercise the packaged Vercel function

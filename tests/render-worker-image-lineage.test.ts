@@ -11,7 +11,9 @@ import { fileURLToPath } from 'node:url';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { authoredCatalog, finishQualificationSource, prepareQualificationSource, verifyGeneratedRelease, verifyGeneratedSignature } from '../scripts/qualify-render-worker-image.ts';
 
-const VENDOR = resolve(dirname(fileURLToPath(import.meta.url)), '../vendor/lolly');
+const WORK = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const SOURCE = resolve(process.env.LOLLY_LINEAGE_SOURCE ?? join(WORK, 'vendor/lolly'));
+const MATCHED_SOURCE = JSON.parse(readFileSync(join(WORK, 'engine-pin.json'), 'utf8')).generatedFrom as string;
 const SIGNATURE = 'brands/lolly-start/catalog/tools/index.sig.json';
 const sha = (value: Uint8Array) => createHash('sha256').update(value).digest('hex');
 function put(root: string, path: string, bytes: string | Uint8Array): void {
@@ -37,10 +39,14 @@ function fixture(t: TestContext): string {
   put(root, 'brands/lolly-start/tools/.gitkeep', '');
   put(root, 'packages/node-shell/package.json', JSON.stringify({ name: '@lolly-tools/node-shell', type: 'module',
     exports: { './content-roots': './src/content-roots.ts' } }));
+  assert.match(MATCHED_SOURCE, /^[a-f0-9]{40}$/);
+  assert.equal(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: SOURCE, encoding: 'utf8' }).trim(), MATCHED_SOURCE, 'Use the exact engine-pinned Lolly source');
   for (const path of ['packages/node-shell/src/content-roots.ts', 'packages/node-shell/src/repo-root.ts',
     'engine/src/catalog-integrity.ts', 'engine/src/canonical-json.ts', 'engine/src/x509.ts', 'engine/src/bytes.ts',
     'engine/src/der-read.ts', 'scripts/sign-catalog.ts', 'scripts/materialize-catalog-delivery.ts', 'scripts/verify-release-catalog.ts']) {
-    const target = join(root, path); mkdirSync(dirname(target), { recursive: true }); copyFileSync(join(VENDOR, path), target);
+    const bytes = readFileSync(join(SOURCE, path));
+    assert.deepEqual(execFileSync('git', ['show', `${MATCHED_SOURCE}:${path}`], { cwd: SOURCE, maxBuffer: 1024 * 1024 }), bytes, 'Fixture modules must be unchanged committed source');
+    const target = join(root, path); mkdirSync(dirname(target), { recursive: true }); copyFileSync(join(SOURCE, path), target);
   }
   mkdirSync(join(root, 'node_modules/@lolly-tools'), { recursive: true });
   symlinkSync(join(root, 'packages/node-shell'), join(root, 'node_modules/@lolly-tools/node-shell'), 'dir');

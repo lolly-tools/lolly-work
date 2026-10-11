@@ -17,6 +17,11 @@ type WorkerModule = typeof import('../workers/render/src/server.ts');
 const skip = process.env.LOLLY_RENDER_IMAGE_TEST !== '1' && 'Run qualify-render-worker-image.ts with the built image and matched signed shell.';
 const shell = '/qualification/shell';
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
+/** Failure metadata names fixed categories only; never prints tickets or tool output. */
+function errorCategories(message: string): string[] {
+  return ['timeout', 'catalogue revision', 'catalog signature', 'catalog integrity', 'index hash',
+    'file digest', 'tool directory', 'content decoding', 'WebGPU'].filter(value => message.toLowerCase().includes(value.toLowerCase()));
+}
 const listen = async (server: Server): Promise<string> => {
   if (!server.listening) await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address(); assert.ok(address && typeof address !== 'string');
@@ -93,8 +98,8 @@ test('built worker uses its actual browser for signed 1.248 QR SVG/PNG, tickets,
   let ticketReads = 0, hookReads = 0, sandboxHookReads = 0, modelHits = 0, trapHits = 0, websocketHits = 0;
   server.on('request', (req, res) => {
     if (req.headers['x-lw-render-read']) ticketReads++;
-    if (req.url?.startsWith('/tools/qr-code/hooks.js')) hookReads++;
-    if (req.url?.startsWith('/tools/sandbox/hooks.js')) sandboxHookReads++;
+    if (/^\/tools\/qr-code(?:@[0-9a-f]{16})?\/hooks\.js(?:\?|$)/.test(req.url ?? '')) hookReads++;
+    if (/^\/tools\/sandbox(?:@[0-9a-f]{16})?\/hooks\.js(?:\?|$)/.test(req.url ?? '')) sandboxHookReads++;
     if (req.url?.startsWith('/models/')) modelHits++;
     if (hold && req.url?.startsWith('/catalog/tools/index.json')) {
       held = true; const gate = new Promise<void>(resolve => { releaseHold = resolve; });
@@ -116,22 +121,59 @@ test('built worker uses its actual browser for signed 1.248 QR SVG/PNG, tickets,
     browser = actualBrowser;
     assert.equal(await worker.getBrowser(), actualBrowser, 'The actual worker singleton is used');
     let sandboxExecuted = 0, aiDisabled = 0, aiEnabled = 0;
-    actualBrowser.on('context', context => context.on('page', page => page.on('console', message => {
+    const diagnostics: Record<string, unknown>[] = [];
+    const note = (value: Record<string, unknown>) => { if (diagnostics.length < 24) diagnostics.push(value); };
+    const requestPath = (raw: string) => {
+      try { const url = new URL(raw); return url.origin === base && /^[A-Za-z0-9_./@-]{1,256}$/.test(url.pathname) ? url.pathname : 'external-or-unsupported'; }
+      catch { return 'unparseable'; }
+    };
+    actualBrowser.on('context', context => context.on('page', page => {
+      page.on('response', response => { if (response.status() >= 400) note({ kind: 'http', path: requestPath(response.url()), status: response.status() }); });
+      page.on('requestfailed', request => {
+        const error = request.failure()?.errorText ?? '';
+        note({ kind: 'request', path: requestPath(request.url()), error: /^net::ERR_[A-Z_]+$/.test(error) ? error : 'other', errorSha256: hash(Buffer.from(error)) });
+      });
+      page.on('pageerror', error => note({ kind: 'page', messageSha256: hash(Buffer.from(error.message)), categories: errorCategories(error.message) }));
+      page.on('console', message => {
       // Never retain arbitrary tool output; only these fixed control markers count.
       const value = message.text();
       if (value === 'LOLLY_WORKER_EGRESS_CONTROL_RAN') sandboxExecuted++;
       if (value === 'LOLLY_WORKER_AI_DISABLED') aiDisabled++;
       if (value === 'LOLLY_WORKER_AI_ENABLED') aiEnabled++;
-    })));
+      const categories = errorCategories(value);
+      if (categories.length) note({ kind: 'console', messageSha256: hash(Buffer.from(value)), categories });
+      });
+    }));
     const gpuContext = await actualBrowser.newContext({ serviceWorkers: 'block' });
     try {
       const page = await gpuContext.newPage(); await page.goto(base);
       const facts = await page.evaluate(`(async()=>{const gpu=navigator.gpu;if(!gpu||!isSecureContext)return {ok:false};const adapter=await gpu.requestAdapter();if(!adapter)return {ok:false};const device=await adapter.requestDevice();try{return {ok:device.limits.maxStorageBuffersPerShaderStage>=3&&device.limits.maxComputeInvocationsPerWorkgroup>=64&&device.limits.maxComputeWorkgroupSizeX>=64&&device.limits.maxStorageBufferBindingSize>=1048576,software:/swiftshader/i.test([adapter.info?.vendor,adapter.info?.architecture,adapter.info?.description].join(' '))};}finally{device.destroy();}})()`);
       assert.deepEqual(facts, { ok: true, software: true });
     } finally { await gpuContext.close(); }
+    diagnostics.length = 0;
     const render = async (format: string, inputs: Record<string, string>) => {
       const response = await fetch(`${base}/api/v1/render`, { method: 'POST', headers: { 'content-type': 'application/json', cookie },
         body: JSON.stringify({ toolId: 'qr-code', format, inputs }), signal: AbortSignal.timeout(25000) });
+      if (response.status !== 200) {
+        const chunks: Uint8Array[] = []; let size = 0, truncated = false;
+        const reader = response.body?.getReader();
+        if (reader) try {
+          while (true) {
+            const { done, value } = await reader.read(); if (done) break;
+            if (size + value.length > 32768) { truncated = true; break; }
+            chunks.push(value); size += value.length;
+          }
+        } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+        const bytes = Buffer.concat(chunks);
+        let code = 'unknown', categories: string[] = [];
+        try {
+          const value = JSON.parse(bytes.toString()) as { error?: { code?: unknown; message?: unknown } };
+          if (typeof value.error?.code === 'string' && /^[A-Z_]{1,64}$/.test(value.error.code)) code = value.error.code;
+          if (typeof value.error?.message === 'string') categories = errorCategories(value.error.message);
+        } catch { /* The original HTTP status remains the acceptance failure. */ }
+        console.log(JSON.stringify({ status: 'WORKER_RENDER_FAILURE_METADATA', format, httpStatus: response.status,
+          code, categories, responseBytes: bytes.length, responseTruncated: truncated, responseSha256: hash(bytes), browser: diagnostics }));
+      }
       assert.equal(response.status, 200, `${format} through the real control plane and worker`);
       assert.equal(response.headers.get('content-type')?.split(';')[0], format === 'svg' ? 'image/svg+xml' : 'image/png');
       const bytes = Buffer.from(await response.arrayBuffer()); assert.ok(bytes.length > 100 && bytes.length < 16 * 1024 * 1024);
