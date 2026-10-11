@@ -14,6 +14,7 @@ import { importCatalogSigningKey } from '../server/src/catalog/signing.ts';
 import { mintRenderRead } from '../server/src/render/read-ticket.ts';
 import { createRenderResourceHold, requestRenderCancellation } from './collab/render-resource-hold.ts';
 import { createRenderCancellationDiagnostics, renderDiagnosticPath } from './collab/render-resource-diagnostics.ts';
+import { captureRenderPagePhase, RENDER_PAGE_PHASE_SCRIPT } from './collab/render-page-phase.ts';
 type WorkerModule = typeof import('../workers/render/src/server.ts');
 
 const skip = process.env.LOLLY_RENDER_IMAGE_TEST !== '1' && 'Run qualify-render-worker-image.ts with the built image and matched signed shell.';
@@ -39,7 +40,7 @@ async function until(predicate: () => Promise<boolean>, ms = 5000): Promise<void
   assert.fail('Image lifecycle predicate did not settle');
 }
 
-test('built worker uses its actual browser for signed 1.253 QR SVG/PNG, tickets, cancellation and egress', { skip, timeout: 90_000 }, async t => {
+test('built worker uses its actual browser for signed 1.254 QR SVG/PNG, tickets, cancellation and egress', { skip, timeout: 90_000 }, async t => {
   assert.equal(process.getuid?.(), 1000);
   assert.equal(process.versions.node, '24.21.0');
   assert.equal(process.env.PLAYWRIGHT_BROWSERS_PATH, '/opt/lolly-browsers');
@@ -50,7 +51,7 @@ test('built worker uses its actual browser for signed 1.253 QR SVG/PNG, tickets,
   for (const file of sources) assert.equal(hash(await readFile(join('/app/src', file))), hash(await readFile(new URL(file, sourceRoot))), file);
   const pin = JSON.parse(await readFile(new URL('../engine-pin.json', import.meta.url), 'utf8'));
   assert.equal(process.env.LOLLY_TEST_SHELL_SOURCE, pin.generatedFrom);
-  assert.equal(pin.engine.version, '1.253.0');
+  assert.equal(pin.engine.version, '1.254.0');
   const material = process.env.LW_CATALOG_SIGNING_KEY;
   const publicMaterial = process.env.LOLLY_TEST_CATALOG_PUBLIC_KEY_JWK;
   assert.ok(material && publicMaterial);
@@ -255,10 +256,13 @@ test('built worker uses its actual browser for signed 1.253 QR SVG/PNG, tickets,
       assert.equal(abort.signal.aborted, false);
       abortAtMs = performance.now() - cancellationAt; abort.abort(); await rejection;
     } catch (error) {
-      console.log(JSON.stringify({ status: 'WORKER_CANCELLATION_FAILURE_METADATA', elapsedMs: performance.now() - cancellationAt,
+      const failure = { status: 'WORKER_CANCELLATION_FAILURE_METADATA', elapsedMs: performance.now() - cancellationAt,
         responseStatus, responseAtMs, readyAtMs, abortAtMs, signalAborted: abort.signal.aborted, settled,
         heldReads: cancellationHold.reads, heldPending: cancellationHold.pending, heldClosed: cancellationHold.closed,
-        contexts: actualBrowser.contexts().length, requests: cancellationDiagnostics.snapshot(), browser: diagnostics }));
+        contexts: actualBrowser.contexts().length, requests: cancellationDiagnostics.snapshot(), browser: diagnostics.map(row => ({ ...row })) };
+      const page = actualBrowser.contexts()[0]?.pages()[0];
+      const pagePhase = await captureRenderPagePhase(page ? () => page.evaluate(RENDER_PAGE_PHASE_SCRIPT) : undefined);
+      console.log(JSON.stringify({ ...failure, pagePhase, pagePhaseCompletedAtMs: performance.now() - cancellationAt }));
       throw error;
     }
     await until(async () => (await (await fetch(`${workerBase}/readyz`)).json() as { active: number }).active === 0);

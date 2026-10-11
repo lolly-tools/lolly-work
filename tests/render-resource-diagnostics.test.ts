@@ -88,3 +88,48 @@ test('diagnostics bound request volume and expose a genuinely pending hook indep
     assert.throws(() => diagnostics.arm(target));
   } finally { held?.end(); server.closeAllConnections(); await pending; await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
 });
+
+test('late tool loading remains visible after hundreds of bootstrap requests without retaining private paths', async () => {
+  const server = createServer(), base = await listen(server), diagnostics = createRenderCancellationDiagnostics(base);
+  const target = { path: '/tools/qr-code@0123456789abcdef/hooks.js', readToken: 'private-ticket', revision: 'private-revision' };
+  let held: import('node:http').ServerResponse | undefined;
+  let entered!: () => void;
+  const arrival = new Promise<void>(resolve => { entered = resolve; });
+  server.on('request', (req, res) => {
+    diagnostics.observe(req, res);
+    if (req.url?.startsWith('/tools/qr-code@0123456789abcdef/tool.json')) { held = res; entered(); }
+    else { if (req.url?.includes('styles.css')) res.statusCode = 404; res.end('private-body'); }
+  });
+  diagnostics.arm(target);
+  try {
+    for (let i = 0; i < 350; i++) await get(base, `/_app/chunk_${i}.js?private-query`);
+    await get(base, '/catalog/tools/index.sig.json');
+    await get(base, '/tools/qr-code@0123456789abcdef/template.html?private-query');
+    await get(base, '/tools/sandbox/styles.css?private-query');
+    const pending = get(base, '/tools/qr-code@0123456789abcdef/tool.json?private-query', {
+      'x-lw-render-read': target.readToken, 'x-lolly-brand-revision': target.revision });
+    await arrival;
+    const report = diagnostics.snapshot();
+    assert.equal(report.bootstrapReads, 350); assert.equal(report.bootstrap.length, 32);
+    assert.equal(report.toolReads, 3); assert.equal(report.hookReads, 0);
+    assert.equal(report.recent.length, 32); assert.equal(report.recent.at(-1)?.path, 'tool-manifest');
+    assert.equal(report.resources['app-script']?.requests, 350);
+    assert.equal(report.resources['app-script']?.completed, 350);
+    assert.equal(report.resources['app-script']?.pending, 0);
+    assert.equal(report.resources['catalog-signature']?.completed, 1);
+    assert.equal(report.resources['tool-template']?.completed, 1);
+    assert.equal(report.resources['tool-style']?.lastStatus, 404);
+    assert.equal(report.resources['tool-style']?.errorResponses, 1);
+    assert.equal(report.resources['tool-manifest']?.pending, 1);
+    assert.equal(report.resources['tool-manifest']?.completed, 0);
+    assert.equal(report.tools.at(-1)?.tokenMatches, true);
+    for (const secret of ['private-query', 'private-body', target.readToken, target.revision, 'chunk_349']) assert.ok(!JSON.stringify(report).includes(secret));
+    assert.ok(held); held.end(); await pending;
+    const finished = diagnostics.snapshot();
+    assert.equal(finished.resources['tool-manifest']?.completed, 1);
+    assert.equal(finished.resources['tool-manifest']?.pending, 0);
+    assert.equal(report.resources['tool-manifest']?.pending, 1, 'The earlier snapshot remains the actual pending observation');
+    assert.equal(renderDiagnosticPath(base + '/tools/qr-code%2fprivate/tool.json', base), 'internal-other');
+    assert.equal(renderDiagnosticPath(base + '/tools/private-user/tool.json', base), 'internal-other');
+  } finally { held?.end(); server.closeAllConnections(); await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
+});
