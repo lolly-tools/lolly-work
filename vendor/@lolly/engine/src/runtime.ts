@@ -43,6 +43,7 @@ import { hydrate, resolvePaintBindings } from './template.ts';
 import { buildExportMeta } from './metadata.ts';
 import { isTokenValue, isAlias, aliasPath, colorToHex } from './tokens.ts';
 import { resolveBlockTokenBindings } from './token-block-bindings.ts';
+import { resolveTextDocumentTokenBindings } from './text-token-bindings.ts';
 import { resolveNestedRenders } from './compose.ts';
 import { isToolUrl } from './tool-url.ts';
 import { isBakedRef } from './bake.ts';
@@ -1860,10 +1861,11 @@ export async function createRuntime(
 
     async export(renderedNode, format, opts = {}) {
       const composedSource = model.some(item => item.id === 'textDocument' && item.value) || !!extras.__lollyTextPreflight;
-      const exportRevision = composedSource ? JSON.stringify([modelToValues(model), emojiStyle]) : null;
+      const layoutSource = !!extras.layoutReceipt || !!extras.__lollyLayoutPreflight;
+      const exportRevision = composedSource || layoutSource ? JSON.stringify([modelToValues(model), emojiStyle]) : null;
       const checkTextRevision = (): void => {
         if (exportRevision !== null && exportRevision !== JSON.stringify([modelToValues(model), emojiStyle]))
-          throw new Error('The text changed while its export was prepared. Wait for layout, then export again.');
+          throw new Error(layoutSource ? 'The layout changed while its export was prepared. Wait for layout, then export again.' : 'The text changed while its export was prepared. Wait for layout, then export again.');
       };
       if ((format === 'html' || format === 'zip') && tool.manifest.render.portable) {
         if (!tool.presentationSource) throw new Error('The portable presentation runtime is missing. Reload the tool before exporting.');
@@ -1886,6 +1888,10 @@ export async function createRuntime(
         const size = designExportSize(tool.manifest.designTool, modelToValues(model), format, opts.width === undefined ? undefined : Number(opts.width), opts.height === undefined ? undefined : Number(opts.height));
         opts = { ...opts, ...size };
         if (!host.export.checkLayout) throw Object.assign(new Error('This tool needs a browser for text layout checks before export.'), { code: 'NEEDS_BROWSER' });
+        if (extras.__lollyLayoutPreflight) {
+          const { checkDesignLayoutReceipt } = await import('./design-tool/layout-preflight.ts');
+          checkDesignLayoutReceipt(extras.__lollyLayoutPreflight, modelToValues(model), renderedNode);
+        }
         if (extras.__lollyTextPreflight) {
           const { checkDesignTextReceipt } = await import('./design-tool/text-preflight.ts');
           checkDesignTextReceipt(extras.__lollyTextPreflight, modelToValues(model), renderedNode);
@@ -2622,7 +2628,9 @@ async function resolveTokenRefs(model: InputModelItem[], host: HostV1, onSet?: (
   const { swatchFace } = await import('./color-face.ts');
   const swatches = new Map((set?.colors?.() ?? []).map(swatch => [swatch.ref, swatch]));
   const target = model.some(input => input.id === 'editingRange' && input.value === 'hdr') ? 'rec2020' : 'srgb';
+  const textInputs = new Set(model.flatMap(input => typeof input.canvas?.textDocumentInput === 'string' ? [input.canvas.textDocumentInput] : []));
   return model.map(input => {
+    if (textInputs.has(input.id) && typeof input.value === 'string') return { ...input, value: resolveTextDocumentTokenBindings(input.value, set) };
     if (input.type === 'blocks' && input.tokenBindingsField && Array.isArray(input.value)) return { ...input, value: resolveBlockTokenBindings(input.value, input.tokenBindingsField, input.fields ?? [], set, target) };
     if (!['color', 'number', 'text', 'longtext', 'select'].includes(input.type)) return input;
     const v = input.value;

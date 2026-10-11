@@ -907,6 +907,8 @@ export { TAR_MAX_ARCHIVE_BYTES, TAR_MAX_MEMBERS, TAR_MAX_PAYLOAD_BYTES } from '.
 export { PDF_ARTWORK_MAX_CANDIDATES } from './pdf-artwork.ts';
 export { createPrepareAPI, inspectPreparation, applyPreparation, preparationDigest, preparationRecipe, readPreparationRecipe } from './prepare.ts';
 export { inspectPrivateText, validatePreparationRules } from './prepare-text.ts';
+export { inspectOfficePackage, isOfficeSource } from './office-census.ts';
+export type { OfficeCensus, OfficeCensusPart, OfficeCensusFinding, OfficeCensusOptions } from './office-census.ts';
 
 export { applyPreparationMetadata } from './prepare-metadata.ts';
 
@@ -1204,3 +1206,10 @@ export type { CameraRawPreset } from './camera-raw-preset.ts';
 export { readPremiereXml, writePremiereXml, premiereSequenceValues, framesToSeconds, secondsToFrames } from './premiere-xml.ts';
 export type { InterchangeRate, InterchangeClip, InterchangeSequence } from './premiere-xml.ts';
 export { readIdmlSpreads } from './idml-read.ts';
+
+export { createDesignLayoutEvaluator, hasDesignLayout, validateDesignLayout, designLayoutSourceEdit, parseLayoutTrack } from './design-layout.ts';
+export type { LayoutRequest, LayoutSolver, LayoutSolverOutput, LayoutEvaluation, LayoutMeasure, LayoutGrid } from './design-layout.ts';
+export { penpotChildrenPaintOrder, importPenpotLayouts, exportPenpotLayout, penpotHasLayout } from './penpot-layout.ts';
+export { designLayoutDescendants, remapDesignLayout } from './design-layout.ts';
+
+export { createDesignLayoutMeasurer, resolveDesignLayoutFonts } from './design-layout-resources.ts';

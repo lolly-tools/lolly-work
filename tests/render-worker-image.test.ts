@@ -39,7 +39,7 @@ async function until(predicate: () => Promise<boolean>, ms = 5000): Promise<void
   assert.fail('Image lifecycle predicate did not settle');
 }
 
-test('built worker uses its actual browser for signed 1.248 QR SVG/PNG, tickets, cancellation and egress', { skip, timeout: 90_000 }, async t => {
+test('built worker uses its actual browser for signed 1.253 QR SVG/PNG, tickets, cancellation and egress', { skip, timeout: 90_000 }, async t => {
   assert.equal(process.getuid?.(), 1000);
   assert.equal(process.versions.node, '24.21.0');
   assert.equal(process.env.PLAYWRIGHT_BROWSERS_PATH, '/opt/lolly-browsers');
@@ -50,7 +50,7 @@ test('built worker uses its actual browser for signed 1.248 QR SVG/PNG, tickets,
   for (const file of sources) assert.equal(hash(await readFile(join('/app/src', file))), hash(await readFile(new URL(file, sourceRoot))), file);
   const pin = JSON.parse(await readFile(new URL('../engine-pin.json', import.meta.url), 'utf8'));
   assert.equal(process.env.LOLLY_TEST_SHELL_SOURCE, pin.generatedFrom);
-  assert.equal(pin.engine.version, '1.248.0');
+  assert.equal(pin.engine.version, '1.253.0');
   const material = process.env.LW_CATALOG_SIGNING_KEY;
   const publicMaterial = process.env.LOLLY_TEST_CATALOG_PUBLIC_KEY_JWK;
   assert.ok(material && publicMaterial);

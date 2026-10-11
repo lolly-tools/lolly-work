@@ -6,6 +6,32 @@ minors, never removed or signature-changed without a major bump.
 
 Moved verbatim from the comment block that used to live in `src/index.ts`.
 
+## 1.253.0
+
+- Add bounded border-token consumer adapters for colour, absolute width and solid, dashed or dotted stroke style. Active border properties refresh together; incompatible source values retain the complete cached border. Relative widths and custom stroke styles remain unsupported.
+- Design 1.48 links whole borders and individual stroke styles through the existing selection and undo path. Dash arrays and authored dash/gap lengths clear with the link, remain custom after local edits, and restore in the same transaction. Scalar rendering, saved URLs and portable token metadata remain compatible with earlier hosts.
+
+## 1.252.0
+
+- Add guarded removal of selected DOCX core and custom properties through Prepare, Strip Hidden Data and the CLI. Property elements are removed by namespace and source range; unrelated ZIP members, property parts, relationships and package declarations are retained. Copies are inspected again and summary reports omit private values and paths.
+- Add optional preparation property actions and stable property identities. Supported DOCX operations use the shared property comparison with explicit limits; document appearance is not certified. Macro-enabled, signed, encrypted, malformed, over-budget, renamed and nested packages remain inspect-only, as do files with property-dependent Word fields or XML-bound content controls.
+
+## 1.251.0
+
+- Add bounded, read-only DOCX/PPTX/XLSX package inspection through Prepare for sharing: document properties, comments and authors, tracked changes, notes, hidden-content markers, relationships, connections, cache surfaces and embedded objects. Shared ZIP and XML budgets retain unsupported, encrypted, malformed and active content without execution or external lookup.
+- Add optional `readOnly` fields to preparation findings, groups and scopes. Apply refuses unsupported replacements and package-part removal; retained Office findings remain in content-free summary counts. Strip Hidden Data uses the same census and refuses cleaned Office/archive exports, including renamed Office packages.
+
+## 1.250.0
+
+- Design token consumers can project typography and a single shadow into existing scalar properties, serialize 2 to 12 sRGB gradient stops as a rightward linear gradient, and adapt duration units and cubic Bezier controls. Unrepresentable values retain their cached literal with a reason. Each property keeps its own reference and adapter through local overrides and reopening.
+- Portable paragraph settings add bounded `tokenLinks` metadata. Paragraph spacing, indents and line height refresh through the shared runtime before composition and export. Selected paragraphs keep their other links when a new property is linked.
+- Design 1.47 exposes whole typography and shadow actions for legacy layers, gradient links, duration and easing links, and paragraph token controls for composed text. Whole typography on composed text remains pending font-resource integration.
+
+## 1.249.0
+
+- Add the optional `host.layout.evaluate` capability. Design flex and grid rules use the newer Penpot Rust implementation pinned to `10955f17e27943429a10e90360d0404e3f56e27c`, compiled as a bounded, import-free WASM kernel. Authored rows and grid tracks remain separate from evaluated geometry.
+- Design 1.46 appends dynamic layout fields and a grid-track collection. Existing compact URL field positions stay fixed.
+
 ## 1.248.0
 
 - Outline Design strike-through with ascent from the resolved HarfBuzz font instance and the Design HTML reference's CSS auto policy. SVG and PDF share its validated geometry; missing metrics and underline retain explicit findings.

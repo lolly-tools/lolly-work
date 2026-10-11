@@ -1,22 +1,22 @@
 {
-  "generatedFrom": "24622f74a3aff007778c5f211f7561c78be36678",
+  "generatedFrom": "f0668b79c12ac728e426f971e00b9c5b0a9ef482",
   "note": "Pin manifest - a consumer verifies vendored content against contentHash. tarballSha256 is informational (gzip is not reproducible).",
   "core": {
     "version": "1.2.0",
     "tarball": "lolly-tools-core-1.2.0.tgz",
-    "tarballSha256": "958bf8eac585d64031c5f0fe23c3c28aa98dd5c6f6b9166ac896716415898d0a",
-    "contentHash": "bface4531504aad5248a68a2fec5e0c4ee4a14d231ba4e19ccb8cbe2cf6bd503"
+    "tarballSha256": "68bc8b7c7fcc9b409776bb3a5fedc426876f61c55902010459d04255d615be84",
+    "contentHash": "5cdb52195c9882be1e4d9809253f8bb23827ff62bd8f270ee633c37c2fb791e1"
   },
   "engine": {
-    "version": "1.248.0",
-    "tarball": "lolly-engine-1.248.0.tgz",
-    "tarballSha256": "909b10fd858492372a0d441525ec2f3f0b6718ab093b87078de4921923ca0038",
-    "contentHash": "a544b590b041e56912854cf08a12b728b73bcf50c5d78676ceacc76fa10e771d"
+    "version": "1.253.0",
+    "tarball": "lolly-engine-1.253.0.tgz",
+    "tarballSha256": "244df30df29a12bcab1825b9d49030c131cab720731522d4ee08be1e2b3ed103",
+    "contentHash": "59583d6f88001075ee8b2c1f93bdfa1c976815dfa62c43fab1974d18e7c42cce"
   },
   "schemas": {
     "asset-ref.schema.json": "e07d85d6db6c3a7c88190c86a4779707e2b073ce17dbaa9bb355ed2c015fcdae",
     "asset.schema.json": "2498d0e8d911ae12b5eff4055a30b38182fbd8a534dbc9693de0218bdcc8627e",
-    "blocks-wire-order.json": "3393a226a3bcc7b3776f7a6a6175d69ebbef6395a5e835396f252c652e8aaecb",
+    "blocks-wire-order.json": "48cbe081ba8cc77f110b9b2e1f63408f1be009a5c46973dc654d310d12bb358b",
     "brand-system-v1.schema.json": "19f653283b83e99ecdc4ea98014828dcb5e660633f86cb0772387a02d89378ca",
     "canonical-aliases.json": "3b008b3d5c2936cd68246d736b0de877e98d5a37939645928ef55380aff7cc29",
     "canonical-inputs.json": "8747d7dea7721ae0a6a0fce9e58ce188dd86faab94c44a15304fc70042095e22",
@@ -27,7 +27,7 @@
     "design-authoring-v1.schema.json": "0a41529dc27ef1eb98183c5851b60dad9965e47ad1b23d1fa5bcb53991fdaa3f",
     "design-compose-v1.schema.json": "97af1b80fd2e82fe4470ca23735ebc7b8bade0c75beb2faf85f559d8d8c875cb",
     "design-package-v1.schema.json": "07177ea87ede6a30cebf3ffced43738a35505c01b5c099ea111c68e4f0729239",
-    "design-tool-v1.schema.json": "5a1d4217569e09b113f11905fb8127e8d5666cc0ee2d1b6cc8f7a0e1b61662e4",
+    "design-tool-v1.schema.json": "5f2e41a83ffb7c267788d3c1fc451f6b94ca3eb42cd6bf83eec692394a0cd2e9",
     "emoji-pack-v1.schema.json": "48b5dbaaddd8269f242544157cf542519f76b50384745bee5bf0aa45bb92de89",
     "emoji-source-records-v1.schema.json": "fa7a2f9bbf0433ad901d832bbf5f817bf6142fb433a7c5be8a418ce426911c30",
     "emoji-style-v1.schema.json": "940b007355b2b2fe2d985b238499f4cb4b02211a1471682bde0b8b77bc1494e1",
@@ -42,10 +42,10 @@
     "rebrand-source-v1.schema.json": "40cfeab6a9471d72db769e797e25c99fdc06cb786c4a89a3d6f4ad94ea5a89f5",
     "section-vocabulary.json": "0c0cc7684863166daba64b5f744ff6c583765880e18aeece8465ea20efd475ba",
     "slide-master-v1.schema.json": "b925b7fb859a33dd8be573d1fae54d1ae88c60e4e713b77233c8bd9f4bddd30b",
-    "text-document-v1.schema.json": "660b2108ee2dcd5a3e15ada040205a930b58faa0b101a23341892d59bf4ceeff",
+    "text-document-v1.schema.json": "824aef786ce70fdd7bb74cae34f8e569e37939b9c3c3596db08879379114af99",
     "text-frame-v1.schema.json": "4da9745015da8dfd75e60f7e15300604eeedd4902bca7a049d063a396455f069",
     "text-measure-v1.schema.json": "6a3b17fdc8d7d8769d723724b73dabd3d5d74c77df577480a9c42cfcb0a0e976",
     "tokens.schema.json": "012f3050656230bb609eb841c6a7e42a3cfa4088c7c3b938a561a81d3fa13dcc",
-    "tool.schema.json": "af222e0e2c1f10c6b504d494c479e12c2ad9d0da1c618b26553753c8255e5aac"
+    "tool.schema.json": "31f9ea6001419c0e0a3624d92384bf6355d6caaf3cd33f54502c75be9097da2b"
   }
 }

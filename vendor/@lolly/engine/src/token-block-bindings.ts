@@ -33,9 +33,11 @@ import { aliasPath, isAlias, isTokenValue } from './tokens.ts';
 import { resolveTokenBinding } from './token-binding.ts';
 import { canonicalJson } from './canonical-json.ts';
 import { parseGradientSpec } from './gradient-spec.ts';
+import { isTokenAdapter, type TokenAdapter } from './token-consumer-adapters.ts';
 
 export interface BlockTokenBinding {
   ref: string;
+  adapter?: TokenAdapter;
   value: string | number;
   custom?: boolean;
   status?: 'linked' | 'unresolved' | 'incompatible';
@@ -55,11 +57,13 @@ export const RUN_LINKS_KEY = '__runs';
 const DESIGN_LINKS_FIELD = 'tokenLinks';
 const STATUSES = ['linked', 'unresolved', 'incompatible'];
 const HEX6 = /^[0-9a-f]{6}$/;
+const BORDER_STYLE_ADAPTERS: readonly (TokenAdapter | undefined)[] = ['border.style', 'border.dashArray', 'border.dashLength', 'border.gapLength'];
 
 function readLink(value: unknown): BlockTokenBinding | null {
   if (!record(value) || !isAlias(value.ref) || value.ref.length > 1024 || !scalar(value.value)) return null;
   return {
     ref: value.ref, value: value.value,
+    ...(isTokenAdapter(value.adapter) ? { adapter: value.adapter } : {}),
     ...(value.custom === true ? { custom: true } : {}),
     ...(STATUSES.includes(String(value.status)) ? { status: value.status as BlockTokenBinding['status'] } : {}),
     ...(typeof value.reason === 'string' ? { reason: value.reason.slice(0, 1000) } : {}),
@@ -116,7 +120,13 @@ export function reconcileBlockTokenBindings(rows: InputValue[], metadataField: s
     const links = readBlockTokenBindings(row[metadataField]);
     let changed = false;
     for (const [field, link] of Object.entries(links)) if (!link.custom && !sameScalar(row[field], link.value)) {
-      links[field] = { ref: link.ref, value: link.value, custom: true, ...(link.mode ? { mode: link.mode } : {}) }; changed = true;
+      links[field] = { ...link, custom: true }; changed = true;
+    }
+    // Dash overrides and the style form one consumer: an authored dash array wins
+    // over its style keyword, so refreshing the keyword alone would mislabel the link.
+    const customStyles = new Set(Object.values(links).filter(link => link.custom && BORDER_STYLE_ADAPTERS.includes(link.adapter)).map(link => link.ref));
+    for (const [field, link] of Object.entries(links)) if (!link.custom && customStyles.has(link.ref) && BORDER_STYLE_ADAPTERS.includes(link.adapter)) {
+      links[field] = { ...link, custom: true }; changed = true;
     }
     return changed ? { ...row, [metadataField]: encodeBindings(links, readBlockRunBindings(row[metadataField])) } as InputValue : row;
   });
@@ -430,14 +440,25 @@ export function resolveBlockTokenBindings(rows: InputValue[], metadataField: str
     if (!Object.keys(links).length) return row;
     const next = { ...row };
     let moved = false;
+    // A border refresh is atomic across its active properties. Incompatible width
+    // or style keeps the entire last usable border, including its colour.
+    const heldBorders = new Map<string, ReturnType<typeof resolveTokenBinding>>();
+    const borderResults = new Map<string, ReturnType<typeof resolveTokenBinding>>();
+    for (const [id, link] of Object.entries(links)) {
+      const field = byId.get(id);
+      if (link.custom || !link.adapter?.startsWith('border.') || !field || id === metadataField) continue;
+      const result = resolveTokenBinding(set?.get(aliasPath(link.ref)!), { ...field, type: field.type ?? 'text', colorTarget, adapter: link.adapter });
+      borderResults.set(id, result);
+      if (result.status !== 'linked') heldBorders.set(link.ref, result);
+    }
     for (const [id, link] of Object.entries(links)) {
       if (link.custom || link.mode === 'tint') continue;
       const field = byId.get(id);
       if (!field || id === metadataField) continue;
-      const result = resolveTokenBinding(set?.get(aliasPath(link.ref)!), { ...field, type: field.type ?? 'text', colorTarget });
+      const result = link.adapter?.startsWith('border.') && heldBorders.has(link.ref) ? heldBorders.get(link.ref)! : borderResults.get(id) ?? resolveTokenBinding(set?.get(aliasPath(link.ref)!), { ...field, type: field.type ?? 'text', colorTarget, adapter: link.adapter });
       if (result.status === 'linked' && scalar(result.value)) {
         if (next[id] !== result.value) moved = true;
-        next[id] = result.value; links[id] = { ref: link.ref, value: result.value, status: 'linked' };
+        next[id] = result.value; links[id] = { ref: link.ref, value: result.value, status: 'linked', ...(link.adapter ? { adapter: link.adapter } : {}) };
       } else links[id] = { ...link, status: result.status, reason: result.reason };
     }
     next[metadataField] = encodeBindings(links, readBlockRunBindings(row[metadataField]));
@@ -450,17 +471,17 @@ export function resolveBlockTokenBindings(rows: InputValue[], metadataField: str
 }
 
 /** One explicit link/custom action, suitable for one transaction across a selection. */
-export function withBlockTokenBinding(row: Row, metadataField: string, field: string, value: InputValue): Row {
+export function withBlockTokenBinding(row: Row, metadataField: string, field: string, value: InputValue, adapter?: TokenAdapter): Row {
   if (!safeField(field) || field === metadataField || field === RUN_LINKS_KEY) throw new Error('This property cannot hold a token link.');
   const links = readBlockTokenBindings(row[metadataField]);
   const runs = readBlockRunBindings(row[metadataField]);
   if (isTokenValue(value) && scalar(value.value)) {
     const ref = `{${aliasPath(value.ref) ?? value.ref}}`;
     if (!isAlias(ref) || ref.length > 1024) throw new Error('This token reference is invalid or too long.');
-    links[field] = { ref, value: value.value, status: 'linked' };
+    links[field] = { ref, value: value.value, status: 'linked', ...(adapter ? { adapter } : {}) };
     return { ...row, [field]: value.value, [metadataField]: encodeBindings(links, runs) };
   }
   if (!scalar(value)) throw new Error('A linked block property needs a scalar value.');
-  if (links[field]) links[field] = { ref: links[field]!.ref, value: links[field]!.value, custom: true, ...(links[field]!.mode ? { mode: links[field]!.mode } : {}) };
+  if (links[field]) links[field] = { ...links[field]!, custom: true };
   return { ...row, [field]: value, [metadataField]: encodeBindings(links, runs) };
 }
