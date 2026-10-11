@@ -89,6 +89,7 @@ test('built worker uses its actual browser for signed 1.248 QR SVG/PNG, tickets,
   const workerBase = await listen(worker.server);
   const store = createMemoryStore();
   const config = parseConfig(JSON.stringify({ instance: { name: 'Worker image fixture', pack: shell, shellDir: shell, baseUrl: base },
+    deployment: { mode: 'evaluation' },
     idp: { additional: [{ id: 'email', kind: 'password' }] }, rateLimit: { enabled: false },
     render: { allowHooksInFastPath: false, worker: { url: workerBase, timeoutMs: 20000 } }, policy: { defaultAccessMode: 'gated' } }));
   const app = buildApp({ config, store, secrets: { session, link, renderWorker: secret, catalogSigningKey: material }, backgroundPollMs: 0 });

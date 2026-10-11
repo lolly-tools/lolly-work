@@ -38,6 +38,7 @@ to the database nor calls identity, renderer or asset providers. The owner conso
 | `name` | `Lolly Work` | the deploy's display name, also called the workspace name: console rail, sign-in card, `/healthz`, `instanceName` in `/api/auth/config`, and the invite, refusal and request pages, notices and copied invite messages ("Andy invited you to lolly.ing"). Put the name people know first: lolly.ing uses `lolly.ing` |
 | `baseUrl` | `http://localhost:8787` | the URL this deploy answers on. Drives OIDC redirect URIs and the `Secure` cookie flag - **must** match reality |
 | `pack` | `./packs/demo` | the brand pack mount: catalog, tools, design tokens, fonts, logos. The default is the small demo pack committed at `packs/demo`; the server warns at boot if the path does not exist, and the catalog is empty until it does |
+| `catalogPublicationGeneration` | `0` | operator-provisioned, nonnegative safe integer identifying an immutable mounted release. Production requires a positive generation, supplied here or by a verified signed source envelope. Advance it when changing an unsigned pack or its engine pin; never decrease it or reuse it for different bytes. |
 | `shellDir` | *unset* | path to a built Lolly `shells/web/dist`. Set ⇒ the shell is served at `/` on one origin (session cookies work, the shell's `org/` governance seam activates) |
 | `appUrl` | *unset* | where the Lolly app lives when it is *not* same-origin (a Vite dev server, a split deploy). The console routes "Open Lolly" and deep links through it |
 | `brandTokens` | *unset* | map source IDs (`mounted` or `profile:<name>`) to explicit tokens asset IDs; required when a source has multiple independent heads |
@@ -47,6 +48,13 @@ to the database nor calls identity, renderer or asset providers. The owner conso
 | `homeUrl` | *unset* | optional destination for the Home button and arrival at the bare address, overriding `homeView`. A root-relative URL such as `/#/p?team=project-id`, or an HTTPS URL for an organisation's own landing page. Credentials, protocol-relative URLs and executable schemes are refused. Explicit document and view links keep their destinations |
 
 `pack` supports materialized trees, modern `profiles.json` roots and legacy brand layouts. Selection lives in the Store; mounted files are never rewritten. See [Design-system administration](design-system-administration.md) for persistence requirements and explicit tokens selection.
+
+The publication fence records both the generation and the mounted release digest. Startup
+verifies this identity before `/readyz` succeeds; `/healthz` remains a liveness check.
+The engine pin is normalized as canonical JSON in both source and bundled servers.
+When upgrading a server that recorded the earlier raw-file pin identity, provision a
+higher positive `catalogPublicationGeneration` for the reviewed release once. Keep the
+existing fence and sequence history; deleting them would remove rollback protection.
 
 Under a non-`open` access mode, a `shellDir` that is missing or predates the `org/`
 governance module **stops boot**. In evaluation, `LW_ALLOW_STALE_SHELL=1` downgrades

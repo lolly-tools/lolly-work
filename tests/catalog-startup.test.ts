@@ -8,6 +8,8 @@ import { createServer, type Server } from 'node:http';
 import { generateKeyPairSync } from 'node:crypto';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { build } from 'esbuild';
 import { buildApp } from '../server/src/api/app.ts';
 import { parseConfig } from '../server/src/config/instance.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
@@ -139,4 +141,38 @@ test('a contained legacy profile alias uses the physical mount boundary and an e
   t.after(() => fs.rm(outside, { recursive: true, force: true }));
   await fs.rm(join(f.pack, 'catalog')); await fs.symlink(outside, join(f.pack, 'catalog'));
   await assert.rejects(catalogPublication({ pack: f.pack, signing: null }));
+});
+
+test('the real ESM bundle binds the same pin and verified publication before readiness', { timeout: 15_000 }, async t => {
+  const f = await fixture(t), directory = await fs.mkdtemp(join(tmpdir(), 'lw-catalog-bundle-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  // External packages stay borrowed; the pin itself must be bundled from the source.
+  await fs.symlink(fileURLToPath(new URL('../node_modules', import.meta.url)), join(directory, 'node_modules'));
+  const output = join(directory, 'app.mjs');
+  const appSource = fileURLToPath(new URL('../server/src/api/app.ts', import.meta.url));
+  const publicationSource = fileURLToPath(new URL('../server/src/catalog/publication.ts', import.meta.url));
+  await build({ stdin: { contents: `export { buildApp } from ${JSON.stringify(appSource)}; export { catalogPublication } from ${JSON.stringify(publicationSource)};`,
+    resolveDir: fileURLToPath(new URL('..', import.meta.url)) }, outfile: output, bundle: true, platform: 'node', format: 'esm', target: 'node24', packages: 'external',
+    banner: { js: "import { createRequire as __lwCreateRequire } from 'node:module'; const require = __lwCreateRequire(import.meta.url);" } });
+  const bundled = await import(pathToFileURL(output).href) as { buildApp: typeof buildApp; catalogPublication: typeof catalogPublication };
+  assert.deepEqual(await bundled.catalogPublication({ pack: f.pack, signing: createCatalogSigning(f.material) }),
+    await catalogPublication({ pack: f.pack, signing: createCatalogSigning(f.material) }));
+  await assert.rejects(fs.access(join(directory, 'engine-pin.json')), { code: 'ENOENT' });
+  const previousEnvironment = process.env.NODE_ENV; process.env.NODE_ENV = 'production';
+  t.after(() => { if (previousEnvironment === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = previousEnvironment; });
+  const config = parseConfig(JSON.stringify({ instance: { name: 'Bundled source', pack: f.pack }, deployment: { mode: 'evaluation' },
+    idp: { additional: [{ id: 'email', kind: 'password' }] }, rateLimit: { enabled: false }, policy: { defaultAccessMode: 'gated' } }));
+  const store = createMemoryStore(), owner = await store.upsertUserBySub({ sub: 'bundle-owner', email: 'owner@bundle.invalid', groups: ['owner'], role: 'owner' });
+  const cookie = mintSessionCookie({ sub: owner.sub, email: owner.email, name: 'Bundle owner', groups: owner.groups, role: owner.role, epoch: owner.sessionEpoch }, 'bundle-session', false).split(';')[0]!;
+  const options = { config, store, secrets: { session: 'bundle-session', link: 'bundle-link', catalogSigningKey: f.material }, backgroundPollMs: 0 };
+  // The same store exercises the publication fence across both serving forms.
+  for (const handler of [buildApp(options), bundled.buildApp(options)]) {
+    const base = await listen(t, createServer(handler)); await eventuallyReady(base);
+    const indexResponse = await fetch(base + '/catalog/tools/index.json', { headers: { cookie } }); assert.equal(indexResponse.status, 200);
+    const index = Buffer.from(await indexResponse.arrayBuffer());
+    const envelopeResponse = await fetch(base + '/catalog/tools/index.sig.json', { headers: { cookie } }); assert.equal(envelopeResponse.status, 200);
+    const envelope = await envelopeResponse.json() as { indexHash: string };
+    assert.equal(envelope.indexHash, sha256Hex(index));
+    assert.equal((await verifyCatalogEnvelope(envelope, index, await importSpkiOrJwkPublicKey(f.publicMaterial))).ok, true);
+  }
 });

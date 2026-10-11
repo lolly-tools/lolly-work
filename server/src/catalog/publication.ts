@@ -8,6 +8,7 @@ import { safeDirectory, safeFile } from '../api/file-delivery.ts';
 import { canonicalJson, sha256Hex } from '../lib/crypto.ts';
 import type { CatalogPublication } from '../store/types.ts';
 import { completeToolFileDigests, type CatalogSigning } from './signing.ts';
+import enginePin from '../../../engine-pin.json' with { type: 'json' };
 
 interface SourceEnvelope {
   seq?: number; indexHash: string; files: Record<string, string>;
@@ -56,8 +57,8 @@ export async function catalogPublication(options: {
   for (const rel of ['profiles.json', 'brands.json']) {
     const file = await safeFile(root, rel); if (file) manifest[rel] = sha256Hex(await readFile(file.path));
   }
-  const pin = await readFile(new URL('../../../engine-pin.json', import.meta.url));
-  const digest = sha256Hex(canonicalJson({ files: manifest, enginePin: sha256Hex(pin) }));
+  // Source and bundled hosts bind the same committed JSON value, without a path fallback.
+  const digest = sha256Hex(canonicalJson({ files: manifest, enginePin: sha256Hex(canonicalJson(enginePin)) }));
   let generation = options.generation ?? 0;
   const envelopeFile = await safeFile(root, 'catalog/tools/index.sig.json');
   if (envelopeFile) {
