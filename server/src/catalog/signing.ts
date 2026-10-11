@@ -29,9 +29,9 @@
  * source. The key material is never logged or echoed in an error message.
  */
 import { createHash, createPrivateKey, webcrypto } from 'node:crypto';
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { readdir, readFile, stat, realpath } from 'node:fs/promises';
 import { verifyToolCoding, type ToolIdentity } from './tool-codings.ts';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { canonicalJson } from '../lib/crypto.ts';
 import { regularSourceFile, safeDirectory, safeFile } from '../api/file-delivery.ts';
 import { filterToolIndex, toolVisibleTo, type ToolOverlay } from '../policy/overlay.ts';
@@ -227,6 +227,36 @@ export async function completeToolFileDigests(packDir: string): Promise<Record<s
   return files;
 }
 
+/** Service-owned proofs cover identity bytes and every transport sibling together. */
+export function createToolDigestCache(maxRoots = 32): (pack: string) => Promise<Record<string, string>> {
+  const memo = new Map<string, { promise: Promise<Record<string, string>>; settled: boolean }>();
+  return async pack => {
+    const key = await realpath(pack).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error;
+      // An absent evaluation pack preserves its existing empty-catalog behavior.
+      return resolve(pack);
+    });
+    let entry = memo.get(key);
+    if (entry) { memo.delete(key); memo.set(key, entry); return entry.promise; }
+    if (memo.size >= maxRoots) {
+      const oldest = [...memo].find(([, value]) => value.settled);
+      if (!oldest) throw new Error('Too many tool publications are being verified');
+      memo.delete(oldest[0]);
+    }
+    entry = { promise: Promise.resolve({}), settled: false };
+    const current = entry;
+    entry.promise = completeToolFileDigests(pack).then(files => {
+      current.settled = true;
+      return Object.freeze(files);
+    }, error => {
+      if (memo.get(key) === current) memo.delete(key);
+      throw error;
+    });
+    memo.set(key, entry);
+    return entry.promise;
+  };
+}
+
 /** Same canonical relative-filename map as the OSS directory hash helper. */
 export function toolDirectoryDigests(files: Record<string, string>): Record<string, string> {
   const byTool = new Map<string, Record<string, string>>();
@@ -279,6 +309,8 @@ export interface CatalogSigning {
    *  message that names the variable, never its value. */
   ready: Promise<{ keyId: string }>;
   publicKey(): Promise<webcrypto.JsonWebKey>;
+  /** Internal immutable proof shared with startup and filtered catalog delivery. */
+  fileDigests(packDir: string): Promise<Record<string, string>>;
   /** The serialised envelope binding exactly `served.bytes` for this caller. */
   envelopeFor(packDir: string, served: ServedToolIndex, binding?: CatalogBinding): Promise<Buffer>;
 }
@@ -297,14 +329,14 @@ export function createCatalogSigning(material: string, now: () => Date = () => n
   // A bad key is reported by the route that needs it; never as an unhandled rejection.
   ready.catch(() => {});
   const cache = new Map<string, Buffer>();
-  const trees = new Map<string, Promise<Record<string, string>>>();
+  const fileDigests = createToolDigestCache();
   return {
     ready,
     async publicKey() { return { ...(await keyed).publicJwk }; },
+    fileDigests,
     async envelopeFor(packDir, served, binding) {
       const { e, privateKey, keyId } = await keyed;
-      if (!trees.has(packDir)) trees.set(packDir, completeToolFileDigests(packDir).catch(error => { trees.delete(packDir); throw error; }));
-      const all = await trees.get(packDir)!;
+      const all = await fileDigests(packDir);
       const files: Record<string, string> = {};
       for (const [path, digest] of Object.entries(all)) {
         if (served.visible(path.slice(0, path.indexOf('/')))) files[path] = digest;

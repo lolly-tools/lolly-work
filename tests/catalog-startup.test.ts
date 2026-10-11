@@ -3,6 +3,7 @@
 import { test, mock, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import nativeFs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { createServer, type Server } from 'node:http';
 import { generateKeyPairSync } from 'node:crypto';
@@ -10,11 +11,12 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
+import { gzipSync } from 'node:zlib';
 import { buildApp } from '../server/src/api/app.ts';
 import { parseConfig } from '../server/src/config/instance.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
 import { mintSessionCookie } from '../server/src/iam/sessions.ts';
-import { createCatalogSigning } from '../server/src/catalog/signing.ts';
+import { completeToolFileDigests, createCatalogSigning, createToolDigestCache } from '../server/src/catalog/signing.ts';
 import { createCatalogDelivery } from '../server/src/catalog/delivery.ts';
 import { catalogPublication } from '../server/src/catalog/publication.ts';
 import { sha256Hex } from '../server/src/lib/crypto.ts';
@@ -175,4 +177,79 @@ test('the real ESM bundle binds the same pin and verified publication before rea
     assert.equal(envelope.indexHash, sha256Hex(index));
     assert.equal((await verifyCatalogEnvelope(envelope, index, await importSpkiOrJwkPublicKey(f.publicMaterial))).ok, true);
   }
+});
+
+test('readiness prewarms the real projection once and parallel principals keep exact filtered signatures', { timeout: 10_000 }, async t => {
+  const f = await fixture(t);
+  await fs.mkdir(join(f.pack, 'tools/secret'), { recursive: true });
+  const index = JSON.parse(await fs.readFile(join(f.pack, 'catalog/tools/index.json'), 'utf8')) as { tools: Array<Record<string, unknown>> };
+  const hidden = { ...index.tools[0], id: 'secret', name: 'Secret' }; index.tools.push(hidden);
+  await fs.writeFile(join(f.pack, 'tools/secret/tool.json'), JSON.stringify(hidden));
+  await fs.writeFile(join(f.pack, 'tools/secret/template.html'), '<svg>secret</svg>');
+  const sourceIndex = Buffer.from(JSON.stringify(index)); await fs.writeFile(join(f.pack, 'catalog/tools/index.json'), sourceIndex);
+  const coding = join(f.pack, 'tools/probe/template.html.gz');
+  await fs.writeFile(coding, gzipSync(await fs.readFile(join(f.pack, 'tools/probe/template.html'))));
+  await fs.writeFile(f.signaturePath, await createCatalogSigning(f.material).envelopeFor(f.pack,
+    { bytes: sourceIndex, json: true, visible: () => true }, { seq: 7, catalogScope: 'a'.repeat(64) }));
+  let release!: () => void, entered!: () => void, projectionReads = 0, codingReads = 0;
+  const held = new Promise<void>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { entered = resolve; });
+  const originalRead = fs.readFile, originalStream = nativeFs.createReadStream;
+  const read = mock.method(fs, 'readFile', (function (...args: Parameters<typeof fs.readFile>) {
+    const path = String(args[0]);
+    if (path.includes('lw-brand-sources-') && path.endsWith('/tools/probe/template.html')) {
+      projectionReads++; entered(); return held.then(() => Reflect.apply(originalRead, fs, args));
+    }
+    return Reflect.apply(originalRead, fs, args);
+  }) as typeof fs.readFile);
+  const stream = mock.method(nativeFs, 'createReadStream', (function (...args: Parameters<typeof nativeFs.createReadStream>) {
+    if (String(args[0]).endsWith('/tools/probe/template.html.gz')) codingReads++;
+    return Reflect.apply(originalStream, nativeFs, args);
+  }) as typeof nativeFs.createReadStream);
+  syncBuiltinESMExports();
+  t.after(() => { release(); read.mock.restore(); stream.mock.restore(); syncBuiltinESMExports(); });
+  const store = createMemoryStore(); await store.putOverlay({ toolId: 'secret', version: 1, visibility: { groups: ['brand'] } });
+  const cookies: string[] = [];
+  for (const group of ['brand', 'marketing']) {
+    const user = await store.upsertUserBySub({ sub: group, email: group + '@projection.invalid', groups: [group], role: 'member' });
+    cookies.push(mintSessionCookie({ sub: user.sub, name: group, email: user.email, groups: user.groups, role: user.role, epoch: user.sessionEpoch }, 'projection-session', false).split(';')[0]!);
+  }
+  const config = parseConfig(JSON.stringify({ instance: { name: 'Projection', pack: f.pack }, deployment: { mode: 'evaluation' }, rateLimit: { enabled: false },
+    idp: { additional: [{ id: 'email', kind: 'password' }] }, policy: { defaultAccessMode: 'gated' } }));
+  const base = await listen(t, createServer(buildApp({ config, store, secrets: { session: 'projection-session', link: 'projection-link', catalogSigningKey: f.material }, backgroundPollMs: 0 })));
+  await started; assert.equal((await fetch(base + '/readyz')).status, 503);
+  let finished = 0;
+  const pending = cookies.map(cookie => fetch(base + '/catalog/tools/index.sig.json', { headers: { cookie } }).then(response => { finished++; return response; }));
+  await new Promise(resolve => setTimeout(resolve, 25)); assert.equal(finished, 0); assert.equal(projectionReads, 1);
+  release(); await eventuallyReady(base);
+  const envelopes: Array<{ files: Record<string, string>; indexHash: string; toolDirs: Record<string, string> }> = [];
+  for (const [i, response] of (await Promise.all(pending)).entries()) {
+    assert.equal(response.status, 200); const envelope = await response.json() as typeof envelopes[number]; envelopes.push(envelope);
+    const bytes = Buffer.from(await (await fetch(base + '/catalog/tools/index.json', { headers: { cookie: cookies[i]! } })).arrayBuffer());
+    assert.equal(envelope.indexHash, sha256Hex(bytes));
+    assert.equal((await verifyCatalogEnvelope(envelope, bytes, await importSpkiOrJwkPublicKey(f.publicMaterial))).ok, true);
+  }
+  assert.notEqual(envelopes[0]!.indexHash, envelopes[1]!.indexHash);
+  assert.ok(envelopes[0]!.files['secret/template.html']);
+  assert.ok(!Object.keys(envelopes[1]!.files).some(path => path.startsWith('secret/')));
+  assert.equal((await fetch(base + `/tools/secret@${envelopes[0]!.toolDirs.secret!.slice(0, 16)}/template.html`, { headers: { cookie: cookies[1]! } })).status, 404);
+  assert.equal(projectionReads, 1, 'Delivery and signing reuse the entire verified projection proof');
+  assert.equal(codingReads, 3, 'One source publication hash, one source coding proof and one projection coding proof; no first-request decoding');
+});
+
+test('physical aliases share one bounded proof while failed or new roots are verified afresh', async t => {
+  const f = await fixture(t), alias = join(f.pack, 'alias'); await fs.symlink('.', alias);
+  const cache = createToolDigestCache(1);
+  const [a, b] = await Promise.all([cache(f.pack), cache(alias)]); assert.equal(a, b); assert.equal(Object.isFrozen(a), true);
+  const fresh = await fixture(t); await fs.writeFile(join(fresh.pack, 'tools/probe/template.html'), '<svg>new release</svg>');
+  const newer = await cache(fresh.pack); assert.notEqual(newer['probe/template.html'], a['probe/template.html']);
+  const coding = join(fresh.pack, 'tools/probe/template.html.gz'); await fs.writeFile(coding, gzipSync(Buffer.from('wrong identity')));
+  const cold = createToolDigestCache(); await assert.rejects(cold(fresh.pack), /identity/);
+  await fs.writeFile(coding, gzipSync(await fs.readFile(join(fresh.pack, 'tools/probe/template.html'))));
+  assert.deepEqual(await cold(fresh.pack), newer, 'A failed proof cannot poison a later complete verification');
+  await fs.writeFile(join(fresh.pack, 'tools/probe/template.html'), 'tampered');
+  await assert.rejects(completeToolFileDigests(fresh.pack), /identity/, 'The uncached corruption verifier still reads changed bytes');
+  const outsideCoding = join(f.pack, 'tools/probe/template.html.gz');
+  await fs.writeFile(outsideCoding, gzipSync(await fs.readFile(join(f.pack, 'tools/probe/template.html'))));
+  await fs.rm(coding); await fs.symlink(outsideCoding, coding);
+  await assert.rejects(createToolDigestCache()(fresh.pack), /regular source/, 'An unregistered escaping coding link is refused');
 });

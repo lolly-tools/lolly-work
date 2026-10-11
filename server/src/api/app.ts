@@ -513,6 +513,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     pack: () => config.instance.pack, store, federation, ready: providersReady, pagedThreshold: serving.pagedProviderThreshold,
   });
   const catalogDelivery = createCatalogDelivery({ store, servedIndex, signing: catalogSigning, requireGeneration: productionMode(config),
+    activePack: async () => (await brand.snapshot()).source.root,
     source: { pack: deploymentConfig.instance.pack, generation: deploymentConfig.instance.catalogPublicationGeneration,
       publicKey: deploymentConfig.instance.catalogPublicKey } });
   let catalogReady = false;

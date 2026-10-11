@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import type { Store, CatalogPublication } from '../store/types.ts';
 import { catalogPublication } from './publication.ts';
 import { canonicalJson, sha256Hex } from '../lib/crypto.ts';
-import { completeToolFileDigests, servedToolIndexBytes, toolDirectoryDigests, type CatalogCaller, type CatalogSigning, type ServedToolIndex } from './signing.ts';
+import { createToolDigestCache, servedToolIndexBytes, toolDirectoryDigests, type CatalogCaller, type CatalogSigning, type ServedToolIndex } from './signing.ts';
 import { servedToolSidecar } from './tool-sidecars.ts';
 import type { ServedIndexer, ServedIndex } from './served-index.ts';
 
@@ -34,21 +34,18 @@ function ids(bytes: Buffer, field: 'tools' | 'assets'): string[] {
   catch { return []; }
 }
 
-export function createCatalogDelivery(deps: { store: Store; servedIndex: ServedIndexer; signing: CatalogSigning | null; source: { pack: string; generation?: number; publicKey?: Record<string, unknown> }; requireGeneration?: boolean; now?: () => number; maxBytes?: number }) {
+export function createCatalogDelivery(deps: { store: Store; servedIndex: ServedIndexer; signing: CatalogSigning | null; source: { pack: string; generation?: number; publicKey?: Record<string, unknown> }; activePack?: () => Promise<string>; requireGeneration?: boolean; now?: () => number; maxBytes?: number }) {
   const now = deps.now ?? Date.now, maxBytes = deps.maxBytes ?? MAX_SNAPSHOT_BYTES;
   let publication: Promise<CatalogPublication> | undefined;
   let preparation: Promise<void> | undefined;
-  const fileMemo = new Map<string, Promise<Record<string, string>>>();
-  const toolFiles = (pack: string): Promise<Record<string, string>> => {
-    if (!fileMemo.has(pack)) fileMemo.set(pack, completeToolFileDigests(pack).catch(error => { fileMemo.delete(pack); throw error; }));
-    return fileMemo.get(pack)!;
-  };
+  const toolFiles = deps.signing?.fileDigests ?? createToolDigestCache();
   const sourcePublication = (): Promise<CatalogPublication> => publication ??= catalogPublication({ ...deps.source, signing: deps.signing,
     fileDigests: () => toolFiles(deps.source.pack),
   }).catch(error => { publication = undefined; throw error; });
   /** Startup and first reads share the same complete source proof, never a render timeout. */
   const prepare = (): Promise<void> => preparation ??= Promise.all([
     sourcePublication(), toolFiles(deps.source.pack),
+    ...(deps.activePack ? [deps.activePack().then(toolFiles)] : []),
   ]).then(([source]) => {
     if (deps.requireGeneration && source.generation <= 0) throw Object.assign(new Error('Production catalog publication requires a positive generation'), { status: 503 });
   });
