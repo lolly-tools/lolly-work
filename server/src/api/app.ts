@@ -24,7 +24,7 @@ import { linkByEmailFor, linkKeys, passwordIdpOf, sessionKeys, type InstanceConf
 import type { InvitationRecord, PasswordLinkRecord, ProjectMemberRole, ProjectRecord, ProjectSessionStats, ScimTokenRecord, SessionRecord, SessionSummary, Store, UserRecord } from '../store/types.ts';
 import type { RoomSnapshot } from '../collab/rooms.ts';
 import type { NearbyRegistry } from '../collab/nearby.ts';
-import { createRouter, guardDelivery, readJson, readRaw, sendError, sendJson, setDeliveryClass, type Handler, type RouteCtx } from './router.ts';
+import { createRouter, guardDelivery, readJson, readRaw, sendError, sendJson, setDeliveryClass, SERVICE_WORKER_CACHE_CONTROL, type Handler, type RouteCtx } from './router.ts';
 import { INERT_BYTE_HEADERS, canonicalRenderQuery, matchesEtag, safeFile, sendBytes, sendFile } from './file-delivery.ts';
 import { cachePolicy, publicStaticDeliveryClass, type DeliveryClass } from '@lolly-tools/core/delivery-v1';
 import { readShotCred } from './shot-provenance.ts';
@@ -5063,7 +5063,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     setDeliveryClass(res, delivery);
     const policy = cachePolicy(delivery);
     if (!await sendFile(req, res, shellDir, target, { contentType: contentType(target), ranges: true,
-      headers: { ...shellSecurityHeaders(rel), 'cache-control': policy.cacheControl } })) {
+      headers: { ...shellSecurityHeaders(rel), 'cache-control': target === 'sw.js' ? SERVICE_WORKER_CACHE_CONTROL : policy.cacheControl } })) {
       sendError(res, 404, 'NOT_FOUND', asset ? 'no such file' : 'shell index not found: check instance.shellDir');
     }
   } : null;

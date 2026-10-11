@@ -15,6 +15,7 @@ import { mintRenderRead } from '../server/src/render/read-ticket.ts';
 import { createRenderResourceHold, requestRenderCancellation } from './collab/render-resource-hold.ts';
 import { createRenderCancellationDiagnostics, renderDiagnosticPath } from './collab/render-resource-diagnostics.ts';
 import { captureRenderPagePhase, RENDER_PAGE_PHASE_SCRIPT } from './collab/render-page-phase.ts';
+import { createRenderManifestBootstrap, waitForRenderManifestBootstrap } from './collab/render-manifest-bootstrap.ts';
 type WorkerModule = typeof import('../workers/render/src/server.ts');
 
 const skip = process.env.LOLLY_RENDER_IMAGE_TEST !== '1' && 'Run qualify-render-worker-image.ts with the built image and matched signed shell.';
@@ -75,6 +76,7 @@ test('built worker uses its actual browser for signed 1.254 QR SVG/PNG, tickets,
   process.env.LW_RENDER_MAX_CONCURRENT = '1';
   let worker: WorkerModule | undefined, browser: Awaited<ReturnType<WorkerModule['getBrowser']>> | undefined, trap: Server | undefined;
   const cancellationHold = createRenderResourceHold();
+  const cancellationBootstrap = createRenderManifestBootstrap();
   const server = createServer(); const base = await listen(server);
   let cleanup: Promise<void> | undefined;
   const finish = () => cleanup ??= (async () => {
@@ -105,6 +107,7 @@ test('built worker uses its actual browser for signed 1.254 QR SVG/PNG, tickets,
   const cancellationDiagnostics = createRenderCancellationDiagnostics(base);
   server.on('request', (req, res) => {
     cancellationDiagnostics.observe(req, res);
+    cancellationBootstrap.observe(req, res);
     const path = new URL(req.url ?? '/', base).pathname;
     if (catalogReads.length < 64 && /^\/(?:catalog\/(?:tools|assets)\/index(?:\.slim|\.sig)?(?:\.[0-9a-f]{16})?\.json|tools\/(?:qr-code|sandbox)(?:@[0-9a-f]{16})?\/[A-Za-z0-9_./-]+)$/.test(path)) {
       const read: typeof catalogReads[number] = { path, startMs: performance.now() - startupAt }; catalogReads.push(read);
@@ -229,6 +232,7 @@ test('built worker uses its actual browser for signed 1.254 QR SVG/PNG, tickets,
     const directory = envelope.toolDirs?.['qr-code'];
     assert.match(directory, /^[a-f0-9]{64}$/);
     const cancellationTarget = { path: `/tools/qr-code@${directory.slice(0, 16)}/hooks.js`, readToken, revision };
+    cancellationBootstrap.arm({ ...cancellationTarget, path: cancellationTarget.path.replace(/hooks\.js$/, 'tool.json') });
     diagnostics.length = 0;
     cancellationDiagnostics.arm(cancellationTarget);
     cancellationHold.arm(cancellationTarget);
@@ -237,7 +241,7 @@ test('built worker uses its actual browser for signed 1.254 QR SVG/PNG, tickets,
       overrides: {}, profile: {}, readToken, brandRevision: revision, ts: Date.now() });
     let settled = false, responseStatus: number | undefined, responseAtMs: number | undefined;
     const cancellationAt = performance.now();
-    let readyAtMs: number | undefined, abortAtMs: number | undefined;
+    let bootstrapAtMs: number | undefined, readyAtMs: number | undefined, abortAtMs: number | undefined;
     const pending = requestRenderCancellation(`${workerBase}/render`, { 'content-type': 'application/json',
       'x-lw-render-sig': createHmac('sha256', secret).update(cancelBody).digest('base64url') }, cancelBody, abort.signal)
       .then(status => { responseStatus = status; responseAtMs = performance.now() - cancellationAt; return status; })
@@ -245,6 +249,10 @@ test('built worker uses its actual browser for signed 1.254 QR SVG/PNG, tickets,
     const rejection = assert.rejects(pending, { name: 'AbortError' });
     void rejection.catch(() => {});
     try {
+      // A fresh context imports the shell before fetching its signed manifest.
+      // Count only the hook phase against the original five-second predicate.
+      await waitForRenderManifestBootstrap(cancellationBootstrap, { settled: () => settled, contexts: () => actualBrowser.contexts().length });
+      bootstrapAtMs = performance.now() - cancellationAt;
       await until(async () => cancellationHold.reads > 0);
       assert.equal(settled, false, 'The authoritative signed hook is still held before cancellation');
       assert.equal(actualBrowser.contexts().length, 1);
@@ -257,7 +265,7 @@ test('built worker uses its actual browser for signed 1.254 QR SVG/PNG, tickets,
       abortAtMs = performance.now() - cancellationAt; abort.abort(); await rejection;
     } catch (error) {
       const failure = { status: 'WORKER_CANCELLATION_FAILURE_METADATA', elapsedMs: performance.now() - cancellationAt,
-        responseStatus, responseAtMs, readyAtMs, abortAtMs, signalAborted: abort.signal.aborted, settled,
+        responseStatus, responseAtMs, bootstrapAtMs, readyAtMs, abortAtMs, signalAborted: abort.signal.aborted, settled,
         heldReads: cancellationHold.reads, heldPending: cancellationHold.pending, heldClosed: cancellationHold.closed,
         contexts: actualBrowser.contexts().length, requests: cancellationDiagnostics.snapshot(), browser: diagnostics.map(row => ({ ...row })) };
       const page = actualBrowser.contexts()[0]?.pages()[0];
@@ -274,6 +282,7 @@ test('built worker uses its actual browser for signed 1.254 QR SVG/PNG, tickets,
     console.log(JSON.stringify({ source: pin.generatedFrom, engine: pin.engine.version, browser: actualBrowser.version(), defaultSoftwareWebGpu: true,
       svgSha256: hash(svg), pngSha256: hash(png), darkPixels: dark, lightPixels: light,
       ticketReads, hookReads, sandboxHookReads, sandboxExecuted, aiDisabled, modelHits, trapHits, websocketHits,
+      cancelledBootstrapMs: bootstrapAtMs,
       cancelledContextsClosed: true, cancelledResourceReads: cancellationHold.reads, cancelledResourceSocketsClosed: cancellationHold.closed,
       resumedRenderVerified: true, browserSandboxQualified: false, productionAcceptance: false }));
   } finally {

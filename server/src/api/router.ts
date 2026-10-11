@@ -25,6 +25,8 @@ interface Route {
 const requests = new WeakMap<ServerResponse, IncomingMessage>();
 const classes = new WeakMap<ServerResponse, DeliveryClass>();
 const classOptions = new WeakMap<ServerResponse, CachePolicyOptions>();
+/** Browsers revalidate the service worker; shared caches never retain it. */
+export const SERVICE_WORKER_CACHE_CONTROL = 'no-cache, s-maxage=0, no-transform';
 /** Dynamic file routes select their class after resolving the actual file. */
 export function setDeliveryClass(res: ServerResponse, delivery: DeliveryClass, options: CachePolicyOptions = {}): void { classes.set(res, delivery); classOptions.set(res, options); }
 /** Credentials of any kind keep a response out of a shared cache. */
@@ -51,8 +53,11 @@ export function guardDelivery(req: IncomingMessage, res: ServerResponse): void {
     if (cls === 'link' && !/\bno-store\b/.test(control)) control = policy.cacheControl;
     if (status >= 400 || merged.has('set-cookie') || (/\bpublic\b/.test(control) && !publicAllowed)) control = cachePolicy('person-private').cacheControl;
     if (!/\bno-transform\b/.test(control)) control += ', no-transform';
+    const serviceWorker = cls === 'public-revalidate' && new URL(req.url ?? '/', 'http://local').pathname === '/sw.js';
+    if (serviceWorker && !publicAllowed) control = cachePolicy('person-private').cacheControl;
+    else if (serviceWorker && [200, 206, 304].includes(status) && (/^public\b/.test(control) || control === SERVICE_WORKER_CACHE_CONTROL) && !/\bno-store\b/.test(control)) control = SERVICE_WORKER_CACHE_CONTROL;
     merged.set('cache-control', control);
-    const shared = publicAllowed && /^public\b/.test(control);
+    const shared = publicAllowed && /^public\b/.test(control) && !serviceWorker;
     merged.set('cdn-cache-control', shared ? policy.cdnCacheControl : 'no-store');
     if (shared) {
       const max = /(?:^|,)\s*max-age=(\d+)/.exec(control)?.[1] ?? '0';
