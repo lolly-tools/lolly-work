@@ -13,6 +13,7 @@ import { mintSessionCookie } from '../server/src/iam/sessions.ts';
 import { importCatalogSigningKey } from '../server/src/catalog/signing.ts';
 import { mintRenderRead } from '../server/src/render/read-ticket.ts';
 import { createRenderResourceHold, requestRenderCancellation } from './collab/render-resource-hold.ts';
+import { createRenderCancellationDiagnostics, renderDiagnosticPath } from './collab/render-resource-diagnostics.ts';
 type WorkerModule = typeof import('../workers/render/src/server.ts');
 
 const skip = process.env.LOLLY_RENDER_IMAGE_TEST !== '1' && 'Run qualify-render-worker-image.ts with the built image and matched signed shell.';
@@ -100,7 +101,9 @@ test('built worker uses its actual browser for signed 1.248 QR SVG/PNG, tickets,
   let ticketReads = 0, hookReads = 0, sandboxHookReads = 0, modelHits = 0, trapHits = 0, websocketHits = 0;
   const catalogReads: Array<{ path: string; startMs: number; elapsedMs?: number; status?: number }> = [];
   const startupAt = performance.now();
+  const cancellationDiagnostics = createRenderCancellationDiagnostics(base);
   server.on('request', (req, res) => {
+    cancellationDiagnostics.observe(req, res);
     const path = new URL(req.url ?? '/', base).pathname;
     if (catalogReads.length < 64 && /^\/(?:catalog\/(?:tools|assets)\/index(?:\.slim|\.sig)?(?:\.[0-9a-f]{16})?\.json|tools\/(?:qr-code|sandbox)(?:@[0-9a-f]{16})?\/[A-Za-z0-9_./-]+)$/.test(path)) {
       const read: typeof catalogReads[number] = { path, startMs: performance.now() - startupAt }; catalogReads.push(read);
@@ -132,11 +135,12 @@ test('built worker uses its actual browser for signed 1.248 QR SVG/PNG, tickets,
     let sandboxExecuted = 0, aiDisabled = 0, aiEnabled = 0;
     const diagnostics: Record<string, unknown>[] = [];
     const note = (value: Record<string, unknown>) => { if (diagnostics.length < 24) diagnostics.push(value); };
-    const requestPath = (raw: string) => {
-      try { const url = new URL(raw); return url.origin === base && /^[A-Za-z0-9_./@-]{1,256}$/.test(url.pathname) ? url.pathname : 'external-or-unsupported'; }
-      catch { return 'unparseable'; }
-    };
+    const requestPath = (raw: string) => renderDiagnosticPath(raw, base);
     actualBrowser.on('context', context => context.on('page', page => {
+      cancellationDiagnostics.progress('page-created');
+      page.on('framenavigated', frame => { if (frame === page.mainFrame()) cancellationDiagnostics.progress('main-frame-navigation'); });
+      page.on('domcontentloaded', () => cancellationDiagnostics.progress('domcontentloaded'));
+      page.on('load', () => cancellationDiagnostics.progress('load'));
       page.on('response', response => { if (response.status() >= 400) note({ kind: 'http', path: requestPath(response.url()), status: response.status() }); });
       page.on('requestfailed', request => {
         const error = request.failure()?.errorText ?? '';
@@ -223,7 +227,10 @@ test('built worker uses its actual browser for signed 1.248 QR SVG/PNG, tickets,
     await until(async () => actualBrowser.contexts().length === 0);
     const directory = envelope.toolDirs?.['qr-code'];
     assert.match(directory, /^[a-f0-9]{64}$/);
-    cancellationHold.arm({ path: `/tools/qr-code@${directory.slice(0, 16)}/hooks.js`, readToken, revision });
+    const cancellationTarget = { path: `/tools/qr-code@${directory.slice(0, 16)}/hooks.js`, readToken, revision };
+    diagnostics.length = 0;
+    cancellationDiagnostics.arm(cancellationTarget);
+    cancellationHold.arm(cancellationTarget);
     const abort = new AbortController();
     const cancelBody = JSON.stringify({ toolId: 'qr-code', format: 'svg', query: new URLSearchParams({ url: `https://worker.invalid/?nonce=${randomUUID()}` }).toString(),
       overrides: {}, profile: {}, readToken, brandRevision: revision, ts: Date.now() });
@@ -251,7 +258,7 @@ test('built worker uses its actual browser for signed 1.248 QR SVG/PNG, tickets,
       console.log(JSON.stringify({ status: 'WORKER_CANCELLATION_FAILURE_METADATA', elapsedMs: performance.now() - cancellationAt,
         responseStatus, responseAtMs, readyAtMs, abortAtMs, signalAborted: abort.signal.aborted, settled,
         heldReads: cancellationHold.reads, heldPending: cancellationHold.pending, heldClosed: cancellationHold.closed,
-        contexts: actualBrowser.contexts().length }));
+        contexts: actualBrowser.contexts().length, requests: cancellationDiagnostics.snapshot(), browser: diagnostics }));
       throw error;
     }
     await until(async () => (await (await fetch(`${workerBase}/readyz`)).json() as { active: number }).active === 0);
