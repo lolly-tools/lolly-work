@@ -99,7 +99,7 @@ test('sign out on all devices ends every session of the caller, this browser inc
 
   const done = await env.call(phone, 'POST', '/api/v1/me/revoke-sessions');
   assert.equal(done.status, 204);
-  assert.equal(done.headers.get('cache-control'), 'no-store');
+  assert.equal(done.headers.get('cache-control'), 'private, no-store, max-age=0, no-transform');
   const cleared = done.headers.getSetCookie();
   assert.ok(cleared.some((c) => c.startsWith('lw_session=;') && /Max-Age=0/.test(c)), 'this browser\'s session cookie is cleared');
   assert.ok(cleared.some((c) => c.startsWith('lw_guest=;') && /Max-Age=0/.test(c)), 'and its guest cookie, as logout does');

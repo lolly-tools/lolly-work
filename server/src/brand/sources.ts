@@ -1,3 +1,4 @@
+import { registerProjectionRoots } from '../api/file-delivery.ts';
 import { existsSync, rmSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, realpath, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
@@ -105,7 +106,13 @@ export function createBrandSources(pack: string, tokensHeads: Record<string, str
       const effective = { ...index, brandTokens: head?.id ?? null, assets: assets.map(asset => asset.type === 'tokens' ? { ...asset, defaultTokens: asset.id === head?.id } : asset) };
       await writeFile(join(root, 'catalog', 'assets', 'index.json'), JSON.stringify(effective));
       await mkdir(join(root, 'tools'), { recursive: true });
+      await registerProjectionRoots(root, [roots.catalogRoot, ...roots.toolRoots, ...roots.assetRoots.map(source => source.dir)]);
+      // Content-addressed releases live beside logical tool directories.
+      for (const source of roots.toolRoots) for (const id of await readdir(source).catch(() => [] as string[])) {
+        if (/^[a-z0-9-]+@[0-9a-f]{16}$/i.test(id) && !existsSync(join(root, 'tools', id))) await symlink(join(source, id), join(root, 'tools', id));
+      }
       for (const [id, tool] of toolDirs(roots)) {
+        if (/^[a-z0-9-]+@[0-9a-f]{16}$/i.test(id)) continue;
         if (!tool.base) { await symlink(tool.dir, join(root, 'tools', id)); continue; }
         for (const rel of listToolFiles(id, roots)) {
           const dest = join(root, 'tools', id, rel);

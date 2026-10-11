@@ -15,12 +15,10 @@
  * that function returned. There is no second serialisation to drift.
  *
  * The `files` digests follow the OSS signer (lolly `scripts/sign-catalog.ts`, its
- * plain `--tools <dir>` layout, which is the layout a materialised pack has): for
- * every directory under `<pack>/tools` holding a `tool.json`, the fixed signed
- * filenames that exist, then the `i18n/<lang>.json` sidecars and the
- * `templates/<tid>.json` starter templates, sha256 over the raw bytes. They are
- * computed once per pack root and memoised; a pack mounted on a serverless
- * function or a container is read-only for the life of the process.
+ * plain `--tools <dir>` layout): every safe file in each logical tool tree,
+ * including binary assets and supporting libraries. The existing i18n and
+ * template filename rules still apply. Digests cover raw bytes and are computed
+ * once per immutable pack root; a new release must mount a new pack root.
  *
  * Each envelope carries only the digests of tools the caller may fetch (the same
  * predicate the `/tools/*` route applies), so a hidden tool's id never reaches a
@@ -33,6 +31,8 @@
 import { createHash, createPrivateKey, webcrypto } from 'node:crypto';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import { canonicalJson } from '../lib/crypto.ts';
+import { safeDirectory, safeFile } from '../api/file-delivery.ts';
 import { filterToolIndex, toolVisibleTo, type ToolOverlay } from '../policy/overlay.ts';
 
 /** Where the envelope is served, relative to the catalog root. */
@@ -102,6 +102,11 @@ interface UnsignedEnvelope {
   signedAt: string;
   indexHash: string;
   files: Record<string, string>;
+  seq?: number;
+  catalogScope?: string;
+  assetIndexHash?: string;
+  slimHash?: string;
+  toolDirs?: Record<string, string>;
 }
 interface EngineIntegrity {
   CATALOG_SIG_ALG: string;
@@ -184,6 +189,49 @@ export function packToolFileDigests(packDir: string): Promise<Record<string, str
   return hit;
 }
 
+/** Complete safe tool trees, including binary assets and supporting libraries. */
+export async function completeToolFileDigests(packDir: string): Promise<Record<string, string>> {
+  const root = join(packDir, 'tools'), files: Record<string, string> = {};
+  let count = 0;
+  const visit = async (rel: string, depth = 0): Promise<void> => {
+    if (depth > 32) throw new Error('tool directory is too deep');
+    if (!await safeDirectory(root, rel)) return;
+    for (const entry of (await readdir(join(root, rel), { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+      if (/[\\%?#\p{White_Space}\p{Cc}]/u.test(entry.name)) throw new Error('tool directory contains an unsafe file name');
+      if (++count > 100000) throw new Error('tool directory is too large');
+      const path = `${rel}/${entry.name}`;
+      const relative = path.slice(path.indexOf('/') + 1);
+      if (relative.startsWith('i18n/') && !SIGNED_I18N_SIDECAR.test(relative)) continue;
+      if (relative.startsWith('templates/') && !SIGNED_TEMPLATE_FILE.test(relative)) continue;
+      const metadata = entry.isSymbolicLink() ? await stat(join(root, path)).catch(() => null) : entry;
+      if (metadata?.isDirectory()) await visit(path, depth + 1);
+      else if (metadata?.isFile() && await safeFile(root, path)) files[path] = sha256(await readFile(join(root, path)));
+    }
+  };
+  for (const id of (await readdir(root).catch(() => [])).sort()) {
+    if (/^[a-z0-9-]+$/i.test(id) && await safeFile(root, `${id}/tool.json`)) await visit(id);
+  }
+  return files;
+}
+
+/** Same canonical relative-filename map as the OSS directory hash helper. */
+export function toolDirectoryDigests(files: Record<string, string>): Record<string, string> {
+  const byTool = new Map<string, Record<string, string>>();
+  for (const [path, digest] of Object.entries(files)) {
+    const slash = path.indexOf('/'), id = path.slice(0, slash);
+    if (slash < 1) continue;
+    const entries = byTool.get(id) ?? Object.create(null) as Record<string, string>; entries[path.slice(slash + 1)] = digest; byTool.set(id, entries);
+  }
+  return Object.fromEntries([...byTool].map(([id, entries]) => [id, sha256(Buffer.from(canonicalJson(entries)))]));
+}
+
+export interface CatalogBinding {
+  seq: number;
+  catalogScope: string;
+  assetIndexHash?: string;
+  slimHash?: string;
+}
+
 const EC_P256 = { name: 'ECDSA', namedCurve: 'P-256' } as const;
 const KEY_SHAPE = 'LW_CATALOG_SIGNING_KEY must be an ECDSA P-256 private key, as a PKCS#8 PEM (BEGIN PRIVATE KEY) or a private JWK JSON object';
 
@@ -217,8 +265,9 @@ export interface CatalogSigning {
   /** Resolves with the RFC 7638 key id once the key is imported; rejects with a
    *  message that names the variable, never its value. */
   ready: Promise<{ keyId: string }>;
+  publicKey(): Promise<webcrypto.JsonWebKey>;
   /** The serialised envelope binding exactly `served.bytes` for this caller. */
-  envelopeFor(packDir: string, served: ServedToolIndex): Promise<Buffer>;
+  envelopeFor(packDir: string, served: ServedToolIndex, binding?: CatalogBinding): Promise<Buffer>;
 }
 
 const ENVELOPE_CACHE_MAX = 64;
@@ -229,27 +278,30 @@ const ENVELOPE_CACHE_MAX = 64;
 export function createCatalogSigning(material: string, now: () => Date = () => new Date()): CatalogSigning {
   const keyed = (async () => {
     const [e, key] = await Promise.all([engine(), importCatalogSigningKey(material)]);
-    return { e, privateKey: key.privateKey, keyId: await e.jwkThumbprint(key.publicJwk) };
+    return { e, privateKey: key.privateKey, publicJwk: key.publicJwk, keyId: await e.jwkThumbprint(key.publicJwk) };
   })();
   const ready = keyed.then(({ keyId }) => ({ keyId }));
   // A bad key is reported by the route that needs it; never as an unhandled rejection.
   ready.catch(() => {});
   const cache = new Map<string, Buffer>();
+  const trees = new Map<string, Promise<Record<string, string>>>();
   return {
     ready,
-    async envelopeFor(packDir, served) {
+    async publicKey() { return { ...(await keyed).publicJwk }; },
+    async envelopeFor(packDir, served, binding) {
       const { e, privateKey, keyId } = await keyed;
-      const all = await packToolFileDigests(packDir);
+      if (!trees.has(packDir)) trees.set(packDir, completeToolFileDigests(packDir).catch(error => { trees.delete(packDir); throw error; }));
+      const all = await trees.get(packDir)!;
       const files: Record<string, string> = {};
       for (const [path, digest] of Object.entries(all)) {
         if (served.visible(path.slice(0, path.indexOf('/')))) files[path] = digest;
       }
       const indexHash = sha256(served.bytes);
-      const cacheKey = `${packDir}\u0000${indexHash}\u0000${Object.keys(files).join('\u0000')}`;
+      const cacheKey = `${packDir}\u0000${indexHash}\u0000${canonicalJson(binding ?? {})}\u0000${Object.keys(files).join('\u0000')}`;
       const hit = cache.get(cacheKey);
       if (hit) return hit;
       const envelope = await e.signCatalogEnvelope(
-        { alg: e.CATALOG_SIG_ALG, keyId, signedAt: now().toISOString(), indexHash, files }, privateKey,
+        { alg: e.CATALOG_SIG_ALG, keyId, signedAt: now().toISOString(), indexHash, files, toolDirs: toolDirectoryDigests(files), ...(binding ?? {}) }, privateKey,
       );
       const bytes = Buffer.from(JSON.stringify(envelope), 'utf8');
       if (cache.size >= ENVELOPE_CACHE_MAX) cache.delete(cache.keys().next().value as string);

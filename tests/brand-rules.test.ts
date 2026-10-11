@@ -203,6 +203,6 @@ test('managed render replies carry fresh observations even with a matching reque
   const first = await fetch(f.base + '/render/campaign.svg', { headers: { cookie: f.cookie } });
   const again = await fetch(f.base + '/render/campaign.svg', { headers: { cookie: f.cookie, 'if-none-match': first.headers.get('etag')! } });
   assert.equal(again.status, 200);
-  assert.equal(again.headers.get('cache-control'), 'private, no-store');
+  assert.equal(again.headers.get('cache-control'), 'private, no-store, max-age=0, no-transform');
   assert.equal(again.headers.get('x-lolly-brand-check'), 'checked');
 });

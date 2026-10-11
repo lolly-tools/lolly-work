@@ -202,7 +202,7 @@ test('the pack download tags its bytes and honours If-None-Match', async () => {
   const etag = first.headers.get('etag');
   assert.ok(etag, 'the download carries an entity tag');
   assert.match(etag, /^"[0-9a-f]{64}"$/, 'the stored checksum, quoted and strong');
-  assert.equal(first.headers.get('cache-control'), 'private, no-cache', 'keepable, but only after asking');
+  assert.equal(first.headers.get('cache-control'), 'private, no-cache, no-transform', 'keepable, but only after asking');
   assert.equal((await first.arrayBuffer()).byteLength, bytes.length);
 
   // The tag IS the meta checksum the owner-facing route reports.

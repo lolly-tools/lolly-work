@@ -7,6 +7,12 @@
  *   node scripts/build-instance-pack.ts --lolly <checkout> --profile <name> --out <dir>
  *     [--exclude <catalog subdir>]... [--allow-dirty] [--node <path>]
  *
+ * A signed extracted build uses --release-root <dir> --release-custody <file>
+ * --release-custody-sha256 <reviewed SHA256>. This mode verifies the complete
+ * reviewed tree and pinned public signature, then copies exact identity bytes.
+ * It never rematerialises tools, prunes indexes or carries compression siblings.
+ * See docs/instance-pack-production.md for its custody and derivation contract.
+ *
  * The copy is made by the checkout's own resolver
  * (packages/node-shell/src/content-roots.ts `materializeInto`), run as a child
  * process from inside that checkout, so its workspace resolution, profiles and
@@ -40,9 +46,10 @@
  * engine; the exit code is non-zero when that check fails.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { verifyReleasePack } from './lib/release-pack.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const SOURCE_FILE = '.lolly-pack-source.json';
@@ -54,6 +61,9 @@ export interface PackArgs {
   exclude: string[];
   allowDirty: boolean;
   node: string;
+  releaseRoot?: string;
+  releaseCustody?: string;
+  releaseCustodySha256?: string;
 }
 
 export function parseArgs(argv: string[]): PackArgs {
@@ -71,6 +81,9 @@ export function parseArgs(argv: string[]): PackArgs {
     else if (flag === '--exclude') args.exclude.push(value());
     else if (flag === '--allow-dirty') args.allowDirty = true;
     else if (flag === '--node') args.node = value();
+    else if (flag === '--release-root') args.releaseRoot = resolve(value());
+    else if (flag === '--release-custody') args.releaseCustody = resolve(value());
+    else if (flag === '--release-custody-sha256') args.releaseCustodySha256 = value();
     else throw new Error(`unknown flag ${flag}`);
   }
   if (!args.lolly || !args.profile || !args.out) {
@@ -81,7 +94,13 @@ export function parseArgs(argv: string[]): PackArgs {
     if (!/^[a-z0-9][a-z0-9._-]*(\/[a-z0-9][a-z0-9._-]*)*$/i.test(ex)) throw new Error(`--exclude ${ex}: give a path under catalog/, such as og`);
   }
   const rel = relative(args.lolly, args.out);
-  if (!rel || !rel.startsWith('..')) throw new Error('--out must be outside the Lolly checkout');
+  const outside = (path: string): boolean => path === '..' || path.startsWith(`..${sep}`) || isAbsolute(path);
+  if (!outside(rel)) throw new Error('--out must be outside the Lolly checkout');
+  const releaseFlags = [args.releaseRoot, args.releaseCustody, args.releaseCustodySha256];
+  if (releaseFlags.some(Boolean) && !releaseFlags.every(Boolean)) throw new Error('release mode requires --release-root, --release-custody and --release-custody-sha256 together');
+  if (args.releaseRoot && (args.exclude.length || args.allowDirty)) throw new Error('release mode does not allow --exclude or --allow-dirty; prepare exclusions before signing the release');
+  if (args.releaseCustodySha256 && !/^[0-9a-f]{64}$/.test(args.releaseCustodySha256)) throw new Error('--release-custody-sha256 needs a full lowercase SHA-256');
+  if (args.releaseRoot && (!outside(relative(args.releaseRoot, args.out)) || !outside(relative(args.out, args.releaseRoot)))) throw new Error('--out must not overlap --release-root');
   return args as PackArgs;
 }
 
@@ -166,6 +185,12 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   if (existsSync(args.out) && readdirSync(args.out).length && !existsSync(join(args.out, SOURCE_FILE))) {
     throw new Error(`--out ${args.out} is not empty and is not a pack this script built; choose an empty directory`);
   }
+  if (args.releaseRoot && existsSync(args.out) && readdirSync(args.out).length) throw new Error('release mode requires an empty output directory; it never overwrites a previous pack');
+  if (args.releaseRoot) {
+    let ancestor = args.out;
+    while (!existsSync(ancestor)) ancestor = dirname(ancestor);
+    if (realpathSync(ancestor) !== ancestor) throw new Error('--out must not use symlink paths');
+  }
 
   const commit = git(args.lolly, 'rev-parse', 'HEAD');
   const dirty = git(args.lolly, 'status', '--porcelain') !== '';
@@ -178,6 +203,10 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     .map((line) => /^([ +U])([0-9a-f]{7,64}) (\S+)/.exec(line))
     .filter((m): m is RegExpExecArray => !!m)
     .map((m) => ({ path: m[3]!, commit: m[2]!, ...(m[1] !== ' ' ? { differsFromIndex: true } : {}) }));
+  const release = args.releaseRoot ? verifyReleasePack({
+    root: args.releaseRoot, custody: args.releaseCustody!, custodySha256: args.releaseCustodySha256!,
+    lolly: args.lolly, commit, profile: args.profile, node: args.node,
+  }) : null;
   const nvmrc = join(args.lolly, '.nvmrc');
   if (existsSync(nvmrc)) {
     const want = readFileSync(nvmrc, 'utf8').trim().replace(/^v/, '').split('.')[0];
@@ -187,22 +216,27 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 
   // From here until the full record is written, the pack is not what any earlier
   // record described.
-  mkdirSync(args.out, { recursive: true });
+  mkdirSync(args.out, { recursive: true, ...(release ? { mode: 0o755 } : {}) });
   writeFileSync(join(args.out, SOURCE_FILE), JSON.stringify({
-    version: 1, source: 'lolly', incomplete: true, commit, profile: args.profile, startedAt: new Date().toISOString(),
-  }, null, 2) + '\n');
+    version: release ? 2 : 1, source: 'lolly', incomplete: true, commit, profile: args.profile, startedAt: new Date().toISOString(),
+  }, null, 2) + '\n', release ? { mode: 0o644 } : undefined);
 
-  console.log(`[build-instance-pack] materialising profile ${args.profile} from ${args.lolly} @ ${commit.slice(0, 12)}${dirty ? ' (dirty)' : ''}`);
-  const child = spawnSync(args.node, ['--input-type=module', '-e', CHILD, pathToFileURL(resolver).href, args.out, args.profile, args.lolly], {
-    cwd: args.lolly, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'],
-    env: { ...process.env, LOLLY_PROFILE: args.profile },
-  });
-  if (child.status !== 0) {
-    console.error(`[build-instance-pack] the checkout's resolver failed (exit ${child.status})`);
-    return 1;
+  if (release) {
+    console.log(`[build-instance-pack] copying verified signed release for profile ${args.profile} @ ${commit.slice(0, 12)}`);
+    release.copyTo(args.out);
+  } else {
+    console.log(`[build-instance-pack] materialising profile ${args.profile} from ${args.lolly} @ ${commit.slice(0, 12)}${dirty ? ' (dirty)' : ''}`);
+    const child = spawnSync(args.node, ['--input-type=module', '-e', CHILD, pathToFileURL(resolver).href, args.out, args.profile, args.lolly], {
+      cwd: args.lolly, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'],
+      env: { ...process.env, LOLLY_PROFILE: args.profile },
+    });
+    if (child.status !== 0) {
+      console.error(`[build-instance-pack] the checkout's resolver failed (exit ${child.status})`);
+      return 1;
+    }
+    const resolved = JSON.parse(child.stdout.trim().split('\n').at(-1) ?? '{}') as { profile?: string };
+    if (resolved.profile !== args.profile) throw new Error(`the resolver materialised profile ${resolved.profile ?? '(none)'}, not ${args.profile}`);
   }
-  const resolved = JSON.parse(child.stdout.trim().split('\n').at(-1) ?? '{}') as { profile?: string };
-  if (resolved.profile !== args.profile) throw new Error(`the resolver materialised profile ${resolved.profile ?? '(none)'}, not ${args.profile}`);
 
   for (const ex of args.exclude) rmSync(join(args.out, 'catalog', ...ex.split('/')), { recursive: true, force: true });
   let prunedAssets: PrunedAsset[] = [];
@@ -216,21 +250,23 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     }
   }
   const removed: string[] = [];
+  if (release) removed.push(SIGNATURE_REL);
   if (existsSync(join(args.out, ...SIGNATURE_REL.split('/')))) {
     rmSync(join(args.out, ...SIGNATURE_REL.split('/')));
     removed.push(SIGNATURE_REL);
   }
   const links = symlinksUnder(args.out);
   if (links.length) throw new Error(`the materialised pack still holds symbolic links: ${links.slice(0, 5).join(', ')}`);
+  if (release && (git(args.lolly, 'rev-parse', 'HEAD') !== commit || git(args.lolly, 'status', '--porcelain') !== '')) throw new Error('release source changed while producing the pack');
 
   writeFileSync(join(args.out, SOURCE_FILE), JSON.stringify({
-    version: 1, source: 'lolly', commit, profile: args.profile, dirty,
-    ...(submodules.length ? { submodules } : {}),
-    ...(args.exclude.length ? { excluded: args.exclude.map((e) => `catalog/${e}`) } : {}),
+    version: release ? 2 : 1, source: 'lolly', commit, profile: args.profile, dirty,
+    ...(!release && submodules.length ? { submodules } : {}),
+    ...(release ? { excluded: [], derivation: release.derivation } : args.exclude.length ? { excluded: args.exclude.map((e) => `catalog/${e}`) } : {}),
     ...(prunedAssets.length ? { prunedAssets } : {}),
     ...(removed.length ? { removed } : {}),
     builtAt: new Date().toISOString(),
-  }, null, 2) + '\n');
+  }, null, 2) + '\n', release ? { mode: 0o644 } : undefined);
 
   console.log('[build-instance-pack] checking the pack against the vendored engine (scripts/inspect-pack.ts)');
   const env = { ...process.env };

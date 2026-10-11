@@ -977,6 +977,15 @@ export function noticeKeepCount(keep: number): number {
   return keep;
 }
 
+/** Verified mounted source generation, fenced independently of mutable grants. */
+export interface CatalogPublication { generation: number; digest: string }
+
+/** Private catalog bytes retained for one hour; possession never grants access. */
+export interface CatalogDeliverySnapshot {
+  scope: string; kind: 'tools' | 'assets' | 'slim'; hash: string;
+  bytes: Buffer; until: number; toolIds: string[]; assetIds: string[];
+}
+
 export interface Store extends RenderStore, PasskeyStore {
   getCommentThread(id: string): Promise<CommentThread | null>;
   listCommentThreads(sessionId: string): Promise<CommentThread[]>;
@@ -1429,6 +1438,11 @@ export interface Store extends RenderStore, PasskeyStore {
   // whole instance and `provider:<id>` for one provider's entries. Policy, so
   // the policy document exports and applies them beside the field definitions.
   listCatalogTagRules(): Promise<CatalogTagRule[]>;
+  /** A durable monotonic sequence for each observed global catalog state. */
+  catalogDeliverySequence(fingerprint: string, publication: CatalogPublication): Promise<number>;
+  /** Bounded, durable snapshots; false refuses publication when retention is full. */
+  putCatalogDeliverySnapshot(snapshot: CatalogDeliverySnapshot, now: number, maxBytes: number): Promise<boolean>;
+  getCatalogDeliverySnapshot(scope: string, kind: CatalogDeliverySnapshot['kind'], hash16: string, now: number): Promise<CatalogDeliverySnapshot | null>;
   putCatalogTagRule(rule: CatalogTagRule): Promise<void>;
   deleteCatalogTagRule(scope: string): Promise<void>;
   getAssetMeta(assetId: string): Promise<AssetMetaRecord | null>;

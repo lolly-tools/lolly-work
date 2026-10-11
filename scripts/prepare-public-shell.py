@@ -31,6 +31,7 @@ OVERLAY_ANCHOR = "/run/lolly-public-overlay"
 FS_GROUP_POLICY = "OnRootMismatch"
 PUBLIC_GROUP = 101
 PATHS = ("_app", "index.html", "precache.json", "sw.js", "portable/player.js")
+DELIVERY_MAP_HOLD = "Public delivery-map images require the matched full cohort; five-path updates cannot refresh validators or compressed siblings"
 CATALOG_KEYS = {"indexSha256", "envelopeSha256", "pinCanonicalSha256", "keyId", "signedFiles"}
 BASELINE_KEYS = {"version", "imageSource", "shellSource", "image", "profile", "settings", "publicKeySha256", "publicCatalog", "staticManifest", "overlay", "deploymentSpecSha256", "deployment", "nginxConfig", "modelsClaim", "modelsPV", "policyInventory", "serviceInventory", "originalEvidence"}
 PRODUCER_KEYS = {"version", "status", "artifactClass", "lollySource", "imageSource", "previousShellSource", "image", "profile", "settings", "publicCatalog", "shellManifestSha256", "workspaceModules", "originalReport", "classification", "imageClassification", "custody", "previousAcceptance", "ci", "publicKey", "previous", "candidate", "shell", "overlay", "delta", "retention", "retainedFiles", "webGate", "catalog", "producer", "producerSourceFiles", "originAuthenticatedByThisCommand", "normalCIQualified", "runtimeQualified", "promotionAttempted"}
@@ -46,6 +47,15 @@ def overlay_mounts(volume):
     # Relabel the whole new overlay before resolving its serving subPaths.
     return [{"name": volume, "mountPath": OVERLAY_ANCHOR, "readOnly": True},
             *[{"name": volume, "mountPath": ROOT + "/" + path, "readOnly": True, "subPath": path} for path in PATHS]]
+
+
+def require_legacy_delivery(files, config, before):
+    # A stale baked map can validate different bytes; unmounted gzip siblings
+    # can also reappear from the image. Only a qualified wider overlay fixes both.
+    mounts = [mount for container in before["spec"]["template"]["spec"].get("containers", []) for mount in container.get("volumeMounts", [])]
+    require(".delivery-etags.conf" not in files
+            and not any(isinstance(value, str) and "delivery-etags.conf" in value for value in config.get("data", {}).values())
+            and not any(mount.get("mountPath") == "/etc/nginx/delivery-etags.conf" for mount in mounts), DELIVERY_MAP_HOLD)
 
 
 def resource(value, api, kind, namespace=None):
@@ -137,6 +147,7 @@ def baseline(value, inputs):
     require(list(files) == sorted(files) and type(manifest["totalBytes"]) is int and total == manifest["totalBytes"] <= cohort.MAX_BYTES, "Accepted public static manifest order/total differs")
     prepared, runtime = original_baseline(value, before, files, inputs)
     config = resource(inputs.file(value["nginxConfig"]), "v1", "ConfigMap", namespace)
+    require_legacy_delivery(files, config, before)
     claim = resource(inputs.file(value["modelsClaim"]), "v1", "PersistentVolumeClaim", namespace)
     pv = resource(inputs.file(value["modelsPV"]), "v1", "PersistentVolume")
     require(config.get("data", {}).get("default.conf") and hashlib.sha256(config["data"]["default.conf"].encode()).hexdigest() == runtime["nginxConfigSha256"]
@@ -244,7 +255,7 @@ def prepare(value, base, node="node", runner=shared.git_command):
         prior_overlay = inputs.file(previous["overlay"]["manifest"])
         require(prior_overlay == {"version": 1, "files": [row for p, row in old.files.items() if overlay_path(p)], "totalBytes": sum(row["size"] for p, row in old.files.items() if overlay_path(p))}, "Previously accepted public overlay manifest differs")
     pin = inputs.file(producer["publicKey"])
-    actual_catalog = public_catalog(shell, pin, previous["publicCatalog"], node)
+    actual_catalog = public_catalog(shell, pin, previous["publicCatalog"], node, old)
     exact(producer["catalog"], {"previous", "candidate", "signatureReused", "newSigning"})
     require(producer["catalog"]["signatureReused"] is True and producer["catalog"]["newSigning"] is False, "Public producer must reuse the accepted signed catalog")
     for key in ("originalReport", "webGate"):
@@ -302,13 +313,12 @@ def prepare(value, base, node="node", runner=shared.git_command):
     inputs.unchanged(); return result, inputs
 
 
-def public_catalog(shell, pin, expected, node):
+def public_catalog(shell, pin, expected, node, previous=None):
     exact(pin, {"kty", "crv", "x", "y"})
     require(pin.get("kty") == "EC" and pin.get("crv") == "P-256" and all(isinstance(pin[k], str) and re.fullmatch(r"[A-Za-z0-9_-]{43}", pin[k]) for k in ("x", "y"))
             and cohort.digest(pin) == expected["pinCanonicalSha256"], "Public verification pin changed")
     envelope = cohort.parse_json(shell.data("catalog/tools/index.sig.json"))
-    exact(envelope, {"alg", "keyId", "signedAt", "indexHash", "files", "signature"})
-    key_id = __import__("base64").urlsafe_b64encode(hashlib.sha256(cohort.canonical(pin)).digest()).decode().rstrip("=")
+    modern, key_id = cohort.catalog_envelope(envelope, pin, node)
     require(envelope.get("alg") == "ECDSA-P256-SHA256" and envelope.get("keyId") == expected["keyId"] == key_id and envelope.get("indexHash") == expected["indexSha256"]
             and shell.files["catalog/tools/index.sig.json"]["sha256"] == expected["envelopeSha256"] and shell.files["catalog/tools/index.json"]["sha256"] == expected["indexSha256"]
             and isinstance(envelope.get("signedAt"), str) and re.fullmatch(r"[0-9TZ:.+\-]{20,40}", envelope["signedAt"])
@@ -317,8 +327,9 @@ def public_catalog(shell, pin, expected, node):
     for path, digest in envelope["files"].items():
         cohort.safe_path(path); cohort.sha(digest)
         require(path.isascii() and "/" in path and shell.files.get("tools/" + path, {}).get("sha256") == digest, "Public signed tool content differs")
-    require(all(path[6:] in envelope["files"] for path in shell.files if path.startswith("tools/") and path.endswith("/tool.json")), "Public tool manifest outside signed closure")
-    cohort.verify_signature(pin, envelope, node)
+    require(all(path[6:] in envelope["files"] for path in shell.files if path.startswith("tools/") and path.endswith("/tool.json")
+                and not (modern and cohort.HASH_TOOL.fullmatch(path))), "Public tool manifest outside signed closure")
+    cohort.catalog_content(shell, envelope, modern, previous, node)
     return expected
 
 

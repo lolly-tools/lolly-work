@@ -26,7 +26,7 @@ import { join } from 'node:path';
 import { sha256Hex } from '../lib/crypto.ts';
 import type { Store } from '../store/types.ts';
 import { callerSeesProvider, composeFederated, type Federation, type FragmentView } from './federation.ts';
-import { applyLifecycleToIndex, type AssetIndex, type AssetIndexEntry, type LifecycleRow } from './lifecycle.ts';
+import { applyLifecycleToIndex, assetState, type AssetIndex, type AssetIndexEntry, type LifecycleRow } from './lifecycle.ts';
 import { composeInstanceAssets } from './instance-assets.ts';
 import { applyTagRules, compileTagRules } from './tag-rules.ts';
 import { composeAssetMeta } from './asset-meta.ts';
@@ -41,6 +41,8 @@ export interface ServedProvider {
 }
 
 export interface ServedIndex {
+  /** Global inputs before caller filtering, including time-based lifecycle state. */
+  sourceFingerprint: string;
   /**
    * 'composed': `bytes` is the composed feed. 'raw': the pack index did not
    * have the expected shape, so `bytes` is the file as it is on disk (the
@@ -147,6 +149,7 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
   const paged = new Map<string, { basedOn: string; result: ServedIndex }>();
   const inflight = new Map<string, Promise<ServedIndex>>();
   let compositions = 0;
+  const packInputs = new Map<string, { stamp: string; bytes: Buffer | null; entries: AssetIndexEntry[] }>();
 
   // Least recently used goes first once a map holds more than maxKeys keys
   // or, together with the other map, more than maxBytes of feed. The entry
@@ -179,6 +182,13 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
     } catch {
       /* no pack index: federated-only instances still compose */
     }
+    let input = packInputs.get(packFile);
+    if (!input || input.stamp !== packStamp) {
+      const bytes = await readFile(packFile).catch(() => null);
+      let entries: AssetIndexEntry[] = [];
+      try { const index = bytes && JSON.parse(bytes.toString()) as AssetIndex; if (index && Array.isArray(index.assets)) entries = index.assets; } catch { /* Raw compatibility is handled below. */ }
+      input = { stamp: packStamp, bytes, entries }; packInputs.set(packFile, input);
+    }
     const frags = await deps.federation.fragments();
     const [rows, creds, instAssets, metas, fieldDefs, collections, tagRuleRows, providerRecs] = await Promise.all([
       deps.store.listLifecycle(), deps.store.listCredentials(), deps.store.listInstanceAssets(),
@@ -188,12 +198,16 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
     // Hidden tags (catalog/tag-rules.ts) are an input too: hiding or showing one
     // moves the fingerprint, so the next read composes afresh with no re-sync.
     const tagRules = compileTagRules(tagRuleRows, providerRecs);
+    const t = now();
     const fingerprint = sha256Hex([
-      packStamp, providerStamp(frags), JSON.stringify(rows), JSON.stringify(creds), JSON.stringify(instAssets),
+      sha256Hex(input.bytes ?? Buffer.alloc(0)), providerStamp(frags), JSON.stringify(rows), JSON.stringify(creds), JSON.stringify(instAssets),
       JSON.stringify(metas), JSON.stringify(fieldDefs), JSON.stringify(collections),
       JSON.stringify(tagRuleRows), JSON.stringify(providerRecs.map((p) => [p.id, p.mapping?.hiddenTags ?? []])),
+      JSON.stringify(rows.map(row => [row.assetId, assetState(row, t)])),
+      JSON.stringify([...input.entries, ...instAssets.map(asset => asset.entry), ...frags.flatMap(fragment => fragment.fragment.assets)].map(entry => [entry.id,
+        typeof entry.availableFrom === 'string' ? Date.parse(entry.availableFrom) <= t : true,
+        typeof entry.availableUntil === 'string' ? Date.parse(entry.availableUntil) > t : true])),
     ].join('\n'));
-    const t = now();
     const hit = memo.get(key);
     if (hit && hit.fingerprint === fingerprint && t < hit.staleAt) {
       remember(memo, key, hit);
@@ -239,21 +253,21 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
           const { composed, staleAt: s } = composeOver(JSON.parse(raw.toString('utf8')) as AssetIndex);
           const bytes = Buffer.from(JSON.stringify(composed));
           const version = sha256Hex(bytes).slice(0, 32);
-          result = { status: 'composed', bytes, etag: quoted(version), version, index: composed, providers };
+          result = { status: 'composed', sourceFingerprint: fingerprint, bytes, etag: quoted(version), version, index: composed, providers };
           staleAt = s;
         } catch {
           // Not the expected shape: the route serves the file as it is, and
           // search falls back to the federated half alone.
           const fallback = composeOver({});
           const version = sha256Hex(raw).slice(0, 32);
-          result = { status: 'raw', bytes: raw, etag: quoted(version), version, index: fallback.composed, providers };
+          result = { status: 'raw', sourceFingerprint: fingerprint, bytes: raw, etag: quoted(version), version, index: fallback.composed, providers };
           staleAt = fallback.staleAt;
         }
       } else {
         const { composed, staleAt: s } = composeOver({});
         const bytes = Buffer.from(JSON.stringify(composed));
         const version = sha256Hex(bytes).slice(0, 32);
-        result = { status: 'missing', bytes, etag: quoted(version), version, index: composed, providers };
+        result = { status: 'missing', sourceFingerprint: fingerprint, bytes, etag: quoted(version), version, index: composed, providers };
         staleAt = s;
       }
       const served = withSort(result);
@@ -291,7 +305,7 @@ export function createServedIndex(deps: ServedIndexDeps): ServedIndexer {
     index.pagedProviders = [...large.values()].map((p) => ({ id: p.id, label: p.label, count: counts.get(p.id) ?? 0 }));
     const bytes = Buffer.from(JSON.stringify(index));
     const version = sha256Hex(bytes).slice(0, 32);
-    const result = withSort({ status: 'composed', bytes, etag: quoted(version), version, index, providers: base.providers });
+    const result = withSort({ status: 'composed', sourceFingerprint: base.sourceFingerprint, bytes, etag: quoted(version), version, index, providers: base.providers });
     remember(paged, key, { basedOn: base.version, result });
     return result;
   };

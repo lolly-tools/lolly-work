@@ -199,7 +199,7 @@ test('chooser lists the password entry; the form renders with a form token and s
   assert.equal(form.res.status, 200);
   assert.match(form.res.headers.get('content-security-policy') ?? '', /form-action 'self'/);
   assert.match(form.res.headers.get('content-security-policy') ?? '', /default-src 'none'/);
-  assert.equal(form.res.headers.get('cache-control'), 'no-store');
+  assert.equal(form.res.headers.get('cache-control'), 'private, no-store, max-age=0, no-transform');
   // Not no-referrer: a form post from a no-referrer page carries Origin: null,
   // which the CSRF check refuses (see the browser-shaped post test below).
   assert.equal(form.res.headers.get('referrer-policy'), 'strict-origin');
@@ -270,7 +270,7 @@ test('links: an admin session, user.invite and same-site requests only', async (
 
   const ok = await issueLink(base, admin, ' A@X.example ', 'setup');
   assert.equal(ok.status, 201);
-  assert.equal(ok.headers.get('cache-control'), 'no-store');
+  assert.equal(ok.headers.get('cache-control'), 'private, no-store, max-age=0, no-transform');
   const body = (await ok.json()) as { url: string; expiresAt: string };
   assert.deepEqual(Object.keys(body).sort(), ['expiresAt', 'url']);
   const url = new URL(body.url);
@@ -309,7 +309,7 @@ test('set: the link page, then a password, signs the person in once; the link is
   const page = await openForm(base, `${u.pathname}${u.search}`);
   assert.equal(page.res.status, 200);
   assert.equal(page.res.headers.get('referrer-policy'), 'strict-origin', 'the token never leaves in a Referer, and the post keeps its Origin');
-  assert.equal(page.res.headers.get('cache-control'), 'no-store');
+  assert.equal(page.res.headers.get('cache-control'), 'private, no-store, max-age=0, no-transform');
   assert.ok(page.html.includes('value="ana@partner.example"'));
   assert.match(page.html, /name="email"[^>]*readonly/);
   assert.ok(page.html.includes('Set your password'));
@@ -327,7 +327,7 @@ test('set: the link page, then a password, signs the person in once; the link is
   assert.equal(set.status, 303);
   assert.equal(set.headers.get('location'), '/');
   assert.equal(set.headers.get('referrer-policy'), 'no-referrer');
-  assert.equal(set.headers.get('cache-control'), 'no-store');
+  assert.equal(set.headers.get('cache-control'), 'private, no-store, max-age=0, no-transform');
   assert.equal(await sessionEmail(base, cookieOf(set, 'lw_session')), 'ana@partner.example');
 
   const cred = await store.getPasswordCredential('ana@partner.example');

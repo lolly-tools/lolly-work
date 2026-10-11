@@ -28,7 +28,7 @@ test('transfer inventory projects metadata only, preserves source and discloses 
   await env.store.putSessionVersion({ sessionId: saved.id, rev: saved.rev, kind: 'save', inputs: saved.inputs, meta: saved.meta, contributors: [] });
   const before = await env.store.getSession(saved.id);
   const response = await fetch(env.base + '/api/v1/projects/prj_preview/transfer-inventory', { headers: { cookie: env.adminSession } });
-  assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'private, no-store');
+  assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'private, no-store, max-age=0, no-transform');
   const text = await response.text(), result = JSON.parse(text);
   assert.equal(result.schema, 'lolly-project-transfer-inventory-v1');
   assert.equal(result.snapshotConsistent, false); assert.equal(result.importReady, false); assert.equal(result.complete, false);

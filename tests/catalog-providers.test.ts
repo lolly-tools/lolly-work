@@ -189,7 +189,7 @@ test('members see only their source summaries, without connection secrets or set
   const designer = await login('designer@test');
   const seller = await login('seller@test');
   const response = await fetch(`${base}/api/v1/catalog/sources`, { headers: { cookie: designer } });
-  assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'private, no-store');
+  assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'private, no-store, max-age=0, no-transform');
   const data = await response.json() as { sources: Array<Record<string, unknown>>; canManage: boolean };
   assert.equal(data.sources[0]?.id, 'dam1'); assert.equal(data.sources[0]?.count, 1); assert.equal(data.canManage, false);
   assert.deepEqual(Object.keys(data.sources[0]!).sort(), ['count', 'id', 'label', 'lastSyncedAt', 'status']);

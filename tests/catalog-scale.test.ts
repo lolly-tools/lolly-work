@@ -84,8 +84,8 @@ test('the feed carries every synthetic asset, answers 304 to its own ETag, and k
   const first = await get('/catalog/assets/index.json');
   assert.equal(first.status, 200);
   const etag = first.headers.get('etag') as string;
-  assert.match(etag, /^"[0-9a-f]{32}"$/);
-  assert.equal(first.headers.get('cache-control'), 'private, no-cache');
+  assert.match(etag, /^"[0-9a-f]{64}(?:-(?:br|gzip))?"$/);
+  assert.equal(first.headers.get('cache-control'), 'private, no-cache, no-transform');
   const text = await first.text();
   const body = JSON.parse(text) as { assets: Entry[]; pagedProviders?: unknown };
   assert.equal(body.assets.filter((a) => a.provider === 'big').length, COUNT);
@@ -194,7 +194,7 @@ test('federated bytes: SVG named as SVG, cached by entry version, 304 and immuta
   assert.equal(one.headers.get('content-type'), 'image/svg+xml');
   assert.equal(one.headers.get('x-content-type-options'), 'nosniff');
   assert.match(one.headers.get('content-security-policy') ?? '', /sandbox/);
-  assert.equal(one.headers.get('cache-control'), 'private, max-age=300');
+  assert.equal(one.headers.get('cache-control'), 'private, max-age=300, no-transform');
   const etag = one.headers.get('etag') as string;
   assert.ok(etag);
   const svgText = await one.text();
@@ -208,11 +208,11 @@ test('federated bytes: SVG named as SVG, cached by entry version, 304 and immuta
   // Even a request naming the current version is kept for five minutes, not
   // forever: losing access to a provider must not leave a long-lived browser copy.
   const pinned = await get(`${svgUrl}?v=${svgEntry.version}`);
-  assert.equal(pinned.headers.get('cache-control'), 'private, max-age=300');
+  assert.equal(pinned.headers.get('cache-control'), 'private, max-age=300, no-transform');
   await pinned.arrayBuffer();
   const revalidated = await get(`${svgUrl}?v=${svgEntry.version}`, { 'if-none-match': etag });
   assert.equal(revalidated.status, 304, 'revalidating after the five minutes costs no bytes');
-  assert.equal(revalidated.headers.get('cache-control'), 'private, max-age=300');
+  assert.equal(revalidated.headers.get('cache-control'), 'private, max-age=300, no-transform');
 
   const png = await get(pngEntry.formats.find((f) => f.format === 'png')?.url as string);
   assert.equal(png.headers.get('content-type'), 'image/png');

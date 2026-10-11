@@ -60,7 +60,7 @@ async function boot(accessMode: 'open' | 'gated'): Promise<string> {
 
 async function login(base: string, email: string): Promise<string> {
   const res = await fetch(`${base}/api/auth/dev?email=${encodeURIComponent(email)}`, { redirect: 'manual' });
-  assert.equal(res.status, 302);
+  assert.equal(res.status, 302, res.status === 302 ? undefined : `Dev login setup failed: ${await res.text()}`);
   return (res.headers.getSetCookie().find((c) => c.startsWith('lw_session=')) as string).split(';')[0] as string;
 }
 
@@ -102,7 +102,7 @@ test('the manifest is readable from any origin', async () => {
     assert.equal(res.status, 200);
     assert.equal(res.headers.get('access-control-allow-origin'), '*', `${mode}: the card is unauthenticated whatever the access mode`);
     assert.equal(res.headers.get('access-control-allow-credentials'), null, 'no cookie is read here, so none is asked for');
-    assert.equal(res.headers.get('vary'), null, 'one answer for every origin - nothing to vary on');
+    assert.equal(res.headers.get('vary'), 'Accept-Encoding', 'origins share the same card; transfer coding is negotiated');
     const body = (await res.json()) as { name: string };
     assert.equal(body.name, 'CORS Hub', 'the header rides the real manifest, not a stub');
   }

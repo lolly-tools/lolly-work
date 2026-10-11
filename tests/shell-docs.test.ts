@@ -10,12 +10,14 @@ import { createMemoryStore } from '../server/src/store/memory.ts';
 import { buildApp } from '../server/src/api/app.ts';
 import { SHELL_SECURITY_HEADERS } from '../server/src/api/shell-headers.ts';
 import { shellDocsPath } from '../server/src/api/shell-docs.ts';
+import { sha256Hex } from '../server/src/lib/crypto.ts';
 
 let server: Server;
 let base = '';
 let root = '';
 let shell = '';
 const html = (title: string, path: string) => `<!doctype html><title>${title}</title><link rel="canonical" href="https://lolly.tools/info/${path}"><h1>${title}</h1>`;
+const screenshot = 'public screenshot bytes', shotPath = `info/shots/session.${sha256Hex(screenshot).slice(0, 16)}.png`;
 const documents = new Map([
   ['info/index.html', html('Documentation', 'index.html')],
   ['info/operate/deployment.html', html('Deployment', 'operate/deployment.html')],
@@ -27,6 +29,8 @@ const documents = new Map([
   ['info/search-index.json', JSON.stringify({ title: 'public search' })],
   ['info/sitemap.xml', '<?xml version="1.0"?><urlset><url><loc>https://lolly.tools/info/operate/deployment.html</loc></url></urlset>'],
   ['robots-lolly-tools.txt', 'User-agent: *\nAllow: /\n\nSitemap: https://lolly.tools/info/sitemap.xml\n'],
+  ['info/shots/session.png', screenshot],
+  [shotPath, screenshot],
 ]);
 
 before(async () => {
@@ -171,14 +175,21 @@ test('public docs do not publish governed APIs, private assets, tools or renders
   }
 });
 
-test('ordinary app GETs and assets keep their fallback, while HEAD does not call their GET handlers', async () => {
+test('ordinary app GETs and assets keep their fallback, and HEAD preserves validators without a body', async () => {
   const app = await fetch(base + '/design');
   assert.equal(app.status, 200);
   assert.match(await app.text(), /App shell/);
   const asset = await fetch(base + '/assets/app.js');
   assert.equal(asset.status, 200);
   assert.equal(await asset.text(), 'console.log("app")');
-  for (const path of ['/', '/design', '/assets/app.js']) assert.equal((await fetch(base + path, { method: 'HEAD' })).status, 404, path);
+  for (const path of ['/', '/design', '/assets/app.js']) {
+    const get = await fetch(base + path), head = await fetch(base + path, { method: 'HEAD' });
+    assert.equal(head.status, 200, path);
+    assert.equal(head.headers.get('etag'), get.headers.get('etag'), path);
+    assert.equal(head.headers.get('content-length'), get.headers.get('content-length'), path);
+    assert.equal((await head.arrayBuffer()).byteLength, 0, path);
+    await get.arrayBuffer();
+  }
 });
 
 test('discovery files absent from a shell mount are refused rather than invented', async () => {
@@ -187,4 +198,28 @@ test('discovery files absent from a shell mount are refused rather than invented
   for (const path of ['/robots.txt', '/sitemap.xml', '/info/sitemap.xml']) {
     for (const method of ['GET', 'HEAD']) assert.equal((await fetch(base + path, { method, redirect: 'manual' })).status, 404);
   }
+});
+
+test('addressed documentation shots cache immutably while credentials and errors stay private', async () => {
+  const path = '/' + shotPath, immutable = 'public, max-age=31536000, s-maxage=31536000, immutable, no-transform';
+  const get = await fetch(base + path); assert.equal(get.status, 200); assert.equal(await get.text(), screenshot);
+  assert.equal(get.headers.get('cache-control'), immutable); assert.equal(get.headers.get('cdn-cache-control'), 'max-age=31536000, no-transform');
+  const etag = get.headers.get('etag')!;
+  for (const method of ['GET', 'HEAD']) {
+    const conditional = await fetch(base + path, { method, headers: { 'if-none-match': etag } });
+    assert.equal(conditional.status, 304); assert.equal(conditional.headers.get('cache-control'), immutable);
+    for (const credentials of [{ cookie: 'lw_session=untrusted' }, { authorization: 'Bearer untrusted' }]) {
+      const privateResponse = await fetch(base + path, { method, headers: { ...credentials, 'if-none-match': etag } });
+      assert.equal(privateResponse.status, 304); assert.equal(privateResponse.headers.get('cache-control'), 'private, no-store, max-age=0, no-transform');
+      assert.equal(privateResponse.headers.get('cdn-cache-control'), 'no-store'); assert.equal(privateResponse.headers.get('surrogate-control'), null);
+    }
+  }
+  const range = await fetch(base + path, { headers: { range: 'bytes=0-5' } }); assert.equal(range.status, 206); assert.equal(await range.text(), screenshot.slice(0, 6));
+  assert.equal(range.headers.get('cache-control'), immutable);
+  const legacy = await fetch(base + '/info/shots/session.png'); assert.equal(legacy.status, 200);
+  assert.equal(legacy.headers.get('cache-control'), 'public, max-age=0, s-maxage=0, must-revalidate, no-transform');
+  const invalid = await fetch(base + path, { headers: { range: 'bytes=9999-99999' } }); assert.equal(invalid.status, 416);
+  assert.equal(invalid.headers.get('cdn-cache-control'), 'no-store');
+  const missing = await fetch(base + '/info/shots/missing.0000000000000000.png'); assert.equal(missing.status, 404);
+  assert.equal(missing.headers.get('cdn-cache-control'), 'no-store');
 });

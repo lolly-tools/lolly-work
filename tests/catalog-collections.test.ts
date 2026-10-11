@@ -370,7 +370,7 @@ test('a collection link: share serves the listing page, download serves the zip,
   const page = await fetch(share.path);
   assert.equal(page.status, 200);
   assert.match(page.headers.get('content-type') ?? '', /^text\/html/);
-  assert.equal(page.headers.get('cache-control'), 'private, no-store', 'nothing a bearer page serves is CDN-cacheable');
+  assert.equal(page.headers.get('cache-control'), 'private, no-store, no-transform', 'nothing a bearer page serves is CDN-cacheable');
   assert.match(page.headers.get('content-security-policy') ?? '', /default-src 'none'/);
   const html = await page.text();
   assert.match(html, /Launch kit/);

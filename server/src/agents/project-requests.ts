@@ -20,6 +20,7 @@ class ResponseCapture extends Writable {
   writeHead(status: number, headers: Record<string, unknown> = {}) { this.statusCode = status; this.headersSent = true; for (const [key, value] of Object.entries(headers)) this.setHeader(key, value); return this; }
   setHeader(key: string, value: unknown) { this.headers.set(key.toLowerCase(), value); return this; }
   getHeader(key: string) { return this.headers.get(key.toLowerCase()); }
+  getHeaders() { return Object.fromEntries(this.headers); }
   override _write(chunk: Buffer, _encoding: BufferEncoding, done: (error?: Error | null) => void) {
     this.bytes += chunk.length;
     if (this.bytes > 4 * 1024 * 1024) { done(new Error('PROJECT_RESPONSE_TOO_LARGE')); return; }

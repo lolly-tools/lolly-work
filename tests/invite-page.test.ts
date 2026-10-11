@@ -58,7 +58,7 @@ test('signed out, pending: who invited, to what, as which role, until when, and 
 
   // Headers (spec 3.1): no cache, no index, strict-origin, no script.
   const h = page.res.headers;
-  assert.equal(h.get('cache-control'), 'no-store');
+  assert.equal(h.get('cache-control'), 'private, no-store, max-age=0, no-transform');
   assert.equal(h.get('x-robots-tag'), 'noindex, nofollow');
   assert.equal(h.get('referrer-policy'), 'strict-origin');
   assert.equal(h.get('x-content-type-options'), 'nosniff');

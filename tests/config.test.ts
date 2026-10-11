@@ -180,3 +180,15 @@ test('policy.invites.passwordDomains follows the domains rule and defaults to no
   assert.throws(() => openCfg({ policy: { defaultAccessMode: 'open', invites: { passwordDomains: ['not a domain'] } } }), /policy\.invites\.passwordDomains/);
   assert.throws(() => openCfg({ policy: { defaultAccessMode: 'open', invites: { passwordDomains: 'suse.com' } } }), /policy\.invites\.passwordDomains/);
 });
+
+
+test('catalog publication generation and public-key configuration fail closed', () => {
+  const policy = { defaultAccessMode: 'open' };
+  for (const catalogPublicationGeneration of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '2']) {
+    assert.throws(() => parseConfig(JSON.stringify({ policy, instance: { catalogPublicationGeneration } })), /catalogPublicationGeneration/);
+  }
+  assert.equal(parseConfig(JSON.stringify({ policy, instance: { catalogPublicationGeneration: 2 } })).instance.catalogPublicationGeneration, 2);
+  for (const catalogPublicKey of [null, [], { kty: 'RSA' }, { kty: 'EC', crv: 'P-256', x: 'public', y: 'public', d: 'private' }]) {
+    assert.throws(() => parseConfig(JSON.stringify({ policy, instance: { catalogPublicKey } })), /catalogPublicKey/);
+  }
+});

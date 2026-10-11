@@ -545,6 +545,45 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
 
   return {
     configureRoleGroups(mapping) { roleGroups = structuredClone(mapping); },
+    async catalogDeliverySequence(fingerprint, publication) {
+      if (!/^[0-9a-f]{64}$/.test(fingerprint) || !/^[0-9a-f]{64}$/.test(publication.digest)
+        || !Number.isSafeInteger(publication.generation) || publication.generation < 0) throw new Error('invalid catalog publication');
+      const { rows } = await pool.query(`insert into catalog_delivery_sequence(singleton,fingerprint,seq,publication_generation,publication_digest) values(true,$1,1,$2,$3)
+        on conflict(singleton) do update set fingerprint=excluded.fingerprint,
+        seq=case when catalog_delivery_sequence.fingerprint=excluded.fingerprint and catalog_delivery_sequence.publication_generation=excluded.publication_generation
+          then catalog_delivery_sequence.seq else catalog_delivery_sequence.seq+1 end,
+        publication_generation=excluded.publication_generation, publication_digest=excluded.publication_digest
+        where excluded.publication_generation > catalog_delivery_sequence.publication_generation
+          or (excluded.publication_generation = catalog_delivery_sequence.publication_generation and excluded.publication_digest = catalog_delivery_sequence.publication_digest)
+        returning seq`, [fingerprint, publication.generation, publication.digest]);
+      if (!rows.length) throw Object.assign(new Error('Catalog source publication is older or conflicts with the accepted release'), { status: 503 });
+      const seq = Number(rows[0]?.seq);
+      if (!Number.isSafeInteger(seq) || seq <= 0) throw new Error('catalog sequence unavailable');
+      return seq;
+    },
+    async putCatalogDeliverySnapshot(snapshot, now, maxBytes) {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        // Serialize the budget across replicas; never evict promised snapshots.
+        await client.query('select pg_advisory_xact_lock(3000066)');
+        await client.query('delete from catalog_delivery_snapshots where until_ms <= $1', [now]);
+        const existing = await client.query('select 1 from catalog_delivery_snapshots where scope=$1 and kind=$2 and hash=$3', [snapshot.scope, snapshot.kind, snapshot.hash]);
+        if (existing.rowCount) { await client.query('commit'); return true; }
+        const size = await client.query('select coalesce(sum(octet_length(bytes)), 0) as size from catalog_delivery_snapshots');
+        if (Number(size.rows[0]!.size) + snapshot.bytes.length > maxBytes) { await client.query('rollback'); return false; }
+        await client.query('insert into catalog_delivery_snapshots(scope, kind, hash, bytes, until_ms, tool_ids, asset_ids) values($1,$2,$3,$4,$5,$6,$7)',
+          [snapshot.scope, snapshot.kind, snapshot.hash, snapshot.bytes, snapshot.until, JSON.stringify(snapshot.toolIds), JSON.stringify(snapshot.assetIds)]);
+        await client.query('commit'); return true;
+      } catch (error) { await client.query('rollback'); throw error; }
+      finally { client.release(); }
+    },
+    async getCatalogDeliverySnapshot(scope, kind, hash16, now) {
+      const { rows } = await pool.query('select * from catalog_delivery_snapshots where scope=$1 and kind=$2 and left(hash,16)=$3 and until_ms>$4 limit 2', [scope, kind, hash16, now]);
+      if (rows.length !== 1) return null;
+      const row = rows[0]!;
+      return { scope, kind, hash: row.hash as string, bytes: row.bytes as Buffer, until: Number(row.until_ms), toolIds: row.tool_ids as string[], assetIds: row.asset_ids as string[] };
+    },
     ...createPostgresRenderStore(pool),
     ...createPostgresPasskeys(pool),
     storageKind: 'postgres',

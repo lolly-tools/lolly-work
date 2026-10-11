@@ -166,7 +166,7 @@ test('(a) SVG render: 200 with the title in the bytes, ETag, then 304 on If-None
   assert.equal(res.headers.get('content-type'), 'image/svg+xml');
   const etag = res.headers.get('etag');
   assert.ok(etag && etag.startsWith('"r-'), 'ETag present');
-  assert.equal(res.headers.get('cache-control'), 'private, max-age=60');
+  assert.equal(res.headers.get('cache-control'), 'private, no-cache, no-transform');
   const svg = await res.text();
   assert.match(svg, /<svg/);
   assert.ok(svg.includes('HELLOWORLD'), 'title baked into the SVG');
@@ -262,7 +262,7 @@ test('(e) share link serves rendered bytes with a public cache header; revoked â
   const served = await fetch(path);
   assert.equal(served.status, 200);
   assert.equal(served.headers.get('content-type'), 'image/svg+xml');
-  assert.equal(served.headers.get('cache-control'), 'public, max-age=300');
+  assert.equal(served.headers.get('cache-control'), 'private, max-age=300, no-transform');
   assert.ok((await served.text()).includes('LINKED'), 'the link renders its baked params');
 
   const revoke = await fetch(`${main.base}/api/v1/links/${id}/revoke`, { method: 'POST', headers: { cookie } });

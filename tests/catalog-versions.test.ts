@@ -518,10 +518,14 @@ test('a head move busts the render cache key', async () => {
   const render = async (): Promise<string> => {
     const res = await fetch(`${base}/render/test-card.svg?title=Versioned`, { headers: { cookie: admin } });
     assert.equal(res.status, 200, await res.text());
-    return res.headers.get('etag') as string;
+    const etag = res.headers.get('etag');
+    assert.match(etag ?? '', /^"r-[0-9a-f]{32}"$/);
+    const cacheKey = res.headers.get('x-lolly-cache-key');
+    assert.match(cacheKey ?? '', /^[0-9a-f]{64}$/);
+    return cacheKey!;
   };
   const first = await render();
-  assert.ok(first?.startsWith('"r-'));
+  assert.match(first, /^[0-9a-f]{64}$/);
   assert.equal(await render(), first, 'a stable catalog renders under a stable key');
 
   // Roll the head back: the bytes behind a stable catalog id changed, so the

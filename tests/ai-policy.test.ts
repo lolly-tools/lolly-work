@@ -70,7 +70,7 @@ test('HTTP: member-only uncached leases, admin switch, audit and account revocat
   assert.equal((await toggle(member, 'on')).status, 403);
   assert.equal((await toggle(admin, 'on')).status, 200);
   const lease = await read(member);
-  assert.equal(lease.headers.get('cache-control'), 'no-store');
+  assert.equal(lease.headers.get('cache-control'), 'private, no-store, max-age=0, no-transform');
   assert.deepEqual(await lease.json(), { version: 1, enabled: true, capabilities: ['ocr'], maxAgeSeconds: 60 });
   assert.equal((await toggle(admin, 'off')).status, 200);
   assert.equal((await (await read(member)).json() as { enabled: boolean }).enabled, false);

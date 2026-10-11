@@ -143,11 +143,11 @@ test('each caller gets an envelope bound to exactly the bytes it was served', as
     const cookie = await login(base, email);
     const indexRes = await fetch(`${base}/catalog/tools/index.json`, { headers: { cookie } });
     assert.equal(indexRes.status, 200);
-    assert.equal(indexRes.headers.get('cache-control'), 'private, no-cache');
+    assert.equal(indexRes.headers.get('cache-control'), 'private, no-cache, no-transform');
     const index = new Uint8Array(await indexRes.arrayBuffer());
     const sigRes = await fetch(`${base}/catalog/tools/index.sig.json`, { headers: { cookie } });
     assert.equal(sigRes.status, 200);
-    assert.equal(sigRes.headers.get('cache-control'), 'private, no-cache');
+    assert.equal(sigRes.headers.get('cache-control'), 'private, no-cache, no-transform');
     const envelope = await sigRes.json() as Envelope;
     assert.equal(envelope.keyId, keyId);
     assert.deepEqual(await engine.verifyCatalogEnvelope(envelope, index, publicKey), { ok: true });
@@ -155,7 +155,8 @@ test('each caller gets an envelope bound to exactly the bytes it was served', as
     const hooks = new Uint8Array(await (await fetch(`${base}/tools/open-tool/hooks.js`, { headers: { cookie } })).arrayBuffer());
     assert.deepEqual(await engine.verifyToolFile(envelope, 'open-tool', 'hooks.js', hooks), { ok: true });
     assert.equal((await engine.verifyToolFile(envelope, 'open-tool', 'hooks.js', new TextEncoder().encode('tampered'))).ok, false);
-    assert.equal((await engine.verifyToolFile(envelope, 'open-tool', 'notes.txt', new Uint8Array())).ok, false);
+    assert.equal((await engine.verifyToolFile(envelope, 'open-tool', 'notes.txt', new TextEncoder().encode('never fetched by the loader'))).ok, true);
+    assert.ok(!Object.hasOwn(envelope.files, 'open-tool/i18n/README.txt'));
     served[email] = { index, envelope };
   }
   const brand = served['brand@test']!;
@@ -223,7 +224,7 @@ test('catalog sidecars keyed by tool id follow the same visibility as the index'
     // The slim index is filtered like the full one.
     const slim = await get(marketer, 'tools/index.slim.json');
     assert.equal(slim.status, 200);
-    assert.equal(slim.headers.get('cache-control'), 'private, no-cache');
+    assert.equal(slim.headers.get('cache-control'), 'private, no-cache, no-transform');
     assert.deepEqual((await slim.json() as { tools: Array<{ id: string }> }).tools.map((t) => t.id), ['open-tool']);
     assert.deepEqual((await (await get(brand, 'tools/index.slim.json')).json() as { tools: Array<{ id: string }> }).tools.map((t) => t.id), ['open-tool', 'secret-tool']);
     // No other file under catalog/tools/ reaches a caller, in any spelling.

@@ -320,22 +320,227 @@ def verify_signature(pin, envelope, node):
     require(result.returncode == 0 and result.stdout == b"VERIFIED", "Catalog signature does not verify against the existing public pin")
 
 
-def catalog(shell, raw, public_pin, expected_public_pin, node):
-    exact(public_pin, {"kty", "crv", "x", "y"})
-    require(public_pin["kty"] == "EC" and public_pin["crv"] == "P-256" and all(isinstance(public_pin[k], str) and re.fullmatch(r"[A-Za-z0-9_-]{43}", public_pin[k]) for k in ("x", "y"))
-            and digest(public_pin) == expected_public_pin, "Existing public catalog pin differs")
-    envelope = parse_json(shell.data("catalog/tools/index.sig.json"))
-    exact(envelope, {"alg", "keyId", "signedAt", "indexHash", "files", "signature"})
-    key_id = base64.urlsafe_b64encode(hashlib.sha256(canonical(public_pin)).digest()).decode().rstrip("=")
+CATALOG_LEGACY_FIELDS = {"alg", "keyId", "signedAt", "indexHash", "files", "signature"}
+CATALOG_DELIVERY_REQUIRED = {"seq", "toolDirs"}
+CATALOG_DELIVERY_OPTIONAL = {"catalogScope", "expiresAt", "assetIndexHash", "slimHash"}
+TOOL_ID = re.compile(r"[a-z0-9][a-z0-9-]*\Z", re.I)
+HASH_TOOL = re.compile(r"tools/([a-z0-9][a-z0-9-]*)@([0-9a-f]{16})/(.+)\Z", re.I)
+HASH_INDEX = re.compile(r"catalog/(tools/index(?:\.slim)?|assets/index)\.([0-9a-f]{16})\.json\Z")
+
+
+def catalog_envelope(envelope, pin, node):
+    """Admit only a verified legacy envelope or the complete delivery extension."""
+    require(isinstance(envelope, dict), "Malformed signed catalog")
+    fields = set(envelope)
+    modern = fields != CATALOG_LEGACY_FIELDS
+    require(fields == CATALOG_LEGACY_FIELDS or (CATALOG_LEGACY_FIELDS | CATALOG_DELIVERY_REQUIRED <= fields
+            and fields <= CATALOG_LEGACY_FIELDS | CATALOG_DELIVERY_REQUIRED | CATALOG_DELIVERY_OPTIONAL), "Unknown or incomplete catalog envelope fields")
+    key_id = base64.urlsafe_b64encode(hashlib.sha256(canonical(pin)).digest()).decode().rstrip("=")
     require(envelope["alg"] == "ECDSA-P256-SHA256" and envelope["keyId"] == key_id
             and isinstance(envelope["signedAt"], str) and re.fullmatch(r"[0-9TZ:.+\-]{20,40}", envelope["signedAt"])
             and isinstance(envelope["signature"], str) and re.fullmatch(r"[A-Za-z0-9_-]{86}", envelope["signature"])
             and isinstance(envelope["files"], dict) and 1 <= len(envelope["files"]) <= MAX_FILES, "Malformed signed catalog")
     sha(envelope["indexHash"])
+    # No publication or directory assertion is admitted before cryptographic verification.
+    verify_signature(pin, envelope, node)
+    if modern:
+        require(type(envelope["seq"]) is int and 0 < envelope["seq"] <= 9007199254740991, "Invalid signed catalog sequence")
+        require(isinstance(envelope["toolDirs"], dict), "Invalid signed tool directory map")
+        if "catalogScope" in envelope:
+            sha(envelope["catalogScope"])
+        from datetime import datetime, timezone
+        try:
+            signed_at = datetime.fromisoformat(envelope["signedAt"].replace("Z", "+00:00"))
+            require(signed_at.tzinfo is not None, "Signed catalog timestamp requires a timezone")
+        except (ValueError, TypeError):
+            raise Refusal("Invalid signed catalog timestamp")
+        if "expiresAt" in envelope:
+            require(isinstance(envelope["expiresAt"], str) and re.fullmatch(r"[0-9TZ:.+\-]{20,40}", envelope["expiresAt"]), "Invalid signed catalog expiry")
+            try:
+                expires = datetime.fromisoformat(envelope["expiresAt"].replace("Z", "+00:00"))
+                require(expires > signed_at and expires > datetime.now(timezone.utc), "Signed catalog expiry precedes its publication or has elapsed")
+            except (ValueError, TypeError):
+                raise Refusal("Invalid signed catalog timestamps")
+    return modern, key_id
+
+
+def signed_tool_file(path):
+    """Match the maintained signer's logical trees and sidecar exclusions."""
+    parts = path.split("/")
+    if len(parts) < 3 or parts[0] != "tools" or not TOOL_ID.fullmatch(parts[1]): return False
+    rel = "/".join(parts[2:])
+    if rel.startswith("i18n/"): return re.fullmatch(r"i18n/[a-z0-9-]+\.json", rel) is not None
+    if rel.startswith("templates/"): return re.fullmatch(r"templates/[A-Za-z0-9._-]+\.json", rel) is not None
+    return True
+
+
+VERIFY_CODINGS = r"""
+const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
+const { Transform, Writable } = require('node:stream'), { pipeline } = require('node:stream/promises');
+const { createGunzip, createBrotliDecompress } = require('node:zlib');
+if (Number(process.versions.node.split('.')[0]) < 24) process.exit(2);
+let input = '', total = 0;
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', part => { input += part; if (Buffer.byteLength(input) > 33554432) process.exit(2); });
+const stamp = stat => [stat.dev, stat.ino, stat.mode, stat.size, stat.mtimeNs, stat.ctimeNs].map(String);
+function open(root, row) {
+  const file = path.join(root, row.path);
+  if (fs.realpathSync(file) !== file) throw Error('Coding path is not a regular tree leaf');
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+  try {
+    const stat = fs.fstatSync(fd, { bigint: true });
+    if (!stat.isFile() || (stat.mode & 0o022n) || JSON.stringify(stamp(stat)) !== JSON.stringify(row.stamp)) throw Error('Coding custody changed');
+    return { fd, file, row };
+  } catch (error) { fs.closeSync(fd); throw error; }
+}
+function unchanged(item) {
+  if (JSON.stringify(stamp(fs.fstatSync(item.fd, { bigint: true }))) !== JSON.stringify(item.row.stamp)
+      || JSON.stringify(stamp(fs.lstatSync(item.file, { bigint: true }))) !== JSON.stringify(item.row.stamp)) throw Error('Coding custody changed');
+}
+process.stdin.on('end', async () => {
+  try {
+    const value = JSON.parse(input);
+    for (const pair of value.pairs) {
+      const coding = open(value.root, pair.coding); let identity;
+      try {
+        identity = open(value.root, pair.identity);
+        let encodedSize = 0, decodedSize = 0;
+        const encodedHash = crypto.createHash('sha256'), decodedHash = crypto.createHash('sha256');
+        const source = fs.createReadStream(null, { fd: coding.fd, autoClose: false });
+        const custody = new Transform({ transform(chunk, encoding, callback) {
+          encodedSize += chunk.length;
+          if (encodedSize > pair.coding.size) return callback(Error('Coding exceeds its encoded size bound'));
+          encodedHash.update(chunk); callback(null, chunk);
+        } });
+        const sink = new Writable({ write(chunk, encoding, callback) {
+          decodedSize += chunk.length; total += chunk.length;
+          if (decodedSize > pair.identity.size || total > value.maxDecodedBytes) return callback(Error('Coding exceeds its decoded size bound'));
+          decodedHash.update(chunk); callback();
+        } });
+        const decoder = pair.coding.path.endsWith('.gz') ? createGunzip() : createBrotliDecompress();
+        await pipeline(source, custody, decoder, sink);
+        if (encodedSize !== pair.coding.size || decoder.bytesWritten !== encodedSize || encodedHash.digest('hex') !== pair.coding.sha256
+            || decodedSize !== pair.identity.size || decodedHash.digest('hex') !== pair.identity.sha256) throw Error('Coding bytes differ from identity');
+        unchanged(coding); unchanged(identity);
+      } finally { fs.closeSync(coding.fd); if (identity) fs.closeSync(identity.fd); }
+    }
+    process.stdout.write('VERIFIED');
+  } catch (error) { process.stderr.write(String(error.message).slice(0, 256)); process.exitCode = 1; }
+});
+"""
+
+
+def verified_codings(tree, node):
+    """Exclude generated codings only after bounded decoding proves identity bytes."""
+    codings = {path for path in tree.files if path.endswith((".gz", ".br"))}
+    if not codings: return set()
+    pairs = []
+    for path in sorted(codings):
+        identity = path[:-3]
+        require(identity in tree.files and identity not in codings, "Orphan or nested compression sibling")
+        def row(leaf):
+            return {**tree.files[leaf], "stamp": [str(value) for value in tree.identities[leaf]]}
+        pairs.append({"coding": row(path), "identity": row(identity)})
+    payload = canonical({"root": str(tree.root), "pairs": pairs, "maxDecodedBytes": MAX_BYTES * 2})
+    require(len(payload) <= JSON_LIMIT, "Compression verification metadata exceeds its size bound")
+    tree.unchanged()
+    try:
+        result = subprocess.run([node, "-e", VERIFY_CODINGS], input=payload, capture_output=True,
+                                env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")}, timeout=600, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        raise Refusal("Compression sibling verification could not complete")
+    require(result.returncode == 0 and result.stdout == b"VERIFIED", "Compression sibling does not decode to its bounded identity: " + result.stderr.decode(errors="replace")[:256])
+    tree.unchanged()
+    return codings
+
+
+def delivery_inventory(tree):
+    """An inventory is custody metadata, not a signature or an access grant."""
+    if "catalog/delivery-manifest.json" not in tree.files: return {}
+    value = parse_json(tree.data("catalog/delivery-manifest.json"))
+    exact(value, {"version", "files"})
+    require(type(value["version"]) is int and value["version"] == 1 and isinstance(value["files"], list)
+            and len(value["files"]) <= MAX_FILES, "Invalid catalog delivery inventory")
+    result = {}
+    for item in value["files"]:
+        exact(item, {"path", "size", "sha256"}); path = safe_path(item["path"]); sha(item["sha256"])
+        require(path.isascii() and not re.search(r"[\s%?#]", path) and path not in result
+                and type(item["size"]) is int and 0 <= item["size"] <= MAX_BYTES, "Unsafe or duplicate catalog delivery entry")
+        require(not path.endswith((".gz", ".br")), "Compression sibling is not an identity delivery inventory entry")
+        require(HASH_TOOL.fullmatch(path) or re.fullmatch(r"(?:catalog|info/shots)/.+\.[0-9a-f]{16}\.[a-z0-9]{1,12}", path), "Delivery inventory path is not content addressed")
+        require(tree.files.get(path) == item, "Catalog delivery inventory differs from physical bytes")
+        if not HASH_TOOL.fullmatch(path):
+            address = re.search(r"\.([0-9a-f]{16})\.[a-z0-9]{1,12}$", path)
+            require(item["sha256"].startswith(address[1]), "Catalog content address differs from physical bytes")
+        result[path] = item
+    return result
+
+
+def catalog_content(tree, envelope, modern, previous=None, node="node"):
+    """Check every logical signed byte and every actual immutable alias tree."""
+    codings = verified_codings(tree, node)
+    files, by_tool = envelope["files"], {}
+    for path, expected in files.items():
+        safe_path(path); sha(expected)
+        parts = path.split("/", 1)
+        require(path.isascii() and len(parts) == 2 and (not modern or TOOL_ID.fullmatch(parts[0])), "Signed catalog path needs canonical logical tool-relative serialization")
+        require(tree.files.get("tools/" + path, {}).get("sha256") == expected, "Signed tool bytes differ from catalog tree")
+        by_tool.setdefault(parts[0], {})[parts[1]] = expected
+    for path in tree.files:
+        if path.startswith("tools/") and path.endswith("/tool.json") and not (modern and HASH_TOOL.fullmatch(path)):
+            require(path[6:] in files, "Tool manifest is outside the signed catalog closure")
+    if not modern: return
+    require(set(envelope["toolDirs"]) == set(by_tool), "Signed tool directory ids differ from logical files")
+    for tool_id, entries in by_tool.items():
+        sha(envelope["toolDirs"][tool_id])
+        require("tool.json" in entries and digest(entries) == envelope["toolDirs"][tool_id], "Signed tool directory digest differs")
+    actual = {path[6:]: row["sha256"] for path, row in tree.files.items() if path not in codings and signed_tool_file(path)}
+    require(actual == files, "Logical tool tree is outside the full signed catalog closure")
+    for field, path in (("assetIndexHash", "catalog/assets/index.json"), ("slimHash", "catalog/tools/index.slim.json")):
+        require((field in envelope) == (path in tree.files), "Signed sidecar hash and actual catalog sibling differ")
+        if field in envelope:
+            require(sha(envelope[field]) == tree.files[path]["sha256"], "Signed catalog sidecar bytes differ")
+    inventory = delivery_inventory(tree)
+    prior = delivery_inventory(previous) if previous is not None else {}
+    aliases = {}
+    for path, row in tree.files.items():
+        if path in codings: continue
+        matched = HASH_TOOL.fullmatch(path)
+        if matched:
+            require(path in inventory, "Immutable tool bytes are outside the delivery inventory")
+            tool_id, address, rel = matched.groups()
+            aliases.setdefault((tool_id, address), {})[rel] = row["sha256"]
+        indexed = HASH_INDEX.fullmatch(path)
+        if indexed:
+            require(path in inventory and row["sha256"].startswith(indexed[2]), "Immutable catalog index differs from delivery inventory")
+            field = {"tools/index": "indexHash", "tools/index.slim": "slimHash", "assets/index": "assetIndexHash"}[indexed[1]]
+            require(row["sha256"] == envelope.get(field) or prior.get(path) == row, "Retained catalog index lacks previous reviewed custody")
+    for tool_id, expected in envelope["toolDirs"].items():
+        require((tool_id, expected[:16]) in aliases, "Signed current immutable tool directory is missing")
+    for field, path in (("indexHash", "catalog/tools/index"), ("assetIndexHash", "catalog/assets/index"), ("slimHash", "catalog/tools/index.slim")):
+        if field in envelope:
+            addressed = f"{path}.{envelope[field][:16]}.json"
+            require(inventory.get(addressed) == tree.files.get(addressed) and addressed in inventory, "Signed current immutable catalog index is missing")
+    for (tool_id, address), entries in aliases.items():
+        require(digest(entries).startswith(address) and "tool.json" in entries, "Immutable tool directory differs from its content address")
+        if envelope["toolDirs"].get(tool_id, "").startswith(address):
+            require(entries == by_tool[tool_id], "Current immutable tool bytes differ from signed logical bytes")
+        else:
+            prefix = f"tools/{tool_id}@{address}/"
+            require(previous is not None and all(prior.get(prefix + rel) == tree.files[prefix + rel] for rel in entries)
+                    and {path for path in prior if path.startswith(prefix)} == {prefix + rel for rel in entries}, "Retained immutable tool bytes lack previous reviewed custody")
+
+
+def catalog(shell, raw, public_pin, expected_public_pin, node, previous=None):
+    exact(public_pin, {"kty", "crv", "x", "y"})
+    require(public_pin["kty"] == "EC" and public_pin["crv"] == "P-256" and all(isinstance(public_pin[k], str) and re.fullmatch(r"[A-Za-z0-9_-]{43}", public_pin[k]) for k in ("x", "y"))
+            and digest(public_pin) == expected_public_pin, "Existing public catalog pin differs")
+    envelope = parse_json(shell.data("catalog/tools/index.sig.json"))
+    modern, key_id = catalog_envelope(envelope, public_pin, node)
     require(hashlib.sha256(shell.data("catalog/tools/index.json")).hexdigest() == envelope["indexHash"], "Signed catalog index differs")
     require("catalog/tools/index.sig.json" not in raw.files, "Raw Work pack must omit the build-time signature")
     for path in raw.files:
-        if path.startswith("tools/") and path.endswith("/tool.json"):
+        if path.startswith("tools/") and path.endswith("/tool.json") and not (modern and HASH_TOOL.fullmatch(path)):
             require(path[len("tools/"):] in envelope["files"], "Tool manifest is outside the signed catalog closure")
     for path, expected in envelope["files"].items():
         safe_path(path); sha(expected)
@@ -346,7 +551,8 @@ def catalog(shell, raw, public_pin, expected_public_pin, node):
         if path.startswith(("tools/", "catalog/tools/")):
             require(path in shell.files and item == shell.files[path], "Raw tool/catalog payload differs from compiled private shell")
     require(raw.files.get("catalog/tools/index.json") == shell.files["catalog/tools/index.json"], "Raw catalog index differs")
-    verify_signature(public_pin, envelope, node)
+    catalog_content(shell, envelope, modern, previous, node)
+    catalog_content(raw, envelope, modern, previous, node)
     return {"indexSha256": envelope["indexHash"], "envelopeSha256": shell.files["catalog/tools/index.sig.json"]["sha256"], "keyId": key_id, "signedFiles": len(envelope["files"])}
 
 
@@ -367,8 +573,62 @@ def receipt(value, required, inputs):
     return item
 
 
+def raw_source_stamp(value, inputs, raw, candidate, lolly_root, runner):
+    """A derived pack must match independent reviewed custody and exact source bytes."""
+    data = parse_json(raw.data(".lolly-pack-source.json"))
+    require(isinstance(data, dict), "Malformed raw pack source stamp")
+    common = {"version", "source", "commit", "profile", "dirty", "excluded", "removed", "builtAt"}
+    modern = type(data.get("version")) is int and data["version"] == 2
+    exact(data, common | ({"derivation"} if modern else set()))
+    require(type(data["version"]) is int and data["version"] in (1, 2) and data["source"] == "lolly"
+            and data["commit"] == value["lolly"]["source"] and data["profile"] == value["profile"] and data["dirty"] is False
+            and data["removed"] == ["catalog/tools/index.sig.json"]
+            and data["excluded"] == ([] if modern else ["catalog/og", "catalog/previews"]), "Raw pack source stamp differs from clean private source")
+    require(("rawDerivation" in value) == modern, "Derived raw pack needs independent release custody; legacy stamps must stay unchanged")
+    if not modern: return None
+    exact(value["rawDerivation"], {"custody"})
+    ref = value["rawDerivation"]["custody"]
+    custody = inputs.file(ref)
+    exact(custody, {"version", "status", "lollySource", "profile", "manifest", "publicPin", "verifier"})
+    require(type(custody["version"]) is int and custody["version"] == 1 and custody["status"] == "SIGNED_LOLLY_RELEASE_REVIEWED"
+            and custody["lollySource"] == value["lolly"]["source"] and custody["profile"] == value["profile"], "Raw derivation custody differs from clean source or profile")
+    custody_base = local_path(ref["path"], inputs.base).parent
+    for name, reviewed in (("manifest", value["candidateShell"]["manifest"]), ("publicPin", value["publicPin"])):
+        exact(custody[name], {"path", "sha256"})
+        path = local_path(custody[name]["path"], custody_base)
+        require(sha(custody[name]["sha256"]) == reviewed["sha256"] and path == local_path(reviewed["path"], inputs.base), "Raw derivation custody differs from reviewed " + name)
+        inputs.file({"path": str(path), "sha256": custody[name]["sha256"]})
+    exact(custody["verifier"], {"path", "sha256"})
+    verifier = "scripts/verify-release-catalog.ts"
+    require(custody["verifier"]["path"] == verifier and sha(custody["verifier"]["sha256"])
+            == hashlib.sha256(git_bytes(lolly_root, value["lolly"]["source"], verifier, runner)).hexdigest(), "Raw derivation verifier differs from clean source")
+    inputs.file({"path": str(lolly_root / verifier), "sha256": custody["verifier"]["sha256"]}, False)
+    derivation = data["derivation"]
+    exact(derivation, {"kind", "custodySha256", "manifestSha256", "publicPinSha256", "verifierSha256", "indexSha256", "envelopeSha256", "omittedCodingSidecars"})
+    require(derivation["kind"] == "verified-signed-release" and derivation["custodySha256"] == ref["sha256"]
+            and derivation["manifestSha256"] == candidate.manifest_sha and derivation["publicPinSha256"] == value["publicPin"]["sha256"]
+            and derivation["verifierSha256"] == custody["verifier"]["sha256"]
+            and derivation["indexSha256"] == candidate.files["catalog/tools/index.json"]["sha256"]
+            and derivation["envelopeSha256"] == candidate.files["catalog/tools/index.sig.json"]["sha256"], "Raw derivation stamp differs from independent reviewed release bytes")
+    codings = {path for path in candidate.files if path.endswith((".gz", ".br"))}
+    require(type(derivation["omittedCodingSidecars"]) is int and derivation["omittedCodingSidecars"] == len(codings), "Raw derivation coding count differs from reviewed release")
+    require(isinstance(data["builtAt"], str) and re.fullmatch(r"[0-9TZ:.+\-]{20,40}", data["builtAt"]), "Invalid derived raw pack build timestamp")
+    from datetime import datetime
+    try:
+        require(datetime.fromisoformat(data["builtAt"].replace("Z", "+00:00")).tzinfo is not None, "Derived raw pack timestamp needs a timezone")
+    except ValueError:
+        raise Refusal("Invalid derived raw pack build timestamp")
+    require("seq" in parse_json(candidate.data("catalog/tools/index.sig.json")), "Derived raw pack needs a modern verified release")
+    inventory = delivery_inventory(candidate)
+    expected = {path: row for path, row in candidate.files.items()
+                if path not in codings and path != "catalog/tools/index.sig.json"
+                and (path.startswith(("tools/", "catalog/")) or path in inventory)}
+    require({path: row for path, row in raw.files.items() if path != ".lolly-pack-source.json"} == expected, "Derived raw pack differs from the exact reviewed identity projection")
+    return copy.deepcopy(derivation)
+
+
 def prepare(value, base, expected_public_pin, node="node", runner=git_command):
-    exact(value, EVIDENCE_KEYS)
+    exact(value, EVIDENCE_KEYS | ({"rawDerivation"} if isinstance(value, dict) and "rawDerivation" in value else set()))
     require(type(value["version"]) is int and value["version"] == 1, "Unsupported private cohort evidence")
     inputs = Inputs(base)
     lolly_root, lolly_run = source_record(value["lolly"], inputs, runner, "lolly")
@@ -386,12 +646,8 @@ def prepare(value, base, expected_public_pin, node="node", runner=git_command):
     roots = [tree.root for tree in inputs.trees]
     require(len(set(roots)) == 4 and all(a not in b.parents for a in roots for b in roots if a != b), "Private input trees must be distinct and non-overlapping")
     retention(candidate, previous_shell, shell)
-    actual_catalog = catalog(shell, raw, inputs.file(value["publicPin"]), sha(expected_public_pin), node)
-    stamp_data = parse_json(raw.data(".lolly-pack-source.json"))
-    exact(stamp_data, {"version", "source", "commit", "profile", "dirty", "excluded", "removed", "builtAt"})
-    require(type(stamp_data["version"]) is int and stamp_data["version"] == 1 and stamp_data["source"] == "lolly" and stamp_data["commit"] == value["lolly"]["source"]
-            and stamp_data["profile"] == value["profile"] and stamp_data["dirty"] is False
-            and stamp_data["removed"] == ["catalog/tools/index.sig.json"] and stamp_data["excluded"] == ["catalog/og", "catalog/previews"], "Raw pack source stamp differs from clean private source")
+    actual_catalog = catalog(shell, raw, inputs.file(value["publicPin"]), sha(expected_public_pin), node, previous_shell)
+    raw_derivation = raw_source_stamp(value, inputs, raw, candidate, lolly_root, runner)
     build = receipt(value["build"], {"version", "status", "lollySource", "workSource", "brandCommit", "profile", "enginePinSha256", "shellManifestSha256", "settings", "workspaceModules", "originalReport"}, inputs)
     require(build["status"] == "PRIVATE_WEB_BUILD_REVIEWED" and build["lollySource"] == value["lolly"]["source"] and build["workSource"] == value["work"]["source"]
             and build["brandCommit"] == brand_commit and build["profile"] == value["profile"] and build["enginePinSha256"] == value["enginePin"]["sha256"]
@@ -472,7 +728,7 @@ def prepare(value, base, expected_public_pin, node="node", runner=git_command):
     return {"version": 1, "status": STATUS, "sources": {"lolly": value["lolly"]["source"], "work": value["work"]["source"], "brand": brand_commit},
             "normalCI": {"lolly": {"run": lolly_run["id"], "attempt": lolly_run["run_attempt"]}, "work": {"run": work_run["id"], "attempt": work_run["run_attempt"]}},
             "image": value["expectedWorkImage"], "profile": value["profile"], "enginePinSha256": value["enginePin"]["sha256"], "resolverPinSha256": value["resolverPin"]["sha256"],
-            "shell": {"manifestSha256": shell.manifest_sha, "releaseId": shell.shell_id, "files": len(shell.files)}, "rawPack": {"manifestSha256": raw.manifest_sha, "files": len(raw.files)},
+            "shell": {"manifestSha256": shell.manifest_sha, "releaseId": shell.shell_id, "files": len(shell.files)}, "rawPack": {"manifestSha256": raw.manifest_sha, "files": len(raw.files), **({"derivation": raw_derivation} if raw_derivation else {})},
             "catalog": actual_catalog, "previousCohortSha256": value["previous"]["sha256"], "beforeSpecSha256": previous["deploymentSpecSha256"], "desiredSpecSha256": digest(spec),
             "desiredSpec": spec, "guardedPatchTemplate": patch, "inverseTupleTemplate": rollback,
             "allUnselectedSpecFieldsPreserved": True, "evidence": [{"path": str(path), "sha256": expected} for path, (_, expected) in sorted(inputs.reads.items())],

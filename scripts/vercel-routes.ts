@@ -69,7 +69,7 @@ export const SHELL_FUNCTION_PATHS = '^/(api/(?:ca|penpot|mcp)(?:/.*)?|api/fetch-
  *  against that sw.js. (`/api/` and `/catalog/` are bypassed already, and
  *  `/tools/<id>/<file>` paths end in a file name.) */
 export const SHELL_SW_BYPASS_PREFIXES: readonly string[] = [
-  'activate', 'admin', 'connect', 'healthz', 'l', 'metrics', 'readyz', 'render', 'scim',
+  'activate', 'admin', 'connect', 'e', 'healthz', 'l', 'metrics', 'o', 'readyz', 'render', 'scim',
 ];
 
 /** Top-level paths a WebSocket upgrade arrives on: the collab gateway's

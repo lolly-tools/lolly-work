@@ -80,6 +80,7 @@ Connecting your first one end to end, with commands:
 |---|---|
 | [operations](operations.md) | Migrations, collaboration drain, secret rotation, backup, limits, monitoring, application updates |
 | [fast frontend updates](frontend-updates.md) | Ordinary web code changes, private three-command publication, public supervised phases and accepted baselines |
+| [verified instance packs](instance-pack-production.md) | Raw Work packs from signed releases, immutable assets, renditions and release custody |
 | [telemetry](telemetry.md) | What is recorded, what never is, attribution consent, dashboards |
 | [audit](audit.md) | The hash-chained record, verification, anchoring the head off-box |
 | [production evidence](production-readiness.md) | Read-only configuration checks, staging probes and unresolved review evidence |

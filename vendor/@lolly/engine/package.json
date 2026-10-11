@@ -22,7 +22,7 @@
   },
   "dependencies": {
     "@cto.af/linebreak": "4.0.3",
-    "@lolly-tools/core": "1.1.0",
+    "@lolly-tools/core": "1.2.0",
     "ajv": "^8.17.1",
     "bidi-shaper": "0.1.2",
     "css-tree": "^3.2.1",

@@ -4,6 +4,8 @@
  * node:http, a container, and a Vercel function wrapper.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { cachePolicy, type DeliveryClass, type CachePolicyOptions } from '@lolly-tools/core/delivery-v1';
+import { appendVary, encodeText } from './file-delivery.ts';
 
 export type Handler = (req: IncomingMessage, res: ServerResponse, ctx: RouteCtx) => void | Promise<void>;
 
@@ -17,26 +19,77 @@ interface Route {
   path: string; // the registered pattern, e.g. '/api/v1/users/:id' - used as a low-cardinality metric label
   segments: string[]; // ':name' = param, '*' = trailing wildcard (rest in params['*'])
   handler: Handler;
+  delivery: DeliveryClass;
+}
+
+const requests = new WeakMap<ServerResponse, IncomingMessage>();
+const classes = new WeakMap<ServerResponse, DeliveryClass>();
+const classOptions = new WeakMap<ServerResponse, CachePolicyOptions>();
+/** Dynamic file routes select their class after resolving the actual file. */
+export function setDeliveryClass(res: ServerResponse, delivery: DeliveryClass, options: CachePolicyOptions = {}): void { classes.set(res, delivery); classOptions.set(res, options); }
+/** Credentials of any kind keep a response out of a shared cache. */
+export function carriesCredential(req: IncomingMessage): boolean {
+  return Object.keys(req.headers).some(name => ['cookie', 'authorization', 'x-lolly-client'].includes(name.toLowerCase()) || name.toLowerCase().startsWith('x-lw-'));
+}
+
+/** Install before dispatch, so auth errors and early raw responses are covered too. */
+export function guardDelivery(req: IncomingMessage, res: ServerResponse): void {
+  if (requests.has(res)) return;
+  requests.set(res, req);
+  const original = res.writeHead;
+  res.writeHead = function (this: ServerResponse, status: number, ...args: unknown[]) {
+    const passed = (typeof args[0] === 'string' ? args[1] : args[0]) as Record<string, string | number | string[]> | undefined;
+    const entries = Array.isArray(passed) ? Array.from({ length: passed.length / 2 }, (_, i) => [passed[2 * i]!, passed[2 * i + 1]!]) : Object.entries(passed ?? {});
+    const merged = new Map<string, string | number | string[]>();
+    for (const [name, value] of Object.entries(res.getHeaders())) if (value !== undefined) merged.set(name.toLowerCase(), value as string | number | string[]);
+    for (const [name, value] of entries) merged.set(String(name).toLowerCase(), value);
+    const cls = classes.get(res) ?? 'person-private';
+    const publicAllowed = cls.startsWith('public-') && !carriesCredential(req) && !merged.has('set-cookie');
+    const policy = cachePolicy(publicAllowed ? cls : cls.startsWith('public-') ? 'instance-private' : cls, { ...classOptions.get(res), status });
+    let control = String(merged.get('cache-control') ?? policy.cacheControl);
+    if (cls === 'person-private') control = cachePolicy('person-private', { status }).cacheControl;
+    if (cls === 'link' && !/\bno-store\b/.test(control)) control = policy.cacheControl;
+    if (status >= 400 || merged.has('set-cookie') || (/\bpublic\b/.test(control) && !publicAllowed)) control = cachePolicy('person-private').cacheControl;
+    if (!/\bno-transform\b/.test(control)) control += ', no-transform';
+    merged.set('cache-control', control);
+    const shared = publicAllowed && /^public\b/.test(control);
+    merged.set('cdn-cache-control', shared ? policy.cdnCacheControl : 'no-store');
+    if (shared) {
+      const max = /(?:^|,)\s*max-age=(\d+)/.exec(control)?.[1] ?? '0';
+      if (!/\bs-maxage=/.test(control)) merged.set('cache-control', control + `, s-maxage=${max}`);
+      merged.set('surrogate-control', policy.surrogateControl ?? policy.cdnCacheControl);
+    } else merged.delete('surrogate-control');
+    if (!merged.has('referrer-policy')) merged.set('referrer-policy', 'no-referrer');
+    return typeof args[0] === 'string'
+      ? Reflect.apply(original, this, [status, args[0], Object.fromEntries(merged)])
+      : original.call(this, status, Object.fromEntries(merged));
+  } as ServerResponse['writeHead'];
 }
 
 export function createRouter(): {
-  add: (method: string, path: string, handler: Handler) => void;
+  add: (method: string, path: string, handler: Handler, options?: { delivery?: DeliveryClass }) => void;
+  /** Classes are conservative by default; public routes opt in explicitly. */
+  descriptions: () => Array<{ method: string; path: string; delivery: DeliveryClass }>;
   /** Returns the matched route PATTERN (e.g. '/api/v1/users/:id'), or null when
    *  nothing matched - a bounded label for the HTTP request metric. */
   dispatch: (req: IncomingMessage, res: ServerResponse) => Promise<string | null>;
 } {
   const routes: Route[] = [];
   return {
-    add(method, path, handler) {
-      routes.push({ method, path, segments: path.split('/').filter(Boolean), handler });
+    add(method, path, handler, options) {
+      routes.push({ method, path, segments: path.split('/').filter(Boolean), handler, delivery: options?.delivery ?? 'person-private' });
     },
+    descriptions: () => routes.map(({ method, path, delivery }) => ({ method, path, delivery })),
     async dispatch(req, res) {
+      // Unit callers can use a minimal response double; HTTP callers get the guard.
+      if (typeof res.writeHead === 'function') guardDelivery(req, res);
       const url = new URL(req.url ?? '/', 'http://local');
       const parts = url.pathname.split('/').filter(Boolean);
       for (const route of routes) {
         if (route.method !== req.method) continue;
         const params = match(route.segments, parts);
         if (!params) continue;
+        classes.set(res, route.delivery);
         await route.handler(req, res, { params, url });
         return route.path;
       }
@@ -92,9 +145,13 @@ export async function readRaw(req: IncomingMessage, maxBytes: number): Promise<B
 }
 
 export function sendJson(res: ServerResponse, status: number, body: unknown, headers?: Record<string, string>): void {
-  const data = JSON.stringify(body);
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...headers });
-  res.end(data);
+  const data = Buffer.from(JSON.stringify(body)), req = requests.get(res);
+  const encoded = req ? encodeText(req, data, 'application/json') : { bytes: data };
+  const output: Record<string, string> = { 'cache-control': cachePolicy('person-private', { status }).cacheControl, ...headers };
+  if (req) output.vary = appendVary(res.getHeader('vary') ?? headers?.vary, 'Accept-Encoding');
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...output,
+    ...(encoded.encoding ? { 'content-encoding': encoded.encoding } : {}), 'content-length': String(encoded.bytes.length) });
+  res.end(req?.method === 'HEAD' ? undefined : encoded.bytes);
 }
 
 /** `detail` merges extra, already-safe fields into the error object (e.g. the

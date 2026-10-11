@@ -143,7 +143,7 @@ test('erasure deletes the mapping, scrubs attribution, and refuses to destroy sh
   await store.putProject({ id: 'p1', name: 'Campaign', visibility: 'private', ownerId: departed.id, createdAt: new Date().toISOString(), archivedAt: new Date().toISOString() });
   const preview = await fetch(`${base}/api/v1/users/${departed.id}/erasure-preview`, { headers: { cookie: owner } });
   assert.equal(preview.status, 200);
-  assert.equal(preview.headers.get('cache-control'), 'no-store');
+  assert.equal(preview.headers.get('cache-control'), 'private, no-store, max-age=0, no-transform');
   const body = await preview.json() as { blocked: boolean; completePersonalDataErasure: boolean; references: { projects: number }; telemetryEvents: number };
   assert.equal(body.blocked, true);
   assert.equal(body.completePersonalDataErasure, false);

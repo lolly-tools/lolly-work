@@ -153,7 +153,7 @@ test('setup is owner gated, readiness describes the actual store, and a reviewer
     const access = await (await fetch(base + '/api/auth/session', { headers: { cookie: owner } })).json() as any;
     assert.equal(access.console.views.setup, true);
     const tokenResponse = await fetch(base + '/api/v1/tokens', { method: 'POST', headers: { cookie: owner, 'content-type': 'application/json' }, body: JSON.stringify({ label: 'Canary', role: 'viewer' }) });
-    assert.equal(tokenResponse.status, 201); assert.equal(tokenResponse.headers.get('cache-control'), 'no-store');
+    assert.equal(tokenResponse.status, 201); assert.equal(tokenResponse.headers.get('cache-control'), 'private, no-store, max-age=0, no-transform');
     const token = await tokenResponse.json() as any;
     const listed = await (await fetch(base + '/api/v1/tokens', { headers: { cookie: owner } })).json() as any;
     assert.equal(JSON.stringify(listed).includes(token.token), false);

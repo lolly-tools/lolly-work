@@ -128,6 +128,13 @@ export interface AssetIndex {
   [key: string]: unknown;
 }
 
+/** Canonical full SHA-256 SRI only; short URL hashes are never checksums. */
+export function assetFormatSha256(format: AssetFormatEntry): string | null {
+  const checksum = typeof format.checksum === 'string' ? /^sha256-([A-Za-z0-9+/]{43}=)$/.exec(format.checksum) : null;
+  const digest = checksum ? Buffer.from(checksum[1]!, 'base64') : null;
+  return digest && digest.length === 32 && digest.toString('base64') === checksum![1] ? digest.toString('hex') : null;
+}
+
 /**
  * Fold lifecycle rows and imported upstream windows into a servable feed:
  * revoked, scheduled, and expired-with-'hide' entries are dropped; a purely-
@@ -165,14 +172,32 @@ export function applyLifecycleToIndex(index: AssetIndex, rows: LifecycleRow[], n
  */
 export function buildPathMap(index: AssetIndex): Map<string, string> {
   const map = new Map<string, string>();
+  const claim = (path: string, id: string): void => {
+    if (map.has(path) && map.get(path) !== id) throw new Error('ambiguous catalog asset path');
+    map.set(path, id);
+  };
   if (!Array.isArray(index.assets)) return map;
   for (const asset of index.assets) {
-    if (typeof asset?.id !== 'string' || !Array.isArray(asset.formats)) continue;
-    for (const fmt of asset.formats) {
+    if (typeof asset?.id !== 'string') continue;
+    const locales = asset.locales && typeof asset.locales === 'object' && !Array.isArray(asset.locales) ? Object.values(asset.locales) : [];
+    const formats = [...(Array.isArray(asset.formats) ? asset.formats : []), ...locales.filter(Array.isArray).flat()];
+    for (const fmt of formats as AssetFormatEntry[]) {
       const url = typeof fmt?.url === 'string' ? fmt.url : undefined;
       if (!url) continue;
       const rel = url.replace(/^\/+/, '').replace(/^catalog\//, '');
-      if (rel) map.set(rel, asset.id);
+      if (!rel) continue;
+      claim(rel, asset.id);
+      const addressed = /^(.*)\.([0-9a-f]{16})(\.[a-z0-9]{1,16})$/.exec(rel);
+      if (!addressed) continue;
+      if (/[\\%?#\p{White_Space}\p{Cc}]/u.test(rel) || rel.split('/').some(part => !part || part === '.' || part === '..') || rel.includes('://')) {
+        throw new Error('unsafe catalog asset address');
+      }
+      // The current full SRI must agree before a legacy alias gains this owner.
+      const digest = assetFormatSha256(fmt);
+      if (!digest || digest.slice(0, 16) !== addressed[2]) {
+        throw new Error('catalog asset address does not match its checksum');
+      }
+      claim(`${addressed[1]}${addressed[3]}`, asset.id);
     }
   }
   return map;

@@ -105,6 +105,10 @@ export interface InstanceConfig {
     name: string;
     baseUrl: string;
     pack: string;
+    /** Operator-assigned release generation for unsigned mounted sources. Increment on publication. */
+    catalogPublicationGeneration?: number;
+    /** Pinned public P-256 key for verifying a mounted catalog's publication sequence. */
+    catalogPublicKey?: Record<string, unknown>;
     /** Optional path to a built Lolly web shell (shells/web/dist). When set, the
      *  instance serves the shell at `/` so the whole product is ONE origin - 
      *  session cookies work and the shell's org/ seam activates. Absent → the
@@ -823,6 +827,13 @@ export function parseConfig(json: string): InstanceConfig {
     || !['api', 'web'].includes(cfg.deployment?.application)
     || typeof cfg.deployment?.requireServerRendering !== 'boolean') {
     throw new Error('deployment requires mode (auto/evaluation/production), application (api/web) and boolean requireServerRendering');
+  }
+  if (cfg.instance.catalogPublicationGeneration !== undefined && (!Number.isSafeInteger(cfg.instance.catalogPublicationGeneration)
+    || cfg.instance.catalogPublicationGeneration <= 0)) throw new Error('instance.catalogPublicationGeneration must be a positive safe integer');
+  if (cfg.instance.catalogPublicKey !== undefined) {
+    const key = cfg.instance.catalogPublicKey;
+    if (!key || Array.isArray(key) || key.kty !== 'EC' || key.crv !== 'P-256' || typeof key.x !== 'string'
+      || typeof key.y !== 'string' || 'd' in key) throw new Error('instance.catalogPublicKey must be a public P-256 JWK');
   }
   if (cfg.instance.brandTokens !== undefined && (cfg.instance.brandTokens === null || Array.isArray(cfg.instance.brandTokens)
     || typeof cfg.instance.brandTokens !== 'object' || Object.entries(cfg.instance.brandTokens).some(([key, value]) =>

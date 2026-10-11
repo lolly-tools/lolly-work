@@ -24,7 +24,9 @@ import { linkByEmailFor, linkKeys, passwordIdpOf, sessionKeys, type InstanceConf
 import type { InvitationRecord, PasswordLinkRecord, ProjectMemberRole, ProjectRecord, ProjectSessionStats, ScimTokenRecord, SessionRecord, SessionSummary, Store, UserRecord } from '../store/types.ts';
 import type { RoomSnapshot } from '../collab/rooms.ts';
 import type { NearbyRegistry } from '../collab/nearby.ts';
-import { createRouter, readJson, readRaw, sendError, sendJson, type Handler, type RouteCtx } from './router.ts';
+import { createRouter, guardDelivery, readJson, readRaw, sendError, sendJson, setDeliveryClass, type Handler, type RouteCtx } from './router.ts';
+import { INERT_BYTE_HEADERS, canonicalRenderQuery, matchesEtag, safeFile, sendBytes, sendFile } from './file-delivery.ts';
+import { cachePolicy, publicStaticDeliveryClass, type DeliveryClass } from '@lolly-tools/core/delivery-v1';
 import { readShotCred } from './shot-provenance.ts';
 import { CONSOLE_ASSET_HEADERS, consoleDocumentHeaders } from './console-headers.ts';
 import { mintToken, verifyToken } from '../iam/tokens.ts';
@@ -97,11 +99,12 @@ import {
 } from '../collab/invites.ts';
 import { normalizeOverlay, toolVisibleTo, resolveInputAccess } from '../policy/overlay.ts';
 import {
-  applyLifecycleToIndex, assetState, buildPathMap, combinedState, entryWindow,
+  applyLifecycleToIndex, assetFormatSha256, assetState, buildPathMap, combinedState, entryWindow,
   type AssetFormatEntry, type AssetIndex, type AssetIndexEntry, type AssetState, type LifecycleRow,
 } from '../catalog/lifecycle.ts';
 import { buildFragment, callerSeesProvider, createFederation, credentialContext, mapProviderAsset, passesExposure } from '../catalog/federation.ts';
 import { createServedIndex } from '../catalog/served-index.ts';
+import { createCatalogDelivery, retainedToolBytes, type CatalogSnapshotKind } from '../catalog/delivery.ts';
 import { createExtCache, extCacheKey } from '../catalog/ext-cache.ts';
 import { browseAssets, normalisedQuery, parseBrowseQuery } from '../catalog/asset-browse.ts';
 import { providerDrift } from '../catalog/drift.ts';
@@ -177,9 +180,9 @@ import { RenderResourceError, type RenderSpec } from '../renders/types.ts';
 import { createHostedAssetResolver, optimizeHostedAsset, type HostedAssetResult, type HostedProviderRef } from '../catalog/providers/asset-resolver.ts';
 import { resolveBindingRows, type DataBinding } from '../automation/bindings.ts';
 import { resolveC2paSigner } from '../render/c2pa-signer.ts';
-import { CATALOG_INDEX_REL, CATALOG_SIG_REL, callerCanSeeTool, createCatalogSigning, servedToolIndexBytes } from '../catalog/signing.ts';
+import { CATALOG_INDEX_REL, CATALOG_SIG_REL, callerCanSeeTool, createCatalogSigning } from '../catalog/signing.ts';
 import { publicCard, shellStubFor } from '../shell/share-cards.ts';
-import { isToolKeyedCatalogPath, servedToolSidecar } from '../catalog/tool-sidecars.ts';
+import { addressedToolArt, isToolKeyedCatalogPath, servedToolSidecar, toolArtAddress } from '../catalog/tool-sidecars.ts';
 import type { ProvenanceDoc, ProvenanceIngredient } from '../render/provenance.ts';
 import type { Profile } from '../render/contract.ts';
 import { ScryptBusyError, hashPassword, randomId, sameString, scryptQueueFull, sealSecret, secretFingerprint, sha256Hex, verifyPassword } from '../lib/crypto.ts';
@@ -508,6 +511,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   const servedIndex = createServedIndex({
     pack: () => config.instance.pack, store, federation, ready: providersReady, pagedThreshold: serving.pagedProviderThreshold,
   });
+  const catalogDelivery = createCatalogDelivery({ store, servedIndex, signing: catalogSigning,
+    source: { pack: deploymentConfig.instance.pack, generation: deploymentConfig.instance.catalogPublicationGeneration,
+      publicKey: deploymentConfig.instance.catalogPublicKey } });
   const extCache = createExtCache(serving.extCache);
   /** Whether a conditional request already holds `etag` (a list, `*`, or weak forms). */
   const etagMatches = (req: IncomingMessage, etag: string): boolean => {
@@ -2651,6 +2657,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       res.end(JSON.stringify({ kind: 'guest-edit', toolId: link.target.toolId, sessionRef: link.target.sessionId ?? null, guest: name }));
       return;
     }
+    setDeliveryClass(res, 'link', { boundedAgeSec: Math.max(0, Math.min(300, link.exp - Math.floor(Date.now() / 1000))) });
     // A collection target is a LIST of assets (plans/31 §5) - its own listing
     // page, one member's bytes, or the zip-all, all through this one signature.
     if (link.target.collectionId) return serveLinkedCollection(req, res, link, ctx.url);
@@ -2661,7 +2668,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // share / embed / download - render the BAKED stored target to bytes. The
     // signature IS the authorization (no session needed), so params are trusted
     // exactly as minted and the caller's query is ignored (bar the password gate
-    // above). Public-cacheable: the URL fully determines the asset.
+    // above). Each request still rechecks the live link before private caching.
     const toolId = link.target.toolId;
     if (!toolId) return sendError(res, 400, 'UNRENDERABLE_TARGET', 'this link has no tool to render');
     const fmt = (link.target.format || 'svg').toLowerCase();
@@ -2675,14 +2682,15 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         toolId, format: fmt, query: q.toString(),
         principal: null, profile: {}, overlays: await store.listOverlays(),
       });
-      const etag = `"r-${result.cacheKey.slice(0, 16)}"`;
-      if (!result.evidence?.brandRules && req.headers['if-none-match'] === etag) {
+      const etag = `W/"r-${result.cacheKey.slice(0, 16)}"`;
+      if (result.evidence?.brandRules) setDeliveryClass(res, 'person-private');
+      if (!result.evidence?.brandRules && matchesEtag(req.headers['if-none-match'], etag)) {
         res.writeHead(304, { etag });
         res.end();
         return;
       }
       const headers: Record<string, string> = {
-        'content-type': result.mime, etag, 'cache-control': result.evidence?.brandRules ? 'private, no-store' : 'public, max-age=300',
+        'content-type': result.mime, etag, 'cache-control': result.evidence?.brandRules ? 'private, no-store' : cachePolicy('link', { boundedAgeSec: Math.max(0, Math.min(300, link.exp - Math.floor(Date.now() / 1000))) }).cacheControl,
         'x-lolly-brand-check': result.evidence?.brandRules?.disposition ?? 'not-requested',
         ...provenanceHeader(result.provenance),
       };
@@ -3433,7 +3441,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     sendJson(res, 200, await brand.apply(actor, change, review.revision, review.reviewToken));
   });
 
-  router.add('GET', '/connect/pack.lolly', async (req, res) => {
+  const servePack: Handler = async (req, res, ctx) => {
     // Gating follows defaultAccessMode (plans/34 §7b, resolved): an open
     // instance serves the pack publicly; anything else asks for a member
     // session. The pack holds no secrets, but it does hold the brand.
@@ -3461,24 +3469,32 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const offer = await offeredPack();
     const head = offer?.blobId ? await blobs.head(offer.blobId) : null;
     if (!head) return sendError(res, 404, 'NOT_FOUND', 'no instance pack is hosted here');
-    const etag = `"${head.checksum}"`;
-    if (ifNoneMatchHits(req.headers['if-none-match'], etag)) {
-      res.writeHead(304, { etag, 'cache-control': 'private, no-cache' });
-      res.end();
-      return;
-    }
+    const checksum = /^brand-download\/([0-9a-f]{64})\.lolly$/.exec(offer?.blobId ?? '')?.[1] ?? offer?.meta?.checksum ?? head.checksum;
+    const requested = ctx.params.file;
+    if (requested && requested !== `pack.${checksum.slice(0, 16)}.lolly`) return sendError(res, 404, 'NOT_FOUND', 'No current pack at this checksum.');
+    const immutable = !!requested && config.policy.defaultAccessMode === 'open';
+    setDeliveryClass(res, immutable ? 'public-immutable' : 'instance-private');
+    const policy = cachePolicy(immutable ? 'public-immutable' : 'instance-private'), etag = `"${checksum}"`;
+    const headers = { etag, 'cache-control': policy.cacheControl, 'x-content-type-options': 'nosniff',
+      ...(offer?.meta?.uploadedAt ? { 'last-modified': new Date(offer.meta.uploadedAt).toUTCString() } : {}),
+      ...(immutable ? { 'cache-tag': `o_${checksum.slice(0, 16)},h_${sha256Hex(config.instance.baseUrl).slice(0, 16)}`, 'surrogate-key': `o_${checksum.slice(0, 16)} h_${sha256Hex(config.instance.baseUrl).slice(0, 16)}` } : {}) };
+    if (matchesEtag(req.headers['if-none-match'], etag)) { res.writeHead(304, headers); res.end(); return; }
+    if (req.method === 'HEAD') { res.writeHead(200, { ...headers, 'content-type': 'application/octet-stream', 'content-length': String(head.size) }); res.end(); return; }
     const blob = offer?.blobId ? await blobs.get(offer.blobId) : null;
     if (!blob) return sendError(res, 404, 'NOT_FOUND', 'no instance pack is hosted here');
     res.writeHead(200, {
       'content-type': 'application/octet-stream',
       'content-disposition': `attachment; filename="${config.instance.name.replace(/[^A-Za-z0-9._ -]/g, '').replace(/\s+/g, ' ').trim() || 'instance'}.lolly"`,
       'content-length': String(blob.stat.size),
-      etag,
-      'cache-control': 'private, no-cache',
+      ...headers,
       'x-content-type-options': 'nosniff',
     });
     Readable.fromWeb(blob.body as import('node:stream/web').ReadableStream<Uint8Array>).pipe(res);
-  });
+  };
+  for (const method of ['GET', 'HEAD']) {
+    router.add(method, '/connect/pack.lolly', servePack, { delivery: 'instance-private' });
+    router.add(method, '/connect/:file', servePack, { delivery: 'instance-private' });
+  }
 
   // The preflight a browser sends before a cross-origin `If-None-Match` GET of
   // the pack. Open instances only, matching the gate on the download itself: a
@@ -4847,7 +4863,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     try {
       map = buildPathMap(JSON.parse(await readFile(file, 'utf8')) as AssetIndex);
     } catch {
-      /* unreadable/malformed index — empty map, nothing gated */
+      throw Object.assign(new Error('catalog asset ownership is unavailable'), { status: 503 });
     }
     assetPathMapCache.set(pack, { mtimeMs, map });
     return map;
@@ -4981,10 +4997,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
    * way its author drew it. Both are inert for bytes loaded as an <img>, which
    * is how the shells consume them, so this costs the normal path nothing.
    */
-  const INERT_BYTES: Record<string, string> = {
-    'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; sandbox",
-    'x-content-type-options': 'nosniff',
-  };
+  const INERT_BYTES = INERT_BYTE_HEADERS;
 
   // ── asset versions (plans/31 §6) ──────────────────────────────────────────
 
@@ -5030,7 +5043,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // `/tools` gallery route (the `/tools/*` file route below also matches it) and
   // the SPA fallback registered last. Absent shellDir → null, and neither does.
   const shellDir = config.instance.shellDir;
-  const serveShell = shellDir ? async (res: ServerResponse, rel: string): Promise<void> => {
+  const serveShell = shellDir ? async (req: IncomingMessage, res: ServerResponse, rel: string): Promise<void> => {
     const clean = normalize(rel.replace(/^\/+/, '')).replace(/^(\.\.[/\\])+/, '');
     if (clean.includes('..')) return sendError(res, 400, 'INVALID_INPUT', 'bad path');
     // A path ending in a file extension is a real asset. Anything else is an SPA
@@ -5041,16 +5054,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const asset = /\.[a-z0-9]+$/i.test(clean);
     const target = clean === '.well-known/lolly.json' ? 'info/well-known-lolly.json'
       : asset && clean ? clean : (shellStubFor(clean, (r) => existsSync(join(shellDir, r))) ?? 'index.html');
-    try {
-      const bytes = await readFile(join(shellDir, target));
-      res.writeHead(200, {
-        ...shellSecurityHeaders(rel),
-        'content-type': contentType(target),
-        'cache-control': asset ? 'public, max-age=300' : 'no-cache',
-      });
-      res.end(bytes);
-    } catch {
-      // Missing real asset → 404; a missing index means the shellDir is wrong.
+    const delivery: DeliveryClass = publicStaticDeliveryClass('/' + target);
+    setDeliveryClass(res, delivery);
+    const policy = cachePolicy(delivery);
+    if (!await sendFile(req, res, shellDir, target, { contentType: contentType(target), ranges: true,
+      headers: { ...shellSecurityHeaders(rel), 'cache-control': policy.cacheControl } })) {
       sendError(res, 404, 'NOT_FOUND', asset ? 'no such file' : 'shell index not found: check instance.shellDir');
     }
   } : null;
@@ -5062,9 +5070,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // the caller's groups cannot see is not fetchable by URL: it answers 404, the
   // same absence the index shows. A guest may fetch the tool its link opens.
   // `tools` is a reserved prefix below, so the dist's copy is never consulted.
-  router.add('GET', '/tools/*', async (req, res, ctx) => {
+  const serveTool: Handler = async (req, res, ctx) => {
     // The bare `/tools` is the app's gallery route, not a tool file.
-    if (!ctx.params['*'] && serveShell) return serveShell(res, 'tools');
+    if (!ctx.params['*'] && serveShell) return serveShell(req, res, 'tools');
     const user = await memberOf(req) ?? renderReader(req, brand.current()!.revision, linkVerify);
     const p = principalOf(req);
     if (config.policy.defaultAccessMode === 'gated' && !user && p?.kind !== 'guest') {
@@ -5072,21 +5080,28 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
     const rel = normalize(ctx.params['*'] ?? '').replace(/^(\.\.[/\\])+/, '');
     if (!rel || rel.includes('..')) return sendError(res, 400, 'INVALID_INPUT', 'bad path');
-    const toolId = rel.split(/[/\\]/, 1)[0] ?? '';
+    const rawId = rel.split(/[/\\]/, 1)[0] ?? '';
+    const addressed = /^([a-z0-9-]+)@([0-9a-f]{16})$/i.exec(rawId);
+    const toolId = addressed?.[1] ?? rawId;
     if (!/^[a-z0-9-]+$/i.test(toolId)) return sendError(res, 400, 'INVALID_INPUT', 'bad tool id');
     const guestTool = p?.kind === 'guest' && p.guest.toolId === toolId;
     if (!guestTool && !toolVisibleTo((await store.listOverlays()).get(toolId), user?.groups ?? [])) {
       return sendError(res, 404, 'NOT_FOUND', 'no such tool file');
     }
-    let bytes: Buffer;
-    try {
-      bytes = await readFile(join(config.instance.pack, 'tools', rel));
-    } catch {
-      return sendError(res, 404, 'NOT_FOUND', 'no such tool file');
+    if (addressed) {
+      const view = await catalogDelivery.current(config.instance.pack, { overlays: await store.listOverlays(), groups: user?.groups ?? [], ...(guestTool ? { guestToolId: toolId } : {}) });
+      if (!view || !JSON.parse(view.tools.bytes.toString()).tools?.some((tool: { id: string }) => tool.id === toolId)) return sendError(res, 404, 'NOT_FOUND', 'no such tool release');
+      const retained = await retainedToolBytes(config.instance.pack, rel);
+      if (retained) { sendBytes(req, res, retained.bytes, { contentType: contentType(rel), modified: retained.modified, ranges: true, headers: { 'cache-control': cachePolicy('instance-private').cacheControl } }); return; }
+      const logicalPath = `${toolId}${rel.slice(rawId.length)}`;
+      if (view.toolDirs[toolId]?.slice(0, 16) !== addressed[2] || !view.files[logicalPath]) return sendError(res, 404, 'NOT_FOUND', 'no such tool release');
     }
-    res.writeHead(200, { 'content-type': contentType(rel), 'cache-control': 'private, no-cache' });
-    res.end(bytes);
-  });
+    const logical = addressed ? `${toolId}${rel.slice(rawId.length)}` : rel;
+    if (!await sendFile(req, res, join(config.instance.pack, 'tools'), logical, { contentType: contentType(logical), ranges: true,
+      headers: { 'cache-control': cachePolicy('instance-private').cacheControl } })) return sendError(res, 404, 'NOT_FOUND', 'no such tool file');
+  };
+  router.add('GET', '/tools/*', serveTool, { delivery: 'instance-private' });
+  router.add('HEAD', '/tools/*', serveTool, { delivery: 'instance-private' });
 
   // ── catalog serving (pack mount, per-caller filtered, lifecycle-enforced) ──
   const serveCatalog: Handler = async (req, res, ctx) => {
@@ -5100,25 +5115,32 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const card = publicCard(normalize(ctx.params['*'] ?? ''));
     if (card) {
       let everyone = true;
+      const overlays = await store.listOverlays();
+      const caller = { overlays, groups: user?.groups ?? [], ...(p?.kind === 'guest' ? { guestToolId: p.guest.toolId } : {}) };
       if (card.kind === 'tool') {
-        const overlays = await store.listOverlays();
-        const caller = { overlays, groups: user?.groups ?? [], ...(p?.kind === 'guest' ? { guestToolId: p.guest.toolId } : {}) };
         if (!callerCanSeeTool(caller, card.toolId)) return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
         everyone = toolVisibleTo(overlays.get(card.toolId), []);
       }
       for (const root of [config.instance.pack, ...(shellDir ? [shellDir] : [])]) {
         let bytes: Buffer;
         try {
-          bytes = await readFile(join(root, 'catalog', card.rel));
+          if (toolArtAddress(card.rel)) {
+            const art = await addressedToolArt(root, card.rel, caller, config.instance.pack);
+            if (!art) continue;
+            bytes = art.bytes;
+          } else {
+            const file = await safeFile(root, `catalog/${card.rel}`);
+            if (!file) continue;
+            bytes = await readFile(file.path);
+          }
         } catch {
           continue;
         }
-        res.writeHead(200, {
-          'content-type': contentType(card.rel),
-          'cache-control': everyone ? 'public, max-age=3600' : 'private, no-cache',
-          'x-content-type-options': 'nosniff',
-        });
-        res.end(bytes);
+        const delivery = everyone ? 'public-bounded' : 'instance-private';
+        setDeliveryClass(res, delivery, everyone ? { boundedAgeSec: 3600 } : {});
+        sendBytes(req, res, bytes, { contentType: contentType(card.rel),
+          headers: { 'cache-control': cachePolicy(delivery, everyone ? { boundedAgeSec: 3600 } : {}).cacheControl,
+            'x-content-type-options': 'nosniff' } });
         return;
       }
       return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
@@ -5126,8 +5148,17 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (config.policy.defaultAccessMode === 'gated' && !user && p?.kind !== 'guest') {
       return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
     }
+    if ((ctx.params['*'] ?? '').includes('..')) return sendError(res, 400, 'INVALID_INPUT', 'bad path');
     let rel = normalize(ctx.params['*'] ?? '').replace(/^(\.\.[/\\])+/, '');
     if (rel.includes('..')) return sendError(res, 400, 'INVALID_INPUT', 'bad path');
+    const addressedIndex = /^(tools\/index(?:\.slim)?|assets\/index)\.([0-9a-f]{16})\.json$/.exec(rel);
+    if (addressedIndex) {
+      const kind: CatalogSnapshotKind = addressedIndex[1] === 'assets/index' ? 'assets' : addressedIndex[1] === 'tools/index.slim' ? 'slim' : 'tools';
+      const bytes = await catalogDelivery.snapshot(config.instance.pack, { overlays: await store.listOverlays(), groups: user?.groups ?? [],
+        ...(p?.kind === 'guest' ? { guestToolId: p.guest.toolId } : {}) }, kind, addressedIndex[2]!);
+      if (!bytes) return sendError(res, 404, 'NOT_FOUND', 'no accessible catalog snapshot');
+      sendBytes(req, res, bytes, { contentType: 'application/json; charset=utf-8', headers: { 'cache-control': cachePolicy('instance-private').cacheControl } }); return;
+    }
     // After the exit's cutover, an old ext/* blob URL (baked into already-rendered
     // SVGs and live sessions) resolves through a persistent alias to the new
     // inst/* path - nothing that referenced the federated identity breaks (plans/27 §5).
@@ -5328,28 +5359,17 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // indexHash is always the hash of the bytes this same caller receives.
     // Without a key the pack's build-time signature is never served (see below).
     if (rel === CATALOG_INDEX_REL || (catalogSigning && rel === CATALOG_SIG_REL)) {
-      const served = await servedToolIndexBytes(config.instance.pack, {
+      const view = await catalogDelivery.current(config.instance.pack, {
         overlays: await store.listOverlays(), groups: user?.groups ?? [],
         ...(p?.kind === 'guest' ? { guestToolId: p.guest.toolId } : {}),
       });
-      if (!served) return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
+      if (!view) return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
       if (rel === CATALOG_SIG_REL && catalogSigning) {
-        let envelope: Buffer;
-        try {
-          envelope = await catalogSigning.envelopeFor(config.instance.pack, served);
-        } catch {
-          return sendError(res, 503, 'CATALOG_SIGNING_UNAVAILABLE', 'the catalog signature could not be produced; see the server log');
-        }
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'private, no-cache' });
-        res.end(envelope);
-        return;
+        if (!view.envelope) return sendError(res, 503, 'CATALOG_SIGNING_UNAVAILABLE', 'the catalog signature could not be produced; see the server log');
+        sendBytes(req, res, view.envelope, { contentType: 'application/json; charset=utf-8', headers: { 'cache-control': cachePolicy('instance-private').cacheControl } }); return;
       }
-      res.writeHead(200, {
-        'content-type': served.json ? 'application/json; charset=utf-8' : contentType(rel),
-        'cache-control': 'private, no-cache',
-      });
-      res.end(served.bytes);
-      return;
+      sendBytes(req, res, view.tools.bytes, { contentType: view.tools.json ? 'application/json; charset=utf-8' : contentType(rel),
+        headers: { 'cache-control': cachePolicy('instance-private').cacheControl } }); return;
     }
     // Other files that name tools (the slim index, the pack's build-time
     // signature, preview art, social cards and their manifests) follow the same
@@ -5362,9 +5382,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       });
       if (decided.kind === 'not-found') return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
       if (decided.kind === 'json') {
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'private, no-cache' });
-        res.end(decided.bytes);
-        return;
+        sendBytes(req, res, decided.bytes, { contentType: 'application/json; charset=utf-8', headers: { 'cache-control': cachePolicy('instance-private').cacheControl } }); return;
       }
     }
     // The asset feed: composed per caller from the pack, federated sources,
@@ -5376,49 +5394,67 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       await providersReady;
       const served = await servedIndex.forCaller({ groups: user?.groups ?? [], paged: ctx.url.searchParams.get('paged') === '1' });
       if (served.status === 'missing') return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
-      if (etagMatches(req, served.etag)) {
-        res.writeHead(304, { etag: served.etag, 'cache-control': 'private, no-cache' });
-        res.end();
-        return;
-      }
-      res.writeHead(200, {
-        'content-type': served.status === 'composed' ? 'application/json; charset=utf-8' : contentType(rel),
-        'cache-control': 'private, no-cache', etag: served.etag,
-      });
-      res.end(served.bytes);
-      return;
+      sendBytes(req, res, served.bytes, { contentType: served.status === 'composed' ? 'application/json; charset=utf-8' : contentType(rel),
+        headers: { 'cache-control': cachePolicy('instance-private').cacheControl } }); return;
     }
-    const filePath = join(config.instance.pack, 'catalog', rel);
+    const previewOwner = toolArtAddress(rel)?.kind === 'preview' ? await loadAssetPathMap(config.instance.pack) : null;
+    // A preview explicitly owned by an asset keeps that asset's lifecycle gate.
+    if (previewOwner && !previewOwner.has(rel) && !previewOwner.has(rel.replace(/\.[0-9a-f]{16}(\.[a-z0-9]{1,16})$/, '$1'))) {
+      const art = await addressedToolArt(config.instance.pack, rel, { overlays: await store.listOverlays(), groups: user?.groups ?? [],
+        ...(p?.kind === 'guest' ? { guestToolId: p.guest.toolId } : {}) });
+      if (!art) return sendError(res, 404, 'NOT_FOUND', 'no such tool preview release');
+      sendBytes(req, res, art.bytes, { contentType: contentType(rel), ranges: true, modified: art.modified,
+        headers: { ...INERT_BYTES, 'cache-control': cachePolicy('instance-private').cacheControl } }); return;
+    }
+    const address = /^(.*)\.([0-9a-f]{16})(\.[a-z0-9]{1,16})$/.exec(rel);
+    let actualRel = rel, addressedAssetId: string | undefined, addressedAssetSha: string | undefined;
+    if (address) {
+      const legacy = `${address[1]}${address[3]}`;
+      const current = await servedIndex.forCaller({ groups: user?.groups ?? [] });
+      const formats = current.index.assets?.flatMap(entry => [...(entry.formats ?? []), ...Object.values(entry.locales ?? {}).flat()]
+        .filter(format => format.url === `/catalog/${rel}` || format.url === `/catalog/${legacy}`)
+        .map(format => ({ id: entry.id, hash: assetFormatSha256(format) }))) ?? [];
+      const owners = new Set(formats.map(format => format.id)), hashes = new Set(formats.map(format => format.hash));
+      const first = formats[0];
+      if (!first?.hash || owners.size !== 1 || hashes.size !== 1 || first.hash.slice(0, 16) !== address[2]) return sendError(res, 404, 'NOT_FOUND', 'no currently accessible asset release');
+      addressedAssetId = first.id; addressedAssetSha = first.hash;
+    }
+    let file = await safeFile(join(config.instance.pack, 'catalog'), actualRel);
+    if (!file && address) {
+      actualRel = `${address[1]}${address[3]}`; file = await safeFile(join(config.instance.pack, 'catalog'), actualRel);
+    }
     let bytes: Buffer;
     try {
-      bytes = await readFile(filePath);
+      if (!file) throw new Error('missing');
+      bytes = await readFile(file.path);
     } catch {
       return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
     }
+    if (address && sha256Hex(bytes) !== addressedAssetSha) return sendError(res, 404, 'NOT_FOUND', 'no such asset release');
     // Any other catalog file: if it's a format entry owned by an asset
     // whose lifecycle blocks it (revoked, scheduled, or expired-and-hidden),
     // the blob dies too - a guessed/cached URL doesn't bypass the feed.
-    const assetId = (await loadAssetPathMap(config.instance.pack)).get(rel);
+    const assetId = addressedAssetId ?? (await loadAssetPathMap(config.instance.pack)).get(actualRel);
     if (assetId) {
       const { state, blocked } = await catalogBytesGate(assetId, false);
       if (blocked) {
         const message = state === 'revoked' ? 'this asset has been revoked' : state === 'scheduled' ? 'this asset is not yet published' : 'this asset has expired';
         return sendError(res, 410, 'ASSET_EXPIRED', message);
       }
+      const current = await servedIndex.forCaller({ groups: user?.groups ?? [] });
+      if (!current.index.assets?.some(entry => entry.id === assetId)) return sendError(res, 404, 'NOT_FOUND', 'no currently accessible asset');
     }
-    res.writeHead(200, {
-      'content-type': contentType(rel), 'cache-control': 'private, no-cache',
-      ...(req.method === 'HEAD' ? { 'content-length': String(bytes.length) } : {}),
-    });
-    res.end(req.method === 'HEAD' ? undefined : bytes);
+    sendBytes(req, res, bytes, { contentType: contentType(rel), ranges: true,
+      modified: file!.modified, headers: { ...INERT_BYTES, 'cache-control': cachePolicy('instance-private').cacheControl } });
   };
-  router.add('GET', '/catalog/*', serveCatalog);
+  router.add('GET', '/catalog/*', serveCatalog, { delivery: 'instance-private' });
+  router.add('HEAD', '/catalog/*', serveCatalog, { delivery: 'instance-private' });
   // Font availability probes follow the same admission and lifecycle gates as GET.
   router.add('HEAD', '/catalog/fonts/*', async (req, res, ctx) => {
     const rel = ctx.params['*'] ?? '';
     if (rel.includes('..')) return sendError(res, 400, 'INVALID_INPUT', 'bad path');
     await serveCatalog(req, res, { ...ctx, params: { '*': `fonts/${rel}` } });
-  });
+  }, { delivery: 'instance-private' });
 
   // ── signed links onto catalog assets (plans/31 §2 1b) ────────────────────
   // A share/embed/download link may target a catalog asset id instead of a tool
@@ -9703,21 +9739,25 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
 
     const overlays = await store.listOverlays();
     const query = ctx.url.search.replace(/^\?/, '');
+    const canonical = canonicalRenderQuery(query);
+    if (query !== canonical) { res.writeHead(308, { location: ctx.url.pathname + (canonical ? '?' + canonical : '') }); res.end(); return; }
     try {
-      const result = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer: await getC2paSigner() }, {
+      const signer = await getC2paSigner();
+      const result = await renderTool({ config, resolveProvenance, instanceCatalogVersion, worker: renderWorker, signer }, {
         toolId, format, query,
         principal: user ? { groups: user.groups } : { groups: [] },
         profile: renderProfileOf(user),
         overlays,
       }, user);
-      const etag = `"r-${result.cacheKey.slice(0, 16)}"`;
-      if (!result.evidence?.brandRules && req.headers['if-none-match'] === etag) {
-        res.writeHead(304, { etag });
+      if (result.evidence?.brandRules) setDeliveryClass(res, 'person-private');
+      const etag = signer ? `W/"r-${result.cacheKey.slice(0, 16)}"` : `"r-${sha256Hex(Buffer.from(result.bytes)).slice(0, 32)}"`;
+      if (!result.evidence?.brandRules && matchesEtag(req.headers['if-none-match'], etag)) {
+        res.writeHead(304, { etag, 'cache-control': cachePolicy('instance-private').cacheControl });
         res.end();
         return;
       }
       res.writeHead(200, {
-        'content-type': result.mime, etag, 'cache-control': result.evidence?.brandRules ? 'private, no-store' : 'private, max-age=60',
+        'content-type': result.mime, etag, 'x-lolly-cache-key': result.cacheKey, 'cache-control': result.evidence?.brandRules ? 'private, no-store' : cachePolicy('instance-private').cacheControl,
         'x-lolly-brand-check': result.evidence?.brandRules?.disposition ?? 'not-requested',
         ...provenanceHeader(result.provenance),
       });
@@ -9740,7 +9780,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       }
       throw err;
     }
-  });
+  }, { delivery: 'instance-private' });
 
   // ── admin console (static shell; every API call it makes is auth-enforced) ─
   // Bundle-aware data-dir base - see api/_lib/bootstrap.ts's FN_ROOT note. When the
@@ -10187,7 +10227,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // reach public docs or the SPA fallback. Absent shellDir means these routes
   // are not added. HEAD handles only public docs, never private GET handlers.
   // serveShell is defined above the tool file routes, which also use it.
-  const RESERVED_PREFIX = /^(api|catalog|tools|render|l|admin|scim|healthz|activate|connect)(\/|$)/;
+  const RESERVED_PREFIX = /^(api|catalog|tools|render|l|e|o|admin|scim|healthz|activate|connect)(\/|$)/;
   if (shellDir && serveShell) {
     const serveShellDocs = async (req: IncomingMessage, res: ServerResponse, rel: string): Promise<boolean> => {
       const doc = shellDocsPath(rel);
@@ -10213,14 +10253,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
             res.writeHead(308, { ...shellSecurityHeaders(rel), location: doc.location, 'cache-control': 'public, max-age=300' });
             res.end();
           } else {
-            const bytes = req.method === 'HEAD' ? undefined : await readFile(target);
-            res.writeHead(200, {
-              ...shellSecurityHeaders(rel),
-              'content-type': contentType(candidate),
-              'content-length': bytes?.length ?? metadata.size,
-              'cache-control': 'public, max-age=300',
-            });
-            res.end(bytes);
+            const delivery = publicStaticDeliveryClass('/' + candidate);
+            setDeliveryClass(res, delivery);
+            await sendFile(req, res, shellDir, candidate, { contentType: contentType(candidate), ranges: true,
+              headers: { ...shellSecurityHeaders(rel), 'cache-control': cachePolicy(delivery).cacheControl } });
           }
           return true;
         }
@@ -10232,18 +10268,18 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       res.writeHead(307, { location: '/review/agent-collaboration-review.mp4', 'cache-control': 'public, max-age=300' });
       res.end();
     });
-    router.add('GET', '/', (_req, res) => void serveShell(res, 'index.html'));
+    router.add('GET', '/', (req, res) => void serveShell(req, res, 'index.html'), { delivery: 'public-revalidate' });
     router.add('GET', '/*', async (req, res, ctx) => {
       const p = ctx.params['*'] || '';
       if (RESERVED_PREFIX.test(p)) return sendError(res, 404, 'NOT_FOUND', `no route for GET /${p}`);
-      if (!(await serveShellDocs(req, res, p))) await serveShell(res, p);
-    });
+      if (!(await serveShellDocs(req, res, p))) await serveShell(req, res, p);
+    }, { delivery: 'public-revalidate' });
     router.add('HEAD', '/*', async (req, res, ctx) => {
       const p = ctx.params['*'] || '';
-      if (RESERVED_PREFIX.test(p) || !(await serveShellDocs(req, res, p))) {
+      if (RESERVED_PREFIX.test(p)) {
         sendError(res, 404, 'NOT_FOUND', `no route for HEAD /${p}`);
-      }
-    });
+      } else if (!(await serveShellDocs(req, res, p))) await serveShell(req, res, p);
+    }, { delivery: 'public-revalidate' });
   } else if (config.dev.enabled) {
     // The passwordless testing sandbox serves persona sign-in, docs and the
     // architecture overview when no web shell is mounted. Register this last
@@ -10306,6 +10342,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   };
 
   return async (req, res) => {
+    guardDelivery(req, res);
     if (devCors(req, res)) return;
     // Fleet: every tagged request feeds the version histogram (plans/10 §1).
     const client = parseClientHeader(req.headers['x-lolly-client'] as string | undefined);

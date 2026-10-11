@@ -3,6 +3,7 @@
 """Small offline Git/OCI/tree fixtures; no production, registry or credentials."""
 import copy
 import hashlib
+import gzip
 import importlib.util
 import io
 import json
@@ -64,6 +65,7 @@ class Cohort(unittest.TestCase):
         self.put(lolly, "packages/node-shell/src/repo-root.ts", b"export const root = '.';\n")
         self.put(lolly, "LICENSE", b"MPL-2.0\n")
         self.put(lolly, "scripts/webgpu-release-gate.ts", b"// Fixture gate, not runtime qualification\n")
+        self.put(lolly, "scripts/verify-release-catalog.ts", b"// Clean fixture verifier source; no runtime verification is claimed.\n")
         self.brand = "f" * 40
         self.git(lolly, "update-index", "--add", "--cacheinfo", "160000," + self.brand + ",brands/private")
         self.sources["lolly"] = self.commit(lolly)
@@ -312,6 +314,135 @@ class Cohort(unittest.TestCase):
             self.assertFalse((root / "catalog/tools/fixture").exists())
         self.assertTrue((Path(self.evidence["shell"]["root"]) / "catalog/tools/index.sig.json").is_file())
         self.assertFalse((Path(self.evidence["rawPack"]["root"]) / "catalog/tools/index.sig.json").exists())
+
+    def delivery_cohort(self):
+        directory = m.digest({path.split("/", 1)[1]: digest for path, digest in self.envelope["files"].items()})
+        unsigned = {k: v for k, v in self.envelope.items() if k != "signature"}
+        unsigned.update(seq=7, toolDirs={"fixture": directory})
+        signed = subprocess.run([NODE, "-e", "const c=require('node:crypto');let d='';process.stdin.on('data',x=>d+=x);process.stdin.on('end',()=>{const v=JSON.parse(d);process.stdout.write(c.sign('sha256',Buffer.from(v.payload,'base64'),{key:c.createPrivateKey({key:v.key,format:'jwk'}),dsaEncoding:'ieee-p1363'}).toString('base64url'));});"],
+                                input=raw({"key": self.keys["private"], "payload": __import__("base64").b64encode(raw(unsigned)).decode()}), capture_output=True, check=True)
+        envelope = {**unsigned, "signature": signed.stdout.decode()}
+        for name in ("candidateShell", "shell", "rawPack"):
+            root = Path(self.evidence[name]["root"])
+            files = {str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+            aliases = {f"tools/fixture@{directory[:16]}/{path.split('/', 1)[1]}": files["tools/" + path] for path in envelope["files"]}
+            aliases[f"catalog/tools/index.{envelope['indexHash'][:16]}.json"] = files["catalog/tools/index.json"]
+            files.update(aliases)
+            files["catalog/delivery-manifest.json"] = raw({"version": 1, "files": [{"path": p, "size": len(b), "sha256": sha(b)} for p, b in sorted(aliases.items())]})
+            if name != "rawPack": files["catalog/tools/index.sig.json"] = raw(envelope)
+            self.evidence[name] = self.tree(name + "-delivery", files)
+        self.patch(self.evidence, "build", lambda v: v.update(shellManifestSha256=self.evidence["candidateShell"]["manifest"]["sha256"]))
+        self.patch(self.evidence, "inspection", lambda v: v.update(packManifestSha256=self.evidence["rawPack"]["manifest"]["sha256"]))
+        return envelope
+
+    def test_delivery_envelope_prepares_the_complete_private_cohort(self):
+        self.delivery_cohort()
+        result, inputs = self.prepare()
+        self.assertEqual(result["catalog"]["signedFiles"], 2)
+        self.assertEqual(result["status"], m.STATUS)
+        self.assertFalse(result["qualificationBoundary"]["productionMutation"])
+        inputs.unchanged()
+
+    def derived_cohort(self):
+        self.delivery_cohort()
+        for name in ("candidateShell", "shell"):
+            root = Path(self.evidence[name]["root"])
+            content = {str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+            picture = b"reviewed screenshot identity bytes"
+            picture_path = "info/shots/fixture." + sha(picture)[:16] + ".svg"
+            content[picture_path] = picture
+            content["info/shots/unaddressed.txt"] = b"shell only"
+            content["catalog/packs/fixture/asset.svg"] = b"reviewed asset bytes"
+            inventory = json.loads(content["catalog/delivery-manifest.json"])
+            inventory["files"].append({"path": picture_path, "size": len(picture), "sha256": sha(picture)})
+            inventory["files"].sort(key=lambda row: row["path"])
+            content["catalog/delivery-manifest.json"] = raw(inventory)
+            for path in ("tools/fixture/index.html", "catalog/tools/index.json", "_app/new.js"):
+                content[path + ".gz"] = gzip.compress(content[path], mtime=0)
+            self.evidence[name] = self.tree(name + "-derived", content)
+        candidate = Path(self.evidence["candidateShell"]["root"])
+        content = {str(path.relative_to(candidate)): path.read_bytes() for path in candidate.rglob("*") if path.is_file()}
+        inventory = json.loads(content["catalog/delivery-manifest.json"])
+        indexed = {row["path"] for row in inventory["files"]}
+        identities = {path: data for path, data in content.items() if not path.endswith((".gz", ".br"))
+                      and path != "catalog/tools/index.sig.json" and (path.startswith(("tools/", "catalog/")) or path in indexed)}
+        verifier_path = "scripts/verify-release-catalog.ts"
+        verifier_sha = sha((self.roots["lolly"] / verifier_path).read_bytes())
+        custody = {"version": 1, "status": "SIGNED_LOLLY_RELEASE_REVIEWED", "lollySource": self.sources["lolly"], "profile": "private",
+                   "manifest": self.evidence["candidateShell"]["manifest"], "publicPin": self.evidence["publicPin"], "verifier": {"path": verifier_path, "sha256": verifier_sha}}
+        self.evidence["rawDerivation"] = {"custody": self.file("release-custody", custody)}
+        source = {"version": 2, "source": "lolly", "commit": self.sources["lolly"], "profile": "private", "dirty": False, "excluded": [],
+                  "removed": ["catalog/tools/index.sig.json"], "builtAt": "2026-10-11T00:00:00Z",
+                  "derivation": {"kind": "verified-signed-release", "custodySha256": self.evidence["rawDerivation"]["custody"]["sha256"],
+                                 "manifestSha256": self.evidence["candidateShell"]["manifest"]["sha256"], "publicPinSha256": self.evidence["publicPin"]["sha256"],
+                                 "verifierSha256": verifier_sha, "indexSha256": sha(content["catalog/tools/index.json"]),
+                                 "envelopeSha256": sha(content["catalog/tools/index.sig.json"]), "omittedCodingSidecars": 3}}
+        identities[".lolly-pack-source.json"] = raw(source)
+        self.evidence["rawPack"] = self.tree("release-derived-raw", identities)
+        self.patch(self.evidence, "build", lambda v: v.update(shellManifestSha256=self.evidence["candidateShell"]["manifest"]["sha256"]))
+        self.patch(self.evidence, "inspection", lambda v: v.update(packManifestSha256=self.evidence["rawPack"]["manifest"]["sha256"]))
+        return source
+
+    def test_derived_raw_pack_binds_independent_custody_and_exact_identity_projection(self):
+        source = self.derived_cohort()
+        result, inputs = self.prepare()
+        self.assertEqual(result["rawPack"]["derivation"], source["derivation"])
+        raw_root = Path(self.evidence["rawPack"]["root"])
+        self.assertTrue(list(raw_root.glob("info/shots/*.svg")))
+        self.assertFalse((raw_root / "info/shots/unaddressed.txt").exists())
+        self.assertFalse(list(raw_root.rglob("*.gz")))
+        self.assertIn({"path": str(self.roots["lolly"] / "scripts/verify-release-catalog.ts"), "sha256": source["derivation"]["verifierSha256"]}, result["evidence"])
+        self.assertFalse(result["qualificationBoundary"]["runtimeQualified"])
+        inputs.unchanged()
+
+    def test_derived_raw_stamp_claims_cannot_replace_independent_custody(self):
+        source = self.derived_cohort()
+        root = Path(self.evidence["rawPack"]["root"])
+        identities = {str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+        candidate = m.Tree(self.evidence["candidateShell"], m.Inputs(self.base))
+        for field in ("custodySha256", "manifestSha256", "publicPinSha256", "verifierSha256", "indexSha256", "envelopeSha256", "omittedCodingSidecars"):
+            bad = copy.deepcopy(source); bad["derivation"][field] = True if field == "omittedCodingSidecars" else "0" * 64
+            changed = self.tree("bad-derived-" + field, {**identities, ".lolly-pack-source.json": raw(bad)})
+            with self.subTest(field=field), self.assertRaisesRegex(m.Refusal, "Raw derivation"):
+                m.raw_source_stamp(self.evidence, m.Inputs(self.base), m.Tree(changed, m.Inputs(self.base)), candidate, self.roots["lolly"], m.git_command)
+        original = self.evidence.pop("rawDerivation")
+        with self.assertRaisesRegex(m.Refusal, "independent release custody"):
+            self.prepare()
+        self.evidence["rawDerivation"] = original
+
+    def test_derived_projection_cannot_omit_or_add_reviewed_identity_bytes(self):
+        self.derived_cohort()
+        root = Path(self.evidence["rawPack"]["root"])
+        identities = {str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+        candidate = m.Tree(self.evidence["candidateShell"], m.Inputs(self.base))
+        omitted = dict(identities); omitted.pop("catalog/packs/fixture/asset.svg")
+        for name, changed in (("omitted", omitted), ("extra", {**identities, "extra.txt": b"not reviewed"})):
+            entry = self.tree("projection-" + name, changed)
+            with self.subTest(case=name), self.assertRaisesRegex(m.Refusal, "exact reviewed identity projection"):
+                m.raw_source_stamp(self.evidence, m.Inputs(self.base), m.Tree(entry, m.Inputs(self.base)), candidate, self.roots["lolly"], m.git_command)
+
+    def test_rehashed_custody_cannot_change_verifier_source_manifest_or_pin(self):
+        source = self.derived_cohort()
+        root = Path(self.evidence["rawPack"]["root"])
+        identities = {str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+        candidate = m.Tree(self.evidence["candidateShell"], m.Inputs(self.base))
+        original = json.loads((self.base / self.evidence["rawDerivation"]["custody"]["path"]).read_bytes())
+        changes = (lambda v: v.update(lollySource="0" * 40), lambda v: v.update(profile="another"),
+                   lambda v: v["manifest"].update(sha256="0" * 64), lambda v: v["publicPin"].update(sha256="0" * 64),
+                   lambda v: v["verifier"].update(path="scripts/unreviewed.ts"), lambda v: v["verifier"].update(sha256="0" * 64),
+                   lambda v: v.update(verified=True))
+        for number, change in enumerate(changes):
+            custody = copy.deepcopy(original); change(custody)
+            self.evidence["rawDerivation"] = {"custody": self.file("modified-custody", custody)}
+            changed = copy.deepcopy(source); changed["derivation"]["custodySha256"] = self.evidence["rawDerivation"]["custody"]["sha256"]
+            entry = self.tree("rehashed-custody-" + str(number), {**identities, ".lolly-pack-source.json": raw(changed)})
+            with self.subTest(custody=custody), self.assertRaises(m.Refusal):
+                m.raw_source_stamp(self.evidence, m.Inputs(self.base), m.Tree(entry, m.Inputs(self.base)), candidate, self.roots["lolly"], m.git_command)
+
+    def test_legacy_source_stamp_does_not_accept_derived_evidence(self):
+        self.evidence["rawDerivation"] = {"custody": self.file("unneeded", {})}
+        with self.assertRaisesRegex(m.Refusal, "legacy stamps must stay unchanged"):
+            self.prepare()
 
     def test_altered_signed_payload_refuses_even_with_matching_full_tree_manifests(self):
         path, changed = "tools/fixture/index.html", b"<main>Altered signed payload</main>"

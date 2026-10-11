@@ -166,7 +166,7 @@ export function createBrandService(config: InstanceConfig, store: Store, blobs: 
     const checksum = createHash('sha256').update(bytes).digest('hex');
     const blobId = `brand-download/${checksum}.lolly`;
     const stat = await blobs.put(blobId, bytes, 'application/octet-stream');
-    const meta: InstancePackMeta = { ...inspected, size: stat.size, checksum: stat.checksum, uploadedAt: new Date().toISOString(), uploadedBy: actor };
+    const meta: InstancePackMeta = { ...inspected, size: stat.size, checksum, uploadedAt: new Date().toISOString(), uploadedBy: actor };
     const next = { ...expected.state, download: { suppressed: false, sourceId: expected.source.id,
       sourceRevision: expected.source.revision, blobId, meta } };
     const result = await store.casBrandState(expected.state.revision, next, { at: meta.uploadedAt, actor,

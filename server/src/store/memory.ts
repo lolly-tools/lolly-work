@@ -51,6 +51,8 @@ const sameGrant = (a: Grant, b: Grant): boolean =>
   a.principal === b.principal && a.action === b.action && a.resource === b.resource && a.effect === b.effect;
 
 export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOverlay[]; messages?: Message[]; flagGovernance?: FlagGovernance[]; injectables?: InjectableRecord[] }): Store {
+  let catalogDelivery = { fingerprint: '', seq: 0, publicationGeneration: -1, publicationDigest: '' };
+  const catalogSnapshots = new Map<string, import('./types.ts').CatalogDeliverySnapshot>();
   let roleGroups: RoleGroups = {};
   const mapped = (user: UserRecord): UserRecord => ({ ...user, role: roleFromGroups(user.groups, roleGroups) });
   let brandState = initialBrandState();
@@ -201,6 +203,33 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const liveProjectFiles = (now = Date.now()) => [...projectFiles.values()].filter((f) => activeProjectFile(f, now));
 
   return {
+    async catalogDeliverySequence(fingerprint, publication) {
+      if (!/^[0-9a-f]{64}$/.test(fingerprint) || !/^[0-9a-f]{64}$/.test(publication.digest)
+        || !Number.isSafeInteger(publication.generation) || publication.generation < 0) throw new Error('invalid catalog publication');
+      if (publication.generation < catalogDelivery.publicationGeneration
+        || (publication.generation === catalogDelivery.publicationGeneration && publication.digest !== catalogDelivery.publicationDigest)) {
+        throw Object.assign(new Error('Catalog source publication is older or conflicts with the accepted release'), { status: 503 });
+      }
+      const changed = catalogDelivery.fingerprint !== fingerprint || catalogDelivery.publicationGeneration !== publication.generation;
+      if (changed && catalogDelivery.seq === Number.MAX_SAFE_INTEGER) throw new Error('catalog sequence exhausted');
+      catalogDelivery = { fingerprint, seq: catalogDelivery.seq + Number(changed),
+        publicationGeneration: publication.generation, publicationDigest: publication.digest };
+      return catalogDelivery.seq;
+    },
+    async putCatalogDeliverySnapshot(snapshot, now, maxBytes) {
+      for (const [key, item] of catalogSnapshots) if (item.until <= now) catalogSnapshots.delete(key);
+      const key = `${snapshot.scope}/${snapshot.kind}/${snapshot.hash}`;
+      if (catalogSnapshots.has(key)) return true;
+      let size = snapshot.bytes.length;
+      for (const item of catalogSnapshots.values()) size += item.bytes.length;
+      if (size > maxBytes) return false;
+      catalogSnapshots.set(key, { ...structuredClone(snapshot), bytes: Buffer.from(snapshot.bytes) }); return true;
+    },
+    async getCatalogDeliverySnapshot(scope, kind, hash16, now) {
+      const matches = [...catalogSnapshots.values()].filter(item => item.scope === scope && item.kind === kind && item.hash.startsWith(hash16) && item.until > now);
+      if (matches.length !== 1) return null;
+      return { ...structuredClone(matches[0]!), bytes: Buffer.from(matches[0]!.bytes) };
+    },
     configureRoleGroups(mapping) { roleGroups = structuredClone(mapping); },
     storageKind: 'memory',
     ...createMemoryRenderStore(),

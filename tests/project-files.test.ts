@@ -136,7 +136,7 @@ test('shared files survive a new HTTP app, and every route checks project member
   const read = await call('viewer', 'GET', path);
   assert.equal(read.status, 200);
   assert.match(read.headers.get('content-disposition')!, /^attachment/);
-  assert.equal(read.headers.get('cache-control'), 'private, no-store');
+  assert.equal(read.headers.get('cache-control'), 'private, no-store, max-age=0, no-transform');
   assert.deepEqual(new Uint8Array(await read.arrayBuffer()), bytes);
   assert.equal((await call('outside', 'GET', path)).status, 403);
   const viewer = (await store.findUsersByEmail('viewer@test'))[0]!;
@@ -223,7 +223,7 @@ test('the list shows ready files newest first with trimmed rows, names and the b
   await upload('editor', new Uint8Array([5, 6]), projectId, false);
   const listed = await call('viewer', 'GET', `/api/v1/projects/${projectId}/files`);
   assert.equal(listed.status, 200);
-  assert.equal(listed.headers.get('cache-control'), 'private, no-store');
+  assert.equal(listed.headers.get('cache-control'), 'private, no-store, max-age=0, no-transform');
   const body = await listed.json() as { files: Array<Record<string, unknown>>; limits: Record<string, number> };
   assert.deepEqual(body.files.map(f => f.id), [second.id, first.id], 'ready only, newest first');
   assert.deepEqual(Object.keys(body.files[1]!).sort(),
@@ -599,7 +599,7 @@ test('a render ticket reads a listed file for its submitter and opens no other f
   assert.equal(got.status, 200);
   assert.deepEqual(new Uint8Array(await got.arrayBuffer()), bytes, 'every part, verified');
   assert.match(got.headers.get('content-disposition')!, /^attachment/);
-  assert.equal(got.headers.get('cache-control'), 'private, no-store');
+  assert.equal(got.headers.get('cache-control'), 'private, no-store, max-age=0, no-transform');
   // Refused: another project's path, an unlisted file, the list, and every write or delete.
   assert.equal((await read(`/api/v1/projects/${other}/files/${elsewhere.id}`)).status, 401);
   assert.equal((await read(`/api/v1/projects/${other}/files/${elsewhere.id}`, 'GET', ticket([elsewhere.id], viewer, other))).status, 200, 'its own ticket');

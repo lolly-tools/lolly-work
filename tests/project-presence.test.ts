@@ -30,7 +30,7 @@ test('project presence uses current membership and per-session permissions, neve
   const read = () => fetch(base + '/api/v1/projects/p1/presence', { headers: { cookie } });
   try {
     assert.equal((await fetch(base + '/api/v1/projects/p1/presence')).status, 401);
-    const response = await read(); assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'private, no-store'); const data = await response.json() as { sessions: Array<{ sessionId: string }> }; assert.deepEqual(data.sessions.map(r => r.sessionId), ['s1']); assert.equal(JSON.stringify(data).includes('PRIVATE DOCUMENT'), false);
+    const response = await read(); assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'private, no-store, max-age=0, no-transform'); const data = await response.json() as { sessions: Array<{ sessionId: string }> }; assert.deepEqual(data.sessions.map(r => r.sessionId), ['s1']); assert.equal(JSON.stringify(data).includes('PRIVATE DOCUMENT'), false);
     await store.putGrant({ principal: `user:${user.id}`, action: 'session.view', resource: 'session:s1', effect: 'deny' });
     assert.deepEqual(((await (await read()).json()) as typeof data).sessions, []);
     await store.deleteProjectMember('p1', user.id); assert.equal((await read()).status, 403);

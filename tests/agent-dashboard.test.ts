@@ -108,7 +108,7 @@ test('agent dashboard and navigation enforce audit disclosure and validate the t
   try {
     assert.equal((await fetch(base + '/api/v1/agents/activity')).status, 401);
     const ok = await fetch(base + '/api/v1/agents/activity', { headers: { cookie } });
-    assert.equal(ok.status, 200); assert.equal(ok.headers.get('cache-control'), 'private, no-store');
+    assert.equal(ok.status, 200); assert.equal(ok.headers.get('cache-control'), 'private, no-store, max-age=0, no-transform');
     for (const days of ['0', '91', 'NaN', '2.5']) assert.equal((await fetch(base + '/api/v1/agents/activity?days=' + days, { headers: { cookie } })).status, 400);
     await store.putGrant({ principal: '*', action: 'audit.export', resource: '*', effect: 'deny' });
     assert.equal((await fetch(base + '/api/v1/agents/activity', { headers: { cookie } })).status, 403);

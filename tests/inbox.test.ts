@@ -93,7 +93,7 @@ test('GET /api/v1/inbox: an ETag over what the caller sees, a 304 when nothing m
   assert.equal(first.status, 200);
   const etag = first.headers.get('etag')!;
   assert.match(etag, /^"ib-[0-9a-f]{16}"$/);
-  assert.equal(first.headers.get('cache-control'), 'private, no-cache');
+  assert.equal(first.headers.get('cache-control'), 'private, no-store, max-age=0, no-transform');
   const body = await first.json() as { messages: Message[]; unread: number };
   assert.deepEqual([body.messages.map((m) => m.id), body.unread], [['m1'], 1]);
 

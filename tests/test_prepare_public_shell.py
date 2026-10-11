@@ -107,6 +107,60 @@ class Public(unittest.TestCase):
     def refresh_previous(self): self.evidence["previous"] = self.file("changed-baseline", self.previous)
     def refresh_producer(self): self.evidence["producer"] = self.file("changed-producer", self.producer)
 
+    def accept_delivery_baseline(self, marker):
+        """Keep every synthetic original consistent so only the delivery hold refuses."""
+        inputs = m.cohort.Inputs(self.base)
+        tree = m.cohort.Tree(self.trees["previous"], inputs)
+        content = {path: tree.data(path) for path in tree.files}
+        config = inputs.file(self.previous["nginxConfig"])
+        prepared = inputs.file(self.previous["originalEvidence"][1])
+        accepted = inputs.file(self.previous["originalEvidence"][0])
+        if marker == "static": content[".delivery-etags.conf"] = b'map "$uri" $lolly_delivery_etag { default ""; }\n'
+        elif marker == "config": config["data"]["default.conf"] += "\ninclude /etc/nginx/delivery-etags.conf;\n"
+        elif marker == "mount":
+            self.before["spec"]["template"]["spec"]["containers"][0]["volumeMounts"].append(
+                {"name": "nginx", "mountPath": "/etc/nginx/delivery-etags.conf", "readOnly": True, "subPath": "delivery-etags.conf"})
+            config["data"]["delivery-etags.conf"] = 'map "$uri" $lolly_delivery_etag { default ""; }'
+        else: raise ValueError("Unknown delivery baseline fixture")
+        self.trees["previous"] = self.tree("accepted-delivery-" + marker, content)
+        self.previous["staticManifest"] = self.trees["previous"]["manifest"]
+        self.previous["nginxConfig"] = self.file("accepted-delivery-config", config)
+        self.previous["deployment"] = self.file("accepted-delivery-deployment", self.before)
+        self.previous["deploymentSpecSha256"] = m.cohort.digest(self.before["spec"])
+        prepared.update(nginxConfig=config, expectedPublicSpec=self.before["spec"])
+        self.previous["originalEvidence"][1] = self.file("delivery-original-prepared", prepared)
+        self.previous["originalEvidence"][2] = self.file("delivery-original-static", {"htmlRoot": m.ROOT[1:], "files": {
+            path: {"mode": 0o644, "size": len(data), "sha256": f.sha(data)} for path, data in sorted(content.items())}})
+        self.previous["originalEvidence"][3] = self.binary("delivery-original-runtime-hashes", "".join(
+            f"{f.sha(data)}  {m.ROOT}/{path}\n" for path, data in sorted(content.items())).encode())
+        accepted["preparedSha256"] = self.previous["originalEvidence"][1]["sha256"]
+        accepted["runtime"].update(actualPublicSpecSha256=self.previous["deploymentSpecSha256"], independentExpectedSpecSha256=self.previous["deploymentSpecSha256"],
+            allStaticFilesChecked=len(content), runtimeHashManifestSha256=self.previous["originalEvidence"][3]["sha256"], nginxConfigSha256=f.sha(config["data"]["default.conf"].encode()))
+        self.previous["originalEvidence"][0] = self.file("delivery-original-accepted", accepted)
+        self.refresh_previous()
+        return m.cohort.Tree(self.trees["previous"], m.cohort.Inputs(self.base)).files
+
+    def test_map_bearing_baseline_refuses_even_with_complete_original_custody(self):
+        files = self.accept_delivery_baseline("static")
+        m.original_baseline(self.previous, self.before, files, m.cohort.Inputs(self.base))
+        with self.assertRaisesRegex(m.Refusal, "delivery-map images require the matched full cohort"): self.prepare()
+        evidence = self.file("reviewed-delivery-input", self.evidence); out = self.base / "refused-delivery-plan"
+        result = subprocess.run([sys.executable, "-B", str(Path(__file__).parents[1] / "scripts/prepare-public-shell.py"),
+            "--evidence", str(self.base / evidence["path"]), "--reviewed-evidence-sha256", evidence["sha256"], "--out-dir", str(out), "--node", NODE], capture_output=True)
+        self.assertEqual(result.returncode, 1); self.assertFalse(out.exists())
+
+    def test_map_config_cannot_bypass_hold_by_omitting_static_marker(self):
+        files = self.accept_delivery_baseline("config")
+        self.assertNotIn(".delivery-etags.conf", files)
+        m.original_baseline(self.previous, self.before, files, m.cohort.Inputs(self.base))
+        with self.assertRaisesRegex(m.Refusal, "delivery-map images require the matched full cohort"): self.prepare()
+
+    def test_map_mount_cannot_bypass_hold_by_omitting_static_marker(self):
+        files = self.accept_delivery_baseline("mount")
+        self.assertNotIn(".delivery-etags.conf", files)
+        m.original_baseline(self.previous, self.before, files, m.cohort.Inputs(self.base))
+        with self.assertRaisesRegex(m.Refusal, "delivery-map images require the matched full cohort"): self.prepare()
+
     def test_bootstrap_keeps_serving_readonly_and_selects_only_local_handoff_fields(self):
         before = self.before["spec"]["template"]["spec"]; after = self.result["desiredSpec"]["template"]["spec"]
         self.assertEqual(after["containers"][0]["image"], before["containers"][0]["image"])

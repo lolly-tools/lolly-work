@@ -95,7 +95,7 @@ test('every function navigation outside /api and /catalog is one the shell servi
   // A navigation the shell's service worker does not bypass, and whose last
   // segment has no dot, is stored as the offline app shell. Each of these is a
   // function page or endpoint, so the worker must leave it to the network.
-  assert.deepEqual([...SHELL_SW_BYPASS_PREFIXES].sort(), functionPrefixes(SRC).filter((p) => !['api', 'catalog', 'tools'].includes(p)).sort());
+  assert.deepEqual([...SHELL_SW_BYPASS_PREFIXES].sort(), [...functionPrefixes(SRC).filter((p) => !['api', 'catalog', 'tools'].includes(p)), 'e', 'o'].sort());
 });
 
 test('a Lolly checkout\'s service worker bypasses every function navigation', { skip: !LOLLY_SW && 'no Lolly checkout beside this repository (set LOLLY_DIR)' }, () => {

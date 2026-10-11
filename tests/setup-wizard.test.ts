@@ -147,7 +147,7 @@ test('an administrator provisions one identity, signs in as mapped owner and pro
     assert.equal(current.account.id, scimUser.id); assert.equal(current.account.role, 'owner'); assert.equal(current.account.signIn.provider, 'oidc'); assert.ok(current.account.provisioned);
     const correlation = await (await call('/api/v1/system/setup/account-test', owner, { sub: 'customer-owner' })).json() as any;
     assert.equal(correlation.account.id, scimUser.id);
-    const preview = await call('/api/v1/system/setup/configuration', owner, cutover); assert.equal(preview.status, 200); assert.equal(preview.headers.get('cache-control'), 'no-store'); assert.equal(config.dev.enabled, true);
+    const preview = await call('/api/v1/system/setup/configuration', owner, cutover); assert.equal(preview.status, 200); assert.equal(preview.headers.get('cache-control'), 'private, no-store, max-age=0, no-transform'); assert.equal(config.dev.enabled, true);
     await store.putOverlay({ toolId: 'card', version: 1, inputAccess: { title: [{ groups: ['*'], level: 'locked', value: 'Governed welcome' }] } });
     const metadata = await (await call('/api/v1/system/setup/tools/card', owner)).json() as any;
     assert.equal(metadata.inputs[0].access, 'locked'); assert.deepEqual(metadata.formats, ['svg', 'png']);

@@ -94,9 +94,9 @@ export type PublicCard =
  */
 export function publicCard(rel: string): PublicCard | null {
   const lower = rel.toLowerCase();
-  const view = lower.match(new RegExp(`^og/views/(${ID})\\.png$`));
+  const view = lower.match(new RegExp(`^og/views/(${ID})(?:\\.[0-9a-f]{16})?\\.png$`));
   if (view) return { kind: 'view', rel: lower };
-  const tool = lower.match(new RegExp(`^og/(${ID})\\.(png|jpe?g|webp)$`));
+  const tool = lower.match(new RegExp(`^og/(${ID})(?:\\.[0-9a-f]{16})?\\.(png|jpe?g|webp)$`));
   if (tool) return { kind: 'tool', toolId: tool[1] as string, rel: lower };
   return null;
 }

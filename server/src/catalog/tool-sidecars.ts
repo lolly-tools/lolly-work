@@ -31,8 +31,50 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { filterToolIndex } from '../policy/overlay.ts';
 import { callerCanSeeTool, type CatalogCaller } from './signing.ts';
+import { safeFile } from '../api/file-delivery.ts';
+import { sha256Hex } from '../lib/crypto.ts';
 
 export const CATALOG_SLIM_INDEX_REL = 'tools/index.slim.json';
+
+export type ToolArtAddress =
+  | { kind: 'preview' | 'tool-card'; toolId: string; hash16: string }
+  | { kind: 'view-card'; hash16: string };
+
+/** Hash addresses never widen the existing preview and share-card namespaces. */
+export function toolArtAddress(rel: string): ToolArtAddress | null {
+  const preview = /^previews\/([a-z0-9-]+)(?:\.look\d+)?\.([0-9a-f]{16})\.(?:svg|png|webp|avif|jpe?g|gif|webm|mp4)$/.exec(rel);
+  if (preview) return { kind: 'preview', toolId: preview[1]!, hash16: preview[2]! };
+  const card = /^og\/([a-z0-9-]+)\.([0-9a-f]{16})\.(?:png|jpe?g|webp)$/.exec(rel);
+  if (card) return { kind: 'tool-card', toolId: card[1]!, hash16: card[2]! };
+  const view = /^og\/views\/[a-z0-9-]+\.([0-9a-f]{16})\.png$/.exec(rel);
+  return view ? { kind: 'view-card', hash16: view[1]! } : null;
+}
+
+/** The mounted release inventory binds full bytes, not only a short URL digest.
+ * Shell fallback cards still consult the active pack's tool list and grants. */
+export async function addressedToolArt(root: string, rel: string, caller: CatalogCaller, currentPack = root): Promise<{ bytes: Buffer; modified: Date } | null> {
+  const address = toolArtAddress(rel);
+  if (!address) return null;
+  if (address.kind !== 'view-card') {
+    if (!callerCanSeeTool(caller, address.toolId)) return null;
+    const index = await readJson(join(currentPack, 'catalog/tools/index.json'));
+    if (!isObject(index) || !Array.isArray(index.tools) || !index.tools.some(tool => isObject(tool) && tool.id === address.toolId)) return null;
+  }
+  const manifest = await safeFile(root, 'catalog/delivery-manifest.json');
+  const file = await safeFile(root, `catalog/${rel}`);
+  if (!manifest || manifest.size > 16 * 1024 * 1024 || !file) return null;
+  try {
+    const inventory = await readJson(manifest.path);
+    if (!isObject(inventory) || inventory.version !== 1 || !Array.isArray(inventory.files) || inventory.files.length > 100000) return null;
+    const matches = inventory.files.filter(item => isObject(item) && item.path === `catalog/${rel}`);
+    if (matches.length !== 1) return null;
+    const entry = matches[0] as Record<string, unknown>;
+    if (typeof entry.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(entry.sha256)
+      || entry.sha256.slice(0, 16) !== address.hash16 || !Number.isSafeInteger(entry.size) || entry.size !== file.size) return null;
+    const bytes = await readFile(file.path);
+    return bytes.length === entry.size && sha256Hex(bytes) === entry.sha256 ? { bytes, modified: file.modified } : null;
+  } catch { return null; }
+}
 
 /** The directories whose files are named after a tool id. */
 const TOOL_KEYED_DIRS = ['previews', 'og'] as const;

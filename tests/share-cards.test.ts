@@ -126,7 +126,7 @@ test('gated instance: signed out, stubs, the Tools view and public cards answer 
   const toolCard = await get('/catalog/og/open-tool.png');
   assert.equal(toolCard.status, 200);
   assert.equal(toolCard.body, 'pack-card', 'the pack copy wins over the shell build');
-  assert.equal(toolCard.cache, 'public, max-age=3600');
+  assert.equal(toolCard.cache, 'public, max-age=3600, s-maxage=3600, no-transform');
   assert.match(String(toolCard.type), /^image\/png/);
   const viewCard = await get('/catalog/og/views/a.png');
   assert.equal(viewCard.status, 200);
@@ -142,7 +142,7 @@ test('gated instance: signed out, stubs, the Tools view and public cards answer 
   const staffCard = await fetch(`${base}/catalog/og/staff-tool.png`, { headers: { cookie } });
   assert.equal(staffCard.status, 200);
   assert.equal(await staffCard.text(), 'staff-card');
-  assert.equal(staffCard.headers.get('cache-control'), 'private, no-cache');
+  assert.equal(staffCard.headers.get('cache-control'), 'private, no-cache, no-transform');
   // Everything else under /catalog keeps the sign-in gate.
   assert.equal((await get('/catalog/tools/index.json')).status, 401);
   assert.equal((await get('/catalog/og/.og-sigs.json')).status, 401);

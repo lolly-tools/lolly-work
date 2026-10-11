@@ -148,7 +148,7 @@ test('share and embed serve the asset inline to a bearer with no session; downlo
     assert.equal(res.status, 200);
     assert.equal(await res.text(), HERO_BYTES);
     assert.equal(res.headers.get('content-type'), 'image/png');
-    assert.equal(res.headers.get('cache-control'), 'private, max-age=300', 'nothing an asset link serves is CDN-cacheable');
+    assert.equal(res.headers.get('cache-control'), 'private, max-age=300, no-transform', 'nothing an asset link serves is CDN-cacheable');
     assert.equal(res.headers.get('content-disposition'), null, `${kind} serves inline`);
     assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
     // Inline plus unauthenticated is exactly the combination a member-submitted
