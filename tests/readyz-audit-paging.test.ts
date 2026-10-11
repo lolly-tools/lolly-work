@@ -32,7 +32,12 @@ async function boot() {
   servers.push(server);
   await new Promise<void>((r) => server.listen(0, () => r()));
   const addr = server.address();
-  return { store, base: `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}` };
+  const base = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
+  for (let i = 0; i < 100; i++) {
+    if ((await fetch(`${base}/readyz`)).status === 200) return { store, base };
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.fail('The fixture must complete its real catalog startup proof');
 }
 
 test('/readyz answers 200 while the store can, 503 when it cannot, and every response carries a request id', async () => {

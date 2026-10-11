@@ -21,8 +21,10 @@ const fail = () => Object.assign(new Error('Mounted catalog publication could no
 /** Called once for an immutable mounted release, never for a mutable brand projection. */
 export async function catalogPublication(options: {
   pack: string; generation?: number; publicKey?: Record<string, unknown>; signing: CatalogSigning | null;
+  /** The delivery service's verified, immutable source map, shared with startup. */
+  fileDigests?: () => Promise<Record<string, string>>;
 }): Promise<CatalogPublication> {
-  const root = resolve(options.pack), manifest: Record<string, string> = {};
+  const root = await realpath(resolve(options.pack)), manifest: Record<string, string> = {};
   let count = 0;
   const visit = async (rel: string, depth = 0): Promise<void> => {
     if (depth > 32) throw fail();
@@ -72,7 +74,7 @@ export async function catalogPublication(options: {
         const module: string = '@lolly/engine', verifier = await import(module) as Verifier;
         const index = await readFile(join(root, 'catalog/tools/index.json'));
         if (!(await verifier.verifyCatalogEnvelope(envelope, index, key)).ok) throw fail();
-        const files = await completeToolFileDigests(root);
+        const files = await (options.fileDigests?.() ?? completeToolFileDigests(root));
         if (canonicalJson(envelope.files) !== canonicalJson(files)) throw fail();
         for (const [field, path] of [['assetIndexHash', 'catalog/assets/index.json'], ['slimHash', 'catalog/tools/index.slim.json']] as const) {
           if (envelope[field] !== undefined && envelope[field] !== sha256Hex(await readFile(join(root, path)))) throw fail();

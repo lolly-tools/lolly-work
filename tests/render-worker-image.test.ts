@@ -96,7 +96,14 @@ test('built worker uses its actual browser for signed 1.248 QR SVG/PNG, tickets,
   const cookie = mintSessionCookie({ sub: owner.sub, email: owner.email, name: 'Image test owner', groups: owner.groups, role: owner.role, epoch: owner.sessionEpoch }, session, false).split(';')[0];
   assert.ok(cookie);
   let ticketReads = 0, hookReads = 0, sandboxHookReads = 0, modelHits = 0, trapHits = 0, websocketHits = 0;
+  const catalogReads: Array<{ path: string; startMs: number; elapsedMs?: number; status?: number }> = [];
+  const startupAt = performance.now();
   server.on('request', (req, res) => {
+    const path = new URL(req.url ?? '/', base).pathname;
+    if (catalogReads.length < 64 && /^\/(?:catalog\/(?:tools|assets)\/index(?:\.slim|\.sig)?(?:\.[0-9a-f]{16})?\.json|tools\/(?:qr-code|sandbox)(?:@[0-9a-f]{16})?\/[A-Za-z0-9_./-]+)$/.test(path)) {
+      const read: typeof catalogReads[number] = { path, startMs: performance.now() - startupAt }; catalogReads.push(read);
+      res.once('finish', () => { read.elapsedMs = performance.now() - startupAt - read.startMs; read.status = res.statusCode; });
+    }
     if (req.headers['x-lw-render-read']) ticketReads++;
     if (/^\/tools\/qr-code(?:@[0-9a-f]{16})?\/hooks\.js(?:\?|$)/.test(req.url ?? '')) hookReads++;
     if (/^\/tools\/sandbox(?:@[0-9a-f]{16})?\/hooks\.js(?:\?|$)/.test(req.url ?? '')) sandboxHookReads++;
@@ -106,6 +113,9 @@ test('built worker uses its actual browser for signed 1.248 QR SVG/PNG, tickets,
       void gate.then(() => { if (!res.destroyed) void app(req, res); });
     } else void app(req, res);
   });
+  // Readiness includes the immutable publication proof; startup is not a render job.
+  await until(async () => (await fetch(`${base}/readyz`)).status === 200, 30_000);
+  console.log(JSON.stringify({ status: 'WORKER_CONTROL_PLANE_STARTUP_VERIFIED', elapsedMs: performance.now() - startupAt }));
   trap = createServer((_req, res) => { trapHits++; res.end('refused probe reached a private address'); });
   trap.on('upgrade', (_req, socket) => { websocketHits++; socket.destroy(); });
   const trapBase = await listen(trap);
@@ -172,7 +182,8 @@ test('built worker uses its actual browser for signed 1.248 QR SVG/PNG, tickets,
           if (typeof value.error?.message === 'string') categories = errorCategories(value.error.message);
         } catch { /* The original HTTP status remains the acceptance failure. */ }
         console.log(JSON.stringify({ status: 'WORKER_RENDER_FAILURE_METADATA', format, httpStatus: response.status,
-          code, categories, responseBytes: bytes.length, responseTruncated: truncated, responseSha256: hash(bytes), browser: diagnostics }));
+          code, categories, responseBytes: bytes.length, responseTruncated: truncated, responseSha256: hash(bytes), browser: diagnostics,
+          catalogReads: catalogReads.map(read => ({ ...read, ...(read.elapsedMs === undefined ? { pendingMs: performance.now() - startupAt - read.startMs } : {}) })) }));
       }
       assert.equal(response.status, 200, `${format} through the real control plane and worker`);
       assert.equal(response.headers.get('content-type')?.split(';')[0], format === 'svg' ? 'image/svg+xml' : 'image/png');

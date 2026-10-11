@@ -34,10 +34,24 @@ function ids(bytes: Buffer, field: 'tools' | 'assets'): string[] {
   catch { return []; }
 }
 
-export function createCatalogDelivery(deps: { store: Store; servedIndex: ServedIndexer; signing: CatalogSigning | null; source: { pack: string; generation?: number; publicKey?: Record<string, unknown> }; now?: () => number; maxBytes?: number }) {
+export function createCatalogDelivery(deps: { store: Store; servedIndex: ServedIndexer; signing: CatalogSigning | null; source: { pack: string; generation?: number; publicKey?: Record<string, unknown> }; requireGeneration?: boolean; now?: () => number; maxBytes?: number }) {
   const now = deps.now ?? Date.now, maxBytes = deps.maxBytes ?? MAX_SNAPSHOT_BYTES;
   let publication: Promise<CatalogPublication> | undefined;
+  let preparation: Promise<void> | undefined;
   const fileMemo = new Map<string, Promise<Record<string, string>>>();
+  const toolFiles = (pack: string): Promise<Record<string, string>> => {
+    if (!fileMemo.has(pack)) fileMemo.set(pack, completeToolFileDigests(pack).catch(error => { fileMemo.delete(pack); throw error; }));
+    return fileMemo.get(pack)!;
+  };
+  const sourcePublication = (): Promise<CatalogPublication> => publication ??= catalogPublication({ ...deps.source, signing: deps.signing,
+    fileDigests: () => toolFiles(deps.source.pack),
+  }).catch(error => { publication = undefined; throw error; });
+  /** Startup and first reads share the same complete source proof, never a render timeout. */
+  const prepare = (): Promise<void> => preparation ??= Promise.all([
+    sourcePublication(), toolFiles(deps.source.pack),
+  ]).then(([source]) => {
+    if (deps.requireGeneration && source.generation <= 0) throw Object.assign(new Error('Production catalog publication requires a positive generation'), { status: 503 });
+  });
   const remember = async (scope: string, kind: CatalogSnapshotKind, bytes: Buffer): Promise<void> => {
     const at = now();
     const stored = await deps.store.putCatalogDeliverySnapshot({ scope, kind, hash: sha256Hex(bytes), bytes,
@@ -45,12 +59,12 @@ export function createCatalogDelivery(deps: { store: Store; servedIndex: ServedI
     if (!stored) throw Object.assign(new Error('catalog snapshot retention is full'), { status: 503 });
   };
   const current = async (pack: string, caller: CatalogCaller): Promise<CatalogDeliveryView | null> => {
-    if (!fileMemo.has(pack)) fileMemo.set(pack, completeToolFileDigests(pack).catch(error => { fileMemo.delete(pack); throw error; }));
+    await prepare();
     const [tools, assets, slimResult, rawTools, rawSlim, allFiles] = await Promise.all([
       servedToolIndexBytes(pack, caller), deps.servedIndex.forCaller({ groups: caller.groups }),
       servedToolSidecar(pack, 'tools/index.slim.json', caller),
       readFile(join(pack, 'catalog/tools/index.json')).catch(() => Buffer.alloc(0)),
-      readFile(join(pack, 'catalog/tools/index.slim.json')).catch(() => Buffer.alloc(0)), fileMemo.get(pack)!,
+      readFile(join(pack, 'catalog/tools/index.slim.json')).catch(() => Buffer.alloc(0)), toolFiles(pack),
     ]);
     if (!tools) return null;
     const slim = slimResult.kind === 'json' ? slimResult.bytes : null;
@@ -59,8 +73,7 @@ export function createCatalogDelivery(deps: { store: Store; servedIndex: ServedI
       tools: sha256Hex(rawTools), slim: sha256Hex(rawSlim), files: allFiles,
       overlays: [...caller.overlays].sort(([a], [b]) => a.localeCompare(b)),
     }));
-    publication ??= catalogPublication({ ...deps.source, signing: deps.signing }).catch(error => { publication = undefined; throw error; });
-    const seq = await deps.store.catalogDeliverySequence(fingerprint, await publication);
+    const seq = await deps.store.catalogDeliverySequence(fingerprint, await sourcePublication());
     const files = Object.fromEntries(Object.entries(allFiles).filter(([path]) => tools.visible(path.slice(0, path.indexOf('/')))));
     const toolDirs = toolDirectoryDigests(files);
     await remember(scope, 'tools', tools.bytes);
@@ -72,6 +85,7 @@ export function createCatalogDelivery(deps: { store: Store; servedIndex: ServedI
     return { tools, assets, slim, scope, seq, files, toolDirs, envelope };
   };
   return {
+    prepare,
     current,
     /** Recompose current permissions first, then permit only historical subsets. */
     async snapshot(pack: string, caller: CatalogCaller, kind: CatalogSnapshotKind, hash16: string): Promise<Buffer | null> {

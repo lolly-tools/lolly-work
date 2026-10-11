@@ -310,6 +310,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // project files its inputs name, while that person can see them (plan 76 M4j).
   const renderTool = (...args: [...Parameters<typeof renderToolUnscoped>, submitter?: UserRecord | null]) => {
     const run = async () => {
+      await catalogPreparation;
       const snap = brand.current()!;
       const policyHash = brandPolicyHash([...args[1].overlays]);
       const managedRules = await managedRuleContext(snap, args[1].toolId, args[1].format === 'jpeg' ? 'jpg' : args[1].format);
@@ -511,9 +512,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   const servedIndex = createServedIndex({
     pack: () => config.instance.pack, store, federation, ready: providersReady, pagedThreshold: serving.pagedProviderThreshold,
   });
-  const catalogDelivery = createCatalogDelivery({ store, servedIndex, signing: catalogSigning,
+  const catalogDelivery = createCatalogDelivery({ store, servedIndex, signing: catalogSigning, requireGeneration: productionMode(config),
     source: { pack: deploymentConfig.instance.pack, generation: deploymentConfig.instance.catalogPublicationGeneration,
       publicKey: deploymentConfig.instance.catalogPublicKey } });
+  let catalogReady = false;
+  const catalogPreparation = catalogDelivery.prepare();
+  void catalogPreparation.then(() => { catalogReady = true; }, () => {});
   const extCache = createExtCache(serving.extCache);
   /** Whether a conditional request already holds `etag` (a list, `*`, or weak forms). */
   const etagMatches = (req: IncomingMessage, etag: string): boolean => {
@@ -639,7 +643,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const configured = !productionMode(config) || (storeOk
       && await store.pendingMigrations().then(pending => pending.length === 0).catch(() => false)
       && await setupReport().then(report => report.ready).catch(() => false));
-    const ok = storeOk && configured;
+    const ok = storeOk && configured && catalogReady;
     sendJson(res, ok ? 200 : 503, { ok, store: store.storageKind });
   });
   // ── health + metrics ──────────────────────────────────────────────────────
