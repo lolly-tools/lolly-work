@@ -40,14 +40,14 @@ try {
   const base = `http://127.0.0.1:${address.port}`;
   const htmlResponse = await fetch(base + '/admin/');
   assert.equal(htmlResponse.status, 200);
-  assert.equal(htmlResponse.headers.get('cache-control'), 'no-cache');
+  assert.equal(htmlResponse.headers.get('cache-control'), 'private, no-store, max-age=0, no-transform');
   const html = await htmlResponse.text();
   assert.equal(html, consoleAssetPlan().html, 'served HTML must match the generated console entry');
   const stylesheet = /<link\b[^>]*\bhref="(\/admin\/styles\.css\?v=[a-f0-9]{64})"/.exec(html);
   assert.ok(stylesheet, 'shipped HTML must select the current stylesheet');
   const css = await fetch(base + stylesheet[1]);
   assert.equal(css.status, 200);
-  assert.equal(css.headers.get('cache-control'), 'no-cache');
+  assert.equal(css.headers.get('cache-control'), 'private, no-store, max-age=0, no-transform');
   assert.equal(await css.text(), await readFile(join(CONSOLE_DIR, 'styles.css'), 'utf8'));
   // Plan 76 milestone 4 (R2): the version routes the shell's History feature-detects.
   // An unknown session route answers 404, so a 401 shows the route is in this build.
@@ -93,7 +93,7 @@ try {
       const entry = await loadConsoleModuleGraph({ html, base, context: dom.getInternalVMContext(), read: async url => {
         const response = await fetch(url);
         assert.equal(response.status, 200, `HTML-selected module must be shipped: ${new URL(url).pathname}`);
-        assert.equal(response.headers.get('cache-control'), 'no-cache', 'imported modules must revalidate after an update');
+        assert.equal(response.headers.get('cache-control'), 'private, no-store, max-age=0, no-transform', 'imported admin modules must stay out of browser and shared caches');
         const source = await response.text();
         assert.equal(source, await readFile(join(CONSOLE_DIR, decodeURIComponent(new URL(url).pathname.slice('/admin/'.length))), 'utf8'), 'served module bytes must match the console source');
         return source;
