@@ -131,7 +131,7 @@ try {
   const shell = await request('/admin'); assert.equal(shell.status, 200); assert.equal(await shell.text(), assets.html);
   for (const name of assets.files.filter(name => /\.(?:js|css)$/.test(name))) {
     const module = await request(`/admin/${name}`); assert.equal(module.status, 200);
-    assert.equal(module.headers.get('cache-control'), 'no-cache');
+    assert.equal(module.headers.get('cache-control'), 'private, no-store, max-age=0, no-transform');
     assert.equal(await module.text(), readFileSync(join(root, 'console', name), 'utf8'));
   }
   for (const path of [`/admin/app.js?v=${assets.revision}`, `/admin/styles.css?v=${assets.revision}`]) {

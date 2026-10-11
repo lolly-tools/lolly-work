@@ -3,9 +3,10 @@
 import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, randomUUID, type webcrypto } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { brotliDecompressSync, gunzipSync } from 'node:zlib';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -24,10 +25,10 @@ export function imageRefusal(value: string, count: number): { status: string; ph
     trackedChangeCount: Number.isInteger(count) && count >= 0 && count <= 128 ? count : 0 };
 }
 
-function boundedFile(root: string, path: string): Buffer {
+function boundedFile(root: string, path: string, allowEmpty = false): Buffer {
   const absolute = resolve(root, path), canonicalRoot = realpathSync(root);
   const stat = lstatSync(absolute);
-  assert.ok(stat.isFile() && !stat.isSymbolicLink() && stat.size > 0 && stat.size <= 16 * 1024 * 1024);
+  assert.ok(stat.isFile() && !stat.isSymbolicLink() && stat.size >= (allowEmpty ? 0 : 1) && stat.size <= 16 * 1024 * 1024);
   assert.ok(realpathSync(absolute).startsWith(`${canonicalRoot}/`));
   const bytes = readFileSync(absolute); assert.equal(bytes.length, stat.size);
   return bytes;
@@ -69,14 +70,17 @@ export function verifyGeneratedDocs(root: string, changes: { status: 'M' | 'D'; 
   return files.length;
 }
 
-interface CatalogInput { index: Buffer; files: Record<string, string> }
-interface CatalogEnvelope { alg: string; keyId: string; indexHash: string; files: Record<string, string>; signature: string; signedAt: string }
+interface CatalogInput { index: Buffer; files: Record<string, string>; assetIndex?: Buffer; slimIndex?: Buffer }
+interface CatalogEnvelope { alg: string; keyId: string; indexHash: string; files: Record<string, string>; signature: string; signedAt: string;
+  seq?: number; expiresAt?: string; assetIndexHash?: string; slimHash?: string; catalogScope?: string; toolDirs?: Record<string, string> }
 interface CatalogIntegrity {
   CATALOG_SIGNED_TOOL_FILES: readonly string[];
   CATALOG_SIGNED_I18N_SIDECAR: RegExp;
   CATALOG_SIGNED_TEMPLATE_FILE: RegExp;
   importSpkiOrJwkPublicKey(value: string): Promise<webcrypto.CryptoKey>;
   verifyCatalogEnvelope(envelope: CatalogEnvelope, bytes: Uint8Array, key: webcrypto.CryptoKey): Promise<{ ok: boolean }>;
+  jwkThumbprint(jwk: webcrypto.JsonWebKey): Promise<string>;
+  toolDirectoryHash(files: Record<string, string>, id: string): Promise<string>;
 }
 async function catalogIntegrity(): Promise<CatalogIntegrity> {
   const module: string = pathToFileURL(join(ROOT, 'vendor/@lolly/engine/src/catalog-integrity.ts')).href;
@@ -91,38 +95,158 @@ interface ContentResolver {
   catalogFile(file: string, roots: unknown): string;
 }
 
-async function authoredCatalog(root: string): Promise<CatalogInput> {
+export async function authoredCatalog(root: string): Promise<CatalogInput> {
   // Reuse the matched source's overlay resolver; do not flatten brand manifests ourselves.
   const resolver = await import(pathToFileURL(join(root, 'packages/node-shell/src/content-roots.ts')).href) as ContentResolver;
   const integrity = await catalogIntegrity();
   const roots = resolver.contentRoots({ root, profile: 'lolly-start' });
   assert.equal(resolver.catalogFile('tools/index.sig.json', roots), join(root, SIGNING_OUTPUT));
-  const files: Record<string, string> = {};
+  const files: Record<string, string> = Object.create(null);
   for (const id of [...resolver.toolDirs(roots).keys()].sort()) {
     assert.match(id, /^[a-z0-9-]+$/);
     const names = new Set([...integrity.CATALOG_SIGNED_TOOL_FILES, ...resolver.listToolFiles(id, roots)
-      .filter(name => integrity.CATALOG_SIGNED_I18N_SIDECAR.test(name) || integrity.CATALOG_SIGNED_TEMPLATE_FILE.test(name))]);
+      .filter(name => !(name.startsWith('i18n/') && !integrity.CATALOG_SIGNED_I18N_SIDECAR.test(name)) &&
+        !(name.startsWith('templates/') && !integrity.CATALOG_SIGNED_TEMPLATE_FILE.test(name)))]);
     for (const name of names) {
+      assert.ok(name && !/[\\%?#\p{White_Space}\p{Cc}]/u.test(name) && name.split('/').every(part => part && part !== '.' && part !== '..'), 'Signed tool filenames must be safe');
       const path = resolver.toolFile(id, name, roots); if (!path) continue;
-      const original = boundedFile(root, path);
+      const original = boundedFile(root, path, true);
       const bytes = name === 'tool.json' ? Buffer.from(resolver.readToolManifestText(id, roots)) : original;
       files[`${id}/${name}`] = sha256(bytes);
     }
   }
-  assert.ok(Object.keys(files).length > 0 && Object.keys(files).length <= 8192);
-  return { index: boundedFile(root, resolver.catalogFile('tools/index.json', roots)), files };
+  assert.ok(Object.keys(files).length > 0 && Object.keys(files).length <= 100000);
+  const assetPath = resolver.catalogFile('assets/index.json', roots), slimPath = resolver.catalogFile('tools/index.slim.json', roots);
+  return { index: boundedFile(root, resolver.catalogFile('tools/index.json', roots)), files,
+    ...(existsSync(assetPath) ? { assetIndex: boundedFile(root, assetPath) } : {}),
+    ...(existsSync(slimPath) ? { slimIndex: boundedFile(root, slimPath) } : {}) };
 }
 
 export async function verifyGeneratedSignature(source: Uint8Array, dist: Uint8Array, expected: CatalogInput, publicMaterial: string): Promise<number> {
   assert.deepEqual(source, dist, 'The served envelope must be the source signing output');
   const envelope = JSON.parse(Buffer.from(source).toString('utf8')) as CatalogEnvelope;
-  assert.deepEqual(Object.keys(envelope).sort(), ['alg', 'files', 'indexHash', 'keyId', 'signature', 'signedAt']);
-  assert.deepEqual(Object.entries(envelope.files).sort(), Object.entries(expected.files).sort());
-  assert.equal(envelope.indexHash, sha256(expected.index));
+  const allowed = new Set(['alg', 'files', 'indexHash', 'keyId', 'signature', 'signedAt', 'seq', 'expiresAt', 'assetIndexHash', 'slimHash', 'catalogScope', 'toolDirs']);
+  assert.ok(envelope && !Array.isArray(envelope) && Object.keys(envelope).every(name => allowed.has(name)), 'Unknown signed envelope fields are refused');
   const integrity = await catalogIntegrity();
   const publicKey = await integrity.importSpkiOrJwkPublicKey(publicMaterial);
   assert.equal((await integrity.verifyCatalogEnvelope(envelope, expected.index, publicKey)).ok, true);
+  assert.deepEqual(Object.entries(envelope.files).sort(), Object.entries(expected.files).sort());
+  assert.equal(envelope.indexHash, sha256(expected.index));
+  for (const [field, bytes] of [['assetIndexHash', expected.assetIndex], ['slimHash', expected.slimIndex]] as const) {
+    assert.equal(envelope[field], bytes ? sha256(bytes) : undefined, 'Every actual sibling index must be bound, without claiming absent bytes');
+  }
+  if (envelope.toolDirs !== undefined) {
+    const ids = [...new Set(Object.keys(expected.files).map(path => path.split('/')[0]!))].sort();
+    assert.deepEqual(Object.keys(envelope.toolDirs).sort(), ids);
+    for (const id of ids) assert.equal(envelope.toolDirs[id], await integrity.toolDirectoryHash(expected.files, id));
+  }
   return Object.keys(expected.files).length;
+}
+
+/** The final release has rewritten hash URLs; verify its actual bytes separately from authored inputs. */
+export async function verifyGeneratedRelease(root: string, expected: CatalogInput, publicMaterial: string, sourceEnvelope: Uint8Array): Promise<number> {
+  await verifyGeneratedSignature(sourceEnvelope, sourceEnvelope, expected, publicMaterial);
+  const source = JSON.parse(Buffer.from(sourceEnvelope).toString('utf8')) as CatalogEnvelope;
+  assert.ok(Number.isSafeInteger(source.seq) && source.seq === 1, 'A fresh qualification lineage must begin at sequence one');
+  const dist = join(root, 'shells/web/dist');
+  const files = await derivedToolFiles(root, dist, expected);
+  const input: CatalogInput = { index: boundedFile(dist, 'catalog/tools/index.json'), files,
+    ...(existsSync(join(dist, 'catalog/assets/index.json')) ? { assetIndex: boundedFile(dist, 'catalog/assets/index.json') } : {}),
+    ...(existsSync(join(dist, 'catalog/tools/index.slim.json')) ? { slimIndex: boundedFile(dist, 'catalog/tools/index.slim.json') } : {}) };
+  const bytes = boundedFile(dist, 'catalog/tools/index.sig.json');
+  const count = await verifyGeneratedSignature(bytes, bytes, input, publicMaterial);
+  const envelope = JSON.parse(bytes.toString('utf8')) as CatalogEnvelope;
+  assert.ok(Number.isSafeInteger(envelope.seq) && envelope.seq! > source.seq!, 'The materialized release must advance its verified source sequence');
+  assert.ok(envelope.toolDirs, 'A modern materialized release requires the full tool directory map');
+  const verifier = await import(pathToFileURL(join(root, 'scripts/verify-release-catalog.ts')).href) as {
+    verifyReleaseCatalog(root: string, publicMaterial: string): Promise<{ verified: true; files: number }>;
+  };
+  const verified = await verifier.verifyReleaseCatalog(dist, publicMaterial);
+  assert.equal(verified.verified, true); assert.equal(verified.files, count);
+  return count;
+}
+
+/** Coding siblings are excluded only after their complete decoded identity is proved. */
+function verifyToolCodings(root: string): void {
+  let entries = 0;
+  const walk = (directory: string, depth: number): void => {
+    assert.ok(depth <= 32);
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      assert.ok(++entries <= 100000 && !entry.isSymbolicLink());
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) { walk(path, depth + 1); continue; }
+      assert.ok(entry.isFile());
+      if (!/\.(gz|br)$/.test(entry.name)) continue;
+      const identity = boundedFile(root, path.slice(0, -3), true), encoded = boundedFile(root, path);
+      const decode = entry.name.endsWith('.gz') ? gunzipSync : brotliDecompressSync;
+      const result = decode(encoded, { info: true, maxOutputLength: Math.max(1, identity.length + 1) }) as unknown as { buffer: Buffer; engine: { bytesWritten: number } };
+      assert.equal(result.engine.bytesWritten, encoded.length, 'Coding must consume the entire encoded input');
+      assert.deepEqual(result.buffer, identity, 'Coding must match the exact identity bytes');
+    }
+  };
+  walk(join(root, 'tools'), 0);
+}
+
+/** Replay the committed materializer from the authored tools; arbitrary signed changes still refuse. */
+async function derivedToolFiles(root: string, dist: string, expected: CatalogInput): Promise<Record<string, string>> {
+  const materializer = await import(pathToFileURL(join(root, 'scripts/materialize-catalog-delivery.ts')).href) as {
+    catalogToolFiles(root: string): Record<string, string>;
+    materializeCatalogDelivery(root: string): Promise<unknown>;
+  };
+  verifyToolCodings(dist);
+  const actual = materializer.catalogToolFiles(join(dist, 'tools'));
+  for (const path of Object.keys(actual)) if (/\.(gz|br)$/.test(path)) delete actual[path];
+  assert.deepEqual(Object.keys(actual).sort(), Object.keys(expected.files).sort(), 'The final release must retain the complete authored tool file set');
+  const resolver = await import(pathToFileURL(join(root, 'packages/node-shell/src/content-roots.ts')).href) as ContentResolver;
+  const roots = resolver.contentRoots({ root, profile: 'lolly-start' });
+  const projected = realpathSync(mkdtempSync(join(tmpdir(), 'worker-catalog-derivation-'))); chmodSync(projected, 0o700);
+  try {
+    for (const [path, digest] of Object.entries(expected.files)) {
+      const slash = path.indexOf('/'), id = path.slice(0, slash), name = path.slice(slash + 1);
+      const original = resolver.toolFile(id, name, roots); assert.ok(original);
+      const bytes = name === 'tool.json' ? Buffer.from(resolver.readToolManifestText(id, roots)) : boundedFile(root, original, true);
+      assert.equal(sha256(bytes), digest, 'Authored tool input must remain unchanged through the build');
+      const target = join(projected, 'tools', path); mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, bytes, { flag: 'wx' });
+    }
+    let imageEntries = 0;
+    const copyImages = (directory: string, depth = 0): void => {
+      assert.ok(depth <= 32);
+      if (!existsSync(directory)) return;
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        assert.ok(++imageEntries <= 100000 && !entry.isSymbolicLink()); const from = join(directory, entry.name);
+        if (entry.isDirectory()) { copyImages(from, depth + 1); continue; }
+        assert.ok(entry.isFile());
+        if (!/\.(svg|png|webp|avif|jpe?g|gif|webm|mp4)$/i.test(entry.name) || /\.[0-9a-f]{16}\.[a-z0-9]+$/i.test(entry.name)) continue;
+        const to = join(projected, relative(dist, from)); mkdirSync(dirname(to), { recursive: true }); linkSync(from, to);
+      }
+    };
+    for (const prefix of ['catalog/previews', 'catalog/og', 'info/shots']) copyImages(join(dist, prefix));
+    const writeIndex = (path: string, bytes: Buffer): void => {
+      const to = join(projected, path); mkdirSync(dirname(to), { recursive: true }); writeFileSync(to, bytes, { flag: 'wx' });
+    };
+    writeIndex('catalog/tools/index.json', expected.index);
+    if (expected.slimIndex) writeIndex('catalog/tools/index.slim.json', expected.slimIndex);
+    const assetPath = 'catalog/assets/index.json';
+    if (existsSync(join(dist, assetPath))) {
+      const bytes = boundedFile(dist, assetPath); writeIndex(assetPath, bytes);
+      const index = JSON.parse(bytes.toString('utf8')) as { assets: Array<{ formats?: Array<{ url: string }>; locales?: Record<string, Array<{ url: string }>> }> };
+      assert.ok(Array.isArray(index.assets));
+      for (const asset of index.assets) for (const format of [...(asset.formats ?? []), ...Object.values(asset.locales ?? {}).flat()]) {
+        if (!format.url.startsWith('/catalog/')) continue;
+        assert.ok(!/[\\%?#\p{White_Space}\p{Cc}]/u.test(format.url) && format.url.slice(1).split('/').every(part => part && part !== '.' && part !== '..'));
+        const from = resolve(dist, format.url.slice(1)), to = resolve(projected, format.url.slice(1));
+        assert.ok(realpathSync(from).startsWith(dist + sep) && lstatSync(from).isFile() && !lstatSync(from).isSymbolicLink());
+        mkdirSync(dirname(to), { recursive: true }); if (!existsSync(to)) linkSync(from, to);
+      }
+    }
+    await materializer.materializeCatalogDelivery(projected);
+    const derived = materializer.catalogToolFiles(join(projected, 'tools'));
+    assert.deepEqual(Object.entries(actual).sort(), Object.entries(derived).sort(), 'Final tool bytes must be the exact maintained derivation');
+    assert.deepEqual(boundedFile(dist, 'catalog/tools/index.json'), boundedFile(projected, 'catalog/tools/index.json'));
+    if (expected.slimIndex) assert.deepEqual(boundedFile(dist, 'catalog/tools/index.slim.json'), boundedFile(projected, 'catalog/tools/index.slim.json'));
+    return actual;
+  } finally { rmSync(projected, { recursive: true }); }
 }
 export function imageArguments(args: string[]): { lollyRoot: string; image: string } {
   const values = new Map<string, string>();
@@ -155,6 +279,102 @@ function output(command: string, args: string[], cwd = ROOT): string {
   return execFileSync(command, args, { cwd, encoding: 'utf8', timeout: 15_000, maxBuffer: 1024 * 1024 }).trim();
 }
 
+interface QualificationSource { root: string; owned: string; originalRoot: string; source: string;
+  originalEnvelopeSha256: string; receiptSha256: string; device: number; inode: number }
+
+/** Borrow external packages, while every workspace package resolves to the owned checkout. */
+function borrowDependencies(original: string, clone: string): string[] {
+  const workspaces = ['', 'engine', ...['packages', 'shells'].flatMap(parent => existsSync(join(original, parent))
+    ? readdirSync(join(original, parent), { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => `${parent}/${entry.name}`) : [])];
+  const packages = new Map<string, string>();
+  for (const workspace of workspaces) {
+    const manifest = join(original, workspace, 'package.json');
+    if (!existsSync(manifest)) continue;
+    const name = (JSON.parse(readFileSync(manifest, 'utf8')) as { name?: string }).name;
+    if (name) { assert.ok(!packages.has(name)); packages.set(name, workspace); }
+  }
+  const aliases: string[] = [];
+  const project = (from: string, to: string, nesting: number): void => {
+    const meta = lstatSync(from), name = from.slice(from.lastIndexOf(sep) + 1);
+    if (meta.isDirectory() && nesting < 2 && (name.startsWith('@') || name === '.bin')) {
+      mkdirSync(to);
+      for (const entry of readdirSync(from).sort()) project(join(from, entry), join(to, entry), nesting + 1);
+    } else if (meta.isFile()) {
+      copyFileSync(from, to); chmodSync(to, meta.mode & 0o777);
+    } else {
+      assert.ok(meta.isDirectory() || meta.isSymbolicLink(), 'Unsupported dependency entry');
+      const target = realpathSync(from), rel = relative(original, target);
+      const workspace = rel && !rel.startsWith(`..${sep}`) && rel !== '..' && !rel.split(sep).includes('node_modules');
+      const parts = from.split(sep), packageName = parts.at(-2)?.startsWith('@') ? parts.slice(-2).join('/') : name;
+      const registered = packages.get(packageName);
+      if (registered !== undefined) assert.equal(target, realpathSync(join(original, registered)), 'Workspace aliases must refer to the matched source');
+      const selected = workspace ? join(clone, rel) : target;
+      assert.ok(existsSync(selected), 'A borrowed workspace target must exist in the exact clone');
+      symlinkSync(selected, to, 'dir');
+      if (workspace) { assert.equal(realpathSync(to), realpathSync(selected)); aliases.push(relative(clone, to)); }
+    }
+  };
+  for (const workspace of workspaces) {
+    const from = join(original, workspace, 'node_modules');
+    if (!existsSync(from)) continue;
+    const to = join(clone, workspace, 'node_modules');
+    assert.ok(!existsSync(to), 'The owned clone must not contain adopted dependencies');
+    mkdirSync(to);
+    for (const entry of readdirSync(from).sort()) project(join(from, entry), join(to, entry), 0);
+  }
+  return aliases.sort();
+}
+
+/** A new fixture identity starts only in an exclusive clone; the historical lineage is retained untouched. */
+export async function prepareQualificationSource(originalRoot: string, source: string, publicMaterial: string): Promise<QualificationSource> {
+  const original = realpathSync(originalRoot);
+  assert.match(source, /^[a-f0-9]{40}$/);
+  assert.equal(output('git', ['rev-parse', 'HEAD'], original), source);
+  assert.equal(output('git', ['status', '--porcelain', '--untracked-files=no'], original), '');
+  const historical = boundedFile(original, SIGNING_OUTPUT);
+  assert.deepEqual(execFileSync('git', ['show', `${source}:${SIGNING_OUTPUT}`], { cwd: original, maxBuffer: 16 * 1024 * 1024 }), historical);
+  const jwk = JSON.parse(publicMaterial) as webcrypto.JsonWebKey;
+  assert.ok(jwk.kty === 'EC' && jwk.crv === 'P-256' && jwk.d === undefined);
+  const integrity = await catalogIntegrity();
+  await integrity.importSpkiOrJwkPublicKey(publicMaterial);
+  const keyId = await integrity.jwkThumbprint(jwk);
+  assert.notEqual((JSON.parse(historical.toString('utf8')) as { keyId?: string }).keyId, keyId, 'The fixture key must be a separate fresh identity');
+  const owned = realpathSync(mkdtempSync(join(tmpdir(), 'lolly-worker-source-'))); chmodSync(owned, 0o700);
+  const root = join(owned, 'lolly');
+  const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('GIT_')));
+  Object.assign(gitEnv, { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' });
+  execFileSync('git', ['-c', 'core.hooksPath=/dev/null', 'clone', '--shared', '--no-checkout', '--', original, root],
+    { env: gitEnv, timeout: 60_000, maxBuffer: 1024 * 1024 });
+  execFileSync('git', ['-C', root, '-c', 'core.hooksPath=/dev/null', 'checkout', '--detach', source],
+    { env: gitEnv, timeout: 60_000, maxBuffer: 1024 * 1024 });
+  assert.equal(output('git', ['rev-parse', 'HEAD'], root), source);
+  assert.equal(output('git', ['status', '--porcelain', '--untracked-files=no'], root), '');
+  assert.ok(lstatSync(join(root, '.git')).isDirectory() && !lstatSync(join(root, '.git')).isSymbolicLink());
+  const aliases = borrowDependencies(original, root);
+  assert.deepEqual(boundedFile(root, SIGNING_OUTPUT), historical);
+  const originalEnvelopeSha256 = sha256(historical);
+  writeFileSync(join(owned, 'historical-envelope.json'), historical, { flag: 'wx', mode: 0o600 });
+  const receipt = Buffer.from(JSON.stringify({ version: 1, status: 'EXCLUSIVE_TEST_LINEAGE_INITIALIZED', source,
+    fixtureProfile: 'lolly-start', fixtureKey: 'ephemeral-test-only', publicKeyId: keyId,
+    historicalEnvelope: { path: 'historical-envelope.json', size: historical.length, sha256: originalEnvelopeSha256, trustedForNewLineage: false },
+    copiedSignatureRemoved: SIGNING_OUTPUT, workspaceAliases: aliases, productionAcceptance: false }) + '\n');
+  writeFileSync(join(owned, 'lineage-custody.json'), receipt, { flag: 'wx', mode: 0o600 });
+  unlinkSync(join(root, SIGNING_OUTPUT));
+  assert.equal(sha256(boundedFile(original, SIGNING_OUTPUT)), originalEnvelopeSha256);
+  const meta = lstatSync(root);
+  return { root, owned, originalRoot: original, source, originalEnvelopeSha256, receiptSha256: sha256(receipt), device: meta.dev, inode: meta.ino };
+}
+
+/** Drop only the owned working copy, keeping its bounded historical-signature custody. */
+export function finishQualificationSource(fixture: QualificationSource): void {
+  assert.equal(output('git', ['rev-parse', 'HEAD'], fixture.originalRoot), fixture.source);
+  assert.equal(sha256(boundedFile(fixture.originalRoot, SIGNING_OUTPUT)), fixture.originalEnvelopeSha256);
+  const meta = lstatSync(fixture.root);
+  assert.ok(meta.isDirectory() && !meta.isSymbolicLink() && meta.dev === fixture.device && meta.ino === fixture.inode && realpathSync(fixture.root) === fixture.root);
+  assert.equal(fixture.root, join(fixture.owned, 'lolly'));
+  rmSync(fixture.root, { recursive: true });
+}
+
 export async function main(args = process.argv.slice(2)): Promise<void> {
   phase = 'ARGUMENTS'; trackedChangeCount = 0;
   const { lollyRoot, image } = imageArguments(args);
@@ -178,6 +398,14 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   const key = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
   const privateMaterial = key.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
   const publicMaterial = JSON.stringify(key.publicKey.export({ format: 'jwk' }));
+  const fixture = await prepareQualificationSource(lollyRoot, source, publicMaterial);
+  try { await qualifyOwnedFixture(fixture.root, imageId, source, privateMaterial, publicMaterial); }
+  finally { finishQualificationSource(fixture); }
+  console.log(JSON.stringify({ status: 'WORKER_FIXTURE_LINEAGE_CUSTODY', source,
+    historicalEnvelopeSha256: fixture.originalEnvelopeSha256, receiptSha256: fixture.receiptSha256, originalCheckoutPreserved: true, productionAcceptance: false }));
+}
+
+async function qualifyOwnedFixture(lollyRoot: string, imageId: string, source: string, privateMaterial: string, publicMaterial: string): Promise<void> {
   phase = 'CATALOG_INPUT';
   const catalogInput = await authoredCatalog(lollyRoot);
   const buildEnv: NodeJS.ProcessEnv = {};
@@ -197,8 +425,9 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   phase = 'GENERATED_DOCS';
   const docs = verifyGeneratedDocs(lollyRoot, generated);
   phase = 'GENERATED_SIGNATURE';
-  const signedFiles = await verifyGeneratedSignature(boundedFile(lollyRoot, SIGNING_OUTPUT),
-    boundedFile(lollyRoot, 'shells/web/dist/catalog/tools/index.sig.json'), catalogInput, publicMaterial);
+  const sourceEnvelope = boundedFile(lollyRoot, SIGNING_OUTPUT);
+  await verifyGeneratedSignature(sourceEnvelope, sourceEnvelope, catalogInput, publicMaterial);
+  const signedFiles = await verifyGeneratedRelease(lollyRoot, catalogInput, publicMaterial, sourceEnvelope);
   assert.deepEqual(boundedFile(lollyRoot, 'brands/lolly-start/catalog/tools/index.json'), catalogInput.index);
   console.log(JSON.stringify({ status: 'WORKER_FIXTURE_DERIVATIONS_VERIFIED', trackedChangeCount, docs, signedFiles }));
   phase = 'CONTAINER_CUSTODY';
