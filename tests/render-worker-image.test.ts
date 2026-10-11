@@ -12,6 +12,7 @@ import { createMemoryStore } from '../server/src/store/memory.ts';
 import { mintSessionCookie } from '../server/src/iam/sessions.ts';
 import { importCatalogSigningKey } from '../server/src/catalog/signing.ts';
 import { mintRenderRead } from '../server/src/render/read-ticket.ts';
+import { createRenderResourceHold } from './collab/render-resource-hold.ts';
 type WorkerModule = typeof import('../workers/render/src/server.ts');
 
 const skip = process.env.LOLLY_RENDER_IMAGE_TEST !== '1' && 'Run qualify-render-worker-image.ts with the built image and matched signed shell.';
@@ -71,11 +72,11 @@ test('built worker uses its actual browser for signed 1.248 QR SVG/PNG, tickets,
   delete process.env.LW_RENDER_EXPORT_TIMEOUT_MS; delete process.env.LW_RENDER_NAV_TIMEOUT_MS;
   process.env.LW_RENDER_MAX_CONCURRENT = '1';
   let worker: WorkerModule | undefined, browser: Awaited<ReturnType<WorkerModule['getBrowser']>> | undefined, trap: Server | undefined;
-  let hold = false, releaseHold: (() => void) | undefined, held = false;
+  const cancellationHold = createRenderResourceHold();
   const server = createServer(); const base = await listen(server);
   let cleanup: Promise<void> | undefined;
   const finish = () => cleanup ??= (async () => {
-    hold = false; releaseHold?.();
+    cancellationHold.release();
     try { await browser?.close(); } finally {
       try { if (worker?.server) await close(worker.server); } finally {
         try { await close(server); } finally { if (trap) await close(trap); }
@@ -109,10 +110,7 @@ test('built worker uses its actual browser for signed 1.248 QR SVG/PNG, tickets,
     if (/^\/tools\/qr-code(?:@[0-9a-f]{16})?\/hooks\.js(?:\?|$)/.test(req.url ?? '')) hookReads++;
     if (/^\/tools\/sandbox(?:@[0-9a-f]{16})?\/hooks\.js(?:\?|$)/.test(req.url ?? '')) sandboxHookReads++;
     if (req.url?.startsWith('/models/')) modelHits++;
-    if (hold && req.url?.startsWith('/catalog/tools/index.json')) {
-      held = true; const gate = new Promise<void>(resolve => { releaseHold = resolve; });
-      void gate.then(() => { if (!res.destroyed) void app(req, res); });
-    } else void app(req, res);
+    if (!cancellationHold.intercept(req, res, () => { void app(req, res); })) void app(req, res);
   });
   // Readiness includes the immutable publication proof; startup is not a render job.
   await until(async () => (await fetch(`${base}/readyz`)).status === 200, 30_000);
@@ -223,22 +221,33 @@ test('built worker uses its actual browser for signed 1.248 QR SVG/PNG, tickets,
     assert.equal(aiEnabled, 0);
     assert.equal(trapHits, 0); assert.equal(websocketHits, 0); assert.equal(modelHits, 0);
     await until(async () => actualBrowser.contexts().length === 0);
-    hold = true;
+    const directory = envelope.toolDirs?.['qr-code'];
+    assert.match(directory, /^[a-f0-9]{64}$/);
+    cancellationHold.arm({ path: `/tools/qr-code@${directory.slice(0, 16)}/hooks.js`, readToken, revision });
     const abort = new AbortController();
     const cancelBody = JSON.stringify({ toolId: 'qr-code', format: 'svg', query: new URLSearchParams({ url: `https://worker.invalid/?nonce=${randomUUID()}` }).toString(),
       overrides: {}, profile: {}, readToken, brandRevision: revision, ts: Date.now() });
+    let settled = false;
     const pending = fetch(`${workerBase}/render`, { method: 'POST', headers: { 'content-type': 'application/json',
-      'x-lw-render-sig': createHmac('sha256', secret).update(cancelBody).digest('base64url') }, body: cancelBody, signal: abort.signal });
+      'x-lw-render-sig': createHmac('sha256', secret).update(cancelBody).digest('base64url') }, body: cancelBody, signal: abort.signal })
+      .finally(() => { settled = true; });
     const rejection = assert.rejects(pending, { name: 'AbortError' });
-    await until(async () => held);
+    await until(async () => cancellationHold.reads > 0);
+    assert.equal(settled, false, 'The authoritative signed hook is still held before cancellation');
+    assert.equal(actualBrowser.contexts().length, 1);
+    assert.equal((await (await fetch(`${workerBase}/readyz`)).json() as { active: number }).active, 1);
     abort.abort(); await rejection;
     await until(async () => (await (await fetch(`${workerBase}/readyz`)).json() as { active: number }).active === 0);
     assert.equal(actualBrowser.contexts().length, 0);
-    hold = false; releaseHold?.();
+    await until(async () => cancellationHold.closed === cancellationHold.reads);
+    cancellationHold.release();
+    assert.match((await render('svg', { url: `https://worker.invalid/?nonce=${randomUUID()}` })).toString(), /<svg[\s>]/);
+    assert.equal(actualBrowser.contexts().length, 0);
     console.log(JSON.stringify({ source: pin.generatedFrom, engine: pin.engine.version, browser: actualBrowser.version(), defaultSoftwareWebGpu: true,
       svgSha256: hash(svg), pngSha256: hash(png), darkPixels: dark, lightPixels: light,
       ticketReads, hookReads, sandboxHookReads, sandboxExecuted, aiDisabled, modelHits, trapHits, websocketHits,
-      cancelledContextsClosed: true, browserSandboxQualified: false, productionAcceptance: false }));
+      cancelledContextsClosed: true, cancelledResourceReads: cancellationHold.reads, cancelledResourceSocketsClosed: cancellationHold.closed,
+      resumedRenderVerified: true, browserSandboxQualified: false, productionAcceptance: false }));
   } finally {
     await finish();
   }
