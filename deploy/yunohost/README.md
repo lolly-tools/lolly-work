@@ -15,6 +15,15 @@ contracts also exercise SSO/LDAP role mapping and rendered configuration. A real
 Linux `package_check` install/upgrade/backup/restore run is still required before
 qualifying a release; see the [cloud deployment guide](../../docs/cloud-deployment.md#yunohost-qualification).
 
+The `1.1.0~ynh3` package is a test candidate. Its server is the matched Work
+`464ac88d4498b00985dfbcdb47dd96655425f426` source, with Lolly
+`0359d8106bccbd1da56b5552605199f0bf705472` and engine `1.259`. The neutral,
+signed web shell loads models from `https://lolli.li`. Source CI and archive
+checks have passed; a successful installation, upgrade and backup/restore on
+YunoHost has not yet been established. Treat it as beta until the exact mirrored
+package passes the runtime workflow below. That workflow tests `amd64` on Debian
+Bookworm; `arm64` needs separate runtime qualification.
+
 ## Shape
 
 - **One service, one database.** Node 24 (YunoHost's `nodejs` resource) runs `server/src/main.ts` behind the domain's nginx; PostgreSQL from the `database` resource; migrations at boot.
@@ -45,6 +54,39 @@ cd /tmp/lolly-work_ynh && git add -A && git commit -m "Lolly Work <ver>~ynh1" &&
 ```
 
 Both tarballs must be live on lolli.li first: the manifest's checksums are verified at install.
+
+For `1.1.0~ynh3`, generate the pins with the maintained producer on a clean
+committed source tree:
+
+```bash
+node scripts/yunohost-release.ts --ynh-rev 3 \
+  --shell-url https://lolli.li/lolly-web-1.1.0-ynh3.tar.gz \
+  --shell-sha256 8bc8121a68e6fee6dda3902ed48d5e2669353bcfd101ca3822990235a2099376
+```
+
+Commit the generated manifest, recut the archive, and require the same archive
+checksum before publishing. Deployment metadata and the manual workflow are
+excluded from the installed archive; its server, engine and lockfile remain the
+matched source above.
+
+After publishing both archives and mirroring the generated package, select the
+reviewed **full 40-character mirror commit**, rather than a moving branch. Run
+the manual workflow in `lolly-tools/lolly-work` with that exact commit and version:
+
+```bash
+MIRROR_COMMIT='<reviewed full commit in lolly-tools/lolly-work_ynh>'
+[[ "$MIRROR_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+gh workflow run yunohost-runtime.yml --repo lolly-tools/lolly-work --ref main \
+  --field package_commit="$MIRROR_COMMIT" --field package_version='1.1.0~ynh3'
+```
+
+The workflow uses a fresh Ubuntu runner and the official Incus package checker.
+It requires successful root and multiple-instance installation, upgrade,
+backup/restore and URL-change results for the selected package. `tests.toml`
+also covers upgrading from mirror commit
+`db60f651fbeb561e4b330a1dd44bd4aaf463e635` (`0.2.0~ynh1`). Its original logs and
+checker revisions are uploaded even on failure; preserve those results when
+reporting candidate status.
 
 ## Layout
 
