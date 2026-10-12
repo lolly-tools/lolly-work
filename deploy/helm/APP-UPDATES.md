@@ -14,10 +14,15 @@ sources, builds fresh application assets with the maintained Vite configuration,
 reuses verified unchanged content and retains old lazy-loaded chunks. It does
 not relabel the running image as a newer backend release.
 
-For public sites served by an accepted Nginx image, use
-[public shell preparation](PUBLIC-SHELL-UPDATES.md), then
-[isolated staging and promotion](PUBLIC-SHELL-PROMOTION.md). This updates five
-read-only UI paths while retaining the image, signed catalog and model storage.
+Start with the shared [frontend update guide](../../docs/frontend-updates.md)
+for the source, CI, accepted baseline and private/public path selection.
+For public sites using full SHA validator maps, prepare the
+[complete static root and map together](PLAN300-PUBLIC-FULL-ROOT.md). Local
+assembly does not replace the site's staging, native qualification and guarded
+publication. The legacy [public shell preparation](PUBLIC-SHELL-UPDATES.md) and
+[isolated staging and promotion](PUBLIC-SHELL-PROMOTION.md) update five read-only
+UI paths only when the accepted image has no delivery map; that path refuses
+newer map-bearing baselines.
 
 `scripts/app-update.py` plans by default. It uses Python 3.10 or newer and kubectl,
 with no Python packages to install. Applying needs the exact reviewed plan and

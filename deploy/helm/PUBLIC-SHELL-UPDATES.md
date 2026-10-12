@@ -1,5 +1,11 @@
 # Public UI updates with an unchanged static server
 
+For an image with Plan300 full SHA validator maps and compressed siblings, use
+the [complete-root preparation contract](PLAN300-PUBLIC-FULL-ROOT.md) and its
+separately qualified site publisher. The five-path producer below deliberately
+refuses such an image: new bytes with an old baked map have invalid validators.
+Keep that refusal until complete-root staging and publication are qualified.
+
 This lane prepares a public Lolly web update without rebuilding a container image,
 Rust, models, tools or documentation. It is separate from private Work shell
 updates: the public server is Nginx, has no Work raw pack or private engine-pin

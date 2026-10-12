@@ -1,15 +1,34 @@
 # Update the web frontend without rebuilding its image
 
-For a compatible web TypeScript, CSS or layout change, build the new frontend
-and publish a new shell claim. Keep the accepted application image, engine,
-catalogue, database and infrastructure. A single-owner `Recreate` instance has
-a brief reconnect window when its new owner starts.
+Start with an exact qualified source commit and the instance's current accepted
+release. For a compatible web TypeScript, CSS or layout change, build the new
+frontend and publish a new shell claim. Keep the accepted application image,
+engine, catalogue, database and infrastructure. A single-owner `Recreate`
+instance has a brief reconnect window when its new owner starts.
 
 Use this path for web application code. Backend TypeScript, the baked Work admin
 console, dependencies, engine/core/schema, tools, brand or build-policy changes
 need their broader release path. The
 [release classifier](application-release-classification.md) checks the exact
 committed changes; an allowed filename alone does not establish compatibility.
+
+Use this guide for either a private Work instance or a public static site. A
+developer supplies the immutable source and its successful CI; the operator
+supplies the accepted baseline and protected instance inputs. Someone using the
+instance sees the new UI after acceptance and may need to reconnect an open tab.
+No cloud provisioning, Helm reinstall or database restore is part of a normal
+application update.
+
+| Change | Release path |
+| --- | --- |
+| Compatible web TypeScript, CSS or layout | Private shell commands below; public root and validator map must advance together. |
+| Images or documentation inside unchanged signed content | Reuse those accepted bytes; there is no need to rebuild them. |
+| Changed tools, catalogued assets, brand content or served documentation | Qualify a complete content release with signatures and retained addresses. Reuse the runtime only when its exact compatibility is established. |
+| Backend TypeScript or the baked admin console | Qualified application image via [application updates](../deploy/helm/APP-UPDATES.md). |
+| Engine, schema, native runtime or dependency changes | Matched release and its broader checks; infrastructure stays in place unless that change requires it. |
+
+A new commit on `main` is the input to qualification, not an automatic live
+release. Keep old claims and immutable files until the new release is accepted.
 
 ## Before the first update
 
@@ -89,7 +108,27 @@ for custody/preparation, and the
 [authenticated catalogue guide](https://github.com/lolly-tools/lolly-work/blob/main/deploy/helm/PRIVATE-SHELL-CATALOG-PROBES.md)
 for the reusable caller policy. Input assembly remains an operator review step.
 
-## Public Nginx instance: supervised phases
+## Public Nginx instance: choose its delivery layout
+
+A Plan300 image has a full SHA validator map and gzip/Brotli siblings. Its root
+and map must come from the same complete inventory. The old five-path producer
+refuses that baseline; do not remove its hold or reuse a baked map for new
+JavaScript. The maintained
+[complete-root preparation helpers](../deploy/helm/PLAN300-PUBLIC-FULL-ROOT.md)
+assemble current and retained content, validate every coding and derive one
+guarded root-claim patch. They reuse the accepted image, configuration and
+models for a compatible later frontend update.
+
+Complete-root assembly and patch derivation are local preparation. A site's
+stager, native qualifier and publisher must bind that protocol and provide real
+resource, memory, HTTP, retirement and TLS acceptance before promotion. These
+helpers do not make the older public facade operational on a map-bearing image.
+For the current `lolly.tools` layout, follow its protected production handoff.
+
+The following five-path commands remain for an accepted legacy image without
+that validator map. They cannot be substituted for complete-root publication.
+
+### Legacy public Nginx instance: supervised phases
 
 The public lane reuses its accepted image and signed neutral catalogue. Its
 overlay contains only `_app`, `index.html`, `precache.json`, `sw.js` and
