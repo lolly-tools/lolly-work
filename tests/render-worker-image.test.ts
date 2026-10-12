@@ -16,6 +16,7 @@ import { createRenderResourceHold, requestRenderCancellation } from './collab/re
 import { createRenderCancellationDiagnostics, renderDiagnosticPath } from './collab/render-resource-diagnostics.ts';
 import { captureRenderPagePhase, RENDER_PAGE_PHASE_SCRIPT } from './collab/render-page-phase.ts';
 import { createRenderManifestBootstrap, waitForRenderManifestBootstrap } from './collab/render-manifest-bootstrap.ts';
+import { catalogStartupDiagnostic } from './collab/render-startup-diagnostics.ts';
 type WorkerModule = typeof import('../workers/render/src/server.ts');
 
 const skip = process.env.LOLLY_RENDER_IMAGE_TEST !== '1' && 'Run qualify-render-worker-image.ts with the built image and matched signed shell.';
@@ -144,7 +145,8 @@ test('built worker uses its actual browser for signed 1.259 QR SVG/PNG, tickets,
   try {
     await until(async () => (await fetch(`${base}/readyz`)).status === 200, 30_000);
   } catch (error) {
-    console.log(JSON.stringify({ status: 'WORKER_CONTROL_PLANE_STARTUP_REFUSED', ready: await startupReadinessDiagnostic(base) }));
+    console.log(JSON.stringify({ status: 'WORKER_CONTROL_PLANE_STARTUP_REFUSED', ready: await startupReadinessDiagnostic(base),
+      catalog: await catalogStartupDiagnostic(base, cookie) }));
     throw error;
   }
   console.log(JSON.stringify({ status: 'WORKER_CONTROL_PLANE_STARTUP_VERIFIED', elapsedMs: performance.now() - startupAt }));
