@@ -89,7 +89,8 @@ node scripts/yunohost-release.ts --oss ABS_MATCHED_LOLLY_SOURCE --ynh-rev POSITI
 ```
 
 The producer uses the held Git tree with a fixed UTC timestamp of one second
-after epoch and deterministic gzip. Deployment files are excluded from the
+after epoch, canonical file permissions and deterministic gzip. User Git tar
+configuration cannot change the archive permissions. Deployment files are excluded from the
 installed archive, so committing the generated manifest preserves its complete
 archive checksum. A change to installed source changes that checksum. Each
 packaging revision uses a distinct `lolly-work-1.1.0-ynhN.tar.gz` name, and an

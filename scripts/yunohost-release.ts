@@ -142,7 +142,7 @@ export function archiveHead(version: string, outFile: string): ArchiveSource {
   // A tree archive has no commit-ID PAX header. Fixed metadata makes the payload
   // stable after the generated, excluded deployment manifest is committed.
   // One second after epoch is verified in the actual archive regression.
-  const tar = run('git', ['archive', '--format=tar', '--mtime=1970-01-01T00:00:01Z', `--prefix=lolly-work-${version}/`, tree, ...EXCLUDED.map((d) => `:(exclude)${d}`)]);
+  const tar = run('git', ['-c', 'tar.umask=0022', 'archive', '--format=tar', '--mtime=1970-01-01T00:00:01Z', `--prefix=lolly-work-${version}/`, tree, ...EXCLUDED.map((d) => `:(exclude)${d}`)]);
   // Deterministic gzip (no name, mtime 0) so the same commit gives the same bytes.
   const gz = run('gzip', ['-9', '-n'], tar);
   if (run('git', ['rev-parse', '--verify', 'HEAD']).toString().trim() !== commit || run('git', ['status', '--porcelain']).toString().trim()) {

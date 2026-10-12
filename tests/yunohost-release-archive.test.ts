@@ -34,10 +34,12 @@ test('release archive survives an excluded manifest commit but detects installed
     git('config', 'user.email', 'release-fixture@invalid'); git('config', 'commit.gpgsign', 'false');
     git('add', '.'); git('commit', '--quiet', '-m', 'Application source');
     const release = await import(pathToFileURL(join(root, 'scripts', 'yunohost-release.ts')).href);
+    git('config', 'tar.umask', '0000');
     const first = join(artifacts, 'first.tar.gz');
     const firstSource = release.archiveHead('1.1.0', first);
     writeFileSync(join(root, 'deploy', 'manifest.toml'), 'version = "1.1.0~ynh1"\n');
     git('add', 'deploy/manifest.toml'); git('commit', '--quiet', '-m', 'Generated excluded manifest');
+    git('config', 'tar.umask', '0077');
     const second = join(artifacts, 'second.tar.gz');
     const secondSource = release.archiveHead('1.1.0', second);
     assert.notEqual(firstSource.commit, secondSource.commit);
@@ -49,7 +51,10 @@ test('release archive survives an excluded manifest commit but detects installed
     for (let offset = 0; offset + 512 <= tar.length && tar[offset];) {
       const header = tar.subarray(offset, offset + 512);
       assert.equal(Number.parseInt(header.subarray(136, 148).toString('ascii').replace(/\0/g, '').trim(), 8), 1, 'every entry has the exact fixed UTC timestamp');
-      assert.notEqual(String.fromCharCode(header[156]!), 'g', 'tree archives contain no commit-ID global PAX record');
+      const type = String.fromCharCode(header[156]!);
+      assert.notEqual(type, 'g', 'tree archives contain no commit-ID global PAX record');
+      const mode = Number.parseInt(header.subarray(100, 108).toString('ascii').replace(/\0/g, '').trim(), 8);
+      assert.equal(mode, type === '5' ? 0o755 : 0o644, 'user Git tar.umask cannot alter canonical archive modes');
       const size = Number.parseInt(header.subarray(124, 136).toString('ascii').replace(/\0/g, '').trim(), 8) || 0;
       offset += 512 + Math.ceil(size / 512) * 512; headers++;
     }
