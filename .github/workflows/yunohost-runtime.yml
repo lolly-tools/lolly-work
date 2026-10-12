@@ -44,6 +44,7 @@ jobs:
           ref: ${{ inputs.package_commit }}
           path: .qualification/package
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: YunoHost/package_check
@@ -53,6 +54,8 @@ jobs:
       - name: Verify the package manifest
         run: |
           test "$(git -C .qualification/package rev-parse HEAD)" = "$PACKAGE_COMMIT"
+          # The official upgrade test checks out this immutable old version.
+          git -C .qualification/package cat-file -e db60f651fbeb561e4b330a1dd44bd4aaf463e635^{tree}
           python3 - <<'PY'
           import os, pathlib, tomllib
           manifest = tomllib.loads(pathlib.Path('.qualification/package/manifest.toml').read_text())
@@ -161,6 +164,47 @@ jobs:
           (proof / 'incus-local-base.verified.actual.json').write_text(json.dumps({'origin': selected['origin'], 'remoteAlias': selected['alias'], 'localAlias': legacy, 'fingerprint': image['fingerprint'], 'architecture': image['architecture'], 'type': image['type'], 'remotePublic': selected['public'], 'localPublic': image['public'], 'sameGenuineImportedFingerprint': True, 'nativeAppInstallationQualified': False}, indent=2) + '\n')
           print('Actual full-fingerprint local base imported and verified: ' + image['fingerprint'])
           PY
+          # The official detector only sees direct Nginx helper calls. This
+          # package's reviewed wrapper calls that helper after writing includes.
+          # Extend only its detector, so real root/URL-change tests are selected.
+          python3 - <<'PY'
+          import difflib, hashlib, json, os, pathlib
+          package = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / '.qualification/package'
+          parser = pathlib.Path('lib/parse_tests_toml.py')
+          original = parser.read_bytes()
+          expected = '07f94c88fa31581c6d755bb59a72fea5eec94a6f0f590390b1643b15ca9601be'
+          sources = {'scripts/install': '1207d9b2d3e847fe734a5acc87737df2def8073eefac2db2c6544a026cd6a7de',
+                     'scripts/_common.sh': '2c224fdf19f4985bfea834b5c3b48e8aba2f172f867c6a17beefdb44e54e7e01'}
+          for name, checksum in sources.items():
+              if hashlib.sha256((package / name).read_bytes()).hexdigest() != checksum:
+                  raise SystemExit('Reviewed real Nginx wrapper source differs')
+          old = b"^ynh_config_add_nginx'"
+          replacement = b'^ynh_config_add_nginx' + bytes([92, 92]) + b"|^lollywork_add_nginx$'"
+          if hashlib.sha256(original).hexdigest() != expected or original.count(old) != 1:
+              raise SystemExit('Pinned checker webapp detector differs')
+          modified = original.replace(old, replacement)
+          proof = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / '.qualification/results'
+          (proof / 'checker-parser.pinned.original.py').write_bytes(original)
+          (proof / 'checker-parser.wrapper-adapted.py').write_bytes(modified)
+          (proof / 'checker-webapp-wrapper.patch').write_text(''.join(difflib.unified_diff(original.decode().splitlines(True), modified.decode().splitlines(True), fromfile='a/lib/parse_tests_toml.py', tofile='b/lib/parse_tests_toml.py')))
+          (proof / 'checker-webapp-compatibility.actual.json').write_text(json.dumps({'upstreamCommit': 'f7d32cadac3cfced282decede024707fba9e6ec6', 'originalSha256': expected, 'modifiedSha256': hashlib.sha256(modified).hexdigest(), 'onlyChange': 'Recognize exact verified lollywork_add_nginx wrapper as a webapp', 'packageSourceChecksums': sources, 'applicationChecksUnchanged': True, 'runtimeQualified': False}, indent=2) + '\n')
+          parser.write_bytes(modified)
+          print('Declared real Nginx wrapper detection; application checks unchanged')
+          PY
+          mkdir "$GITHUB_WORKSPACE/.qualification/results/planned-tests"
+          python3 lib/parse_tests_toml.py "$GITHUB_WORKSPACE/.qualification/package" \
+            --dump-to "$GITHUB_WORKSPACE/.qualification/results/planned-tests"
+          python3 - <<'PY'
+          import json, os, pathlib
+          directory = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / '.qualification/results/planned-tests'
+          rows = [json.loads(path.read_bytes()) for path in directory.glob('*.json')]
+          expected = {('TEST_PACKAGE_LINTER', ''), ('TEST_INSTALL', 'root'), ('TEST_INSTALL', 'multi'),
+                      ('TEST_UPGRADE', ''), ('TEST_UPGRADE', 'db60f651fbeb561e4b330a1dd44bd4aaf463e635'),
+                      ('TEST_BACKUP_RESTORE', ''), ('TEST_CHANGE_URL', '')}
+          if len(rows) != len(expected) or any(row['test_serie'] != 'default' for row in rows) or {(row['test_type'], row['test_arg']) for row in rows} != expected:
+              raise SystemExit('Actual official parser did not select every required URL, upgrade and recovery test')
+          print('Actual official parser selected all seven required application tests')
+          PY
           ./package_check.sh "$GITHUB_WORKSPACE/.qualification/package"
           SH
       - name: Run official install, upgrade, multiple-instance and recovery checks
@@ -178,6 +222,7 @@ jobs:
           tests = result['tests']
           required = {('TEST_PACKAGE_LINTER', ''), ('TEST_INSTALL', 'root'),
                       ('TEST_INSTALL', 'multi'), ('TEST_UPGRADE', ''),
+                      ('TEST_UPGRADE', 'db60f651fbeb561e4b330a1dd44bd4aaf463e635'),
                       ('TEST_BACKUP_RESTORE', ''), ('TEST_CHANGE_URL', '')}
           observed = {(test['test_type'], test['test_arg']) for test in tests if test['test_serie'] == 'default'}
           if not required.issubset(observed):
