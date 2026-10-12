@@ -49,7 +49,9 @@ class Publication:
         need(s.l.a.checksum(self.path) == self.input_sha and s.l.a.checksum(Path(__file__)) == self.operator_sha, 'Reviewed publication source/input changed')
         self.save(name + '.started.json', {'status': 'STARTED_NO_REPLAY', 'inputSha256': self.input_sha, 'operatorSha256': self.operator_sha})
         try:
-            result = fn(); return self.save(name + '.accepted.json', {'version': 1, 'inputSha256': self.input_sha, 'operatorSha256': self.operator_sha, **result})
+            start = len(self.stage.events); result = fn()
+            return self.save(name + '.accepted.json', {'version': 1, 'inputSha256': self.input_sha,
+                'operatorSha256': self.operator_sha, 'commands': self.stage.events[start:], **result})
         except BaseException as error:
             self.save(name + '.uncertain.json', {'status': 'REFUSED_NO_REPLAY', 'failureType': type(error).__name__}); raise
     def prior(self, name):
@@ -83,44 +85,69 @@ class Publication:
     def dryrun(self):
         need(not self.out.exists(), 'Publication attempt cannot replay'); self.out.mkdir(mode=0o700)
         def fn():
-            before = self.fresh(); prepared = patch(before, self.desired); self.save('dryrun.patch.original.json', prepared)
+            before = self.fresh(); before_ref = self.save('dryrun.before.original.json', before)
+            prepared = patch(before, self.desired); patch_ref = self.save('dryrun.patch.original.json', prepared)
             response = s.cohort.parse_json(self.stage.remote(['patch', 'deployment', before['metadata']['name'], '-n', self.stage.namespace, '--type=json', '--dry-run=server', '--patch-file=/dev/stdin', '-o', 'json'], raw(prepared)))
-            need(response['metadata']['uid'] == before['metadata']['uid'] and response['spec'] == self.desired, 'Server dryrun altered selected fields'); self.save('dryrun.response.original.json', response)
-            return {'status': 'ACTUAL_FRONTEND_SERVER_DRYRUN_NOT_PUBLISHED', 'productionMutation': False}
+            need(response['metadata']['uid'] == before['metadata']['uid'] and response['spec'] == self.desired, 'Server dryrun altered selected fields')
+            response_ref = self.save('dryrun.response.original.json', response)
+            return {'status': 'ACTUAL_FRONTEND_SERVER_DRYRUN_NOT_PUBLISHED', 'productionMutation': False,
+                'before': before_ref, 'patch': patch_ref, 'response': response_ref}
         return self.with_journal(lambda: self.phase('dryrun', fn))
 
     def publish(self):
         self.prior('dryrun')
         def fn():
             need(self.load('dryrun.response.original.json')['spec'] == self.desired, 'Dryrun tuple changed')
-            before = self.preflight(); prepared = patch(before, self.desired); self.save('publish.patch.original.json', prepared)
+            before = self.preflight(); before_ref = self.save('publish.before.original.json', before)
+            prepared = patch(before, self.desired); patch_ref = self.save('publish.patch.original.json', prepared)
             # Saving a local receipt is not another target call. The immediately
             # preceding remote operation is the maintained target preflight.
             response = s.cohort.parse_json(self.stage.remote(['patch', 'deployment', before['metadata']['name'], '-n', self.stage.namespace, '--type=json', '--patch-file=/dev/stdin', '-o', 'json'], raw(prepared)))
-            need(response['metadata']['uid'] == before['metadata']['uid'] and response['spec'] == self.desired, 'Atomic frontend patch differs'); self.save('publish.response.original.json', response)
-            return {'status': 'ACTUAL_FRONTEND_PATCHED_ACCEPTANCE_PENDING', 'productionMutation': True}
+            need(response['metadata']['uid'] == before['metadata']['uid'] and response['spec'] == self.desired, 'Atomic frontend patch differs')
+            response_ref = self.save('publish.response.original.json', response)
+            return {'status': 'ACTUAL_FRONTEND_PATCHED_ACCEPTANCE_PENDING', 'productionMutation': True,
+                'before': before_ref, 'patch': patch_ref, 'response': response_ref}
         return self.with_journal(lambda: self.phase('publish', fn))
 
     def observe(self):
         self.prior('publish')
         def fn():
             self.stage.remote(['rollout', 'status', 'deployment/' + self.stage.before['metadata']['name'], '-n', self.stage.namespace, '--timeout=240s'], timeout=260)
-            actual = self.fresh(True); physical = {'static': self.stage.physical('qualifier', owner=True), 'models': self.stage.physical('qualifier', models=True, owner=True)}
+            actual = self.fresh(True)
+            owner_before = self.save('owner-before.original.json', {'deployment': actual, 'pod': self.stage.owner, 'replicaSet': self.stage.replica})
+            binding = s.l.serving_binding(s.l.held(owner_before), self.stage.prepared, self.stage.target['node']['name'])
+            physical = {'static': self.stage.physical('qualifier', owner=True), 'models': self.stage.physical('qualifier', models=True, owner=True)}
             memory = self.stage.measure(owner=True)
-            self.stage.native_http(self.stage.owner)
+            native_http = self.save('owning-native-http.actual.json', self.stage.native_http(self.stage.owner))
             http = s.module('delivery_publication_http', 'public-delivery-http.py')
             models = http.verify_models_tls(self.stage.context['origin'], self.stage.models)
-            self.save('owning-models-tls.actual.json', models)
-            self.save('owning-static-tls.actual.json', http.verify_static_tls(self.stage.context['origin'], [v for v in self.stage.rows if v['path'] in s.l.a.overlay.FIXED]))
+            models_ref = self.save('owning-models-tls.actual.json', models)
+            static_ref = self.save('owning-static-tls.actual.json', http.verify_static_tls(self.stage.context['origin'], [v for v in self.stage.rows if v['path'] in s.l.a.overlay.FIXED]))
             need(self.stage.physical('qualifier', owner=True) == physical['static']
                 and self.stage.physical('qualifier', models=True, owner=True) == physical['models'],
                 'Published static/model inode and full byte closure changed during HTTP')
-            self.fresh(True); self.save('owner.original.json', {'deployment': actual, 'pod': self.stage.owner, 'replicaSet': self.stage.replica})
+            final = self.fresh(True)
+            owner_after = self.save('owner.original.json', {'deployment': final, 'pod': self.stage.owner, 'replicaSet': self.stage.replica})
+            need(binding == s.l.serving_binding(s.l.held(owner_after), self.stage.prepared, self.stage.target['node']['name']),
+                 'Published owner/process changed across serving observation')
             return {'status': 'ACTUAL_FRONTEND_ROOT_SERVING_VERIFIED', 'deploymentUID': actual['metadata']['uid'], 'deploymentSpecSha256': s.l.digest(actual['spec']),
                 'source': self.stage.prepared['source'], 'manifest': self.stage.prepared['manifest'], 'mapSha256': self.stage.prepared['mapSha256'],
                 'physical': physical, 'memory': memory,
+                'evidence': {'ownerBefore': owner_before, 'ownerAfter': owner_after, 'nativeHTTP': native_http,
+                    'staticTLS': static_ref, 'modelsTLS': models_ref},
                 'modelsMountedByStaging': False, 'allProtectedSpecsVerified': True, 'browserAcceptanceClaimed': False, 'productionMutation': False}
-        return self.with_journal(lambda: self.phase('observe', fn))
+        observed = self.with_journal(lambda: self.phase('observe', fn))
+        def handoff():
+            ref = lambda name: {'path': str(self.out / name), 'sha256': s.l.a.checksum(self.out / name)}
+            proof = {'version': 1, 'input': {'path': str(self.path), 'sha256': self.input_sha},
+                'operator': {'path': str(Path(__file__).resolve()), 'sha256': self.operator_sha},
+                'phases': {name: {kind: ref(name + '.' + kind + '.json') for kind in ['started', 'accepted']}
+                    for name in ['dryrun', 'publish', 'observe']}}
+            accepted = s.l.publication_baseline(proof)
+            return {'status': 'ACTUAL_SERVING_BASELINE_RECORDED', 'acceptedRelease': self.save('accepted-release.actual.json', accepted),
+                'observation': observed, 'productionMutation': False, 'browserAcceptanceClaimed': False}
+        self.phase('handoff', handoff)
+        return observed
 
     def rollback(self):
         self.prior('publish')

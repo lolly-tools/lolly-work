@@ -336,4 +336,182 @@ class Lifecycle(unittest.TestCase):
         with self.assertRaises(l.a.Refusal): l.prepare(value, self.put(value))
 
 
+class PublicationHandoff(unittest.TestCase):
+    """Synthetic original receipts exercise admission, never target acceptance."""
+    def setUp(self):
+        self.f = Lifecycle(); self.f.setUp(); f = self.f
+        f.before['metadata']['generation'] = 1
+        f.value['refs'].update({'deployment': f.put(f.before), 'baseline': f.put(f.baseline)})
+        self.out = f.base / 'publication'; self.out.mkdir()
+        stage = {'path': str(SCRIPTS / 'stage-public-delivery.py'), 'sha256': l.a.checksum(SCRIPTS / 'stage-public-delivery.py')}
+        self.operator = {'path': str(SCRIPTS / 'publish-public-delivery.py'), 'sha256': l.a.checksum(SCRIPTS / 'publish-public-delivery.py')}
+        programs = {k: f.base / (k + '.py') for k in ['preflight', 'hostProbe', 'signatureVerifier']}
+        for path in programs.values(): path.write_text('raise RuntimeError("synthetic fixture must never execute target programs")\n')
+        program_refs = {k: {'path': str(path), 'sha256': l.a.checksum(path)} for k, path in programs.items()}
+        program_refs['node'] = {'path': str(NODE), 'sha256': l.a.checksum(NODE)}
+        sources = [stage, self.operator, *[ref for k, ref in program_refs.items() if k != 'node']]
+        review = {'version': 1, 'status': 'ROOT_REVIEWED_RUNTIME_ADAPTER_SOURCE', 'source': stage, 'sources': sources,
+            'capabilities': sorted(l.CAPABILITIES), 'stages': l.STAGES, 'productionMutation': False}
+        adapter = {**{k: v for k, v in review.items() if k != 'productionMutation'},
+            'status': 'ROOT_REVIEWED_FULL_ROOT_RUNTIME_ADAPTER', 'review': f.put(review)}
+        f.adapter_source = stage; f.value['refs']['adapterReview'] = f.put(adapter)
+        f.input = f.put(f.value); f.prepared = l.prepare(f.value, f.input)
+        self.prepared = f.prepared; stage_receipt = f.receipt(); prepared_ref = stage_receipt['prepared']
+        retired_dir = f.base / 'stage'; retired_dir.mkdir()
+        retirement = l.a.write_new(retired_dir / 'runtime.qualified-and-retired.actual.json', l.raw(stage_receipt))
+        self.runtime = {'version': 1, 'status': 'REVIEWED_PUBLIC_FRONTEND_RUNTIME_NOT_EXECUTED', 'prepared': prepared_ref,
+            'target': f.put({'node': {'name': 'customer-node'}}), 'context': f.put({'scope': 'synthetic fixture only'}),
+            'programs': program_refs, 'sources': sources, 'outputDirectory': str(retired_dir)}
+        self.publication = {'version': 1, 'status': 'REVIEWED_ACTUAL_FRONTEND_ROOT_PUBLICATION_NOT_EXECUTED',
+            'stageInput': f.put(self.runtime), 'stageSource': stage, 'retirement': retirement, 'outputDirectory': str(self.out)}
+        self.input = f.put(self.publication)
+        dep = copy.deepcopy(f.before); dep['spec'] = copy.deepcopy(self.prepared['desiredSpec']); dep['metadata']['generation'] = 2
+        dep['status'] = {'observedGeneration': 2, **dict.fromkeys(['replicas', 'readyReplicas', 'availableReplicas', 'updatedReplicas'], 1)}
+        template = copy.deepcopy(dep['spec']['template']); template['metadata']['labels']['pod-template-hash'] = 'abc123'
+        selector = copy.deepcopy(dep['spec']['selector']); selector['matchLabels']['pod-template-hash'] = 'abc123'
+        replica = {'apiVersion': 'apps/v1', 'kind': 'ReplicaSet', 'metadata': {'name': 'new-rs', 'namespace': 'customer-apps', 'uid': 'new-rs-uid',
+            'labels': template['metadata']['labels'], 'ownerReferences': [{'kind': 'Deployment', 'uid': 'web-owner', 'controller': True}]},
+            'spec': {'replicas': 1, 'selector': selector, 'template': template}}
+        pod = {'apiVersion': 'v1', 'kind': 'Pod', 'metadata': {**copy.deepcopy(template['metadata']), 'name': 'new-owner', 'namespace': 'customer-apps', 'uid': 'new-owner-uid',
+            'ownerReferences': [{'kind': 'ReplicaSet', 'name': 'new-rs', 'uid': 'new-rs-uid', 'controller': True}]},
+            'spec': {**copy.deepcopy(template['spec']), 'nodeName': 'customer-node'},
+            'status': {'containerStatuses': [{'name': 'native', 'image': f.image, 'imageID': f.image, 'containerID': 'containerd://' + '1' * 64,
+                'ready': True, 'restartCount': 0, 'state': {'running': {'startedAt': '2026-10-12T01:00:00Z'}}}]}}
+        self.bundle = {'deployment': dep, 'pod': pod, 'replicaSet': replica}
+        self.physical = {}
+        for key, rows in [('static', l.held(self.prepared['manifest'])['files']), ('models', l.held(f.models)['files'])]:
+            self.physical[key] = {'files': len(rows), 'bytes': sum(row['size'] for row in rows), 'physicalEpoch': 0, 'uid': 101, 'gid': 101,
+                'allPhysicalHashesVerified': True, 'modelLinkClosureVerified': key == 'models', 'hardLinkedFiles': 0,
+                'modelInodeFingerprint': 'a' * 64 if key == 'models' else None}
+        self.memory = {'version': 1, 'podUID': 'new-owner-uid', 'limitBytes': 512 * 1024**2, 'currentBytes': 80 * 1024**2,
+            'peakBytes': 90 * 1024**2, 'rssBytes': 60 * 1024**2, 'oom': 0, 'oomKill': 0}
+        self.native_http = {'static': {'status': 'ISOLATED_STATIC_HTTP_RETAINED_FULL_BYTES_AND_SAMPLES_VERIFIED_ONLY'},
+            'decoded': {'status': 'ACTUAL_LOOPBACK_GZIP_WIRE_AND_DECODED_IDENTITY_VERIFIED'}}
+        models = l.held(f.models)['files']
+        self.models_tls = {'status': 'ISOLATED_MODEL_HTTP_BYTES_VERIFIED_ONLY', 'files': len(models),
+            'inventorySha256': hashlib.sha256(json.dumps(models, separators=(',', ':')).encode()).hexdigest()}
+        self.static_tls = {'status': 'ACTUAL_NORMAL_TLS_MUTABLE_ROOT_IDENTITIES_VERIFIED',
+            'rows': [{'path': row['path'], 'status': 200, 'size': row['size'], 'sha256': row['sha256']}
+                for row in l.held(self.prepared['manifest'])['files'] if row['path'] in l.a.overlay.FIXED]}
+        evidence = {k: self.save(name, value) for k, name, value in [
+            ('ownerBefore', 'owner-before.original.json', self.bundle), ('ownerAfter', 'owner.original.json', self.bundle),
+            ('nativeHTTP', 'owning-native-http.actual.json', self.native_http), ('modelsTLS', 'owning-models-tls.actual.json', self.models_tls),
+            ('staticTLS', 'owning-static-tls.actual.json', self.static_tls)]}
+        self.proof = {'version': 1, 'input': self.input, 'operator': self.operator, 'phases': {}}
+        for name in ['dryrun', 'publish', 'observe']:
+            base = {'version': 1, 'inputSha256': self.input['sha256'], 'operatorSha256': self.operator['sha256'],
+                'commands': [self.command(name)], 'productionMutation': name == 'publish'}
+            if name == 'observe':
+                base.update({'status': 'ACTUAL_FRONTEND_ROOT_SERVING_VERIFIED', 'deploymentUID': 'web-owner',
+                    'deploymentSpecSha256': l.digest(dep['spec']), 'source': self.prepared['source'], 'manifest': self.prepared['manifest'],
+                    'mapSha256': self.prepared['mapSha256'], 'physical': self.physical, 'memory': self.memory, 'evidence': evidence,
+                    'modelsMountedByStaging': False, 'allProtectedSpecsVerified': True, 'browserAcceptanceClaimed': False})
+            else:
+                patched = [{'op': 'test', 'path': '/metadata/uid', 'value': 'web-owner'},
+                    {'op': 'test', 'path': '/metadata/resourceVersion', 'value': '27'}, {'op': 'test', 'path': '/spec', 'value': f.before['spec']},
+                    {'op': 'replace', 'path': '/spec', 'value': dep['spec']}]
+                base.update({'status': 'ACTUAL_FRONTEND_SERVER_DRYRUN_NOT_PUBLISHED' if name == 'dryrun' else 'ACTUAL_FRONTEND_PATCHED_ACCEPTANCE_PENDING',
+                    'before': self.save(name + '.before.original.json', f.before), 'patch': self.save(name + '.patch.original.json', patched),
+                    'response': self.save(name + '.response.original.json', dep)})
+            self.proof['phases'][name] = {'started': self.save(name + '.started.json', {'status': 'STARTED_NO_REPLAY',
+                'inputSha256': self.input['sha256'], 'operatorSha256': self.operator['sha256']}), 'accepted': self.save(name + '.accepted.json', base)}
+
+    def tearDown(self): self.f.tearDown()
+    def save(self, name, value): return l.a.write_new(self.out / name, l.raw(value))
+    def command(self, name):
+        stream = self.save(name + '.unit-stream.json', {'scope': 'synthetic command stdout/stderr, not target execution'})
+        return self.save('command-' + name + '.actual.json', {'exitCode': 0, 'failure': None, 'complete': True, 'stdout': stream, 'stderr': stream})
+    def replace(self, ref, change):
+        value = l.held(ref); change(value); path = Path(ref['path']); path.write_bytes(l.raw(value)); ref['sha256'] = l.a.checksum(path)
+
+    def test_successful_handoff_rederives_exact_baseline_without_model_mount(self):
+        accepted = l.publication_baseline(self.proof)
+        self.assertEqual(accepted['version'], 2); self.assertEqual(accepted['ownerPodUID'], 'new-owner-uid')
+        self.assertEqual(accepted['manifestSha256'], self.prepared['manifest']['sha256'])
+        self.assertEqual(accepted['models'], self.f.models); self.assertEqual(accepted['publicPin'], self.f.pin)
+        self.assertEqual(accepted['publication'], self.proof)
+        for key in ['writer', 'qualifier']:
+            self.assertNotIn('models', [v['name'] for v in self.prepared['resources'][key]['spec']['volumes']])
+
+    def test_next_prepare_consumes_handoff_and_rejects_rehashed_baseline_projection(self):
+        f = self.f; accepted = l.publication_baseline(self.proof)
+        previous = l.held(self.prepared['manifest'])
+        root = Path(l.held(self.prepared['refs']['assembly'])['root'])
+        data = {row['path']: (root / row['path']).read_bytes() for row in previous['files']}
+        data['index.html'] = b'next synthetic shell'; data['_app/next.js'] = b'next synthetic module'
+        candidate = f.tree(f.base / 'next-candidate', data)
+        assembly = l.a.assemble(str(f.base / 'next-candidate'), str(root), candidate, previous,
+            l.held(f.models)['files'], f.base / 'next-assembly', SCRIPTS / 'public-delivery-map.mjs',
+            {'path': str(NODE), 'sha256': l.a.checksum(NODE)}, mode='frontend', candidate_custody=f.public_build(f.base / 'next-candidate', candidate))
+        baseline = copy.deepcopy(f.baseline); baseline['deployments'][0] = self.bundle['deployment']; baseline['pods']['items'] = [self.bundle['pod']]
+        value = copy.deepcopy(f.value); value['refs'].update({'deployment': f.put(self.bundle['deployment']), 'baseline': f.put(baseline),
+            'assembly': assembly, 'previousManifest': self.prepared['manifest'], 'acceptedRelease': f.put(accepted)})
+        value['names'] = {'claim': 'next-site', 'writer': 'next-writer', 'qualifier': 'next-qualifier', 'policy': 'next-deny'}
+        value['outputDirectory'] = str(f.base / 'next-prepared')
+        result = l.prepare(value, f.put(value)); self.assertFalse(result['modelsMounted'])
+        self.assertEqual(result['refs']['models'], f.models)
+        accepted['ownerPodUID'] = 'requested-replacement'; value['refs']['acceptedRelease'] = f.put(accepted)
+        with self.assertRaisesRegex(l.a.Refusal, 'rederive from original serving custody'): l.prepare(value, f.put(value))
+
+    def test_failed_missing_or_wrong_publication_custody_refused(self):
+        for name in ['dryrun', 'publish', 'observe']:
+            proof = copy.deepcopy(self.proof); proof['phases'][name]['accepted']['sha256'] = '0' * 64
+            with self.subTest(name=name), self.assertRaises(l.a.Refusal): l.publication_baseline(proof)
+        self.save('observe.uncertain.json', {'status': 'REFUSED_NO_REPLAY'})
+        with self.assertRaises(l.a.Refusal): l.publication_baseline(self.proof)
+
+    def test_rehashed_wrong_input_command_or_model_refused(self):
+        observe = self.proof['phases']['observe']['accepted']
+        for key, value in [('inputSha256', '0' * 64), ('source', '0' * 40), ('mapSha256', '0' * 64), ('modelsMountedByStaging', True)]:
+            original = Path(observe['path']).read_bytes(); original_sha = observe['sha256']
+            self.replace(observe, lambda v: v.update({key: value}))
+            with self.subTest(key=key), self.assertRaises(l.a.Refusal): l.publication_baseline(self.proof)
+            Path(observe['path']).write_bytes(original); observe['sha256'] = original_sha
+        command = l.held(observe)['commands'][0]; self.replace(command, lambda v: v.update({'exitCode': 2}))
+        self.replace(observe, lambda v: v.update({'commands': [command]}))
+        with self.assertRaises(l.a.Refusal): l.publication_baseline(self.proof)
+
+    def test_missing_retirement_or_changed_original_command_stream_refused(self):
+        retirement = Path(self.publication['retirement']['path']); original = retirement.read_bytes(); retirement.unlink()
+        with self.assertRaises(FileNotFoundError): l.publication_baseline(self.proof)
+        retirement.write_bytes(original)
+        phase = l.held(self.proof['phases']['publish']['accepted']); command = l.held(phase['commands'][0])
+        Path(command['stdout']['path']).write_bytes(b'changed original command output')
+        with self.assertRaisesRegex(l.a.Refusal, 'size/hash differs'): l.publication_baseline(self.proof)
+
+    def test_owner_replacement_process_restart_or_replica_template_drift_refused(self):
+        observe = self.proof['phases']['observe']['accepted']; owner = l.held(observe)['evidence']['ownerAfter']
+        for fault in ['pod', 'process', 'restart', 'replica', 'network']:
+            original = Path(owner['path']).read_bytes(); original_sha = owner['sha256']
+            def mutate(value):
+                if fault == 'pod': value['pod']['metadata']['uid'] = 'replacement'
+                elif fault == 'process': value['pod']['status']['containerStatuses'][0]['containerID'] = 'containerd://replacement'
+                elif fault == 'restart': value['pod']['status']['containerStatuses'][0]['restartCount'] = 1
+                elif fault == 'replica': value['replicaSet']['spec']['template']['spec']['hostNetwork'] = True
+                else: value['pod']['spec']['hostNetwork'] = True
+            self.replace(owner, mutate); self.replace(observe, lambda v: v['evidence'].update({'ownerAfter': owner}))
+            with self.subTest(fault=fault), self.assertRaises((l.a.Refusal, RuntimeError)): l.publication_baseline(self.proof)
+            Path(owner['path']).write_bytes(original); owner['sha256'] = original_sha
+            self.replace(observe, lambda v: v['evidence'].update({'ownerAfter': owner}))
+
+    def test_incomplete_physical_memory_and_tls_proof_refused(self):
+        observe = self.proof['phases']['observe']['accepted']
+        for fault in ['physical', 'oom', 'static', 'models']:
+            original = Path(observe['path']).read_bytes(); original_sha = observe['sha256']
+            child = None
+            def mutate(value):
+                nonlocal child
+                if fault == 'physical': value['physical']['models']['allPhysicalHashesVerified'] = False
+                elif fault == 'oom': value['memory']['oomKill'] = 1
+                else:
+                    key = 'staticTLS' if fault == 'static' else 'modelsTLS'; ref = value['evidence'][key]
+                    child = (Path(ref['path']), Path(ref['path']).read_bytes())
+                    self.replace(ref, lambda body: body.update({'status': 'REFUSED'}))
+            self.replace(observe, mutate)
+            reason = {'physical': 'physical serving', 'oom': 'memory gate', 'static': 'normal TLS static', 'models': 'model HTTP proof'}[fault]
+            with self.subTest(fault=fault), self.assertRaisesRegex(l.a.Refusal, reason): l.publication_baseline(self.proof)
+            if child: child[0].write_bytes(child[1])
+            Path(observe['path']).write_bytes(original); observe['sha256'] = original_sha
+
+
 if __name__ == '__main__': unittest.main()

@@ -29,12 +29,196 @@ CAPABILITIES = {'completeProtectedDeployments', 'globalPodsPVCsPVs', 'uniqueBack
                 'nativeHTTPAndMemory', 'exclusiveNoReplay', 'preflightImmediatelyBeforeEveryMutation'}
 REFS = {'deployment', 'baseline', 'assembly', 'previousManifest', 'models', 'configs',
         'qualifiedSource', 'acceptedRelease', 'adapterReview'}
+ACCEPTED_KEYS = {'version', 'status', 'deploymentUID', 'deploymentSpecSha256', 'ownerPodUID',
+                 'image', 'manifestSha256', 'mapSha256', 'models', 'configs', 'publicPin'}
 
 
 def digest(value): return hashlib.sha256(raw(value)).hexdigest()
 def held(ref): return a.parsed(a.read_ref(ref))
 def dns(value): return type(value) is str and bool(re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', value))
 def sha(value): return type(value) is str and bool(a.overlay.SHA.fullmatch(value))
+
+
+def serving_binding(bundle, prepared, node):
+    """Pure full-owner/process fence for the two actual observation bookends."""
+    exact(bundle, {'deployment', 'pod', 'replicaSet'})
+    deployment, pod, replica = (bundle[k] for k in ['deployment', 'pod', 'replicaSet'])
+    before = held(prepared['refs']['deployment']); selected(deployment)
+    need(deployment['metadata']['uid'] == before['metadata']['uid']
+         and deployment['spec'] == prepared['desiredSpec'], 'Observed serving Deployment differs from the qualified switch')
+    expected = copy.deepcopy(before); expected['spec'] = prepared['desiredSpec']
+    if 'generation' in expected['metadata']: expected['metadata']['generation'] += 1
+    annotations = expected['metadata'].get('annotations', {})
+    if 'deployment.kubernetes.io/revision' in annotations:
+        need(annotations['deployment.kubernetes.io/revision'].isdigit(), 'Original numeric controller revision required')
+        annotations['deployment.kubernetes.io/revision'] = str(int(annotations['deployment.kubernetes.io/revision']) + 1)
+    same_deployments([deployment], [expected])
+    status = deployment.get('status', {}); generation = deployment['metadata'].get('generation')
+    need(type(generation) is int and generation > 0 and status.get('observedGeneration') == generation
+         and all(status.get(k) == 1 for k in ['replicas', 'readyReplicas', 'availableReplicas', 'updatedReplicas'])
+         and status.get('unavailableReplicas', 0) == 0, 'Actual serving generation must be fully Ready')
+    spec = importlib.util.spec_from_file_location('delivery_baseline_owner', Path(__file__).with_name('stage-public-shell.py'))
+    legacy = importlib.util.module_from_spec(spec); spec.loader.exec_module(legacy)
+    legacy.Stage.owner_chain(pod, replica, deployment)
+    meta = prepared['desiredSpec']['template']['metadata']; labels = copy.deepcopy(meta.get('labels', {}))
+    controller_hash = replica['metadata'].get('labels', {}).get('pod-template-hash')
+    need(type(controller_hash) is str and re.fullmatch('[a-z0-9]{1,63}', controller_hash), 'Original ReplicaSet template hash required')
+    labels['pod-template-hash'] = controller_hash
+    for value in [pod, replica]:
+        need(value['metadata'].get('namespace') == before['metadata']['namespace']
+             and value['metadata'].get('uid') and not value['metadata'].get('deletionTimestamp'), 'Live original owner identities required')
+    copied = copy.deepcopy(pod)
+    need(copied['metadata'].get('labels') == labels and copied['metadata'].get('annotations', {}) == meta.get('annotations', {})
+         and copied['spec'].get('nodeName') == node, 'Observed Pod metadata or scheduling changed')
+    if 'nodeName' not in prepared['desiredSpec']['template']['spec']: copied['spec'].pop('nodeName')
+    wanted = {'apiVersion': 'v1', 'kind': 'Pod', 'metadata': {'name': pod['metadata']['name'],
+        'namespace': before['metadata']['namespace'], 'labels': labels}, 'spec': prepared['desiredSpec']['template']['spec']}
+    legacy.validate_public_pod(copied, wanted, ready=True)
+    template = replica['spec']['template']
+    need(template['metadata'].get('labels') == labels and template['metadata'].get('annotations', {}) == meta.get('annotations', {}),
+         'ReplicaSet template metadata differs')
+    projected = {'apiVersion': 'v1', 'kind': 'Pod', 'metadata': {**wanted['metadata'], 'uid': replica['metadata']['uid']}, 'spec': template['spec']}
+    legacy.validate_public_pod(projected, wanted)
+    selector = copy.deepcopy(prepared['desiredSpec']['selector']); selector.setdefault('matchLabels', {})['pod-template-hash'] = controller_hash
+    need(replica['spec']['selector'] == selector and replica['spec']['replicas'] == 1, 'ReplicaSet selector or replica ownership differs')
+    process = pod['status']['containerStatuses'][0]
+    need(type(process.get('containerID')) is str and re.fullmatch('containerd://[a-f0-9]{64}', process['containerID'])
+         and set(process.get('state', {})) == {'running'}
+         and type(process['state']['running'].get('startedAt')) is str and process['state']['running']['startedAt'],
+         'Actual running container identity/start time required')
+    return {'deploymentUID': deployment['metadata']['uid'], 'deploymentSpecSha256': digest(deployment['spec']),
+        'deploymentMetadata': {k: deployment['metadata'].get(k, {}) for k in ['labels', 'annotations', 'generation']},
+        'ownerPodUID': pod['metadata']['uid'], 'podSpec': pod['spec'],
+        'podMetadata': {k: pod['metadata'].get(k, {}) for k in ['labels', 'annotations', 'ownerReferences']},
+        'replicaSetUID': replica['metadata']['uid'], 'replicaSetSpec': replica['spec'],
+        'replicaSetMetadata': {k: replica['metadata'].get(k, {}) for k in ['labels', 'annotations', 'ownerReferences']},
+        'process': {k: process.get(k) for k in ['name', 'image', 'imageID', 'containerID', 'state', 'restartCount', 'ready']}}
+
+
+def publication_baseline(proof):
+    """Derive the next baseline only from original successful publication custody.
+
+    This function reads held evidence only. It neither observes a target nor
+    converts an unqualified root or a requested tuple into serving acceptance.
+    """
+    exact(proof, {'version', 'input', 'operator', 'phases'})
+    need(proof['version'] == 1, 'Closed original publication proof required')
+    a.read_ref(proof['operator']); publication = held(proof['input'])
+    exact(publication, {'version', 'status', 'stageInput', 'stageSource', 'retirement', 'outputDirectory'})
+    need(publication['version'] == 1 and publication['status'] == 'REVIEWED_ACTUAL_FRONTEND_ROOT_PUBLICATION_NOT_EXECUTED'
+         and Path(proof['operator']['path']).name == 'publish-public-delivery.py'
+         and Path(publication['stageSource']['path']) == Path(proof['operator']['path']).with_name('stage-public-delivery.py'),
+         'Original maintained publication input/source required')
+    a.read_ref(publication['stageSource']); runtime = held(publication['stageInput'])
+    exact(runtime, {'version', 'status', 'prepared', 'target', 'context', 'programs', 'sources', 'outputDirectory'})
+    need(runtime['version'] == 1 and runtime['status'] == 'REVIEWED_PUBLIC_FRONTEND_RUNTIME_NOT_EXECUTED'
+         and publication['stageSource'] in runtime['sources'], 'Original reviewed stage binding required')
+    for ref in runtime['sources']: a.read_ref(ref)
+    exact(runtime['programs'], {'preflight', 'hostProbe', 'node', 'signatureVerifier'})
+    for key, ref in runtime['programs'].items():
+        exact(ref, {'path', 'sha256'}); path = Path(ref['path'])
+        need(path.is_absolute() and path.resolve(strict=True) == path and sha(ref['sha256']) and a.checksum(path) == ref['sha256']
+             and (key == 'node' or ref in runtime['sources']), 'Original registered execution program differs')
+    prepared = held(runtime['prepared']); retirement = held(publication['retirement']); admit(prepared, retirement)
+    adapter = held(prepared['refs']['adapterReview'])
+    need(adapter['source'] == publication['stageSource'] and adapter['sources'] == runtime['sources'], 'Original adapter registry closure differs')
+    need(retirement['prepared'] == runtime['prepared'] and retirement['adapter'] == publication['stageSource']
+         and publication['retirement']['path'] == str(Path(runtime['outputDirectory']) / 'runtime.qualified-and-retired.actual.json'),
+         'Original exact qualified-and-retired stage required')
+    output = Path(publication['outputDirectory']); exact(proof['phases'], {'dryrun', 'publish', 'observe'})
+    phases, commands = {}, set()
+    for name in ['dryrun', 'publish', 'observe']:
+        refs = proof['phases'][name]; exact(refs, {'started', 'accepted'})
+        for kind, ref in refs.items():
+            need(ref['path'] == str(output / (name + '.' + kind + '.json')), 'Original exclusive publication phase path required')
+        uncertain = output / (name + '.uncertain.json')
+        need(not uncertain.exists() and not uncertain.is_symlink(), 'Failed or uncertain publication cannot seed a baseline')
+        start, phase = held(refs['started']), held(refs['accepted'])
+        exact(start, {'status', 'inputSha256', 'operatorSha256'})
+        common = {'version', 'inputSha256', 'operatorSha256', 'commands', 'status', 'productionMutation'}
+        exact(phase, common | ({'before', 'patch', 'response'} if name != 'observe' else
+            {'deploymentUID', 'deploymentSpecSha256', 'source', 'manifest', 'mapSha256', 'physical', 'memory', 'evidence',
+             'modelsMountedByStaging', 'allProtectedSpecsVerified', 'browserAcceptanceClaimed'}))
+        need(start['status'] == 'STARTED_NO_REPLAY' and phase['version'] == 1
+             and all(start[k] == phase[k] == proof[v]['sha256'] for k, v in [('inputSha256', 'input'), ('operatorSha256', 'operator')]),
+             'Publication phase source/input custody differs')
+        need(type(phase.get('commands')) is list and phase['commands'], 'Actual original publication commands required')
+        for ref in phase['commands']:
+            need(Path(ref['path']).parent == output and ref['path'] not in commands, 'Command belongs to another or repeated publication phase')
+            commands.add(ref['path'])
+            command = held(ref)
+            need(command.get('exitCode') == 0 and command.get('failure') is None and command.get('complete') is True,
+                 'Failed or incomplete command cannot seed a baseline')
+            for stream in ['stdout', 'stderr']:
+                need(Path(command[stream]['path']).parent == output, 'Original command stream belongs to another journal')
+                a.read_ref(command[stream])
+        phases[name] = phase
+    need(phases['dryrun']['status'] == 'ACTUAL_FRONTEND_SERVER_DRYRUN_NOT_PUBLISHED' and phases['dryrun']['productionMutation'] is False
+         and phases['publish']['status'] == 'ACTUAL_FRONTEND_PATCHED_ACCEPTANCE_PENDING' and phases['publish']['productionMutation'] is True,
+         'Actual dryrun and switch must precede observation')
+    observed = phases['observe']
+    need(observed['status'] == 'ACTUAL_FRONTEND_ROOT_SERVING_VERIFIED' and observed['productionMutation'] is False
+         and observed['allProtectedSpecsVerified'] is True and observed['modelsMountedByStaging'] is False
+         and observed['browserAcceptanceClaimed'] is False and observed['source'] == prepared['source']
+         and observed['manifest'] == prepared['manifest'] and observed['mapSha256'] == prepared['mapSha256'],
+         'Actual complete serving observation required')
+    exact(observed['evidence'], {'ownerBefore', 'ownerAfter', 'nativeHTTP', 'staticTLS', 'modelsTLS'})
+    evidence = {}
+    filenames = {'ownerBefore': 'owner-before.original.json', 'ownerAfter': 'owner.original.json',
+        'nativeHTTP': 'owning-native-http.actual.json', 'staticTLS': 'owning-static-tls.actual.json', 'modelsTLS': 'owning-models-tls.actual.json'}
+    for key, ref in observed['evidence'].items():
+        need(ref['path'] == str(output / filenames[key]), 'Serving evidence belongs to another publication')
+        evidence[key] = held(ref)
+    held(runtime['context']); target = held(runtime['target'])
+    binding = serving_binding(evidence['ownerBefore'], prepared, target['node']['name'])
+    need(binding == serving_binding(evidence['ownerAfter'], prepared, target['node']['name'])
+         and observed['deploymentUID'] == binding['deploymentUID'] and observed['deploymentSpecSha256'] == binding['deploymentSpecSha256']
+         and observed['memory']['podUID'] == binding['ownerPodUID'], 'Serving owner/process changed across observation')
+    for name in ['dryrun', 'publish']:
+        phase = phases[name]
+        for key in ['before', 'patch', 'response']:
+            need(phase[key]['path'] == str(output / (name + '.' + key + '.original.json')), 'Original guarded switch evidence path differs')
+        before, response, patch = held(phase['before']), held(phase['response']), held(phase['patch'])
+        original = held(prepared['refs']['deployment'])
+        need(before['metadata']['uid'] == original['metadata']['uid'] and before['spec'] == original['spec']
+             and type(before['metadata'].get('resourceVersion')) is str and before['metadata']['resourceVersion'], 'Actual pre-switch owner differs')
+        need(patch == [{'op': 'test', 'path': '/metadata/uid', 'value': before['metadata']['uid']},
+            {'op': 'test', 'path': '/metadata/resourceVersion', 'value': before['metadata']['resourceVersion']},
+            {'op': 'test', 'path': '/spec', 'value': before['spec']}, {'op': 'replace', 'path': '/spec', 'value': prepared['desiredSpec']}],
+            'Original UID/RV/full-spec atomic switch required')
+        need(response['metadata']['uid'] == binding['deploymentUID'] and response['spec'] == prepared['desiredSpec'], 'Original server response differs')
+    manifest, models = held(prepared['manifest']), held(prepared['refs']['models'])['files']
+    exact(observed['physical'], {'static', 'models'})
+    for key, rows in [('static', manifest['files']), ('models', models)]:
+        value = observed['physical'][key]
+        need(value['files'] == len(rows) and value['bytes'] == sum(row['size'] for row in rows)
+             and value['physicalEpoch'] == 0 and value['uid'] == value['gid'] == 101 and value['allPhysicalHashesVerified'] is True
+             and value['modelLinkClosureVerified'] is (key == 'models')
+             and (sha(value['modelInodeFingerprint']) if key == 'models' else value['hardLinkedFiles'] == 0),
+             'Complete physical serving proof differs')
+    memory = observed['memory']; exact(memory, {'version', 'podUID', 'limitBytes', 'currentBytes', 'peakBytes', 'oom', 'oomKill', 'rssBytes'})
+    limit = re.fullmatch(r'([1-9][0-9]*)(Mi|Gi)', prepared['desiredSpec']['template']['spec']['containers'][0]['resources']['limits']['memory'])
+    need(limit and memory['version'] == 1 and all(type(memory[k]) is int for k in set(memory) - {'version', 'podUID'})
+         and memory['limitBytes'] == int(limit[1]) * (1024**2 if limit[2] == 'Mi' else 1024**3)
+         and 0 < memory['rssBytes'] <= memory['currentBytes'] <= memory['peakBytes'] < memory['limitBytes']
+         and memory['oom'] == memory['oomKill'] == 0, 'Actual serving memory gate required')
+    need(evidence['nativeHTTP']['static']['status'] == 'ISOLATED_STATIC_HTTP_RETAINED_FULL_BYTES_AND_SAMPLES_VERIFIED_ONLY'
+         and evidence['nativeHTTP']['decoded']['status'] == 'ACTUAL_LOOPBACK_GZIP_WIRE_AND_DECODED_IDENTITY_VERIFIED'
+         and evidence['modelsTLS']['status'] == 'ISOLATED_MODEL_HTTP_BYTES_VERIFIED_ONLY'
+         and evidence['modelsTLS']['inventorySha256'] == hashlib.sha256(json.dumps(models, separators=(',', ':')).encode()).hexdigest()
+         and evidence['modelsTLS']['files'] == len(models), 'Actual native and normal TLS model HTTP proof required')
+    static = evidence['staticTLS']; need(static['status'] == 'ACTUAL_NORMAL_TLS_MUTABLE_ROOT_IDENTITIES_VERIFIED', 'Actual normal TLS static proof required')
+    expected = {row['path']: row for row in manifest['files'] if row['path'] in a.overlay.FIXED}
+    need(type(static['rows']) is list and len(static['rows']) == len(expected) == 4
+         and {row['path'] for row in static['rows']} == set(expected)
+         and all(row['status'] == 200 and row['size'] == expected[row['path']]['size'] and row['sha256'] == expected[row['path']]['sha256']
+                 for row in static['rows']), 'Exact complete normal TLS static bodies required')
+    previous = held(prepared['refs']['acceptedRelease'])
+    return {'version': 2, 'status': 'ACTUAL_PUBLIC_FULL_ROOT_SERVING_ACCEPTED',
+        'deploymentUID': binding['deploymentUID'], 'deploymentSpecSha256': binding['deploymentSpecSha256'], 'ownerPodUID': binding['ownerPodUID'],
+        'image': prepared['desiredSpec']['template']['spec']['containers'][0]['image'],
+        'manifestSha256': prepared['manifest']['sha256'], 'mapSha256': prepared['mapSha256'],
+        'models': prepared['refs']['models'], 'configs': prepared['refs']['configs'], 'publicPin': previous['publicPin'], 'publication': copy.deepcopy(proof)}
 
 
 def matches(selector, labels):
@@ -253,9 +437,11 @@ def prepare(value, input_ref):
     expected, retained = a.union(candidate, old); expected[a.overlay.MAP] = report['map']
     need(a.tree(expected) == manifest and retained == report['retained'], 'Assembled bytes do not derive from the original candidate build and retained baseline')
     accepted = bound['acceptedRelease']
-    exact(accepted, {'version', 'status', 'deploymentUID', 'deploymentSpecSha256', 'ownerPodUID', 'image', 'manifestSha256', 'mapSha256', 'models', 'configs', 'publicPin'})
+    exact(accepted, ACCEPTED_KEYS | ({'publication'} if accepted.get('version') == 2 else set()))
+    if accepted['version'] == 2:
+        need(accepted == publication_baseline(accepted['publication']), 'Accepted baseline must rederive from original serving custody')
     annotations = before['spec']['template']['metadata']['annotations']; web = before['spec']['template']['spec']['containers'][0]
-    need(accepted['version'] == 1 and accepted['status'] == 'ACTUAL_PUBLIC_FULL_ROOT_SERVING_ACCEPTED'
+    need(accepted['version'] in {1, 2} and accepted['status'] == 'ACTUAL_PUBLIC_FULL_ROOT_SERVING_ACCEPTED'
         and accepted['deploymentUID'] == before['metadata']['uid'] and accepted['deploymentSpecSha256'] == digest(before['spec'])
         and accepted['image'] == web['image'] and accepted['manifestSha256'] == refs['previousManifest']['sha256']
         and accepted['manifestSha256'] == annotations['lolly.tools/full-root-manifest']

@@ -431,4 +431,67 @@ process.stdout.write(JSON.stringify(keys.publicKey.export({format:'jwk'})));'''
         finally: f.tearDown()
 
 
+class PublicationHandoff(unittest.TestCase):
+    """Exercise the real observe/phase/handoff path with target DATA fixtures."""
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location('publication_receipt_fixture', Path(__file__).with_name('test_public_delivery_lifecycle.py'))
+        fixtures = importlib.util.module_from_spec(spec); spec.loader.exec_module(fixtures)
+        self.f = fixtures.PublicationHandoff(); self.f.setUp(); f = self.f
+        # These are synthetic receipts owned by this temporary fixture only.
+        # The real publisher must create its own observe intent/evidence/receipt.
+        observe = s.l.held(f.proof['phases']['observe']['accepted'])
+        for ref in [*observe['evidence'].values(), *f.proof['phases']['observe'].values()]: Path(ref['path']).unlink()
+        self.stage = object.__new__(s.Stage); stage = self.stage
+        stage.events = []; stage.prepared = f.prepared; stage.target = {'node': {'name': 'customer-node'}}
+        stage.before = f.f.before; stage.namespace = 'customer-apps'
+        stage.owner = copy.deepcopy(f.bundle['pod']); stage.replica = copy.deepcopy(f.bundle['replicaSet'])
+        stage.context = {'origin': 'https://unit.invalid'}; stage.rows = s.l.held(f.prepared['manifest'])['files']
+        stage.models = s.l.held(f.f.models)['files']
+        stage.remote = lambda *args, **kwargs: stage.events.append(f.command('observe-actual')) or b''
+        stage.physical = lambda key, models=False, owner=False: copy.deepcopy(f.physical['models' if models else 'static'])
+        stage.measure = lambda owner=False: copy.deepcopy(f.memory)
+        stage.native_http = lambda owner: copy.deepcopy(f.native_http)
+        self.pub = object.__new__(p.Publication); pub = self.pub
+        pub.stage = stage; pub.out = f.out; pub.path = Path(f.input['path']); pub.input_sha = f.input['sha256']; pub.operator_sha = f.operator['sha256']
+        pub.with_journal = lambda fn: fn()  # target transport is forbidden in this fixture
+        pub.fresh = lambda after=False: copy.deepcopy(f.bundle['deployment'])
+        self.http = type('HTTPDataFixture', (), {'verify_models_tls': lambda *_args: copy.deepcopy(f.models_tls),
+            'verify_static_tls': lambda *_args: copy.deepcopy(f.static_tls)})
+
+    def tearDown(self): self.f.tearDown()
+
+    def test_real_observe_records_handoff_after_original_acceptance_and_refuses_replay(self):
+        with patch.object(p.s, 'module', return_value=self.http): ref = self.pub.observe()
+        self.assertEqual(Path(ref['path']).name, 'observe.accepted.json')
+        accepted = json.loads((self.f.out / 'accepted-release.actual.json').read_bytes())
+        self.assertEqual(accepted, s.l.publication_baseline(accepted['publication']))
+        handoff = json.loads((self.f.out / 'handoff.accepted.json').read_bytes())
+        self.assertEqual(handoff['observation'], ref); self.assertFalse(handoff['productionMutation']); self.assertFalse(handoff['browserAcceptanceClaimed'])
+        with patch.object(p.s, 'module', return_value=self.http), self.assertRaises(FileExistsError): self.pub.observe()
+
+    def test_owner_change_never_emits_observe_or_baseline_acceptance(self):
+        calls = []
+        def changed(after=False):
+            calls.append(after)
+            if len(calls) == 2: self.stage.owner['status']['containerStatuses'][0]['containerID'] = 'containerd://replacement'
+            return copy.deepcopy(self.f.bundle['deployment'])
+        self.pub.fresh = changed
+        with patch.object(p.s, 'module', return_value=self.http), self.assertRaises(RuntimeError): self.pub.observe()
+        self.assertFalse((self.f.out / 'observe.accepted.json').exists()); self.assertFalse((self.f.out / 'accepted-release.actual.json').exists())
+        self.assertTrue((self.f.out / 'observe.uncertain.json').exists())
+
+    def test_http_failure_never_emits_observe_or_baseline_acceptance(self):
+        def failed(*args): raise RuntimeError('actual TLS oracle refused')
+        self.http.verify_models_tls = failed
+        with patch.object(p.s, 'module', return_value=self.http), self.assertRaisesRegex(RuntimeError, 'TLS oracle refused'): self.pub.observe()
+        self.assertFalse((self.f.out / 'observe.accepted.json').exists()); self.assertFalse((self.f.out / 'accepted-release.actual.json').exists())
+        self.assertTrue((self.f.out / 'observe.uncertain.json').exists())
+
+    def test_local_handoff_failure_preserves_verified_observation_without_baseline(self):
+        with patch.object(p.s, 'module', return_value=self.http), patch.object(p.s.l, 'publication_baseline', side_effect=RuntimeError('held evidence refused')):
+            with self.assertRaises(RuntimeError): self.pub.observe()
+        self.assertTrue((self.f.out / 'observe.accepted.json').exists()); self.assertTrue((self.f.out / 'handoff.uncertain.json').exists())
+        self.assertFalse((self.f.out / 'accepted-release.actual.json').exists()); self.assertFalse((self.f.out / 'handoff.accepted.json').exists())
+
+
 if __name__ == '__main__': unittest.main()

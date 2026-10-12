@@ -131,6 +131,18 @@ configuration, models and infrastructure remain selected unchanged; only the
 new qualified frontend root and its paired map advance.
 For the current `lolly.tools` layout, follow its protected production handoff.
 
+After successful complete-root observation, the publisher retains
+`observe.accepted.json` and writes `accepted-release.actual.json` plus
+`handoff.accepted.json`. Use that version 2 record as the next preparation's
+`acceptedRelease`, with its manifest as `previousManifest` and fresh complete
+target captures. The next preparation revalidates the original input/source,
+dryrun, atomic switch, retirement, command streams and stable serving owner
+bookends; a failed or partial observation cannot produce this handoff. Preserve
+those original files and source paths. Existing registered version 1 baselines
+remain readable. This records serving acceptance only; browser and native target
+registration keep their separate scope. Memory admission retains this adapter's
+existing current ≤ peak < configured limit and zero-OOM requirements.
+
 The following five-path commands remain for an accepted legacy image without
 that validator map. They cannot be substituted for complete-root publication.
 
