@@ -116,7 +116,7 @@ jobs:
           # remote already exists; only --rebuild initializes it itself.
           timeout 120s incus remote add yunohost https://repo.yunohost.org/incus --protocol simplestreams --public
           incus remote list --format json > "$GITHUB_WORKSPACE/.qualification/results/incus-remotes.before.original.json"
-          timeout 120s incus image list yunohost:yunohost-bookworm-stable-appci --format json \
+          timeout 120s incus image list yunohost:yunohost/bookworm-stable/appci --format json \
             > "$GITHUB_WORKSPACE/.qualification/results/incus-official-base.before.original.json"
           python3 - <<'PY'
           import json, os, pathlib, re
@@ -129,7 +129,7 @@ jobs:
           if not isinstance(images, list) or len(images) != 1:
               raise SystemExit('Expected exactly one official matching base image')
           image = images[0]
-          alias = 'yunohost-bookworm-stable-appci'
+          alias = 'yunohost/bookworm-stable/appci'
           if image['architecture'] != 'x86_64' or image['type'] != 'container' or image['public'] is not True:
               raise SystemExit('Official image platform, type or visibility differs')
           if not any(row['name'] == alias for row in image['aliases']):
@@ -138,6 +138,28 @@ jobs:
               raise SystemExit('Official image fingerprint is not a complete SHA256')
           (proof / 'incus-official-base.selection.actual.json').write_text(json.dumps({'origin': remote['Addr'], 'protocol': remote['Protocol'], 'alias': alias, 'fingerprint': image['fingerprint'], 'architecture': image['architecture'], 'type': image['type'], 'public': image['public'], 'nativeAppInstallationQualified': False}, indent=2) + '\n')
           print('Actual official Incus base image available: ' + image['fingerprint'])
+          PY
+          # The published remote now uses slash aliases. Import its exact
+          # selected fingerprint under the pinned checker's legacy local alias.
+          base_fingerprint=$(python3 -c 'import json, os, pathlib; p=pathlib.Path(os.environ["GITHUB_WORKSPACE"])/".qualification/results/incus-official-base.selection.actual.json"; print(json.loads(p.read_text())["fingerprint"])')
+          timeout 900s incus image copy "yunohost:$base_fingerprint" local: --alias yunohost-bookworm-stable-appci
+          incus image list "$base_fingerprint" --format json \
+            > "$GITHUB_WORKSPACE/.qualification/results/incus-local-base.imported.original.json"
+          python3 - <<'PY'
+          import json, os, pathlib
+          proof = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / '.qualification/results'
+          selected = json.loads((proof / 'incus-official-base.selection.actual.json').read_text())
+          images = json.loads((proof / 'incus-local-base.imported.original.json').read_text())
+          if not isinstance(images, list) or len(images) != 1:
+              raise SystemExit('Expected exactly one actual imported base image')
+          image = images[0]
+          legacy = 'yunohost-bookworm-stable-appci'
+          if image['fingerprint'] != selected['fingerprint'] or image['architecture'] != selected['architecture'] or image['type'] != selected['type']:
+              raise SystemExit('Actual imported image bytes or platform differ from selected official image')
+          if image['public'] is not False or not any(row['name'] == legacy for row in image['aliases']):
+              raise SystemExit('Expected private local compatibility alias is missing or has different visibility')
+          (proof / 'incus-local-base.verified.actual.json').write_text(json.dumps({'origin': selected['origin'], 'remoteAlias': selected['alias'], 'localAlias': legacy, 'fingerprint': image['fingerprint'], 'architecture': image['architecture'], 'type': image['type'], 'remotePublic': selected['public'], 'localPublic': image['public'], 'sameGenuineImportedFingerprint': True, 'nativeAppInstallationQualified': False}, indent=2) + '\n')
+          print('Actual full-fingerprint local base imported and verified: ' + image['fingerprint'])
           PY
           ./package_check.sh "$GITHUB_WORKSPACE/.qualification/package"
           SH
@@ -186,8 +208,8 @@ jobs:
             fi
           done
           sudo incus list --format=json > .qualification/results/incus-final.json || true
-          incus image list --format json > .qualification/results/incus-local-images.final.original.json || true
-          incus remote list --format json > .qualification/results/incus-remotes.final.original.json || true
+          sg incus-admin -c 'incus image list --format json' > .qualification/results/incus-local-images.final.original.json || true
+          sg incus-admin -c 'incus remote list --format json' > .qualification/results/incus-remotes.final.original.json || true
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:
