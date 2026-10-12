@@ -64,7 +64,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y incus btrfs-progs lynx jq python3-pip python3-venv python3-toml \
             python3-pycurl python3-bs4 python3-lxml python3-jsonschema \
-            python3-packaging python3-pyparsing python3-six
+            python3-packaging python3-pyparsing python3-six iputils-ping curl
           # Ubuntu 24.04 does not package imgkit. Keep distro-managed dependencies
           # and install its reviewed pure-Python wheel in an isolated environment.
           /usr/bin/python3 -m venv --system-site-packages .qualification/python
@@ -92,6 +92,26 @@ jobs:
           # The detached checker remains at the reviewed commit. Its official
           # linter updater records the actual linter revision in the result set.
           test "$(git rev-parse HEAD)" = f7d32cadac3cfced282decede024707fba9e6ec6
+          test "$(git rev-parse --abbrev-ref HEAD)" = HEAD
+          python3 - <<'PY'
+          import difflib, hashlib, json, os, pathlib
+          common = pathlib.Path('lib/common.sh')
+          original = common.read_bytes()
+          expected = 'ca512f2e5cea6bba470ecf5989b7024496559c4ffb84dd181cb1d345c36c60cc'
+          old = b'assert_we_are_connected_to_the_internets() {\n    ping -q -c 2 yunohost.org > /dev/null 2>&1 \\\n    || ping -q -c 2 framasoft.org > /dev/null 2>&1 \\\n    || log_critical "Unable to connect to internet."\n}\n'
+          replacement = b'assert_we_are_connected_to_the_internets() {\n    # GitHub Azure runners can block ICMP. Preserve real ping diagnostics,\n    # then require actual TLS-verified HTTP200 and the needed image index.\n    local proof="$GITHUB_WORKSPACE/.qualification/results"\n    local rc=0\n    mkdir -p "$proof"\n    command -v ping > "$proof/ping-command.original" 2> "$proof/ping-command.stderr" || rc=$?\n    printf \'%s\\n\' "$rc" > "$proof/ping-command.exit"\n    rc=0\n    timeout 8s ping -q -c 2 -W 3 yunohost.org > "$proof/ping-yunohost.stdout" 2> "$proof/ping-yunohost.stderr" || rc=$?\n    printf \'%s\\n\' "$rc" > "$proof/ping-yunohost.exit"\n    rc=0\n    timeout 8s ping -q -c 2 -W 3 framasoft.org > "$proof/ping-framasoft.stdout" 2> "$proof/ping-framasoft.stderr" || rc=$?\n    printf \'%s\\n\' "$rc" > "$proof/ping-framasoft.exit"\n    rc=0\n    /usr/bin/curl --fail --silent --show-error --location --proto \'=https\' --proto-redir \'=https\' \\\n        --connect-timeout 10 --max-time 30 --max-filesize 1048576 \\\n        --output "$proof/yunohost-image-index.original.json" \\\n        --write-out \'%{http_code} %{ssl_verify_result} %{size_download}\\n\' \\\n        https://repo.yunohost.org/incus/streams/v1/index.json \\\n        > "$proof/yunohost-curl.enums.original" 2> "$proof/yunohost-curl.stderr" || rc=$?\n    printf \'%s\\n\' "$rc" > "$proof/yunohost-curl.exit"\n    cat "$proof/yunohost-curl.enums.original" "$proof/yunohost-curl.stderr"\n    [[ "$rc" == 0 ]] || log_critical "Required YunoHost HTTPS connection failed."\n    local code tls count\n    read -r code tls count < "$proof/yunohost-curl.enums.original"\n    [[ "$code" == 200 && "$tls" == 0 ]] || log_critical "Required YunoHost HTTPS status or TLS verification failed."\n    python3 -c \'import json, pathlib, sys; b=pathlib.Path(sys.argv[1]).read_bytes(); assert 0<len(b)<=1048576 and len(b)==int(sys.argv[2]); v=json.loads(b); i=v["index"]["images"]; assert v["format"]=="index:1.0" and i["datatype"]=="image-downloads" and i["format"]=="products:1.0" and i["path"]=="streams/v1/images.json" and "yunohost:bookworm-stable:appci:amd64" in i["products"]; print("Verified required YunoHost HTTPS image index")\' "$proof/yunohost-image-index.original.json" "$count" \\\n        || log_critical "Required YunoHost HTTPS image index is invalid."\n}\n'
+          if hashlib.sha256(original).hexdigest() != expected or original.count(old) != 1:
+              raise SystemExit('Pinned checker common.sh or startup guard differs')
+          modified = original.replace(old, replacement)
+          proof = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / '.qualification/results'
+          proof.mkdir(parents=True, exist_ok=True)
+          (proof / 'checker-common.pinned.original.sh').write_bytes(original)
+          (proof / 'checker-common.https-adapted.sh').write_bytes(modified)
+          (proof / 'checker-startup-https.patch').write_text(''.join(difflib.unified_diff(original.decode().splitlines(True), modified.decode().splitlines(True), fromfile='a/lib/common.sh', tofile='b/lib/common.sh')))
+          (proof / 'checker-compatibility.actual.json').write_text(json.dumps({'upstreamCommit': 'f7d32cadac3cfced282decede024707fba9e6ec6', 'originalSha256': expected, 'modifiedSha256': hashlib.sha256(modified).hexdigest(), 'onlyModifiedFunction': 'assert_we_are_connected_to_the_internets', 'reason': 'Declared GitHub Azure ICMP compatibility; actual bounded verified HTTPS required', 'installOrRecoveryQualified': False}, indent=2) + '\n')
+          common.write_bytes(modified)
+          print('Declared checker startup HTTPS adaptation; application checks unchanged')
+          PY
           ./package_check.sh "$GITHUB_WORKSPACE/.qualification/package"
           SH
       - name: Run official install, upgrade, multiple-instance and recovery checks
