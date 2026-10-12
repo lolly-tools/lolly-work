@@ -68,9 +68,10 @@ class Lifecycle(unittest.TestCase):
             'run': self.ci_run,
             'jobs': self.put({'jobs': [{'name': 'source', 'run_id': 42, 'status': 'completed', 'conclusion': 'success'}], 'total_count': 1}), 'requiredJobs': ['source']}
         self.adapter_source = self.put({'synthetic': 'unit-test-only adapter fixture'})
-        review = {'version': 1, 'status': 'ROOT_REVIEWED_RUNTIME_ADAPTER_SOURCE', 'source': self.adapter_source, 'sources': [self.adapter_source],
+        preparer = {'path': str(SCRIPTS / 'public-delivery-lifecycle.py'), 'sha256': l.a.checksum(SCRIPTS / 'public-delivery-lifecycle.py')}
+        review = {'version': 1, 'status': 'ROOT_REVIEWED_RUNTIME_ADAPTER_SOURCE', 'source': self.adapter_source, 'sources': [self.adapter_source, preparer],
             'capabilities': sorted(l.CAPABILITIES), 'stages': l.STAGES, 'productionMutation': False}
-        adapter = {'version': 1, 'status': 'ROOT_REVIEWED_FULL_ROOT_RUNTIME_ADAPTER', 'source': self.adapter_source, 'sources': [self.adapter_source],
+        adapter = {'version': 1, 'status': 'ROOT_REVIEWED_FULL_ROOT_RUNTIME_ADAPTER', 'source': self.adapter_source, 'sources': [self.adapter_source, preparer],
             'capabilities': sorted(l.CAPABILITIES), 'stages': l.STAGES, 'review': self.put(review)}
         self.value = {'version': 1, 'status': 'REVIEWED_PUBLIC_FRONTEND_LIFECYCLE_NOT_EXECUTED',
             'refs': {'deployment': self.put(self.before), 'baseline': self.put(self.baseline), 'assembly': self.assembly, 'previousManifest': previous_ref,
@@ -349,7 +350,8 @@ class PublicationHandoff(unittest.TestCase):
         for path in programs.values(): path.write_text('raise RuntimeError("synthetic fixture must never execute target programs")\n')
         program_refs = {k: {'path': str(path), 'sha256': l.a.checksum(path)} for k, path in programs.items()}
         program_refs['node'] = {'path': str(NODE), 'sha256': l.a.checksum(NODE)}
-        sources = [stage, self.operator, *[ref for k, ref in program_refs.items() if k != 'node']]
+        preparer = {'path': str(SCRIPTS / 'public-delivery-lifecycle.py'), 'sha256': l.a.checksum(SCRIPTS / 'public-delivery-lifecycle.py')}
+        sources = [stage, self.operator, preparer, *[ref for k, ref in program_refs.items() if k != 'node']]
         review = {'version': 1, 'status': 'ROOT_REVIEWED_RUNTIME_ADAPTER_SOURCE', 'source': stage, 'sources': sources,
             'capabilities': sorted(l.CAPABILITIES), 'stages': l.STAGES, 'productionMutation': False}
         adapter = {**{k: v for k, v in review.items() if k != 'productionMutation'},
@@ -433,8 +435,8 @@ class PublicationHandoff(unittest.TestCase):
         for key in ['writer', 'qualifier']:
             self.assertNotIn('models', [v['name'] for v in self.prepared['resources'][key]['spec']['volumes']])
 
-    def test_next_prepare_consumes_handoff_and_rejects_rehashed_baseline_projection(self):
-        f = self.f; accepted = l.publication_baseline(self.proof)
+    def next_value(self, accepted):
+        f = self.f
         previous = l.held(self.prepared['manifest'])
         root = Path(l.held(self.prepared['refs']['assembly'])['root'])
         data = {row['path']: (root / row['path']).read_bytes() for row in previous['files']}
@@ -448,10 +450,68 @@ class PublicationHandoff(unittest.TestCase):
             'assembly': assembly, 'previousManifest': self.prepared['manifest'], 'acceptedRelease': f.put(accepted)})
         value['names'] = {'claim': 'next-site', 'writer': 'next-writer', 'qualifier': 'next-qualifier', 'policy': 'next-deny'}
         value['outputDirectory'] = str(f.base / 'next-prepared')
+        return value
+
+    def test_next_prepare_consumes_handoff_and_rejects_rehashed_baseline_projection(self):
+        f = self.f; accepted = l.publication_baseline(self.proof); value = self.next_value(accepted)
         result = l.prepare(value, f.put(value)); self.assertFalse(result['modelsMounted'])
         self.assertEqual(result['refs']['models'], f.models)
         accepted['ownerPodUID'] = 'requested-replacement'; value['refs']['acceptedRelease'] = f.put(accepted)
         with self.assertRaisesRegex(l.a.Refusal, 'rederive from original serving custody'): l.prepare(value, f.put(value))
+
+    def test_distinct_real_checkouts_admit_history_then_prepare_next_without_restamping(self):
+        # Source-only Git checkouts contain the real helpers/test fixture. No
+        # packages, model bodies, target transport or historical code execution.
+        checkout_a, checkout_b = self.f.base / 'helper-A', self.f.base / 'helper-B'
+        checkout_a.mkdir()
+        paths = subprocess.run(['git', 'ls-files', 'scripts'], cwd=SCRIPTS.parent, capture_output=True, text=True, check=True).stdout.splitlines()
+        paths.append('tests/test_public_delivery_lifecycle.py')
+        for relative in paths:
+            target = checkout_a / relative; target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(SCRIPTS.parent / relative, target)
+        env = {**os.environ, 'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': os.devnull}
+        for args in [['init', '--quiet', '--initial-branch=main'], ['add', 'scripts', 'tests'],
+            ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '--quiet', '-m', 'Real helper checkout fixture']]:
+            subprocess.run(['git', '-c', 'core.hooksPath=/dev/null', *args], cwd=checkout_a, env=env, capture_output=True, check=True)
+        subprocess.run(['git', 'clone', '--shared', '--quiet', str(checkout_a), str(checkout_b)], env=env, capture_output=True, check=True)
+        hashes_a = {relative: l.a.checksum(checkout_a / relative) for relative in paths}
+        spec = importlib.util.spec_from_file_location('original_checkout_fixture', checkout_a / 'tests/test_public_delivery_lifecycle.py')
+        original = importlib.util.module_from_spec(spec); spec.loader.exec_module(original)
+        fixture = original.PublicationHandoff(); fixture.setUp()
+        try:
+            spec = importlib.util.spec_from_file_location('next_checkout_lifecycle', checkout_b / 'scripts/public-delivery-lifecycle.py')
+            next_l = importlib.util.module_from_spec(spec); spec.loader.exec_module(next_l)
+            prepared = fixture.prepared; runtime = original.l.held(fixture.publication['stageInput'])
+            retirement = original.l.held(fixture.publication['retirement'])
+            originals = {str(path): path.read_bytes() for path in fixture.f.base.rglob('*') if path.is_file()}
+            next_l.admit(prepared, retirement)
+            accepted = next_l.publication_baseline(fixture.proof)
+            self.assertEqual(accepted, original.l.publication_baseline(fixture.proof))
+            value = fixture.next_value(accepted)
+            adapter = original.l.held(value['refs']['adapterReview'])
+            def relocate(ref):
+                path = Path(ref['path'])
+                return {**ref, 'path': str(checkout_b / path.relative_to(checkout_a))} if checkout_a in path.parents else ref
+            adapter['source'] = relocate(adapter['source']); adapter['sources'] = [relocate(ref) for ref in adapter['sources']]
+            review = original.l.held(adapter['review']); review.update({key: adapter[key] for key in ['source', 'sources']})
+            adapter['review'] = fixture.f.put(review); value['refs']['adapterReview'] = fixture.f.put(adapter)
+            result = next_l.prepare(value, fixture.f.put(value))
+            self.assertEqual(result['preparer'], {'path': str(checkout_b / 'scripts/public-delivery-lifecycle.py'),
+                'sha256': next_l.a.checksum(checkout_b / 'scripts/public-delivery-lifecycle.py')})
+            self.assertNotEqual(prepared['preparer']['path'], result['preparer']['path'])
+            self.assertEqual(prepared['preparer']['sha256'], result['preparer']['sha256'])
+            for fault in ['source-hash', 'unregistered-path', 'forged-spec', 'forged-field']:
+                altered = copy.deepcopy(prepared)
+                if fault == 'source-hash': altered['preparer']['sha256'] = '0' * 64
+                elif fault == 'unregistered-path': altered['preparer'] = result['preparer']
+                elif fault == 'forged-spec': altered['desiredSpec']['template']['spec']['containers'][0]['image'] = 'evil@sha256:' + '0' * 64
+                else: altered['runtimeQualified'] = True
+                reason = 'size/hash differs' if fault == 'source-hash' else 'original reviewed source closure' if fault == 'unregistered-path' else 'rederive from original qualified bytes'
+                with self.subTest(fault=fault), self.assertRaisesRegex(next_l.a.Refusal, reason): next_l.admit(altered, retirement)
+            self.assertEqual(originals, {path: Path(path).read_bytes() for path in originals})
+            self.assertEqual(hashes_a, {relative: l.a.checksum(checkout_a / relative) for relative in paths})
+            self.assertEqual(subprocess.run(['git', 'status', '--porcelain'], cwd=checkout_a, env=env, capture_output=True, check=True).stdout, b'')
+        finally: fixture.tearDown()
 
     def test_failed_missing_or_wrong_publication_custody_refused(self):
         for name in ['dryrun', 'publish', 'observe']:

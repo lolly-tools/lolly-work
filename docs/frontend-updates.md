@@ -142,6 +142,10 @@ those original files and source paths. Existing registered version 1 baselines
 remain readable. This records serving acceptance only; browser and native target
 registration keep their separate scope. Memory admission retains this adapter's
 existing current ≤ peak < configured limit and zero-OOM requirements.
+Admission validates the historical preparer's original hash and reviewed source
+membership independently of the current checkout. All resources and protected
+fields still rederive under the current guards; original receipts are preserved
+when preparation moves to another checkout.
 
 The following five-path commands remain for an accepted legacy image without
 that validator map. They cannot be substituted for complete-root publication.

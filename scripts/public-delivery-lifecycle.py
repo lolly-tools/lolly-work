@@ -489,11 +489,20 @@ def prepare(value, input_ref):
 def admit(prepared, receipt):
     """Consume truthful adapter receipts; preserve target/publication ownership."""
     need(prepared['status'] == 'PUBLIC_FRONTEND_LIFECYCLE_PREPARED_NOT_STAGED' and prepared['modelsMounted'] is False, 'Unstaged prepared request required')
-    need(prepared == prepare(held(prepared['preparationInput']), prepared['preparationInput']), 'Prepared resources and exact patch must rederive from original qualified bytes')
+    # Preparation provenance belongs to the original registered checkout, not
+    # this admission caller. Validate it without executing historical code;
+    # every other field must still rederive under the current complete guards.
+    preparer = prepared['preparer']; exact(preparer, {'path', 'sha256'}); a.read_ref(preparer)
+    adapter = held(prepared['refs']['adapterReview'])
+    need(Path(preparer['path']).name == Path(__file__).name and preparer in adapter['sources'],
+         'Historical preparer is outside its original reviewed source closure')
+    derived = prepare(held(prepared['preparationInput']), prepared['preparationInput'])
+    need({k: v for k, v in prepared.items() if k != 'preparer'} == {k: v for k, v in derived.items() if k != 'preparer'},
+         'Prepared resources and exact patch must rederive from original qualified bytes')
     exact(receipt, {'version', 'status', 'prepared', 'adapter', 'phases', 'native', 'models', 'retirement', 'globalBefore', 'globalAfter'})
     need(receipt['version'] == 1 and receipt['status'] == 'ACTUAL_FRONTEND_ROOT_QUALIFIED_AND_RETIRED'
         and held(receipt['prepared']) == prepared, 'Exact actual prepared/runtime binding required')
-    adapter = held(prepared['refs']['adapterReview']); need(receipt['adapter'] == adapter['source'], 'Actual runtime adapter source differs')
+    need(receipt['adapter'] == adapter['source'], 'Actual runtime adapter source differs')
     need(type(receipt['phases']) is list and len(receipt['phases']) == len(STAGES), 'All exclusive real stage phases required')
     for name, ref in zip(STAGES, receipt['phases']):
         phase = held(ref); exact(phase, {'version', 'phase', 'status', 'prepared', 'source', 'commands'})
