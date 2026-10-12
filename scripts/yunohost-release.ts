@@ -11,7 +11,7 @@
  *   node scripts/yunohost-release.ts --ynh-rev 2      # a repackaging of the same upstream version
  *   node scripts/yunohost-release.ts --out <dir>      # default ~/.cache/lolly-release/artifacts
  *
- * The tarball is `git archive` of HEAD: the server, console, vendored engine, docs,
+ * The tarball archives HEAD's tree at a fixed UTC time: server, console, vendored engine, docs,
  * migrations and lockfile, with no node_modules (the install script runs
  * `pnpm install --frozen-lockfile --prod` on the host). Four trees are left out on purpose - `packs/`
  * because the demo pack carries SUSE's proprietary brand assets (packs/demo/brands/
@@ -37,8 +37,9 @@ export const EXCLUDED = ['packs', 'tests', 'plans', 'deploy', '.github'];
 export interface SourcePin { url: string; sha256: string }
 export interface Pins { version: string; ynhRev: number; main: SourcePin; shell: SourcePin }
 
-export function tarballName(version: string): string {
-  return `lolly-work-${version}.tar.gz`;
+export function tarballName(version: string, ynhRev?: number): string {
+  if (ynhRev !== undefined && (!Number.isSafeInteger(ynhRev) || ynhRev < 1)) throw new Error('YunoHost revision must be a positive integer');
+  return `lolly-work-${version}${ynhRev === undefined ? '' : `-ynh${ynhRev}`}.tar.gz`;
 }
 
 export function upstreamVersion(): string {
@@ -128,15 +129,27 @@ function run(cmd: string, args: string[], input?: Buffer): Buffer {
   return r.stdout;
 }
 
-/** `git archive` HEAD without the excluded trees, gzipped, into outFile. */
-export function archiveHead(version: string, outFile: string): void {
+export interface ArchiveSource { commit: string; tree: string; mtime: 1 }
+
+/** Excluded manifest updates leave installed bytes unchanged, including archive metadata. */
+export function archiveHead(version: string, outFile: string): ArchiveSource {
   const dirty = run('git', ['status', '--porcelain']).toString().trim();
   if (dirty) throw new Error(`working tree is dirty - commit first; a release tarball is a commit:\n${dirty}`);
   checkConsoleAssets();
-  const tar = run('git', ['archive', '--format=tar', `--prefix=lolly-work-${version}/`, 'HEAD', ...EXCLUDED.map((d) => `:(exclude)${d}`)]);
+  const commit = run('git', ['rev-parse', '--verify', 'HEAD']).toString().trim();
+  const tree = run('git', ['rev-parse', '--verify', `${commit}^{tree}`]).toString().trim();
+  if (!/^[0-9a-f]{40}$/.test(commit) || !/^[0-9a-f]{40}$/.test(tree)) throw new Error('Release source must have complete Git object identities');
+  // A tree archive has no commit-ID PAX header. Fixed metadata makes the payload
+  // stable after the generated, excluded deployment manifest is committed.
+  // One second after epoch is verified in the actual archive regression.
+  const tar = run('git', ['archive', '--format=tar', '--mtime=1970-01-01T00:00:01Z', `--prefix=lolly-work-${version}/`, tree, ...EXCLUDED.map((d) => `:(exclude)${d}`)]);
   // Deterministic gzip (no name, mtime 0) so the same commit gives the same bytes.
   const gz = run('gzip', ['-9', '-n'], tar);
-  writeFileSync(outFile, gz);
+  if (run('git', ['rev-parse', '--verify', 'HEAD']).toString().trim() !== commit || run('git', ['status', '--porcelain']).toString().trim()) {
+    throw new Error('Release source changed while producing the archive');
+  }
+  writeFileSync(outFile, gz, { flag: 'wx' });
+  return { commit, tree, mtime: 1 };
 }
 
 interface Args { publish: boolean; oss: string; shellUrl?: string; shellSha256?: string; ynhRev: number; out: string }
@@ -159,7 +172,7 @@ export function parseArgs(argv: string[]): Args {
   }
   if ((a.shellUrl ? 1 : 0) + (a.shellSha256 ? 1 : 0) === 1) throw new Error('--shell-url and --shell-sha256 go together');
   if (a.shellSha256 && !/^[0-9a-f]{64}$/.test(a.shellSha256)) throw new Error('--shell-sha256 must be 64 hex characters');
-  if (!Number.isInteger(a.ynhRev) || a.ynhRev < 1) throw new Error('--ynh-rev must be a positive integer');
+  if (!Number.isSafeInteger(a.ynhRev) || a.ynhRev < 1) throw new Error('--ynh-rev must be a positive integer');
   return a;
 }
 
@@ -169,12 +182,13 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const shell = args.shellUrl ? { url: args.shellUrl, sha256: args.shellSha256! } : shellPinFrom(args.oss);
 
   mkdirSync(args.out, { recursive: true });
-  const name = tarballName(version);
+  const name = tarballName(version, args.ynhRev);
   const outFile = join(args.out, name);
   console.log(`[yunohost-release] archiving HEAD -> ${outFile} (without ${EXCLUDED.join(', ')})`);
-  archiveHead(version, outFile);
+  const source = archiveHead(version, outFile);
   const sha256 = await sha256File(outFile);
   console.log(`[yunohost-release] ${name}  ${(statSync(outFile).size / 1e6).toFixed(1)} MB  sha256 ${sha256}`);
+  writeFileSync(join(args.out, `${name}.source.json`), JSON.stringify({ version: 1, source, archive: { name, size: statSync(outFile).size, sha256 }, shell, shellRuntimeCompatibilityVerified: false, runtimeQualified: false }, null, 2) + '\n', { flag: 'wx' });
 
   const pins: Pins = { version, ynhRev: args.ynhRev, main: { url: `${RELEASE_HOST}/${name}`, sha256 }, shell };
   writeFileSync(MANIFEST, pinManifest(readFileSync(MANIFEST, 'utf8'), pins));

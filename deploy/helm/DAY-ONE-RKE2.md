@@ -99,10 +99,12 @@ storage; neither CI nor the earlier macOS rehearsal certifies a new RKE2 release
 Published by `release.yml` on the `v0.2.0` tag (2026-08-14), multi-arch, SBOM- and
 provenance-attested and cosign-signed:
 `ghcr.io/lolly-tools/lolly-work-server:0.2.0` and
-`ghcr.io/lolly-tools/lolly-work-render-worker:0.2.0`. The chart's empty
-`image.tag`/`renderWorker.image.tag` default to `appVersion` (= `0.2.0`, kept in step with
-`package.json`). This records the historical release, not a current registry pull
-or cluster qualification. Select compatible signed application and worker
+`ghcr.io/lolly-tools/lolly-work-render-worker:0.2.0`. This records the historical
+release, not a current registry pull or cluster qualification. The current
+chart's empty `image.tag`/`renderWorker.image.tag` default to `appVersion` (= `1.1.0`,
+kept in step with `package.json`). Those defaults describe the shared release
+candidate; they do not prove that its images have been published or qualified.
+Select compatible signed application and worker
 images, pin `image.digest` and `renderWorker.image.digest`, and retain their
 qualification evidence. If the GHCR packages are private in your org, add an
 `imagePullSecret` (or mirror into the SUSE registry — preferable air-gap posture anyway).

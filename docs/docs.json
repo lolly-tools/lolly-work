@@ -14,6 +14,11 @@
       "title": "Start here",
       "docs": [
         {
+          "slug": "release-1-1-0",
+          "title": "Release 1.1.0",
+          "summary": "Shared Lolly and Work release candidate, matched component versions, qualification, migration and rollback."
+        },
+        {
           "slug": "overview",
           "title": "What this deploy is",
           "summary": "The control plane in one page: what it serves, the two-repo shape, and the trust model."

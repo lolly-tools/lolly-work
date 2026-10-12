@@ -43,9 +43,9 @@ image:
   # PRIVATE today — so a stock install ImagePullBackOffs unless you either add an
   # imagePullSecrets entry below, or build and push your own (also the better
   # air-gap posture):
-  #   docker build -f deploy/compose/Dockerfile -t <registry>/lolly-work-server:0.2.0 .
-  #   docker push <registry>/lolly-work-server:0.2.0
-  #   helm install … --set image.repository=<registry>/lolly-work-server --set image.tag=0.2.0
+  #   docker build -f deploy/compose/Dockerfile -t <registry>/lolly-work-server:1.1.0 .
+  #   docker push <registry>/lolly-work-server:1.1.0
+  #   helm install … --set image.repository=<registry>/lolly-work-server --set image.tag=1.1.0
   #
   # The migrate Job runs `pnpm run migrate` (node scripts/migrate.ts); the stock
   # deploy/compose/Dockerfile ships scripts/, migrations/, package.json and the

@@ -16,10 +16,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseAllDocuments } from 'yaml';
+import { parse, parseAllDocuments } from 'yaml';
 import { parseConfig } from '../server/src/config/instance.ts';
 
 const CHART = fileURLToPath(new URL('../deploy/helm', import.meta.url));
@@ -48,6 +48,19 @@ const manifests = (out: string) => parseAllDocuments(out).map(doc => doc.toJSON(
 const deployment = (out: string, worker = false) => manifests(out).find(doc =>
   doc?.kind === 'Deployment' && (doc.metadata.labels?.['app.kubernetes.io/component'] === 'render-worker') === worker);
 const SMALL = ['-f', `${CHART}/values-small-suse.yaml`];
+
+test('chart application version matches Work and defaults server, migration and worker images together', { skip: noHelm }, () => {
+  const appVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+  const chart = parse(readFileSync(join(CHART, 'Chart.yaml'), 'utf8'));
+  assert.equal(chart.appVersion, appVersion);
+  const values = parse(readFileSync(join(CHART, 'values.yaml'), 'utf8'));
+  const r = render([...SECRETS, ...WORKER]); assert.ok(r.ok, r.err);
+  const docs = manifests(r.out), app = deployment(r.out), worker = deployment(r.out, true);
+  const migration = docs.find(doc => doc.kind === 'Job');
+  assert.equal(app.spec.template.spec.containers[0].image, `${values.image.repository}:${appVersion}`);
+  assert.equal(migration.spec.template.spec.containers[0].image, app.spec.template.spec.containers[0].image);
+  assert.equal(worker.spec.template.spec.containers[0].image, `${values.renderWorker.image.repository}:${appVersion}`);
+});
 
 test('raw instance config remains exact with mounted pack and shell', { skip: noHelm }, () => {
   const directory = mkdtempSync(join(tmpdir(), 'lolly-helm-raw-config-'));
@@ -260,8 +273,8 @@ test('immutable digests pin app, migration and worker while tag defaults still w
 
   const original = render([...SECRETS, ...WORKER]);
   assert.ok(original.ok, original.err);
-  assert.equal(deployment(original.out).spec.template.spec.containers[0].image, 'ghcr.io/lolly-tools/lolly-work-server:0.2.0');
-  assert.equal(deployment(original.out, true).spec.template.spec.containers[0].image, 'ghcr.io/lolly-tools/lolly-work-render-worker:0.2.0');
+  assert.equal(deployment(original.out).spec.template.spec.containers[0].image, 'ghcr.io/lolly-tools/lolly-work-server:1.1.0');
+  assert.equal(deployment(original.out, true).spec.template.spec.containers[0].image, 'ghcr.io/lolly-tools/lolly-work-render-worker:1.1.0');
   const tagged = render([...SECRETS, ...WORKER, '--set', 'image.tag=custom', '--set', 'renderWorker.image.tag=worker-custom']);
   assert.ok(tagged.ok, tagged.err);
   assert.equal(deployment(tagged.out).spec.template.spec.containers[0].image, 'ghcr.io/lolly-tools/lolly-work-server:custom');

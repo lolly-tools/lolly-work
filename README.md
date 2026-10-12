@@ -9,6 +9,9 @@ just config + a pack mount.
 > Lolly renders on-device by design; everything hosted lives here (the public MCP server is
 > the one exception).
 
+The [shared 1.1.0 release candidate](docs/release-1-1-0.md) records the matched
+Lolly source, component versions and the checks required before publication.
+
 ## Getting started
 
 A running web UI + CLI, dead easy. The one install guide is

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 /** Design's layout adapter. Authored rows stay flat; solver output is disposable. */
 import { atan2, cos, hypot, sin } from './geom/portable-math.ts';
+import { designHierarchyAncestors, designHierarchyDescendants, designHierarchyIndex } from './design-hierarchy.ts';
 
 type Row = Record<string, unknown>;
 
@@ -75,6 +76,8 @@ const on = (v: unknown): boolean => v === true || v === 'true' || v === 1 || v =
 const number = (v: unknown, fallback = 0): number => (v === '' || v == null ? fallback : Number(v));
 const mode = (r: Row, axis: 'W' | 'H'): string => String(r[`layout${axis}`] || 'fixed');
 const owner = (r: Row): string => String(r.layoutOwner || r.frame || '');
+const hierarchyOwner = (r: Row, byId: ReadonlyMap<string, Row>): string =>
+  byId.get(String(r.group || ''))?.kind === 'group' ? String(r.group) : owner(r);
 const id = (r: Row): string => String(r.id || '');
 const isText = (r: Row): boolean =>
   r.kind === 'text' || (typeof r.text === 'string' && r.text.length > 0);
@@ -130,7 +133,14 @@ export function validateDesignLayout(
       add(r, 'layout.identity', 'Layout requires unique permanent layer IDs.');
     byId.set(id(r), r);
   }
+  const parentOf = (r: Row) => hierarchyOwner(r, byId);
   for (const r of boxes) {
+    if (r.group && byId.get(String(r.group))?.kind === 'group' && r.layoutOwner)
+      add(r, 'layout.owner-conflict', 'A grouped layer cannot also have a layout owner.');
+    if (r.kind === 'group' && (mode(r, 'W') === 'fill' || mode(r, 'H') === 'fill') && !hasDesignLayout([byId.get(parentOf(r)) || {}]))
+      add(r, 'layout.group-sizing', 'Group fill sizing requires a flex or grid owner.');
+    if (r.kind === 'group' && hasDesignLayout([r]))
+      add(r, 'layout.group-container', 'Use an artboard or box as a dynamic layout container.');
     if (r.layoutOwner && r.frame)
       add(
         r,
@@ -140,7 +150,7 @@ export function validateDesignLayout(
     if (r.layoutOwner && !hasDesignLayout([byId.get(String(r.layoutOwner)) || {}]))
       add(r, 'layout.owner-missing', 'The layout owner is missing or has no layout.');
     const seen = new Set<string>([id(r)]);
-    let o = owner(r);
+    let o = parentOf(r);
     while (o) {
       if (seen.has(o)) {
         add(r, 'layout.owner-cycle', 'Layout ownership contains a cycle.');
@@ -151,11 +161,11 @@ export function validateDesignLayout(
         add(r, 'layout.depth', 'Layout nesting exceeds 64 levels.');
         break;
       }
-      o = owner(byId.get(o) || {});
+      o = parentOf(byId.get(o) || {});
     }
     if (r.layout && !['none', 'flex', 'grid'].includes(String(r.layout)))
       add(r, 'layout.mode', 'Unknown layout mode.');
-    if (r.layoutOwner || hasDesignLayout([r]) || hasDesignLayout([byId.get(owner(r)) || {}])) {
+    if (r.layoutOwner || hasDesignLayout([r]) || r.kind === 'group' || hasDesignLayout([byId.get(parentOf(r)) || {}])) {
       for (const [key, choices] of Object.entries({
         layoutDirection: ['row', 'row-reverse', 'column', 'column-reverse'],
         layoutAlign: ['start', 'center', 'end', 'stretch'],
@@ -308,6 +318,74 @@ function fromCorners(r: Row, b: number[]): Row {
     rot: Math.abs(rot - original) < 0.0001 ? original : Math.abs(rot) < 0.0001 ? 0 : rot,
   };
 }
+function checkedGroupGeometry(row: Row): Row {
+  if (['x', 'y', 'w', 'h', 'rot'].some(field => !Number.isFinite(number(row[field])) || Math.abs(number(row[field])) > MAX_LAYOUT_SCALAR))
+    throw new Error('Group sizing exceeds the finite geometry limit.');
+  return row;
+}
+
+/** Intrinsic group sizing measures visible geometry in the group's authored axes. */
+function measureGroupBounds(group: Row, boxes: Row[], children: ReadonlyMap<string, number[]>, visit: () => void): Row {
+  if (on(group.hidden)) return group;
+  const origin = corners(group), angle = number(group.rot) * Math.PI / 180, c = cos(angle), s = sin(angle);
+  let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+  const pending = [...(children.get(id(group)) || [])];
+  for (let at = 0; at < pending.length; at++) {
+    visit(); const row = boxes[pending[at]!]!;
+    if (on(row.hidden)) continue;
+    if (row.kind !== 'group') {
+      const points = corners(row);
+      for (let p = 0; p < points.length; p += 2) {
+        const dx = points[p]! - origin[0]!, dy = points[p + 1]! - origin[1]!;
+        const u = dx * c + dy * s, v = -dx * s + dy * c;
+        left = Math.min(left, u); right = Math.max(right, u); top = Math.min(top, v); bottom = Math.max(bottom, v);
+      }
+    }
+    pending.push(...(children.get(id(row)) || []));
+  }
+  if (left === Infinity) { left = top = right = bottom = 0; }
+  const huggingW = mode(group, 'W') === 'hug', huggingH = mode(group, 'H') === 'hug';
+  const extent = (axis: 'W' | 'H', value: number) => {
+    const max = number(group[`layoutMax${axis}`], Infinity);
+    if (max < 0.01) throw new Error('Group content sizing needs a maximum size of at least 0.01.');
+    return Math.max(0.01, Math.min(max, Math.max(number(group[`layoutMin${axis}`]), value)));
+  };
+  const w = huggingW ? extent('W', right - left) : number(group.w, 100), h = huggingH ? extent('H', bottom - top) : number(group.h, 100);
+  const x0 = origin[0]! + (huggingW ? left * c : 0) - (huggingH ? top * s : 0);
+  const y0 = origin[1]! + (huggingW ? left * s : 0) + (huggingH ? top * c : 0);
+  return checkedGroupGeometry({...group, x:x0 + c*w/2 - s*h/2 - w/2, y:y0 + s*w/2 + c*h/2 - h/2, w, h});
+}
+
+/** Prevent f32 corner-normalization noise from repeatedly resizing group descendants. */
+function settleGroupGeometry(before: Row, after: Row): Row {
+  const next = {...after};
+  for (const field of ['x', 'y', 'w', 'h']) if (before[field] != null && Math.abs(number(before[field])-number(after[field])) < 0.0001) next[field] = before[field];
+  return next;
+}
+
+/** Apply one solver transform to each descendant once, including hidden branches. */
+function carryGroupGeometry(before: Row, after: Row, boxes: Row[], children: ReadonlyMap<string, number[]>, visit: () => void): void {
+  if (['x', 'y', 'w', 'h', 'rot'].every(field => before[field] === after[field])) return;
+  if ([before, after].some(row => number(row.w, 100) <= 0 || number(row.h, 100) <= 0)) throw new Error('Group sizing requires nonzero bounds.');
+  const old = corners(before), next = corners(after), ux=old[2]!-old[0]!, uy=old[3]!-old[1]!, vx=old[6]!-old[0]!, vy=old[7]!-old[1]!;
+  const det = ux*vy - uy*vx;
+  if (!Number.isFinite(det) || Math.abs(det) < 1e-12) throw new Error('Group sizing requires nonzero bounds.');
+  const pending = [...(children.get(id(before)) || [])];
+  for (let at = 0; at < pending.length; at++) {
+    visit(); const index = pending[at]!, row = boxes[index]!, points = corners(row), mapped: number[] = [];
+    for (let p = 0; p < points.length; p += 2) {
+      const dx=points[p]!-old[0]!, dy=points[p+1]!-old[1]!, u=(dx*vy-dy*vx)/det, v=(dy*ux-dx*uy)/det;
+      mapped.push(next[0]! + u*(next[2]!-next[0]!) + v*(next[6]!-next[0]!), next[1]! + u*(next[3]!-next[1]!) + v*(next[7]!-next[1]!));
+    }
+    try { boxes[index] = checkedGroupGeometry(fromCorners(row,mapped)); }
+    catch (error) {
+      if (error instanceof Error && error.message.includes('skewed rectangle')) throw new Error(`Group sizing would shear rotated layer "${id(row)}". Use fixed sizing or align its rotation with the group.`);
+      throw error;
+    }
+    pending.push(...(children.get(id(row)) || []));
+  }
+}
+
 const sides = (r: Row, prefix: string) =>
   ['Top', 'Right', 'Bottom', 'Left'].map((k) => number(r[prefix + k]));
 const limit = (r: Row, k: string): number | null =>
@@ -454,14 +532,14 @@ export type LayoutMeasure = (
 
 function inheritVisibility(boxes: Row[], byId: Map<string, number>): void {
   for (const row of boxes) {
-    let o = owner(row);
+    let o = String(row.group && boxes[byId.get(String(row.group))!]?.kind === 'group' ? row.group : owner(row));
     while (o) {
       const ancestor = boxes[byId.get(o)!];
       if (on(ancestor?.hidden)) {
         row.hidden = true;
         break;
       }
-      o = owner(ancestor || {});
+      o = String(ancestor?.group && boxes[byId.get(String(ancestor.group))!]?.kind === 'group' ? ancestor.group : owner(ancestor || {}));
     }
   }
 }
@@ -494,13 +572,15 @@ export function createDesignLayoutEvaluator(solve: LayoutSolver, measure?: Layou
         solved: 0,
         grids: [],
       };
-    if (!hasDesignLayout(source))
+    const intrinsicGroups = source.filter(row => row?.kind === 'group' && (mode(row, 'W') === 'hug' || mode(row, 'H') === 'hug'));
+    if (!hasDesignLayout(source) && !intrinsicGroups.length)
       return { boxes: source as Row[], findings: [], passes: 0, solved: 0, grids: [] };
     const findings = validateDesignLayout(source, tracks);
     if (findings.length)
       return { boxes: source as Row[], findings, passes: 0, solved: 0, grids: [] };
     const boxes = source.map((r) => ({ ...r }));
     const byId = new Map(boxes.map((r, n) => [id(r), n]));
+    const owner = (r: Row): string => boxes[byId.get(String(r.group || ''))!]?.kind === 'group' ? String(r.group) : String(r.layoutOwner || r.frame || '');
     const children = new Map<string, number[]>();
     for (const [n, r] of boxes.entries()) {
       const o = owner(r);
@@ -525,7 +605,7 @@ export function createDesignLayoutEvaluator(solve: LayoutSolver, measure?: Layou
       return d;
     };
     containers.sort((a, b) => depth(b) - depth(a));
-    const participating = new Set(containers.map(id)),
+    const participating = new Set([...containers, ...intrinsicGroups].map(id)),
       pending = [...participating];
     for (let n = 0; n < pending.length; n++)
       for (const index of children.get(pending[n]!) || []) {
@@ -536,7 +616,7 @@ export function createDesignLayoutEvaluator(solve: LayoutSolver, measure?: Layou
         }
       }
     const ancestors = new Set<string>();
-    for (const container of containers) {
+    for (const container of [...containers, ...intrinsicGroups]) {
       let o = owner(container);
       while (o) {
         if (!participating.has(o)) ancestors.add(o);
@@ -552,7 +632,7 @@ export function createDesignLayoutEvaluator(solve: LayoutSolver, measure?: Layou
             .filter(
               (k) =>
                 k.startsWith('layout') ||
-                ['id', 'x', 'y', 'w', 'h', 'rot', 'frame', 'hidden', 'kind', 'textStory'].includes(
+                ['id', 'x', 'y', 'w', 'h', 'rot', 'frame', 'group', 'hidden', 'kind', 'textStory'].includes(
                   k
                 )
             )
@@ -587,6 +667,7 @@ export function createDesignLayoutEvaluator(solve: LayoutSolver, measure?: Layou
     let solved = 0,
       passes = 0,
       work = 0;
+    const visit = () => { if (++work > MAX_LAYOUT_REFLOW_WORK) throw new Error('Layout exceeds its aggregate reflow work budget.'); };
     const grids = new Map<string, LayoutGrid>();
     const active = new Set(containers.map(id));
     for (const k of memo.keys())
@@ -597,6 +678,10 @@ export function createDesignLayoutEvaluator(solve: LayoutSolver, measure?: Layou
     try {
       for (; passes < MAX_LAYOUT_PASSES; passes++) {
         const before = boxes.map((r) => [r.x, r.y, r.w, r.h, r.rot].join(','));
+        for (const group of intrinsicGroups) {
+          const n = byId.get(id(group))!;
+          boxes[n] = measureGroupBounds(boxes[n]!, boxes, children, visit);
+        }
         for (const c of containers) {
           const index = byId.get(id(c))!;
           const container = boxes[index]!;
@@ -633,6 +718,7 @@ export function createDesignLayoutEvaluator(solve: LayoutSolver, measure?: Layou
                 y: ny + (ss * w) / 2 + (cc * h) / 2 - h / 2,
               };
             }
+            if (row.kind === 'group') carryGroupGeometry(row, boxes[n]!, boxes, children, visit);
           }
           for (const n of members) {
             let r = boxes[n]!;
@@ -745,9 +831,11 @@ export function createDesignLayoutEvaluator(solve: LayoutSolver, measure?: Layou
           boxes[index] = next;
           for (const [i, n] of members.entries()) {
             const old = boxes[n]!;
-            const nextChild = fromCorners(old, result[i + 1]!);
+            const answerChild = fromCorners(old, result[i + 1]!);
+            const nextChild = old.kind === 'group' ? settleGroupGeometry(old, answerChild) : answerChild;
             boxes[n] = nextChild;
-            // Moving a frame or layout container carries descendants without scaling them.
+            if (old.kind === 'group') carryGroupGeometry(old, nextChild, boxes, children, visit);
+            // Frame and layout-container children retain their own sizing rules.
             if (
               (old.kind === 'frame' || hasDesignLayout([old])) &&
               (nextChild.x !== old.x || nextChild.y !== old.y)
@@ -774,7 +862,7 @@ export function createDesignLayoutEvaluator(solve: LayoutSolver, measure?: Layou
         );
       // Existing renderers receive artboard membership as a derived projection.
       for (const r of boxes)
-        if (r.layoutOwner) {
+        if (r.layoutOwner || boxes[byId.get(String(r.group))!]?.kind === 'group') {
           let o = owner(r);
           while (o) {
             const p = boxes[byId.get(o)!];
@@ -797,7 +885,7 @@ export function createDesignLayoutEvaluator(solve: LayoutSolver, measure?: Layou
               w: row.w,
               h: row.h,
               rot: row.rot,
-              ...(row.layoutOwner && 'frame' in row ? { frame: row.frame } : {}),
+              ...((row.layoutOwner || row.group) && 'frame' in row ? { frame: row.frame } : {}),
               ...(row.hidden !== source[byId.get(id(row))!]!.hidden ? { hidden: row.hidden } : {}),
             });
         if (projections.size >= MAX_LAYOUT_PROJECTIONS)
@@ -821,29 +909,36 @@ export function createDesignLayoutEvaluator(solve: LayoutSolver, measure?: Layou
 export function designLayoutSourceEdit(
   source: readonly Row[],
   evaluated: readonly Row[],
-  proposed: readonly Row[]
+  proposed: readonly Row[],
+  options: { groupSizeAxes?: ReadonlyMap<string, ReadonlySet<'W' | 'H'>> } = {}
 ): Row[] {
   const src = new Map(source.map((r) => [id(r), r])),
     prev = new Map(evaluated.map((r) => [id(r), r]));
+  const changedGroups = new Set(proposed.filter(row => src.get(id(row))?.kind === 'group' && prev.has(id(row)) && ['x','y','w','h','rot'].some(field => row[field] !== prev.get(id(row))![field])).map(id));
+  const hierarchy = changedGroups.size ? designHierarchyIndex(source) : null;
+  const groupIntents = new Set([...changedGroups].filter(group => !hierarchy || !designHierarchyAncestors(hierarchy,group).some(ancestor => changedGroups.has(ancestor))));
+  const materialized = hierarchy ? designHierarchyDescendants(hierarchy,groupIntents) : new Set<string>();
   return proposed.map((r) => {
     const old = src.get(id(r)),
       shown = prev.get(id(r));
     if (!old || !shown) return r;
     const next = { ...r };
     for (const k of ['x', 'y', 'w', 'h', 'rot', 'frame', 'hidden'])
-      if (r[k] === shown[k]) {
+      if (r[k] === shown[k] && (!materialized.has(id(r)) || k === 'frame' || k === 'hidden')) {
         if (k in old) next[k] = old[k];
         else delete next[k];
       }
     if (
-      old.layoutOwner ||
+      (!materialized.has(id(r)) || groupIntents.has(id(r))) && (old.layoutOwner ||
+      old.kind === 'group' ||
       old.layout === 'flex' ||
       old.layout === 'grid' ||
       src.get(owner(old))?.layout === 'flex' ||
-      src.get(owner(old))?.layout === 'grid'
+      src.get(owner(old))?.layout === 'grid')
     ) {
-      if (r.w !== shown.w) next.layoutW = 'fixed';
-      if (r.h !== shown.h) next.layoutH = 'fixed';
+      const requested = old.kind === 'group' ? options.groupSizeAxes?.get(id(r)) : undefined;
+      if (r.w !== shown.w && (!requested || requested.has('W'))) next.layoutW = 'fixed';
+      if (r.h !== shown.h && (!requested || requested.has('H'))) next.layoutH = 'fixed';
     }
     return next;
   });
@@ -854,23 +949,11 @@ export function designLayoutDescendants(
   rows: readonly Row[],
   selected: ReadonlySet<string>
 ): Set<string> {
-  const result = new Set(selected),
-    children = new Map<string, string[]>();
-  for (const row of rows) {
-    const o = owner(row);
-    if (o) {
-      const list = children.get(o) || [];
-      list.push(id(row));
-      children.set(o, list);
-    }
-  }
-  const pending = [...result];
+  const result = new Set(selected), pending = [...result];
+  const index = designHierarchyIndex(rows);
   for (let n = 0; n < pending.length; n++)
-    for (const child of children.get(pending[n]!) || [])
-      if (!result.has(child)) {
-        result.add(child);
-        pending.push(child);
-      }
+    for (const child of index.children.get(pending[n]!) || [])
+      if (!result.has(child)) { result.add(child); pending.push(child); }
   return result;
 }
 export function remapDesignLayout(

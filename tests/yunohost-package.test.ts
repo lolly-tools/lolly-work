@@ -214,9 +214,10 @@ test('manifest: the two release pins are self-consistent', () => {
   const pins = readPins(manifest);
   assert.match(pins.version, /^\d+\.\d+\.\d+$/);
   assert.equal(pins.version, (JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as { version: string }).version, 'the manifest tracks package.json');
-  assert.equal(pins.main.url, `${RELEASE_HOST}/${tarballName(pins.version)}`);
+  assert.ok([tarballName(pins.version), tarballName(pins.version, pins.ynhRev)]
+    .some(name => pins.main.url === `${RELEASE_HOST}/${name}`), 'the archive URL matches its exact version and optional packaging revision');
   assert.match(pins.main.sha256, /^[0-9a-f]{64}$/);
-  assert.match(pins.shell.url, new RegExp(`^${RELEASE_HOST}/lolly-web-\\d+\\.\\d+\\.\\d+\\.tar\\.gz$`));
+  assert.match(pins.shell.url, new RegExp(`^${RELEASE_HOST}/lolly-web-\\d+\\.\\d+\\.\\d+(?:-ynh[1-9]\\d*)?\\.tar\\.gz$`));
   assert.match(pins.shell.sha256, /^[0-9a-f]{64}$/);
   const pinned = pinManifest(manifest, { version: '9.9.9', ynhRev: 2, main: { url: `${RELEASE_HOST}/${tarballName('9.9.9')}`, sha256: 'ab'.repeat(32) }, shell: { url: `${RELEASE_HOST}/lolly-web-8.8.8.tar.gz`, sha256: 'cd'.repeat(32) } });
   const back = readPins(pinned);

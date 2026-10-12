@@ -6,6 +6,23 @@ minors, never removed or signature-changed without a major bump.
 
 Moved verbatim from the comment block that used to live in `src/index.ts`.
 
+## 1.257.0
+
+- Design 1.50 supports group fill sizing through the modern Penpot solver and intrinsic bounds for group Hug sizing. Descendant transforms remain derived geometry; a resize that would require skew is refused atomically.
+- Group opacity and blend modes remain editable through nested compositing, including Penpot imports and exports. SVG retains group scopes; PDF pages with collective group effects use a faithful raster fallback and refuse when that fallback is disabled.
+- Saved group effects and non-fixed group sizing require `.lolly` reader 8. Ordinary groups, named pages and legacy flat documents retain their prior reader gates.
+
+## 1.256.0
+
+- Shared comparison accepts raw YAML snapshots and parses one bounded YAML 1.2 data document before using the existing structure comparator. Mapping keys match by name; arrays retain their selected ordering rule. Comments and formatting remain available through Text comparison.
+- Guarded parsing refuses tags, directives, anchors, aliases, merge keys, duplicate or non-string mapping keys, unsafe numbers and unsupported or over-budget content. Refusals remain incomplete and cannot establish equality. Sources stay unchanged; reports keep their private default.
+
+## 1.255.0
+
+- Add local runtime view state to hook contexts. `setViewState` refreshes computed rendering while preserving canonical inputs; saved values, undo history and collaboration records keep the complete document.
+- Add bounded Design hierarchy indexing, validation, legacy group migration and reparenting. Design 1.49 adds named pages and stable nested group nodes, shared by the canvas, navigator and native Penpot import/export. Group descendants retain document coordinates. Only the active editor page is painted; detached exports render all pages.
+- Layout groups participate as one fixed-size flow item. Unsupported group compositing imports as a vector asset when the existing serializer can preserve appearance; other unsupported composite groups are refused with a visible explanation.
+
 ## 1.254.0
 
 - Shared immutable comparison adds tables and extracted document units through the existing Compare API. Unique sheet and column labels align by name; row keys are explicitly selected, while missing, blank or duplicate keys retain positional comparison with an explanation.

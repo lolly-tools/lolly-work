@@ -160,8 +160,8 @@ Things to know before you install:
   `ghcr.io/lolly-tools/lolly-work-server` and `...-render-worker` on every `v*` release, but
   the packages are private today, so a stock install gets `ImagePullBackOff`. Add an
   `imagePullSecrets` entry for GHCR, or build your own and point the chart at it (the better
-  air-gap posture): `docker build -f deploy/compose/Dockerfile -t <registry>/lolly-work-server:0.2.0 .`,
-  push, then `--set image.repository=<registry>/lolly-work-server --set image.tag=0.2.0`.
+  air-gap posture): `docker build -f deploy/compose/Dockerfile -t <registry>/lolly-work-server:1.1.0 .`,
+  push, then `--set image.repository=<registry>/lolly-work-server --set image.tag=1.1.0`.
 - **`instance.baseUrl` must match the URL the deploy answers on.** It drives OIDC redirect
   URIs and the `Secure` cookie flag.
 - **Secrets are never auto-generated.** Every replica must sign and verify with the *same*
