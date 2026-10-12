@@ -23,6 +23,8 @@ sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location('public_overlay_boundary', Path(__file__).with_name('public-delivery-overlay.py'))
 overlay = importlib.util.module_from_spec(spec); spec.loader.exec_module(overlay)
 need, Refusal = overlay.need, overlay.Refusal
+spec = importlib.util.spec_from_file_location('public_build_contract', Path(__file__).with_name('prepare-public-shell.py'))
+build_contract = importlib.util.module_from_spec(spec); spec.loader.exec_module(build_contract)
 
 
 def raw(value):
@@ -138,9 +140,80 @@ def node_command(node, program, value, timeout=300):
     return parsed(result.stdout), result
 
 
-def assemble(candidate_root, previous_root, candidate, previous, models, output, compiler, node, mode='matched'):
+def candidate_build(binding, physical_bytes=True):
+    """Keep the maintained build descriptor, never infer its source from CI."""
+    exact(binding, {'root', 'manifest', 'originalCustody'})
+    descriptor = parsed(read_ref(binding['originalCustody']))
+    exact(descriptor, build_contract.PRODUCER_KEYS)
+    need(descriptor['version'] == 1 and descriptor['status'] == 'LOCAL_PUBLIC_SHELL_UPDATE_PREPARED_UNQUALIFIED'
+        and descriptor['artifactClass'] == 'public-shell-overlay' and descriptor['profile'] == 'lolly-start'
+        and type(descriptor['lollySource']) is str and re.fullmatch('[a-f0-9]{40}', descriptor['lollySource'])
+        and all(descriptor[key] is False for key in ['originAuthenticatedByThisCommand', 'normalCIQualified', 'runtimeQualified', 'promotionAttempted']),
+        'Original maintained public build descriptor required; no handwritten source stamp')
+    need(descriptor['candidate'] == {'root': binding['root'], 'manifest': binding['manifest']}, 'Original candidate root/manifest custody differs')
+    manifest = parsed(read_ref(binding['manifest']))
+    if physical_bytes: physical(binding['root'], manifest)
+    refs = descriptor['producerSourceFiles']; need(type(refs) is list and len(refs) == len(build_contract.PRODUCER_SOURCES), 'Complete original public builder source closure required')
+    sources = {}
+    for ref in refs:
+        read_ref(ref); path = Path(ref['path'])
+        need(path.name in build_contract.PRODUCER_SOURCES and path.name not in sources
+            and checksum(Path(__file__).with_name(path.name)) == ref['sha256'], 'Original builder differs from reviewed maintained helper bytes')
+        sources[path.name] = ref
+    need(sources.get('prepare-public-shell-update.ts') == descriptor['producer'], 'Original public producer is outside its source closure')
+    report = parsed(read_ref(descriptor['originalReport'])); command = report.get('command')
+    need(report.get('exitCode') == 0 and report.get('signal') is None and report.get('error') is None
+        and type(command) is list and len(command) == 4 and command[1] == sources['shell-update-vite.mjs']['path'], 'Original successful maintained Vite command required')
+    runner = parsed(read_ref({'path': command[2], 'sha256': command[3]}))
+    exact(runner, {'source', 'sourceCommit', 'output', 'prerequisites', 'moduleReceipt'})
+    need(runner['sourceCommit'] == descriptor['lollySource'] and runner['output'] == binding['root']
+        and runner['moduleReceipt'] == descriptor['workspaceModules']['path'], 'Original Vite source/output/module custody differs')
+    modules = parsed(read_ref(descriptor['workspaceModules']))
+    need(modules.get('version') == 1 and modules.get('source') == runner['source'] and modules.get('guardIncludesWorkerGraph') is True
+        and modules.get('normalCIQualified') is False and modules.get('productionAuthority') is False, 'Original source-bound workspace graph required')
+    shared = build_contract.cohort
+    checkout = shared.local_path(runner['source'], Path.cwd())
+    git = build_contract.shared.git_command
+    need(checkout.is_dir() and Path(git(['git', 'rev-parse', '--show-toplevel'], checkout)) == checkout
+        and git(['git', 'rev-parse', 'HEAD'], checkout) == descriptor['lollySource']
+        and git(['git', 'cat-file', '-t', descriptor['lollySource']], checkout) == 'commit'
+        and git(['git', 'status', '--porcelain'], checkout) == '', 'Original Vite checkout is dirty or differs from its declared source/root')
+    common = Path(os.path.abspath(checkout / git(['git', 'rev-parse', '--git-common-dir'], checkout)))
+    need(common.resolve(strict=True) == common and not (common / 'info/grafts').exists() and not (common / 'info/grafts').is_symlink(), 'Local Git metadata aliases or ancestry grafts refuse source custody')
+    compiled = modules.get('modules'); need(type(compiled) is list and 1 <= len(compiled) <= 5000, 'Complete bounded compiled workspace graph required')
+    seen = set()
+    for row in compiled:
+        exact(row, {'path', 'bytes', 'sha256'}); path = shared.local_path(row['path'], Path.cwd())
+        need(path.is_relative_to(checkout) and str(path) not in seen and type(row['bytes']) is int and row['bytes'] >= 0
+            and path.relative_to(checkout).as_posix().startswith(('engine/', 'packages/core/', 'packages/node-shell/', 'packages/rondo/', 'packages/audio-dock/')),
+            'Duplicate or escaped compiled workspace module')
+        data = shared.git_bytes(checkout, descriptor['lollySource'], path.relative_to(checkout).as_posix(), git)
+        need(len(data) == row['bytes'] and hashlib.sha256(data).hexdigest() == shared.sha(row['sha256']), 'Compiled workspace bytes differ from immutable candidate Git')
+        seen.add(str(path))
+    ci = parsed(read_ref(descriptor['ci']))
+    need(ci.get('head_sha') == descriptor['lollySource'] and ci.get('head_branch') == 'main'
+        and ci.get('status') == 'completed' and ci.get('conclusion') == 'success', 'Original candidate CI run differs from its source')
+    for key in ['classification', 'imageClassification', 'custody', 'previousAcceptance', 'ci', 'publicKey', 'retention', 'webGate']:
+        read_ref(descriptor[key])
+    catalog = descriptor['catalog']; exact(catalog, {'previous', 'candidate', 'signatureReused', 'newSigning'})
+    need(catalog['signatureReused'] is True and catalog['newSigning'] is False, 'Original unchanged signed catalog custody required')
+    for key in ['previous', 'candidate']: read_ref(catalog[key])
+    return {**binding, 'source': descriptor['lollySource'], 'profile': descriptor['profile']}
+
+
+def verify_candidate_build(value, physical_bytes=True):
+    exact(value, {'root', 'manifest', 'originalCustody', 'source', 'profile'})
+    binding = {key: value[key] for key in ['root', 'manifest', 'originalCustody']}
+    need(candidate_build(binding, physical_bytes) == value, 'Candidate build provenance changed since assembly')
+    return value
+
+
+def assemble(candidate_root, previous_root, candidate, previous, models, output, compiler, node, mode='matched', candidate_custody=None):
     need(mode in {'matched', 'frontend'}, 'Explicit full-cohort or application-only assembly required')
     current = physical(candidate_root, candidate); old = physical(previous_root, previous)
+    build = candidate_build(candidate_custody) if candidate_custody is not None else None
+    if build is not None:
+        need(build['root'] == candidate_root and parsed(read_ref(build['manifest'])) == candidate, 'Assembly candidate differs from original build custody')
     merged, retained = union(current, old)
     output = Path(output)
     need(output.is_absolute() and output.resolve() == output and not output.exists()
@@ -168,11 +241,13 @@ def assemble(candidate_root, previous_root, candidate, previous, models, output,
         changes = {path: row for path, row in merged.items() if old.get(path) != row}
         boundary = overlay.plan(previous, result, result, tree(changes), sorted(set(old) - set(merged)))
     need(physical(candidate_root, candidate) == current and physical(previous_root, previous) == old, 'Original release changed during assembly')
+    if build is not None: verify_candidate_build(build)
     manifest_ref = write_new(output / 'static.manifest.actual.json', raw(result) + b'\n')
     stdout = write_new(output / 'map-and-coding.stdout.original', process.stdout)
     stderr = write_new(output / 'map-and-coding.stderr.original', process.stderr)
     report = {'version': 2, 'protocol': 'PUBLIC_FULL_ROOT_DELIVERY_OVERLAY', 'status': 'LOCAL_PHYSICAL_ASSEMBLY_NOT_RUNTIME_ACCEPTANCE',
         'root': str(site), 'manifest': manifest_ref, 'mode': mode, 'frontendBoundary': boundary,
+        'candidateBuild': build,
         'retained': retained, 'files': len(merged), 'bytes': result['totalBytes'],
         'map': merged[overlay.MAP], 'decodedCodings': value['decodedCodings'], 'originalSignedBytesChanged': False,
         'mapCommand': {'exitCode': process.returncode, 'stdout': stdout, 'stderr': stderr},
@@ -193,7 +268,7 @@ def main():
         for field in ['candidate', 'previous']:
             exact(value[field], {'root', 'manifest', 'originalCustody'})
             read_ref(value[field]['originalCustody']); read_ref(value[field]['manifest'])
-        need(parsed(read_ref(value['candidate']['originalCustody'])).get('profile') == 'lolly-start', 'Public-profile artifact descriptor required; qualification remains external')
+        candidate_build(value['candidate'])
         compiler = Path(value['compiler']['path']); read_ref(value['compiler'])
         need(compiler == Path(__file__).with_name('public-delivery-map.mjs'), 'Reviewed adjacent map/coding helper required')
         read_ref(value['boundary']); need(Path(value['boundary']['path']) == Path(__file__).with_name('public-delivery-overlay.py'), 'Reviewed boundary source required')
@@ -201,7 +276,7 @@ def main():
         model_inventory = parsed(read_ref(value['models']))
         exact(model_inventory, {'version', 'files'}); need(model_inventory['version'] == 1, 'Reviewed model union schema required')
         result = assemble(value['candidate']['root'], value['previous']['root'], parsed(read_ref(value['candidate']['manifest'])),
-            parsed(read_ref(value['previous']['manifest'])), model_inventory['files'], value['outputDirectory'], compiler, value['node'], value['mode'])
+            parsed(read_ref(value['previous']['manifest'])), model_inventory['files'], value['outputDirectory'], compiler, value['node'], value['mode'], value['candidate'])
         print(raw({'assembly': result, 'runtimeQualified': False, 'productionMutation': False}).decode())
         return 0
     except Exception as error:

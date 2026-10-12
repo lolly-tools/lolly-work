@@ -123,6 +123,12 @@ Complete-root assembly and patch derivation are local preparation. A site's
 stager, native qualifier and publisher must bind that protocol and provide real
 resource, memory, HTTP, retirement and TLS acceptance before promotion. These
 helpers do not make the older public facade operational on a map-bearing image.
+The [complete-root runtime adapter](../deploy/helm/PUBLIC-DELIVERY-RUNTIME.md)
+provides explicit prepare, isolated stage, qualified switch and observation
+commands for its declared managed K3s layout. Its source controls do not replace
+registration and actual native acceptance on the operator's target. The image,
+configuration, models and infrastructure remain selected unchanged; only the
+new qualified frontend root and its paired map advance.
 For the current `lolly.tools` layout, follow its protected production handoff.
 
 The following five-path commands remain for an accepted legacy image without

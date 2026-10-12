@@ -36,9 +36,16 @@ node:     {path, sha256}  # actual reviewed executable
 outputDirectory: /exclusive/new/local/output
 ```
 
-The artifact descriptor is preserved, not treated as CI qualification. The
-maintained source/release gates must independently verify it before staging or
-publication. The original model union array may be wrapped in a new reviewed
+The candidate descriptor must be the original maintained
+`public-shell-update.prepared.json`, with its exact source, public profile,
+candidate root/manifest, successful Vite command/input and complete builder
+source references. The assembler holds and revalidates those originals and
+retains them in `assembly.actual.json` as `candidateBuild`. The lifecycle binder
+then requires the build source/profile to match qualified CI and independently
+reconstructs the assembled candidate/retained byte union. A passing unrelated
+commit cannot relabel old bytes. Other descriptor formats require an explicit
+reviewed producer adapter. Build custody is not CI or runtime acceptance.
+The original model union array may be wrapped in a new reviewed
 `{version:1,files}` record while preserving its original reference and hash.
 Do not rewrite the original union or its source receipts.
 

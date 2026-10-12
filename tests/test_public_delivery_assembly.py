@@ -143,6 +143,30 @@ class Assembly(unittest.TestCase):
             a.assemble(str(self.new), str(self.old), self.candidate, self.previous, [], self.base / 'assembled',
                        SCRIPTS / 'public-delivery-map.mjs', self.node, mode='frontend')
 
+    def test_cli_retains_exact_original_build_custody_and_refuses_profile_only_stamp(self):
+        spec = importlib.util.spec_from_file_location('assembly_source_fixture', Path(__file__).with_name('test_public_delivery_lifecycle.py'))
+        fixtures = importlib.util.module_from_spec(spec); spec.loader.exec_module(fixtures)
+        fixture = fixtures.Lifecycle(); fixture.setUp()
+        try:
+            reference = lambda path: {'path': str(path), 'sha256': a.checksum(path)}
+            value = {'version': 2, 'mode': 'frontend', 'candidate': fixture.candidate_build,
+                'previous': {'root': str(fixture.base / 'old'), 'manifest': fixture.put(fixture.previous), 'originalCustody': fixture.put({'scope': 'synthetic previous fixture'})},
+                'models': fixture.models, 'compiler': reference(SCRIPTS / 'public-delivery-map.mjs'), 'boundary': reference(SCRIPTS / 'public-delivery-overlay.py'),
+                'node': self.node, 'outputDirectory': str(fixture.base / 'actual-cli-assembly')}
+            request = fixture.put(value)
+            result = subprocess.run([os.environ.get('PYTHON', os.sys.executable), '-B', str(SCRIPTS / 'assemble-public-delivery.py'),
+                '--input', request['path'], '--input-sha256', request['sha256'], '--operator-sha256', a.checksum(SCRIPTS / 'assemble-public-delivery.py')], capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr.decode())
+            ref = json.loads(result.stdout)['assembly']; report = json.loads(Path(ref['path']).read_bytes())
+            self.assertEqual(report['candidateBuild']['originalCustody'], fixture.candidate_build['originalCustody'])
+            self.assertEqual(report['candidateBuild']['manifest'], fixture.candidate_build['manifest']); self.assertEqual(report['candidateBuild']['source'], fixture.source)
+            value['candidate'] = {**value['candidate'], 'originalCustody': fixture.put({'profile': 'lolly-start'})}; value['outputDirectory'] = str(fixture.base / 'refused-cli-assembly')
+            request = fixture.put(value)
+            refused = subprocess.run([os.sys.executable, '-B', str(SCRIPTS / 'assemble-public-delivery.py'), '--input', request['path'], '--input-sha256', request['sha256'],
+                '--operator-sha256', a.checksum(SCRIPTS / 'assemble-public-delivery.py')], capture_output=True)
+            self.assertNotEqual(refused.returncode, 0); self.assertFalse(Path(value['outputDirectory']).exists())
+        finally: fixture.tearDown()
+
 
 class Placement(unittest.TestCase):
     def bootstrap(self):
