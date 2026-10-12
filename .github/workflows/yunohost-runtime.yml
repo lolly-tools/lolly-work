@@ -1,0 +1,136 @@
+# SPDX-License-Identifier: MPL-2.0
+name: YunoHost installation qualification
+
+# Run only after both immutable source archives are published and the package
+# mirror has their generated checksums. This never contacts a Lolly instance.
+on:
+  workflow_dispatch:
+    inputs:
+      package_commit:
+        description: Full reviewed commit in lolly-tools/lolly-work_ynh
+        required: true
+        type: string
+      package_version:
+        description: Exact package version, for example 1.1.0~ynh3
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: yunohost-installation-qualification
+  cancel-in-progress: false
+
+jobs:
+  installation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      PACKAGE_COMMIT: ${{ inputs.package_commit }}
+      PACKAGE_VERSION: ${{ inputs.package_version }}
+      YNHDEV_BACKEND: incus
+      ARCH: amd64
+      DIST: bookworm
+      YNH_BRANCH: stable
+    steps:
+      - name: Validate immutable package selection
+        run: |
+          [[ "$PACKAGE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$PACKAGE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+~ynh[0-9]+$ ]]
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: lolly-tools/lolly-work_ynh
+          ref: ${{ inputs.package_commit }}
+          path: .qualification/package
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: YunoHost/package_check
+          ref: f7d32cadac3cfced282decede024707fba9e6ec6
+          path: .qualification/package_check
+          persist-credentials: false
+      - name: Verify the package manifest
+        run: |
+          test "$(git -C .qualification/package rev-parse HEAD)" = "$PACKAGE_COMMIT"
+          python3 - <<'PY'
+          import os, pathlib, tomllib
+          manifest = tomllib.loads(pathlib.Path('.qualification/package/manifest.toml').read_text())
+          if manifest['id'] != 'lolly-work' or manifest['version'] != os.environ['PACKAGE_VERSION']:
+              raise SystemExit('The selected package identity/version differs')
+          PY
+      - name: Prepare disposable Incus runner
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y incus btrfs-progs lynx jq python3-pip python3-toml \
+            python3-pycurl python3-bs4 python3-lxml python3-imgkit python3-jsonschema \
+            python3-packaging python3-pyparsing python3-six
+          # Docker's forwarding policy conflicts with the official Incus checker.
+          # This is an ephemeral hosted runner, never a production host.
+          sudo systemctl stop docker.service docker.socket
+          sudo iptables -P FORWARD ACCEPT
+          sudo modprobe btrfs
+          sudo usermod -aG incus-admin "$USER"
+          sudo incus admin init --auto --storage-backend=btrfs --storage-create-loop=20
+          mkdir -p .qualification/results
+          cat > .qualification/run-package-check.sh <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/.qualification/package_check"
+          # The detached checker remains at the reviewed commit. Its official
+          # linter updater records the actual linter revision in the result set.
+          test "$(git rev-parse HEAD)" = f7d32cadac3cfced282decede024707fba9e6ec6
+          ./package_check.sh "$GITHUB_WORKSPACE/.qualification/package"
+          SH
+      - name: Run official install, upgrade, multiple-instance and recovery checks
+        run: sg incus-admin -c 'bash "$GITHUB_WORKSPACE/.qualification/run-package-check.sh"'
+      - name: Require actual successful installation and recovery results
+        run: |
+          # package_check itself can exit zero even when an app test fails.
+          python3 - <<'PY'
+          import json, os, pathlib
+          result = json.loads(pathlib.Path('.qualification/package_check/results_0.json').read_text())
+          if result['app'] != 'lolly-work' or result['architecture'] != 'amd64':
+              raise SystemExit('Results identify a different app or architecture')
+          if result['commit'] != os.environ['PACKAGE_COMMIT'] or result['app_version'] != os.environ['PACKAGE_VERSION']:
+              raise SystemExit('Results do not identify the selected package')
+          tests = result['tests']
+          required = {('TEST_PACKAGE_LINTER', ''), ('TEST_INSTALL', 'root'),
+                      ('TEST_INSTALL', 'multi'), ('TEST_UPGRADE', ''),
+                      ('TEST_BACKUP_RESTORE', ''), ('TEST_CHANGE_URL', '')}
+          observed = {(test['test_type'], test['test_arg']) for test in tests if test['test_serie'] == 'default'}
+          if not required.issubset(observed):
+              raise SystemExit('Required install, upgrade, recovery or URL-change evidence is missing')
+          if any(test['main_result'] != 'success' for test in tests):
+              raise SystemExit('An official package test failed')
+          # Levels 1-5 cover install, upgrade, recovery and security/lint errors.
+          # Level 6 requires ownership by YunoHost-Apps; our mirror is upstream.
+          if any(result['level_results'].get(str(level)) is not True for level in range(1, 6)):
+              raise SystemExit('Official installation/recovery/security checks did not pass')
+          if any('<style=danger>' in note for test in tests for note in test.get('test_notes', [])):
+              raise SystemExit('Official checks reported an unsafe runtime condition')
+          print('The exact package passed the official YunoHost installation and recovery checks.')
+          PY
+      - name: Preserve checker versions and original logs
+        if: always()
+        run: |
+          mkdir -p .qualification/results
+          git -C .qualification/package rev-parse HEAD > .qualification/results/package-commit.txt
+          git -C .qualification/package_check rev-parse HEAD > .qualification/results/checker-commit.txt
+          if test -d .qualification/package_check/package_linter/.git; then
+            git -C .qualification/package_check/package_linter rev-parse HEAD > .qualification/results/linter-commit.txt
+          fi
+          cp .qualification/package/manifest.toml .qualification/results/manifest.toml
+          for report in results_0.json full_log_0.log summary_0.png; do
+            if test -f ".qualification/package_check/$report"; then
+              cp ".qualification/package_check/$report" .qualification/results/
+            fi
+          done
+          sudo incus list --format=json > .qualification/results/incus-final.json || true
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        with:
+          name: yunohost-installation-${{ github.run_id }}
+          path: .qualification/results/
+          if-no-files-found: error
+          retention-days: 14
