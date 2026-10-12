@@ -41,6 +41,27 @@ async function until(predicate: () => Promise<boolean>, ms = 5000): Promise<void
   assert.fail('Image lifecycle predicate did not settle');
 }
 
+/** Failure-only fixed-route metadata; no headers, credentials or free-form response text. */
+async function startupReadinessDiagnostic(base: string) {
+  let status = 0;
+  try {
+    const response = await fetch(`${base}/readyz`, { redirect: 'error', signal: AbortSignal.timeout(1000) });
+    status = response.status;
+    const reader = response.body?.getReader(), chunks: Uint8Array[] = [];
+    let bytes = 0;
+    if (!reader) return { status, body: 'unavailable' };
+    while (true) {
+      const part = await reader.read(); if (part.done) break;
+      bytes += part.value.byteLength;
+      if (bytes > 1024) { await reader.cancel(); return { status, body: 'oversized' }; }
+      chunks.push(part.value);
+    }
+    const value = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown> | null;
+    return { status, ok: typeof value?.ok === 'boolean' ? value.ok : 'unknown',
+      store: value?.store === 'memory' || value?.store === 'postgres' ? value.store : 'unknown' };
+  } catch { return { status, body: 'unavailable' }; }
+}
+
 test('built worker uses its actual browser for signed 1.259 QR SVG/PNG, tickets, cancellation and egress', { skip, timeout: 90_000 }, async t => {
   assert.equal(process.getuid?.(), 1000);
   assert.equal(process.versions.node, '24.21.0');
@@ -120,7 +141,12 @@ test('built worker uses its actual browser for signed 1.259 QR SVG/PNG, tickets,
     if (!cancellationHold.intercept(req, res, () => { void app(req, res); })) void app(req, res);
   });
   // Readiness includes the immutable publication proof; startup is not a render job.
-  await until(async () => (await fetch(`${base}/readyz`)).status === 200, 30_000);
+  try {
+    await until(async () => (await fetch(`${base}/readyz`)).status === 200, 30_000);
+  } catch (error) {
+    console.log(JSON.stringify({ status: 'WORKER_CONTROL_PLANE_STARTUP_REFUSED', ready: await startupReadinessDiagnostic(base) }));
+    throw error;
+  }
   console.log(JSON.stringify({ status: 'WORKER_CONTROL_PLANE_STARTUP_VERIFIED', elapsedMs: performance.now() - startupAt }));
   trap = createServer((_req, res) => { trapHits++; res.end('refused probe reached a private address'); });
   trap.on('upgrade', (_req, socket) => { websocketHits++; socket.destroy(); });

@@ -12,8 +12,8 @@ publishing the version tag.
 | Lolly desktop product | 1.1.0, from the Tauri product configuration |
 | Work application | 1.1.0 |
 | Work Helm chart | 0.3.0; appVersion 1.1.0 |
-| Lolly source | 3d19c182b7fd25c1089c72ed308864aa835add3c |
-| Work preparation base | e0c4abc34e12453e561ac02a8d8108ea73b35e6c |
+| Lolly source | 0359d8106bccbd1da56b5552605199f0bf705472 |
+| Work preparation base | 374e8903b3b4e8a0ffebaa378810c94267fc6a20 |
 | Engine | 1.259.0 |
 | Tool-author core | 1.2.0 |
 
