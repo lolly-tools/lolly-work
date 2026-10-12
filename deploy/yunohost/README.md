@@ -2,8 +2,10 @@
 
 [YunoHost](https://yunohost.org) package for Lolly Work: a governed Lolly instance for a team, signed in with the host's own accounts. See [`doc/DESCRIPTION.md`](doc/DESCRIPTION.md) for what it is and [`doc/ADMIN.md`](doc/ADMIN.md) for how it is wired.
 
+For a fresh `1.1.0~ynh3` beta installation, use the exact reviewed package:
+
 ```bash
-sudo yunohost app install https://github.com/lolly-tools/lolly-work_ynh
+sudo yunohost app install https://github.com/lolly-tools/lolly-work_ynh/tree/583cdc4af5322e683991a548428859b79084db2d
 ```
 
 This directory is developed inside the Lolly Work repository at `deploy/yunohost/`, beside the Compose and Helm shapes, and mirrored to `lolly-tools/lolly-work_ynh` at release time. Fix things here, not in the mirror.
@@ -12,24 +14,30 @@ The deployment qualification workflow runs a pinned official package linter. It
 blocks package/schema/script errors and reports catalog registration and working
 status separately, since those belong to publishing the mirror. Repository
 contracts also exercise SSO/LDAP role mapping and rendered configuration. A real
-Linux `package_check` install/upgrade/backup/restore run is still required before
-qualifying a release; see the [cloud deployment guide](../../docs/cloud-deployment.md#yunohost-qualification).
+Linux `package_check` run establishes installation/upgrade/backup/restore results;
+see the [cloud deployment guide](../../docs/cloud-deployment.md#yunohost-qualification).
 
-The `1.1.0~ynh3` package is a test candidate. Its server is the matched Work
+The `1.1.0~ynh3` package is a beta test candidate. Its server is the matched Work
 `464ac88d4498b00985dfbcdb47dd96655425f426` source, with Lolly
 `0359d8106bccbd1da56b5552605199f0bf705472` and engine `1.259`. The neutral,
 signed web shell loads models from `https://lolli.li`. Source CI and archive
-checks have passed; a successful installation, upgrade and backup/restore on
-YunoHost has not yet been established. Treat it as beta until the exact mirrored
-package passes the runtime workflow below. That workflow tests `amd64` on Debian
-Bookworm; `arm64` needs separate runtime qualification.
+checks passed. The actual [runtime run](https://github.com/lolly-tools/lolly-work/actions/runs/38284099878)
+passed six checks on `amd64` Debian Bookworm with YunoHost 12.1.41.2: root
+installation and reinstall, multiple instances, backup/restore, same-version
+upgrade, URL change and package lint.
+
+The seventh check failed while setting up the historical `0.2.0~ynh1` package,
+before the application upgrade began. Upgrade from 0.2 and `arm64` installation
+remain unqualified. This is a fresh-install beta, with no stable YunoHost tag or
+catalog promotion. Keep a verified backup and complete a restore test before
+upgrading an existing instance.
 
 ## Shape
 
 - **One service, one database.** Node 24 (YunoHost's `nodejs` resource) runs `server/src/main.ts` behind the domain's nginx; PostgreSQL from the `database` resource; migrations at boot.
 - **Two sources.** `main` is this repository at the release tag (no `node_modules`; the install runs `pnpm install --frozen-lockfile --prod`). `shell` is the Lolly web app build the open-source `lolly` YunoHost package installs, served at `/` and seeded as the instance pack.
 - **YunoHost SSO, no passwords.** `proxyAuth` in the server (docs/identity.md, "Reverse-proxy sign-in"): SSOwat's `YNH_USER` / `YNH_USER_EMAIL` / `YNH_USER_FULLNAME` headers plus a shared secret nginx injects, and an anonymous read of the host's LDAP for groups and this app's role permissions.
-- **Whole domain**, `multi_instance`, `amd64` + `arm64`.
+- **Whole domain**, `multi_instance`; declared architectures `amd64` + `arm64`, with beta runtime checks completed on `amd64` only.
 
 ## Cutting a release
 
@@ -83,7 +91,7 @@ gh workflow run yunohost-runtime.yml --repo lolly-tools/lolly-work --ref main \
 The workflow uses a fresh Ubuntu runner and the official Incus package checker.
 It requires successful root and multiple-instance installation, upgrade,
 backup/restore and URL-change results for the selected package. `tests.toml`
-also covers upgrading from mirror commit
+also attempts upgrading from mirror commit
 `db60f651fbeb561e4b330a1dd44bd4aaf463e635` (`0.2.0~ynh1`). Its original logs and
 checker revisions are uploaded even on failure; preserve those results when
 reporting candidate status.
