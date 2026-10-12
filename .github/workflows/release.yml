@@ -8,6 +8,16 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: Existing version tag to package, for example v1.1.0
+        required: true
+        type: string
+      expected_source_sha:
+        description: Full reviewed commit the existing tag must resolve to
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -17,17 +27,93 @@ permissions:
   id-token: write
 
 jobs:
+  release-source:
+    name: Verify immutable release source
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      source: ${{ steps.resolve.outputs.source }}
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - name: Validate release selectors
+        env:
+          RELEASE_TAG: ${{ inputs.version_tag || github.ref_name }}
+          EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha || github.sha }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          if not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?', os.environ['RELEASE_TAG']):
+              raise SystemExit('An existing version tag is required')
+          if not re.fullmatch('[a-f0-9]{40}', os.environ['EXPECTED_SOURCE_SHA']):
+              raise SystemExit('A full reviewed release source SHA is required')
+          PY
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.expected_source_sha || github.sha }}
+          persist-credentials: false
+      - name: Resolve tag and verify checked-out package
+        id: resolve
+        env:
+          RELEASE_TAG: ${{ inputs.version_tag || github.ref_name }}
+          EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha || github.sha }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, re, subprocess
+          tag = os.environ['RELEASE_TAG']
+          expected = os.environ['EXPECTED_SOURCE_SHA']
+          actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          remote = subprocess.check_output(['git', 'ls-remote', '--exit-code', 'origin', 'refs/tags/' + tag, 'refs/tags/' + tag + '^{}'], text=True, timeout=60)
+          refs = {}
+          for line in remote.splitlines():
+              fields = line.split()
+              if len(fields) != 2 or not re.fullmatch('[a-f0-9]{40}', fields[0]) or fields[1] in refs:
+                  raise SystemExit('Malformed or duplicate actual tag reference')
+              refs[fields[1]] = fields[0]
+          allowed = {'refs/tags/' + tag, 'refs/tags/' + tag + '^{}'}
+          if 'refs/tags/' + tag not in refs or not set(refs).issubset(allowed):
+              raise SystemExit('The exact existing version tag is missing')
+          resolved = refs.get('refs/tags/' + tag + '^{}', refs['refs/tags/' + tag])
+          version = json.loads(pathlib.Path('package.json').read_text())['version']
+          if actual != expected or resolved != expected or version != tag[1:]:
+              raise SystemExit('Tag, checked-out source or package version differs')
+          receipt = {'version': 1, 'releaseTag': tag, 'source': actual, 'packageVersion': version,
+                     'workflowSource': os.environ['GITHUB_WORKFLOW_SHA'], 'workflowRef': os.environ['GITHUB_WORKFLOW_REF'],
+                     'event': os.environ['GITHUB_EVENT_NAME'], 'actualTagRefs': refs}
+          pathlib.Path('release-source.actual.json').write_text(json.dumps(receipt, indent=2) + '\n')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('source=' + actual + '\nversion=' + version + '\n')
+          print(json.dumps(receipt, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-source-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: release-source.actual.json
+          if-no-files-found: error
+
   server-image:
     name: server image
+    needs: release-source
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.release-source.outputs.source }}
+          persist-credentials: false
+      - name: Verify exact build source
+        env:
+          RELEASE_SOURCE: ${{ needs.release-source.outputs.source }}
+          RELEASE_VERSION: ${{ needs.release-source.outputs.version }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$RELEASE_SOURCE"
+          node -e 'if (JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).version !== process.env.RELEASE_VERSION) process.exit(1)'
 
-      # Prefer a PAT (GHCR_PAT, scope write:packages) when the org caps the
-      # GITHUB_TOKEN's package scope to read (first-publish "permission_denied:
-      # read_package"). Falls back to GITHUB_TOKEN when the secret is absent.
+      # Use the repository-scoped Actions token, as recommended for GHCR.
+      # Existing GHCR_PAT configuration remains untouched and is not consumed.
       - name: Log in to GHCR
-        run: echo "${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
 
       # Multi-arch (amd64 + arm64): the edge story is Rancher-managed k3s, and
       # edge nodes are frequently ARM — an amd64-only manifest is an instant
@@ -41,13 +127,18 @@ jobs:
       # the chart's empty image.tag defaults to appVersion — kept in sync with
       # package.json "version", so `helm install` pulls exactly this build.
       - name: Build and push (amd64 + arm64, with SBOM + provenance attestations)
+        env:
+          RELEASE_SOURCE: ${{ needs.release-source.outputs.source }}
+          RELEASE_VERSION: ${{ needs.release-source.outputs.version }}
         run: |
-          IMAGE="ghcr.io/${{ github.repository_owner }}/lolly-work-server"
-          VERSION="${GITHUB_REF_NAME#v}"
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER}/lolly-work-server"
+          VERSION="$RELEASE_VERSION"
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           docker buildx build --platform linux/amd64,linux/arm64 \
             --provenance=mode=max --sbom=true \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$RELEASE_SOURCE" \
             -f deploy/compose/Dockerfile -t "$IMAGE:$VERSION" -t "$IMAGE:latest" --push .
 
       # Keyless signature over the pushed manifest digest - verifiable against
@@ -65,15 +156,26 @@ jobs:
 
   render-worker-image:
     name: render-worker image
+    needs: release-source
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.release-source.outputs.source }}
+          persist-credentials: false
+      - name: Verify exact build source
+        env:
+          RELEASE_SOURCE: ${{ needs.release-source.outputs.source }}
+          RELEASE_VERSION: ${{ needs.release-source.outputs.version }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$RELEASE_SOURCE"
+          node -e 'if (JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).version !== process.env.RELEASE_VERSION) process.exit(1)'
 
-      # Prefer a PAT (GHCR_PAT, scope write:packages) when the org caps the
-      # GITHUB_TOKEN's package scope to read (first-publish "permission_denied:
-      # read_package"). Falls back to GITHUB_TOKEN when the secret is absent.
+      # Keep the same repository-scoped token as the server job.
       - name: Log in to GHCR
-        run: echo "${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
 
       # Multi-arch like the server (Playwright ships linux-arm64 Chromium).
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
@@ -84,13 +186,18 @@ jobs:
       # ghcr.io/lolly-tools/lolly-work-render-worker, which matches this under
       # the lolly-tools org.
       - name: Build and push (amd64 + arm64, with SBOM + provenance attestations)
+        env:
+          RELEASE_SOURCE: ${{ needs.release-source.outputs.source }}
+          RELEASE_VERSION: ${{ needs.release-source.outputs.version }}
         run: |
-          IMAGE="ghcr.io/${{ github.repository_owner }}/lolly-work-render-worker"
-          VERSION="${GITHUB_REF_NAME#v}"
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER}/lolly-work-render-worker"
+          VERSION="$RELEASE_VERSION"
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           docker buildx build --platform linux/amd64,linux/arm64 \
             --provenance=mode=max --sbom=true \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$RELEASE_SOURCE" \
             -t "$IMAGE:$VERSION" -t "$IMAGE:latest" --push workers/render
 
       # Same keyless signature as the server image - one verify recipe covers both.
