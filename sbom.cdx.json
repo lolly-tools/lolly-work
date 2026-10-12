@@ -8,15 +8,15 @@
       {
         "vendor": "lolly",
         "name": "build-sbom",
-        "version": "0.2.0"
+        "version": "1.1.0"
       }
     ],
     "component": {
       "type": "application",
-      "bom-ref": "pkg:npm/lolly-work@0.2.0",
+      "bom-ref": "pkg:npm/lolly-work@1.1.0",
       "name": "lolly-work",
-      "version": "0.2.0",
-      "purl": "pkg:npm/lolly-work@0.2.0",
+      "version": "1.1.0",
+      "purl": "pkg:npm/lolly-work@1.1.0",
       "licenses": [
         {
           "license": {
