@@ -79,7 +79,7 @@ ram.runtime = "512M"
     # without node_modules: the install script runs `pnpm install --frozen-lockfile --prod`. Built and
     # published by scripts/yunohost-release.ts; see deploy/yunohost/README.md.
     url = "https://lolli.li/lolly-work-1.1.0-ynh2.tar.gz"
-    sha256 = "19faa95d4b53d94a464d0068f1db2be7b58307389eccb6b5ede1bc6a9166632f"
+    sha256 = "50e9afe9c72c0e45d5c5c97c07415134983e83896cde2a243780cc58f9e8c83b"
     format = "tar.gz"
     in_subdir = true
 
