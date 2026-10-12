@@ -11,6 +11,9 @@ import hashlib
 import json
 import re
 
+# Matches public-delivery-overlay.MAX_BYTES. This is transfer, not live RAM.
+MAX_RETAINED_BYTES = 8 * 1024**3
+
 
 def need(value,message):
     if not value:raise RuntimeError(message)
@@ -28,6 +31,17 @@ def row(value):
 def immutable(path):
     return bool(re.match(r'(?:_app/|ort-hf/[^/]+/|info/docs\.[a-zA-Z0-9_-]{6,40}\.(?:css|js)$|tools/[a-zA-Z0-9-]+@[0-9a-f]{16}/|models/.+@[0-9a-f]{16}/)',path)
                 or re.fullmatch(r'.*\.[0-9a-f]{16}\.[a-zA-Z0-9]{1,16}',path))
+
+
+def retained_budget(retained):
+    need(type(retained)is list and 0<len(retained)<=20000,'Bounded complete retained identity rows required')
+    previous='';total=0;canonical=[]
+    for value in retained:
+        row(value);need(value['path']>previous and immutable(value['path']),'Retained paths must be sorted unique immutable')
+        previous=value['path'];total+=value['size'];need(total<=MAX_RETAINED_BYTES,'Retained transfer exceeds complete-root bound')
+        canonical.append({'path':value['path'],'size':value['size'],'sha256':value['sha256']})
+    encoded=json.dumps(canonical,separators=(',',':'),ensure_ascii=True,allow_nan=False).encode()
+    return {'count':len(canonical),'bytes':total,'sha256':hashlib.sha256(encoded).hexdigest()}
 
 
 def policy(value,expected,status,verifier,coding=None):
@@ -48,12 +62,14 @@ def policy(value,expected,status,verifier,coding=None):
 
 
 def verify_static(config,verifier):
-    need(type(config)is dict and set(config)=={'origin','retained','samples'},'Closed anonymous static check input required')
+    need(type(config)is dict and set(config)=={'origin','retained','retainedBudget','samples'},'Closed anonymous static check input required')
     retained,samples=config['retained'],config['samples'];need(type(retained)is list and 0<len(retained)<=20000 and type(samples)is list and 1<=len(samples)<=64,'Bounded static projection/sample set required')
-    previous='';total=0
-    for r in retained:
-        row(r);need(r['path']>previous and immutable(r['path']),'Retained paths must be sorted unique immutable');previous=r['path'];total+=r['size']
-    need(total<=512*1024**2,'Retained HTTP identity bytes exceed reviewed bound')
+    budget=config['retainedBudget'];expected=retained_budget(retained)
+    need(type(budget)is dict and set(budget)=={'count','bytes','sha256'}
+         and type(budget['count'])is int and type(budget['bytes'])is int
+         and type(budget['sha256'])is str and budget==expected,
+         'Retained count/bytes/full metadata digest differs from reviewed rows')
+    total=budget['bytes']
     request,observe=verifier['request'],verifier['observation'];origin=config['origin'];observed=[];captured=0
     def get(method,r,headers,maximum):return request(origin,method,'/'+r['path'],{'Accept-Encoding':'identity',**headers},maximum,origin_header=None)
     for r in retained:
@@ -91,4 +107,4 @@ def verify_static(config,verifier):
         need(response['status']==404 and response['headers'].get('cache-control')==verifier['PRIVATE']and response['headers'].get('cdn-cache-control')=='no-store'
              and not any(k in response['headers']for k in ['etag','last-modified','set-cookie','age','cache-tag','surrogate-key']), 'Missing/control API path was exposed or publicly cached')
         forbidden.append({'path':path,'response':observe('GET missing/control',response)})
-    return {'version':1,'status':'ISOLATED_STATIC_HTTP_RETAINED_FULL_BYTES_AND_SAMPLES_VERIFIED_ONLY','retainedFiles':len(retained),'retainedBytes':total,'retained':observed,'samples':sample_observed,'forbidden':forbidden,'allCandidateHttpBodiesClaimed':False,'publicDeploymentMutated':False,'published':False}
+    return {'version':1,'status':'ISOLATED_STATIC_HTTP_RETAINED_FULL_BYTES_AND_SAMPLES_VERIFIED_ONLY','retainedFiles':len(retained),'retainedBytes':total,'retainedBudget':budget,'retained':observed,'samples':sample_observed,'forbidden':forbidden,'allCandidateHttpBodiesClaimed':False,'publicDeploymentMutated':False,'published':False}

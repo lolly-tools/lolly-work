@@ -142,6 +142,16 @@ those original files and source paths. Existing registered version 1 baselines
 remain readable. This records serving acceptance only; browser and native target
 registration keep their separate scope. Memory admission retains this adapter's
 existing current ≤ peak < configured limit and zero-OOM requirements.
+Retained HTTP verification binds the complete held identity rows to a closed
+count, byte total and canonical SHA-256 digest before any request. Its finite
+8 GiB transfer ceiling matches complete-root assembly; it is separate from the
+Pod's memory limit. Individual bodies remain capped at 2 GiB and stream in
+64 KiB blocks. Native result capture, strict parsing and compact HTTP receipts
+share a 32 MiB envelope including their newlines. Every response field remains
+in that receipt; an oversized result refuses qualification rather than dropping
+headers or rows. Existing process identity, hash, cache, Range and CORS checks
+and command deadlines still apply.
+
 Admission validates the historical preparer's original hash and reviewed source
 membership independently of the current checkout. All resources and protected
 fields still rederive under the current guards; original receipts are preserved

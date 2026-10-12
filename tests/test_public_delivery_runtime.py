@@ -494,4 +494,91 @@ class PublicationHandoff(unittest.TestCase):
         self.assertFalse((self.f.out / 'accepted-release.actual.json').exists()); self.assertFalse((self.f.out / 'handoff.accepted.json').exists())
 
 
+class HTTPBudgets(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.static = load('runtime_static_budget', 'public-delivery-static-http.py')
+
+    def retained(self, count=10271, total=658189662):
+        # Reproduce the large cohort's metadata count/total without body blobs.
+        size, remainder = divmod(total, count)
+        return [{'path': f'_app/unit-retained.{i:016x}.js', 'size': size + (i < remainder),
+                 'sha256': hashlib.sha256(f'unit metadata {i}'.encode()).hexdigest()} for i in range(count)]
+
+    def config(self, rows):
+        return {'origin': 'http://127.0.0.1:8080', 'retained': rows,
+                'retainedBudget': self.static.retained_budget(rows),
+                'samples': [{'identity': rows[0], 'gzip': None}]}
+
+    def test_large_reviewed_metadata_reaches_first_request_without_body_allocation(self):
+        rows = self.retained(); config = self.config(rows); calls = []
+        class FirstRequest(Exception): pass
+        def request(*args, **kwargs): calls.append(args); raise FirstRequest()
+        with self.assertRaises(FirstRequest): self.static.verify_static(config, {'request': request, 'observation': None})
+        self.assertEqual(len(calls), 1); self.assertEqual(config['retainedBudget']['count'], 10271)
+        self.assertEqual(config['retainedBudget']['bytes'], 658189662)
+        overlay = load('runtime_budget_assembly_limit', 'public-delivery-overlay.py')
+        self.assertEqual(self.static.MAX_RETAINED_BYTES, overlay.MAX_BYTES)
+
+    def test_wrong_budget_digest_schema_and_row_refuse_before_network(self):
+        base = self.config(self.retained(2, 9)); cases = []
+        for field, value in [('count', 1), ('bytes', 8), ('sha256', '0' * 64), ('count', True), ('bytes', True)]:
+            wrong = copy.deepcopy(base); wrong['retainedBudget'][field] = value; cases.append(wrong)
+        wrong = copy.deepcopy(base); wrong['retainedBudget']['extra'] = True; cases.append(wrong)
+        wrong = copy.deepcopy(base); wrong['retained'][0]['sha256'] = '0' * 64; cases.append(wrong)
+        wrong = copy.deepcopy(base); del wrong['retainedBudget']; cases.append(wrong)
+        for config in cases:
+            with self.subTest(config=config), self.assertRaises(RuntimeError):
+                self.static.verify_static(config, {'request': lambda *_a, **_k: self.fail('NETWORK_REACHED')})
+
+    def test_hard_ceiling_and_duplicate_or_unordered_metadata_refuse(self):
+        rows = self.retained(5, self.static.MAX_RETAINED_BYTES)
+        self.assertEqual(self.static.retained_budget(rows)['bytes'], self.static.MAX_RETAINED_BYTES)
+        for wrong in [rows + [rows[-1]], list(reversed(rows)), [{**rows[0], 'size': rows[0]['size'] + 1}, *rows[1:]]]:
+            with self.assertRaises(RuntimeError): self.static.retained_budget(wrong)
+
+    def test_metadata_digest_canonical_key_order_and_payload_source_rows(self):
+        rows = self.retained(2, 9)
+        reordered = [dict(reversed(list(row.items()))) for row in rows]
+        self.assertEqual(self.static.retained_budget(rows), self.static.retained_budget(reordered))
+        candidates = rows + [{'path': path, 'size': 0, 'sha256': 'a' * 64} for path in
+                            ['index.html', 'precache.json', 'sw.js', 'portable/player.js', 'catalog/unit.json', 'tools/unit.json', 'info/unit.json']]
+        payload = h.payload(sorted(candidates, key=lambda r: r['path']), [r['path'] for r in rows])
+        self.assertEqual(payload['retainedBudget'], self.static.retained_budget(rows))
+        self.assertEqual(payload['retained'], rows)
+
+    def test_http_envelope_includes_newlines_and_compact_fields(self):
+        self.assertEqual(h.HTTP_REPORT_LIMIT, s.cohort.JSON_LIMIT)
+        self.assertIn(f'len(child.stdout)>{h.HTTP_REPORT_LIMIT}-1', h.NAMESPACE_HTTP)
+        report = {'static': {'EXPLICIT_UNIT_METADATA_ONLY': 'x' * (29 * 1024**2)}, 'decoded': {'samples': []}}
+        data = h.report_bytes(report); self.assertGreater(len(data), 28 * 1024**2)
+        self.assertEqual(s.cohort.parse_json(data), report)
+        with tempfile.TemporaryDirectory() as temp:
+            op = object.__new__(s.Stage); op.out = Path(temp).resolve(); ref = op.save('native-http.original.json', report)
+            self.assertEqual(s.l.a.read_ref(ref), data); self.assertEqual(s.l.a.parsed(data), report)
+            self.assertEqual(Path(ref['path']).stat().st_mode & 0o777, 0o600)
+            with self.assertRaises(FileExistsError): op.save('native-http.original.json', report)
+        with self.assertRaises(ValueError): h.report_bytes({'value': float('nan')})
+        overhead = len(h.report_bytes({'x': ''})); exact = {'x': 'x' * (h.HTTP_REPORT_LIMIT - overhead)}
+        self.assertEqual(len(h.report_bytes(exact)), h.HTTP_REPORT_LIMIT)
+        exact['x'] += 'x'
+        with self.assertRaises(RuntimeError): h.report_bytes(exact)
+        for invalid in [b'{"x":1,"x":2}', b'{"x":NaN}']:
+            with self.assertRaises(RuntimeError): s.cohort.parse_json(invalid)
+
+    def test_actual_native_caller_binds_budget_and_report_without_transport(self):
+        op = object.__new__(s.Stage); op.rows = self.retained(2, 9) + [
+            {'path': path, 'size': 0, 'sha256': 'a' * 64} for path in
+            ['index.html', 'precache.json', 'sw.js', 'portable/player.js', 'catalog/unit.json', 'tools/unit.json', 'info/unit.json']]
+        op.rows.sort(key=lambda r: r['path']); op.report = {'retained': [r['path'] for r in self.retained(2, 9)]}
+        def host_python(code, data, timeout):
+            value = json.loads(data); self.assertEqual(timeout, 2500); self.assertEqual(code, h.NAMESPACE_HTTP)
+            self.assertEqual(value['payload']['retainedBudget'], self.static.retained_budget(value['payload']['retained']))
+            self.assertEqual(value['sources']['public-delivery-static-http.py'], (SCRIPTS / 'public-delivery-static-http.py').read_text())
+            return b'{"static":{"EXPLICIT_UNIT_NO_NETWORK":true},"decoded":{}}'
+        op.host_python = host_python
+        result = op.native_http({'status': {'containerStatuses': [{'containerID': 'containerd://' + 'a' * 64}]}})
+        self.assertTrue(result['static']['EXPLICIT_UNIT_NO_NETWORK'])
+
+
 if __name__ == '__main__': unittest.main()

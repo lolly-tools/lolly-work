@@ -266,7 +266,10 @@ class Stage:
         l.a.verify_candidate_build(self.report['candidateBuild'], physical_bytes=False)
         l.a.physical(self.root, self.manifest, epoch=True)
 
-    def save(self, name, value): return l.a.write_new(self.out / name, raw(value) + b'\n')
+    def save(self, name, value):
+        # Only HTTP receipts use the explicit capture/parse/file envelope.
+        data = module('delivery_http_receipt', 'public-delivery-http.py').report_bytes(value) if name in {'native-http.original.json', 'models-http.original.json'} else raw(value) + b'\n'
+        return l.a.write_new(self.out / name, data)
     def load(self, name): return l.a.parsed((self.out / name).read_bytes())
 
     def run(self, argv, data=None, timeout=240):
@@ -644,7 +647,9 @@ class Stage:
         helper = module('delivery_http', 'public-delivery-http.py'); payload = helper.payload(self.rows, self.report['retained'])
         source = {name: Path(__file__).with_name(name).read_text() for name in ['public-delivery-http.py', 'public-delivery-model-http.py', 'public-delivery-static-http.py', 'public-delivery-decoded-http.py']}
         code = helper.NAMESPACE_HTTP
-        return cohort.parse_json(self.host_python(code, raw({'container': current[13:], 'payload': payload, 'sources': source}), timeout=2500))
+        result = cohort.parse_json(self.host_python(code, raw({'container': current[13:], 'payload': payload, 'sources': source}), timeout=2500))
+        helper.report_bytes(result)
+        return result
 
     def retire(self):
         self.prior('qualify')

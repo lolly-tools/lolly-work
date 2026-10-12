@@ -8,6 +8,15 @@ from pathlib import Path
 import ssl
 from urllib.parse import urlsplit
 
+# Includes every component and stored newline within the strict cohort parser.
+HTTP_REPORT_LIMIT = 32 * 1024**2
+
+
+def report_bytes(value):
+    data = json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode() + b'\n'
+    if len(data) > HTTP_REPORT_LIMIT: raise RuntimeError('Complete HTTP report exceeds 32 MiB envelope')
+    return data
+
 
 def module(name, filename):
     spec = importlib.util.spec_from_file_location(name, Path(__file__).with_name(filename))
@@ -80,7 +89,8 @@ def payload(rows, retained):
     # A frontend build may already include every retained body; still exercise
     # an actual immutable route rather than invent an empty positive oracle.
     if not identities: identities = [lookup[next(p for p in sorted(lookup) if p.startswith('_app/') and not p.endswith(('.gz', '.br')))]]
-    return {'samples': [{'identity': lookup[p], 'gzip': lookup.get(p + '.gz')} for p in dict.fromkeys(paths)], 'retained': identities}
+    budget = module('delivery_static_metadata_budget', 'public-delivery-static-http.py').retained_budget(identities)
+    return {'samples': [{'identity': lookup[p], 'gzip': lookup.get(p + '.gz')} for p in dict.fromkeys(paths)], 'retained': identities, 'retainedBudget': budget}
 
 
 NAMESPACE_HTTP = r'''import json,pathlib,subprocess,sys
@@ -90,6 +100,6 @@ pid=int(r.stdout);p=pathlib.Path('/proc')/str(pid);before=p.stat();net=(p/'ns/ne
 if pid<=1 or '\nUid:\t101\t'not in(p/'status').read_text() or x['container'] not in(p/'cgroup').read_text():raise RuntimeError('Actual native UID101/container membership refused')
 program="import json,sys;x=json.load(sys.stdin);m={'__name__':'models'};s={'__name__':'static'};d={'__name__':'decoded'};exec(x['sources']['public-delivery-model-http.py'],m);exec(x['sources']['public-delivery-static-http.py'],s);exec(x['sources']['public-delivery-decoded-http.py'],d);origin='http://127.0.0.1:8080';print(json.dumps({'static':s['verify_static']({'origin':origin,**x['payload']},m),'decoded':d['verify_decoded'](origin,x['payload']['samples'])},separators=(',',':')))"
 child=subprocess.run(['nsenter','--target',str(pid),'--net','python3','-c',program],input=json.dumps(x,separators=(',',':')).encode(),capture_output=True,timeout=2400,env={'PATH':'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'})
-if p.stat().st_ino!=before.st_ino or(p/'ns/net').stat().st_ino!=net.st_ino or(p/'stat').read_text().rsplit(')',1)[1].split()[19]!=start or child.returncode or len(child.stdout)>28*1024**2 or len(child.stderr)>65536:raise RuntimeError('Actual namespace native HTTP refused')
+if p.stat().st_ino!=before.st_ino or(p/'ns/net').stat().st_ino!=net.st_ino or(p/'stat').read_text().rsplit(')',1)[1].split()[19]!=start or child.returncode or len(child.stdout)>__HTTP_REPORT_LIMIT__-1 or len(child.stderr)>65536:raise RuntimeError('Actual namespace native HTTP refused')
 print(child.stdout.decode())
-'''
+'''.replace('__HTTP_REPORT_LIMIT__', str(HTTP_REPORT_LIMIT))
