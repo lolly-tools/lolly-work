@@ -62,9 +62,18 @@ jobs:
       - name: Prepare disposable Incus runner
         run: |
           sudo apt-get update
-          sudo apt-get install -y incus btrfs-progs lynx jq python3-pip python3-toml \
-            python3-pycurl python3-bs4 python3-lxml python3-imgkit python3-jsonschema \
+          sudo apt-get install -y incus btrfs-progs lynx jq python3-pip python3-venv python3-toml \
+            python3-pycurl python3-bs4 python3-lxml python3-jsonschema \
             python3-packaging python3-pyparsing python3-six
+          # Ubuntu 24.04 does not package imgkit. Keep distro-managed dependencies
+          # and install its reviewed pure-Python wheel in an isolated environment.
+          python3 -m venv --system-site-packages .qualification/python
+          printf '%s\n' 'imgkit==1.2.3 --hash=sha256:cba8e3f67da6e0a5c87345a8b41605337851f9b9b75719500fa6810ecff84791' \
+            > .qualification/imgkit-requirements.txt
+          .qualification/python/bin/python -m pip install --no-deps --only-binary=:all: \
+            --require-hashes -r .qualification/imgkit-requirements.txt
+          .qualification/python/bin/python -c 'import imgkit, toml, pycurl, bs4, lxml, jsonschema, packaging, pyparsing, six'
+          echo "$GITHUB_WORKSPACE/.qualification/python/bin" >> "$GITHUB_PATH"
           # Docker's forwarding policy conflicts with the official Incus checker.
           # This is an ephemeral hosted runner, never a production host.
           sudo systemctl stop docker.service docker.socket
@@ -76,6 +85,9 @@ jobs:
           cat > .qualification/run-package-check.sh <<'SH'
           #!/usr/bin/env bash
           set -euo pipefail
+          export PATH="$GITHUB_WORKSPACE/.qualification/python/bin:$PATH"
+          test "$(command -v python3)" = "$GITHUB_WORKSPACE/.qualification/python/bin/python3"
+          python3 -c 'import imgkit, importlib.metadata; assert importlib.metadata.version("imgkit") == "1.2.3"'
           cd "$GITHUB_WORKSPACE/.qualification/package_check"
           # The detached checker remains at the reviewed commit. Its official
           # linter updater records the actual linter revision in the result set.
