@@ -67,7 +67,7 @@ jobs:
             python3-packaging python3-pyparsing python3-six
           # Ubuntu 24.04 does not package imgkit. Keep distro-managed dependencies
           # and install its reviewed pure-Python wheel in an isolated environment.
-          python3 -m venv --system-site-packages .qualification/python
+          /usr/bin/python3 -m venv --system-site-packages .qualification/python
           printf '%s\n' 'imgkit==1.2.3 --hash=sha256:cba8e3f67da6e0a5c87345a8b41605337851f9b9b75719500fa6810ecff84791' \
             > .qualification/imgkit-requirements.txt
           .qualification/python/bin/python -m pip install --no-deps --only-binary=:all: \
