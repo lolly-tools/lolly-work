@@ -48,12 +48,30 @@ test('real committed web changes are advisory with immutable trees and complete 
   assert.equal(result.promotionAuthorized, false);
   assert.deepEqual(classifyApplicationRelease({ repo, base, candidate }), result);
 }));
+test('web updates may retain the runtime while deployment archive metadata changes', () => fixture((repo, base) => {
+  write(repo, '.github/workflows/deployment-suse.yml', 'name: archive qualified images\n');
+  const metadata = commit(repo);
+  assert.equal(classifyApplicationRelease({ repo, base, candidate: metadata }).classification, 'full-or-paired-required');
+  write(repo, 'shells/web/src/main.ts', 'export const web = 2;\n');
+  const candidate = commit(repo), result = classifyApplicationRelease({ repo, base, candidate });
+  assert.equal(result.classification, 'web-shell-only');
+  assert.deepEqual(result.changedPaths.map(change => change.path), ['.github/workflows/deployment-suse.yml', 'shells/web/src/main.ts']);
+  assert.equal(result.normalCiRequired, true); assert.equal(result.promotionAuthorized, false);
+  write(repo, 'shells/web/vite.config.js', 'changed build input\n');
+  assert.equal(classifyApplicationRelease({ repo, base, candidate: commit(repo) }).classification, 'full-or-paired-required');
+}));
+test('deployment metadata symlinks cannot enter the shell-only lane', () => fixture((repo, base) => {
+  write(repo, 'shells/web/src/main.ts', 'export const web = 2;\n');
+  mkdirSync(join(repo, '.github/workflows'), { recursive: true });
+  symlinkSync('../../engine/src/version.ts', join(repo, '.github/workflows/deployment-suse.yml'));
+  assert.equal(classifyApplicationRelease({ repo, base, candidate: commit(repo) }).classification, 'full-or-paired-required');
+}));
 for (const path of ['engine/src/version.ts', 'packages/core/src/host-v1.ts', 'packages/node-shell/src/content-roots.ts',
   'schemas/tool.schema.json', 'community/design/tool.json', 'tools/qr-code/hooks.js', 'brands/suse/catalog/tools/index.json',
   'catalog/tools/index.json', 'profiles.json', 'pnpm-lock.yaml', 'shells/web/package.json', 'deploy/docker/web.Dockerfile',
   'services/mcp/src/http.ts', 'scripts/webgpu-release-gate.ts', 'docs/supported-environments.md',
   'shells/web/src/browser-support.ts', 'tests/webgpu-release-gate.test.ts', 'tests/browser-support.browser.test.ts',
-  '.github/workflows/ci.yml', 'unexpected/new.txt']) {
+  '.github/workflows/ci.yml', '.github/workflows/deployment-suse.yaml', '.github/workflows/webgpu-release-gate.yml', 'unexpected/new.txt']) {
   test(`web plus ${path} refuses the narrow scope`, () => fixture((repo, base) => {
     write(repo, 'shells/web/src/main.ts', 'export const web = 2;\n'); write(repo, path, 'changed\n');
     const result = classifyApplicationRelease({ repo, base, candidate: commit(repo) });

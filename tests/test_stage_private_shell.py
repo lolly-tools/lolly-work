@@ -281,7 +281,7 @@ class Inputs(fixture.Plan):
                        'claims':{'apiVersion':'v1','kind':'PersistentVolumeClaimList','metadata':{'resourceVersion':'1'},'items':[r for r in resources if r['kind']=='PersistentVolumeClaim']},
                        'storageClass':{'apiVersion':'storage.k8s.io/v1','kind':'StorageClass','metadata':{'name':'local-path','uid':'class-uid','resourceVersion':'1'},'provisioner':'synthetic.example/fixture-only','volumeBindingMode':'WaitForFirstConsumer'}}
         self.preflight=self.base/'no-network-preflight.py'; self.preflight.write_text('print("synthetic fixture only")\n')
-        sourcefiles=[SCRIPT,*[HERE/'scripts'/name for name in ('app-update.py','prepare-private-shell.py','prepare-private-cohort.py','prepare-paired-release.py','plan-private-cohort.py')]]
+        sourcefiles=[SCRIPT,*[HERE/'scripts'/name for name in ('app-update.py','prepare-private-shell.py','generation-acceptance.py','publish-private-shell.py','prepare-private-cohort.py','prepare-paired-release.py','plan-private-cohort.py')]]
         self.stage_input={'version':1,'target':self.file('stage-target',self.target),'prepared':self.file('stage-prepared',self.prepared),'previous':self.prepare_evidence['previous'],
                           'baseline':self.file('stage-baseline',self.baseline),'previousShell':self.prepare_evidence['previousShell'],'shell':self.prepare_evidence['shell'],'rawPack':self.prepare_evidence['rawPack'],
                           'publicKey':self.prepare_evidence['publicPin'],'sourceMap':self.file('synthetic-reviewed-source-map',{'fixture':{'mode':'644','bytes':0,'sha256':'a'*64}}),

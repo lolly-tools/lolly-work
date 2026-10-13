@@ -54,7 +54,10 @@ def allowed_source(path):
     if re.search(r"(?:release-gate|supported-environments|support-matrix|browser-support|webgpu-qualification)", path, re.I):
         return False
     return (re.fullmatch(r"shells/web/src/.+\.(?:ts|css|html|svg)", path) is not None or path in {"shells/web/src/README.md", "shells/web/index.html", "shells/web/public/sw.js"}
-            or re.fullmatch(r"tests/.+\.test\.ts", path) is not None)
+            or re.fullmatch(r"tests/.+\.test\.ts", path) is not None
+            # Same narrow CI metadata exception as the independent TS classifier;
+            # this workflow is not consumed by the local frontend build.
+            or path == ".github/workflows/deployment-suse.yml")
 
 
 def git_tree(root, source, runner):
@@ -155,6 +158,8 @@ def authenticated_owner_content(original, previous, before, inputs):
     require(type(refs) is list and len(refs) == 4, "Full authenticated owner/content/TLS/previous custody required")
     owner, content, tls = [inputs.file(ref) for ref in refs[:3]]
     prior = inputs.file(refs[3])
+    if isinstance(prior, dict) and "lollySource" in prior:
+        prior, _ = previous_record(refs[3], inputs)
     require(all(previous[key] == prior[key] for key in ("image", "workSource", "engineSource", "enginePin", "resolverPin", "pack", "pin")), "Shell-only acceptance changed the previous runtime/engine/pack tuple")
     exact(owner, {"deployment", "pod", "replicaSet"})
     deployment, pod, rs = (owner[key] for key in ("deployment", "pod", "replicaSet"))
@@ -407,7 +412,14 @@ def accepted_manifest_custody(original, refs, previous, inputs):
 
 
 def previous_record(ref, inputs):
-    previous = inputs.file(ref); exact(previous, PREVIOUS_KEYS)
+    previous = inputs.file(ref)
+    if isinstance(previous, dict) and "lollySource" in previous:
+        spec = importlib.util.spec_from_file_location("generation_acceptance", Path(__file__).with_name("generation-acceptance.py"))
+        generation = importlib.util.module_from_spec(spec); spec.loader.exec_module(generation)
+        # This is an internal view of original evidence, never a rewritten receipt.
+        import types
+        return generation.validate(previous, inputs, types.SimpleNamespace(cohort=cohort, PREVIOUS_KEYS=PREVIOUS_KEYS, AUTH_PROFILE=AUTH_PROFILE, Refusal=Refusal))
+    exact(previous, PREVIOUS_KEYS)
     require(type(previous["version"]) is int and previous["version"] == 1, "Unknown accepted shell cohort")
     for key in ("shellSource", "engineSource", "workSource"):
         cohort.commit(previous[key])
@@ -437,6 +449,15 @@ def previous_record(ref, inputs):
     for item in acceptance["originalEvidence"]:
         inputs.file(item, False)
     return previous, before
+
+
+def accepted_owner_ids(original, inputs):
+    """Identity view after previous_record validates the original protocol."""
+    if original.get("status") == "PRIVATE_GENERATION_COHORT_OWNER_CONTENT_AUTHENTICATED_TLS_VERIFIED_FULL_ACCEPTANCE_PENDING":
+        owner = inputs.file(original["originalEvidence"][0])
+        require(owner["pod"]["metadata"]["uid"] == original["podUID"], "Generation accepted owner differs")
+        return original["podUID"], owner["replicaSet"]["metadata"]["uid"]
+    return original["podUid"], original["replicaSetUid"]
 
 
 def change_tuple(before, previous, selection, source, release):
@@ -518,9 +539,16 @@ def prepare(value, base, expected_public_pin, node="node", runner=git_command):
     actual_catalog = cohort.catalog(shell, raw, public_pin, cohort.sha(expected_public_pin), node)
     require(cohort.catalog(old, raw, public_pin, cohort.sha(expected_public_pin), node) == actual_catalog, "Accepted signed catalog changed")
     accepted_proof = inputs.file(inputs.file(previous["acceptance"])["originalEvidence"][0])
-    require(accepted_proof["fullStatic"].get("files") == len(old.files) and accepted_proof["runtimeAndCatalog"].get("packFilesEqual") == len(raw.files)
-            and accepted_proof["runtimeAndCatalog"].get("signedToolFilesEqual") == actual_catalog["signedFiles"] and accepted_proof["runtimeAndCatalog"].get("engine") == pin["engine"]["version"]
-            and accepted_proof["runtimeAndCatalog"].get("core") == pin["core"]["version"], "Original accepted full-content count or engine ABI differs")
+    if accepted_proof["status"] == "PRIVATE_GENERATION_COHORT_OWNER_CONTENT_AUTHENTICATED_TLS_VERIFIED_FULL_ACCEPTANCE_PENDING":
+        content = inputs.file(accepted_proof["originalEvidence"][1])
+        runtime = inputs.file(accepted_proof["originalEvidence"][3])
+        require(len(content["shell"]["files"]) == len(old.files) and len(content["pack"]["files"]) == len(raw.files)
+                and content["catalog"]["signedFiles"] == actual_catalog["signedFiles"] and runtime["engineVersion"] == pin["engine"]["version"]
+                and runtime["coreVersion"] == pin["core"]["version"], "Original generation full-content count or engine ABI differs")
+    else:
+        require(accepted_proof["fullStatic"].get("files") == len(old.files) and accepted_proof["runtimeAndCatalog"].get("packFilesEqual") == len(raw.files)
+                and accepted_proof["runtimeAndCatalog"].get("signedToolFilesEqual") == actual_catalog["signedFiles"] and accepted_proof["runtimeAndCatalog"].get("engine") == pin["engine"]["version"]
+                and accepted_proof["runtimeAndCatalog"].get("core") == pin["core"]["version"], "Original accepted full-content count or engine ABI differs")
     stamp = cohort.parse_json(raw.data(".lolly-pack-source.json"))
     exact(stamp, {"version", "source", "commit", "profile", "dirty", "excluded", "removed", "builtAt"})
     require(type(stamp["version"]) is int and stamp["version"] == 1 and stamp["source"] == "lolly" and stamp["commit"] == previous["engineSource"] and stamp["profile"] == value["profile"] and stamp["dirty"] is False

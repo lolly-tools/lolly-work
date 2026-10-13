@@ -25,6 +25,19 @@ Their result is a protected `shell.prepared.json` whose status explicitly says i
 has not been runtime qualified or applied. Neither a local build nor a handwritten
 success record replaces those original qualification inputs.
 
+The preparer also reads original generation-cohort serving receipts. It verifies
+their owning process, complete content manifests, immutable generation config,
+engine pins and authenticated catalogue proof without rewriting the receipts.
+A receipt marked `FULL_ACCEPTANCE_PENDING` keeps that scope: browser, export and
+agent checks remain separately required. Source files in its custody are checked
+as bytes, never executed as proof. The retained Work image and engine stay fixed.
+
+A UI change accompanied by `.github/workflows/deployment-suse.yml` metadata can
+use this lane because that CI workflow is not an input to the local frontend
+build. The workflow alone does not qualify as a shell update; dependency,
+release-gate and local build-configuration changes still require the matched
+release path.
+
 ## Assemble the preparation input without release-specific scripts
 
 `scripts/assemble-private-shell-input.py` translates an original successful local

@@ -42,7 +42,7 @@ CAPTURE_KEYS = {'version', 'status', 'targetSha256', 'systemNamespace', 'node', 
 AUTH_PROFILE = 'NORMAL_TLS_PER_CALLER_INDEX_ORACLE_AND_PINNED_P256_ENVELOPE'
 MOUNT_PLACEHOLDERS = {'${stagePodUID}', '${writerPodUID}', '${nodeUID}', '${targetPath}'}
 DEPENDENCIES = ('update-private-shell.py', 'stage-private-shell.py', 'publish-private-shell.py', 'plan-private-shell.py', 'prepare-private-shell.py',
-                'app-update.py', 'prepare-private-cohort.py', 'prepare-paired-release.py', 'plan-private-cohort.py')
+                'generation-acceptance.py', 'app-update.py', 'prepare-private-cohort.py', 'prepare-paired-release.py', 'plan-private-cohort.py')
 
 
 def file_ref(path):
@@ -278,8 +278,9 @@ class Update:
         storage = named(load(value['storageClass']), 'StorageClass', 'storage.k8s.io/v1')
         rs = named(load(value['replicaSet']), 'ReplicaSet', 'apps/v1', self.namespace)
         acceptance = self.inputs.file(self.previous['acceptance']); original = self.inputs.file(acceptance['originalEvidence'][0])
-        owners = [pod for pod in pods['items'] if pod['metadata']['uid'] == original['podUid']]
-        require(len(owners) == 1 and rs['metadata']['uid'] == original['replicaSetUid'], 'Captured actual previous owner/ReplicaSet absent')
+        pod_uid, rs_uid = planner.shell.accepted_owner_ids(original, self.inputs)
+        owners = [pod for pod in pods['items'] if pod['metadata']['uid'] == pod_uid]
+        require(len(owners) == 1 and rs['metadata']['uid'] == rs_uid, 'Captured actual previous owner/ReplicaSet absent')
         publisher.Publication.chain(owners[0], rs, deployments['work'])
         require(deployments['work']['spec'] == self.before['spec'] and pin['metadata']['name'] == self.previous['pin']['name'] and pin['metadata']['uid'] == self.previous['pin']['uid'], 'Captured accepted Work/pin differs')
         require(storage['metadata']['name'] == self.profile['storage']['storageClassName'], 'Captured storage class differs from reviewed profile')
@@ -424,10 +425,11 @@ class Update:
                      'storageClass': get('storage-class', 'storageclass', self.profile['storage']['storageClassName'])}
             pods = stage.complete_list(self.inputs.file(value['pods']), 'Pod', self.namespace)
             accepted = self.inputs.file(self.inputs.file(self.previous['acceptance'])['originalEvidence'][0])
-            owners = [pod for pod in pods['items'] if pod['metadata']['uid'] == accepted['podUid']]
+            pod_uid, rs_uid = planner.shell.accepted_owner_ids(accepted, self.inputs)
+            owners = [pod for pod in pods['items'] if pod['metadata']['uid'] == pod_uid]
             require(len(owners) == 1, 'Accepted owner absent from fresh original capture')
             controllers = [ref for ref in owners[0]['metadata'].get('ownerReferences', []) if ref.get('controller') is True]
-            require(len(controllers) == 1 and controllers[0].get('kind') == 'ReplicaSet' and controllers[0].get('uid') == accepted['replicaSetUid'],
+            require(len(controllers) == 1 and controllers[0].get('kind') == 'ReplicaSet' and controllers[0].get('uid') == rs_uid,
                     'Accepted exact ReplicaSet controller changed')
             value['replicaSet'] = get('replica-set', 'replicaset', controllers[0]['name'], self.namespace)
             ref = save(out, 'capture.original.json', value)
