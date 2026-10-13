@@ -95,3 +95,52 @@ physical scanning, signature, source, allocation, retirement and rollout checks
 remain in the deployment path. The earlier 177-model production baseline read
 about 5.39 GB and transferred 10.78 GB over TLS in roughly 13 minutes, with full
 qualification about 28 minutes. There is no measured production speedup yet.
+
+
+## Complete local qualification benchmark
+
+Run a new exclusive output directory through the maintained operation timer:
+
+```sh
+python3 -B tests/public_release_end_to_end_fixture.py run \
+  --out-dir /absolute/new-local-benchmark
+```
+
+This creates real files and serves them over loopback HTTP from a child process.
+It prepares the inventory and frontend, performs an initial full model check,
+copies and hashes the staged frontend, scans the model bytes three times while
+rechecking the same serving process, then publishes a local copy and starts a
+distinct serving process. The replacement always receives full-body checks.
+The HTTP oracle and command timer are the maintained implementations; this does
+not invoke or simulate Kubernetes acceptance phases. The result explicitly sets
+`clusterCustodyQualified`, `tlsMeasured` and `productionCalls` to false.
+
+On 2026-10-13, macOS 27.0.1 arm64 with Python 3.14.6 produced the following real
+local result using four models totaling 8,519,681 bytes and 524,364 frontend
+bytes. Command durations include Python startup, module loading and local phase
+work; HTTP time is nested within them.
+
+| Operation | Command time | HTTP body bytes | Physical model scans |
+| --- | ---: | ---: | ---: |
+| Preparation | 0.146 s | 0 | 1 |
+| Initial full model verification | 0.235 s | 17,039,653 | 2 |
+| Same-owner staging and protocol recheck | 0.191 s | 131,363 | 3 |
+| Publication with a new serving process | 0.310 s | 17,039,653 | 2 |
+
+The four commands took 0.882 s of active time. First-command start to final-command
+exit took **0.991 s**, including 0.109 s between commands for local server startup,
+shutdown and receipt handling. HTTP checks account for 0.242 s within the command
+times; they are not added again. Actual process IDs and before/after proof paths
+are retained in the private output, together with held sources, each original
+exit/stdout/stderr, phase timing sidecars and the aggregate summary. Outputs are
+local test artifacts and must not be committed as release acceptance.
+
+This measures a complete small local filesystem/HTTP qualification, not production
+release latency. Production still includes TLS, network and storage throughput,
+full signed catalog/static verification, Kubernetes allocation and guards, source
+custody, native container ownership and Recreate readiness. The measured historical
+177-model baseline above remains the available production expectation: model TLS
+alone was roughly 13 minutes and full qualification roughly 28 minutes. Reuse can
+remove the two large-body transfers during an eligible unchanged-owner stage;
+post-Recreate publication still incurs those full transfers. Do not scale the
+loopback wall time into a production estimate or describe the release as instant.
