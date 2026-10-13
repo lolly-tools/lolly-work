@@ -525,7 +525,7 @@ def evidence_shape(value):
         exact(value["rawDerivation"]["release"]["manifest"], {"path", "sha256"})
 
 
-def unchanged_raw_source(value, previous, raw, inputs, root, actual_catalog, expected_public_pin, node, runner):
+def unchanged_raw_source(value, previous, raw, inputs, root, actual_catalog, expected_public_pin, node, runner, accepted_shell=None):
     """Retain the accepted pack; derived stamps keep their original signed-release custody."""
     stamp = cohort.parse_json(raw.data(".lolly-pack-source.json"))
     if type(stamp.get("version")) is int and stamp["version"] == 2:
@@ -533,7 +533,7 @@ def unchanged_raw_source(value, previous, raw, inputs, root, actual_catalog, exp
         derivation = value["rawDerivation"]
         exact(derivation, {"custody", "release"})
         release = cohort.Tree(derivation["release"], inputs)
-        require(cohort.catalog(release, raw, inputs.file(value["publicPin"]), cohort.sha(expected_public_pin), node) == actual_catalog,
+        require(cohort.catalog(release, raw, inputs.file(value["publicPin"]), cohort.sha(expected_public_pin), node, previous=accepted_shell) == actual_catalog,
                 "Original derived release catalog differs from accepted catalog")
         original = {"lolly": {**value["lolly"], "source": previous["engineSource"]}, "profile": value["profile"],
                     "publicPin": value["publicPin"], "candidateShell": derivation["release"],
@@ -568,8 +568,8 @@ def prepare(value, base, expected_public_pin, node="node", runner=git_command):
     cohort.retention(candidate, old, shell)
     require({p: entry for p, entry in old.files.items() if not generated_path(p)} == {p: entry for p, entry in candidate.files.items() if not generated_path(p)}, "Static assets/catalog/dependencies changed in shell-only output")
     public_pin = inputs.file(value["publicPin"])
-    actual_catalog = cohort.catalog(shell, raw, public_pin, cohort.sha(expected_public_pin), node)
-    require(cohort.catalog(old, raw, public_pin, cohort.sha(expected_public_pin), node) == actual_catalog, "Accepted signed catalog changed")
+    actual_catalog = cohort.catalog(shell, raw, public_pin, cohort.sha(expected_public_pin), node, previous=old)
+    require(cohort.catalog(old, raw, public_pin, cohort.sha(expected_public_pin), node, previous=old) == actual_catalog, "Accepted signed catalog changed")
     accepted_proof = inputs.file(inputs.file(previous["acceptance"])["originalEvidence"][0])
     if accepted_proof["status"] == "PRIVATE_GENERATION_COHORT_OWNER_CONTENT_AUTHENTICATED_TLS_VERIFIED_FULL_ACCEPTANCE_PENDING":
         content = inputs.file(accepted_proof["originalEvidence"][1])
@@ -581,7 +581,7 @@ def prepare(value, base, expected_public_pin, node="node", runner=git_command):
         require(accepted_proof["fullStatic"].get("files") == len(old.files) and accepted_proof["runtimeAndCatalog"].get("packFilesEqual") == len(raw.files)
                 and accepted_proof["runtimeAndCatalog"].get("signedToolFilesEqual") == actual_catalog["signedFiles"] and accepted_proof["runtimeAndCatalog"].get("engine") == pin["engine"]["version"]
                 and accepted_proof["runtimeAndCatalog"].get("core") == pin["core"]["version"], "Original accepted full-content count or engine ABI differs")
-    unchanged_raw_source(value, previous, raw, inputs, root, actual_catalog, expected_public_pin, node, runner)
+    unchanged_raw_source(value, previous, raw, inputs, root, actual_catalog, expected_public_pin, node, runner, accepted_shell=old)
     build = cohort.receipt(value["build"], {"version", "status", "lollySource", "engineSource", "workSource", "brandCommit", "profile", "enginePinSha256", "shellManifestSha256", "settings", "workspaceModules", "originalReport"}, inputs)
     require(build["status"] == "PRIVATE_WEB_BUILD_REVIEWED" and build["lollySource"] == value["lolly"]["source"] and build["engineSource"] == previous["engineSource"] and build["workSource"] == previous["workSource"] and build["brandCommit"] == brand
             and build["profile"] == value["profile"] and build["enginePinSha256"] == value["enginePin"]["sha256"] and build["shellManifestSha256"] == candidate.manifest_sha, "Reviewed build source/manifest custody differs")

@@ -266,6 +266,35 @@ class Shell(fixture.Cohort):
             wrong = copy.deepcopy(actual); change(wrong["reconciliation"])
             with self.assertRaises(m.Refusal): m.authenticated_acceptance_custody(wrong, self.previous, self.before, m.cohort.Inputs(self.base))
 
+    def test_retained_historical_index_requires_exact_accepted_delivery_custody(self):
+        f = fixture.Cohort(); f.keys = self.keys; f.setUp()
+        try:
+            f.delivery_cohort()
+            original = m.cohort.Tree(f.evidence["shell"], m.cohort.Inputs(f.base))
+            historical = b'{"tools":[],"retained":true}'
+            alias = "catalog/tools/index." + hashlib.sha256(historical).hexdigest()[:16] + ".json"
+            trees = {}
+            for name in ("shell", "rawPack"):
+                root = Path(f.evidence[name]["root"])
+                data = {str(p.relative_to(root)):p.read_bytes() for p in root.rglob("*") if p.is_file()}
+                data[alias] = historical
+                inventory = json.loads(data["catalog/delivery-manifest.json"])
+                inventory["files"].append({"path":alias,"size":len(historical),"sha256":hashlib.sha256(historical).hexdigest()})
+                inventory["files"].sort(key=lambda row: row["path"])
+                data["catalog/delivery-manifest.json"] = m.cohort.canonical(inventory)
+                trees[name] = m.cohort.Tree(f.tree("retained-"+name,data), m.cohort.Inputs(f.base))
+            pin = m.cohort.Inputs(f.base).file(f.evidence["publicPin"])
+            for prior in (None, original):
+                with self.assertRaisesRegex(m.Refusal, "Retained catalog index lacks"):
+                    m.cohort.catalog(trees["shell"],trees["rawPack"],pin,f.public_pin_sha,NODE,previous=prior)
+            verified = m.cohort.catalog(trees["shell"],trees["rawPack"],pin,f.public_pin_sha,NODE,previous=trees["shell"])
+            self.assertEqual(verified["signedFiles"],2)
+            altered = copy.copy(trees["shell"])
+            altered.files = {**altered.files,alias:{**altered.files[alias],"sha256":"0"*64}}
+            with self.assertRaises(m.Refusal):
+                m.cohort.catalog(trees["shell"],trees["rawPack"],pin,f.public_pin_sha,NODE,previous=altered)
+        finally: f.tearDown(); f.doCleanups()
+
     def test_derived_pack_reuses_original_release_custody_after_frontend_source_changes(self):
         f = fixture.Cohort(); f.keys = self.keys; f.setUp()
         try:
