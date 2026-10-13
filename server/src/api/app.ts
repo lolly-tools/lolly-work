@@ -537,6 +537,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     pack: () => config.instance.pack, store, federation, ready: providersReady, pagedThreshold: serving.pagedProviderThreshold,
   });
   const catalogDelivery = createCatalogDelivery({ store, servedIndex, signing: catalogSigning, requireGeneration: productionMode(config),
+    shellDir: config.instance.shellDir,
     activePack: async () => (await brand.snapshot()).source.root,
     source: { pack: deploymentConfig.instance.pack, generation: deploymentConfig.instance.catalogPublicationGeneration,
       publicKey: deploymentConfig.instance.catalogPublicKey } });
@@ -5180,7 +5181,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!rel || rel.includes('..')) return sendError(res, 400, 'INVALID_INPUT', 'bad path');
     const rawId = rel.split(/[/\\]/, 1)[0] ?? '';
     const addressed = /^([a-z0-9-]+)@([0-9a-f]{16})$/i.exec(rawId);
-    const toolId = addressed?.[1] ?? rawId;
+    const toolId = (addressed?.[1] ?? rawId).toLowerCase();
     if (!/^[a-z0-9-]+$/i.test(toolId)) return sendError(res, 400, 'INVALID_INPUT', 'bad tool id');
     if (!user && p?.kind === 'guest' && p.guest.toolId !== toolId) return sendError(res, 404, 'NOT_FOUND', 'no such tool file');
     const guestTool = p?.kind === 'guest' && p.guest.toolId === toolId;
@@ -5195,7 +5196,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       const logicalPath = `${toolId}${rel.slice(rawId.length)}`;
       if (view.toolDirs[toolId]?.slice(0, 16) !== addressed[2] || !view.files[logicalPath]) return sendError(res, 404, 'NOT_FOUND', 'no such tool release');
     }
-    const logical = addressed ? `${toolId}${rel.slice(rawId.length)}` : rel;
+    const logical = `${toolId}${rel.slice(rawId.length)}`;
     if (!await sendFile(req, res, join(config.instance.pack, 'tools'), logical, { contentType: contentType(logical), ranges: true,
       headers: { 'cache-control': cachePolicy('instance-private').cacheControl } })) return sendError(res, 404, 'NOT_FOUND', 'no such tool file');
   };

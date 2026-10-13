@@ -623,9 +623,22 @@ instead ([hiding tags](catalog.md#hiding-tags)).
 | `LW_SIEM_SECRET` | with `siem.url` | HMAC key signing every forwarded audit batch |
 | `LW_RENDER_WORKER_SECRET` | with a render worker | shared HMAC key; must match the worker |
 | `LW_C2PA_SIGNING_KEY` | to sign exports | PKCS#8 private-key PEM |
-| `LW_CATALOG_SIGNING_KEY` | when the shell pins a catalog key | ECDSA P-256 private key (PKCS#8 PEM or private JWK JSON) that signs each caller's tool index and tool file digests at `/catalog/tools/index.sig.json`. Unset: the catalog is served unsigned and that path answers 404, even when the pack carries a build-time signature, because that envelope can never match the index served per caller |
+| `LW_CATALOG_SIGNING_KEY` | when the shell pins a catalog key | ECDSA P-256 private key (PKCS#8 PEM or private JWK JSON) that signs each caller's tool index, tool file digests and verified optional media resources at `/catalog/tools/index.sig.json`. Unset: the catalog is served unsigned and that path answers 404, even when the pack carries a build-time signature, because that envelope can never match the index served per caller |
 | `LW_BLOBS_S3_CREDENTIAL` | with `blobs.driver: s3` | `<accessKeyId>:<secretAccessKey>` for the blob bucket |
 | `<credentialRef>` | per config-managed provider or delivery destination | resolved at boot, never persisted |
+
+Optional media proofs come from the mounted publisher's verified catalog
+envelope. Original bytes must match its full SHA-256 digest before Work signs a
+caller-scoped resource map. Visible tool and asset entries and the verified,
+deterministically filtered preview bundle select that map. Hidden entries never
+enter its bundle or tool file map; guest tool metadata is limited to the shared
+tool while the public asset feed retains its normal visibility.
+`/info/shots/` and fallback share cards can use exact verified bytes from the
+mounted `instance.shellDir`. Absent proofs, missing files or changed original
+bytes omit the optional resource and require the shell's safe preview fallback.
+Resource work is bounded to 4,096 referenced paths, 64 MiB per file and 256 MiB
+of checked bytes per view. A source pack without signed media proofs still
+supports tool rendering; qualify preview behavior with the paired shell release.
 
 In development, `LW_SESSION_SECRET` and `LW_LINK_SECRET` fall back to ephemeral randoms, so
 sessions die on restart. In production (`NODE_ENV=production`) their absence throws.
