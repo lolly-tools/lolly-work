@@ -304,6 +304,11 @@
           "summary": "Qualified source updates with reused runtimes, private shell publication, public root and validator maps, and accepted baselines."
         },
         {
+          "slug": "public-model-proof-reuse",
+          "title": "Public model verification reuse",
+          "summary": "Bounded verification reuse for an unchanged serving process, invalidation rules, and measured release timings."
+        },
+        {
           "slug": "instance-pack-production",
           "title": "Build a verified instance pack",
           "summary": "Derive raw Work packs from signed releases while preserving asset addresses, renditions and release custody."
