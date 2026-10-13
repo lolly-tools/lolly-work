@@ -39,7 +39,7 @@ def cli_evidence(prepared, inputs):
         if ref["sha256"] == checksum:
             matching.append(ref)
     require(len(matching) == 1, "Preparation must bind its unique original CLI envelope")
-    original = inputs.file(matching[0]); exact(original, shell.EVIDENCE_KEYS)
+    original = inputs.file(matching[0]); shell.evidence_shape(original)
     require(type(original["version"]) is int and original["version"] == 1, "Unknown CLI custody")
     for family in ("lolly", "work"):
         exact(original[family], {"root", "source", "repository", "main", "ciRun", "ciJobs"})
@@ -51,6 +51,11 @@ def cli_evidence(prepared, inputs):
     for family in ("shell", "rawPack"):
         exact(original[family], {"root", "manifest"}); exact(original[family]["manifest"], {"path", "sha256"})
         require(original[family]["manifest"]["sha256"] == prepared[family]["manifestSha256"], "Original content custody differs")
+    if "rawDerivation" in original:
+        for ref in (original["rawDerivation"]["custody"], original["rawDerivation"]["release"]["manifest"]):
+            inputs.file(ref, False)
+            path = str(cohort.local_path(ref["path"], inputs.base))
+            require({"path": path, "sha256": ref["sha256"]} in refs, "Derived pack custody missing from prepared evidence")
     # Every original custody reference must still have the byte identity the
     # preparer reviewed. Trees are not rehashed here; retired stage full-hash
     # evidence and final owning-runtime acceptance cover their next boundary.

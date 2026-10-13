@@ -512,6 +512,15 @@ def change_tuple(before, previous, selection, source, release):
     return spec, patch, {"status": "FRESH_AFTER_CAPTURE_AND_DATA_COMPATIBILITY_REQUIRED_NOT_EXECUTABLE", "fields": fields}
 
 
+def evidence_shape(value):
+    exact(value, EVIDENCE_KEYS | ({"rawDerivation"} if isinstance(value, dict) and "rawDerivation" in value else set()))
+    if "rawDerivation" in value:
+        exact(value["rawDerivation"], {"custody", "release"})
+        exact(value["rawDerivation"]["custody"], {"path", "sha256"})
+        exact(value["rawDerivation"]["release"], {"root", "manifest"})
+        exact(value["rawDerivation"]["release"]["manifest"], {"path", "sha256"})
+
+
 def unchanged_raw_source(value, previous, raw, inputs, root, actual_catalog, expected_public_pin, node, runner):
     """Retain the accepted pack; derived stamps keep their original signed-release custody."""
     stamp = cohort.parse_json(raw.data(".lolly-pack-source.json"))
@@ -534,7 +543,7 @@ def unchanged_raw_source(value, previous, raw, inputs, root, actual_catalog, exp
 
 
 def prepare(value, base, expected_public_pin, node="node", runner=git_command):
-    exact(value, EVIDENCE_KEYS | ({"rawDerivation"} if isinstance(value, dict) and "rawDerivation" in value else set())); require(type(value["version"]) is int and value["version"] == 1, "Unknown shell evidence")
+    evidence_shape(value); require(type(value["version"]) is int and value["version"] == 1, "Unknown shell evidence")
     inputs = cohort.Inputs(base)
     root, lolly_run = cohort.source_record(value["lolly"], inputs, runner, "lolly")
     work_root, work_run = cohort.source_record(value["work"], inputs, runner, "work")
@@ -554,7 +563,7 @@ def prepare(value, base, expected_public_pin, node="node", runner=git_command):
     require(old.manifest_sha == previous["shell"]["manifestSha256"] and old.shell_id == previous["shell"]["releaseId"] and raw.manifest_sha == previous["pack"]["manifestSha256"], "Accepted shell/raw-pack snapshot differs")
     cohort.retention(candidate, old, shell)
     def generated(path):
-        return path.startswith("_app/") or path in {"index.html", "precache.json", "sw.js", "portable/player.js"}
+        return path.startswith("_app/") or re.sub(r"\.(gz|br)$", "", path) in {"index.html", "precache.json", "sw.js", "portable/player.js"}
     require({p: entry for p, entry in old.files.items() if not generated(p)} == {p: entry for p, entry in candidate.files.items() if not generated(p)}, "Static assets/catalog/dependencies changed in shell-only output")
     public_pin = inputs.file(value["publicPin"])
     actual_catalog = cohort.catalog(shell, raw, public_pin, cohort.sha(expected_public_pin), node)
