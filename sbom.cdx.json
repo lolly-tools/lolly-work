@@ -1,7 +1,7 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:def2b147-69fe-4391-8a4c-f81237dbf51a",
+  "serialNumber": "urn:uuid:cd7ac6c9-6499-402a-8f9d-fe817eaeb2c7",
   "version": 1,
   "metadata": {
     "tools": [
@@ -297,6 +297,27 @@
         {
           "alg": "SHA-512",
           "content": "4ba98bd32341fc06edf448b8b6af200e171ccdce12dfebd0e2b6bbbf19c07fe6070b4dacaedab128a660871d83abaa747bae931cac11eabf0de8ff79c04b72ed"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40exodus/bytes@1.16.0",
+      "name": "@exodus/bytes",
+      "version": "1.16.0",
+      "purl": "pkg:npm/%40exodus/bytes@1.16.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "21ca56f38b849f737b113b4d64c9712a17e5e8f79cf2b50d18e4c1b566cad452a1271205029b59c95aef5515418a6009c490a07373f17a9c64756586e035737c"
         }
       ]
     },
@@ -1827,10 +1848,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/data-urls@7.0.0",
+      "bom-ref": "pkg:npm/data-urls@8.0.0",
       "name": "data-urls",
-      "version": "7.0.0",
-      "purl": "pkg:npm/data-urls@7.0.0",
+      "version": "8.0.0",
+      "purl": "pkg:npm/data-urls@8.0.0",
       "scope": "required",
       "licenses": [
         {
@@ -1842,7 +1863,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "db75c770217e7281987af8ab65c793543ecd7493aa567fb8f481f2c60b339be2488872e80764e498fb6c6243564f5a6f4521a4737e4be8d1ecd321e43764ae98"
+          "content": "25050208afbf08019b186c7ad7c3e51593171fcd49b63eedef7087bfd75dff3556bf18064f6ccb1518e729bf8d838e86230732f9fedff3ca9de1dbaa9652be59"
         }
       ]
     },
@@ -2079,10 +2100,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/jsdom@30.1.1",
+      "bom-ref": "pkg:npm/jsdom@30.1.2",
       "name": "jsdom",
-      "version": "30.1.1",
-      "purl": "pkg:npm/jsdom@30.1.1",
+      "version": "30.1.2",
+      "purl": "pkg:npm/jsdom@30.1.2",
       "scope": "required",
       "licenses": [
         {
@@ -2094,7 +2115,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "15a866a0f2b9bdb3dcfa3c55d6212b307980672a4267de36347178faaa9a580baf68a293059c5ac27980b6b6c658b53b32d9717ea20fd2ac3a69223e6961ad2e"
+          "content": "d05144fe3135ae9a6655f52b254831a978dcc289596081ad0208f5a53bacb0c84d6712318bb5bf3ef7d668c36ba068b6077e97d482876dec6967d0e192838f89"
         }
       ]
     },
@@ -2137,27 +2158,6 @@
         {
           "alg": "SHA-512",
           "content": "0de5e3f57e710c28e028b53fed147efc7404573bae1148b095dc0e1ac1cafec7c07c42c6584c9371fd31fae3af0af2b73b6ccf99978f5d62fce6fb626ba1b267"
-        }
-      ]
-    },
-    {
-      "type": "library",
-      "bom-ref": "pkg:npm/lru-cache@11.5.2",
-      "name": "lru-cache",
-      "version": "11.5.2",
-      "purl": "pkg:npm/lru-cache@11.5.2",
-      "scope": "required",
-      "licenses": [
-        {
-          "license": {
-            "id": "BlueOak-1.0.0"
-          }
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "e297ccd457f4c79d28d2d4306f9b9cc3f4733720f4fd824c13a215712b5a959b8c5b176ddec47786e4ad4edc73e0f526bd97d182ebc37a36acbd0da489f475d6"
         }
       ]
     },
@@ -3045,6 +3045,20 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:npm/tr46@7.0.0",
+      "name": "tr46",
+      "version": "7.0.0",
+      "purl": "pkg:npm/tr46@7.0.0",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "05c0d20d6f922065953a7b35666e9883dd6af40123ede6880f440363da08a890f503c76c70dc0c725f529acd837ae582368bf55f4fe85da9c719840148bc19b2"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:npm/tslib@1.14.1",
       "name": "tslib",
       "version": "1.14.1",
@@ -3150,10 +3164,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/undici@8.10.2",
+      "bom-ref": "pkg:npm/undici@8.11.2",
       "name": "undici",
-      "version": "8.10.2",
-      "purl": "pkg:npm/undici@8.10.2",
+      "version": "8.11.2",
+      "purl": "pkg:npm/undici@8.11.2",
       "scope": "required",
       "licenses": [
         {
@@ -3165,7 +3179,7 @@
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "ff2e3f6c7f58354e618bd348ae93aebc65c5731ae3dc232b57efc0629a300184e91e7f205ff5cf163372efae853e8618d2689085d5bdefb24558a18d841770c9"
+          "content": "bb8501dbf22b29d53a945c6e9879a6a356b77c240ee6dcd0965468adfa114badedc61ac1ef14e94a7d4f7edc02e2a10790e6aa3fde5f0965b8949cf012bc3385"
         }
       ]
     },
@@ -3234,27 +3248,6 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/whatwg-url@16.0.1",
-      "name": "whatwg-url",
-      "version": "16.0.1",
-      "purl": "pkg:npm/whatwg-url@16.0.1",
-      "scope": "required",
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA-512",
-          "content": "d6da38cd70719971d5dc8892484227aeb78896ed36bd43afae1c49247e6f731613043031e7572a66229dc93c6579c74a3528e3f04731181c4d7fa560fbde3983"
-        }
-      ]
-    },
-    {
-      "type": "library",
       "bom-ref": "pkg:npm/whatwg-url@17.1.2",
       "name": "whatwg-url",
       "version": "17.1.2",
@@ -3271,6 +3264,20 @@
         {
           "alg": "SHA-512",
           "content": "4c4640f99ab18a7ec98ec9b672346884299e9f96b087e853e998b755976a66535193bcef388ffd5a904583f0d6940e7a6d69f3c26e83b81f0d4b412cc501fdb9"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/whatwg-url@17.2.0",
+      "name": "whatwg-url",
+      "version": "17.2.0",
+      "purl": "pkg:npm/whatwg-url@17.2.0",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "2212c81cd701af3222c42e575ec6ebe03c5d8da8f2039bd0e51c0664cb6b529f866ed13936bb207bd40a6aeee35eb0b46935cb606574c625bb4dbe184b66a89b"
         }
       ]
     },
