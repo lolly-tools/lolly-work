@@ -464,16 +464,23 @@ class Stage:
         value = cohort.parse_json(self.host_python(code, raw(self.image))); need(value['image'] == self.image and self.image in value['repoDigests'], 'Native imported image no longer available'); return value
 
     def phase(self, name, fn):
-        self.unchanged(); start = len(self.events)
+        started = time.monotonic(); self.unchanged(); start = len(self.events)
         self.save(name + '.started.json', {'status': 'STARTED_NO_REPLAY', 'inputSha256': self.input_sha, 'operatorSha256': self.operator_sha})
         try:
             details = fn(); result = {'version': 1, 'phase': name, 'status': 'ACTUAL_PHASE_ACCEPTED', 'prepared': self.value['prepared'],
                 'source': {'path': str(Path(__file__).resolve()), 'sha256': self.operator_sha}, 'commands': self.events[start:]}
             need(result['commands'], 'Original phase command custody required')
             self.save(name + '.details.actual.json', details)
+            self.save(name + '.timing.actual.json', {'version': 1, 'activity': 'stage:' + name, 'elapsedSeconds': time.monotonic() - started, 'clock': 'LOCAL_MONOTONIC_ELAPSED_TIME', 'phaseBodyCompleted': True, 'qualificationClaimed': False})
             return self.save(name + '.accepted.json', result)
         except BaseException as error:
-            self.save(name + '.uncertain.json', {'status': 'REFUSED_NO_REPLAY', 'failureType': type(error).__name__, 'inputSha256': self.input_sha}); raise
+            self.save(name + '.uncertain.json', {'status': 'REFUSED_NO_REPLAY', 'failureType': type(error).__name__, 'inputSha256': self.input_sha})
+            try:
+                if not (self.out / (name + '.timing.actual.json')).exists():
+                    self.save(name + '.timing.actual.json', {'version': 1, 'activity': 'stage:' + name, 'elapsedSeconds': time.monotonic() - started, 'clock': 'LOCAL_MONOTONIC_ELAPSED_TIME', 'phaseBodyCompleted': False, 'qualificationClaimed': False})
+            except Exception as timing_error:
+                error.add_note('Phase timing capture failed: ' + type(timing_error).__name__)
+            raise
 
     def prior(self, name):
         result = self.load(name + '.accepted.json'); need(result['prepared'] == self.value['prepared'] and result['source']['sha256'] == self.operator_sha, 'Prior phase belongs to different runtime source/input')
@@ -625,7 +632,7 @@ class Stage:
             need(before == self.physical('qualifier'), 'Native physical bytes changed during HTTP')
             model_after, model_physical_after = self.model_checkpoint(); need(model_before == model_after, 'Active model owner/backing changed during stage')
             need(model_physical_after == model_physical_before, 'Active model inode/link membership changed during native HTTP')
-            model_http = module('delivery_http', 'public-delivery-http.py').verify_models_tls(self.context['origin'], self.models)
+            model_http = module('delivery_http', 'public-delivery-http.py').verify_models_tls(self.context['origin'], self.models, telemetry=lambda value: self.save('models-http.timing.actual.json', value))
             self.save('models-http.original.json', model_http)
             model_final, model_physical_final = self.model_checkpoint()
             need(model_final == model_before and model_physical_final == model_physical_before,

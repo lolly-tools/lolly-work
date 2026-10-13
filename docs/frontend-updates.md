@@ -286,4 +286,27 @@ through ordinary and mismatching-If-Range requests. Its TLS portion took about 1
 the full qualification took about 28 minutes. These are measurements from that run,
 not a promised duration or a measured result of the scan reduction. Model HTTP requests
 and publication checks remain unchanged. Broader accepted-model proof reuse, freshness
-rules and timing reports are tracked in [issue 115](https://github.com/lolly-tools/lolly-work/issues/115).
+rules and end-to-end timing coverage are tracked in [issue 115](https://github.com/lolly-tools/lolly-work/issues/115).
+
+
+The maintained full-root stage and publisher write `<phase>.timing.actual.json`
+with monotonic elapsed seconds, including their guard work. Model HTTPS checks
+also write `models-http.timing.actual.json` during qualification and
+`owning-models-tls.timing.actual.json` during observation. These record requests
+started, responses completed and response-body bytes actually read, including
+partial reads on failure. Bytes exclude headers and TLS framing; they are not
+network-interface traffic measurements. Model time is part of its enclosing
+phase time, so do not add them together. Constructor and local preparation time
+are not covered by these phase sidecars.
+
+These diagnostic files do not grant acceptance. Keep the existing accepted or
+uncertain receipt and original command evidence alongside them; a completed phase
+body or HTTP check alone does not prove publication succeeded. An interrupted
+process may leave no timing file. This telemetry does not reduce transfers or
+claim a faster release.
+
+Any future reuse of model proofs must remain within the exact same verified
+owner and process checkpoint. A replaced owner or process requires full
+qualification, even when image and storage identities match. A Recreate rollout
+necessarily changes owner, so a proof from the old serving owner cannot qualify
+the new one. Cross-owner reuse remains outside the current optimization.

@@ -6,6 +6,7 @@ import importlib.util
 import json
 from pathlib import Path
 import ssl
+import time
 from urllib.parse import urlsplit
 
 # Includes every component and stored newline within the strict cohort parser.
@@ -23,10 +24,12 @@ def module(name, filename):
     value = importlib.util.module_from_spec(spec); spec.loader.exec_module(value); return value
 
 
-def verify_models_tls(origin, files):
+def verify_models_tls(origin, files, telemetry=None):
     """Use the same strict model oracle with authenticated server TLS transport."""
     u = urlsplit(origin)
     if u.scheme != 'https' or not u.hostname or u.username or u.password or u.query or u.fragment or u.path not in {'', '/'}: raise RuntimeError('Exact normal TLS origin required')
+    started = time.monotonic()
+    counts = {'requestsStarted': 0, 'responsesCompleted': 0, 'bodyBytesRead': 0}
     verifier = module('delivery_tls_models', 'public-delivery-model-http.py')
     def request(actual_origin, method, path, headers, maximum, origin_header='https://example.net'):
         if actual_origin != origin or not (path.startswith('/models/') or path in {'/.delivery-etags.conf', '/healthz'}): raise RuntimeError('Model origin/path changed')
@@ -34,6 +37,7 @@ def verify_models_tls(origin, files):
         try:
             sent = {'Accept-Encoding': 'gzip, br', **headers}
             if origin_header is not None: sent['Origin'] = origin_header
+            counts['requestsStarted'] += 1
             connection.request(method, path, headers=sent); response = connection.getresponse(); original = response.getheaders()
             if len(original) > 64 or sum(len(k) + len(v) for k, v in original) > 32768: raise RuntimeError('Bounded original TLS response headers required')
             grouped = {}
@@ -41,16 +45,31 @@ def verify_models_tls(origin, files):
             if any(len(values) != 1 for values in grouped.values()): raise RuntimeError('Duplicate TLS response header refused')
             digest, prefix, size = hashlib.sha256(), bytearray(), 0
             while block := response.read(min(65536, maximum - size + 1)):
-                size += len(block)
+                size += len(block); counts['bodyBytesRead'] += len(block)
                 if size > maximum: raise RuntimeError('Exact TLS response byte bound exceeded')
                 digest.update(block)
                 if len(prefix) < 32: prefix.extend(block[:32 - len(prefix)])
+            counts['responsesCompleted'] += 1
             return {'status': response.status, 'headers': {k: v[0] for k, v in grouped.items()}, 'originalHeaders': original,
                 'knownDuplicateCors416': False, 'size': size, 'sha256': digest.hexdigest(), 'prefix': bytes(prefix)}
         finally: connection.close()
     verifier.request = request
     encoded = json.dumps(files, separators=(',', ':')).encode()
-    return verifier.verify({'version': 1, 'origin': origin, 'inventorySha256': hashlib.sha256(encoded).hexdigest(), 'files': files})
+    def emit(passed):
+        if telemetry is not None:
+            telemetry({'version': 1, 'activity': 'model-http', 'clock': 'LOCAL_MONOTONIC_ELAPSED_TIME',
+                'elapsedSeconds': time.monotonic() - started, **counts, 'checksCompleted': passed,
+                'byteAccounting': 'RESPONSE_BODY_BYTES_READ_INCLUDES_PARTIAL_FAILURES_EXCLUDES_HEADERS_AND_TLS',
+                'qualificationClaimed': False})
+    try:
+        result = verifier.verify({'version': 1, 'origin': origin, 'inventorySha256': hashlib.sha256(encoded).hexdigest(), 'files': files})
+    except BaseException as error:
+        try: emit(False)
+        except Exception as telemetry_error:
+            error.add_note('Model timing capture failed: ' + type(telemetry_error).__name__)
+        raise
+    emit(True)
+    return result
 
 
 def verify_static_tls(origin, rows):
