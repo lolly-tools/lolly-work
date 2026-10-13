@@ -36,6 +36,7 @@ import { declaredOrigins, egressChecker } from './egress.ts';
 import { renderWebBase } from './web-base.ts';
 import { workerBrowserOptions } from './browser-launch.ts';
 import { RequestLifecycle } from './request-lifecycle.ts';
+import { deliverResponse, ResponseBudget } from './request-delivery.ts';
 
 const PORT = Number(process.env.PORT ?? 8791);
 const SECRET = process.env.LW_RENDER_WORKER_SECRET ?? '';
@@ -168,31 +169,30 @@ async function renderSvg(job: { toolId: string; query: string; overrides: Record
     });
     signal.throwIfAborted();
     let confirmedBrand = false;
-    let rejectBrand!: (error: Error) => void;
-    const mismatchedBrand = new Promise<never>((_, reject) => { rejectBrand = reject; });
-    void mismatchedBrand.catch(() => {});
     const egress = egressChecker(DECLARED_ORIGINS);
+    const budget = new ResponseBudget();
     await ctx.route('**/*', route => requests.track(async () => {
       const raw = route.request().url();
       const verdict = await egress(raw);
       if (!verdict.allow) { refused(raw, verdict.reason); await route.abort('blockedbyclient'); return; }
       signal.throwIfAborted();
       const url = new URL(raw);
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') { await route.continue(); return; }
       const readPath = /^(\/catalog\/|\/tools\/|\/api\/auth\/config$)/.test(url.pathname);
-      if (url.origin !== new URL(WEB_BASE).origin) { await route.continue(); return; }
-      if (job.readToken && (readPath && !/^\/(catalog|tools)(\/|$)/.test(url.pathname) || projectFileRead(route.request().method(), url.pathname))) {
-        const response = await route.fetch({ maxRedirects: 0, headers: { ...route.request().headers(), 'x-lw-render-read': job.readToken } });
-        await route.fulfill({ response }); return;
-      }
-      if (!job.brandRevision || !/^\/(catalog|tools|api\/brand)(\/|$)/.test(url.pathname)) { await route.continue(); return; }
-      const response = await route.fetch({ maxRedirects: 0, headers: { ...route.request().headers(), 'x-lolly-brand-revision': job.brandRevision,
-        ...(readPath && job.readToken ? { 'x-lw-render-read': job.readToken } : {}) } });
-      if (response.headers()['x-lolly-brand-revision'] !== job.brandRevision || response.status() === 409) {
-        rejectBrand(requests.fail('The catalogue revision changed or the worker is not connected to this instance. Retry after refreshing.'));
-        await route.abort('failed'); return;
-      }
-      confirmedBrand = true;
-      await route.fulfill({ response });
+      const sameOrigin = url.origin === new URL(WEB_BASE).origin;
+      const revisionPath = sameOrigin && job.brandRevision && /^\/(catalog|tools|api\/brand)(\/|$)/.test(url.pathname);
+      const credentialPath = sameOrigin && job.readToken && (readPath || projectFileRead(route.request().method(), url.pathname));
+      await deliverResponse(route, budget, signal, {
+        timeout: Math.min(NAV_TIMEOUT_MS, EXPORT_TIMEOUT_MS),
+        headers: { ...route.request().headers(), ...(credentialPath ? { 'x-lw-render-read': job.readToken! } : {}),
+          ...(revisionPath ? { 'x-lolly-brand-revision': job.brandRevision! } : {}) },
+        ...(revisionPath ? { verify: (response) => {
+          if (response.headers()['x-lolly-brand-revision'] !== job.brandRevision || response.status() === 409) {
+            throw requests.fail('The catalogue revision changed or the worker is not connected to this instance. Retry after refreshing.');
+          }
+          confirmedBrand = true;
+        } } : {}),
+      });
     }, () => route.abort('failed')));
     signal.throwIfAborted();
     const page = await ctx.newPage();
@@ -206,7 +206,7 @@ async function renderSvg(job: { toolId: string; query: string; overrides: Record
     // tool mounts and its hooks settle. The download event is the real gate.
     await page.goto(exportUrl(job.toolId, job.query, job.overrides), { waitUntil: 'commit', timeout: NAV_TIMEOUT_MS });
     signal.throwIfAborted();
-    const download = await Promise.race([downloadP, mismatchedBrand]);
+    const download = await downloadP;
     if (job.brandRevision && !confirmedBrand) throw new Error('The worker could not verify the selected catalogue revision.');
     signal.throwIfAborted();
     const stream = await download.createReadStream();
@@ -262,12 +262,15 @@ async function rasterise(job: { svg: string; format: string; width?: number }, s
   // must not execute, and model URLs must not acquire weights through markup.
   return withContext(signal, { serviceWorkers: 'block', deviceScaleFactor: 1, javaScriptEnabled: false }, async (ctx, requests) => {
     const egress = egressChecker(DECLARED_ORIGINS);
+    const budget = new ResponseBudget();
     await ctx.route('**/*', route => requests.track(async () => {
       const raw = route.request().url();
       const verdict = await egress(raw);
       if (!verdict.allow) { refused(raw, verdict.reason); await route.abort('blockedbyclient'); return; }
       signal.throwIfAborted();
-      await route.continue();
+      const url = new URL(raw);
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') { await route.continue(); return; }
+      await deliverResponse(route, budget, signal, { timeout: EXPORT_TIMEOUT_MS });
     }, () => route.abort('failed')));
     signal.throwIfAborted();
     const page = await ctx.newPage();
