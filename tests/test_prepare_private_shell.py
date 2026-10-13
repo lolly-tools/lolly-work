@@ -266,6 +266,30 @@ class Shell(fixture.Cohort):
             wrong = copy.deepcopy(actual); change(wrong["reconciliation"])
             with self.assertRaises(m.Refusal): m.authenticated_acceptance_custody(wrong, self.previous, self.before, m.cohort.Inputs(self.base))
 
+    def test_derived_pack_reuses_original_release_custody_after_frontend_source_changes(self):
+        f = fixture.Cohort(); f.keys = self.keys; f.setUp()
+        try:
+            stamp = f.derived_cohort()
+            value = copy.deepcopy(f.evidence)
+            value["rawDerivation"]["release"] = value["candidateShell"]
+            previous = {"engineSource": f.sources["lolly"]}
+            value["lolly"]["source"] = "f" * 40  # The frontend can advance; the pack cannot.
+            inputs = m.cohort.Inputs(f.base)
+            raw = m.cohort.Tree(value["rawPack"], inputs)
+            release = m.cohort.Tree(value["candidateShell"], inputs)
+            catalog = m.cohort.catalog(release, raw, inputs.file(value["publicPin"]), f.public_pin_sha, NODE)
+            result = m.unchanged_raw_source(value, previous, raw, inputs, f.roots["lolly"], catalog, f.public_pin_sha, NODE, m.git_command)
+            self.assertEqual(result, stamp["derivation"]); inputs.unchanged()
+            for kind in ("missing", "custody", "engine", "release"):
+                bad = copy.deepcopy(value); prior = dict(previous)
+                if kind == "missing": del bad["rawDerivation"]
+                elif kind == "custody": bad["rawDerivation"]["custody"]["sha256"] = "0" * 64
+                elif kind == "engine": prior["engineSource"] = "e" * 40
+                else: bad["rawDerivation"]["release"]["manifest"]["sha256"] = "0" * 64
+                with self.subTest(kind=kind), self.assertRaises((m.Refusal, ValueError, OSError)):
+                    m.unchanged_raw_source(bad, prior, raw, m.cohort.Inputs(f.base), f.roots["lolly"], catalog, f.public_pin_sha, NODE, m.git_command)
+        finally: f.tearDown(); f.doCleanups()
+
     def test_shell_new_source_retains_engine_pack_image_and_only_three_selected_leaves(self):
         self.assertEqual(self.result["sources"]["engine"], self.engine_source)
         self.assertNotEqual(self.result["sources"]["lolly"], self.engine_source)

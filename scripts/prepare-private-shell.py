@@ -512,8 +512,29 @@ def change_tuple(before, previous, selection, source, release):
     return spec, patch, {"status": "FRESH_AFTER_CAPTURE_AND_DATA_COMPATIBILITY_REQUIRED_NOT_EXECUTABLE", "fields": fields}
 
 
+def unchanged_raw_source(value, previous, raw, inputs, root, actual_catalog, expected_public_pin, node, runner):
+    """Retain the accepted pack; derived stamps keep their original signed-release custody."""
+    stamp = cohort.parse_json(raw.data(".lolly-pack-source.json"))
+    if type(stamp.get("version")) is int and stamp["version"] == 2:
+        require("rawDerivation" in value, "Accepted derived pack requires original release custody")
+        derivation = value["rawDerivation"]
+        exact(derivation, {"custody", "release"})
+        release = cohort.Tree(derivation["release"], inputs)
+        require(cohort.catalog(release, raw, inputs.file(value["publicPin"]), cohort.sha(expected_public_pin), node) == actual_catalog,
+                "Original derived release catalog differs from accepted catalog")
+        original = {"lolly": {**value["lolly"], "source": previous["engineSource"]}, "profile": value["profile"],
+                    "publicPin": value["publicPin"], "candidateShell": derivation["release"],
+                    "rawDerivation": {"custody": derivation["custody"]}}
+        return cohort.raw_source_stamp(original, inputs, raw, release, root, runner)
+    require("rawDerivation" not in value, "Legacy pack must not acquire derived release custody")
+    exact(stamp, {"version", "source", "commit", "profile", "dirty", "excluded", "removed", "builtAt"})
+    require(type(stamp["version"]) is int and stamp["version"] == 1 and stamp["source"] == "lolly" and stamp["commit"] == previous["engineSource"] and stamp["profile"] == value["profile"] and stamp["dirty"] is False
+            and stamp["removed"] == ["catalog/tools/index.sig.json"] and stamp["excluded"] == ["catalog/og", "catalog/previews"], "Unchanged raw-pack source stamp differs")
+    return None
+
+
 def prepare(value, base, expected_public_pin, node="node", runner=git_command):
-    exact(value, EVIDENCE_KEYS); require(type(value["version"]) is int and value["version"] == 1, "Unknown shell evidence")
+    exact(value, EVIDENCE_KEYS | ({"rawDerivation"} if isinstance(value, dict) and "rawDerivation" in value else set())); require(type(value["version"]) is int and value["version"] == 1, "Unknown shell evidence")
     inputs = cohort.Inputs(base)
     root, lolly_run = cohort.source_record(value["lolly"], inputs, runner, "lolly")
     work_root, work_run = cohort.source_record(value["work"], inputs, runner, "work")
@@ -549,10 +570,7 @@ def prepare(value, base, expected_public_pin, node="node", runner=git_command):
         require(accepted_proof["fullStatic"].get("files") == len(old.files) and accepted_proof["runtimeAndCatalog"].get("packFilesEqual") == len(raw.files)
                 and accepted_proof["runtimeAndCatalog"].get("signedToolFilesEqual") == actual_catalog["signedFiles"] and accepted_proof["runtimeAndCatalog"].get("engine") == pin["engine"]["version"]
                 and accepted_proof["runtimeAndCatalog"].get("core") == pin["core"]["version"], "Original accepted full-content count or engine ABI differs")
-    stamp = cohort.parse_json(raw.data(".lolly-pack-source.json"))
-    exact(stamp, {"version", "source", "commit", "profile", "dirty", "excluded", "removed", "builtAt"})
-    require(type(stamp["version"]) is int and stamp["version"] == 1 and stamp["source"] == "lolly" and stamp["commit"] == previous["engineSource"] and stamp["profile"] == value["profile"] and stamp["dirty"] is False
-            and stamp["removed"] == ["catalog/tools/index.sig.json"] and stamp["excluded"] == ["catalog/og", "catalog/previews"], "Unchanged raw-pack source stamp differs")
+    unchanged_raw_source(value, previous, raw, inputs, root, actual_catalog, expected_public_pin, node, runner)
     build = cohort.receipt(value["build"], {"version", "status", "lollySource", "engineSource", "workSource", "brandCommit", "profile", "enginePinSha256", "shellManifestSha256", "settings", "workspaceModules", "originalReport"}, inputs)
     require(build["status"] == "PRIVATE_WEB_BUILD_REVIEWED" and build["lollySource"] == value["lolly"]["source"] and build["engineSource"] == previous["engineSource"] and build["workSource"] == previous["workSource"] and build["brandCommit"] == brand
             and build["profile"] == value["profile"] and build["enginePinSha256"] == value["enginePin"]["sha256"] and build["shellManifestSha256"] == candidate.manifest_sha, "Reviewed build source/manifest custody differs")
