@@ -863,6 +863,7 @@ function listNodes(nodes) {
 // Build the linear sentence for one item as a flat array of text + link nodes.
 function activityLine(item, names) {
   const p = item.payload || {};
+  const email = typeof p.email === 'string' && (p.email.startsWith('email:') || p.email === '[email omitted]') ? null : p.email;
   const s = actSubjRef(item.subject);
   const out = [actActorObj(item.actor, names)];
   if (item.actor.kind === 'agent' && item.actor.client) out.push(' ', el('span', { class: 'agent-client-tag', title: 'Reported on this request; not verified by Lolly.' }, agentClientLabel(item.actor.client), ...(item.actor.client.model ? [` · ${agentModelLabel(item.actor.client)}`] : [])));
@@ -871,8 +872,8 @@ function activityLine(item, names) {
   const push = (...xs) => out.push(...xs);
   switch (item.action) {
     case 'auth.login': push('signed in', p.provider ? ` via ${p.provider}` : ''); break;
-    case 'auth.password.link.issue': push('issued a ', p.purpose === 'reset' ? 'password' : 'sign-in', ' link for ', el('b', {}, p.email || 'someone')); break;
-    case 'auth.password.set': push('set the password for ', el('b', {}, p.email || 'an account')); break;
+    case 'auth.password.link.issue': push('issued a ', p.purpose === 'reset' ? 'password' : 'sign-in', ' link for ', el('b', {}, email || 'someone')); break;
+    case 'auth.password.set': push('set the password for ', el('b', {}, email || 'an account')); break;
     case 'link.create': push('created a ', el('b', {}, `${p.kind || 'share'} link`), p.toolId ? [' for ', actToolObj(p.toolId)] : '', s ? [' — ', actConsoleObj('link', s.id, 'link')] : ''); break;
     case 'link.revoke': push('revoked ', actConsoleObj('link', s?.id, 'a link')); break;
     case 'session.create': push('created a session', p.toolId ? [' of ', actToolObj(p.toolId)] : '', s ? [' — ', actSessionObj(s.id, p.toolId)] : '', p.projectId ? [' in ', actProjectObj(p.projectId)] : ''); break;
@@ -922,24 +923,24 @@ function activityLine(item, names) {
     // Invitations and access requests (plans/74 invite spec 4.4). A step
     // taken before anyone is admitted is audited as `anonymous`, which the
     // feed names "the system", so those sentences lead with the address.
-    case 'invite.create': push('invited ', bold(p.email), p.projects?.length ? [' to ', ...listNodes(p.projects.map((x) => actProjectObj(x.projectId)))] : ''); break;
-    case 'invite.extend': push('added ', p.project?.projectId ? actProjectObj(p.project.projectId) : 'a project', ' to the invitation for ', bold(p.email)); break;
-    case 'invite.accept': push('accepted the invitation for ', bold(p.email)); break;
-    case 'invite.revoke': push('revoked the invitation for ', bold(p.email)); break;
-    case 'invite.link': push('made a new invite link for ', bold(p.email)); break;
-    case 'invite.open': out[0] = 'Someone'; push('opened ', p.email ? ['the invitation for ', bold(p.email)] : 'an invitation'); break;
-    case 'invite.wrong-account': out[0] = bold(p.email); push('opened an invitation with another account'); break;
-    case 'auth.denied': out[0] = bold(p.email); push('could not sign in', p.reason ? ` (${DENIED_REASON[p.reason] ?? p.reason.replace(/-/g, ' ')})` : ''); break;
+    case 'invite.create': push('invited ', bold(email), p.projects?.length ? [' to ', ...listNodes(p.projects.map((x) => actProjectObj(x.projectId)))] : ''); break;
+    case 'invite.extend': push('added ', p.project?.projectId ? actProjectObj(p.project.projectId) : 'a project', ' to the invitation for ', bold(email)); break;
+    case 'invite.accept': push('accepted the invitation for ', bold(email)); break;
+    case 'invite.revoke': push('revoked the invitation for ', bold(email)); break;
+    case 'invite.link': push('made a new invite link for ', bold(email)); break;
+    case 'invite.open': out[0] = 'Someone'; push('opened ', email ? ['the invitation for ', bold(email)] : 'an invitation'); break;
+    case 'invite.wrong-account': out[0] = bold(email); push('opened an invitation with another account'); break;
+    case 'auth.denied': out[0] = bold(email); push('could not sign in', p.reason ? ` (${DENIED_REASON[p.reason] ?? p.reason.replace(/-/g, ' ')})` : ''); break;
     case 'access.request':
       if (p.kind === 'project') push(p.role === 'editor' ? 'asked to edit ' : 'asked to view ', p.projectId ? actProjectObj(p.projectId) : 'a project');
       else {
-        if (item.actor?.kind !== 'user') out[0] = bold(p.email);
+        if (item.actor?.kind !== 'user') out[0] = bold(email);
         push(p.kind === 'join' ? `asked to join ${workspaceName()}` : 'asked to use their own account for an invitation');
       }
       break;
-    case 'access.request.held': out[0] = bold(p.email); push('asked again, and the request limit held it'); break;
-    case 'access.approve': push('approved a request from ', bold(p.email)); break;
-    case 'access.decline': push('declined a request from ', bold(p.email)); break;
+    case 'access.request.held': out[0] = bold(email); push('asked again, and the request limit held it'); break;
+    case 'access.approve': push('approved a request from ', bold(email)); break;
+    case 'access.decline': push('declined a request from ', bold(email)); break;
     case 'access.withdraw': if (item.actor?.kind !== 'user') out[0] = 'Someone'; push('withdrew a request'); break;
     case 'access.supersede': push('closed a request, because the person got access another way'); break;
     default: push(item.action.replace(/\./g, ' '), s ? [' ', actConsoleObj(s.type, s.id)] : '');
@@ -988,7 +989,7 @@ async function renderActivityFeed(host, params = new URLSearchParams()) {
     ]);
   } catch (e) {
     host.replaceChildren(el('p', { class: 'sub' }, e.status === 403
-      ? 'You cannot see the activity timeline. It needs permission to read the audit log, which a deployment admin grants.'
+      ? 'Activity access follows the deployment policy and audit permissions.'
       : `Activity did not load: ${e.message}`));
     return;
   }

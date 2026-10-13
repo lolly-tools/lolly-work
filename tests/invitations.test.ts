@@ -170,7 +170,7 @@ test('routes: create, idempotent re-invite, list, revoke once, re-invite after r
   assert.deepEqual((await mixed.json() as { invitations: Wire[] }).invitations.map((i) => i.created), [false, true]);
   assert.equal((await store.listAudit()).filter((e) => e.action === 'invite.create').length, 3, 'one audit row per invitation actually created');
   const createRow = (await store.listAudit()).find((e) => e.action === 'invite.create' && e.subject === `invitation:${ana.id}`);
-  assert.deepEqual(createRow?.payload, { email: 'ana@example.com', groups: ['team'], expiresAt, via: 'console', passwordSetup: false });
+  assert.deepEqual(createRow?.payload, { email: '[email omitted]', groups: ['team'], expiresAt, via: 'console', passwordSetup: false });
 
   const listed = await (await fetch(`${base}/api/v1/invitations`, { headers: { cookie: admin } })).json() as { invitations: Wire[] };
   assert.equal(listed.invitations.length, 3);
@@ -182,7 +182,7 @@ test('routes: create, idempotent re-invite, list, revoke once, re-invite after r
   assert.equal((await revoke(base, admin, ana.id)).status, 404);
   assert.equal((await revoke(base, admin, 'inv_nope')).status, 404);
   const revokeRow = (await store.listAudit()).find((e) => e.action === 'invite.revoke');
-  assert.deepEqual(revokeRow?.payload, { email: 'ana@example.com', was: 'pending' });
+  assert.deepEqual(revokeRow?.payload, { email: '[email omitted]', was: 'pending' });
 
   // After a revoke the address is free for a fresh invitation.
   const fresh = await invite(base, admin, { emails: ['ana@example.com'] });
@@ -336,14 +336,14 @@ test('admission by invitation end to end: invited, groups joined and created, ac
   assert.equal(boUser.role, 'member');
   const row = await store.getUserBySub('g-bo');
   assert.deepEqual(row?.localGroups, ['team'], 'joined as a LOCAL group, so an IdP re-sync keeps it');
-  assert.deepEqual((await store.listLocalGroups()).map((g) => g.name), ['team'], 'no group was invented');
+  assert.deepEqual((await store.listLocalGroups()).map((g) => g.name), ['owner', 'team'], 'only the bootstrap owner and invited group exist');
   const accepted = await store.getInvitation(inv.id);
   assert.equal(accepted?.acceptedUserId, row?.id);
   assert.ok(accepted?.acceptedAt);
   const audit = await store.listAudit();
   const acceptRow = audit.find((e) => e.action === 'invite.accept');
   assert.equal(acceptRow?.subject, `invitation:${inv.id}`);
-  assert.deepEqual(acceptRow?.payload, { via: 'sign-in', provider: 'oidc', idp: 'primary', email: 'bo@partner.example', groups: ['team'] });
+  assert.deepEqual(acceptRow?.payload, { via: 'sign-in', provider: 'oidc', idp: 'primary', email: '[email omitted]', groups: ['team'] });
   assert.equal((audit.findLast((e) => e.action === 'auth.login')?.payload as { admittedVia?: string }).admittedVia, 'invitation');
 
   // An owner removes Bo from the group; the next sign-in does not put it back.
@@ -358,10 +358,10 @@ test('admission by invitation end to end: invited, groups joined and created, ac
     .invitations.find((i) => i.id === inv.id);
   assert.equal(listedAccepted?.status, 'accepted');
   assert.equal((await revoke(base, owner, inv.id)).status, 200);
-  assert.deepEqual((await store.listAudit()).findLast((e) => e.action === 'invite.revoke')?.payload, { email: 'bo@partner.example', was: 'accepted' });
+  assert.deepEqual((await store.listAudit()).findLast((e) => e.action === 'invite.revoke')?.payload, { email: '[email omitted]', was: 'accepted' });
   const after = await oidcSignIn(base, current, { sub: 'g-bo', email: 'bo@partner.example', email_verified: true });
   assert.equal(after.done.status, 403);
-  assert.deepEqual((await deniedReasons(store)).at(-1), { provider: 'oidc', idp: 'primary', reason: 'not-invited', email: 'bo@partner.example' });
+  assert.deepEqual((await deniedReasons(store)).at(-1), { provider: 'oidc', idp: 'primary', reason: 'not-invited', email: '[email omitted]' });
 });
 
 test('an invitation written for an account that already existed is accepted but never re-groups it', async () => {
@@ -380,7 +380,7 @@ test('an invitation written for an account that already existed is accepted but 
   assert.equal((await store.getInvitation('inv_mal'))?.acceptedUserId, row?.id, 'still recorded as accepted');
   assert.equal((await store.listLocalGroups()).length, 0, 'no group created');
   assert.deepEqual((await store.listAudit()).find((e) => e.action === 'invite.accept')?.payload,
-    { via: 'sign-in', provider: 'oidc', idp: 'primary', email: 'mal@example.com', groups: ['admin'], groupsNotApplied: 'existing-account' });
+    { via: 'sign-in', provider: 'oidc', idp: 'primary', email: '[email omitted]', groups: ['admin'], groupsNotApplied: 'existing-account' });
 });
 
 test('device sign-in asks admission again: a revoked invitation cannot be renewed from a live session', async () => {
@@ -406,7 +406,7 @@ test('device sign-in asks admission again: a revoked invitation cannot be renewe
   const after = await deviceSignIn();
   assert.equal(after.status, 'denied', 'no longer admitted: no fresh session');
   assert.equal(after.session, undefined);
-  assert.deepEqual((await deniedReasons(store)).at(-1), { provider: 'device', reason: 'not-admitted', email: 'bo@partner.example' });
+  assert.deepEqual((await deniedReasons(store)).at(-1), { provider: 'device', reason: 'not-admitted', email: '[email omitted]' });
 });
 
 test('admission by invitation: an expired or revoked pending invitation admits nobody', async () => {
@@ -489,7 +489,7 @@ test('admission by invitation through the reverse proxy', async () => {
   assert.equal(admitted.status, 302);
   assert.deepEqual((await store.getUserBySub('proxy:bo'))?.localGroups, ['team', 'brand']);
   assert.deepEqual((await store.listAudit()).find((e) => e.action === 'invite.accept')?.payload,
-    { via: 'sign-in', provider: 'proxy', email: 'bo@partner.example', groups: ['team', 'brand'], createdGroups: ['team', 'brand'] });
+    { via: 'sign-in', provider: 'proxy', email: '[email omitted]', groups: ['team', 'brand'], createdGroups: ['team', 'brand'] });
 });
 
 // ── the CLI drives the same routes ───────────────────────────────────────────
@@ -555,7 +555,7 @@ test('invitation wires: a personal link while pending, names and projects, passw
   assert.deepEqual([body.providers, body.passwordSignIn, body.passwordDomains, body.inviteNote],
     [['Email and password'], true, ['suse.com'], 'Use GitHub or email and password.']);
   const create = (await store.listAudit()).find((e) => e.action === 'invite.create');
-  assert.deepEqual(create?.payload, { email: 'sam@suse.com', groups: [], via: 'console', passwordSetup: true });
+  assert.deepEqual(create?.payload, { email: '[email omitted]', groups: [], via: 'console', passwordSetup: true });
 
   // A password set since ends what the flag offers; the wire says so.
   await store.putPasswordCredential({ id: 'pw_1', email: 'sam@suse.com', hash: 'x', at: new Date().toISOString(), ownerIssued: false });
@@ -643,7 +643,7 @@ test('New link (R13): the version goes up and earlier links stop matching; pendi
   assert.equal(readInviteToken(tokenOf(next.link!), ['lInv'])?.version, (await store.getInvitation(first.id))?.linkVersion);
   const adminId = (await store.findUsersByEmail('admin@test'))[0]!.id;
   const row = (await store.listAudit()).find((e) => e.action === 'invite.link');
-  assert.deepEqual([row?.actor, row?.subject, row?.payload], [`user:${adminId}`, `invitation:${first.id}`, { email: 'ana@x.example', version: 2 }]);
+  assert.deepEqual([row?.actor, row?.subject, row?.payload], [`user:${adminId}`, `invitation:${first.id}`, { email: '[email omitted]', version: 2 }]);
 
   // Ten new links a day for one invitation, then 429.
   for (let i = 0; i < 9; i++) assert.equal((await post(base, admin, `/api/v1/invitations/${first.id}/link`)).status, 200, `link ${i + 2}`);

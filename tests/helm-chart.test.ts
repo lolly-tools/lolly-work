@@ -138,6 +138,7 @@ test('internal policy overlay produces a valid gated config and preserves enviro
   assert.equal(cfg.policy.telemetry, 'off');
   assert.equal(cfg.policy.guestLinks.enabled, false);
   assert.equal(cfg.policy.nearby.enabled, false);
+  assert.deepEqual(cfg.policy.activity, { mode: 'off', auditSessionUpdates: false });
   assert.equal(cfg.policy.retention.auditDays, 180, 'retain the environment-approved schedule');
   assert.ok(cfg.policy.sessionTtlHours <= 24);
   assert.equal(cfg.render.allowHooksInFastPath, false);

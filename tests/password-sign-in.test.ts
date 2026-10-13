@@ -496,8 +496,8 @@ test('login: a wrong password and an unknown email get the same 400; the email i
   assert.equal(cookieOf(wrong, 'lw_session'), undefined);
 
   const fails = (await auditOf(store)).filter((e) => e.action === 'auth.password.fail').map((e) => e.payload);
-  assert.deepEqual(fails[0], { provider: 'password', idp: 'email', reason: 'wrong-password', email: 'eve@partner.example' });
-  assert.deepEqual(fails[1], { provider: 'password', idp: 'email', reason: 'unknown-email', emailHash: sha256Hex('nobody@partner.example').slice(0, 16) });
+  assert.deepEqual(fails[0], { provider: 'password', idp: 'email', reason: 'wrong-password', email: '[email omitted]' });
+  assert.deepEqual(fails[1], { provider: 'password', idp: 'email', reason: 'unknown-email', email: '[email omitted]' });
 });
 
 test('login: ten failures lock the credential; the right password is then refused the same way', async () => {
@@ -559,7 +559,7 @@ test('admission still applies: a revoked invitation refuses the next password si
   assert.ok((await refused.text()).includes('This account is not on Password Team yet'));
   assert.equal(cookieOf(refused, 'lw_session'), undefined);
   assert.deepEqual((await auditOf(store)).filter((e) => e.action === 'auth.denied').at(-1)?.payload,
-    { provider: 'password', idp: 'email', reason: 'not-invited', email: 'ivy@elsewhere.example' });
+    { provider: 'password', idp: 'email', reason: 'not-invited', email: '[email omitted]' });
 });
 
 test('"Disable access" stops password sign-in, and a disabled account gets no new link', async () => {
@@ -730,7 +730,7 @@ test('a link is judged again when it is used: a sign-in made meanwhile, or an is
   assert.equal(post.status, 410);
   assert.equal(await store.getPasswordCredential('pia@partner.example'), null);
   assert.deepEqual((await auditOf(store)).filter((e) => e.action === 'auth.password.link.refused').at(-1)?.payload,
-    { provider: 'password', idp: 'email', email: 'pia@partner.example', reason: 'OWNER_ONLY' });
+    { provider: 'password', idp: 'email', email: '[email omitted]', reason: 'OWNER_ONLY' });
 
   // Issued by an admin who is then disabled.
   const later = await linkFor(base, admin, 'quin@partner.example');
@@ -776,7 +776,7 @@ test('removing the password sign-in deletes the password: it does not link back 
   assert.equal(again.status, 400);
   assert.ok((await again.text()).includes(MISMATCH));
   assert.deepEqual((await store.listIdentities(rae.id)).map((r) => r.idp), ['primary'], 'not linked back');
-  assert.equal((await auditOf(store)).filter((e) => e.action === 'auth.password.remove').at(-1)?.payload?.email, 'rae@partner.example');
+  assert.equal((await auditOf(store)).filter((e) => e.action === 'auth.password.remove').at(-1)?.payload?.email, '[email omitted]');
   const after = (await (await fetch(`${base}/api/v1/users/${rae.id}/identities`, { headers: { cookie: owner } })).json()) as { password: { set: boolean } };
   assert.equal(after.password.set, false);
 

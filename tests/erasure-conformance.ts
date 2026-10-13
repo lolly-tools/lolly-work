@@ -39,8 +39,12 @@ export async function runErasureConformance(store: Store): Promise<void> {
   }
   const unreferenced = await user('erasure-unreferenced');
   await store.putEvents([{ at: now, event: 'tool.open', attrs: {}, userId: unreferenced.id }]);
+  await store.upsertInstall('erasure-install', { shell: 'web', engine: '1.0.0' }, unreferenced.id);
+  await store.upsertInstall('keeper-install', { shell: 'web', engine: '1.0.0' }, keeper.id);
   assert.deepEqual(await store.eraseUserAccount(unreferenced.id), { status: 'erased', scrubbed: 1 });
   assert.equal(await store.getUser(unreferenced.id), null);
+  assert.equal((await store.listInstalls()).find(row => row.installId === 'erasure-install')?.userIdLastSeen, undefined);
+  assert.equal((await store.listInstalls()).find(row => row.installId === 'keeper-install')?.userIdLastSeen, keeper.id);
   assert.equal((await store.listEvents()).some((e) => e.userId === unreferenced.id), false);
   assert.deepEqual(await store.eraseUserAccount(unreferenced.id), { status: 'not-found' });
 

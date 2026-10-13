@@ -35,10 +35,13 @@ test('role mapping keeps legacy defaults, supports exact customer groups and app
 
 test('generated configuration preserves advanced settings, excludes secrets and matches the applied projection', () => {
   const config = configured(); config.idp.additional = [{ id: 'subsidiary', issuer: 'https://other.test', clientId: 'other', displayName: 'Other', groupsClaim: 'roles', claimMap: config.idp.claimMap, clientSecretRef: 'OTHER_SECRET' }];
+  config.policy.activity.mode = 'off';
+  config.policy.activity.auditSessionUpdates = false;
   const original = JSON.stringify(config);
   const draft = setupDraft(config, ['Customer Owners']); draft.name = 'New name'; draft.workerUrl = 'http://renderer:9090';
   const proposal = generateSetup(draft, config);
   const next = parseConfig(JSON.stringify(mergeSetupPatch(config as unknown as Record<string, unknown>, proposal.patch)));
+  assert.deepEqual(next.policy.activity, config.policy.activity);
   assert.deepEqual(next.idp.additional, config.idp.additional); assert.equal(next.policy.sessionTtlHours, config.policy.sessionTtlHours);
   assert.equal(JSON.stringify(config), original);
   assert.equal(setupSettingsHash(setupDraft(next)), proposal.expectedSettingsHash);

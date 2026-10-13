@@ -162,7 +162,7 @@ test('one person, two sign-ins: a verified email links GitHub to the Google acco
 
   const link = (await store.listAudit()).find((e) => e.action === 'identity.link');
   assert.equal(link?.actor, `user:${user.id}`);
-  assert.deepEqual(link?.payload, { via: 'email', provider: 'github', idp: 'github', email: 'ana@example.com' });
+  assert.deepEqual(link?.payload, { via: 'email', provider: 'github', idp: 'github', email: '[email omitted]' });
 
   // The profile view: two sign-ins, the account's own one stays.
   const { identities, available } = await myIdentities(base, ghSession);
@@ -230,7 +230,7 @@ test('an unpinned IdP never joins an account proven only through a pinned one', 
   assert.notEqual((await store.getUserByIdentity('github:101'))?.id, ana.id);
   assert.ok(!(await store.listAudit()).some((e) => e.action === 'identity.link'));
   const held = (await store.listAudit()).find((e) => e.action === 'identity.link-held');
-  assert.deepEqual(held?.payload, { provider: 'github', idp: 'github', email: 'ana@example.com', reason: 'pinned' });
+  assert.deepEqual(held?.payload, { provider: 'github', idp: 'github', email: '[email omitted]', reason: 'pinned' });
 
   // The person can still add GitHub by hand, proving both sides in one browser.
   script.github = { id: 102, login: 'ana-real', emails: [{ email: 'ana@example.com', primary: true, verified: true }] };
@@ -252,7 +252,7 @@ test('an email two accounts already prove links nothing and is audited', async (
   assert.equal((await me(base, github.session as string)).user?.sub, 'github:101', 'its own account');
   assert.equal((await store.listUsers()).length, 3);
   const ambiguous = (await store.listAudit()).find((e) => e.action === 'identity.link-ambiguous');
-  assert.deepEqual(ambiguous?.payload, { provider: 'github', idp: 'github', email: 'ana@example.com', candidates: 2 });
+  assert.deepEqual(ambiguous?.payload, { provider: 'github', idp: 'github', email: '[email omitted]', candidates: 2 });
   assert.ok(!(await store.listAudit()).some((e) => e.action === 'identity.link'));
 });
 
@@ -273,7 +273,7 @@ test('a signed-in member links an account with a different email; a stolen link 
   assert.equal(linked.authorize.searchParams.get('prompt'), 'select_account', 'the account picker by default');
   assert.equal((await store.getUserByIdentity('github:303'))?.id, owner.id);
   const audit = (await store.listAudit()).find((e) => e.action === 'identity.link');
-  assert.deepEqual(audit?.payload, { via: 'self', idp: 'github', email: 'ana.personal@mail.test' });
+  assert.deepEqual(audit?.payload, { via: 'self', idp: 'github', email: '[email omitted]' });
 
   // Signing in with that GitHub account now reaches the same person.
   const again = await signIn(base, script, 'github');
@@ -359,7 +359,7 @@ test('unlink: never the account sign-in, never the last one; admins can unlink f
   assert.equal(delGh.status, 204);
   assert.equal(await store.getUserByIdentity('github:606'), null);
   const unlink = (await store.listAudit()).find((e) => e.action === 'identity.unlink');
-  assert.deepEqual(unlink?.payload, { by: 'self', idp: 'github', email: 'ana2@mail.test', sessionsRevoked: true });
+  assert.deepEqual(unlink?.payload, { by: 'self', idp: 'github', email: '[email omitted]', sessionsRevoked: true });
   // Removing a sign-in puts out the sessions it made (every session carries
   // the account's sub, so all of them end) and keeps this device signed in.
   assert.equal((await fetch(`${base}/api/auth/session`, { headers: { cookie: viaGithub } })).status, 401, 'the removed sign-in session ends');

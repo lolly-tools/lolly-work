@@ -761,7 +761,7 @@ onBothStores('inviting someone who signed up since their invitation closes it', 
   const ownerPrincipal = `user:${await env.userId('owner@test')}`;
   const removed = (await auditFor(env, inv.id)).find((e) => e.action === 'invite.project.remove');
   assert.equal(removed?.actor, ownerPrincipal);
-  assert.deepEqual(removed?.payload, { email: 'dee@test', projectId: first, userId: deeId, via: 'membership' });
+  assert.deepEqual(removed?.payload, { email: '[email omitted]', projectId: first, userId: deeId, via: 'membership' });
   // The last project goes the same way, and the invitation is withdrawn.
   assert.deepEqual(brief((await env.as('owner@test', 'POST', `/api/v1/projects/${second}/invite`, { emails: ['dee@test'], role: 'viewer' })).json.results),
     [{ email: 'dee@test', status: 'added' }]);
@@ -769,7 +769,7 @@ onBothStores('inviting someone who signed up since their invitation closes it', 
   assert.ok((await env.store.getInvitation(inv.id))?.revokedAt, 'revoked');
   assert.equal(await env.store.findActiveInvitation('dee@test'), null);
   const revoked = (await auditFor(env, inv.id)).find((e) => e.action === 'invite.revoke');
-  assert.deepEqual(revoked?.payload, { email: 'dee@test', projectId: second, userId: deeId, via: 'membership', was: 'pending' });
+  assert.deepEqual(revoked?.payload, { email: '[email omitted]', projectId: second, userId: deeId, via: 'membership', was: 'pending' });
 });
 
 onBothStores('accepting one invitation at sign-in closes the project on the invitation for another address the person holds', async (store) => {
@@ -1035,7 +1035,7 @@ onBothStores('New link and Invite again from the people panel', async (store) =>
   assert.equal(rotated.json.expiresAt, first.expiresAt);
   assert.equal(readInviteToken(rotated.json.link.slice(rotated.json.link.lastIndexOf('/') + 1), ['lMem'])?.version, 2);
   const linkRow = (await env.store.listAudit()).find((e) => e.action === 'invite.link');
-  assert.deepEqual([linkRow?.actor, linkRow?.payload], [`user:${await env.userId('mona@test')}`, { email: 'new@else.example', version: 2 }]);
+  assert.deepEqual([linkRow?.actor, linkRow?.payload], [`user:${await env.userId('mona@test')}`, { email: '[email omitted]', version: 2 }]);
   assert.equal((await env.as('eddie@test', 'POST', `/api/v1/projects/${projectId}/invitations/${first.invitationId}/link`, {})).status, 403);
   assert.equal((await env.as('admin@test', 'POST', `/api/v1/projects/${other}/invitations/${first.invitationId}/link`, {})).status, 404,
     'only from a project the invitation carries');
