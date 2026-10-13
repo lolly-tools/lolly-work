@@ -154,6 +154,16 @@ def cli_evidence(prepared, inputs):
     for family in ("lolly", "work"):
         exact(original[family], {"root", "source", "repository", "main", "ciRun", "ciJobs"})
         require(original[family]["source"] == prepared["sources"][family], "CLI evidence source differs")
+        main = inputs.file(original[family]["main"])
+        if isinstance(main, dict) and main.get("status") == "HISTORICAL_MAIN_SOURCE_QUALIFIED":
+            def held_provider(ref):
+                path = str(cohort.local_path(ref["path"], inputs.base))
+                require({"path": path, "sha256": ref["sha256"]} in refs, "Historical provider original missing from prepared evidence")
+                return inputs.file(ref)
+            cohort.paired.main_record(main, original[family], inputs.base, held_provider)
+            run = cohort.paired.run_record(held_provider(original[family]["ciRun"]), original[family]["source"], original[family]["repository"], ".github/workflows/ci.yml", "push")
+            cohort.paired.jobs_record(held_provider(original[family]["ciJobs"]), run, allow_shell_skip=family == "lolly", required_names=cohort.WORK_JOBS if family == "work" else cohort.LOLLY_JOBS)
+            require(prepared["normalCI"][family] == {"run": run["id"], "attempt": run["run_attempt"]}, "Historical CI differs from prepared run")
     exact(original["brand"], {"path", "commit"})
     require(original["brand"]["commit"] == prepared["sources"]["brand"] and original["profile"] == prepared["profile"]
             and original["expectedWorkImage"] == prepared["image"], "CLI evidence profile, brand or image differs")
