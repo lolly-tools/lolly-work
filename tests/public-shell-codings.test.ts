@@ -67,3 +67,21 @@ test('a same-path old app coding cannot be recompressed', async () => {
     await assert.rejects(prepareCodings(f.request), /immutable wire/);
   } finally { rmSync(f.root, { recursive: true, force: true }); }
 });
+
+// The production Python manifest is compact, sorted-key JSON. Retaining its
+// bytes and its row meaning are separate requirements from TS serialization.
+test('Python key ordering does not turn unchanged public files into a delta', () => {
+  const before = { version: 1 as const, totalBytes: 4, files: [
+    { path: '.delivery-etags.conf', sha256: 'a'.repeat(64), size: 1 },
+    { path: '_app/old.js.gz', sha256: 'b'.repeat(64), size: 1 },
+    { path: 'index.html', sha256: 'c'.repeat(64), size: 1 },
+    { path: 'info/guide-12345678.js', sha256: 'd'.repeat(64), size: 1 },
+  ] };
+  const after = { version: 1 as const, totalBytes: 4, files: before.files.map(row => ({ path: row.path, size: row.size,
+    sha256: row.path === '.delivery-etags.conf' || row.path === 'index.html' ? 'e'.repeat(64) : row.sha256 })) };
+  assert.deepEqual(publicFullRootDelta(after, before).files.map(row => row.path), ['.delivery-etags.conf', 'index.html']);
+  const corrupted = structuredClone(after); corrupted.files[1]!.sha256 = 'f'.repeat(64);
+  assert.throws(() => publicFullRootDelta(corrupted, before), /Protected public content or immutable wire/);
+  const resized = structuredClone(after); resized.files[3]!.size += 1;
+  assert.throws(() => publicFullRootDelta(resized, before), /Protected public content or immutable wire/);
+});
