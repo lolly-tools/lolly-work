@@ -63,7 +63,7 @@ async function startupReadinessDiagnostic(base: string) {
   } catch { return { status, body: 'unavailable' }; }
 }
 
-test('built worker uses its actual browser for signed 1.259 QR SVG/PNG, tickets, cancellation and egress', { skip, timeout: 90_000 }, async t => {
+test('built worker uses its actual browser for signed matched-engine QR SVG/PNG, tickets, cancellation and egress', { skip, timeout: 90_000 }, async t => {
   assert.equal(process.getuid?.(), 1000);
   assert.equal(process.versions.node, '26.11.1');
   assert.equal(process.env.PLAYWRIGHT_BROWSERS_PATH, '/opt/lolly-browsers');
@@ -74,14 +74,14 @@ test('built worker uses its actual browser for signed 1.259 QR SVG/PNG, tickets,
   for (const file of sources) assert.equal(hash(await readFile(join('/app/src', file))), hash(await readFile(new URL(file, sourceRoot))), file);
   const pin = JSON.parse(await readFile(new URL('../engine-pin.json', import.meta.url), 'utf8'));
   assert.equal(process.env.LOLLY_TEST_SHELL_SOURCE, pin.generatedFrom);
-  assert.equal(pin.engine.version, '1.259.0');
   const material = process.env.LW_CATALOG_SIGNING_KEY;
   const publicMaterial = process.env.LOLLY_TEST_CATALOG_PUBLIC_KEY_JWK;
   assert.ok(material && publicMaterial);
   const signing = await importCatalogSigningKey(material);
   assert.deepEqual(signing.publicJwk, JSON.parse(publicMaterial));
   const engineSpecifier: string = '@lolly/engine';
-  const { importSpkiOrJwkPublicKey, verifyCatalogEnvelope, verifyToolFile } = await import(engineSpecifier);
+  const { ENGINE_VERSION, importSpkiOrJwkPublicKey, verifyCatalogEnvelope, verifyToolFile } = await import(engineSpecifier);
+  assert.equal(pin.engine.version, ENGINE_VERSION);
   const publicKey = await importSpkiOrJwkPublicKey(publicMaterial);
   const envelope = JSON.parse(await readFile(join(shell, 'catalog/tools/index.sig.json'), 'utf8'));
   const index = await readFile(join(shell, 'catalog/tools/index.json'));
@@ -92,6 +92,7 @@ test('built worker uses its actual browser for signed 1.259 QR SVG/PNG, tickets,
   const qr = JSON.parse(await readFile(join(shell, 'tools/qr-code/tool.json'), 'utf8'));
   assert.ok(qr.hooks, 'The acceptance must use the isolated hooked path');
   const secret = randomUUID(), link = randomUUID(), session = randomUUID();
+  process.env.LW_RENDER_DEPLOYMENT_MODE = 'evaluation';
   process.env.PORT = '0'; process.env.LW_RENDER_WORKER_SECRET = secret;
   // These are the normal production defaults, not the longer legacy browser-test values.
   delete process.env.LW_RENDER_EXPORT_TIMEOUT_MS; delete process.env.LW_RENDER_NAV_TIMEOUT_MS;
@@ -163,6 +164,9 @@ test('built worker uses its actual browser for signed 1.259 QR SVG/PNG, tickets,
     assert.equal(refused.status, 401);
     const actualBrowser = await worker.getBrowser();
     browser = actualBrowser;
+    const evidencePath: string = '/app/src/sandbox-evidence.ts';
+    const { linuxSandboxEvidence } = await import(evidencePath);
+    assert.deepEqual(await linuxSandboxEvidence(actualBrowser), { rendererNamespace: true, rendererSeccomp: true, noCapabilities: true });
     assert.equal(await worker.getBrowser(), actualBrowser, 'The actual worker singleton is used');
     let sandboxExecuted = 0, aiDisabled = 0, aiEnabled = 0;
     const diagnostics: Record<string, unknown>[] = [];

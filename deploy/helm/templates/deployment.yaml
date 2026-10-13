@@ -134,6 +134,10 @@ spec:
               value: {{ .Values.service.targetPort | quote }}
             - name: LW_CONFIG
               value: /app/instance.json
+            {{- if .Values.renderWorker.enabled }}
+            - name: NODE_EXTRA_CA_CERTS
+              value: /run/render-trust/ca.crt
+            {{- end }}
             # HA path: the migrate Job owns the schema, so no replica applies DDL
             # and each refuses to start on a pending schema. With the Job turned
             # off, nothing else would ever apply DDL, so the single-node default
@@ -151,6 +155,11 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
+            {{- if .Values.renderWorker.enabled }}
+            - name: render-trust
+              mountPath: /run/render-trust
+              readOnly: true
+            {{- end }}
             - name: config
               mountPath: /app/instance.json
               subPath: instance.json
@@ -171,6 +180,12 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
       volumes:
+        {{- if .Values.renderWorker.enabled }}
+        - name: render-trust
+          secret:
+            secretName: {{ required "renderWorker.tls.caSecret is required when the worker is enabled" .Values.renderWorker.tls.caSecret | quote }}
+            items: [{ key: ca.crt, path: ca.crt }]
+        {{- end }}
         - name: config
           configMap:
             name: {{ include "lolly-work.fullname" . }}-config

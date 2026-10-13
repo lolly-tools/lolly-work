@@ -29,7 +29,7 @@ if (process.env.LW_REQUIRE_HELM_TESTS === '1' && noHelm) throw new Error('Helm q
 
 const SECRETS = ['--set', 'secrets.sessionSecret=aaaa', '--set', 'secrets.linkSecret=bbbb'];
 const WORKER = [
-  '--set', 'renderWorker.enabled=true',
+  '--set', 'renderWorker.enabled=true', '--set', 'renderWorker.tls.existingSecret=worker-tls', '--set', 'renderWorker.tls.caSecret=worker-ca',
   '--set', 'renderWorker.webBase=https://lolly.tools',
   '--set', 'renderWorker.secret=cccc',
 ];
@@ -163,16 +163,16 @@ test('worker topology: /readyz readiness vs /healthz liveness, concurrency env, 
 });
 
 test('render browser requires HTTPS or explicit loopback while the worker API stays private', { skip: noHelm }, () => {
-  const enabled = ['--set', 'renderWorker.enabled=true', '--set', 'renderWorker.secret=cccc'];
+  const enabled = ['--set', 'renderWorker.enabled=true', '--set', 'renderWorker.tls.existingSecret=worker-tls', '--set', 'renderWorker.tls.caSecret=worker-ca', '--set', 'renderWorker.secret=cccc'];
   for (const base of ['https://lolly.ing', 'https://shell.internal:8443/lolly',
     'https://[2001:db8::1]:8443', 'http://localhost:8787', 'http://127.0.0.1:8787', 'http://[::1]:8787']) {
     const r = render([...SECRETS, ...enabled, '--set-json', `renderWorker.webBase=${JSON.stringify(base)}`,
-      '--set-string', 'config.render.worker.url=http://lolly-lolly-work-render-worker:8791']);
+      '--set-string', 'config.render.worker.url=https://lolly-lolly-work-render-worker.default.svc:8791']);
     assert.ok(r.ok, `${base}: ${r.err}`);
     const env = deployment(r.out, true).spec.template.spec.containers[0].env;
     assert.equal(env.find((item: { name: string; value: string }) => item.name === 'LOLLY_WEB_BASE').value, base);
     const cfg = JSON.parse(manifests(r.out).find(d => d.kind === 'ConfigMap').data['instance.json']);
-    assert.equal(cfg.render.worker.url, 'http://lolly-lolly-work-render-worker:8791');
+    assert.equal(cfg.render.worker.url, 'https://lolly-lolly-work-render-worker.default.svc:8791');
   }
   for (const base of ['', 'http://lolly-work.lolly-private.svc.cluster.local', 'http://10.4.27.58:8787',
     'http://lolly.ing', 'http://localhost.evil.test', 'http://127.1', 'http://2130706433',
@@ -247,6 +247,36 @@ test('worker browser startup is bounded without weakening container hardening', 
   for (const value of ['0', '999', '120001', '1.5', 'false', 'unbounded']) {
     const invalid = render([...SECRETS, ...WORKER, '--set', `renderWorker.browserStartupTimeoutMs=${value}`]);
     assert.equal(invalid.ok, false); assert.match(invalid.err, /browserStartupTimeoutMs/);
+  }
+});
+
+test('worker TLS key stays in the worker while both endpoints receive the public trust bundle', { skip: noHelm }, () => {
+  for (const key of ['existingSecret', 'caSecret']) {
+    const refused = render([...SECRETS, ...WORKER, '--set', `renderWorker.tls.${key}=`]);
+    assert.equal(refused.ok, false); assert.match(refused.err, /renderWorker.tls/);
+  }
+  const r = render([...SECRETS, ...WORKER]); assert.ok(r.ok, r.err);
+  const worker = deployment(r.out, true).spec.template.spec;
+  const app = deployment(r.out).spec.template.spec;
+  assert.equal(worker.containers[0].readinessProbe.httpGet.scheme, 'HTTPS');
+  assert.equal(worker.containers[0].livenessProbe.httpGet.scheme, 'HTTPS');
+  assert.equal(worker.containers[0].env.find((entry: { name: string }) => entry.name === 'LW_RENDER_DEPLOYMENT_MODE').value, 'production');
+  assert.equal(worker.containers[0].env.find((entry: { name: string }) => entry.name === 'LW_RENDER_TLS_SERVER_NAME').value, 'lolly-lolly-work-render-worker.default.svc');
+  assert.equal(app.containers[0].env.find((entry: { name: string }) => entry.name === 'NODE_EXTRA_CA_CERTS').value, '/run/render-trust/ca.crt');
+  assert.ok(!app.volumes.some((volume: { name: string }) => volume.name === 'render-tls'));
+  assert.equal(worker.volumes.find((volume: { name: string }) => volume.name === 'render-tls').secret.secretName, 'worker-tls');
+  assert.equal(app.volumes.find((volume: { name: string }) => volume.name === 'render-trust').secret.secretName, 'worker-ca');
+  for (const pod of [worker, app]) assert.equal(pod.containers[0].volumeMounts.find((mount: { name: string }) => mount.name === 'render-trust').readOnly, true);
+});
+
+test('worker accepts a reviewed local seccomp profile and refuses an unconfined policy', { skip: noHelm }, () => {
+  const approved = render([...SECRETS, ...WORKER, '--set-json', 'renderWorker.seccompProfile={"type":"Localhost","localhostProfile":"lolly/chromium.json"}']);
+  assert.ok(approved.ok, approved.err);
+  assert.deepEqual(deployment(approved.out, true).spec.template.spec.containers[0].securityContext.seccompProfile,
+    { type: 'Localhost', localhostProfile: 'lolly/chromium.json' });
+  for (const profile of [{ type: 'Unconfined' }, { type: 'Localhost', localhostProfile: '../profile.json' }, { type: 'Localhost' }]) {
+    const refused = render([...SECRETS, ...WORKER, '--set-json', `renderWorker.seccompProfile=${JSON.stringify(profile)}`]);
+    assert.equal(refused.ok, false); assert.match(refused.err, /seccompProfile/);
   }
 });
 

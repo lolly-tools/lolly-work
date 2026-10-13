@@ -28,7 +28,7 @@ import { observeWorkerResources } from './evidence.ts';
  *
  * Zero framework: node:http + node:crypto + playwright-core.
  */
-import { createServer } from 'node:http';
+import { workerTransport } from './transport.ts';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -324,7 +324,7 @@ const busy = (res: import('node:http').ServerResponse): void => {
 
 // Exported so tests can listen on an OS-assigned port and drive real HTTP
 // requests at it without launching Chromium (see __setBrowserGetterForTests).
-export const server = createServer((req, res) => {
+const transport = workerTransport((req, res) => {
   void (async () => {
     if (req.method === 'GET' && req.url === '/healthz') return sendJson(res, 200, { ok: true });
     // A process with no connected browser cannot take work. Capacity remains
@@ -416,8 +416,9 @@ export const server = createServer((req, res) => {
     if (!res.headersSent) fail(res, 500, 'INTERNAL', (e as Error).message);
   });
 });
+export const server = transport.server;
 
-server.listen(PORT, () => {
+server.listen(PORT, transport.host, () => {
   const address = server.address();
   console.log(`[render-worker] listening on :${typeof address === 'object' && address ? address.port : PORT} → web shell ${WEB_BASE}`);
 });
