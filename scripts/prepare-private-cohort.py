@@ -245,6 +245,9 @@ def source_record(value, inputs, runner, kind):
     inputs.source_checks.append((root, value["source"], runner))
     for key in ("main", "ciRun", "ciJobs"):
         inputs.file(value[key])
+    # Register every historical provider original in the same immutable read
+    # closure, including the preparer's final unchanged() check.
+    paired.main_record(inputs.file(value["main"]), value, inputs.base, inputs.file)
     jobs = inputs.file(value["ciJobs"])
     required = WORK_JOBS if kind == "work" else LOLLY_JOBS
     paired.jobs_record(jobs, run, allow_shell_skip=kind == "lolly", required_names=required)

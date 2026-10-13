@@ -192,6 +192,19 @@ and a complete small example are in `tests/test_prepare_private_cohort.py`.
 Provider authentication and original build execution remain operator-reviewed
 inputs; the helper checks their local byte and source bindings.
 
+Normally each source's `main` reference holds the original provider response
+for that exact current main commit. If main advances while a qualified release
+is being prepared, use an explicit `HISTORICAL_MAIN_SOURCE_QUALIFIED` proof
+instead of changing or inventing a historical branch response. Its closed
+fields are `version: 1`, `status`, `repository`, `source`, and checksum references
+`currentMain`, `mergedPullRequest`, and `comparison`. These hold original GitHub
+responses showing the current main, the merged PR whose merge commit is the
+qualified source, and the complete ancestor comparison to current main. The
+same exact-source successful push/main CI run, complete jobs, and artifact
+checks still apply. Preparation and planning retain all nested originals in
+the evidence closure. This does not make the historical source the latest
+application or authorize deployment.
+
 The materialized pack inspector identifies its source as `mounted`, including
 each tool's source. This is independent of the private content profile, which
 the preparer verifies against the source stamp and build receipt. Keep the
