@@ -91,6 +91,7 @@ jobs:
             /engine/src/catalog-integrity.ts
             /engine/src/canonical-json.ts
             /engine/src/x509.ts
+            /engine/src/x509-read.ts
             /engine/src/bytes.ts
             /engine/src/der-read.ts
             /scripts/sign-catalog.ts

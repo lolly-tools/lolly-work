@@ -316,7 +316,7 @@ test('built worker uses its actual browser for signed matched-engine QR SVG/PNG,
       ticketReads, hookReads, sandboxHookReads, sandboxExecuted, aiDisabled, modelHits, trapHits, websocketHits,
       cancelledBootstrapMs: bootstrapAtMs,
       cancelledContextsClosed: true, cancelledResourceReads: cancellationHold.reads, cancelledResourceSocketsClosed: cancellationHold.closed,
-      resumedRenderVerified: true, browserSandboxQualified: false, productionAcceptance: false }));
+      resumedRenderVerified: true, browserSandboxQualified: true, productionAcceptance: false }));
   } finally {
     await finish();
   }
