@@ -1238,3 +1238,28 @@ onBothStores('handing a project on keeps the previous owner as a Manager', async
   assert.equal((await env.as('owner@test', 'PATCH', `/api/v1/projects/${theirs}`, { ownerId: dee })).status, 200);
   assert.equal(await env.store.getProjectMember(theirs, parked.id), null);
 });
+
+
+test('people HTTP: custom groups and instance summary stay manager-only and peer-scoped', async () => {
+  const env = await boot();
+  const projectId = await seedProject(env, 'private');
+  const ownerId = await env.userId('alice@test');
+  await env.store.putShareGroup({ id: 'design-team', name: 'Design team', ownerId,
+    managers: [], createdBy: ownerId, createdAt: new Date().toISOString() });
+  await env.store.setUserShareGroups(ownerId, ['design-team']);
+  const peer = await env.userId('gina@test');
+  await env.store.setUserShareGroups(peer, ['design-team']);
+  await env.store.putProject({ ...(await env.store.getProject(projectId))!, sharing: {
+    groups: [{ kind: 'custom', id: 'design-team', role: 'viewer' }],
+    general: { audience: 'instance', role: 'editor' },
+  } });
+  const owner = (await env.as('alice@test', 'GET', `/api/v1/projects/${projectId}/members`)).json;
+  assert.deepEqual(owner.instanceAudience, { role: 'commenter' });
+  assert.deepEqual(owner.effective, [{ userId: peer, name: 'Gina', role: 'viewer', via: 'custom-group', group: 'Design team' }]);
+  const otherManager = (await env.as('mona@test', 'GET', `/api/v1/projects/${projectId}/members`)).json;
+  assert.deepEqual(otherManager.effective, [], 'manager outside the group learns no members');
+  assert.deepEqual(otherManager.instanceAudience, { role: 'commenter' });
+  const viewer = (await env.as('vic@test', 'GET', `/api/v1/projects/${projectId}/members`)).json;
+  assert.equal(viewer.instanceAudience, undefined);
+  assert.equal(viewer.effective, undefined);
+});

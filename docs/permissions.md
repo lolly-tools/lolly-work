@@ -46,19 +46,22 @@ access the project cannot take away:
 | Row | `via` | `role` | Who sees it |
 |---|---|---|---|
 | Someone in one of the project's visibility groups | `group`, with `group` naming it | The level the group gives; their full level for an admin or owner caller | the project's managers who are in that group, or are an admin or owner |
+| Someone in a user-made share group | `custom-group`, with `group` naming it | The level from visible grants; their full level for an admin or owner caller | managers who belong to that group, or are an admin or owner |
 | A workspace admin or owner who is not otherwise on the project | `admin` | Editor, or Manager while they hold `project.manage` | managers who are themselves an admin or owner |
 
 The rows never carry an email address, and names never fall back to one. A manager who is
 not an admin learns only that admins can open the project (`adminAccess: 'note'`), never
 who they are: anyone who may create a project manages it, so listing the admins there
 would show any member what `GET /api/v1/users` refuses them. The same caller sees a group
-row at the Editor level the group gives, never a Manager level an admin role adds, which
+row at the level their shared groups give, never a stronger level from a hidden group or an admin role, which
 would point the admins out the same way. Disabled accounts are left out, and the list stops
 at 200 people (`effectiveTruncated: true`). A project can be made visible to any group, so
 group rows are listed only for the groups the caller is in themselves (an admin or owner
 sees them all): making a project visible to a group never reads that group's people out.
-People who reach the project through a user-made group or the instance-wide audience
-(`policy.sharing`) are not listed here yet; the project's share settings show those grants.
+Expired group grants and user-made groups disabled by policy are excluded. Instance-wide
+access appears as `instanceAudience: { role }`, capped by `policy.sharing.instance.maxRole`
+and Editor, without listing the directory. It is absent when instance sharing is disabled.
+Only managers receive this summary, alongside the effective rows.
 
 The list also says whether the caller may hand the project on (`canTransfer`), by the same
 test the transfer applies: the project's owner, or a holder of `project.manage`. Lolly
