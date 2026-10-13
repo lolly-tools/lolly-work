@@ -217,15 +217,17 @@ owner has no member role and cannot be removed; hand the project on first.
 
 Each row says where its access comes from: `via: 'owner'` or `via: 'member'`. Managers also
 get `effective`, a separate list of the people who can open the project without a row on
-it: members of one of its visibility groups (`via: 'group'`, with the group's name) and
-workspace admins and owners (`via: 'admin'`). They are kept apart from `members` so a
+it: members of its directory groups (`via: 'group'`) or user-made groups
+(`via: 'custom-group'`), with the group's name, and workspace admins and owners
+(`via: 'admin'`). They are kept apart from `members` so a
 client offers no role select or Remove on them: that access comes from a group or a
 workspace role, and changes in the project's visibility and share settings or in the
 directory. They carry no email, and a manager who is not an admin or
 owner sees group rows only for groups they are in and learns only that admins can open the
-project (`adminAccess: 'note'`), never who they are. People who reach the project through
-a user-made group or the instance-wide audience are not in this list yet; the share
-settings show those grants. The full rules are in
+project (`adminAccess: 'note'`), never who they are. Expired grants and groups disabled by
+policy are excluded. Instance-wide access is a separate `instanceAudience: { role }`
+summary, capped by policy, so the people panel can say everyone in the workspace has
+access without listing every account. The full rules are in
 [permissions](permissions.md#who-can-see-who-has-access).
 
 Handing a project on (`ownerId`) keeps the previous owner on it as a manager, audited as
