@@ -4,8 +4,8 @@ The isolated browser worker the control plane dispatches **hooked / HTML-heavy
 tools** to. Those tools ship `hooks.js` that may touch real browser APIs, so they
 can't run in the control plane's in-process jsdom fast path - and because they run
 the least-trusted content, they run **here**, in a separate, hardened deployment
-that is blast-separated from the control plane (no database, no secrets beyond the
-shared HMAC key).
+that is blast-separated from the control plane. It has no database credential;
+its only private material is the shared request key and worker TLS key.
 
 ## How it renders
 
@@ -35,6 +35,9 @@ The signature covers the exact request bytes; `ts` must be within ±5 min
 | var | required | meaning |
 |---|---|---|
 | `LW_RENDER_WORKER_SECRET` | ✅ | shared HMAC key (identical value on the control plane) |
+| `LW_RENDER_TLS_CERT_FILE` / `LW_RENDER_TLS_KEY_FILE` | production | read-only certificate chain and matching key files |
+| `LW_RENDER_TLS_SERVER_NAME` / `LW_RENDER_TLS_CA_FILE` | TLS healthcheck | Service DNS name and approved private CA bundle |
+| `LW_RENDER_DEPLOYMENT_MODE` | | production requires TLS; evaluation HTTP listens only on loopback |
 | `LOLLY_WEB_BASE` | ✅ | canonical HTTPS Lolly shell URL with trusted TLS; HTTP only for explicit localhost/127.0.0.1/[::1] development |
 | `LW_RENDER_ALLOWED_ORIGINS` | | comma-separated origins a rendered page may reach even on a private address (an internal asset host); plain origins, no paths |
 | `PORT` | | listen port (default 8791) |
@@ -56,6 +59,10 @@ and `LW_RENDER_WORKER_SECRET` in the environment (same value). With both set,
 hooked tools render via this worker; without them, they still return
 `501 HOOKED_TOOL_NEEDS_CHROMIUM`.
 
+Use an HTTPS worker URL in production and mount the approved public CA bundle in
+the control plane. See [transport configuration](../../deploy/helm/RENDER-TRANSPORT.md)
+for certificate provisioning, healthchecks and rotation.
+
 ## Hardening
 
 Runs as a non-root user with Chromium's sandbox explicitly enabled through
@@ -75,6 +82,8 @@ privileges, switch seccomp off or disable the browser sandbox to bypass the chec
 and [container guidance](https://playwright.dev/docs/docker) describe sandbox
 enablement and namespace requirements. A gVisor or Kata runtime class can add
 isolation after its own qualification; it does not replace the browser sandbox.
+The [reviewed namespace profile](../../deploy/seccomp/README.md) provides an
+explicit option for runtimes whose default profile blocks namespace setup.
 
 **Egress rule (plans/58 WP0, `src/egress.ts`).** Every request a rendered page makes,
 in both `/render` and `/rasterise`, goes through one rule:
@@ -104,7 +113,7 @@ remove an obsolete Alpine executable override when adopting this image.
 
 Run as the unprivileged `node` user with a read-only root filesystem, dropped
 capabilities, no-new-privileges and writable ephemeral `/tmp`. Chromium's user-data
-directory, XDG configuration and cache use that temporary mount. Health is HTTP
+directory, XDG configuration and cache use that temporary mount. Health is HTTPS
 `/healthz`; `/readyz` reports `{ ok, active, capacity }` with HTTP 503 when the
 browser is not connected or capacity is full.
 `active` includes cancelled requests until their Chromium contexts finish closing.
@@ -135,14 +144,14 @@ cancellation and loopback/model/WebSocket refusal. Its original 20-second render
 deadline remains unchanged. Existing injected-browser tests are supplementary.
 
 Run the same acceptance with a clean isolated checkout matching the engine pin,
-frozen Work and Lolly dependencies installed on Linux amd64, Node 26.11.1 and a
+frozen Work and Lolly dependencies installed on Linux amd64 or arm64, Node 26.11.1 and a
 local Docker socket:
 
 ```sh
 docker build -t lolly-render-worker:qualification workers/render
 node scripts/qualify-render-worker-image.ts \
   --lolly-root /path/to/isolated-matching-lolly \
-  --image lolly-render-worker:qualification
+  --image lolly-render-worker:qualification --sandbox-profile chromium
 ```
 
 The command rebuilds only that isolated checkout's signed test shell. It uses
@@ -151,10 +160,11 @@ capabilities and no-new-privileges. It changes no Kubernetes resource or instanc
 data and publishes neither the shell nor an image. Local Docker cleanup refuses
 an identity mismatch. CI currently exercises Linux amd64 with 1 GiB and one CPU;
 other architectures and production resource limits require their own acceptance.
-The browser launch must retain its sandbox during acceptance. Check renderer
-sandbox evidence, such as Chromium's sandbox diagnostics or the renderer's
-namespace and seccomp state, on the actual target runtime. Launch flags and a
-passing health probe alone do not establish that evidence. The graphics test
+The image architecture must match the qualification host. The acceptance checks
+the actual renderer's user and PID namespaces and additional seccomp filter.
+Use `--sandbox-profile runtime-default` to qualify the runtime's own profile.
+Repeat acceptance on the actual target runtime. Launch flags and a passing health
+probe alone do not establish that evidence. The graphics test
 makes no physical GPU, private brand or complete production qualification claim.
 
 This requirement covers the Chromium worker. The control plane's separate

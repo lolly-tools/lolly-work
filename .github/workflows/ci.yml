@@ -285,7 +285,7 @@ jobs:
       - name: Qualify built worker with matched signed shell and real browser
         if: matrix.image == 'render-worker'
         timeout-minutes: 25
-        run: node scripts/qualify-render-worker-image.ts --lolly-root qualification-lolly --image lolly-render-worker:ci
+        run: node scripts/qualify-render-worker-image.ts --lolly-root qualification-lolly --image lolly-render-worker:ci --sandbox-profile chromium
       - name: Qualify native server rendering and release contracts
         if: matrix.image == 'server'
         run: |

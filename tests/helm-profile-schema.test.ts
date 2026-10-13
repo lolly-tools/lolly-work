@@ -13,7 +13,7 @@ const tools = ['helm', 'kubeconform'].every(binary => {
 if (process.env.LW_REQUIRE_HELM_TESTS === '1' && !tools) throw new Error('Helm qualification requires Helm and kubeconform');
 const skip = tools ? false : 'install helm and kubeconform for offline schema qualification';
 const secret = ['--set', 'existingSecret=qualification-secrets'];
-const worker = ['--set', 'renderWorker.enabled=true', '--set', 'renderWorker.webBase=https://shell.example.test'];
+const worker = ['--set', 'renderWorker.enabled=true', '--set', 'renderWorker.tls.existingSecret=worker-tls', '--set', 'renderWorker.tls.caSecret=worker-ca', '--set', 'renderWorker.webBase=https://shell.example.test'];
 const small = ['-f', `${chart}/values-small-suse.yaml`];
 const copies = [
   '--set-json', 'imagePullSecrets=[{"name":"qualification-registry"}]',
