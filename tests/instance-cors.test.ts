@@ -60,7 +60,7 @@ async function boot(accessMode: 'open' | 'gated'): Promise<string> {
 
 async function login(base: string, email: string): Promise<string> {
   const res = await fetch(`${base}/api/auth/dev?email=${encodeURIComponent(email)}`, { redirect: 'manual' });
-  assert.equal(res.status, 302, res.status === 302 ? undefined : `Dev login setup failed: ${await res.text()}`);
+  assert.equal(res.status, 302, res.status === 302 ? '' : `Dev login setup failed: ${await res.text()}`);
   return (res.headers.getSetCookie().find((c) => c.startsWith('lw_session=')) as string).split(';')[0] as string;
 }
 

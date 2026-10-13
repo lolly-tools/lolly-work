@@ -65,7 +65,7 @@ async function startupReadinessDiagnostic(base: string) {
 
 test('built worker uses its actual browser for signed 1.259 QR SVG/PNG, tickets, cancellation and egress', { skip, timeout: 90_000 }, async t => {
   assert.equal(process.getuid?.(), 1000);
-  assert.equal(process.versions.node, '24.21.0');
+  assert.equal(process.versions.node, '26.11.1');
   assert.equal(process.env.PLAYWRIGHT_BROWSERS_PATH, '/opt/lolly-browsers');
   assert.ok(!process.env.LOLLY_BROWSER_PATH && !process.env.LOLLY_BROWSER_CHANNEL);
   const sourceRoot = new URL('../workers/render/src/', import.meta.url);

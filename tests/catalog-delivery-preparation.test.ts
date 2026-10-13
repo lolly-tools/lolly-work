@@ -9,6 +9,6 @@ for (const optimized of [false, true]) {
   test(`delivery catalog preparation (${optimized ? 'optimized' : 'normal'} Python)`, () => {
     const result = spawnSync('python3', [...(optimized ? ['-O'] : []), fileURLToPath(new URL('./test_catalog_delivery_preparation.py', import.meta.url))],
       { encoding: 'utf8', timeout: 120_000, env: { ...process.env, LOLLY_TEST_NODE: process.execPath } });
-    assert.equal(result.status, 0, result.stderr || result.error?.message);
+    assert.equal(result.status, 0, result.stderr || result.error?.message || 'Child process failed');
   });
 }

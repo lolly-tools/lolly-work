@@ -53,7 +53,7 @@ async function exercise(store: Store) {
   };
   const call = async (invitation: Invitation, name: string, args: Record<string, unknown> = {}) => (await rpc(invitation, 'tools/call', { name, arguments: args })).body.result;
   const value = async (invitation: Invitation, name: string, args: Record<string, unknown> = {}) => {
-    const result = await call(invitation, name, args); assert.equal(result.isError, undefined, result.content?.[0]?.text); assert.ok(result.structuredContent); return result.structuredContent;
+    const result = await call(invitation, name, args); assert.equal(result.isError, undefined, result.content?.[0]?.text ?? 'Agent tool failed'); assert.ok(result.structuredContent); return result.structuredContent;
   };
   try {
     const a = await invite(owner), b = await invite(colleague), readOnly = await invite(viewer, 'viewer');

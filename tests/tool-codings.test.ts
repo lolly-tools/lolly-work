@@ -47,7 +47,7 @@ async function fixture(t: TestContext) {
     await put(root, `tools/probe/${rel}.gz`, gzipSync(bytes)); await put(root, `tools/probe/${rel}.br`, brotliCompressSync(bytes));
   }
   const files = await completeToolFileDigests(root), keys = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
-  const publicKey = keys.publicKey.export({ format: 'jwk' });
+  const publicKey = { ...keys.publicKey.export({ format: 'jwk' }) };
   const privateKey = await webcrypto.subtle.importKey('jwk', keys.privateKey.export({ format: 'jwk' }),
     { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
   const envelope = await signCatalogEnvelope({ alg: CATALOG_SIG_ALG, keyId: await jwkThumbprint(publicKey),

@@ -33,9 +33,9 @@ jobs:
         with:
           version: 11.26.0
           run_install: false
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v7.1.0
         with:
-          node-version: '24'
+          node-version: '26.11.1'
           cache: pnpm
           cache-dependency-path: services/admission/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
@@ -49,9 +49,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: '24'
+          node-version: '26.11.1'
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Install an isolated CI Redis fixture
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends redis-server
@@ -64,7 +64,7 @@ jobs:
         run: node services/admission/test/container-smoke.mjs lolly-admission:ci
       - name: Verify the archive and bind the exact booted runtime config
         run: python3 services/admission/test/oci-evidence.py "$RUNNER_TEMP/admission-amd64.oci.tar" lolly-admission:ci "$RUNNER_TEMP/admission-amd64-evidence.json"
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: admission-amd64-${{ github.sha }}
           path: |
@@ -90,9 +90,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: '24'
+          node-version: '26.11.1'
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Log in with this workflow's package credential only
         env:

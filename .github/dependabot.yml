@@ -80,7 +80,7 @@ updates:
 
   # ── Docker: the two release base images, digest-pinned ────────────────────
   # deploy/compose/Dockerfile (server) and workers/render/Dockerfile (render
-  # worker) are pinned to a node:24 multi-arch index by sha256 digest. This
+  # worker) are pinned to a node:26 multi-arch index by sha256 digest. This
   # keeps each pin moving as the upstream tag is rebuilt, so a digest pin does
   # not become a stale base nobody patches — the failure mode that makes digest
   # pinning worse than a tag. release.yml builds, cosign-signs and pushes these,

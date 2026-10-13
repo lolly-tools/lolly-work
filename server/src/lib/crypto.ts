@@ -8,7 +8,7 @@ export function b64u(data: string | Uint8Array): string {
   return Buffer.from(data).toString('base64url');
 }
 
-export function b64uDecode(s: string): Buffer {
+export function b64uDecode(s: string): Buffer<ArrayBuffer> {
   return Buffer.from(s, 'base64url');
 }
 
