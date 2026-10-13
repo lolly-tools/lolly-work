@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { signBody, verifyBody, renderViaWorker, rasteriseViaWorker, WorkerError, WORKER_TS_SKEW_MS } from '../server/src/render/worker-client.ts';
 
 const SECRET = 'shared-key';
-const CFG = { url: 'http://worker.local', secret: SECRET, timeoutMs: 5000 };
+const CFG = { url: 'https://worker.local', secret: SECRET, timeoutMs: 5000 };
 const JOB = { toolId: 'hooky', query: 'title=Hi', overrides: { logo: 'brand/logo' }, format: 'svg' as const, profile: {} };
 const RASTER_JOB = { svg: '<svg xmlns="http://www.w3.org/2000/svg"><text>ok</text></svg>', format: 'png' };
 const okSvg = '<svg xmlns="http://www.w3.org/2000/svg"><text>ok</text></svg>';

@@ -12,7 +12,7 @@ test('native preview inputs are recognised by bytes and bounded', () => {
   assert.throws(() => previewInputFormat(Buffer.alloc(17 * 1024 * 1024)), /too large/);
 });
 test('preview jobs are signed and return a bounded PDF rather than arbitrary output', async () => {
-  const config = { url: 'http://worker', secret: 'test-only-secret', timeoutMs: 5000 }, signal = new AbortController().signal;
+  const config = { url: 'https://worker', secret: 'test-only-secret', timeoutMs: 5000 }, signal = new AbortController().signal;
   const fake = (async (_url, init) => { assert.equal(verifyBody(String(init?.body), config.secret, (init?.headers as Record<string, string>)['x-lw-render-sig']!), true); return new Response('%PDF-1.7\nfixture', { headers: { 'content-type': 'application/pdf' } }); }) as typeof fetch;
   assert.match((await createFilePreview(config, Buffer.from('%!PS fixture'), signal, fake)).toString(), /^%PDF/);
   const bad = (async () => new Response('not a PDF', { headers: { 'content-type': 'application/pdf' } })) as typeof fetch;

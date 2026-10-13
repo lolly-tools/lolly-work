@@ -21,5 +21,9 @@ export function createPostgresOidcLogout(pool: Database): OidcLogoutStore {
       const r = await pool.query('select 1 from oidc_logout_targets where key=any($1::text[]) limit 1', [sessionLogoutKeys(s)]);
       return r.rows.length > 0;
     },
+    async localSessionRevoked(key) {
+      const r = await pool.query('select 1 from oidc_logout_targets where key=$1 and issued_at > extract(epoch from clock_timestamp()) - 2678400', [key]);
+      return r.rows.length > 0;
+    },
   };
 }

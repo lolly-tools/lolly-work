@@ -20,6 +20,7 @@ export interface LogoutEvent {
 export interface OidcLogoutStore {
   recordOidcLogout(event: LogoutEvent): Promise<boolean>;
   oidcSessionRevoked(session: OidcSession): Promise<boolean>;
+  localSessionRevoked(key: string): Promise<boolean>;
 }
 export const logoutKey = (issuer: string, clientId: string, kind: string, value: string): string =>
   createHash('sha256').update(JSON.stringify([issuer, clientId, kind, value])).digest('hex');

@@ -528,10 +528,10 @@ switch (cmd) {
     if (sub === 'create') {
       const label = values.label ?? fail('usage: lw tokens create --label ci --role admin');
       const role = values.role ?? fail('--role required (viewer|member|author|approver|admin|owner)');
-      const t = await call('/api/v1/tokens', { method: 'POST', body: { label, role } }) as { id: string; token: string; role: string };
+      const t = await call('/api/v1/tokens', { method: 'POST', body: { label, role, ...(values.days ? { ttlDays: Number(values.days) } : {}) } }) as { id: string; token: string; role: string; expiresAt: string };
       out(t);
       if (!values.json) {
-        console.log(`${t.id}  role ${t.role}`);
+        console.log(`${t.id}  role ${t.role}  expires ${t.expiresAt}`);
         console.log(`token (shown once, store it now): ${t.token}`);
         console.log('use it: LW_TOKEN=<token> lw … (or --token <token>)');
       }
@@ -544,11 +544,11 @@ switch (cmd) {
       break;
     }
     const { tokens } = await call('/api/v1/tokens') as {
-      tokens: Array<{ id: string; label: string; role: string; createdAt: string; lastUsedAt: string | null; revokedAt: string | null }>;
+      tokens: Array<{ id: string; label: string; role: string; createdAt: string; expiresAt: string | null; legacyUnbounded: boolean; lastUsedAt: string | null; revokedAt: string | null }>;
     };
     out(tokens);
     if (!values.json) for (const t of tokens) {
-      console.log(`${t.id}  ${t.label}  role ${t.role}  ${t.revokedAt ? `REVOKED ${t.revokedAt}` : `last used ${t.lastUsedAt ?? 'never'}`}`);
+      console.log(`${t.id}  ${t.label}  role ${t.role}  ${t.revokedAt ? `REVOKED ${t.revokedAt}` : `last used ${t.lastUsedAt ?? 'never'}`}  ${t.legacyUnbounded ? 'legacy without expiry: rotate' : `expires ${t.expiresAt}`}`);
     }
     break;
   }

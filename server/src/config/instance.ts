@@ -14,6 +14,7 @@ import type { ActivityPolicy } from '../policy/activity.ts';
  *                          var per entry; resolved at boot, never persisted
  */
 import { readFileSync } from 'node:fs';
+import { serviceUrl } from '../lib/service-url.ts';
 import { randomId } from '../lib/crypto.ts';
 import { validateAiConfig } from '../policy/ai.ts';
 import { validateInvitePolicy, type InvitePolicyConfig } from '../policy/invites.ts';
@@ -220,6 +221,7 @@ export interface InstanceConfig {
      *  `sessionTtlHours`, which turns renewal off. Must be at least
      *  `sessionTtlHours` and at most 720. */
     sessionMaxHours?: number;
+    serviceTokens: { allowLegacyUnbounded: boolean };
     /** Catalog submit (plans/31 section 3) - the ORG policy half, so it belongs
      *  beside the other things an org tunes. Open to authors by default: anyone
      *  holding `catalog.submit` submits and the asset goes live immediately.
@@ -577,6 +579,7 @@ const DEFAULTS: InstanceConfig = {
     guestLinks: { enabled: true, maxTtlHours: 168, defaultTtlHours: 72 },
     nearby: { enabled: true },
     sessionTtlHours: 12,
+    serviceTokens: { allowLegacyUnbounded: true },
     submit: { maxBytes: 64 * 1024 * 1024, quota: { bytes: 0, count: 0 } },
     catalog: { versionKeep: 0 },
     fleet: {},
@@ -895,6 +898,7 @@ export function parseConfig(json: string): InstanceConfig {
     throw new Error(`invalid telemetry level: ${cfg.policy.telemetry}`);
   }
   const ttl = cfg.policy.sessionTtlHours;
+  if (typeof cfg.policy.serviceTokens?.allowLegacyUnbounded !== 'boolean') throw new Error('policy.serviceTokens.allowLegacyUnbounded must be boolean');
   if (typeof ttl !== 'number' || !Number.isFinite(ttl) || ttl <= 0 || ttl > 720) {
     throw new Error(`invalid sessionTtlHours: ${ttl} (must be > 0 and <= 720)`);
   }
@@ -1046,9 +1050,8 @@ export function parseConfig(json: string): InstanceConfig {
     if (!u || !/^https?:$/.test(u.protocol)) throw new Error('notify.webhook.url must be an http(s) URL');
   }
   if (cfg.siem.url !== undefined) {
-    let u: URL | null = null;
-    try { u = new URL(cfg.siem.url); } catch { /* refused below */ }
-    if (!u || !/^https?:$/.test(u.protocol)) throw new Error('siem.url must be an http(s) URL');
+    try { cfg.siem.url = serviceUrl(cfg.siem.url, cfg.deployment.mode === 'production' || (cfg.deployment.mode !== 'evaluation' && process.env.NODE_ENV === 'production')); }
+    catch { throw new Error('siem.url requires HTTPS; HTTP is only for explicit loopback evaluation, without credentials, query or fragment'); }
   }
   if (!Number.isInteger(cfg.siem.batchSize) || cfg.siem.batchSize < 1 || cfg.siem.batchSize > 1000) {
     throw new Error(`invalid siem.batchSize: ${cfg.siem.batchSize} (1-1000)`);
@@ -1057,6 +1060,10 @@ export function parseConfig(json: string): InstanceConfig {
     throw new Error(`invalid siem.intervalSeconds: ${cfg.siem.intervalSeconds} (>= 5)`);
   }
   const wt = cfg.render.worker.timeoutMs;
+  if (cfg.render.worker.url) {
+    try { cfg.render.worker.url = serviceUrl(cfg.render.worker.url, cfg.deployment.mode === 'production' || (cfg.deployment.mode !== 'evaluation' && process.env.NODE_ENV === 'production')); }
+    catch { throw new Error('render.worker.url requires HTTPS; HTTP is only for explicit loopback evaluation'); }
+  }
   if (cfg.render.worker.url && (!Number.isFinite(wt) || wt <= 0)) throw new Error(`invalid render.worker.timeoutMs: ${wt}`);
   const rl = cfg.rateLimit;
   if (!Number.isFinite(rl.trustedProxyHops) || rl.trustedProxyHops < 0) throw new Error('rateLimit.trustedProxyHops must be >= 0');
@@ -1216,9 +1223,13 @@ export function linkKeys(s: Secrets): readonly string[] {
 
 export function loadSecrets(env = process.env, cfg?: Pick<InstanceConfig, 'proxyAuth'> & Partial<Pick<InstanceConfig, 'deployment'>>): Secrets {
   const prod = cfg?.deployment?.mode === 'production' || (cfg?.deployment?.mode !== 'evaluation' && env.NODE_ENV === 'production');
+  if (prod && env.NODE_TLS_REJECT_UNAUTHORIZED === '0') throw new Error('Production requires TLS certificate verification');
   const need = (name: string): string => {
     const v = env[name];
-    if (v) return v;
+    if (v) {
+      if (prod && /^(?:eval-only-|dev-only-)/.test(v)) throw new Error(`${name} must be replaced with a production secret`);
+      return v;
+    }
     if (prod) {
       throw new Error(
         `${name} is required in production. Generate one with \`openssl rand -hex 32\` and set it ` +
@@ -1261,5 +1272,10 @@ export function loadSecrets(env = process.env, cfg?: Pick<InstanceConfig, 'proxy
   if (env.LW_RENDER_WORKER_SECRET) secrets.renderWorker = env.LW_RENDER_WORKER_SECRET;
   if (env.LW_C2PA_SIGNING_KEY) secrets.c2paSigningKey = env.LW_C2PA_SIGNING_KEY;
   if (env.LW_CATALOG_SIGNING_KEY) secrets.catalogSigningKey = env.LW_CATALOG_SIGNING_KEY;
+  if (prod) {
+    for (const [name, value] of Object.entries(secrets)) {
+      if (typeof value === 'string' && /^(?:eval-only-|dev-only-)/.test(value)) throw new Error(`${name} must be replaced with a production secret`);
+    }
+  }
   return secrets;
 }

@@ -327,6 +327,8 @@ export interface ApiTokenRecord {
   /** 'user:<id>' who minted it. */
   createdBy: string;
   createdAt: string;
+  /** Absent only on legacy service credentials awaiting owner rotation. */
+  expiresAt?: string;
   lastUsedAt?: string;
   /** Set on revoke; a revoked token is kept so its trail survives. */
   revokedAt?: string;

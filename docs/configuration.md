@@ -288,6 +288,19 @@ next authenticated request. Token expiry does not replace the offboarding integr
 | `c2pa.certFile` | `""` | signing-cert chain PEM (leaf first), public |
 | `c2pa.claimGenerator` | `""` | producer label in the signed manifest |
 
+Production worker and SIEM service URLs require HTTPS with verified server
+certificates. Requests cannot follow redirects or include URL credentials, query
+strings or fragments. HTTP is accepted only for explicit loopback evaluation
+fixtures. For an internal CA, mount its public PEM read-only and set
+`NODE_EXTRA_CA_CERTS` before starting Node. Keep hostname verification enabled;
+`NODE_TLS_REJECT_UNAUTHORIZED=0` is refused in production. The worker request HMAC
+continues to authenticate the control plane. TLS certificates and trust mounts
+need their own deployment qualification.
+
+`policy.serviceTokens.allowLegacyUnbounded` defaults to `true` for existing
+credentials without expiry. New service credentials always use a bounded expiry.
+Rotate the legacy integrations before deliberately setting the policy to `false`.
+
 Every tool in the committed `packs/demo` ships hooks, so `instance.example.json` and
 `values-eval.yaml` both set `allowHooksInFastPath: true` - that pack is curated in this
 repo end to end. Repoint `instance.pack` at a pack you do not fully control and this goes

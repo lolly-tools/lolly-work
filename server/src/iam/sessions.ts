@@ -7,7 +7,7 @@
  *   lw_guest - a guest admitted by a guest-edit link (plans/02 §8)
  */
 import type { OidcSession } from './oidc-logout.ts';
-import { b64uDecode } from '../lib/crypto.ts';
+import { b64uDecode, randomId, sha256Hex } from '../lib/crypto.ts';
 import { mintToken, verifyToken } from './tokens.ts';
 
 export const SESSION_COOKIE = 'lw_session';
@@ -20,6 +20,8 @@ export const GUEST_COOKIE = 'lw_guest';
 export const DEFAULT_SESSION_TTL_SEC = 12 * 60 * 60;
 
 export interface SessionUser {
+  /** Local browser-session revocation id, carried unchanged through renewal. */
+  revocationId?: string;
   sub: string;
   email: string;
   name: string;
@@ -46,6 +48,7 @@ export interface SessionUser {
 }
 
 export interface GuestSession {
+  revocationId?: string;
   linkId: string;
   toolId: string;
   sessionRef?: string;
@@ -99,7 +102,7 @@ export function clearCookie(name: string, secure: boolean): string {
 export function mintSessionCookie(
   user: SessionUser, secret: string, secure: boolean, ttlSec: number = DEFAULT_SESSION_TTL_SEC, now: number = Date.now(),
 ): string {
-  const payload: SessionUser = typeof user.authAt === 'number' ? user : { ...user, authAt: user.authenticatedAt ?? now };
+  const payload: SessionUser = { ...user, authAt: user.authAt ?? user.authenticatedAt ?? now, revocationId: user.revocationId ?? randomId(24) };
   const token = mintToken('lw/session', payload, secret, ttlSec, now);
   return cookieValue(SESSION_COOKIE, token, { secure, maxAgeSec: ttlSec });
 }
@@ -123,7 +126,9 @@ export function readMemberSession(cookieHeader: string | undefined, secret: stri
   if (!user) return null;
   try {
     const box = JSON.parse(b64uDecode(token.slice(0, token.lastIndexOf('.'))).toString('utf8')) as { exp?: unknown };
-    return typeof box.exp === 'number' && Number.isFinite(box.exp) ? { user, exp: box.exp } : null;
+    const revocationId = typeof user.revocationId === 'string' && user.revocationId.length <= 128 && user.revocationId
+      ? user.revocationId : `legacy:${sha256Hex(token)}`;
+    return typeof box.exp === 'number' && Number.isFinite(box.exp) ? { user: { ...user, revocationId }, exp: box.exp } : null;
   } catch {
     return null;
   }
@@ -197,7 +202,7 @@ export function chainTtlSec(authAt: number, policy: { ttlSec: number; maxSec: nu
 }
 
 export function mintGuestCookie(guest: GuestSession, secret: string, secure: boolean, ttlSec: number): string {
-  const token = mintToken('lw/guest', guest, secret, ttlSec);
+  const token = mintToken('lw/guest', { ...guest, revocationId: guest.revocationId ?? randomId(24) }, secret, ttlSec);
   return cookieValue(GUEST_COOKIE, token, { secure, maxAgeSec: ttlSec });
 }
 
@@ -206,13 +211,13 @@ export function readPrincipal(cookieHeader: string | undefined, secret: string |
   const cookies = parseCookies(cookieHeader);
   const session = cookies[SESSION_COOKIE];
   if (session) {
-    const user = verifyToken<SessionUser>('lw/session', session, secret);
-    if (user) return { kind: 'member', user };
+    const member = readMemberSession(cookieHeader, secret);
+    if (member) return { kind: 'member', user: member.user };
   }
   const guest = cookies[GUEST_COOKIE];
   if (guest) {
     const g = verifyToken<GuestSession>('lw/guest', guest, secret);
-    if (g) return { kind: 'guest', guest: g };
+    if (g) return { kind: 'guest', guest: { ...g, revocationId: g.revocationId ?? `legacy:${sha256Hex(guest)}` } };
   }
   return null;
 }

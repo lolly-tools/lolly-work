@@ -1,5 +1,8 @@
 import { activityAvailable } from '../policy/activity.ts';
 import { registerOidcLogout } from '../iam/oidc-logout-routes.ts';
+import { localSessionKey, revokeBrowserSessions } from '../iam/local-logout.ts';
+import { createLinkPasswordAttempts } from '../links/password-attempts.ts';
+import { credentialExpiry } from '../iam/credential-expiry.ts';
 import { safeMessageUrl } from '../inbox/message-url.ts';
 import { withRenderDeadline } from '../render/deadline.ts';
 import { WorkerError } from '../render/worker-client.ts';
@@ -356,7 +359,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // The Chromium render worker is active only when both the URL and the shared
   // HMAC key are present; otherwise hooked tools keep 501-ing (unchanged).
   const renderWorker = config.render.worker.url && secrets.renderWorker
-    ? { url: config.render.worker.url, secret: secrets.renderWorker, timeoutMs: config.render.worker.timeoutMs }
+    ? { url: config.render.worker.url, secret: secrets.renderWorker, timeoutMs: config.render.worker.timeoutMs, requireHttps: productionMode(config) }
     : undefined;
   // Advertised to shells via org_config (plans/23 §3.A) - computed HERE, beside
   // the worker resolution, so the advertisement can only ever reflect the same
@@ -399,6 +402,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
 
   const principalOf = async (req: IncomingMessage): Promise<Principal | null> => {
     const principal = readPrincipal(req.headers.cookie, sessionVerify);
+    const key = principal && localSessionKey(principal);
+    if (key && await store.localSessionRevoked(key)) return null;
     if (principal?.kind !== 'guest') return principal;
     const link = await store.getLink(principal.guest.linkId);
     if (!config.policy.guestLinks.enabled || !link || link.kind !== 'guest-edit' || link.revokedAt || !Number.isFinite(link.exp)
@@ -633,11 +638,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // verification here checks with it. Derived, never stored.
   const auditMacKey = deriveAuditMacKey(secrets.session);
   const log = createLogger();
-  // Password guessing against one public link: ten misses lock the link for a
-  // quarter hour, on top of the per-IP link bucket. In-memory per process.
-  const linkPasswordMisses = new Map<string, { n: number; until: number }>();
-  const LINK_PASSWORD_MISSES = 10;
-  const LINK_PASSWORD_LOCK_MS = 15 * 60 * 1000;
+  const linkPasswordAttempts = createLinkPasswordAttempts();
 
   let setupMemo: { revision: string; expires: number; report: Promise<SetupReport> } | undefined;
   const setupReport = async () => {
@@ -2179,7 +2180,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   registerOidcLogout({ router, store, fetchImpl, resolveIdp, memberOf, secret: secrets.session, keys: sessionVerify,
     secure, baseUrl: config.instance.baseUrl, audit });
 
-  router.add('POST', '/api/auth/logout', (_req, res) => {
+  router.add('POST', '/api/auth/logout', async (req, res) => {
+    const actor = await memberOf(req);
+    await revokeBrowserSessions(store, req.headers.cookie, sessionVerify);
+    if (actor) await audit(`user:${actor.id}`, 'auth.logout', 'session');
     res.writeHead(204, { 'set-cookie': [clearCookie(SESSION_COOKIE, secure), clearCookie(GUEST_COOKIE, secure)] });
     res.end();
   });
@@ -2682,20 +2686,23 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (link.kind === 'project-invite') return sendError(res, 404, 'NOT_FOUND', 'open the project invitation address');
     const sig = ctx.url.searchParams.get('s') ?? '';
     const pw = ctx.url.searchParams.get('pw');
+    const initialStatus = checkLink(link, sig, linkVerify, { passwordOk: true });
+    if (initialStatus === 'bad-signature') return sendError(res, 403, 'BAD_SIGNATURE', 'link signature invalid');
+    if (initialStatus === 'expired') return sendError(res, 410, 'LINK_EXPIRED', 'this link has expired');
+    if (initialStatus === 'revoked') return sendError(res, 410, 'LINK_REVOKED', 'this link was revoked');
     let passwordOk = true;
     if (link.pwHash) {
-      const miss = linkPasswordMisses.get(link.id);
-      if (miss && miss.n >= LINK_PASSWORD_MISSES && Date.now() < miss.until) {
-        res.setHeader('retry-after', String(Math.ceil((miss.until - Date.now()) / 1000)));
-        return sendError(res, 429, 'PASSWORD_LOCKED', 'too many wrong passwords for this link - try again later');
+      const client = clientIp(req, config.rateLimit.trustedProxyHops);
+      const retryAfter = linkPasswordAttempts.retryAfter(link.id, client);
+      if (retryAfter) {
+        res.setHeader('retry-after', String(retryAfter));
+        return sendError(res, 429, 'PASSWORD_LOCKED', 'too many wrong passwords from this client - try again later');
       }
       passwordOk = pw !== null && (await verifyPassword(pw, link.pwHash));
       if (pw !== null && !passwordOk) {
-        const fresh = !miss || Date.now() >= miss.until;
-        linkPasswordMisses.set(link.id, { n: fresh ? 1 : miss.n + 1, until: Date.now() + LINK_PASSWORD_LOCK_MS });
-        if (linkPasswordMisses.size > 10_000) linkPasswordMisses.clear();
+        linkPasswordAttempts.miss(link.id, client);
       } else if (passwordOk) {
-        linkPasswordMisses.delete(link.id);
+        linkPasswordAttempts.clear(link.id, client);
       }
     }
     const status = checkLink(link, sig, linkVerify, { passwordOk });
@@ -2778,6 +2785,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!bearer || !bearer.startsWith(SERVICE_TOKEN_PREFIX)) return null;
     const rec = await store.findApiTokenByHash(hashServiceSecret(bearer));
     if (!rec || rec.revokedAt) return null;
+    if (rec.expiresAt ? !Number.isFinite(Date.parse(rec.expiresAt)) || Date.parse(rec.expiresAt) <= Date.now() : !config.policy.serviceTokens.allowLegacyUnbounded) return null;
     void store.touchApiToken(rec.id, new Date().toISOString());
     return serviceAccountFor(rec);
   };
@@ -3357,32 +3365,37 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   });
 
   // ── service tokens (plans/35 wave 2) ──────────────────────────────────────
-  const tokenWire = (t: { id: string; label: string; role: string; createdBy: string; createdAt: string; lastUsedAt?: string; revokedAt?: string }) =>
-    ({ id: t.id, label: t.label, role: t.role, createdBy: t.createdBy, createdAt: t.createdAt, lastUsedAt: t.lastUsedAt ?? null, revokedAt: t.revokedAt ?? null });
+  const tokenWire = (t: { id: string; label: string; role: string; createdBy: string; createdAt: string; expiresAt?: string; lastUsedAt?: string; revokedAt?: string }) =>
+    ({ id: t.id, label: t.label, role: t.role, createdBy: t.createdBy, createdAt: t.createdAt, expiresAt: t.expiresAt ?? null,
+      legacyUnbounded: !t.expiresAt, lastUsedAt: t.lastUsedAt ?? null, revokedAt: t.revokedAt ?? null });
 
   router.add('POST', '/api/v1/tokens', async (req, res) => {
     const actor = await requireAction(req, res, 'token.manage');
     if (!actor) return;
-    const body = (await readJson(req)) as { label?: unknown; role?: unknown } | null;
+    const body = (await readJson(req)) as { label?: unknown; role?: unknown; ttlDays?: unknown } | null;
     const label = typeof body?.label === 'string' ? body.label.trim().slice(0, 80) : '';
     if (!label) return sendError(res, 400, 'INVALID_INPUT', 'label required - name the automation, not a person');
     if (typeof body?.role !== 'string' || !TOKEN_ROLES.includes(body.role)) {
       return sendError(res, 400, 'INVALID_INPUT', `role must be one of: ${TOKEN_ROLES.join(', ')}`);
     }
     const { secret, tokenHash } = mintServiceSecret();
+    let expiresAt: string;
+    try { expiresAt = credentialExpiry(body.ttlDays); }
+    catch { return sendError(res, 400, 'INVALID_INPUT', 'ttlDays must be an integer from 1 to 365'); }
     const rec = {
       id: `tok_${randomId(8)}`, label, role: body.role, tokenHash,
-      createdBy: `user:${actor.id}`, createdAt: new Date().toISOString(),
+      createdBy: `user:${actor.id}`, createdAt: new Date().toISOString(), expiresAt,
     };
     await store.putApiToken(rec);
-    await audit(`user:${actor.id}`, 'token.create', `token:${rec.id}`, { label, role: body.role });
+    await audit(`user:${actor.id}`, 'token.create', `token:${rec.id}`, { label, role: body.role, expiresAt });
     // The one and only time the secret exists in a response.
     sendJson(res, 201, { ...tokenWire(rec), token: secret }, { 'cache-control': 'no-store' });
   });
 
   router.add('GET', '/api/v1/tokens', async (req, res) => {
     if (!(await requireAction(req, res, 'token.manage'))) return;
-    sendJson(res, 200, { tokens: (await store.listApiTokens()).map(tokenWire) });
+    const tokens = (await store.listApiTokens()).map(tokenWire);
+    sendJson(res, 200, { tokens, legacyUnboundedCount: tokens.filter(token => token.legacyUnbounded && !token.revokedAt).length });
   });
 
   router.add('DELETE', '/api/v1/tokens/:id', async (req, res, ctx) => {
@@ -3989,6 +4002,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     return mintSessionCookie({
       sub: user.sub, email: user.email, groups: user.groups, role: user.role,
       name: displayName(user), epoch: user.sessionEpoch, authAt,
+      revocationId: held.user.revocationId,
       ...(held.user.authenticatedAt !== undefined ? { authenticatedAt: held.user.authenticatedAt } : {}),
       ...(held.user.oidc ? { oidc: held.user.oidc } : {}),
       ...(held.user.standingUntil !== undefined ? { standingUntil: held.user.standingUntil } : {}),
@@ -10468,6 +10482,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     return mintSessionCookie({
       sub: user.sub, email: user.email, groups: user.groups, role: user.role, name: displayName(user),
       epoch: user.sessionEpoch, authAt: renewal.authAt,
+      revocationId: session.user.revocationId,
       ...(session.user.authenticatedAt !== undefined ? { authenticatedAt: session.user.authenticatedAt } : {}),
       ...(session.user.oidc ? { oidc: session.user.oidc } : {}),
       ...(session.user.standingUntil !== undefined ? { standingUntil: session.user.standingUntil } : {}),
