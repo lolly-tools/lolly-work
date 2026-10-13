@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
-/** Bounded per-client attempts; one caller cannot lock a link for other clients. */
+/** Bounded attempts per link and source address. */
 export function createLinkPasswordAttempts(now: () => number = Date.now, maxEntries = 10000) {
   const entries = new Map<string, { misses: number; until: number }>();
   const keyOf = (link: string, client: string) => JSON.stringify([link, client]);

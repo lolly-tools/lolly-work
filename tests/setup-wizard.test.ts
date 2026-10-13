@@ -38,7 +38,7 @@ test('generated configuration preserves advanced settings, excludes secrets and 
   config.policy.activity.mode = 'off';
   config.policy.activity.auditSessionUpdates = false;
   const original = JSON.stringify(config);
-  const draft = setupDraft(config, ['Customer Owners']); draft.name = 'New name'; draft.workerUrl = 'http://renderer:9090';
+  const draft = setupDraft(config, ['Customer Owners']); draft.name = 'New name'; draft.workerUrl = 'https://renderer:9090';
   const proposal = generateSetup(draft, config);
   const next = parseConfig(JSON.stringify(mergeSetupPatch(config as unknown as Record<string, unknown>, proposal.patch)));
   assert.deepEqual(next.policy.activity, config.policy.activity);

@@ -121,7 +121,7 @@ test('aggregate deadline also bounds the driver rate gap and prevents late reque
 test('guided API enforces access, validates before any fetch and leaves preview state unpersisted', async () => {
   const store = createMemoryStore(), f = fixture();
   const config = parseConfig(JSON.stringify({ instance: { baseUrl: 'http://localhost' }, dev: { enabled: true, users: [{ email: 'owner@test', groups: ['owner'] }, { email: 'member@test', groups: ['member'] }] } }));
-  const app = buildApp({ config, store, secrets: { session: 's', link: 'l', credential: 'c'.repeat(32) }, fetchImpl: f.fetchImpl });
+  const app = buildApp({ config, store, secrets: { session: 's', link: 'l', credential: 'c'.repeat(32) }, fetchImpl: f.fetchImpl, providerResolver: async () => ['93.184.216.34'] });
   const server = createServer((req, res) => void app(req, res));
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${(server.address() as any).port}`;
