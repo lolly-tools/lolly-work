@@ -61,7 +61,7 @@ function same(left: ShellManifest, right: ShellManifest): boolean {
   return left.version === right.version && left.totalBytes === right.totalBytes && left.files.length === right.files.length
     && left.files.every((file, index) => { const other = right.files[index]; return other?.path === file.path && other.size === file.size && other.sha256 === file.sha256; });
 }
-function changedAllowed(path: string): boolean { return path.startsWith('_app/') || ['index.html', 'precache.json', 'portable/player.js', 'sw.js'].includes(path); }
+export function changedAllowed(path: string): boolean { return path.startsWith('_app/') || ['index.html', 'precache.json', 'portable/player.js', 'sw.js'].includes(path.replace(/\.(gz|br)$/, '')); }
 export function shellUpdateDelta(candidate: ShellManifest, previous: ShellManifest) {
   const old = new Map(previous.files.map(file => [file.path, file]));
   const files = candidate.files.filter(file => { const prior = old.get(file.path); return prior?.size !== file.size || prior.sha256 !== file.sha256; });
@@ -154,6 +154,8 @@ export function prepareShellUpdate(options: ShellUpdateOptions) {
     const runnerInput = writeShellJson(join(options.out, 'vite-input.json'), { source: options.source, sourceCommit: options.candidate, output: candidate, prerequisites, moduleReceipt: modulesPath });
     const buildReport = command([fileURLToPath(new URL('./shell-update-vite.mjs', import.meta.url)), runnerInput.path, runnerInput.sha256], options, env, 'vite-build');
     restoreAcceptedCatalog(options.previousShell, candidate, previous, join(options.out, 'accepted-catalog-restoration.json'));
+    const codingInput = writeShellJson(join(options.out, 'coding-input.json'), { version: 1, source: options.source, candidate, previous: previousRef, scratch: join(options.out, 'coding-scratch'), receipt: join(options.out, 'coding-rewrite.json') });
+    const codingReport = command([fileURLToPath(new URL('./private-shell-codings.mjs', import.meta.url)), codingInput.path, codingInput.sha256], options, env, 'generated-codings');
     const catalog = command(['scripts/verify-release-catalog.ts', '--root', candidate, '--public-key', options.publicKey], options, env, 'candidate-catalog');
     const candidateManifest = shellManifest(candidate), delta = shellUpdateDelta(candidateManifest, previous);
     requireShell(delta.files.length > 0, 'No generated shell changes; no update needed.');
@@ -179,7 +181,7 @@ export function prepareShellUpdate(options: ShellUpdateOptions) {
       shell: { root: prepared, manifest: preparedRef, shellId: shellId(preparedManifest), files: preparedManifest.files.length },
       delta: { root: deltaRoot, manifest: deltaRef, files: delta.files.length, totalBytes: delta.totalBytes },
       retention: { path: retentionPath, ...shellFileHash(retentionPath), retainedFiles: retention.retained.length },
-      webGate, catalog: { previous: previousCatalog, candidate: catalog, signatureReused: true, newSigning: false },
+      webGate, codingReport, catalog: { previous: previousCatalog, candidate: catalog, signatureReused: true, newSigning: false },
       producer: { path: fileURLToPath(import.meta.url), ...shellFileHash(fileURLToPath(import.meta.url)) },
       originAuthenticatedByThisCommand: false, normalCIQualified: false, runtimeQualified: false, promotionAttempted: false,
       outstanding: ['Review source CI and accepted previous custody', 'Read-only staged runtime and browser qualification', 'Fresh exact live guards, narrow promotion and post-promotion acceptance'] };
