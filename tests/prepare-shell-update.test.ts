@@ -7,7 +7,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
-import { prepareShellUpdate, shellUpdateArguments, shellUpdateDelta } from '../scripts/prepare-shell-update.ts';
+import { prepareShellUpdate, restoreAcceptedCatalog, shellUpdateArguments, shellUpdateDelta } from '../scripts/prepare-shell-update.ts';
 import type { ShellUpdateOptions } from '../scripts/prepare-shell-update.ts';
 import { cloneShellFiles, sha256, shellFileCustody, shellFileStamp, shellId, shellManifest, writeShellJson } from '../scripts/shell-update-files.ts';
 import { shellReleaseId } from '../scripts/shell-release-id.ts';
@@ -37,7 +37,7 @@ function fixture(t: { after: (fn: () => void) => void }) {
   put(source, 'schemas/tool.schema.json', '{}\n'); put(source, 'profiles.json', '{}\n');
   put(source, 'shells/web/index.html', '<body><script type="module" src="./src/main.ts"></script></body>');
   put(source, 'shells/web/src/main.ts', 'import { number } from "@lolly/engine"; document.body.textContent = String(number) + "base";\n');
-  put(source, 'shells/web/vite.config.js', `import { writeFileSync, existsSync } from 'node:fs'; import { fileURLToPath } from 'node:url'; let out;\nexport default { plugins: [{name:'test-maintained-static', configResolved(c){out=c.build.outDir}, buildStart(){if(!existsSync(fileURLToPath(new URL('./public/ort/ort-wasm-test.wasm',import.meta.url))))throw new Error('Fixture source-runtime cache required')}, closeBundle(){writeFileSync(out+'/precache.json','{"version":"test"}')}}], worker:{plugins:()=>[]},build:{assetsDir:'_app',minify:false}};\n`);
+  put(source, 'shells/web/vite.config.js', `import { writeFileSync, existsSync, rmSync } from 'node:fs'; import { fileURLToPath } from 'node:url'; let out;\nexport default { plugins: [{name:'test-maintained-static', configResolved(c){out=c.build.outDir}, buildStart(){if(!existsSync(fileURLToPath(new URL('./public/ort/ort-wasm-test.wasm',import.meta.url))))throw new Error('Fixture source-runtime cache required')}, closeBundle(){rmSync(out+'/tools/demo@1234567890abcdef',{recursive:true,force:true});writeFileSync(out+'/precache.json','{"version":"test"}')}}], worker:{plugins:()=>[]},build:{assetsDir:'_app',minify:false}};\n`);
   put(source, 'scripts/webgpu-release-gate.ts', 'if (JSON.stringify(process.argv.slice(2)) !== JSON.stringify(["--scope", "web"])) throw new Error("Fixture requires explicit web scope"); console.log("Fixture web gate passed; no physical qualification claimed");\n');
   // The fixture invokes the repository's real vendored catalog crypto, while the
   // producer invokes its supplied Lolly source's maintained release verifier.
@@ -67,6 +67,7 @@ console.log(JSON.stringify({verified:true,files:Object.keys(envelope.files).leng
   const pair = generateKeyPairSync('ec', { namedCurve: 'prime256v1' }), pin = pair.publicKey.export({ format: 'jwk' });
   const publicKey = join(root, 'public.json'); writeShellJson(publicKey, pin);
   const index = '{"tools":[]}\n', tool = '{"id":"demo"}\n'; put(previous, 'catalog/tools/index.json', index); put(previous, 'tools/demo/tool.json', tool);
+  put(previous, 'tools/demo@1234567890abcdef/tool.json', tool);
   const keyId = Buffer.from(sha256(canonical({ crv: pin.crv, kty: pin.kty, x: pin.x, y: pin.y })), 'hex').toString('base64url');
   const unsigned = { alg: 'ECDSA-P256-SHA256', keyId, signedAt: '2026-10-10T00:00:00.000Z', indexHash: sha256(index), files: { 'demo/tool.json': sha256(tool) } };
   put(previous, 'catalog/tools/index.sig.json', JSON.stringify({ ...unsigned, signature: sign('sha256', Buffer.from(canonical(unsigned)), { key: pair.privateKey, dsaEncoding: 'ieee-p1363' }).toString('base64url') }));
@@ -90,6 +91,7 @@ test('real CLI builds with Vite and catalog crypto, retains lazy assets, and lea
   const prepared = JSON.parse(readFileSync(join(f.options.out, 'shell-update.prepared.json'), 'utf8'));
   assert.equal(prepared.status, 'LOCAL_PRIVATE_SHELL_UPDATE_PREPARED_UNQUALIFIED');
   assert.equal(prepared.normalCIQualified, false); assert.equal(prepared.runtimeQualified, false); assert.equal(prepared.promotionAttempted, false); assert.equal(prepared.originAuthenticatedByThisCommand, false);
+  assert.equal(readFileSync(join(prepared.shell.root, 'tools/demo@1234567890abcdef/tool.json'), 'utf8'), readFileSync(join(f.previous, 'tools/demo/tool.json'), 'utf8'));
   assert.equal(prepared.catalog.signatureReused, true); assert.equal(prepared.catalog.newSigning, false);
   assert.equal(readFileSync(join(prepared.shell.root, '_app/old-lazy.js'), 'utf8'), 'export const previous = true;');
   assert.equal(readFileSync(join(prepared.shell.root, 'font.woff2'), 'utf8'), 'accepted static font'); assert.deepEqual(shellManifest(f.previous), before);
@@ -165,4 +167,31 @@ test('CLI input options are exact and help does not build', () => {
   assert.throws(() => shellUpdateArguments(['--source', '/tmp']), /every/);
   const result = spawnSync(process.execPath, [join(work, 'scripts/prepare-shell-update.ts'), '--help'], { encoding: 'utf8' });
   assert.equal(result.status, 0); assert.match(result.stdout, /never installs dependencies/);
+});
+
+
+test('catalog materialization restores only missing accepted delivery bytes with separate inodes', t => {
+  const f = fixture(t), candidate = join(f.root, 'materialized'); mkdirSync(candidate);
+  put(f.previous, 'tools/demo@1234567890abcdef/tool.json', '{"id":"demo"}\n');
+  const before = shellManifest(f.previous);
+  put(candidate, 'catalog/tools/index.json', readFileSync(join(f.previous, 'catalog/tools/index.json'), 'utf8'));
+  const rows = restoreAcceptedCatalog(f.previous, candidate, before, join(f.root, 'restored.json'));
+  assert.ok(rows.some(row => row.path === 'tools/demo@1234567890abcdef/tool.json'));
+  assert.deepEqual(shellManifest(candidate).files, before.files.filter(row => /^(catalog|tools)\//.test(row.path)));
+  assert.notEqual(lstatSync(join(candidate, rows[0]!.path)).ino, lstatSync(join(f.previous, rows[0]!.path)).ino);
+  assert.deepEqual(shellManifest(f.previous), before);
+});
+
+test('catalog restoration refuses altered bytes, new files and symlinks before copying anything', t => {
+  for (const kind of ['changed', 'extra', 'symlink']) {
+    const f = fixture(t), candidate = join(f.root, 'materialized'); mkdirSync(candidate);
+    const before = shellManifest(f.previous), receipt = join(f.root, 'restored.json');
+    if (kind === 'changed') put(candidate, 'tools/demo/tool.json', 'changed');
+    if (kind === 'extra') put(candidate, 'tools/unknown/tool.json', '{}');
+    if (kind === 'symlink') { mkdirSync(join(candidate, 'tools')); symlinkSync(join(f.previous, 'tools/demo'), join(candidate, 'tools/demo')); }
+    assert.throws(() => restoreAcceptedCatalog(f.previous, candidate, before, receipt), /catalog|resource|symbolic|regular|symlink/i);
+    assert.equal(existsSync(receipt), false);
+    assert.equal(existsSync(join(candidate, 'catalog/tools/index.sig.json')), false);
+    assert.deepEqual(shellManifest(f.previous), before);
+  }
 });
