@@ -512,6 +512,10 @@ def change_tuple(before, previous, selection, source, release):
     return spec, patch, {"status": "FRESH_AFTER_CAPTURE_AND_DATA_COMPATIBILITY_REQUIRED_NOT_EXECUTABLE", "fields": fields}
 
 
+def generated_path(path):
+    return path.startswith("_app/") or re.sub(r"\.(gz|br)$", "", path) in {"index.html", "precache.json", "sw.js", "portable/player.js"}
+
+
 def evidence_shape(value):
     exact(value, EVIDENCE_KEYS | ({"rawDerivation"} if isinstance(value, dict) and "rawDerivation" in value else set()))
     if "rawDerivation" in value:
@@ -562,9 +566,7 @@ def prepare(value, base, expected_public_pin, node="node", runner=git_command):
     require(len(set(roots)) == 4 and all(a not in b.parents for a in roots for b in roots if a != b), "Distinct complete trees required")
     require(old.manifest_sha == previous["shell"]["manifestSha256"] and old.shell_id == previous["shell"]["releaseId"] and raw.manifest_sha == previous["pack"]["manifestSha256"], "Accepted shell/raw-pack snapshot differs")
     cohort.retention(candidate, old, shell)
-    def generated(path):
-        return path.startswith("_app/") or re.sub(r"\.(gz|br)$", "", path) in {"index.html", "precache.json", "sw.js", "portable/player.js"}
-    require({p: entry for p, entry in old.files.items() if not generated(p)} == {p: entry for p, entry in candidate.files.items() if not generated(p)}, "Static assets/catalog/dependencies changed in shell-only output")
+    require({p: entry for p, entry in old.files.items() if not generated_path(p)} == {p: entry for p, entry in candidate.files.items() if not generated_path(p)}, "Static assets/catalog/dependencies changed in shell-only output")
     public_pin = inputs.file(value["publicPin"])
     actual_catalog = cohort.catalog(shell, raw, public_pin, cohort.sha(expected_public_pin), node)
     require(cohort.catalog(old, raw, public_pin, cohort.sha(expected_public_pin), node) == actual_catalog, "Accepted signed catalog changed")

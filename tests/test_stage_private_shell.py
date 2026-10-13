@@ -49,6 +49,25 @@ def actual_pod(want):
 
 
 class Boundaries(unittest.TestCase):
+    def test_only_obsolete_fixed_codings_can_be_removed_and_real_node_refuses_tampering(self):
+        import gzip
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve(); payload = gzip.compress(b'old index')
+            (root / 'index.html').write_bytes(b'new small index')
+            (root / 'index.html.gz').write_bytes(payload)
+            row = {'path':'index.html.gz','size':len(payload),'sha256':hashlib.sha256(payload).hexdigest()}
+            old = {'index.html.gz':row}; new = {'index.html':{'path':'index.html','size':15,'sha256':'a'*64}}
+            self.assertEqual(m.obsolete_generated_codings(old,new),[row])
+            for name in ('font.gz','_app/old.js.gz','index.html.br.gz','../index.html.gz'):
+                with self.assertRaises(m.Refusal): m.obsolete_generated_codings({name:{**row,'path':name}},new)
+            for wrong in ({**row,'sha256':'0'*64},{**row,'path':'../index.html.gz'},{**row,'size':True}):
+                result = subprocess.run([NODE,'-e',m.REMOVE_CODINGS,str(root),json.dumps([wrong])],capture_output=True)
+                self.assertNotEqual(result.returncode,0); self.assertEqual((root/'index.html.gz').read_bytes(),payload)
+            result = subprocess.run([NODE,'-e',m.REMOVE_CODINGS,str(root),json.dumps([row])],capture_output=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(json.loads(result.stdout),{'removed':['index.html.gz']})
+            self.assertFalse((root/'index.html.gz').exists()); self.assertEqual((root/'index.html').read_bytes(),b'new small index')
+
     def test_defaulted_pod_is_exact_nonroot_and_qualifier_mounts_only_isolated_readonly_content(self):
         desired = simple(); m.validate_pod(actual_pod(desired['writer']),desired['writer'],True)
         m.validate_pod(actual_pod(desired['qualifier']),desired['qualifier'],True)
