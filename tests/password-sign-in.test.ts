@@ -93,7 +93,7 @@ function postForm(base: string, path: string, fields: Record<string, string>, co
   return fetch(`${base}${path}`, {
     method: 'POST', redirect: 'manual',
     headers: {
-      'content-type': 'application/x-www-form-urlencoded', origin: base, 'sec-fetch-site': 'same-origin',
+      'content-type': 'application/x-www-form-urlencoded', origin: 'https://team.example', 'sec-fetch-site': 'same-origin',
       ...(cookie ? { cookie } : {}), ...headers,
     },
     body: new URLSearchParams(fields).toString(),
@@ -600,7 +600,7 @@ test('a password sign-in joins the existing person who holds that verified email
   assert.equal(await sessionEmail(base, cookieOf(set, 'lw_session')), 'kim@partner.example');
   assert.equal((await store.findUsersByEmail('kim@partner.example')).length, 1, 'no second account');
   assert.deepEqual((await store.listIdentities(kim.id)).map((r) => r.idp).sort(), ['email', 'github']);
-  assert.ok((await auditOf(store)).some((e) => e.action === 'identity.link' && e.payload?.via === 'email' && e.payload?.provider === 'password'));
+  assert.ok((await auditOf(store)).some((e) => e.action === 'identity.link' && e.payload?.via === 'password-link' && e.payload?.provider === 'password'));
 
   const afterSet = (await (await fetch(`${base}/api/v1/users/${kim.id}/identities`, { headers: { cookie: admin } })).json()) as { password: { set: boolean } };
   assert.equal(afterSet.password.set, true);
@@ -643,11 +643,11 @@ test('a browser-shaped post: the Origin strict-origin keeps passes; the Origin: 
   const opaque = await postForm(base, '/api/auth/password/set', fields, page.cookie, { origin: 'null' });
   assert.equal(opaque.status, 403);
   assert.equal(((await opaque.json()) as { error: { code: string } }).error.code, 'CSRF_BLOCKED');
-  const set = await postForm(base, '/api/auth/password/set', fields, page.cookie, { origin: base });
+  const set = await postForm(base, '/api/auth/password/set', fields, page.cookie, { origin: 'https://team.example' });
   assert.equal(set.status, 303);
   // And signing in from the form.
   const form = await openForm(base, '/api/auth/login?idp=email');
-  const login = await postForm(base, '/api/auth/password/login', { email: 'max@partner.example', password: PW, returnTo: '/', csrf: form.csrf }, form.cookie, { origin: base });
+  const login = await postForm(base, '/api/auth/password/login', { email: 'max@partner.example', password: PW, returnTo: '/', csrf: form.csrf }, form.cookie, { origin: 'https://team.example' });
   assert.equal(login.status, 303);
   // The device confirmation form posts with the session cookie the same way.
   const activate = await fetch(`${base}/activate`, { headers: { cookie: admin } });

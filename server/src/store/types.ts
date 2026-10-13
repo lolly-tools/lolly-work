@@ -36,6 +36,7 @@ import type { ProjectAccess } from '../rbac/project-access.ts';
 import { sha256Hex } from '../lib/crypto.ts';
 
 export interface UserRecord {
+  scimIdp?: string;
   id: string;
   sub: string;
   email: string;
@@ -67,6 +68,7 @@ export interface UserRecord {
 /** A local group definition (the registry). IdP groups are NOT registered -
  *  they're discovered from users' idpGroups. */
 export interface LocalGroupRecord {
+  scimIdp?: string;
   name: string;
   description?: string;
   createdAt: string;
@@ -296,6 +298,7 @@ export interface AccessRequestCount {
 /** A SCIM provisioning bearer token (plans/31 §8). One per IdP connector; the
  *  opaque secret is shown once at mint and stored only as `tokenHash`. */
 export interface ScimTokenRecord {
+  expiresAt?: string;
   id: string;
   /** The operator's label for the IdP connector this token authorizes. */
   idp: string;
@@ -1068,6 +1071,7 @@ export interface Store extends OidcLogoutStore, RenderStore, PasskeyStore {
   listUsersPage(opts: ListUsersPageOpts): Promise<{ rows: UserRecord[]; total: number }>;
   /** Replace a user's localGroups (idpGroups untouched); recomputes the
    *  effective union + role. Returns the updated record, or null if unknown. */
+  setUserScimIdp(userId: string, idp: string): Promise<UserRecord | null>;
   setLocalGroups(userId: string, localGroups: string[]): Promise<UserRecord | null>;
   /** Set (ISO string) or clear (null) disabledAt. Disabling also bumps
    *  sessionEpoch (disable = lockout AND revocation); clearing does not.

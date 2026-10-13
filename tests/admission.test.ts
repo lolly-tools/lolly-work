@@ -232,3 +232,8 @@ test('setup: the admission fields keep old hashes and old setup files working, a
     dev: { enabled: true, users: [{ email: 'o@x.test', groups: ['owner'] }] } }));
   assert.equal(fieldOf({ ...setupDraft(ownerless, []), admissionEmails: ['ana@example.com'], bootstrapOwners: ['ana@example.com'] }, ownerless), 'bootstrapOwners');
 });
+
+test('trusted email verification never overrides an explicit negative or malformed claim', () => {
+  assert.equal(emailIsVerified({ email: 'a@example.org' }, { emailVerification: 'trusted' }), true);
+  for (const emailVerified of [false, null, 'true', 1]) assert.equal(emailIsVerified({ email: 'a@example.org', emailVerified }, { emailVerification: 'trusted' }), false);
+});

@@ -376,7 +376,7 @@ test('config: kind github takes no issuer, needs a secret ref, and linkByEmail d
   const gh = ok.idp.additional[0];
   assert.equal(gh?.kind, 'github');
   assert.equal(gh?.issuer, '');
-  assert.equal(linkByEmailFor(gh!), true, 'claim (the default) links by verified email');
+  assert.equal(linkByEmailFor(gh!), false, 'additional providers require an explicit linking choice');
   assert.equal(linkByEmailFor({ emailVerification: 'trusted' }), false, 'trusted does not link unless asked');
   assert.equal(linkByEmailFor({ emailVerification: 'trusted', linkByEmail: true }), true);
   assert.equal(linkByEmailFor({ linkByEmail: false }), false);

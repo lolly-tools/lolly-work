@@ -317,6 +317,13 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       });
       return { rows: rows.slice(opts.offset, opts.offset + opts.limit), total };
     },
+    async setUserScimIdp(userId, idp) {
+      for (const u of users.values()) {
+        if (u.id !== userId) continue;
+        const next = { ...u, scimIdp: idp }; users.set(u.sub, next); return mapped(next);
+      }
+      return null;
+    },
     async setLocalGroups(userId, local) {
       for (const u of users.values()) {
         if (u.id !== userId) continue;

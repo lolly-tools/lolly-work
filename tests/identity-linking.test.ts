@@ -88,7 +88,7 @@ async function boot(idpExtra: Record<string, unknown> = {}, seed?: (store: Store
     idp: {
       issuer: GOOGLE, clientId: 'g-client', displayName: 'Google',
       bootstrapOwners: ['owner@example.com'],
-      additional: [{ id: 'github', kind: 'github', clientId: 'gh-client', displayName: 'GitHub', clientSecretRef: SECRET_ENV }],
+      additional: [{ id: 'github', kind: 'github', clientId: 'gh-client', displayName: 'GitHub', clientSecretRef: SECRET_ENV, linkByEmail: true }],
       ...idpExtra,
     },
   }));
@@ -414,7 +414,8 @@ test('a user from before 0039 is found by users.sub and gets an identity row', a
 test('a linked sign-in keeps the work IdP groups and is refused when the person is disabled', async () => {
   const { base, store, script } = await boot();
   script.google = { sub: 'g-1', email: 'ana@example.com', email_verified: true, groups: ['admin'] };
-  await signIn(base, script, 'primary');
+  const primary = await signIn(base, script, 'primary');
+  await linkWhileSignedIn(base, script, 'github', primary.session as string);
   const gh = await signIn(base, script, 'github');
   assert.equal((await me(base, gh.session as string)).user?.role, 'admin', 'GitHub has no groups, and did not clear them');
   const user = (await store.getUserBySub('g-1'))!;
@@ -479,7 +480,8 @@ test('a linked sign-in does not outlive the work account: standing and groups la
 test('IdP groups lapse when the IdP that sent them has not been seen for the window', async () => {
   const { base, store, script } = await boot();
   script.google = { sub: 'g-1', email: 'ana@example.com', email_verified: true, groups: ['admin'] };
-  await signIn(base, script, 'primary');
+  const initial = await signIn(base, script, 'primary');
+  await linkWhileSignedIn(base, script, 'github', initial.session as string);
   const recent = await signIn(base, script, 'github');
   assert.equal((await me(base, recent.session as string)).user?.role, 'admin', 'carried over while the work sign-in is recent');
 
@@ -628,4 +630,56 @@ test('an active linked session stops at the standing deadline even before its co
   const later = Date.now() + 120_000;
   t.mock.method(Date, 'now', () => later);
   assert.equal((await fetch(`${base}/api/auth/session`, { headers: { cookie: personal.session! } })).status, 401);
+});
+
+test('email linking never joins an owner or admin account, even when explicitly enabled', async () => {
+  for (const role of ['owner', 'admin']) {
+    const { base, store, script } = await boot();
+    script.google = { sub: 'g-1', email: 'ana@example.com', email_verified: true, groups: [role] };
+    await signIn(base, script, 'primary');
+    const other = await signIn(base, script, 'github');
+    assert.equal((await me(base, other.session as string)).user?.sub, 'github:101');
+    assert.equal((await store.listUsers()).length, 2);
+  }
+});
+
+test('an additional provider has no automatic email linking by default', async () => {
+  const { base, store, script } = await boot({ additional: [{ id: 'github', kind: 'github', clientId: 'gh-client', displayName: 'GitHub', clientSecretRef: SECRET_ENV }] });
+  await signIn(base, script, 'primary');
+  const other = await signIn(base, script, 'github');
+  assert.equal((await me(base, other.session as string)).user?.sub, 'github:101');
+  assert.equal((await store.listUsers()).length, 2);
+});
+
+test('bootstrap ownership is durable at first creation and cannot restore a removed group', async () => {
+  const { base, store, script } = await boot({ bootstrapOwners: ['ana@example.com'] });
+  const first = await signIn(base, script, 'primary');
+  assert.equal((await me(base, first.session as string)).user?.role, 'owner');
+  const user = (await store.getUserBySub('g-1'))!;
+  assert.deepEqual(user.localGroups, ['owner']);
+  const repeat = await signIn(base, script, 'primary');
+  assert.equal((await me(base, repeat.session as string)).user?.role, 'owner');
+  await store.setLocalGroups(user.id, []);
+  const removed = await signIn(base, script, 'primary');
+  assert.equal((await me(base, removed.session as string)).user?.role, 'member');
+});
+
+
+test('bootstrap ownership cannot grant a second account for an existing email', async () => {
+  const { base, store, script } = await boot({ bootstrapOwners: ['ana@example.com'] });
+  const owner = await signIn(base, script, 'primary');
+  assert.equal((await me(base, owner.session as string)).user?.role, 'owner');
+  const second = await signIn(base, script, 'github');
+  assert.equal((await me(base, second.session as string)).user?.role, 'member');
+  assert.equal((await store.listUsers()).filter(user => user.role === 'owner').length, 1);
+});
+
+
+test('a provider without email linking cannot supply a matching target account', async () => {
+  const { base, store, script } = await boot({ additional: [{ id: 'github', kind: 'github', clientId: 'gh-client', displayName: 'GitHub', clientSecretRef: SECRET_ENV }] });
+  const github = await signIn(base, script, 'github');
+  assert.equal((await me(base, github.session as string)).user?.sub, 'github:101');
+  const primary = await signIn(base, script, 'primary');
+  assert.equal((await me(base, primary.session as string)).user?.sub, 'g-1');
+  assert.equal((await store.listUsers()).length, 2);
 });

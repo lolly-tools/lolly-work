@@ -17,6 +17,7 @@ import { mintSessionCookie } from '../server/src/iam/sessions.ts';
 
 let server: Server;
 let base = '';
+let backingStore: ReturnType<typeof createMemoryStore>;
 
 before(async () => {
   const pack = await mkdtemp(join(tmpdir(), 'lw-pack-'));
@@ -43,6 +44,7 @@ before(async () => {
     },
   }));
   const store = createMemoryStore();
+  backingStore = store;
   const app = buildApp({ config, store, secrets: { session: 's3', link: 'l3' } });
   server = createServer((req, res) => void app(req, res));
   await new Promise<void>((r) => server.listen(0, () => r()));
@@ -268,4 +270,24 @@ test('a pre-epoch token (no epoch field) stays valid until an actual bump', asyn
   // …and dies like any other token once the epoch is bumped
   assert.equal((await fetch(`${base}/api/v1/users/${ownerId}/revoke-sessions`, { method: 'POST', headers: { cookie: owner } })).status, 200);
   assert.equal((await fetch(`${base}/api/v1/org-config`, { headers: { cookie: legacy } })).status, 401);
+});
+
+
+test('administrators cannot assign or remove owner membership', async () => {
+  const owner = await login('owner@test');
+  const admin = await login('admin@test');
+  const people = await usersByEmail(owner);
+  const ownerId = people.get('owner@test')!.id;
+  const adminId = people.get('admin@test')!.id;
+  await backingStore.putLocalGroup({ name: 'owner', createdAt: new Date().toISOString() });
+  const headers = { cookie: admin, 'content-type': 'application/json' };
+  const promote = await fetch(`${base}/api/v1/users/${adminId}/local-groups`, { method: 'PUT', headers, body: JSON.stringify({ groups: ['owner'] }) });
+  assert.equal(promote.status, 403);
+  const demote = await fetch(`${base}/api/v1/users/${ownerId}/local-groups`, { method: 'PUT', headers, body: JSON.stringify({ groups: [] }) });
+  assert.equal(demote.status, 403);
+  const remove = await fetch(`${base}/api/v1/groups/owner`, { method: 'DELETE', headers });
+  assert.equal(remove.status, 403);
+  const allowed = await fetch(`${base}/api/v1/users/${adminId}/local-groups`, { method: 'PUT', headers: { ...headers, cookie: owner }, body: JSON.stringify({ groups: ['owner'] }) });
+  assert.equal(allowed.status, 200);
+  assert.equal((await backingStore.getUser(adminId))?.role, 'owner');
 });

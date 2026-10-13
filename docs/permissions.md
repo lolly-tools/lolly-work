@@ -115,11 +115,9 @@ A grant that creates or removes any owner-only action (`instance.config`,
 requires the **owner** role, even though grant editing itself is an admin action.
 Attempting it returns `403 OWNER_ONLY_ACTION`.
 
-The guard stops an admin minting an owner-only *grant*. It does not stop an admin becoming
-an owner: role is derived from group membership, group editing is an admin action, and a
-local group named `owner` escalates exactly like an IdP one. That is deliberate (it is the
-break-glass when an IdP has no `owner` group) and audited, but it means the boundary
-between admin and owner is a governance convention, not a wall.
+Only an owner may create or remove an owner-mapped local group, assign owner membership,
+or change an owner account's local groups. The same restriction applies to groups
+holding owner-only grants. Administrators may manage groups within their own role.
 
 ### "Edit but not export"
 

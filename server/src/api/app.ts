@@ -1,4 +1,6 @@
 import { registerOidcLogout } from '../iam/oidc-logout-routes.ts';
+import { safeMessageUrl } from '../inbox/message-url.ts';
+import { withRenderDeadline } from '../render/deadline.ts';
 import { WorkerError } from '../render/worker-client.ts';
 import { createFilePreview, readPreviewInput, PREVIEW_INPUT_LIMIT } from '../catalog/file-preview.ts';
 import { visibleSourceStatuses } from '../catalog/source-status.ts';
@@ -310,19 +312,21 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // `submitter`: the person the render is for. The worker may then read the
   // project files its inputs name, while that person can see them (plan 76 M4j).
   const renderTool = (...args: [...Parameters<typeof renderToolUnscoped>, submitter?: UserRecord | null]) => {
-    const run = async () => {
+    const run = async (signal: AbortSignal) => {
       await catalogPreparation;
+      signal.throwIfAborted();
       const snap = brand.current()!;
       const policyHash = brandPolicyHash([...args[1].overlays]);
       const managedRules = await managedRuleContext(snap, args[1].toolId, args[1].format === 'jpeg' ? 'jpg' : args[1].format);
       const files = args[2] && args[0].worker && projectFilesEnabled(config, store) ? await renderFileScope({ store, projectAccessOf }, args[1].query, args[2]) : undefined;
       const out = await renderToolUnscoped({ ...args[0], brandRevision: snap.revision, managedRules,
-        workerReadToken: mintRenderRead(args[1].principal?.groups ?? [], snap.revision, secrets.link, files) }, args[1]);
+        workerReadToken: mintRenderRead(args[1].principal?.groups ?? [], snap.revision, secrets.link, files) }, { ...args[1], signal });
       if ((await brand.snapshot()).revision !== snap.revision || brandPolicyHash([...await store.listOverlays()]) !== policyHash) throw new BrandError('Brand or organisation policy changed during rendering. Retry with the current revision.', 409, 'BRAND_REVISION_CHANGED');
       if (managedRules) await sourceRules(snap);
       return out;
     };
-    return brand.current() ? run() : brand.run(run);
+    const bounded = () => withRenderDeadline(run, config.render.worker.timeoutMs, args[1].signal);
+    return brand.current() ? bounded() : brand.run(bounded);
   };
   const fetchImpl = deps.fetchImpl ?? fetch;
   const secure = config.instance.baseUrl.startsWith('https:');
@@ -392,8 +396,17 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   const sessionVerify = sessionKeys(secrets);
   const linkVerify = linkKeys(secrets);
 
-  const principalOf = (req: IncomingMessage): Principal | null =>
-    readPrincipal(req.headers.cookie, sessionVerify);
+  const principalOf = async (req: IncomingMessage): Promise<Principal | null> => {
+    const principal = readPrincipal(req.headers.cookie, sessionVerify);
+    if (principal?.kind !== 'guest') return principal;
+    const link = await store.getLink(principal.guest.linkId);
+    if (!config.policy.guestLinks.enabled || !link || link.kind !== 'guest-edit' || link.revokedAt || !Number.isFinite(link.exp)
+      || link.exp * 1000 <= Date.now() || link.target.toolId !== principal.guest.toolId || (link.target.sessionId ?? '') !== (principal.guest.sessionRef ?? '')) return null;
+    const inviter = await store.getUser(link.createdBy);
+    if (!inviter || inviter.disabledAt || !evaluate({ userId: inviter.id, groups: inviter.groups, role: inviter.role as Role },
+      'link.create-guest', linkResourceSelectors(link.target), await store.listGrants())) return null;
+    return principal;
+  };
 
   // Shared with the collab ws gateway (server/src/iam/member.ts), which must
   // authenticate an `upgrade` request with byte-identical semantics - including
@@ -659,7 +672,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // Prometheus scrape endpoint (registered before auth so it can't be shadowed).
   // Loopback-only unless LW_METRICS_TOKEN is set. Gauges are collected at scrape.
   router.add('GET', '/metrics', async (req, res) => {
-    const gate = metricsGate(req, secrets.metricsToken);
+    const gate = metricsGate(req, secrets.metricsToken, productionMode(config) || config.proxyAuth.enabled || config.rateLimit.trustedProxyHops > 0);
     if (gate === 'not-found') return sendError(res, 404, 'NOT_FOUND', 'no route for GET /metrics');
     if (gate === 'unauthorized') return sendError(res, 401, 'UNAUTHORIZED', 'metrics require a bearer token');
     const gauges: GaugeLine[] = [
@@ -757,7 +770,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       ...(c.tenantId ? { tenantId: c.tenantId } : {}),
       emailVerification: c.emailVerification ?? 'claim',
     } satisfies AdmissionIdp,
-    linkByEmail: linkByEmailFor(c),
+    linkByEmail: linkByEmailFor(c, c === config.idp),
     scope: (c.scopes ?? ['openid', 'profile', 'email']).join(' '),
     // A pinned Google domain is also sent as `hd`, so the account picker
     // offers the right account first. Configured authParams.hd must agree.
@@ -1365,12 +1378,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (idp === 'dev') return 'Developer sign-in';
     return config.idp.additional.find((a) => a.id === idp)?.displayName ?? idp;
   };
-  /** Whether this sign-in's email counts as verified for linking: the IdP
-   *  vouches for it AND takes part in linking by email. A `trusted` IdP that
-   *  has not opted in is never a link target, so an address it merely
-   *  asserts can never pull someone else's sign-in into its account. */
+  /** Whether the verified identity vouches for its email address. */
   const linkableEmail = (identity: AdmissionIdentity, idp: ResolvedIdp): boolean =>
-    idp.linkByEmail && emailIsVerified(identity, idp.constraints);
+    emailIsVerified(identity, idp.constraints);
   /** The directory pin of a stored identity's IdP (iam/identities.ts
    *  `idpPin`); undefined when that IdP is no longer configured. */
   const pinOfIdp = (idpId: string): string | null | undefined => {
@@ -1512,7 +1522,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const verifiedForLinking = linkableEmail(identity, idp);
     const resolution = await resolveSignIn(store, {
       sub: identity.sub, email: identity.email, emailVerified: verifiedForLinking, linkByEmail: idp.linkByEmail,
-      pin: idpPin(idp.constraints), pinOf: pinOfIdp,
+      pin: idpPin(idp.constraints), pinOf: pinOfIdp, linkableOf: id => resolveIdp(id)?.linkByEmail ?? false,
     });
     const admitted = await admitSignIn(identity, idp.constraints, resolution);
     if (!admitted.ok) {
@@ -1533,7 +1543,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       }
       if (!profile.title && held.title) profile.title = held.title;
     }
-    const ownerGroup = bootstrapOwnerGroup(admitted, identity.email, config.idp.bootstrapOwners, config.idp.roleGroups.owner);
+    const ownerGroup = resolution.via === 'new' && !(await store.findUsersByEmail(identity.email)).length ? bootstrapOwnerGroup(admitted, identity.email, config.idp.bootstrapOwners, config.idp.roleGroups.owner) : null;
     if (ownerGroup && !profile.groups.includes(ownerGroup)) profile.groups = [...profile.groups, ownerGroup];
     /** The refusal for a password that may not open an owner's account. */
     const refuseOwnerSession = async (): Promise<null> => {
@@ -1563,8 +1573,10 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       profile: { ...profile, role: roleFromGroups(profile.groups, config.idp.roleGroups) },
       provider,
     });
+    if (ownerGroup && !(await store.listLocalGroups()).some(g => g.name === ownerGroup)) await store.putLocalGroup({ name: ownerGroup, createdAt: new Date().toISOString() });
+    const bootstrapped = ownerGroup ? (await store.setLocalGroups(upserted.id, [...new Set([...upserted.localGroups, ownerGroup])]))! : upserted;
     // The row exists now, so an invitation's groups can be joined to it.
-    const user = await acceptInvitationAtSignIn(upserted, admitted, { provider, idp: idp.id });
+    const user = await acceptInvitationAtSignIn(bootstrapped, admitted, { provider, idp: idp.id });
     // Whatever else made the account an owner meanwhile (an invitation's
     // groups) is caught here, before a session exists.
     if (opts.ownerAllowed === false && user.role === 'owner') return refuseOwnerSession();
@@ -1774,7 +1786,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       const name = [id.firstname, id.lastname].filter(Boolean).join(' ');
       return refuseSignIn(req, res, { email: id.email, idp: 'proxy', sub: proxySub, ...(name ? { name } : {}) }, admitted.reason, { provider: 'proxy', switchHref: '' });
     }
-    const ownerGroup = bootstrapOwnerGroup(admitted, id.email, config.idp.bootstrapOwners, config.idp.roleGroups.owner);
+    const ownerGroup = resolution.via === 'new' && !(await store.findUsersByEmail(id.email)).length ? bootstrapOwnerGroup(admitted, id.email, config.idp.bootstrapOwners, config.idp.roleGroups.owner) : null;
     const proxyGroups = ownerGroup && !id.groups.includes(ownerGroup) ? [...id.groups, ownerGroup] : id.groups;
     const upserted = await recordSignIn({
       resolution, sub: proxySub, idp: 'proxy', email: id.email, emailVerified: false, provider: 'proxy',
@@ -1785,7 +1797,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         ...(id.lastname ? { lastname: id.lastname } : {}),
       },
     });
-    const user = await acceptInvitationAtSignIn(upserted, admitted, { provider: 'proxy' });
+    if (ownerGroup && !(await store.listLocalGroups()).some(g => g.name === ownerGroup)) await store.putLocalGroup({ name: ownerGroup, createdAt: new Date().toISOString() });
+    const bootstrapped = ownerGroup ? (await store.setLocalGroups(upserted.id, [...new Set([...upserted.localGroups, ownerGroup])]))! : upserted;
+    const user = await acceptInvitationAtSignIn(bootstrapped, admitted, { provider: 'proxy' });
     const sessionUser: SessionUser = {
       sub: user.sub, email: user.email, groups: user.groups, role: user.role,
       name: displayName(user), epoch: user.sessionEpoch, authenticatedAt: Date.now(),
@@ -2076,6 +2090,19 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const identity: MappedIdentity = {
       sub: `${idp.subPrefix}${cred.id}`, email: cred.email, emailVerified: true, groups: [], ...(typedName ? { firstname: typedName } : {}),
     };
+    const enrollmentTargets = holder ? [holder] : await store.findUsersByVerifiedEmail(cred.email);
+    const enrollmentTarget = enrollmentTargets.length === 1 ? enrollmentTargets[0] : undefined;
+    if (enrollmentTarget) {
+      const admitted = await admitSignIn(identity, idp.constraints, { via: 'legacy', user: enrollmentTarget });
+      if (!admitted.ok) {
+        await refuseSignIn(req, res, { email: identity.email, idp: idp.id, sub: identity.sub }, admitted.reason, { provider: 'password', idp: idp.id, switchHref: passwordLoginHref(returnTo) });
+        return;
+      }
+      const linked = await store.linkIdentity({ identitySub: identity.sub, userId: enrollmentTarget.id, idp: idp.id,
+        email: cred.email, emailVerified: false, linkedAt: at });
+      if (!linked) return sendError(res, 409, 'IDENTITY_IN_USE', 'this password belongs to another account');
+      if (linked.created) await audit(`user:${enrollmentTarget.id}`, 'identity.link', `user:${enrollmentTarget.id}`, { via: 'password-link', provider: 'password', idp: idp.id, email: cred.email });
+    }
     const done = await completeSignIn(req, res, idp, identity, { switchHref: passwordLoginHref(returnTo), ownerAllowed: cred.ownerIssued });
     if (done) sendSignedIn(res, false, done.cookie, returnTo);
   });
@@ -2137,7 +2164,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   });
 
   router.add('GET', '/api/auth/session', async (req, res) => {
-    const p = principalOf(req);
+    const p = await principalOf(req);
     if (!p) return sendError(res, 401, 'UNAUTHORIZED', 'no session');
     if (p.kind === 'guest') {
       return sendJson(res, 200, { kind: 'guest', guest: { name: p.guest.name, inviter: p.guest.inviter, toolId: p.guest.toolId } });
@@ -2338,7 +2365,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
     const etag = `"oc-${payload.policyVersion}-${payload.inboxUnread}-${payload.branding.revision}"`;
     if (req.headers['if-none-match'] === etag) {
-      res.writeHead(304, { etag });
+      res.writeHead(304, { ...INERT_BYTE_HEADERS, etag });
       res.end();
       return;
     }
@@ -2391,7 +2418,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   router.add('POST', '/api/v1/telemetry', async (req, res) => {
     if (config.policy.telemetry === 'off') return sendJson(res, 202, { accepted: 0 });
     const user = await memberOf(req);
-    const p = principalOf(req);
+    const p = await principalOf(req);
     if (!user && p?.kind !== 'guest') return sendError(res, 401, 'UNAUTHORIZED', 'telemetry is session-scoped');
     const body = (await readJson(req)) as { events?: RawEvent[] } | null;
     const raw = Array.isArray(body?.events) ? body.events.slice(0, 500) : [];
@@ -2538,6 +2565,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, action, selectors, grants)) {
       return sendError(res, 403, denialCode(action), `not allowed: ${action}`);
     }
+    if (body.target.toolId && !await automationMayUse({ user, groups: user.groups, profile: {}, principal: `user:${user.id}` }, body.target.toolId)) return sendError(res, 403, 'FORBIDDEN', 'you cannot use this tool');
     if (kind === 'guest-edit' && !config.policy.guestLinks.enabled) {
       return sendError(res, 403, 'GUEST_LINKS_DISABLED', 'guest links are disabled on this deployment');
     }
@@ -2611,6 +2639,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
     const maxTtl = kind === 'guest-edit' ? config.policy.guestLinks.maxTtlHours : 24 * 365;
     const defTtl = kind === 'guest-edit' ? config.policy.guestLinks.defaultTtlHours : DEFAULT_TTL_SEC[kind] / 3600;
+    if (body.ttlHours !== undefined && (typeof body.ttlHours !== 'number' || !Number.isFinite(body.ttlHours) || body.ttlHours <= 0)) return sendError(res, 400, 'INVALID_INPUT', 'ttlHours must be a positive finite number');
     const ttlHours = Math.min(body.ttlHours ?? defTtl, maxTtl);
     const link: LinkRecord = {
       id: randomId(10),
@@ -2716,12 +2745,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       const etag = `W/"r-${result.cacheKey.slice(0, 16)}"`;
       if (result.evidence?.brandRules) setDeliveryClass(res, 'person-private');
       if (!result.evidence?.brandRules && matchesEtag(req.headers['if-none-match'], etag)) {
-        res.writeHead(304, { etag });
+        res.writeHead(304, { ...INERT_BYTE_HEADERS, etag });
         res.end();
         return;
       }
       const headers: Record<string, string> = {
-        'content-type': result.mime, etag, 'cache-control': result.evidence?.brandRules ? 'private, no-store' : cachePolicy('link', { boundedAgeSec: Math.max(0, Math.min(300, link.exp - Math.floor(Date.now() / 1000))) }).cacheControl,
+        ...INERT_BYTE_HEADERS, 'content-type': result.mime, etag, 'cache-control': result.evidence?.brandRules ? 'private, no-store' : cachePolicy('link', { boundedAgeSec: Math.max(0, Math.min(300, link.exp - Math.floor(Date.now() / 1000))) }).cacheControl,
         'x-lolly-brand-check': result.evidence?.brandRules?.disposition ?? 'not-requested',
         ...provenanceHeader(result.provenance),
       };
@@ -3805,6 +3834,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if ((await store.listUsers()).some((u) => u.idpGroups.includes(name))) {
       return sendError(res, 409, 'IDP_GROUP_COLLISION', 'an IdP group already carries this name');
     }
+    const refusal = await inviteGroupsRefusal(user, [name], true);
+    if (refusal) return sendError(res, refusal.status, refusal.code, refusal.message);
     const group = {
       name,
       ...(typeof body?.description === 'string' && body.description.trim() ? { description: body.description.slice(0, 300) } : {}),
@@ -3822,6 +3853,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!(await store.listLocalGroups()).some((g) => g.name === name)) {
       return sendError(res, 404, 'NOT_FOUND', 'no such local group');
     }
+    const refusal = await inviteGroupsRefusal(user, [name]);
+    if (refusal) return sendError(res, refusal.status, refusal.code, refusal.message);
     await store.deleteLocalGroup(name); // also strips it from every user's localGroups
     await audit(`user:${user.id}`, 'group.delete', `group:${name}`, { source: 'local' });
     sendJson(res, 200, { ok: true });
@@ -3840,7 +3873,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const registry = new Set((await store.listLocalGroups()).map((g) => g.name));
     const unknown = wanted.filter((g) => !registry.has(g));
     if (unknown.length) return sendError(res, 400, 'UNKNOWN_GROUP', `not local groups: ${unknown.join(', ')}`);
-    const updated = await store.setLocalGroups(ctx.params.id as string, wanted);
+    const target = await store.getUser(ctx.params.id as string);
+    if (!target) return sendError(res, 404, 'NOT_FOUND', 'no such user');
+    if (target.role === 'owner' && actor.role !== 'owner') return sendError(res, 403, 'OWNER_ONLY', 'only an owner can change an owner account');
+    const refusal = await inviteGroupsRefusal(actor, wanted);
+    if (refusal) return sendError(res, refusal.status, refusal.code, refusal.message);
+    const updated = await store.setLocalGroups(target.id, wanted);
     if (!updated) return sendError(res, 404, 'NOT_FOUND', 'no such user');
     await audit(`user:${actor.id}`, 'user.local-groups', `user:${updated.id}`, { localGroups: updated.localGroups });
     sendJson(res, 200, userWire(updated));
@@ -4240,7 +4278,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
    * Asked when an invitation is written and again when it is invited again.
    */
   const inviteGroupsRefusal = async (
-    actor: UserRecord, groups: readonly string[],
+    actor: UserRecord, groups: readonly string[], allowUnregistered = false,
   ): Promise<{ status: number; code: string; message: string; field?: string } | null> => {
     if (!groups.length) return null;
     const grants = await store.listGrants();
@@ -4264,6 +4302,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         return { status: 403, code: 'OWNER_ONLY_ACTION', message: `only an owner can invite into a group holding owner-only grants: ${powered.join(', ')}`, field: 'groups' };
       }
     }
+    if (allowUnregistered) return null;
     const registry = new Set((await store.listLocalGroups()).map((g) => g.name));
     const ownerNamable = new Set<string>();
     if (isOwner) {
@@ -4625,6 +4664,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!user) return;
     const body = (await readJson(req)) as Partial<Message> | null;
     if (!body?.title || typeof body.title !== 'string') return sendError(res, 400, 'INVALID_INPUT', 'title required');
+    if (body.cta && !safeMessageUrl(body.cta.url)) return sendError(res, 400, 'INVALID_INPUT', 'cta.url must be an HTTP URL or an instance-relative path');
     const msg: Message = {
       id: `msg_${randomId(8)}`,
       kind: (['announcement', 'upgrade', 'policy', 'approval', 'expiry'] as const).includes(body.kind as never) ? body.kind as Message['kind'] : 'announcement',
@@ -5107,7 +5147,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // The bare `/tools` is the app's gallery route, not a tool file.
     if (!ctx.params['*'] && serveShell) return serveShell(req, res, 'tools');
     const user = await memberOf(req) ?? renderReader(req, brand.current()!.revision, linkVerify);
-    const p = principalOf(req);
+    const p = await principalOf(req);
     if (config.policy.defaultAccessMode === 'gated' && !user && p?.kind !== 'guest') {
       return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
     }
@@ -5117,6 +5157,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const addressed = /^([a-z0-9-]+)@([0-9a-f]{16})$/i.exec(rawId);
     const toolId = addressed?.[1] ?? rawId;
     if (!/^[a-z0-9-]+$/i.test(toolId)) return sendError(res, 400, 'INVALID_INPUT', 'bad tool id');
+    if (!user && p?.kind === 'guest' && p.guest.toolId !== toolId) return sendError(res, 404, 'NOT_FOUND', 'no such tool file');
     const guestTool = p?.kind === 'guest' && p.guest.toolId === toolId;
     if (!guestTool && !toolVisibleTo((await store.listOverlays()).get(toolId), user?.groups ?? [])) {
       return sendError(res, 404, 'NOT_FOUND', 'no such tool file');
@@ -5139,7 +5180,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // ── catalog serving (pack mount, per-caller filtered, lifecycle-enforced) ──
   const serveCatalog: Handler = async (req, res, ctx) => {
     const user = await memberOf(req) ?? renderReader(req, brand.current()!.revision, linkVerify);
-    const p = principalOf(req);
+    const p = await principalOf(req);
     // Share cards answer before the sign-in gate: a link unfurler never signs in.
     // A tool's card follows the tool's own visibility for this caller, so a card
     // for a tool hidden from some groups is never public; only a card every caller
@@ -5926,7 +5967,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // inspect wildcard below, which would otherwise match the bare path.
   router.add('GET', '/api/v1/catalog/assets', async (req, res, ctx) => {
     const user = await memberOf(req) ?? renderReader(req, brand.current()!.revision, linkVerify);
-    const p = principalOf(req);
+    const p = await principalOf(req);
     if (config.policy.defaultAccessMode === 'gated' && !user && p?.kind !== 'guest') {
       return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
     }
@@ -5946,7 +5987,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
 
   router.add('GET', '/api/v1/catalog/assets/*', async (req, res, ctx) => {
     const user = await memberOf(req);
-    const p = principalOf(req);
+    const p = await principalOf(req);
     if (config.policy.defaultAccessMode === 'gated' && !user && p?.kind !== 'guest') {
       return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
     }
@@ -7420,7 +7461,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const doc = await buildConfigDocument(store);
     const etag = `"cfg-${canonicalHash(doc).slice(0, 16)}"`;
     if (req.headers['if-none-match'] === etag) {
-      res.writeHead(304, { etag });
+      res.writeHead(304, { ...INERT_BYTE_HEADERS, etag });
       res.end();
       return;
     }
@@ -9345,12 +9386,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     return body as Record<string, unknown>;
   };
   const automationMayRender = async (caller: NonNullable<Awaited<ReturnType<typeof automationCaller>>>, toolId: string): Promise<boolean> => {
-    if (!caller.user) return config.policy.defaultAccessMode === 'open';
     if (!(await automationMayUse(caller, toolId))) return false;
+    if (!caller.user) return config.policy.defaultAccessMode === 'open';
     return evaluate({ userId: caller.user.id, groups: caller.user.groups, role: caller.user.role as Role }, 'export.server', [`tool:${toolId}`, '*'], await store.listGrants());
   };
   const automationMayUse = async (caller: NonNullable<Awaited<ReturnType<typeof automationCaller>>>, toolId: string): Promise<boolean> => {
-    if (!caller.user) return config.policy.defaultAccessMode === 'open';
+    if (!caller.user) return config.policy.defaultAccessMode === 'open' && toolVisibleTo((await store.listOverlays()).get(toolId), []);
     const principal = { userId: caller.user.id, groups: caller.user.groups, role: caller.user.role as Role };
     const grants = await store.listGrants();
     const decision = grantDecision(principal, 'tool.use', [`tool:${toolId}`, '*'], grants);
@@ -9667,7 +9708,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
     try {
       const result = await execute();
-      res.writeHead(200, { 'content-type': result.mime, 'x-lolly-cache-key': result.cacheKey, 'x-lolly-brand-check': result.evidence?.brandRules?.disposition ?? 'not-requested' });
+      res.writeHead(200, { ...INERT_BYTE_HEADERS, 'content-type': result.mime, 'x-lolly-cache-key': result.cacheKey, 'x-lolly-brand-check': result.evidence?.brandRules?.disposition ?? 'not-requested' });
       res.end(Buffer.from(result.bytes));
     } catch (e) { if (e instanceof RenderError) return sendError(res, e.status, e.code, e.message); throw e; }
   });
@@ -9724,7 +9765,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!job) return sendError(res, 404, 'NOT_FOUND', 'job not found');
     const output = await automationJobs.result(job.id, principal);
     if (!output) return sendError(res, 409, 'JOB_NOT_DONE', 'job has not completed');
-    res.writeHead(200, { 'content-type': output.mime, 'content-length': String(output.bytes.byteLength), 'cache-control': 'private, no-store' });
+    res.writeHead(200, { ...INERT_BYTE_HEADERS, 'content-type': output.mime, 'content-length': String(output.bytes.byteLength), 'cache-control': 'private, no-store' });
     res.end(Buffer.from(output.bytes));
   });
 
@@ -9756,12 +9797,13 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const format = spec.slice(dot + 1);
 
     const user = await memberOf(req);
-    const p = principalOf(req);
-    const gated = config.policy.defaultAccessMode === 'gated';
+    const p = await principalOf(req);
     if (!user) {
       const guestOk = p?.kind === 'guest' && p.guest.toolId === toolId;
-      if (gated && !guestOk) return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
+      if (p?.kind === 'guest' && !guestOk) return sendError(res, 403, 'FORBIDDEN', 'this guest link targets another tool');
+      if (config.policy.defaultAccessMode !== 'open' && !guestOk) return sendError(res, 401, 'UNAUTHORIZED', 'this deployment is sign-in gated');
     } else {
+      if (!await automationMayUse({ user, groups: user.groups, profile: {}, principal: `user:${user.id}` }, toolId)) return sendError(res, 403, 'FORBIDDEN', 'you cannot use this tool');
       // Server-side rendering is a privileged action (admin default; grantable).
       const grants = await store.listGrants();
       const selectors = [`tool:${toolId}`, '*'];
@@ -9771,6 +9813,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
 
     const overlays = await store.listOverlays();
+    if (!user && !toolVisibleTo(overlays.get(toolId), [])) return sendError(res, 403, 'FORBIDDEN', 'this tool is not visible');
     const query = ctx.url.search.replace(/^\?/, '');
     const canonical = canonicalRenderQuery(query);
     if (query !== canonical) { res.writeHead(308, { location: ctx.url.pathname + (canonical ? '?' + canonical : '') }); res.end(); return; }
@@ -9785,12 +9828,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       if (result.evidence?.brandRules) setDeliveryClass(res, 'person-private');
       const etag = signer ? `W/"r-${result.cacheKey.slice(0, 16)}"` : `"r-${sha256Hex(Buffer.from(result.bytes)).slice(0, 32)}"`;
       if (!result.evidence?.brandRules && matchesEtag(req.headers['if-none-match'], etag)) {
-        res.writeHead(304, { etag, 'cache-control': cachePolicy('instance-private').cacheControl });
+        res.writeHead(304, { ...INERT_BYTE_HEADERS, etag, 'cache-control': cachePolicy('instance-private').cacheControl });
         res.end();
         return;
       }
       res.writeHead(200, {
-        'content-type': result.mime, etag, 'x-lolly-cache-key': result.cacheKey, 'cache-control': result.evidence?.brandRules ? 'private, no-store' : cachePolicy('instance-private').cacheControl,
+        ...INERT_BYTE_HEADERS, 'content-type': result.mime, etag, 'x-lolly-cache-key': result.cacheKey, 'cache-control': result.evidence?.brandRules ? 'private, no-store' : cachePolicy('instance-private').cacheControl,
         'x-lolly-brand-check': result.evidence?.brandRules?.disposition ?? 'not-requested',
         ...provenanceHeader(result.provenance),
       });
@@ -10036,7 +10079,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const secret = bearerFromHeader(req.headers.authorization as string | undefined);
     if (!secret) { scimErr(res, 401, 'a Bearer provisioning token is required'); return null; }
     const rec = await store.findScimTokenByHash(hashScimSecret(secret));
-    if (!rec || rec.revokedAt) { scimErr(res, 401, 'invalid or revoked provisioning token'); return null; }
+    if (!rec || rec.revokedAt || !rec.expiresAt || !Number.isFinite(Date.parse(rec.expiresAt)) || Date.parse(rec.expiresAt) <= Date.now()) { scimErr(res, 401, 'invalid, expired or revoked provisioning token'); return null; }
     void store.touchScimToken(rec.id, new Date().toISOString());
     return { idp: rec.idp, tokenId: rec.id };
   };
@@ -10045,25 +10088,28 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   router.add('POST', '/api/v1/scim/tokens', async (req, res) => {
     const user = await requireAction(req, res, 'scim.manage');
     if (!user) return;
-    const body = (await readJson(req)) as { idp?: unknown } | null;
+    const body = (await readJson(req)) as { idp?: unknown; ttlDays?: unknown } | null;
     const idp = typeof body?.idp === 'string' ? body.idp.trim().slice(0, 80) : '';
-    if (!idp) return sendError(res, 400, 'INVALID_INPUT', 'idp (a label for the IdP connector) is required');
+    if (!idp || !resolveIdp(idp) || resolveIdp(idp)?.kind !== 'oidc') return sendError(res, 400, 'INVALID_INPUT', 'idp must name a configured OIDC connector');
+    const ttlDays = body?.ttlDays ?? 90;
+    if (typeof ttlDays !== 'number' || !Number.isFinite(ttlDays) || ttlDays <= 0 || ttlDays > 365) return sendError(res, 400, 'INVALID_INPUT', 'ttlDays must be greater than zero and at most 365');
     const { secret, tokenHash } = mintScimSecret();
     const rec: ScimTokenRecord = {
       id: `sct_${randomId(8)}`, idp, tokenHash, createdBy: `user:${user.id}`, createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + ttlDays * 86_400_000).toISOString(),
     };
     await store.putScimToken(rec);
     await audit(`user:${user.id}`, 'scim.token.create', `scim:${rec.id}`, { idp });
     // The secret is returned ONCE, here, and never again: it is not recoverable
     // from the stored hash.
-    sendJson(res, 201, { id: rec.id, idp, token: secret, createdAt: rec.createdAt }, { 'cache-control': 'no-store' });
+    sendJson(res, 201, { id: rec.id, idp, token: secret, createdAt: rec.createdAt, expiresAt: rec.expiresAt }, { 'cache-control': 'no-store' });
   });
   router.add('GET', '/api/v1/scim/tokens', async (req, res) => {
     const user = await requireAction(req, res, 'scim.manage');
     if (!user) return;
     // Metadata only - never the hash, never the secret.
     const tokens = (await store.listScimTokens()).map((t) => ({
-      id: t.id, idp: t.idp, createdBy: t.createdBy, createdAt: t.createdAt,
+      id: t.id, idp: t.idp, createdBy: t.createdBy, createdAt: t.createdAt, ...(t.expiresAt ? { expiresAt: t.expiresAt } : {}),
       ...(t.lastUsedAt ? { lastUsedAt: t.lastUsedAt } : {}),
       ...(t.revokedAt ? { revokedAt: t.revokedAt } : {}),
     }));
@@ -10099,56 +10145,93 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     });
   });
 
+  const scimOwnsUser = (u: UserRecord, idp: string): boolean => u.scimIdp === idp && u.role !== 'owner' && u.role !== 'admin';
+  const scimOwnsGroup = (g: { scimIdp?: string }, idp: string): boolean => g.scimIdp === idp;
+  const scimSubject = (idp: string, raw: string): string => (resolveIdp(idp)?.subPrefix ?? `${idp}:`) + raw;
+  const scimUserView = async (u: UserRecord, idp: string) => {
+    const identity = (await store.listIdentities(u.id)).find(row => row.idp === idp);
+    return { ...userToScim(u, scimBase), externalId: (identity?.identitySub ?? u.sub).slice((resolveIdp(idp)?.subPrefix ?? `${idp}:`).length) };
+  };
+  const scimGroupAllowed = async (name: string): Promise<boolean> => {
+    const role = roleFromGroups([name], config.idp.roleGroups);
+    return role !== 'owner' && role !== 'admin' && !(await store.listGrants()).some(g => g.principal === `group:${name}` && g.effect === 'allow' && ownerOnlyAction(g.action));
+  };
+  router.add('PUT', '/api/v1/scim/ownership', async (req, res) => {
+    const actor = await requireAction(req, res, 'scim.manage'); if (!actor) return;
+    const body = await readJson(req) as { idp?: unknown; userIds?: unknown; groups?: unknown } | null;
+    const idp = typeof body?.idp === 'string' ? body.idp : '';
+    if (!idp || resolveIdp(idp)?.kind !== 'oidc' || !Array.isArray(body?.userIds) || !Array.isArray(body?.groups)
+      || !body.userIds.every((id): id is string => typeof id === 'string') || !body.groups.every((g): g is string => typeof g === 'string')) {
+      return sendError(res, 400, 'INVALID_INPUT', 'a configured OIDC idp, userIds and groups are required');
+    }
+    const users = await Promise.all(body.userIds.map(id => store.getUser(id)));
+    const defs = await store.listLocalGroups();
+    const groups = body.groups.map(name => defs.find(g => g.name === name));
+    if (users.some(u => !u || u.role === 'owner' || u.role === 'admin' || (u.scimIdp && u.scimIdp !== idp))
+      || groups.some(g => !g || (g.scimIdp && g.scimIdp !== idp))) return sendError(res, 400, 'INVALID_INPUT', 'only unassigned resources or this connector resources may be assigned');
+    for (const group of groups) {
+      if (!await scimGroupAllowed(group!.name)) return sendError(res, 403, 'OWNER_ONLY', 'this group is managed by an instance owner');
+      const members = (await store.listUsers()).filter(u => u.localGroups.includes(group!.name));
+      if (members.some(u => !scimOwnsUser(u, idp) && !users.some(target => target!.id === u.id))) return sendError(res, 400, 'INVALID_INPUT', 'every group member must belong to this connector');
+    }
+    for (const user of users) await store.setUserScimIdp(user!.id, idp);
+    for (const group of groups) await store.putLocalGroup({ ...group!, scimIdp: idp });
+    await audit(`user:${actor.id}`, 'scim.ownership', `scim:${idp}`, { users: users.length, groups: groups.length });
+    sendJson(res, 200, { ok: true });
+  });
+
   // Users --------------------------------------------------------------------
   router.add('GET', '/scim/v2/Users', async (req, res, ctx) => {
-    if (!(await scimAuth(req, res))) return;
+    const connector = await scimAuth(req, res); if (!connector) return;
     const filter = parseScimFilter(ctx.url.searchParams.get('filter'));
-    const all = await store.listUsers();
+    const all = (await store.listUsers()).filter(u => scimOwnsUser(u, connector.idp));
     let rows = filter
-      ? all.filter((u) => (filter.attr === 'userName' ? u.email : u.sub) === filter.value)
+      ? all.filter((u) => (filter.attr === 'userName' ? u.email : u.sub) === (filter.attr === 'userName' ? filter.value : scimSubject(connector.idp, filter.value)))
       : all;
     // The IdP's subject may reach an account through a linked sign-in
     // (plans/74, "One person, many sign-ins") rather than users.sub, when the
     // account was created by another IdP. That account is the person.
     if (filter && filter.attr !== 'userName' && rows.length === 0) {
-      const linked = await store.getUserByIdentity(filter.value);
-      if (linked) rows = [linked];
+      const linked = await store.getUserByIdentity(scimSubject(connector.idp, filter.value));
+      if (linked && scimOwnsUser(linked, connector.idp)) rows = [linked];
     }
     // Bounded page: the IdP reconciles against this, it does not mirror it.
-    scimJson(res, 200, scimList(rows.slice(0, SCIM_PAGE_MAX).map((u) => userToScim(u, scimBase)), rows.length));
+    scimJson(res, 200, scimList(await Promise.all(rows.slice(0, SCIM_PAGE_MAX).map((u) => scimUserView(u, connector.idp))), rows.length));
   });
   router.add('POST', '/scim/v2/Users', async (req, res) => {
-    if (!(await scimAuth(req, res))) return;
+    const connector = await scimAuth(req, res); if (!connector) return;
     const parsed = parseUserCreate(await readJson(req));
     if ('error' in parsed) return scimErr(res, 400, parsed.error, 'invalidValue');
+    parsed.sub = scimSubject(connector.idp, parsed.sub);
     // A subject linked to an existing account is that person already: a
     // second row would take the IdP's group pushes while they sign in as
     // the first.
     if (await store.getUserBySub(parsed.sub) || await store.getUserByIdentity(parsed.sub)) {
       return scimErr(res, 409, `a user with this ${parsed.sub === parsed.email ? 'userName' : 'externalId'} already exists`, 'uniqueness');
     }
-    const created = await store.upsertUserBySub({
+    const provisioned = await store.upsertUserBySub({
       sub: parsed.sub, email: parsed.email,
       ...(parsed.firstname ? { firstname: parsed.firstname } : {}),
       ...(parsed.lastname ? { lastname: parsed.lastname } : {}),
       groups: [], role: 'member',
     });
+    const created = (await store.setUserScimIdp(provisioned.id, connector.idp))!;
     // active:false at creation is a provisioned-but-suspended account: disable it
     // at once (which also sets the epoch, so no session ever mints for it live).
     const final = parsed.active ? created : (await store.setUserDisabled(created.id, new Date().toISOString())) ?? created;
     await audit('scim', 'scim.user.create', `user:${created.id}`, { sub: parsed.sub, active: parsed.active });
-    scimJson(res, 201, userToScim(final, scimBase), { location: `${scimBase}/scim/v2/Users/${encodeURIComponent(created.id)}` });
+    scimJson(res, 201, await scimUserView(final, connector.idp), { location: `${scimBase}/scim/v2/Users/${encodeURIComponent(created.id)}` });
   });
   router.add('GET', '/scim/v2/Users/:id', async (req, res, ctx) => {
-    if (!(await scimAuth(req, res))) return;
+    const connector = await scimAuth(req, res); if (!connector) return;
     const u = await store.getUser(ctx.params.id as string);
-    if (!u) return scimErr(res, 404, 'no such user');
-    scimJson(res, 200, userToScim(u, scimBase));
+    if (!u || !scimOwnsUser(u, connector.idp)) return scimErr(res, 404, 'no such user');
+    scimJson(res, 200, await scimUserView(u, connector.idp));
   });
   router.add('PATCH', '/scim/v2/Users/:id', async (req, res, ctx) => {
-    if (!(await scimAuth(req, res))) return;
+    const connector = await scimAuth(req, res); if (!connector) return;
     const u = await store.getUser(ctx.params.id as string);
-    if (!u) return scimErr(res, 404, 'no such user');
+    if (!u || !scimOwnsUser(u, connector.idp)) return scimErr(res, 404, 'no such user');
     const patch = parseUserPatch(await readJson(req));
     if ('error' in patch) return scimErr(res, 400, patch.error, 'invalidValue');
     let next = u;
@@ -10170,12 +10253,12 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       next = (await store.setUserDisabled(u.id, patch.active ? null : new Date().toISOString())) ?? next;
       await audit('scim', patch.active ? 'scim.user.enable' : 'scim.user.disable', `user:${u.id}`);
     }
-    scimJson(res, 200, userToScim(next, scimBase));
+    scimJson(res, 200, await scimUserView(next, connector.idp));
   });
   router.add('DELETE', '/scim/v2/Users/:id', async (req, res, ctx) => {
-    if (!(await scimAuth(req, res))) return;
+    const connector = await scimAuth(req, res); if (!connector) return;
     const u = await store.getUser(ctx.params.id as string);
-    if (!u) return scimErr(res, 404, 'no such user');
+    if (!u || !scimOwnsUser(u, connector.idp)) return scimErr(res, 404, 'no such user');
     // A SCIM delete is a DEPROVISION, not a hard erase: the row and its audit
     // trail stay, disabled with the epoch bumped, so off-boarding never rewrites
     // history. The same soft-delete enterprise IdPs expect.
@@ -10195,45 +10278,51 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   const memberViews = (users: UserRecord[]): Array<{ id: string; display: string }> =>
     users.map((u) => ({ id: u.id, display: displayName(u) }));
   router.add('GET', '/scim/v2/Groups', async (req, res) => {
-    if (!(await scimAuth(req, res))) return;
+    const connector = await scimAuth(req, res); if (!connector) return;
     const [defs, users] = await Promise.all([store.listLocalGroups(), store.listUsers()]);
-    scimJson(res, 200, scimList(defs.map((g) => groupToScim(g.name, memberViews(groupMembers(users, g.name)), scimBase))));
+    scimJson(res, 200, scimList(defs.filter(g => scimOwnsGroup(g, connector.idp)).map((g) => groupToScim(g.name, memberViews(groupMembers(users.filter(u => scimOwnsUser(u, connector.idp)), g.name)), scimBase))));
   });
   router.add('POST', '/scim/v2/Groups', async (req, res) => {
-    if (!(await scimAuth(req, res))) return;
+    const connector = await scimAuth(req, res); if (!connector) return;
     const body = (await readJson(req)) as { displayName?: unknown; members?: unknown } | null;
     const name = typeof body?.displayName === 'string' ? body.displayName.trim() : '';
-    if (!name) return scimErr(res, 400, 'displayName is required', 'invalidValue');
+    if (!name || name.length > 128 || /[\u0000-\u001f\u007f]/.test(name)) return scimErr(res, 400, 'displayName must be a group name of at most 128 characters', 'invalidValue');
+    if (!await scimGroupAllowed(name)) return scimErr(res, 403, 'this group is managed by an instance owner');
     if ((await store.listLocalGroups()).some((g) => g.name === name)) {
       return scimErr(res, 409, 'a group with this displayName already exists', 'uniqueness');
     }
-    await store.putLocalGroup({ name, createdAt: new Date().toISOString() });
     const memberIds = Array.isArray(body?.members)
       ? body.members.map((m) => (m && typeof m === 'object' ? String((m as { value?: unknown }).value ?? '') : '')).filter(Boolean)
       : [];
+    const targets = await Promise.all(memberIds.map(id => store.getUser(id)));
+    if (targets.some(u => !u || !scimOwnsUser(u, connector.idp))) return scimErr(res, 404, 'no such member');
+    await store.putLocalGroup({ name, scimIdp: connector.idp, createdAt: new Date().toISOString() });
     for (const id of memberIds) {
       const u = await store.getUser(id);
       if (u && !u.localGroups.includes(name)) await store.setLocalGroups(u.id, [...u.localGroups, name]);
     }
     await audit('scim', 'scim.group.create', `group:${name}`, { members: memberIds.length });
-    scimJson(res, 201, groupToScim(name, memberViews(groupMembers(await store.listUsers(), name)), scimBase),
+    scimJson(res, 201, groupToScim(name, memberViews(groupMembers((await store.listUsers()).filter(u => scimOwnsUser(u, connector.idp)), name)), scimBase),
       { location: `${scimBase}/scim/v2/Groups/${encodeURIComponent(name)}` });
   });
   router.add('GET', '/scim/v2/Groups/:name', async (req, res, ctx) => {
-    if (!(await scimAuth(req, res))) return;
+    const connector = await scimAuth(req, res); if (!connector) return;
     const name = decodeURIComponent(ctx.params.name as string);
-    if (!(await store.listLocalGroups()).some((g) => g.name === name)) return scimErr(res, 404, 'no such group');
-    scimJson(res, 200, groupToScim(name, memberViews(groupMembers(await store.listUsers(), name)), scimBase));
+    if (!(await store.listLocalGroups()).some(g => g.name === name && scimOwnsGroup(g, connector.idp))) return scimErr(res, 404, 'no such group');
+    if (!await scimGroupAllowed(name)) return scimErr(res, 403, 'this group is managed by an instance owner');
+    scimJson(res, 200, groupToScim(name, memberViews(groupMembers((await store.listUsers()).filter(u => scimOwnsUser(u, connector.idp)), name)), scimBase));
   });
   router.add('PATCH', '/scim/v2/Groups/:name', async (req, res, ctx) => {
-    if (!(await scimAuth(req, res))) return;
+    const connector = await scimAuth(req, res); if (!connector) return;
     const name = decodeURIComponent(ctx.params.name as string);
-    if (!(await store.listLocalGroups()).some((g) => g.name === name)) return scimErr(res, 404, 'no such group');
+    if (!(await store.listLocalGroups()).some(g => g.name === name && scimOwnsGroup(g, connector.idp))) return scimErr(res, 404, 'no such group');
+    if (!await scimGroupAllowed(name)) return scimErr(res, 403, 'this group is managed by an instance owner');
     const parsed = parseGroupPatch(await readJson(req));
     if ('error' in parsed) return scimErr(res, 400, parsed.error, 'invalidValue');
-    const users = await store.listUsers();
+    const users = (await store.listUsers()).filter(u => scimOwnsUser(u, connector.idp));
     const current = groupMembers(users, name).map((u) => u.id);
     const target = new Set(applyMemberOps(current, parsed.ops));
+    if ([...target].some(id => !users.some(u => u.id === id))) return scimErr(res, 404, 'no such member');
     const currentSet = new Set(current);
     // Write only the users whose membership actually moved; a member id naming
     // no user is ignored, never invented.
@@ -10243,13 +10332,16 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       await store.setLocalGroups(u.id, want ? [...u.localGroups, name] : u.localGroups.filter((g) => g !== name));
     }
     await audit('scim', 'scim.group.patch', `group:${name}`, { before: current.length, after: target.size });
-    scimJson(res, 200, groupToScim(name, memberViews(groupMembers(await store.listUsers(), name)), scimBase));
+    scimJson(res, 200, groupToScim(name, memberViews(groupMembers((await store.listUsers()).filter(u => scimOwnsUser(u, connector.idp)), name)), scimBase));
   });
   router.add('DELETE', '/scim/v2/Groups/:name', async (req, res, ctx) => {
-    if (!(await scimAuth(req, res))) return;
+    const connector = await scimAuth(req, res); if (!connector) return;
     const name = decodeURIComponent(ctx.params.name as string);
-    if (!(await store.listLocalGroups()).some((g) => g.name === name)) return scimErr(res, 404, 'no such group');
-    await store.deleteLocalGroup(name); // strips it from every member's localGroups
+    if (!(await store.listLocalGroups()).some(g => g.name === name && scimOwnsGroup(g, connector.idp))) return scimErr(res, 404, 'no such group');
+    if (!await scimGroupAllowed(name)) return scimErr(res, 403, 'this group is managed by an instance owner');
+    const allMembers = groupMembers(await store.listUsers(), name);
+    if (allMembers.some(u => !scimOwnsUser(u, connector.idp))) return scimErr(res, 403, 'group has members outside this connector');
+    await store.deleteLocalGroup(name);
     await audit('scim', 'scim.group.delete', `group:${name}`);
     res.writeHead(204); res.end();
   });
@@ -10406,7 +10498,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     });
     // Cookie-authenticated mutations from another site are refused before any
     // route runs (iam/csrf.ts). Bearer callers and cookie-less requests pass.
-    const csrf = csrfVerdict(req.method, req.headers);
+    const csrf = csrfVerdict(req.method, req.headers, [config.instance.baseUrl, config.instance.appUrl]);
     if (csrf) {
       routeClass = 'csrf-blocked';
       res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' });

@@ -437,11 +437,10 @@ export function passwordIdpOf(config: { idp: { additional: AdditionalIdp[] } }):
 }
 
 /** Whether a sign-in from this IdP may join an existing person by a matching
- *  email. Default: yes when the IdP's own verified flag is checked (`claim`),
- *  no when every address is simply trusted (`trusted`), because a trusted
- *  address was never proven by the person. `linkByEmail` overrides either way. */
-export function linkByEmailFor(c: Pick<IdpConstraints, 'linkByEmail' | 'emailVerification'>): boolean {
-  return c.linkByEmail ?? (c.emailVerification ?? 'claim') === 'claim';
+ *  email. Additional IdPs require an explicit choice; the primary retains its
+ *  verified-claim default. */
+export function linkByEmailFor(c: Pick<IdpConstraints, 'linkByEmail' | 'emailVerification'>, primary = false): boolean {
+  return c.linkByEmail ?? (primary && (c.emailVerification ?? 'claim') === 'claim');
 }
 
 /** Per-IdP sign-in constraints (plans/74 W-ID-1), on the primary `idp` block
@@ -459,7 +458,7 @@ export interface IdpConstraints extends OidcPolicy {
   /** Extra authorization request parameters, from `AUTH_PARAM_ALLOWLIST` only. */
   authParams?: Partial<Record<typeof AUTH_PARAM_ALLOWLIST[number], string>>;
   /** Link a sign-in to an existing person with the same email. Read through
-   *  `linkByEmailFor`: absent means true under `claim`, false under `trusted`. */
+   *  `linkByEmailFor`: absent means false. */
   linkByEmail?: boolean;
 }
 

@@ -237,6 +237,7 @@ function installRow(r: Record<string, unknown>): InstallRow {
 function scimTokenFromRow(r: Record<string, unknown>): ScimTokenRecord {
   return {
     id: r.id as string,
+    ...(r.expires_at ? { expiresAt: new Date(r.expires_at as string).toISOString() } : {}),
     idp: r.idp as string,
     tokenHash: r.token_hash as string,
     createdBy: r.created_by as string,
@@ -322,6 +323,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     const groups = (r.groups as string[]) ?? [];
     return {
       id: r.id as string,
+      ...(r.scim_idp ? { scimIdp: r.scim_idp as string } : {}),
       sub: r.sub as string,
       email: r.email as string,
       ...(r.firstname ? { firstname: r.firstname as string } : {}),
@@ -688,6 +690,10 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       );
       return { rows: rows.map(userFromRow), total };
     },
+    async setUserScimIdp(userId, idp) {
+      const { rows } = await pool.query('update users set scim_idp = $2 where id = $1 returning *', [userId, idp]);
+      return rows[0] ? userFromRow(rows[0]) : null;
+    },
     async setLocalGroups(userId, localGroups) {
       const { rows: existing } = await pool.query('select idp_groups from users where id = $1', [userId]);
       if (!existing[0]) return null;
@@ -713,18 +719,19 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     },
 
     async listLocalGroups() {
-      const { rows } = await pool.query('select name, description, created_at from local_groups order by name');
+      const { rows } = await pool.query('select name, description, created_at, scim_idp from local_groups order by name');
       return rows.map((r) => ({
         name: r.name as string,
+        ...(r.scim_idp ? { scimIdp: r.scim_idp as string } : {}),
         ...(r.description ? { description: r.description as string } : {}),
         createdAt: new Date(r.created_at as string).toISOString(),
       })) as LocalGroupRecord[];
     },
     async putLocalGroup(group) {
       await pool.query(
-        `insert into local_groups (name, description, created_at) values ($1, $2, $3)
-         on conflict (name) do update set description = excluded.description`,
-        [group.name, group.description ?? null, group.createdAt],
+        `insert into local_groups (name, description, created_at, scim_idp) values ($1, $2, $3, $4)
+         on conflict (name) do update set description = excluded.description, scim_idp = coalesce(excluded.scim_idp, local_groups.scim_idp)`,
+        [group.name, group.description ?? null, group.createdAt, group.scimIdp ?? null],
       );
     },
     async deleteLocalGroup(name) {
@@ -745,10 +752,10 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
 
     async putScimToken(rec) {
       await pool.query(
-        `insert into scim_tokens (id, idp, token_hash, created_by, created_at, last_used_at, revoked_at)
-         values ($1, $2, $3, $4, $5, $6, $7)
-         on conflict (id) do update set idp = excluded.idp, last_used_at = excluded.last_used_at, revoked_at = excluded.revoked_at`,
-        [rec.id, rec.idp, rec.tokenHash, rec.createdBy, rec.createdAt, rec.lastUsedAt ?? null, rec.revokedAt ?? null],
+        `insert into scim_tokens (id, idp, token_hash, created_by, created_at, last_used_at, revoked_at, expires_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8)
+         on conflict (id) do update set last_used_at = excluded.last_used_at, revoked_at = excluded.revoked_at`,
+        [rec.id, rec.idp, rec.tokenHash, rec.createdBy, rec.createdAt, rec.lastUsedAt ?? null, rec.revokedAt ?? null, rec.expiresAt ?? null],
       );
     },
     async listScimTokens() {

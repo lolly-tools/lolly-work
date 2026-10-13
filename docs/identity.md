@@ -323,10 +323,11 @@ invitation for the email:
   address.
 
 **Bootstrap owners.** An IdP such as Google sends no groups, so nobody could reach the
-owner role. `idp.bootstrapOwners` lists the emails that get the owner group at sign-in:
+owner role. `idp.bootstrapOwners` lists the emails that get the owner group when the
+account is first created:
 the first name in `roleGroups.owner`, else the literal `owner`. It applies only to an
-admitted person with a verified email, it is re-applied at each sign-in (removing the
-address removes the group at the next one), and each grant writes an
+admitted person with a verified email. The group is stored in local membership and
+an owner may remove it later; subsequent sign-ins do not restore it. Each grant writes an
 `auth.bootstrap-owner` audit row. Every bootstrap owner must be admitted by `emails` or
 `domains`, and the server refuses a config where one is not. That check reads the lists
 only: a `hostedDomain` or `tenantId` pin can still refuse the owner's account, so check
@@ -721,15 +722,14 @@ window, its groups lapse. A work IdP linked to an account that GitHub created gr
 its groups the same way. A sign-in added by hand asserts no groups until its first
 real sign-in.
 
-**Which IdPs link by email.** Per IdP, `linkByEmail` decides. It defaults to `true` when
-`emailVerification` is `claim` (the IdP must say `email_verified: true`) and to `false`
-when it is `trusted`. An identity counts as confirmed, and so as a link target, only
-when its IdP links by email and vouched for the address at that sign-in. An Entra
-organization tenant that can assign any address should stay `trusted` (no link by
-email) unless `tenantId` pins it; the server refuses `linkByEmail: true` on a `trusted`
-IdP that has neither a `hostedDomain` nor a `tenantId` pin. Set `linkByEmail: false` on
-any IdP that should never join an existing user by email; its sign-ins still link by
-hand, as below.
+**Which IdPs link by email.** Per IdP, `linkByEmail` decides. Additional providers default
+to `false`. The primary retains `true` under `claim` and `false` under `trusted`.
+An explicit setting overrides those defaults. Owner and admin accounts never join by
+email. An identity's verified address remains recorded regardless of its provider's
+linking preference, while automatic email targets require that provider's linking
+permission. Trusted verification accepts an omitted claim, but never an explicit
+negative or malformed claim. A trusted provider enabled for linking still requires a
+`hostedDomain` or `tenantId` pin. Sign-ins may also be linked by hand, as below.
 
 ```json
 "additional": [
@@ -932,7 +932,8 @@ and Group membership; passwords, bulk, sort and ETags are declared unsupported i
 
 SCIM is **another writer of the one identity model**, never a second one:
 
-- a SCIM **User** is a `UserRecord`. Its `externalId` is the `sub` OIDC login also keys on,
+- a SCIM **User** is a `UserRecord`. Its `externalId` receives the configured connector
+  subject prefix used by OIDC login,
   so a person the IdP provisions and the same person signing in resolve to **one row** - and
   the groups SCIM set survive that sign-in, because they land in `localGroups` (durable),
   not the IdP-authoritative `idpGroups` (re-synced on login).
@@ -949,6 +950,24 @@ POST   /api/v1/scim/tokens     { "idp": "keycloak" }   # returns the secret ONCE
 GET    /api/v1/scim/tokens                              # metadata only - never the secret or its hash
 DELETE /api/v1/scim/tokens/:id                          # revoke
 ```
+
+The connector id must name a configured OIDC provider (`primary` or an additional
+provider id). Tokens expire after 90 days by default; `ttlDays` accepts a positive
+number up to 365. User and group reads and changes are limited to resources assigned
+to that connector. Owner and admin users, their role groups, and groups with owner-only
+grants stay under instance administration.
+
+On an existing installation, apply migration `0068_provisioning_scope.sql`, reissue
+provisioning tokens, and assign the legacy resources through an owner session:
+
+```
+PUT /api/v1/scim/ownership
+{ "idp": "primary", "userIds": ["<user id>"], "groups": ["<group name>"] }
+```
+
+Every member of an assigned group must be assigned to the same connector. Resources
+already assigned to another connector cannot be reassigned by this route. Legacy tokens
+without an expiry and resources without an assignment remain unavailable to SCIM.
 
 The secret is stored only as its sha256, so a leaked database yields hashes, not usable
 tokens. **SAML is not implemented**, and does not need to be: Keycloak (which id.suse.com

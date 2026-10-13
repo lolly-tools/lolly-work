@@ -718,10 +718,10 @@ switch (cmd) {
   // it is not recoverable from the stored hash - so it goes to stdout for the
   // operator to paste into the IdP connector, and never to the audit trail.
   case 'scim': {
-    if (sub !== 'token') fail('usage: lw scim token create --idp <label> | list | revoke <id>');
+    if (sub !== 'token') fail('usage: lw scim token create --idp <provider-id> | list | revoke <id>');
     const action = positionals[2];
     if (action === 'create') {
-      const idp = values.idp ?? fail('usage: lw scim token create --idp <label>');
+      const idp = values.idp ?? fail('usage: lw scim token create --idp <provider-id>');
       const rec = await call('/api/v1/scim/tokens', { method: 'POST', body: { idp } }) as { id: string; idp: string; token: string };
       out(rec);
       if (!values.json) {
@@ -1551,7 +1551,7 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   catalog versions <id> · catalog rollback <id> <n> · catalog version-rm <id> <n>   the byte history, and moving the head
   catalog supersede <id> <replacementId> | --rm   retire an asset in favour of another (replacedBy)
   grants [list] · grants add|rm <principal> <action> [<resource>] --effect deny|allow
-  scim token create --idp <label> | list | revoke <id>   provisioning bearers for an IdP (SCIM /scim/v2)
+  scim token create --idp <provider-id> | list | revoke <id>   provisioning bearers for an IdP (SCIM /scim/v2)
   preview --groups a,b   what a member in those groups would receive
   msg send --title "…" [--body --kind --severity --groups a,b --shells tauri --max-engine 1.52.99]
 

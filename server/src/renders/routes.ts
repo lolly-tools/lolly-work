@@ -1,3 +1,4 @@
+import { INERT_BYTE_HEADERS } from '../api/file-delivery.ts';
 import type { IncomingMessage } from 'node:http';
 import { readBlobBody, type BlobStore } from '../blobs/types.ts';
 import { readJson, sendError, sendJson, type createRouter, type Handler } from '../api/router.ts';
@@ -94,7 +95,7 @@ export function registerRenderRoutes(router: Pick<ReturnType<typeof createRouter
     if (bytes.byteLength !== r.output.size || sha256Hex(bytes) !== r.output.sha256) {
       throw new RenderResourceError('OUTPUT_INTEGRITY', 409, 'retained output no longer matches its receipt');
     }
-    res.writeHead(200, { 'content-type': r.output.mime, 'content-length': String(bytes.byteLength),
+    res.writeHead(200, { ...INERT_BYTE_HEADERS, 'content-type': r.output.mime, 'content-length': String(bytes.byteLength),
       'cache-control': 'private, no-store', etag: `"${r.output.sha256}"`, 'x-content-type-options': 'nosniff',
       'x-lolly-brand-check': r.output.evidence?.brandRules?.disposition ?? 'not-requested',
       'content-disposition': `attachment; filename="${r.id}${r.output.evidence?.brandRules?.disposition === 'draft' ? '-DRAFT' : ''}.${r.request.format}"` });

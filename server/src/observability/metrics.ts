@@ -81,17 +81,18 @@ function timingSafeEq(a: string, b: string): boolean {
 
 const isLoopback = (ip: string): boolean => {
   const a = ip.replace(/^::ffff:/, '');
-  return a === '::1' || a.startsWith('127.') || ip === '';
+  return a === '::1' || a.startsWith('127.');
 };
 
 /** Decide access to /metrics. No token ⇒ loopback-only (returns 'not-found' for
  *  a public peer so the endpoint is invisible off-box). Token set ⇒ require a
  *  matching bearer, compared in constant time. */
-export function metricsGate(req: IncomingMessage, token?: string): 'ok' | 'unauthorized' | 'not-found' {
+export function metricsGate(req: IncomingMessage, token?: string, requireToken = false): 'ok' | 'unauthorized' | 'not-found' {
   if (token) {
     const auth = req.headers['authorization'];
     const presented = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : '';
     return timingSafeEq(presented, token) ? 'ok' : 'unauthorized';
   }
+  if (requireToken) return 'not-found';
   return isLoopback(req.socket.remoteAddress ?? '') ? 'ok' : 'not-found';
 }

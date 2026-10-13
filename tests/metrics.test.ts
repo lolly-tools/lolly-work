@@ -46,3 +46,9 @@ test('metricsGate: no token ⇒ loopback ok, public not-found; token ⇒ bearer 
   // length-mismatch path must not throw
   assert.doesNotThrow(() => metricsGate(reqWith({ auth: 'Bearer x' }), 'much-longer-token'));
 });
+
+test('proxied or production metrics require an explicit token even on loopback', () => {
+  assert.equal(metricsGate(reqWith({ ip: '127.0.0.1' }), undefined, true), 'not-found');
+  assert.equal(metricsGate(reqWith({ ip: '127.0.0.1', auth: 'Bearer metrics' }), 'metrics', true), 'ok');
+  assert.equal(metricsGate(reqWith({})), 'not-found');
+});
