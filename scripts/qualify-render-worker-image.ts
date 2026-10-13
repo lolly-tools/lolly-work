@@ -70,9 +70,9 @@ export function verifyGeneratedDocs(root: string, changes: { status: 'M' | 'D'; 
   return files.length;
 }
 
-interface CatalogInput { index: Buffer; files: Record<string, string>; assetIndex?: Buffer; slimIndex?: Buffer }
+interface CatalogInput { index: Buffer; files: Record<string, string>; resources?: Record<string, string>; documentationResources?: Record<string, string>; assetIndex?: Buffer; slimIndex?: Buffer }
 interface CatalogEnvelope { alg: string; keyId: string; indexHash: string; files: Record<string, string>; signature: string; signedAt: string;
-  seq?: number; expiresAt?: string; assetIndexHash?: string; slimHash?: string; catalogScope?: string; toolDirs?: Record<string, string> }
+  seq?: number; expiresAt?: string; assetIndexHash?: string; slimHash?: string; catalogScope?: string; toolDirs?: Record<string, string>; resources?: Record<string, string> }
 interface CatalogIntegrity {
   CATALOG_SIGNED_TOOL_FILES: readonly string[];
   CATALOG_SIGNED_I18N_SIDECAR: RegExp;
@@ -93,6 +93,62 @@ interface ContentResolver {
   readToolManifestText(id: string, roots: unknown): string;
   listToolFiles(id: string, roots: unknown): string[];
   catalogFile(file: string, roots: unknown): string;
+}
+
+/** Derive public resource proofs from bounded physical bytes, independently of the signer. */
+export function publicResourceDigests(root: string): Record<string, string> {
+  const canonicalRoot = realpathSync(root), resources: Record<string, string> = Object.create(null);
+  let entries = 0, files = 0;
+  const walk = (directory: string, depth: number): void => {
+    assert.ok(depth <= 32);
+    if (!existsSync(directory)) return;
+    const meta = lstatSync(directory);
+    assert.ok(meta.isDirectory() && !meta.isSymbolicLink() && realpathSync(directory).startsWith(canonicalRoot + sep));
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      assert.ok(++entries <= 100000 && !entry.isSymbolicLink());
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) { walk(path, depth + 1); continue; }
+      assert.ok(entry.isFile());
+      if (!/\.(svg|png|webp|avif|jpe?g|gif|webm|mp4|json)$/i.test(entry.name)) continue;
+      const logical = relative(canonicalRoot, path).split(sep).join('/');
+      assert.ok(logical.length < 1024 && !/[\\%?#\p{White_Space}\p{Cc}]/u.test(logical) &&
+        logical.split('/').every(part => part && part !== '.' && part !== '..') && ++files <= 20000);
+      resources[`/${logical}`] = sha256(boundedFile(canonicalRoot, path, true));
+    }
+  };
+  for (const prefix of ['catalog/previews', 'catalog/og', 'info/shots']) {
+    let directory = canonicalRoot;
+    for (const part of prefix.split('/')) {
+      directory = join(directory, part);
+      if (!existsSync(directory)) break;
+      assert.ok(lstatSync(directory).isDirectory() && !lstatSync(directory).isSymbolicLink());
+    }
+    walk(join(canonicalRoot, prefix), 0);
+  }
+  return resources;
+}
+
+/** Capture the exact documentation-shot mirror inputs before any build runs. */
+export function documentationResourceDigests(root: string): Record<string, string> {
+  const resources: Record<string, string> = Object.create(null);
+  let entries = 0, files = 0;
+  for (const suffix of ['', 'covers']) {
+    const directory = join(root, 'docs/shots', suffix);
+    if (!existsSync(directory)) continue;
+    for (const parent of ['docs', 'docs/shots', ...(suffix ? ['docs/shots/covers'] : [])]) {
+      const meta = lstatSync(join(root, parent)); assert.ok(meta.isDirectory() && !meta.isSymbolicLink());
+    }
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      assert.ok(++entries <= 100000 && !entry.isSymbolicLink());
+      if (entry.isDirectory()) continue;
+      assert.ok(entry.isFile());
+      if (!(suffix ? /\.(png|svg|jpg|webp|webm|mp4)$/ : /\.(png|svg|jpg)$/).test(entry.name)) continue;
+      const path = `/info/shots/${suffix ? `${suffix}/` : ''}${entry.name}`;
+      assert.ok(path.length <= 1024 && !/[\\%?#\p{White_Space}\p{Cc}]/u.test(path) && ++files <= 20000);
+      resources[path] = sha256(boundedFile(root, join(directory, entry.name), true));
+    }
+  }
+  return resources;
 }
 
 export async function authoredCatalog(root: string): Promise<CatalogInput> {
@@ -118,6 +174,8 @@ export async function authoredCatalog(root: string): Promise<CatalogInput> {
   assert.ok(Object.keys(files).length > 0 && Object.keys(files).length <= 100000);
   const assetPath = resolver.catalogFile('assets/index.json', roots), slimPath = resolver.catalogFile('tools/index.slim.json', roots);
   return { index: boundedFile(root, resolver.catalogFile('tools/index.json', roots)), files,
+    resources: publicResourceDigests(resolve(dirname(resolver.catalogFile('tools/index.json', roots)), '../..')),
+    documentationResources: documentationResourceDigests(root),
     ...(existsSync(assetPath) ? { assetIndex: boundedFile(root, assetPath) } : {}),
     ...(existsSync(slimPath) ? { slimIndex: boundedFile(root, slimPath) } : {}) };
 }
@@ -125,12 +183,19 @@ export async function authoredCatalog(root: string): Promise<CatalogInput> {
 export async function verifyGeneratedSignature(source: Uint8Array, dist: Uint8Array, expected: CatalogInput, publicMaterial: string): Promise<number> {
   assert.deepEqual(source, dist, 'The served envelope must be the source signing output');
   const envelope = JSON.parse(Buffer.from(source).toString('utf8')) as CatalogEnvelope;
-  const allowed = new Set(['alg', 'files', 'indexHash', 'keyId', 'signature', 'signedAt', 'seq', 'expiresAt', 'assetIndexHash', 'slimHash', 'catalogScope', 'toolDirs']);
+  const allowed = new Set(['alg', 'files', 'resources', 'indexHash', 'keyId', 'signature', 'signedAt', 'seq', 'expiresAt', 'assetIndexHash', 'slimHash', 'catalogScope', 'toolDirs']);
   assert.ok(envelope && !Array.isArray(envelope) && Object.keys(envelope).every(name => allowed.has(name)), 'Unknown signed envelope fields are refused');
   const integrity = await catalogIntegrity();
   const publicKey = await integrity.importSpkiOrJwkPublicKey(publicMaterial);
   assert.equal((await integrity.verifyCatalogEnvelope(envelope, expected.index, publicKey)).ok, true);
   assert.deepEqual(Object.entries(envelope.files).sort(), Object.entries(expected.files).sort());
+  if (envelope.resources !== undefined || expected.resources !== undefined) {
+    assert.ok(envelope.resources && typeof envelope.resources === 'object' && !Array.isArray(envelope.resources));
+    assert.ok(Object.keys(envelope.resources).length <= 20000 && Object.entries(envelope.resources).every(([path, digest]) =>
+      /^\/(?:catalog\/(?:previews|og)|info\/shots)\//.test(path) && path.length <= 1024 &&
+      !/[\\%?#\p{White_Space}\p{Cc}]/u.test(path) && path.slice(1).split('/').every(part => part && part !== '.' && part !== '..') && /^[a-f0-9]{64}$/.test(digest)));
+    assert.deepEqual(Object.entries(envelope.resources).sort(), Object.entries(expected.resources ?? {}).sort());
+  }
   assert.equal(envelope.indexHash, sha256(expected.index));
   for (const [field, bytes] of [['assetIndexHash', expected.assetIndex], ['slimHash', expected.slimIndex]] as const) {
     assert.equal(envelope[field], bytes ? sha256(bytes) : undefined, 'Every actual sibling index must be bound, without claiming absent bytes');
@@ -150,7 +215,7 @@ export async function verifyGeneratedRelease(root: string, expected: CatalogInpu
   assert.ok(Number.isSafeInteger(source.seq) && source.seq === 1, 'A fresh qualification lineage must begin at sequence one');
   const dist = join(root, 'shells/web/dist');
   const files = await derivedToolFiles(root, dist, expected);
-  const input: CatalogInput = { index: boundedFile(dist, 'catalog/tools/index.json'), files,
+  const input: CatalogInput = { index: boundedFile(dist, 'catalog/tools/index.json'), files, resources: publicResourceDigests(dist),
     ...(existsSync(join(dist, 'catalog/assets/index.json')) ? { assetIndex: boundedFile(dist, 'catalog/assets/index.json') } : {}),
     ...(existsSync(join(dist, 'catalog/tools/index.slim.json')) ? { slimIndex: boundedFile(dist, 'catalog/tools/index.slim.json') } : {}) };
   const bytes = boundedFile(dist, 'catalog/tools/index.sig.json');
@@ -209,19 +274,20 @@ async function derivedToolFiles(root: string, dist: string, expected: CatalogInp
       const target = join(projected, 'tools', path); mkdirSync(dirname(target), { recursive: true });
       writeFileSync(target, bytes, { flag: 'wx' });
     }
-    let imageEntries = 0;
-    const copyImages = (directory: string, depth = 0): void => {
-      assert.ok(depth <= 32);
-      if (!existsSync(directory)) return;
-      for (const entry of readdirSync(directory, { withFileTypes: true })) {
-        assert.ok(++imageEntries <= 100000 && !entry.isSymbolicLink()); const from = join(directory, entry.name);
-        if (entry.isDirectory()) { copyImages(from, depth + 1); continue; }
-        assert.ok(entry.isFile());
-        if (!/\.(svg|png|webp|avif|jpe?g|gif|webm|mp4)$/i.test(entry.name) || /\.[0-9a-f]{16}\.[a-z0-9]+$/i.test(entry.name)) continue;
-        const to = join(projected, relative(dist, from)); mkdirSync(dirname(to), { recursive: true }); linkSync(from, to);
-      }
-    };
-    for (const prefix of ['catalog/previews', 'catalog/og', 'info/shots']) copyImages(join(dist, prefix));
+    const releaseResources = publicResourceDigests(dist);
+    for (const path of Object.keys(releaseResources)) {
+      const authoredShot = expected.documentationResources?.[path] !== undefined;
+      if (/\.[0-9a-f]{16}\.[a-z0-9]+$/i.test(path) && expected.resources?.[path] === undefined && !authoredShot) continue;
+      const original = path.startsWith('/catalog/') ? resolver.catalogFile(path.slice('/catalog/'.length), roots)
+        : join(root, 'docs/shots', path.slice('/info/shots/'.length));
+      const bytes = boundedFile(root, original, true), digest = sha256(bytes);
+      if (path.startsWith('/catalog/')) assert.equal(digest, expected.resources?.[path], 'Every original catalog resource must remain authored');
+      else assert.equal(digest, expected.documentationResources?.[path], 'Every original documentation shot must match its pre-build input');
+      if (path !== '/catalog/previews/bundle.json') assert.equal(digest, releaseResources[path], 'Original resource bytes must remain exact');
+      const to = join(projected, path.slice(1)); mkdirSync(dirname(to), { recursive: true }); writeFileSync(to, bytes, { flag: 'wx' });
+    }
+    for (const path of Object.keys(expected.resources ?? {})) assert.ok(path in releaseResources, 'The release must retain every authored public resource');
+    for (const path of Object.keys(expected.documentationResources ?? {})) assert.ok(path in releaseResources, 'The release must retain every captured documentation shot');
     const writeIndex = (path: string, bytes: Buffer): void => {
       const to = join(projected, path); mkdirSync(dirname(to), { recursive: true }); writeFileSync(to, bytes, { flag: 'wx' });
     };
@@ -245,6 +311,7 @@ async function derivedToolFiles(root: string, dist: string, expected: CatalogInp
     assert.deepEqual(Object.entries(actual).sort(), Object.entries(derived).sort(), 'Final tool bytes must be the exact maintained derivation');
     assert.deepEqual(boundedFile(dist, 'catalog/tools/index.json'), boundedFile(projected, 'catalog/tools/index.json'));
     if (expected.slimIndex) assert.deepEqual(boundedFile(dist, 'catalog/tools/index.slim.json'), boundedFile(projected, 'catalog/tools/index.slim.json'));
+    assert.deepEqual(Object.entries(releaseResources).sort(), Object.entries(publicResourceDigests(projected)).sort(), 'Published resources must match the maintained materialization');
     return actual;
   } finally { rmSync(projected, { recursive: true }); }
 }

@@ -98,7 +98,7 @@ test('slow signed startup holds readiness, first catalog reads and worker dispat
   assert.equal(sha256Hex(index), envelope.indexHash);
   assert.equal((await verifyCatalogEnvelope(envelope, index, await importSpkiOrJwkPublicKey(f.publicMaterial))).ok, true);
   const output = await render; assert.equal(output.status, 200, await output.clone().text()); assert.equal(workerRequests, 1);
-  assert.equal(sourceReads, 1);
+  assert.equal(sourceReads, 2, 'Startup verification and the memoised optional media lookup each read the envelope once');
   assert.equal(sourceToolReads, 1, 'Startup and signature verification must share the complete immutable tool digest map');
 });
 

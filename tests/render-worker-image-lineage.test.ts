@@ -64,6 +64,9 @@ function fixture(t: TestContext): string {
   put(root, 'brands/lolly-start/catalog/tools/index.slim.json', '{"tools":[{"id":"probe","preview":"/catalog/previews/probe.svg"}]}\n');
   put(root, 'brands/lolly-start/catalog/assets/index.json', '{"assets":[]}\n');
   put(root, 'brands/lolly-start/catalog/previews/probe.svg', '<svg viewBox="0 0 1 1"/>');
+  put(root, 'brands/lolly-start/catalog/previews/bundle.json', '{"probe":[{"preview":"/catalog/previews/probe.svg"}]}\n');
+  put(root, 'brands/lolly-start/catalog/og/probe.svg', '<svg viewBox="0 0 2 2"/>');
+  put(root, 'docs/shots/probe.svg', '<svg viewBox="0 0 3 3"/>');
   return root;
 }
 
@@ -108,9 +111,11 @@ test('the physical modern release proves the full authored safe tree, exact mate
   const dist = join(root, 'shells/web/dist');
   cpSync(join(root, 'community/probe'), join(dist, 'tools/probe'), { recursive: true });
   cpSync(join(root, 'brands/lolly-start/catalog'), join(dist, 'catalog'), { recursive: true });
+  cpSync(join(root, 'docs/shots'), join(dist, 'info/shots'), { recursive: true });
   const args = ['--tools', join(dist, 'tools'), '--index', join(dist, 'catalog/tools/index.json'), '--out', join(dist, 'catalog/tools/index.sig.json'), '--materialize'];
   sign(root, keys, args);
   assert.notDeepEqual(readFileSync(join(dist, 'tools/probe/card.html')), readFileSync(join(root, 'community/probe/card.html')));
+  assert.notDeepEqual(readFileSync(join(dist, 'catalog/previews/bundle.json')), readFileSync(join(root, 'brands/lolly-start/catalog/previews/bundle.json')));
   for (const extension of ['gz', 'br']) {
     const identity = readFileSync(join(dist, 'tools/probe/template.html'));
     put(dist, `tools/probe/template.html.${extension}`, extension === 'gz' ? gzipSync(identity) : brotliCompressSync(identity));
@@ -121,6 +126,39 @@ test('the physical modern release proves the full authored safe tree, exact mate
     { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
   const engineModule: string = '../vendor/@lolly/engine/src/catalog-integrity.ts';
   const engine = await import(engineModule) as { signCatalogEnvelope(value: Record<string, unknown>, privateKey: webcrypto.CryptoKey): Promise<unknown> };
+  const originalShot = readFileSync(join(root, 'docs/shots/probe.svg'));
+  assert.equal(expected.documentationResources?.['/info/shots/probe.svg'], sha(originalShot));
+  assert.equal(JSON.parse(source.toString()).resources['/info/shots/probe.svg'], undefined);
+  for (const name of ['extra', 'probe']) {
+    const path = `/info/shots/${name}.svg`, added = Buffer.from('<svg viewBox="0 0 4 4"/>');
+    const alias = `/info/shots/${name}.${sha(added).slice(0, 16)}.svg`;
+    const unsigned = JSON.parse(envelope.toString()); delete unsigned.signature;
+    put(root, `docs/shots/${name}.svg`, added); put(dist, path.slice(1), added); put(dist, alias.slice(1), added);
+    unsigned.resources[path] = sha(added); unsigned.resources[alias] = sha(added);
+    put(dist, 'catalog/tools/index.sig.json', JSON.stringify(await engine.signCatalogEnvelope(unsigned, privateKey)));
+    await assert.rejects(verifyGeneratedRelease(root, expected, keys.publicMaterial, source), /Every original documentation shot must match its pre-build input/);
+    rmSync(join(dist, alias.slice(1)));
+    if (name === 'extra') { rmSync(join(root, 'docs/shots/extra.svg')); rmSync(join(dist, path.slice(1))); }
+    else { put(root, 'docs/shots/probe.svg', originalShot); put(dist, path.slice(1), originalShot); }
+  }
+  put(dist, 'catalog/tools/index.sig.json', envelope);
+  const originalBundle = readFileSync(join(dist, 'catalog/previews/bundle.json'));
+  for (const mutate of ['omitted', 'different', 'extra']) {
+    const unsigned = JSON.parse(envelope.toString()); delete unsigned.signature;
+    if (mutate === 'omitted') delete unsigned.resources['/catalog/previews/probe.svg'];
+    if (mutate === 'different') unsigned.resources['/catalog/previews/probe.svg'] = 'a'.repeat(64);
+    if (mutate === 'extra') unsigned.resources['/catalog/previews/extra.svg'] = 'a'.repeat(64);
+    put(dist, 'catalog/tools/index.sig.json', JSON.stringify(await engine.signCatalogEnvelope(unsigned, privateKey)));
+    await assert.rejects(verifyGeneratedRelease(root, expected, keys.publicMaterial, source));
+  }
+  const rewritten = Buffer.from('{"probe":[{"preview":"/catalog/previews/other.svg"}]}\n');
+  put(dist, 'catalog/previews/bundle.json', rewritten);
+  const changedBundle = JSON.parse(envelope.toString()); delete changedBundle.signature;
+  changedBundle.resources['/catalog/previews/bundle.json'] = sha(rewritten);
+  put(dist, 'catalog/tools/index.sig.json', JSON.stringify(await engine.signCatalogEnvelope(changedBundle, privateKey)));
+  await assert.rejects(verifyGeneratedRelease(root, expected, keys.publicMaterial, source));
+  put(dist, 'catalog/previews/bundle.json', originalBundle);
+  put(dist, 'catalog/tools/index.sig.json', envelope);
   for (const field of ['toolDirs', 'assetIndexHash', 'slimHash']) {
     const unsigned = JSON.parse(envelope.toString()); delete unsigned.signature;
     unsigned[field] = field === 'toolDirs' ? { probe: 'a'.repeat(64) } : 'a'.repeat(64);

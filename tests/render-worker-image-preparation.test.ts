@@ -5,7 +5,7 @@ import { createHash, webcrypto } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { imageArguments, matchedShell, ownsContainer, generatedChanges, verifyGeneratedDocs, verifyGeneratedSignature, imageRefusal } from '../scripts/qualify-render-worker-image.ts';
+import { imageArguments, matchedShell, ownsContainer, generatedChanges, verifyGeneratedDocs, verifyGeneratedSignature, publicResourceDigests, documentationResourceDigests, imageRefusal } from '../scripts/qualify-render-worker-image.ts';
 
 test('image preparation refuses wrong source and engine without any build or browser', () => {
   const source = 'a'.repeat(40), pin = { generatedFrom: source, engine: { version: '1.248.0' } };
@@ -84,7 +84,7 @@ test('fresh catalog derivation binds the pre-build authored digest map and index
   const module: string = '../vendor/@lolly/engine/src/catalog-integrity.ts';
   const engine = await import(module) as {
     jwkThumbprint(jwk: webcrypto.JsonWebKey): Promise<string>;
-    signCatalogEnvelope(unsigned: { alg: string; keyId: string; signedAt: string; indexHash: string; files: Record<string, string> }, key: webcrypto.CryptoKey): Promise<unknown>;
+    signCatalogEnvelope(unsigned: { alg: string; keyId: string; signedAt: string; indexHash: string; files: Record<string, string>; resources?: Record<string, string> }, key: webcrypto.CryptoKey): Promise<unknown>;
   };
   const keys = await webcrypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']) as webcrypto.CryptoKeyPair;
   const publicJwk = await webcrypto.subtle.exportKey('jwk', keys.publicKey), publicMaterial = JSON.stringify(publicJwk);
@@ -104,10 +104,69 @@ test('fresh catalog derivation binds the pre-build authored digest map and index
   await assert.rejects(verifyGeneratedSignature(forged, forged, { index, files }, publicMaterial));
   const other = await webcrypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']) as webcrypto.CryptoKeyPair;
   await assert.rejects(verifyGeneratedSignature(bytes, bytes, { index, files }, JSON.stringify(await webcrypto.subtle.exportKey('jwk', other.publicKey))));
+  const resources = { '/catalog/previews/probe.svg': createHash('sha256').update('preview bytes').digest('hex') };
+  const signedResources = Buffer.from(JSON.stringify(await engine.signCatalogEnvelope({ ...unsigned, resources }, keys.privateKey)));
+  assert.equal(await verifyGeneratedSignature(signedResources, signedResources, { index, files, resources }, publicMaterial), 2);
+  const mismatches: Record<string, string>[] = [{}, { ...resources, '/info/shots/probe.png': 'a'.repeat(64) }, { '/catalog/previews/probe.svg': 'b'.repeat(64) }];
+  for (const expected of mismatches) {
+    await assert.rejects(verifyGeneratedSignature(signedResources, signedResources, { index, files, resources: expected }, publicMaterial));
+  }
+  await assert.rejects(verifyGeneratedSignature(bytes, bytes, { index, files, resources }, publicMaterial));
+  const invalidMaps: Record<string, string>[] = [{ '/other/probe.svg': 'a'.repeat(64) }, { '/catalog/previews/../probe.svg': 'a'.repeat(64) },
+    { '/catalog/previews/probe.svg': 'a'.repeat(16) }, { '/catalog/previews/probe%2e.svg': 'a'.repeat(64) }];
+  for (const invalid of invalidMaps) {
+    const signed = Buffer.from(JSON.stringify(await engine.signCatalogEnvelope({ ...unsigned, resources: invalid }, keys.privateKey)));
+    await assert.rejects(verifyGeneratedSignature(signed, signed, { index, files, resources: invalid }, publicMaterial));
+  }
+});
+
+test('public resource proofs cover actual preview, bundle, social card and shot bytes within physical bounds', t => {
+  const root = mkdtempSync(join(tmpdir(), 'worker-resource-control-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const resources = { '/catalog/previews/probe.svg': '<svg/>', '/catalog/previews/bundle.json': '{"probe":[]}',
+    '/catalog/og/probe.webp': 'card', '/info/shots/covers/probe.webm': 'shot' };
+  for (const [path, value] of Object.entries(resources)) {
+    mkdirSync(join(root, path.slice(1), '..'), { recursive: true });
+    writeFileSync(join(root, path.slice(1)), value);
+  }
+  writeFileSync(join(root, 'catalog/previews/unserved.txt'), 'outside the published resource grammar');
+  const expected = Object.fromEntries(Object.entries(resources).map(([path, value]) => [path, createHash('sha256').update(value).digest('hex')]));
+  assert.deepEqual(Object.entries(publicResourceDigests(root)).sort(), Object.entries(expected).sort());
+  writeFileSync(join(root, 'catalog/previews/probe.svg'), '<svg>changed</svg>');
+  assert.notEqual(publicResourceDigests(root)['/catalog/previews/probe.svg'], expected['/catalog/previews/probe.svg']);
+  const malformed = join(root, 'catalog/previews/bad%name.svg'); writeFileSync(malformed, 'bad');
+  assert.throws(() => publicResourceDigests(root)); rmSync(malformed);
+  const symbolic = join(root, 'catalog/previews/link.svg'); symlinkSync(join(root, 'catalog/previews/probe.svg'), symbolic);
+  assert.throws(() => publicResourceDigests(root)); rmSync(symbolic);
+  const large = join(root, 'catalog/previews/large.webp'); writeFileSync(large, Buffer.alloc(16 * 1024 * 1024 + 1));
+  assert.throws(() => publicResourceDigests(root)); rmSync(large);
+  const deep = join(root, 'catalog/previews', ...Array.from({ length: 33 }, () => 'nested'));
+  mkdirSync(deep, { recursive: true }); assert.throws(() => publicResourceDigests(root));
+  rmSync(join(root, 'catalog'), { recursive: true });
+  symlinkSync(join(root, 'info'), join(root, 'catalog'), 'dir');
+  assert.throws(() => publicResourceDigests(root));
 });
 
 test('refusal diagnostics contain fixed phase and bounded counts, never arbitrary caught values', () => {
   assert.deepEqual(imageRefusal('TRACKED_SOURCE', 4), { status: 'WORKER_IMAGE_ACCEPTANCE_REFUSED', phase: 'TRACKED_SOURCE', trackedChangeCount: 4 });
   for (const count of [-1, 129, 1.5, NaN, Infinity]) assert.equal(imageRefusal('SIGNED_BUILD', count).trackedChangeCount, 0);
   assert.deepEqual(imageRefusal('private key or raw error', 0), { status: 'WORKER_IMAGE_ACCEPTANCE_REFUSED', phase: 'UNKNOWN', trackedChangeCount: 0 });
+});
+
+test('documentation-shot inputs follow the actual mirror grammar and remain a pre-build snapshot', t => {
+  const root = mkdtempSync(join(tmpdir(), 'worker-shot-inputs-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, 'docs/shots/covers'), { recursive: true });
+  writeFileSync(join(root, 'docs/shots/first.svg'), '<svg/>');
+  writeFileSync(join(root, 'docs/shots/covers/first.webm'), 'cover');
+  writeFileSync(join(root, 'docs/shots/unserved.webp'), 'outside the root mirror grammar');
+  const captured = documentationResourceDigests(root);
+  assert.deepEqual(Object.keys(captured).sort(), ['/info/shots/covers/first.webm', '/info/shots/first.svg']);
+  writeFileSync(join(root, 'docs/shots/first.svg'), '<svg>changed</svg>');
+  writeFileSync(join(root, 'docs/shots/extra.svg'), '<svg/>');
+  const changed = documentationResourceDigests(root);
+  assert.notEqual(changed['/info/shots/first.svg'], captured['/info/shots/first.svg']);
+  assert.equal(captured['/info/shots/extra.svg'], undefined);
+  const symbolic = join(root, 'docs/shots/link.svg'); symlinkSync(join(root, 'docs/shots/first.svg'), symbolic);
+  assert.throws(() => documentationResourceDigests(root));
 });

@@ -16,7 +16,7 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
-import { createSign, generateKeyPairSync } from 'node:crypto';
+import { createHash, createSign, generateKeyPairSync, randomUUID } from 'node:crypto';
 import { cp, mkdtemp, mkdir, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -50,6 +50,7 @@ interface Script {
   google: { sub: string; email: string; email_verified?: boolean; groups?: string[]; hd?: string };
   github: { id: number; login: string; emails: Array<{ email: string; primary: boolean; verified: boolean }> };
   nonce: string;
+  fixtureId: string;
 }
 
 function idpFetch(script: Script): typeof fetch {
@@ -98,20 +99,43 @@ async function boot(idpExtra: Record<string, unknown> = {}, seed?: (store: Store
     google: { sub: 'g-1', email: 'ana@example.com', email_verified: true },
     github: { id: 101, login: 'ana-gh', emails: [{ email: 'ana@example.com', primary: true, verified: true }] },
     nonce: '',
+    fixtureId: randomUUID(),
   };
   const app = buildApp({ config, store, blobs: createMemoryBlobStore(), secrets: { session: 'sLink', link: 'lLink' }, fetchImpl: idpFetch(script) });
-  const server = createServer((req, res) => void app(req, res));
+  const server = createServer((req, res) => {
+    res.setHeader('x-lw-test-fixture', script.fixtureId);
+    void app(req, res);
+  });
   servers.push(server);
-  await new Promise<void>((r) => server.listen(0, () => r()));
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
   const addr = server.address();
-  return { base: `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`, store, script };
+  assert.ok(addr && typeof addr === 'object');
+  assert.equal(addr.address, '127.0.0.1', 'the fixture reserves the exact address used by its client');
+  assert.equal(addr.family, 'IPv4');
+  return { base: `http://${addr.address}:${addr.port}`, store, script };
 }
 
 /** Run one IdP round trip. `start` is the path that begins it (login or link);
  *  `session` rides along when a signed-in person starts a link. */
 async function roundTrip(base: string, script: Script, start: string, session?: string) {
   const started = await fetch(`${base}${start}`, { redirect: 'manual', headers: session ? { cookie: session } : {} });
-  assert.equal(started.status, 302, `start ${start}`);
+  const ownFixture = started.headers.get('x-lw-test-fixture') === script.fixtureId;
+  let diagnostic = '';
+  if (started.status !== 302 || !ownFixture) {
+    const reader = started.body?.getReader();
+    const chunk = reader ? (await reader.read()).value : undefined;
+    await reader?.cancel();
+    const prefix = chunk?.subarray(0, 512) ?? new Uint8Array();
+    let code: string | undefined;
+    try {
+      const candidate = JSON.parse(new TextDecoder().decode(prefix)).error?.code;
+      if (typeof candidate === 'string' && /^[A-Z_]{1,64}$/.test(candidate)) code = candidate;
+    } catch { /* A non-JSON response is identified by its digest. */ }
+    diagnostic = JSON.stringify({ ownFixture, contentType: started.headers.get('content-type'), code,
+      bodyPrefixSha256: createHash('sha256').update(prefix).digest('hex') });
+  }
+  assert.equal(started.status, 302, `start ${start} ${diagnostic}`);
+  assert.ok(ownFixture, `the sign-in response belongs to this fixture ${diagnostic}`);
   const authorize = new URL(started.headers.get('location') as string);
   if (authorize.origin === GOOGLE) script.nonce = authorize.searchParams.get('nonce') as string;
   const stateCookie = (started.headers.getSetCookie().find((c) => c.startsWith('lw_state=')) as string).split(';')[0] as string;

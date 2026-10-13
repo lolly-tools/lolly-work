@@ -51,6 +51,7 @@ test('dashboard reports revoked/expired/disabled invitations and absence of a ro
   const { store, record, user } = await fixture();
   assert.equal((await agentDashboard(store, undefined, 30, now)).summary.connected, null);
   assert.equal((await agentDashboard(store, rooms, 30, now + 7200000)).agents[0]!.status, 'expired');
+  await store.upsertUserBySub({ sub: 'reserve-owner', email: 'reserve@test', groups: ['owner'], role: 'owner' });
   await store.setUserDisabled(user.id, at);
   assert.equal((await agentDashboard(store, rooms, 30, now)).agents[0]!.status, 'unavailable');
   await store.revokeDocumentAgent(record.id, at);
