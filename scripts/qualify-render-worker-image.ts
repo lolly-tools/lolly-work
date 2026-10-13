@@ -453,8 +453,8 @@ async function qualifyOwnedFixture(lollyRoot: string, imageId: string, source: s
       '--mount', `type=bind,src=${ROOT},dst=/qualification/work,readonly`,
       '--mount', `type=bind,src=${join(lollyRoot, 'shells/web/dist')},dst=/qualification/shell,readonly`,
       '--env', 'LW_CATALOG_SIGNING_KEY', '--env', 'LOLLY_TEST_CATALOG_PUBLIC_KEY_JWK',
-      '--env', 'LOLLY_TEST_SHELL_SOURCE', '--env', 'LOLLY_RENDER_IMAGE_TEST=1', '--entrypoint', 'node', imageId,
-      '--test', '/qualification/work/tests/render-worker-image.test.ts'],
+      '--env', 'LOLLY_TEST_SHELL_SOURCE', '--env', 'LOLLY_RENDER_IMAGE_TEST=1', '--env', 'LOLLY_RENDER_TLS_IMAGE_TEST=1', '--entrypoint', 'node', imageId,
+      '--test', '--test-concurrency=1', '/qualification/work/tests/render-worker-image.test.ts', '/qualification/work/tests/render-worker-tls.image.test.ts'],
     { env: { ...process.env, LW_CATALOG_SIGNING_KEY: privateMaterial, LOLLY_TEST_CATALOG_PUBLIC_KEY_JWK: publicMaterial,
       LOLLY_TEST_SHELL_SOURCE: source }, stdio: 'inherit', timeout: 150_000 });
     assert.ok(!result.error && result.status === 0, 'Real image acceptance must exit successfully');
