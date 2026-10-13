@@ -30,11 +30,13 @@ def owner_model_label(stage, observed, expected, owner):
         expected['root']['selinuxLabel'] = actual
 
 
-def request(l, value, original_proof=None):
+def request(l, value, original_proof=None, depth=0):
     need, exact, held = l.need, l.exact, l.held
+    need(type(depth) is int and 0 <= depth < 8, 'Bounded failed forward ancestry required')
     prior = value.get('priorForwardObservation')
+    trust = value.get('tlsTrust')
     exact(value, {'version', 'status', 'originalInput', 'originalOperator', 'originalPhases', 'failedObservation',
-                  'originalCommands', 'failureEvidence', 'sources', 'outputDirectory'} | ({'priorForwardObservation'} if prior is not None else set()))
+                  'originalCommands', 'failureEvidence', 'sources', 'outputDirectory'} | ({'priorForwardObservation'} if prior is not None else set()) | ({'tlsTrust'} if trust is not None else set()))
     need(value['version'] == 1 and value['status'] == 'REVIEWED_PUBLIC_FORWARD_SERVING_OBSERVATION_NOT_EXECUTED', 'Explicit forward observation request required')
     original = held(value['originalInput']); l.a.read_ref(value['originalOperator'])
     directory = Path(original['outputDirectory']); output = Path(value['outputDirectory'])
@@ -80,8 +82,8 @@ def request(l, value, original_proof=None):
     need(len(observers) == len(helpers) == 1 and Path(helpers[0]['path']) == Path(observers[0]['path']).parent / 'sources/public-serving-continuation.py', 'Original continuation validator is outside held observer closure')
     if prior is not None:
         exact(prior, {'input', 'operator', 'started', 'uncertain', 'commands', 'ownerBefore'})
-        previous = held(prior['input']); need('priorForwardObservation' not in previous, 'Only one original failed forward observation may continue')
-        previous_binding = request(l, previous)
+        previous = held(prior['input'])
+        request(l, previous, depth=depth+1)
         for key in ['originalInput', 'originalOperator', 'originalPhases', 'failedObservation', 'originalCommands', 'failureEvidence']:
             need(previous[key] == value[key], 'Forward attempts must retain identical original switch lineage')
         need(prior['operator'] in previous['sources'] and Path(prior['operator']['path']).name == 'observe-forward.py', 'Exact prior forward source required')
@@ -90,7 +92,7 @@ def request(l, value, original_proof=None):
         for kind in ['started', 'uncertain']:
             need(prior[kind]['path'] == str(prior_directory / ('observe.' + kind + '.json')), 'Exact failed forward journal required')
         need(held(prior['started']) == {'status': 'STARTED_NO_REPLAY', 'inputSha256': prior['input']['sha256'], 'operatorSha256': prior['operator']['sha256']}
-             and held(prior['uncertain']) == {'status': 'REFUSED_NO_REPLAY', 'failureType': 'Refusal'}, 'Actual failed forward observation required')
+             and held(prior['uncertain']) in [{'status': 'REFUSED_NO_REPLAY', 'failureType': kind} for kind in ['Refusal', 'SSLCertVerificationError']], 'Actual failed forward observation required')
         need(not (prior_directory/'observe.accepted.json').exists() and not (prior_directory/'accepted-release.actual.json').exists(), 'Failed forward attempt cannot be restamped')
         need(type(prior['commands']) is list and prior['commands']
              and [r['path'] for r in prior['commands']] == sorted(str(p) for p in prior_directory.glob('command-*.actual.json')), 'Complete failed forward command journal required')
@@ -100,6 +102,11 @@ def request(l, value, original_proof=None):
                 need(Path(row[stream]['path']).parent == prior_directory, 'Prior forward stream escaped journal'); l.a.read_ref(row[stream])
         need(prior['ownerBefore']['path'] == str(prior_directory/'owner-before.original.json'), 'Actual failed owner bookend required')
         owner = held(prior['ownerBefore']); exact(owner, {'deployment', 'pod', 'replicaSet'})
+    if trust is not None:
+        exact(trust, {'caFile', 'certificateRequired', 'hostnameVerification'})
+        need(trust['certificateRequired'] is True and trust['hostnameVerification'] is True, 'Verified certificate and hostname are mandatory')
+        data = l.a.read_ref(trust['caFile'])
+        need(0 < len(data) <= 2*1024**2 and b'-----BEGIN CERTIFICATE-----' in data, 'Bounded explicit CA bundle required')
     if original_proof is not None:
         need(value['originalInput'] == original_proof['input'] and value['originalOperator'] == original_proof['operator']
              and all(value['originalPhases'][name] == original_proof['phases'][name] for name in ['dryrun', 'publish']), 'Forward observation changes original switch ancestry')

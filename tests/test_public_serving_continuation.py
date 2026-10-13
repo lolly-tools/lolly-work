@@ -14,7 +14,7 @@ l=load('serving_lifecycle',SCRIPTS/'public-delivery-lifecycle.py')
 h=load('serving_continuation',SCRIPTS/'public-serving-continuation.py')
 class Ancestry(unittest.TestCase):
     def setUp(self):
-        self.temp=tempfile.TemporaryDirectory(); self.base=Path(self.temp.name).resolve()
+        self.temp=tempfile.TemporaryDirectory(); self.base=Path(self.temp.name).resolve(); self.attempt=1
         self.old=self.base/'old'; self.old.mkdir()
         self.value={'version':1,'status':'REVIEWED_PUBLIC_FORWARD_SERVING_OBSERVATION_NOT_EXECUTED',
             'originalInput':self.put(self.base/'original.json',{'outputDirectory':str(self.old)}),
@@ -42,8 +42,8 @@ class Ancestry(unittest.TestCase):
             'stdout':self.put(directory/(key+'.stdout.original'),body),'stderr':self.put(directory/(key+'.stderr.original'),b'')})
     def prior(self):
         previous=copy.deepcopy(self.value); prior_dir=Path(previous['outputDirectory']); prior_dir.mkdir()
-        request=self.put(self.base/'prior.input.json',previous); source=previous['sources'][1]
-        self.value['outputDirectory']=str(self.base/'attempt-two')
+        request=self.put(self.base/('prior-'+str(self.attempt)+'.input.json'),previous); source=previous['sources'][1]
+        self.attempt+=1; self.value['outputDirectory']=str(self.base/('attempt-'+str(self.attempt)))
         self.value['priorForwardObservation']={'input':request,'operator':source,
             'started':self.put(prior_dir/'observe.started.json',{'status':'STARTED_NO_REPLAY','inputSha256':request['sha256'],'operatorSha256':source['sha256']}),
             'uncertain':self.put(prior_dir/'observe.uncertain.json',{'status':'REFUSED_NO_REPLAY','failureType':'Refusal'}),
@@ -52,6 +52,17 @@ class Ancestry(unittest.TestCase):
         return prior_dir
     def test_original_and_explicit_prior_failed_journal(self):
         h.request(l,self.value); self.prior(); h.request(l,self.value)
+    def test_recursive_failed_attempts_are_bounded_and_keep_trust(self):
+        self.prior(); self.prior(); h.request(l,self.value)
+        with self.assertRaises(RuntimeError):h.request(l,self.value,depth=8)
+        self.value['tlsTrust']={'caFile':self.put(self.base/'unit-roots.pem',b'-----BEGIN CERTIFICATE-----\nsynthetic fixture only\n'),
+            'certificateRequired':True,'hostnameVerification':True}
+        h.request(l,self.value)
+        for field in ['certificateRequired','hostnameVerification']:
+            value=copy.deepcopy(self.value);value['tlsTrust'][field]=False
+            with self.assertRaises(RuntimeError):h.request(l,value)
+        value=copy.deepcopy(self.value);value['tlsTrust']['caFile']['sha256']='0'*64
+        with self.assertRaises(RuntimeError):h.request(l,value)
     def test_reader_location_is_not_historical_custody(self):
         path=self.base/'copied-reader.py'; path.write_bytes((SCRIPTS/'public-serving-continuation.py').read_bytes())
         self.assertEqual(load('copied_reader',path).request(l,self.value),h.request(l,self.value))
