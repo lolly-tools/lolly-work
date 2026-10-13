@@ -89,6 +89,7 @@ import { recordSaveVersion } from '../versions/recorder.ts';
 import { registerVersionRoutes } from '../versions/routes.ts';
 import { createRenderFileReader, mintRenderRead, renderFileScope, renderReader } from '../render/read-ticket.ts';
 import { projectFilesEnabled, removeUploadsBy } from '../projects/files.ts';
+import { effectiveAccessFor } from '../projects/effective-access.ts';
 import { buildShareMessage, createWindowQuota, mergeInvitationProject, nameWithoutEmail, roleAbove } from '../projects/sharing.ts';
 import { approversFor, closeRequestsOnAccess } from '../access/requests.ts';
 import type { ProjectRequestWire } from '../access/types.ts';
@@ -8686,55 +8687,6 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     return out;
   };
 
-  /**
-   * Who else can open a project without a row on it (plans/75 G15): the
-   * people in one of its visibility groups, and the workspace's admins and
-   * owners, who can open every project. Listed for the project's managers
-   * only, beside the owner and member rows, never inside them, so an older
-   * Lolly offers no role select or Remove for access a project cannot take
-   * away. Each row says which way the person gets in (`via`), at what level
-   * (`role`), and for a group row which group.
-   *
-   * Names never fall back to an address, and the rows carry no email. A
-   * project's visibility can name any group, so this must not become a way
-   * to read the directory: a caller who may not list everyone gets group rows
-   * only for the groups they are in themselves, whose people they can see
-   * anyway. For the same reason the admins are listed by name only to a
-   * caller who may list everyone (an admin or owner, as `GET /api/v1/users`
-   * asks). Another manager could otherwise make a project of their own and
-   * read off who the admins are (rbac/project-access.ts, `isProjectMember`);
-   * they learn only that admins can open it (`adminAccess: 'note'`), and a
-   * group row of theirs shows the level the group itself gives (the same rule
-   * as `projectAccess`, with no admin role and no `project.manage` lift),
-   * never a Manager level an admin role adds.
-   */
-  const EFFECTIVE_ROWS_MAX = 200;
-  const effectiveAccessFor = async (caller: UserRecord, project: ProjectRecord, listed: ReadonlySet<string>, grants: Grant[]) => {
-    const seesDirectory = caller.role === 'admin' || caller.role === 'owner';
-    const visible = project.visibility === 'private' ? [] : project.visibility.groups;
-    const groups = seesDirectory ? visible : visible.filter((g) => caller.groups.includes(g));
-    const rows: Array<{ userId: string; name: string; role: ProjectAccess; via: 'group' | 'admin'; group?: string; isMe?: true }> = [];
-    for (const u of await store.listUsers()) {
-      if (listed.has(u.id) || u.disabledAt) continue;
-      const group = groups.find((g) => u.groups.includes(g));
-      const admin = u.role === 'admin' || u.role === 'owner';
-      if (!group && !(admin && seesDirectory)) continue;
-      const role: ProjectAccess = seesDirectory
-        ? effectiveProjectAccess(u, project, null, grants)
-        : projectAccess({ ...u, role: 'member' }, project, null);
-      if (role === 'none') continue;
-      rows.push({
-        userId: u.id, name: nameWithoutEmail(u), role, ...(group ? { via: 'group' as const, group } : { via: 'admin' as const }),
-        ...(u.id === caller.id ? { isMe: true as const } : {}),
-      });
-    }
-    rows.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()) || (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0));
-    return {
-      effective: rows.slice(0, EFFECTIVE_ROWS_MAX),
-      ...(rows.length > EFFECTIVE_ROWS_MAX ? { effectiveTruncated: true } : {}),
-      adminAccess: seesDirectory ? 'listed' as const : 'note' as const,
-    };
-  };
 
   router.add('GET', '/api/v1/projects/:id/members', async (req, res, ctx) => {
     const gate = await projectGate(req, res, ctx.params.id as string, 'viewer');
@@ -8763,7 +8715,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       };
     };
     const members = [person(project.ownerId, 'owner', project.createdAt), ...rows.map((m) => person(m.userId, m.role, m.addedAt))];
-    const effective = manager ? await effectiveAccessFor(user, project, new Set(members.map((m) => m.userId)), grants) : null;
+    const effective = manager ? await effectiveAccessFor(store, user, project, new Set(members.map((m) => m.userId)), grants) : null;
     // An invitation for an address someone on the project already holds is
     // not listed when accepting it would change nothing: that person is in,
     // and is shown once, as a member. Adding a member closes such
