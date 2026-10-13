@@ -11,6 +11,7 @@ const MAX_STRING = 8192;
 const MAX_ENTRIES = 256;
 
 export function auditEmailToken(value: string, macKey?: string): string {
+  if (value === AUDIT_EMAIL_OMITTED || /^email:[A-Za-z0-9_-]{43}$/.test(value)) return value;
   if (!macKey) return AUDIT_EMAIL_OMITTED;
   return `email:${hmac(value.trim().toLowerCase(), deriveKey(macKey, 'lw/audit-email'))}`;
 }

@@ -46,6 +46,9 @@ const OPTIONS = {
     mapping: { type: 'string' },
     exposure: { type: 'string' },
     section: { type: 'string' },
+    category: { type: 'string' },
+    cursor: { type: 'string' },
+    limit: { type: 'string' },
     'remote-id': { type: 'string' },
     name: { type: 'string' },
     tags: { type: 'string' },
@@ -465,8 +468,17 @@ switch (cmd) {
   }
 
   case 'users': {
-    if (sub !== 'erase' && sub !== 'erase-preview') fail('usage: lw users erase|erase-preview <id>');
-    const id = positionals[2] ?? fail('usage: lw users erase|erase-preview <id>');
+    if (!['erase', 'erase-preview', 'subject-export', 'offboard-preview', 'offboard'].includes(sub ?? '')) fail('usage: lw users erase|erase-preview|subject-export|offboard-preview|offboard <id>');
+    const id = positionals[2] ?? fail('usage: lw users <action> <id>');
+    if (sub === 'subject-export') {
+      const query = new URLSearchParams();
+      for (const key of ['category', 'cursor', 'limit'] as const) if (values[key]) query.set(key, values[key]);
+      out(await call(`/api/v1/users/${encodeURIComponent(id)}/subject-export?${query}`)); break;
+    }
+    if (sub === 'offboard-preview') { out(await call(`/api/v1/users/${encodeURIComponent(id)}/offboarding-preview`)); break; }
+    if (sub === 'offboard') {
+      out(await call(`/api/v1/users/${encodeURIComponent(id)}/offboard`, { method: 'POST', body: { confirmUserId: id } })); break;
+    }
     if (sub === 'erase-preview') { out(await call(`/api/v1/users/${encodeURIComponent(id)}/erasure-preview`)); break; }
     const r = await call(`/api/v1/users/${encodeURIComponent(id)}`, { method: 'DELETE' }) as { scrubbed: number };
     console.log(`erased account identity ${id} - ${r.scrubbed} telemetry event(s) de-attributed. Other retained records, audit identifiers, external copies and backups require separate review; this is not complete personal-data erasure.`);
@@ -1515,6 +1527,9 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   invite ls [--all] · invite rm <id>   open invitations (--all adds revoked ones); revoke one
   retention run              apply the stated retention policy and sweep expired uploads now (both also run daily on the long-lived server)
   users erase-preview <id>   read-only reference counts and account-erasure scope (owner)
+  users subject-export <id>  bounded partial metadata page (owner; --category, --cursor, --limit)
+  users offboard-preview <id> bounded direct issuance counts and remaining review (owner)
+  users offboard <id>        disable, end sessions and revoke direct issuance (owner; retains content)
   users erase <id>           atomic account-row removal + telemetry de-attribution (owner; retained references block it)
   projects transfer-preview <id> [--json] [--out new-file.json]   read-only project inventory (signed-in manager; not an export/import)
   brand                      inspect design-system sources and permissions

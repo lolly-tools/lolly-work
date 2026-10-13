@@ -1003,6 +1003,12 @@ collab): those flows mean "a person decided". Authenticate the CLI with
 
 ## Offboarding, disable and revocation
 
+Owners can use the bounded account metadata export and direct-issuance offboarding
+operation described in [account lifecycle operations](account-lifecycle.md).
+Both the offboarding operation and ordinary disable preserve another active owner.
+Ownership transfer, retained content and complete personal-data lifecycle review
+remain separate actions.
+
 ```
 POST /api/v1/users/:id/disabled     # { disabled: true }   (or SCIM active=false)
 ```
