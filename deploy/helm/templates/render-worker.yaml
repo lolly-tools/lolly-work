@@ -65,11 +65,10 @@ spec:
         - name: render-worker
           image: {{ $image | quote }}
           imagePullPolicy: {{ .Values.renderWorker.image.pullPolicy }}
-          # The worker launches Chromium (--no-sandbox); it needs a writable /tmp
-          # and cannot use readOnlyRootFilesystem, but stays non-root + drops caps.
           securityContext:
             allowPrivilegeEscalation: false
             runAsNonRoot: true
+            readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
             seccompProfile:

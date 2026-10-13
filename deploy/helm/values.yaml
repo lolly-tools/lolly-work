@@ -244,7 +244,7 @@ renderWorker:
   # plane on the worker port; egress only to cluster DNS, public addresses on 80/443,
   # and extraEgress. The worker's own egress rule already refuses private addresses in
   # code; this closes the gap where Chromium resolves a name again when it connects.
-  # Off by default because it must know where the shell lives: with webBase on a public
+  # Enabled whenever the worker is deployed. With webBase on a public
   # address the defaults work; a shell on a private address (in-cluster Service,
   # internal load balancer) or any origin in LW_RENDER_ALLOWED_ORIGINS needs an
   # extraEgress rule, e.g.
@@ -252,7 +252,7 @@ renderWorker:
   #     - to: [{ podSelector: { matchLabels: { app: lolly-web } } }]
   #       ports: [{ protocol: TCP, port: 8080 }]
   networkPolicy:
-    enabled: false
+    enabled: true
     # CoreDNS namespace and pod selectors must both match. Do not trust DNS
     # labels on pods in arbitrary namespaces.
     dnsNamespaceLabels:
@@ -269,9 +269,9 @@ renderWorker:
     limits: { cpu: "2", memory: 2Gi }
     # Optional ephemeral-storage entries belong in requests/limits above.
   tmp:
-    # Disk-backed scratch. Empty preserves the default unbounded emptyDir.
+    # Disk-backed scratch for browser profiles, cache and conversion output.
     # Positive integer bytes, binary Ki/Mi/Gi/Ti/Pi/Ei or decimal k/M/G/T/P/E.
-    sizeLimit: ""
+    sizeLimit: "1Gi"
   # Horizontal autoscaling — the render tier is the CPU-heavy part (each Chromium
   # rasterise is a CPU burst), so scale on CPU. When enabled, replicaCount is
   # ignored (the HPA owns the replica count between min and max). Renders are

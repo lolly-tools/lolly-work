@@ -218,10 +218,16 @@ test('worker + HPA: the Deployment drops static replicas and the HPA targets it'
 const policyNamed = (out: string, suffix: string): string | undefined =>
   docsOf(out).find((d) => /kind: NetworkPolicy/.test(d) && new RegExp(`name: \\S*${suffix}\\s`).test(d));
 
-test('worker NetworkPolicy is opt-in and off by default', { skip: noHelm }, () => {
+test('worker NetworkPolicy is enabled by default and permits explicit disablement', { skip: noHelm }, () => {
   const r = render([...SECRETS, ...WORKER]);
   assert.ok(r.ok, r.err);
-  assert.ok(!policyNamed(r.out, 'render-worker'), 'no worker policy unless renderWorker.networkPolicy.enabled');
+  assert.ok(policyNamed(r.out, 'render-worker'));
+  const disabled = render([...SECRETS, ...WORKER, '--set', 'renderWorker.networkPolicy.enabled=false']);
+  assert.ok(disabled.ok, disabled.err);
+  assert.ok(!policyNamed(disabled.out, 'render-worker'));
+  const worker = deployment(r.out, true).spec.template.spec;
+  assert.equal(worker.containers[0].securityContext.readOnlyRootFilesystem, true);
+  assert.equal(worker.volumes.find((volume: { name: string }) => volume.name === 'tmp').emptyDir.sizeLimit, '1Gi');
 });
 
 test('worker NetworkPolicy: control-plane ingress only, egress to DNS and public addresses, extraEgress templated', { skip: noHelm }, () => {

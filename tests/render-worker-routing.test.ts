@@ -36,7 +36,7 @@ function request(extra: Record<string, unknown> = {}, signal?: AbortSignal, path
 /** Simulate Playwright's event dispatcher: it does not join route callbacks to
  * goto/download. Catch rejections here so the old bug fails an assertion rather
  * than terminating the test process as it terminated the production worker. */
-function fixture(url: string, action: 'fetch' | 'fulfill' | 'continue' | 'abort', fail: boolean, held = false, closeHold?: Promise<void>, wsFailure = false) {
+function fixture(url: string, action: 'fetch' | 'fulfill' | 'abort', fail: boolean, held = false, closeHold?: Promise<void>, wsFailure = false) {
   const started = gate(), finish = gate();
   let routeHandler!: (route: any) => Promise<void>;
   let wsHandler: ((ws: any) => Promise<void>) | undefined;
@@ -50,9 +50,9 @@ function fixture(url: string, action: 'fetch' | 'fulfill' | 'continue' | 'abort'
   };
   const route = {
     request: () => ({ url: () => url, method: () => 'GET', headers: () => ({}) }),
-    fetch: async () => { if (action === 'fetch') await selected(); return { headers: () => ({ 'x-lolly-brand-revision': 'revision-a' }), status: () => 200 }; },
+    fetch: async () => { if (action === 'fetch') await selected(); return { headers: () => ({ 'x-lolly-brand-revision': 'revision-a' }), status: () => 200, body: async () => Buffer.alloc(0), dispose: async () => {} }; },
     fulfill: async () => { if (action === 'fulfill') await selected(); },
-    continue: async () => { if (action === 'continue') await selected(); },
+    continue: async () => { assert.fail('HTTP delivery must be checked'); },
     abort: async () => { if (action === 'abort') await selected(); },
   };
   const browser = { newContext: async () => ({
@@ -99,7 +99,7 @@ for (const [name, url, action, extra] of [
   ['revision fulfill', 'https://web.test/catalog/index.json', 'fulfill', { brandRevision: 'revision-a' }],
   ['read-ticket fetch', 'https://web.test/api/auth/config', 'fetch', { readToken: 'synthetic-read-token' }],
   ['read-ticket fulfill', 'https://web.test/api/auth/config', 'fulfill', { readToken: 'synthetic-read-token' }],
-  ['continue', 'https://web.test/assets/app.js', 'continue', {}],
+  ['ordinary asset fulfill', 'https://web.test/assets/app.js', 'fulfill', {}],
   ['blocked abort', 'https://web.test/models/ocr.onnx', 'abort', {}],
 ] as const) test(`${name}: a genuine routing failure rejects the render without leaking or rejecting the event callback`, { timeout: 5000 }, async () => {
   const f = fixture(url, action, true);
@@ -115,7 +115,7 @@ for (const [name, url, action, extra] of [
 });
 
 test('WebSocket refusal failures reject the render and cannot escape its event callback', { timeout: 5000 }, async () => {
-  const f = fixture('https://web.test/assets/app.js', 'continue', false, false, undefined, true);
+  const f = fixture('https://web.test/assets/app.js', 'fulfill', false, false, undefined, true);
   setBrowser(async () => f.browser);
   const response = await request();
   assert.equal(response.status, 502);
@@ -124,7 +124,7 @@ test('WebSocket refusal failures reject the render and cannot escape its event c
 });
 
 for (const [url, action] of [
-  ['https://web.test/assets/image.png', 'continue'], ['https://web.test/models/ocr.onnx', 'abort'],
+  ['https://web.test/assets/image.png', 'fulfill'], ['https://web.test/models/ocr.onnx', 'abort'],
 ] as const) test(`raster ${action} failures propagate without a leaked callback or successful raster`, { timeout: 5000 }, async () => {
   const f = fixture(url, action, true);
   setBrowser(async () => f.browser);
@@ -152,7 +152,7 @@ for (const status of [200, 409]) test(`a late catalogue ${status === 409 ? '409'
     request: () => ({ url: () => `https://web.test/catalog/${late ? 'late' : 'first'}.json`, headers: () => ({}), method: () => 'GET' }),
     fetch: async () => {
       if (late) { started.release(); await finish.promise; }
-      return { status: () => late ? status : 200, headers: () => ({ 'x-lolly-brand-revision': late && status === 200 ? 'wrong-revision' : 'revision-a' }) };
+      return { status: () => late ? status : 200, headers: () => ({ 'x-lolly-brand-revision': late && status === 200 ? 'wrong-revision' : 'revision-a' }), body: async () => Buffer.alloc(0), dispose: async () => {} };
     },
     fulfill: async () => {}, abort: async () => {},
   });
