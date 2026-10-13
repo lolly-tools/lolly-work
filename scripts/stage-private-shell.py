@@ -251,7 +251,7 @@ class Stage:
         require(isinstance(value['sourceFiles'],list), 'Reviewed full operator source closure required')
         source_files = [self.inputs.file(ref,False) for ref in value['sourceFiles']]
         require(len(source_files) == len(set(source_files)) and set(source_files) >= {Path(__file__).resolve(), *[Path(__file__).with_name(name).resolve() for name in
-                ('app-update.py','prepare-private-shell.py','prepare-private-cohort.py','prepare-paired-release.py','plan-private-cohort.py')]}, 'Imported operator source closure missing')
+                ('app-update.py','prepare-private-shell.py','generation-acceptance.py','publish-private-shell.py','prepare-private-cohort.py','prepare-paired-release.py','plan-private-cohort.py')]}, 'Imported operator source closure missing')
         require(type(value['minimumFreeBytes']) is int and value['minimumFreeBytes'] >= 8 * 1024**3 and type(value['maximumWriteBytes']) is int
                 and self.new.files and 0 < value['maximumWriteBytes'] <= 8 * 1024**3, 'Bounded host floor/write budget required')
         require(sum(f['size'] for f in self.new.files.values()) + sum(f['size'] for f in self.pack.files.values()) <= value['maximumWriteBytes'], 'Full stage exceeds host write budget')
@@ -266,7 +266,7 @@ class Stage:
         require(not any(self.out == tree.root or tree.root in self.out.parents or self.out in tree.root.parents for tree in (self.old,self.new,self.pack)), 'Output must not overlap inputs')
         self.kube = kube or self; self.events = []; self.policy_retired = False
         acceptance = self.inputs.file(self.previous['acceptance']); original = self.inputs.file(acceptance['originalEvidence'][0])
-        self.owner_uid, self.replica_uid = original['podUid'], original['replicaSetUid']
+        self.owner_uid, self.replica_uid = shell.accepted_owner_ids(original, self.inputs)
         pods = complete_list(self.baseline['pods'],'Pod',self.namespace)
         owners = [pod for pod in pods['items'] if pod['metadata']['uid'] == self.owner_uid]; require(len(owners) == 1, 'Accepted owner missing')
         self.owner = owners[0]; require(self.owner['spec']['nodeName'] == self.target['node']['name'], 'Accepted owner node differs')

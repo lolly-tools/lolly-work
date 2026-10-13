@@ -91,11 +91,16 @@ function web(path: string): boolean {
     || path === 'shells/web/index.html' || path === 'shells/web/public/sw.js';
 }
 function test(path: string): boolean { return !releaseGate(path) && /^tests\/.+\.test\.ts$/.test(path); }
+// The deployment workflow transports qualified artifacts; it is not a runtime
+// build input to this local Vite producer. Normal candidate CI remains required.
+function deploymentMetadata(path: string): boolean { return path === '.github/workflows/deployment-suse.yml'; }
 function scope(repository: Repository, changes: ChangedPath[]): Pick<ReleaseClassification, 'classification' | 'reasons'> {
   if (!changes.length) return { classification: 'no-change', reasons: ['No committed tree changes.'] };
-  if (repository === 'lolly' && changes.every(change => regular(change) && (web(change.path) || test(change.path)))
+  if (repository === 'lolly' && changes.every(change => regular(change) && (web(change.path) || test(change.path) || deploymentMetadata(change.path)))
     && changes.some(change => web(change.path) && !change.path.endsWith('.test.ts') && !change.path.endsWith('.md'))) {
-    return { classification: 'web-shell-only', reasons: ['Only reviewed web-shell paths and test fixtures changed; shared contract and release inputs are unchanged.'] };
+    return { classification: 'web-shell-only', reasons: [changes.some(change => deploymentMetadata(change.path))
+      ? 'Only web-shell paths, test fixtures and supported deployment metadata changed; runtime source and local build inputs are unchanged.'
+      : 'Only reviewed web-shell paths and test fixtures changed; shared contract and release inputs are unchanged.'] };
   }
   return { classification: 'full-or-paired-required', reasons: [repository === 'lolly-work'
     ? 'Work changes require existing backend or paired qualification; no narrower Work rule is implemented.'

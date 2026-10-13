@@ -277,8 +277,22 @@ class Shell(fixture.Cohort):
         self.assertFalse(self.result["qualificationBoundary"]["runtimeQualified"])
         self.inputs.unchanged()
 
+    def test_deployment_archive_metadata_keeps_independent_runtime_tree_gate(self):
+        self.mutate_source(".github/workflows/deployment-suse.yml")
+        self.update_classification()
+        report = json.loads((self.base / self.evidence["classification"]["path"]).read_bytes())
+        result = m.compatibility(self.roots["lolly"], self.previous, self.sources["lolly"], report, m.git_command)
+        self.assertEqual(result["status"], "NON_SHELL_GIT_TREES_EQUAL_TO_ACCEPTED_ENGINE_SOURCE")
+        self.assertEqual(result["engineSource"], self.engine_source)
+        self.assertTrue(result["fullTreeEqualityRequired"])
+        self.assertIn(".github/workflows/deployment-suse.yml", [v["path"] for v in report["changedPaths"]])
+        self.mutate_source("shells/web/vite.config.js")
+        # The prior accepted report cannot conceal a newly changed build input.
+        with self.assertRaises(m.Refusal):
+            m.compatibility(self.roots["lolly"], self.previous, self.sources["lolly"], report, m.git_command)
+
     def test_non_shell_contract_dependency_config_lock_unknown_or_engine_changes_refuse(self):
-        for path in ("engine/src/version.ts", "packages/core/src/host-v1.ts", "schemas/tool.schema.json", "packages/node-shell/src/content-roots.ts", "package-lock.json", "shells/web/vite.config.js", "profiles.json", "tools/fixture/tool.json", "unknown.ts"):
+        for path in ("engine/src/version.ts", "packages/core/src/host-v1.ts", "schemas/tool.schema.json", "packages/node-shell/src/content-roots.ts", "package-lock.json", "shells/web/vite.config.js", "profiles.json", "tools/fixture/tool.json", ".github/workflows/ci.yml", ".github/workflows/deployment-suse.yaml", ".github/workflows/webgpu-release-gate.yml", "unknown.ts"):
             with self.subTest(path=path):
                 inventory = m.git_tree(self.roots["lolly"], self.sources["lolly"], m.git_command)
                 changed = copy.deepcopy(inventory); changed[path] = ("100644", "blob", "a" * 40)

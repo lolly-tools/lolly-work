@@ -159,7 +159,7 @@ def plan(value, base):
                     accepted_content_owners.add(meta["uid"])
     acceptance_wrapper = inputs.file(previous["acceptance"])
     accepted_original = inputs.file(acceptance_wrapper["originalEvidence"][0])
-    require(accepted_content_owners == {accepted_original["podUid"]}, "Accepted shell/pack has another owner or its actual owner is absent")
+    require(accepted_content_owners == {shell.accepted_owner_ids(accepted_original, inputs)[0]}, "Accepted shell/pack has another owner or its actual owner is absent")
     candidate = resources.name(selection["shellClaim"])
     require(isinstance(staged.get("rawPack"), dict) and staged["rawPack"].get("storage") == "ISOLATED_STAGING_PVC_COPY", "Stage pack must use new temporary isolated copied storage")
     temporary_pack = resources.name(staged["rawPack"].get("claim"))
