@@ -227,4 +227,36 @@ class Probe(unittest.TestCase):
         with self.assertRaises(fixture.m.Refusal): self.f.operation()
 
 
+    def test_publication_binding_preserves_config_through_shell_ancestry(self):
+        from types import SimpleNamespace
+        before = copy.deepcopy(self.operation.before)
+        spec = before['spec']['template']['spec']
+        spec['volumes'].append({'name': 'config', 'configMap': {'name': 'synthetic-generation-3'}})
+        spec['containers'][0]['volumeMounts'].append({'name': 'config', 'mountPath': '/app/config', 'readOnly': True})
+        owner = {'deployment': before}
+        runtime = {'publicationGeneration': 3, 'configSha256': 'a' * 64}
+        original = {'status': 'PRIVATE_GENERATION_COHORT_OWNER_CONTENT_AUTHENTICATED_TLS_VERIFIED_FULL_ACCEPTANCE_PENDING',
+                    'configReference': {'generation': 3, 'volume': 'config', 'key': 'instance.json', 'candidate': {'name': 'synthetic-generation-3'}},
+                    'originalEvidence': [self.f.f.file('publication-owner', owner), {}, {}, self.f.f.file('publication-runtime', runtime)]}
+        operation = SimpleNamespace(inputs=self.operation.inputs, before=copy.deepcopy(before), prepared=self.operation.prepared)
+        expected = {'generation': 3, 'configPath': '/app/config/instance.json', 'configSha256': 'a' * 64}
+        self.assertEqual(m.publication_binding(operation, original), expected)
+        accepted = self.f.f.file('publication-original', original)
+        wrapper = self.f.f.file('publication-wrapper', {'originalEvidence': [accepted]})
+        previous = self.f.f.file('publication-previous', {'acceptance': wrapper})
+        later = {'status': 'PRIVATE_SHELL_RUNTIME_AND_AUTHENTICATED_HTTPS_ACCEPTED', 'originalEvidence': [{}, {}, {}, previous]}
+        self.assertEqual(m.publication_binding(operation, later), expected)
+        for change in [lambda spec: spec['volumes'][-1]['configMap'].update(name='other'),
+                       lambda spec: spec['containers'][0]['volumeMounts'][-1].update(mountPath='/app/other'),
+                       lambda spec: spec['containers'][0]['volumeMounts'][-1].update(readOnly=False),
+                       lambda spec: spec['containers'][0]['volumeMounts'][-1].update(subPath='other')]:
+            operation.before = copy.deepcopy(before); change(operation.before['spec']['template']['spec'])
+            with self.assertRaises(m.Refusal): m.publication_binding(operation, later)
+        operation.before = copy.deepcopy(before)
+        bad = copy.deepcopy(original); bad['originalEvidence'][3] = self.f.f.file('publication-runtime-wrong', {**runtime, 'publicationGeneration': 2})
+        with self.assertRaises(m.Refusal): m.publication_binding(operation, bad)
+        # A legacy receipt does not gain a modern generation claim.
+        self.assertIsNone(m.publication_binding(operation, {'status': 'LEGACY_RUNTIME_ACCEPTED'}))
+
+
 if __name__ == '__main__': unittest.main()

@@ -30,6 +30,8 @@ ORACLE_FILES = (
     'server/src/catalog/signing.ts', 'server/src/policy/overlay.ts',
     'server/src/store/postgres.ts', 'server/src/iam/sessions.ts',
     'server/src/iam/tokens.ts', 'server/src/lib/crypto.ts',
+    'server/src/catalog/tool-sidecars.ts', 'server/src/catalog/delivery.ts',
+    'server/src/catalog/publication.ts',
 )
 LIMIT = 32 * 1024**2
 INPUT_KEYS = {'version', 'status', 'profile', 'source', 'instanceProfile', 'prepared',
@@ -145,6 +147,40 @@ def source_bindings(source_map):
     return {path: row for path, row in source_map.items() if path.startswith('server/src/')}
 
 
+def publication_binding(operation, original):
+    """Follow already validated shell custody to its unchanged generation config."""
+    current = original
+    for _ in range(32):
+        if current.get('status') == 'PRIVATE_GENERATION_COHORT_OWNER_CONTENT_AUTHENTICATED_TLS_VERIFIED_FULL_ACCEPTANCE_PENDING':
+            config = current['configReference']
+            need(type(config['generation']) is int and config['generation'] > 0)
+            owner = operation.inputs.file(current['originalEvidence'][0])
+            runtime = operation.inputs.file(current['originalEvidence'][3])
+            need(runtime['publicationGeneration'] == config['generation']
+                 and re.fullmatch('[a-f0-9]{64}', runtime['configSha256']))
+            old = owner['deployment']['spec']['template']['spec']
+            now = operation.before['spec']['template']['spec']
+            volume = choose(old['volumes'], config['volume'])
+            need(volume == choose(now['volumes'], config['volume'])
+                 and volume['configMap']['name'] == config['candidate']['name'])
+            selected = operation.prepared['selection']['container']
+            mount = choose(choose(old['containers'], selected)['volumeMounts'], config['volume'])
+            need(mount == choose(choose(now['containers'], selected)['volumeMounts'], config['volume'])
+                 and mount.get('readOnly') is True and mount.get('subPath') in {None, config['key']}
+                 and 'subPathExpr' not in mount and mount['mountPath'].startswith('/app/')
+                 and re.fullmatch(r'[A-Za-z0-9_.-]+', config['key']) and config['key'] not in {'.', '..'})
+            path = mount['mountPath'] if mount.get('subPath') else mount['mountPath'].rstrip('/') + '/' + config['key']
+            return {'generation': config['generation'], 'configPath': path, 'configSha256': runtime['configSha256']}
+        if current.get('status') not in {'PRIVATE_SHELL_RUNTIME_AND_HTTPS_ACCEPTED', 'PRIVATE_SHELL_RUNTIME_AND_AUTHENTICATED_HTTPS_ACCEPTED'}:
+            return None
+        refs = current.get('originalEvidence', [])
+        if len(refs) < 4: return None
+        previous = operation.inputs.file(refs[3])
+        if not isinstance(previous, dict) or 'acceptance' not in previous: return None
+        current = operation.inputs.file(operation.inputs.file(previous['acceptance'])['originalEvidence'][0])
+    raise Refusal('Accepted publication ancestry is too deep')
+
+
 def derive(value):
     """Reconstruct held preparation and plan; importing this module is inert."""
     exact(value, INPUT_KEYS)
@@ -179,11 +215,20 @@ def derive(value):
          and set(baseline['deployments']) == set(operation.target['components']))
     previous_owner = {'deployment': baseline['deployments']['work'], 'pod': baseline['owner'], 'replicaSet': baseline['replicaSet']}
     original = operation.inputs.file(operation.inputs.file(operation.previous['acceptance'])['originalEvidence'][0])
+    pod_uid, rs_uid = facade.planner.shell.accepted_owner_ids(original, operation.inputs)
+    if original['status'] == 'PRIVATE_GENERATION_COHORT_OWNER_CONTENT_AUTHENTICATED_TLS_VERIFIED_FULL_ACCEPTANCE_PENDING':
+        accepted_owner = operation.inputs.file(original['originalEvidence'][0])
+        pod_sha = sha(canonical(accepted_owner['pod']['spec']))
+    else:
+        pod_sha = original['podSpecSha256']
     need(previous_owner['deployment']['spec'] == operation.before['spec']
          and previous_owner['deployment']['metadata']['uid'] == operation.before['metadata']['uid']
-         and previous_owner['pod']['metadata']['uid'] == original['podUid']
-         and sha(canonical(previous_owner['pod']['spec'])) == original['podSpecSha256']
-         and previous_owner['replicaSet']['metadata']['uid'] == original['replicaSetUid'])
+         and previous_owner['pod']['metadata']['uid'] == pod_uid
+         and sha(canonical(previous_owner['pod']['spec'])) == pod_sha
+         and previous_owner['replicaSet']['metadata']['uid'] == rs_uid)
+    publication = publication_binding(operation, original)
+    envelope = parse((Path(operation.shell['root']) / 'catalog/tools/index.sig.json').read_bytes())
+    need(publication is not None or 'seq' not in envelope)
     facade.publisher.Publication.chain(previous_owner['pod'], previous_owner['replicaSet'], previous_owner['deployment'])
     pod_spec = copy.deepcopy(previous_owner['pod']['spec'])
     selection = operation.prepared['selection']
@@ -198,7 +243,7 @@ def derive(value):
          and receipt.name == 'catalog.preflight.original.json' and receipt.parent.resolve(strict=True) == receipt.parent)
     operation.source_check()
     return {'input': value, 'operation': operation, 'prepared': operation.prepared, 'previous': operation.previous,
-            'previousOwner': previous_owner, 'desiredSpec': plan['desiredSpec'], 'podSpec': pod_spec,
+            'previousOwner': previous_owner, 'publication': publication, 'desiredSpec': plan['desiredSpec'], 'podSpec': pod_spec,
             'target': operation.target, 'updater': facade.updater, 'publisher': facade.publisher, 'policy': policy, 'files': source_map,
             'heldPlanInputs': held, 'identities': identities,
             'migrations': operation.inputs.file(policy['migrations']), 'pin': pin,
@@ -379,6 +424,7 @@ def node_program(prepared, started):
             'caller': prepared['policy']['caller'], 'shellPath': mounts['shellPath'], 'packPath': mounts['packPath'],
             'publicJwk': json_ref(prepared['refs']['publicPin']), 'notBefore': started,
             'baseURL': prepared['baseURL'], 'sourceBindingSha256': prepared['sourceBindingSha256']}
+    if prepared.get('publication') is not None: data['publication'] = prepared['publication']
     url = 'data:text/javascript;base64,' + base64.b64encode(frozen(prepared['policy']['module'])).decode()
     return ('(async()=>{const input=' + canonical(data).decode() + ';const auth=await import(' + json.dumps(url) + ');'
             'await auth.bootstrap({input,borrow:()=>auth.borrow(input)});})().catch(()=>{'
