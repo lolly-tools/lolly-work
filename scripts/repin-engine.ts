@@ -216,7 +216,13 @@ function apply(ossDir: string, drift: Drift, force = false): void {
     console.log('\n▶ pnpm test');
     const concurrency = process.env.LOLLY_REPIN_TEST_CONCURRENCY;
     if (concurrency !== undefined && !/^[1-9]\d?$/.test(concurrency)) throw new Error('LOLLY_REPIN_TEST_CONCURRENCY must be between 1 and 99');
-    run('pnpm', ['test', ...(concurrency ? [`--test-concurrency=${concurrency}`] : [])], ROOT);
+    if (concurrency) {
+      // Node options must precede the file pattern; pnpm test appends arguments.
+      run('pnpm', ['run', 'pretest'], ROOT);
+      run('node', ['--test', `--test-concurrency=${concurrency}`, 'tests/**/*.test.ts'], ROOT);
+    } else {
+      run('pnpm', ['test'], ROOT);
+    }
   } catch (err) {
     console.error(`\n✗ re-pin failed — restoring previous vendor/ + pin from ${backupDir}`);
     restore(backupDir);
