@@ -71,6 +71,9 @@ def serving_binding(bundle, prepared, node):
     need(copied['metadata'].get('labels') == labels and copied['metadata'].get('annotations', {}) == meta.get('annotations', {})
          and copied['spec'].get('nodeName') == node, 'Observed Pod metadata or scheduling changed')
     if 'nodeName' not in prepared['desiredSpec']['template']['spec']: copied['spec'].pop('nodeName')
+    if 'enableServiceLinks' not in prepared['desiredSpec']['template']['spec']:
+        need(copied['spec'].get('enableServiceLinks') is True, 'Observed Pod default enableServiceLinks differs')
+        copied['spec'].pop('enableServiceLinks')
     wanted = {'apiVersion': 'v1', 'kind': 'Pod', 'metadata': {'name': pod['metadata']['name'],
         'namespace': before['metadata']['namespace'], 'labels': labels}, 'spec': prepared['desiredSpec']['template']['spec']}
     legacy.validate_public_pod(copied, wanted, ready=True)
@@ -107,7 +110,8 @@ def publication_baseline(proof):
     This function reads held evidence only. It neither observes a target nor
     converts an unqualified root or a requested tuple into serving acceptance.
     """
-    exact(proof, {'version', 'input', 'operator', 'phases'})
+    continued_observation = 'forward' in proof
+    exact(proof, {'version', 'input', 'operator', 'phases'} | ({'forward'} if continued_observation else set()))
     need(proof['version'] == 1, 'Closed original publication proof required')
     a.read_ref(proof['operator']); publication = held(proof['input'])
     exact(publication, {'version', 'status', 'stageInput', 'stageSource', 'retirement', 'outputDirectory'})
@@ -136,12 +140,22 @@ def publication_baseline(proof):
          and publication['retirement']['path'] == str(Path(runtime['outputDirectory']) / 'runtime.qualified-and-retired.actual.json'),
          'Original exact qualified-and-retired stage required')
     output = Path(publication['outputDirectory']); exact(proof['phases'], {'dryrun', 'publish', 'observe'})
+    forward = None
+    if continued_observation:
+        need(protocol == 'MATCHED', 'Only explicitly registered matched forward observation is supported')
+        spec = importlib.util.spec_from_file_location('serving_continuation', Path(__file__).with_name('public-serving-continuation.py'))
+        helper = importlib.util.module_from_spec(spec); spec.loader.exec_module(helper)
+        from types import SimpleNamespace
+        forward = helper.binding(SimpleNamespace(need=need, exact=exact, held=held, a=a), proof['forward'], proof)
+    observe_output = forward['output'] if forward else output
     phases, commands = {}, set()
     for name in ['dryrun', 'publish', 'observe']:
         refs = proof['phases'][name]; exact(refs, {'started', 'accepted'})
+        phase_output = observe_output if name == 'observe' else output
+        phase_binding = forward if name == 'observe' and forward else proof
         for kind, ref in refs.items():
-            need(ref['path'] == str(output / (name + '.' + kind + '.json')), 'Original exclusive publication phase path required')
-        uncertain = output / (name + '.uncertain.json')
+            need(ref['path'] == str(phase_output / (name + '.' + kind + '.json')), 'Original exclusive publication phase path required')
+        uncertain = phase_output / (name + '.uncertain.json')
         need(not uncertain.exists() and not uncertain.is_symlink(), 'Failed or uncertain publication cannot seed a baseline')
         start, phase = held(refs['started']), held(refs['accepted'])
         exact(start, {'status', 'inputSha256', 'operatorSha256'})
@@ -150,24 +164,24 @@ def publication_baseline(proof):
             {'deploymentUID', 'deploymentSpecSha256', 'source', 'manifest', 'mapSha256', 'physical', 'memory', 'evidence',
              'modelsMountedByStaging', 'allProtectedSpecsVerified', 'browserAcceptanceClaimed'}))
         need(start['status'] == 'STARTED_NO_REPLAY' and phase['version'] == 1
-             and all(start[k] == phase[k] == proof[v]['sha256'] for k, v in [('inputSha256', 'input'), ('operatorSha256', 'operator')]),
+             and all(start[k] == phase[k] == phase_binding[v]['sha256'] for k, v in [('inputSha256', 'input'), ('operatorSha256', 'operator')]),
              'Publication phase source/input custody differs')
         need(type(phase.get('commands')) is list and phase['commands'], 'Actual original publication commands required')
         for ref in phase['commands']:
-            need(Path(ref['path']).parent == output and ref['path'] not in commands, 'Command belongs to another or repeated publication phase')
+            need(Path(ref['path']).parent == phase_output and ref['path'] not in commands, 'Command belongs to another or repeated publication phase')
             commands.add(ref['path'])
             command = held(ref)
             need(command.get('exitCode') == 0 and command.get('failure') is None and command.get('complete') is True,
                  'Failed or incomplete command cannot seed a baseline')
             for stream in ['stdout', 'stderr']:
-                need(Path(command[stream]['path']).parent == output, 'Original command stream belongs to another journal')
+                need(Path(command[stream]['path']).parent == phase_output, 'Original command stream belongs to another journal')
                 a.read_ref(command[stream])
         phases[name] = phase
     need(phases['dryrun']['status'] == f'ACTUAL_{protocol}_SERVER_DRYRUN_NOT_PUBLISHED' and phases['dryrun']['productionMutation'] is False
          and phases['publish']['status'] == f'ACTUAL_{protocol}_PATCHED_ACCEPTANCE_PENDING' and phases['publish']['productionMutation'] is True,
          'Actual dryrun and switch must precede observation')
     observed = phases['observe']
-    need(observed['status'] == f'ACTUAL_{protocol}_ROOT_SERVING_VERIFIED' and observed['productionMutation'] is False
+    need(observed['status'] == (f'ACTUAL_{protocol}_ROOT_FORWARD_SERVING_VERIFIED' if forward else f'ACTUAL_{protocol}_ROOT_SERVING_VERIFIED') and observed['productionMutation'] is False
          and observed['allProtectedSpecsVerified'] is True and observed['modelsMountedByStaging'] is False
          and observed['browserAcceptanceClaimed'] is False and observed['source'] == prepared['source']
          and observed['manifest'] == prepared['manifest'] and observed['mapSha256'] == prepared['mapSha256'],
@@ -177,7 +191,7 @@ def publication_baseline(proof):
     filenames = {'ownerBefore': 'owner-before.original.json', 'ownerAfter': 'owner.original.json',
         'nativeHTTP': 'owning-native-http.actual.json', 'staticTLS': 'owning-static-tls.actual.json', 'modelsTLS': 'owning-models-tls.actual.json'}
     for key, ref in observed['evidence'].items():
-        need(ref['path'] == str(output / filenames[key]), 'Serving evidence belongs to another publication')
+        need(ref['path'] == str(observe_output / filenames[key]), 'Serving evidence belongs to another publication')
         evidence[key] = held(ref)
     held(runtime['context']); target = held(runtime['target'])
     binding = serving_binding(evidence['ownerBefore'], prepared, target['node']['name'])

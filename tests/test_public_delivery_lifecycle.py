@@ -376,7 +376,7 @@ class PublicationHandoff(unittest.TestCase):
             'spec': {'replicas': 1, 'selector': selector, 'template': template}}
         pod = {'apiVersion': 'v1', 'kind': 'Pod', 'metadata': {**copy.deepcopy(template['metadata']), 'name': 'new-owner', 'namespace': 'customer-apps', 'uid': 'new-owner-uid',
             'ownerReferences': [{'kind': 'ReplicaSet', 'name': 'new-rs', 'uid': 'new-rs-uid', 'controller': True}]},
-            'spec': {**copy.deepcopy(template['spec']), 'nodeName': 'customer-node'},
+            'spec': {**copy.deepcopy(template['spec']), 'nodeName': 'customer-node', 'enableServiceLinks': True},
             'status': {'containerStatuses': [{'name': 'native', 'image': f.image, 'imageID': f.image, 'containerID': 'containerd://' + '1' * 64,
                 'ready': True, 'restartCount': 0, 'state': {'running': {'startedAt': '2026-10-12T01:00:00Z'}}}]}}
         self.bundle = {'deployment': dep, 'pod': pod, 'replicaSet': replica}
@@ -434,6 +434,25 @@ class PublicationHandoff(unittest.TestCase):
         self.assertEqual(accepted['publication'], self.proof)
         for key in ['writer', 'qualifier']:
             self.assertNotIn('models', [v['name'] for v in self.prepared['resources'][key]['spec']['volumes']])
+
+    def test_owner_default_is_exact_and_explicit_template_value_is_preserved(self):
+        result=l.serving_binding(self.bundle,self.prepared,'customer-node')
+        self.assertTrue(result['podSpec']['enableServiceLinks'])
+        for value in (False,None):
+            owner=copy.deepcopy(self.bundle)
+            if value is None:owner['pod']['spec'].pop('enableServiceLinks')
+            else:owner['pod']['spec']['enableServiceLinks']=value
+            with self.subTest(value=value),self.assertRaises(l.a.Refusal):
+                l.serving_binding(owner,self.prepared,'customer-node')
+        prepared=copy.deepcopy(self.prepared); owner=copy.deepcopy(self.bundle)
+        prepared['desiredSpec']['template']['spec']['enableServiceLinks']=False
+        owner['deployment']['spec']=copy.deepcopy(prepared['desiredSpec'])
+        owner['replicaSet']['spec']['template']['spec']['enableServiceLinks']=False
+        owner['pod']['spec']['enableServiceLinks']=False
+        result=l.serving_binding(owner,prepared,'customer-node')
+        self.assertFalse(result['podSpec']['enableServiceLinks'])
+        owner['pod']['spec']['enableServiceLinks']=True
+        with self.assertRaises(RuntimeError):l.serving_binding(owner,prepared,'customer-node')
 
     def next_value(self, accepted):
         f = self.f

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
+import { requireInventoryBytes } from '../scripts/retain-shell-assets.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs, { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
@@ -349,4 +350,13 @@ test('cleanup preserves an adopted clone changed in place before final inventory
   finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
   assert.equal(changed, true); assert.equal(readFileSync(destination, 'utf8'), 'bad entry');
   assert.equal(existsSync(options.receiptOut), false);
+});
+
+
+test('accepted large inventory fits a bounded metadata budget without changing content limits', () => {
+  // The accepted 91,966-file shell accounts for paths plus 160 bytes per entry.
+  assert.doesNotThrow(() => requireInventoryBytes(17_849_759));
+  assert.doesNotThrow(() => requireInventoryBytes(32 * 1024 * 1024));
+  for (const bytes of [32 * 1024 * 1024 + 1, Number.MAX_SAFE_INTEGER + 1, NaN, -1, 0.5])
+    assert.throws(() => requireInventoryBytes(bytes), /inventory.*byte bound/);
 });

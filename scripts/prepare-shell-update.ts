@@ -61,7 +61,7 @@ function same(left: ShellManifest, right: ShellManifest): boolean {
   return left.version === right.version && left.totalBytes === right.totalBytes && left.files.length === right.files.length
     && left.files.every((file, index) => { const other = right.files[index]; return other?.path === file.path && other.size === file.size && other.sha256 === file.sha256; });
 }
-function changedAllowed(path: string): boolean { return path.startsWith('_app/') || ['index.html', 'precache.json', 'portable/player.js', 'sw.js'].includes(path); }
+export function changedAllowed(path: string): boolean { return path.startsWith('_app/') || ['index.html', 'precache.json', 'portable/player.js', 'sw.js'].includes(path.replace(/\.(gz|br)$/, '')); }
 export function shellUpdateDelta(candidate: ShellManifest, previous: ShellManifest) {
   const old = new Map(previous.files.map(file => [file.path, file]));
   const files = candidate.files.filter(file => { const prior = old.get(file.path); return prior?.size !== file.size || prior.sha256 !== file.sha256; });
@@ -70,6 +70,21 @@ export function shellUpdateDelta(candidate: ShellManifest, previous: ShellManife
     requireShell(candidate.files.some(row => row.path === file.path && row.sha256 === file.sha256 && row.size === file.size), 'A protected static resource was removed.');
   }
   return { version: 1 as const, files, totalBytes: files.reduce((n, file) => n + file.size, 0) };
+}
+/** Materializers replace their roots; retain every accepted non-shell resource. */
+export function restoreAcceptedCatalog(previousRoot: string, candidate: string, previous: ShellManifest, receipt: string) {
+  const protectedPath = (path: string) => !changedAllowed(path);
+  const expected = previous.files.filter(file => protectedPath(file.path));
+  const old = new Map(expected.map(file => [file.path, file]));
+  const actual = shellManifest(candidate).files.filter(file => protectedPath(file.path));
+  for (const file of actual) {
+    const accepted = old.get(file.path);
+    requireShell(accepted && accepted.size === file.size && accepted.sha256 === file.sha256,
+      'Materialized protected bytes changed or introduced an unaccepted resource.');
+  }
+  const present = new Set(actual.map(file => file.path));
+  const missing = expected.filter(file => !present.has(file.path));
+  return cloneShellFiles(previousRoot, candidate, missing, receipt);
 }
 function command(args: string[], options: ShellUpdateOptions, env: NodeJS.ProcessEnv, name: string) {
   const started = performance.now();
@@ -138,6 +153,9 @@ export function prepareShellUpdate(options: ShellUpdateOptions) {
     const modulesPath = join(options.out, 'workspace-modules.json');
     const runnerInput = writeShellJson(join(options.out, 'vite-input.json'), { source: options.source, sourceCommit: options.candidate, output: candidate, prerequisites, moduleReceipt: modulesPath });
     const buildReport = command([fileURLToPath(new URL('./shell-update-vite.mjs', import.meta.url)), runnerInput.path, runnerInput.sha256], options, env, 'vite-build');
+    restoreAcceptedCatalog(options.previousShell, candidate, previous, join(options.out, 'accepted-catalog-restoration.json'));
+    const codingInput = writeShellJson(join(options.out, 'coding-input.json'), { version: 1, source: options.source, candidate, previous: previousRef, scratch: join(options.out, 'coding-scratch'), receipt: join(options.out, 'coding-rewrite.json') });
+    const codingReport = command([fileURLToPath(new URL('./private-shell-codings.mjs', import.meta.url)), codingInput.path, codingInput.sha256], options, env, 'generated-codings');
     const catalog = command(['scripts/verify-release-catalog.ts', '--root', candidate, '--public-key', options.publicKey], options, env, 'candidate-catalog');
     const candidateManifest = shellManifest(candidate), delta = shellUpdateDelta(candidateManifest, previous);
     requireShell(delta.files.length > 0, 'No generated shell changes; no update needed.');
@@ -163,7 +181,7 @@ export function prepareShellUpdate(options: ShellUpdateOptions) {
       shell: { root: prepared, manifest: preparedRef, shellId: shellId(preparedManifest), files: preparedManifest.files.length },
       delta: { root: deltaRoot, manifest: deltaRef, files: delta.files.length, totalBytes: delta.totalBytes },
       retention: { path: retentionPath, ...shellFileHash(retentionPath), retainedFiles: retention.retained.length },
-      webGate, catalog: { previous: previousCatalog, candidate: catalog, signatureReused: true, newSigning: false },
+      webGate, codingReport, catalog: { previous: previousCatalog, candidate: catalog, signatureReused: true, newSigning: false },
       producer: { path: fileURLToPath(import.meta.url), ...shellFileHash(fileURLToPath(import.meta.url)) },
       originAuthenticatedByThisCommand: false, normalCIQualified: false, runtimeQualified: false, promotionAttempted: false,
       outstanding: ['Review source CI and accepted previous custody', 'Read-only staged runtime and browser qualification', 'Fresh exact live guards, narrow promotion and post-promotion acceptance'] };

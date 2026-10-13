@@ -22,14 +22,14 @@ class SourceClosure(unittest.TestCase):
     def test_complete_current_closure(self):
         result = registry.verify_sources(self.refs, matched.a.read_ref)
         self.assertTrue({'public-delivery-native.py', 'stage-public-shell.py', 'generation-acceptance.py',
-                         'publish-private-shell.py', 'public-build-source-registry.py'} <= result.keys())
+                         'publish-private-shell.py', 'public-build-source-registry.py', 'public-serving-continuation.py'} <= result.keys())
     def test_missing_native_or_owner_helper(self):
-        for name in ['public-delivery-native.py', 'stage-public-shell.py']:
+        for name in ['public-delivery-native.py', 'stage-public-shell.py', 'public-serving-continuation.py']:
             with self.subTest(name=name), self.assertRaisesRegex(RuntimeError, 'Complete original'):
                 registry.verify_sources([r for r in self.refs if Path(r['path']).name != name], matched.a.read_ref)
     def test_consistently_rehashed_changed_native_or_owner(self):
         with tempfile.TemporaryDirectory() as directory:
-            for name in ['public-delivery-native.py', 'stage-public-shell.py']:
+            for name in ['public-delivery-native.py', 'stage-public-shell.py', 'public-serving-continuation.py']:
                 path = Path(directory) / name; path.write_bytes((SCRIPTS / name).read_bytes() + b'\n# changed\n')
                 refs = copy.deepcopy(self.refs)
                 for ref in refs:

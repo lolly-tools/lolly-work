@@ -6,7 +6,7 @@ import { copyFileSync, constants, existsSync, lstatSync, mkdirSync, symlinkSync,
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { classifyApplicationRelease } from './classify-application-release.ts';
-import { shellUpdateDelta } from './prepare-shell-update.ts';
+import { shellUpdateDelta, restoreAcceptedCatalog } from './prepare-shell-update.ts';
 import { retainShellAssets } from './retain-shell-assets.ts';
 import { canonicalDirectory, cloneShellFiles, readShellJson, requireDisk, requireShell, sha256,
   shellFileHash, shellId, shellManifest, writeShellJson } from './shell-update-files.ts';
@@ -39,6 +39,9 @@ function exact(value: unknown, keys: string[]): asserts value is Record<string, 
 function reference(value: unknown): Ref {
   exact(value, ['path', 'sha256']); requireShell(typeof value.path === 'string' && typeof value.sha256 === 'string' && HASH.test(value.sha256), 'Invalid public custody reference.');
   readShellJson(value.path, value.sha256); return value as Ref;
+}
+function sameFile(left: ShellManifest['files'][number] | undefined, right: ShellManifest['files'][number] | undefined): boolean {
+  return Boolean(left && right && left.path === right.path && left.size === right.size && left.sha256 === right.sha256);
 }
 function same(left: ShellManifest, right: ShellManifest): boolean {
   return left.version === right.version && left.totalBytes === right.totalBytes && left.files.length === right.files.length
@@ -83,11 +86,11 @@ export function publicFullRootDelta(candidate: ShellManifest, previous: ShellMan
   const mutable = (path: string) => (PUBLIC_OVERLAY_FILES as readonly string[]).includes(path.replace(/\.(gz|br)$/, ''));
   for (const row of previous.files) {
     if (row.path === '.delivery-etags.conf' || mutable(row.path)) continue;
-    requireShell(JSON.stringify(current.get(row.path)) === JSON.stringify(row), 'Protected public content or immutable wire bytes changed.');
+    requireShell(sameFile(current.get(row.path), row), 'Protected public content or immutable wire bytes changed.');
   }
   for (const row of previous.files) if (!current.has(row.path)) requireShell(/\.(gz|br)$/.test(row.path) && mutable(row.path)
     && old.get(row.path.slice(0, -3))?.sha256 !== current.get(row.path.slice(0, -3))?.sha256, 'Only stale changed-entry codings may disappear.');
-  const files = candidate.files.filter(row => JSON.stringify(old.get(row.path)) !== JSON.stringify(row));
+  const files = candidate.files.filter(row => !sameFile(old.get(row.path), row));
   requireShell(files.length > 0 && files.some(row => row.path === '.delivery-etags.conf') && files.every(row => row.path === '.delivery-etags.conf' || mutable(row.path) || row.path.startsWith('_app/')), 'Exact full-root frontend boundary required.');
   return { version: 1, files, totalBytes: files.reduce((sum, row) => sum + row.size, 0) };
 }
@@ -137,7 +140,7 @@ export function preparePublicShellUpdate(options: PublicShellOptions) {
   requireShell(['web-shell-only', 'no-change'].includes(imageClassification.classification), 'Public image source dependencies, engine, profile, tools, config or brand changed.');
   for (const prefix of ['ort/', 'ort-hf/', 'viz-presets/']) {
     const cached = resolve(options.source, 'shells/web/public', prefix), expected = previous.files.filter(row => row.path.startsWith(prefix)).map(row => ({ ...row, path: row.path.slice(prefix.length) }));
-    if (expected.length && existsSync(cached)) requireShell(JSON.stringify(shellManifest(cached).files) === JSON.stringify(expected), 'Source prerequisite cache differs from accepted public bytes.');
+    if (expected.length && existsSync(cached)) requireShell(same(shellManifest(cached), { version: 1, files: expected, totalBytes: expected.reduce((total, row) => total + row.size, 0) }), 'Source prerequisite cache differs from accepted public bytes.');
   }
   requireDisk(dirname(options.out), 128 * 1024 ** 2); mkdirSync(options.out, { mode: 0o700 });
   try {
@@ -152,7 +155,7 @@ export function preparePublicShellUpdate(options: PublicShellOptions) {
       requireShell(!result.error && result.status === 0 && result.signal === null, 'Original full-root acceptance validation refused.');
       baseline = { path: output, sha256: shellFileHash(output).sha256 };
     }
-    const classificationRef = writeShellJson(join(options.out, 'classification.json'), classification), imageClassificationRef = writeShellJson(join(options.out, 'image-classification.json'), imageClassification), imageManifestRef = writeShellJson(join(options.out, 'previous-static.manifest.json'), previous);
+    const classificationRef = writeShellJson(join(options.out, 'classification.json'), classification), imageClassificationRef = writeShellJson(join(options.out, 'image-classification.json'), imageClassification), imageManifestRef = fullRoot ? input.previousManifest : writeShellJson(join(options.out, 'previous-static.manifest.json'), previous);
     const content = join(options.out, 'public-content'), prerequisites = join(options.out, 'public-prerequisites'), candidate = join(options.out, 'candidate-static');
     for (const path of [content, prerequisites, candidate]) mkdirSync(path, { mode: 0o700 });
     writeShellJson(join(content, 'profiles.json'), { default: input.profile, profiles: { [input.profile]: { label: input.profile, tools: ['tools'], catalog: 'catalog' } } });
@@ -170,12 +173,13 @@ export function preparePublicShellUpdate(options: PublicShellOptions) {
     const modulesPath = join(options.out, 'workspace-modules.json');
     const runner = writeShellJson(join(options.out, 'vite-input.json'), { source: options.source, sourceCommit: options.candidate, output: candidate, prerequisites, moduleReceipt: modulesPath });
     const buildReport = command([fileURLToPath(new URL('./shell-update-vite.mjs', import.meta.url)), runner.path, runner.sha256], options, env, 'vite-build');
+    restoreAcceptedCatalog(options.previousShell, candidate, previous, join(options.out, 'accepted-catalog-restoration.json'));
     const candidateCatalog = command(['scripts/verify-release-catalog.ts', '--root', candidate, '--public-key', options.publicKey], options, env, 'candidate-catalog');
     catalog(candidate, input, pin);
     if (fullRoot) {
       const current = new Map(shellManifest(candidate).files.map(row => [row.path, row]));
       const retained = previous.files.filter(row => row.path.startsWith('_app/'));
-      for (const row of retained) if (current.has(row.path)) requireShell(JSON.stringify(current.get(row.path)) === JSON.stringify(row), 'Existing immutable app wire bytes changed.');
+      for (const row of retained) if (current.has(row.path)) requireShell(sameFile(current.get(row.path), row), 'Existing immutable app wire bytes changed.');
       cloneShellFiles(options.previousShell, candidate, retained.filter(row => !current.has(row.path)), join(options.out, 'candidate-retained-clone.json'));
       const verified = readShellJson(baseline!.path, baseline!.sha256) as { models: Ref };
       const receipt = join(options.out, 'frontend-codings.json');

@@ -27,7 +27,7 @@ def source_names():
     # private publication/catalog validator. Include that dynamic branch too.
     return stage.SOURCE_NAMES | contract.PRODUCER_SOURCES | {
         'public-build-source-registry.py', 'verify-public-baseline.py',
-        'public-shell-codings.mjs', 'generation-acceptance.py',
+        'public-shell-codings.mjs', 'private-shell-codings.mjs', 'generation-acceptance.py',
         'publish-private-shell.py', 'plan-private-shell.py',
     }
 
