@@ -71,16 +71,16 @@ export function shellUpdateDelta(candidate: ShellManifest, previous: ShellManife
   }
   return { version: 1 as const, files, totalBytes: files.reduce((n, file) => n + file.size, 0) };
 }
-/** Materialization emits fixed tool IDs; retain the accepted immutable delivery URLs. */
+/** Materializers replace their roots; retain every accepted non-shell resource. */
 export function restoreAcceptedCatalog(previousRoot: string, candidate: string, previous: ShellManifest, receipt: string) {
-  const protectedPath = (path: string) => path.startsWith('catalog/') || path.startsWith('tools/');
+  const protectedPath = (path: string) => !changedAllowed(path);
   const expected = previous.files.filter(file => protectedPath(file.path));
   const old = new Map(expected.map(file => [file.path, file]));
   const actual = shellManifest(candidate).files.filter(file => protectedPath(file.path));
   for (const file of actual) {
     const accepted = old.get(file.path);
     requireShell(accepted && accepted.size === file.size && accepted.sha256 === file.sha256,
-      'Materialized catalog bytes changed or introduced an unaccepted resource.');
+      'Materialized protected bytes changed or introduced an unaccepted resource.');
   }
   const present = new Set(actual.map(file => file.path));
   const missing = expected.filter(file => !present.has(file.path));
