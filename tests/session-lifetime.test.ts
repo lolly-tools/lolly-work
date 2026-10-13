@@ -216,7 +216,9 @@ test('a member request past half the TTL gets a fresh cookie that keeps the chai
   assert.equal(sessionCookieOf((await env.call(fresh, 'GET', '/api/v1/org-config')).headers), null);
 
   // Past half: the polled documents and any write renew.
-  const old = cookieAt(dana, signedIn, 2, { authenticatedAt: signedIn });
+  const oidc = { idp: 'primary', issuer: 'https://id.example', clientId: 'work', subject: dana.sub, sid: 'session', iat: Math.floor(signedIn / 1000) };
+  const standingUntil = now + HOUR;
+  const old = cookieAt(dana, signedIn, 2, { authenticatedAt: signedIn, oidc, standingUntil });
   for (const [method, path, body] of [['GET', '/api/v1/org-config'], ['GET', '/api/auth/session'], ['GET', '/api/v1/inbox'], ['POST', '/api/v1/projects', { name: 'Renewed' }]] as const) {
     const res = await env.call(old, method, path, body);
     assert.ok(res.status < 300, `${method} ${path} → ${res.status}`);
@@ -229,6 +231,8 @@ test('a member request past half the TTL gets a fresh cookie that keeps the chai
     assert.ok(box.p.authAt! <= signedIn && signedIn - box.p.authAt! < 1000, 'the chain\'s start is carried over');
     assert.equal(box.p.authenticatedAt, signedIn, 'a renewal is not a sign-in');
     assert.equal(box.p.epoch, dana.sessionEpoch);
+    assert.deepEqual(box.p.oidc, oidc);
+    assert.equal(box.p.standingUntil, standingUntil);
     assert.equal((await env.call(renewed.pair, 'GET', '/api/auth/session')).status, 200, 'the new cookie works');
   }
   // Reads that a shared cache could keep, and pages, never carry a cookie.
@@ -332,7 +336,9 @@ test('a device approved from an expiring session gets no cookie past that sessio
 
   // Signed in 5.5 h ago, this cookie issued an hour ago: half an hour left to the cap.
   const signedIn = now - 5.5 * HOUR;
-  const nearCap = cookieAt(dana, now - HOUR, 2, { authAt: signedIn, authenticatedAt: signedIn });
+  const oidc = { idp: 'primary', issuer: 'https://id.example', clientId: 'work', subject: dana.sub, sid: 'session', iat: Math.floor(signedIn / 1000) };
+  const standingUntil = now + HOUR;
+  const nearCap = cookieAt(dana, now - HOUR, 2, { authAt: signedIn, authenticatedAt: signedIn, oidc, standingUntil });
   const near = await deviceSignIn(env.base, nearCap);
   assert.equal(near.body.status, 'approved');
   assert.ok(near.cookie, 'the device gets a session');
@@ -341,6 +347,8 @@ test('a device approved from an expiring session gets no cookie past that sessio
   assert.ok(box.exp * 1000 <= signedIn + 6 * HOUR + 1000, 'ends no later than authAt + sessionMaxHours');
   assert.ok(box.p.authAt! <= signedIn && signedIn - box.p.authAt! < 1000, 'the device continues the approver\'s chain');
   assert.equal(box.p.authenticatedAt, signedIn, 'and keeps the time of the last real sign-in');
+  assert.deepEqual(box.p.oidc, oidc);
+  assert.equal(box.p.standingUntil, standingUntil);
   assert.equal(near.body.cookie, near.cookie.pair, 'the JSON carries the same, cut cookie');
   // The device's cookie cannot be renewed past the cap either.
   assert.equal(sessionRenewal(readMemberSession(near.cookie.pair, SECRET)!, { ttlSec: 2 * 3600, maxSec: 6 * 3600 }, Date.now() + 1700_000), null);

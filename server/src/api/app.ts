@@ -1,3 +1,4 @@
+import { registerOidcLogout } from '../iam/oidc-logout-routes.ts';
 import { WorkerError } from '../render/worker-client.ts';
 import { createFilePreview, readPreviewInput, PREVIEW_INPUT_LIMIT } from '../catalog/file-preview.ts';
 import { visibleSourceStatuses } from '../catalog/source-status.ts';
@@ -34,7 +35,7 @@ import {
   GUEST_COOKIE, SESSION_COOKIE, chainTtlSec, clearCookie, guestActor, mintGuestCookie, mintSessionCookie, parseCookies, readMemberSession,
   readPrincipal, sessionChainStart, sessionRenewal, type Principal, type SessionUser,
 } from '../iam/sessions.ts';
-import { buildAuthorizeUrl, discover, exchangeCode, mapClaims, pkcePair, verifyIdToken, fetchJwks, kidOf, type MappedIdentity } from '../iam/oidc.ts';
+import { buildAuthorizeUrl, discover, exchangeCode, mapClaims, pkcePair, verifyIdToken, fetchJwks, kidOf, type OidcPolicy, type MappedIdentity } from '../iam/oidc.ts';
 import { displayName, resolveMember } from '../iam/member.ts';
 import { resolveProxyIdentity } from '../iam/proxy-auth.ts';
 import { createDeviceAuth, normalizeUserCode } from '../iam/device-auth.ts';
@@ -743,12 +744,14 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     id: string; issuer: string; clientId: string; displayName: string;
     groupsClaim: string; claimMap: typeof config.idp.claimMap; clientSecret?: string; subPrefix: string;
     /** Per-IdP sign-in constraints (plans/74 W-ID-1); never inherited between IdPs. */
-    constraints: AdmissionIdp; scope: string; authParams: Record<string, string>;
+    constraints: AdmissionIdp; scope: string; authParams: Record<string, string>; oidc: OidcPolicy;
     /** Whether a verified email may link this IdP's sign-in to an existing user (`linkByEmailFor`). */
     linkByEmail: boolean;
   }
   /** The authorize-request extras and admission pins one IdP block declares. */
   const idpExtras = (c: typeof config.idp | (typeof config.idp.additional)[number]) => ({
+    oidc: { tokenEndpointAuthMethod: c.tokenEndpointAuthMethod, signingAlgorithm: c.signingAlgorithm,
+      trustedAudiences: c.trustedAudiences, assurance: c.assurance } satisfies OidcPolicy,
     constraints: {
       ...(c.hostedDomain ? { hostedDomain: c.hostedDomain } : {}),
       ...(c.tenantId ? { tenantId: c.tenantId } : {}),
@@ -1227,11 +1230,16 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
    *  `carry.loginHint` the invited address, which an OIDC provider uses to
    *  offer the right account first; GitHub takes no hint. */
   const redirectToIdp = async (
-    res: ServerResponse, idp: ResolvedIdp, returnTo: string, askedPrompt: 'select_account' | 'login' | null, linkTo?: string,
+    req: IncomingMessage, res: ServerResponse, idp: ResolvedIdp, returnTo: string, askedPrompt: 'select_account' | 'login' | null, linkTo?: string,
     carry: { invite?: InviteRef; loginHint?: string } = {},
   ): Promise<void> => {
     // GitHub (iam/github.ts) has fixed endpoints and nothing to discover.
-    const disco = idp.kind === 'github' ? null : await discover(idp.issuer, fetchImpl);
+    let disco;
+    try { disco = idp.kind === 'github' ? null : await discover(idp.issuer, fetchImpl); }
+    catch {
+      await audit('anonymous', 'auth.failed', 'session', { provider: providerOf(idp), idp: idp.id, reason: 'discovery' });
+      return signInFailed(req, res, 502, 'IDP_FAILED', 'The identity provider could not start sign-in. Try again or contact your workspace owner.', { retryHref: '/api/auth/login', html: true });
+    }
     const { verifier, challenge } = pkcePair();
     const nonce = randomId(12);
     const state = randomId(12);
@@ -1249,7 +1257,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         clientId: idp.clientId,
         redirectUri: `${config.instance.baseUrl}/api/auth/callback`,
         state, nonce, codeChallenge: challenge,
-        scope: idp.scope,
+        scope: idp.scope, assurance: idp.oidc.assurance,
         params: {
           ...idp.authParams, ...(askedPrompt ? { prompt: askedPrompt } : {}),
           ...(carry.loginHint && idp.kind === 'oidc' ? { login_hint: carry.loginHint } : {}),
@@ -1295,7 +1303,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // A person may ask for the account picker or a fresh login (the refusal
     // page's "use a different account" link does); nothing else from the
     // query string reaches the IdP.
-    await redirectToIdp(res, idp, returnToSafe(ctx.url.searchParams.get('returnTo')), loginPrompt(ctx.url.searchParams.get('prompt')));
+    await redirectToIdp(req, res, idp, returnToSafe(ctx.url.searchParams.get('returnTo')), loginPrompt(ctx.url.searchParams.get('prompt')));
   });
 
   // Self-service link (plans/74, "One person, many sign-ins"): a signed-in
@@ -1320,7 +1328,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!wanted) return sendError(res, 400, 'INVALID_INPUT', 'idp is required: name the sign-in to add', { field: 'idp' });
     const idp = resolveIdp(wanted);
     if (!idp || idp.kind === 'password') return sendError(res, 404, 'NO_IDP', `no IdP named "${wanted}" is configured`);
-    await redirectToIdp(res, idp, returnToSafe(ctx.url.searchParams.get('returnTo')),
+    await redirectToIdp(req, res, idp, returnToSafe(ctx.url.searchParams.get('returnTo')),
       loginPrompt(ctx.url.searchParams.get('prompt')) ?? 'select_account', me.id);
   });
 
@@ -1515,7 +1523,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       return null;
     }
     // The other addresses matched an invitation; they are never stored.
-    const { emailVerified: _verified, hd: _hd, tid: _tid, invitationEmails: _others, ...profile } = identity;
+    const { emailVerified: _verified, hd: _hd, tid: _tid, invitationEmails: _others, oidc: _oidc, ...profile } = identity;
     if (idp.kind === 'password' && resolution.via !== 'new') {
       const held = resolution.user;
       if (profile.firstname) profile.lastname = undefined;
@@ -1560,9 +1568,14 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // Whatever else made the account an owner meanwhile (an invitation's
     // groups) is caught here, before a session exists.
     if (opts.ownerAllowed === false && user.role === 'owner') return refuseOwnerSession();
+    const standingRows = (await store.listIdentities(user.id)).filter(r => r.identitySub !== identity.sub
+      && ((r.groups?.length ?? 0) > 0 || (admitted.via === 'linked' && r.identitySub === user.sub)));
+    const standingEnds = standingRows.map(r => Date.parse(r.lastLoginAt ?? '') + linkedStandingMs).filter(t => Number.isFinite(t) && t > Date.now());
     const sessionUser: SessionUser = {
       sub: user.sub, email: user.email, groups: user.groups, role: user.role,
       name: displayName(user), epoch: user.sessionEpoch, authenticatedAt: Date.now(),
+      ...(identity.oidc ? { oidc: identity.oidc } : {}),
+      ...(standingEnds.length ? { standingUntil: Math.min(...standingEnds) } : {}),
     };
     if (ownerGroup) await audit(`user:${user.id}`, 'auth.bootstrap-owner', `user:${user.id}`, { provider, idp: idp.id, group: ownerGroup });
     await audit(`user:${user.id}`, 'auth.login', 'session', { provider, idp: idp.id, ...(admitted.via !== 'open' ? { admittedVia: admitted.via } : {}), setupFingerprint: identitySettingsHash(config) });
@@ -1621,19 +1634,20 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       // any of them is the HTML page plus an `auth.failed` row naming the step
       // (a fixed word, never the IdP's own error text), as for GitHub above,
       // instead of an unhandled 500 carrying raw JSON.
-      let step: 'discovery' | 'issuer-mismatch' | 'token' | 'no-id-token' | 'jwks' | 'id-token' | 'claims' = 'discovery';
+      let step: 'discovery' | 'issuer-mismatch' | 'token' | 'no-id-token' | 'jwks' | 'id-token' | 'claims' | 'session' = 'discovery';
       try {
         const disco = await discover(idp.issuer, fetchImpl);
         // OIDC Discovery 4.3: the document's issuer must be the one it was fetched
         // for. Checking it against the CONFIGURED issuer, not against itself, is
         // what stops a discovery answer from naming a different authority.
-        if (disco.issuer.replace(/\/+$/, '') !== idp.issuer.replace(/\/+$/, '')) {
+        if (disco.issuer !== idp.issuer) {
           step = 'issuer-mismatch';
           throw new Error('IdP discovery names a different issuer than configured');
         }
         step = 'token';
         const tokens = await exchangeCode({
-          tokenEndpoint: disco.token_endpoint,
+          tokenEndpoint: disco.token_endpoint, authMethod: idp.oidc.tokenEndpointAuthMethod,
+          supportedAuthMethods: disco.token_endpoint_auth_methods_supported,
           code, verifier: box.verifier,
           clientId: idp.clientId,
           ...(idp.clientSecret ? { clientSecret: idp.clientSecret } : {}),
@@ -1648,19 +1662,26 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         const jwks = await fetchJwks(disco.jwks_uri, fetchImpl, kidOf(tokens.id_token));
         step = 'id-token';
         const claims = await verifyIdToken(tokens.id_token, jwks, {
-          issuer: disco.issuer, clientId: idp.clientId, nonce: box.nonce,
+          ...idp.oidc, issuer: idp.issuer, clientId: idp.clientId, nonce: box.nonce,
         });
         step = 'claims';
         identity = mapClaims(claims, idp.claimMap, idp.groupsClaim);
+        step = 'session';
+        if (claims.sid !== undefined && (typeof claims.sid !== 'string' || !claims.sid || claims.sid.length > 1024)) throw new Error('invalid IdP session');
+        identity.oidc = { idp: idp.id, issuer: idp.issuer, clientId: idp.clientId, subject: identity.sub,
+          iat: claims.iat as number, ...(typeof claims.sid === 'string' ? { sid: claims.sid } : {}) };
+        if (await store.oidcSessionRevoked(identity.oidc)) throw new Error('IdP session was signed out');
       } catch (err) {
         // The library messages name a step and an HTTP status, never a token or secret.
         console.warn(`[lolly-work] sign-in through ${idp.id} failed at ${step}: ${(err as Error)?.message ?? err}`);
         await audit('anonymous', 'auth.failed', 'session', { provider: providerOf(idp), idp: idp.id, reason: step });
         const name = idp.displayName || 'The identity provider';
-        const message = step === 'claims'
+        const message = step === 'session'
+          ? `${name} could not establish an active session. Sign in again with your identity provider.`
+          : step === 'claims'
           ? `${name} did not share an email address for this account. This workspace needs one to know who you are. Try again with another account, or tell an owner of this workspace.`
           : `${name} did not finish the sign-in. Wait a moment and try again; if it keeps happening, tell an owner of this workspace.`;
-        return signInFailed(req, res, step === 'claims' ? 403 : 502, step === 'claims' ? 'NO_EMAIL' : 'IDP_FAILED', message, { retryHref, html: true, ...failHeading });
+        return signInFailed(req, res, step === 'claims' || step === 'session' ? 403 : 502, step === 'claims' ? 'NO_EMAIL' : 'IDP_FAILED', message, { retryHref, html: true, ...failHeading });
       }
     }
     // The namespace prefix (empty for primary) keeps two issuers' subs apart.
@@ -2092,7 +2113,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       const idp = resolveIdp(o.idpId);
       if (!idp) return sendError(res, 404, 'NO_IDP', `no IdP named "${o.idpId}" is configured`);
       if (idp.kind === 'password') return renderPasswordLogin(req, res, 200, { returnTo: o.returnTo, invitedEmail: o.email });
-      await redirectToIdp(res, idp, o.returnTo, o.prompt, undefined, { invite: o.invite, loginHint: o.email });
+      await redirectToIdp(req, res, idp, o.returnTo, o.prompt, undefined, { invite: o.invite, loginHint: o.email });
     },
     passwordSetupIssuer,
     renderInvitePasswordSet: async (req, res, o) => {
@@ -2124,8 +2145,11 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'session user unknown or disabled');
     const access = consoleAccess({ userId: user.id, groups: user.groups, role: user.role as Role }, await store.listGrants());
-    return sendJson(res, 200, { kind: 'member', user: { sub: user.sub, email: user.email, groups: user.groups, role: user.role }, console: access }, { 'cache-control': 'no-store' });
+    return sendJson(res, 200, { kind: 'member', user: { sub: user.sub, email: user.email, groups: user.groups, role: user.role }, console: access, ...(p.user.oidc ? { providerLogoutPath: '/api/auth/logout-provider' } : {}) }, { 'cache-control': 'no-store' });
   });
+
+  registerOidcLogout({ router, store, fetchImpl, resolveIdp, memberOf, secret: secrets.session, keys: sessionVerify,
+    secure, baseUrl: config.instance.baseUrl, audit });
 
   router.add('POST', '/api/auth/logout', (_req, res) => {
     res.writeHead(204, { 'set-cookie': [clearCookie(SESSION_COOKIE, secure), clearCookie(GUEST_COOKIE, secure)] });
@@ -2264,6 +2288,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       sub: me.sub, email: me.email, groups: me.groups, role: me.role,
       name: displayName(me), epoch: me.sessionEpoch, authAt: sessionChainStart(held, sessionTtlSec),
       ...(held.user.authenticatedAt !== undefined ? { authenticatedAt: held.user.authenticatedAt } : {}),
+      ...(held.user.oidc ? { oidc: held.user.oidc } : {}),
+      ...(held.user.standingUntil !== undefined ? { standingUntil: held.user.standingUntil } : {}),
     });
     if (approved) await audit(`user:${me.id}`, 'auth.device.approve', 'session', { code: normalizeUserCode(code) });
     render(activateDoneHtml(config.instance.name, approved ? 'approved' : 'unknown'));
@@ -3925,6 +3951,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       sub: user.sub, email: user.email, groups: user.groups, role: user.role,
       name: displayName(user), epoch: user.sessionEpoch, authAt,
       ...(held.user.authenticatedAt !== undefined ? { authenticatedAt: held.user.authenticatedAt } : {}),
+      ...(held.user.oidc ? { oidc: held.user.oidc } : {}),
+      ...(held.user.standingUntil !== undefined ? { standingUntil: held.user.standingUntil } : {}),
     }, secrets.session, secure, ttl);
   };
   /** Removes one sign-in, or answers why not. Returns the account as it
@@ -10343,6 +10371,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       sub: user.sub, email: user.email, groups: user.groups, role: user.role, name: displayName(user),
       epoch: user.sessionEpoch, authAt: renewal.authAt,
       ...(session.user.authenticatedAt !== undefined ? { authenticatedAt: session.user.authenticatedAt } : {}),
+      ...(session.user.oidc ? { oidc: session.user.oidc } : {}),
+      ...(session.user.standingUntil !== undefined ? { standingUntil: session.user.standingUntil } : {}),
     }, secrets.session, secure, renewal.ttlSec);
   };
 

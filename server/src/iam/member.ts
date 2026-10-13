@@ -29,6 +29,8 @@ export async function resolveMember(
 ): Promise<UserRecord | null> {
   const p = readPrincipal(cookieHeader, sessionSecret);
   if (p?.kind !== 'member') return null;
+  if (p.user.standingUntil !== undefined && Date.now() >= p.user.standingUntil) return null;
+  if (p.user.oidc && await store.oidcSessionRevoked(p.user.oidc)) return null;
   const user = await store.getUserBySub(p.user.sub);
   if (!user || user.disabledAt) return null;
   // Pre-expiry revocation: a token minted before the user's current epoch is

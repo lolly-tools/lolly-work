@@ -33,6 +33,7 @@ any Lolly deployment. The console links there when this deploy serves or points 
 |---|---|
 | [design-system administration](design-system-administration.md) | Source inventory, reviewed changes, retirement, connect downloads and rollback |
 | [configuration](configuration.md) | Every `instance.json` key and `LW_*` variable, with defaults |
+| [enterprise identity](enterprise-identity.md) | Managed SSO installation, provider registration, MFA policy, SCIM/offboarding, logout, upgrades and rotation |
 | [identity](identity.md) | OIDC SSO, group→role mapping, member and guest sessions, offboarding |
 
 ## Govern

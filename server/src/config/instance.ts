@@ -19,7 +19,7 @@ import { validateInvitePolicy, type InvitePolicyConfig } from '../policy/invites
 import { PROJECT_FILE_DEFAULTS, PROJECT_FILE_MAX_BYTES, type ProjectFilePolicy } from '../projects/files.ts';
 import { PROVIDER_KINDS, type ProviderExposure, type ProviderKind, type ProviderMapping, type ProviderSyncConfig } from '../catalog/providers/types.ts';
 import { DELIVERY_DESTINATION_KINDS, type ConfigDeliveryDestination } from '../delivery/types.ts';
-import { AUTH_PARAM_ALLOWLIST, type ClaimMap } from '../iam/oidc.ts';
+import { AUTH_PARAM_ALLOWLIST, oidcUrl, type OidcPolicy, type ClaimMap } from '../iam/oidc.ts';
 import type { AdmissionPolicy, EmailVerification } from '../iam/admission.ts';
 import type { RoleGroups } from '../rbac/evaluate.ts';
 import { validateSharingPolicy } from '../policy/sharing.ts';
@@ -446,7 +446,7 @@ export function linkByEmailFor(c: Pick<IdpConstraints, 'linkByEmail' | 'emailVer
 
 /** Per-IdP sign-in constraints (plans/74 W-ID-1), on the primary `idp` block
  *  and on each `idp.additional[]` entry. Never inherited between IdPs. */
-export interface IdpConstraints {
+export interface IdpConstraints extends OidcPolicy {
   /** Google Workspace: the `hd` claim must equal this; also sent as the `hd` auth param. */
   hostedDomain?: string;
   /** Microsoft Entra: the `tid` claim must equal this tenant id. */
@@ -712,6 +712,20 @@ const EMAIL_ADDR = /^[^\s@]+@[^\s@]+$/;
  *  here would either lock everyone out or let the wrong tenant in, so refuse
  *  the config rather than guess. */
 function validateIdpConstraints(label: string, c: IdpConstraints): void {
+  if (c.tokenEndpointAuthMethod !== undefined && !['client_secret_post', 'client_secret_basic', 'none'].includes(c.tokenEndpointAuthMethod)) throw new Error(`${label}.tokenEndpointAuthMethod is unsupported`);
+  if (c.signingAlgorithm !== undefined && !['RS256', 'ES256', 'PS256'].includes(c.signingAlgorithm)) throw new Error(`${label}.signingAlgorithm is unsupported`);
+  const strings = (value: unknown, field: string): void => {
+    if (!Array.isArray(value) || !value.length || value.length > 30 || value.some(v => typeof v !== 'string' || !v.trim() || v.length > 256)) throw new Error(`${label}.${field} must be a nonempty list of strings`);
+  };
+  if (c.trustedAudiences !== undefined) strings(c.trustedAudiences, 'trustedAudiences');
+  if (c.assurance !== undefined) {
+    if (!c.assurance || typeof c.assurance !== 'object' || Array.isArray(c.assurance)) throw new Error(`${label}.assurance must be an object`);
+    if (Object.keys(c.assurance).some(k => !['acrValues', 'amrValues', 'maxAgeSeconds'].includes(k))) throw new Error(`${label}.assurance has an unknown requirement`);
+    if (c.assurance.acrValues !== undefined) strings(c.assurance.acrValues, 'assurance.acrValues');
+    if (c.assurance.amrValues !== undefined) strings(c.assurance.amrValues, 'assurance.amrValues');
+    const age = c.assurance.maxAgeSeconds;
+    if (age !== undefined && (!Number.isInteger(age) || age < 0 || age > 86400)) throw new Error(`${label}.assurance.maxAgeSeconds must be an integer from 0 to 86400`);
+  }
   if (c.hostedDomain !== undefined) {
     const d = typeof c.hostedDomain === 'string' ? c.hostedDomain.trim().toLowerCase() : '';
     if (!DOMAIN_NAME.test(d)) throw new Error(`${label}.hostedDomain must be a domain name such as example.com`);
@@ -941,7 +955,7 @@ export function parseConfig(json: string): InstanceConfig {
       if (cfg.idp.additional.filter((x) => x.kind === 'password').length > 1) {
         throw new Error('idp.additional may hold one kind password entry at most');
       }
-      for (const k of ['issuer', 'clientId', 'clientSecretRef', 'groupsClaim', 'claimMap', 'hostedDomain', 'tenantId', 'scopes', 'authParams'] as const) {
+      for (const k of ['issuer', 'clientId', 'clientSecretRef', 'groupsClaim', 'claimMap', 'hostedDomain', 'tenantId', 'scopes', 'authParams', 'tokenEndpointAuthMethod', 'signingAlgorithm', 'trustedAudiences', 'assurance'] as const) {
         if (a[k] !== undefined && a[k] !== '') throw new Error(`idp.additional "${a.id}".${k} does not apply to kind password`);
       }
       // The address is the one an admin issued the sign-in link for: it may
@@ -975,7 +989,7 @@ export function parseConfig(json: string): InstanceConfig {
       // discover, no claims to pin, and a confidential client is mandatory.
       if (a.issuer !== undefined && a.issuer !== '') throw new Error(`idp.additional "${a.id}" is kind github, which takes no issuer`);
       if (!a.clientSecretRef) throw new Error(`idp.additional "${a.id}" is kind github and needs a clientSecretRef (GitHub OAuth Apps always have a client secret)`);
-      for (const k of ['hostedDomain', 'tenantId', 'scopes', 'authParams'] as const) {
+      for (const k of ['hostedDomain', 'tenantId', 'scopes', 'authParams', 'tokenEndpointAuthMethod', 'signingAlgorithm', 'trustedAudiences', 'assurance'] as const) {
         if (a[k] !== undefined) throw new Error(`idp.additional "${a.id}".${k} does not apply to kind github`);
       }
       // GitHub reports verification per address and lets anyone add an
@@ -984,7 +998,10 @@ export function parseConfig(json: string): InstanceConfig {
         throw new Error(`idp.additional "${a.id}" is kind github, whose emailVerification can only be "claim" (GitHub accepts addresses nobody has proven)`);
       }
       a.issuer = '';
-    } else if (!a.issuer || typeof a.issuer !== 'string') throw new Error(`idp.additional "${a.id}" needs an issuer`);
+    } else {
+      if (!a.issuer || typeof a.issuer !== 'string') throw new Error(`idp.additional "${a.id}" needs an issuer`);
+      oidcUrl(a.issuer, true);
+    }
     if (!a.clientId) throw new Error(`idp.additional "${a.id}" needs a clientId`);
     if (!a.displayName) throw new Error(`idp.additional "${a.id}" needs a displayName - the chooser button must say which house`);
     if (a.clientSecretRef !== undefined && !/^[A-Z][A-Z0-9_]*$/.test(a.clientSecretRef)) {
@@ -995,6 +1012,7 @@ export function parseConfig(json: string): InstanceConfig {
     validateIdpConstraints(`idp.additional "${a.id}"`, a);
   }
   validateIdpConstraints('idp', cfg.idp);
+  if (cfg.idp.issuer) oidcUrl(cfg.idp.issuer, true);
   validateAdmission(cfg.idp);
   const lsd: unknown = cfg.idp.linkedStandingDays;
   if (lsd !== undefined && (typeof lsd !== 'number' || !Number.isInteger(lsd) || lsd < 1 || lsd > 365)) {

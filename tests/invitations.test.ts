@@ -260,7 +260,7 @@ const ISSUER = 'https://accounts.google.test';
 const b64u = (v: Buffer | string): string => Buffer.from(v).toString('base64url');
 function signIdToken(payload: Record<string, unknown>): string {
   const head = b64u(JSON.stringify({ alg: 'RS256', kid: 'k1', typ: 'JWT' }));
-  const body = b64u(JSON.stringify(payload));
+  const body = b64u(JSON.stringify({ iat: Math.floor(Date.now() / 1000), ...payload }));
   return `${head}.${body}.${b64u(createSign('sha256').update(`${head}.${body}`).sign(privateKey))}`;
 }
 type Current = { nonce: string; claims: Record<string, unknown> };

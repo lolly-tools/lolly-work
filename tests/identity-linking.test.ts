@@ -41,7 +41,7 @@ const JWK = { ...publicKey.export({ format: 'jwk' }), kid: 'k1', alg: 'RS256', u
 const b64u = (v: Buffer | string): string => Buffer.from(v).toString('base64url');
 function signIdToken(payload: Record<string, unknown>): string {
   const head = b64u(JSON.stringify({ alg: 'RS256', kid: 'k1', typ: 'JWT' }));
-  const body = b64u(JSON.stringify(payload));
+  const body = b64u(JSON.stringify({ iat: Math.floor(Date.now() / 1000), ...payload }));
   return `${head}.${body}.${b64u(createSign('sha256').update(`${head}.${body}`).sign(privateKey))}`;
 }
 
@@ -612,4 +612,20 @@ test('config: idp.linkedStandingDays is whole days from 1 to 365, absent by defa
   for (const bad of [0, 366, 1.5, '30']) {
     assert.throws(() => parseConfig(cfg({ linkedStandingDays: bad })), /invalid idp\.linkedStandingDays/);
   }
+});
+
+
+test('an active linked session stops at the standing deadline even before its cookie expires', async t => {
+  const { base, store, script } = await boot({ admission: { domains: ['example.com'] } });
+  script.google = { sub: 'g-1', email: 'ana@example.com', email_verified: true, groups: ['admin'] };
+  const ana = (await signIn(base, script, 'primary')).session as string;
+  script.github = { id: 899, login: 'ana-home', emails: [{ email: 'ana@home.test', primary: true, verified: true }] };
+  await linkWhileSignedIn(base, script, 'github', ana);
+  await age(store, 'g-1', 30 - 60_000 / 86_400_000);
+  const personal = await signIn(base, script, 'github');
+  assert.equal(personal.done.status, 302);
+  assert.equal((await fetch(`${base}/api/auth/session`, { headers: { cookie: personal.session! } })).status, 200);
+  const later = Date.now() + 120_000;
+  t.mock.method(Date, 'now', () => later);
+  assert.equal((await fetch(`${base}/api/auth/session`, { headers: { cookie: personal.session! } })).status, 401);
 });

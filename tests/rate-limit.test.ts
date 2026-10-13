@@ -56,6 +56,8 @@ test('prune keeps size <= maxBuckets', () => {
 test('surface classifier: dev provider is NOT throttled; real auth + telemetry + links are', () => {
   assert.equal(rateLimitSurface('GET', '/api/auth/login'), 'auth');
   assert.equal(rateLimitSurface('GET', '/api/auth/callback'), 'auth');
+  assert.equal(rateLimitSurface('POST', '/api/auth/backchannel-logout/primary'), 'auth');
+  assert.equal(rateLimitSurface('GET', '/api/auth/logout-provider'), 'auth');
   assert.equal(rateLimitSurface('GET', '/api/auth/dev'), null); // local-only convenience
   assert.equal(rateLimitSurface('GET', '/api/v1/instance'), 'auth'); // unauthenticated manifest shares the auth bucket
   assert.equal(rateLimitSurface('POST', '/api/v1/telemetry'), 'telemetry');

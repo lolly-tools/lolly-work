@@ -1,5 +1,8 @@
 # Installing
 
+For managed SSO, use [Enterprise identity deployment](enterprise-identity.md): provider
+registration, admission, optional MFA, SCIM/offboarding, logout and upgrade checks.
+
 Choose a **shared Lolly Work instance**, a disposable evaluation, or a deployment
 on your existing platform. Commands with registry, hostname or file placeholders
 need your reviewed values before you run them.
@@ -109,11 +112,14 @@ profile) come from the open-source Lolly repo, which this repo never builds. To 
 clone it beside this one once:
 
 ```bash
-git clone --recurse-submodules https://github.com/lolly-tools/lolly.git ../lolly
+git clone https://github.com/lolly-tools/lolly.git ../lolly
 cd ../lolly && pnpm install && pnpm run build:web && cd -   # needs Node >=22.18 or >=24
 ```
 
-`--recurse-submodules` matters: the OSS tools and catalog are git submodules, so `pnpm install` there needs them present first, and `build:web` produces an empty catalog without them.
+The public clone includes the community tools and starter brand. Only the private
+SUSE brand needs an opt-in submodule checkout: run
+`git submodule update --init --checkout brands/suse` inside the Lolly clone when
+you have access and intend to build that profile.
 
 Then re-run `pnpm run demo`. It looks for `$LOLLY_OSS_DIR`, then `../lolly`; the boot banner
 says which of the three states it found (no shell / stale shell / fresh shell). The console

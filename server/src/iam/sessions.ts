@@ -6,6 +6,7 @@
  *   lw_session - a signed-in member (from OIDC or the dev provider)
  *   lw_guest - a guest admitted by a guest-edit link (plans/02 §8)
  */
+import type { OidcSession } from './oidc-logout.ts';
 import { b64uDecode } from '../lib/crypto.ts';
 import { mintToken, verifyToken } from './tokens.ts';
 
@@ -39,6 +40,9 @@ export interface SessionUser {
    *  when the caller does not; a cookie minted before it existed has none and
    *  is read as starting at its sign-in, or else when it was issued. */
   authAt?: number;
+  oidc?: OidcSession;
+  /** Latest time this session may rely on another linked identity. */
+  standingUntil?: number;
 }
 
 export interface GuestSession {

@@ -1,5 +1,8 @@
 # Day one on RKE2 — enabling the render worker
 
+For managed SSO, use [Enterprise identity deployment](../../docs/enterprise-identity.md): provider
+registration, admission, optional MFA, SCIM/offboarding, logout and upgrade checks.
+
 Use this reference acceptance checklist after installing Work on your selected
 K3s/RKE2 cluster. It does not install RKE2 or qualify its host/version/storage
 matrix. Current lolly.ing and lolly.tools run on UpCloud/K3s; their reviewed

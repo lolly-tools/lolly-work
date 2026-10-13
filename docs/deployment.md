@@ -1,5 +1,8 @@
 # Deployment shapes
 
+For managed SSO, use [Enterprise identity deployment](enterprise-identity.md): provider
+registration, admission, optional MFA, SCIM/offboarding, logout and upgrade checks.
+
 The deployment paths below run the same application code. They differ in how
 configuration and secrets arrive, who applies migrations, and whether the pack,
 shell, collaboration gateway and Chromium worker are present. UpCloud and Evroc

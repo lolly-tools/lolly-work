@@ -1,7 +1,7 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:cd7ac6c9-6499-402a-8f9d-fe817eaeb2c7",
+  "serialNumber": "urn:uuid:18a78727-c639-4337-8c52-c46d8b85acf8",
   "version": 1,
   "metadata": {
     "tools": [
@@ -2100,6 +2100,27 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:npm/jose@6.2.12",
+      "name": "jose",
+      "version": "6.2.12",
+      "purl": "pkg:npm/jose@6.2.12",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "f4d88598911ec74b32d83939f23d94181487814b36ca917d7994aee0beaf8ce5f70e9f7a4b0d45dee2fe1fe0f5b31d368d965dcd44f41e0bc2cb9f42baf5dc5b"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:npm/jsdom@30.1.2",
       "name": "jsdom",
       "version": "30.1.2",
@@ -3050,6 +3071,13 @@
       "version": "7.0.0",
       "purl": "pkg:npm/tr46@7.0.0",
       "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
       "hashes": [
         {
           "alg": "SHA-512",
@@ -3274,6 +3302,13 @@
       "version": "17.2.0",
       "purl": "pkg:npm/whatwg-url@17.2.0",
       "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
       "hashes": [
         {
           "alg": "SHA-512",

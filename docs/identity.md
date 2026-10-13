@@ -58,6 +58,9 @@ who keeps working is not sent back to sign in at the end of it (plans/75 RENEW):
 
 ## OIDC SSO
 
+For installation, IdP registration, optional assurance, logout and upgrades, follow
+[Enterprise identity deployment](enterprise-identity.md).
+
 Provider-agnostic by construction - nothing in the code knows your IdP. Set:
 
 ```json
@@ -71,14 +74,14 @@ Provider-agnostic by construction - nothing in the code knows your IdP. Set:
 ```
 
 The flow is discovery → Authorization Code + PKCE (S256) → `id_token` verified against the
-provider JWKS (RS256 via WebCrypto) **before any claim is believed**. Verified claims fill
+provider JWKS (jose; RS256 by default) **before any claim is believed**. Verified claims fill
 the org user record through `claimMap`.
 
 - Redirect URI: `<instance.baseUrl>/api/auth/callback`. `baseUrl` must match the URL the
   deploy actually answers on.
 - `LW_IDP_CLIENT_SECRET` only if your IdP issues a confidential client.
 - `displayName` is what the sign-in button and "managed by …" copy say. Any compliant
-  issuer works; open and sovereign providers are first-class.
+  issuer matching the supported token and logout profile can be used.
 
 Routes: `GET /api/auth/config` (what the sign-in screen needs), `GET /api/auth/login`,
 `GET /api/auth/callback`, `GET /api/auth/session`, `POST /api/auth/logout`,

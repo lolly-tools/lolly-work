@@ -28,7 +28,7 @@ const JWK = { ...publicKey.export({ format: 'jwk' }), kid: 'k1', alg: 'RS256', u
 const b64u = (v: Buffer | string): string => Buffer.from(v).toString('base64url');
 function signIdToken(payload: Record<string, unknown>): string {
   const head = b64u(JSON.stringify({ alg: 'RS256', kid: 'k1', typ: 'JWT' }));
-  const body = b64u(JSON.stringify(payload));
+  const body = b64u(JSON.stringify({ iat: Math.floor(Date.now() / 1000), ...payload }));
   return `${head}.${body}.${b64u(createSign('sha256').update(`${head}.${body}`).sign(privateKey))}`;
 }
 const SECRETS = { session: 's'.repeat(40), link: 'l'.repeat(40) };
@@ -97,7 +97,7 @@ async function assertFailurePage(res: Response, status: number, text: RegExp): P
   assert.ok(res.headers.getSetCookie().some((c) => c.startsWith('lw_state=;')), 'the state cookie is cleared');
 }
 
-for (const fault of ['issuer-mismatch', 'token', 'no-id-token', 'jwks', 'id-token'] as const) {
+for (const fault of ['token', 'no-id-token', 'jwks', 'id-token'] as const) {
   test(`a callback that fails at ${fault} shows the failure page and audits auth.failed`, async () => {
     const issuer = `https://idp-${fault}.example`;
     const nonceRef = { nonce: '' };
@@ -141,4 +141,14 @@ test('the same stub signs a person in when nothing fails', async () => {
   const done = await fetch(`${base}/api/auth/callback?code=c&state=${state}`, { headers: { cookie }, redirect: 'manual' });
   assert.equal(done.status, 302);
   assert.equal(done.headers.get('location'), '/admin');
+});
+
+
+test('discovery issuer mismatch is refused before the browser leaves for an IdP', async () => {
+  const { base, store } = await boot('https://idp-mismatch.example', issuerFetch('https://idp-mismatch.example', 'issuer-mismatch', { nonce: '' }));
+  const res = await fetch(`${base}/api/auth/login`, { redirect: 'manual' });
+  assert.equal(res.status, 502);
+  assert.equal(res.headers.get('location'), null);
+  assert.match(await res.text(), /could not start sign-in/);
+  assert.ok((await store.listAudit()).some(e => e.action === 'auth.failed'));
 });
