@@ -38,7 +38,7 @@ legacy = module('delivery_maintained_stage', 'stage-public-shell.py')
 native = module('delivery_native', 'public-delivery-native.py')
 private, cohort, updater, r = legacy.private, legacy.cohort, legacy.updater, legacy.resources
 need, exact, raw = l.need, l.exact, l.raw
-SOURCE_NAMES = {*legacy.SOURCE_NAMES, 'plan-private-cohort.py', 'public-delivery-lifecycle.py', 'assemble-public-delivery.py',
+SOURCE_NAMES = {*legacy.SOURCE_NAMES, 'continue-public-observation.py', 'plan-private-cohort.py', 'public-delivery-lifecycle.py', 'assemble-public-delivery.py',
     'public-delivery-overlay.py', 'public-delivery-map.mjs', 'stage-public-delivery.py', 'publish-public-delivery.py',
     'public-delivery-native.py', 'public-delivery-http.py', 'public-delivery-model-http.py', 'public-matched-baseline.py', 'public-stage-continuation.py', 'public-serving-continuation.py', 'public-memory-health.py',
     'public-delivery-static-http.py', 'public-delivery-decoded-http.py'}
@@ -183,7 +183,7 @@ class Stage:
         self.path = Path(path); self.input_sha = input_sha; self.operator_sha = operator_sha
         need(l.a.checksum(self.path) == input_sha and l.a.checksum(Path(__file__)) == operator_sha, 'Exact reviewed runtime input/source required')
         self.value = l.held({'path': str(self.path), 'sha256': input_sha})
-        exact(self.value, {'version', 'status', 'prepared', 'target', 'context', 'programs', 'sources', 'outputDirectory'})
+        exact(self.value, {'version', 'status', 'prepared', 'target', 'context', 'programs', 'sources', 'outputDirectory'} | ({'modelReuse'} if 'modelReuse' in self.value else set()))
         need(self.value['version'] == 1 and self.value['status'] == 'REVIEWED_PUBLIC_FRONTEND_RUNTIME_NOT_EXECUTED', 'Closed runtime adapter input required')
         self.prepared = l.held(self.value['prepared'])
         need(self.prepared == l.prepare(l.held(self.prepared['preparationInput']), self.prepared['preparationInput']), 'Independently rebuilt preparation differs')
@@ -236,6 +236,10 @@ class Stage:
         self.out = Path(self.value['outputDirectory']); need(self.out.is_absolute() and self.out.resolve() == self.out and self.out.parent.resolve(strict=True) == self.out.parent
              and self.out != self.root and self.root not in self.out.parents and self.out not in self.root.parents, 'Distinct canonical output outside physical assembly required')
         self.events = []; self.policy_retired = (self.out / 'retire.accepted.json').exists()
+        self.model_reuse = None
+        if 'modelReuse' in self.value:
+            self.model_reuse_helper = module('stage_accepted_model_reuse', 'continue-public-observation.py')
+            self.model_reuse = self.model_reuse_helper.stage_binding(l, self.value['modelReuse'], self.prepared, self.target, self.context)
         self.local_signature, self.local_map = self.verify_local()
 
     def source_pair(self, name):
@@ -266,6 +270,8 @@ class Stage:
         for ref in self.value['sources']: l.a.read_ref(ref)
         for ref in self.value['programs'].values(): need(l.a.checksum(Path(ref['path'])) == ref['sha256'], 'Execution program changed')
         for key in ['prepared', 'target', 'context']: l.held(self.value[key])
+        if 'modelReuse' in self.value:
+            self.model_reuse_helper.stage_binding(l, self.value['modelReuse'], self.prepared, self.target, self.context)
         l.a.verify_candidate_build(self.report['candidateBuild'], physical_bytes=False)
         l.a.physical(self.root, self.manifest, epoch=True)
 
@@ -623,6 +629,7 @@ class Stage:
         def fn():
             pod = self.owned('qualifier'); uid = pod['metadata']['uid']; self.fresh(uid); self.verify_local()
             before = self.physical('qualifier'); model_before, model_physical_before = self.model_checkpoint()
+            reuse_start = self.model_reuse_helper.stage_begin(self, self.model_reuse, model_physical_before) if self.model_reuse is not None else None
             configs = l.held(self.prepared['refs']['configs'])[0]['data']
             for key, path in self.context['configPaths'].items():
                 value = self.remote(['exec', '-n', self.namespace, self.names['qualifier'], '-c', self.container, '--', 'sha256sum', path])
@@ -632,12 +639,18 @@ class Stage:
             need(before == self.physical('qualifier'), 'Native physical bytes changed during HTTP')
             model_after, model_physical_after = self.model_checkpoint(); need(model_before == model_after, 'Active model owner/backing changed during stage')
             need(model_physical_after == model_physical_before, 'Active model inode/link membership changed during native HTTP')
-            model_http = module('delivery_http', 'public-delivery-http.py').verify_models_tls(self.context['origin'], self.models, telemetry=lambda value: self.save('models-http.timing.actual.json', value))
-            self.save('models-http.original.json', model_http)
+            # A reviewed same-process proof is explicit. Missing, stale or changed
+            # opt-ins refuse; absence of the option retains every full-body GET.
+            http_options = {'original': self.model_reuse['modelsTLS']} if self.model_reuse is not None else {}
+            model_http = module('delivery_http', 'public-delivery-http.py').verify_models_tls(self.context['origin'], self.models,
+                telemetry=lambda value: self.save('models-http.timing.actual.json', value), **http_options)
+            model_http_original = self.save('models-http.original.json', model_http)
             model_final, model_physical_final = self.model_checkpoint()
             need(model_final == model_before and model_physical_final == model_physical_before,
                 'Active model owner/inode/link membership changed during normal TLS')
             self.fresh(uid)
+            reuse_ref = (self.save('model-reuse.actual.json', self.model_reuse_helper.stage_finish(self, self.model_reuse, reuse_start, model_physical_final, model_http_original))
+                         if self.model_reuse is not None else None)
             physical = self.save('physical.actual.json', {'version': 1, 'manifest': self.prepared['manifest'], 'epoch': 0, 'hardLinkedFiles': 0, 'allHashesVerified': True, 'allCodingsDecoded': True, 'mapRecompiled': True})
             http_ref = self.save('http.actual.json', {'version': 1, 'mapSha256': self.prepared['mapSha256'], **dict.fromkeys(['external8080', 'identityStrongEtag', 'gzipStrongEtag', 'conditional304', 'ifRange206', 'crossCodingMiss', 'privateErrors', 'serviceWorkerNoStore'], True)})
             pin = l.held(self.prepared['refs']['acceptedRelease'])['publicPin']
@@ -645,7 +658,8 @@ class Stage:
             memory = self.save('memory.actual.json', self.measure())
             before_ref = self.save('model-owner-before.actual.json', model_before); after_ref = self.save('model-owner-after.actual.json', model_after)
             model_http_ref = self.save('model-http.actual.json', {'version': 1, 'recipe': self.prepared['refs']['models'], **dict.fromkeys(['normalTLS', 'allModels', 'strongValidators', 'rangeAndIfRange', 'strict416', 'strictCors', 'privateErrors'], True)})
-            self.save('models.actual.json', {'version': 1, 'recipe': self.prepared['refs']['models'], 'modelsMounted': False, 'before': before_ref, 'after': after_ref, 'http': model_http_ref})
+            self.save('models.actual.json', {'version': 1, 'recipe': self.prepared['refs']['models'], 'modelsMounted': False, 'before': before_ref, 'after': after_ref, 'http': model_http_ref,
+                **({'reuse': reuse_ref} if reuse_ref is not None else {})})
             self.save('native.actual.json', {'version': 1, 'source': self.prepared['source'], 'image': self.image, 'resourcesSha256': self.prepared['resourcesSha256'], 'manifest': self.prepared['manifest'],
                 'mapSha256': self.prepared['mapSha256'], 'modelsMounted': False, 'physical': physical, 'http': http_ref, 'memory': memory, 'signature': signature})
             return {'podUID': uid, 'modelsMounted': False, 'actualNativeVerified': True}

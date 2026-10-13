@@ -494,6 +494,7 @@ class OwningPod(unittest.TestCase):
         self.pod['spec']['hostNetwork'] = True
         self.op.fresh = lambda allowed=None, after=None: self.op.public_owner([self.before], {'items': [self.pod]}, after or self.before['spec'])
         self.op.remote = lambda *args, **kwargs: b''
+        self.op.events = []
         pub = object.__new__(p.Publication); pub.stage = self.op; pub.desired = self.before['spec']
         pub.prior = lambda *args: None; pub.with_journal = lambda fn: fn(); pub.phase = lambda name, fn: fn()
         for method in [pub.observe, pub.rollback]:
@@ -590,7 +591,7 @@ class PublicationHandoff(unittest.TestCase):
         pub.stage = stage; pub.out = f.out; pub.path = Path(f.input['path']); pub.input_sha = f.input['sha256']; pub.operator_sha = f.operator['sha256']
         pub.with_journal = lambda fn: fn()  # target transport is forbidden in this fixture
         pub.fresh = lambda after=False: copy.deepcopy(f.bundle['deployment'])
-        self.http = type('HTTPDataFixture', (), {'verify_models_tls': lambda *_args, **_kwargs: copy.deepcopy(f.models_tls),
+        self.http = type('HTTPDataFixture', (), {'process_sample': lambda stage: {'value': {'unit': 'synthetic'}}, 'verify_models_tls': lambda *_args, **_kwargs: copy.deepcopy(f.models_tls),
             'verify_static_tls': lambda *_args: copy.deepcopy(f.static_tls)})
 
     def tearDown(self): self.f.tearDown()
@@ -719,6 +720,7 @@ class HTTPBudgets(unittest.TestCase):
 class ModelCheckpoints(unittest.TestCase):
     def stage(self, change=None):
         op = object.__new__(s.Stage); events = []; saved = {}
+        op.model_reuse = None
         op.owner = {'metadata': {'uid': 'owner'}, 'spec': {'unchanged': True}}
         op.model_pair = {'claim': {'metadata': {'uid': 'claim'}}, 'pv': {'metadata': {'uid': 'pv'}}}
         op.namespace = 'public'; op.container = 'web'; op.names = {'qualifier': 'qualifier'}

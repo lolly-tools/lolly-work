@@ -114,7 +114,7 @@ def validate_rows(rows):
     need(total <= 8 * 1024**3, 'Logical model bytes exceed qualification bound')
 
 
-def verify(config):
+def verify(config, *, _reuse=None):
     need(type(config) is dict and set(config) == {'version', 'origin', 'inventorySha256', 'files'}
          and type(config['version']) is int and config['version'] == 1, 'Exact HTTP verification input required')
     rows = config['files']
@@ -122,6 +122,7 @@ def verify(config):
     encoded = json.dumps(rows, ensure_ascii=False, separators=(',', ':')).encode()
     need(hashlib.sha256(encoded).hexdigest() == config['inventorySha256'], 'HTTP inventory pin differs')
     origin = config['origin']
+    prior = validate_reuse(config, _reuse) if _reuse is not None else None
     results = []
     captured = 0
     for row in rows:
@@ -151,11 +152,15 @@ def verify(config):
                          'access-control-allow-credentials', 'set-cookie', 'age', 'cache-tag', 'surrogate-key')),
              'Anonymous Range/If-Range browser preflight requires zero-TTL cache policy and complete CORS')
         observed.append(observation('OPTIONS Range/If-Range/If-None-Match preflight', preflight))
-        full = request(origin, 'GET', url, {}, size)
-        policy(full, row, 200)
-        need(full['size'] == size and full['sha256'] == row['sha256']
-             and full['headers'].get('content-length') == str(size), 'Actual HTTP model bytes differ')
-        observed.append(observation('GET full body', full))
+        reuse = prior is not None and size > 65536
+        if reuse:
+            observed.append({'check': 'REUSED GET full body', 'original': prior[url]['GET full body']})
+        else:
+            full = request(origin, 'GET', url, {}, size)
+            policy(full, row, 200)
+            need(full['size'] == size and full['sha256'] == row['sha256']
+                 and full['headers'].get('content-length') == str(size), 'Actual HTTP model bytes differ')
+            observed.append(observation('GET full body', full))
         for candidate in (etag, 'W/' + etag):
             same = request(origin, 'GET', url, {'If-None-Match': candidate}, 0)
             policy(same, row, 304)
@@ -166,16 +171,19 @@ def verify(config):
             for extra in ({}, {'If-Range': etag}, {'If-None-Match': '"unrecognized-full-model-hash"'}):
                 partial = request(origin, 'GET', url, {'Range': f'bytes=0-{count - 1}', **extra}, count)
                 policy(partial, row, 206)
-                need(partial['size'] == count and partial['prefix'] == full['prefix'][:count]
+                need(partial['size'] == count and (partial['sha256'] == prior[url]['GET Range ' + json.dumps(extra, sort_keys=True)]['sha256'] if reuse else partial['prefix'] == full['prefix'][:count])
                      and partial['headers'].get('content-length') == str(count)
                      and partial['headers'].get('content-range') == f'bytes 0-{count - 1}/{size}',
                      'Identity Range or strong If-Range differs')
                 observed.append(observation('GET Range ' + json.dumps(extra, sort_keys=True), partial))
-            mismatch = request(origin, 'GET', url, {'Range': 'bytes=0-0', 'If-Range': '"unrecognized-full-model-hash"'}, size)
-            policy(mismatch, row, 200)
-            need(mismatch['size'] == size and mismatch['sha256'] == row['sha256']
-                 and 'content-range' not in mismatch['headers'], 'Mismatched If-Range must return the entire current file')
-            observed.append(observation('GET mismatching If-Range full body', mismatch))
+            if reuse:
+                observed.append({'check': 'REUSED GET mismatching If-Range full body', 'original': prior[url]['GET mismatching If-Range full body']})
+            else:
+                mismatch = request(origin, 'GET', url, {'Range': 'bytes=0-0', 'If-Range': '"unrecognized-full-model-hash"'}, size)
+                policy(mismatch, row, 200)
+                need(mismatch['size'] == size and mismatch['sha256'] == row['sha256']
+                     and 'content-range' not in mismatch['headers'], 'Mismatched If-Range must return the entire current file')
+                observed.append(observation('GET mismatching If-Range full body', mismatch))
             invalid = request(origin, 'GET', url, {'Range': f'bytes={size}-{size + 1}'}, 65536)
             need(invalid['status'] == 416 and invalid['headers'].get('cache-control') == PRIVATE
                  and invalid['headers'].get('cdn-cache-control') == 'no-store'
@@ -189,12 +197,12 @@ def verify(config):
                              'set-cookie', 'age', 'vary', 'cache-tag', 'surrogate-key', 'access-control-allow-credentials')),
                  'Strict single-CORS negative Range must remain private/no-store with no ETag')
             observed.append(observation('GET unsatisfiable Range', invalid))
-        result = {'url': url, 'size': size, 'sha256': full['sha256'],
+        result = {'url': url, 'size': size, 'sha256': row['sha256'],
                         'head': True, 'conditional304': True, 'strongIfRange': bool(size),
                         'mismatchedIfRange200': bool(size), 'identityOnly': True,
                         'successfulResponseWildcardCors': True, 'lastModifiedIntentionallyAbsent': True,
                         'range416BrowserReadableCors': True if size else None,
-                        'responses': observed}
+                        'responses': observed, **({'largeFullBodyProofReused': reuse} if prior is not None else {})}
         captured += len(json.dumps(result, separators=(',', ':')).encode())
         need(captured <= 12 * 1024**2, 'Original HTTP receipt exceeds bounded aggregate capture')
         results.append(result)
@@ -212,14 +220,80 @@ def verify(config):
         forbidden_observed.append({'url': url, **observation('GET forbidden', response)})
     health = request(origin, 'GET', '/healthz', {}, 16)
     need(health['status'] == 200 and health['prefix'] == b'ok\n', 'Isolated static server is unhealthy')
-    return {'version': 1, 'status': 'ISOLATED_MODEL_HTTP_BYTES_VERIFIED_ONLY',
+    return {'version': 1, 'status': ('SAME_OWNER_MODEL_HTTP_PROTOCOL_RECHECK_WITH_EXPLICIT_BODY_REUSE' if prior is not None else 'ISOLATED_MODEL_HTTP_BYTES_VERIFIED_ONLY'),
             'inventorySha256': config['inventorySha256'], 'files': len(results),
             'logicalBytes': sum(r['size'] for r in rows), 'rows': results,
             'forbiddenPaths404': forbidden, 'forbiddenResponses': forbidden_observed,
             'physicalEpochNotEstablishedByHttp': True,
             'lastModifiedIntentionallyAbsent': True, 'kubernetesMountCustodyEstablished': False,
             'openErrata': [],
-            'productionPublicationQualified': False, 'readOnly': True}
+            'productionPublicationQualified': False, 'readOnly': True,
+            **({'healthResponse': observation('GET health', health)} if prior is not None else {})}
+
+
+
+def validate_reuse(config, proof):
+    """Prior bytes remain explicitly prior; never fabricate a current response."""
+    need(type(proof) is dict and proof.get('version') == 1
+         and proof.get('status') == 'ISOLATED_MODEL_HTTP_BYTES_VERIFIED_ONLY'
+         and proof.get('inventorySha256') == config['inventorySha256']
+         and proof.get('files') == len(config['files'])
+         and proof.get('logicalBytes') == sum(r['size'] for r in config['files'])
+         and proof.get('openErrata') == [] and proof.get('readOnly') is True,
+         'Complete original full-body model proof required')
+    need(type(proof.get('rows')) is list and len(proof['rows']) == len(config['files']), 'Original model rows missing')
+    out = {}
+    for expected, row in zip(config['files'], proof['rows']):
+        need(all(row.get(k) == expected[k] for k in ['url', 'size', 'sha256']), 'Original model inventory changed')
+        responses = row.get('responses'); need(type(responses) is list and responses, 'Original response custody missing')
+        checks = {r['check']: r for r in responses}
+        need(len(checks) == len(responses), 'Duplicate original HTTP check')
+        for name in ['GET full body'] + (['GET mismatching If-Range full body'] if expected['size'] else []):
+            r = checks.get(name, {}); need(r.get('status') == 200 and r.get('size') == expected['size'] and r.get('sha256') == expected['sha256'], 'Original complete body differs')
+            headers = r.get('originalHeaders', []); need(len(headers) == len({k.lower() for k, _ in headers}), 'Original duplicated headers')
+            policy({'status': r['status'], 'headers': {k.lower(): v for k, v in headers}}, expected, 200)
+        if expected['size']:
+            for extra in ({}, {'If-Range': '"' + expected['sha256'] + '"'}, {'If-None-Match': '"unrecognized-full-model-hash"'}):
+                r = checks.get('GET Range ' + json.dumps(extra, sort_keys=True), {})
+                need(r.get('status') == 206 and r.get('size') == min(expected['size'], 32)
+                     and type(r.get('sha256')) is str and re.fullmatch('[a-f0-9]{64}', r['sha256']), 'Original bounded range proof differs')
+        out[row['url']] = checks
+    return out
+
+
+def verify_repeat(config, original):
+    return verify(config, _reuse=original)
+
+
+
+def validate_repeat_report(config, original, fresh):
+    """Re-run the same pure protocol oracle over held observations, no network."""
+    prior = validate_reuse(config, original)
+    need(type(fresh) is dict and fresh.get('status') == 'SAME_OWNER_MODEL_HTTP_PROTOCOL_RECHECK_WITH_EXPLICIT_BODY_REUSE', 'Explicit repeated HTTP report required')
+    queues = {}
+    for row in fresh['rows']:
+        need(row['url'] in prior and row['url'] not in queues, 'Repeated model URL differs')
+        queues[row['url']] = iter([v for v in row['responses'] if not v['check'].startswith('REUSED ')])
+        for response in row['responses']:
+            if response['check'].startswith('GET Range '):
+                need(response['sha256'] == prior[row['url']][response['check']]['sha256'], 'Actual repeated range bytes differ from original')
+    for response in fresh['forbiddenResponses']:
+        need(response['url'] not in queues, 'Repeated forbidden URL duplicated'); queues[response['url']] = iter([response])
+    health = fresh['healthResponse']; need(health['status'] == 200 and health['size'] == 3 and health['sha256'] == hashlib.sha256(b'ok\n').hexdigest(), 'Actual repeated health body differs')
+    queues['/healthz'] = iter([health])
+    def held_request(_origin, _method, path, _headers, maximum, origin_header='https://lolly.ing'):
+        need(path in queues, 'Repeated HTTP response missing'); r = next(queues[path])
+        headers = r['originalHeaders']; need(len(headers) <= 64 and len(headers) == len({k.lower() for k, _ in headers}) and r['size'] <= maximum, 'Repeated response headers/size differ')
+        return {**r, 'headers': {k.lower():v for k,v in headers},
+                'prefix': b'ok\n' if path == '/healthz' else b'\0' * min(r['size'],32)}
+    global request
+    old = request
+    try:
+        request = held_request
+        expected = verify_repeat(config, original)
+        need(expected == fresh, 'Repeated HTTP report does not rederive from complete original observations')
+        for queue in queues.values(): need(next(queue, None) is None, 'Unexpected repeated HTTP response')
+    finally: request = old
 
 
 if __name__ == '__main__':

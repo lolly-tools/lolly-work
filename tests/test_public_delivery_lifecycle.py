@@ -59,7 +59,7 @@ class Lifecycle(unittest.TestCase):
         collection = lambda rows: {'apiVersion': 'v1', 'kind': 'List', 'metadata': {'resourceVersion': '', 'continue': ''}, 'items': rows}
         self.baseline = {'version': 1, 'deployments': [self.before, other], 'pods': collection([self.owner]),
             'pvcs': collection([{'metadata': {'name': 'active-models', 'namespace': 'customer-apps', 'uid': 'model-claim'}, 'spec': {'volumeName': 'model-pv'}}]),
-            'pvs': collection([{'metadata': {'name': 'model-pv', 'uid': 'model-pv-uid'}}]), 'services': collection([]), 'policies': collection([])}
+            'pvs': collection([{'metadata': {'name': 'model-pv', 'uid': 'model-pv-uid'}, 'spec': {'claimRef': {'uid': 'model-claim'}, 'local': {'path': '/var/lib/models'}}}]), 'services': collection([]), 'policies': collection([])}
         configs = self.put([{'apiVersion': 'v1', 'kind': 'ConfigMap', 'metadata': {'name': 'qualified-nginx', 'namespace': 'customer-apps', 'uid': 'config'}, 'immutable': True, 'data': {'default.conf': 'native config'}}])
         self.pin = self.put({'kty': 'EC', 'crv': 'P-256', 'x': 'A' * 43, 'y': 'B' * 43})
         accepted = {'version': 1, 'status': 'ACTUAL_PUBLIC_FULL_ROOT_SERVING_ACCEPTED', 'deploymentUID': 'web-owner', 'deploymentSpecSha256': l.digest(self.before['spec']),
@@ -351,7 +351,7 @@ class PublicationHandoff(unittest.TestCase):
         program_refs = {k: {'path': str(path), 'sha256': l.a.checksum(path)} for k, path in programs.items()}
         program_refs['node'] = {'path': str(NODE), 'sha256': l.a.checksum(NODE)}
         preparer = {'path': str(SCRIPTS / 'public-delivery-lifecycle.py'), 'sha256': l.a.checksum(SCRIPTS / 'public-delivery-lifecycle.py')}
-        sources = [stage, self.operator, preparer, *[ref for k, ref in program_refs.items() if k != 'node']]
+        sources = [stage, self.operator, preparer, {'path':str(SCRIPTS/'continue-public-observation.py'),'sha256':l.a.checksum(SCRIPTS/'continue-public-observation.py')}, *[ref for k, ref in program_refs.items() if k != 'node']]
         review = {'version': 1, 'status': 'ROOT_REVIEWED_RUNTIME_ADAPTER_SOURCE', 'source': stage, 'sources': sources,
             'capabilities': sorted(l.CAPABILITIES), 'stages': l.STAGES, 'productionMutation': False}
         adapter = {**{k: v for k, v in review.items() if k != 'productionMutation'},
@@ -362,7 +362,7 @@ class PublicationHandoff(unittest.TestCase):
         retired_dir = f.base / 'stage'; retired_dir.mkdir()
         retirement = l.a.write_new(retired_dir / 'runtime.qualified-and-retired.actual.json', l.raw(stage_receipt))
         self.runtime = {'version': 1, 'status': 'REVIEWED_PUBLIC_FRONTEND_RUNTIME_NOT_EXECUTED', 'prepared': prepared_ref,
-            'target': f.put({'node': {'name': 'customer-node'}}), 'context': f.put({'scope': 'synthetic fixture only'}),
+            'target': f.put({'node': {'name': 'customer-node'},'transport':{'type':'local'}}), 'context': f.put({'scope': 'synthetic fixture only','origin':'https://unit.invalid'}),
             'programs': program_refs, 'sources': sources, 'outputDirectory': str(retired_dir)}
         self.publication = {'version': 1, 'status': 'REVIEWED_ACTUAL_FRONTEND_ROOT_PUBLICATION_NOT_EXECUTED',
             'stageInput': f.put(self.runtime), 'stageSource': stage, 'retirement': retirement, 'outputDirectory': str(self.out)}

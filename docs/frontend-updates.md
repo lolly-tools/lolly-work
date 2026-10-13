@@ -284,9 +284,10 @@ byte check across either HTTP boundary. The accepted receipt format is unchanged
 One 177-model qualification read 5.39 GB of models and transferred 10.78 GB over TLS
 through ordinary and mismatching-If-Range requests. Its TLS portion took about 13 minutes;
 the full qualification took about 28 minutes. These are measurements from that run,
-not a promised duration or a measured result of the scan reduction. Model HTTP requests
-and publication checks remain unchanged. Broader accepted-model proof reuse, freshness
-rules and end-to-end timing coverage are tracked in [issue 115](https://github.com/lolly-tools/lolly-work/issues/115).
+not a promised duration or a measured result of the scan reduction. The original full path
+and publication checks remain unchanged. The explicit accepted-checkpoint option and
+complete operation measurements below address the separate work tracked in
+[issue 115](https://github.com/lolly-tools/lolly-work/issues/115).
 
 
 The maintained full-root stage and publisher write `<phase>.timing.actual.json`
@@ -305,8 +306,63 @@ body or HTTP check alone does not prove publication succeeded. An interrupted
 process may leave no timing file. This telemetry does not reduce transfers or
 claim a faster release.
 
-Any future reuse of model proofs must remain within the exact same verified
+Reuse of model proofs must remain within the exact same verified
 owner and process checkpoint. A replaced owner or process requires full
 qualification, even when image and storage identities match. A Recreate rollout
 necessarily changes owner, so a proof from the old serving owner cannot qualify
 the new one. Cross-owner reuse remains outside the current optimization.
+
+### Completing a failed observation under the same owner
+
+The maintained frontend publisher now writes `observe.checkpoint.actual.json`
+only after its full model TLS checks, complete physical checks on both sides of
+HTTP, and final owner and native-process bookend succeed. This checkpoint is
+explicitly **not release acceptance**. If a later diagnostic fails, retain the
+original `observe.uncertain.json` and every command and raw stream.
+
+`continue-public-observation.py` supports `check` and `observe` only. A reviewed
+input binds the original publication proof (with its checkpoint as the observation
+receipt), the original started and uncertain markers, the complete sorted original
+command-reference list, and a new exclusive output directory. The continuation
+operator must already belong to the original reviewed source registry. Supply the
+exact input and operator hashes with `--reviewed-input-sha256` and
+`--reviewed-operator-sha256`; there is no publication or rollback action.
+
+A continuation must begin and finish within 15 minutes of the checkpoint. It
+requires the same Deployment, ReplicaSet, Pod, container, native PID/start ticks,
+boot, namespace, executable and root identity, together with unchanged reviewed
+configuration and storage. It performs fresh complete physical model/static hashes,
+health, native HTTP, memory and fixed-entry TLS checks. Every model gets fresh
+cache, CORS, conditional request and range checks; range hashes must match the
+original full verification. Only the two complete-body transfers for model files
+larger than 64 KiB are reused. The resulting rows label those proofs `REUSED` and
+retain their original values and receipt rather than describing a new download.
+Smaller files still receive both complete-body requests.
+
+Expiry, owner/process replacement, changed bytes, configuration or storage, missing
+original commands, altered validators, a failed fresh check, or an already accepted
+or rolled-back attempt all refuse the continuation. A new failed continuation
+keeps its own uncertain journal; it never erases or retries the original attempt.
+Normal publication acceptance validates both journals and the exact proof links.
+
+This recovery path keeps full physical scans and applies only to its original
+owner. No production speedup is claimed for this continuation.
+
+### Reusing an accepted model checkpoint during the next stage
+
+A reviewed runtime input may opt in with a held `modelReuse` request linking the
+previous genuine acceptance and its full model checkpoint. Qualification requires
+that exact serving owner and native process, unchanged configuration/model recipe
+and claim/PV bindings, and a checkpoint no older than 24 hours at both bookends.
+It retains all three full physical model scans, fresh endpoint/protocol checks
+and global guards. Missing or stale explicit proof refuses; omitting the option
+uses the original full-body path. Publication after Recreate still transfers all
+model bodies for the new owner.
+
+`measure-public-release.py` wraps one reviewed command at a time to retain its
+actual exit/stdout/stderr and constructor-inclusive duration. Disjoint preparation,
+staging and publication operation records can be totaled without double-counting
+nested HTTP measurements. The runnable loopback fixture compares actual full and
+reused body bytes; it does not measure production deployment speed. See
+[model proof reuse and release measurements](public-model-proof-reuse.md) for the
+request shapes, timing commands, measurements and limits.
