@@ -71,6 +71,21 @@ export function shellUpdateDelta(candidate: ShellManifest, previous: ShellManife
   }
   return { version: 1 as const, files, totalBytes: files.reduce((n, file) => n + file.size, 0) };
 }
+/** Materialization emits fixed tool IDs; retain the accepted immutable delivery URLs. */
+export function restoreAcceptedCatalog(previousRoot: string, candidate: string, previous: ShellManifest, receipt: string) {
+  const protectedPath = (path: string) => path.startsWith('catalog/') || path.startsWith('tools/');
+  const expected = previous.files.filter(file => protectedPath(file.path));
+  const old = new Map(expected.map(file => [file.path, file]));
+  const actual = shellManifest(candidate).files.filter(file => protectedPath(file.path));
+  for (const file of actual) {
+    const accepted = old.get(file.path);
+    requireShell(accepted && accepted.size === file.size && accepted.sha256 === file.sha256,
+      'Materialized catalog bytes changed or introduced an unaccepted resource.');
+  }
+  const present = new Set(actual.map(file => file.path));
+  const missing = expected.filter(file => !present.has(file.path));
+  return cloneShellFiles(previousRoot, candidate, missing, receipt);
+}
 function command(args: string[], options: ShellUpdateOptions, env: NodeJS.ProcessEnv, name: string) {
   const started = performance.now();
   const result = spawnSync(process.execPath, args, { cwd: options.source, env, encoding: 'utf8', timeout: 300_000, maxBuffer: 16 * 1024 ** 2 });
@@ -138,6 +153,7 @@ export function prepareShellUpdate(options: ShellUpdateOptions) {
     const modulesPath = join(options.out, 'workspace-modules.json');
     const runnerInput = writeShellJson(join(options.out, 'vite-input.json'), { source: options.source, sourceCommit: options.candidate, output: candidate, prerequisites, moduleReceipt: modulesPath });
     const buildReport = command([fileURLToPath(new URL('./shell-update-vite.mjs', import.meta.url)), runnerInput.path, runnerInput.sha256], options, env, 'vite-build');
+    restoreAcceptedCatalog(options.previousShell, candidate, previous, join(options.out, 'accepted-catalog-restoration.json'));
     const catalog = command(['scripts/verify-release-catalog.ts', '--root', candidate, '--public-key', options.publicKey], options, env, 'candidate-catalog');
     const candidateManifest = shellManifest(candidate), delta = shellUpdateDelta(candidateManifest, previous);
     requireShell(delta.files.length > 0, 'No generated shell changes; no update needed.');
