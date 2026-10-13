@@ -50,16 +50,26 @@ class CompleteLocalMeasurement(unittest.TestCase):
             out=Path(temporary).resolve();f.phase(out,'preparation')
             class Broken(f.m.Handler):
                 def do_GET(self):
-                    if self.path=='/healthz':return self.respond()
-                    self.send_response(200);self.send_header('Content-Length','70000');self.end_headers()
-                    self.wfile.write(b'partial-body');self.wfile.flush();self.close_connection=True
+                    if self.path!='/models/unit/large.bin' or self.headers.get('Range') or self.headers.get('If-None-Match'):
+                        return self.respond()
+                    source=f.m.BODIES[self.path]
+                    headers={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':f.m.m.CORS_METHODS,
+                             'Access-Control-Allow-Headers':f.m.m.CORS_HEADERS,'Access-Control-Expose-Headers':f.m.m.CORS_EXPOSE,
+                             'Cache-Control':f.m.m.REVALIDATE,'CDN-Cache-Control':'max-age=0, must-revalidate, no-transform',
+                             'ETag':'"'+f.hashlib.sha256(source).hexdigest()+'"','X-Content-Type-Options':'nosniff',
+                             'Content-Length':str(len(source)),'Accept-Ranges':'bytes'}
+                    self.send_response(200)
+                    for key,value in headers.items():self.send_header(key,value)
+                    self.end_headers();self.wfile.write(source[:65553]);self.wfile.flush();self.close_connection=True
             server=f.ThreadingHTTPServer(('127.0.0.1',0),Broken)
             thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
             try:
-                with self.assertRaises(RuntimeError):f.http(out,'broken',{'port':server.server_port})
+                with self.assertRaisesRegex(RuntimeError,'Actual HTTP model bytes differ'):
+                    f.http(out,'broken',{'port':server.server_port})
             finally:server.shutdown();server.server_close();thread.join()
             timing=f.read(out/'broken.timing.json')
-            self.assertFalse(timing['checksCompleted']);self.assertEqual(timing['bodyBytesRead'],1)
+            self.assertFalse(timing['checksCompleted']);self.assertEqual(timing['bodyBytesRead'],65553)
+            self.assertGreater(timing['bodyBytesRead'],len(b'ok\n'))
             self.assertFalse((out/'broken.report.json').exists())
 
 if __name__=='__main__':unittest.main()
