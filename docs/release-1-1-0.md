@@ -235,8 +235,10 @@ genuine two-principal OAuth, a large PDF, real 300-second expiry, drain/restart,
 accounting and normal-TLS acceptance. M9 has historical EA backend and partial
 640 WebP/parent verification proofs; its latest browser run refused before complete
 original placement/export acceptance, and 0359 has no M9 runtime acceptance yet.
-The public web rollout does not close those remaining milestones. Same-origin
-delivery remains selected; no third-party CDN or separate asset host was activated.
+The public web rollout does not close those remaining milestones.
+Post-promotion end-to-end delivery, model and retention checks and final plan
+closeout remain required. Same-origin delivery remains selected; no third-party
+CDN or separate asset host was activated.
 
 Plan295's P3f fidelity, broader phase3 and physical/native release holds remain
 open. Multiarch image publication, web acceptance and YunoHost beta checks do not
