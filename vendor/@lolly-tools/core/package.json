@@ -1,6 +1,6 @@
 {
   "name": "@lolly-tools/core",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "The Lolly tool-author contract: HostV1 capability-bridge types, the tool.json manifest schema + validator, an in-memory mock host for testing, and typed authoring helpers. Depend on this to build a Lolly tool without the platform monorepo.",
   "license": "MPL-2.0",
   "type": "module",
@@ -67,7 +67,8 @@
     "./design-compose-v1": "./src/design-compose-v1.ts",
     "./schema/design-compose-v1.schema.json": "./schema/design-compose-v1.schema.json",
     "./present-receiver": "./src/present-receiver.ts",
-    "./delivery-v1": "./src/delivery-v1.ts"
+    "./delivery-v1": "./src/delivery-v1.ts",
+    "./tool-skill-v1": "./src/tool-skill-v1.ts"
   },
   "files": [
     "src",

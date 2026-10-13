@@ -74,7 +74,7 @@ importers:
         specifier: 4.0.3
         version: 4.0.3
       '@lolly-tools/core':
-        specifier: 1.2.0
+        specifier: 1.3.0
         version: link:../../@lolly-tools/core
       ajv:
         specifier: ^8.17.1
