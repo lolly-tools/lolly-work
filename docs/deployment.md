@@ -260,7 +260,7 @@ you can:
 | cert-manager | practically | TLS; annotation example is in `values.yaml` |
 | Keycloak or any OIDC IdP | yes for SSO | fully IdP-agnostic; `idp.displayName` names it in the UI |
 | kube-prometheus-stack | optional | ServiceMonitor template included; `/metrics` is token-gated |
-| Node.js 24 base image | yes | SUSE BCI `bci/nodejs` or `node:24-alpine` |
+| Node.js base image | yes | default Node 26 Alpine; SUSE BCI `bci/nodejs:24-base` is the separately qualified alternative |
 | S3-compatible object store | optional | only for the S3 catalog provider |
 | Chromium worker image | optional | built in-repo from `workers/render` |
 
