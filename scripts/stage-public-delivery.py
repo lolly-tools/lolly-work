@@ -615,7 +615,7 @@ class Stage:
         self.prior('create-qualifier')
         def fn():
             pod = self.owned('qualifier'); uid = pod['metadata']['uid']; self.fresh(uid); self.verify_local()
-            before = self.physical('qualifier'); model_before = self.model_owner(); model_physical_before = self.physical('qualifier', models=True, owner=True)
+            before = self.physical('qualifier'); model_before, model_physical_before = self.model_checkpoint()
             configs = l.held(self.prepared['refs']['configs'])[0]['data']
             for key, path in self.context['configPaths'].items():
                 value = self.remote(['exec', '-n', self.namespace, self.names['qualifier'], '-c', self.container, '--', 'sha256sum', path])
@@ -623,11 +623,12 @@ class Stage:
             self.remote(['exec', '-n', self.namespace, self.names['qualifier'], '-c', self.container, '--', 'nginx', '-t'])
             http = self.native_http(pod); self.save('native-http.original.json', http)
             need(before == self.physical('qualifier'), 'Native physical bytes changed during HTTP')
-            model_after = self.model_owner(); need(model_before == model_after, 'Active model owner/backing changed during stage')
-            need(self.physical('qualifier', models=True, owner=True) == model_physical_before, 'Active model inode/link membership changed during native HTTP')
+            model_after, model_physical_after = self.model_checkpoint(); need(model_before == model_after, 'Active model owner/backing changed during stage')
+            need(model_physical_after == model_physical_before, 'Active model inode/link membership changed during native HTTP')
             model_http = module('delivery_http', 'public-delivery-http.py').verify_models_tls(self.context['origin'], self.models)
             self.save('models-http.original.json', model_http)
-            need(self.model_owner() == model_before and self.physical('qualifier', models=True, owner=True) == model_physical_before,
+            model_final, model_physical_final = self.model_checkpoint()
+            need(model_final == model_before and model_physical_final == model_physical_before,
                 'Active model owner/inode/link membership changed during normal TLS')
             self.fresh(uid)
             physical = self.save('physical.actual.json', {'version': 1, 'manifest': self.prepared['manifest'], 'epoch': 0, 'hardLinkedFiles': 0, 'allHashesVerified': True, 'allCodingsDecoded': True, 'mapRecompiled': True})
@@ -644,10 +645,15 @@ class Stage:
         return self.phase('qualify', fn)
 
     def model_owner(self):
-        self.physical('qualifier', models=True, owner=True)
-        return {'version': 1, 'ownerUID': self.owner['metadata']['uid'], 'ownerSpecSha256': l.digest(self.owner['spec']),
+        return self.model_checkpoint()[0]
+
+    def model_checkpoint(self):
+        # One complete scan supplies both the owner assertion and its physical proof.
+        physical = self.physical('qualifier', models=True, owner=True)
+        owner = {'version': 1, 'ownerUID': self.owner['metadata']['uid'], 'ownerSpecSha256': l.digest(self.owner['spec']),
             'claimUID': self.model_pair['claim']['metadata']['uid'], 'pvUID': self.model_pair['pv']['metadata']['uid'],
             'recipe': self.prepared['refs']['models'], 'allPhysicalHashesVerified': True}
+        return owner, physical
 
     def native_http(self, pod):
         current = pod['status']['containerStatuses'][0]['containerID']; need(re.fullmatch('containerd://[a-f0-9]{64}', current), 'Actual container identity required')

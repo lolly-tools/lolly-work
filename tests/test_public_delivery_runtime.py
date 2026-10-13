@@ -650,4 +650,80 @@ class HTTPBudgets(unittest.TestCase):
         self.assertTrue(result['static']['EXPLICIT_UNIT_NO_NETWORK'])
 
 
+class ModelCheckpoints(unittest.TestCase):
+    def stage(self, change=None):
+        op = object.__new__(s.Stage); events = []; saved = {}
+        op.owner = {'metadata': {'uid': 'owner'}, 'spec': {'unchanged': True}}
+        op.model_pair = {'claim': {'metadata': {'uid': 'claim'}}, 'pv': {'metadata': {'uid': 'pv'}}}
+        op.namespace = 'public'; op.container = 'web'; op.names = {'qualifier': 'qualifier'}
+        op.context = {'configPaths': {}, 'origin': 'https://public.example'}
+        op.models = [{'url': '/models/a', 'size': 3, 'sha256': hashlib.sha256(b'abc').hexdigest()}]
+        op.prepared = {'refs': {'configs': 'config-ref', 'models': 'model-ref', 'acceptedRelease': 'accepted-ref'},
+            'manifest': 'manifest', 'mapSha256': 'map', 'source': 'source', 'resourcesSha256': 'resources'}
+        op.image = 'image'; op.prior = lambda phase: None
+        op.owned = lambda key: {'metadata': {'uid': 'qualifier'}}
+        op.fresh = lambda *args: events.append('fresh')
+        op.verify_local = lambda: None; op.remote = lambda *args: b''
+        op.measure = lambda: {'memory': True}
+        op.phase = lambda name, fn: fn()
+        def save(name, value): saved[name] = copy.deepcopy(value); return name
+        op.save = save
+        count = 0
+        def physical(key, models=False, owner=False):
+            nonlocal count
+            if not models: events.append('static'); return {'static': True}
+            self.assertTrue(owner); count += 1; events.append('models')
+            if change: change(op, count)
+            fixture = Native(); raw = fixture.scan([fixture.row('a', inode=20 + (1 if change and getattr(op, 'inode_changed', False) else 0))], True)
+            return n.physical(raw, op.models, True)
+        op.physical = physical
+        op.native_http = lambda pod: events.append('native-http') or {'native': True}
+        def tls(origin, models): events.append('tls'); return {'tls': True}
+        helper = type('HTTP', (), {'verify_models_tls': staticmethod(tls)})
+        def held(ref): return [{'data': {}}] if ref == 'config-ref' else {'publicPin': 'pin'}
+        return op, events, saved, helper, held
+
+    def run_qualification(self, change=None):
+        op, events, saved, helper, held = self.stage(change)
+        with patch.object(s, 'module', return_value=helper), patch.object(s.l, 'held', side_effect=held):
+            result = op.qualify()
+        return op, events, saved, result
+
+    def test_three_full_model_scans_keep_all_http_and_freshness_checkpoints(self):
+        op, events, saved, result = self.run_qualification()
+        self.assertEqual(events, ['fresh', 'static', 'models', 'native-http', 'static', 'models', 'tls', 'models', 'fresh'])
+        self.assertTrue(result['actualNativeVerified'])
+        owner = saved['model-owner-before.actual.json']
+        self.assertEqual(owner, saved['model-owner-after.actual.json'])
+        self.assertEqual(set(owner), {'version', 'ownerUID', 'ownerSpecSha256', 'claimUID', 'pvUID', 'recipe', 'allPhysicalHashesVerified'})
+        self.assertEqual(saved['models-http.original.json'], {'tls': True})
+
+    def test_changed_owner_backing_recipe_or_native_inode_refuses_at_either_bookend(self):
+        for checkpoint in (2, 3):
+            for kind in ('owner', 'spec', 'claim', 'pv', 'recipe', 'inode'):
+                def change(op, count):
+                    if count != checkpoint: return
+                    if kind == 'owner': op.owner['metadata']['uid'] = 'replacement'
+                    elif kind == 'spec': op.owner['spec'] = {'changed': True}
+                    elif kind in ('claim', 'pv'): op.model_pair[kind]['metadata']['uid'] = 'replacement'
+                    elif kind == 'recipe': op.prepared['refs']['models'] = 'other-recipe'
+                    else: op.inode_changed = True
+                with self.subTest(checkpoint=checkpoint, kind=kind), self.assertRaises(RuntimeError):
+                    self.run_qualification(change)
+
+    def test_incomplete_or_changed_model_bytes_still_fail_the_native_parser(self):
+        for checkpoint in (1, 2, 3):
+            def change(op, count):
+                if count == checkpoint: op.models[0]['sha256'] = '0' * 64
+            with self.subTest(checkpoint=checkpoint), self.assertRaises(RuntimeError):
+                self.run_qualification(change)
+
+    def test_model_owner_compatibility_still_scans_each_call_and_keeps_receipt_shape(self):
+        op, events, _, _, _ = self.stage()
+        first = op.model_owner(); second = op.model_owner()
+        self.assertEqual(first, second)
+        self.assertEqual(events, ['models', 'models'])
+        self.assertNotIn('physical', first)
+
+
 if __name__ == '__main__': unittest.main()
