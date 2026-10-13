@@ -231,6 +231,25 @@ test('worker NetworkPolicy is enabled by default and permits explicit disablemen
   assert.equal(worker.volumes.find((volume: { name: string }) => volume.name === 'tmp').emptyDir.sizeLimit, '1Gi');
 });
 
+test('worker browser startup is bounded without weakening container hardening', { skip: noHelm }, () => {
+  const r = render([...SECRETS, ...WORKER]); assert.ok(r.ok, r.err);
+  const pod = deployment(r.out, true).spec.template.spec;
+  const container = pod.containers[0];
+  assert.equal(container.env.find((entry: { name: string }) => entry.name === 'LW_RENDER_BROWSER_STARTUP_TIMEOUT_MS').value, '30000');
+  assert.equal(pod.securityContext.runAsUser, 1000);
+  assert.equal(container.securityContext.runAsNonRoot, true);
+  assert.equal(container.securityContext.allowPrivilegeEscalation, false);
+  assert.equal(container.securityContext.readOnlyRootFilesystem, true);
+  assert.deepEqual(container.securityContext.capabilities.drop, ['ALL']);
+  assert.equal(container.securityContext.seccompProfile.type, 'RuntimeDefault');
+  const custom = render([...SECRETS, ...WORKER, '--set', 'renderWorker.browserStartupTimeoutMs=1000']);
+  assert.ok(custom.ok, custom.err);
+  for (const value of ['0', '999', '120001', '1.5', 'false', 'unbounded']) {
+    const invalid = render([...SECRETS, ...WORKER, '--set', `renderWorker.browserStartupTimeoutMs=${value}`]);
+    assert.equal(invalid.ok, false); assert.match(invalid.err, /browserStartupTimeoutMs/);
+  }
+});
+
 test('worker NetworkPolicy: control-plane ingress only, egress to DNS and public addresses, extraEgress templated', { skip: noHelm }, () => {
   const r = render([...SECRETS, ...WORKER,
     '--set', 'renderWorker.networkPolicy.enabled=true',

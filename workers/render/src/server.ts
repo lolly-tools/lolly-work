@@ -16,25 +16,28 @@ import { observeWorkerResources } from './evidence.ts';
  *                    when LW_RENDER_MAX_CONCURRENT contexts are already open
  *   POST /rasterise  same envelope/backpressure; body: { svg, format, width?, ts }
  *   GET  /healthz  → 200 { ok } - liveness, independent of load
- *   GET  /readyz   → { ok, active, capacity }, HTTP 200 below capacity, 503 at
- *                    capacity - readiness, so k8s pulls a saturated pod from
+ *   GET  /readyz   → { ok, active, capacity }, HTTP 200 with a connected browser
+ *                    below capacity, 503 otherwise, so k8s pulls the pod from
  *                    the Service instead of routing new work to it (plans/22
  *                    §5). Unauthenticated by design (no HMAC on a probe path).
  *
  * Rendering mirrors the proven MCP Tier-B path: drive a headless Chromium against
  * a real Lolly web shell's export URL and capture the SVG the app's own export
  * downloads - so hooks run in a real browser exactly as a user's Download would.
- * The browser is launched once and reused (a lazy singleton).
+ * Startup launches the sandboxed browser before readiness. Requests reuse it.
  *
  * Zero framework: node:http + node:crypto + playwright-core.
  */
 import { createServer } from 'node:http';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Browser, BrowserContext, BrowserContextOptions } from 'playwright-core';
 import { createSemaphore } from './semaphore.ts';
 import { declaredOrigins, egressChecker } from './egress.ts';
 import { renderWebBase } from './web-base.ts';
 import { workerBrowserOptions } from './browser-launch.ts';
+import { createBrowserLifecycle } from './browser-lifecycle.ts';
 import { RequestLifecycle } from './request-lifecycle.ts';
 import { deliverResponse, ResponseBudget } from './request-delivery.ts';
 
@@ -44,6 +47,8 @@ const TS_SKEW_MS = Number(process.env.LW_RENDER_TS_SKEW_MS ?? 5 * 60 * 1000);
 const NAV_TIMEOUT_MS = Number(process.env.LW_RENDER_NAV_TIMEOUT_MS ?? 30_000);
 const EXPORT_TIMEOUT_MS = Number(process.env.LW_RENDER_EXPORT_TIMEOUT_MS ?? 20_000);
 const MAX_CONCURRENT = Number(process.env.LW_RENDER_MAX_CONCURRENT ?? 4);
+const MAIN = !!process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const browserOptions = workerBrowserOptions();
 
 if (!SECRET) { console.error('[render-worker] LW_RENDER_WORKER_SECRET is required'); process.exit(1); }
 let WEB_BASE: string;
@@ -81,8 +86,14 @@ function macEquals(a: string, b: string): boolean {
   return ab.length === bb.length && timingSafeEqual(ab, bb);
 }
 
-// ── lazy Chromium singleton ───────────────────────────────────────────────────
-let browserP: Promise<Browser> | null = null;
+const browserLifecycle = createBrowserLifecycle<Browser>({
+  launch: async () => {
+    const { chromium } = await import('playwright-core');
+    return chromium.launch(browserOptions);
+  },
+  timeoutMs: browserOptions.timeout,
+  ...(MAIN ? { onRecoveryFailure: () => stopWorker(1) } : {}),
+});
 // Test-only injection point: swaps the real Chromium singleton for a stub so
 // the HTTP/HMAC/semaphore behavior in this file is exercisable without
 // launching a browser. Production never calls this; it's exported purely for
@@ -93,13 +104,7 @@ export function __setBrowserGetterForTests(fn: (() => Promise<Browser>) | null):
 }
 export async function getBrowser(): Promise<Browser> {
   if (browserGetterOverride) return browserGetterOverride();
-  if (!browserP) {
-    browserP = (async () => {
-      const { chromium } = await import('playwright-core');
-      return chromium.launch(workerBrowserOptions());
-    })().catch((err) => { browserP = null; throw err; });
-  }
-  return browserP;
+  return browserLifecycle.get();
 }
 
 /** Whether a same-origin request carries the render read credential as a project
@@ -322,12 +327,12 @@ const busy = (res: import('node:http').ServerResponse): void => {
 export const server = createServer((req, res) => {
   void (async () => {
     if (req.method === 'GET' && req.url === '/healthz') return sendJson(res, 200, { ok: true });
-    // Readiness tracks LOAD, not liveness: k8s should pull a saturated pod out
-    // of the Service (plans/22 §5) so it stops receiving NEW requests while it
-    // drains, without killing it. Deliberately unauthenticated (no HMAC) - a
-    // probe endpoint that required signing the request wouldn't be a usable
-    // probe endpoint.
-    if (req.method === 'GET' && req.url === '/readyz') return sendJson(res, sem.atCapacity ? 503 : 200, { ok: !sem.atCapacity, active: sem.inUse, capacity: sem.limit });
+    // A process with no connected browser cannot take work. Capacity remains
+    // part of readiness while liveness is independent of both conditions.
+    if (req.method === 'GET' && req.url === '/readyz') {
+      const ok = (!!browserGetterOverride || browserLifecycle.ready) && !sem.atCapacity;
+      return sendJson(res, ok ? 200 : 503, { ok, active: sem.inUse, capacity: sem.limit });
+    }
     const path = (req.url ?? '').split('?')[0];
     if (req.method !== 'POST' || (path !== '/render' && path !== '/rasterise' && path !== '/file-preview')) {
       return fail(res, 404, 'NOT_FOUND', `no route for ${req.method} ${req.url}`);
@@ -412,13 +417,27 @@ export const server = createServer((req, res) => {
   });
 });
 
-server.listen(PORT, () => console.log(`[render-worker] listening on :${PORT} → web shell ${WEB_BASE}`));
+server.listen(PORT, () => {
+  const address = server.address();
+  console.log(`[render-worker] listening on :${typeof address === 'object' && address ? address.port : PORT} → web shell ${WEB_BASE}`);
+});
+server.on('close', () => { void browserLifecycle.close().catch(() => {}); });
+
+let stopping = false;
+function stopWorker(code: number): void {
+  if (stopping) return;
+  stopping = true;
+  if (code) console.error('[render-worker] browser startup refused; check sandbox support, browser installation and startup timeout');
+  server.close();
+  const deadline = setTimeout(() => process.exit(code), 5000);
+  void browserLifecycle.close().catch(() => {}).finally(() => {
+    clearTimeout(deadline); process.exit(code);
+  });
+}
+
+if (MAIN) void getBrowser().catch(() => stopWorker(1));
 
 // Graceful shutdown so Chromium is torn down (no leaked processes).
 for (const sig of ['SIGTERM', 'SIGINT'] as const) {
-  process.on(sig, () => {
-    server.close();
-    void browserP?.then((b) => b.close()).catch(() => {}).finally(() => process.exit(0));
-    if (!browserP) process.exit(0);
-  });
+  process.on(sig, () => stopWorker(0));
 }

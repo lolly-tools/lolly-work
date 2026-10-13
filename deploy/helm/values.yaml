@@ -222,6 +222,9 @@ renderWorker:
   # to add capacity, not this number. /readyz flips to 503 at the same
   # threshold so a saturated pod is pulled from the Service.
   maxConcurrent: 4
+  # Chromium must start with its sandbox. A failed or timed-out launch stops the
+  # worker; no browser sandbox bypass is available. Range: 1000 to 120000 ms.
+  browserStartupTimeoutMs: 30000
   replicaCount: 1
   image:
     repository: ghcr.io/lolly-tools/lolly-work-render-worker

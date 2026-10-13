@@ -5,6 +5,10 @@
 {{- end }}
 {{- end }}
 {{- include "lolly-work.validateWorkerWebBase" . }}
+{{- $startupMs := .Values.renderWorker.browserStartupTimeoutMs }}
+{{- if or (not (or (kindIs "int" $startupMs) (kindIs "int64" $startupMs) (kindIs "float64" $startupMs))) (ne (float64 $startupMs) (float64 (int $startupMs))) (lt (int $startupMs) 1000) (gt (int $startupMs) 120000) }}
+{{- fail "renderWorker.browserStartupTimeoutMs must be an integer from 1000 to 120000" }}
+{{- end }}
 {{- $name := printf "%s-render-worker" (include "lolly-work.fullname" .) }}
 {{- $image := include "lolly-work.imageRef" (dict "image" .Values.renderWorker.image "defaultTag" .Chart.AppVersion "name" "renderWorker.image") }}
 {{- $pullSecrets := .Values.imagePullSecrets }}
@@ -85,6 +89,8 @@ spec:
             {{- end }}
             - name: LW_RENDER_MAX_CONCURRENT
               value: {{ .Values.renderWorker.maxConcurrent | quote }}
+            - name: LW_RENDER_BROWSER_STARTUP_TIMEOUT_MS
+              value: {{ $startupMs | quote }}
             - name: LW_RENDER_WORKER_SECRET
               valueFrom:
                 secretKeyRef:
@@ -99,11 +105,8 @@ spec:
             httpGet: { path: /healthz, port: http }
             initialDelaySeconds: 10
             periodSeconds: 20
-          # Readiness: is this pod able to take MORE work right now. /readyz
-          # flips to 503 the moment LW_RENDER_MAX_CONCURRENT contexts are open
-          # (plans/23 §3.C), so k8s stops routing new requests to a saturated
-          # pod without killing it — the "removed from readiness when
-          # saturated" line of plans/22 §5.
+          # Readiness requires a connected sandboxed browser and free capacity.
+          # Browser startup or recovery keeps the pod out of the Service.
           readinessProbe:
             httpGet: { path: /readyz, port: http }
             initialDelaySeconds: 5
