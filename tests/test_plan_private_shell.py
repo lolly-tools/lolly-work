@@ -79,6 +79,30 @@ class Plan(fixture.Shell):
     def resource(self, facts, kind, name):
         return next(r for r in facts["resources"] if r["kind"] == kind and r["metadata"]["name"] == name)
 
+    def test_prepared_cli_preserves_optional_derived_custody_and_refuses_unbound_or_extra_fields(self):
+        # Start with the real maintained preparer result, then exercise the
+        # planner's envelope/custody boundary independently of raw-pack parsing.
+        original = copy.deepcopy(self.prepare_evidence)
+        custody = self.file("derived-original-custody", {"version": 1, "original": "retained"})
+        original["rawDerivation"] = {"custody": custody, "release": original["previousShell"]}
+        cli = self.file("derived-cli-envelope", original)
+        prepared = copy.deepcopy(self.prepared)
+        prepared["evidence"] = [r for r in prepared["evidence"] if r["sha256"] != self.original_cli["sha256"]]
+        prepared["reviewedEvidenceSha256"] = cli["sha256"]
+        for ref in (cli, custody):
+            prepared["evidence"].append({"path": str(self.base / ref["path"]), "sha256": ref["sha256"]})
+        self.assertEqual(m.cli_evidence(prepared, m.cohort.Inputs(self.base)), original)
+        missing = copy.deepcopy(prepared)
+        missing["evidence"] = [r for r in missing["evidence"] if r["sha256"] != custody["sha256"]]
+        with self.assertRaises(m.Refusal): m.cli_evidence(missing, m.cohort.Inputs(self.base))
+        original["rawDerivation"]["unexpected"] = True
+        wrong = self.file("invalid-derived-cli", original)
+        bad = copy.deepcopy(prepared)
+        bad["evidence"] = [r for r in bad["evidence"] if r["sha256"] != cli["sha256"]]
+        bad["evidence"].append({"path": str(self.base / wrong["path"]), "sha256": wrong["sha256"]})
+        bad["reviewedEvidenceSha256"] = wrong["sha256"]
+        with self.assertRaises(m.Refusal): m.cli_evidence(bad, m.cohort.Inputs(self.base))
+
     def test_plan_changes_only_shell_claim_and_existing_shell_provenance(self):
         result, inputs = m.plan(self.evidence, self.base)
         patched = patch_fixture.apply_patch(self.before, result["guardedPatch"])

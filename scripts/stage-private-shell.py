@@ -41,6 +41,40 @@ shell = module('shell_stage_preparer', 'prepare-private-shell.py')
 resources = module('shell_stage_resources', 'plan-private-cohort.py')
 cohort = shell.cohort
 require, exact, Refusal = cohort.require, cohort.exact, cohort.Refusal
+def obsolete_generated_codings(old, new):
+    removed = [row for path, row in sorted(old.items()) if path not in new]
+    require(len(removed) <= 8 and all(re.fullmatch(r"(?:index\.html|precache\.json|sw\.js|portable/player\.js)\.(?:gz|br)", row['path'])
+            and row['path'][:-3] in new for row in removed), 'Only obsolete fixed-frontend codings may leave the isolated overlay')
+    return removed
+
+
+REMOVE_CODINGS = r"""
+const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
+const root = process.argv[1], rows = JSON.parse(process.argv[2]);
+if (path.resolve(root) !== root || fs.realpathSync(root) !== root || !Array.isArray(rows) || rows.length > 8) throw Error('Invalid isolated coding removal');
+const checked = [], names = new Set();
+for (const row of rows) {
+  if (Object.keys(row).sort().join() !== 'path,sha256,size' || !/^(index\.html|precache\.json|sw\.js|portable\/player\.js)\.(gz|br)$/.test(row.path)
+      || names.has(row.path) || !Number.isSafeInteger(row.size) || row.size < 0 || row.size > 32 * 1024 ** 2 || !/^[0-9a-f]{64}$/.test(row.sha256)) throw Error('Invalid coding row');
+  names.add(row.path); const file = path.join(root, row.path), parent = path.dirname(file);
+  if (fs.realpathSync(parent) !== parent) throw Error('Coding parent escaped');
+  const stat = fs.lstatSync(file), fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  try {
+    const open = fs.fstatSync(fd);
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size !== row.size || open.ino !== stat.ino || open.dev !== stat.dev
+        || crypto.createHash('sha256').update(fs.readFileSync(fd)).digest('hex') !== row.sha256) throw Error('Original isolated coding differs');
+  } finally { fs.closeSync(fd); }
+  checked.push([file, stat]);
+}
+for (const [file, before] of checked) {
+  const now = fs.lstatSync(file);
+  if (now.ino !== before.ino || now.dev !== before.dev || now.size !== before.size || now.mtimeMs !== before.mtimeMs || now.ctimeMs !== before.ctimeMs) throw Error('Coding changed before unlink');
+  fs.unlinkSync(file);
+}
+process.stdout.write(JSON.stringify({removed: rows.map(row => row.path)}));
+"""
+
+
 INPUT_KEYS = {'version', 'target', 'prepared', 'previous', 'baseline', 'previousShell', 'shell', 'rawPack', 'publicKey', 'sourceMap', 'preflight', 'hostProbe',
               'programs', 'names', 'storage', 'minimumFreeBytes', 'maximumWriteBytes', 'ownerSealSha256', 'outputDirectory', 'sourceFiles'}
 
@@ -212,10 +246,11 @@ class Stage:
                 and self.new.manifest_sha == self.prepared['shell']['manifestSha256'] and self.new.shell_id == self.prepared['shell']['releaseId']
                 and self.pack.manifest_sha == self.prepared['rawPack']['manifestSha256'] == self.previous['pack']['manifestSha256'], 'Complete accepted/prepared tree differs')
         require(all(self.new.files.get(path) == file for path, file in self.old.files.items() if path.startswith('_app/')), 'Previous lazy closure must be retained')
-        require(set(self.old.files) <= set(self.new.files) and 'index.html' in self.new.files, 'A shell overlay cannot remove previous files')
+        self.removed_codings = obsolete_generated_codings(self.old.files, self.new.files)
+        require('index.html' in self.new.files, 'Shell entrypoint required')
         self.delta = [file for path, file in sorted(self.new.files.items()) if self.old.files.get(path) != file]
-        require(self.delta and sum(file['size'] for file in self.delta) <= 32 * 1024**2 and all(file['path'].startswith('_app/') or file['path'] in {'index.html','precache.json','portable/player.js','sw.js'} for file in self.delta), 'Bounded UI-only delta required')
-        require(all(self.new.files.get(path) == file for path, file in self.old.files.items() if not (path.startswith('_app/') or path in {'index.html','precache.json','portable/player.js','sw.js'})), 'Protected static bytes differ')
+        require(self.delta and sum(file['size'] for file in self.delta) <= 32 * 1024**2 and all(shell.generated_path(file['path']) for file in self.delta), 'Bounded UI-only delta required')
+        require(all(self.new.files.get(path) == file for path, file in self.old.files.items() if not shell.generated_path(path)), 'Protected static bytes differ')
         self.baseline = self.inputs.file(value['baseline']); exact(self.baseline, {'version', 'deployments', 'resources', 'pods', 'claims', 'storageClass'})
         require(self.baseline['version'] == 1 and isinstance(self.baseline['deployments'], list) and len(self.baseline['deployments']) == len(self.target['components']), 'Complete target Deployment baseline required')
         self.baseline_deployments = {resource_key(dep): dep for dep in self.baseline['deployments']}
@@ -573,6 +608,10 @@ class Stage:
                     with path.open('rb') as stream: tar.addfile(info,stream)
             require(archive.stat().st_size <= 34 * 1024**2,'Delta transport bound'); self.verify_bindings(); self.owned('writer'); self.preflight(writer['metadata']['uid'])
             self.remote(['exec','-i','-n',self.namespace,writer['metadata']['name'],'-c','stager','--','tar','-C','/stage/shell','-xf','-'],archive.read_bytes(),timeout=600)
+            if self.removed_codings:
+                self.verify_bindings(); self.owned('writer'); self.preflight(writer['metadata']['uid'])
+                removed = self.remote(['exec','-n',self.namespace,writer['metadata']['name'],'-c','stager','--','node','-e',REMOVE_CODINGS,'/stage/shell',cohort.canonical(self.removed_codings).decode()])
+                require(cohort.parse_json(removed) == {'removed':[row['path'] for row in self.removed_codings]}, 'Isolated obsolete coding removal differs')
             shell_check = self.tree(writer,'/stage/shell',self.new); pack_check = self.tree(writer,'/stage/pack',self.pack)
             self.tree(self.owner,self.owner_paths['shell'],self.old,True); self.tree(self.owner,self.owner_paths['pack'],self.pack,True)
             return {'pod':writer,'fullShellHashesVerified':shell_check['verified'],'fullPackHashesVerified':pack_check['verified'],'readOnlyOwnerStream':True,'activePVCMountedInStaging':False,'ownerBefore':before}

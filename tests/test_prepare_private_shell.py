@@ -266,6 +266,59 @@ class Shell(fixture.Cohort):
             wrong = copy.deepcopy(actual); change(wrong["reconciliation"])
             with self.assertRaises(m.Refusal): m.authenticated_acceptance_custody(wrong, self.previous, self.before, m.cohort.Inputs(self.base))
 
+    def test_retained_historical_index_requires_exact_accepted_delivery_custody(self):
+        f = fixture.Cohort(); f.keys = self.keys; f.setUp()
+        try:
+            f.delivery_cohort()
+            original = m.cohort.Tree(f.evidence["shell"], m.cohort.Inputs(f.base))
+            historical = b'{"tools":[],"retained":true}'
+            alias = "catalog/tools/index." + hashlib.sha256(historical).hexdigest()[:16] + ".json"
+            trees = {}
+            for name in ("shell", "rawPack"):
+                root = Path(f.evidence[name]["root"])
+                data = {str(p.relative_to(root)):p.read_bytes() for p in root.rglob("*") if p.is_file()}
+                data[alias] = historical
+                inventory = json.loads(data["catalog/delivery-manifest.json"])
+                inventory["files"].append({"path":alias,"size":len(historical),"sha256":hashlib.sha256(historical).hexdigest()})
+                inventory["files"].sort(key=lambda row: row["path"])
+                data["catalog/delivery-manifest.json"] = m.cohort.canonical(inventory)
+                trees[name] = m.cohort.Tree(f.tree("retained-"+name,data), m.cohort.Inputs(f.base))
+            pin = m.cohort.Inputs(f.base).file(f.evidence["publicPin"])
+            for prior in (None, original):
+                with self.assertRaisesRegex(m.Refusal, "Retained catalog index lacks"):
+                    m.cohort.catalog(trees["shell"],trees["rawPack"],pin,f.public_pin_sha,NODE,previous=prior)
+            verified = m.cohort.catalog(trees["shell"],trees["rawPack"],pin,f.public_pin_sha,NODE,previous=trees["shell"])
+            self.assertEqual(verified["signedFiles"],2)
+            altered = copy.copy(trees["shell"])
+            altered.files = {**altered.files,alias:{**altered.files[alias],"sha256":"0"*64}}
+            with self.assertRaises(m.Refusal):
+                m.cohort.catalog(trees["shell"],trees["rawPack"],pin,f.public_pin_sha,NODE,previous=altered)
+        finally: f.tearDown(); f.doCleanups()
+
+    def test_derived_pack_reuses_original_release_custody_after_frontend_source_changes(self):
+        f = fixture.Cohort(); f.keys = self.keys; f.setUp()
+        try:
+            stamp = f.derived_cohort()
+            value = copy.deepcopy(f.evidence)
+            value["rawDerivation"]["release"] = value["candidateShell"]
+            previous = {"engineSource": f.sources["lolly"]}
+            value["lolly"]["source"] = "f" * 40  # The frontend can advance; the pack cannot.
+            inputs = m.cohort.Inputs(f.base)
+            raw = m.cohort.Tree(value["rawPack"], inputs)
+            release = m.cohort.Tree(value["candidateShell"], inputs)
+            catalog = m.cohort.catalog(release, raw, inputs.file(value["publicPin"]), f.public_pin_sha, NODE)
+            result = m.unchanged_raw_source(value, previous, raw, inputs, f.roots["lolly"], catalog, f.public_pin_sha, NODE, m.git_command)
+            self.assertEqual(result, stamp["derivation"]); inputs.unchanged()
+            for kind in ("missing", "custody", "engine", "release"):
+                bad = copy.deepcopy(value); prior = dict(previous)
+                if kind == "missing": del bad["rawDerivation"]
+                elif kind == "custody": bad["rawDerivation"]["custody"]["sha256"] = "0" * 64
+                elif kind == "engine": prior["engineSource"] = "e" * 40
+                else: bad["rawDerivation"]["release"]["manifest"]["sha256"] = "0" * 64
+                with self.subTest(kind=kind), self.assertRaises((m.Refusal, ValueError, OSError)):
+                    m.unchanged_raw_source(bad, prior, raw, m.cohort.Inputs(f.base), f.roots["lolly"], catalog, f.public_pin_sha, NODE, m.git_command)
+        finally: f.tearDown(); f.doCleanups()
+
     def test_shell_new_source_retains_engine_pack_image_and_only_three_selected_leaves(self):
         self.assertEqual(self.result["sources"]["engine"], self.engine_source)
         self.assertNotEqual(self.result["sources"]["lolly"], self.engine_source)
