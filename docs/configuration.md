@@ -545,6 +545,11 @@ cursor records the highest seq the receiver confirmed, and a refused batch repla
 Long-lived server only - on a serverless deploy, poll `GET /api/v1/audit` with a service
 token instead. Delivery lag is the `lw_siem_lag` gauge on `/metrics`.
 
+Batches use `lolly.audit-projection.v1` with privacy-filtered bodies, original
+source hash references and separate projection proofs. Qualify the receiver's
+adapter before rollout. Original rows and their retention policy remain unchanged;
+see [account lifecycle operations](account-lifecycle.md#siem-projection-format).
+
 | Key | Default | What it does |
 |---|---|---|
 | `url` | *unset* | the receiver; batches POST as JSON signed with `LW_SIEM_SECRET` (same header scheme as notify webhooks) |

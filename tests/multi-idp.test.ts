@@ -361,6 +361,7 @@ test('bootstrap owner: a listed, verified owner email gets the owner group and r
   assert.ok((await store.listAudit()).some((e) => e.action === 'auth.bootstrap-owner' && e.subject === `user:${row?.id}`));
 
   // A disabled account is refused at its next sign-in, owner or not.
+  await store.upsertUserBySub({ sub: 'another-owner', email: 'another-owner@example.test', groups: row!.groups, role: 'owner' });
   await store.setUserDisabled(row!.id, new Date().toISOString());
   const again = await signIn(base, current, { sub: 'g-ana', email: 'ana@example.com', email_verified: true });
   assert.equal(again.done.status, 403);

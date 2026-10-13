@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 export const CREDENTIAL_DEFAULT_DAYS = 90;
 export const CREDENTIAL_MAX_DAYS = 365;
+export function credentialActive(record: { expiresAt?: string; revokedAt?: string } | null, allowLegacyUnbounded: boolean, now = Date.now()): boolean {
+  if (!record || record.revokedAt) return false;
+  if (record.expiresAt === undefined) return allowLegacyUnbounded;
+  const expiry = Date.parse(record.expiresAt);
+  return Number.isFinite(expiry) && expiry > now;
+}
 export function credentialExpiry(days: unknown, now = Date.now()): string {
   const ttl = days === undefined ? CREDENTIAL_DEFAULT_DAYS : days;
   if (typeof ttl !== 'number' || !Number.isInteger(ttl) || ttl < 1 || ttl > CREDENTIAL_MAX_DAYS) {

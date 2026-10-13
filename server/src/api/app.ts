@@ -1,9 +1,10 @@
 import { activityAvailable } from '../policy/activity.ts';
+import { registerSubjectRoutes } from '../privacy/routes.ts';
 import { registerOidcLogout } from '../iam/oidc-logout-routes.ts';
 import { localSessionKey, revokeBrowserSessions } from '../iam/local-logout.ts';
 import { createLinkPasswordAttempts } from '../links/password-attempts.ts';
 import { createProviderFetch, providerDestination, type ProviderResolver } from '../catalog/providers/egress.ts';
-import { credentialExpiry } from '../iam/credential-expiry.ts';
+import { credentialActive, credentialExpiry } from '../iam/credential-expiry.ts';
 import { safeMessageUrl } from '../inbox/message-url.ts';
 import { withRenderDeadline } from '../render/deadline.ts';
 import { WorkerError } from '../render/worker-client.ts';
@@ -2787,8 +2788,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     const bearer = bearerFromHeader(req.headers.authorization);
     if (!bearer || !bearer.startsWith(SERVICE_TOKEN_PREFIX)) return null;
     const rec = await store.findApiTokenByHash(hashServiceSecret(bearer));
-    if (!rec || rec.revokedAt) return null;
-    if (rec.expiresAt !== undefined ? !Number.isFinite(Date.parse(rec.expiresAt)) || Date.parse(rec.expiresAt) <= Date.now() : !config.policy.serviceTokens.allowLegacyUnbounded) return null;
+    if (!rec || !credentialActive(rec, config.policy.serviceTokens.allowLegacyUnbounded)) return null;
     void store.touchApiToken(rec.id, new Date().toISOString());
     return serviceAccountFor(rec);
   };
@@ -3370,7 +3370,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // ── service tokens (plans/35 wave 2) ──────────────────────────────────────
   const tokenWire = (t: { id: string; label: string; role: string; createdBy: string; createdAt: string; expiresAt?: string; lastUsedAt?: string; revokedAt?: string }) =>
     ({ id: t.id, label: t.label, role: t.role, createdBy: t.createdBy, createdAt: t.createdAt, expiresAt: t.expiresAt ?? null,
-      legacyUnbounded: !t.expiresAt, lastUsedAt: t.lastUsedAt ?? null, revokedAt: t.revokedAt ?? null });
+      legacyUnbounded: t.expiresAt === undefined, lastUsedAt: t.lastUsedAt ?? null, revokedAt: t.revokedAt ?? null });
 
   router.add('POST', '/api/v1/tokens', async (req, res) => {
     const actor = await requireAction(req, res, 'token.manage');
@@ -3683,6 +3683,13 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   });
 
   // ── retention + erasure (plans/35 wave 3) ─────────────────────────────────
+  registerSubjectRoutes({ router, store, secret: secrets.session,
+    owner: async (req, res) => {
+      const actor = await requireAction(req, res, 'instance.config');
+      if (!actor) return null;
+      if (actor.role !== 'owner') { sendError(res, 403, 'OWNER_ONLY', 'An owner must authorize account export and offboarding.'); return null; }
+      return actor;
+    }, audit });
   // The run is a route rather than a CLI-to-database path so a serverless
   // deploy can cron it with a service token - the same reasoning as SIEM's
   // poll-with-a-token fallback. On the long-lived server main.ts also runs it
@@ -9464,8 +9471,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       member = true;
     } else if (principal.startsWith('service:svc_')) {
       const id = principal.slice('service:svc_'.length);
-      const token = (await store.listApiTokens()).find((t) => t.id === id && !t.revokedAt);
-      if (token) user = serviceAccountFor(token);
+      const token = await store.getApiToken(id);
+      if (token && credentialActive(token, config.policy.serviceTokens.allowLegacyUnbounded)) user = serviceAccountFor(token);
     }
     if (!user || user.disabledAt) throw new RenderResourceError('PRINCIPAL_UNAVAILABLE', 403, 'render owner is no longer active');
     const caller = { user, principal, groups: user.groups, profile: member ? renderProfileOf(user) : {} };
@@ -9539,8 +9546,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     let user: UserRecord | null = null;
     if (job.principal.startsWith('user:')) user = await store.getUser(job.principal.slice(5));
     else if (job.principal.startsWith('service:svc_')) {
-      const token = (await store.listApiTokens()).find(token => token.id === job.principal.slice(12) && !token.revokedAt);
-      if (token) user = serviceAccountFor(token);
+      const token = await store.getApiToken(job.principal.slice(12));
+      if (token && credentialActive(token, config.policy.serviceTokens.allowLegacyUnbounded)) user = serviceAccountFor(token);
     }
     const guest = job.principal.startsWith('guest:') && config.policy.defaultAccessMode === 'open';
     if ((!user && !guest) || user?.disabledAt) throw new Error('The job principal is no longer authorized.');

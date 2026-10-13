@@ -1,4 +1,5 @@
 import type { OidcLogoutStore } from '../iam/oidc-logout.ts';
+import type { SubjectStore } from '../privacy/subject.ts';
 import type { CommentThread } from '@lolly-tools/core/canvas-review-v1';
 import type { CanvasCheckpoint, CanvasOp } from '@lolly-tools/core/canvas-op-v1';
 import { createHash, randomInt } from 'node:crypto';
@@ -992,7 +993,7 @@ export interface CatalogDeliverySnapshot {
   bytes: Buffer; until: number; toolIds: string[]; assetIds: string[];
 }
 
-export interface Store extends OidcLogoutStore, RenderStore, PasskeyStore {
+export interface Store extends OidcLogoutStore, RenderStore, PasskeyStore, SubjectStore {
   getCommentThread(id: string): Promise<CommentThread | null>;
   listCommentThreads(sessionId: string): Promise<CommentThread[]>;
   createCommentThread(thread: CommentThread): Promise<'created' | 'exists' | 'limit'>;
@@ -1235,6 +1236,7 @@ export interface Store extends OidcLogoutStore, RenderStore, PasskeyStore {
   // Service tokens (plans/35 wave 2) - same contract shapes as the SCIM set.
   putApiToken(rec: ApiTokenRecord): Promise<void>;
   listApiTokens(): Promise<ApiTokenRecord[]>;
+  getApiToken(id: string): Promise<ApiTokenRecord | null>;
   findApiTokenByHash(tokenHash: string): Promise<ApiTokenRecord | null>;
   touchApiToken(id: string, at: string): Promise<void>;
   revokeApiToken(id: string, at: string): Promise<boolean>;

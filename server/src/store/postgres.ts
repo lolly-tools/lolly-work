@@ -1,4 +1,5 @@
 import { createPostgresOidcLogout } from '../iam/oidc-logout-postgres.ts';
+import { createPostgresSubjects, guardLastOwner } from '../privacy/postgres.ts';
 import { COMMENT_THREAD_LIMIT, type CommentThread } from '@lolly-tools/core/canvas-review-v1';
 import type { CanvasCheckpoint, CanvasOp } from '@lolly-tools/core/canvas-op-v1';
 import { auditWhere } from '../audit/filter.ts';
@@ -591,6 +592,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     ...createPostgresRenderStore(pool),
     ...createPostgresOidcLogout(pool),
     ...createPostgresPasskeys(pool),
+    ...createPostgresSubjects(pool, () => roleGroups),
     storageKind: 'postgres',
     brandPersistence: 'durable',
     async getBrandState() {
@@ -708,11 +710,19 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       return rows[0] ? userFromRow(rows[0]) : null;
     },
     async setUserDisabled(userId, disabledAt) {
-      // Disabling is also a revocation: any live session dies on its next request.
-      const { rows } = disabledAt
-        ? await pool.query('update users set disabled_at = $2, session_epoch = session_epoch + 1 where id = $1 returning *', [userId, disabledAt])
-        : await pool.query('update users set disabled_at = null where id = $1 returning *', [userId]);
-      return rows[0] ? userFromRow(rows[0]) : null;
+      if (!disabledAt) {
+        const { rows } = await pool.query('update users set disabled_at = null where id = $1 returning *', [userId]);
+        return rows[0] ? userFromRow(rows[0]) : null;
+      }
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        await guardLastOwner(client, userId, roleGroups);
+        const { rows } = await client.query('update users set disabled_at = $2, session_epoch = session_epoch + 1 where id = $1 returning *', [userId, disabledAt]);
+        await client.query('commit');
+        return rows[0] ? userFromRow(rows[0]) : null;
+      } catch (error) { await client.query('rollback'); throw error; }
+      finally { client.release(); }
     },
     async bumpSessionEpoch(userId) {
       const { rows } = await pool.query('update users set session_epoch = session_epoch + 1 where id = $1 returning *', [userId]);
@@ -789,6 +799,10 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     async listApiTokens() {
       const { rows } = await pool.query('select * from api_tokens order by created_at desc');
       return rows.map(apiTokenFromRow);
+    },
+    async getApiToken(id) {
+      const { rows } = await pool.query('select * from api_tokens where id = $1', [id]);
+      return rows[0] ? apiTokenFromRow(rows[0]) : null;
     },
     async findApiTokenByHash(tokenHash) {
       const { rows } = await pool.query('select * from api_tokens where token_hash = $1', [tokenHash]);

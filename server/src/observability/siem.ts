@@ -23,6 +23,8 @@ import type { InstanceConfig, Secrets } from '../config/instance.ts';
 import type { Store } from '../store/types.ts';
 import { serviceUrl } from '../lib/service-url.ts';
 import { productionMode } from '../setup/checks.ts';
+import { deriveAuditMacKey } from '../audit/chain.ts';
+import { AUDIT_PROJECTION_FORMAT, projectAuditEvent } from '../audit/projection.ts';
 
 export interface SiemForwarder {
   /** Forward one batch. Resolves with how many events were delivered (0 =
@@ -53,7 +55,8 @@ export function createSiemForwarder(deps: SiemDeps): SiemForwarder {
     const cursor = await store.getSiemCursor();
     const events = await store.listAuditAfter(cursor, config.siem.batchSize);
     if (!events.length) return 0;
-    const body = JSON.stringify({ instance: config.instance.name, events });
+    const body = JSON.stringify({ format: AUDIT_PROJECTION_FORMAT, instance: config.instance.name,
+      events: events.map(event => projectAuditEvent(event, secret, secrets.session ? deriveAuditMacKey(secrets.session) : undefined)) });
     const ts = String(Date.now());
     const sig = createHmac('sha256', secret).update(`${ts}.${body}`).digest('hex');
     try {
