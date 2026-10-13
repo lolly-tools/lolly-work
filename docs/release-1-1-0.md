@@ -199,7 +199,7 @@ and room-routing limits, permissions and instance credentials remain unchanged.
 
 ## Production and remaining acceptance
 
-As of 2026-10-12, private `lolly.ing` serves the qualified Work464/Lolly0359
+As of 2026-10-13, private `lolly.ing` serves the qualified Work464/Lolly0359
 cohort. Owner, content, authenticated catalog and normal-TLS checks passed, as did
 worker SVG/PNG and scoped document-agent read/claim-inspection/revocation checks.
 Current signed-in browser observations reached Tools, presentation advance/exit
@@ -207,11 +207,15 @@ and reload/reconnect with Saved to work. Full browser acceptance remains pending
 an independent local recovery-copy warning is still under diagnosis. These
 document-agent checks do not establish restricted public MCP result-link delivery.
 
-Public `lolly.tools` still serves its accepted EA release. The 0359 image is imported
-and its configuration is pinned, but staging qualification, retirement, promotion
-and serving observation remain pending. Published GitHub releases do not establish
-that production switch. Fresh recovery and full owner/storage guards remain
-mandatory; failed phases are retained and never replayed.
+Public `lolly.tools` now serves Lolly0359 as a verified web-only release.
+Pre-promotion qualification verified all 45,777 static-file hashes, all 177 model
+hashes and the complete staged HTTP matrix; the qualifier and its policy were
+retired before promotion. Read-only serving observation on 2026-10-13 verified
+the serving owner, complete physical static/model roots and normal TLS through
+index and small-model body probes. Those limited requests do not repeat the
+complete HTTP matrix or establish browser acceptance. Full owner and storage
+guards passed, and previous public roots and models remain retained for rollback.
+Fresh recovery remains mandatory; original failures are retained and never replayed.
 
 Main `6a77ca47a7beeb6f6a122193b7f5411a9d6abac2` adds the reviewed accepted-baseline
 handoff for recurring public delivery updates. Its four source workflows and all
@@ -220,14 +224,19 @@ prepare while retaining source, owner, storage and rollback guards. This follow-
 does not change the published v1.1.0 tag or artifacts; the generic adapter's first
 native target acceptance remains open.
 
+Main `41ce3844f0790ab939883d234ce11ecaa2a65d35` adds the reviewed generic HTTP
+collection-budget and report correction. Its 35 runtime checks, six optimized
+checks and Node wrapper passed locally. At this status update, its four source
+CI workflows remain pending; local checks do not establish their result. Published
+release tags and artifacts remain unchanged.
+
 Plan300 remains in progress. M8 restricted result-link activation still needs
 genuine two-principal OAuth, a large PDF, real 300-second expiry, drain/restart,
 accounting and normal-TLS acceptance. M9 has historical EA backend and partial
 640 WebP/parent verification proofs; its latest browser run refused before complete
 original placement/export acceptance, and 0359 has no M9 runtime acceptance yet.
-Fresh post-promotion delivery/model/retention probes and final documentation
-closeout remain required. Same-origin delivery remains selected; no third-party
-CDN or separate asset host was activated.
+The public web rollout does not close those remaining milestones. Same-origin
+delivery remains selected; no third-party CDN or separate asset host was activated.
 
 Plan295's P3f fidelity, broader phase3 and physical/native release holds remain
 open. Multiarch image publication, web acceptance and YunoHost beta checks do not
