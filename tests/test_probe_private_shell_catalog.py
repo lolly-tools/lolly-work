@@ -211,6 +211,8 @@ class Probe(unittest.TestCase):
         original = copy.deepcopy(self.f.profile)
         mutations = [lambda p: p.update(authenticatedStaticProbe={}), lambda p: p['authenticatedCatalog'].update(extra='unknown'),
             lambda p: p['authenticatedCatalog']['node'].update(version='v23.0.0'),
+            lambda p: p['authenticatedCatalog']['node'].update(version='v25.0.0'),
+            lambda p: p['authenticatedCatalog']['node'].update(version='v27.0.0'),
             lambda p: p['authenticatedCatalog']['caller'].update(session='prj_wrong'),
             lambda p: p['authenticatedCatalog']['caller'].update(emails=[]),
             lambda p: p['sourceFiles'].remove(p['authenticatedCatalog']['module'])]

@@ -156,7 +156,7 @@ class Update:
         require(type(value['python']) is str and Path(value['python']).is_absolute() and re.fullmatch(r'python3(?:\.[0-9]+)?', Path(value['python']).name), 'Explicit Python probe executable required')
         exact(value['node'], {'path', 'version'})
         require(type(value['node']['path']) is str and Path(value['node']['path']).is_absolute() and Path(value['node']['path']).name == 'node'
-                and type(value['node']['version']) is str and re.fullmatch(r'v24\.[0-9]+\.[0-9]+', value['node']['version']), 'Explicit Node24 syntax-check executable/version required')
+                and type(value['node']['version']) is str and re.fullmatch(r'v(?:24|26)\.[0-9]+\.[0-9]+', value['node']['version']), 'Explicit Node24 or Node26 syntax-check executable/version required')
         exact(value['caller'], {'project', 'session', 'emails'})
         for key in ('project', 'session'):
             require(type(value['caller'][key]) is str and re.fullmatch(r'(?:prj|ses)_[A-Za-z0-9_-]{1,100}', value['caller'][key]) and value['caller'][key].startswith('prj_' if key == 'project' else 'ses_'), 'Exact approved caller project/session required')
