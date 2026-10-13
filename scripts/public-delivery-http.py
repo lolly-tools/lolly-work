@@ -24,7 +24,7 @@ def module(name, filename):
     value = importlib.util.module_from_spec(spec); spec.loader.exec_module(value); return value
 
 
-def verify_models_tls(origin, files, telemetry=None):
+def verify_models_tls(origin, files, telemetry=None, *, original=None):
     """Use the same strict model oracle with authenticated server TLS transport."""
     u = urlsplit(origin)
     if u.scheme != 'https' or not u.hostname or u.username or u.password or u.query or u.fragment or u.path not in {'', '/'}: raise RuntimeError('Exact normal TLS origin required')
@@ -62,7 +62,8 @@ def verify_models_tls(origin, files, telemetry=None):
                 'byteAccounting': 'RESPONSE_BODY_BYTES_READ_INCLUDES_PARTIAL_FAILURES_EXCLUDES_HEADERS_AND_TLS',
                 'qualificationClaimed': False})
     try:
-        result = verifier.verify({'version': 1, 'origin': origin, 'inventorySha256': hashlib.sha256(encoded).hexdigest(), 'files': files})
+        config = {'version': 1, 'origin': origin, 'inventorySha256': hashlib.sha256(encoded).hexdigest(), 'files': files}
+        result = verifier.verify(config) if original is None else verifier.verify_repeat(config, original)
     except BaseException as error:
         try: emit(False)
         except Exception as telemetry_error:

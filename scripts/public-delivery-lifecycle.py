@@ -104,14 +104,16 @@ def matched_baseline():
     value = importlib.util.module_from_spec(spec); spec.loader.exec_module(value); return value
 
 
-def publication_baseline(proof):
+def publication_baseline(proof, *, _checkpoint=False):
     """Derive the next baseline only from original successful publication custody.
 
     This function reads held evidence only. It neither observes a target nor
     converts an unqualified root or a requested tuple into serving acceptance.
     """
+    repeated = 'repeat' in proof
     continued_observation = 'forward' in proof
-    exact(proof, {'version', 'input', 'operator', 'phases'} | ({'forward'} if continued_observation else set()))
+    need(not repeated or not continued_observation and not _checkpoint, 'One explicit continuation protocol required')
+    exact(proof, {'version', 'input', 'operator', 'phases'} | ({'forward'} if continued_observation else set()) | ({'repeat'} if repeated else set()))
     need(proof['version'] == 1, 'Closed original publication proof required')
     a.read_ref(proof['operator']); publication = held(proof['input'])
     exact(publication, {'version', 'status', 'stageInput', 'stageSource', 'retirement', 'outputDirectory'})
@@ -122,7 +124,7 @@ def publication_baseline(proof):
          'Original maintained publication input/source required')
     a.read_ref(publication['stageSource']); runtime = held(publication['stageInput'])
     continued = protocol == 'MATCHED' and 'continuation' in runtime
-    exact(runtime, {'version', 'status', 'prepared', 'target', 'context', 'programs', 'sources', 'outputDirectory'} | ({'continuation'} if continued else set()))
+    exact(runtime, {'version', 'status', 'prepared', 'target', 'context', 'programs', 'sources', 'outputDirectory'} | ({'continuation'} if continued else set()) | ({'modelReuse'} if 'modelReuse' in runtime else set()))
     need(runtime['version'] == 1 and runtime['status'] == f'REVIEWED_PUBLIC_{protocol}_RUNTIME_NOT_EXECUTED'
          and publication['stageSource'] in runtime['sources'], 'Original reviewed stage binding required')
     for ref in runtime['sources']: a.read_ref(ref)
@@ -134,6 +136,10 @@ def publication_baseline(proof):
     prepared = held(runtime['prepared']); retirement = held(publication['retirement'])
     need(runtime.get('continuation') == retirement.get('continuation'), 'Original forward runtime/retirement lineage differs')
     admit(prepared, retirement, _historical_matched=protocol == 'MATCHED')
+    staged_model = held(retirement['models'])
+    need(('modelReuse' in runtime) == ('reuse' in staged_model), 'Runtime model reuse opt-in and receipt differ')
+    if 'modelReuse' in runtime:
+        need(held(staged_model['reuse'])['runtimeInput'] == publication['stageInput'], 'Model reuse belongs to another runtime input')
     adapter = held(prepared['refs']['adapterReview'])
     need(adapter['source'] == publication['stageSource'] and adapter['sources'] == runtime['sources'], 'Original adapter registry closure differs')
     need(retirement['prepared'] == runtime['prepared'] and retirement['adapter'] == publication['stageSource']
@@ -147,19 +153,27 @@ def publication_baseline(proof):
         helper = importlib.util.module_from_spec(spec); spec.loader.exec_module(helper)
         from types import SimpleNamespace
         forward = helper.binding(SimpleNamespace(need=need, exact=exact, held=held, a=a), proof['forward'], proof)
-    observe_output = forward['output'] if forward else output
+    repeat = None
+    if repeated:
+        need(protocol == 'FRONTEND', 'Repeat observation is only for maintained frontend publication')
+        spec = importlib.util.spec_from_file_location('repeat_observation', Path(__file__).with_name('continue-public-observation.py'))
+        helper = importlib.util.module_from_spec(spec); spec.loader.exec_module(helper)
+        repeat = helper.binding(sys.modules[__name__] if __name__ in sys.modules else
+            __import__('types').SimpleNamespace(**globals()), proof['repeat'], proof)
+    observe_output = repeat['output'] if repeat else forward['output'] if forward else output
     phases, commands = {}, set()
     for name in ['dryrun', 'publish', 'observe']:
         refs = proof['phases'][name]; exact(refs, {'started', 'accepted'})
         phase_output = observe_output if name == 'observe' else output
-        phase_binding = forward if name == 'observe' and forward else proof
+        phase_binding = (repeat or forward) if name == 'observe' and (repeat or forward) else proof
         for kind, ref in refs.items():
-            need(ref['path'] == str(phase_output / (name + '.' + kind + '.json')), 'Original exclusive publication phase path required')
+            filename = 'observe.checkpoint.actual.json' if _checkpoint and name == 'observe' and kind == 'accepted' else name + '.' + kind + '.json'
+            need(ref['path'] == str(phase_output / filename), 'Original exclusive publication phase path required')
         uncertain = phase_output / (name + '.uncertain.json')
-        need(not uncertain.exists() and not uncertain.is_symlink(), 'Failed or uncertain publication cannot seed a baseline')
+        need((_checkpoint and name == 'observe') or not uncertain.exists() and not uncertain.is_symlink(), 'Failed or uncertain publication cannot seed a baseline')
         start, phase = held(refs['started']), held(refs['accepted'])
         exact(start, {'status', 'inputSha256', 'operatorSha256'})
-        common = {'version', 'inputSha256', 'operatorSha256', 'commands', 'status', 'productionMutation'}
+        common = {'version', 'inputSha256', 'operatorSha256', 'commands', 'status', 'productionMutation'} | ({'completedAtUnixNs', 'ownerProcess', 'ownerProcessBefore'} if _checkpoint and name == 'observe' else set()) | ({'repeatWindow'} if repeated and name == 'observe' else set())
         exact(phase, common | ({'before', 'patch', 'response'} if name != 'observe' else
             {'deploymentUID', 'deploymentSpecSha256', 'source', 'manifest', 'mapSha256', 'physical', 'memory', 'evidence',
              'modelsMountedByStaging', 'allProtectedSpecsVerified', 'browserAcceptanceClaimed'}))
@@ -181,17 +195,18 @@ def publication_baseline(proof):
          and phases['publish']['status'] == f'ACTUAL_{protocol}_PATCHED_ACCEPTANCE_PENDING' and phases['publish']['productionMutation'] is True,
          'Actual dryrun and switch must precede observation')
     observed = phases['observe']
-    need(observed['status'] == (f'ACTUAL_{protocol}_ROOT_FORWARD_SERVING_VERIFIED' if forward else f'ACTUAL_{protocol}_ROOT_SERVING_VERIFIED') and observed['productionMutation'] is False
+    need(observed['status'] == ('ACTUAL_FRONTEND_ROOT_SERVING_CHECKPOINT_NOT_ACCEPTANCE' if _checkpoint else 'ACTUAL_FRONTEND_ROOT_REPEAT_SERVING_VERIFIED' if repeat else f'ACTUAL_{protocol}_ROOT_FORWARD_SERVING_VERIFIED' if forward else f'ACTUAL_{protocol}_ROOT_SERVING_VERIFIED') and observed['productionMutation'] is False
          and observed['allProtectedSpecsVerified'] is True and observed['modelsMountedByStaging'] is False
          and observed['browserAcceptanceClaimed'] is False and observed['source'] == prepared['source']
          and observed['manifest'] == prepared['manifest'] and observed['mapSha256'] == prepared['mapSha256'],
          'Actual complete serving observation required')
-    exact(observed['evidence'], {'ownerBefore', 'ownerAfter', 'nativeHTTP', 'staticTLS', 'modelsTLS'})
+    exact(observed['evidence'], {'ownerBefore', 'ownerAfter', 'nativeHTTP', 'staticTLS', 'modelsTLS'} | ({'modelsRepeatTLS'} if repeat else set()))
     evidence = {}
     filenames = {'ownerBefore': 'owner-before.original.json', 'ownerAfter': 'owner.original.json',
-        'nativeHTTP': 'owning-native-http.actual.json', 'staticTLS': 'owning-static-tls.actual.json', 'modelsTLS': 'owning-models-tls.actual.json'}
+        'nativeHTTP': 'owning-native-http.actual.json', 'staticTLS': 'owning-static-tls.actual.json', 'modelsTLS': 'owning-models-tls.actual.json', 'modelsRepeatTLS': 'owning-models-repeat-tls.actual.json'}
     for key, ref in observed['evidence'].items():
-        need(ref['path'] == str(observe_output / filenames[key]), 'Serving evidence belongs to another publication')
+        expected_ref = repeat['checkpoint']['evidence']['modelsTLS'] if repeat and key == 'modelsTLS' else None
+        need(ref == expected_ref if expected_ref else ref['path'] == str(observe_output / filenames[key]), 'Serving evidence belongs to another publication')
         evidence[key] = held(ref)
     held(runtime['context']); target = held(runtime['target'])
     binding = serving_binding(evidence['ownerBefore'], prepared, target['node']['name'])
@@ -248,9 +263,11 @@ def publication_baseline(proof):
          and {row['path'] for row in static['rows']} == set(expected)
          and all(row['status'] == 200 and row['size'] == expected[row['path']]['size'] and row['sha256'] == expected[row['path']]['sha256']
                  for row in static['rows']), 'Exact complete normal TLS static bodies required')
+    if repeat:
+        helper.final_binding(__import__('types').SimpleNamespace(**globals()), repeat, observed, binding, evidence)
     previous = (matched_baseline().accepted(held(prepared['refs']['acceptedRelease']), held(prepared['refs']['deployment']), prepared['refs'])
         if protocol == 'MATCHED' else held(prepared['refs']['acceptedRelease']))
-    return {'version': 2, 'status': 'ACTUAL_PUBLIC_FULL_ROOT_SERVING_ACCEPTED',
+    return {'version': 2, 'status': ('FULL_PUBLIC_OBSERVATION_CHECKPOINT_NOT_ACCEPTANCE' if _checkpoint else 'ACTUAL_PUBLIC_FULL_ROOT_SERVING_ACCEPTED'),
         'deploymentUID': binding['deploymentUID'], 'deploymentSpecSha256': binding['deploymentSpecSha256'], 'ownerPodUID': binding['ownerPodUID'],
         'image': prepared['desiredSpec']['template']['spec']['containers'][0]['image'],
         'manifestSha256': prepared['manifest']['sha256'], 'mapSha256': prepared['mapSha256'],
@@ -498,7 +515,7 @@ def _prepare(value, input_ref, historical_matched=False):
         and accepted['manifestSha256'] == annotations['lolly.tools/full-root-manifest']
         and accepted['mapSha256'] == annotations['lolly.tools/delivery-etags-sha256']
         and accepted['mapSha256'] == old[a.overlay.MAP]['sha256']
-        and accepted['models'] == refs['models'] and accepted['configs'] == refs['configs'], 'Genuinely accepted whole-root baseline required')
+        and held(accepted['models']) == bound['models'] and held(accepted['configs']) == bound['configs'], 'Genuinely accepted whole-root baseline required')
     pin = held(accepted['publicPin']); exact(pin, {'kty', 'crv', 'x', 'y'})
     need(pin['kty'] == 'EC' and pin['crv'] == 'P-256'
          and all(type(pin[key]) is str and re.fullmatch(r'[A-Za-z0-9_-]{43}', pin[key]) for key in ['x', 'y']), 'Public-only P256 pin required')
@@ -608,7 +625,12 @@ def admit(prepared, receipt, *, _historical_matched=False):
     need(signature['version'] == 1 and signature['manifest'] == prepared['manifest'] and signature['publicPin'] == accepted['publicPin']
         and signature['sourceSignatureVerified'] is True and signature['fullSignedFileClosureVerified'] is True, 'Actual P256 complete original byte proof required')
     a.read_ref(signature['publicPin'])
-    model = held(receipt['models']); exact(model, {'version', 'recipe', 'modelsMounted', 'before', 'after', 'http'})
+    model = held(receipt['models']); exact(model, {'version', 'recipe', 'modelsMounted', 'before', 'after', 'http'} | ({'reuse'} if 'reuse' in model else set()))
+    if 'reuse' in model:
+        need(not _historical_matched, 'Model reuse requires the maintained frontend protocol')
+        spec = importlib.util.spec_from_file_location('stage_model_reuse', Path(__file__).with_name('continue-public-observation.py'))
+        reuse_helper = importlib.util.module_from_spec(spec); spec.loader.exec_module(reuse_helper)
+        reuse_helper.stage_admit(__import__('types').SimpleNamespace(**globals()), prepared, receipt, model)
     need(model['version'] == 1 and model['recipe'] == prepared['refs']['models'] and model['modelsMounted'] is False, 'Active model owner proof must retain original recipe without staging mounts')
     before_model, after_model = held(model['before']), held(model['after'])
     exact(before_model, {'version', 'ownerUID', 'ownerSpecSha256', 'claimUID', 'pvUID', 'recipe', 'allPhysicalHashesVerified'})

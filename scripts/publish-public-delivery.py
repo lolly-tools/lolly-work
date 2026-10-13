@@ -121,10 +121,13 @@ class Publication:
     def observe(self):
         self.prior('publish')
         def fn():
+            command_start = len(self.stage.events)
             self.stage.remote(['rollout', 'status', 'deployment/' + self.stage.before['metadata']['name'], '-n', self.stage.namespace, '--timeout=240s'], timeout=260)
             actual = self.fresh(True)
             owner_before = self.save('owner-before.original.json', {'deployment': actual, 'pod': self.stage.owner, 'replicaSet': self.stage.replica})
             binding = s.l.serving_binding(s.l.held(owner_before), self.stage.prepared, self.stage.target['node']['name'])
+            continuation = s.module('public_observation_checkpoint', 'continue-public-observation.py')
+            process_before = continuation.process_sample(self.stage)
             physical = {'static': self.stage.physical('qualifier', owner=True), 'models': self.stage.physical('qualifier', models=True, owner=True)}
             memory = self.stage.measure(owner=True)
             native_http = self.save('owning-native-http.actual.json', self.stage.native_http(self.stage.owner))
@@ -139,12 +142,22 @@ class Publication:
             owner_after = self.save('owner.original.json', {'deployment': final, 'pod': self.stage.owner, 'replicaSet': self.stage.replica})
             need(binding == s.l.serving_binding(s.l.held(owner_after), self.stage.prepared, self.stage.target['node']['name']),
                  'Published owner/process changed across serving observation')
-            return {'status': 'ACTUAL_FRONTEND_ROOT_SERVING_VERIFIED', 'deploymentUID': actual['metadata']['uid'], 'deploymentSpecSha256': s.l.digest(actual['spec']),
+            result = {'status': 'ACTUAL_FRONTEND_ROOT_SERVING_VERIFIED', 'deploymentUID': actual['metadata']['uid'], 'deploymentSpecSha256': s.l.digest(actual['spec']),
                 'source': self.stage.prepared['source'], 'manifest': self.stage.prepared['manifest'], 'mapSha256': self.stage.prepared['mapSha256'],
                 'physical': physical, 'memory': memory,
                 'evidence': {'ownerBefore': owner_before, 'ownerAfter': owner_after, 'nativeHTTP': native_http,
                     'staticTLS': static_ref, 'modelsTLS': models_ref},
                 'modelsMountedByStaging': False, 'allProtectedSpecsVerified': True, 'browserAcceptanceClaimed': False, 'productionMutation': False}
+            # This is completed evidence, not publication acceptance. A later
+            # diagnostic failure may be continued read-only under the same owner.
+            process = continuation.process_sample(self.stage)
+            need(process['value'] == process_before['value'], 'Native owning process changed across model HTTP')
+            self.save('observe.checkpoint.actual.json', {'version': 1, 'inputSha256': self.input_sha,
+                'operatorSha256': self.operator_sha, 'commands': self.stage.events[command_start:],
+                **result, 'status': 'ACTUAL_FRONTEND_ROOT_SERVING_CHECKPOINT_NOT_ACCEPTANCE',
+                'completedAtUnixNs': time.time_ns(), 'ownerProcess': process, 'ownerProcessBefore': process_before})
+            result['memory'] = self.stage.measure(owner=True)
+            return result
         observed = self.with_journal(lambda: self.phase('observe', fn))
         def handoff():
             ref = lambda name: {'path': str(self.out / name), 'sha256': s.l.a.checksum(self.out / name)}
