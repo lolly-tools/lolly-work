@@ -19,6 +19,9 @@ updates:
   # PRs for a manual, tested merge.
   - package-ecosystem: "npm"
     directory: "/"
+    # Workspace manifests under vendor are immutable; update them only through repin-engine.
+    exclude-paths:
+      - "vendor/**"
     schedule:
       interval: "weekly"
       day: "monday"
