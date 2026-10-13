@@ -58,11 +58,14 @@ test('HTTP OIDC login, explicit provider logout and back-channel logout preserve
   }
   await login(502);
   acr = 'strong';
-  const one = await login();
+  let one = await login();
   sid = 'session-two'; const two = await login();
   assert.equal(readMemberSession(one, secret)?.user.oidc?.sid, 'session-one');
   const ordinary = await fetch(base + '/api/auth/logout', { method: 'POST', headers: { cookie: one } });
   assert.equal(ordinary.status, 204); assert.equal(ordinary.headers.get('location'), null);
+  assert.equal((await get('/api/auth/session', one)).status, 401);
+  assert.equal((await get('/api/auth/session', two)).status, 200);
+  sid = 'session-one'; one = await login();
   const status = await get('/api/auth/session', one); assert.equal((await status.json() as { providerLogoutPath?: string }).providerLogoutPath, '/api/auth/logout-provider');
   const confirmation = await get('/api/auth/logout-provider', one);
   assert.equal(confirmation.status, 200);
@@ -79,6 +82,9 @@ test('HTTP OIDC login, explicit provider logout and back-channel logout preserve
   assert.equal(destination.origin, issuer); assert.equal(destination.searchParams.get('client_id'), 'work');
   assert.equal(destination.searchParams.get('post_logout_redirect_uri'), 'http://localhost:8787/');
   assert.ok(out.headers.getSetCookie().some(v => v.startsWith('lw_session=;')));
+  assert.equal((await get('/api/auth/session', one)).status, 401);
+  assert.equal((await get('/api/auth/session', two)).status, 200);
+  one = await login();
   const logout = signed({ iss: issuer, aud: 'work', iat, jti: 'event-one', sid: 'session-one', events: { 'http://schemas.openid.net/event/backchannel-logout': {} } });
   const notify = (token: string) => fetch(base + '/api/auth/backchannel-logout/primary', { method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ logout_token: token }) });

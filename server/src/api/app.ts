@@ -2,6 +2,7 @@ import { activityAvailable } from '../policy/activity.ts';
 import { registerOidcLogout } from '../iam/oidc-logout-routes.ts';
 import { localSessionKey, revokeBrowserSessions } from '../iam/local-logout.ts';
 import { createLinkPasswordAttempts } from '../links/password-attempts.ts';
+import { createProviderFetch, providerDestination, type ProviderResolver } from '../catalog/providers/egress.ts';
 import { credentialExpiry } from '../iam/credential-expiry.ts';
 import { safeMessageUrl } from '../inbox/message-url.ts';
 import { withRenderDeadline } from '../render/deadline.ts';
@@ -259,6 +260,7 @@ export interface AppDeps {
   store: Store;
   secrets: Secrets;
   fetchImpl?: typeof fetch;
+  providerResolver?: ProviderResolver;
   /** Injectable metrics registry (tests pass a fresh one to assert counter deltas). */
   metrics?: Metrics;
   /** Live collab-room snapshot for the admin console's Rooms panel
@@ -333,6 +335,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     return brand.current() ? bounded() : brand.run(bounded);
   };
   const fetchImpl = deps.fetchImpl ?? fetch;
+  const providerFetch = createProviderFetch(config.network.providers, deps.fetchImpl, deps.providerResolver);
   const secure = config.instance.baseUrl.startsWith('https:');
   const sessionTtlSec = config.policy.sessionTtlHours * 3600;
   // Sliding renewal's cap (plans/75 RENEW); absent equals the TTL, which leaves renewal off.
@@ -509,7 +512,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     store,
     ...(secrets.credential ? { credentialSecret: secrets.credential } : {}),
     configSecrets,
-    ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    fetchImpl: providerFetch,
     maxProviderAssets: serving.maxProviderAssets,
   });
   const providersReady: Promise<void> = (async () => {
@@ -604,7 +607,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       if (resolved.size !== undefined && resolved.size > hostedAssetMaxBytes) throw new Error('cms asset exceeds the byte limit');
       return { bytes: new Uint8Array(await readBlobBody(resolved.body, hostedAssetMaxBytes)), mime: resolved.contentType, id: extAssetId(rec.id, asset.remoteId) };
     }
-    const response = await fetchImpl(resolved.url, { redirect: 'error', signal: AbortSignal.timeout(20_000) });
+    const response = await providerFetch(resolved.url, { redirect: 'error', signal: AbortSignal.timeout(20_000) });
     if (!response.ok || !response.body) throw new Error(`cms asset fetch failed (${response.status})`);
     const declared = Number(response.headers.get('content-length') ?? 0);
     if (declared > hostedAssetMaxBytes) throw new Error('cms asset exceeds the byte limit');
@@ -2785,7 +2788,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (!bearer || !bearer.startsWith(SERVICE_TOKEN_PREFIX)) return null;
     const rec = await store.findApiTokenByHash(hashServiceSecret(bearer));
     if (!rec || rec.revokedAt) return null;
-    if (rec.expiresAt ? !Number.isFinite(Date.parse(rec.expiresAt)) || Date.parse(rec.expiresAt) <= Date.now() : !config.policy.serviceTokens.allowLegacyUnbounded) return null;
+    if (rec.expiresAt !== undefined ? !Number.isFinite(Date.parse(rec.expiresAt)) || Date.parse(rec.expiresAt) <= Date.now() : !config.policy.serviceTokens.allowLegacyUnbounded) return null;
     void store.touchApiToken(rec.id, new Date().toISOString());
     return serviceAccountFor(rec);
   };
@@ -5420,6 +5423,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
           } finally { res.removeListener('close', disconnected); }
         }
         if (blob.kind === 'redirect') {
+          await providerDestination(blob.url, config.network.providers, deps.providerResolver);
           res.writeHead(302, { location: blob.url, 'cache-control': 'private, no-store' });
           res.end();
           return;
@@ -5778,6 +5782,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       // member-facing blob route does - the driver, not us, decides whether a
       // format can be streamed.
       if (blob.kind === 'redirect') {
+        await providerDestination(blob.url, config.network.providers, deps.providerResolver);
         res.writeHead(302, { location: blob.url, 'cache-control': 'private, no-store' });
         res.end();
         return;
@@ -7606,7 +7611,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     return user && evaluate({ userId: user.id, groups: user.groups, role: user.role as Role }, action, ['*'], await store.listGrants()) ? user : null;
   };
   registerProviderOAuth(router, { store, baseUrl: config.instance.baseUrl, credentialSecret: secrets.credential,
-    fetchImpl: deps.fetchImpl, ready: providersReady, invalidate: id => federation.invalidate(id), audit,
+    fetchImpl: providerFetch, ready: providersReady, invalidate: id => federation.invalidate(id), audit,
     owner: req => providerSetupActor(req, 'catalog.provider.credential'), manager: req => providerSetupActor(req, 'catalog.provider.manage'),
   });
 
@@ -7662,7 +7667,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     };
     await audit(`user:${user.id}`, 'catalog.provider.preview', `provider-kind:${cfg.kind}`);
     if (body?.setupVersion === 1 && body.shape !== true) {
-      return sendJson(res, 200, await previewGuidedProvider(rec, secret, deps.fetchImpl), { 'cache-control': 'no-store' });
+      return sendJson(res, 200, await previewGuidedProvider(rec, secret, providerFetch), { 'cache-control': 'no-store' });
     }
     // --shape (plans/33 §3): the live-verify multiplier. Structure only - key
     // names and value types, never a value - so it answers "what is this field
@@ -7679,7 +7684,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // no list page can answer - and those decide whether the exit works.
     const detailId = typeof body?.remoteId === 'string' && body.remoteId ? body.remoteId : undefined;
     try {
-      const provider = createProvider(rec, secret, deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {});
+      const provider = createProvider(rec, secret, { fetchImpl: providerFetch });
       const health = await provider.healthCheck();
       let shape: ProviderShapeReport | null = null;
       let shapeText: string[] | undefined;
@@ -7819,7 +7824,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
     let health: { ok: boolean; detail?: string };
     try {
-      health = await createProvider(rec, body.secret, deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}).healthCheck();
+      health = await createProvider(rec, body.secret, { fetchImpl: providerFetch }).healthCheck();
     } catch (err) {
       health = { ok: false, detail: (err as Error).message };
     }

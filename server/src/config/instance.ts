@@ -15,6 +15,7 @@ import type { ActivityPolicy } from '../policy/activity.ts';
  */
 import { readFileSync } from 'node:fs';
 import { serviceUrl } from '../lib/service-url.ts';
+import { providerOrigins, type ProviderNetworkPolicy } from '../catalog/providers/egress.ts';
 import { randomId } from '../lib/crypto.ts';
 import { validateAiConfig } from '../policy/ai.ts';
 import { validateInvitePolicy, type InvitePolicyConfig } from '../policy/invites.ts';
@@ -329,6 +330,7 @@ export interface InstanceConfig {
     pagedProviderThreshold: number;
     extCache: { maxBytes: number; maxItemBytes: number };
   };
+  network: { providers: ProviderNetworkPolicy };
   /**
    * Fixed organization-owned outbound targets. Credentials are per-entry env
    * refs, never part of org-config; personal device targets do not enter this
@@ -609,6 +611,7 @@ const DEFAULTS: InstanceConfig = {
     directory: null,
   },
   catalogProviders: [],
+  network: { providers: { allowedPrivateOrigins: [], redirectOrigins: [], maxBytes: 64 * 1024 * 1024 } },
   catalogServing: {
     maxProviderAssets: 100_000,
     pagedProviderThreshold: 2000,
@@ -1060,6 +1063,12 @@ export function parseConfig(json: string): InstanceConfig {
     throw new Error(`invalid siem.intervalSeconds: ${cfg.siem.intervalSeconds} (>= 5)`);
   }
   const wt = cfg.render.worker.timeoutMs;
+  if (!cfg.network?.providers || typeof cfg.network.providers !== 'object') throw new Error('network.providers must be configured');
+  cfg.network.providers.allowedPrivateOrigins = providerOrigins(cfg.network.providers.allowedPrivateOrigins);
+  cfg.network.providers.redirectOrigins = providerOrigins(cfg.network.providers.redirectOrigins);
+  if (!Number.isInteger(cfg.network.providers.maxBytes) || cfg.network.providers.maxBytes < 1 || cfg.network.providers.maxBytes > 1024 * 1024 * 1024) {
+    throw new Error('network.providers.maxBytes must be an integer from 1 to 1073741824');
+  }
   if (cfg.render.worker.url) {
     try { cfg.render.worker.url = serviceUrl(cfg.render.worker.url, cfg.deployment.mode === 'production' || (cfg.deployment.mode !== 'evaluation' && process.env.NODE_ENV === 'production')); }
     catch { throw new Error('render.worker.url requires HTTPS; HTTP is only for explicit loopback evaluation'); }

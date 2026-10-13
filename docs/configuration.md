@@ -553,6 +553,24 @@ token instead. Delivery lag is the `lw_siem_lag` gauge on `/metrics`.
 
 ## `catalogProviders`
 
+Server-side catalog connectors use `network.providers` for outbound requests.
+Initial destinations must resolve entirely to public addresses unless their exact
+origin appears in `allowedPrivateOrigins`. Private deployments list only reviewed
+origins, including the intended scheme and port; paths and wildcards are refused.
+Native connections use a checked DNS answer while retaining the original Host and
+TLS hostname. For internal HTTPS services, use the same read-only CA trust setup
+described for other service connections.
+
+Cross-origin redirects require `redirectOrigins`, and only GET/HEAD reads may
+follow them. Credential and custom headers are removed on a cross-origin hop.
+Every hop is checked again, with at most three redirects. Explicit error/manual
+redirect modes retain their stricter caller behavior. The default private and
+cross-origin redirect lists are empty. `maxBytes` defaults to 64 MiB per request
+and decoded response, and accepts 1 to 1 GiB; review the required media sizes before
+changing that limit. Requests have a 30-second budget. These controls apply to
+catalog federation, setup/consent checks, preview, hosted catalog bytes and publish
+requests. They do not define the identity provider or delivery destination policy.
+
 Deploy-time (GitOps / air-gap) provider entries, upserted at boot as `managedBy: 'config'`
 and read-only in the API. Each entry: `id` (lowercase, dash-separated), `kind`, `label`,
 optional `credentialRef` (the *name* of the env var holding the secret), `enabled`,
