@@ -220,12 +220,23 @@ def publication_baseline(proof):
              and value['modelLinkClosureVerified'] is (key == 'models')
              and (sha(value['modelInodeFingerprint']) if key == 'models' else value['hardLinkedFiles'] == 0),
              'Complete physical serving proof differs')
-    memory = observed['memory']; exact(memory, {'version', 'podUID', 'limitBytes', 'currentBytes', 'peakBytes', 'oom', 'oomKill', 'rssBytes'})
+    memory = observed['memory']
     limit = re.fullmatch(r'([1-9][0-9]*)(Mi|Gi)', prepared['desiredSpec']['template']['spec']['containers'][0]['resources']['limits']['memory'])
-    need(limit and memory['version'] == 1 and all(type(memory[k]) is int for k in set(memory) - {'version', 'podUID'})
-         and memory['limitBytes'] == int(limit[1]) * (1024**2 if limit[2] == 'Mi' else 1024**3)
-         and 0 < memory['rssBytes'] <= memory['currentBytes'] <= memory['peakBytes'] < memory['limitBytes']
-         and memory['oom'] == memory['oomKill'] == 0, 'Actual serving memory gate required')
+    need(limit, 'Explicit native memory limit required')
+    if memory.get('version') == 2:
+        need(forward and held(forward['input']).get('memoryProfile') == memory.get('profile'), 'Explicit forward memory profile required')
+        spec = importlib.util.spec_from_file_location('public_memory_health', Path(__file__).with_name('public-memory-health.py'))
+        mh = importlib.util.module_from_spec(spec); spec.loader.exec_module(mh)
+        mh.verify(SimpleNamespace(exact=exact, held=held, a=a), memory,
+            int(limit[1]) * (1024**2 if limit[2] == 'Mi' else 1024**3), binding['ownerPodUID'], observed['commands'], evidence['ownerBefore']['pod']['metadata']['namespace'],
+            evidence['ownerBefore']['pod']['metadata']['name'], prepared['desiredSpec']['template']['spec']['containers'][0]['name'], target)
+    else:
+        memory = observed['memory']; exact(memory, {'version', 'podUID', 'limitBytes', 'currentBytes', 'peakBytes', 'oom', 'oomKill', 'rssBytes'})
+        limit = re.fullmatch(r'([1-9][0-9]*)(Mi|Gi)', prepared['desiredSpec']['template']['spec']['containers'][0]['resources']['limits']['memory'])
+        need(limit and memory['version'] == 1 and all(type(memory[k]) is int for k in set(memory) - {'version', 'podUID'})
+             and memory['limitBytes'] == int(limit[1]) * (1024**2 if limit[2] == 'Mi' else 1024**3)
+             and 0 < memory['rssBytes'] <= memory['currentBytes'] <= memory['peakBytes'] < memory['limitBytes']
+             and memory['oom'] == memory['oomKill'] == 0, 'Actual serving memory gate required')
     need(evidence['nativeHTTP']['static']['status'] == 'ISOLATED_STATIC_HTTP_RETAINED_FULL_BYTES_AND_SAMPLES_VERIFIED_ONLY'
          and evidence['nativeHTTP']['decoded']['status'] == 'ACTUAL_LOOPBACK_GZIP_WIRE_AND_DECODED_IDENTITY_VERIFIED'
          and evidence['modelsTLS']['status'] == 'ISOLATED_MODEL_HTTP_BYTES_VERIFIED_ONLY'

@@ -40,7 +40,7 @@ private, cohort, updater, r = legacy.private, legacy.cohort, legacy.updater, leg
 need, exact, raw = l.need, l.exact, l.raw
 SOURCE_NAMES = {*legacy.SOURCE_NAMES, 'plan-private-cohort.py', 'public-delivery-lifecycle.py', 'assemble-public-delivery.py',
     'public-delivery-overlay.py', 'public-delivery-map.mjs', 'stage-public-delivery.py', 'publish-public-delivery.py',
-    'public-delivery-native.py', 'public-delivery-http.py', 'public-delivery-model-http.py', 'public-matched-baseline.py', 'public-stage-continuation.py', 'public-serving-continuation.py',
+    'public-delivery-native.py', 'public-delivery-http.py', 'public-delivery-model-http.py', 'public-matched-baseline.py', 'public-stage-continuation.py', 'public-serving-continuation.py', 'public-memory-health.py',
     'public-delivery-static-http.py', 'public-delivery-decoded-http.py'}
 
 

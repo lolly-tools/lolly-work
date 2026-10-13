@@ -81,4 +81,22 @@ class Ancestry(unittest.TestCase):
         with self.assertRaises(RuntimeError):h.request(l,value)
         value=copy.deepcopy(self.value); value['sources']=value['sources'][1:]
         with self.assertRaises(RuntimeError):h.request(l,value)
+    def test_peak_refusal_requires_complete_grammar_and_original_owner(self):
+        directory=self.prior();prior=self.value['priorForwardObservation']
+        owner={'metadata':{'namespace':'public','name':'web-owner'},'spec':{'containers':[{'name':'web','resources':{'limits':{'memory':'768Mi'}}}]}}
+        prior['ownerBefore']=self.put(directory/'owner-before.original.json',{'deployment':{},'pod':owner,'replicaSet':{}})
+        prior['uncertain']=self.put(directory/'observe.uncertain.json',{'status':'REFUSED_NO_REPLAY','failureType':'RuntimeError'})
+        data=b'M\tcurrent\t800534528\nM\tpeak\t805306368\nM\tmax\t805306368\nE\toom\t0\nE\toom_kill\t0\nP\t1\t101\t101\t101\t101\t76924 kB\nEND\tCGROUP_AND_NGINX_PROCESS_MEMORY_OBSERVED\n'
+        path=directory/'command-read.actual.json';row=json.loads(path.read_text());row['stdout']=self.put(directory/'read.stdout.original',data);row['argv']=['ssh','host','kubectl exec -i -n public web-owner -c web -- /bin/sh -s'];prior['commands']=[self.put(path,row)]
+        h.request(l,self.value)
+        for bad in [data.replace(b'M\tmax\t',b'M\tpeak\t'),data.replace(b'P\t1\t101',b'P\t1\t0'),data.replace(b'E\toom\t0',b'E\toom\t1'),data.replace(b'76924 kB',b'99999999 kB')]:
+            with self.assertRaises(RuntimeError):h.legacy_peak_refusal(l,bad,768*1024**2)
+        row['argv'][-1]=row['argv'][-1].replace('web-owner','other-owner');prior['commands']=[self.put(path,row)]
+        with self.assertRaises(RuntimeError):h.request(l,self.value)
+    def test_memory_profile_requires_adjacent_held_helper(self):
+        m=load('profile_fixture',SCRIPTS/'public-memory-health.py');self.value['memoryProfile']=m.PROFILE
+        with self.assertRaises(RuntimeError):h.request(l,self.value)
+        helper=self.base/'reader/sources/public-memory-health.py';self.value['sources'].append(self.put(helper,(SCRIPTS/helper.name).read_bytes()));h.request(l,self.value)
+        self.value['memoryProfile']={**m.PROFILE,'headroomDivisor':16}
+        with self.assertRaises(RuntimeError):h.request(l,self.value)
 if __name__=='__main__':unittest.main()
