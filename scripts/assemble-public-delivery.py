@@ -144,22 +144,29 @@ def candidate_build(binding, physical_bytes=True):
     """Keep the maintained build descriptor, never infer its source from CI."""
     exact(binding, {'root', 'manifest', 'originalCustody'})
     descriptor = parsed(read_ref(binding['originalCustody']))
-    exact(descriptor, build_contract.PRODUCER_KEYS)
-    need(descriptor['version'] == 1 and descriptor['status'] == 'LOCAL_PUBLIC_SHELL_UPDATE_PREPARED_UNQUALIFIED'
-        and descriptor['artifactClass'] == 'public-shell-overlay' and descriptor['profile'] == 'lolly-start'
+    full_root = descriptor.get('version') == 2
+    exact(descriptor, build_contract.PRODUCER_KEYS | ({'delivery'} if full_root else set()))
+    need(descriptor['version'] in {1, 2} and descriptor['status'] == 'LOCAL_PUBLIC_SHELL_UPDATE_PREPARED_UNQUALIFIED'
+        and descriptor['artifactClass'] == ('public-full-root-frontend' if full_root else 'public-shell-overlay') and descriptor['profile'] == 'lolly-start'
         and type(descriptor['lollySource']) is str and re.fullmatch('[a-f0-9]{40}', descriptor['lollySource'])
         and all(descriptor[key] is False for key in ['originAuthenticatedByThisCommand', 'normalCIQualified', 'runtimeQualified', 'promotionAttempted']),
         'Original maintained public build descriptor required; no handwritten source stamp')
     need(descriptor['candidate'] == {'root': binding['root'], 'manifest': binding['manifest']}, 'Original candidate root/manifest custody differs')
     manifest = parsed(read_ref(binding['manifest']))
     if physical_bytes: physical(binding['root'], manifest)
-    refs = descriptor['producerSourceFiles']; need(type(refs) is list and len(refs) == len(build_contract.PRODUCER_SOURCES), 'Complete original public builder source closure required')
-    sources = {}
-    for ref in refs:
-        read_ref(ref); path = Path(ref['path'])
-        need(path.name in build_contract.PRODUCER_SOURCES and path.name not in sources
-            and checksum(Path(__file__).with_name(path.name)) == ref['sha256'], 'Original builder differs from reviewed maintained helper bytes')
-        sources[path.name] = ref
+    if full_root:
+        spec = importlib.util.spec_from_file_location('public_build_sources', Path(__file__).with_name('public-build-source-registry.py'))
+        registry = importlib.util.module_from_spec(spec); spec.loader.exec_module(registry)
+        sources = registry.verify_sources(descriptor['producerSourceFiles'], read_ref)
+    else:
+        refs = descriptor['producerSourceFiles']; source_names = build_contract.PRODUCER_SOURCES
+        need(type(refs) is list and len(refs) == len(source_names), 'Complete original public builder source closure required')
+        sources = {}
+        for ref in refs:
+            read_ref(ref); path = Path(ref['path'])
+            need(path.name in source_names and path.name not in sources
+                and checksum(Path(__file__).with_name(path.name)) == ref['sha256'], 'Original builder differs from reviewed maintained helper bytes')
+            sources[path.name] = ref
     need(sources.get('prepare-public-shell-update.ts') == descriptor['producer'], 'Original public producer is outside its source closure')
     report = parsed(read_ref(descriptor['originalReport'])); command = report.get('command')
     need(report.get('exitCode') == 0 and report.get('signal') is None and report.get('error') is None
@@ -198,7 +205,46 @@ def candidate_build(binding, physical_bytes=True):
     catalog = descriptor['catalog']; exact(catalog, {'previous', 'candidate', 'signatureReused', 'newSigning'})
     need(catalog['signatureReused'] is True and catalog['newSigning'] is False, 'Original unchanged signed catalog custody required')
     for key in ['previous', 'candidate']: read_ref(catalog[key])
+    if full_root: verify_full_root_build(descriptor, runner, sources, manifest)
     return {**binding, 'source': descriptor['lollySource'], 'profile': descriptor['profile']}
+
+
+def verify_full_root_build(descriptor, runner, sources, manifest):
+    """Full-root producer custody cannot open the legacy five-path hold."""
+    delivery = descriptor['delivery']; exact(delivery, {'baseline', 'codings', 'baselineCommand', 'codingCommand'})
+    baseline, codings = [parsed(read_ref(delivery[key])) for key in ['baseline', 'codings']]
+    baseline_command = parsed(read_ref(delivery['baselineCommand']))
+    argv = baseline_command.get('command')
+    need(baseline_command.get('exitCode') == 0 and baseline_command.get('signal') is None and baseline_command.get('error') is None
+        and type(argv) is list and len(argv) == 9 and argv[:3] == ['python3', '-B', sources['verify-public-baseline.py']['path']]
+        and argv[3::2] == ['--input', '--sha256', '--output'] and argv[8] == delivery['baseline']['path'], 'Exact successful baseline verifier command required')
+    request = parsed(read_ref({'path': argv[4], 'sha256': argv[6]}))
+    spec = importlib.util.spec_from_file_location('public_baseline_verifier', Path(__file__).with_name('verify-public-baseline.py'))
+    verifier = importlib.util.module_from_spec(spec); spec.loader.exec_module(verifier)
+    need(baseline == verifier.verify(request) and baseline['acceptedRelease'] == descriptor['previousAcceptance']
+        and baseline['source'] == descriptor['previousShellSource'] and baseline['image'] == descriptor['image']
+        and baseline['manifest']['sha256'] == descriptor['previous']['manifest']['sha256'] and parsed(read_ref(baseline['manifest'])) == parsed(read_ref(descriptor['previous']['manifest'])), 'Actual original serving baseline differs')
+    command = parsed(read_ref(delivery['codingCommand'])); argv = command.get('command')
+    need(command.get('exitCode') == 0 and command.get('signal') is None and command.get('error') is None
+        and type(argv) is list and len(argv) == 4 and Path(argv[0]).is_absolute()
+        and argv[1] == sources['public-shell-codings.mjs']['path'], 'Exact maintained coding command required')
+    value = parsed(read_ref({'path': argv[2], 'sha256': argv[3]}))
+    exact(value, {'version', 'source', 'candidate', 'previous', 'scratch', 'models', 'receipt'})
+    need(value['version'] == 1 and value['source'] == runner['source'] and value['candidate'] == runner['output']
+        and value['previous'] == baseline['manifest'] and value['models'] == baseline['models']
+        and value['receipt'] == delivery['codings']['path'], 'Coding command source/output/models differ')
+    exact(codings, {'version', 'status', 'candidate', 'previous', 'models', 'compressor', 'changed', 'written', 'removed', 'map', 'retainedImmutableWireVerified', 'allCodingsDecoded', 'runtimeQualified', 'productionMutation'})
+    need(codings['version'] == 1 and codings['status'] == 'FRONTEND_CODINGS_AND_FINAL_MAP_PREPARED_NOT_QUALIFIED'
+        and codings['candidate'] == value['candidate'] and codings['previous'] == value['previous'] and codings['models'] == value['models']
+        and codings['retainedImmutableWireVerified'] is True and codings['allCodingsDecoded'] is True
+        and codings['runtimeQualified'] is False and codings['productionMutation'] is False, 'Exact unqualified coding proof required')
+    compressor = codings['compressor']; read_ref(compressor)
+    checkout = Path(runner['source']); source = build_contract.shared.git_bytes(checkout, descriptor['lollySource'], 'scripts/build-delivery.ts', build_contract.shared.git_command)
+    need(compressor['path'] == str(checkout / 'scripts/build-delivery.ts') and hashlib.sha256(source).hexdigest() == compressor['sha256'], 'Compressor differs from immutable source')
+    rows = overlay.manifest(manifest); old = overlay.manifest(parsed(read_ref(baseline['manifest'])))
+    need(codings['map'] == {k: rows[overlay.MAP][k] for k in ['size', 'sha256']}, 'Candidate map differs from coding proof')
+    writes = tree({path: row for path, row in rows.items() if old.get(path) != row})
+    overlay.plan(parsed(read_ref(baseline['manifest'])), manifest, manifest, writes, sorted(set(old) - set(rows)))
 
 
 def verify_candidate_build(value, physical_bytes=True):

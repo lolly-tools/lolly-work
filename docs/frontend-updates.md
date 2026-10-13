@@ -129,6 +129,24 @@ commands for its declared managed K3s layout. Its source controls do not replace
 registration and actual native acceptance on the operator's target. The image,
 configuration, models and infrastructure remain selected unchanged; only the
 new qualified frontend root and its paired map advance.
+The same `update:public-shell:build` command now accepts an original version 2
+complete-root serving record. It verifies that record through the maintained
+read-only validator and emits a version 2 `public-full-root-frontend` descriptor.
+The builder keeps the accepted image, public catalog, configuration and model
+recipe; it recompiles the frontend and compresses only changed entry files and
+new chunks. Retained immutable identities and gzip/Brotli bytes remain exact.
+It checks all encoded files and generates the validator map from the final
+inventory. Complete-root assembly then consumes this descriptor in `frontend`
+mode; the legacy five-path facade still refuses a map-bearing root.
+
+Keep the original preparation, qualification and publication records, including
+any explicitly verified continuation after an interrupted staging attempt.
+Reading that history does not rerun old operators or erase failed journals.
+New preparation holds the complete current validator source closure as well.
+This avoids rebuilding an unchanged image; whole-root and HTTP qualification
+still take time proportional to the retained content and are not an instant
+publish operation.
+
 For the current `lolly.tools` layout, follow its protected production handoff.
 
 After successful complete-root observation, the publisher retains

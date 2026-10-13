@@ -18,6 +18,16 @@ const HASH = /^[a-f0-9]{64}$/, COMMIT = /^[a-f0-9]{40}$/;
 export const PUBLIC_SETTINGS = { catalogTrustMode: 'verified', requireAiPolicy: false, liveRelay: 'https://lolly.tools/live', siteUrl: 'https://lolly.tools' } as const;
 export const PUBLIC_OVERLAY_FILES = ['index.html', 'precache.json', 'sw.js', 'portable/player.js'] as const;
 export const PUBLIC_STATUS = 'LOCAL_PUBLIC_SHELL_UPDATE_PREPARED_UNQUALIFIED';
+function fullRootSources(): string[] {
+  const registry = fileURLToPath(new URL('public-build-source-registry.py', import.meta.url));
+  const result = spawnSync('python3', ['-B', registry], { encoding: 'utf8', maxBuffer: 65536 });
+  requireShell(result.status === 0 && !result.error, 'Maintained full-root source registry failed.');
+  const names: unknown = JSON.parse(result.stdout);
+  requireShell(Array.isArray(names) && names.length > 0 && names.length < 100
+    && names.every(name => typeof name === 'string' && /^[a-z0-9.-]+$/.test(name))
+    && new Set(names).size === names.length, 'Closed unique maintained source registry required.');
+  return names as string[];
+}
 const SOURCE_FILES = ['prepare-public-shell-update.ts', 'prepare-shell-update.ts', 'classify-application-release.ts', 'retain-shell-assets.ts', 'shell-update-files.ts', 'shell-update-clone.py', 'shell-update-vite.mjs'];
 type Catalog = { indexSha256: string; envelopeSha256: string; pinCanonicalSha256: string; keyId: string; signedFiles: number };
 type Custody = { version: 1; artifactClass: 'public-shell-overlay'; imageSource: string; previousShellSource: string; image: string; profile: 'lolly-start';
@@ -51,7 +61,7 @@ function custody(options: PublicShellOptions): Custody {
   for (const key of ['previousManifest', 'previousAcceptance', 'ci']) reference(value[key]);
   const accepted = readShellJson((value.previousAcceptance as Ref).path, (value.previousAcceptance as Ref).sha256);
   requireShell(accepted && typeof accepted === 'object' && 'status' in accepted
-    && ['READ_ONLY_PUBLIC647_PROMOTION_ACCEPTANCE_PASSED', 'PUBLIC_SHELL_RUNTIME_AND_HTTPS_ACCEPTED'].includes(accepted.status as string), 'Only an original public acceptance can supply the public baseline.');
+    && ['READ_ONLY_PUBLIC647_PROMOTION_ACCEPTANCE_PASSED', 'PUBLIC_SHELL_RUNTIME_AND_HTTPS_ACCEPTED', 'ACTUAL_PUBLIC_FULL_ROOT_SERVING_ACCEPTED'].includes(accepted.status as string), 'Only an original public acceptance can supply the public baseline.');
   return value as unknown as Custody;
 }
 function previousManifest(options: PublicShellOptions, input: Custody): ShellManifest {
@@ -67,6 +77,19 @@ function previousManifest(options: PublicShellOptions, input: Custody): ShellMan
   requireShell(actual.files.every(row => !row.path.startsWith('models/') && row.path !== 'models'), 'Model storage must not enter the public shell snapshot.');
   requireShell(actual.files.some(row => row.path.startsWith('_app/')) && PUBLIC_OVERLAY_FILES.every(path => actual.files.some(row => row.path === path)), 'All five public overlay paths must already exist.');
   return actual;
+}
+export function publicFullRootDelta(candidate: ShellManifest, previous: ShellManifest): ShellManifest {
+  const old = new Map(previous.files.map(row => [row.path, row])), current = new Map(candidate.files.map(row => [row.path, row]));
+  const mutable = (path: string) => (PUBLIC_OVERLAY_FILES as readonly string[]).includes(path.replace(/\.(gz|br)$/, ''));
+  for (const row of previous.files) {
+    if (row.path === '.delivery-etags.conf' || mutable(row.path)) continue;
+    requireShell(JSON.stringify(current.get(row.path)) === JSON.stringify(row), 'Protected public content or immutable wire bytes changed.');
+  }
+  for (const row of previous.files) if (!current.has(row.path)) requireShell(/\.(gz|br)$/.test(row.path) && mutable(row.path)
+    && old.get(row.path.slice(0, -3))?.sha256 !== current.get(row.path.slice(0, -3))?.sha256, 'Only stale changed-entry codings may disappear.');
+  const files = candidate.files.filter(row => JSON.stringify(old.get(row.path)) !== JSON.stringify(row));
+  requireShell(files.length > 0 && files.some(row => row.path === '.delivery-etags.conf') && files.every(row => row.path === '.delivery-etags.conf' || mutable(row.path) || row.path.startsWith('_app/')), 'Exact full-root frontend boundary required.');
+  return { version: 1, files, totalBytes: files.reduce((sum, row) => sum + row.size, 0) };
 }
 function catalog(root: string, input: Custody, pin: unknown): void {
   exact(pin, ['kty', 'crv', 'x', 'y']);
@@ -103,7 +126,10 @@ export function preparePublicShellUpdate(options: PublicShellOptions) {
   for (const root of [options.source, options.previousShell]) requireShell(!options.out.startsWith(root + sep) && !root.startsWith(options.out + sep) && root !== options.out, 'Public source, baseline and output must not overlap.');
   requireShell(HASH.test(options.custodySha256), 'Reviewed public custody hash required.');
   const input = custody(options), previous = previousManifest(options, input), pin = readShellJson(options.publicKey, input.publicKeySha256);
-  const producerSourceFiles = SOURCE_FILES.map(name => { const path = fileURLToPath(new URL(name, import.meta.url)); return { path, sha256: shellFileHash(path).sha256 }; });
+  const accepted = readShellJson(input.previousAcceptance.path, input.previousAcceptance.sha256) as { status: string; version: number };
+  const fullRoot = accepted.status === 'ACTUAL_PUBLIC_FULL_ROOT_SERVING_ACCEPTED';
+  requireShell(!fullRoot || accepted.version === 2, 'Full-root builds require original publication custody.');
+  const producerSourceFiles = (fullRoot ? fullRootSources() : SOURCE_FILES).map(name => { const path = fileURLToPath(new URL(name, import.meta.url)); return { path, sha256: shellFileHash(path).sha256 }; });
   catalog(options.previousShell, input, pin);
   const classification = classifyApplicationRelease({ repo: options.source, base: options.base, candidate: options.candidate });
   requireShell(classification.classification === 'web-shell-only', 'Only committed web-shell changes qualify for public overlay preparation.');
@@ -115,6 +141,17 @@ export function preparePublicShellUpdate(options: PublicShellOptions) {
   }
   requireDisk(dirname(options.out), 128 * 1024 ** 2); mkdirSync(options.out, { mode: 0o700 });
   try {
+    let baseline: Ref | null = null, codingReceipt: Ref | null = null;
+    if (fullRoot) {
+      const request = writeShellJson(join(options.out, 'baseline-input.json'), { version: 1, acceptedRelease: input.previousAcceptance,
+        image: input.image, manifest: input.previousManifest, source: options.base, publicPin: { path: options.publicKey, sha256: input.publicKeySha256 } });
+      const output = join(options.out, 'baseline-verified.json'), helper = fileURLToPath(new URL('./verify-public-baseline.py', import.meta.url));
+      const argv = ['-B', helper, '--input', request.path, '--sha256', request.sha256, '--output', output];
+      const result = spawnSync('python3', argv, { encoding: 'utf8', timeout: 300_000, maxBuffer: 16 * 1024 ** 2 });
+      writeShellJson(join(options.out, 'baseline-command.original.json'), { command: ['python3', ...argv], exitCode: result.status, signal: result.signal, stdout: result.stdout ?? '', stderr: result.stderr ?? '', error: result.error?.name ?? null });
+      requireShell(!result.error && result.status === 0 && result.signal === null, 'Original full-root acceptance validation refused.');
+      baseline = { path: output, sha256: shellFileHash(output).sha256 };
+    }
     const classificationRef = writeShellJson(join(options.out, 'classification.json'), classification), imageClassificationRef = writeShellJson(join(options.out, 'image-classification.json'), imageClassification), imageManifestRef = writeShellJson(join(options.out, 'previous-static.manifest.json'), previous);
     const content = join(options.out, 'public-content'), prerequisites = join(options.out, 'public-prerequisites'), candidate = join(options.out, 'candidate-static');
     for (const path of [content, prerequisites, candidate]) mkdirSync(path, { mode: 0o700 });
@@ -135,7 +172,19 @@ export function preparePublicShellUpdate(options: PublicShellOptions) {
     const buildReport = command([fileURLToPath(new URL('./shell-update-vite.mjs', import.meta.url)), runner.path, runner.sha256], options, env, 'vite-build');
     const candidateCatalog = command(['scripts/verify-release-catalog.ts', '--root', candidate, '--public-key', options.publicKey], options, env, 'candidate-catalog');
     catalog(candidate, input, pin);
-    const candidateManifest = shellManifest(candidate), delta = shellUpdateDelta(candidateManifest, previous);
+    if (fullRoot) {
+      const current = new Map(shellManifest(candidate).files.map(row => [row.path, row]));
+      const retained = previous.files.filter(row => row.path.startsWith('_app/'));
+      for (const row of retained) if (current.has(row.path)) requireShell(JSON.stringify(current.get(row.path)) === JSON.stringify(row), 'Existing immutable app wire bytes changed.');
+      cloneShellFiles(options.previousShell, candidate, retained.filter(row => !current.has(row.path)), join(options.out, 'candidate-retained-clone.json'));
+      const verified = readShellJson(baseline!.path, baseline!.sha256) as { models: Ref };
+      const receipt = join(options.out, 'frontend-codings.json');
+      const codingInput = writeShellJson(join(options.out, 'frontend-codings-input.json'), { version: 1, source: options.source, candidate,
+        previous: input.previousManifest, scratch: join(options.out, 'frontend-coding-scratch'), models: verified.models, receipt });
+      command([fileURLToPath(new URL('./public-shell-codings.mjs', import.meta.url)), codingInput.path, codingInput.sha256], options, env, 'frontend-codings');
+      codingReceipt = { path: receipt, sha256: shellFileHash(receipt).sha256 };
+    }
+    const candidateManifest = shellManifest(candidate), delta = fullRoot ? publicFullRootDelta(candidateManifest, previous) : shellUpdateDelta(candidateManifest, previous);
     requireShell(delta.files.length > 0 && PUBLIC_OVERLAY_FILES.every(path => candidateManifest.files.some(row => row.path === path)), 'Public build must produce every fixed overlay file and a changed UI.');
     const candidateRef = writeShellJson(join(options.out, 'candidate-static.manifest.json'), candidateManifest), prepared = join(options.out, 'prepared-static'), retentionPath = join(options.out, 'retention.json');
     const retention = retainShellAssets({ candidate, previous: options.previousShell, expectedCandidateId: shellId(candidateManifest), expectedPreviousId: shellId(previous), out: prepared, receiptOut: retentionPath, copyMode: 'clone' });
@@ -150,7 +199,7 @@ export function preparePublicShellUpdate(options: PublicShellOptions) {
     custody(options); readShellJson(options.publicKey, input.publicKeySha256); requireDisk(options.out);
     for (const ref of producerSourceFiles) requireShell(shellFileHash(ref.path).sha256 === ref.sha256, 'Public producer helper source changed during preparation.');
     const modules = readShellJson(modulesPath); requireShell(modules && typeof modules === 'object' && 'source' in modules && modules.source === options.source, 'Source-bound public workspace receipt differs.');
-    const result = { version: 1, status: PUBLIC_STATUS, artifactClass: 'public-shell-overlay', lollySource: options.candidate, imageSource: input.imageSource, previousShellSource: options.base,
+    const result = { version: fullRoot ? 2 : 1, status: PUBLIC_STATUS, artifactClass: fullRoot ? 'public-full-root-frontend' : 'public-shell-overlay', ...(fullRoot ? { delivery: { baseline, codings: codingReceipt, baselineCommand: { path: join(options.out, 'baseline-command.original.json'), sha256: shellFileHash(join(options.out, 'baseline-command.original.json')).sha256 }, codingCommand: { path: join(options.out, 'frontend-codings.original.json'), sha256: shellFileHash(join(options.out, 'frontend-codings.original.json')).sha256 } } } : {}), lollySource: options.candidate, imageSource: input.imageSource, previousShellSource: options.base,
       image: input.image, profile: input.profile, settings: input.settings, publicCatalog: input.publicCatalog, shellManifestSha256: preparedRef.sha256,
       workspaceModules: { path: modulesPath, sha256: shellFileHash(modulesPath).sha256 }, originalReport: buildReport, classification: classificationRef, imageClassification: imageClassificationRef,
       custody: { path: options.custody, sha256: options.custodySha256 }, previousAcceptance: input.previousAcceptance, ci: input.ci, publicKey: { path: options.publicKey, sha256: input.publicKeySha256 },
@@ -166,7 +215,7 @@ export function preparePublicShellUpdate(options: PublicShellOptions) {
 }
 export function main(argv = process.argv.slice(2)): number {
   if (argv.length === 1 && argv[0] === '--help') {
-    console.log('Usage: node scripts/prepare-public-shell-update.ts --source CLEAN_LOLLY_ROOT --base ACCEPTED_SHELL_COMMIT --candidate CANDIDATE_COMMIT --previous-shell ACCEPTED_PUBLIC_STATIC_ROOT --public-key EXISTING_PUBLIC_JWK --custody REVIEWED_PUBLIC_CUSTODY_JSON --custody-sha256 SHA256 --out NEW_DIRECTORY\nPublic-only artifact: neutral lolly-start, existing signed catalog and verification pin, unchanged accepted public image/models/config. Emits complete static, retained five-path overlay and delta manifests. Never installs dependencies, signs, builds an image, authenticates CI/report origins, contacts a cluster or deploys.'); return 0;
+    console.log('Usage: node scripts/prepare-public-shell-update.ts --source CLEAN_LOLLY_ROOT --base ACCEPTED_SHELL_COMMIT --candidate CANDIDATE_COMMIT --previous-shell ACCEPTED_PUBLIC_STATIC_ROOT --public-key EXISTING_PUBLIC_JWK --custody REVIEWED_PUBLIC_CUSTODY_JSON --custody-sha256 SHA256 --out NEW_DIRECTORY\nPublic-only artifact: neutral lolly-start, existing signed catalog and verification pin, unchanged accepted public image/models/config. Emits a version 2 full-root frontend artifact for an accepted full-root release, including refreshed codings and paired validator map; legacy baselines retain version 1 overlay output. Never installs dependencies, signs, builds an image, authenticates CI/report origins, contacts a cluster or deploys.'); return 0;
   }
   try { const result = preparePublicShellUpdate(publicShellArguments(argv)); console.log(JSON.stringify({ status: result.status, source: result.lollySource, overlay: result.overlay.manifest, promotionAttempted: false })); return 0; }
   catch { console.error(JSON.stringify({ status: 'REFUSED', reason: 'Public source, custody, capacity or maintained build checks failed; inspect original reports.', promotionAttempted: false })); return 1; }
