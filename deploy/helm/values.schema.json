@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "renderWorker": {
+      "type": "object",
+      "properties": {
+        "browserStartupTimeoutMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 120000,
+          "description": "Maximum Chromium startup or recovery time. The browser sandbox is always required."
+        }
+      }
+    }
+  }
+}

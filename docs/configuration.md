@@ -293,6 +293,18 @@ Every tool in the committed `packs/demo` ships hooks, so `instance.example.json`
 repo end to end. Repoint `instance.pack` at a pack you do not fully control and this goes
 back to `false`, with a Chromium worker for the hooked tools.
 
+The Chromium worker always enables its browser sandbox. A bounded launch begins
+at startup, and `/readyz` stays unavailable until the browser connects. Failed
+startup or recovery stops the worker without an unsandboxed fallback.
+`LW_RENDER_BROWSER_STARTUP_TIMEOUT_MS` controls that budget (default `30000`,
+integer from `1000` to `120000`); Helm uses
+`renderWorker.browserStartupTimeoutMs`. Qualify the exact Linux image and target
+runtime with the existing non-root, seccomp and container permissions before
+rollout. A host that refuses the sandbox must remain out of service until its
+runtime is qualified. The separate evaluation `allowHooksInFastPath` setting runs
+curated demo hooks in `node:vm` and has no browser isolation; keep that setting
+false when preparing production packs.
+
 The worker itself takes `LW_RENDER_MAX_CONCURRENT` (default `4`, Helm
 `renderWorker.maxConcurrent`): its per-pod render/rasterise cap. At capacity it answers
 `503 RENDER_BUSY` + `Retry-After` immediately - no internal queueing, so saturation stays

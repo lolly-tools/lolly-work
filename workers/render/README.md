@@ -39,6 +39,7 @@ The signature covers the exact request bytes; `ts` must be within ±5 min
 | `LW_RENDER_ALLOWED_ORIGINS` | | comma-separated origins a rendered page may reach even on a private address (an internal asset host); plain origins, no paths |
 | `PORT` | | listen port (default 8791) |
 | `LW_RENDER_NAV_TIMEOUT_MS` / `LW_RENDER_EXPORT_TIMEOUT_MS` | | per-render timeouts |
+| `LW_RENDER_BROWSER_STARTUP_TIMEOUT_MS` | | browser startup and recovery budget, default 30000 ms; integer from 1000 to 120000 |
 | `LOLLY_BROWSER_PATH` / `LOLLY_BROWSER_CHANNEL` | | pin a specific Chromium instead of the bundled one |
 
 ## Run / build
@@ -57,11 +58,23 @@ hooked tools render via this worker; without them, they still return
 
 ## Hardening
 
-Runs as a non-root user with Chromium's `--no-sandbox` (pod-level isolation
-substitutes for Chromium's own sandbox, which needs privileges we don't grant).
-In production run it under a sandboxed runtimeClass (gVisor / Kata) and a strict
-NetworkPolicy - it only needs to reach `LOLLY_WEB_BASE`, and only the control
-plane needs to reach it.
+Runs as a non-root user with Chromium's sandbox explicitly enabled through
+Playwright's `chromiumSandbox: true`. There is no unsandboxed launch setting or
+automatic fallback. Startup begins a bounded browser launch; readiness stays
+false until the browser is connected. A disconnect removes readiness immediately
+and starts one shared recovery launch with the same settings and budget. Failed
+startup or recovery stops the worker with a nonzero exit status.
+
+Keep the existing read-only root filesystem, dropped capabilities,
+no-new-privileges, seccomp profile and NetworkPolicy. Qualify the exact Linux
+image, host kernel and container runtime before promotion. Chromium's sandbox
+needs namespace support, and a runtime's default seccomp profile may refuse the
+required operations. A refusal is a deployment qualification failure; do not add
+privileges, switch seccomp off or disable the browser sandbox to bypass the check.
+[Playwright's launch options](https://playwright.dev/docs/api/class-browsertype)
+and [container guidance](https://playwright.dev/docs/docker) describe sandbox
+enablement and namespace requirements. A gVisor or Kata runtime class can add
+isolation after its own qualification; it does not replace the browser sandbox.
 
 **Egress rule (plans/58 WP0, `src/egress.ts`).** Every request a rendered page makes,
 in both `/render` and `/rasterise`, goes through one rule:
@@ -73,7 +86,7 @@ WebSockets are refused outright, and Chromium runs with non-proxied WebRTC disab
 A refusal is logged with its origin and reason, never the full URL.
 
 Chromium resolves a name again when it connects, so a DNS-rebinding host can slip past
-the in-process check. The chart's opt-in `renderWorker.networkPolicy` closes that at
+the in-process check. The chart's default-on `renderWorker.networkPolicy` closes that at
 the network: control-plane ingress only, and egress to cluster DNS, public addresses and
 the `extraEgress` rules you add for a private shell or allowed origin.
 
@@ -92,7 +105,8 @@ remove an obsolete Alpine executable override when adopting this image.
 Run as the unprivileged `node` user with a read-only root filesystem, dropped
 capabilities, no-new-privileges and writable ephemeral `/tmp`. Chromium's user-data
 directory, XDG configuration and cache use that temporary mount. Health is HTTP
-`/healthz`; `/readyz` reports `{ ok, active, capacity }` with HTTP 503 when full.
+`/healthz`; `/readyz` reports `{ ok, active, capacity }` with HTTP 503 when the
+browser is not connected or capacity is full.
 `active` includes cancelled requests until their Chromium contexts finish closing.
 Supply the approved
 `LW_RENDER_WORKER_SECRET` and `LOLLY_WEB_BASE` using deployment configuration and
@@ -137,6 +151,14 @@ capabilities and no-new-privileges. It changes no Kubernetes resource or instanc
 data and publishes neither the shell nor an image. Local Docker cleanup refuses
 an identity mismatch. CI currently exercises Linux amd64 with 1 GiB and one CPU;
 other architectures and production resource limits require their own acceptance.
-The worker's existing browser sandbox setting is unchanged: pod isolation remains
-its security boundary, and this graphics compatibility test makes no browser
-sandbox, physical GPU, private brand or complete production qualification claim.
+The browser launch must retain its sandbox during acceptance. Check renderer
+sandbox evidence, such as Chromium's sandbox diagnostics or the renderer's
+namespace and seccomp state, on the actual target runtime. Launch flags and a
+passing health probe alone do not establish that evidence. The graphics test
+makes no physical GPU, private brand or complete production qualification claim.
+
+This requirement covers the Chromium worker. The control plane's separate
+`render.allowHooksInFastPath` setting permits curated hooks to run inside
+`node:vm`, which is not an isolation boundary. Keep that setting false for
+production packs. The evaluation profile enables the bundled demo path; review
+that deliberate evaluation setting separately when preparing a production config.

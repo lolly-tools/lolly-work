@@ -54,6 +54,14 @@ function sign(body: string): Record<string, string> {
 function renderJob(toolId: string): string {
   return JSON.stringify({ toolId, query: 'title=Hi', overrides: {}, format: 'svg', profile: {}, ts: Date.now() });
 }
+
+test('a listening worker without a connected browser is live but not ready', async () => {
+  setBrowserGetter(null);
+  assert.equal((await fetch(`${base}/healthz`)).status, 200);
+  const response = await fetch(`${base}/readyz`);
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { ok: false, active: 0, capacity: 1 });
+});
 function rasterJob(): string {
   return JSON.stringify({ svg: '<svg xmlns="http://www.w3.org/2000/svg"></svg>', format: 'png', ts: Date.now() });
 }
