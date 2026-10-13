@@ -6247,7 +6247,8 @@ function shell(current, content) {
       el('div', { class: 'session' },
         el('div', { class: 'who', title: session?.user?.email ?? '' }, session?.user?.email ?? ''),
         el('div', {}, session?.user?.role ?? ''),
-        el('p', {}, el('button', { onclick: async () => { await api('/api/auth/logout', { method: 'POST' }); location.reload(); } }, 'Sign out'))),
+        el('p', {}, el('button', { onclick: async () => { await api('/api/auth/logout', { method: 'POST' }); location.reload(); } }, 'Sign out')),
+        session?.providerLogoutPath === '/api/auth/logout-provider' ? el('a', { href: '/api/auth/logout-provider' }, 'Sign out of identity provider') : null),
     ),
     content,
   );

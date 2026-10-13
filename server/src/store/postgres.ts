@@ -1,3 +1,4 @@
+import { createPostgresOidcLogout } from '../iam/oidc-logout-postgres.ts';
 import { COMMENT_THREAD_LIMIT, type CommentThread } from '@lolly-tools/core/canvas-review-v1';
 import type { CanvasCheckpoint, CanvasOp } from '@lolly-tools/core/canvas-op-v1';
 import { auditWhere } from '../audit/filter.ts';
@@ -585,6 +586,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       return { scope, kind, hash: row.hash as string, bytes: row.bytes as Buffer, until: Number(row.until_ms), toolIds: row.tool_ids as string[], assetIds: row.asset_ids as string[] };
     },
     ...createPostgresRenderStore(pool),
+    ...createPostgresOidcLogout(pool),
     ...createPostgresPasskeys(pool),
     storageKind: 'postgres',
     brandPersistence: 'durable',

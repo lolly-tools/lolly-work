@@ -33,7 +33,7 @@ const b64u = (v: Buffer | string): string => Buffer.from(v).toString('base64url'
 
 function signIdToken(payload: Record<string, unknown>): string {
   const head = b64u(JSON.stringify({ alg: 'RS256', kid: 'k1', typ: 'JWT' }));
-  const body = b64u(JSON.stringify(payload));
+  const body = b64u(JSON.stringify({ iat: Math.floor(Date.now() / 1000), ...payload }));
   const sig = createSign('sha256').update(`${head}.${body}`).sign(privateKey);
   return `${head}.${body}.${b64u(sig)}`;
 }

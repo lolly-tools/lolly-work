@@ -1,5 +1,8 @@
 # Operations runbook
 
+For managed SSO, use [Enterprise identity deployment](enterprise-identity.md): provider
+registration, admission, optional MFA, SCIM/offboarding, logout and upgrade checks.
+
 Day-two work: schema ownership, collaboration drain, backup, limits, monitoring
 and upgrades. Keep application releases separate from infrastructure relocation.
 

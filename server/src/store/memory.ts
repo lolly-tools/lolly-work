@@ -1,3 +1,4 @@
+import { createMemoryOidcLogout } from '../iam/oidc-logout-memory.ts';
 import { COMMENT_THREAD_LIMIT, type CommentThread } from '@lolly-tools/core/canvas-review-v1';
 import type { CanvasCheckpoint, CanvasOp } from '@lolly-tools/core/canvas-op-v1';
 import { matchesAudit } from '../audit/filter.ts';
@@ -233,6 +234,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     configureRoleGroups(mapping) { roleGroups = structuredClone(mapping); },
     storageKind: 'memory',
     ...createMemoryRenderStore(),
+    ...createMemoryOidcLogout(),
     ...passkeys.store,
     brandPersistence: 'ephemeral',
     async getBrandState() { return structuredClone(brandState); },

@@ -1,5 +1,8 @@
 # Update applications without redeploying infrastructure
 
+For managed SSO, use [Enterprise identity deployment](../../docs/enterprise-identity.md): provider
+registration, admission, optional MFA, SCIM/offboarding, logout and upgrade checks.
+
 Choose the smallest release that matches the code change. Web UI TypeScript,
 CSS and layout changes can use a compatible shell update without building an
 image. Server and native runtime changes use a qualified application image.

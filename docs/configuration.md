@@ -66,7 +66,7 @@ For generated deployment files and a staged owner cutover, use [Customer setup](
 
 | Key | Default | What it does |
 |---|---|---|
-| `issuer` | `""` | OIDC issuer URL; discovery does the rest. Any compliant issuer works |
+| `issuer` | `""` | Exact OIDC issuer URL; see the supported profile in the enterprise identity guide |
 | `clientId` | `""` | the client this deploy authenticates as |
 | `displayName` | `""` | human name on the sign-in button ("Keycloak", "SUSE ID", "ZITADEL"). Empty ⇒ "SSO" |
 | `groupsClaim` | `groups` | the claim carrying group membership |
@@ -82,6 +82,20 @@ For generated deployment files and a staged owner cutover, use [Customer setup](
 | `linkByEmail` | `true` under `claim`, `false` under `trusted` | per IdP. Whether a sign-in from this IdP may join an existing person whose email matches. The default links only when the IdP itself says the address is verified; set `true` to link from a `trusted` IdP (refused unless that IdP has a `hostedDomain` or `tenantId` pin), or `false` to never link from this one |
 | `scopes` | `["openid", "profile", "email"]` | per IdP. Requested scopes, a list or a space-separated string; must include `openid` |
 | `authParams` | `{}` | per IdP. Extra authorization request parameters, allowlisted: `prompt`, `hd`, `domain_hint`, `login_hint`, `acr_values`. Any other key is refused; `hd` must equal `hostedDomain` when both are set |
+
+The following settings apply to each OIDC provider independently and are not
+inherited by `additional` entries. GitHub and password entries refuse these keys.
+See [Enterprise identity deployment](enterprise-identity.md) for registration,
+claim semantics, acceptance checks and lifecycle procedures.
+
+| Key | Default | What it does |
+|---|---|---|
+| `tokenEndpointAuthMethod` | `client_secret_post` with a secret, otherwise `none` | `client_secret_basic`, `client_secret_post` or `none`; must match provider registration and advertised metadata |
+| `signingAlgorithm` | `RS256` | Exactly one of `RS256`, `ES256`, `PS256`; other algorithms are refused |
+| `trustedAudiences` | absent | Explicit additional audience strings; the Work client must still be present and `azp`, when present, must match it |
+| `assurance.acrValues` | absent | Nonempty string list; returned `acr` must equal one entry |
+| `assurance.amrValues` | absent | Nonempty string list; returned `amr` must include every entry |
+| `assurance.maxAgeSeconds` | absent | Integer 0-86400; requires `auth_time` within this age, with sixty seconds of tolerance |
 
 Gated access needs `idp.issuer`, `proxyAuth.enabled` or a `password` entry - or
 `dev.enabled` for local work. The server refuses to start otherwise. See [identity](identity.md).
