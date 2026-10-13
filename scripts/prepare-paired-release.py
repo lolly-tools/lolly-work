@@ -140,6 +140,40 @@ def command(argv, cwd):
     return result.stdout.decode().strip()
 
 
+def main_record(main, value, base, read=None):
+    """Admit current main or explicit, original-provider historical ancestry."""
+    read = read or (lambda ref: file_input(ref, base))
+    if main.get("status") != "HISTORICAL_MAIN_SOURCE_QUALIFIED":
+        exact(main, {"ref", "object"}, {"node_id", "url"})
+        exact(main["object"], {"type", "sha"}, {"url"})
+        require(main["ref"] == "refs/heads/main" and main["object"]["type"] == "commit" and main["object"]["sha"] == value["source"], "Qualified source is stale against reviewed main")
+        return
+    exact(main, {"version", "status", "repository", "source", "currentMain", "mergedPullRequest", "comparison"})
+    require(type(main["version"]) is int and main["version"] == 1 and main["repository"] == value["repository"] and main["source"] == value["source"], "Historical main identity differs")
+    current, pull, comparison = [read(main[k]) for k in ("currentMain", "mergedPullRequest", "comparison")]
+    exact(current, {"ref", "object"}, {"node_id", "url"})
+    exact(current["object"], {"type", "sha"}, {"url"})
+    api = "https://api.github.com/repos/" + value["repository"]
+    require(current["ref"] == "refs/heads/main" and current["object"]["type"] == "commit" and COMMIT.fullmatch(current["object"]["sha"])
+            and current.get("url") == api + "/git/refs/heads/main", "Original current main ref differs")
+    head = current["object"]["sha"]
+    require(isinstance(pull, dict) and positive(pull.get("number")) and pull.get("url") == api + "/pulls/" + str(pull["number"])
+            and pull.get("merged") is True and pull.get("state") == "closed" and isinstance(pull.get("merged_at"), str) and bool(pull["merged_at"])
+            and pull.get("merge_commit_sha") == value["source"] and pull.get("base", {}).get("ref") == "main"
+            and pull["base"].get("repo", {}).get("full_name") == value["repository"], "Original merged main PR does not bind qualified source")
+    require(isinstance(comparison, dict) and comparison.get("url") == api + "/compare/" + value["source"] + "..." + head
+            and comparison.get("base_commit", {}).get("sha") == value["source"] and comparison.get("merge_base_commit", {}).get("sha") == value["source"]
+            and type(comparison.get("behind_by")) is int and comparison["behind_by"] == 0
+            and type(comparison.get("ahead_by")) is int and 0 <= comparison["ahead_by"] <= 300
+            and type(comparison.get("total_commits")) is int and comparison["total_commits"] == comparison["ahead_by"]
+            and isinstance(comparison.get("commits"), list) and len(comparison["commits"]) == comparison["total_commits"], "Original complete comparison does not prove main ancestry")
+    commits = comparison["commits"]
+    require(all(isinstance(c, dict) and isinstance(c.get("sha"), str) and COMMIT.fullmatch(c["sha"]) for c in commits)
+            and len({c["sha"] for c in commits}) == len(commits)
+            and ((head == value["source"] and comparison.get("status") == "identical" and not commits)
+                 or (head != value["source"] and comparison.get("status") == "ahead" and commits and commits[-1]["sha"] == head)), "Comparison head or ancestry status differs")
+
+
 def source_record(value, base, runner):
     exact(value, {"root", "source", "repository", "main", "ciRun", "ciJobs"})
     require(isinstance(value["source"], str) and COMMIT.fullmatch(value["source"]) and isinstance(value["repository"], str) and REPO.fullmatch(value["repository"]), "Invalid source identity")
@@ -148,9 +182,7 @@ def source_record(value, base, runner):
     require(root.is_absolute() and root.is_dir(), "Source checkout must be an absolute local directory")
     require(runner(["git", "rev-parse", "HEAD"], root) == value["source"] and runner(["git", "status", "--porcelain"], root) == "", "Checkout is dirty or differs from the qualified source")
     main = file_input(value["main"], base)
-    exact(main, {"ref", "object"}, {"node_id", "url"})
-    exact(main["object"], {"type", "sha"}, {"url"})
-    require(main["ref"] == "refs/heads/main" and main["object"]["type"] == "commit" and main["object"]["sha"] == value["source"], "Qualified source is stale against reviewed main")
+    main_record(main, value, base)
     run = run_record(file_input(value["ciRun"], base), value["source"], value["repository"], ".github/workflows/ci.yml", "push")
     jobs_record(file_input(value["ciJobs"], base), run, allow_shell_skip=True)
     return root, run

@@ -270,3 +270,43 @@ acceptance, and preserve current user data.
 For `lolly.ing` and `lolly.tools`, use the production handoff in
 `lolly-private/production/README.md` and its `check-target.py`. Historical
 `candidate` names identify the current UpCloud K3s production host.
+
+
+### Public qualification costs
+
+Avoiding an image build does not make the full public release immediate. The full-root
+qualifier still verifies the complete static root, models, native HTTP behaviour and
+normal-TLS responses before publication. At each of its three model checkpoints it now
+uses one complete physical scan for both the owner assertion and inode/hash comparison;
+this removes three duplicate scans without reusing an older checkpoint or skipping a
+byte check across either HTTP boundary. The accepted receipt format is unchanged.
+
+One 177-model qualification read 5.39 GB of models and transferred 10.78 GB over TLS
+through ordinary and mismatching-If-Range requests. Its TLS portion took about 13 minutes;
+the full qualification took about 28 minutes. These are measurements from that run,
+not a promised duration or a measured result of the scan reduction. Model HTTP requests
+and publication checks remain unchanged. Broader accepted-model proof reuse, freshness
+rules and end-to-end timing coverage are tracked in [issue 115](https://github.com/lolly-tools/lolly-work/issues/115).
+
+
+The maintained full-root stage and publisher write `<phase>.timing.actual.json`
+with monotonic elapsed seconds, including their guard work. Model HTTPS checks
+also write `models-http.timing.actual.json` during qualification and
+`owning-models-tls.timing.actual.json` during observation. These record requests
+started, responses completed and response-body bytes actually read, including
+partial reads on failure. Bytes exclude headers and TLS framing; they are not
+network-interface traffic measurements. Model time is part of its enclosing
+phase time, so do not add them together. Constructor and local preparation time
+are not covered by these phase sidecars.
+
+These diagnostic files do not grant acceptance. Keep the existing accepted or
+uncertain receipt and original command evidence alongside them; a completed phase
+body or HTTP check alone does not prove publication succeeded. An interrupted
+process may leave no timing file. This telemetry does not reduce transfers or
+claim a faster release.
+
+Any future reuse of model proofs must remain within the exact same verified
+owner and process checkpoint. A replaced owner or process requires full
+qualification, even when image and storage identities match. A Recreate rollout
+necessarily changes owner, so a proof from the old serving owner cannot qualify
+the new one. Cross-owner reuse remains outside the current optimization.

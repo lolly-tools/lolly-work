@@ -15,6 +15,8 @@ import { parseProductionRequest, inspectWorkProduction, verifyProductionReport, 
  * watermark, host). A boot that never renders stays instant.
  */
 import { readFile, stat } from 'node:fs/promises';
+import { workerQuery } from './worker-inputs.ts';
+import type { RenderFileScope } from './read-ticket.ts';
 import { governedInputs, requireGovernedInputs, requireRuleValues, projectRuleOverlay, finishRuleReport, markBrandDraft, type ManagedRuleContext } from '../brand/rules.ts';
 import { join } from 'node:path';
 
@@ -85,6 +87,7 @@ function renderErrorFromWorker(e: WorkerError): RenderError {
 
 export interface RenderDeps {
   workerReadToken?: string;
+  workerFiles?: RenderFileScope;
   managedRules?: ManagedRuleContext;
   brandRevision?: string;
   config: InstanceConfig;
@@ -163,15 +166,6 @@ async function resolveHostedValues(value: unknown, resolve?: RenderDeps['hostedR
     return Object.fromEntries(entries);
   }
   return value;
-}
-
-function queryFromValues(values: Record<string, unknown>): string {
-  const query = new URLSearchParams();
-  for (const [key, value] of Object.entries(values)) {
-    if (value === undefined || value === null) continue;
-    query.set(key, typeof value === 'object' ? JSON.stringify(value) : String(value));
-  }
-  return query.toString();
 }
 
 export async function renderTool(deps: RenderDeps, req: RenderRequest): Promise<RenderOutput> {
@@ -354,12 +348,13 @@ async function renderCandidate(deps: RenderDeps, req: RenderRequest): Promise<Re
         `LW_RENDER_WORKER_SECRET for the Chromium worker - see docs/configuration.md)`);
     }
     try {
-      const boundValues = Object.fromEntries(engine.buildInputModel(tool.manifest, { profile: { ...req.profile }, initial: bakedValues })
+      const model = engine.buildInputModel(tool.manifest, { profile: { ...req.profile }, initial: bakedValues });
+      const boundValues = Object.fromEntries(model
         .filter(input => input.bindToProfile).map(input => [input.id, input.value]));
-      const readable = queryFromValues({ ...boundValues, ...bakedValues,
+      const readable = workerQuery(engine, model, { ...boundValues, ...bakedValues,
         ...(pxW ? { width: st.width } : {}), ...(pxH ? { height: st.height } : {}),
         ...(st.unit ? { unit: st.unit } : {}), ...(st.dpi ? { dpi: st.dpi } : {}),
-      });
+      }, deps.config.instance.baseUrl, deps.workerFiles);
       const packed = readable.length > 4096 ? await engine.packQuery(readable) : null;
       const query = packed && packed.length + 2 < readable.length ? `z=${packed}` : readable;
       // The worker navigates through ordinary HTTP servers/proxies. Bound the

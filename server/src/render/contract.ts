@@ -191,7 +191,8 @@ export interface TokenSetLike {
 }
 
 export interface EngineApi {
-  buildInputModel(manifest: unknown, options: { profile: Record<string, unknown>; initial: Record<string, unknown> }): { id: string; value: unknown; bindToProfile?: string }[];
+  buildInputModel(manifest: unknown, options: { profile: Record<string, unknown>; initial: Record<string, unknown> }): { id: string; type: string; value: unknown; bindToProfile?: string }[];
+  serializeUrlState(model: { id: string; type: string; value: unknown }[], opts: { keepUserIds: boolean; inlineBakedAssets: boolean }): string;
   createTokenSet(doc: unknown, opts?: { theme?: string }): TokenSetLike;
   makeColorApi(): Record<string, unknown>;
   ENGINE_VERSION: string;

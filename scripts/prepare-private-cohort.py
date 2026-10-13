@@ -245,6 +245,9 @@ def source_record(value, inputs, runner, kind):
     inputs.source_checks.append((root, value["source"], runner))
     for key in ("main", "ciRun", "ciJobs"):
         inputs.file(value[key])
+    # Register every historical provider original in the same immutable read
+    # closure, including the preparer's final unchanged() check.
+    paired.main_record(inputs.file(value["main"]), value, inputs.base, inputs.file)
     jobs = inputs.file(value["ciJobs"])
     required = WORK_JOBS if kind == "work" else LOLLY_JOBS
     paired.jobs_record(jobs, run, allow_shell_skip=kind == "lolly", required_names=required)
@@ -627,6 +630,49 @@ def raw_source_stamp(value, inputs, raw, candidate, lolly_root, runner):
     return copy.deepcopy(derivation)
 
 
+def previous_record(ref, inputs):
+    """Read the original matched or split-source acceptance without rewriting it."""
+    previous = inputs.file(ref)
+    if isinstance(previous, dict) and "shellSource" in previous:
+        spec = importlib.util.spec_from_file_location("cohort_previous_shell", Path(__file__).with_name("prepare-private-shell.py"))
+        shell = importlib.util.module_from_spec(spec); spec.loader.exec_module(shell)
+        try:
+            previous, before = shell.previous_record(ref, inputs)
+        except shell.Refusal as error:
+            raise Refusal(str(error)) from error
+        old_pin, old_resolver = inputs.file(previous["enginePin"]), inputs.file(previous["resolverPin"])
+        require(old_pin.get("generatedFrom") == previous["engineSource"] and old_resolver.get("commit") == previous["engineSource"], "Previous split engine/resolver source differs")
+        return previous, before
+    exact(previous, {"version", "deployment", "deploymentSpecSha256", "lollySource", "workSource", "image", "enginePin", "shell", "pack", "pin", "acceptance"})
+    require(type(previous["version"]) is int and previous["version"] == 1, "Unknown previous cohort")
+    before = inputs.file(previous["deployment"])
+    exact(before, {"apiVersion", "kind", "metadata", "spec"})
+    require(before["apiVersion"] == "apps/v1" and before["kind"] == "Deployment" and digest(before["spec"]) == sha(previous["deploymentSpecSha256"]), "Previous protected Deployment differs")
+    exact(before["metadata"], {"name", "namespace", "uid", "resourceVersion"})
+    for key in ("name", "namespace"):
+        require(isinstance(before["metadata"][key], str) and NAME.fullmatch(before["metadata"][key]), "Invalid owning Deployment identity")
+    require(all(isinstance(before["metadata"][key], str) and 1 <= len(before["metadata"][key]) <= 128 for key in ("uid", "resourceVersion")), "Missing current UID/resourceVersion guard")
+    for key in ("lollySource", "workSource"):
+        commit(previous[key])
+    paired.updater.image_ref(previous["image"])
+    old_pin = inputs.file(previous["enginePin"])
+    require(old_pin.get("generatedFrom") == previous["lollySource"], "Previous engine source differs")
+    for family in ("shell", "pack", "pin"):
+        exact(previous[family], {"name", "uid"} | ({"manifestSha256", "releaseId"} if family == "shell" else {"manifestSha256"} if family == "pack" else {"sha256"}))
+        require(isinstance(previous[family]["name"], str) and NAME.fullmatch(previous[family]["name"]) and isinstance(previous[family]["uid"], str) and previous[family]["uid"], "Missing previous claim/pin identity")
+    require(previous["pin"]["sha256"] == previous["enginePin"]["sha256"], "Previous pin custody differs")
+    sha(previous["pack"]["manifestSha256"])
+    acceptance = receipt(previous["acceptance"], {"version", "status", "deploymentUID", "deploymentSpecSha256", "lollySource", "workSource", "image", "enginePinSha256", "shellManifestSha256", "packManifestSha256", "originalEvidence"}, inputs)
+    require(acceptance["status"] == "RUNTIME_ACCEPTED" and acceptance["deploymentUID"] == before["metadata"]["uid"]
+            and acceptance["deploymentSpecSha256"] == previous["deploymentSpecSha256"] and acceptance["lollySource"] == previous["lollySource"]
+            and acceptance["workSource"] == previous["workSource"] and acceptance["image"] == previous["image"] and acceptance["enginePinSha256"] == previous["pin"]["sha256"]
+            and acceptance["shellManifestSha256"] == previous["shell"]["manifestSha256"] and acceptance["packManifestSha256"] == previous["pack"]["manifestSha256"], "Previous acceptance does not bind the actual old cohort")
+    require(isinstance(acceptance["originalEvidence"], list) and 2 <= len(acceptance["originalEvidence"]) <= 16, "Missing prior runtime/HTTPS evidence")
+    for item in acceptance["originalEvidence"]:
+        inputs.file(item, False)
+    return previous, before
+
+
 def prepare(value, base, expected_public_pin, node="node", runner=git_command):
     exact(value, EVIDENCE_KEYS | ({"rawDerivation"} if isinstance(value, dict) and "rawDerivation" in value else set()))
     require(type(value["version"]) is int and value["version"] == 1, "Unsupported private cohort evidence")
@@ -692,35 +738,9 @@ def prepare(value, base, expected_public_pin, node="node", runner=git_command):
         image_digest = paired.work_image(stream, value["work"]["source"], pin)
     paired.updater.image_ref(value["expectedWorkImage"])
     require(value["expectedWorkImage"].split("@")[-1] == image_digest, "Expected server image differs from verified OCI")
-    previous = inputs.file(value["previous"])
-    exact(previous, {"version", "deployment", "deploymentSpecSha256", "lollySource", "workSource", "image", "enginePin", "shell", "pack", "pin", "acceptance"})
-    require(type(previous["version"]) is int and previous["version"] == 1, "Unknown previous cohort")
-    before = inputs.file(previous["deployment"])
-    exact(before, {"apiVersion", "kind", "metadata", "spec"})
-    require(before["apiVersion"] == "apps/v1" and before["kind"] == "Deployment" and digest(before["spec"]) == sha(previous["deploymentSpecSha256"]), "Previous protected Deployment differs")
-    exact(before["metadata"], {"name", "namespace", "uid", "resourceVersion"})
-    for key in ("name", "namespace"):
-        require(isinstance(before["metadata"][key], str) and NAME.fullmatch(before["metadata"][key]), "Invalid owning Deployment identity")
-    require(all(isinstance(before["metadata"][key], str) and 1 <= len(before["metadata"][key]) <= 128 for key in ("uid", "resourceVersion")), "Missing current UID/resourceVersion guard")
-    for key in ("lollySource", "workSource"):
-        commit(previous[key])
-    paired.updater.image_ref(previous["image"])
-    old_pin = inputs.file(previous["enginePin"])
-    require(old_pin.get("generatedFrom") == previous["lollySource"], "Previous engine source differs")
-    for family in ("shell", "pack", "pin"):
-        exact(previous[family], {"name", "uid"} | ({"manifestSha256", "releaseId"} if family == "shell" else {"manifestSha256"} if family == "pack" else {"sha256"}))
-        require(isinstance(previous[family]["name"], str) and NAME.fullmatch(previous[family]["name"]) and isinstance(previous[family]["uid"], str) and previous[family]["uid"], "Missing previous claim/pin identity")
-    require(previous["shell"]["manifestSha256"] == previous_shell.manifest_sha and previous["shell"]["releaseId"] == previous_shell.shell_id
-            and previous["pin"]["sha256"] == previous["enginePin"]["sha256"], "Previous shell/pin custody differs")
-    sha(previous["pack"]["manifestSha256"])
-    acceptance = receipt(previous["acceptance"], {"version", "status", "deploymentUID", "deploymentSpecSha256", "lollySource", "workSource", "image", "enginePinSha256", "shellManifestSha256", "packManifestSha256", "originalEvidence"}, inputs)
-    require(acceptance["status"] == "RUNTIME_ACCEPTED" and acceptance["deploymentUID"] == before["metadata"]["uid"]
-            and acceptance["deploymentSpecSha256"] == previous["deploymentSpecSha256"] and acceptance["lollySource"] == previous["lollySource"]
-            and acceptance["workSource"] == previous["workSource"] and acceptance["image"] == previous["image"] and acceptance["enginePinSha256"] == previous["pin"]["sha256"]
-            and acceptance["shellManifestSha256"] == previous["shell"]["manifestSha256"] and acceptance["packManifestSha256"] == previous["pack"]["manifestSha256"], "Previous acceptance does not bind the actual old cohort")
-    require(isinstance(acceptance["originalEvidence"], list) and 2 <= len(acceptance["originalEvidence"]) <= 16, "Missing prior runtime/HTTPS evidence")
-    for item in acceptance["originalEvidence"]:
-        inputs.file(item, False)
+    previous, before = previous_record(value["previous"], inputs)
+    require(previous["shell"]["manifestSha256"] == previous_shell.manifest_sha and previous["shell"]["releaseId"] == previous_shell.shell_id,
+            "Previous shell custody differs")
     spec, patch, rollback = change_tuple(before, previous, value["selection"], value["expectedWorkImage"], value["lolly"]["source"])
     for source in (value["lolly"], value["work"]):
         require(runner(["git", "rev-parse", "HEAD"], Path(source["root"])) == source["source"] and runner(["git", "status", "--porcelain"], Path(source["root"])) == "", "Source changed during preparation")
