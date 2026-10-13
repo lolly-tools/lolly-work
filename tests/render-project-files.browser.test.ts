@@ -11,13 +11,14 @@
  * The first test sends the worker the ticket the render mint site would mint
  * (renderFileScope + mintRenderRead, against the same store), with the image
  * named the way the shell's own URL mode names it. The second goes through
- * POST /api/v1/render end to end and is a todo until the render pipeline hands
- * asset inputs to the worker in URL-mode form (see its reason).
+ * POST /api/v1/render end to end, including URL-mode project asset identifiers.
  *
  * Gated: set LW_RENDER_CANARY_SHELL to a built shell (shells/web/dist of a lolly
  * checkout, or a copy of it) whose tools/ and catalog/ also serve as the pack.
  * LOLLY_BROWSER_PATH picks a Chromium when the pinned one is not installed.
  * LW_RENDER_CANARY_EVIDENCE names a JSON file for the hashes and request log.
+ * LW_RENDER_CANARY_PUBLIC_KEY supplies a signed fixture’s public JWK;
+ * LW_RENDER_CANARY_SIGNING_KEY supplies only that disposable fixture’s private key.
  */
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -26,6 +27,7 @@ import { writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { Store } from '../server/src/store/types.ts';
+import type { Browser } from '../workers/render/node_modules/playwright-core/types/types.d.ts';
 
 const shell = process.env.LW_RENDER_CANARY_SHELL;
 const skip = !shell && 'Set LW_RENDER_CANARY_SHELL to a built Lolly shell to run the worker file-read canary.';
@@ -52,11 +54,14 @@ async function setup() {
   const { createMemoryStore } = await import('../server/src/store/memory.ts');
   const { createMemoryBlobStore } = await import('../server/src/blobs/memory.ts');
   const { fileChecksum } = await import('../server/src/projects/files.ts');
+  const failedRequests: { path: string; status: number }[] = [];
+  evidence.failedRequests = failedRequests;
   const requests: { method: string; path: string; ticket: boolean; status?: number }[] = [];
   let handler: ((req: IncomingMessage, res: ServerResponse) => Promise<void>) | undefined;
   const app = createServer((req, res) => {
     const row: { method: string; path: string; ticket: boolean; status?: number } = { method: req.method ?? '', path: (req.url ?? '').split('?')[0]!, ticket: typeof req.headers['x-lw-render-read'] === 'string' };
     if (/^\/api\/v1\/projects\/[^/]+\/files\//.test(row.path)) { requests.push(row); res.once('finish', () => { row.status = res.statusCode; }); }
+    res.once('finish', () => { if (res.statusCode >= 400 && failedRequests.length < 40) failedRequests.push({ path: row.path, status: res.statusCode }); });
     void handler!(req, res);
   });
   await new Promise<void>((resolve) => app.listen(0, '127.0.0.1', resolve));
@@ -65,11 +70,23 @@ async function setup() {
   process.env.PORT = '0';
   process.env.LW_RENDER_WORKER_SECRET = 'local-file-canary';
   process.env.LOLLY_WEB_BASE = base;
-  process.env.LW_RENDER_EXPORT_TIMEOUT_MS = '90000';
+  process.env.LW_RENDER_EXPORT_TIMEOUT_MS ??= '90000';
   process.env.LW_RENDER_NAV_TIMEOUT_MS = '60000';
   const playwrightPath: string = '../workers/render/node_modules/playwright-core/index.mjs';
-  const { chromium } = await import(playwrightPath) as { chromium: { launch(o: object): Promise<{ close(): Promise<void> }> } };
-  const browser = await chromium.launch({ args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'], ...(process.env.LOLLY_BROWSER_PATH ? { executablePath: process.env.LOLLY_BROWSER_PATH } : {}) });
+  const { chromium } = await import(playwrightPath) as { chromium: { launch(o: object): Promise<Browser> } };
+  const { workerBrowserOptions } = await import('../workers/render/src/browser-launch.ts');
+  const browser = await chromium.launch(workerBrowserOptions());
+  const diagnostics: string[] = [];
+  evidence.browserDiagnostics = diagnostics;
+  const createContext = browser.newContext.bind(browser);
+  browser.newContext = async (options) => {
+    const context = await createContext(options);
+    context.on('page', page => {
+      page.on('pageerror', error => { if (diagnostics.length < 40) diagnostics.push(error.message.slice(0, 1000)); });
+      page.on('console', message => { if (message.type() === 'error' && diagnostics.length < 40) diagnostics.push(message.text().slice(0, 1000)); });
+    });
+    return context;
+  };
   const worker = await import('../workers/render/src/server.ts');
   worker.__setBrowserGetterForTests(async () => browser as never);
   if (!worker.server.listening) await new Promise((resolve) => worker.server.once('listening', resolve));
@@ -78,12 +95,13 @@ async function setup() {
   const store: Store = Object.assign(createMemoryStore(), { storageKind: 'postgres' as const });
   const people = ['alice', 'viewer', 'outsider'];
   const link = 'canary-link';
+  const catalogPublicKey = process.env.LW_RENDER_CANARY_PUBLIC_KEY ? JSON.parse(process.env.LW_RENDER_CANARY_PUBLIC_KEY) as Record<string, unknown> : undefined;
   const config = parseConfig(JSON.stringify({
-    instance: { name: 'File canary', baseUrl: base, pack: shell, shellDir: shell },
+    instance: { name: 'File canary', baseUrl: base, pack: shell, shellDir: shell, ...(catalogPublicKey ? { catalogPublicKey } : {}) },
     policy: { defaultAccessMode: 'gated' }, rateLimit: { enabled: false }, render: { worker: { url: workerCfg.url, timeoutMs: workerCfg.timeoutMs } },
     dev: { enabled: true, users: people.map((name) => ({ email: `${name}@test`, name, groups: ['team'] })) },
   }));
-  handler = buildApp({ config, store, blobs: createMemoryBlobStore(), secrets: { session: 'canary-session', link, renderWorker: workerCfg.secret } });
+  handler = buildApp({ config, store, blobs: createMemoryBlobStore(), secrets: { session: 'canary-session', link, renderWorker: workerCfg.secret, ...(process.env.LW_RENDER_CANARY_SIGNING_KEY ? { catalogSigningKey: process.env.LW_RENDER_CANARY_SIGNING_KEY } : {}) } });
 
   const cookies = new Map<string, string>();
   for (const name of people) {
@@ -179,20 +197,35 @@ test('the worker reads a project image with the render ticket, and its SVG, PNG 
 
 test('POST /api/v1/render exports a document whose image is a project file', {
   skip, timeout: 300_000,
-  todo: 'blocked outside W4: render/pipeline.ts queryFromValues hands the worker asset inputs as JSON objects, which the shell reads as an asset id, so no asset input reaches a worker export; and a user/team/<file> id also needs the shell to fetch project files in export mode',
 }, async () => {
   const e = await once();
-  const render = async (format: string, image: string) => {
-    const r = await e.call('viewer', 'POST', '/api/v1/render', { toolId: 'frame', format, inputs: { title: 'M4 canary', image } });
+  const render = async (format: string, image?: string, who = 'viewer') => {
+    const r = await e.call(who, 'POST', '/api/v1/render', { toolId: 'frame', format, inputs: { title: 'M4 canary', image } });
     const out = new Uint8Array(await r.arrayBuffer());
     assert.equal(r.status, 200, Buffer.from(out).toString('utf8').slice(0, 300));
     return out;
   };
   const rows: Record<string, unknown> = {};
   evidence.api = rows;
+  const reference = {
+    svg: embedded(Buffer.from(await render('svg', e.inline)).toString('utf8')),
+    png: await e.pixels(await render('png', e.inline)),
+    pdf: sha(await render('pdf', e.inline)),
+  };
+  const blank = await e.pixels(await render('png'));
   for (const [label, image] of [['address', e.address], ['assetId', `user/team/${e.fileId}`]] as const) {
-    const svg = Buffer.from(await render('svg', image)).toString('utf8');
-    rows[label] = { svgImages: embedded(svg) };
-    assert.ok(embedded(svg).includes(sha(e.bytes)), `${label}: the exported SVG embeds the uploaded bytes`);
+    const svg = embedded(Buffer.from(await render('svg', image)).toString('utf8'));
+    const png = await e.pixels(await render('png', image));
+    const pdf = sha(await render('pdf', image));
+    rows[label] = { svgImages: svg, pngPixels: png, pdfSha256: pdf };
+    assert.ok(svg.includes(sha(e.bytes)), `${label}: the exported SVG embeds the uploaded bytes`);
+    assert.deepEqual(svg, reference.svg);
+    assert.equal(png, reference.png, `${label}: PNG matches inline pixels`);
+    assert.notEqual(png, blank);
+    assert.equal(pdf, reference.pdf, `${label}: PDF matches inline reference`);
+    const outsiderSvg = embedded(Buffer.from(await render('svg', image, 'outsider')).toString('utf8'));
+    const outsiderPng = await e.pixels(await render('png', image, 'outsider'));
+    assert.deepEqual(outsiderSvg, [], `${label}: outsider cannot obtain uploaded bytes`);
+    assert.equal(outsiderPng, blank, `${label}: outsider has no uploaded pixels`);
   }
 });

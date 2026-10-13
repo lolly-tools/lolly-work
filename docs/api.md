@@ -505,6 +505,13 @@ are never emailed today; see `policy.comments` under [Canvas comments](#canvas-c
 | `GET /l/:id?s=…&zip=1`, `…&asset=<id>[&dl=1]` | public - a collection link's zip-all, and one member of that set (an id it does not name is `404 NOT_IN_COLLECTION`) |
 | `GET /render/<toolId>.<format>` | `export.server`, or a guest scoped to that tool |
 
+For worker-backed renders, asset inputs use the same URL encoding as the Lolly
+shell. A `user/team/<fileId>` reference is resolved to that project's file endpoint
+only when the submitter can read the project and the file belongs to the render's
+scoped read ticket. The worker receives no general session credentials. Private
+files outside that scope remain inaccessible; inline baked assets keep their
+original bytes.
+
 ## Recoverable render resources
 
 `POST /api/v1/renders` submits an authenticated, persistent single-tool request.
