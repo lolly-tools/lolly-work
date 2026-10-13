@@ -76,6 +76,38 @@ class Native(unittest.TestCase):
             with self.subTest(wrong=wrong), self.assertRaises(RuntimeError): n.memory(wrong, 4096, 'owner')
 
 
+class KernelMountInfo(unittest.TestCase):
+    def setUp(self):
+        self.program = {'__name__': 'unit_fixture'}
+        exec(s.PV_IDENTITIES, self.program)
+
+    def row(self, root='net:[123]', mountpoint='/run/netns/cni-test', filesystem='nsfs'):
+        return f'29 1 0:4 {root} {mountpoint} rw - {filesystem} nsfs rw\n'
+
+    def test_namespace_mount_is_retained_but_cannot_back_a_claim(self):
+        rows = self.program['mounts'](self.row())
+        self.assertEqual(rows[0]['root'], 'net:[123]')
+        with self.assertRaisesRegex(RuntimeError, 'NON_FILESYSTEM_PV_MOUNT_MAPPING'):
+            self.program['mapping']('/run/netns/cni-test', os.makedev(0, 4), rows)
+
+    def test_only_exact_nsfs_network_namespace_roots_are_opaque(self):
+        for root in ['net:[]', 'net:[-1]', 'net:[abc]', 'mnt:[123]', 'net:[123]suffix', 'net:[123]/x']:
+            with self.subTest(root=root), self.assertRaisesRegex(RuntimeError, 'CANONICAL_KERNEL_MOUNT_PATH_REQUIRED'):
+                self.program['mounts'](self.row(root=root))
+        for filesystem in ['xfs', 'ext4', 'tmpfs', 'overlay']:
+            with self.subTest(filesystem=filesystem), self.assertRaisesRegex(RuntimeError, 'CANONICAL_KERNEL_MOUNT_PATH_REQUIRED'):
+                self.program['mounts'](self.row(filesystem=filesystem))
+
+    def test_mountpoints_remain_canonical_and_ordinary_mapping_is_unchanged(self):
+        for mountpoint in ['relative', '//run/netns/x', '/run/../x', '/run//x', '/run/./x']:
+            with self.subTest(mountpoint=mountpoint), self.assertRaisesRegex(RuntimeError, 'CANONICAL_KERNEL_MOUNT_PATH_REQUIRED'):
+                self.program['mounts'](self.row(mountpoint=mountpoint))
+        rows = self.program['mounts']('1 0 8:1 / / rw - xfs /dev/sda rw\n' + self.row())
+        self.assertEqual(self.program['mapping']('/var/lib/pvc', os.makedev(8, 1), rows),
+            {'device': '8:1', 'root': '/', 'mountpoint': '/', 'effectivePath': '/var/lib/pvc'})
+        self.assertEqual(self.program['mounts'](self.row(root='/normal', mountpoint='/run/a\\040b', filesystem='xfs'))[0]['mountpoint'], '/run/a b')
+
+
 class Sequencing(unittest.TestCase):
     def stage(self):
         op = object.__new__(s.Stage); op.events = []; op.target = {'node': {'name': 'node', 'uid': 'node-uid'}}
@@ -329,7 +361,7 @@ class OwningPod(unittest.TestCase):
             'annotations': copy.deepcopy(self.before['spec']['template']['metadata']['annotations']),
             'ownerReferences': [{'kind': 'ReplicaSet', 'name': 'actual-rs', 'uid': 'actual-rs-uid', 'controller': True}]},
             'spec': {**copy.deepcopy(self.before['spec']['template']['spec']), 'nodeName': 'node', 'dnsPolicy': 'ClusterFirst', 'schedulerName': 'default-scheduler',
-                'terminationGracePeriodSeconds': 30, 'serviceAccountName': 'default', 'priority': 0, 'preemptionPolicy': 'PreemptLowerPriority'},
+                'terminationGracePeriodSeconds': 30, 'serviceAccountName': 'default', 'priority': 0, 'preemptionPolicy': 'PreemptLowerPriority', 'enableServiceLinks': True},
             'status': {'containerStatuses': [{'name': 'native', 'ready': True, 'restartCount': 0, 'imageID': self.fixture.image}]}}
         self.op.get = lambda *args: self.replica
 
@@ -345,6 +377,18 @@ class OwningPod(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(RuntimeError): self.owner(changed)
         changed = copy.deepcopy(self.pod); changed['spec']['initContainers'] = [{'name': 'injected', 'image': 'unreviewed'}]
         with self.assertRaises(RuntimeError): self.owner(changed)
+
+    def test_service_link_default_is_exact_and_explicit_false_stays_required(self):
+        for value in [False, 1, 'true', None]:
+            changed = copy.deepcopy(self.pod)
+            if value is None: changed['spec'].pop('enableServiceLinks')
+            else: changed['spec']['enableServiceLinks'] = value
+            with self.subTest(value=value), self.assertRaisesRegex(RuntimeError, 'default enableServiceLinks differs'):
+                self.owner(changed)
+        self.before['spec']['template']['spec']['enableServiceLinks'] = False
+        changed = copy.deepcopy(self.pod); changed['spec']['enableServiceLinks'] = False
+        self.assertEqual(self.owner(changed), changed)
+        with self.assertRaises(RuntimeError): self.owner(self.pod)
 
     def test_metadata_replacement_exposure_and_security_drift_refused(self):
         for kind in ['label', 'annotation', 'owner', 'security']:
