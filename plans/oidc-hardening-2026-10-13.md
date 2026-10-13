@@ -60,3 +60,12 @@ The user was asked whether to extend the thirty-day work-identity recheck policy
 to passkeys. In the absence of a further decision, this change preserves their
 existing behavior and documents that boundary explicitly. An organisation-wide
 MFA or periodic-IdP-login claim would need policy for every local sign-in path.
+
+## CI follow-up
+
+Work CI built and booted the BCI server image, built the server and worker
+containers, and passed typecheck, audit/SBOM, Helm and database restore checks.
+Its full PostgreSQL-enabled suite ran 2,427 tests: 2,401 passed, 25 skipped and
+one failed because the new guide was absent from `docs/docs.json`. Registered
+the guide for console access; the documentation/installation suite then passed
+locally (15 passed, one built-page check skipped). CI is rerunning on that fix.

@@ -29,6 +29,11 @@
           "summary": "Nothing → a running, configured, governed instance: local demo, first config, sign-in, Postgres, secrets, Compose, systemd, Helm."
         },
         {
+          "slug": "enterprise-identity",
+          "title": "Enterprise identity deployment",
+          "summary": "Managed SSO registration, admission, optional MFA, SCIM offboarding, logout, upgrades and credential rotation."
+        },
+        {
           "slug": "customer-setup",
           "title": "Guided customer setup",
           "summary": "An illustrated six-step journey through deployment, owner identity, SCIM, assets and a checked sample, with configuration apply and recovery."
