@@ -265,7 +265,7 @@ test('admission: an unlisted Google-style identity is refused with a 403 page an
   assert.equal((await store.listUsers()).length, 0, 'no user row was created');
   const denied = (await store.listAudit()).find((e) => e.action === 'auth.denied');
   assert.equal(denied?.actor, 'anonymous');
-  assert.deepEqual(denied?.payload, { provider: 'oidc', idp: 'primary', reason: 'not-invited', email: 'stranger@gmail.test' });
+  assert.deepEqual(denied?.payload, { provider: 'oidc', idp: 'primary', reason: 'not-invited', email: '[email omitted]' });
 });
 
 test('admission: a listed email is admitted; a listed domain only with email_verified', async () => {

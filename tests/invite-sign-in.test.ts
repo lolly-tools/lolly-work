@@ -117,10 +117,10 @@ test('another account is refused with the wrong-account page, and no user row is
   assert.equal((await env.store.listUsers()).length, usersBefore, 'users unchanged');
   assert.equal(await env.store.getUserBySub('g-sam'), null);
   const denied = (await auditsOf(env, 'auth.denied'))[0]!;
-  assert.deepEqual(denied.payload, { provider: 'oidc', idp: 'primary', reason: 'not-invited', email: 'sam.k@gmail.example', invitationId: 'inv_an' });
+  assert.deepEqual(denied.payload, { provider: 'oidc', idp: 'primary', reason: 'not-invited', email: '[email omitted]', invitationId: 'inv_an' });
   const wrong = (await auditsOf(env, 'invite.wrong-account'))[0]!;
   assert.equal(wrong.actor, 'anonymous');
-  assert.deepEqual(wrong.payload, { email: 'sam.k@gmail.example', provider: 'oidc', idp: 'primary', admitted: false });
+  assert.deepEqual(wrong.payload, { email: '[email omitted]', provider: 'oidc', idp: 'primary', admitted: false });
   assert.equal((await env.store.getInvitation('inv_an'))?.acceptedAt, undefined);
 });
 
@@ -178,7 +178,7 @@ test('one link sets the password: a one-hour link on the invitation, the name ke
   assert.deepEqual((await auditsOf(env, 'invite.open'))[0]!.payload, { provider: 'password', idp: 'email' });
   const issued = (await auditsOf(env, 'auth.password.link.issue'))[0]!;
   assert.equal(issued.actor, `user:${env.admin.id}`, 'on the authority of the admin who invited');
-  assert.deepEqual(issued.payload, { idp: 'email', email: INVITED, purpose: 'setup', via: 'invitation', invitationId: 'inv_an' });
+  assert.deepEqual(issued.payload, { idp: 'email', email: '[email omitted]', purpose: 'setup', via: 'invitation', invitationId: 'inv_an' });
 
   const token = /name="token" value="([^"]+)"/.exec(html)![1]!;
   const csrf = /name="csrf" value="([^"]+)"/.exec(html)![1]!;

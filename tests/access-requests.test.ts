@@ -318,7 +318,7 @@ test('approve: the role is the approver\'s choice within policy, the project is 
   const mine = (await env.as('olly@test', 'GET', `/api/v1/access-requests/mine?projectId=${projectId}`)).json.requests;
   assert.deepEqual(mine.map((r: { status: string; answerRole: string }) => [r.status, r.answerRole]), [['approved', 'viewer']]);
   const [row] = await env.audits('access.approve');
-  assert.deepEqual(row?.payload, { kind: 'project', email: 'olly@test', role: 'viewer', outcome: 'added', projectId });
+  assert.deepEqual(row?.payload, { kind: 'project', email: '[email omitted]', role: 'viewer', outcome: 'added', projectId });
   assert.equal(row?.actor, `user:${(await env.user('mona@test')).id}`);
   const answered = await env.as('alice@test', 'GET', '/api/v1/access-requests?status=answered');
   assert.deepEqual(answered.json.requests.map((r: { id: string; status: string }) => [r.id, r.status]), [[open!.id, 'approved']]);
@@ -358,7 +358,7 @@ test('decline: the request is closed, the asker hears without the approver\'s na
   const told = await env.inbox('olly@test');
   assert.deepEqual(told.map((m) => m.title), ['Your request for Launch was not approved']);
   assert.ok(!JSON.stringify(told).includes('Mona'), 'a decline never names who declined');
-  assert.deepEqual((await env.audits('access.decline')).map((e) => e.payload), [{ kind: 'project', email: 'olly@test', projectId }]);
+  assert.deepEqual((await env.audits('access.decline')).map((e) => e.payload), [{ kind: 'project', email: '[email omitted]', projectId }]);
   assert.equal((await env.as('olly@test', 'POST', `/api/v1/projects/${projectId}/access-requests`, { role: 'editor' })).status, 202);
   assert.equal((await openRequests(env)).length, 1, 'a new ask after a decline');
 });
@@ -434,7 +434,7 @@ test('join into a project the approver manages: the invitation carries it, and t
   assert.deepEqual((await env.store.findActiveInvitation('sam@example.com'))?.projects, [{ projectId, role: 'editor', invitedBy: `user:${admin.id}` }]);
   const [row] = await env.audits('access.approve');
   assert.deepEqual(row?.payload, {
-    kind: 'join', email: 'sam@example.com', outcome: 'invited', invitationId: ok.json.invitation.id, projectId, role: 'editor',
+    kind: 'join', email: '[email omitted]', outcome: 'invited', invitationId: ok.json.invitation.id, projectId, role: 'editor',
   });
   assert.equal((await env.oidcSignIn({ sub: 'g-sam', email: 'sam@example.com' })).status, 302);
   const sam = (await env.store.findUsersByEmail('sam@example.com'))[0]!;

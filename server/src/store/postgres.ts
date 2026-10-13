@@ -1527,8 +1527,14 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       return rowCount ?? 0;
     },
     async deleteUser(id) {
-      const { rowCount } = await pool.query('delete from users where id = $1', [id]);
-      return (rowCount ?? 0) > 0;
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        const { rowCount } = await client.query('delete from users where id = $1', [id]);
+        if (rowCount) await client.query('update fleet_installs set user_id_last_seen = null where user_id_last_seen = $1', [id]);
+        await client.query('commit'); return (rowCount ?? 0) > 0;
+      } catch (error) { await client.query('rollback'); throw error; }
+      finally { client.release(); }
     },
 
     async previewUserErasure(id) {
@@ -1562,6 +1568,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         );
         const deleted = await client.query('delete from users where id = $1 returning email', [id]);
         if (!deleted.rowCount) { await client.query('rollback'); return { status: 'not-found' }; }
+        await client.query('update fleet_installs set user_id_last_seen = null where user_id_last_seen = $1', [id]);
         const scrubbed = await client.query('update telemetry_events set user_id = null where user_id = $1', [id]);
         // The person's comment reads, received notices and mention sends went
         // with their row; the notices they caused go too (actor_id has no key).

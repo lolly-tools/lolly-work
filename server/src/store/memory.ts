@@ -915,6 +915,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     async deleteUser(id) {
       for (const [sub, u] of users) {
         if (u.id === id) {
+          for (const [installId, row] of installs) if (row.userIdLastSeen === id) { const { userIdLastSeen: _removed, ...rest } = row; installs.set(installId, rest); }
           users.delete(sub);
           passkeys.forgetUser(id);
           // migration 0040: a membership row goes with its user.
@@ -948,6 +949,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
         events[i] = rest;
         scrubbed++;
       }
+      for (const [installId, row] of installs) if (row.userIdLastSeen === id) { const { userIdLastSeen: _removed, ...rest } = row; installs.set(installId, rest); }
       users.delete(user.sub);
       passkeys.forgetUser(id);
       forgetCommentState(id, true);

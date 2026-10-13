@@ -359,7 +359,7 @@ test('a device approved from an expiring session gets no cookie past that sessio
   const refused = await deviceSignIn(env.base, capped);
   assert.deepEqual([refused.body, refused.cookie], [{ status: 'denied' }, null], 'no cookie, so no new chain');
   const denied = (await env.store.listAudit()).filter((e) => e.action === 'auth.denied');
-  assert.deepEqual(denied.at(-1)?.payload, { provider: 'device', reason: 'session-max', email: 'dana@test' });
+  assert.deepEqual(denied.at(-1)?.payload, { provider: 'device', reason: 'session-max', email: '[email omitted]' });
 
   // A fresh session approves a device for a full TTL, in its own chain.
   const fresh = cookieAt(dana, now - 0.25 * HOUR, 2, { authAt: now - 0.25 * HOUR });

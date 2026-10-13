@@ -109,7 +109,7 @@ test('held by the per-address cap: the same page, nothing stored, audited as hel
   assert.ok((await sent.text()).includes('<h1>Request sent</h1>'));
   assert.equal((await openJoins(env)).length, 0);
   const held = (await env.store.listAudit()).find((e) => e.action === 'access.request.held')!;
-  assert.deepEqual(held.payload, { kind: 'join', email: SAM, reason: 'per-email' });
+  assert.deepEqual(held.payload, { kind: 'join', email: '[email omitted]', reason: 'per-email' });
 });
 
 test('the address is the ask token\'s: an email field is ignored; a forged or expired token gets the expired page', async () => {

@@ -58,8 +58,10 @@ deletion. The database enforces that block when deletion is attempted.
 
 ## Account removal and rights requests
 
-`lw users erase USER_ID` removes the identity row and de-attributes telemetry in
-one database transaction. A reference or a failed telemetry update rolls back the
+`lw users erase USER_ID` removes the identity row, de-attributes telemetry and
+clears the fleet install rows naming that account in one database transaction.
+Migration `0069_fleet_attribution.sql` also clears existing fleet associations whose
+account row has already been removed. A reference or a failed telemetry update rolls back the
 whole operation. Shared content is never cascaded away to make removal succeed.
 The account's unfinished project-file uploads are removed (parts, then rows)
 before the identity row goes; its finished project files block the removal like
@@ -132,3 +134,48 @@ counts only, never inputs or names.
 
 Source anchors: `migrations/0053_session_versions.sql`, `server/src/versions/`,
 `server/src/collab/rooms.ts` and the version blocks of `server/src/store/types.ts`.
+
+## Activity and new audit data
+
+`policy.activity.mode` controls the activity feed and the agent dashboard:
+`off`, `owner-only` or `delegated`. The default remains `delegated`; an employee-only
+Helm overlay selects `off` and `activity.auditSessionUpdates: false`. Successful feed
+reads are audited with the reader id and the names of requested filters. Filter values
+and search text are omitted. Security audit access, fleet views, account access times,
+live collaboration and document authorship retain their existing permissions and
+records. These switches do not remove every source of individual activity.
+
+New audit entries replace email fields, addresses in actor or subject references,
+addresses in other text, and address-shaped payload keys before hashing. A deployment
+with an audit MAC key records stable keyed tokens; an unkeyed store omits the addresses.
+The tokens change when the deployment key rotates. New rows and forwarded SIEM batches
+keep their original chain hashes and MACs. Existing audit rows are retained unchanged,
+including any addresses they already contain, and SIEM forwarding does not rewrite
+those rows. Their retention and external recipient handling need an approved operator
+action. Existing hash-chain and key-retirement procedures still apply.
+
+## Offboarding procedure
+
+1. Remove admission and sign-in access at the authoritative identity provider. Disable
+   the local account, revoke sessions, and revoke any separate service or provisioning
+   credentials under the existing owner controls.
+2. Review the erasure preview and any holds. Transfer shared project ownership where
+   approved. Resolve retained sessions, links, approvals, message acknowledgements and
+   finished files through their own lifecycle controls; archiving does not erase them.
+3. Run `lw users erase-preview USER_ID --json`, then `lw users erase USER_ID` only after
+   the approved references have been resolved. A refusal leaves the identity and fleet
+   association in place. Success removes the local account, its private credentials and
+   ancillary identity rows, telemetry attribution and fleet last-user association.
+4. Record remaining audit history, shared content, device caches, recipients and backup
+   exceptions in the case. Carry the approved removal record into restore procedures
+   before traffic is admitted again.
+
+For a subject access request, gather the approved identity and reference inventory,
+shared records in scope and external recipient information through existing authorized
+reads. Review and securely deliver that collection under the operator's case process.
+There is no complete automatic subject export or content-wide erasure. A successful
+account erasure does not complete the wider request.
+
+Retention durations remain unchanged. The deployment owner must supply approved
+`policy.retention.auditDays` and `telemetryDays`; the internal overlay leaves those
+values unset instead of selecting an unapproved duration.

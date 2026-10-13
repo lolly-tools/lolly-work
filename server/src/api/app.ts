@@ -1,3 +1,4 @@
+import { activityAvailable } from '../policy/activity.ts';
 import { registerOidcLogout } from '../iam/oidc-logout-routes.ts';
 import { safeMessageUrl } from '../inbox/message-url.ts';
 import { withRenderDeadline } from '../render/deadline.ts';
@@ -1906,7 +1907,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       await audit('anonymous', 'auth.password.fail', 'session', {
         provider: 'password', idp: idp.id,
         reason: attempt.status === 'none' ? 'unknown-email' : attempt.status === 'locked' ? 'locked' : 'wrong-password',
-        ...(attempt.status !== 'none' ? { email: attempt.credential.email } : { emailHash: sha256Hex(email).slice(0, 16) }),
+        email: attempt.status !== 'none' ? attempt.credential.email : email,
       });
       return fail(400, 'INVALID_CREDENTIALS', PASSWORD_MISMATCH);
     }
@@ -2171,7 +2172,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     }
     const user = await memberOf(req);
     if (!user) return sendError(res, 401, 'UNAUTHORIZED', 'session user unknown or disabled');
-    const access = consoleAccess({ userId: user.id, groups: user.groups, role: user.role as Role }, await store.listGrants());
+    const access = consoleAccess({ userId: user.id, groups: user.groups, role: user.role as Role }, await store.listGrants(), config.policy.activity);
     return sendJson(res, 200, { kind: 'member', user: { sub: user.sub, email: user.email, groups: user.groups, role: user.role }, console: access, ...(p.user.oidc ? { providerLogoutPath: '/api/auth/logout-provider' } : {}) }, { 'cache-control': 'no-store' });
   });
 
@@ -6652,17 +6653,21 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
 
   // Audited agent usage uses the same disclosure permission as the audit timeline.
   router.add('GET', '/api/v1/agents/activity', async (req, res, ctx) => {
-    if (!(await requireAction(req, res, 'audit.export'))) return;
+    const reader = await requireAction(req, res, 'audit.export'); if (!reader) return;
+    if (!activityAvailable(config.policy.activity, reader.role)) return sendError(res, 403, 'ACTIVITY_DISABLED', 'Activity access is disabled by deployment policy');
     const asked = Number(ctx.url.searchParams.get('days') ?? 30);
     if (!Number.isInteger(asked) || asked < 1 || asked > 90) return sendError(res, 400, 'INVALID_INPUT', 'Choose a window from 1 to 90 days.');
-    sendJson(res, 200, await agentDashboard(store, deps.agentRooms, asked), { 'cache-control': 'private, no-store' });
+    const dashboard = await agentDashboard(store, deps.agentRooms, asked);
+    await audit(`user:${reader.id}`, 'activity.read', 'activity:agents', { days: asked });
+    sendJson(res, 200, dashboard, { 'cache-control': 'private, no-store' });
   });
 
   // Humane, merged activity timeline (audit log + attributed usage telemetry).
   // Behind audit.export since it surfaces audit content; the console renders it
   // under the Overview with filters, thumbnails, and deep links.
   router.add('GET', '/api/v1/activity', async (req, res, ctx) => {
-    if (!(await requireAction(req, res, 'audit.export'))) return;
+    const reader = await requireAction(req, res, 'audit.export'); if (!reader) return;
+    if (!activityAvailable(config.policy.activity, reader.role)) return sendError(res, 403, 'ACTIVITY_DISABLED', 'Activity access is disabled by deployment policy');
     const p = ctx.url.searchParams;
     const [auditEvents, telemetry, users] = await Promise.all([
       store.listAudit(),
@@ -6680,6 +6685,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       before: p.get('before'),
       limit: Number(p.get('limit') ?? 50),
     }, groupsByUser);
+    await audit(`user:${reader.id}`, 'activity.read', 'activity:feed', { filters: ['category', 'actor', 'group', 'day', 'q', 'before'].filter(key => p.has(key)), count: page.items.length });
     sendJson(res, 200, page, { 'cache-control': 'no-store' });
   });
 
@@ -8509,7 +8515,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // A REST save is a version too (plan 76 M4), including the save a shell
     // retries after merging a 409; the store skips one that changed nothing.
     await recordSaveVersion(store, next, user.id, saver.startsWith('agent:') ? { id: saver.slice('agent:'.length), kind: 'agent' } : { id: user.id, kind: 'user' });
-    await audit(`user:${user.id}`, 'session.update', `session:${next.id}`, { rev: next.rev, projectId: next.projectId, toolId: next.toolId });
+    if (config.policy.activity.auditSessionUpdates) await audit(`user:${user.id}`, 'session.update', `session:${next.id}`, { rev: next.rev, projectId: next.projectId, toolId: next.toolId });
     sendJson(res, 200, sessionFull(next));
   });
 
