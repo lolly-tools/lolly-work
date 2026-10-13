@@ -8,7 +8,7 @@ for (const optimized of [false, true]) {
   test(`maintained private caller catalogue (${optimized ? 'optimized' : 'normal'} Python)`, () => {
     const result = spawnSync('python3', [...(optimized ? ['-O'] : []), '-B', fileURLToPath(new URL('./test_probe_private_shell_catalog.py', import.meta.url))],
       { encoding: 'utf8', timeout: 120_000, env: { ...process.env, LOLLY_TEST_NODE: process.execPath } });
-    assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message);
+    assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message || 'Child process failed');
   });
 }
 
@@ -33,6 +33,6 @@ test('real pinned P-256 caller oracle rejects altered bytes, visible files, key 
     console.log('synthetic cryptographic positive and negatives passed; no HTTPS request issued');
   `;
   const result = spawnSync(process.execPath, ['--input-type=module', '-e', program], { encoding: 'utf8', timeout: 30_000 });
-  assert.equal(result.status, 0, result.stderr || result.error?.message);
+  assert.equal(result.status, 0, result.stderr || result.error?.message || 'Child process failed');
   assert.match(result.stdout, /no HTTPS request issued/);
 });

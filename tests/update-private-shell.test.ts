@@ -8,6 +8,6 @@ for (const optimized of [false, true]) {
   test(`private frontend update facade (${optimized ? 'optimized' : 'normal'} Python)`, () => {
     const result = spawnSync('python3', [...(optimized ? ['-O'] : []), '-B', fileURLToPath(new URL('./test_update_private_shell.py', import.meta.url))],
       { encoding: 'utf8', timeout: 120_000, env: { ...process.env, LOLLY_TEST_NODE: process.execPath } });
-    assert.equal(result.status, 0, result.stderr || result.error?.message);
+    assert.equal(result.status, 0, result.stderr || result.error?.message || 'Child process failed');
   });
 }

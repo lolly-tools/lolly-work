@@ -4,8 +4,8 @@
 # Base pinned by digest (multi-arch index: linux/amd64 + linux/arm64) so the
 # signed+attested release image is reproducible and the tag can't shift under a
 # rebuild. Dependabot's docker updater (/.github/dependabot.yml, dir
-# /deploy/compose) keeps the pin moving as node:24-alpine is rebuilt.
-FROM node:24-alpine3.24@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1
+# /deploy/compose) keeps the pin moving as node:26-alpine is rebuilt.
+FROM node:26.11.1-alpine3.24@sha256:143494b1da2945f061539253adc65e4f1569ddf07da2d384c022c791a9d90a4a
 WORKDIR /app
 
 # Keep the reviewed security floor while accepting newer patched revisions.

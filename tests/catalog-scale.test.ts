@@ -122,6 +122,8 @@ test('the browse route walks a 20000-asset provider in name order with stable cu
   let cursor: string | null = null;
   let pages = 0;
   let previous: [string, string] | null = null;
+  const precedes = (left: [string, string], right: [string, string]): boolean =>
+    left[0] < right[0] || (left[0] === right[0] && left[1] < right[1]);
   let facetTypes: Array<{ name: string; count: number }> = [];
   do {
     const qs = new URLSearchParams({ source: 'big', limit: '500', ...(cursor ? { cursor } : {}) });
@@ -139,7 +141,7 @@ test('the browse route walks a 20000-asset provider in name order with stable cu
       assert.ok(!seen.has(a.id), `no repeats across pages (${a.id})`);
       seen.add(a.id);
       const key: [string, string] = [a.name.toLowerCase(), a.id];
-      if (previous) assert.ok(previous[0] < key[0] || (previous[0] === key[0] && previous[1] < key[1]), 'sorted by name, then id');
+      if (previous) assert.ok(precedes(previous, key), 'sorted by name, then id');
       previous = key;
     }
     cursor = page.nextCursor;

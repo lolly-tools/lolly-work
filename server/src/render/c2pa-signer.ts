@@ -33,8 +33,8 @@ export interface LoadedSigner {
 }
 
 /** Split a PEM bundle into its DER blocks, keyed by label (CERTIFICATE / PRIVATE KEY). */
-function pemBlocks(pem: string): Array<{ label: string; der: Uint8Array }> {
-  const out: Array<{ label: string; der: Uint8Array }> = [];
+function pemBlocks(pem: string): Array<{ label: string; der: Uint8Array<ArrayBuffer> }> {
+  const out: Array<{ label: string; der: Uint8Array<ArrayBuffer> }> = [];
   const re = /-----BEGIN ([^-]+)-----([\s\S]*?)-----END \1-----/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(pem))) {

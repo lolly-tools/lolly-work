@@ -10,6 +10,6 @@ for (const optimized of [false, true]) {
     const result = spawnSync('python3', args, {
       encoding: 'utf8', env: { ...process.env, LOLLY_TEST_NODE: process.execPath },
     });
-    assert.equal(result.status, 0, result.stderr || result.error?.message);
+    assert.equal(result.status, 0, result.stderr || result.error?.message || 'Child process failed');
   });
 }

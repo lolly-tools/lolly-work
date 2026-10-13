@@ -8,5 +8,5 @@ test('private shell staging protects storage, admission, custody and no-replay b
   const result = spawnSync('python3', ['-B', fileURLToPath(new URL('./test_stage_private_shell.py', import.meta.url))], {
     encoding: 'utf8', env: { ...process.env, LOLLY_TEST_NODE: process.execPath }, timeout: 120_000,
   });
-  assert.equal(result.status, 0, result.stderr || result.error?.message);
+  assert.equal(result.status, 0, result.stderr || result.error?.message || 'Child process failed');
 });
