@@ -9,6 +9,7 @@ phase never replays; rollback requires the actual published owning spec.
 import argparse
 from pathlib import Path
 import sys
+import time
 import uuid
 import copy
 import importlib.util
@@ -46,14 +47,22 @@ class Publication:
     def save(self, name, value): return s.l.a.write_new(self.out / name, raw(value) + b'\n')
     def load(self, name): return s.l.a.parsed((self.out / name).read_bytes())
     def phase(self, name, fn):
+        started = time.monotonic()
         need(s.l.a.checksum(self.path) == self.input_sha and s.l.a.checksum(Path(__file__)) == self.operator_sha, 'Reviewed publication source/input changed')
         self.save(name + '.started.json', {'status': 'STARTED_NO_REPLAY', 'inputSha256': self.input_sha, 'operatorSha256': self.operator_sha})
         try:
             start = len(self.stage.events); result = fn()
+            self.save(name + '.timing.actual.json', {'version': 1, 'activity': 'publication:' + name, 'elapsedSeconds': time.monotonic() - started, 'clock': 'LOCAL_MONOTONIC_ELAPSED_TIME', 'phaseBodyCompleted': True, 'qualificationClaimed': False})
             return self.save(name + '.accepted.json', {'version': 1, 'inputSha256': self.input_sha,
                 'operatorSha256': self.operator_sha, 'commands': self.stage.events[start:], **result})
         except BaseException as error:
-            self.save(name + '.uncertain.json', {'status': 'REFUSED_NO_REPLAY', 'failureType': type(error).__name__}); raise
+            self.save(name + '.uncertain.json', {'status': 'REFUSED_NO_REPLAY', 'failureType': type(error).__name__})
+            try:
+                if not (self.out / (name + '.timing.actual.json')).exists():
+                    self.save(name + '.timing.actual.json', {'version': 1, 'activity': 'publication:' + name, 'elapsedSeconds': time.monotonic() - started, 'clock': 'LOCAL_MONOTONIC_ELAPSED_TIME', 'phaseBodyCompleted': False, 'qualificationClaimed': False})
+            except Exception as timing_error:
+                error.add_note('Phase timing capture failed: ' + type(timing_error).__name__)
+            raise
     def prior(self, name):
         value = self.load(name + '.accepted.json'); need(value['inputSha256'] == self.input_sha and value['operatorSha256'] == self.operator_sha, 'Different accepted publication phase'); return value
 
@@ -120,7 +129,7 @@ class Publication:
             memory = self.stage.measure(owner=True)
             native_http = self.save('owning-native-http.actual.json', self.stage.native_http(self.stage.owner))
             http = s.module('delivery_publication_http', 'public-delivery-http.py')
-            models = http.verify_models_tls(self.stage.context['origin'], self.stage.models)
+            models = http.verify_models_tls(self.stage.context['origin'], self.stage.models, telemetry=lambda value: self.save('owning-models-tls.timing.actual.json', value))
             models_ref = self.save('owning-models-tls.actual.json', models)
             static_ref = self.save('owning-static-tls.actual.json', http.verify_static_tls(self.stage.context['origin'], [v for v in self.stage.rows if v['path'] in s.l.a.overlay.FIXED]))
             need(self.stage.physical('qualifier', owner=True) == physical['static']

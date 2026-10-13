@@ -182,10 +182,33 @@ class Sequencing(unittest.TestCase):
             op.value['prepared'] = {'path': '/reviewed/prepared.json', 'sha256': 'c' * 64}; op.unchanged = lambda: None
             calls = []
             def failure(): calls.append('called'); raise RuntimeError('uncertain mutation')
-            with self.assertRaises(RuntimeError): op.phase('copy', failure)
+            with patch.object(s.time, 'monotonic', side_effect=[10.0, 12.5]), self.assertRaises(RuntimeError): op.phase('copy', failure)
+            timing = json.loads((op.out / 'copy.timing.actual.json').read_bytes())
+            self.assertEqual(timing, {'version': 1, 'activity': 'stage:copy', 'elapsedSeconds': 2.5, 'clock': 'LOCAL_MONOTONIC_ELAPSED_TIME', 'phaseBodyCompleted': False, 'qualificationClaimed': False})
             self.assertTrue((op.out / 'copy.started.json').exists()); self.assertTrue((op.out / 'copy.uncertain.json').exists())
             with self.assertRaises(FileExistsError): op.phase('copy', failure)
             self.assertEqual(calls, ['called'])
+
+    def test_timing_write_failure_never_masks_original_phase_error(self):
+        for publication in (False, True):
+            with self.subTest(publication=publication), tempfile.TemporaryDirectory() as directory:
+                op = self.stage(); op.out = Path(directory); op.input_sha = 'a' * 64; op.operator_sha = 'b' * 64
+                op.value['prepared'] = {'path': '/reviewed/prepared.json', 'sha256': 'c' * 64}; op.unchanged = lambda: None
+                if publication:
+                    pub = object.__new__(p.Publication); pub.stage = op; pub.out = op.out; pub.path = Path('/unit/input')
+                    pub.input_sha = op.input_sha; pub.operator_sha = op.operator_sha; op = pub
+                save = op.save
+                def fail_timing(name, value):
+                    if name.endswith('.timing.actual.json'): raise OSError('timing disk failure')
+                    return save(name, value)
+                op.save = fail_timing
+                def failure(): raise RuntimeError('original refusal')
+                def checksum(path): return op.input_sha if path == op.path else op.operator_sha
+                with patch.object(p.s.l.a, 'checksum', side_effect=checksum) if publication else patch.object(op, 'unchanged', return_value=None):
+                    with self.assertRaisesRegex(RuntimeError, 'original refusal') as caught: op.phase('observe', failure)
+                self.assertEqual(caught.exception.__notes__, ['Phase timing capture failed: OSError'])
+                self.assertTrue((op.out / 'observe.uncertain.json').exists())
+                self.assertFalse((op.out / 'observe.accepted.json').exists())
 
     def test_mutating_patch_preserves_exact_uid_rv_and_full_spec(self):
         before = {'metadata': {'uid': 'owner', 'resourceVersion': '38'}, 'spec': {'template': {'spec': {'models': 'unchanged'}}}}
@@ -367,9 +390,52 @@ class TlsTransport(unittest.TestCase):
             with self.assertRaises(RuntimeError): verifier.request(value['origin'], 'GET', '/api/', {}, 2)
             return {'scope': 'unit fake transport only'}
         verifier.verify = verify
-        with patch.object(h, 'module', return_value=verifier), patch.object(h.http.client, 'HTTPSConnection', Connection):
-            h.verify_models_tls('https://example.net', [{'url': '/models/unit/weights.onnx', 'size': 2, 'sha256': 'a' * 64}])
+        timings = []
+        with patch.object(h, 'module', return_value=verifier), patch.object(h.http.client, 'HTTPSConnection', Connection), patch.object(h.time, 'monotonic', side_effect=[100.0, 102.5]):
+            result = h.verify_models_tls('https://example.net', [{'url': '/models/unit/weights.onnx', 'size': 2, 'sha256': 'a' * 64}], telemetry=timings.append)
+        self.assertEqual(result, {'scope': 'unit fake transport only'})
+        self.assertEqual(len(timings), 1); timing = timings[0]
+        self.assertEqual((timing['elapsedSeconds'], timing['requestsStarted'], timing['responsesCompleted'], timing['bodyBytesRead']), (2.5, 4, 3, 8))
+        self.assertTrue(timing['checksCompleted']); self.assertFalse(timing['qualificationClaimed'])
+        self.assertIn('EXCLUDES_HEADERS_AND_TLS', timing['byteAccounting'])
         self.assertEqual(len(calls), 4); self.assertTrue(all('Cookie' not in headers and 'Authorization' not in headers for _, _, headers in calls))
+
+
+    def test_failed_tls_timing_preserves_partial_bytes_and_original_exception(self):
+        class Response:
+            status = 200
+            def __init__(self): self.parts = [b'ab', RuntimeError('stream interrupted')]
+            def getheaders(self): return []
+            def read(self, count):
+                part = self.parts.pop(0)
+                if isinstance(part, Exception): raise part
+                return part
+        class Connection:
+            def __init__(self, *args, **kwargs): pass
+            def request(self, *args, **kwargs): pass
+            def getresponse(self): return Response()
+            def close(self): pass
+        verifier = type('Verifier', (), {})()
+        verifier.verify = lambda value: verifier.request(value['origin'], 'GET', '/models/unit/file', {}, 10)
+        timings = []
+        with patch.object(h, 'module', return_value=verifier), patch.object(h.http.client, 'HTTPSConnection', Connection), patch.object(h.time, 'monotonic', side_effect=[20.0, 23.0]):
+            with self.assertRaisesRegex(RuntimeError, 'stream interrupted'):
+                h.verify_models_tls('https://example.net', [], telemetry=timings.append)
+        self.assertEqual((timings[0]['requestsStarted'], timings[0]['responsesCompleted'], timings[0]['bodyBytesRead']), (1, 0, 2))
+        self.assertEqual(timings[0]['elapsedSeconds'], 3.0); self.assertFalse(timings[0]['checksCompleted'])
+        def fail_capture(value): raise OSError('local full')
+        with patch.object(h, 'module', return_value=verifier), patch.object(h.http.client, 'HTTPSConnection', Connection):
+            with self.assertRaisesRegex(RuntimeError, 'stream interrupted') as caught:
+                h.verify_models_tls('https://example.net', [], telemetry=fail_capture)
+        self.assertEqual(caught.exception.__notes__, ['Model timing capture failed: OSError'])
+
+    def test_telemetry_does_not_change_verifier_return_or_raise_success(self):
+        result = {'same': object()}; timings = []
+        verifier = type('Verifier', (), {'verify': lambda _, value: result})()
+        with patch.object(h, 'module', return_value=verifier):
+            self.assertIs(h.verify_models_tls('https://example.net', [], telemetry=timings.append), result)
+            self.assertIs(h.verify_models_tls('https://example.net', []), result)
+        self.assertEqual((timings[0]['requestsStarted'], timings[0]['responsesCompleted'], timings[0]['bodyBytesRead']), (0, 0, 0))
 
 
 class OwningPod(unittest.TestCase):
@@ -524,7 +590,7 @@ class PublicationHandoff(unittest.TestCase):
         pub.stage = stage; pub.out = f.out; pub.path = Path(f.input['path']); pub.input_sha = f.input['sha256']; pub.operator_sha = f.operator['sha256']
         pub.with_journal = lambda fn: fn()  # target transport is forbidden in this fixture
         pub.fresh = lambda after=False: copy.deepcopy(f.bundle['deployment'])
-        self.http = type('HTTPDataFixture', (), {'verify_models_tls': lambda *_args: copy.deepcopy(f.models_tls),
+        self.http = type('HTTPDataFixture', (), {'verify_models_tls': lambda *_args, **_kwargs: copy.deepcopy(f.models_tls),
             'verify_static_tls': lambda *_args: copy.deepcopy(f.static_tls)})
 
     def tearDown(self): self.f.tearDown()
@@ -550,7 +616,7 @@ class PublicationHandoff(unittest.TestCase):
         self.assertTrue((self.f.out / 'observe.uncertain.json').exists())
 
     def test_http_failure_never_emits_observe_or_baseline_acceptance(self):
-        def failed(*args): raise RuntimeError('actual TLS oracle refused')
+        def failed(*args, **kwargs): raise RuntimeError('actual TLS oracle refused')
         self.http.verify_models_tls = failed
         with patch.object(p.s, 'module', return_value=self.http), self.assertRaisesRegex(RuntimeError, 'TLS oracle refused'): self.pub.observe()
         self.assertFalse((self.f.out / 'observe.accepted.json').exists()); self.assertFalse((self.f.out / 'accepted-release.actual.json').exists())
@@ -678,7 +744,7 @@ class ModelCheckpoints(unittest.TestCase):
             return n.physical(raw, op.models, True)
         op.physical = physical
         op.native_http = lambda pod: events.append('native-http') or {'native': True}
-        def tls(origin, models): events.append('tls'); return {'tls': True}
+        def tls(origin, models, telemetry=None): events.append('tls'); return {'tls': True}
         helper = type('HTTP', (), {'verify_models_tls': staticmethod(tls)})
         def held(ref): return [{'data': {}}] if ref == 'config-ref' else {'publicPin': 'pin'}
         return op, events, saved, helper, held
