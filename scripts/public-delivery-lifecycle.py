@@ -515,7 +515,7 @@ def _prepare(value, input_ref, historical_matched=False):
         and accepted['manifestSha256'] == annotations['lolly.tools/full-root-manifest']
         and accepted['mapSha256'] == annotations['lolly.tools/delivery-etags-sha256']
         and accepted['mapSha256'] == old[a.overlay.MAP]['sha256']
-        and accepted['models'] == refs['models'] and accepted['configs'] == refs['configs'], 'Genuinely accepted whole-root baseline required')
+        and held(accepted['models']) == bound['models'] and held(accepted['configs']) == bound['configs'], 'Genuinely accepted whole-root baseline required')
     pin = held(accepted['publicPin']); exact(pin, {'kty', 'crv', 'x', 'y'})
     need(pin['kty'] == 'EC' and pin['crv'] == 'P-256'
          and all(type(pin[key]) is str and re.fullmatch(r'[A-Za-z0-9_-]{43}', pin[key]) for key in ['x', 'y']), 'Public-only P256 pin required')

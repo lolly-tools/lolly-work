@@ -478,6 +478,20 @@ class PublicationHandoff(unittest.TestCase):
         accepted['ownerPodUID'] = 'requested-replacement'; value['refs']['acceptedRelease'] = f.put(accepted)
         with self.assertRaisesRegex(l.a.Refusal, 'rederive from original serving custody'): l.prepare(value, f.put(value))
 
+    def test_next_prepare_accepts_identical_fresh_model_config_captures_not_changed_data(self):
+        accepted = l.publication_baseline(self.proof); value = self.next_value(accepted)
+        for key in ['models', 'configs']:
+            value['refs'][key] = self.f.put(l.held(value['refs'][key]))
+            self.assertNotEqual(value['refs'][key]['path'], accepted[key]['path'])
+        prepared = l.prepare(value, self.f.put(value))
+        self.assertEqual(prepared['refs']['models'], value['refs']['models'])
+        for key in ['models', 'configs']:
+            changed = copy.deepcopy(value); content = l.held(changed['refs'][key])
+            if key == 'models': content['files'][0]['sha256'] = 'f' * 64
+            else: content[0]['data']['new.conf'] = 'changed'
+            changed['refs'][key] = self.f.put(content)
+            with self.subTest(key=key), self.assertRaises(l.a.Refusal): l.prepare(changed, self.f.put(changed))
+
     def test_distinct_real_checkouts_admit_history_then_prepare_next_without_restamping(self):
         # Source-only Git checkouts contain the real helpers/test fixture. No
         # packages, model bodies, target transport or historical code execution.

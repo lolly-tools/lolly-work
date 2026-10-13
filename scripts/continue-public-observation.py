@@ -180,7 +180,7 @@ def stage_binding(l, request, prepared, target, context):
     publication = l.held(proof['input']); runtime = l.held(publication['stageInput']); old = l.held(runtime['prepared'])
     l.need(not list(Path(publication['outputDirectory']).glob('rollback*')), 'Rollback intent or outcome invalidates accepted model reuse')
     l.need(l.held(runtime['target']) == target and l.held(runtime['context'])['origin'] == context['origin']
-           and old['refs']['models'] == prepared['refs']['models'] and old['refs']['configs'] == prepared['refs']['configs'], 'Target, origin, model recipe or configuration changed')
+           and l.held(old['refs']['models']) == l.held(prepared['refs']['models']) and l.held(old['refs']['configs']) == l.held(prepared['refs']['configs']), 'Target, origin, model recipe or configuration changed')
     owner = l.serving_binding(l.held(checkpoint['evidence']['ownerAfter']), old, target['node']['name'])
     current = {'deployment':l.held(prepared['refs']['deployment']), 'pod':context['owner'], 'replicaSet':context['replicaSet']}
     l.need(l.serving_binding(current, old, target['node']['name']) == owner, 'Owner replacement requires full model qualification')

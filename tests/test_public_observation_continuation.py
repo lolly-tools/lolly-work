@@ -181,6 +181,12 @@ class AcceptedStage(Custody):
   request,prepared,target,context=self.accepted_fixture();bound=c.stage_binding(l,request,prepared,target,context)
   self.assertEqual(bound['process'],self.process);self.assertEqual(bound['physical'],l.held(self.cp['phases']['observe']['accepted'])['physical']['models'])
   self.assertEqual(bound['modelsTLS']['status'],'ISOLATED_MODEL_HTTP_BYTES_VERIFIED_ONLY')
+ def test_new_capture_paths_preserve_exact_config_and_model_identity(self):
+  request,prepared,target,context=self.accepted_fixture()
+  previous=copy.deepcopy(prepared['refs'])
+  for key in ['models','configs']:prepared['refs'][key]=self.f.f.put(l.held(previous[key]))
+  self.assertNotEqual(previous['models'],prepared['refs']['models']);self.assertNotEqual(previous['configs'],prepared['refs']['configs'])
+  self.assertEqual(c.stage_binding(l,request,prepared,target,context)['process'],self.process)
  def test_replacement_owner_configuration_storage_or_acceptance_refused(self):
   request,prepared,target,context=self.accepted_fixture()
   cases=[]
