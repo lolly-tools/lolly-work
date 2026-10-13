@@ -270,3 +270,20 @@ acceptance, and preserve current user data.
 For `lolly.ing` and `lolly.tools`, use the production handoff in
 `lolly-private/production/README.md` and its `check-target.py`. Historical
 `candidate` names identify the current UpCloud K3s production host.
+
+
+### Public qualification costs
+
+Avoiding an image build does not make the full public release immediate. The full-root
+qualifier still verifies the complete static root, models, native HTTP behaviour and
+normal-TLS responses before publication. At each of its three model checkpoints it now
+uses one complete physical scan for both the owner assertion and inode/hash comparison;
+this removes three duplicate scans without reusing an older checkpoint or skipping a
+byte check across either HTTP boundary. The accepted receipt format is unchanged.
+
+One 177-model qualification read 5.39 GB of models and transferred 10.78 GB over TLS
+through ordinary and mismatching-If-Range requests. Its TLS portion took about 13 minutes;
+the full qualification took about 28 minutes. These are measurements from that run,
+not a promised duration or a measured result of the scan reduction. Model HTTP requests
+and publication checks remain unchanged. Broader accepted-model proof reuse, freshness
+rules and timing reports are tracked in [issue 115](https://github.com/lolly-tools/lolly-work/issues/115).
