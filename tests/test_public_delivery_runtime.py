@@ -26,6 +26,31 @@ n = load('runtime_native', 'public-delivery-native.py')
 h = load('runtime_http', 'public-delivery-http.py')
 
 
+class ProcessContext(unittest.TestCase):
+    label = b'system_u:system_r:container_t:s0:c387,c465'
+    def test_native_single_terminal_framing(self):
+        helper = s.module('test_process_context', 'public-serving-continuation.py')
+        for suffix in (b'', b'\n', b'\0'):
+            self.assertEqual(helper.process_context(self.label + suffix), self.label.decode())
+    def test_noncanonical_context_refuses(self):
+        helper = s.module('test_process_context_negative', 'public-serving-continuation.py')
+        for data in (self.label+b'\0\0', self.label+b'\0\n', self.label+b'\n\0',
+                     b'a\0'+self.label, self.label+b'\n\n', self.label+b' ', b' '+self.label, b'', b'x'*258):
+            with self.subTest(data=data), self.assertRaises((RuntimeError, UnicodeError)):
+                helper.process_context(data)
+    def test_production_owner_match_and_different_mcs_or_type(self):
+        stage = object.__new__(s.Stage); stage.namespace='public'; stage.container='web'
+        stage.remote=lambda args:self.label+b'\0'
+        owner={'metadata':{'name':'owner'}}
+        old={'root':{'selinuxLabel':'system_u:object_r:container_file_t:s0:c1,c2'}}
+        actual={'root':{'selinuxLabel':'system_u:object_r:container_file_t:s0:c387,c465'}}
+        expected=copy.deepcopy(old); stage.owner_model_label(actual,expected,owner)
+        self.assertEqual(actual,expected)
+        for label in ('system_u:object_r:container_file_t:s0:c3,c4', 'system_u:object_r:another_type:s0:c387,c465'):
+            with self.subTest(label=label),self.assertRaises(RuntimeError):
+                stage.owner_model_label({'root':{'selinuxLabel':label}},copy.deepcopy(old),owner)
+
+
 class Native(unittest.TestCase):
     def row(self, path, body=b'abc', inode=20, links=1, uid=101):
         return 'F\t' + path + '\t' + f'{len(body)} 81a4 {uid} 101 0 {inode} 8 {links}' + '\t' + hashlib.sha256(body).hexdigest()

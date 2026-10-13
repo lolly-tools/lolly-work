@@ -40,7 +40,7 @@ private, cohort, updater, r = legacy.private, legacy.cohort, legacy.updater, leg
 need, exact, raw = l.need, l.exact, l.raw
 SOURCE_NAMES = {*legacy.SOURCE_NAMES, 'plan-private-cohort.py', 'public-delivery-lifecycle.py', 'assemble-public-delivery.py',
     'public-delivery-overlay.py', 'public-delivery-map.mjs', 'stage-public-delivery.py', 'publish-public-delivery.py',
-    'public-delivery-native.py', 'public-delivery-http.py', 'public-delivery-model-http.py', 'public-matched-baseline.py', 'public-stage-continuation.py',
+    'public-delivery-native.py', 'public-delivery-http.py', 'public-delivery-model-http.py', 'public-matched-baseline.py', 'public-stage-continuation.py', 'public-serving-continuation.py',
     'public-delivery-static-http.py', 'public-delivery-decoded-http.py'}
 
 
@@ -408,7 +408,8 @@ class Stage:
         old, actual = expected['root']['selinuxLabel'], observed['root']['selinuxLabel']
         if actual != old:
             need(old is not None and actual is not None and actual.split(':', 3)[:3] == old.split(':', 3)[:3], 'Model filesystem label type/identity changed')
-            current = self.remote(['exec', '-n', self.namespace, owner['metadata']['name'], '-c', self.container, '--', 'cat', '/proc/1/attr/current']).decode().strip()
+            serving = module('public_serving_context', 'public-serving-continuation.py')
+            current = serving.process_context(self.remote(['exec', '-n', self.namespace, owner['metadata']['name'], '-c', self.container, '--', 'cat', '/proc/1/attr/current']))
             need(len(current) <= 256 and len(current.split(':', 3)) == 4 and current.split(':', 3)[3] == actual.split(':', 3)[3], 'New model MCS label does not belong to the verified native owner')
             expected['root']['selinuxLabel'] = actual
 
