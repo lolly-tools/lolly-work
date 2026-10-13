@@ -13,7 +13,7 @@ import { cloneShellFiles, shellFileCustody, shellFileStamp } from './shell-updat
 const MAX_FILES = 100_000;
 const MAX_BYTES = 8 * 1024 * 1024 * 1024;
 const MAX_DEPTH = 64;
-const MAX_INVENTORY_BYTES = 16 * 1024 * 1024;
+const MAX_INVENTORY_BYTES = 32 * 1024 * 1024;
 const MAX_RECEIPT_BYTES = 64 * 1024 * 1024;
 const CHUNK = 64 * 1024;
 const ID = /^release-[0-9a-f]{16}$/;
@@ -34,6 +34,10 @@ export class RetentionRefusal extends Error {
 }
 function requireThat(condition: unknown, reason: string): asserts condition {
   if (!condition) throw new RetentionRefusal(reason);
+}
+/** Metadata has its own finite budget, independent of the file and content caps. */
+export function requireInventoryBytes(bytes: number): void {
+  requireThat(Number.isSafeInteger(bytes) && bytes >= 0 && bytes <= MAX_INVENTORY_BYTES, 'Shell input inventory exceeds its byte bound.');
 }
 function identity(stat: BigIntStats): Identity { return { dev: stat.dev, ino: stat.ino }; }
 function matches(stat: BigIntStats, value: Identity): boolean { return stat.dev === value.dev && stat.ino === value.ino; }
@@ -109,7 +113,7 @@ function snapshot(root: string): Snapshot {
         requireThat(entry.isFile() && ++entries <= MAX_FILES, 'Shell inputs must contain bounded regular files.');
         const file = readFile(result, { path: child });
         inventoryBytes += Buffer.byteLength(child) + 160;
-        requireThat(inventoryBytes <= MAX_INVENTORY_BYTES, 'Shell input inventory exceeds its byte bound.');
+        requireInventoryBytes(inventoryBytes);
         total += file.size;
         requireThat(total <= MAX_BYTES, 'Shell input bytes exceed their bound.');
         result.files.push(file);
