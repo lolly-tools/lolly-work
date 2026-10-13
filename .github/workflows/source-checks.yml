@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: MPL-2.0
+name: Source checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  source-checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '26.11.1'
+          package-manager-cache: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 11.26.0
+          run_install: false
+      - name: Install pinned source compiler
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Install verified scanner binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/source-scanners"
+          archive="$RUNNER_TEMP/source-scanners/gitleaks.tar.gz"
+          gh release download v8.29.1 --repo gitleaks/gitleaks --pattern gitleaks_8.29.1_linux_x64.tar.gz --output "$archive"
+          printf '%s  %s\n' e4eb209d04e20339d77122a3bdf9cd41351255cfb27ebcb75e85325e04f88924 "$archive" | sha256sum --check
+          tar -xzf "$archive" -C "$RUNNER_TEMP/source-scanners" gitleaks
+          binary="$RUNNER_TEMP/source-scanners/opengrep"
+          gh release download v1.26.0 --repo opengrep/opengrep --pattern opengrep_manylinux_x86 --output "$binary"
+          printf '%s  %s\n' 40c21299eeddabf743b856daa843d24f9d4a027130671cd45b3b21776fd9ab26 "$binary" | sha256sum --check
+          chmod +x "$binary"
+          echo "GITLEAKS_BIN=$RUNNER_TEMP/source-scanners/gitleaks" >> "$GITHUB_ENV"
+          echo "OPENGREP_BIN=$binary" >> "$GITHUB_ENV"
+      - name: Scan history with redacted findings
+        run: node scripts/scan-secrets.ts
+      - name: Check application source and scanner canaries
+        run: node scripts/scan-code.ts

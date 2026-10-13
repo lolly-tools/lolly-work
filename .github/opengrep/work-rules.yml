@@ -1,0 +1,27 @@
+rules:
+  - id: work-verified-tls
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: Verify TLS certificates and hostnames for authenticated connections.
+    pattern-either:
+      - pattern: "{ ..., rejectUnauthorized: false, ... }"
+      - pattern: "process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'"
+    paths:
+      exclude: ["tests/**", "**/*.test.ts"]
+
+  - id: work-direct-process-arguments
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: Pass process arguments directly instead of enabling a command shell.
+    pattern: "{ ..., shell: true, ... }"
+    paths:
+      exclude: ["tests/**", "**/*.test.ts"]
+
+  - id: work-credential-redirects
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: Authenticated outbound requests must refuse redirects or validate each hop before sending credentials.
+    patterns:
+      - pattern: "fetch($URL, { ..., headers: $HEADERS, redirect: 'follow', ... })"
+    paths:
+      exclude: ["tests/**", "**/*.test.ts"]

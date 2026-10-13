@@ -1,0 +1,49 @@
+title = "Lolly Work secret scanning"
+minVersion = "v8.29.1"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Generated emoji sequence identifiers are hexadecimal Unicode code points"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''^vendor/@lolly/engine/src/emoji-data/17\.0\.json$''']
+regexTarget = "secret"
+regexes = ['''^[0-9a-f]{4,6}(?:-[0-9a-f]{4,6}){3,}$''']
+
+[[allowlists]]
+description = "The generated engine inventory contains public SHA-256 digests"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''^engine-pin\.json$''']
+regexTarget = "secret"
+regexes = ['''^[0-9a-f]{64}$''']
+
+[[allowlists]]
+description = "Historical configuration references name environment variables rather than credential values"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''^deploy/helm/templates/_helpers\.tpl$''', '''^server/src/render/c2pa-signer\.ts$''', '''^server/src/config/instance\.ts$''']
+commits = ["ec301902765812037e16959e0e8be7057bccd6e2"]
+
+[[allowlists]]
+description = "Historical test declarations build fresh disposable keys or intentionally malformed PEM"
+condition = "AND"
+targetRules = ["private-key"]
+paths = ['''^tests/catalog-signing\.test\.ts$''', '''^tests/c2pa-signer\.test\.ts$''']
+commits = ["6330ccf6eb37af0bc3611797c1dff2e04aa944ed", "ec301902765812037e16959e0e8be7057bccd6e2"]
+
+[[allowlists]]
+description = "Historical S3 listing test carries static XML fixture paths"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''^tests/s3-driver\.test\.ts$''']
+commits = ["ec301902765812037e16959e0e8be7057bccd6e2"]
+
+[[allowlists]]
+description = "Historical smoke test uses a fixed public WebSocket handshake nonce"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''^deploy/vm/smoke\.sh$''']
+commits = ["6330ccf6eb37af0bc3611797c1dff2e04aa944ed"]
