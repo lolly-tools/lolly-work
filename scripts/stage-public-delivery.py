@@ -40,7 +40,7 @@ private, cohort, updater, r = legacy.private, legacy.cohort, legacy.updater, leg
 need, exact, raw = l.need, l.exact, l.raw
 SOURCE_NAMES = {*legacy.SOURCE_NAMES, 'plan-private-cohort.py', 'public-delivery-lifecycle.py', 'assemble-public-delivery.py',
     'public-delivery-overlay.py', 'public-delivery-map.mjs', 'stage-public-delivery.py', 'publish-public-delivery.py',
-    'public-delivery-native.py', 'public-delivery-http.py', 'public-delivery-model-http.py',
+    'public-delivery-native.py', 'public-delivery-http.py', 'public-delivery-model-http.py', 'public-matched-baseline.py', 'public-stage-continuation.py',
     'public-delivery-static-http.py', 'public-delivery-decoded-http.py'}
 
 
@@ -78,14 +78,17 @@ def mounts(text):
  for line in text.splitlines():
   fields=line.split();separator=fields.index('-')
   if separator<6 or len(fields)<separator+4 or not re.fullmatch(r'[0-9]+:[0-9]+',fields[2]):raise RuntimeError('COMPLETE_MOUNTINFO_ROW_REQUIRED')
-  rows.append({'id':fields[0],'device':fields[2],'root':path(fields[3]),'mountpoint':path(fields[4])})
+  root=fields[3] if fields[separator+1]=='nsfs' and re.fullmatch(r'net:\[[0-9]+\]',fields[3]) else path(fields[3])
+  rows.append({'id':fields[0],'device':fields[2],'root':root,'mountpoint':path(fields[4])})
  return rows
 def mapping(path,device,rows):
  choices=[row for row in rows if row['mountpoint']=='/' or path==row['mountpoint']or path.startswith(row['mountpoint']+'/')]
  if not choices:raise RuntimeError('PV_MOUNT_MAPPING_ABSENT')
  size=max(len(row['mountpoint'])for row in choices);choices=[row for row in choices if len(row['mountpoint'])==size]
  if len(choices)!=1 or choices[0]['device']!=str(os.major(device))+':'+str(os.minor(device)):raise RuntimeError('AMBIGUOUS_PHYSICAL_PV_MOUNT_MAPPING')
- row=choices[0];suffix=path[len(row['mountpoint']):]if row['mountpoint']!='/'else path
+ row=choices[0]
+ if not row['root'].startswith('/'):raise RuntimeError('NON_FILESYSTEM_PV_MOUNT_MAPPING')
+ suffix=path[len(row['mountpoint']):]if row['mountpoint']!='/'else path
  return {'device':row['device'],'root':row['root'],'mountpoint':row['mountpoint'],'effectivePath':str(pathlib.PurePosixPath(row['root'])/suffix.lstrip('/'))}
 def identity(p):
  s=p.lstat()
@@ -430,6 +433,9 @@ class Stage:
         copied = copy.deepcopy(pod); placement = copied['spec'].get('nodeName')
         need(placement == self.target['node']['name'], 'Native owner is not on the reviewed scheduling node')
         if 'nodeName' not in desired['template']['spec']: copied['spec'].pop('nodeName')
+        if 'enableServiceLinks' not in desired['template']['spec']:
+            need(copied['spec'].get('enableServiceLinks') is True, 'Native owner default enableServiceLinks differs')
+            copied['spec'].pop('enableServiceLinks')
         metadata = desired['template']['metadata']; labels = copy.deepcopy(metadata.get('labels', {}))
         controller_hash = replica.get('metadata', {}).get('labels', {}).get('pod-template-hash')
         need(type(controller_hash) is str and re.fullmatch('[a-z0-9]{1,63}', controller_hash), 'Actual ReplicaSet template hash required')

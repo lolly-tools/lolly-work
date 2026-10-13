@@ -1,9 +1,9 @@
 # Complete public static root and application updates
 
-This source proposal is not active in the five-path facade. The existing
-delivery-map hold stays in place until the producer, new-claim staging,
-native qualifier and publisher bind this protocol. These helpers perform
-local assembly and pure resource/patch derivation; they do not contact a cluster.
+The complete-root lane is separate from the five-path facade, whose delivery-map
+hold remains in place. Its maintained frontend producer, assembler and runtime
+adapter use the same complete-root protocol. The assembly helpers perform local
+work and pure resource/patch derivation; they do not contact a cluster.
 
 The first matched release needs its actual `lolly-start` public artifact,
 ordinary source CI, image custody, pinned catalog verification and complete
@@ -35,6 +35,16 @@ boundary: {path, sha256}  # adjacent public-delivery-overlay.py
 node:     {path, sha256}  # actual reviewed executable
 outputDirectory: /exclusive/new/local/output
 ```
+
+For an accepted version 2 full-root serving baseline,
+`prepare-public-shell-update.ts` emits a version 2
+`public-full-root-frontend` descriptor. Its read-only baseline verifier holds
+the original serving chain, including explicit staging recovery where present.
+The producer regenerates codings only for changed frontend identities, keeps
+all retained immutable wire bytes and compiles the map after retention. The
+assembler checks the original verifier and compression commands and the full
+current validator source closure before admitting this descriptor. It never
+uses the legacy five-path publisher for this output.
 
 The candidate descriptor must be the original maintained
 `public-shell-update.prepared.json`, with its exact source, public profile,

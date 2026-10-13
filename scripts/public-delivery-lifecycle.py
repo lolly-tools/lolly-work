@@ -95,6 +95,12 @@ def serving_binding(bundle, prepared, node):
         'process': {k: process.get(k) for k in ['name', 'image', 'imageID', 'containerID', 'state', 'restartCount', 'ready']}}
 
 
+def matched_baseline():
+    """Load only the maintained read-only custody helper, never held source."""
+    spec = importlib.util.spec_from_file_location('matched_baseline', Path(__file__).with_name('public-matched-baseline.py'))
+    value = importlib.util.module_from_spec(spec); spec.loader.exec_module(value); return value
+
+
 def publication_baseline(proof):
     """Derive the next baseline only from original successful publication custody.
 
@@ -105,13 +111,15 @@ def publication_baseline(proof):
     need(proof['version'] == 1, 'Closed original publication proof required')
     a.read_ref(proof['operator']); publication = held(proof['input'])
     exact(publication, {'version', 'status', 'stageInput', 'stageSource', 'retirement', 'outputDirectory'})
-    need(publication['version'] == 1 and publication['status'] == 'REVIEWED_ACTUAL_FRONTEND_ROOT_PUBLICATION_NOT_EXECUTED'
+    protocol = 'MATCHED' if publication.get('status') == 'REVIEWED_ACTUAL_MATCHED_ROOT_PUBLICATION_NOT_EXECUTED' else 'FRONTEND'
+    need(publication['version'] == 1 and publication['status'] == f'REVIEWED_ACTUAL_{protocol}_ROOT_PUBLICATION_NOT_EXECUTED'
          and Path(proof['operator']['path']).name == 'publish-public-delivery.py'
          and Path(publication['stageSource']['path']) == Path(proof['operator']['path']).with_name('stage-public-delivery.py'),
          'Original maintained publication input/source required')
     a.read_ref(publication['stageSource']); runtime = held(publication['stageInput'])
-    exact(runtime, {'version', 'status', 'prepared', 'target', 'context', 'programs', 'sources', 'outputDirectory'})
-    need(runtime['version'] == 1 and runtime['status'] == 'REVIEWED_PUBLIC_FRONTEND_RUNTIME_NOT_EXECUTED'
+    continued = protocol == 'MATCHED' and 'continuation' in runtime
+    exact(runtime, {'version', 'status', 'prepared', 'target', 'context', 'programs', 'sources', 'outputDirectory'} | ({'continuation'} if continued else set()))
+    need(runtime['version'] == 1 and runtime['status'] == f'REVIEWED_PUBLIC_{protocol}_RUNTIME_NOT_EXECUTED'
          and publication['stageSource'] in runtime['sources'], 'Original reviewed stage binding required')
     for ref in runtime['sources']: a.read_ref(ref)
     exact(runtime['programs'], {'preflight', 'hostProbe', 'node', 'signatureVerifier'})
@@ -119,7 +127,9 @@ def publication_baseline(proof):
         exact(ref, {'path', 'sha256'}); path = Path(ref['path'])
         need(path.is_absolute() and path.resolve(strict=True) == path and sha(ref['sha256']) and a.checksum(path) == ref['sha256']
              and (key == 'node' or ref in runtime['sources']), 'Original registered execution program differs')
-    prepared = held(runtime['prepared']); retirement = held(publication['retirement']); admit(prepared, retirement)
+    prepared = held(runtime['prepared']); retirement = held(publication['retirement'])
+    need(runtime.get('continuation') == retirement.get('continuation'), 'Original forward runtime/retirement lineage differs')
+    admit(prepared, retirement, _historical_matched=protocol == 'MATCHED')
     adapter = held(prepared['refs']['adapterReview'])
     need(adapter['source'] == publication['stageSource'] and adapter['sources'] == runtime['sources'], 'Original adapter registry closure differs')
     need(retirement['prepared'] == runtime['prepared'] and retirement['adapter'] == publication['stageSource']
@@ -153,11 +163,11 @@ def publication_baseline(proof):
                 need(Path(command[stream]['path']).parent == output, 'Original command stream belongs to another journal')
                 a.read_ref(command[stream])
         phases[name] = phase
-    need(phases['dryrun']['status'] == 'ACTUAL_FRONTEND_SERVER_DRYRUN_NOT_PUBLISHED' and phases['dryrun']['productionMutation'] is False
-         and phases['publish']['status'] == 'ACTUAL_FRONTEND_PATCHED_ACCEPTANCE_PENDING' and phases['publish']['productionMutation'] is True,
+    need(phases['dryrun']['status'] == f'ACTUAL_{protocol}_SERVER_DRYRUN_NOT_PUBLISHED' and phases['dryrun']['productionMutation'] is False
+         and phases['publish']['status'] == f'ACTUAL_{protocol}_PATCHED_ACCEPTANCE_PENDING' and phases['publish']['productionMutation'] is True,
          'Actual dryrun and switch must precede observation')
     observed = phases['observe']
-    need(observed['status'] == 'ACTUAL_FRONTEND_ROOT_SERVING_VERIFIED' and observed['productionMutation'] is False
+    need(observed['status'] == f'ACTUAL_{protocol}_ROOT_SERVING_VERIFIED' and observed['productionMutation'] is False
          and observed['allProtectedSpecsVerified'] is True and observed['modelsMountedByStaging'] is False
          and observed['browserAcceptanceClaimed'] is False and observed['source'] == prepared['source']
          and observed['manifest'] == prepared['manifest'] and observed['mapSha256'] == prepared['mapSha256'],
@@ -213,7 +223,8 @@ def publication_baseline(proof):
          and {row['path'] for row in static['rows']} == set(expected)
          and all(row['status'] == 200 and row['size'] == expected[row['path']]['size'] and row['sha256'] == expected[row['path']]['sha256']
                  for row in static['rows']), 'Exact complete normal TLS static bodies required')
-    previous = held(prepared['refs']['acceptedRelease'])
+    previous = (matched_baseline().accepted(held(prepared['refs']['acceptedRelease']), held(prepared['refs']['deployment']), prepared['refs'])
+        if protocol == 'MATCHED' else held(prepared['refs']['acceptedRelease']))
     return {'version': 2, 'status': 'ACTUAL_PUBLIC_FULL_ROOT_SERVING_ACCEPTED',
         'deploymentUID': binding['deploymentUID'], 'deploymentSpecSha256': binding['deploymentSpecSha256'], 'ownerPodUID': binding['ownerPodUID'],
         'image': prepared['desiredSpec']['template']['spec']['containers'][0]['image'],
@@ -385,11 +396,17 @@ def resources(before, names, node, storage_class, byte_count):
 
 
 def prepare(value, input_ref):
+    """Prepare only frontend changes; historical matched reads are internal."""
+    return _prepare(value, input_ref)
+
+
+def _prepare(value, input_ref, historical_matched=False):
     """Bind physical assembly and source qualification without target access."""
     exact(value, {'version', 'status', 'refs', 'names', 'node', 'storageClass', 'minimumFreeBytes', 'outputDirectory'})
     need(held(input_ref) == value, 'Original preparation input differs')
-    exact(value['refs'], REFS); refs = value['refs']; bound = {key: held(ref) for key, ref in refs.items()}
-    need(value['version'] == 1 and value['status'] == 'REVIEWED_PUBLIC_FRONTEND_LIFECYCLE_NOT_EXECUTED', 'Explicit frontend-only lifecycle input required')
+    exact(value['refs'], REFS | ({'capacityReview'} if historical_matched else set())); refs = value['refs']; bound = {key: held(ref) for key, ref in refs.items()}
+    protocol = 'MATCHED' if historical_matched else 'FRONTEND'
+    need(value['version'] == 1 and value['status'] == f'REVIEWED_PUBLIC_{protocol}_LIFECYCLE_NOT_EXECUTED', 'Explicit frontend-only lifecycle input required')
     before = bound['deployment']; selected(before); baseline = protected(bound['baseline'])
     key = (before['metadata']['namespace'], before['metadata']['name'])
     need(key in baseline and baseline[key] == before, 'Selected owner must belong to complete baseline')
@@ -401,7 +418,11 @@ def prepare(value, input_ref):
     for kind in ['pods', 'pvcs', 'policies']:
         need(all(not (r['metadata'].get('namespace') == key[0] and r['metadata']['name'] in names.values())
                  for r in bound['baseline'][kind]['items']), 'Fresh resources cannot adopt an existing name')
-    report = bound['assembly']; need(report['version'] == 2 and report['protocol'] == 'PUBLIC_FULL_ROOT_DELIVERY_OVERLAY'
+    report = bound['assembly']; matched = matched_baseline() if historical_matched else None
+    if matched:
+        matched_candidate = matched.candidate(report, refs, bound, physical=False)
+    else:
+        need(report['version'] == 2 and report['protocol'] == 'PUBLIC_FULL_ROOT_DELIVERY_OVERLAY'
         and report['status'] == 'LOCAL_PHYSICAL_ASSEMBLY_NOT_RUNTIME_ACCEPTANCE' and report['mode'] == 'frontend'
         and report['runtimeQualified'] is False and report['productionMutation'] is False and report['published'] is False
         and report['originalSignedBytesChanged'] is False and report['physicalEpoch'] == report['hardLinkedFiles'] == 0,
@@ -412,9 +433,11 @@ def prepare(value, input_ref):
          and output != root and root not in output.parents and output not in root.parents,
          'Preparation output must not overlap assembled static bytes')
     previous = bound['previousManifest']; old = a.overlay.manifest(previous)
-    changes = a.tree({path: row for path, row in rows.items() if old.get(path) != row})
-    boundary = a.overlay.plan(previous, manifest, manifest, changes, sorted(set(old) - set(rows)))
-    need(report['frontendBoundary'] == boundary and report['map'] == rows[a.overlay.MAP], 'Actual full-root boundary/map differs')
+    need(report['map'] == rows[a.overlay.MAP], 'Actual paired map differs')
+    if not matched:
+        changes = a.tree({path: row for path, row in rows.items() if old.get(path) != row})
+        boundary = a.overlay.plan(previous, manifest, manifest, changes, sorted(set(old) - set(rows)))
+        need(report['frontendBoundary'] == boundary and report['map'] == rows[a.overlay.MAP], 'Actual full-root boundary/map differs')
     source = bound['qualifiedSource']
     exact(source, {'version', 'status', 'source', 'profile', 'main', 'run', 'jobs', 'requiredJobs'})
     need(source['version'] == 1 and source['status'] == 'ACTUAL_SOURCE_CI_QUALIFIED' and source['profile'] == 'lolly-start'
@@ -429,17 +452,20 @@ def prepare(value, input_ref):
         found = [r for r in job_rows if r['name'] == name]
         need(len(found) == 1 and found[0]['status'] == 'completed' and found[0]['conclusion'] == 'success'
              and found[0]['run_id'] == run['id'], 'Every mandatory job must pass on that actual run')
-    build = a.verify_candidate_build(report.get('candidateBuild'), physical_bytes=False)
-    descriptor = held(build['originalCustody'])
-    need(build['source'] == source['source'] and build['profile'] == source['profile'] and descriptor['ci'] == source['run'],
-        'Passing CI does not belong to the original candidate build and run custody')
-    candidate = a.physical(build['root'], held(build['manifest']))
-    expected, retained = a.union(candidate, old); expected[a.overlay.MAP] = report['map']
-    need(a.tree(expected) == manifest and retained == report['retained'], 'Assembled bytes do not derive from the original candidate build and retained baseline')
-    accepted = bound['acceptedRelease']
-    exact(accepted, ACCEPTED_KEYS | ({'publication'} if accepted.get('version') == 2 else set()))
-    if accepted['version'] == 2:
-        need(accepted == publication_baseline(accepted['publication']), 'Accepted baseline must rederive from original serving custody')
+    if matched:
+        accepted = matched.accepted(bound['acceptedRelease'], before, refs)
+    else:
+        build = a.verify_candidate_build(report.get('candidateBuild'), physical_bytes=False)
+        descriptor = held(build['originalCustody'])
+        need(build['source'] == source['source'] and build['profile'] == source['profile'] and descriptor['ci'] == source['run'],
+            'Passing CI does not belong to the original candidate build and run custody')
+        candidate = a.physical(build['root'], held(build['manifest']))
+        expected, retained = a.union(candidate, old); expected[a.overlay.MAP] = report['map']
+        need(a.tree(expected) == manifest and retained == report['retained'], 'Assembled bytes do not derive from the original candidate build and retained baseline')
+        accepted = bound['acceptedRelease']
+        exact(accepted, ACCEPTED_KEYS | ({'publication'} if accepted.get('version') == 2 else set()))
+        if accepted['version'] == 2:
+            need(accepted == publication_baseline(accepted['publication']), 'Accepted baseline must rederive from original serving custody')
     annotations = before['spec']['template']['metadata']['annotations']; web = before['spec']['template']['spec']['containers'][0]
     need(accepted['version'] in {1, 2} and accepted['status'] == 'ACTUAL_PUBLIC_FULL_ROOT_SERVING_ACCEPTED'
         and accepted['deploymentUID'] == before['metadata']['uid'] and accepted['deploymentSpecSha256'] == digest(before['spec'])
@@ -472,11 +498,19 @@ def prepare(value, input_ref):
         'Independent root review must bind that exact adapter source and capability closure')
     need(type(adapter['sources']) is list and adapter['sources'] and adapter['source'] in adapter['sources'], 'Complete adapter source closure required')
     for ref in adapter['sources']: a.read_ref(ref)
-    need(type(value['minimumFreeBytes']) is int and value['minimumFreeBytes'] >= 8 * 1024**3, 'Conservative target host reserve required')
+    if matched:
+        matched.capacity(bound['capacityReview'], value, source, adapter, manifest)
+    else:
+        need(type(value['minimumFreeBytes']) is int and value['minimumFreeBytes'] >= 8 * 1024**3, 'Conservative target host reserve required')
     want = desired(before, names['claim'], source['source'], report['manifest']['sha256'], report['map']['sha256'])
-    rendered = resources(before, names, value['node'], value['storageClass'], manifest['totalBytes'])
+    selected_before = before
+    if matched:
+        want = matched.desired_image(want, matched_candidate['image'])
+        selected_before = copy.deepcopy(before)
+        selected_before['spec'] = matched.desired_image(before['spec'], matched_candidate['image'])
+    rendered = resources(selected_before, names, value['node'], value['storageClass'], manifest['totalBytes'])
     exposure(bound['baseline'], rendered['writer']['metadata']['labels'], key[0])
-    return {'version': 1, 'status': 'PUBLIC_FRONTEND_LIFECYCLE_PREPARED_NOT_STAGED', 'refs': refs, 'preparationInput': input_ref,
+    return {'version': 1, 'status': f'PUBLIC_{protocol}_LIFECYCLE_PREPARED_NOT_STAGED', 'refs': refs, 'preparationInput': input_ref,
         'preparer': {'path': str(Path(__file__).resolve()), 'sha256': a.checksum(Path(__file__))},
         'beforeUID': before['metadata']['uid'], 'beforeSpecSha256': digest(before['spec']), 'source': source['source'],
         'manifest': report['manifest'], 'mapSha256': report['map']['sha256'], 'resources': rendered,
@@ -486,9 +520,10 @@ def prepare(value, input_ref):
         'runtimeQualified': False, 'published': False, 'productionMutation': False}
 
 
-def admit(prepared, receipt):
+def admit(prepared, receipt, *, _historical_matched=False):
     """Consume truthful adapter receipts; preserve target/publication ownership."""
-    need(prepared['status'] == 'PUBLIC_FRONTEND_LIFECYCLE_PREPARED_NOT_STAGED' and prepared['modelsMounted'] is False, 'Unstaged prepared request required')
+    protocol = 'MATCHED' if _historical_matched else 'FRONTEND'
+    need(prepared['status'] == f'PUBLIC_{protocol}_LIFECYCLE_PREPARED_NOT_STAGED' and prepared['modelsMounted'] is False, 'Unstaged prepared request required')
     # Preparation provenance belongs to the original registered checkout, not
     # this admission caller. Validate it without executing historical code;
     # every other field must still rederive under the current complete guards.
@@ -496,19 +531,31 @@ def admit(prepared, receipt):
     adapter = held(prepared['refs']['adapterReview'])
     need(Path(preparer['path']).name == Path(__file__).name and preparer in adapter['sources'],
          'Historical preparer is outside its original reviewed source closure')
-    derived = prepare(held(prepared['preparationInput']), prepared['preparationInput'])
+    derived = _prepare(held(prepared['preparationInput']), prepared['preparationInput'], _historical_matched)
     need({k: v for k, v in prepared.items() if k != 'preparer'} == {k: v for k, v in derived.items() if k != 'preparer'},
          'Prepared resources and exact patch must rederive from original qualified bytes')
-    exact(receipt, {'version', 'status', 'prepared', 'adapter', 'phases', 'native', 'models', 'retirement', 'globalBefore', 'globalAfter'})
-    need(receipt['version'] == 1 and receipt['status'] == 'ACTUAL_FRONTEND_ROOT_QUALIFIED_AND_RETIRED'
+    continued = _historical_matched and 'continuation' in receipt
+    exact(receipt, {'version', 'status', 'prepared', 'adapter', 'phases', 'native', 'models', 'retirement', 'globalBefore', 'globalAfter'} | ({'continuation'} if continued else set()))
+    if continued:
+        from types import SimpleNamespace
+        spec = importlib.util.spec_from_file_location('public_stage_continuation', Path(__file__).with_name('public-stage-continuation.py'))
+        continuation = importlib.util.module_from_spec(spec); spec.loader.exec_module(continuation)
+        original = continuation.validate(SimpleNamespace(held=held, need=need, exact=exact, a=a), held(receipt['continuation']), prepared)
+    need(receipt['version'] == 1 and receipt['status'] == f'ACTUAL_{protocol}_ROOT_QUALIFIED_AND_RETIRED'
         and held(receipt['prepared']) == prepared, 'Exact actual prepared/runtime binding required')
     need(receipt['adapter'] == adapter['source'], 'Actual runtime adapter source differs')
     need(type(receipt['phases']) is list and len(receipt['phases']) == len(STAGES), 'All exclusive real stage phases required')
     for name, ref in zip(STAGES, receipt['phases']):
-        phase = held(ref); exact(phase, {'version', 'phase', 'status', 'prepared', 'source', 'commands'})
-        need(phase['version'] == 1 and phase['phase'] == name and phase['status'] == 'ACTUAL_PHASE_ACCEPTED'
-            and phase['prepared'] == receipt['prepared'] and phase['source'] == receipt['adapter']
+        phase = held(ref); recovered = continued and name == 'retire-writer'; adopted = continued and name in {'create', 'copy'}
+        exact(phase, {'version', 'phase', 'status', 'prepared', 'source', 'commands'} | ({'continuation'} if recovered else set()))
+        expected_prepared = original['input']['prepared'] if adopted else receipt['prepared']
+        expected_source = held(receipt['continuation'])['originalSource'] if adopted else receipt['adapter']
+        expected_status = 'ACTUAL_WRITER_RETIREMENT_POSTCONDITIONS_VERIFIED_BY_CONTINUATION' if recovered else 'ACTUAL_PHASE_ACCEPTED'
+        need(phase['version'] == 1 and phase['phase'] == name and phase['status'] == expected_status
+            and phase['prepared'] == expected_prepared and phase['source'] == expected_source
             and type(phase['commands']) is list and phase['commands'], 'Literal phase source/input/command custody required')
+        if adopted: need(ref == held(receipt['continuation'])[name], 'Only exact original successful phases may be adopted')
+        if recovered: need(phase['continuation'] == receipt['continuation'], 'Writer recovery lineage differs')
         for command in phase['commands']:
             actual = held(command); need(actual['exitCode'] == 0 and actual.get('failure') is None, 'Failed command cannot qualify a phase')
             for stream in ['stdout', 'stderr']: a.read_ref(actual[stream])
@@ -531,6 +578,8 @@ def admit(prepared, receipt):
         and memory['oom'] == memory['oomKill'] == 0, 'Actual owning cgroup current/peak/RSS/zeroOOM under unchanged native limit required')
     signature = held(native['signature']); exact(signature, {'version', 'manifest', 'publicPin', 'sourceSignatureVerified', 'fullSignedFileClosureVerified'})
     accepted = held(prepared['refs']['acceptedRelease'])
+    if _historical_matched:
+        accepted = matched_baseline().accepted(accepted, held(prepared['refs']['deployment']), prepared['refs'])
     need(signature['version'] == 1 and signature['manifest'] == prepared['manifest'] and signature['publicPin'] == accepted['publicPin']
         and signature['sourceSignatureVerified'] is True and signature['fullSignedFileClosureVerified'] is True, 'Actual P256 complete original byte proof required')
     a.read_ref(signature['publicPin'])
