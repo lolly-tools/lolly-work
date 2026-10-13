@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 import { canonicalJson } from '../lib/crypto.ts';
-import { signBody, WorkerError, type WorkerConfig } from '../render/worker-client.ts';
+import { signBody, workerEndpoint, WorkerError, type WorkerConfig } from '../render/worker-client.ts';
 import { readBlobBody } from '../blobs/types.ts';
 export const PREVIEW_INPUT_LIMIT = 16 * 1024 * 1024;
 export async function createFilePreview(worker: WorkerConfig, bytes: Uint8Array, signal: AbortSignal, fetchImpl: typeof fetch = fetch): Promise<Buffer> {
   if (!bytes.length || bytes.length > PREVIEW_INPUT_LIMIT) throw new WorkerError('The preview input is empty or too large.', 413);
   const payload = canonicalJson({ bytesB64: Buffer.from(bytes).toString('base64'), ts: Date.now() });
-  const response = await fetchImpl(`${worker.url.replace(/\/$/, '')}/file-preview`, { method: 'POST', body: payload,
+  const response = await fetchImpl(workerEndpoint(worker, '/file-preview'), { method: 'POST', body: payload, redirect: 'error',
     headers: { 'content-type': 'application/json', 'x-lw-render-sig': signBody(payload, worker.secret) }, signal: AbortSignal.any([signal, AbortSignal.timeout(Math.min(worker.timeoutMs, 35_000))]) });
   if (!response.ok) throw new WorkerError(response.status === 503 ? 'The preview service is busy. Try again.' : 'This file could not be converted within the preview limits.', response.status === 422 ? 422 : response.status === 503 ? 503 : 502);
   if (!response.body || response.headers.get('content-type') !== 'application/pdf') throw new WorkerError('The preview service returned an invalid document.');

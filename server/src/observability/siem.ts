@@ -21,6 +21,8 @@
 import { createHmac } from 'node:crypto';
 import type { InstanceConfig, Secrets } from '../config/instance.ts';
 import type { Store } from '../store/types.ts';
+import { serviceUrl } from '../lib/service-url.ts';
+import { productionMode } from '../setup/checks.ts';
 
 export interface SiemForwarder {
   /** Forward one batch. Resolves with how many events were delivered (0 =
@@ -41,8 +43,9 @@ export interface SiemDeps {
 export function createSiemForwarder(deps: SiemDeps): SiemForwarder {
   const { config, secrets, store, onResult } = deps;
   const fetchImpl = deps.fetchImpl ?? fetch;
-  const url = config.siem.url;
-  if (!url) throw new Error('createSiemForwarder called without siem.url - the caller gates on it');
+  if (!config.siem.url) throw new Error('createSiemForwarder called without siem.url - the caller gates on it');
+  const url = serviceUrl(config.siem.url, productionMode(config));
+  if (productionMode(config) && process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0') throw new Error('SIEM TLS verification is required');
   if (!secrets.siem) throw new Error('siem.url is configured but LW_SIEM_SECRET is not set');
   const secret = secrets.siem;
 
@@ -56,6 +59,8 @@ export function createSiemForwarder(deps: SiemDeps): SiemForwarder {
     try {
       const res = await fetchImpl(url, {
         method: 'POST',
+        redirect: 'error',
+        signal: AbortSignal.timeout(20000),
         headers: {
           'content-type': 'application/json',
           'x-lolly-timestamp': ts,

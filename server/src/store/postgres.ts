@@ -60,6 +60,7 @@ function apiTokenFromRow(r: Record<string, unknown>): ApiTokenRecord {
     tokenHash: r.token_hash as string,
     createdBy: r.created_by as string,
     createdAt: new Date(r.created_at as string).toISOString(),
+    ...(r.expires_at ? { expiresAt: new Date(r.expires_at as string).toISOString() } : {}),
     ...(r.last_used_at ? { lastUsedAt: new Date(r.last_used_at as string).toISOString() } : {}),
     ...(r.revoked_at ? { revokedAt: new Date(r.revoked_at as string).toISOString() } : {}),
   };
@@ -779,10 +780,10 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     // Service tokens (plans/35 wave 2) - the SCIM block's shapes, one row kind over.
     async putApiToken(rec) {
       await pool.query(
-        `insert into api_tokens (id, label, role, token_hash, created_by, created_at, last_used_at, revoked_at)
-         values ($1, $2, $3, $4, $5, $6, $7, $8)
+        `insert into api_tokens (id, label, role, token_hash, created_by, created_at, last_used_at, revoked_at, expires_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          on conflict (id) do update set label = excluded.label, last_used_at = excluded.last_used_at, revoked_at = excluded.revoked_at`,
-        [rec.id, rec.label, rec.role, rec.tokenHash, rec.createdBy, rec.createdAt, rec.lastUsedAt ?? null, rec.revokedAt ?? null],
+        [rec.id, rec.label, rec.role, rec.tokenHash, rec.createdBy, rec.createdAt, rec.lastUsedAt ?? null, rec.revokedAt ?? null, rec.expiresAt ?? null],
       );
     },
     async listApiTokens() {

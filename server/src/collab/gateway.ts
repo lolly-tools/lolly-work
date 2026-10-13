@@ -135,6 +135,7 @@ import { sessionKeys, type InstanceConfig, type Secrets } from '../config/instan
 import type { ProjectRecord, SessionRecord, Store, UserRecord } from '../store/types.ts';
 import { displayName, resolveMember } from '../iam/member.ts';
 import { guestActor, readPrincipal, type GuestSession } from '../iam/sessions.ts';
+import { localSessionKey } from '../iam/local-logout.ts';
 import { linkResourceSelectors, type LinkRecord } from '../links/sign.ts';
 import { accessAtLeast, effectiveProjectAccess, type ProjectMembership } from '../rbac/project-access.ts';
 import { createBrandService } from '../brand/service.ts';
@@ -938,7 +939,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
       brand.snapshot().then(snap => readToolInputs(snap.source.root, toolId)),
       store.getSession(sessionId),
     ]);
-    const seat = liveGuestSeat(ctx.cookie, link, linkId, sessionId);
+    const seat = await liveGuestSeat(ctx.cookie, link, linkId, sessionId);
     if (!seat || !session || session.deletedAt) return null;
     // The inviter's own standing - plans/02 §8's second revocation lever, re-run
     // here exactly as the link's own liveness is (see `guestInviterStanding`).
@@ -954,7 +955,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
 
   /**
    * "Is this still the guest that was admitted, and may it still be here?" - the
-   * pure decision, over rows the caller has already read. The guest-side dual of
+   * current decision, including persisted local logout. The guest-side dual of
    * `seatAllows`, and the ONE expression of it for both re-checks.
    *
    * The cookie is re-verified rather than trusted from the handshake (it expires
@@ -962,14 +963,16 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
    * guest cookie arriving on a live socket must not inherit the seat the first
    * one opened.
    */
-  const liveGuestSeat = (
+  const liveGuestSeat = async (
     cookie: string | undefined, link: LinkRecord | null, linkId: string, sessionId: string,
-  ): GuestSeat | null => {
+  ): Promise<GuestSeat | null> => {
     // The instance-wide kill switch. An operator who turns guest links off has
     // turned them off for the sockets already open too, not merely for minting.
     if (!config.policy.guestLinks.enabled) return null;
     const principal = readPrincipal(cookie, sessionVerify);
     if (principal?.kind !== 'guest' || principal.guest.linkId !== linkId) return null;
+    const key = localSessionKey(principal);
+    if (key && await store.localSessionRevoked(key)) return null;
     if (!link) return null;
     return guestSeatOf(link, principal.guest, sessionId);
   };
@@ -1045,7 +1048,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
       const { linkId } = ctx.identity;
       const [link, session] = await Promise.all([store.getLink(linkId), store.getSession(sessionId)]);
       if (!session || session.deletedAt) return null;
-      const seat = liveGuestSeat(ctx.cookie, link, linkId, sessionId);
+      const seat = await liveGuestSeat(ctx.cookie, link, linkId, sessionId);
       if (!seat) return null;
       // An idle guest observer has no gesture to lose the seat on - the inviter
       // check has to ride the same keepalive the link's own liveness does.
@@ -1323,7 +1326,7 @@ export function createCollabGateway(deps: CollabGatewayDeps): CollabGateway {
     req: IncomingMessage, socket: Duplex, head: Buffer, sessionId: string, guest: GuestSession,
   ): Promise<void> => {
     const link = await store.getLink(guest.linkId);
-    const seat = config.policy.guestLinks.enabled && link ? guestSeatOf(link, guest, sessionId) : null;
+    const seat = await liveGuestSeat(req.headers.cookie, link, guest.linkId, sessionId);
     if (!seat) return refuse(socket, 403, 'FORBIDDEN');
 
     // The connection ceilings, keyed on the LINK - same placement as the member

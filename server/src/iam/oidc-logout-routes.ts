@@ -8,6 +8,7 @@ import { verifyLogoutToken } from './oidc-logout.ts';
 import { clearCookie, SESSION_COOKIE, GUEST_COOKIE, parseCookies, readMemberSession } from './sessions.ts';
 import { mintToken, verifyToken } from './tokens.ts';
 import { randomId, sha256Hex } from '../lib/crypto.ts';
+import { revokeBrowserSessions } from './local-logout.ts';
 
 interface Provider { kind: string; id: string; issuer: string; clientId: string; displayName: string; oidc: OidcPolicy }
 export function registerOidcLogout(d: {
@@ -55,6 +56,7 @@ export function registerOidcLogout(d: {
     url.searchParams.set('logout_hint', held.s.subject);
     url.searchParams.set('post_logout_redirect_uri', new URL('/', d.baseUrl).href);
     await d.audit(`user:${me.id}`, 'auth.logout-provider', 'session', { idp: held.p.id });
+    await revokeBrowserSessions(d.store, req.headers.cookie, d.keys);
     res.writeHead(303, { location: url.href, 'set-cookie': clear(), 'cache-control': 'no-store' });
     res.end();
   });

@@ -979,8 +979,16 @@ The console's **Provisioning and service tokens** page provides create, metadata
 and revoke actions through the existing APIs. SCIM requires `scim.manage`; service
 tokens require `token.manage`. A new secret displays once and is cleared when acknowledged;
 it is not placed in the URL, localStorage or token metadata. Record it before leaving.
-Last-use metadata helps identify unused credentials. Scopes and expiry are not implemented;
-service tokens currently carry the selected role and can be revoked.
+Last-use metadata helps identify unused credentials. New service tokens carry the
+selected role and expire after 90 days by default. `ttlDays` accepts 1 to 365 days;
+the CLI uses `lw tokens create --label ci --role admin --days 90`.
+
+Existing tokens without expiry remain accepted for compatibility. The list reports
+`legacyUnbounded` and `legacyUnboundedCount`, and the CLI labels them for rotation.
+An owner issues a replacement, installs it in the automation, verifies its access,
+then revokes the old token. After every required integration has rotated, an owner
+may set `policy.serviceTokens.allowLegacyUnbounded: false` to reject remaining
+unbounded tokens. No cutover date or automatic invalidation is selected.
 
 Automation identity (plans/35): CI running `lw export`/`lw apply`, a
 governance-drift check, an audit poller - no more session cookies in secret
@@ -1005,9 +1013,13 @@ token embeds at mint, so a token minted before the bump is refused from that mom
 live session of the disabled person therefore dies on its next request; there is no window
 to ride out. SCIM `active=false` (above) composes exactly this. Two further notes:
 
-- Revocation is **per user, not per session**: the epoch kills all of a person's sessions at
-  once (there is no list of individual sessions to revoke one of). `bumpSessionEpoch` is the
-  same lever for a "sign everyone-of-this-person out" without disabling them.
+- The epoch kills all of a person's sessions at once. `bumpSessionEpoch` is the
+  lever for signing the whole account out without disabling it. Local logout
+  separately revokes the current browser's session chain and any guest cookie;
+  replaying those cookies cannot restore access. Renewals carry the same revocation
+  id. Older cookies use a token-specific fallback carried into renewal, leaving
+  other device sessions active. Revocation markers remain in the existing logout
+  store for its 31-day security window, beyond the maximum 30-day session chain.
 - **Sign out on all devices** is that lever in each person's own hands (plans/75 G18):
   `POST /api/v1/me/revoke-sessions` bumps the caller's own epoch, so every session they
   hold, in any browser or app, ends on its next request, and it clears this browser's
