@@ -35,7 +35,7 @@ public = module('public_stage_contract', 'prepare-public-shell.py')
 updater, resources, cohort = private.updater, private.resources, public.cohort
 require, exact, Refusal = cohort.require, cohort.exact, cohort.Refusal
 SOURCE_NAMES = {'stage-public-shell.py', 'stage-private-shell.py', 'prepare-public-shell.py', 'prepare-private-shell.py',
-                'prepare-private-cohort.py', 'prepare-paired-release.py', 'plan-private-cohort.py', 'app-update.py'}
+                'prepare-private-cohort.py', 'prepare-paired-release.py', 'plan-private-cohort.py', 'app-update.py', 'capture-private-shell.py'}
 INPUT_KEYS = {'version', 'target', 'prepared', 'planningEvidence', 'baseline', 'publicKey', 'preflight', 'hostProbe',
               'names', 'storage', 'minimumFreeBytes', 'maximumWriteBytes', 'outputDirectory', 'node', 'sourceFiles'}
 

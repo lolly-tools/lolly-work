@@ -46,6 +46,14 @@ def patched(value, patch):
     return result
 
 
+def capture_fake(kube, queries):
+    outputs = {}
+    for kind, name, namespace in queries:
+        outputs[(kind,name,namespace)] = (kube.run(m.captures.query_args((kind,name,namespace))).encode() if name is None
+                                         else json.dumps(kube.get(kind,name,namespace)).encode())
+    return m.captures.Snapshot(outputs, [], True)
+
+
 class FakeKube:
     def __init__(self, fixture):
         self.f = fixture
@@ -183,6 +191,7 @@ class Phases(unittest.TestCase):
         p.input_ref = {"path": str(p.path), "sha256": "8" * 64}; p.operator_checksum = "9" * 64
         p.refs = {"plan": {"path": "plan", "sha256": "a" * 64}, "enginePin": {"path": "pin", "sha256": "7" * 64}}
         p.plan = self.plan; p.before = self.before; p.kube = self.kube
+        p.capture = lambda queries: capture_fake(self.kube, queries)
         p.baseline = {"version": 1, "deployments": copy.deepcopy(self.deployments), "owner": copy.deepcopy(self.old_owner), "replicaSet": copy.deepcopy(self.rs)}
         p.target = {"clusterUID": "cluster-uid", "node": {"name": "fixture-node", "uid": "node-uid"}, "components": {}}
         for role, d in self.deployments.items():
@@ -609,7 +618,7 @@ class Phases(unittest.TestCase):
                 with self.assertRaises(m.Refusal): self.publication.list_resources("pods", "team")
         self.assertEqual(self.kube.patches, [])
 
-    def test_nine_components_and_twenty_claims_use_twelve_fresh_reads(self):
+    def test_nine_components_and_twenty_claims_use_one_transport_for_twelve_fresh_reads(self):
         # Production-sized synthetic inventories; this is a read-count and
         # unchanged-object check, not a claim of real cluster qualification.
         for index in range(2, 9):
@@ -628,7 +637,29 @@ class Phases(unittest.TestCase):
         p.plan["resourceGuards"] = [m.resource_guard(r) for r in self.resources]
         p.target["components"] = {role: {"namespace": dep["metadata"]["namespace"], "namespaceUID": "namespace-uid",
              "deployment": dep["metadata"]["name"], "deploymentUID": dep["metadata"]["uid"]} for role, dep in self.deployments.items()}
+        fixture = self.base / 'capture-fixture.json'; log = self.base / 'read-count'
+        executable = self.base / 'synthetic-kubectl.py'
+        executable.write_text("""import json, os, sys
+from pathlib import Path
+args=sys.argv[3:]; args=args[args.index('get'):]
+query=[args[1],args[2] if args[2]!='-o' else None,args[args.index('--namespace')+1] if '--namespace' in args else None]
+fd=os.open(sys.argv[2],os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600); os.write(fd,b'get\\n'); os.close(fd)
+sys.stdout.write(json.loads(Path(sys.argv[1]).read_text())[json.dumps(query)])
+""")
+        p.target['transport'] = {'type':'local','kubectl':[sys.executable,str(executable),str(fixture),str(log)],'kubeconfig':'/synthetic','context':'synthetic'}
+        snapshots = []
+        def real_capture(queries):
+            expected = capture_fake(self.kube, queries)
+            fixture.write_text(json.dumps({json.dumps(key):raw.decode() for key,raw in expected.outputs.items()}))
+            result = m.Publication.capture(p, queries); snapshots.append(result)
+            self.assertEqual(result.outputs, expected.outputs)
+            return result
+        p.capture = real_capture
         current, pods = p.fresh("batched-count")
+        self.assertEqual(len(log.read_text().splitlines()),12)
+        self.assertEqual(len(snapshots),1)
+        self.assertEqual(sum('-transport.' in ref['path'] for ref in snapshots[0].receipts),1)
+        self.assertEqual(len(snapshots[0].receipts),13)
         self.assertEqual(current, self.deployments["work"])
         self.assertEqual(pods["items"], self.pods)
         original = json.loads((self.base / "batched-count.guards.original.json").read_bytes())
@@ -830,7 +861,7 @@ class Handoff(planner_fixture.Plan):
                 "target": self.file("target", target), "baseline": self.file("baseline", baseline),
                 "shellManifest": self.prepare_evidence["shell"]["manifest"], "packManifest": self.prepare_evidence["rawPack"]["manifest"], "enginePin": self.evidence["enginePin"]}
         sources = [SCRIPT, SCRIPT.parent / "app-update.py", SCRIPT.parent / "plan-private-shell.py", SCRIPT.parent / "prepare-private-shell.py",
-                   SCRIPT.parent / "prepare-private-cohort.py", SCRIPT.parent / "prepare-paired-release.py", SCRIPT.parent / "plan-private-cohort.py"]
+                   SCRIPT.parent / "prepare-private-cohort.py", SCRIPT.parent / "prepare-paired-release.py", SCRIPT.parent / "plan-private-cohort.py", SCRIPT.parent / "capture-private-shell.py"]
         value = {"version": 1, "status": "REVIEWED_PRIVATE_SHELL_PUBLICATION_INPUT", "refs": refs,
                  "sourceFiles": [{"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()} for path in sources],
                  "preflight": {**command, "argv": [*command["argv"], "preflight"]},
@@ -930,6 +961,7 @@ class Handoff(planner_fixture.Plan):
         publication = m.Publication(self.base / ref["path"], ref["sha256"], hashlib.sha256(SCRIPT.read_bytes()).hexdigest(), out,
                                     kube=kube, command_runner=lambda argv, **kwargs: Phases.command(self, argv, **kwargs), health=self.probes.append,
                                     static_fetcher=lambda url, maximum: (shell_root / urlsplit(url).path.lstrip("/")).read_bytes())
+        publication.capture = lambda queries: capture_fake(kube, queries)
         publication.dryrun(); publication.apply(); publication.observe()
         observed = json.loads((out / "observe.actual.json").read_bytes())
         self.assertEqual(observed["image"], self.previous["image"])

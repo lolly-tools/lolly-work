@@ -275,6 +275,7 @@ class Offline(unittest.TestCase):
                 root = Path(fixture_case.f.prepare_evidence['shell']['root'])
                 super().__init__(path, sha, operator, out, kube=kube, command_runner=command, health=lambda _: None,
                                  static_fetcher=lambda url, _: (root / urlsplit(url).path.lstrip('/')).read_bytes())
+                self.capture = lambda queries: publication_fixture.capture_fake(kube, queries)
                 self.fixture = f; publications.append(self)
         return getter, reads, execute_stage, SyntheticPublication, stage_calls, publications
 
