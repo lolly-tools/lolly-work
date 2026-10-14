@@ -60,6 +60,7 @@ def load_module(name, path):
 
 updater = load_module("shell_publication_updater", HERE / "app-update.py")
 storage = load_module("shell_publication_storage", HERE / "plan-private-cohort.py")
+captures = load_module("shell_publication_captures", HERE / "capture-private-shell.py")
 
 
 def held(ref, base):
@@ -390,7 +391,7 @@ class Publication:
             held(ref, self.base); paths.append(Path(os.path.abspath(self.base / ref["path"])))
         require(len(paths) == len(set(paths)) and set(paths) >= {Path(__file__).resolve(), HERE / "app-update.py",
                 HERE / "plan-private-shell.py", HERE / "prepare-private-shell.py", HERE / "prepare-private-cohort.py",
-                HERE / "prepare-paired-release.py", HERE / "plan-private-cohort.py"}, "Complete maintained operator dependency closure required")
+                HERE / "prepare-paired-release.py", HERE / "plan-private-cohort.py", HERE / "capture-private-shell.py"}, "Complete maintained operator dependency closure required")
         for key in ("preflight", "retiredMountProbe"):
             command = self.x[key]; exact(command, {"argv", "source"}); held(command["source"], self.base)
             argv = command["argv"]
@@ -472,7 +473,7 @@ class Publication:
         owner(pod, "ReplicaSet", rs); owner(rs, "Deployment", deployment)
         require(not pod["metadata"].get("deletionTimestamp") and not rs["metadata"].get("deletionTimestamp"), "Owning runtime is deleting")
 
-    def list_resources(self, kind, namespace=None, capture=None):
+    def list_resources(self, kind, namespace=None, capture=None, reads=None):
         args = ["get", kind, "-o", "json"]
         if namespace is not None:
             args += ["--namespace", namespace]
@@ -480,7 +481,7 @@ class Publication:
                     "pods": "Pod", "networkpolicies": "NetworkPolicy", "deployments": "Deployment"}.get(kind)
         require(expected is not None, "Unknown resource collection refused")
         api = {"NetworkPolicy": "networking.k8s.io/v1", "Deployment": "apps/v1"}.get(expected, "v1")
-        raw = self.kube.run(args)
+        raw = (reads or self.kube).run(args)
         require(isinstance(raw, str), "Original collection stdout must be text")
         if capture is not None:
             self.save_raw(capture + ".stdout.original.json", raw.encode())
@@ -514,13 +515,14 @@ class Publication:
             names.add(metadata["name"]); uids.add(metadata["uid"])
         return value
 
-    def resource_checks(self, phase):
+    def resource_checks(self, phase, reads=None):
+        reads = reads or self.kube
         namespace = self.plan["namespace"]
         claim_namespaces = {namespace} | {guard["namespace"] for guard in self.plan["resourceGuards"]
                                           if guard["kind"] == "PersistentVolumeClaim"}
-        claim_lists = {scope: self.list_resources("persistentvolumeclaims", scope, phase + ".claims-" + scope)
+        claim_lists = {scope: self.list_resources("persistentvolumeclaims", scope, phase + ".claims-" + scope, reads)
                        for scope in sorted(claim_namespaces)}
-        volumes = self.list_resources("persistentvolumes", capture=phase + ".volumes")
+        volumes = self.list_resources("persistentvolumes", capture=phase + ".volumes", reads=reads)
         captured = {(v["kind"], v["metadata"].get("namespace"), v["metadata"]["name"]): v
                     for collection in [*claim_lists.values(), volumes] for v in collection["items"]}
         guard_keys = set()
@@ -529,7 +531,7 @@ class Publication:
             require(key not in guard_keys, "Duplicate resource guard")
             guard_keys.add(key)
             if expected["kind"] == "ConfigMap":
-                actual = self.kube.get(expected["kind"], expected["name"], expected["namespace"])
+                actual = reads.get(expected["kind"], expected["name"], expected["namespace"])
             else:
                 require(expected["kind"] in {"PersistentVolumeClaim", "PersistentVolume"} and key in captured,
                         "Protected content resource missing from fresh captures")
@@ -565,7 +567,7 @@ class Publication:
         stage_uid = self.stage["pod"]["metadata"]["uid"]
         stage_name = self.stage["pod"]["metadata"]["name"]
         policy_name = self.stage["retirement"]["policyName"]
-        pods = self.list_resources("pods", namespace, phase + ".pods")
+        pods = self.list_resources("pods", namespace, phase + ".pods", reads)
         require(not any(p["metadata"].get("name") == stage_name or p["metadata"].get("uid") == stage_uid for p in pods["items"]),
                 "Retired stage Pod reappeared")
         writer_meta = self.writer["metadata"]
@@ -574,7 +576,7 @@ class Publication:
         temporary_pack = self.stage["rawPack"]["claim"]
         require(not any(v.get("persistentVolumeClaim", {}).get("claimName") == temporary_pack for p in pods["items"] for v in p["spec"].get("volumes", [])),
                 "Temporary staged pack has an active Pod owner")
-        policies = self.list_resources("networkpolicies", namespace, phase + ".policies")
+        policies = self.list_resources("networkpolicies", namespace, phase + ".policies", reads)
         require(not any(p["metadata"].get("name") == policy_name or p["metadata"].get("uid") == self.stage["retirement"]["policyUID"] for p in policies["items"]),
                 "Retired stage policy reappeared")
         stdout, ref = self.command("retiredMountProbe", phase)
@@ -586,12 +588,29 @@ class Publication:
                 "Current reviewed host mount release probe differs")
         return pods, ref
 
+    def capture(self, queries):
+        snapshot = captures.capture(self.target, queries, self.out)
+        require(snapshot.accepted, "Fresh read capture failed or exceeded bound; inspect retained command originals")
+        return snapshot
+
     def fresh(self, phase, after=False):
-        self.source_check(); updater.check_cluster(self.target, self.kube)
+        self.source_check()
+        namespaces_to_read = sorted({component['namespace'] for component in self.target['components'].values()})
+        queries = [('namespace','kube-system',None), ('node',self.target['node']['name'],None)]
+        for namespace in namespaces_to_read:
+            queries += [('namespace',namespace,None), ('deployments',None,namespace)]
+        claim_namespaces = {self.plan['namespace']} | {guard['namespace'] for guard in self.plan['resourceGuards'] if guard['kind'] == 'PersistentVolumeClaim'}
+        queries += [('persistentvolumeclaims',None,scope) for scope in sorted(claim_namespaces)] + [('persistentvolumes',None,None)]
+        queries += [('ConfigMap',guard['name'],guard['namespace']) for guard in self.plan['resourceGuards'] if guard['kind'] == 'ConfigMap']
+        queries += [('pods',None,self.plan['namespace']), ('networkpolicies',None,self.plan['namespace'])]
+        if not after:
+            queries += [('replicaset',self.baseline['replicaSet']['metadata']['name'],self.plan['namespace'])]
+        reads = self.capture(queries)
+        updater.check_cluster(self.target, reads)
         namespaces, deployments = {}, {}
         for namespace in sorted({component["namespace"] for component in self.target["components"].values()}):
-            namespaces[namespace] = self.kube.get("namespace", namespace)
-            collection = self.list_resources("deployments", namespace, phase + ".deployments-" + namespace)
+            namespaces[namespace] = reads.get("namespace", namespace)
+            collection = self.list_resources("deployments", namespace, phase + ".deployments-" + namespace, reads)
             deployments.update({(namespace, value["metadata"]["name"]): value for value in collection["items"]})
         inventory = DeploymentInventory(namespaces, deployments)
         snapshots = {}
@@ -604,7 +623,7 @@ class Publication:
                         value.get("status", {}).get("observedGeneration", 0) >= value["metadata"].get("generation", 1),
                         "Current owned or protected deployment is not Ready")
             snapshots[role] = value
-        pods, probe_ref = self.resource_checks(phase)
+        pods, probe_ref = self.resource_checks(phase, reads)
         candidate = self.plan["selection"]["shellClaim"]
         holders = [p for p in pods["items"] if any(v.get("persistentVolumeClaim", {}).get("claimName") == candidate for v in p["spec"].get("volumes", []))]
         require((len(holders) == 1) if after else not holders, "Candidate shell has an unexpected Pod owner")
@@ -631,11 +650,11 @@ class Publication:
             owners = [p for p in pods["items"] if p["metadata"].get("uid") == baseline_owner["metadata"]["uid"]]
             require(len(owners) == 1 and owners[0]["spec"] == baseline_owner["spec"] and
                     owners[0]["status"].get("phase") == "Running", "Original owning Pod changed before promotion")
-            rs = self.kube.get("replicaset", self.baseline["replicaSet"]["metadata"]["name"], self.plan["namespace"])
+            rs = reads.get("replicaset", self.baseline["replicaSet"]["metadata"]["name"], self.plan["namespace"])
             require(rs["metadata"]["uid"] == self.baseline["replicaSet"]["metadata"]["uid"] and rs["spec"] == self.baseline["replicaSet"]["spec"],
                     "Original ReplicaSet changed before promotion")
             self.chain(owners[0], rs, snapshots["work"])
-        self.save(phase + ".guards.original.json", {"deployments": snapshots, "namespaces": namespaces, "pods": pods, "mountProbe": probe_ref})
+        self.save(phase + ".guards.original.json", {"deployments": snapshots, "namespaces": namespaces, "pods": pods, "mountProbe": probe_ref, "readCaptures": reads.receipts})
         return snapshots["work"], pods
 
     def dryrun(self):

@@ -300,7 +300,7 @@ class Inputs(fixture.Plan):
                        'claims':{'apiVersion':'v1','kind':'PersistentVolumeClaimList','metadata':{'resourceVersion':'1'},'items':[r for r in resources if r['kind']=='PersistentVolumeClaim']},
                        'storageClass':{'apiVersion':'storage.k8s.io/v1','kind':'StorageClass','metadata':{'name':'local-path','uid':'class-uid','resourceVersion':'1'},'provisioner':'synthetic.example/fixture-only','volumeBindingMode':'WaitForFirstConsumer'}}
         self.preflight=self.base/'no-network-preflight.py'; self.preflight.write_text('print("synthetic fixture only")\n')
-        sourcefiles=[SCRIPT,*[HERE/'scripts'/name for name in ('app-update.py','prepare-private-shell.py','generation-acceptance.py','publish-private-shell.py','prepare-private-cohort.py','prepare-paired-release.py','plan-private-cohort.py')]]
+        sourcefiles=[SCRIPT,*[HERE/'scripts'/name for name in ('app-update.py','prepare-private-shell.py','generation-acceptance.py','publish-private-shell.py','prepare-private-cohort.py','prepare-paired-release.py','plan-private-cohort.py','capture-private-shell.py')]]
         self.stage_input={'version':1,'target':self.file('stage-target',self.target),'prepared':self.file('stage-prepared',self.prepared),'previous':self.prepare_evidence['previous'],
                           'baseline':self.file('stage-baseline',self.baseline),'previousShell':self.prepare_evidence['previousShell'],'shell':self.prepare_evidence['shell'],'rawPack':self.prepare_evidence['rawPack'],
                           'publicKey':self.prepare_evidence['publicPin'],'sourceMap':self.file('synthetic-reviewed-source-map',{'fixture':{'mode':'644','bytes':0,'sha256':'a'*64}}),
@@ -353,7 +353,7 @@ class Inputs(fixture.Plan):
     def test_fresh_complete_claim_policy_and_owner_fences(self):
         stage=self.operator(); stage.out.mkdir(); stage.save('create-policy.original.json',{'kind':'NetworkPolicy','metadata':{'name':'fixture-deny','namespace':'private','uid':'policy-uid'},'spec':stage.desired['policy']['spec']})
         objects=self.guard_objects(stage)
-        stage.get=lambda kind,name=None,namespace=None:copy.deepcopy(objects[(kind,name,namespace)])
+        stage.capture=lambda queries: m.captures.Snapshot({key:json.dumps(objects[key]).encode() for key in queries}, [], True)
         stage.kube=stage; stage.fresh()
         for key in (('pvc',None,'private'),('pods',None,'private'),('deployments',None,'private')):
             objects[key]['apiVersion']='v1'; objects[key]['kind']='List'; objects[key]['metadata']['resourceVersion']=''
@@ -375,29 +375,69 @@ class Inputs(fixture.Plan):
             stage.target['components']['app-'+str(i)]=component
             deployment=copy.deepcopy(self.before); deployment['metadata'].update(namespace=namespace,name=component['deployment'],uid=component['deploymentUID'])
             stage.baseline_deployments[('Deployment',namespace,component['deployment'])]=deployment
-        objects=self.guard_objects(stage); calls=[]; originals=[]
+        objects=self.guard_objects(stage)
         unselected=copy.deepcopy(self.before); unselected['metadata'].update(name='unselected',uid='unselected-uid')
         objects[('deployments',None,'private')]['items'].append(unselected)
-        def transport(argv):
-            self.assertEqual(argv[0],'get'); selector=argv[1]; named=argv[2] if argv[2]!='-o' else None
-            namespace=argv[argv.index('--namespace')+1] if '--namespace' in argv else None
-            calls.append((selector,named,namespace)); raw=json.dumps(objects[(selector,named,namespace)],indent=1).encode()+b'\n'; originals.append(raw)
-            return [sys.executable,'-c','import sys; sys.stdout.buffer.write('+repr(raw)+')']
-        stage.transport=transport; stage.kube=stage; stage.fresh()
+        fixture=self.base/'capture-fixture.json'; log=self.base/'capture-requests.jsonl'
+        executable=self.base/'synthetic-kubectl.py'
+        executable.write_text("""import json, os, sys
+from pathlib import Path
+args=sys.argv[3:]; args=args[args.index('get'):]
+query=[args[1],args[2] if args[2]!='-o' else None,args[args.index('--namespace')+1] if '--namespace' in args else None]
+fd=os.open(sys.argv[2],os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)
+os.write(fd,(json.dumps(query)+'\\n').encode()); os.close(fd)
+raw=json.loads(Path(sys.argv[1]).read_text())[json.dumps(query)]
+sys.stdout.write(raw)
+""")
+        stage.target['transport']['kubectl']=[sys.executable,str(executable),str(fixture),str(log)]
+        def update():
+            fixture.write_text(json.dumps({json.dumps(key):json.dumps(value,indent=1)+'\n' for key,value in objects.items()}))
+        update(); stage.fresh()
+        calls=[json.loads(line) for line in log.read_text().splitlines()]
         self.assertEqual(len(calls),18); self.assertEqual(sum(c[0]=='deployments' for c in calls),5)
         self.assertEqual(sum(c[0]=='pvc' for c in calls),1); self.assertEqual(sum(c[0]=='pv' for c in calls),1)
-        self.assertFalse(any(c[0] in {'deployment','PersistentVolumeClaim','PersistentVolume'} for c in calls))
-        preserved=[Path(e['path']).read_bytes() for e in stage.events]
-        stdout=[Path(json.loads(raw)['originals']['stdout']['path']).read_bytes() for raw in preserved]
-        self.assertEqual(stdout,originals)
-        stage.fresh(); self.assertEqual(len(calls),36)
-        objects[('deployments',None,'private')]['items'][0]['spec']['replicas']=2
+        receipts=[json.loads(Path(e['path']).read_bytes()) for e in stage.events]
+        self.assertEqual(len(receipts),19)  # One transport plus 18 literal GET originals.
+        self.assertEqual(sum('-transport.' in e['path'] for e in stage.events),1)
+        for receipt in receipts[1:]:
+            raw=Path(receipt['originals']['stdout']['path']).read_bytes()
+            self.assertEqual(raw,(json.dumps(objects[tuple(receipt['query'])],indent=1)+'\n').encode())
+        stage.fresh(); self.assertEqual(len(log.read_text().splitlines()),36)
+        self.assertEqual(sum('-transport.' in e['path'] for e in stage.events),2)
+        objects[('deployments',None,'private')]['items'][0]['spec']['replicas']=2; update()
         with self.assertRaises(m.Refusal): stage.fresh()
-        self.assertEqual(len(calls),48)  # Fresh cluster/node plus all five namespace/Deployment pairs.
+        self.assertEqual(len(log.read_text().splitlines()),54)
+        self.assertEqual(sum('-transport.' in e['path'] for e in stage.events),3)
+
+    def test_binding_bundle_keeps_fresh_claim_uid_backing_and_global_alias_guards(self):
+        stage=self.operator(); stage.out.mkdir()
+        records=copy.deepcopy(self.facts['resources'])
+        resource=lambda kind,name: next(row for row in records if row['kind']==kind and row['metadata']['name']==name)
+        ids={key:resource('PersistentVolumeClaim',name) for key,name in [('shellClaim','new-shell'),('packClaim','temporary-pack')]}
+        ids.update({key+'PV':resource('PersistentVolume',row['spec']['volumeName']) for key,row in list(ids.items())})
+        stage.save('identities.actual.json',ids)
+        queries_seen=[]
+        def capture(queries):
+            queries_seen.append(queries)
+            values={('pv',None,None):{'apiVersion':'v1','kind':'List','metadata':{},'items':[row for row in records if row['kind']=='PersistentVolume']}}
+            values.update({('PersistentVolumeClaim',row['metadata']['name'],'private'):row for row in records if row['kind']=='PersistentVolumeClaim'})
+            return m.captures.Snapshot({key:json.dumps(values[key]).encode() for key in queries},[],True)
+        stage.capture=capture
+        self.assertEqual(len(stage.verify_bindings()),2); self.assertEqual(len(queries_seen),1); self.assertEqual(len(queries_seen[0]),3)
+        original=copy.deepcopy(records)
+        changes=[lambda:resource('PersistentVolumeClaim','new-shell')['metadata'].update(uid='replacement'),
+                 lambda:resource('PersistentVolumeClaim','new-shell')['spec'].update(volumeName='pv-old-shell'),
+                 lambda:resource('PersistentVolume','pv-new-shell')['metadata'].update(uid='replacement'),
+                 lambda:resource('PersistentVolume','pv-new-shell')['spec']['local'].update(path='/changed'),
+                 lambda:resource('PersistentVolume','pv-dormant-rollback')['spec']['local'].update(path='/storage/new-shell-uid/child')]
+        for change in changes:
+            records=copy.deepcopy(original); change()
+            with self.subTest(change=changes.index(change)), self.assertRaises((m.Refusal,m.resources.Refusal)): stage.verify_bindings()
+        self.assertEqual(len(queries_seen),6)
 
     def test_batched_original_items_keep_all_identity_payload_namespace_and_inventory_guards(self):
         stage=self.operator(); stage.out.mkdir(); original=self.guard_objects(stage); objects=copy.deepcopy(original)
-        stage.get=lambda kind,name=None,namespace=None:copy.deepcopy(objects[(kind,name,namespace)])
+        stage.capture=lambda queries: m.captures.Snapshot({key:json.dumps(objects[key]).encode() for key in queries}, [], True)
         stage.kube=stage
         dep=('deployments',None,'private'); claims=('pvc',None,'private'); pvs=('pv',None,None)
         pin=next(k for k in objects if k[0]=='ConfigMap')

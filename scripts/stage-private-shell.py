@@ -39,6 +39,7 @@ def module(name, filename):
 updater = module('shell_stage_updater', 'app-update.py')
 shell = module('shell_stage_preparer', 'prepare-private-shell.py')
 resources = module('shell_stage_resources', 'plan-private-cohort.py')
+captures = module('shell_stage_captures', 'capture-private-shell.py')
 cohort = shell.cohort
 require, exact, Refusal = cohort.require, cohort.exact, cohort.Refusal
 def obsolete_generated_codings(old, new):
@@ -286,7 +287,7 @@ class Stage:
         require(isinstance(value['sourceFiles'],list), 'Reviewed full operator source closure required')
         source_files = [self.inputs.file(ref,False) for ref in value['sourceFiles']]
         require(len(source_files) == len(set(source_files)) and set(source_files) >= {Path(__file__).resolve(), *[Path(__file__).with_name(name).resolve() for name in
-                ('app-update.py','prepare-private-shell.py','generation-acceptance.py','publish-private-shell.py','prepare-private-cohort.py','prepare-paired-release.py','plan-private-cohort.py')]}, 'Imported operator source closure missing')
+                ('app-update.py','prepare-private-shell.py','generation-acceptance.py','publish-private-shell.py','prepare-private-cohort.py','prepare-paired-release.py','plan-private-cohort.py','capture-private-shell.py')]}, 'Imported operator source closure missing')
         require(type(value['minimumFreeBytes']) is int and value['minimumFreeBytes'] >= 8 * 1024**3 and type(value['maximumWriteBytes']) is int
                 and self.new.files and 0 < value['maximumWriteBytes'] <= 8 * 1024**3, 'Bounded host floor/write budget required')
         require(sum(f['size'] for f in self.new.files.values()) + sum(f['size'] for f in self.pack.files.values()) <= value['maximumWriteBytes'], 'Full stage exceeds host write budget')
@@ -363,12 +364,31 @@ class Stage:
         return {key:updater.load_json(self.out / ('create-' + key + '.original.json')) for key in ('shellClaim','packClaim','policy','writer')
                 if (self.out / ('create-' + key + '.original.json')).exists()}
 
+    def capture(self, queries):
+        snapshot = captures.capture(self.target, queries, self.out)
+        self.events.extend(snapshot.receipts)
+        require(snapshot.accepted, 'Fresh read capture failed or exceeded bound; inspect retained command originals')
+        return snapshot
+
     def fresh(self, allowed_stage_uid=None):
-        updater.check_cluster(self.target, self.kube)
+        ids = self.identities()
+        queries = [('namespace','kube-system',None), ('node',self.target['node']['name'],None)]
+        for namespace in sorted({component['namespace'] for component in self.target['components'].values()}):
+            queries += [('namespace',namespace,None), ('deployments',None,namespace)]
+        claim_namespaces = {self.namespace} | {value['metadata']['namespace'] for value in self.baseline_resources.values() if value['kind'] == 'PersistentVolumeClaim'}
+        queries += [('pvc',None,namespace) for namespace in sorted(claim_namespaces)] + [('pv',None,None)]
+        queries += [('ConfigMap',before['metadata']['name'],before['metadata'].get('namespace'))
+                    for before in self.baseline_resources.values() if before['kind'] == 'ConfigMap']
+        if 'policy' in ids and not self.policy_retired:
+            queries += [('networkpolicy',ids['policy']['metadata']['name'],self.namespace)]
+        queries += [('storageclass',self.baseline['storageClass']['metadata']['name'],None), ('pods',None,self.namespace),
+                    ('replicaset',self.owner['metadata']['ownerReferences'][0]['name'],self.namespace)]
+        reads = self.capture(queries)
+        updater.check_cluster(self.target, reads)
         namespaces, deployments = {}, {}
         for namespace in sorted({component['namespace'] for component in self.target['components'].values()}):
-            namespaces[namespace] = self.get('namespace',namespace)
-            captured = complete_list(self.get('deployments',namespace=namespace),'Deployment',namespace)
+            namespaces[namespace] = reads.get('namespace',namespace)
+            captured = complete_list(reads.get('deployments',namespace=namespace),'Deployment',namespace)
             deployments.update({(namespace,item['metadata']['name']):item for item in captured['items']})
         inventory = DeploymentInventory(namespaces,deployments)
         for component in self.target['components'].values():
@@ -376,13 +396,13 @@ class Stage:
             require(actual['spec'] == before['spec'], 'A protected Deployment spec changed')
 
         claim_namespaces = {self.namespace} | {value['metadata']['namespace'] for value in self.baseline_resources.values() if value['kind'] == 'PersistentVolumeClaim'}
-        claim_lists = {namespace:complete_list(self.get('pvc',namespace=namespace),'PersistentVolumeClaim',namespace) for namespace in sorted(claim_namespaces)}
+        claim_lists = {namespace:complete_list(reads.get('pvc',namespace=namespace),'PersistentVolumeClaim',namespace) for namespace in sorted(claim_namespaces)}
         protected = {resource_key(item):item for collection in claim_lists.values() for item in collection['items']}
-        pvs = complete_list(self.get('pv'),'PersistentVolume')
+        pvs = complete_list(reads.get('pv'),'PersistentVolume')
         protected.update({resource_key(item):item for item in pvs['items']})
         for key, before in self.baseline_resources.items():
             if before['kind'] == 'ConfigMap':
-                actual = self.get(before['kind'],before['metadata']['name'],before['metadata'].get('namespace'))
+                actual = reads.get(before['kind'],before['metadata']['name'],before['metadata'].get('namespace'))
             else:
                 require(key in protected, 'Protected resource missing from fresh captures')
                 actual = protected[key]
@@ -391,17 +411,16 @@ class Stage:
                 require(actual.get(field) == before.get(field), 'Protected resource payload changed')
         current_claims = claim_lists[self.namespace]
         expected_claims = {c['metadata']['name']:c['metadata']['uid'] for c in self.baseline['claims']['items']}
-        ids = self.identities()
         expected_claims.update({ids[key]['metadata']['name']:ids[key]['metadata']['uid'] for key in ('shellClaim','packClaim') if key in ids})
         observed_claims = {c['metadata']['name']:c['metadata']['uid'] for c in current_claims['items']}
         require(len(observed_claims) == len(current_claims['items']) and observed_claims == expected_claims, 'A namespace claim was added, replaced or removed')
         if 'policy' in ids and not self.policy_retired:
-            policy = self.get('networkpolicy',ids['policy']['metadata']['name'],self.namespace)
+            policy = reads.get('networkpolicy',ids['policy']['metadata']['name'],self.namespace)
             require(policy['metadata']['uid'] == ids['policy']['metadata']['uid'] and not policy['metadata'].get('deletionTimestamp') and policy['spec'] == self.desired['policy']['spec'], 'Stage deny policy changed or disappeared')
-        before_sc = self.baseline['storageClass']; current_sc = self.get('storageclass', before_sc['metadata']['name'])
+        before_sc = self.baseline['storageClass']; current_sc = reads.get('storageclass', before_sc['metadata']['name'])
         require(current_sc['metadata']['uid'] == before_sc['metadata']['uid'] and not current_sc['metadata'].get('deletionTimestamp')
                 and {k:v for k,v in current_sc.items() if k != 'metadata'} == {k:v for k,v in before_sc.items() if k != 'metadata'}, 'Storage provisioner or storage class changed')
-        pods = self.get('pods', namespace=self.namespace)
+        pods = reads.get('pods', namespace=self.namespace)
         complete_list(pods,'Pod',self.namespace)
         owners = [pod for pod in pods['items'] if pod['metadata']['uid'] == self.owner_uid]; require(len(owners) == 1, 'Actual accepted owner missing')
         owner = owners[0]; refs = owner['metadata'].get('ownerReferences',[])
@@ -409,7 +428,7 @@ class Stage:
                 and owner['spec'] == self.owner['spec'] and not owner['metadata'].get('deletionTimestamp'), 'Accepted owner chain/spec changed')
         owner_status = [c for c in owner.get('status', {}).get('containerStatuses', []) if c.get('name') == self.owner_container]
         require(len(owner_status) == 1 and owner_status[0].get('ready') is True and owner_status[0].get('imageID','').removeprefix('docker-pullable://') == self.prepared['image'], 'Accepted source owner is not healthy on exact image')
-        rs = self.get('replicaset', refs[0]['name'], self.namespace); parents = rs['metadata'].get('ownerReferences',[])
+        rs = reads.get('replicaset', refs[0]['name'], self.namespace); parents = rs['metadata'].get('ownerReferences',[])
         require(rs['metadata']['uid'] == self.replica_uid and len(parents) == 1 and parents[0].get('uid') == self.component['deploymentUID'] and parents[0].get('kind') == 'Deployment', 'Actual accepted ReplicaSet chain changed')
         new_claims = {self.prepared['selection']['shellClaim'],self.value['names']['packClaim']}
         for pod in pods['items']:
@@ -431,8 +450,8 @@ class Stage:
         self.run([sys.executable,'-B',str(self.preflight_path)], timeout=120)
         return pods
 
-    def owned(self, key):
-        ids = self.identities(); expected = ids[key]; actual = self.get(expected['kind'],expected['metadata']['name'],self.namespace)
+    def owned(self, key, reads=None):
+        ids = self.identities(); expected = ids[key]; actual = (reads or self).get(expected['kind'],expected['metadata']['name'],self.namespace)
         require(actual['metadata']['uid'] == expected['metadata']['uid'] and not actual['metadata'].get('deletionTimestamp'), 'Owned temporary resource identity changed')
         if actual['kind'] == 'Pod':
             validate_pod(actual, self.desired[key], True)
@@ -440,10 +459,12 @@ class Stage:
         return actual
 
     def verify_bindings(self):
-        ids = self.identities(); pvs = complete_list(self.get('pv'),'PersistentVolume')
+        ids = self.identities()
+        reads = self.capture([('pv',None,None), *[(ids[key]['kind'],ids[key]['metadata']['name'],self.namespace) for key in ('shellClaim','packClaim')]])
+        pvs = complete_list(reads.get('pv'),'PersistentVolume')
         maps = {pv['metadata']['name']:pv for pv in pvs['items']}; require(len(maps) == len(pvs['items']), 'Duplicate PV inventory'); bound = []
         for key in ('shellClaim','packClaim'):
-            claim = self.owned(key); pv = resources.bound_claim(claim,maps,self.namespace)
+            claim = self.owned(key, reads); pv = resources.bound_claim(claim,maps,self.namespace)
             require(pv['metadata']['uid'] == ids[key + 'PV']['metadata']['uid'] and resources.backing(pv) == resources.backing(ids[key + 'PV']), 'New claim rebound')
             bound.append(pv)
         for selected in bound:
