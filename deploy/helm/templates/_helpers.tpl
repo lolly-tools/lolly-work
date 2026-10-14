@@ -252,6 +252,14 @@ Guardrail: in Mode A (no existingSecret, no database.existingSecret) the two
 required signing secrets must be provided, or the deploy is silently insecure.
 */}}
 {{- define "lolly-work.validate" -}}
+{{- $config := .Values.config -}}
+{{- if kindIs "string" $config -}}{{- $config = fromJson $config -}}{{- end -}}
+{{- $instance := $config.instance | default dict -}}
+{{- if or .Values.shell.releasePointer $instance.shellReleasePointer -}}
+{{- if not (and .Values.shell.releasePointer $instance.shellReleasePointer .Values.shell.enabled .Values.shell.readOnly (has .Values.shell.type (list "pvc" "existingClaim" "hostPath")) (not .Values.shell.image) (eq ($instance.shellDir | default "") .Values.shell.mountPath)) -}}
+{{- fail "shell.releasePointer requires matching instance.shellReleasePointer and shellDir, an enabled persistent read-only shell mount, and no shell.image." -}}
+{{- end -}}
+{{- end -}}
 {{- if hasKey .Values.podLabels "app.kubernetes.io/component" -}}
 {{- fail "podLabels.app.kubernetes.io/component is reserved for control-plane and worker traffic isolation." -}}
 {{- end -}}

@@ -97,6 +97,22 @@ test('missing or changed optional original bytes have no preview proof or filter
   assert.deepEqual(await scopedResourceDigests({ pack: f.pack, publisher: {}, caller: f.caller, visibleToolIds: new Set(['open']), visibleValues: [f.index] }), {});
 });
 
+test('retained shells prove only immutable media whose bytes match the signed publisher map', async t => {
+  const f = await fixture(t), current = await mkdtemp(join(tmpdir(), 'resource-current-'));
+  t.after(() => rm(current, { recursive: true, force: true }));
+  const bytes = Buffer.from('retained-shot'), path = `/info/shots/open.${sha256Hex(bytes).slice(0, 16)}.png`;
+  await writeFile(join(f.shell, path), bytes);
+  const resources = { ...f.resources, [path]: sha256Hex(bytes) };
+  const envelope = await engine.signCatalogEnvelope({ alg: engine.CATALOG_SIG_ALG, keyId: await engine.jwkThumbprint(f.key), signedAt: new Date().toISOString(),
+    indexHash: sha256Hex(JSON.stringify(f.index)), files: await completeToolFileDigests(f.pack), seq: 1, resources }, f.pair.privateKey);
+  await writeFile(join(f.pack, 'catalog/tools/index.sig.json'), JSON.stringify(envelope));
+  const publisher = await publisherResourceDigests({ pack: f.pack, publicKey: { ...f.key }, signing: null });
+  const options = { pack: f.pack, shellDirectories: [current, f.shell], publisher, caller: f.caller, visibleToolIds: new Set(['open']), visibleValues: [{ thumb: path, mutable: '/info/shots/open.png' }] };
+  const proof = await scopedResourceDigests(options);
+  assert.equal(proof[path], sha256Hex(bytes)); assert.equal(proof['/info/shots/open.png'], undefined);
+  await writeFile(join(f.shell, path), 'corrupted'); assert.equal((await scopedResourceDigests(options))[path], undefined);
+});
+
 test('guest tool index, slim, files and media proofs include only the shared tool', async t => {
   const f = await fixture(t), caller = { ...f.caller, guestToolId: 'hidden' };
   const served = await servedToolIndexBytes(f.pack, caller); assert.ok(served);

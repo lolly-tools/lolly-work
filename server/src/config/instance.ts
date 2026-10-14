@@ -120,6 +120,8 @@ export interface InstanceConfig {
      *  is missing or predates the org/ governance module (lib/shell-dist.ts);
      *  LW_ALLOW_STALE_SHELL=1 downgrades the refusal to a loud warning. */
     shellDir?: string;
+    /** Opt in to immutable releases selected by shellDir/current.json. */
+    shellReleasePointer?: boolean;
     /** Optional URL of the Lolly app when it is NOT served same-origin via
      *  shellDir - e.g. a Vite dev server (http://localhost:5173) or a split
      *  deploy. The console routes its "Open Lolly" and tool/session/project
@@ -849,6 +851,11 @@ export function parseConfig(json: string): InstanceConfig {
     }
   }
   const cfg = merge(DEFAULTS as unknown as Record<string, unknown>, raw as Record<string, unknown>) as unknown as InstanceConfig;
+  if (cfg.instance.shellReleasePointer !== undefined && typeof cfg.instance.shellReleasePointer !== 'boolean') throw new Error('instance.shellReleasePointer must be boolean');
+  if (cfg.instance.shellReleasePointer && (typeof cfg.instance.shellDir !== 'string' || !cfg.instance.shellDir.startsWith('/')
+    || cfg.instance.shellDir.includes('\\') || cfg.instance.shellDir.split('/').slice(1).some(part => !part || part === '.' || part === '..'))) {
+    throw new Error('instance.shellReleasePointer requires an absolute physical shellDir');
+  }
   if (!['auto', 'evaluation', 'production'].includes(cfg.deployment?.mode)
     || !['api', 'web'].includes(cfg.deployment?.application)
     || typeof cfg.deployment?.requireServerRendering !== 'boolean') {
