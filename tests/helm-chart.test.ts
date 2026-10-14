@@ -280,6 +280,27 @@ test('worker accepts a reviewed local seccomp profile and refuses an unconfined 
   }
 });
 
+test('worker user namespace scopes SYS_ADMIN to hostUsers: false and makes the worker check it', { skip: noHelm }, () => {
+  const off = deployment(render([...SECRETS, ...WORKER]).out, true).spec.template.spec;
+  assert.equal(off.hostUsers, undefined);
+  assert.equal(off.containers[0].securityContext.capabilities.add, undefined);
+  assert.ok(!off.containers[0].env.some((entry: { name: string }) => entry.name === 'LW_RENDER_REQUIRE_USER_NAMESPACE'));
+  const on = render([...SECRETS, ...WORKER, '--set', 'renderWorker.userNamespace.enabled=true', '--kube-version', '1.35.0']);
+  assert.ok(on.ok, on.err);
+  const pod = deployment(on.out, true).spec.template.spec, container = pod.containers[0];
+  assert.equal(pod.hostUsers, false);
+  assert.deepEqual(container.securityContext.capabilities, { drop: ['ALL'], add: ['SYS_ADMIN'] });
+  assert.equal(container.securityContext.allowPrivilegeEscalation, false);
+  assert.equal(container.securityContext.runAsNonRoot, true);
+  assert.equal(container.securityContext.seccompProfile.type, 'RuntimeDefault');
+  assert.equal(container.env.find((entry: { name: string }) => entry.name === 'LW_RENDER_REQUIRE_USER_NAMESPACE').value, '1');
+  assert.equal(deployment(on.out).spec.template.spec.hostUsers, undefined);
+  const old = render([...SECRETS, ...WORKER, '--set', 'renderWorker.userNamespace.enabled=true', '--kube-version', '1.32.0']);
+  assert.equal(old.ok, false); assert.match(old.err, /userNamespace requires Kubernetes 1\.33/);
+  const invalid = render([...SECRETS, ...WORKER, '--set-string', 'renderWorker.userNamespace.enabled=yes', '--kube-version', '1.35.0']);
+  assert.equal(invalid.ok, false); assert.match(invalid.err, /userNamespace/);
+});
+
 test('worker NetworkPolicy: control-plane ingress only, egress to DNS and public addresses, extraEgress templated', { skip: noHelm }, () => {
   const r = render([...SECRETS, ...WORKER,
     '--set', 'renderWorker.networkPolicy.enabled=true',
