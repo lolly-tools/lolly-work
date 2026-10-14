@@ -27,7 +27,7 @@ export function shellFileCustody(path: string): { size: number; sha256: string; 
   const stamp = shellFileStamp;
   try {
     requireShell(stamp(fstatSync(fd, { bigint: true })) === stamp(stat), 'File changed before reading.');
-    const digest = createHash('sha256'), buffer = Buffer.alloc(1024 * 1024); let size = 0;
+    const digest = createHash('sha256'), buffer = Buffer.alloc(Math.max(1, Math.min(1024 * 1024, Number(stat.size)))); let size = 0;
     for (let count; (count = readSync(fd, buffer, 0, buffer.length, null)) > 0;) { size += count; requireShell(size <= Number(stat.size), 'File grew during reading.'); digest.update(buffer.subarray(0, count)); }
     requireShell(size === Number(stat.size) && stamp(fstatSync(fd, { bigint: true })) === stamp(stat) && stamp(lstatSync(path, { bigint: true })) === stamp(stat), 'File changed while reading.');
     return { size, sha256: digest.digest('hex'), stamp: stamp(stat) };

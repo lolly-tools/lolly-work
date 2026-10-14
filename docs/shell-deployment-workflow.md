@@ -130,6 +130,24 @@ The read-only benchmark reports three samples for each implementation and checks
 that their complete deltas match. It measures in-memory manifest comparisons;
 JSON parsing, asset hashing, building, retention and publication are excluded.
 
+Fresh file hashes use a zeroed read buffer capped to the file size and 1 MiB.
+Empty files keep a one-byte buffer so the EOF read still detects concurrent
+growth. Every descriptor, path, stamp and directory check remains in place;
+each inventory still reads and hashes every byte. To measure a complete saved
+tree, checking the resulting manifest bytes and reporting its shell ID:
+
+```sh
+node scripts/benchmark-shell-manifest.ts \
+  "$PRIVATE_RELEASE/prepared-shell" \
+  "$PRIVATE_RELEASE/prepared-shell.manifest.json"
+```
+
+An optional third argument selects a saved `shell-update-files.ts` helper for
+before-and-after measurements. Alternate the order on the same immutable tree
+and preserve all samples. The benchmark measures one fresh inventory; it does
+not measure cloning, complete retention, building or publication. Filesystem
+caches and host load affect the result.
+
 The [immutable shell-pointer mode](../deploy/helm/IMMUTABLE-SHELL-RELEASES.md) is a
 separate opt-in server capability. Its one-time image, configuration and volume
 migration still requires full backend qualification. Only after that migration
