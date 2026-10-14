@@ -114,6 +114,22 @@ fresh response, and this command avoids rebuilding accepted artifacts or replayi
 successful stages. The journal records preparation durations and preserves the
 existing operators' per-command timings.
 
+Local delta validation indexes candidate paths once before checking every
+protected resource. This avoids scanning the entire candidate for each accepted
+file while retaining the exact path, size and content-hash comparisons. Asset
+hashing, clone custody, source checks and publication guards still run normally.
+To compare the former scan and indexed lookup on saved manifests:
+
+```sh
+node scripts/benchmark-shell-update-delta.ts \
+  "$PRIVATE_RELEASE/previous-shell.manifest.json" \
+  "$PRIVATE_RELEASE/candidate-shell.manifest.json"
+```
+
+The read-only benchmark reports three samples for each implementation and checks
+that their complete deltas match. It measures in-memory manifest comparisons;
+JSON parsing, asset hashing, building, retention and publication are excluded.
+
 The [immutable shell-pointer mode](../deploy/helm/IMMUTABLE-SHELL-RELEASES.md) is a
 separate opt-in server capability. Its one-time image, configuration and volume
 migration still requires full backend qualification. Only after that migration
