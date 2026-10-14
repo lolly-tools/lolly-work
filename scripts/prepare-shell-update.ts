@@ -66,8 +66,10 @@ export function shellUpdateDelta(candidate: ShellManifest, previous: ShellManife
   const old = new Map(previous.files.map(file => [file.path, file]));
   const files = candidate.files.filter(file => { const prior = old.get(file.path); return prior?.size !== file.size || prior.sha256 !== file.sha256; });
   requireShell(files.every(file => changedAllowed(file.path)), 'A non-shell generated resource changed; use a broader release.');
+  const current = new Map(candidate.files.map(file => [file.path, file]));
   for (const file of previous.files) if (!changedAllowed(file.path)) {
-    requireShell(candidate.files.some(row => row.path === file.path && row.sha256 === file.sha256 && row.size === file.size), 'A protected static resource was removed.');
+    const present = current.get(file.path);
+    requireShell(present?.sha256 === file.sha256 && present.size === file.size, 'A protected static resource was removed.');
   }
   return { version: 1 as const, files, totalBytes: files.reduce((n, file) => n + file.size, 0) };
 }

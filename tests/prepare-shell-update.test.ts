@@ -11,6 +11,7 @@ import { pathToFileURL } from 'node:url';
 import { changedAllowed, prepareShellUpdate, restoreAcceptedCatalog, shellUpdateArguments, shellUpdateDelta } from '../scripts/prepare-shell-update.ts';
 import type { ShellUpdateOptions } from '../scripts/prepare-shell-update.ts';
 import { cloneShellFiles, sha256, shellFileCustody, shellFileStamp, shellId, shellManifest, writeShellJson } from '../scripts/shell-update-files.ts';
+import type { ShellFile } from '../scripts/shell-update-files.ts';
 import { shellReleaseId } from '../scripts/shell-release-id.ts';
 
 const work = realpathSync(join(import.meta.dirname, '..'));
@@ -187,10 +188,38 @@ test('the maintained source plugin can refuse absent ignored runtime cache witho
 test('generated static changes/removals refuse; only explicit UI paths enter the delta', () => {
   const file = (path: string, value: string) => ({ path, size: value.length, sha256: sha256(value) });
   const previous = { version: 1 as const, files: [file('font.woff2', 'safe')], totalBytes: 4 };
-  assert.throws(() => shellUpdateDelta({ version: 1, files: [file('font.woff2', 'bad')], totalBytes: 3 }, previous), /non-shell/);
+  for (const changed of [file('font.woff2', 'bad!'), { ...previous.files[0]!, size: 5 }, file('new-font.woff2', 'safe')]) {
+    assert.throws(() => shellUpdateDelta({ version: 1, files: [changed], totalBytes: changed.size }, previous), /non-shell/);
+  }
   assert.throws(() => shellUpdateDelta({ version: 1, files: [], totalBytes: 0 }, previous), /removed/);
-  const candidate = { version: 1 as const, files: [file('font.woff2', 'safe'), file('portable/player.js', 'new')], totalBytes: 7 };
-  assert.deepEqual(shellUpdateDelta(candidate, previous).files.map(row => row.path), ['portable/player.js']);
+  const changed = [file('portable/player.js', 'new'), file('_app/new.js', 'code'), file('index.html.br', 'compressed')];
+  const candidate = { version: 1 as const, files: [changed[0]!, file('font.woff2', 'safe'), ...changed.slice(1)], totalBytes: 21 };
+  assert.deepEqual(shellUpdateDelta(candidate, previous), { version: 1, files: changed, totalBytes: 17 });
+});
+
+test('duplicate protected paths still require every candidate and previous entry to match', () => {
+  const safe = { path: 'font.woff2', size: 4, sha256: sha256('safe') }, changed = { ...safe, sha256: sha256('evil') };
+  const manifest = (files: ShellFile[]) => ({ version: 1 as const, files, totalBytes: files.reduce((n, file) => n + file.size, 0) });
+  assert.deepEqual(shellUpdateDelta(manifest([safe, safe]), manifest([safe, safe])), manifest([]));
+  for (const files of [[safe, changed], [changed, safe]]) {
+    assert.throws(() => shellUpdateDelta(manifest(files), manifest([safe])), /non-shell/);
+    assert.throws(() => shellUpdateDelta(manifest([files[1]!]), manifest(files)), /removed/);
+  }
+});
+
+test('large protected inventories need a bounded number of path reads', () => {
+  for (const count of [20_000, 100_000]) {
+    let reads = 0;
+    const files = Array.from({ length: count }, (_, index) => {
+      const path = `fonts/${index}.woff2`;
+      return { get path() { assert.ok(++reads <= 10 * count, 'Delta comparison must not rescan the candidate for each protected file.'); return path; }, size: 1, sha256: 'a'.repeat(64) };
+    });
+    const previous = { version: 1 as const, files, totalBytes: count };
+    const added = { path: '_app/new.js', size: 3, sha256: 'b'.repeat(64) };
+    const candidate = { version: 1 as const, files: [added, ...files.toReversed()], totalBytes: count + 3 };
+    assert.deepEqual(shellUpdateDelta(candidate, previous), { version: 1, files: [added], totalBytes: 3 });
+    assert.ok(reads <= 10 * count);
+  }
 });
 
 test('exact workspace guard refuses an escaped cached workspace path and permits its exact source', async t => {
