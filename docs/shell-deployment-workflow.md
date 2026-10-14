@@ -1,6 +1,6 @@
 # Shell deployment workflow
 
-Use the **Prepare shell deployment request** GitHub workflow after Lolly's exact
+Use Lolly's **Prepare shell deployment request** GitHub workflow after its exact
 main commit has qualified. Select `public-ready` for an eligible UI change or
 `release-ready` after the full suite. Supply the Lolly commit, CI run and attempt.
 The workflow verifies the provider artifact digest, same-repository main-push
@@ -11,6 +11,11 @@ The workflow carries public provenance only. Private packs, credentials, signed
 catalogues and deployment profiles stay with the private operator. GitHub-hosted
 runners do not have production access. This workflow prepares a request; a green
 workflow does not mean the site was published.
+
+The caller lives in Lolly so its temporary read token can read Lolly's CI artifact.
+It calls Work's reusable workflow and checks out the helper at the same pinned
+Work commit. This avoids adding a cross-repository personal access token. Keep
+both Work commit references together when updating the caller.
 
 For a local equivalent with an authenticated GitHub CLI:
 

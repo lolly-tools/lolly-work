@@ -1,25 +1,30 @@
 # SPDX-License-Identifier: MPL-2.0
 name: Prepare shell deployment request
-run-name: Prepare ${{ inputs.tier }} shell ${{ inputs.source }}
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       source:
         description: Exact Lolly main commit (40 characters)
         required: true
+        type: string
       ci_run:
         description: Lolly CI run ID for this main commit
         required: true
+        type: string
       ci_attempt:
         description: Exact CI attempt
         default: '1'
         required: true
+        type: string
       tier:
         description: Qualification tier
-        type: choice
-        options: [public-ready, release-ready]
+        type: string
         default: public-ready
         required: true
+      operator_source:
+        description: Same immutable Work commit as the caller's reusable workflow reference
+        required: true
+        type: string
 permissions:
   contents: read
   actions: read
@@ -28,12 +33,14 @@ concurrency:
   cancel-in-progress: true
 jobs:
   request:
-    if: github.ref == 'refs/heads/main'
+    if: github.repository == 'lolly-tools/lolly' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          repository: lolly-tools/lolly-work
+          ref: ${{ inputs.operator_source }}
           persist-credentials: false
       - name: Verify provider qualification and current main
         env:
