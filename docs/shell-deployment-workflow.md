@@ -1,0 +1,102 @@
+# Shell deployment workflow
+
+Use the **Prepare shell deployment request** GitHub workflow after Lolly's exact
+main commit has qualified. Select `public-ready` for an eligible UI change or
+`release-ready` after the full suite. Supply the Lolly commit, CI run and attempt.
+The workflow verifies the provider artifact digest, same-repository main-push
+provenance, every required check and the current main head. A newly failed test
+refuses the request even if an earlier public-ready artifact exists.
+
+The workflow carries public provenance only. Private packs, credentials, signed
+catalogues and deployment profiles stay with the private operator. GitHub-hosted
+runners do not have production access. This workflow prepares a request; a green
+workflow does not mean the site was published.
+
+For a local equivalent with an authenticated GitHub CLI:
+
+```sh
+python3 -B scripts/verify-shell-qualification.py \
+  --source "$LOLLY_SOURCE" --run-id "$LOLLY_CI_RUN" --attempt "$LOLLY_CI_ATTEMPT" \
+  --tier public-ready --out "$PRIVATE_RELEASE/request"
+```
+
+Build once with `prepare-shell-update.ts`, assemble with
+`assemble-private-shell-input.py`, and qualify with `prepare-private-shell.py`.
+These maintained commands retain the accepted image, engine pin, pack and public
+key. Their output remains bound to the complete manifest and source custody.
+An already prepared artifact can be reused without another build. Do not replace
+the candidate, its receipt, source checkout or helper files while deploying.
+
+The resumable command starts at that prepared artifact. Its reviewed JSON config
+has this shape; every path is absolute and every digest is the SHA256 of the
+referenced file's actual bytes:
+
+```json
+{
+  "version": 1,
+  "profile": {"path": "/private/release/instance-profile.json", "sha256": "REVIEWED_FILE_SHA256"},
+  "prepared": {"path": "/private/release/shell.prepared.json", "sha256": "REVIEWED_FILE_SHA256"},
+  "request": {"path": "/private/release/request/request.json", "sha256": "REVIEWED_FILE_SHA256"},
+  "operatorSha256": "DEPLOY_PRIVATE_SHELL_PY_SHA256",
+  "qualificationVerifierSha256": "VERIFY_SHELL_QUALIFICATION_PY_SHA256",
+  "minimumLocalFreeBytes": 1073741824,
+  "lockDirectory": "/private/deployment-locks"
+}
+```
+
+Create the lock directory with mode `0700`. All operators for the same cluster
+and Work Deployment must use the same directory. The lock identity uses the
+cluster UID, namespace and Deployment UID, so changing profile files cannot
+create a second publication owner. The lock is released automatically when the
+process exits; an interrupted process does not leave a stale PID lock.
+
+```sh
+python3 -B scripts/deploy-private-shell.py \
+  --config "$PRIVATE_RELEASE/deploy.json" --config-sha256 "$DEPLOY_CONFIG_SHA256" \
+  --journal "$PRIVATE_RELEASE/deployment"
+```
+
+The command checks local and host capacity before staging, then uses the existing
+stage and publication guards. Normal target checks still run before each
+production mutation. CI is read again immediately before apply. If main has
+advanced, prepare the newer request; the older candidate is not silently shipped.
+
+Run the identical command to resume. Successful original stage phases are reused;
+completed copy, qualification and retirement phases are not repeated. Read-only
+preparation can retry in a new evidence directory. A started mutation without its
+original accepted result, or any uncertain mutation, refuses automatic replay.
+Reconcile that original operation before attempting a separate recovery. Changing
+the config or helpers also refuses reuse of the old journal.
+
+After a committed apply, resume completes observation even if a newer main commit
+has arrived. It never applies the old candidate again. The accepted receipt gives
+the next instance profile and distinguishes runtime acceptance from the remaining
+authenticated export, document-agent, reconnect and visual checks. Preserve the
+current and immediate rollback artifacts until the normal retention review.
+
+## Qualification policy
+
+Public-ready requires the focused UI suite, scope classification, build and bundle
+budget, typecheck, contract and security tests, catalogue validation, render smoke,
+secret scan and custom security scan. Full CI continues in the same run. Backend,
+engine, authentication, database, dependency, unknown-path and CI policy changes
+require release-ready. A public-ready receipt never claims full-suite success.
+
+Changing the CI policy itself needs full qualification. The existing producer also
+checks the complete source delta against the retained engine baseline. Until that
+baseline or an independently reviewed metadata rule accepts the new CI files, use
+the matched release path. The CI fast check does not override build compatibility.
+
+## Timing and rollout
+
+The previous deployment spent roughly 369 seconds preparing the local shell even
+though Vite took about 11 seconds. Copying and repeated content hashes also cost
+several minutes. Guard batching reduces network round trips while keeping each
+fresh response, and this command avoids rebuilding accepted artifacts or replaying
+successful stages. The journal records preparation durations and preserves the
+existing operators' per-command timings.
+
+The immutable shell-pointer mode is a separate opt-in server capability. Its
+one-time image and volume migration requires full backend qualification. Only
+after that migration can subsequent frontend publications avoid Work Pod rollouts.
+Keep the current guarded PVC path until that migration is accepted.
