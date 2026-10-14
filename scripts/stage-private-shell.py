@@ -234,8 +234,8 @@ class Stage:
         value = self.value; exact(value, INPUT_KEYS); require(type(value['version']) is int and value['version'] == 1, 'Unknown stage input')
         self.target = updater.validate_target(self.inputs.file(value['target'])); require('work' in self.target['components'], 'Owned Work target required')
         self.component = self.target['components']['work']; self.namespace = self.component['namespace']
-        self.prepared = self.inputs.file(value['prepared']); exact(self.prepared, shell.PREPARED_KEYS | {'reviewedEvidenceSha256'})
-        require(self.prepared['status'] == shell.STATUS and self.prepared['qualificationBoundary'] == shell.BOUNDARY and self.prepared['allUnselectedSpecFieldsPreserved'] is True, 'Maintained shell-only preparation required')
+        self.prepared = self.inputs.file(value['prepared']); shell.prepared_schema(self.prepared)
+        require(self.prepared['status'] in {shell.STATUS, shell.PUBLIC_READY_STATUS} and self.prepared['qualificationBoundary'] == shell.BOUNDARY and self.prepared['allUnselectedSpecFieldsPreserved'] is True, 'Maintained shell-only preparation required')
         self.previous, self.accepted_deployment = shell.previous_record(value['previous'], self.inputs)
         require(self.prepared['previousCohortSha256'] == value['previous']['sha256'] and self.prepared['beforeSpecSha256'] == self.previous['deploymentSpecSha256'], 'Preparation/previous spec differs')
         self.pin = self.inputs.file(self.previous['enginePin']); self.public_key = self.inputs.file(value['publicKey']); self.source_map = self.inputs.file(value['sourceMap'])

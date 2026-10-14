@@ -145,6 +145,24 @@ class AdapterTests(fixture.Shell):
             v['ciRun'] = self.file('synthetic-still-running-final', run)
         self.change('candidate_ref', pending); self.refuses()
 
+    def test_public_ready_adapter_keeps_pending_build_and_explicit_fast_scope(self):
+        self.build_snapshot(lambda v: None)
+        def ready(v):
+            v['qualificationTier'] = 'public-ready'
+            run = json.loads(Path(v['ciRun']['path']).read_bytes()); run.update(status='in_progress', conclusion=None)
+            v['ciRun'] = self.file('public-ready-original-main-run', run)
+            jobs = json.loads(Path(v['ciJobs']['path']).read_bytes())
+            for job in jobs['jobs']:
+                if job['name'] not in m.shell.PUBLIC_READY_JOBS: job.update(status='in_progress', conclusion=None)
+            v['ciJobs'] = self.file('public-ready-original-main-jobs', jobs)
+        self.change('candidate_ref', ready)
+        adapter = self.adapter()
+        prepared, held = m.shell.prepare(adapter.evidence | {'build': self.file('public-ready-build', adapter.build), 'webGate': self.file('public-ready-gate', adapter.gate)}, self.base, self.public_pin_sha, NODE)
+        held.unchanged()
+        self.assertEqual(prepared['status'], m.shell.PUBLIC_READY_STATUS)
+        self.assertEqual(set(prepared['normalCI']), {'work'})
+        self.assertFalse(prepared['publicReadyCI']['lolly']['fullSuiteQualified'])
+
     def test_coding_original_input_receipt_and_compressor_are_held(self):
         adapter = self.adapter()
         for path in (self.coding_input['path'], self.coding_request['receipt'], self.coding_receipt['compressor']['path']):

@@ -123,8 +123,8 @@ class Update:
         prepared_path = cohort.local_path(str(prepared_path), Path.cwd())
         self.prepared_ref = {'path': str(prepared_path), 'sha256': cohort.sha(prepared_sha)}
         self.prepared = self.inputs.file(self.prepared_ref)
-        exact(self.prepared, stage.shell.PREPARED_KEYS | {'reviewedEvidenceSha256'})
-        require(type(self.prepared['version']) is int and self.prepared['version'] == 1 and self.prepared['status'] == stage.shell.STATUS and self.prepared['qualificationBoundary'] == stage.shell.BOUNDARY
+        stage.shell.prepared_schema(self.prepared)
+        require(type(self.prepared['version']) is int and self.prepared['version'] == 1 and self.prepared['status'] in {stage.shell.STATUS, stage.shell.PUBLIC_READY_STATUS} and self.prepared['qualificationBoundary'] == stage.shell.BOUNDARY
                 and self.prepared['allUnselectedSpecFieldsPreserved'] is True and self.prepared['previousCohortSha256'] == self.profile['previous']['sha256'], 'Maintained compatible shell preparation required')
         original = planner.cli_evidence(self.prepared, self.inputs)
         original_ref = next(ref for ref in self.prepared['evidence'] if ref['sha256'] == self.prepared['reviewedEvidenceSha256'])

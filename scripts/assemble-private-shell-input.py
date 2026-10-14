@@ -38,9 +38,9 @@ DEPENDENCIES = ('assemble-private-shell-input.py', *update.DEPENDENCIES, 'prepar
 
 
 
-def build_ci_snapshot(snapshot, final, source, repository):
+def build_ci_snapshot(snapshot, final, source, repository, tier=None):
     """Bind a build-time observation to the same finally qualified main CI run."""
-    final = cohort.paired.run_record(final, source, repository, '.github/workflows/ci.yml', 'push')
+    final = shell.public_ready_run(final, source, repository) if tier == 'public-ready' else cohort.paired.run_record(final, source, repository, '.github/workflows/ci.yml', 'push')
     required = {'id', 'run_attempt', 'head_sha', 'head_branch', 'repository', 'head_repository', 'path', 'event', 'status', 'conclusion'}
     exact(snapshot, required, cohort.paired.RUN_FIELDS - required)
     for key in ('id', 'run_attempt'):
@@ -51,6 +51,7 @@ def build_ci_snapshot(snapshot, final, source, repository):
         require(snapshot[key]['id'] == final[key]['id'], 'Build CI repository identity differs')
     if 'workflow_id' in snapshot or 'workflow_id' in final:
         require(cohort.paired.positive(snapshot.get('workflow_id')) and snapshot.get('workflow_id') == final.get('workflow_id'), 'Build CI workflow identity differs')
+    require(snapshot['status'] != 'completed' or final['status'] == 'completed', 'Build CI observation is newer than qualification snapshot')
     require((snapshot['status'] in {'queued', 'in_progress'} and snapshot['conclusion'] is None)
             or (snapshot['status'] == 'completed' and snapshot['conclusion'] == 'success'), 'Build CI observation was not pending or successful')
 
@@ -92,7 +93,7 @@ class Adapter:
         self.candidate_ref = self.ref(candidate); candidate = self.inputs.file(self.candidate_ref)
         self.candidate = self.source(candidate, Path(self.candidate_ref['path']).parent)
         self.work = self.source(profile['work'], Path(self.profile_ref['path']).parent)
-        self.root, run = cohort.source_record(self.candidate, self.inputs, shell.git_command, 'lolly')
+        self.root, run = shell.shell_source_record(self.candidate, self.inputs, shell.git_command)
         work_root, _ = cohort.source_record(self.work, self.inputs, shell.git_command, 'work')
         previous_ref = self.ref(instance['previous'], base=Path(self.instance_ref['path']).parent)
         previous, before = shell.previous_record(previous_ref, self.inputs)
@@ -120,7 +121,7 @@ class Adapter:
         require(self.ref(produced['previousAcceptance'], base=base) == self.ref(custody['previousAcceptance'], base=Path(custody_ref['path']).parent) == self.ref(acceptance['originalEvidence'][0], base=Path(accepted_ref['path']).parent), 'Producer used another accepted runtime')
         build_ci = self.ref(produced['ci'], base=base)
         require(build_ci == self.ref(custody['ci'], base=Path(custody_ref['path']).parent), 'Producer CI custody differs')
-        build_ci_snapshot(self.inputs.file(build_ci), run, self.candidate['source'], self.candidate['repository'])
+        build_ci_snapshot(self.inputs.file(build_ci), run, self.candidate['source'], self.candidate['repository'], self.candidate.get('qualificationTier'))
         require(self.ref(produced['publicKey'], base=base) == public_pin and custody['publicKeySha256'] == public_pin['sha256'], 'Producer public pin differs')
         old = self.tree(instance['previousShell'], Path(self.instance_ref['path']).parent)
         candidate_tree, retained = [self.tree(produced[key], base, producer=True) for key in ('candidate', 'shell')]
@@ -204,7 +205,8 @@ class Adapter:
         self.inputs.file(ref, as_json); return ref
 
     def source(self, value, base):
-        exact(value, {'root', 'source', 'repository', 'main', 'ciRun', 'ciJobs'})
+        exact(value, shell.SOURCE_KEYS, {'qualificationTier'})
+        require('qualificationTier' not in value or value['qualificationTier'] == 'public-ready', 'Unknown source qualification tier')
         return {**value, 'root': str(cohort.local_path(value['root'], base)), **{key: self.ref(value[key], base=base) for key in ('main', 'ciRun', 'ciJobs')}}
 
     def sized_ref(self, value, base):
