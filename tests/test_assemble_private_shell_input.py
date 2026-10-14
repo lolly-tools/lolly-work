@@ -101,6 +101,7 @@ class AdapterTests(fixture.Shell):
         self.assertEqual(actual['qualificationBoundary'], m.BOUNDARY)
         self.assertEqual(out.stat().st_mode & 0o777, 0o700)
         evidence = json.loads(Path(actual['evidence']['path']).read_bytes())
+        self.assertNotIn('rawDerivation', evidence)
         self.assertEqual(evidence['candidateShell']['manifest']['sha256'], self.evidence['candidateShell']['manifest']['sha256'])
         self.assertNotEqual(evidence['candidateShell']['manifest']['sha256'], evidence['shell']['manifest']['sha256'])
         command = [sys.executable, *(['-O'] if sys.flags.optimize else []), str(Path(m.shell.__file__)), '--evidence', actual['evidence']['path'], '--reviewed-evidence-sha256', actual['evidence']['sha256'], '--existing-public-pin-sha256', self.public_pin_sha, '--node', NODE, '--out-dir', str(self.base / 'prepared')]
@@ -171,6 +172,47 @@ class AdapterTests(fixture.Shell):
         self.assertEqual(prepared['status'], m.shell.PUBLIC_READY_STATUS)
         self.assertEqual(set(prepared['normalCI']), {'work'})
         self.assertFalse(prepared['publicReadyCI']['lolly']['fullSuiteQualified'])
+
+    def derivation_profile(self):
+        custody = self.file('synthetic-original-release-custody-not-qualified', {'synthetic': True})
+        release = copy.deepcopy(self.evidence['previousShell'])
+        original = {'custody': custody, 'release': release}
+        relative = copy.deepcopy(original)
+        relative['custody']['path'] = os.path.relpath(custody['path'], self.base)
+        relative['release']['root'] = os.path.relpath(release['root'], self.base)
+        relative['release']['manifest']['path'] = os.path.relpath(release['manifest']['path'], self.base)
+        self.change('profile_ref', lambda v: v.update(rawDerivation=relative))
+        return original
+
+    def test_optional_original_derivation_is_normalized_held_and_preserved_without_qualification(self):
+        original = self.derivation_profile(); adapter = self.adapter()
+        self.assertEqual(adapter.evidence['rawDerivation'], original)
+        self.assertIn(Path(original['custody']['path']), adapter.inputs.reads)
+        self.assertIn(Path(original['release']['manifest']['path']), adapter.inputs.reads)
+        self.assertIn(Path(original['release']['root']), adapter.tree_roots)
+        output = self.base / 'derived-custody-assembly'
+        adapter.publish(output)
+        actual = json.loads((output / 'shell-input.reviewed.json').read_bytes())
+        self.assertEqual(actual['rawDerivation'], original)
+        with self.assertRaisesRegex(m.shell.Refusal, 'Legacy pack must not acquire derived release custody'):
+            m.shell.prepare(actual, output, self.public_pin_sha, NODE)
+
+    def test_optional_derivation_rejects_unknown_shape_or_changed_bound_refs(self):
+        self.derivation_profile(); original = self.profile_ref
+        for edit in (lambda v: v.update(extra=True), lambda v: v.pop('custody'),
+                     lambda v: v['release'].update(extra=True), lambda v: v['release'].pop('manifest'),
+                     lambda v: v['custody'].update(sha256='0' * 64),
+                     lambda v: v['release']['manifest'].update(sha256='0' * 64)):
+            self.profile_ref = original
+            self.change('profile_ref', lambda v: edit(v['rawDerivation']))
+            self.refuses()
+
+    def test_original_derivation_custody_drift_refuses_before_assembly(self):
+        original = self.derivation_profile(); adapter = self.adapter()
+        Path(original['custody']['path']).write_text('{}')
+        output = self.base / 'drifted-derivation-refused'
+        with self.assertRaises(m.Refusal): adapter.publish(output)
+        self.assertFalse(output.exists())
 
     def test_coding_original_input_receipt_and_compressor_are_held(self):
         adapter = self.adapter()

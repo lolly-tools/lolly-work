@@ -82,7 +82,7 @@ class Adapter:
                 self.source_files.append(self.ref({'path': str(path), 'sha256': hashlib.sha256(cohort.read_file(path)[0]).hexdigest()}, False))
         self.profile_ref = self.ref(profile); profile = self.inputs.file(self.profile_ref)
         self.inputs.base = Path(self.profile_ref['path']).parent
-        exact(profile, PROFILE_KEYS)
+        exact(profile, PROFILE_KEYS, {'rawDerivation'})
         require(type(profile['version']) is int and profile['version'] == 1 and profile['status'] == 'REVIEWED_PRIVATE_SHELL_PREPARATION_PROFILE', 'Reviewed preparation profile required')
         self.instance_ref = self.ref(instance); instance = self.inputs.file(self.instance_ref)
         exact(instance, update.PROFILE_KEYS, {'authenticatedStaticProbe', 'authenticatedCatalog', 'stageNamePrefix'})
@@ -129,6 +129,12 @@ class Adapter:
         require(producer_old['root'] == old['root'] and producer_old['manifest']['sha256'] == old['manifest']['sha256'] and old['manifest']['sha256'] == previous['shell']['manifestSha256'] and self.ref(custody['previousManifest'], base=Path(custody_ref['path']).parent) == old['manifest'] and produced['shellManifestSha256'] == retained['manifest']['sha256'], 'Producer accepted snapshot/manifest differs')
         raw_pack = self.tree(profile['rawPack'], Path(self.profile_ref['path']).parent)
         require(raw_pack['manifest']['sha256'] == previous['pack']['manifestSha256'], 'Accepted raw pack differs')
+        raw_derivation = {}
+        if 'rawDerivation' in profile:
+            derivation = profile['rawDerivation']; exact(derivation, {'custody', 'release'})
+            profile_base = Path(self.profile_ref['path']).parent
+            raw_derivation = {'rawDerivation': {'custody': self.ref(derivation['custody'], base=profile_base),
+                                               'release': self.tree(derivation['release'], profile_base, shell_tree=True)}}
         producer_source = self.sized_ref(produced['producer'], base)
         require(Path(producer_source['path']).name == 'prepare-shell-update.ts' and producer_source['sha256'] == cohort.sha(profile['producerSourceSha256']) == hashlib.sha256(cohort.read_file(Path(__file__).with_name('prepare-shell-update.ts'))[0]).hexdigest(), 'Reviewed producer implementation differs')
         classification = self.ref(produced['classification'], base=base)
@@ -162,7 +168,7 @@ class Adapter:
         shell.change_tuple(before, previous, selection, self.candidate['source'], produced['shell']['shellId'])
         self.build = {'version': 1, 'status': 'PRIVATE_WEB_BUILD_REVIEWED', **{key: produced[key] for key in ('lollySource', 'engineSource', 'workSource', 'brandCommit', 'profile', 'enginePinSha256')}, 'shellManifestSha256': candidate_tree['manifest']['sha256'], 'settings': {'scope': 'web', 'requireCatalogSignature': True, 'requireAiPolicy': True, 'relayOrigin': profile['settings']['liveRelay']}, 'workspaceModules': reviewed_modules, 'originalReport': original_build}
         self.gate = {'version': 1, 'status': 'PASS', 'source': self.candidate['source'], 'scope': 'web', 'scriptSha256': hashlib.sha256(cohort.git_bytes(self.root, self.candidate['source'], 'scripts/webgpu-release-gate.ts', shell.git_command)).hexdigest(), 'originalReport': original_gate}
-        self.evidence = {'version': 1, 'lolly': self.candidate, 'work': self.work, 'enginePin': engine_pin, 'resolverPin': resolver_pin, 'brand': profile['brand'], 'profile': profile['profile'], 'publicPin': public_pin, 'candidateShell': candidate_tree, 'previousShell': old, 'shell': retained, 'rawPack': raw_pack, 'previous': previous_ref, 'selection': selection, 'classification': classification}
+        self.evidence = {'version': 1, 'lolly': self.candidate, 'work': self.work, 'enginePin': engine_pin, 'resolverPin': resolver_pin, 'brand': profile['brand'], 'profile': profile['profile'], 'publicPin': public_pin, 'candidateShell': candidate_tree, 'previousShell': old, 'shell': retained, 'rawPack': raw_pack, 'previous': previous_ref, 'selection': selection, 'classification': classification, **raw_derivation}
         self.public_pin_sha = profile['publicPinSha256']; self.inputs.unchanged()
 
     def coding_review(self, report, base, producer_source, candidate, previous, node):
