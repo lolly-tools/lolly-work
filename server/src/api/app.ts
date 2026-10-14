@@ -5158,7 +5158,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     setDeliveryClass(res, delivery);
     const policy = cachePolicy(delivery);
     if (!await sendFile(req, res, shellDir, target, { contentType: contentType(target), ranges: true,
-      headers: { ...shellSecurityHeaders(rel), 'cache-control': target === 'sw.js' ? SERVICE_WORKER_CACHE_CONTROL : policy.cacheControl } })) {
+      headers: { ...shellSecurityHeaders(rel, undefined, config.instance.connectorOrigins), 'cache-control': target === 'sw.js' ? SERVICE_WORKER_CACHE_CONTROL : policy.cacheControl } })) {
       sendError(res, 404, 'NOT_FOUND', asset ? 'no such file' : 'shell index not found: check instance.shellDir');
     }
   } : null;
@@ -10360,13 +10360,13 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
           } catch { continue; }
           if (!metadata.isFile()) continue;
           if (doc.kind === 'redirect') {
-            res.writeHead(308, { ...shellSecurityHeaders(rel), location: doc.location, 'cache-control': 'public, max-age=300' });
+            res.writeHead(308, { ...shellSecurityHeaders(rel, undefined, config.instance.connectorOrigins), location: doc.location, 'cache-control': 'public, max-age=300' });
             res.end();
           } else {
             const delivery = publicStaticDeliveryClass('/' + candidate);
             setDeliveryClass(res, delivery);
             await sendFile(req, res, shellDir, candidate, { contentType: contentType(candidate), ranges: true,
-              headers: { ...shellSecurityHeaders(rel), 'cache-control': cachePolicy(delivery).cacheControl } });
+              headers: { ...shellSecurityHeaders(rel, undefined, config.instance.connectorOrigins), 'cache-control': cachePolicy(delivery).cacheControl } });
           }
           return true;
         }
