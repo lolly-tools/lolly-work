@@ -61,7 +61,7 @@ catch (err) { console.error(`[render-worker] ${(err as Error).message}`); proces
 let DECLARED_ORIGINS: Set<string>;
 try { DECLARED_ORIGINS = declaredOrigins(WEB_BASE, process.env.LW_RENDER_ALLOWED_ORIGINS ?? ''); }
 catch (err) { console.error(`[render-worker] ${(err as Error).message}`); process.exit(1); }
-// A worker granted CAP_SYS_ADMIN for the browser sandbox must be in its own user
+// A worker granted CAP_SYS_ADMIN/CAP_SYS_CHROOT for the browser sandbox must be in its own user
 // namespace (./user-namespace.ts); refuse before Chromium starts if it is not.
 try { assertUserNamespace(process.env.LW_RENDER_REQUIRE_USER_NAMESPACE); }
 catch (err) { console.error(`[render-worker] ${(err as Error).message}`); process.exit(1); }

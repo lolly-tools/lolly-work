@@ -6,14 +6,14 @@ import { readFileSync } from 'node:fs';
  *
  * On a cluster that cannot install a Localhost seccomp profile, Chromium's namespace
  * sandbox runs when the pod has its own Kubernetes user namespace (hostUsers: false)
- * and CAP_SYS_ADMIN: the runtime's default seccomp profile only permits
- * unshare(CLONE_NEWUSER) when that capability is present. Inside a user namespace the
- * capability is scoped to the pod's own namespaces. Outside one it is a real host
- * capability.
+ * and CAP_SYS_ADMIN plus CAP_SYS_CHROOT: the runtime's default seccomp profile only
+ * permits unshare(CLONE_NEWUSER) with the first and chroot with the second. Inside a user
+ * namespace the capabilities are scoped to the pod's own namespaces. Outside one they are
+ * real host capabilities.
  *
  * An API server without user-namespace support drops `hostUsers` from the pod spec
  * instead of rejecting it, so the same manifest can land in the node's namespace. The
- * chart sets LW_RENDER_REQUIRE_USER_NAMESPACE=1 whenever it adds the capability, and
+ * chart sets LW_RENDER_REQUIRE_USER_NAMESPACE=1 whenever it adds the capabilities, and
  * this check stops the worker before Chromium starts if any uid_map range reaches host
  * UID 0 - the identity map `0 0 4294967295` of a pod without its own namespace included.
  */
