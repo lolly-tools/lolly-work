@@ -104,8 +104,8 @@ test('HTTP export pages and offboarding require an owner, audit reads and enforc
   const auth = mintServiceSecret();
   await store.putApiToken({ id: 'owner-operation', label: 'Owner operation', role: 'owner', tokenHash: auth.tokenHash, createdBy: `user:${owner.id}`, createdAt: now });
   const output = await new Promise<string>((resolve, reject) => {
-    const child = spawn(process.execPath, [fileURLToPath(new URL('../cli/lw.ts', import.meta.url)), 'users', 'subject-export', subject.id,
-      '--category', 'credentials', '--limit', '1', '--json', '--token', auth.secret, '--base', base.split('/api/v1/')[0]!], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [fileURLToPath(new URL('../cli/lw.ts', import.meta.url)), 'users', 'subject-export',
+      '--category', 'credentials', '--limit', '1', '--json', `--token=${auth.secret}`, '--base', base.split('/api/v1/')[0]!, '--', subject.id], { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
     child.stdout.on('data', data => { stdout += data; }); child.stderr.on('data', data => { stderr += data; });
     child.on('error', reject); child.on('close', code => code === 0 ? resolve(stdout) : reject(new Error(stderr)));
