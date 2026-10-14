@@ -98,6 +98,9 @@ jobs:
             /scripts/materialize-catalog-delivery.ts
             /scripts/verify-release-catalog.ts
 
+      - name: Install worker test dependencies
+        run: pnpm -C workers/render install --frozen-lockfile
+
       - name: Full test suite (postgres store un-skipped)
         env:
           # tests/store-postgres.test.ts gates on this exact variable; without
