@@ -12,6 +12,9 @@
  * which tests/yunohost-package.test.ts pins in turn to the Lolly repository's copy, so
  * the three cannot drift apart unnoticed. A deployment that needs to reach more hosts
  * adds them through its site policy (plans/58 section 4.3), never by widening this base.
+ * Where the ingress cannot replace headers (snippets disabled on a shared cluster), the
+ * operator lists exact connector origins in instance.connectorOrigins instead; they are
+ * appended to connect-src only, after config validation (config/instance.ts).
  */
 export const SHELL_SECURITY_HEADERS: Readonly<Record<string, string>> = Object.freeze({
   'content-security-policy': "default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' blob: data: https://lolly.ing wss://lolly.ing https://lolli.li https://www.googleapis.com https://fonts.googleapis.com https://fonts.gstatic.com https://api.somafm.com https://registry.color.org https://www.color.org https://geocoding-api.open-meteo.com https://api.dropboxapi.com https://content.dropboxapi.com https://login.microsoftonline.com https://graph.microsoft.com https://api.onedrive.com https://*.up.1drv.com https://*.files.1drv.com https://my.microsoftpersonalcontent.com https://*.sharepoint.com; img-src 'self' data: blob:; media-src 'self' blob: data: https://*.somafm.com; font-src 'self' data: blob:; worker-src 'self' blob:; child-src 'self' blob:; frame-src 'self' blob: https://www.youtube-nocookie.com https://player.vimeo.com https://www.loom.com https://www.google.com https://www.figma.com https://wikipedia.org https://*.wikipedia.org https://commons.wikimedia.org https://upload.wikimedia.org https://www.wikidata.org https://www.mediawiki.org https://www.openstreetmap.org; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'",
@@ -23,8 +26,13 @@ export const SHELL_SECURITY_HEADERS: Readonly<Record<string, string>> = Object.f
 });
 
 /** The isolated any-site page embeds only URLs approved by the document UI. */
-export function shellSecurityHeaders(path: string, relayOrigin = process.env.LW_LIVE_RELAY_ORIGIN): Readonly<Record<string, string>> {
+export function shellSecurityHeaders(path: string, relayOrigin = process.env.LW_LIVE_RELAY_ORIGIN,
+  connectorOrigins: readonly string[] = []): Readonly<Record<string, string>> {
   let headers = SHELL_SECURITY_HEADERS;
+  if (connectorOrigins.length) {
+    headers = { ...headers, 'content-security-policy': headers['content-security-policy']!
+      .replace("connect-src 'self'", `connect-src 'self' ${connectorOrigins.join(' ')}`) };
+  }
   if (relayOrigin) {
     const url = new URL(relayOrigin);
     if (url.protocol !== 'https:' || url.origin !== relayOrigin) throw new Error('LW_LIVE_RELAY_ORIGIN must be a bare HTTPS origin');

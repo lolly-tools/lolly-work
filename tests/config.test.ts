@@ -115,6 +115,21 @@ test('delivery destinations are explicit, normalized, and fail closed at config 
   }
 });
 
+test('instance.connectorOrigins: exact HTTPS origins only, normalised', () => {
+  const open = { policy: { defaultAccessMode: 'open' } };
+  assert.equal(parseConfig(JSON.stringify(open)).instance.connectorOrigins, undefined);
+  assert.deepEqual(parseConfig(JSON.stringify({ ...open, instance: { connectorOrigins: [] } })).instance.connectorOrigins, []);
+  assert.deepEqual(parseConfig(JSON.stringify({ ...open, instance: { connectorOrigins: ['https://api.box.com', 'https://upload.box.com/', 'https://files.example:8443'] } }))
+    .instance.connectorOrigins, ['https://api.box.com', 'https://upload.box.com', 'https://files.example:8443']);
+  for (const bad of [
+    'https://api.box.com', ['http://api.box.com'], ['https://*.box.com'], ['https://api.box.com/2.0'], ['https://user:pw@api.box.com'],
+    ['https://api.box.com?x=1'], ["https://api.box.com; script-src *"], ['wss://api.box.com'], [1], [null],
+    ['https://api.box.com', 'https://api.box.com/'], Array.from({ length: 33 }, (_, i) => `https://h${i}.example`),
+  ]) {
+    assert.throws(() => parseConfig(JSON.stringify({ ...open, instance: { connectorOrigins: bad } })), /instance\.connectorOrigins/, JSON.stringify(bad));
+  }
+});
+
 test('instance.homeView: absent by default, tools or projects when set, anything else refused', () => {
   const open = { policy: { defaultAccessMode: 'open' } };
   assert.equal(parseConfig(JSON.stringify(open)).instance.homeView, undefined);

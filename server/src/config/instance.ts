@@ -135,6 +135,10 @@ export interface InstanceConfig {
     connectPack?: string;
     /** Explicit tokens asset per source id when a catalogue carries multiple token sets. */
     brandTokens?: Record<string, string>;
+    /** Exact HTTPS origins the served shell's connectors may call, added to the shell's
+     *  `connect-src` (api/shell-headers.ts). For deployments whose ingress cannot replace
+     *  response headers. The shell build's own VITE_CONNECTOR_ORIGINS list still applies. */
+    connectorOrigins?: string[];
     /** The view a signed-in member's shell opens on at the bare app address (no
      *  route in it): the tools gallery or their Projects. Absent ⇒ the shell's own
      *  default (tools). Passed to members as org-config `home`; a link to a tool,
@@ -856,6 +860,15 @@ export function parseConfig(json: string): InstanceConfig {
     const key = cfg.instance.catalogPublicKey;
     if (!key || Array.isArray(key) || key.kty !== 'EC' || key.crv !== 'P-256' || typeof key.x !== 'string'
       || typeof key.y !== 'string' || 'd' in key) throw new Error('instance.catalogPublicKey must be a public P-256 JWK');
+  }
+  if (cfg.instance.connectorOrigins !== undefined) {
+    let origins: string[];
+    try { origins = providerOrigins(cfg.instance.connectorOrigins); } catch { origins = []; }
+    if (!Array.isArray(cfg.instance.connectorOrigins) || cfg.instance.connectorOrigins.length > 32
+      || origins.length !== new Set(cfg.instance.connectorOrigins).size || origins.some(origin => !origin.startsWith('https://'))) {
+      throw new Error('instance.connectorOrigins must be a list of at most 32 exact HTTPS origins, without paths or wildcards');
+    }
+    cfg.instance.connectorOrigins = origins;
   }
   if (cfg.instance.brandTokens !== undefined && (cfg.instance.brandTokens === null || Array.isArray(cfg.instance.brandTokens)
     || typeof cfg.instance.brandTokens !== 'object' || Object.entries(cfg.instance.brandTokens).some(([key, value]) =>

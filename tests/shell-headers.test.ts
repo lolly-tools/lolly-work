@@ -131,6 +131,41 @@ test('console documents protect their origin and allow only their own inline boo
   }
 });
 
+test('configured connector origins widen connect-src only, on every shell response', async () => {
+  const origins = ['https://api.box.com', 'https://upload.box.com'];
+  const headers = shellSecurityHeaders('/', undefined, origins), csp = headers['content-security-policy']!;
+  assert.match(csp, /connect-src 'self' https:\/\/api\.box\.com https:\/\/upload\.box\.com blob: data:/);
+  const directives = (policy: string) => policy.split('; ').filter(d => !d.startsWith('connect-src '));
+  assert.deepEqual(directives(csp), directives(SHELL_SECURITY_HEADERS['content-security-policy']!));
+  for (const [key, value] of Object.entries(SHELL_SECURITY_HEADERS)) if (key !== 'content-security-policy') assert.equal(headers[key], value);
+  assert.match(shellSecurityHeaders('/', 'https://lolly.ing', origins)['content-security-policy']!,
+    /connect-src 'self' https:\/\/lolly.ing wss:\/\/lolly.ing https:\/\/api\.box\.com https:\/\/upload\.box\.com/);
+  assert.equal(shellSecurityHeaders('/', undefined, []), SHELL_SECURITY_HEADERS);
+
+  const pack = await mkdtemp(join(tmpdir(), 'lw-pack-'));
+  await mkdir(join(pack, 'catalog', 'tools'), { recursive: true });
+  await writeFile(join(pack, 'catalog', 'tools', 'index.json'), JSON.stringify({ version: 1, tools: [] }));
+  const shellDir = await mkdtemp(join(tmpdir(), 'lw-shell-'));
+  await writeFile(join(shellDir, 'index.html'), '<!doctype html><title>shell</title>');
+  const config = parseConfig(JSON.stringify({
+    instance: { name: 'Connectors', baseUrl: 'http://localhost', pack, shellDir, connectorOrigins: origins },
+    rateLimit: { enabled: false },
+    dev: { enabled: true, users: [] },
+  }));
+  const app = buildApp({ config, store: createMemoryStore(), secrets: { session: 's3', link: 'l3' } });
+  const server = createServer((req, res) => void app(req, res));
+  servers.push(server);
+  await new Promise<void>((r) => server.listen(0, () => r()));
+  const addr = server.address();
+  const base = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
+  for (const method of ['GET', 'HEAD']) {
+    const res = await fetch(base + '/index.html', { method });
+    assert.equal(res.status, 200, method);
+    assert.equal(res.headers.get('content-security-policy'), csp, method);
+    await res.arrayBuffer();
+  }
+});
+
 test('an instance can allow its exact hosted document relay origin', () => {
   const headers = shellSecurityHeaders('/', 'https://lolly.ing');
   assert.match(headers['content-security-policy']!, /connect-src 'self' https:\/\/lolly.ing wss:\/\/lolly.ing/);
