@@ -7,6 +7,12 @@ The workflow verifies the provider artifact digest, same-repository main-push
 provenance, every required check and the current main head. A newly failed test
 refuses the request even if an earlier public-ready artifact exists.
 
+Qualification binds one exact CI attempt. To retry CI, rerun the entire workflow
+with GitHub's **Re-run all jobs**, then prepare a request for that new attempt.
+Re-running only failed jobs leaves results from different attempts and cannot
+qualify publication. Mixed-attempt results and pull-request artifacts cannot
+authorize publication.
+
 The workflow carries public provenance only. Private packs, credentials, signed
 catalogues and deployment profiles stay with the private operator. GitHub-hosted
 runners do not have production access. This workflow prepares a request; a green
@@ -29,8 +35,10 @@ Build once with `prepare-shell-update.ts`, assemble with
 `assemble-private-shell-input.py`, and qualify with `prepare-private-shell.py`.
 These maintained commands retain the accepted image, engine pin, pack and public
 key. Their output remains bound to the complete manifest and source custody.
-An already prepared artifact can be reused without another build. Do not replace
-the candidate, its receipt, source checkout or helper files while deploying.
+If the source is unchanged, an already prepared artifact can be reused after a
+full-workflow CI retry without another build; the publication request must bind
+the newly qualified attempt. Do not replace the candidate, its receipt, source
+checkout or helper files while deploying.
 
 The resumable command starts at that prepared artifact. Its reviewed JSON config
 has this shape; every path is absolute and every digest is the SHA256 of the
@@ -90,10 +98,12 @@ secret scan and custom security scan. Full CI continues in the same run. Backend
 engine, authentication, database, dependency, unknown-path and CI policy changes
 require release-ready. A public-ready receipt never claims full-suite success.
 
-Changing the CI policy itself needs full qualification. The existing producer also
-checks the complete source delta against the retained engine baseline. Until that
-baseline or an independently reviewed metadata rule accepts the new CI files, use
-the matched release path. The CI fast check does not override build compatibility.
+Changing the CI policy itself needs full qualification. This initial rollout also
+includes a Rustls Cargo dependency patch, so the first subsequent production
+release needs the matched release path with full qualification to establish a
+new baseline. The existing producer checks the complete source delta against the
+retained engine baseline; a UI-only request cannot carry that dependency change.
+The CI fast check does not override build compatibility.
 
 ## Timing and rollout
 
@@ -104,7 +114,8 @@ fresh response, and this command avoids rebuilding accepted artifacts or replayi
 successful stages. The journal records preparation durations and preserves the
 existing operators' per-command timings.
 
-The immutable shell-pointer mode is a separate opt-in server capability. Its
-one-time image and volume migration requires full backend qualification. Only
-after that migration can subsequent frontend publications avoid Work Pod rollouts.
-Keep the current guarded PVC path until that migration is accepted.
+The [immutable shell-pointer mode](../deploy/helm/IMMUTABLE-SHELL-RELEASES.md) is a
+separate opt-in server capability. Its one-time image, configuration and volume
+migration still requires full backend qualification. Only after that migration
+can subsequent frontend publications avoid Work Pod rollouts. Keep the current
+guarded PVC path until that migration is accepted.
