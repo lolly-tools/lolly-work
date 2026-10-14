@@ -19,13 +19,37 @@ fixture = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(fixtu
 NODE = os.environ.get("LOLLY_TEST_NODE", "node")
 
 
+class CommentBaseline(unittest.TestCase):
+    def test_exact_reductions_and_removals(self):
+        encode = lambda value: (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode()
+        before = {'shells/web/src/main.ts': 4, 'tests/web.test.ts': 2, 'engine/src/version.ts': 3}
+        changed = {'shells/web/src/main.ts', 'tests/web.test.ts'}
+        self.assertTrue(m.permits_comment_baseline_update(encode(before), encode({**before, 'shells/web/src/main.ts': 1}), changed))
+        self.assertTrue(m.permits_comment_baseline_update(encode(before), encode({'engine/src/version.ts': 3}), changed))
+        self.assertTrue(m.permits_comment_baseline_update(encode(before), encode(before), set()))
+
+    def test_inflation_new_keys_unrelated_changes_and_corrupt_format_refuse(self):
+        encode = lambda value: (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode()
+        before = encode({'shells/web/src/main.ts': 4, 'engine/src/version.ts': 3})
+        changed = {'shells/web/src/main.ts', 'engine/src/version.ts'}
+        for value in [{'shells/web/src/main.ts': 5, 'engine/src/version.ts': 3}, {'shells/web/src/main.ts': 1, 'engine/src/version.ts': 2},
+                      {'shells/web/src/main.ts': 1, 'engine/src/version.ts': 3, 'tests/new.test.ts': 1},
+                      {'shells/web/src/main.ts': 0}, {'shells/web/src/main.ts': -1}, {'shells/web/src/main.ts': 1.5},
+                      {'shells/web/src/main.ts': True}, {'../escape.ts': 1}, [], None]:
+            with self.subTest(value=value): self.assertFalse(m.permits_comment_baseline_update(before, encode(value), changed))
+        for raw in [b'{', b'{"shells/web/src/main.ts":1}', b'{\n  "shells/web/src/main.ts": 1,\n  "shells/web/src/main.ts": 1\n}\n']:
+            self.assertFalse(m.permits_comment_baseline_update(before, raw, changed))
+        self.assertFalse(m.permits_comment_baseline_update(before, encode({'shells/web/src/main.ts': 1, 'engine/src/version.ts': 3}), set()))
+
+
 class Shell(fixture.Cohort):
     # The inherited cohort tests exercise a different lane. This class replaces
     # only their fixture methods; unittest loading below selects our own cases.
     def commit(self, root):
         if root.name == "lolly" and not (root / "package.json").exists():
             for path, data in {"package.json": b'{"name":"lolly"}', "engine/src/version.ts": b"export const v='1.248.0';", "packages/core/src/host-v1.ts": b"export const host={};",
-                               "schemas/tool.schema.json": b'{}', "profiles.json": b'{}', "shells/web/src/main.ts": b"export const hello='old';"}.items():
+                               "schemas/tool.schema.json": b'{}', "profiles.json": b'{}', "shells/web/src/main.ts": b"export const hello='old';",
+                               m.COMMENT_BASELINE: b'{\n  "shells/web/src/main.ts": 4\n}\n'}.items():
                 self.put(root, path, data)
         return super().commit(root)
 
@@ -365,8 +389,68 @@ class Shell(fixture.Cohort):
         report['classification'] = 'web-shell-only'
         with self.assertRaises(m.Refusal): m.compatibility(self.roots['lolly'], self.previous, self.sources['lolly'], report, m.git_command)
 
+    def test_exact_manual_ui_harness_preserves_runtime_and_regular_file_gates(self):
+        self.mutate_source('scripts/check-ui-performance.ts')
+        self.update_classification()
+        report = json.loads((self.base / self.evidence['classification']['path']).read_bytes())
+        result = m.compatibility(self.roots['lolly'], self.previous, self.sources['lolly'], report, m.git_command)
+        self.assertTrue(result['fullTreeEqualityRequired'])
+        path = self.roots['lolly'] / 'scripts/check-ui-performance.ts'
+        path.unlink(); path.symlink_to('/outside/browser-harness')
+        self.sources['lolly'] = self.commit(self.roots['lolly']); self.update_classification()
+        report = json.loads((self.base / self.evidence['classification']['path']).read_bytes())
+        with self.assertRaises(m.Refusal): m.compatibility(self.roots['lolly'], self.previous, self.sources['lolly'], report, m.git_command)
+
+    def test_manual_ui_harness_without_actual_web_change_refuses_independently(self):
+        self.put(self.roots['lolly'], 'shells/web/src/main.ts', b"export const hello='old';")
+        self.mutate_source('scripts/check-ui-performance.ts')
+        self.update_classification()
+        report = json.loads((self.base / self.evidence['classification']['path']).read_bytes())
+        report['classification'] = 'web-shell-only'
+        with self.assertRaises(m.Refusal): m.compatibility(self.roots['lolly'], self.previous, self.sources['lolly'], report, m.git_command)
+
+    def test_comment_baseline_independent_transitions_reject_reinflation_and_forged_advisory(self):
+        def change(count):
+            self.put(self.roots['lolly'], m.COMMENT_BASELINE, (json.dumps({'shells/web/src/main.ts': count}, indent=2) + '\n').encode())
+            self.sources['lolly'] = self.commit(self.roots['lolly']); self.update_classification()
+            return json.loads((self.base / self.evidence['classification']['path']).read_bytes())
+        report = change(1)
+        accepted = self.sources['lolly']
+        self.assertTrue(m.compatibility(self.roots['lolly'], self.previous, accepted, report, m.git_command)['fullTreeEqualityRequired'])
+        report = change(5); report['classification'] = 'web-shell-only'
+        with self.assertRaises(m.Refusal): m.compatibility(self.roots['lolly'], self.previous, self.sources['lolly'], report, m.git_command)
+        self.previous['shellSource'] = accepted
+        report = change(2); report['classification'] = 'web-shell-only'
+        with self.assertRaises(m.Refusal): m.compatibility(self.roots['lolly'], self.previous, self.sources['lolly'], report, m.git_command)
+        path = self.roots['lolly'] / m.COMMENT_BASELINE
+        path.unlink(); self.sources['lolly'] = self.commit(self.roots['lolly']); self.update_classification()
+        report = json.loads((self.base / self.evidence['classification']['path']).read_bytes()); report['classification'] = 'web-shell-only'
+        with self.assertRaises(m.Refusal): m.compatibility(self.roots['lolly'], self.previous, self.sources['lolly'], report, m.git_command)
+        path.symlink_to('/outside/comment-baseline'); self.sources['lolly'] = self.commit(self.roots['lolly']); self.update_classification()
+        report = json.loads((self.base / self.evidence['classification']['path']).read_bytes()); report['classification'] = 'web-shell-only'
+        with self.assertRaises(m.Refusal): m.compatibility(self.roots['lolly'], self.previous, self.sources['lolly'], report, m.git_command)
+
+    def test_comment_baseline_reduction_requires_actual_changed_source_independently(self):
+        self.put(self.roots['lolly'], 'shells/web/src/main.ts', b"export const hello='old';")
+        self.put(self.roots['lolly'], m.COMMENT_BASELINE, b'{\n  "shells/web/src/main.ts": 1\n}\n')
+        self.sources['lolly'] = self.commit(self.roots['lolly']); self.update_classification()
+        report = json.loads((self.base / self.evidence['classification']['path']).read_bytes()); report['classification'] = 'web-shell-only'
+        with self.assertRaises(m.Refusal): m.compatibility(self.roots['lolly'], self.previous, self.sources['lolly'], report, m.git_command)
+
+    def test_exact_canonical_ui_tokens_are_independent_shell_changes(self):
+        self.put(self.roots['lolly'], 'shells/web/src/main.ts', b"export const hello='old';")
+        for path in ['shells/web/design/chrome-tokens.json', 'shells/web/design/ui-semantics.json']:
+            self.put(self.roots['lolly'], path, b'{"shadow":{"$type":"shadow","$value":"none"}}\n')
+            self.sources['lolly'] = self.commit(self.roots['lolly']); self.update_classification()
+            report = json.loads((self.base / self.evidence['classification']['path']).read_bytes())
+            self.assertTrue(m.compatibility(self.roots['lolly'], self.previous, self.sources['lolly'], report, m.git_command)['fullTreeEqualityRequired'])
+        path = self.roots['lolly'] / 'shells/web/design/ui-semantics.json'
+        path.unlink(); path.symlink_to('/outside/ui-tokens'); self.sources['lolly'] = self.commit(self.roots['lolly']); self.update_classification()
+        report = json.loads((self.base / self.evidence['classification']['path']).read_bytes()); report['classification'] = 'web-shell-only'
+        with self.assertRaises(m.Refusal): m.compatibility(self.roots['lolly'], self.previous, self.sources['lolly'], report, m.git_command)
+
     def test_non_shell_contract_dependency_config_lock_unknown_or_engine_changes_refuse(self):
-        for path in ("engine/src/version.ts", "packages/core/src/host-v1.ts", "schemas/tool.schema.json", "packages/node-shell/src/content-roots.ts", "package-lock.json", "shells/web/vite.config.js", "profiles.json", "tools/fixture/tool.json", ".github/workflows/ci.yml", ".github/workflows/deployment-suse.yaml", ".github/workflows/webgpu-release-gate.yml", "deploy/helm/profiles/sovereign/files/public.caddy", "deploy/helm/profiles/sovereign/files/private.caddy.bak", "deploy/helm/profiles/sovereign/readme.md", "unknown.ts"):
+        for path in ("engine/src/version.ts", "server/src/main.ts", "packages/core/src/host-v1.ts", "schemas/tool.schema.json", "packages/node-shell/src/content-roots.ts", "package-lock.json", "shells/web/vite.config.js", "profiles.json", "tools/fixture/tool.json", ".github/workflows/ci.yml", ".github/workflows/deployment-suse.yaml", ".github/workflows/webgpu-release-gate.yml", "deploy/helm/profiles/sovereign/files/public.caddy", "deploy/helm/profiles/sovereign/files/private.caddy.bak", "deploy/helm/profiles/sovereign/readme.md", "scripts/check-ui-performance.ts.bak", "scripts/check-ui-performance-gate.ts", "scripts/lib/ui-performance.ts", "shells/web/design/other.json", "shells/web/design/chrome-tokens.json.bak", "shells/web/src/other.json", "unknown.ts"):
             with self.subTest(path=path):
                 inventory = m.git_tree(self.roots["lolly"], self.sources["lolly"], m.git_command)
                 changed = copy.deepcopy(inventory); changed[path] = ("100644", "blob", "a" * 40)
@@ -427,7 +511,7 @@ class Shell(fixture.Cohort):
 
 def load_tests(loader, tests, pattern):
     # Avoid repeating the inherited v1 lane test list against a different API.
-    return unittest.TestSuite(Shell(name) for name in Shell.__dict__ if name.startswith("test_"))
+    return unittest.TestSuite([loader.loadTestsFromTestCase(CommentBaseline), *(Shell(name) for name in Shell.__dict__ if name.startswith("test_"))])
 
 
 if __name__ == "__main__":

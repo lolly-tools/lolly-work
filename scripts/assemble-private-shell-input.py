@@ -226,7 +226,10 @@ class Adapter:
         return result
 
     def command(self, ref):
-        value = self.inputs.file(ref); exact(value, {'command', 'exitCode', 'signal', 'seconds', 'stdout', 'stderr', 'error'})
+        value = self.inputs.file(ref); exact(value, {'command', 'exitCode', 'signal', 'seconds', 'stdout', 'stderr', 'error'}, {'resourceEnvironment'})
+        if 'resourceEnvironment' in value:
+            exact(value['resourceEnvironment'], {'RAYON_NUM_THREADS', 'NODE_OPTIONS'})
+            require(value['resourceEnvironment'] == {'RAYON_NUM_THREADS': '2', 'NODE_OPTIONS': '--max-old-space-size=2048'}, 'Original bounded child resource environment differs')
         require(type(value['command']) is list and len(value['command']) > 0 and all(type(x) is str and x for x in value['command']) and Path(value['command'][0]).is_absolute() and type(value['exitCode']) is int and value['exitCode'] == 0 and value['signal'] is None and value['error'] is None and type(value['seconds']) in {int, float} and value['seconds'] >= 0 and type(value['stdout']) is str and type(value['stderr']) is str, 'Original local command did not succeed')
         return value
 

@@ -40,6 +40,7 @@ CLASSIFICATION_KEYS = {"version", "rulesVersion", "repository", "base", "candida
 AUTH_PROFILE = "NORMAL_TLS_PER_CALLER_INDEX_ORACLE_AND_PINNED_P256_ENVELOPE"
 AUTH_ACCEPTED = "PRIVATE_SHELL_RUNTIME_AND_AUTHENTICATED_HTTPS_ACCEPTED"
 AUTH_RECONCILED = "PRIVATE_SHELL_RUNTIME_AND_AUTHENTICATED_HTTPS_RECONCILED"
+COMMENT_BASELINE = "scripts/vernacular-code-baseline.json"
 
 
 def git_command(argv, root):
@@ -121,12 +122,34 @@ def prepared_schema(value):
 def allowed_source(path):
     if re.search(r"(?:release-gate|supported-environments|support-matrix|browser-support|webgpu-qualification)", path, re.I):
         return False
-    return (re.fullmatch(r"shells/web/src/.+\.(?:ts|css|html|svg)", path) is not None or path in {"shells/web/src/README.md", "shells/web/index.html", "shells/web/public/sw.js"}
+    return (re.fullmatch(r"shells/web/src/.+\.(?:ts|css|html|svg)", path) is not None or path in {"shells/web/src/README.md", "shells/web/index.html", "shells/web/public/sw.js",
+                                                                                           "shells/web/design/chrome-tokens.json", "shells/web/design/ui-semantics.json"}
             or re.fullmatch(r"tests/.+\.test\.ts", path) is not None
-            # Same narrow CI metadata exception as the independent TS classifier;
-            # these files are not consumed by the local frontend build.
+            # Match the independent TS companion paths. The comment baseline
+            # also receives semantic checks for each source transition below.
             or path in {".github/workflows/deployment-suse.yml", "deploy/helm/profiles/sovereign/README.md",
-                        "deploy/helm/profiles/sovereign/files/private.caddy"})
+                        "deploy/helm/profiles/sovereign/files/private.caddy", "scripts/check-ui-performance.ts", COMMENT_BASELINE})
+
+
+def permits_comment_baseline_update(before, after, changed_sources):
+    try:
+        def parse(raw):
+            require(isinstance(raw, bytes) and len(raw) <= 2 * 1024 * 1024, "Comment baseline exceeds its byte bound")
+            value = json.loads(raw.decode("utf-8"))
+            require(isinstance(value, dict) and len(value) <= 4096, "Invalid comment baseline object")
+            require((json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode() == raw, "Comment baseline must retain its generated JSON format")
+            for path, count in value.items():
+                cohort.safe_path(path)
+                require(not re.search(r"[\u2028-\u202e\u2066-\u2069]", path) and type(count) is int and 0 < count <= 9007199254740991, "Invalid comment baseline entry")
+            return value
+        old, new = parse(before), parse(after)
+        require(all(path in old and count <= old[path] for path, count in new.items()), "Comment baseline cannot add entries or increase counts")
+        for path, count in old.items():
+            if new.get(path) != count:
+                require(path in changed_sources and allowed_source(path) and (path.startswith("shells/web/") or re.fullmatch(r"tests/.+\.test\.ts", path)), "Comment baseline changes require matching web or test source changes")
+        return True
+    except (Refusal, ValueError, TypeError, UnicodeError):
+        return False
 
 
 def git_tree(root, source, runner):
@@ -156,6 +179,17 @@ def compatibility(root, previous, source, report, runner):
     inventories = {revision: git_tree(root, revision, runner) for revision in {previous["engineSource"], previous["shellSource"], source}}
     base, candidate = inventories[previous["shellSource"]], inventories[source]
     engine = inventories[previous["engineSource"]]
+    # Check each transition independently so a prior shell's decrease cannot be
+    # raised again merely because the accepted engine had a larger count.
+    for old_revision, new_revision in ((previous["engineSource"], previous["shellSource"]), (previous["shellSource"], source)):
+        old, new = inventories[old_revision], inventories[new_revision]
+        if old.get(COMMENT_BASELINE) == new.get(COMMENT_BASELINE):
+            continue
+        require(all(inventory.get(COMMENT_BASELINE, (None,))[0] in {"100644", "100755"} for inventory in (old, new)), "Comment baseline must remain a regular existing file")
+        changed_sources = {path for path in set(old) | set(new) if old.get(path) != new.get(path)
+                           and all(entry is None or entry[0] in {"100644", "100755"} for entry in (old.get(path), new.get(path)))}
+        require(permits_comment_baseline_update(runner(["git", "show", old_revision + ":" + COMMENT_BASELINE], root),
+                                               runner(["git", "show", new_revision + ":" + COMMENT_BASELINE], root), changed_sources), "Comment baseline is not a matching source reduction")
     protected = {p: entry for p, entry in engine.items() if not allowed_source(p)}
     require(protected and all({p: entry for p, entry in inventory.items() if not allowed_source(p)} == protected for inventory in inventories.values()), "Non-shell Git tree differs from the accepted engine/pack/runtime source")
     changes = []

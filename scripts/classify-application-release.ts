@@ -10,6 +10,7 @@ const SHA = /^[a-f0-9]{40}$/;
 const MAX_BYTES = 2 * 1024 * 1024;
 const MAX_PATHS = 4096;
 const MAX_PATH_BYTES = 1024;
+const COMMENT_BASELINE = 'scripts/vernacular-code-baseline.json';
 const ZERO = '0'.repeat(40);
 const MODES = new Set(['000000', '100644', '100755', '120000', '160000']);
 type Repository = 'lolly' | 'lolly-work';
@@ -88,7 +89,8 @@ function releaseGate(path: string): boolean {
 function web(path: string): boolean {
   if (releaseGate(path)) return false;
   return /^shells\/web\/src\/.+\.(?:ts|css|html|svg)$/.test(path) || path === 'shells/web/src/README.md'
-    || path === 'shells/web/index.html' || path === 'shells/web/public/sw.js';
+    || path === 'shells/web/index.html' || path === 'shells/web/public/sw.js'
+    || path === 'shells/web/design/chrome-tokens.json' || path === 'shells/web/design/ui-semantics.json';
 }
 function test(path: string): boolean { return !releaseGate(path) && /^tests\/.+\.test\.ts$/.test(path); }
 // These deployment files are outside the local frontend build. Their changes
@@ -97,12 +99,42 @@ function deploymentMetadata(path: string): boolean {
   return ['.github/workflows/deployment-suse.yml', 'deploy/helm/profiles/sovereign/README.md',
     'deploy/helm/profiles/sovereign/files/private.caddy'].includes(path);
 }
-function scope(repository: Repository, changes: ChangedPath[]): Pick<ReleaseClassification, 'classification' | 'reasons'> {
+// This manually invoked browser harness does not produce the shell or qualify a release.
+function uiHarness(path: string): boolean { return path === 'scripts/check-ui-performance.ts'; }
+export function permitsCommentBaselineUpdate(before: string, after: string, changedSources: ReadonlySet<string>): boolean {
+  try {
+    const parse = (raw: string): Record<string, number> => {
+      requireThat(Buffer.byteLength(raw) <= MAX_BYTES, 'Comment baseline exceeds its byte bound.');
+      const value: unknown = JSON.parse(raw);
+      requireThat(value !== null && typeof value === 'object' && !Array.isArray(value), 'Comment baseline must be an object.');
+      requireThat(JSON.stringify(value, null, 2) + '\n' === raw, 'Comment baseline must retain its generated JSON format.');
+      const entries = Object.entries(value);
+      requireThat(entries.length <= MAX_PATHS, 'Comment baseline exceeds its entry bound.');
+      for (const [path, count] of entries) {
+        safePath(path);
+        requireThat(typeof count === 'number' && Number.isSafeInteger(count) && count > 0, 'Invalid comment baseline count.');
+      }
+      return value as Record<string, number>;
+    };
+    const old = parse(before), next = parse(after);
+    for (const [path, count] of Object.entries(next)) {
+      requireThat(Object.hasOwn(old, path) && count <= old[path]!, 'Comment baseline cannot add entries or increase counts.');
+    }
+    for (const [path, count] of Object.entries(old)) {
+      if (!Object.hasOwn(next, path) || next[path] !== count) {
+        requireThat(changedSources.has(path) && (web(path) || test(path)), 'Comment baseline changes require matching web or test source changes.');
+      }
+    }
+    return true;
+  } catch { return false; }
+}
+function scope(repository: Repository, changes: ChangedPath[], commentBaseline: boolean): Pick<ReleaseClassification, 'classification' | 'reasons'> {
   if (!changes.length) return { classification: 'no-change', reasons: ['No committed tree changes.'] };
-  if (repository === 'lolly' && changes.every(change => regular(change) && (web(change.path) || test(change.path) || deploymentMetadata(change.path)))
+  if (repository === 'lolly' && changes.every(change => regular(change) && (web(change.path) || test(change.path) || deploymentMetadata(change.path) || uiHarness(change.path)
+      || (commentBaseline && change.path === COMMENT_BASELINE)))
     && changes.some(change => web(change.path) && !change.path.endsWith('.test.ts') && !change.path.endsWith('.md'))) {
-    return { classification: 'web-shell-only', reasons: [changes.some(change => deploymentMetadata(change.path))
-      ? 'Only web-shell paths, test fixtures and supported deployment metadata changed; runtime source and local build inputs are unchanged.'
+    return { classification: 'web-shell-only', reasons: [changes.some(change => deploymentMetadata(change.path) || uiHarness(change.path) || change.path === COMMENT_BASELINE)
+      ? 'Only web-shell paths, test fixtures and supported metadata, manual UI harness or matching comment-baseline reductions changed; shared runtime source and local build inputs are unchanged.'
       : 'Only reviewed web-shell paths and test fixtures changed; shared contract and release inputs are unchanged.'] };
   }
   return { classification: 'full-or-paired-required', reasons: [repository === 'lolly-work'
@@ -141,12 +173,18 @@ export function classifyApplicationRelease(options: { repo: string; base: string
   const repository = repositoryKind(repo, options.candidate);
   const changes = parseApplicationReleaseInventory(git(repo, ['diff', '--raw', '-z', '--no-abbrev', '--no-renames', '--no-ext-diff', '--no-textconv',
     options.base, options.candidate, '--']));
+  const baseline = changes.find(change => change.path === COMMENT_BASELINE);
+  const commentBaseline = repository === 'lolly' && baseline !== undefined && regular(baseline)
+    && baseline.beforeMode !== '000000' && baseline.afterMode !== '000000'
+    && permitsCommentBaselineUpdate(text(git(repo, ['show', `${options.base}:${COMMENT_BASELINE}`])),
+      text(git(repo, ['show', `${options.candidate}:${COMMENT_BASELINE}`])),
+      new Set(changes.filter(change => regular(change)).map(change => change.path)));
   const baseTree = text(git(repo, ['rev-parse', `${options.base}^{tree}`])).trim();
   const candidateTree = text(git(repo, ['rev-parse', `${options.candidate}^{tree}`])).trim();
   requireThat(SHA.test(baseTree) && SHA.test(candidateTree), 'Missing immutable tree identities.');
   clean(repo, options.candidate);
   return { version: 1, rulesVersion: 'application-release-classification-1', repository, base: options.base, candidate: options.candidate,
-    baseTree, candidateTree, ...scope(repository, changes), changedPaths: changes,
+    baseTree, candidateTree, ...scope(repository, changes, commentBaseline), changedPaths: changes,
     changedPathsSha256: createHash('sha256').update(JSON.stringify(changes)).digest('hex'), advisory: true,
     normalCiRequired: true, privateCompatibilityReviewRequired: true, artifactReuseAuthorized: false, promotionAuthorized: false };
 }

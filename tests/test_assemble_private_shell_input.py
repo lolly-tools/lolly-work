@@ -290,6 +290,26 @@ class AdapterTests(fixture.Shell):
             wrong = copy.deepcopy(manifest); edit(wrong)
             with self.assertRaises(m.Refusal): m.manifest_id(wrong)
 
+    def test_original_resource_limits_are_optional_for_legacy_and_exact_when_recorded(self):
+        operation = m.Adapter.__new__(m.Adapter); operation.inputs = m.cohort.Inputs(self.base)
+        value = json.loads(Path(self.original_build['path']).read_bytes())
+        operation.command(self.original_build)
+        value['resourceEnvironment'] = {'RAYON_NUM_THREADS': '2', 'NODE_OPTIONS': '--max-old-space-size=2048'}
+        ref = self.file('bounded-original-child-command', value)
+        self.assertEqual(operation.command(ref)['resourceEnvironment'], value['resourceEnvironment'])
+        operation.inputs.unchanged()
+
+    def test_wrong_or_open_resource_environment_refuses(self):
+        operation = m.Adapter.__new__(m.Adapter); operation.inputs = m.cohort.Inputs(self.base)
+        original = json.loads(Path(self.original_build['path']).read_bytes())
+        for environment in ({'RAYON_NUM_THREADS': '8', 'NODE_OPTIONS': '--max-old-space-size=2048'},
+                            {'RAYON_NUM_THREADS': '2', 'NODE_OPTIONS': '--max-old-space-size=4096'},
+                            {'RAYON_NUM_THREADS': 2, 'NODE_OPTIONS': '--max-old-space-size=2048'},
+                            {'RAYON_NUM_THREADS': '2'},
+                            {'RAYON_NUM_THREADS': '2', 'NODE_OPTIONS': '--max-old-space-size=2048', 'OTHER': 'value'}, None):
+            with self.assertRaises(m.Refusal):
+                operation.command(self.file('wrong-child-resource-environment', {**original, 'resourceEnvironment': environment}))
+
 
 if __name__ == '__main__':
     suite = unittest.TestSuite(AdapterTests(name) for name in AdapterTests.__dict__ if name.startswith('test_'))
