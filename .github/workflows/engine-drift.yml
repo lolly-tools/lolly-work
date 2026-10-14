@@ -36,3 +36,13 @@ jobs:
 
       - name: Report drift (fail = re-pin due)
         run: LOLLY_OSS_DIR=/tmp/lolly node scripts/repin-engine.ts --check
+
+      # The shell's security headers copy the OSS package's, and the per-PR test can only
+      # compare them when a Lolly checkout sits beside this one, which CI never has.
+      - name: Install dependencies
+        if: always()
+        run: pnpm install --frozen-lockfile
+
+      - name: Shell headers against the OSS copy (fail = re-sync shell-headers.inc and shell-headers.ts)
+        if: always()
+        run: LOLLY_OSS_DIR=/tmp/lolly node --test --test-name-pattern="directive by directive" tests/yunohost-package.test.ts
