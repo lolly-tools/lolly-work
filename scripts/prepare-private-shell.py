@@ -41,6 +41,10 @@ AUTH_PROFILE = "NORMAL_TLS_PER_CALLER_INDEX_ORACLE_AND_PINNED_P256_ENVELOPE"
 AUTH_ACCEPTED = "PRIVATE_SHELL_RUNTIME_AND_AUTHENTICATED_HTTPS_ACCEPTED"
 AUTH_RECONCILED = "PRIVATE_SHELL_RUNTIME_AND_AUTHENTICATED_HTTPS_RECONCILED"
 COMMENT_BASELINE = "scripts/vernacular-code-baseline.json"
+# Exact non-runtime CI/operator companions, kept independent of the advisory TS
+# classifier. The private shell retains its accepted /info snapshot.
+CI_METADATA = frozenset({".github/workflows/ci.yml", ".github/workflows/shell-deployment-request.yml",
+                         "scripts/ci-qualification.ts", "scripts/run-public-ready-ui.ts", "docs/ci-qualification.md"})
 
 
 def git_command(argv, root):
@@ -128,7 +132,8 @@ def allowed_source(path):
             # Match the independent TS companion paths. The comment baseline
             # also receives semantic checks for each source transition below.
             or path in {".github/workflows/deployment-suse.yml", "deploy/helm/profiles/sovereign/README.md",
-                        "deploy/helm/profiles/sovereign/files/private.caddy", "scripts/check-ui-performance.ts", COMMENT_BASELINE})
+                        "deploy/helm/profiles/sovereign/files/private.caddy", "scripts/check-ui-performance.ts", COMMENT_BASELINE}
+            or path in CI_METADATA)
 
 
 def permits_comment_baseline_update(before, after, changed_sources):
@@ -167,7 +172,7 @@ def git_tree(root, source, runner):
     return entries
 
 
-def compatibility(root, previous, source, report, runner):
+def compatibility(root, previous, source, report, runner, *, public_ready=False):
     """Full equality outside the narrow advisory allowlist is an independent gate."""
     require(Path(runner(["git", "rev-parse", "--show-toplevel"], root)) == root, "Use the exact immutable working-tree root")
     common = Path(os.path.abspath(root / runner(["git", "rev-parse", "--git-common-dir"], root)))
@@ -179,6 +184,13 @@ def compatibility(root, previous, source, report, runner):
     inventories = {revision: git_tree(root, revision, runner) for revision in {previous["engineSource"], previous["shellSource"], source}}
     base, candidate = inventories[previous["shellSource"]], inventories[source]
     engine = inventories[previous["engineSource"]]
+    require(type(public_ready) is bool, "Qualification scope must be explicit")
+    # Check inherited entries too: a new allowlist must not hide a symlink or
+    # gitlink already present in an accepted engine or prior shell inventory.
+    require(all(path not in inventory or inventory[path][0] in {"100644", "100755"}
+                for inventory in inventories.values() for path in CI_METADATA), "CI metadata must be regular files in every source inventory")
+    require(not public_ready or all(base.get(path) == candidate.get(path) for path in CI_METADATA),
+            "CI metadata changes require release-ready full CI; public-ready qualification is refused")
     # Check each transition independently so a prior shell's decrease cannot be
     # raised again merely because the accepted engine had a larger count.
     for old_revision, new_revision in ((previous["engineSource"], previous["shellSource"]), (previous["shellSource"], source)):
@@ -660,7 +672,8 @@ def prepare(value, base, expected_public_pin, node="node", runner=git_command):
     require(cohort.git_bytes(work_root, previous["workSource"], "engine-pin.json", runner) == cohort.read_file(cohort.local_path(value["enginePin"]["path"], base))[0]
             and cohort.git_bytes(work_root, previous["workSource"], "content-resolver-pin.json", runner) == cohort.read_file(cohort.local_path(value["resolverPin"]["path"], base))[0], "Pin bytes differ from unchanged Work source")
     cohort.source_pins(pin, resolver, {**value["lolly"], "source": previous["engineSource"]}, value["work"], runner)
-    actual_compatibility = compatibility(root, previous, value["lolly"]["source"], inputs.file(value["classification"]), runner)
+    actual_compatibility = compatibility(root, previous, value["lolly"]["source"], inputs.file(value["classification"]), runner,
+                                         public_ready=value["lolly"].get("qualificationTier") == "public-ready")
     exact(value["brand"], {"path", "commit"}); brand_path = cohort.safe_path(value["brand"]["path"]); brand = cohort.commit(value["brand"]["commit"])
     require(brand_path.startswith("brands/") and runner(["git", "ls-tree", value["lolly"]["source"], "--", brand_path], root).strip().split() == ["160000", "commit", brand, brand_path], "Unchanged private brand differs")
     require(isinstance(value["profile"], str) and cohort.NAME.fullmatch(value["profile"]) and value["profile"] not in {"community", "neutral", "public"}, "Private profile required")

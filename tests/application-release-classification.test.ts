@@ -6,7 +6,7 @@ import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { classificationArguments, classifyApplicationRelease, parseApplicationReleaseInventory, permitsCommentBaselineUpdate } from '../scripts/classify-application-release.ts';
+import { classificationArguments, classifyApplicationRelease, parseApplicationReleaseInventory, permitsCommentBaselineUpdate, requiresFullShellCI } from '../scripts/classify-application-release.ts';
 
 function git(repo: string, ...args: string[]): string {
   const result = spawnSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false', ...args],
@@ -79,6 +79,22 @@ test('deployment metadata symlinks cannot enter the shell-only lane', () => fixt
   symlinkSync('../../engine/src/version.ts', join(repo, '.github/workflows/deployment-suse.yml'));
   assert.equal(classifyApplicationRelease({ repo, base, candidate: commit(repo) }).classification, 'full-or-paired-required');
 }));
+for (const path of ['.github/workflows/ci.yml', '.github/workflows/shell-deployment-request.yml',
+  'scripts/ci-qualification.ts', 'scripts/run-public-ready-ui.ts', 'docs/ci-qualification.md']) {
+  test(`CI companion ${path} requires full CI and a real web delta`, () => fixture((repo, base) => {
+    write(repo, path, 'operator CI metadata\n');
+    const policy = commit(repo);
+    assert.equal(classifyApplicationRelease({ repo, base, candidate: policy }).classification, 'full-or-paired-required');
+    write(repo, 'shells/web/src/main.ts', 'export const web = 2;\n');
+    const candidate = commit(repo), result = classifyApplicationRelease({ repo, base, candidate });
+    assert.equal(result.classification, 'web-shell-only'); assert.equal(requiresFullShellCI(result.changedPaths), true);
+    assert.match(result.reasons.join(' '), /release-ready full CI/); assert.equal(result.promotionAuthorized, false);
+    // The subsequent UI change inherits this accepted policy without changing it.
+    assert.equal(requiresFullShellCI(classifyApplicationRelease({ repo, base: policy, candidate }).changedPaths), false);
+    rmSync(join(repo, path)); symlinkSync('/outside/ci-policy', join(repo, path));
+    assert.equal(classifyApplicationRelease({ repo, base, candidate: commit(repo) }).classification, 'full-or-paired-required');
+  }));
+}
 for (const path of ['shells/web/design/chrome-tokens.json', 'shells/web/design/ui-semantics.json']) {
   test(`canonical web token source ${path} is a real shell change`, () => fixture((repo, base) => {
     write(repo, path, JSON.stringify({ shadow: { $type: 'shadow', $value: 'none' } }) + '\n');
@@ -138,7 +154,9 @@ for (const path of ['engine/src/version.ts', 'packages/core/src/host-v1.ts', 'pa
   'scripts/check-ui-performance-gate.ts', 'scripts/lib/ui-performance.ts', 'docs/supported-environments.md',
   'shells/web/design/other.json', 'shells/web/design/chrome-tokens.json.bak', 'shells/web/src/other.json',
   'shells/web/src/browser-support.ts', 'tests/webgpu-release-gate.test.ts', 'tests/browser-support.browser.test.ts',
-  '.github/workflows/ci.yml', '.github/workflows/deployment-suse.yaml', '.github/workflows/webgpu-release-gate.yml', 'unexpected/new.txt']) {
+  '.github/workflows/ci.yaml', '.github/workflows/ci.yml.bak', '.github/workflows/shell-deployment-request.yaml',
+  'scripts/ci-qualification.ts.bak', 'scripts/run-public-ready-ui-helper.ts', 'docs/ci-qualification.md.bak',
+  '.github/workflows/deployment-suse.yaml', '.github/workflows/webgpu-release-gate.yml', 'unexpected/new.txt']) {
   test(`web plus ${path} refuses the narrow scope`, () => fixture((repo, base) => {
     write(repo, 'shells/web/src/main.ts', 'export const web = 2;\n'); write(repo, path, 'changed\n');
     const result = classifyApplicationRelease({ repo, base, candidate: commit(repo) });

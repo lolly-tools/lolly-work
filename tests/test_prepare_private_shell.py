@@ -111,7 +111,7 @@ class Shell(fixture.Cohort):
         self.result, self.inputs = self.prepare()
 
     def update_classification(self):
-        command = [NODE, str(Path(__file__).parents[1] / "scripts/classify-application-release.ts"), "--repo", str(self.roots["lolly"]), "--base", self.engine_source, "--candidate", self.sources["lolly"]]
+        command = [NODE, str(Path(__file__).parents[1] / "scripts/classify-application-release.ts"), "--repo", str(self.roots["lolly"]), "--base", self.previous["shellSource"], "--candidate", self.sources["lolly"]]
         result = subprocess.run(command, capture_output=True, check=True)
         self.evidence["classification"] = self.file("actual-local-classifier-on-synthetic-fixture", json.loads(result.stdout))
 
@@ -368,6 +368,63 @@ class Shell(fixture.Cohort):
         with self.assertRaises(m.Refusal):
             m.compatibility(self.roots["lolly"], self.previous, self.sources["lolly"], report, m.git_command)
 
+    def test_ci_metadata_with_ui_requires_full_ci_even_when_all_fast_jobs_pass(self):
+        paths = {'.github/workflows/ci.yml', '.github/workflows/shell-deployment-request.yml',
+                 'scripts/ci-qualification.ts', 'scripts/run-public-ready-ui.ts', 'docs/ci-qualification.md'}
+        self.assertEqual(m.CI_METADATA, paths)
+        for path in sorted(paths):
+            with self.subTest(path=path):
+                for companion in paths:
+                    (self.roots['lolly'] / companion).unlink(missing_ok=True)
+                self.mutate_source(path); self.update_classification()
+                report = json.loads((self.base / self.evidence['classification']['path']).read_bytes())
+                self.assertEqual({v['path'] for v in report['changedPaths']} & paths, {path})
+                self.patch(self.evidence, 'build', lambda value: value.update(lollySource=self.sources['lolly']))
+                self.patch(self.evidence, 'webGate', lambda value: value.update(source=self.sources['lolly']))
+                result, inputs = self.prepare(); inputs.unchanged()
+                self.assertEqual(result['status'], m.STATUS)
+                self.assertEqual(set(result['normalCI']), {'lolly', 'work'})
+                fast = copy.deepcopy(self.evidence); fast['lolly']['qualificationTier'] = 'public-ready'
+                with self.assertRaisesRegex(m.Refusal, 'CI metadata changes require release-ready full CI'):
+                    m.prepare(fast, self.base, self.public_pin_sha, NODE)
+                # A full-tier label cannot replace completed successful full CI.
+                self.patch(fast['lolly'], 'ciRun', lambda value: value.update(status='in_progress', conclusion=None))
+                del fast['lolly']['qualificationTier']
+                with self.assertRaises(m.Refusal): m.prepare(fast, self.base, self.public_pin_sha, NODE)
+
+    def test_inherited_ci_metadata_allows_later_public_ready_ui_but_new_changes_refuse(self):
+        for path in sorted(m.CI_METADATA): self.mutate_source(path)
+        self.previous['shellSource'] = self.sources['lolly']
+        self.mutate_source('shells/web/src/main.ts'); self.update_classification()
+        report = json.loads((self.base / self.evidence['classification']['path']).read_bytes())
+        result = m.compatibility(self.roots['lolly'], self.previous, self.sources['lolly'], report, m.git_command, public_ready=True)
+        self.assertTrue(result['fullTreeEqualityRequired'])
+        self.assertEqual([v['path'] for v in report['changedPaths']], ['shells/web/src/main.ts'])
+        # Deleting a previously accepted policy file is also a policy change.
+        (self.roots['lolly'] / 'docs/ci-qualification.md').unlink()
+        self.sources['lolly'] = self.commit(self.roots['lolly']); self.update_classification()
+        report = json.loads((self.base / self.evidence['classification']['path']).read_bytes())
+        with self.assertRaisesRegex(m.Refusal, 'CI metadata changes require release-ready full CI'):
+            m.compatibility(self.roots['lolly'], self.previous, self.sources['lolly'], report, m.git_command, public_ready=True)
+        self.assertTrue(m.compatibility(self.roots['lolly'], self.previous, self.sources['lolly'], report, m.git_command)['fullTreeEqualityRequired'])
+
+    def test_ci_metadata_cannot_hide_inherited_symlink_or_gitlink_entries(self):
+        self.mutate_source('.github/workflows/ci.yml')
+        self.previous['shellSource'] = self.sources['lolly']
+        self.mutate_source('shells/web/src/main.ts'); self.update_classification()
+        report = json.loads((self.base / self.evidence['classification']['path']).read_bytes())
+        for revision in (self.engine_source, self.previous['shellSource'], self.sources['lolly']):
+            for mode, kind in (('120000', 'blob'), ('160000', 'commit')):
+                with self.subTest(revision=revision, mode=mode):
+                    inventory = m.git_tree(self.roots['lolly'], revision, m.git_command)
+                    inventory['.github/workflows/ci.yml'] = (mode, kind, 'a' * 40)
+                    def nonregular_inventory(argv, root):
+                        if argv[1] == 'ls-tree' and argv[4] == revision:
+                            return ''.join(f'{m} {k} {obj}\t{name}\0' for name, (m, k, obj) in sorted(inventory.items()))
+                        return m.git_command(argv, root)
+                    with self.assertRaisesRegex(m.Refusal, 'CI metadata must be regular files'):
+                        m.compatibility(self.roots['lolly'], self.previous, self.sources['lolly'], report, nonregular_inventory)
+
     def test_exact_edge_metadata_preserves_independent_tree_and_regular_file_gates(self):
         for path in ('deploy/helm/profiles/sovereign/README.md', 'deploy/helm/profiles/sovereign/files/private.caddy'):
             self.mutate_source(path)
@@ -450,7 +507,7 @@ class Shell(fixture.Cohort):
         with self.assertRaises(m.Refusal): m.compatibility(self.roots['lolly'], self.previous, self.sources['lolly'], report, m.git_command)
 
     def test_non_shell_contract_dependency_config_lock_unknown_or_engine_changes_refuse(self):
-        for path in ("engine/src/version.ts", "server/src/main.ts", "packages/core/src/host-v1.ts", "schemas/tool.schema.json", "packages/node-shell/src/content-roots.ts", "package-lock.json", "shells/web/vite.config.js", "profiles.json", "tools/fixture/tool.json", ".github/workflows/ci.yml", ".github/workflows/deployment-suse.yaml", ".github/workflows/webgpu-release-gate.yml", "deploy/helm/profiles/sovereign/files/public.caddy", "deploy/helm/profiles/sovereign/files/private.caddy.bak", "deploy/helm/profiles/sovereign/readme.md", "scripts/check-ui-performance.ts.bak", "scripts/check-ui-performance-gate.ts", "scripts/lib/ui-performance.ts", "shells/web/design/other.json", "shells/web/design/chrome-tokens.json.bak", "shells/web/src/other.json", "unknown.ts"):
+        for path in ("engine/src/version.ts", "server/src/main.ts", "packages/core/src/host-v1.ts", "schemas/tool.schema.json", "packages/node-shell/src/content-roots.ts", "package-lock.json", "shells/web/vite.config.js", "profiles.json", "tools/fixture/tool.json", ".github/workflows/ci.yaml", ".github/workflows/shell-deployment-request.yaml", "scripts/ci-qualification.ts.bak", "scripts/run-public-ready-ui-helper.ts", "docs/ci-qualification.md.bak", ".github/workflows/deployment-suse.yaml", ".github/workflows/webgpu-release-gate.yml", "deploy/helm/profiles/sovereign/files/public.caddy", "deploy/helm/profiles/sovereign/files/private.caddy.bak", "deploy/helm/profiles/sovereign/readme.md", "scripts/check-ui-performance.ts.bak", "scripts/check-ui-performance-gate.ts", "scripts/lib/ui-performance.ts", "shells/web/design/other.json", "shells/web/design/chrome-tokens.json.bak", "shells/web/src/other.json", "unknown.ts"):
             with self.subTest(path=path):
                 inventory = m.git_tree(self.roots["lolly"], self.sources["lolly"], m.git_command)
                 changed = copy.deepcopy(inventory); changed[path] = ("100644", "blob", "a" * 40)

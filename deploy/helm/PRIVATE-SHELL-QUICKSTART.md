@@ -6,6 +6,8 @@ resources, assembles the isolated stage and publication inputs, qualifies the ne
 shell, performs the guarded publication, and reads back its contents over normal
 HTTPS. It keeps the accepted Work image, engine, tool pack and immutable pin.
 
+For CI requests and guarded resume, follow the [shell deployment workflow](../../docs/shell-deployment-workflow.md).
+
 This requires the dedicated shell PVC layout described in [SHELL-UPDATES.md](SHELL-UPDATES.md).
 Backend code, dependencies, engine/core/schema changes, and infrastructure changes
 continue to use their appropriate release paths. A running instance follows a
@@ -44,6 +46,15 @@ The exact `scripts/check-ui-performance.ts` browser harness may also accompany a
 UI change. It is a manually invoked measurement of an existing site, not a build
 or release qualification input. A harness-only change does not qualify; adjacent
 scripts, shared dependencies and release gates remain outside this lane.
+
+Five CI policy companions may accompany a UI change: `.github/workflows/ci.yml`,
+`.github/workflows/shell-deployment-request.yml`, `scripts/ci-qualification.ts`,
+`scripts/run-public-ready-ui.ts`, and `docs/ci-qualification.md`. Changing any of
+these since the accepted shell requires release-ready full CI. A later UI change
+that inherits the same policy can use public-ready qualification. All five must
+remain regular files, and adjacent paths or package changes remain protected.
+The local producer can build while CI runs but grants no qualification. It keeps
+the accepted `/info` snapshot; the policy document is repository operator guidance.
 
 `scripts/vernacular-code-baseline.json` may record reduced or cleared counts for
 web or test source files changed in the same release. Both classifiers verify

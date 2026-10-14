@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { copyFileSync, constants, existsSync, lstatSync, mkdirSync, symlinkSync, unlinkSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { classifyApplicationRelease } from './classify-application-release.ts';
+import { classifyApplicationRelease, requiresFullShellCI } from './classify-application-release.ts';
 import { retainShellAssets } from './retain-shell-assets.ts';
 import { canonicalDirectory, cloneShellFiles, readShellJson, requireDisk, requireShell, sha256,
   shellFileHash, shellId, shellManifest, writeShellJson } from './shell-update-files.ts';
@@ -116,6 +116,8 @@ export function prepareShellUpdate(options: ShellUpdateOptions) {
   requireShell(classification.classification === 'web-shell-only', 'Only committed web-shell changes qualify for this artifact path.');
   const engineClassification = classifyApplicationRelease({ repo: options.source, base: input.engineSource, candidate: options.candidate });
   requireShell(['web-shell-only', 'no-change'].includes(engineClassification.classification), 'Engine, core, schema, dependencies, profile, tool or brand source changed.');
+  const fullCI = requiresFullShellCI(classification.changedPaths);
+  if (fullCI) console.error('CI metadata changed: release-ready full CI is required before private qualification. This local build remains unqualified while CI runs.');
   const pin = readShellJson(options.publicKey, input.publicKeySha256);
   requireShell(pin && typeof pin === 'object' && 'kty' in pin && pin.kty === 'EC' && 'crv' in pin && pin.crv === 'P-256'
     && 'x' in pin && typeof pin.x === 'string' && 'y' in pin && typeof pin.y === 'string' && !('d' in pin), 'Only an existing public P-256 pin is accepted.');
@@ -185,7 +187,8 @@ export function prepareShellUpdate(options: ShellUpdateOptions) {
       webGate, codingReport, catalog: { previous: previousCatalog, candidate: catalog, signatureReused: true, newSigning: false },
       producer: { path: fileURLToPath(import.meta.url), ...shellFileHash(fileURLToPath(import.meta.url)) },
       originAuthenticatedByThisCommand: false, normalCIQualified: false, runtimeQualified: false, promotionAttempted: false,
-      outstanding: ['Review source CI and accepted previous custody', 'Read-only staged runtime and browser qualification', 'Fresh exact live guards, narrow promotion and post-promotion acceptance'] };
+      outstanding: [fullCI ? 'Require release-ready full CI for changed CI metadata and review accepted previous custody' : 'Review source CI and accepted previous custody',
+        'Read-only staged runtime and browser qualification', 'Fresh exact live guards, narrow promotion and post-promotion acceptance'] };
     writeShellJson(join(options.out, 'shell-update.prepared.json'), result); return result;
   } catch (error) {
     writeShellJson(join(options.out, 'shell-update.refused.json'), { version: 1, status: 'REFUSED', reason: error instanceof Error ? error.message : 'Local preparation failed.',
