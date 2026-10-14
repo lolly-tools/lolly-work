@@ -40,7 +40,7 @@ function fixture(t: { after: (fn: () => void) => void }) {
   put(source, 'shells/web/src/main.ts', 'import { number } from "@lolly/engine"; document.body.textContent = String(number) + "base";\n');
   put(source, 'shells/web/vite.config.js', `import { writeFileSync, existsSync, rmSync } from 'node:fs'; import { fileURLToPath } from 'node:url'; let out;\nexport default { plugins: [{name:'test-maintained-static', configResolved(c){out=c.build.outDir}, buildStart(){if(!existsSync(fileURLToPath(new URL('./public/ort/ort-wasm-test.wasm',import.meta.url))))throw new Error('Fixture source-runtime cache required')}, closeBundle(){rmSync(out+'/tools/demo@1234567890abcdef',{recursive:true,force:true});rmSync(out+'/schemas/tool.schema.json.br',{force:true});writeFileSync(out+'/precache.json','{"version":"test"}')}}], worker:{plugins:()=>[]},build:{assetsDir:'_app',minify:false}};\n`);
   put(source, 'scripts/build-delivery.ts', `import{readdirSync,readFileSync,writeFileSync}from'node:fs';import{join}from'node:path';import{gzipSync,brotliCompressSync}from'node:zlib';export function prepareStaticDelivery(root){function walk(p){for(const e of readdirSync(p,{withFileTypes:true})){const f=join(p,e.name);if(e.isDirectory())walk(f);else{const b=readFileSync(f);if(b.length>32){writeFileSync(f+'.gz',gzipSync(b));writeFileSync(f+'.br',brotliCompressSync(b));}}}}walk(root);}`);
-  put(source, 'scripts/webgpu-release-gate.ts', 'if (JSON.stringify(process.argv.slice(2)) !== JSON.stringify(["--scope", "web"])) throw new Error("Fixture requires explicit web scope"); console.log("Fixture web gate passed; no physical qualification claimed");\n');
+  put(source, 'scripts/webgpu-release-gate.ts', 'if (JSON.stringify(process.argv.slice(2)) !== JSON.stringify(["--scope", "web"])) throw new Error("Fixture requires explicit web scope"); if(process.env.RAYON_NUM_THREADS !== "2" || process.env.NODE_OPTIONS !== "--max-old-space-size=2048") throw new Error("Fixture requires bounded child resources"); console.log("Fixture web gate passed; no physical qualification claimed");\n');
   // The fixture invokes the repository's real vendored catalog crypto, while the
   // producer invokes its supplied Lolly source's maintained release verifier.
   put(source, 'scripts/verify-release-catalog.ts', `import { readFileSync } from 'node:fs'; import { join } from 'node:path';
@@ -95,6 +95,10 @@ test('real CLI builds with Vite and catalog crypto, retains lazy assets, and lea
   if (result.status !== 0) assert.fail(`${result.stderr}\n${existsSync(join(f.options.out, 'shell-update.refused.json')) ? readFileSync(join(f.options.out, 'shell-update.refused.json'), 'utf8') : ''}\n${existsSync(join(f.options.out, 'vite-build.original.json')) ? readFileSync(join(f.options.out, 'vite-build.original.json'), 'utf8') : ''}`);
   const prepared = JSON.parse(readFileSync(join(f.options.out, 'shell-update.prepared.json'), 'utf8'));
   assert.equal(prepared.status, 'LOCAL_PRIVATE_SHELL_UPDATE_PREPARED_UNQUALIFIED');
+  for (const ref of [prepared.webGate, prepared.catalog.previous, prepared.originalReport, prepared.codingReport, prepared.catalog.candidate]) {
+    assert.deepEqual(JSON.parse(readFileSync(ref.path, 'utf8')).resourceEnvironment,
+      { RAYON_NUM_THREADS: '2', NODE_OPTIONS: '--max-old-space-size=2048' });
+  }
   for (const name of ['index.html', 'precache.json']) for (const suffix of ['.gz', '.br']) { const path = join(prepared.candidate.root, name + suffix); if (existsSync(path)) assert.deepEqual(suffix === '.gz' ? gunzipSync(readFileSync(path)) : brotliDecompressSync(readFileSync(path)), readFileSync(join(prepared.candidate.root, name))); }
   assert.notDeepEqual(readFileSync(join(prepared.candidate.root, 'index.html.gz')), readFileSync(join(f.previous, 'index.html.gz')));
   assert.equal(existsSync(join(prepared.candidate.root, 'precache.json.gz')), false);

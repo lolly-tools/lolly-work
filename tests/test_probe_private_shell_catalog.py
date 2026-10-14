@@ -55,7 +55,7 @@ class Probe(unittest.TestCase):
         source = fixture.m.file_ref(HERE / 'scripts/probe-private-shell-catalog.py')
         module = fixture.m.file_ref(HERE / 'scripts/private-shell-catalog-probe.mjs')
         ledger = self.f.f.file('synthetic-catalog-ledger', ['001_init.sql'])
-        self.f.profile['sourceFiles'] += [source, module, ledger]
+        self.f.profile['sourceFiles'] += [ref for ref in (source, module, ledger) if ref not in self.f.profile['sourceFiles']]
         self.f.profile['authenticatedCatalog'] = {'source': source, 'module': module, 'python': sys.executable,
             'node': {'path': node, 'version': version}, 'migrations': ledger,
             'caller': {'project': 'prj_synthetic', 'session': 'ses_synthetic', 'emails': ['synthetic@example.test']}}

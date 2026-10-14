@@ -88,9 +88,10 @@ export function restoreAcceptedCatalog(previousRoot: string, candidate: string, 
 }
 function command(args: string[], options: ShellUpdateOptions, env: NodeJS.ProcessEnv, name: string) {
   const started = performance.now();
-  const result = spawnSync(process.execPath, args, { cwd: options.source, env, encoding: 'utf8', timeout: 300_000, maxBuffer: 16 * 1024 ** 2 });
+  const resourceEnvironment = { RAYON_NUM_THREADS: '2', NODE_OPTIONS: '--max-old-space-size=2048' };
+  const result = spawnSync(process.execPath, args, { cwd: options.source, env: { ...env, ...resourceEnvironment }, encoding: 'utf8', timeout: 300_000, maxBuffer: 16 * 1024 ** 2 });
   const report = writeShellJson(join(options.out, `${name}.original.json`), { command: [process.execPath, ...args], exitCode: result.status, signal: result.signal,
-    seconds: (performance.now() - started) / 1000, stdout: result.stdout ?? '', stderr: result.stderr ?? '', error: result.error?.name ?? null });
+    seconds: (performance.now() - started) / 1000, stdout: result.stdout ?? '', stderr: result.stderr ?? '', error: result.error?.name ?? null, resourceEnvironment });
   requireShell(!result.error && result.status === 0 && result.signal === null, `Maintained ${name} refused; preserve its original report.`);
   return report;
 }
