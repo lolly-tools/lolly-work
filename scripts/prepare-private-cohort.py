@@ -488,7 +488,7 @@ def delivery_inventory(tree):
     return result
 
 
-def catalog_content(tree, envelope, modern, previous=None, node="node"):
+def catalog_content(tree, envelope, modern, previous=None, node="node", shell_only_resources=False):
     """Check every logical signed byte and every actual immutable alias tree."""
     codings = verified_codings(tree, node)
     files, by_tool = envelope["files"], {}
@@ -503,6 +503,10 @@ def catalog_content(tree, envelope, modern, previous=None, node="node"):
             require(path[6:] in files, "Tool manifest is outside the signed catalog closure")
     if not modern: return
     for path, expected in envelope.get("resources", {}).items():
+        # Unaddressed documentation images are served by the verified shell.
+        # The derived pack projection separately enforces its exact inventory.
+        if shell_only_resources and path.startswith("/info/shots/") and path[1:] not in tree.files:
+            continue
         require(tree.files.get(path[1:], {}).get("sha256") == expected, "Signed resource bytes differ from catalog tree")
     require(set(envelope["toolDirs"]) == set(by_tool), "Signed tool directory ids differ from logical files")
     for tool_id, entries in by_tool.items():
@@ -566,7 +570,7 @@ def catalog(shell, raw, public_pin, expected_public_pin, node, previous=None):
             require(path in shell.files and item == shell.files[path], "Raw tool/catalog payload differs from compiled private shell")
     require(raw.files.get("catalog/tools/index.json") == shell.files["catalog/tools/index.json"], "Raw catalog index differs")
     catalog_content(shell, envelope, modern, previous, node)
-    catalog_content(raw, envelope, modern, previous, node)
+    catalog_content(raw, envelope, modern, previous, node, shell_only_resources=True)
     return {"indexSha256": envelope["indexHash"], "envelopeSha256": shell.files["catalog/tools/index.sig.json"]["sha256"], "keyId": key_id, "signedFiles": len(envelope["files"])}
 
 

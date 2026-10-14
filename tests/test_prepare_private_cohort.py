@@ -360,6 +360,17 @@ class Cohort(unittest.TestCase):
         with self.assertRaisesRegex(m.Refusal, "Signed resource bytes differ"):
             m.catalog_content(tree, envelope, modern, node=NODE)
 
+    def test_raw_pack_can_omit_shell_documentation_resources(self):
+        envelope = self.delivery_cohort({"/info/shots/fixture.svg": "a" * 64})
+        tree = m.Tree(self.evidence["rawPack"], m.Inputs(self.base))
+        m.catalog_content(tree, envelope, True, node=NODE, shell_only_resources=True)
+        with self.assertRaisesRegex(m.Refusal, "Signed resource bytes differ"):
+            m.catalog_content(tree, envelope, True, node=NODE)
+        tree.files["info/shots/fixture.svg"] = {"sha256": "b" * 64, "size": 1}
+        self.put(Path(self.evidence["rawPack"]["root"]), "info/shots/fixture.svg", b"x")
+        with self.assertRaisesRegex(m.Refusal, "Signed resource bytes differ"):
+            m.catalog_content(tree, envelope, True, node=NODE, shell_only_resources=True)
+
     def test_signed_resources_reject_unsafe_paths_and_unverified_changes(self):
         for path in ("/catalog/previews/../secret", "/catalog/previews/a%2fb", "/catalog/previews/a?b", "/catalog/previews/a b", "/catalog/previews/a\\b", "/catalog/previews//a", "/private/a", "/info/shots/a\x00b"):
             with self.subTest(path=path):
