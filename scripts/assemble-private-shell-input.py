@@ -30,16 +30,35 @@ cohort = shell.cohort
 require, exact, Refusal = cohort.require, cohort.exact, cohort.Refusal
 STATUS = 'PRIVATE_SHELL_INPUT_ASSEMBLED_NOT_PREPARED_NOT_APPLIED'
 PROFILE_KEYS = {'version', 'status', 'instance', 'work', 'brand', 'profile', 'settings', 'rawPack', 'selection', 'publicPinSha256', 'producerSourceSha256'}
-PRODUCER_KEYS = {'version', 'status', 'lollySource', 'engineSource', 'previousShellSource', 'workSource', 'brandCommit', 'profile', 'enginePinSha256', 'shellManifestSha256', 'settings', 'workspaceModules', 'originalReport', 'classification', 'engineClassification', 'custody', 'previousAcceptance', 'ci', 'publicKey', 'previous', 'candidate', 'shell', 'delta', 'retention', 'webGate', 'catalog', 'producer', 'originAuthenticatedByThisCommand', 'normalCIQualified', 'runtimeQualified', 'promotionAttempted', 'outstanding'}
+PRODUCER_KEYS = {'version', 'status', 'lollySource', 'engineSource', 'previousShellSource', 'workSource', 'brandCommit', 'profile', 'enginePinSha256', 'shellManifestSha256', 'settings', 'workspaceModules', 'originalReport', 'classification', 'engineClassification', 'custody', 'previousAcceptance', 'ci', 'publicKey', 'previous', 'candidate', 'shell', 'delta', 'retention', 'webGate', 'codingReport', 'catalog', 'producer', 'originAuthenticatedByThisCommand', 'normalCIQualified', 'runtimeQualified', 'promotionAttempted', 'outstanding'}
 CUSTODY_KEYS = {'version', 'engineSource', 'workSource', 'brandCommit', 'enginePinSha256', 'profile', 'settings', 'previousManifest', 'previousAcceptance', 'ci', 'publicKeySha256'}
 PREFIXES = ('engine/', 'packages/core/', 'packages/node-shell/', 'packages/rondo/', 'packages/audio-dock/')
 BOUNDARY = {'originAuthenticatedByThisCommand': False, 'runtimeQualified': False, 'productionMutation': False, 'buildOrSigningPerformed': False, 'targetContacted': False}
-DEPENDENCIES = ('assemble-private-shell-input.py', *update.DEPENDENCIES, 'prepare-shell-update.ts', 'shell-update-vite.mjs')
+DEPENDENCIES = ('assemble-private-shell-input.py', *update.DEPENDENCIES, 'prepare-shell-update.ts', 'shell-update-vite.mjs', 'private-shell-codings.mjs', 'shell-update-files.ts', 'shell-update-clone.py', 'public-delivery-map.mjs')
 
 
-def manifest_id(manifest):
+
+def build_ci_snapshot(snapshot, final, source, repository, tier=None):
+    """Bind a build-time observation to the same finally qualified main CI run."""
+    final = shell.public_ready_run(final, source, repository) if tier == 'public-ready' else cohort.paired.run_record(final, source, repository, '.github/workflows/ci.yml', 'push')
+    required = {'id', 'run_attempt', 'head_sha', 'head_branch', 'repository', 'head_repository', 'path', 'event', 'status', 'conclusion'}
+    exact(snapshot, required, cohort.paired.RUN_FIELDS - required)
+    for key in ('id', 'run_attempt'):
+        require(cohort.paired.positive(snapshot[key]) and snapshot[key] == final[key], 'Build CI run or attempt differs')
+    require(all(snapshot[key] == final[key] for key in ('head_sha', 'head_branch', 'path', 'event')), 'Build CI source, branch, workflow or event differs')
+    for key in ('repository', 'head_repository'):
+        cohort.paired.repository(snapshot[key], repository)
+        require(snapshot[key]['id'] == final[key]['id'], 'Build CI repository identity differs')
+    if 'workflow_id' in snapshot or 'workflow_id' in final:
+        require(cohort.paired.positive(snapshot.get('workflow_id')) and snapshot.get('workflow_id') == final.get('workflow_id'), 'Build CI workflow identity differs')
+    require(snapshot['status'] != 'completed' or final['status'] == 'completed', 'Build CI observation is newer than qualification snapshot')
+    require((snapshot['status'] in {'queued', 'in_progress'} and snapshot['conclusion'] is None)
+            or (snapshot['status'] == 'completed' and snapshot['conclusion'] == 'success'), 'Build CI observation was not pending or successful')
+
+
+def manifest_id(manifest, *, shell_tree=False):
     exact(manifest, {'version', 'files', 'totalBytes'})
-    require(type(manifest['version']) is int and manifest['version'] == 1 and type(manifest['files']) is list and 1 <= len(manifest['files']) <= cohort.MAX_FILES and type(manifest['totalBytes']) is int, 'Bounded complete manifest required')
+    require(type(manifest['version']) is int and manifest['version'] == 1 and type(manifest['files']) is list and 1 <= len(manifest['files']) <= (cohort.MAX_SHELL_FILES if shell_tree else cohort.MAX_FILES) and type(manifest['totalBytes']) is int, 'Bounded complete manifest required')
     files = {}
     for row in manifest['files']:
         exact(row, {'path', 'size', 'sha256'}); path = cohort.safe_path(row['path'])
@@ -74,7 +93,7 @@ class Adapter:
         self.candidate_ref = self.ref(candidate); candidate = self.inputs.file(self.candidate_ref)
         self.candidate = self.source(candidate, Path(self.candidate_ref['path']).parent)
         self.work = self.source(profile['work'], Path(self.profile_ref['path']).parent)
-        self.root, run = cohort.source_record(self.candidate, self.inputs, shell.git_command, 'lolly')
+        self.root, run = shell.shell_source_record(self.candidate, self.inputs, shell.git_command)
         work_root, _ = cohort.source_record(self.work, self.inputs, shell.git_command, 'work')
         previous_ref = self.ref(instance['previous'], base=Path(self.instance_ref['path']).parent)
         previous, before = shell.previous_record(previous_ref, self.inputs)
@@ -100,11 +119,13 @@ class Adapter:
         accepted_ref = self.ref(previous['acceptance'], base=Path(previous_ref['path']).parent)
         acceptance = self.inputs.file(accepted_ref)
         require(self.ref(produced['previousAcceptance'], base=base) == self.ref(custody['previousAcceptance'], base=Path(custody_ref['path']).parent) == self.ref(acceptance['originalEvidence'][0], base=Path(accepted_ref['path']).parent), 'Producer used another accepted runtime')
-        require(self.ref(produced['ci'], base=base) == self.ref(custody['ci'], base=Path(custody_ref['path']).parent) == self.candidate['ciRun'], 'Producer used another normal CI run')
+        build_ci = self.ref(produced['ci'], base=base)
+        require(build_ci == self.ref(custody['ci'], base=Path(custody_ref['path']).parent), 'Producer CI custody differs')
+        build_ci_snapshot(self.inputs.file(build_ci), run, self.candidate['source'], self.candidate['repository'], self.candidate.get('qualificationTier'))
         require(self.ref(produced['publicKey'], base=base) == public_pin and custody['publicKeySha256'] == public_pin['sha256'], 'Producer public pin differs')
-        old = self.tree(instance['previousShell'], Path(self.instance_ref['path']).parent)
-        candidate_tree, retained = [self.tree(produced[key], base, producer=True) for key in ('candidate', 'shell')]
-        producer_old = self.tree(produced['previous'], base, producer=True)
+        old = self.tree(instance['previousShell'], Path(self.instance_ref['path']).parent, shell_tree=True)
+        candidate_tree, retained = [self.tree(produced[key], base, producer=True, shell_tree=True) for key in ('candidate', 'shell')]
+        producer_old = self.tree(produced['previous'], base, producer=True, shell_tree=True)
         require(producer_old['root'] == old['root'] and producer_old['manifest']['sha256'] == old['manifest']['sha256'] and old['manifest']['sha256'] == previous['shell']['manifestSha256'] and self.ref(custody['previousManifest'], base=Path(custody_ref['path']).parent) == old['manifest'] and produced['shellManifestSha256'] == retained['manifest']['sha256'], 'Producer accepted snapshot/manifest differs')
         raw_pack = self.tree(profile['rawPack'], Path(self.profile_ref['path']).parent)
         require(raw_pack['manifest']['sha256'] == previous['pack']['manifestSha256'], 'Accepted raw pack differs')
@@ -132,6 +153,7 @@ class Adapter:
         runner_ref = self.ref({'path': build['command'][2], 'sha256': build['command'][3]}, base=base); runner = self.inputs.file(runner_ref)
         exact(runner, {'source', 'sourceCommit', 'output', 'prerequisites', 'moduleReceipt'})
         require(runner['source'] == str(self.root) and runner['sourceCommit'] == self.candidate['source'] and runner['output'] == candidate_tree['root'] and runner['moduleReceipt'] == modules_ref['path'], 'Original Vite candidate/modules binding differs')
+        self.coding_review(produced['codingReport'], base, producer_source, candidate_tree, old, build['command'][0])
         original_gate = self.ref(produced['webGate'], base=base); gate = self.command(original_gate)
         require(gate['command'][0] == build['command'][0] and len(gate['command']) == 4 and gate['stderr'] == '' and gate['command'][1:] == ['scripts/webgpu-release-gate.ts', '--scope', 'web'] and gate['stdout'] in {'WebGPU release gate (web): docs/supported-environments.md covers 3 required environments; platform/version limits remain as published.\n', 'WebGPU release gate: the web shell does not require WebGPU at startup; nothing to check.\n'}, 'Original explicit web gate differs')
         exact(profile['selection'], {'container', 'shellVolume', 'packVolume', 'pinVolume'})
@@ -143,13 +165,48 @@ class Adapter:
         self.evidence = {'version': 1, 'lolly': self.candidate, 'work': self.work, 'enginePin': engine_pin, 'resolverPin': resolver_pin, 'brand': profile['brand'], 'profile': profile['profile'], 'publicPin': public_pin, 'candidateShell': candidate_tree, 'previousShell': old, 'shell': retained, 'rawPack': raw_pack, 'previous': previous_ref, 'selection': selection, 'classification': classification}
         self.public_pin_sha = profile['publicPinSha256']; self.inputs.unchanged()
 
+    def coding_review(self, report, base, producer_source, candidate, previous, node):
+        command = self.command(self.ref(report, base=base))
+        program = Path(producer_source['path']).with_name('private-shell-codings.mjs')
+        require(len(command['command']) == 4 and command['command'][:2] == [node, str(program)], 'Original coding invocation differs')
+        self.ref({'path': str(program), 'sha256': hashlib.sha256(cohort.read_file(Path(__file__).with_name(program.name))[0]).hexdigest()}, False)
+        request = self.inputs.file(self.ref({'path': command['command'][2], 'sha256': command['command'][3]}, base=base))
+        exact(request, {'version', 'source', 'candidate', 'previous', 'scratch', 'receipt'})
+        require(type(request['version']) is int and request['version'] == 1 and request['source'] == str(self.root)
+                and request['candidate'] == candidate['root'] and request['scratch'] == str(base / 'coding-scratch')
+                and request['receipt'] == str(base / 'coding-rewrite.json'), 'Original coding source/output binding differs')
+        previous_ref = self.ref(request['previous'], base=base)
+        require(previous_ref['sha256'] == previous['manifest']['sha256'], 'Original coding accepted manifest differs')
+        receipt_ref = self.ref({'path': request['receipt'], 'sha256': hashlib.sha256(cohort.read_file(Path(request['receipt']))[0]).hexdigest()})
+        receipt = self.inputs.file(receipt_ref)
+        exact(receipt, {'version', 'status', 'candidate', 'previous', 'compressor', 'changed', 'written', 'removed', 'retainedImmutableWireVerified', 'allCodingsDecoded', 'runtimeQualified', 'productionMutation'})
+        require(type(receipt['version']) is int and receipt['version'] == 1 and receipt['status'] == 'PRIVATE_FRONTEND_CODINGS_PREPARED_NOT_QUALIFIED'
+                and receipt['candidate'] == candidate['root'] and self.ref(receipt['previous'], base=base) == previous_ref
+                and receipt['retainedImmutableWireVerified'] is True and receipt['allCodingsDecoded'] is True
+                and receipt['runtimeQualified'] is False and receipt['productionMutation'] is False, 'Original coding receipt binding differs')
+        compressor = self.ref(receipt['compressor'], False, base)
+        require(compressor['path'] == str(self.root / 'scripts/build-delivery.ts')
+                and compressor['sha256'] == hashlib.sha256(cohort.git_bytes(self.root, self.candidate['source'], 'scripts/build-delivery.ts', shell.git_command)).hexdigest(), 'Original committed compressor differs')
+        old = {row['path']: row for row in self.inputs.file(previous['manifest'])['files']}
+        rows = self.inputs.file(candidate['manifest'])['files']
+        changed = [row['path'] for row in rows if not row['path'].endswith(('.gz', '.br'))
+                   and (row['path'].startswith('_app/') or row['path'] in {'index.html', 'precache.json', 'sw.js', 'portable/player.js'}) and old.get(row['path']) != row]
+        require(changed and receipt['changed'] == changed, 'Original coding identity delta differs')
+        allowed = {path + suffix for path in changed for suffix in ('.gz', '.br')}
+        written = [row['path'] for row in rows if row['path'] in allowed]
+        require(receipt['written'] == written, 'Original written codings differ from candidate manifest')
+        removed = receipt['removed']
+        require(type(removed) is list and len(removed) <= len(allowed) and all(type(path) is str and path in allowed for path in removed)
+                and removed == sorted(set(removed), key=lambda path: path.encode('utf-16-be')), 'Original removed codings exceed changed identities')
+
     def ref(self, value, as_json=True, base=None):
         exact(value, {'path', 'sha256'})
         ref = {'path': str(cohort.local_path(value['path'], base or self.inputs.base)), 'sha256': cohort.sha(value['sha256'])}
         self.inputs.file(ref, as_json); return ref
 
     def source(self, value, base):
-        exact(value, {'root', 'source', 'repository', 'main', 'ciRun', 'ciJobs'})
+        exact(value, shell.SOURCE_KEYS, {'qualificationTier'})
+        require('qualificationTier' not in value or value['qualificationTier'] == 'public-ready', 'Unknown source qualification tier')
         return {**value, 'root': str(cohort.local_path(value['root'], base)), **{key: self.ref(value[key], base=base) for key in ('main', 'ciRun', 'ciJobs')}}
 
     def sized_ref(self, value, base):
@@ -158,11 +215,11 @@ class Adapter:
         require(type(value['size']) is int and Path(ref['path']).stat().st_size == value['size'], 'Original sized file differs')
         return ref
 
-    def tree(self, value, base, producer=False):
+    def tree(self, value, base, producer=False, shell_tree=False):
         exact(value, {'root', 'manifest', 'shellId', 'files'} if producer else {'root', 'manifest'})
         result = {'root': str(cohort.local_path(value['root'], base)), 'manifest': self.ref(value['manifest'], base=base)}
         self.tree_roots.add(Path(result['root']))
-        manifest = self.inputs.file(result['manifest']); identity = manifest_id(manifest)
+        manifest = self.inputs.file(result['manifest']); identity = manifest_id(manifest, shell_tree=shell_tree)
         require(type(manifest.get('version')) is int and manifest['version'] == 1 and type(manifest.get('files')) is list and len(manifest['files']) > 0, 'Complete original tree manifest required')
         if producer:
             require(type(value['files']) is int and value['files'] == len(manifest['files']) and value['shellId'] == identity, 'Producer tree count/identity differs')

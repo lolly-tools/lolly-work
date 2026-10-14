@@ -234,14 +234,14 @@ class Stage:
         value = self.value; exact(value, INPUT_KEYS); require(type(value['version']) is int and value['version'] == 1, 'Unknown stage input')
         self.target = updater.validate_target(self.inputs.file(value['target'])); require('work' in self.target['components'], 'Owned Work target required')
         self.component = self.target['components']['work']; self.namespace = self.component['namespace']
-        self.prepared = self.inputs.file(value['prepared']); exact(self.prepared, shell.PREPARED_KEYS | {'reviewedEvidenceSha256'})
-        require(self.prepared['status'] == shell.STATUS and self.prepared['qualificationBoundary'] == shell.BOUNDARY and self.prepared['allUnselectedSpecFieldsPreserved'] is True, 'Maintained shell-only preparation required')
+        self.prepared = self.inputs.file(value['prepared']); shell.prepared_schema(self.prepared)
+        require(self.prepared['status'] in {shell.STATUS, shell.PUBLIC_READY_STATUS} and self.prepared['qualificationBoundary'] == shell.BOUNDARY and self.prepared['allUnselectedSpecFieldsPreserved'] is True, 'Maintained shell-only preparation required')
         self.previous, self.accepted_deployment = shell.previous_record(value['previous'], self.inputs)
         require(self.prepared['previousCohortSha256'] == value['previous']['sha256'] and self.prepared['beforeSpecSha256'] == self.previous['deploymentSpecSha256'], 'Preparation/previous spec differs')
         self.pin = self.inputs.file(self.previous['enginePin']); self.public_key = self.inputs.file(value['publicKey']); self.source_map = self.inputs.file(value['sourceMap'])
         require(self.public_key.get('kty') == 'EC' and self.public_key.get('crv') == 'P-256' and 'd' not in self.public_key, 'Public-only P-256 key required')
         require(self.pin['generatedFrom'] == self.prepared['sources']['engine'] and self.previous['enginePin']['sha256'] == self.prepared['enginePinSha256'], 'Accepted engine pin differs')
-        self.old, self.new, self.pack = [cohort.Tree(value[key], self.inputs) for key in ('previousShell', 'shell', 'rawPack')]
+        self.old, self.new, self.pack = [cohort.Tree(value[key], self.inputs, shell=key != 'rawPack') for key in ('previousShell', 'shell', 'rawPack')]
         require(self.old.manifest_sha == self.previous['shell']['manifestSha256'] and self.old.shell_id == self.previous['shell']['releaseId']
                 and self.new.manifest_sha == self.prepared['shell']['manifestSha256'] and self.new.shell_id == self.prepared['shell']['releaseId']
                 and self.pack.manifest_sha == self.prepared['rawPack']['manifestSha256'] == self.previous['pack']['manifestSha256'], 'Complete accepted/prepared tree differs')

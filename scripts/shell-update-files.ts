@@ -47,7 +47,7 @@ export function shellManifest(root: string): ShellManifest {
       requireShell(++entries <= 200_000, 'Tree entry bound exceeded.');
       const child = join(root, path), info = lstatSync(child);
       if (info.isDirectory()) walk(path, depth + 1);
-      else { const hash = shellFileHash(child); files.push({ path, ...hash }); totalBytes += hash.size; requireShell(files.length <= 100_000 && totalBytes <= 8 * 1024 ** 3, 'Tree size bound exceeded.'); }
+      else { const hash = shellFileHash(child); files.push({ path, ...hash }); totalBytes += hash.size; requireShell(files.length <= 120_000 && totalBytes <= 8 * 1024 ** 3, 'Tree size bound exceeded.'); }
     }
     const after = lstatSync(full, { bigint: true });
     requireShell(stat.dev === after.dev && stat.ino === after.ino && stat.mtimeNs === after.mtimeNs && stat.ctimeNs === after.ctimeNs

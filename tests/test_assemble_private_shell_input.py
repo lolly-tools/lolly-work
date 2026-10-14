@@ -24,6 +24,11 @@ NODE = os.environ.get('LOLLY_TEST_NODE', 'node')
 
 
 class AdapterTests(fixture.Shell):
+    def commit(self, root):
+        if root.name == 'lolly' and not (root / 'scripts/build-delivery.ts').exists():
+            self.put(root, 'scripts/build-delivery.ts', b'// Synthetic committed compressor; never executed.\n')
+        return super().commit(root)
+
     def binary(self, name, data):
         ref = super().binary(name, data)
         return {**ref, 'path': str(self.base / ref['path'])}
@@ -59,6 +64,16 @@ class AdapterTests(fixture.Shell):
         for key, field in (('previous', 'previousShell'), ('candidate', 'candidateShell'), ('shell', 'shell')):
             tree = self.evidence[field]; manifest = json.loads((self.base / tree['manifest']['path']).read_bytes())
             self.produced[key] = {**tree, 'shellId': m.manifest_id(manifest), 'files': len(manifest['files'])}
+        candidate = self.produced['candidate']
+        old = {row['path']: row for row in json.loads(Path(self.produced['previous']['manifest']['path']).read_bytes())['files']}
+        rows = json.loads(Path(candidate['manifest']['path']).read_bytes())['files']
+        changed = [row['path'] for row in rows if not row['path'].endswith(('.gz', '.br')) and (row['path'].startswith('_app/') or row['path'] in {'index.html', 'precache.json', 'sw.js', 'portable/player.js'}) and old.get(row['path']) != row]
+        self.coding_request = {'version': 1, 'source': str(self.roots['lolly']), 'candidate': candidate['root'], 'previous': self.produced['previous']['manifest'], 'scratch': str(self.base / 'coding-scratch'), 'receipt': str(self.base / 'coding-rewrite.json')}
+        compressor = self.roots['lolly'] / 'scripts/build-delivery.ts'
+        self.coding_receipt = {'version': 1, 'status': 'PRIVATE_FRONTEND_CODINGS_PREPARED_NOT_QUALIFIED', 'candidate': candidate['root'], 'previous': self.coding_request['previous'], 'compressor': {'path': str(compressor), 'sha256': hashlib.sha256(compressor.read_bytes()).hexdigest()}, 'changed': changed, 'written': [row['path'] for row in rows if row['path'] in {path + suffix for path in changed for suffix in ('.gz', '.br')}], 'removed': [], 'retainedImmutableWireVerified': True, 'allCodingsDecoded': True, 'runtimeQualified': False, 'productionMutation': False}
+        Path(self.coding_request['receipt']).write_bytes(m.cohort.canonical(self.coding_receipt))
+        self.coding_input = self.file('synthetic-coding-input', self.coding_request)
+        self.produced['codingReport'] = self.file('synthetic-coding-command-not-executed', command([str(producer_source.with_name('private-shell-codings.mjs')), self.coding_input['path'], self.coding_input['sha256']], ''))
         self.producer_ref = self.file('synthetic-producer-original', self.produced)
 
     def absolute(self, ref):
@@ -93,6 +108,96 @@ class AdapterTests(fixture.Shell):
         self.assertEqual(prepared.returncode, 0, prepared.stderr)
         self.assertEqual(json.loads((self.base / 'prepared/shell.prepared.json').read_bytes())['status'], m.shell.STATUS)
         self.assertNotEqual(subprocess.run(args, capture_output=True).returncode, 0)
+
+    def build_snapshot(self, edit):
+        value = json.loads(Path(self.evidence['lolly']['ciRun']['path']).read_bytes()); value.update(status='in_progress', conclusion=None); edit(value)
+        snapshot = self.file('synthetic-original-pending-main-run', value)
+        def producer(v):
+            v['ci'] = snapshot
+            custody = json.loads(Path(v['custody']['path']).read_bytes()); custody['ci'] = snapshot
+            v['custody'] = self.file('synthetic-pending-build-custody', custody)
+        self.change('producer_ref', producer)
+        return snapshot
+
+    def test_pending_build_snapshot_binds_same_completed_successful_main_ci(self):
+        for status in ('queued', 'in_progress'):
+            self.producer_ref = self.file('restored-completed-producer', self.produced)
+            snapshot = self.build_snapshot(lambda v: v.update(status=status))
+            adapter = self.adapter()
+            self.assertNotEqual(snapshot, adapter.candidate['ciRun'])
+            self.assertIn(Path(snapshot['path']), adapter.inputs.reads)
+            self.assertIn(Path(adapter.candidate['ciRun']['path']), adapter.inputs.reads)
+
+    def test_pending_build_snapshot_rejects_other_run_attempt_source_repository_workflow_or_event(self):
+        for edit in (lambda v: v.update(id=v['id'] + 1), lambda v: v.update(run_attempt=v['run_attempt'] + 1),
+                     lambda v: v.update(head_sha=self.engine_source), lambda v: v.update(head_branch='feature'),
+                     lambda v: v.update(path='.github/workflows/other.yml'), lambda v: v.update(event='pull_request'),
+                     lambda v: v['repository'].update(id=999), lambda v: v['head_repository'].update(full_name='other/repo'),
+                     lambda v: v.update(workflow_id=123), lambda v: v.update(status='completed', conclusion='failure'),
+                     lambda v: v.update(status='in_progress', conclusion='success')):
+            self.producer_ref = self.file('restored-completed-producer', self.produced)
+            self.build_snapshot(edit); self.refuses()
+
+    def test_pending_build_never_substitutes_for_final_complete_successful_ci(self):
+        self.build_snapshot(lambda v: None)
+        def pending(v):
+            run = json.loads(Path(v['ciRun']['path']).read_bytes()); run.update(status='in_progress', conclusion=None)
+            v['ciRun'] = self.file('synthetic-still-running-final', run)
+        self.change('candidate_ref', pending); self.refuses()
+
+    def test_public_ready_adapter_keeps_pending_build_and_explicit_fast_scope(self):
+        self.build_snapshot(lambda v: None)
+        def ready(v):
+            v['qualificationTier'] = 'public-ready'
+            run = json.loads(Path(v['ciRun']['path']).read_bytes()); run.update(status='in_progress', conclusion=None)
+            v['ciRun'] = self.file('public-ready-original-main-run', run)
+            jobs = json.loads(Path(v['ciJobs']['path']).read_bytes())
+            for job in jobs['jobs']:
+                if job['name'] not in m.shell.PUBLIC_READY_JOBS: job.update(status='in_progress', conclusion=None)
+            v['ciJobs'] = self.file('public-ready-original-main-jobs', jobs)
+        self.change('candidate_ref', ready)
+        adapter = self.adapter()
+        prepared, held = m.shell.prepare(adapter.evidence | {'build': self.file('public-ready-build', adapter.build), 'webGate': self.file('public-ready-gate', adapter.gate)}, self.base, self.public_pin_sha, NODE)
+        held.unchanged()
+        self.assertEqual(prepared['status'], m.shell.PUBLIC_READY_STATUS)
+        self.assertEqual(set(prepared['normalCI']), {'work'})
+        self.assertFalse(prepared['publicReadyCI']['lolly']['fullSuiteQualified'])
+
+    def test_coding_original_input_receipt_and_compressor_are_held(self):
+        adapter = self.adapter()
+        for path in (self.coding_input['path'], self.coding_request['receipt'], self.coding_receipt['compressor']['path']):
+            self.assertIn(Path(path), adapter.inputs.reads)
+        Path(self.coding_request['receipt']).write_text('{}')
+        with self.assertRaises(m.Refusal): adapter.publish(self.base / 'coding-drift-refused')
+
+    def test_coding_command_failed_wrong_program_or_missing_receipt_refuses(self):
+        original = self.producer_ref
+        for edit in (lambda v: v.update(exitCode=1), lambda v: v['command'].__setitem__(1, '/wrong/private-shell-codings.mjs')):
+            self.producer_ref = original
+            def change(v):
+                report = json.loads(Path(v['codingReport']['path']).read_bytes()); edit(report)
+                v['codingReport'] = self.file('wrong-coding-command', report)
+            self.change('producer_ref', change); self.refuses()
+        self.producer_ref = original
+        Path(self.coding_request['receipt']).unlink(); self.refuses()
+
+    def test_coding_consistent_wrong_candidate_source_previous_or_output_refuses(self):
+        original = self.producer_ref
+        for edit in (lambda v: v.update(candidate=self.evidence['shell']['root']), lambda v: v.update(source='/wrong/source'),
+                     lambda v: v.update(previous=self.evidence['candidateShell']['manifest']), lambda v: v.update(receipt='/wrong/receipt.json')):
+            self.producer_ref = original
+            def change(v):
+                request = copy.deepcopy(self.coding_request); edit(request)
+                ref = self.file('wrong-coding-input', request)
+                report = json.loads(Path(v['codingReport']['path']).read_bytes()); report['command'][2:] = [ref['path'], ref['sha256']]
+                v['codingReport'] = self.file('wrong-coding-command', report)
+            self.change('producer_ref', change); self.refuses()
+
+    def test_coding_receipt_cannot_claim_other_compressor_delta_or_qualification(self):
+        for edit in (lambda v: v['compressor'].update(sha256='0' * 64), lambda v: v.update(changed=[]),
+                     lambda v: v.update(written=['catalog/private.json.gz']), lambda v: v.update(removed=['catalog/private.json.gz']),
+                     lambda v: v.update(runtimeQualified=True), lambda v: v.update(allCodingsDecoded=1), lambda v: v.update(extra=True)):
+            receipt = copy.deepcopy(self.coding_receipt); edit(receipt); Path(self.coding_request['receipt']).write_bytes(m.cohort.canonical(receipt)); self.refuses()
 
     def test_byte_identical_manifest_copy_keeps_original_accepted_ref(self):
         manifest = json.loads((self.base / self.evidence['previousShell']['manifest']['path']).read_bytes())

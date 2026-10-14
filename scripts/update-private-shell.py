@@ -42,7 +42,7 @@ CAPTURE_KEYS = {'version', 'status', 'targetSha256', 'systemNamespace', 'node', 
 AUTH_PROFILE = 'NORMAL_TLS_PER_CALLER_INDEX_ORACLE_AND_PINNED_P256_ENVELOPE'
 MOUNT_PLACEHOLDERS = {'${stagePodUID}', '${writerPodUID}', '${nodeUID}', '${targetPath}'}
 DEPENDENCIES = ('update-private-shell.py', 'stage-private-shell.py', 'publish-private-shell.py', 'plan-private-shell.py', 'prepare-private-shell.py',
-                'generation-acceptance.py', 'app-update.py', 'prepare-private-cohort.py', 'prepare-paired-release.py', 'plan-private-cohort.py')
+                'generation-acceptance.py', 'probe-private-shell-catalog.py', 'app-update.py', 'prepare-private-cohort.py', 'prepare-paired-release.py', 'plan-private-cohort.py')
 
 
 def file_ref(path):
@@ -123,8 +123,8 @@ class Update:
         prepared_path = cohort.local_path(str(prepared_path), Path.cwd())
         self.prepared_ref = {'path': str(prepared_path), 'sha256': cohort.sha(prepared_sha)}
         self.prepared = self.inputs.file(self.prepared_ref)
-        exact(self.prepared, stage.shell.PREPARED_KEYS | {'reviewedEvidenceSha256'})
-        require(type(self.prepared['version']) is int and self.prepared['version'] == 1 and self.prepared['status'] == stage.shell.STATUS and self.prepared['qualificationBoundary'] == stage.shell.BOUNDARY
+        stage.shell.prepared_schema(self.prepared)
+        require(type(self.prepared['version']) is int and self.prepared['version'] == 1 and self.prepared['status'] in {stage.shell.STATUS, stage.shell.PUBLIC_READY_STATUS} and self.prepared['qualificationBoundary'] == stage.shell.BOUNDARY
                 and self.prepared['allUnselectedSpecFieldsPreserved'] is True and self.prepared['previousCohortSha256'] == self.profile['previous']['sha256'], 'Maintained compatible shell preparation required')
         original = planner.cli_evidence(self.prepared, self.inputs)
         original_ref = next(ref for ref in self.prepared['evidence'] if ref['sha256'] == self.prepared['reviewedEvidenceSha256'])

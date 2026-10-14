@@ -34,6 +34,14 @@ export function verifyBinding(e,binding) {
     for(const field of ['assetIndexHash','slimHash'])if(binding[field]!==undefined){
       keys.push(field);need(typeof e[field]==='string'&&/^[0-9a-f]{64}$/.test(e[field])&&e[field]===binding[field]);
     }
+    if(binding.resources!==undefined){
+      keys.push('resources');
+      need(e.resources&&typeof e.resources==='object'&&!Array.isArray(e.resources)&&stable(e.resources)===stable(binding.resources));
+      need(Object.keys(e.resources).length<=100000);
+      for(const [path,digest]of Object.entries(e.resources))need(path.length<=1024&&/^\/(?:catalog\/(?:previews|og)|info\/shots)\//.test(path)
+        &&!/[ %\\?#\s\u0000-\u001f\u007f-\u009f]/.test(path)&&path.split('/').slice(1).every(part=>part&&part!=='.'&&part!=='..')
+        &&typeof digest==='string'&&/^[0-9a-f]{64}$/.test(digest));
+    }
     need(e.toolDirs&&typeof e.toolDirs==='object'&&!Array.isArray(e.toolDirs)&&stable(e.toolDirs)===stable(binding.toolDirs));
     for(const [id,digest]of Object.entries(e.toolDirs))need(/^[a-z0-9-]+$/i.test(id)&&typeof digest==='string'&&/^[0-9a-f]{64}$/.test(digest));
   }
@@ -139,6 +147,16 @@ export async function bootstrap({input,borrow}) {
       const slimOracle=await servedToolSidecar(input.packPath,'tools/index.slim.json',{overlays:session.overlays,groups:session.user.groups});
       if(disk.slimHash!==undefined){need(slimOracle.kind==='json');slim=await fetchBytes(new URL('catalog/tools/index.slim.json',input.baseURL),session.cookie,2*1024**2,input.baseURL);need(slim.equals(slimOracle.bytes));expectedBinding.slimHash=hash(slim);}
       else need(slimOracle.kind==='not-found');
+      if(disk.resources!==undefined){
+        need(assets&&slim);
+        const {publisherResourceDigests,scopedResourceDigests}=await import('file:///app/server/src/catalog/resource-proofs.ts');
+        const entries=bytes=>{const parsed=JSON.parse(bytes);need(parsed&&Array.isArray(parsed.tools));return parsed.tools.filter(t=>t&&typeof t.id==='string');};
+        const visibleTools=entries(expectedIndex),visibleAssets=JSON.parse(assets);need(visibleAssets&&Array.isArray(visibleAssets.assets));
+        const publisher=await publisherResourceDigests({pack:input.packPath,publicKey:input.publicJwk,signing:null});
+        expectedBinding.resources=await scopedResourceDigests({pack:input.packPath,shellDir:input.shellPath,publisher,
+          caller:{overlays:session.overlays,groups:session.user.groups},visibleToolIds:new Set(visibleTools.map(t=>t.id.toLowerCase())),
+          visibleValues:[visibleTools,entries(slim),visibleAssets.assets]});
+      }
       const source=await catalogPublication({pack:input.packPath,generation:input.publication.generation,publicKey:input.publicJwk,signing:null,fileDigests:async()=>allFiles});
       expectedBinding.seq=await readPublication({generation:input.publication.generation},source);
     }

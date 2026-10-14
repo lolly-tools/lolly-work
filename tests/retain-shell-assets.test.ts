@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
-import { requireInventoryBytes } from '../scripts/retain-shell-assets.ts';
+import { requireInventoryBytes, requireInventoryCounts } from '../scripts/retain-shell-assets.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs, { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
@@ -35,6 +35,17 @@ function fixture(t: { after: (fn: () => void) => void }) {
     options: (): RetainShellOptions => ({ candidate, previous, expectedCandidateId: shellReleaseId(candidate), expectedPreviousId: shellReleaseId(previous), out: join(root, 'prepared'), receiptOut: join(root, 'receipt.json') }),
   };
 }
+
+test('regular files and directory entries have separate finite inventory bounds', () => {
+  assert.doesNotThrow(() => requireInventoryCounts(99_111, 102_563));
+  assert.doesNotThrow(() => requireInventoryCounts(100_746, 104_198));
+  assert.doesNotThrow(() => requireInventoryCounts(120_000, 200_000));
+  assert.throws(() => requireInventoryCounts(120_001, 120_002), RetentionRefusal);
+  assert.throws(() => requireInventoryCounts(99_111, 200_001), RetentionRefusal);
+  for (const [files, entries] of [[-1, 1], [1, 0], [0, -1], [1.5, 2], [1, 2.5], [NaN, 2], [1, Infinity]] as const) {
+    assert.throws(() => requireInventoryCounts(files, entries), RetentionRefusal);
+  }
+});
 
 test('retains the full bundled dependency tree, leaves active files exact and binds established shell IDs', t => {
   const f = fixture(t), options = f.options(), beforeCandidate = shellReleaseId(f.candidate), beforePrevious = shellReleaseId(f.previous);

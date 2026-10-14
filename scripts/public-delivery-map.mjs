@@ -34,7 +34,7 @@ function aliases(url) {
 
 /** Same native validator translation as Lolly build-delivery.ts, with real wire rows. */
 export function compileMap(files, models = []) {
-  need(Array.isArray(files) && files.length > 0 && files.length <= 100000
+  need(Array.isArray(files) && files.length > 0 && files.length <= 120000
     && Array.isArray(models) && models.length <= 1024, 'Bounded complete map rows required');
   const lookup = new Map();
   for (const row of files) {

@@ -28,6 +28,10 @@ cohort = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(cohort)
 require, exact, Refusal = cohort.require, cohort.exact, cohort.Refusal
 STATUS = "SHELL_ONLY_PREPARED_NOT_RUNTIME_QUALIFIED_NOT_APPLIED"
+PUBLIC_READY_STATUS = "SHELL_ONLY_PUBLIC_READY_PREPARED_NOT_RUNTIME_QUALIFIED_NOT_APPLIED"
+PUBLIC_READY_JOBS = ("secret history scan", "typecheck", "build + bundle budget", "test (contracts)", "test (security)",
+                     "validate catalog", "smoke (render every tool)", "opengrep (custom rules + new findings)")
+SOURCE_KEYS = {"root", "source", "repository", "main", "ciRun", "ciJobs"}
 EVIDENCE_KEYS = {"version", "lolly", "work", "enginePin", "resolverPin", "brand", "profile", "publicPin", "candidateShell", "previousShell", "shell", "rawPack", "build", "webGate", "previous", "selection", "classification"}
 PREVIOUS_KEYS = {"version", "deployment", "deploymentSpecSha256", "shellSource", "engineSource", "workSource", "image", "enginePin", "resolverPin", "shell", "pack", "pin", "acceptance"}
 BOUNDARY = {"localReviewedEvidence": True, "originAuthenticatedByThisCommand": False, "ociSignatureClaimed": False, "privateShellSignatureClaimed": False, "runtimeQualified": False, "productionMutation": False, "buildOrSigningPerformed": False}
@@ -50,14 +54,79 @@ def git_command(argv, root):
     return result.stdout.decode().strip() if argv[1] in {"rev-parse", "status", "cat-file", "merge-base"} else result.stdout.decode()
 
 
+
+def public_ready_run(value, source, repository):
+    required = {"id", "run_attempt", "head_sha", "head_branch", "repository", "head_repository", "path", "event", "status", "conclusion"}
+    exact(value, required, cohort.paired.RUN_FIELDS - required)
+    require(cohort.paired.positive(value["id"]) and cohort.paired.positive(value["run_attempt"])
+            and value["head_sha"] == source and value["head_branch"] == "main" and value["event"] == "push"
+            and value["path"] == ".github/workflows/ci.yml", "Public-ready requires the exact main-push CI source")
+    for key in ("repository", "head_repository"): cohort.paired.repository(value[key], repository)
+    require((value["status"] in {"queued", "in_progress"} and value["conclusion"] is None)
+            or (value["status"] == "completed" and value["conclusion"] == "success"), "Public-ready CI has failed, stopped or unknown state")
+    return value
+
+
+def public_ready_jobs(value, run):
+    exact(value, {"total_count", "jobs"}); jobs = value["jobs"]
+    require(type(jobs) is list and 1 <= len(jobs) <= 100 and type(value["total_count"]) is int and value["total_count"] == len(jobs), "Complete public-ready CI jobs required")
+    ids, names = set(), set()
+    for job in jobs:
+        required = {"id", "run_id", "run_attempt", "head_sha", "name", "status", "conclusion"}
+        exact(job, required, cohort.paired.JOB_FIELDS - required)
+        require(cohort.paired.positive(job["id"]) and job["id"] not in ids and job["run_id"] == run["id"]
+                and cohort.paired.positive(job["run_id"]) and cohort.paired.positive(job["run_attempt"]) and job["run_attempt"] == run["run_attempt"]
+                and job["head_sha"] == run["head_sha"] and type(job["name"]) is str and 0 < len(job["name"]) <= 256 and job["name"] not in names,
+                "Public-ready job identity or attempt differs")
+        pending = job["status"] in {"queued", "in_progress", "waiting"} and job["conclusion"] is None
+        passed = job["status"] == "completed" and job["conclusion"] == "success"
+        skipped = job["status"] == "completed" and job["conclusion"] == "skipped" and job["name"] == "verified instance shell"
+        require(pending or passed or skipped, "A CI job failed, stopped or has an unreviewed skip")
+        require(job["name"] not in PUBLIC_READY_JOBS or passed, "A required public-ready job has not passed")
+        ids.add(job["id"]); names.add(job["name"])
+    require(set(PUBLIC_READY_JOBS) <= names, "Missing public-ready CI job")
+
+
+def shell_source_record(value, inputs, runner):
+    if "qualificationTier" not in value:
+        return cohort.source_record(value, inputs, runner, "lolly")
+    exact(value, SOURCE_KEYS | {"qualificationTier"})
+    require(value["qualificationTier"] == "public-ready", "Unknown shell qualification tier")
+    cohort.commit(value["source"])
+    require(type(value["repository"]) is str and cohort.paired.REPO.fullmatch(value["repository"]), "Invalid shell repository")
+    require(type(value["root"]) is str and Path(value["root"]).is_absolute(), "Explicit shell source root required")
+    root = cohort.local_path(value["root"], inputs.base)
+    require(root.is_dir() and runner(["git", "rev-parse", "HEAD"], root) == value["source"] and runner(["git", "status", "--porcelain"], root) == "", "Public-ready source checkout differs or is dirty")
+    inputs.source_roots.append(root); inputs.source_checks.append((root, value["source"], runner))
+    main, run, jobs = [inputs.file(value[key]) for key in ("main", "ciRun", "ciJobs")]
+    cohort.paired.main_record(main, value, inputs.base, inputs.file)
+    public_ready_run(run, value["source"], value["repository"]); public_ready_jobs(jobs, run)
+    return root, run
+
+
+def prepared_schema(value):
+    fast = value.get("status") == PUBLIC_READY_STATUS
+    exact(value, PREPARED_KEYS | {"reviewedEvidenceSha256"} | ({"publicReadyCI"} if fast else set()))
+    require(value["status"] in {STATUS, PUBLIC_READY_STATUS}, "Unknown prepared qualification status")
+    exact(value["normalCI"], {"work"} if fast else {"lolly", "work"})
+    for ci in value["normalCI"].values():
+        exact(ci, {"run", "attempt"}); require(cohort.paired.positive(ci["run"]) and cohort.paired.positive(ci["attempt"]), "Invalid full CI identity")
+    if fast:
+        exact(value["publicReadyCI"], {"lolly"}); ci = value["publicReadyCI"]["lolly"]
+        exact(ci, {"run", "attempt", "requiredJobs", "fullSuiteQualified"})
+        require(cohort.paired.positive(ci["run"]) and cohort.paired.positive(ci["attempt"]) and ci["requiredJobs"] == list(PUBLIC_READY_JOBS)
+                and ci["fullSuiteQualified"] is False, "Public-ready scope differs from reviewed policy")
+
+
 def allowed_source(path):
     if re.search(r"(?:release-gate|supported-environments|support-matrix|browser-support|webgpu-qualification)", path, re.I):
         return False
     return (re.fullmatch(r"shells/web/src/.+\.(?:ts|css|html|svg)", path) is not None or path in {"shells/web/src/README.md", "shells/web/index.html", "shells/web/public/sw.js"}
             or re.fullmatch(r"tests/.+\.test\.ts", path) is not None
             # Same narrow CI metadata exception as the independent TS classifier;
-            # this workflow is not consumed by the local frontend build.
-            or path == ".github/workflows/deployment-suse.yml")
+            # these files are not consumed by the local frontend build.
+            or path in {".github/workflows/deployment-suse.yml", "deploy/helm/profiles/sovereign/README.md",
+                        "deploy/helm/profiles/sovereign/files/private.caddy"})
 
 
 def git_tree(root, source, runner):
@@ -532,7 +601,7 @@ def unchanged_raw_source(value, previous, raw, inputs, root, actual_catalog, exp
         require("rawDerivation" in value, "Accepted derived pack requires original release custody")
         derivation = value["rawDerivation"]
         exact(derivation, {"custody", "release"})
-        release = cohort.Tree(derivation["release"], inputs)
+        release = cohort.Tree(derivation["release"], inputs, shell=True)
         require(cohort.catalog(release, raw, inputs.file(value["publicPin"]), cohort.sha(expected_public_pin), node, previous=accepted_shell) == actual_catalog,
                 "Original derived release catalog differs from accepted catalog")
         original = {"lolly": {**value["lolly"], "source": previous["engineSource"]}, "profile": value["profile"],
@@ -549,7 +618,7 @@ def unchanged_raw_source(value, previous, raw, inputs, root, actual_catalog, exp
 def prepare(value, base, expected_public_pin, node="node", runner=git_command):
     evidence_shape(value); require(type(value["version"]) is int and value["version"] == 1, "Unknown shell evidence")
     inputs = cohort.Inputs(base)
-    root, lolly_run = cohort.source_record(value["lolly"], inputs, runner, "lolly")
+    root, lolly_run = shell_source_record(value["lolly"], inputs, runner)
     work_root, work_run = cohort.source_record(value["work"], inputs, runner, "work")
     previous, before = previous_record(value["previous"], inputs)
     require(value["work"]["source"] == previous["workSource"] and value["enginePin"]["sha256"] == previous["enginePin"]["sha256"] and value["resolverPin"]["sha256"] == previous["resolverPin"]["sha256"], "Accepted Work or compatibility pins changed")
@@ -561,7 +630,7 @@ def prepare(value, base, expected_public_pin, node="node", runner=git_command):
     exact(value["brand"], {"path", "commit"}); brand_path = cohort.safe_path(value["brand"]["path"]); brand = cohort.commit(value["brand"]["commit"])
     require(brand_path.startswith("brands/") and runner(["git", "ls-tree", value["lolly"]["source"], "--", brand_path], root).strip().split() == ["160000", "commit", brand, brand_path], "Unchanged private brand differs")
     require(isinstance(value["profile"], str) and cohort.NAME.fullmatch(value["profile"]) and value["profile"] not in {"community", "neutral", "public"}, "Private profile required")
-    candidate, old, shell, raw = [cohort.Tree(value[key], inputs) for key in ("candidateShell", "previousShell", "shell", "rawPack")]
+    candidate, old, shell, raw = [cohort.Tree(value[key], inputs, shell=key != "rawPack") for key in ("candidateShell", "previousShell", "shell", "rawPack")]
     roots = [tree.root for tree in inputs.trees]
     require(len(set(roots)) == 4 and all(a not in b.parents for a in roots for b in roots if a != b), "Distinct complete trees required")
     require(old.manifest_sha == previous["shell"]["manifestSha256"] and old.shell_id == previous["shell"]["releaseId"] and raw.manifest_sha == previous["pack"]["manifestSha256"], "Accepted shell/raw-pack snapshot differs")
@@ -601,8 +670,13 @@ def prepare(value, base, expected_public_pin, node="node", runner=git_command):
     inputs.file(gate["originalReport"], False)
     desired, patch, rollback = change_tuple(before, previous, value["selection"], value["lolly"]["source"], shell.shell_id)
     inputs.unchanged()
-    return {"version": 1, "status": STATUS, "sources": {"lolly": value["lolly"]["source"], "engine": previous["engineSource"], "work": previous["workSource"], "brand": brand},
-            "normalCI": {"lolly": {"run": lolly_run["id"], "attempt": lolly_run["run_attempt"]}, "work": {"run": work_run["id"], "attempt": work_run["run_attempt"]}},
+    fast = value["lolly"].get("qualificationTier") == "public-ready"
+    ci = {"normalCI": {"work": {"run": work_run["id"], "attempt": work_run["run_attempt"]}}}
+    lolly_ci = {"run": lolly_run["id"], "attempt": lolly_run["run_attempt"]}
+    if fast: ci["publicReadyCI"] = {"lolly": {**lolly_ci, "requiredJobs": list(PUBLIC_READY_JOBS), "fullSuiteQualified": False}}
+    else: ci["normalCI"]["lolly"] = lolly_ci
+    return {"version": 1, "status": PUBLIC_READY_STATUS if fast else STATUS, "sources": {"lolly": value["lolly"]["source"], "engine": previous["engineSource"], "work": previous["workSource"], "brand": brand},
+            **ci,
             "image": previous["image"], "profile": value["profile"], "enginePinSha256": value["enginePin"]["sha256"], "resolverPinSha256": value["resolverPin"]["sha256"],
             "shell": {"manifestSha256": shell.manifest_sha, "releaseId": shell.shell_id, "files": len(shell.files)}, "rawPack": {"manifestSha256": raw.manifest_sha, "files": len(raw.files)},
             "catalog": actual_catalog, "previousCohortSha256": value["previous"]["sha256"], "beforeSpecSha256": previous["deploymentSpecSha256"], "desiredSpecSha256": cohort.digest(desired),
@@ -641,7 +715,7 @@ def main():
     result["evidence"].append({"path": str(path), "sha256": args.reviewed_evidence_sha256}); result["evidence"].sort(key=lambda ref: ref["path"])
     result["reviewedEvidenceSha256"] = args.reviewed_evidence_sha256
     checksum = publish(result, Path(os.path.abspath(args.out_dir)), inputs)
-    print(json.dumps({"status": STATUS, "preparedSha256": checksum, "productionMutation": False}, sort_keys=True))
+    print(json.dumps({"status": result["status"], "preparedSha256": checksum, "productionMutation": False}, sort_keys=True))
 
 
 if __name__ == "__main__":

@@ -437,7 +437,7 @@ class Stage(private.Stage):
         self.prepared, evidence = bind_prepared(self.inputs, x['prepared'], x['planningEvidence'], x['node'])
         self.previous = self.inputs.file(evidence['previous']); self.accepted_deployment = self.inputs.file(self.previous['deployment'])
         self.producer = self.inputs.file(evidence['producer'])
-        self.old, self.new, self.effective = [cohort.Tree(self.producer[k], self.inputs) for k in ('previous','overlay','shell')]
+        self.old, self.new, self.effective = [cohort.Tree(self.producer[k], self.inputs, shell=True) for k in ('previous','overlay','shell')]
         self.old_overlay = {p:r for p,r in self.old.files.items() if public.overlay_path(p)}
         require(self.new.manifest_sha == self.prepared['overlay']['manifestSha256'] and all(self.new.files.get(p) == r for p,r in self.old_overlay.items() if p.startswith('_app/')), 'Overlay/lazy retention differs')
         self.delta = [r for p,r in self.new.files.items() if self.old_overlay.get(p) != r]

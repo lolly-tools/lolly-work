@@ -117,7 +117,7 @@ class Update:
                 self.profile['publicKey']['sha256'] == self.previous['publicKeySha256'] and
                 {k:self.prepared['selection'][k] for k in raw['selection']} == raw['selection'], 'Accepted baseline/pin/container/volume differs')
         self.producer = self.inputs.file(self.ref(self.evidence['producer'],evidence_base))
-        self.effective = cohort.Tree(self.producer['shell'],self.inputs)
+        self.effective = cohort.Tree(self.producer['shell'],self.inputs,shell=True)
         self.runtime = self.inputs.file(self.ref(self.previous['originalEvidence'][0],self.profile_path.parent))['runtime']
         prefix = raw['stageNamePrefix'] + '-' + self.prepared_ref['sha256'][:16]
         self.names = {'writer':prefix+'-writer','qualifier':prefix+'-check','policy':prefix+'-deny'}

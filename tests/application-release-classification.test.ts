@@ -60,6 +60,19 @@ test('web updates may retain the runtime while deployment archive metadata chang
   write(repo, 'shells/web/vite.config.js', 'changed build input\n');
   assert.equal(classifyApplicationRelease({ repo, base, candidate: commit(repo) }).classification, 'full-or-paired-required');
 }));
+for (const path of ['deploy/helm/profiles/sovereign/README.md', 'deploy/helm/profiles/sovereign/files/private.caddy']) {
+  test(`exact edge metadata ${path} requires a real web delta`, () => fixture((repo, base) => {
+    write(repo, path, 'independent edge metadata\n');
+    assert.equal(classifyApplicationRelease({ repo, base, candidate: commit(repo) }).classification, 'full-or-paired-required');
+    write(repo, 'shells/web/src/main.ts', 'export const web = 2;\n');
+    assert.equal(classifyApplicationRelease({ repo, base, candidate: commit(repo) }).classification, 'web-shell-only');
+  }));
+  test(`edge metadata ${path} refuses symlink content`, () => fixture((repo, base) => {
+    write(repo, 'shells/web/src/main.ts', 'export const web = 2;\n');
+    mkdirSync(dirname(join(repo, path)), { recursive: true }); symlinkSync('/outside/metadata', join(repo, path));
+    assert.equal(classifyApplicationRelease({ repo, base, candidate: commit(repo) }).classification, 'full-or-paired-required');
+  }));
+}
 test('deployment metadata symlinks cannot enter the shell-only lane', () => fixture((repo, base) => {
   write(repo, 'shells/web/src/main.ts', 'export const web = 2;\n');
   mkdirSync(join(repo, '.github/workflows'), { recursive: true });
@@ -69,6 +82,8 @@ test('deployment metadata symlinks cannot enter the shell-only lane', () => fixt
 for (const path of ['engine/src/version.ts', 'packages/core/src/host-v1.ts', 'packages/node-shell/src/content-roots.ts',
   'schemas/tool.schema.json', 'community/design/tool.json', 'tools/qr-code/hooks.js', 'brands/suse/catalog/tools/index.json',
   'catalog/tools/index.json', 'profiles.json', 'pnpm-lock.yaml', 'shells/web/package.json', 'deploy/docker/web.Dockerfile',
+  'deploy/helm/profiles/sovereign/files/public.caddy', 'deploy/helm/profiles/sovereign/files/private.caddy.bak',
+  'deploy/helm/profiles/sovereign/readme.md', 'deploy/helm/profiles/sovereign/values.yaml',
   'services/mcp/src/http.ts', 'scripts/webgpu-release-gate.ts', 'docs/supported-environments.md',
   'shells/web/src/browser-support.ts', 'tests/webgpu-release-gate.test.ts', 'tests/browser-support.browser.test.ts',
   '.github/workflows/ci.yml', '.github/workflows/deployment-suse.yaml', '.github/workflows/webgpu-release-gate.yml', 'unexpected/new.txt']) {

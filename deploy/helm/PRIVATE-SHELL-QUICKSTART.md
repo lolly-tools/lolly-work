@@ -32,9 +32,11 @@ A receipt marked `FULL_ACCEPTANCE_PENDING` keeps that scope: browser, export and
 agent checks remain separately required. Source files in its custody are checked
 as bytes, never executed as proof. The retained Work image and engine stay fixed.
 
-A UI change accompanied by `.github/workflows/deployment-suse.yml` metadata can
-use this lane because that CI workflow is not an input to the local frontend
-build. The workflow alone does not qualify as a shell update; dependency,
+A UI change accompanied by `.github/workflows/deployment-suse.yml`,
+`deploy/helm/profiles/sovereign/README.md`, or
+`deploy/helm/profiles/sovereign/files/private.caddy` metadata can use this lane
+because those exact files are not inputs to the local frontend build. This
+classification grants no authority to change the edge configuration. The workflow alone does not qualify as a shell update; dependency,
 release-gate and local build-configuration changes still require the matched
 release path.
 
@@ -59,8 +61,9 @@ profile can remain unchanged while its `previous` baseline advances.
 For each release, supply a clean immutable Lolly checkout's source record
 (`root`, `source`, `repository`, `main`, `ciRun`, `ciJobs`), the original
 `shell-update.prepared.json` and their reviewed SHA-256 digests. The source record
-uses the existing original provider formats; normal CI must be complete and
-successful, with only the established private-instance build skip permitted.
+uses the existing original provider formats. By default normal CI must be complete
+and successful, with only the established private-instance build skip permitted.
+The explicit public-ready policy below applies only to shell updates.
 Choose an unused shell claim and a new protected output directory:
 
 ```sh
@@ -99,6 +102,45 @@ baseline, changed settings or incomplete CI requires new reviewed inputs; the
 adapter performs no retry and does not follow a moving main branch. Native
 release holds and post-release browser/export/document-agent canaries remain
 separate.
+
+## Public-ready UI updates and full release qualification
+
+For an independently verified shell-only change, add
+`"qualificationTier": "public-ready"` to the Lolly candidate source record.
+The Work record keeps its complete successful normal CI. The exact candidate
+must be on main, and its original provider run must be a main-push execution of
+`.github/workflows/ci.yml` from the expected repository. The complete jobs response
+must show successful completion of these fixed jobs:
+
+- `secret history scan`
+- `typecheck`
+- `build + bundle budget`
+- `test (contracts)`
+- `test (security)`
+- `validate catalog`
+- `smoke (render every tool)`
+- `opengrep (custom rules + new findings)`
+
+Other jobs may still be running. Any reported failure or cancellation refuses
+qualification, including in a background job. Missing jobs, duplicate names,
+wrong attempts, or an unreviewed skip also refuse. The existing skipped
+`verified instance shell` job remains allowed. An incomplete job listing is never
+used to hide the background jobs.
+
+The prepared status is
+`SHELL_ONLY_PUBLIC_READY_PREPARED_NOT_RUNTIME_QUALIFIED_NOT_APPLIED`.
+Its `publicReadyCI` records the selected Lolly run and jobs with
+`fullSuiteQualified: false`; `normalCI` records Work only. The default full policy
+retains its existing status and both normal CI records. Backend, engine, shared
+contract, dependency, and unknown source changes cannot use the shell policy.
+Isolated artifact checks, live owner guards, normal TLS, and post-publication
+export and document-agent checks remain required for both policies.
+
+A local build may begin using an original queued or running main-CI snapshot.
+The adapter binds that snapshot to the qualification snapshot's exact run ID,
+attempt, head SHA, repository identities, branch, event, and workflow. It still
+requires the applicable completed jobs before preparation. Both original
+snapshots remain held; neither receipt is rewritten or labeled fully qualified.
 
 ## IT operator: publish with the instance profile
 
@@ -219,7 +261,7 @@ guards before mutations. Timings are measurements of that run, not a promised
 deployment time.
 
 This command does not enable unattended following of a moving main branch.
-Select one immutable main commit with its completed normal CI and web gate,
+Select one immutable main commit with its explicit CI qualification policy and web gate,
 prepare it against the genuine current accepted baseline, then authorize one
 attempt. Browser, document-agent, export and native qualifications retain their
 own release scope.

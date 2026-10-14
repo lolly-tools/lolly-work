@@ -42,8 +42,15 @@ def cli_evidence(prepared, inputs):
     original = inputs.file(matching[0]); shell.evidence_shape(original)
     require(type(original["version"]) is int and original["version"] == 1, "Unknown CLI custody")
     for family in ("lolly", "work"):
-        exact(original[family], {"root", "source", "repository", "main", "ciRun", "ciJobs"})
+        fast = prepared["status"] == shell.PUBLIC_READY_STATUS and family == "lolly"
+        exact(original[family], shell.SOURCE_KEYS | ({"qualificationTier"} if fast else set()))
+        require(not fast or original[family]["qualificationTier"] == "public-ready", "Original source qualification tier differs")
         require(original[family]["source"] == prepared["sources"][family], "Original qualified source differs")
+    if prepared["status"] == shell.PUBLIC_READY_STATUS:
+        source = original["lolly"]
+        run = shell.public_ready_run(inputs.file(source["ciRun"]), source["source"], source["repository"])
+        shell.public_ready_jobs(inputs.file(source["ciJobs"]), run)
+        require(prepared["publicReadyCI"]["lolly"]["run"] == run["id"] and prepared["publicReadyCI"]["lolly"]["attempt"] == run["run_attempt"], "Prepared public-ready CI identity differs")
     exact(original["brand"], {"path", "commit"})
     require(original["brand"]["commit"] == prepared["sources"]["brand"] and original["profile"] == prepared["profile"] and original["selection"] == prepared["selection"], "Original profile, brand or selection differs")
     for key, field in (("enginePin", "enginePinSha256"), ("resolverPin", "resolverPinSha256"), ("previous", "previousCohortSha256")):
@@ -90,15 +97,12 @@ def plan(value, base):
     require(type(value["version"]) is int and value["version"] == 1, "Unknown shell planning evidence")
     inputs = cohort.Inputs(base)
     prepared, before, facts, staged, pin = [inputs.file(value[k]) for k in ("prepared", "deployment", "resources", "stage", "enginePin")]
-    exact(prepared, shell.PREPARED_KEYS | {"reviewedEvidenceSha256"})
-    require(type(prepared["version"]) is int and prepared["version"] == 1 and prepared["status"] == shell.STATUS and prepared["qualificationBoundary"] == shell.BOUNDARY
+    shell.prepared_schema(prepared)
+    require(type(prepared["version"]) is int and prepared["version"] == 1 and prepared["status"] in {shell.STATUS, shell.PUBLIC_READY_STATUS} and prepared["qualificationBoundary"] == shell.BOUNDARY
             and prepared["allUnselectedSpecFieldsPreserved"] is True, "Not a maintained unqualified shell preparation")
     exact(prepared["sources"], {"lolly", "engine", "work", "brand"})
     for source in prepared["sources"].values():
         cohort.commit(source)
-    exact(prepared["normalCI"], {"lolly", "work"})
-    for ci in prepared["normalCI"].values():
-        exact(ci, {"run", "attempt"}); resources.positive(ci["run"]); resources.positive(ci["attempt"])
     resources.name(prepared["profile"]); require(prepared["profile"] not in {"community", "neutral", "public"}, "Private profile missing")
     original_cli = cli_evidence(prepared, inputs)
     previous, accepted = shell.previous_record(value["previous"], inputs)

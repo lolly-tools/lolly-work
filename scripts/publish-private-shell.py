@@ -187,16 +187,16 @@ class DeploymentInventory:
 
 OWNER_READBACK = r"""const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
 const [shell,pack,pin,publicJwk]=process.argv.slice(1);const hash=b=>crypto.createHash('sha256').update(b).digest('hex');
-function tree(root){const files=[];let totalBytes=0;function walk(dir,prefix){
+function tree(root,limit){const files=[];let totalBytes=0;function walk(dir,prefix){
  for(const name of fs.readdirSync(dir).sort()){if(name==='.'||name==='..'||/[\\\x00-\x1f\x7f]/.test(name))throw Error('path');
  const p=path.join(dir,name),relative=prefix+name,s=fs.lstatSync(p);if(s.isSymbolicLink())throw Error('symlink');
- if(s.isDirectory())walk(p,relative+'/');else{if(!s.isFile()||files.length>=100000)throw Error('file');
+ if(s.isDirectory())walk(p,relative+'/');else{if(!s.isFile()||files.length>=limit)throw Error('file');
  const fd=fs.openSync(p,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW),hasher=crypto.createHash('sha256'),buf=Buffer.alloc(1024*1024);let bytes=0;
  try{let n;while((n=fs.readSync(fd,buf,0,buf.length,null))>0){hasher.update(buf.subarray(0,n));bytes+=n;}
  const end=fs.fstatSync(fd);if(bytes!==s.size||end.ino!==s.ino||end.size!==s.size||end.mtimeMs!==s.mtimeMs)throw Error('changed');}finally{fs.closeSync(fd);}
  totalBytes+=s.size;files.push({path:relative,size:s.size,sha256:hasher.digest('hex')});}}}walk(root,'');files.sort((a,b)=>Buffer.compare(Buffer.from(a.path),Buffer.from(b.path)));
  return {version:1,files,totalBytes};}
-const result={version:1,shell:tree(shell),pack:tree(pack),pinSha256:hash(fs.readFileSync(pin))};
+const result={version:1,shell:tree(shell,120000),pack:tree(pack,100000),pinSha256:hash(fs.readFileSync(pin))};
 if(publicJwk){const jwk=JSON.parse(publicJwk),stable=v=>Array.isArray(v)?'['+v.map(stable).join(',')+']':
  v&&typeof v==='object'?'{'+Object.keys(v).sort().map(k=>JSON.stringify(k)+':'+stable(v[k])).join(',')+'}':JSON.stringify(v);
 const index=fs.readFileSync(path.join(shell,'catalog/tools/index.json')),envelopeBytes=fs.readFileSync(path.join(shell,'catalog/tools/index.sig.json')),
