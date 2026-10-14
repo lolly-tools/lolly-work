@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { cloneShellFiles, shellFileCustody, shellFileStamp } from './shell-update-files.ts';
 
 const MAX_FILES = 100_000;
+const MAX_ENTRIES = MAX_FILES * 2;
 const MAX_BYTES = 8 * 1024 * 1024 * 1024;
 const MAX_DEPTH = 64;
 const MAX_INVENTORY_BYTES = 32 * 1024 * 1024;
@@ -38,6 +39,11 @@ function requireThat(condition: unknown, reason: string): asserts condition {
 /** Metadata has its own finite budget, independent of the file and content caps. */
 export function requireInventoryBytes(bytes: number): void {
   requireThat(Number.isSafeInteger(bytes) && bytes >= 0 && bytes <= MAX_INVENTORY_BYTES, 'Shell input inventory exceeds its byte bound.');
+}
+/** Directories use the entry budget without consuming the regular-file budget. */
+export function requireInventoryCounts(files: number, entries: number): void {
+  requireThat(Number.isSafeInteger(files) && files >= 0 && files <= MAX_FILES
+    && Number.isSafeInteger(entries) && entries >= files && entries <= MAX_ENTRIES, 'Shell input inventory exceeds its count bounds.');
 }
 function identity(stat: BigIntStats): Identity { return { dev: stat.dev, ino: stat.ino }; }
 function matches(stat: BigIntStats, value: Identity): boolean { return stat.dev === value.dev && stat.ino === value.ino; }
@@ -97,7 +103,8 @@ function snapshot(root: string): Snapshot {
   const result: Snapshot = { root, files: [], directories: new Map(), id: '', inventorySha256: '' };
   let total = 0, entries = 0, inventoryBytes = 0;
   function walk(path: string, depth: number): void {
-    requireThat(depth <= MAX_DEPTH && ++entries <= MAX_FILES, 'Shell input inventory exceeds its bounds.');
+    requireThat(depth <= MAX_DEPTH, 'Shell input inventory exceeds its depth bound.');
+    requireInventoryCounts(result.files.length, ++entries);
     const full = join(root, path), stat = lstatSync(full, { bigint: true });
     requireThat(stat.isDirectory(), 'Shell inputs must not contain symbolic links or special files.');
     result.directories.set(path, identity(stat));
@@ -110,7 +117,8 @@ function snapshot(root: string): Snapshot {
       const entry = lstatSync(join(root, child), { bigint: true });
       if (entry.isDirectory()) walk(child, depth + 1);
       else {
-        requireThat(entry.isFile() && ++entries <= MAX_FILES, 'Shell inputs must contain bounded regular files.');
+        requireThat(entry.isFile(), 'Shell inputs must contain bounded regular files.');
+        requireInventoryCounts(result.files.length + 1, ++entries);
         const file = readFile(result, { path: child });
         inventoryBytes += Buffer.byteLength(child) + 160;
         requireInventoryBytes(inventoryBytes);

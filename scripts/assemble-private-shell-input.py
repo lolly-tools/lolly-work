@@ -37,6 +37,24 @@ BOUNDARY = {'originAuthenticatedByThisCommand': False, 'runtimeQualified': False
 DEPENDENCIES = ('assemble-private-shell-input.py', *update.DEPENDENCIES, 'prepare-shell-update.ts', 'shell-update-vite.mjs', 'private-shell-codings.mjs', 'shell-update-files.ts', 'shell-update-clone.py', 'public-delivery-map.mjs')
 
 
+
+def build_ci_snapshot(snapshot, final, source, repository):
+    """Bind a build-time observation to the same finally qualified main CI run."""
+    final = cohort.paired.run_record(final, source, repository, '.github/workflows/ci.yml', 'push')
+    required = {'id', 'run_attempt', 'head_sha', 'head_branch', 'repository', 'head_repository', 'path', 'event', 'status', 'conclusion'}
+    exact(snapshot, required, cohort.paired.RUN_FIELDS - required)
+    for key in ('id', 'run_attempt'):
+        require(cohort.paired.positive(snapshot[key]) and snapshot[key] == final[key], 'Build CI run or attempt differs')
+    require(all(snapshot[key] == final[key] for key in ('head_sha', 'head_branch', 'path', 'event')), 'Build CI source, branch, workflow or event differs')
+    for key in ('repository', 'head_repository'):
+        cohort.paired.repository(snapshot[key], repository)
+        require(snapshot[key]['id'] == final[key]['id'], 'Build CI repository identity differs')
+    if 'workflow_id' in snapshot or 'workflow_id' in final:
+        require(cohort.paired.positive(snapshot.get('workflow_id')) and snapshot.get('workflow_id') == final.get('workflow_id'), 'Build CI workflow identity differs')
+    require((snapshot['status'] in {'queued', 'in_progress'} and snapshot['conclusion'] is None)
+            or (snapshot['status'] == 'completed' and snapshot['conclusion'] == 'success'), 'Build CI observation was not pending or successful')
+
+
 def manifest_id(manifest):
     exact(manifest, {'version', 'files', 'totalBytes'})
     require(type(manifest['version']) is int and manifest['version'] == 1 and type(manifest['files']) is list and 1 <= len(manifest['files']) <= cohort.MAX_FILES and type(manifest['totalBytes']) is int, 'Bounded complete manifest required')
@@ -100,7 +118,9 @@ class Adapter:
         accepted_ref = self.ref(previous['acceptance'], base=Path(previous_ref['path']).parent)
         acceptance = self.inputs.file(accepted_ref)
         require(self.ref(produced['previousAcceptance'], base=base) == self.ref(custody['previousAcceptance'], base=Path(custody_ref['path']).parent) == self.ref(acceptance['originalEvidence'][0], base=Path(accepted_ref['path']).parent), 'Producer used another accepted runtime')
-        require(self.ref(produced['ci'], base=base) == self.ref(custody['ci'], base=Path(custody_ref['path']).parent) == self.candidate['ciRun'], 'Producer used another normal CI run')
+        build_ci = self.ref(produced['ci'], base=base)
+        require(build_ci == self.ref(custody['ci'], base=Path(custody_ref['path']).parent), 'Producer CI custody differs')
+        build_ci_snapshot(self.inputs.file(build_ci), run, self.candidate['source'], self.candidate['repository'])
         require(self.ref(produced['publicKey'], base=base) == public_pin and custody['publicKeySha256'] == public_pin['sha256'], 'Producer public pin differs')
         old = self.tree(instance['previousShell'], Path(self.instance_ref['path']).parent)
         candidate_tree, retained = [self.tree(produced[key], base, producer=True) for key in ('candidate', 'shell')]

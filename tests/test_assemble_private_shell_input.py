@@ -109,6 +109,42 @@ class AdapterTests(fixture.Shell):
         self.assertEqual(json.loads((self.base / 'prepared/shell.prepared.json').read_bytes())['status'], m.shell.STATUS)
         self.assertNotEqual(subprocess.run(args, capture_output=True).returncode, 0)
 
+    def build_snapshot(self, edit):
+        value = json.loads(Path(self.evidence['lolly']['ciRun']['path']).read_bytes()); value.update(status='in_progress', conclusion=None); edit(value)
+        snapshot = self.file('synthetic-original-pending-main-run', value)
+        def producer(v):
+            v['ci'] = snapshot
+            custody = json.loads(Path(v['custody']['path']).read_bytes()); custody['ci'] = snapshot
+            v['custody'] = self.file('synthetic-pending-build-custody', custody)
+        self.change('producer_ref', producer)
+        return snapshot
+
+    def test_pending_build_snapshot_binds_same_completed_successful_main_ci(self):
+        for status in ('queued', 'in_progress'):
+            self.producer_ref = self.file('restored-completed-producer', self.produced)
+            snapshot = self.build_snapshot(lambda v: v.update(status=status))
+            adapter = self.adapter()
+            self.assertNotEqual(snapshot, adapter.candidate['ciRun'])
+            self.assertIn(Path(snapshot['path']), adapter.inputs.reads)
+            self.assertIn(Path(adapter.candidate['ciRun']['path']), adapter.inputs.reads)
+
+    def test_pending_build_snapshot_rejects_other_run_attempt_source_repository_workflow_or_event(self):
+        for edit in (lambda v: v.update(id=v['id'] + 1), lambda v: v.update(run_attempt=v['run_attempt'] + 1),
+                     lambda v: v.update(head_sha=self.engine_source), lambda v: v.update(head_branch='feature'),
+                     lambda v: v.update(path='.github/workflows/other.yml'), lambda v: v.update(event='pull_request'),
+                     lambda v: v['repository'].update(id=999), lambda v: v['head_repository'].update(full_name='other/repo'),
+                     lambda v: v.update(workflow_id=123), lambda v: v.update(status='completed', conclusion='failure'),
+                     lambda v: v.update(status='in_progress', conclusion='success')):
+            self.producer_ref = self.file('restored-completed-producer', self.produced)
+            self.build_snapshot(edit); self.refuses()
+
+    def test_pending_build_never_substitutes_for_final_complete_successful_ci(self):
+        self.build_snapshot(lambda v: None)
+        def pending(v):
+            run = json.loads(Path(v['ciRun']['path']).read_bytes()); run.update(status='in_progress', conclusion=None)
+            v['ciRun'] = self.file('synthetic-still-running-final', run)
+        self.change('candidate_ref', pending); self.refuses()
+
     def test_coding_original_input_receipt_and_compressor_are_held(self):
         adapter = self.adapter()
         for path in (self.coding_input['path'], self.coding_request['receipt'], self.coding_receipt['compressor']['path']):
