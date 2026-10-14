@@ -437,8 +437,20 @@ class Shell(fixture.Cohort):
         report = json.loads((self.base / self.evidence['classification']['path']).read_bytes()); report['classification'] = 'web-shell-only'
         with self.assertRaises(m.Refusal): m.compatibility(self.roots['lolly'], self.previous, self.sources['lolly'], report, m.git_command)
 
+    def test_exact_canonical_ui_tokens_are_independent_shell_changes(self):
+        self.put(self.roots['lolly'], 'shells/web/src/main.ts', b"export const hello='old';")
+        for path in ['shells/web/design/chrome-tokens.json', 'shells/web/design/ui-semantics.json']:
+            self.put(self.roots['lolly'], path, b'{"shadow":{"$type":"shadow","$value":"none"}}\n')
+            self.sources['lolly'] = self.commit(self.roots['lolly']); self.update_classification()
+            report = json.loads((self.base / self.evidence['classification']['path']).read_bytes())
+            self.assertTrue(m.compatibility(self.roots['lolly'], self.previous, self.sources['lolly'], report, m.git_command)['fullTreeEqualityRequired'])
+        path = self.roots['lolly'] / 'shells/web/design/ui-semantics.json'
+        path.unlink(); path.symlink_to('/outside/ui-tokens'); self.sources['lolly'] = self.commit(self.roots['lolly']); self.update_classification()
+        report = json.loads((self.base / self.evidence['classification']['path']).read_bytes()); report['classification'] = 'web-shell-only'
+        with self.assertRaises(m.Refusal): m.compatibility(self.roots['lolly'], self.previous, self.sources['lolly'], report, m.git_command)
+
     def test_non_shell_contract_dependency_config_lock_unknown_or_engine_changes_refuse(self):
-        for path in ("engine/src/version.ts", "packages/core/src/host-v1.ts", "schemas/tool.schema.json", "packages/node-shell/src/content-roots.ts", "package-lock.json", "shells/web/vite.config.js", "profiles.json", "tools/fixture/tool.json", ".github/workflows/ci.yml", ".github/workflows/deployment-suse.yaml", ".github/workflows/webgpu-release-gate.yml", "deploy/helm/profiles/sovereign/files/public.caddy", "deploy/helm/profiles/sovereign/files/private.caddy.bak", "deploy/helm/profiles/sovereign/readme.md", "scripts/check-ui-performance.ts.bak", "scripts/check-ui-performance-gate.ts", "scripts/lib/ui-performance.ts", "unknown.ts"):
+        for path in ("engine/src/version.ts", "server/src/main.ts", "packages/core/src/host-v1.ts", "schemas/tool.schema.json", "packages/node-shell/src/content-roots.ts", "package-lock.json", "shells/web/vite.config.js", "profiles.json", "tools/fixture/tool.json", ".github/workflows/ci.yml", ".github/workflows/deployment-suse.yaml", ".github/workflows/webgpu-release-gate.yml", "deploy/helm/profiles/sovereign/files/public.caddy", "deploy/helm/profiles/sovereign/files/private.caddy.bak", "deploy/helm/profiles/sovereign/readme.md", "scripts/check-ui-performance.ts.bak", "scripts/check-ui-performance-gate.ts", "scripts/lib/ui-performance.ts", "shells/web/design/other.json", "shells/web/design/chrome-tokens.json.bak", "shells/web/src/other.json", "unknown.ts"):
             with self.subTest(path=path):
                 inventory = m.git_tree(self.roots["lolly"], self.sources["lolly"], m.git_command)
                 changed = copy.deepcopy(inventory); changed[path] = ("100644", "blob", "a" * 40)

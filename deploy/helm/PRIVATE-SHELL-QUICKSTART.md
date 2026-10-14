@@ -52,6 +52,11 @@ reductions. The private preparer checks both the engine-to-previous-shell and
 previous-shell-to-candidate transitions, so an earlier reduction stays in force.
 The baseline alone never qualifies as a web update.
 
+The canonical web styling sources `shells/web/design/chrome-tokens.json` and
+`shells/web/design/ui-semantics.json` count as shell changes. Their generated CSS
+and token drift checks remain required by source CI. Other JSON files and changes
+to their generator are outside the shell-only path.
+
 ## Assemble the preparation input without release-specific scripts
 
 `scripts/assemble-private-shell-input.py` translates an original successful local

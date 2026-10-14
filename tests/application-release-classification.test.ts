@@ -79,6 +79,19 @@ test('deployment metadata symlinks cannot enter the shell-only lane', () => fixt
   symlinkSync('../../engine/src/version.ts', join(repo, '.github/workflows/deployment-suse.yml'));
   assert.equal(classifyApplicationRelease({ repo, base, candidate: commit(repo) }).classification, 'full-or-paired-required');
 }));
+for (const path of ['shells/web/design/chrome-tokens.json', 'shells/web/design/ui-semantics.json']) {
+  test(`canonical web token source ${path} is a real shell change`, () => fixture((repo, base) => {
+    write(repo, path, JSON.stringify({ shadow: { $type: 'shadow', $value: 'none' } }) + '\n');
+    const result = classifyApplicationRelease({ repo, base, candidate: commit(repo) });
+    assert.equal(result.classification, 'web-shell-only'); assert.equal(result.promotionAuthorized, false);
+    write(repo, 'engine/src/version.ts', 'export const engine = 2;\n');
+    assert.equal(classifyApplicationRelease({ repo, base, candidate: commit(repo) }).classification, 'full-or-paired-required');
+  }));
+  test(`canonical web token source ${path} refuses symlinks`, () => fixture((repo, base) => {
+    mkdirSync(dirname(join(repo, path)), { recursive: true }); symlinkSync('/outside/ui-tokens', join(repo, path));
+    assert.equal(classifyApplicationRelease({ repo, base, candidate: commit(repo) }).classification, 'full-or-paired-required');
+  }));
+}
 const baselineJson = (value: unknown): string => JSON.stringify(value, null, 2) + '\n';
 test('comment baseline reductions and removal require matching changed web or test sources', () => {
   const before = { 'shells/web/src/main.ts': 4, 'tests/web.test.ts': 2, 'engine/src/version.ts': 3 };
@@ -121,8 +134,9 @@ for (const path of ['engine/src/version.ts', 'packages/core/src/host-v1.ts', 'pa
   'catalog/tools/index.json', 'profiles.json', 'pnpm-lock.yaml', 'shells/web/package.json', 'deploy/docker/web.Dockerfile',
   'deploy/helm/profiles/sovereign/files/public.caddy', 'deploy/helm/profiles/sovereign/files/private.caddy.bak',
   'deploy/helm/profiles/sovereign/readme.md', 'deploy/helm/profiles/sovereign/values.yaml',
-  'services/mcp/src/http.ts', 'scripts/webgpu-release-gate.ts', 'scripts/check-ui-performance.ts.bak',
+  'services/mcp/src/http.ts', 'server/src/main.ts', 'scripts/webgpu-release-gate.ts', 'scripts/check-ui-performance.ts.bak',
   'scripts/check-ui-performance-gate.ts', 'scripts/lib/ui-performance.ts', 'docs/supported-environments.md',
+  'shells/web/design/other.json', 'shells/web/design/chrome-tokens.json.bak', 'shells/web/src/other.json',
   'shells/web/src/browser-support.ts', 'tests/webgpu-release-gate.test.ts', 'tests/browser-support.browser.test.ts',
   '.github/workflows/ci.yml', '.github/workflows/deployment-suse.yaml', '.github/workflows/webgpu-release-gate.yml', 'unexpected/new.txt']) {
   test(`web plus ${path} refuses the narrow scope`, () => fixture((repo, base) => {

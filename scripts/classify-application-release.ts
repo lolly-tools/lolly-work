@@ -89,7 +89,8 @@ function releaseGate(path: string): boolean {
 function web(path: string): boolean {
   if (releaseGate(path)) return false;
   return /^shells\/web\/src\/.+\.(?:ts|css|html|svg)$/.test(path) || path === 'shells/web/src/README.md'
-    || path === 'shells/web/index.html' || path === 'shells/web/public/sw.js';
+    || path === 'shells/web/index.html' || path === 'shells/web/public/sw.js'
+    || path === 'shells/web/design/chrome-tokens.json' || path === 'shells/web/design/ui-semantics.json';
 }
 function test(path: string): boolean { return !releaseGate(path) && /^tests\/.+\.test\.ts$/.test(path); }
 // These deployment files are outside the local frontend build. Their changes

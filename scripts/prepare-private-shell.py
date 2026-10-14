@@ -122,7 +122,8 @@ def prepared_schema(value):
 def allowed_source(path):
     if re.search(r"(?:release-gate|supported-environments|support-matrix|browser-support|webgpu-qualification)", path, re.I):
         return False
-    return (re.fullmatch(r"shells/web/src/.+\.(?:ts|css|html|svg)", path) is not None or path in {"shells/web/src/README.md", "shells/web/index.html", "shells/web/public/sw.js"}
+    return (re.fullmatch(r"shells/web/src/.+\.(?:ts|css|html|svg)", path) is not None or path in {"shells/web/src/README.md", "shells/web/index.html", "shells/web/public/sw.js",
+                                                                                           "shells/web/design/chrome-tokens.json", "shells/web/design/ui-semantics.json"}
             or re.fullmatch(r"tests/.+\.test\.ts", path) is not None
             # Match the independent TS companion paths. The comment baseline
             # also receives semantic checks for each source transition below.
