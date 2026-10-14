@@ -117,6 +117,30 @@ test('real CLI builds with Vite and catalog crypto, retains lazy assets, and lea
   assert.deepEqual(readFileSync(join(prepared.shell.root, 'catalog/tools/index.sig.json')), previousEnvelope);
 });
 
+test('CI companions build while full CI runs, retain accepted info, and remain unqualified', { skip: !hasVite && 'Requires the qualified Lolly dependency cache (LOLLY_SHELL_TEST_DEPENDENCIES).' }, t => {
+  const f = fixture(t);
+  for (const path of ['.github/workflows/ci.yml', '.github/workflows/shell-deployment-request.yml',
+    'scripts/ci-qualification.ts', 'scripts/run-public-ready-ui.ts', 'docs/ci-qualification.md']) put(f.source, path, 'changed operator metadata\n');
+  git(f.source, 'add', '.'); git(f.source, 'commit', '-qm', 'test CI policy companions'); f.options.candidate = git(f.source, 'rev-parse', 'HEAD');
+  put(f.previous, 'info/build/ci-qualification.html', 'accepted info snapshot');
+  const previousManifest = writeShellJson(join(f.root, 'previous-info.json'), shellManifest(f.previous));
+  const ci = writeShellJson(join(f.root, 'pending-ci.json'), { fixtureOnly: true, status: 'in_progress', conclusion: null, originAuthenticated: false });
+  const custody = writeShellJson(join(f.root, 'pending-custody.json'), { ...JSON.parse(readFileSync(f.options.custody, 'utf8')), previousManifest, ci });
+  f.options.custody = custody.path; f.options.custodySha256 = custody.sha256;
+  const result = spawnSync(process.execPath, [join(work, 'scripts/prepare-shell-update.ts'),
+    '--source', f.source, '--base', f.options.base, '--candidate', f.options.candidate, '--previous-shell', f.previous,
+    '--public-key', f.options.publicKey, '--custody', custody.path, '--custody-sha256', custody.sha256, '--out', f.options.out],
+  { encoding: 'utf8', timeout: 90_000, maxBuffer: 1024 * 1024 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /release-ready full CI is required/);
+  const prepared = JSON.parse(readFileSync(join(f.options.out, 'shell-update.prepared.json'), 'utf8'));
+  assert.equal(prepared.status, 'LOCAL_PRIVATE_SHELL_UPDATE_PREPARED_UNQUALIFIED');
+  assert.equal(prepared.normalCIQualified, false); assert.equal(prepared.promotionAttempted, false);
+  assert.match(prepared.outstanding[0], /release-ready full CI/);
+  assert.equal(readFileSync(join(prepared.shell.root, 'info/build/ci-qualification.html'), 'utf8'), 'accepted info snapshot');
+  assert.equal(git(f.source, 'status', '--porcelain'), '');
+});
+
 test('genuine clone receipts bind full target metadata and descriptor-verified content', t => {
   const f = fixture(t), destination = join(f.root, 'clone-custody'); mkdirSync(destination);
   const files = shellManifest(f.previous).files;

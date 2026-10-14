@@ -11,6 +11,10 @@ const MAX_BYTES = 2 * 1024 * 1024;
 const MAX_PATHS = 4096;
 const MAX_PATH_BYTES = 1024;
 const COMMENT_BASELINE = 'scripts/vernacular-code-baseline.json';
+// These exact CI/operator files are not local shell build inputs. Changing them
+// requires full candidate CI, enforced independently by private preparation.
+const CI_METADATA = new Set(['.github/workflows/ci.yml', '.github/workflows/shell-deployment-request.yml',
+  'scripts/ci-qualification.ts', 'scripts/run-public-ready-ui.ts', 'docs/ci-qualification.md']);
 const ZERO = '0'.repeat(40);
 const MODES = new Set(['000000', '100644', '100755', '120000', '160000']);
 type Repository = 'lolly' | 'lolly-work';
@@ -101,6 +105,9 @@ function deploymentMetadata(path: string): boolean {
 }
 // This manually invoked browser harness does not produce the shell or qualify a release.
 function uiHarness(path: string): boolean { return path === 'scripts/check-ui-performance.ts'; }
+export function requiresFullShellCI(changes: readonly ChangedPath[]): boolean {
+  return changes.some(change => CI_METADATA.has(change.path));
+}
 export function permitsCommentBaselineUpdate(before: string, after: string, changedSources: ReadonlySet<string>): boolean {
   try {
     const parse = (raw: string): Record<string, number> => {
@@ -130,10 +137,12 @@ export function permitsCommentBaselineUpdate(before: string, after: string, chan
 }
 function scope(repository: Repository, changes: ChangedPath[], commentBaseline: boolean): Pick<ReleaseClassification, 'classification' | 'reasons'> {
   if (!changes.length) return { classification: 'no-change', reasons: ['No committed tree changes.'] };
-  if (repository === 'lolly' && changes.every(change => regular(change) && (web(change.path) || test(change.path) || deploymentMetadata(change.path) || uiHarness(change.path)
+  if (repository === 'lolly' && changes.every(change => regular(change) && (web(change.path) || test(change.path) || deploymentMetadata(change.path) || uiHarness(change.path) || CI_METADATA.has(change.path)
       || (commentBaseline && change.path === COMMENT_BASELINE)))
     && changes.some(change => web(change.path) && !change.path.endsWith('.test.ts') && !change.path.endsWith('.md'))) {
-    return { classification: 'web-shell-only', reasons: [changes.some(change => deploymentMetadata(change.path) || uiHarness(change.path) || change.path === COMMENT_BASELINE)
+    return { classification: 'web-shell-only', reasons: [requiresFullShellCI(changes)
+      ? 'Only web-shell paths and supported non-runtime companions changed; CI metadata changes require release-ready full CI before private qualification.'
+      : changes.some(change => deploymentMetadata(change.path) || uiHarness(change.path) || change.path === COMMENT_BASELINE)
       ? 'Only web-shell paths, test fixtures and supported metadata, manual UI harness or matching comment-baseline reductions changed; shared runtime source and local build inputs are unchanged.'
       : 'Only reviewed web-shell paths and test fixtures changed; shared contract and release inputs are unchanged.'] };
   }
