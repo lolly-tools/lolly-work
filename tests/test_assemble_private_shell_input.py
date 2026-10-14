@@ -120,7 +120,7 @@ class AdapterTests(fixture.Shell):
         return snapshot
 
     def test_pending_build_snapshot_binds_same_completed_successful_main_ci(self):
-        for status in ('queued', 'in_progress'):
+        for status in ('pending', 'queued', 'in_progress'):
             self.producer_ref = self.file('restored-completed-producer', self.produced)
             snapshot = self.build_snapshot(lambda v: v.update(status=status))
             adapter = self.adapter()
@@ -136,17 +136,26 @@ class AdapterTests(fixture.Shell):
                      lambda v: v.update(workflow_id=123), lambda v: v.update(status='completed', conclusion='failure'),
                      lambda v: v.update(status='in_progress', conclusion='success')):
             self.producer_ref = self.file('restored-completed-producer', self.produced)
-            self.build_snapshot(edit); self.refuses()
+            def pending(v):
+                v.update(status='pending'); edit(v)
+            self.build_snapshot(pending); self.refuses()
+
+    def test_pending_provider_build_state_requires_null_conclusion(self):
+        for conclusion in ('success', 'failure', 'cancelled', 'timed_out', 'neutral', 'skipped', 'action_required'):
+            with self.subTest(conclusion=conclusion):
+                self.producer_ref = self.file('restored-completed-producer', self.produced)
+                self.build_snapshot(lambda v: v.update(status='pending', conclusion=conclusion))
+                self.refuses()
 
     def test_pending_build_never_substitutes_for_final_complete_successful_ci(self):
-        self.build_snapshot(lambda v: None)
+        self.build_snapshot(lambda v: v.update(status='pending'))
         def pending(v):
             run = json.loads(Path(v['ciRun']['path']).read_bytes()); run.update(status='in_progress', conclusion=None)
             v['ciRun'] = self.file('synthetic-still-running-final', run)
         self.change('candidate_ref', pending); self.refuses()
 
     def test_public_ready_adapter_keeps_pending_build_and_explicit_fast_scope(self):
-        self.build_snapshot(lambda v: None)
+        self.build_snapshot(lambda v: v.update(status='pending'))
         def ready(v):
             v['qualificationTier'] = 'public-ready'
             run = json.loads(Path(v['ciRun']['path']).read_bytes()); run.update(status='in_progress', conclusion=None)

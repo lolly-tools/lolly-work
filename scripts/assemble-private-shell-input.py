@@ -52,7 +52,7 @@ def build_ci_snapshot(snapshot, final, source, repository, tier=None):
     if 'workflow_id' in snapshot or 'workflow_id' in final:
         require(cohort.paired.positive(snapshot.get('workflow_id')) and snapshot.get('workflow_id') == final.get('workflow_id'), 'Build CI workflow identity differs')
     require(snapshot['status'] != 'completed' or final['status'] == 'completed', 'Build CI observation is newer than qualification snapshot')
-    require((snapshot['status'] in {'queued', 'in_progress'} and snapshot['conclusion'] is None)
+    require((snapshot['status'] in {'pending', 'queued', 'in_progress'} and snapshot['conclusion'] is None)
             or (snapshot['status'] == 'completed' and snapshot['conclusion'] == 'success'), 'Build CI observation was not pending or successful')
 
 
