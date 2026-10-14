@@ -28,9 +28,10 @@ Kubernetes user namespace (`hostUsers: false`) with `CAP_SYS_ADMIN` and
 `CAP_SYS_CHROOT`. The runtime's default profile permits `unshare(CLONE_NEWUSER)`
 only with the first and `chroot` (which Chromium calls inside its new namespace,
 as `chromium.json` above also has to allow) only with the second. Inside the
-pod's user namespace both reach only the pod's own namespaces: container root maps to an unprivileged host UID range, and
-the non-root worker process still has an empty effective capability set, so the
-renderer evidence checks are unchanged.
+pod's user namespace both reach only the pod's own namespaces: container root
+maps to an unprivileged host UID range, and the non-root worker process still
+has an empty effective capability set, so the renderer evidence checks are
+unchanged.
 
 Measured on RKE2 1.35, containerd 2.2.6, SLES 15 SP7 kernel 6.4 with the worker
 image built from this chart's source, UID 1000, no new privileges and a read-only
