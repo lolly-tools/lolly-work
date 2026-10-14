@@ -35,6 +35,18 @@ def api(path, binary=False):
     return result.stdout if binary else json.loads(result.stdout)
 
 
+class Provider:
+    """Retain literal transport bytes separately from derived validation results."""
+    def __init__(self):
+        self.responses = []
+
+    def __call__(self, path, binary=False):
+        data = api(path, binary=True)
+        need(sum(len(row[1]) for row in self.responses) + len(data) <= 64 * 1024**2, 'Provider audit exceeds bound')
+        self.responses.append((path, data))
+        return data if binary else json.loads(data)
+
+
 def collection(path, field, read=api):
     rows, total = [], None
     for page in range(1, 21):
@@ -77,7 +89,7 @@ def validate(q, run, jobs, repository, workflow_id, source, run_id, attempt, tie
         need(job.get('run_id') == run_id and job.get('run_attempt') == attempt and job.get('head_sha') == source
              and isinstance(job.get('name'), str) and job['name'] not in names, 'Job source, attempt or identity differs')
         names[job['name']] = job
-        pending = job.get('status') in {'queued', 'in_progress', 'waiting', 'pending'} and job.get('conclusion') is None
+        pending = tier == 'public-ready' and job.get('status') in {'queued', 'in_progress', 'waiting', 'pending'} and job.get('conclusion') is None
         skipped = job.get('status') == 'completed' and job.get('conclusion') == 'skipped' and (
             job['name'] == 'verified instance shell' or (job['name'] == 'public-ready' and q.get('scope', {}).get('publicReadyEligible') is False))
         need(pending or skipped or (job.get('status') == 'completed' and job.get('conclusion') == 'success'),
@@ -145,9 +157,16 @@ def main():
     parser.add_argument('--attempt', type=int, required=True); parser.add_argument('--tier', choices=['public-ready', 'release-ready'], required=True)
     parser.add_argument('--out', type=Path, required=True)
     args = parser.parse_args()
-    request, originals = fetch(args.source, args.run_id, args.attempt, args.tier)
+    provider = Provider()
+    request, observations = fetch(args.source, args.run_id, args.attempt, args.tier, provider)
     args.out.mkdir(mode=0o700, parents=False, exist_ok=False)
-    for name, value in [('request.json', request), ('provider.original.json', originals)]:
+    index = []
+    for number, (path, data) in enumerate(provider.responses, 1):
+        name = f'provider-{number:03}.original.' + ('zip' if path.endswith('/zip') else 'json')
+        with (args.out / name).open('xb') as output:
+            output.write(data)
+        index.append({'apiPath': path, 'path': name, 'sha256': hashlib.sha256(data).hexdigest()})
+    for name, value in [('request.json', request), ('provider.derived.json', observations), ('provider-index.json', index)]:
         with (args.out / name).open('x') as output:
             json.dump(value, output, sort_keys=True, indent=2); output.write('\n')
     print('Exact main qualification accepted; private publication remains separate.')

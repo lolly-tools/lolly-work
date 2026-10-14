@@ -76,6 +76,7 @@ class Qualification(unittest.TestCase):
         f.value['requiredJobs'] = [{key: row[key] for key in ('id', 'name', 'conclusion')} for row in f.jobs if row['conclusion'] == 'success']
         with self.assertRaises(q.Refusal): self.validate(f)
         f.run.update(status='completed', conclusion='success')
+        with self.assertRaises(q.Refusal): self.validate(f)
         next(row for row in f.jobs if row['id'] == 100).update(status='completed', conclusion='success')
         self.validate(f)
         f.value['scope']['publicReadyEligible'] = True
@@ -135,6 +136,32 @@ class Qualification(unittest.TestCase):
 
 
 class Resume(unittest.TestCase):
+    def test_completed_receipt_is_bound_to_this_config_preparation_and_tier(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(); deployment = object.__new__(d.Deployment)
+            prepared = d.update.save(root, 'prepared.json', {'source': 'held'})
+            accepted = d.update.save(root, 'accepted-previous.json', {'source': 'held'})
+            profile = d.update.save(root, 'next-profile.json', {'source': 'held'})
+            deployment.config_ref = {'path': '/held/config', 'sha256': 'a' * 64}
+            deployment.config = {'prepared': prepared}; deployment.request = {'qualification': {'qualificationTier': 'public-ready'}}
+            value = {'version': 1, 'status': 'PRIVATE_SHELL_UPDATE_RUNTIME_ACCEPTED', 'config': deployment.config_ref,
+                     'prepared': prepared, 'qualificationTier': 'public-ready', 'productionMutation': True,
+                     'acceptedPrevious': accepted, 'nextProfile': profile}
+            deployment.completed(value)
+            for key, wrong in [('config', {}), ('prepared', accepted), ('qualificationTier', 'release-ready'), ('status', 'PENDING'), ('productionMutation', False)]:
+                with self.assertRaises(d.Refusal): deployment.completed({**value, key: wrong})
+
+    def test_ci_refresh_is_after_apply_guards_and_before_normal_target_preflight(self):
+        deployment = object.__new__(d.Deployment); calls = []
+        deployment.fresh_ci = lambda: calls.append('fresh-ci')
+        publication = SimpleNamespace(command=lambda key, phase: calls.append((key, phase)))
+        planned = {'publicationInput': {'path': '/input', 'sha256': 'a' * 64}, 'publicationOperator': {'sha256': 'b' * 64}, 'executionDirectory': '/journal'}
+        with patch.object(d.update.publisher, 'Publication', return_value=publication):
+            operation = deployment.publication(planned)
+        operation.command('preflight', 'dryrun')
+        operation.command('preflight', 'apply')
+        self.assertEqual(calls, [('preflight', 'dryrun'), 'fresh-ci', ('preflight', 'apply')])
+
     def test_success_is_reused_but_uncertain_or_partial_mutation_is_never_replayed(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); seen = []

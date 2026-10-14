@@ -53,7 +53,9 @@ Create the lock directory with mode `0700`. All operators for the same cluster
 and Work Deployment must use the same directory. The lock identity uses the
 cluster UID, namespace and Deployment UID, so changing profile files cannot
 create a second publication owner. The lock is released automatically when the
-process exits; an interrupted process does not leave a stale PID lock.
+process exits; an interrupted process does not leave a stale PID lock. This is a
+host-local lock. A second operator host needs external publication coordination;
+it does not participate in this filesystem lock.
 
 ```sh
 python3 -B scripts/deploy-private-shell.py \
@@ -63,7 +65,8 @@ python3 -B scripts/deploy-private-shell.py \
 
 The command checks local and host capacity before staging, then uses the existing
 stage and publication guards. Normal target checks still run before each
-production mutation. CI is read again immediately before apply. If main has
+production mutation. CI is read again after the apply guards and immediately
+before the final normal target preflight and patch. If main has
 advanced, prepare the newer request; the older candidate is not silently shipped.
 
 Run the identical command to resume. Successful original stage phases are reused;

@@ -113,20 +113,48 @@ class Deployment:
     def checkpoint(self, name, action):
         path = self.out / (name + '.checkpoint.json')
         if path.exists():
-            value = json.loads(path.read_bytes())
-            need(value['config'] == self.config_ref, 'Checkpoint belongs to another deployment')
-            load(value['result'])
-            return value['result']
+            return self.prior_checkpoint(name)
         directory = update.private_new_directory(self.out / (name + '-' + uuid.uuid4().hex))
         start = time.monotonic(); result = action(directory)
         load(result)
         update.save(self.out, path.name, {'config': self.config_ref, 'result': result, 'seconds': time.monotonic() - start})
         return result
 
+    def prior_checkpoint(self, name):
+        value = json.loads((self.out / (name + '.checkpoint.json')).read_bytes())
+        need(value['config'] == self.config_ref, 'Checkpoint belongs to another deployment')
+        load(value['result'])
+        return value['result']
+
     def fresh_ci(self):
         self.unchanged()
-        value = qualification.verify(self.request)
-        return update.save(self.out, 'ci-' + uuid.uuid4().hex + '.original.json', value)
+        provider = qualification.Provider()
+        label = 'ci-' + uuid.uuid4().hex
+        try:
+            value = qualification.verify(self.request, provider)
+        finally:
+            index = [{'apiPath': path, **update.save_raw(self.out, label + f'-{number:03}.original.json', data)}
+                     for number, (path, data) in enumerate(provider.responses, 1)]
+            update.save(self.out, label + '.index.json', index)
+        return update.save(self.out, label + '.derived.json', value)
+
+    def publication(self, planned):
+        publication = update.publisher.Publication(planned['publicationInput']['path'], planned['publicationInput']['sha256'],
+                                                  planned['publicationOperator']['sha256'], planned['executionDirectory'])
+        original_command = publication.command
+        def guarded_command(key, phase):
+            if key == 'preflight' and phase == 'apply':
+                self.fresh_ci()
+            return original_command(key, phase)
+        publication.command = guarded_command
+        return publication
+
+    def completed(self, value):
+        need(value.get('version') == 1 and value.get('status') == 'PRIVATE_SHELL_UPDATE_RUNTIME_ACCEPTED'
+             and value.get('config') == self.config_ref and value.get('prepared') == self.config['prepared']
+             and value.get('qualificationTier') == self.request['qualification']['qualificationTier']
+             and value.get('productionMutation') is True, 'Accepted result belongs to another deployment')
+        load(value['acceptedPrevious']); load(value['nextProfile'])
 
     def run(self):
         descriptor = os.open(self.lock_dir / self.lock_name, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -148,13 +176,13 @@ class Deployment:
         complete = self.out / 'accepted.json'
         if complete.exists():
             value = json.loads(complete.read_bytes())
-            load(value['acceptedPrevious']); load(value['nextProfile'])
+            self.completed(value)
             return update.file_ref(complete)
         operation = self.operation()
         plan_checkpoint = self.out / 'publication.checkpoint.json'
-        plan_ref = json.loads(plan_checkpoint.read_bytes())['result'] if plan_checkpoint.exists() else None
+        plan_ref = self.prior_checkpoint('publication') if plan_checkpoint.exists() else None
         planned = load(plan_ref) if plan_ref else None
-        applied = planned and (Path(planned['executionDirectory']) / 'apply.actual.json').exists()
+        applied = planned and successful_phase(self.publication(planned), 'apply', PUBLICATION['apply']) is not None
         if not applied:
             self.fresh_ci()
             capacity(operation, self.out, self.config['minimumLocalFreeBytes'])
@@ -174,13 +202,10 @@ class Deployment:
         planned_ref = self.checkpoint('publication', lambda directory: operation.assemble_plan(check,
             operation.read_capture(update.private_new_directory(directory / 'capture')), stage_ref, update.private_new_directory(directory / 'plan')))
         planned = load(planned_ref)
-        publication = update.publisher.Publication(planned['publicationInput']['path'], planned['publicationInput']['sha256'],
-                                                  planned['publicationOperator']['sha256'], planned['executionDirectory'])
+        publication = self.publication(planned)
         for name, expected in PUBLICATION.items():
             operation.source_check(); self.unchanged()
             if successful_phase(publication, name, expected) is None:
-                if name == 'apply':
-                    self.fresh_ci()
                 print('Publication: ' + name, flush=True)
                 try:
                     getattr(publication, name)()
