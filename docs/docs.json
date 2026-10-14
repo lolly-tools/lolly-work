@@ -329,6 +329,11 @@
           "summary": "Advisory Git comparison for web-shell changes, conservative shared-source boundaries and required release qualification."
         },
         {
+          "slug": "shell-deployment-workflow",
+          "title": "Shell deployment workflow",
+          "summary": "Qualified main CI requests, reusable prepared artifacts and guarded publication with resumable successful phases."
+        },
+        {
           "slug": "telemetry",
           "title": "Telemetry and dashboards",
           "summary": "What is recorded, what never is, and how attribution consent works."
