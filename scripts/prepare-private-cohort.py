@@ -325,7 +325,7 @@ def verify_signature(pin, envelope, node):
 
 CATALOG_LEGACY_FIELDS = {"alg", "keyId", "signedAt", "indexHash", "files", "signature"}
 CATALOG_DELIVERY_REQUIRED = {"seq", "toolDirs"}
-CATALOG_DELIVERY_OPTIONAL = {"catalogScope", "expiresAt", "assetIndexHash", "slimHash"}
+CATALOG_DELIVERY_OPTIONAL = {"catalogScope", "expiresAt", "assetIndexHash", "slimHash", "resources"}
 TOOL_ID = re.compile(r"[a-z0-9][a-z0-9-]*\Z", re.I)
 HASH_TOOL = re.compile(r"tools/([a-z0-9][a-z0-9-]*)@([0-9a-f]{16})/(.+)\Z", re.I)
 HASH_INDEX = re.compile(r"catalog/(tools/index(?:\.slim)?|assets/index)\.([0-9a-f]{16})\.json\Z")
@@ -349,6 +349,15 @@ def catalog_envelope(envelope, pin, node):
     if modern:
         require(type(envelope["seq"]) is int and 0 < envelope["seq"] <= 9007199254740991, "Invalid signed catalog sequence")
         require(isinstance(envelope["toolDirs"], dict), "Invalid signed tool directory map")
+        if "resources" in envelope:
+            resources = envelope["resources"]
+            require(isinstance(resources, dict) and len(resources) <= 20000, "Invalid signed resource map")
+            for path, expected in resources.items():
+                require(isinstance(path, str) and len(path) <= 1024
+                        and re.match(r"^/(?:catalog/(?:previews|og)|info/shots)/", path)
+                        and not any(c in "\\%?#" or c.isspace() or ord(c) < 32 or 127 <= ord(c) <= 159 for c in path)
+                        and all(part not in ("", ".", "..") for part in path[1:].split("/")), "Invalid signed resource path")
+                sha(expected)
         if "catalogScope" in envelope:
             sha(envelope["catalogScope"])
         from datetime import datetime, timezone
@@ -493,6 +502,8 @@ def catalog_content(tree, envelope, modern, previous=None, node="node"):
         if path.startswith("tools/") and path.endswith("/tool.json") and not (modern and HASH_TOOL.fullmatch(path)):
             require(path[6:] in files, "Tool manifest is outside the signed catalog closure")
     if not modern: return
+    for path, expected in envelope.get("resources", {}).items():
+        require(tree.files.get(path[1:], {}).get("sha256") == expected, "Signed resource bytes differ from catalog tree")
     require(set(envelope["toolDirs"]) == set(by_tool), "Signed tool directory ids differ from logical files")
     for tool_id, entries in by_tool.items():
         sha(envelope["toolDirs"][tool_id])
