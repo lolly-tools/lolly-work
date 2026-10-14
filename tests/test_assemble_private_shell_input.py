@@ -101,6 +101,7 @@ class AdapterTests(fixture.Shell):
         self.assertEqual(actual['qualificationBoundary'], m.BOUNDARY)
         self.assertEqual(out.stat().st_mode & 0o777, 0o700)
         evidence = json.loads(Path(actual['evidence']['path']).read_bytes())
+        self.assertNotIn('rawDerivation', evidence)
         self.assertEqual(evidence['candidateShell']['manifest']['sha256'], self.evidence['candidateShell']['manifest']['sha256'])
         self.assertNotEqual(evidence['candidateShell']['manifest']['sha256'], evidence['shell']['manifest']['sha256'])
         command = [sys.executable, *(['-O'] if sys.flags.optimize else []), str(Path(m.shell.__file__)), '--evidence', actual['evidence']['path'], '--reviewed-evidence-sha256', actual['evidence']['sha256'], '--existing-public-pin-sha256', self.public_pin_sha, '--node', NODE, '--out-dir', str(self.base / 'prepared')]
@@ -120,7 +121,7 @@ class AdapterTests(fixture.Shell):
         return snapshot
 
     def test_pending_build_snapshot_binds_same_completed_successful_main_ci(self):
-        for status in ('queued', 'in_progress'):
+        for status in ('pending', 'queued', 'in_progress'):
             self.producer_ref = self.file('restored-completed-producer', self.produced)
             snapshot = self.build_snapshot(lambda v: v.update(status=status))
             adapter = self.adapter()
@@ -136,17 +137,26 @@ class AdapterTests(fixture.Shell):
                      lambda v: v.update(workflow_id=123), lambda v: v.update(status='completed', conclusion='failure'),
                      lambda v: v.update(status='in_progress', conclusion='success')):
             self.producer_ref = self.file('restored-completed-producer', self.produced)
-            self.build_snapshot(edit); self.refuses()
+            def pending(v):
+                v.update(status='pending'); edit(v)
+            self.build_snapshot(pending); self.refuses()
+
+    def test_pending_provider_build_state_requires_null_conclusion(self):
+        for conclusion in ('success', 'failure', 'cancelled', 'timed_out', 'neutral', 'skipped', 'action_required'):
+            with self.subTest(conclusion=conclusion):
+                self.producer_ref = self.file('restored-completed-producer', self.produced)
+                self.build_snapshot(lambda v: v.update(status='pending', conclusion=conclusion))
+                self.refuses()
 
     def test_pending_build_never_substitutes_for_final_complete_successful_ci(self):
-        self.build_snapshot(lambda v: None)
+        self.build_snapshot(lambda v: v.update(status='pending'))
         def pending(v):
             run = json.loads(Path(v['ciRun']['path']).read_bytes()); run.update(status='in_progress', conclusion=None)
             v['ciRun'] = self.file('synthetic-still-running-final', run)
         self.change('candidate_ref', pending); self.refuses()
 
     def test_public_ready_adapter_keeps_pending_build_and_explicit_fast_scope(self):
-        self.build_snapshot(lambda v: None)
+        self.build_snapshot(lambda v: v.update(status='pending'))
         def ready(v):
             v['qualificationTier'] = 'public-ready'
             run = json.loads(Path(v['ciRun']['path']).read_bytes()); run.update(status='in_progress', conclusion=None)
@@ -162,6 +172,47 @@ class AdapterTests(fixture.Shell):
         self.assertEqual(prepared['status'], m.shell.PUBLIC_READY_STATUS)
         self.assertEqual(set(prepared['normalCI']), {'work'})
         self.assertFalse(prepared['publicReadyCI']['lolly']['fullSuiteQualified'])
+
+    def derivation_profile(self):
+        custody = self.file('synthetic-original-release-custody-not-qualified', {'synthetic': True})
+        release = copy.deepcopy(self.evidence['previousShell'])
+        original = {'custody': custody, 'release': release}
+        relative = copy.deepcopy(original)
+        relative['custody']['path'] = os.path.relpath(custody['path'], self.base)
+        relative['release']['root'] = os.path.relpath(release['root'], self.base)
+        relative['release']['manifest']['path'] = os.path.relpath(release['manifest']['path'], self.base)
+        self.change('profile_ref', lambda v: v.update(rawDerivation=relative))
+        return original
+
+    def test_optional_original_derivation_is_normalized_held_and_preserved_without_qualification(self):
+        original = self.derivation_profile(); adapter = self.adapter()
+        self.assertEqual(adapter.evidence['rawDerivation'], original)
+        self.assertIn(Path(original['custody']['path']), adapter.inputs.reads)
+        self.assertIn(Path(original['release']['manifest']['path']), adapter.inputs.reads)
+        self.assertIn(Path(original['release']['root']), adapter.tree_roots)
+        output = self.base / 'derived-custody-assembly'
+        adapter.publish(output)
+        actual = json.loads((output / 'shell-input.reviewed.json').read_bytes())
+        self.assertEqual(actual['rawDerivation'], original)
+        with self.assertRaisesRegex(m.shell.Refusal, 'Legacy pack must not acquire derived release custody'):
+            m.shell.prepare(actual, output, self.public_pin_sha, NODE)
+
+    def test_optional_derivation_rejects_unknown_shape_or_changed_bound_refs(self):
+        self.derivation_profile(); original = self.profile_ref
+        for edit in (lambda v: v.update(extra=True), lambda v: v.pop('custody'),
+                     lambda v: v['release'].update(extra=True), lambda v: v['release'].pop('manifest'),
+                     lambda v: v['custody'].update(sha256='0' * 64),
+                     lambda v: v['release']['manifest'].update(sha256='0' * 64)):
+            self.profile_ref = original
+            self.change('profile_ref', lambda v: edit(v['rawDerivation']))
+            self.refuses()
+
+    def test_original_derivation_custody_drift_refuses_before_assembly(self):
+        original = self.derivation_profile(); adapter = self.adapter()
+        Path(original['custody']['path']).write_text('{}')
+        output = self.base / 'drifted-derivation-refused'
+        with self.assertRaises(m.Refusal): adapter.publish(output)
+        self.assertFalse(output.exists())
 
     def test_coding_original_input_receipt_and_compressor_are_held(self):
         adapter = self.adapter()
