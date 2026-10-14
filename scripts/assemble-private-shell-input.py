@@ -30,11 +30,11 @@ cohort = shell.cohort
 require, exact, Refusal = cohort.require, cohort.exact, cohort.Refusal
 STATUS = 'PRIVATE_SHELL_INPUT_ASSEMBLED_NOT_PREPARED_NOT_APPLIED'
 PROFILE_KEYS = {'version', 'status', 'instance', 'work', 'brand', 'profile', 'settings', 'rawPack', 'selection', 'publicPinSha256', 'producerSourceSha256'}
-PRODUCER_KEYS = {'version', 'status', 'lollySource', 'engineSource', 'previousShellSource', 'workSource', 'brandCommit', 'profile', 'enginePinSha256', 'shellManifestSha256', 'settings', 'workspaceModules', 'originalReport', 'classification', 'engineClassification', 'custody', 'previousAcceptance', 'ci', 'publicKey', 'previous', 'candidate', 'shell', 'delta', 'retention', 'webGate', 'catalog', 'producer', 'originAuthenticatedByThisCommand', 'normalCIQualified', 'runtimeQualified', 'promotionAttempted', 'outstanding'}
+PRODUCER_KEYS = {'version', 'status', 'lollySource', 'engineSource', 'previousShellSource', 'workSource', 'brandCommit', 'profile', 'enginePinSha256', 'shellManifestSha256', 'settings', 'workspaceModules', 'originalReport', 'classification', 'engineClassification', 'custody', 'previousAcceptance', 'ci', 'publicKey', 'previous', 'candidate', 'shell', 'delta', 'retention', 'webGate', 'codingReport', 'catalog', 'producer', 'originAuthenticatedByThisCommand', 'normalCIQualified', 'runtimeQualified', 'promotionAttempted', 'outstanding'}
 CUSTODY_KEYS = {'version', 'engineSource', 'workSource', 'brandCommit', 'enginePinSha256', 'profile', 'settings', 'previousManifest', 'previousAcceptance', 'ci', 'publicKeySha256'}
 PREFIXES = ('engine/', 'packages/core/', 'packages/node-shell/', 'packages/rondo/', 'packages/audio-dock/')
 BOUNDARY = {'originAuthenticatedByThisCommand': False, 'runtimeQualified': False, 'productionMutation': False, 'buildOrSigningPerformed': False, 'targetContacted': False}
-DEPENDENCIES = ('assemble-private-shell-input.py', *update.DEPENDENCIES, 'prepare-shell-update.ts', 'shell-update-vite.mjs')
+DEPENDENCIES = ('assemble-private-shell-input.py', *update.DEPENDENCIES, 'prepare-shell-update.ts', 'shell-update-vite.mjs', 'private-shell-codings.mjs', 'shell-update-files.ts', 'shell-update-clone.py', 'public-delivery-map.mjs')
 
 
 def manifest_id(manifest):
@@ -132,6 +132,7 @@ class Adapter:
         runner_ref = self.ref({'path': build['command'][2], 'sha256': build['command'][3]}, base=base); runner = self.inputs.file(runner_ref)
         exact(runner, {'source', 'sourceCommit', 'output', 'prerequisites', 'moduleReceipt'})
         require(runner['source'] == str(self.root) and runner['sourceCommit'] == self.candidate['source'] and runner['output'] == candidate_tree['root'] and runner['moduleReceipt'] == modules_ref['path'], 'Original Vite candidate/modules binding differs')
+        self.coding_review(produced['codingReport'], base, producer_source, candidate_tree, old, build['command'][0])
         original_gate = self.ref(produced['webGate'], base=base); gate = self.command(original_gate)
         require(gate['command'][0] == build['command'][0] and len(gate['command']) == 4 and gate['stderr'] == '' and gate['command'][1:] == ['scripts/webgpu-release-gate.ts', '--scope', 'web'] and gate['stdout'] in {'WebGPU release gate (web): docs/supported-environments.md covers 3 required environments; platform/version limits remain as published.\n', 'WebGPU release gate: the web shell does not require WebGPU at startup; nothing to check.\n'}, 'Original explicit web gate differs')
         exact(profile['selection'], {'container', 'shellVolume', 'packVolume', 'pinVolume'})
@@ -142,6 +143,40 @@ class Adapter:
         self.gate = {'version': 1, 'status': 'PASS', 'source': self.candidate['source'], 'scope': 'web', 'scriptSha256': hashlib.sha256(cohort.git_bytes(self.root, self.candidate['source'], 'scripts/webgpu-release-gate.ts', shell.git_command)).hexdigest(), 'originalReport': original_gate}
         self.evidence = {'version': 1, 'lolly': self.candidate, 'work': self.work, 'enginePin': engine_pin, 'resolverPin': resolver_pin, 'brand': profile['brand'], 'profile': profile['profile'], 'publicPin': public_pin, 'candidateShell': candidate_tree, 'previousShell': old, 'shell': retained, 'rawPack': raw_pack, 'previous': previous_ref, 'selection': selection, 'classification': classification}
         self.public_pin_sha = profile['publicPinSha256']; self.inputs.unchanged()
+
+    def coding_review(self, report, base, producer_source, candidate, previous, node):
+        command = self.command(self.ref(report, base=base))
+        program = Path(producer_source['path']).with_name('private-shell-codings.mjs')
+        require(len(command['command']) == 4 and command['command'][:2] == [node, str(program)], 'Original coding invocation differs')
+        self.ref({'path': str(program), 'sha256': hashlib.sha256(cohort.read_file(Path(__file__).with_name(program.name))[0]).hexdigest()}, False)
+        request = self.inputs.file(self.ref({'path': command['command'][2], 'sha256': command['command'][3]}, base=base))
+        exact(request, {'version', 'source', 'candidate', 'previous', 'scratch', 'receipt'})
+        require(type(request['version']) is int and request['version'] == 1 and request['source'] == str(self.root)
+                and request['candidate'] == candidate['root'] and request['scratch'] == str(base / 'coding-scratch')
+                and request['receipt'] == str(base / 'coding-rewrite.json'), 'Original coding source/output binding differs')
+        previous_ref = self.ref(request['previous'], base=base)
+        require(previous_ref['sha256'] == previous['manifest']['sha256'], 'Original coding accepted manifest differs')
+        receipt_ref = self.ref({'path': request['receipt'], 'sha256': hashlib.sha256(cohort.read_file(Path(request['receipt']))[0]).hexdigest()})
+        receipt = self.inputs.file(receipt_ref)
+        exact(receipt, {'version', 'status', 'candidate', 'previous', 'compressor', 'changed', 'written', 'removed', 'retainedImmutableWireVerified', 'allCodingsDecoded', 'runtimeQualified', 'productionMutation'})
+        require(type(receipt['version']) is int and receipt['version'] == 1 and receipt['status'] == 'PRIVATE_FRONTEND_CODINGS_PREPARED_NOT_QUALIFIED'
+                and receipt['candidate'] == candidate['root'] and self.ref(receipt['previous'], base=base) == previous_ref
+                and receipt['retainedImmutableWireVerified'] is True and receipt['allCodingsDecoded'] is True
+                and receipt['runtimeQualified'] is False and receipt['productionMutation'] is False, 'Original coding receipt binding differs')
+        compressor = self.ref(receipt['compressor'], False, base)
+        require(compressor['path'] == str(self.root / 'scripts/build-delivery.ts')
+                and compressor['sha256'] == hashlib.sha256(cohort.git_bytes(self.root, self.candidate['source'], 'scripts/build-delivery.ts', shell.git_command)).hexdigest(), 'Original committed compressor differs')
+        old = {row['path']: row for row in self.inputs.file(previous['manifest'])['files']}
+        rows = self.inputs.file(candidate['manifest'])['files']
+        changed = [row['path'] for row in rows if not row['path'].endswith(('.gz', '.br'))
+                   and (row['path'].startswith('_app/') or row['path'] in {'index.html', 'precache.json', 'sw.js', 'portable/player.js'}) and old.get(row['path']) != row]
+        require(changed and receipt['changed'] == changed, 'Original coding identity delta differs')
+        allowed = {path + suffix for path in changed for suffix in ('.gz', '.br')}
+        written = [row['path'] for row in rows if row['path'] in allowed]
+        require(receipt['written'] == written, 'Original written codings differ from candidate manifest')
+        removed = receipt['removed']
+        require(type(removed) is list and len(removed) <= len(allowed) and all(type(path) is str and path in allowed for path in removed)
+                and removed == sorted(set(removed), key=lambda path: path.encode('utf-16-be')), 'Original removed codings exceed changed identities')
 
     def ref(self, value, as_json=True, base=None):
         exact(value, {'path', 'sha256'})

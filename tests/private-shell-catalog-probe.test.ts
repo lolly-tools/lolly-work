@@ -39,7 +39,7 @@ test('real pinned P-256 caller oracle rejects altered bytes, visible files, key 
 
 test('modern signed runtime fields require independent sequence, scope and sidecar oracles', () => {
   const program = String.raw`
-    const {verifyCatalog,publicationSequence,collectBytes}=await import(${JSON.stringify(new URL('../scripts/private-shell-catalog-probe.mjs', import.meta.url).href)});
+    const {verifyCatalog,verifyBinding,publicationSequence,collectBytes}=await import(${JSON.stringify(new URL('../scripts/private-shell-catalog-probe.mjs', import.meta.url).href)});
     const {createHash,generateKeyPairSync,sign}=await import('node:crypto');
     const {EventEmitter}=await import('node:events');
     const assert=(await import('node:assert/strict')).default;
@@ -56,6 +56,18 @@ test('modern signed runtime fields require independent sequence, scope and sidec
     for(const field of ['seq','catalogScope','toolDirs','assetIndexHash','slimHash']){const changed={...unsigned};delete changed[field];assert.throws(()=>verifyCatalog({...input,envelope:signed(changed)}));}
     assert.throws(()=>verifyCatalog({...input,expectedBinding:{...expectedBinding,minimumSequence:13}}));
     assert.throws(()=>verifyCatalog({...input,expectedBinding:{kind:'legacy'}}));
+    const resources={'/catalog/previews/bundle.json':hash(Buffer.from('filtered bundle')),'/info/shots/design.png':hash(Buffer.from('visible image'))};
+    const resourceInput={...input,expectedBinding:{...expectedBinding,resources},envelope:signed({...unsigned,resources})};
+    assert.equal(verifyCatalog(resourceInput).signatureVerified,true);
+    for(const map of [{...resources,'/catalog/previews/bundle.json':'0'.repeat(64)},{},null,[],{'/catalog/previews/../private':'a'.repeat(64)}, {'/catalog/previews/a%2fb':'a'.repeat(64)}, {'/unscoped/image':'a'.repeat(64)}]) {
+      assert.throws(()=>verifyCatalog({...resourceInput,envelope:signed({...unsigned,resources:map})}));
+    }
+    assert.throws(()=>verifyCatalog({...resourceInput,envelope:signed(unsigned)}));
+    assert.throws(()=>verifyCatalog({...input,envelope:signed({...unsigned,resources})}));
+    const invalidMaps=[{'/catalog/previews/../private':'a'.repeat(64)},{'/catalog/previews/a%2fb':'a'.repeat(64)},
+      {'/catalog/previews/ab':'a'.repeat(64)}, {'/catalog/previews//a':'a'.repeat(64)}, {'/catalog/previews/a':'bad'},
+      Object.fromEntries(Array.from({length:100001},(_,i)=>['/catalog/previews/'+i,'a'.repeat(64)]))];
+    for(const map of invalidMaps)assert.throws(()=>verifyBinding({...unsigned,signature:'synthetic',resources:map},{...expectedBinding,resources:map}));
     const publication={generation:3003,digest:'c'.repeat(64)},row={seq:'12',publication_generation:'3003',publication_digest:publication.digest};
     assert.equal(publicationSequence(row,{generation:3003},publication),12);
     for(const change of [{seq:'1.5'},{seq:'0'},{publication_generation:'3002'},{publication_digest:'d'.repeat(64)},{extra:1}])assert.throws(()=>publicationSequence({...row,...change},{generation:3003},publication));

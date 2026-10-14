@@ -56,8 +56,9 @@ def allowed_source(path):
     return (re.fullmatch(r"shells/web/src/.+\.(?:ts|css|html|svg)", path) is not None or path in {"shells/web/src/README.md", "shells/web/index.html", "shells/web/public/sw.js"}
             or re.fullmatch(r"tests/.+\.test\.ts", path) is not None
             # Same narrow CI metadata exception as the independent TS classifier;
-            # this workflow is not consumed by the local frontend build.
-            or path == ".github/workflows/deployment-suse.yml")
+            # these files are not consumed by the local frontend build.
+            or path in {".github/workflows/deployment-suse.yml", "deploy/helm/profiles/sovereign/README.md",
+                        "deploy/helm/profiles/sovereign/files/private.caddy"})
 
 
 def git_tree(root, source, runner):

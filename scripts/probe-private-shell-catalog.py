@@ -31,7 +31,7 @@ ORACLE_FILES = (
     'server/src/store/postgres.ts', 'server/src/iam/sessions.ts',
     'server/src/iam/tokens.ts', 'server/src/lib/crypto.ts',
     'server/src/catalog/tool-sidecars.ts', 'server/src/catalog/delivery.ts',
-    'server/src/catalog/publication.ts',
+    'server/src/catalog/publication.ts', 'server/src/catalog/resource-proofs.ts',
 )
 LIMIT = 32 * 1024**2
 INPUT_KEYS = {'version', 'status', 'profile', 'source', 'instanceProfile', 'prepared',

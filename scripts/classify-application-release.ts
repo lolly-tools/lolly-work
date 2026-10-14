@@ -91,9 +91,12 @@ function web(path: string): boolean {
     || path === 'shells/web/index.html' || path === 'shells/web/public/sw.js';
 }
 function test(path: string): boolean { return !releaseGate(path) && /^tests\/.+\.test\.ts$/.test(path); }
-// The deployment workflow transports qualified artifacts; it is not a runtime
-// build input to this local Vite producer. Normal candidate CI remains required.
-function deploymentMetadata(path: string): boolean { return path === '.github/workflows/deployment-suse.yml'; }
+// These deployment files are outside the local frontend build. Their changes
+// grant no edge deployment authority. Normal candidate CI remains required.
+function deploymentMetadata(path: string): boolean {
+  return ['.github/workflows/deployment-suse.yml', 'deploy/helm/profiles/sovereign/README.md',
+    'deploy/helm/profiles/sovereign/files/private.caddy'].includes(path);
+}
 function scope(repository: Repository, changes: ChangedPath[]): Pick<ReleaseClassification, 'classification' | 'reasons'> {
   if (!changes.length) return { classification: 'no-change', reasons: ['No committed tree changes.'] };
   if (repository === 'lolly' && changes.every(change => regular(change) && (web(change.path) || test(change.path) || deploymentMetadata(change.path)))

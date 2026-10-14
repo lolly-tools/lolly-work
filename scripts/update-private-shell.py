@@ -42,7 +42,7 @@ CAPTURE_KEYS = {'version', 'status', 'targetSha256', 'systemNamespace', 'node', 
 AUTH_PROFILE = 'NORMAL_TLS_PER_CALLER_INDEX_ORACLE_AND_PINNED_P256_ENVELOPE'
 MOUNT_PLACEHOLDERS = {'${stagePodUID}', '${writerPodUID}', '${nodeUID}', '${targetPath}'}
 DEPENDENCIES = ('update-private-shell.py', 'stage-private-shell.py', 'publish-private-shell.py', 'plan-private-shell.py', 'prepare-private-shell.py',
-                'generation-acceptance.py', 'app-update.py', 'prepare-private-cohort.py', 'prepare-paired-release.py', 'plan-private-cohort.py')
+                'generation-acceptance.py', 'probe-private-shell-catalog.py', 'app-update.py', 'prepare-private-cohort.py', 'prepare-paired-release.py', 'plan-private-cohort.py')
 
 
 def file_ref(path):

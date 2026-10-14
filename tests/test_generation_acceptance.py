@@ -97,6 +97,24 @@ class Generation(f.Shell):
         self.assertEqual(prepared['status'],m.STATUS)
         self.assertFalse(prepared['qualificationBoundary']['runtimeQualified'])
 
+    def test_large_source_closure_is_bounded_unique_and_holds_every_file(self):
+        spec = importlib.util.spec_from_file_location('source_closure_fixture', Path(m.__file__).with_name('generation-acceptance.py'))
+        generation = importlib.util.module_from_spec(spec); spec.loader.exec_module(generation)
+        closure = [self.binary(f'closure-{i}', b'held source') for i in range(4096)]
+        inputs = m.cohort.Inputs(self.base)
+        generation.source_closure({'sourceFiles': closure}, inputs, m.cohort)
+        self.assertEqual(len(inputs.reads), 4096); inputs.unchanged()
+        for wrong in ([], closure + [closure[0]], [closure[0], closure[0]],
+                      [closure[0], {**closure[0], 'path': './' + closure[0]['path']}],
+                      [{**closure[0], 'sha256': '0' * 64}], [{**closure[0], 'extra': True}]):
+            with self.assertRaises(m.Refusal): generation.source_closure({'sourceFiles': wrong}, m.cohort.Inputs(self.base), m.cohort)
+        oversized = self.base / 'oversized-source'
+        with oversized.open('wb') as stream: stream.truncate(m.cohort.JSON_LIMIT + 1)
+        oversized.chmod(0o600)
+        with self.assertRaises(m.Refusal): generation.source_closure({'sourceFiles': [{'path': str(oversized), 'sha256': '0' * 64}]}, m.cohort.Inputs(self.base), m.cohort)
+        (self.base / closure[0]['path']).write_bytes(b'drift')
+        with self.assertRaises(m.Refusal): inputs.unchanged()
+
     def test_original_scope_source_owner_and_pins_tampering_refuses(self):
         baseline=copy.deepcopy(self.generation)
         for mutate in (lambda v:v.update(runtimeAcceptanceComplete=True),lambda v:v.update(ociImageSignatureClaimed=True),lambda v:v.update(remainingAcceptance=[]),lambda v:v['sources'].update(lolly='f'*40),lambda v:v.update(deploymentUID='different'),lambda v:v.update(podUID='different'),lambda v:v.update(observedImageId='wrong'),lambda v:v.update(enginePinSha256='f'*64),lambda v:v.update(resolverPinSha256='f'*64),lambda v:v.update(publicationGeneration=3)):
@@ -177,6 +195,75 @@ class Generation(f.Shell):
         with self.assertRaises(m.Refusal):self.parse_generation()
 
 
+
+class Modern(Generation):
+    def modern_fixture(self):
+        spec = importlib.util.spec_from_file_location('modern_probe_fixture', Path(m.__file__).with_name('probe-private-shell-catalog.py'))
+        probe = importlib.util.module_from_spec(spec); spec.loader.exec_module(probe)
+        proof = self.generation['authenticatedCatalogProof']
+        source_map = {path: {'sha256': 'a' * 64, 'bytes': 1, 'mode': '0644', 'gitBlob': None} for path in probe.ORACLE_FILES}
+        source_map['migrations/0001_init.sql'] = {'sha256': 'b' * 64, 'bytes': 1, 'mode': '0644', 'gitBlob': None}
+        previous = self.file('modern-previous', {'synthetic': True})
+        release = {'version': 1, 'status': 'ROOT_REVIEWED_MAIN_UI_AUTHENTICATED_RELEASE_BINDINGS', 'sources': self.generation['sources'], 'image': self.generation['image'], 'config': 'sha256:' + 'a' * 64, 'enginePinSha256': self.generation['enginePinSha256'], 'previous': previous,
+                   'publisher': self.binary('modern-publisher.py', b'# inert'), 'publisherClosure': self.file('modern-publisher-closure', {'synthetic': True}),
+                   'sequenceOperator': self.binary('modern-sequence.py', b'# inert'), 'sequenceInput': self.file('modern-sequence-input', {'synthetic': True}),
+                   'generation': 2, 'minimumSequence': 15, 'migrationCount': 1, 'lastMigration': '0001_init.sql'}
+        measured = {'status': 'SYNTHETIC_READ_ONLY_SEQUENCE', 'transactionReadOnly': True, 'productionMutation': False, 'proposedGeneration': 2, 'migrations': ['0001_init.sql'], 'catalog': {'sequence': '14'}}
+        command = {'exitCode': 0, 'stdout': self.file('modern-sequence-stdout', measured)}
+        path = self.base / 'sequence.command.actual.json'; path.write_bytes(m.cohort.canonical(command))
+        command_ref = {'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+        sequence = {'version': 1, 'status': measured['status'], 'productionMutation': False, 'operator': release['sequenceOperator'], 'input': release['sequenceInput'], 'previous': previous, 'result': measured, 'originalCommands': [command_ref]}
+        release['sequenceCapture'] = self.file('modern-sequence-capture', sequence)
+        self.auth_input.pop('sourceBindingSha256', None)
+        self.auth_input.update(version=1, status='REVIEWED_MATCHED_MAIN_UI_CATALOG_PROBE_INPUT', source=proof['source'], profile=m.AUTH_PROFILE)
+        prepared = json.loads((self.base / self.auth_input.pop('prepared')['path']).read_bytes()); prepared['previousCohortSha256'] = previous['sha256']
+        refs = self.auth_input['refs']; refs['prepared'] = self.file('modern-prepared', prepared)
+        refs.update({key: release[key] for key in ('publisher', 'publisherClosure', 'sequenceCapture')})
+        refs.update(sourceMap=self.file('modern-source-map', source_map), releaseBindings=self.file('modern-release-bindings', release), module=self.binary('modern-module.mjs', b'// inert'), report=self.binary('modern-report.py', b'# inert'))
+        self.plan['sourceCohortSha256'] = refs['prepared']['sha256']; refs['plan'] = self.file('modern-plan', self.plan)
+        rows = self.auth_input['sourceFiles'] + list(refs.values()) + [release[key] for key in ('previous', 'sequenceOperator', 'sequenceInput')]
+        self.auth_input['sourceFiles'] = list({ref['path']: ref for ref in rows}.values())
+        proof['input'] = self.file('modern-auth-input', self.auth_input)
+        publication = json.loads((self.base / proof['publicationInput']['path']).read_bytes())
+        publication['refs']['plan'] = refs['plan']; publication['authenticatedStaticProbe'].update(input=proof['input'])
+        publication['authenticatedStaticProbe']['argv'] = ['/usr/bin/python3', str(self.base / proof['source']['path']), '--input', str(self.base / proof['input']['path']), '--input-sha256', proof['input']['sha256']]
+        proof['publicationInput'] = self.file('modern-publication', publication)
+        self.context.update(planSha256=refs['plan']['sha256'], publicationInputSha256=proof['publicationInput']['sha256'])
+        proof['context'] = self.file('modern-context', self.context)
+        self.report = {key: value for key, value in self.report.items() if key not in {'assetCatalog', 'bytePolicy', 'providerMetadata'}}
+        self.report.update(contextSha256=m.cohort.digest(self.context), inputSha256=proof['input']['sha256'])
+        self.report['oracle']['sourceBindingSha256'] = m.cohort.digest(source_map)
+        delivery = {'generation': 2, 'sequence': 17, 'minimumSequence': 15, 'catalogScope': 'a' * 64, 'toolDirsSha256': 'b' * 64, 'publicationDigest': 'c' * 64, 'configSha256': self.runtime['configSha256'], 'resourcesSha256': m.cohort.digest({}), 'resourceCount': 0}
+        for key, path in (('asset', 'catalog/assets/index.json'), ('slim', 'catalog/tools/index.slim.json')):
+            delivery[key] = {'path': path, 'url': self.context['baseURL'] + path, 'status': 200, 'bytes': 100, 'sha256': 'd' * 64, 'signedHash': 'd' * 64, 'envelopeSha256': self.report['oracle']['envelopeSha256'], 'signatureVerified': True, 'verifiedTlsAndHostname': True}
+        self.report['delivery'] = delivery
+        self.modern_receipts()
+
+    def modern_receipts(self):
+        proof = self.generation['authenticatedCatalogProof']
+        proof['report'] = self.file('modern-report', self.report)
+        proof['command'] = self.file('modern-command', {'returncode': 0, 'stdout': json.dumps(self.report), 'stderr': ''})
+        self.tls['authenticatedCatalogProof'] = copy.deepcopy(proof)
+        self.generation['originalEvidence'][2] = self.file('modern-tls', self.tls)
+
+    def test_original_modern_protocol_keeps_pending_acceptance_and_nested_prepared(self):
+        self.modern_fixture()
+        (view, _), inputs = self.parse_generation()
+        self.assertEqual(view['shellSource'], self.engine_source)
+        self.assertFalse(self.generation['runtimeAcceptanceComplete']); inputs.unchanged()
+        self.assertNotIn('sourceBindingSha256', self.auth_input)
+
+    def test_rehashed_modern_delivery_source_map_or_transport_claim_refuses(self):
+        self.modern_fixture(); original = copy.deepcopy(self.report)
+        for change in (lambda v: v['oracle'].update(sourceBindingSha256='0' * 64), lambda v: v['delivery'].update(generation=3),
+                       lambda v: v['delivery'].update(minimumSequence=16), lambda v: v['delivery'].update(sequence=14),
+                       lambda v: v['delivery'].update(configSha256='f' * 64), lambda v: v['delivery'].update(resourceCount=True),
+                       lambda v: v['delivery']['asset'].update(signedHash='e' * 64), lambda v: v['delivery']['slim'].update(verifiedTlsAndHostname=False),
+                       lambda v: v['delivery']['asset'].update(bytes=16 * 1024**2 + 1), lambda v: v['delivery'].update(extra=True)):
+            self.report = copy.deepcopy(original); change(self.report); self.modern_receipts()
+            with self.assertRaises(m.Refusal): self.parse_generation()
+
+
 def load_tests(loader, tests, pattern):
-    return unittest.TestSuite(Generation(name) for name in Generation.__dict__ if name.startswith('test_'))
+    return unittest.TestSuite(cls(name) for cls in (Generation, Modern) for name in cls.__dict__ if name.startswith('test_'))
 if __name__ == '__main__':unittest.main()

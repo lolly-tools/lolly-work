@@ -15,6 +15,23 @@ from urllib.parse import urlsplit
 STATUS = "PRIVATE_GENERATION_COHORT_OWNER_CONTENT_AUTHENTICATED_TLS_VERIFIED_FULL_ACCEPTANCE_PENDING"
 
 
+
+def source_closure(value, inputs, c):
+    closure = value.get("sourceFiles")
+    c.require(type(closure) is list and 1 <= len(closure) <= 4096, "Generation source custody missing or oversized")
+    seen = set()
+    for ref in closure:
+        c.exact(ref, {"path", "sha256"})
+        path = c.local_path(ref["path"], inputs.base)
+        c.require(path not in seen, "Duplicate generation source custody")
+        expected = c.sha(ref["sha256"])
+        identity, actual, _ = c.hash_file(path, c.JSON_LIMIT)
+        c.require(actual == expected, "Generation source bytes differ")
+        c.require(path not in inputs.reads or inputs.reads[path] == (identity, expected), "Conflicting generation source custody")
+        seen.add(path)
+        inputs.reads[path] = (identity, expected)
+
+
 def validate(previous, inputs, shell):
     c = shell.cohort
     need, exact = c.require, c.exact
@@ -61,9 +78,7 @@ def validate(previous, inputs, shell):
     auth_input, publication, context, command, report, gates = [inputs.file(proof[k]) for k in ("input", "publicationInput", "context", "command", "report", "anonymousGates")]
     need(proof["profile"] == shell.AUTH_PROFILE and tls.get("authenticatedCatalogProof") == proof, "Generation authenticated proof differs")
     for value in (publication, auth_input):
-        closure = value.get("sourceFiles")
-        need(type(closure) is list and 1 <= len(closure) <= 200, "Generation source custody missing")
-        for ref in closure: inputs.file(ref, False)
+        source_closure(value, inputs, c)
     need(proof["source"] in auth_input["sourceFiles"], "Generation probe source absent from held source closure")
     invocations = [publication.get("authenticatedStaticProbe")]
     for ref in originals[6:]:
@@ -157,8 +172,10 @@ def validate(previous, inputs, shell):
             need(row["path"] not in paths and type(row["size"]) is int and row["size"] >= 0, "Generation manifest duplicate/size differs")
             paths.add(row["path"]); total += row["size"]
         need(type(manifest["totalBytes"]) is int and manifest["totalBytes"] == total, "Generation manifest total differs")
-    prepared = inputs.file(auth_input["prepared"])
-    need(auth_input["prepared"]["sha256"] == plan["sourceCohortSha256"] and prepared.get("status") == c.STATUS
+    prepared_ref = auth_input.get("prepared", auth_input["refs"].get("prepared"))
+    need("prepared" not in auth_input or "prepared" not in auth_input["refs"] or auth_input["prepared"] == auth_input["refs"]["prepared"], "Conflicting generation prepared references")
+    prepared = inputs.file(prepared_ref)
+    need(prepared_ref["sha256"] == plan["sourceCohortSha256"] and prepared.get("status") == c.STATUS
          and prepared.get("sources") == sources and prepared.get("image") == previous["image"]
          and prepared.get("enginePinSha256") == original["enginePinSha256"] and prepared.get("resolverPinSha256") == original["resolverPinSha256"]
          and prepared.get("shell", {}).get("manifestSha256") == previous["shell"]["manifestSha256"]
@@ -176,7 +193,7 @@ def validate(previous, inputs, shell):
          and all(runtime.get(k) is False for k in ("databaseDirectQueries", "fileWrites", "physicalGpuClaimed", "secretValuesPrinted", "serviceSpawned"))
          and type(runtime.get("sourceFiles")) is int and runtime["sourceFiles"] > 0 and runtime.get("storage") == "pg" and runtime.get("readyStatus") == 200
          and runtime.get("uid") == runtime.get("gid") == 1000, "Generation owning runtime source/pin/readiness proof differs")
-    validate_tls(original, owner, content, tls, context, command, report, gates, auth_input, inputs, shell)
+    validate_tls(original, owner, content, tls, context, command, report, gates, auth_input, inputs, shell, runtime)
     # Internal view only. Its original acceptance reference and pending scope
     # remain untouched; no normalized success receipt is written or substituted.
     view = {**previous, "shellSource": previous["lollySource"], "engineSource": previous["lollySource"], "resolverPin": resolver_ref}
@@ -184,7 +201,70 @@ def validate(previous, inputs, shell):
     return view, before
 
 
-def validate_tls(original, owner, content, tls, context, command, report, gates, auth_input, inputs, shell):
+
+def validate_delivery(delivery, report, original, context, auth_input, inputs, shell, runtime):
+    """Read the original modern protocol without executing its held operator code."""
+    c = shell.cohort; need, exact = c.require, c.exact
+    need(auth_input.get("version") == 1 and auth_input.get("status") == "REVIEWED_MATCHED_MAIN_UI_CATALOG_PROBE_INPUT"
+         and auth_input.get("source") == original["authenticatedCatalogProof"]["source"] and auth_input.get("profile") == shell.AUTH_PROFILE,
+         "Modern generation probe protocol differs")
+    refs = auth_input["refs"]
+    for key in ("sourceMap", "releaseBindings", "sequenceCapture", "publisher", "publisherClosure", "module", "report", "prepared"):
+        need(refs[key] in auth_input["sourceFiles"], "Modern generation reference is outside source custody")
+    spec = importlib.util.spec_from_file_location("generation_source_map", Path(__file__).with_name("probe-private-shell-catalog.py"))
+    probe = importlib.util.module_from_spec(spec); spec.loader.exec_module(probe)
+    source_map = inputs.file(refs["sourceMap"])
+    try: files = probe.source_bindings(source_map)
+    except probe.Refusal as error: raise shell.Refusal("Modern source map differs") from error
+    migrations = sorted(path.removeprefix("migrations/") for path in source_map if path.startswith("migrations/") and path.endswith(".sql"))
+    files.update({"migrations/" + name: source_map["migrations/" + name] for name in migrations})
+    need(report["oracle"]["sourceBindingSha256"] == c.digest(files), "Modern generation source map binding differs")
+    release = inputs.file(refs["releaseBindings"])
+    exact(release, {"version", "status", "sources", "image", "config", "enginePinSha256", "previous", "publisher", "publisherClosure", "sequenceCapture", "sequenceOperator", "sequenceInput", "generation", "minimumSequence", "migrationCount", "lastMigration"})
+    need(type(release["version"]) is int and release["version"] == 1 and release["status"] == "ROOT_REVIEWED_MAIN_UI_AUTHENTICATED_RELEASE_BINDINGS"
+         and release["sources"] == original["sources"] and release["image"] == original["image"] and release["enginePinSha256"] == original["enginePinSha256"]
+         and type(release["generation"]) is int and release["generation"] == original["publicationGeneration"]
+         and type(release["minimumSequence"]) is int and release["minimumSequence"] > 0
+         and type(release["migrationCount"]) is int and release["migrationCount"] == len(migrations) and migrations and release["lastMigration"] == migrations[-1], "Modern release tuple differs")
+    need(type(release["config"]) is str and re.fullmatch(r"sha256:[a-f0-9]{64}", release["config"]), "Modern image config digest missing")
+    for key in ("previous", "publisher", "publisherClosure", "sequenceCapture", "sequenceOperator", "sequenceInput"):
+        need(release[key] in auth_input["sourceFiles"], "Modern release source custody differs"); inputs.file(release[key], False)
+    need(all(refs[key] == release[key] for key in ("publisher", "publisherClosure", "sequenceCapture"))
+         and inputs.file(refs["prepared"])["previousCohortSha256"] == release["previous"]["sha256"], "Modern publisher or previous source differs")
+    sequence = inputs.file(refs["sequenceCapture"]); measured = sequence["result"]
+    need(sequence.get("version") == 1 and sequence.get("productionMutation") is False
+         and sequence.get("operator") == release["sequenceOperator"] and sequence.get("input") == release["sequenceInput"] and sequence.get("previous") == release["previous"]
+         and sequence.get("status") == measured.get("status") and measured.get("transactionReadOnly") is True and measured.get("productionMutation") is False
+         and measured.get("proposedGeneration") == release["generation"] and measured.get("migrations") == migrations,
+         "Modern original sequence capture differs")
+    old_sequence = measured.get("catalog", {}).get("sequence")
+    need(type(old_sequence) is str and re.fullmatch(r"[0-9]+", old_sequence) and int(old_sequence) + 1 == release["minimumSequence"], "Modern minimum sequence differs")
+    commands = sequence.get("originalCommands")
+    need(type(commands) is list and 1 <= len(commands) <= 32, "Modern sequence command custody missing")
+    measured_commands = []
+    for ref in commands:
+        command = inputs.file(ref)
+        need(type(command.get("exitCode")) is int and command["exitCode"] == 0, "Modern sequence command failed")
+        if Path(ref["path"]).name == "sequence.command.actual.json": measured_commands.append(inputs.file(command["stdout"]))
+    need(measured_commands == [measured], "Modern sequence result differs from original output")
+    exact(delivery, {"generation", "sequence", "minimumSequence", "catalogScope", "toolDirsSha256", "publicationDigest", "configSha256", "asset", "slim", "resourcesSha256", "resourceCount"})
+    need(type(delivery["generation"]) is int and delivery["generation"] == release["generation"]
+         and type(delivery["minimumSequence"]) is int and delivery["minimumSequence"] == release["minimumSequence"]
+         and type(delivery["sequence"]) is int and delivery["sequence"] >= release["minimumSequence"]
+         and delivery["configSha256"] == runtime["configSha256"], "Modern generation, sequence or config differs")
+    for key in ("catalogScope", "toolDirsSha256", "publicationDigest", "configSha256", "resourcesSha256"): c.sha(delivery[key])
+    need(type(delivery["resourceCount"]) is int and 0 <= delivery["resourceCount"] <= 100000, "Modern resource count differs")
+    for key, path, maximum in (("asset", "catalog/assets/index.json", 16 * 1024**2), ("slim", "catalog/tools/index.slim.json", 2 * 1024**2)):
+        item = delivery[key]
+        exact(item, {"path", "url", "status", "bytes", "sha256", "signedHash", "envelopeSha256", "signatureVerified", "verifiedTlsAndHostname"})
+        need(item["path"] == path and item["url"] == context["baseURL"] + path and type(item["status"]) is int and item["status"] == 200
+             and type(item["bytes"]) is int and 0 < item["bytes"] <= maximum and item["sha256"] == item["signedHash"]
+             and item["envelopeSha256"] == report["oracle"]["envelopeSha256"] and item["signatureVerified"] is True and item["verifiedTlsAndHostname"] is True,
+             "Modern signed sidecar binding differs")
+        c.sha(item["sha256"])
+
+
+def validate_tls(original, owner, content, tls, context, command, report, gates, auth_input, inputs, shell, runtime):
     c = shell.cohort; need, exact = c.require, c.exact
     proof = original["authenticatedCatalogProof"]
     need(tls.get("profile") == shell.AUTH_PROFILE and tls.get("preparedEnvelopeByteEqualityClaimed") is False
@@ -207,8 +287,11 @@ def validate_tls(original, owner, content, tls, context, command, report, gates,
     need(type(command["returncode"]) is int and command["returncode"] == 0 and command["stderr"] == "" and c.parse_json(command["stdout"].encode()) == report, "Generation command/report original differs")
     need(context["qualifiedCatalog"] == {k:v for k,v in content["catalog"].items() if k not in {"publicPinSha256", "signatureVerified"}}
          and content["catalog"]["signatureVerified"] is True and c.digest(context["publicPin"]) == content["catalog"]["publicPinSha256"], "Generation qualified catalog/P256 pin differs")
-    need(report.get("oracle", {}).get("sourceBindingSha256") == auth_input.get("sourceBindingSha256"), "Generation oracle source binding differs")
     core = copy.deepcopy(report)
+    if "delivery" in core:
+        validate_delivery(core.pop("delivery"), report, original, context, auth_input, inputs, shell, runtime)
+    else:
+        need(report.get("oracle", {}).get("sourceBindingSha256") == auth_input.get("sourceBindingSha256"), "Generation oracle source binding differs")
     extras = set(core) & {"assetCatalog", "bytePolicy", "providerMetadata"}
     need(not extras or extras == {"assetCatalog", "bytePolicy", "providerMetadata"}, "Incomplete generation asset extension")
     if extras:
