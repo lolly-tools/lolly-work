@@ -7,6 +7,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 SCRIPT=Path(__file__).with_name('public_release_end_to_end_fixture.py')
 spec=importlib.util.spec_from_file_location('complete_local_fixture',SCRIPT)
@@ -34,6 +35,33 @@ class CompleteLocalMeasurement(unittest.TestCase):
             for operation in summary['operations']:
                 value=f.timer.held(operation,True);command=f.timer.held(value['command'],True)
                 self.assertEqual(command['exitCode'],0);self.assertIsNone(command['failureType'])
+
+    def test_owner_readiness_is_published_only_after_complete_json(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path=Path(temporary).resolve()/'owner.json'
+            value={'pid':123,'address':'127.0.0.1','port':1234,'startedUnixNs':1}
+            original=f.json.dump
+            def partial(value, stream, **kwargs):
+                stream.write('{');stream.flush()
+                self.assertFalse(path.exists())
+                stream.seek(0);stream.truncate()
+                return original(value,stream,**kwargs)
+            with patch.object(f.json,'dump',side_effect=partial):f.publish_owner(path,value)
+            self.assertEqual(f.read(path),value)
+            self.assertFalse(path.with_name(path.name+'.pending').exists())
+            with self.assertRaises(FileExistsError):f.publish_owner(path,{'pid':999})
+            self.assertEqual(f.read(path),value)
+
+    def test_failed_phase_exposes_held_bounded_child_diagnostic(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            out=Path(temporary).resolve()
+            stderr=out/'stderr.original';stderr.write_text('x'*20000+'specific child predicate')
+            command=out/'command.json';f.save(command,{'stderr':f.ref(stderr)})
+            operation=out/'operation.json';f.save(operation,{'command':f.ref(command)})
+            with self.assertRaisesRegex(RuntimeError,'specific child predicate') as error:
+                f.phase_failure('publication',f.ref(operation))
+            self.assertLess(len(str(error.exception)),16500)
+            self.assertEqual(stderr.stat().st_size,20000+len('specific child predicate'))
 
     def test_changed_physical_model_refuses_without_http_or_success_record(self):
         with tempfile.TemporaryDirectory() as temporary:

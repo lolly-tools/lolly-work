@@ -37,6 +37,15 @@ def save(path, value):
         json.dump(value, stream, sort_keys=True, indent=2); stream.write('\n')
 
 
+def publish_owner(path, value):
+    # Existence is the parent's readiness signal. Publish only closed JSON,
+    # exclusively: a visible empty/partial file is not a started server.
+    pending = path.with_name(path.name+'.pending')
+    save(pending, value)
+    try: os.link(pending, path)
+    finally: pending.unlink()
+
+
 def read(path):
     return json.loads(path.read_bytes())
 
@@ -69,10 +78,14 @@ def start_server(out, name):
     process = subprocess.Popen([sys.executable,'-B',str(Path(__file__).resolve()),'serve','--out-dir',str(out),'--name',name],
                                stdout=subprocess.DEVNULL,stderr=log)
     deadline = time.monotonic()+10
-    while not identity.exists():
-        need(process.poll() is None and time.monotonic()<deadline, 'Local server failed to start')
-        time.sleep(.01)
-    return process, log, identity
+    try:
+        while not identity.exists():
+            need(process.poll() is None and time.monotonic()<deadline, 'Local server failed to start')
+            time.sleep(.01)
+        need(read(identity)['pid']==process.pid, 'Local server identity differs')
+        return process, log, identity
+    except BaseException:
+        stop_server(process, log); raise
 
 
 def stop_server(process, log):
@@ -156,8 +169,14 @@ def phase(out, name):
 def serve(out,name):
     m.BODIES={row['url']:(out/'model-root'/row['url'].lstrip('/')).read_bytes() for row in read(out/'models.json')['files']}
     server=ThreadingHTTPServer(('127.0.0.1',0),m.Handler)
-    save(out/(name+'.owner.json'),{'pid':os.getpid(),'startedUnixNs':time.time_ns(),'address':'127.0.0.1','port':server.server_port})
+    publish_owner(out/(name+'.owner.json'),{'pid':os.getpid(),'startedUnixNs':time.time_ns(),'address':'127.0.0.1','port':server.server_port})
     server.serve_forever()
+
+
+def phase_failure(name, receipt):
+    operation=timer.held(receipt,True);command=timer.held(operation['command'],True)
+    stderr=timer.held(command['stderr']).read_bytes().decode('utf-8','replace')
+    raise RuntimeError('Local '+name+' phase failed; originals retained:\n'+stderr[-16384:])
 
 
 def benchmark(out):
@@ -171,7 +190,7 @@ def benchmark(out):
                  'timeoutSeconds':120,'outputDirectory':str(out/(name+'.operation')),'cwd':str(ROOT)}
         path=out/(name+'.input.json');save(path,request)
         receipt,code=timer.run(ref(path),ref(ROOT/'scripts/measure-public-release.py'));operations.append(receipt)
-        need(code==0,'Local phase failed; originals retained')
+        if code != 0: phase_failure(name,receipt)
     measured('preparation');process,log,_=start_server(out,'original')
     try:measured('verification');measured('staging')
     finally:stop_server(process,log)
