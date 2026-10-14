@@ -35,7 +35,7 @@ function ids(bytes: Buffer, field: 'tools' | 'assets'): string[] {
   catch { return []; }
 }
 
-export function createCatalogDelivery(deps: { store: Store; servedIndex: ServedIndexer; signing: CatalogSigning | null; source: { pack: string; generation?: number; publicKey?: Record<string, unknown> }; shellDir?: string; activePack?: () => Promise<string>; requireGeneration?: boolean; now?: () => number; maxBytes?: number }) {
+export function createCatalogDelivery(deps: { store: Store; servedIndex: ServedIndexer; signing: CatalogSigning | null; source: { pack: string; generation?: number; publicKey?: Record<string, unknown> }; shellDir?: string; shellDirectories?: () => string[]; activePack?: () => Promise<string>; requireGeneration?: boolean; now?: () => number; maxBytes?: number }) {
   const now = deps.now ?? Date.now, maxBytes = deps.maxBytes ?? MAX_SNAPSHOT_BYTES;
   let publication: Promise<CatalogPublication> | undefined;
   let preparation: Promise<void> | undefined;
@@ -58,6 +58,7 @@ export function createCatalogDelivery(deps: { store: Store; servedIndex: ServedI
     if (!stored) throw Object.assign(new Error('catalog snapshot retention is full'), { status: 503 });
   };
   const current = async (pack: string, caller: CatalogCaller): Promise<CatalogDeliveryView | null> => {
+    const shellDirectories = deps.shellDirectories?.() ?? (deps.shellDir ? [deps.shellDir] : []);
     await prepare();
     const [tools, assets, slimResult, rawTools, rawSlim, allFiles] = await Promise.all([
       servedToolIndexBytes(pack, caller), deps.servedIndex.forCaller({ groups: caller.groups }),
@@ -74,7 +75,7 @@ export function createCatalogDelivery(deps: { store: Store; servedIndex: ServedI
     };
     const visibleTools = entries(tools.bytes);
     const publisher = await (resourceProof ??= publisherResourceDigests({ ...deps.source, signing: deps.signing }));
-    const resources = await scopedResourceDigests({ pack, shellDir: deps.shellDir, publisher, caller,
+    const resources = await scopedResourceDigests({ pack, shellDirectories, publisher, caller,
       visibleToolIds: new Set(visibleTools.map(tool => tool.id.toLowerCase())), visibleValues: [visibleTools, entries(slim), assets.index.assets ?? []] });
     const scope = catalogVisibilityScope(caller);
     const fingerprint = sha256Hex(canonicalJson({ assets: assets.sourceFingerprint,

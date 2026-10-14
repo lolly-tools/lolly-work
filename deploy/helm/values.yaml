@@ -423,6 +423,10 @@ pack:
 #   extraEnv: [{ name: LW_ALLOW_STALE_SHELL, value: "1" }]
 shell:
   enabled: false
+  # Opt-in atomic frontend publication. Also set config.instance.shellReleasePointer
+  # and point config.instance.shellDir at mountPath. Requires a persistent volume
+  # mounted read-only by Work; publish from a separately reviewed host path.
+  releasePointer: false
   # One of: pvc | existingClaim | hostPath | emptyDir (same semantics as pack
   # above; emptyDir requires `image` below).
   type: existingClaim

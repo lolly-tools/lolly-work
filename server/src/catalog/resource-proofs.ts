@@ -3,6 +3,7 @@ import { webcrypto } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { safeFile } from '../api/file-delivery.ts';
 import { sha256Hex } from '../lib/crypto.ts';
+import { publicStaticDeliveryClass } from '@lolly-tools/core/delivery-v1';
 import { filteredToolManifestBytes, servedToolSidecar } from './tool-sidecars.ts';
 import type { CatalogCaller, CatalogSigning } from './signing.ts';
 
@@ -47,14 +48,16 @@ function resourceReferences(values: unknown[]): Set<string> {
 
 /** Filter only after the original bundle bytes verify; missing media stays optional. */
 export async function scopedResourceDigests(options: {
-  pack: string; shellDir?: string; publisher: Record<string, string>; caller: CatalogCaller; visibleValues: unknown[]; visibleToolIds: ReadonlySet<string>;
+  pack: string; shellDir?: string; shellDirectories?: readonly string[]; publisher: Record<string, string>; caller: CatalogCaller; visibleValues: unknown[]; visibleToolIds: ReadonlySet<string>;
 }): Promise<Record<string, string>> {
   if (!Object.keys(options.publisher).length) return {};
   let total = 0;
   const approved = async (path: string): Promise<Buffer | null> => {
     const expected = options.publisher[path];
     if (!expected || !catalogResourcePath(path)) return null;
-    const roots = path.startsWith('/info/') ? [options.shellDir] : [options.pack, ...(path.startsWith('/catalog/og/') ? [options.shellDir] : [])];
+    const configured = options.shellDirectories ?? (options.shellDir ? [options.shellDir] : []);
+    const shells = publicStaticDeliveryClass(path) === 'public-immutable' ? configured : configured.slice(0, 1);
+    const roots = path.startsWith('/info/') ? shells : [options.pack, ...(path.startsWith('/catalog/og/') ? shells : [])];
     for (const root of roots) {
       if (!root) continue;
       const file = await safeFile(root, path.slice(1));

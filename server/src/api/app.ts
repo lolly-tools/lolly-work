@@ -36,6 +36,7 @@ import type { NearbyRegistry } from '../collab/nearby.ts';
 import { createRouter, guardDelivery, readJson, readRaw, sendError, sendJson, setDeliveryClass, SERVICE_WORKER_CACHE_CONTROL, type Handler, type RouteCtx } from './router.ts';
 import { INERT_BYTE_HEADERS, canonicalRenderQuery, matchesEtag, safeFile, sendBytes, sendFile } from './file-delivery.ts';
 import { cachePolicy, publicStaticDeliveryClass, type DeliveryClass } from '@lolly-tools/core/delivery-v1';
+import { shellDirectories } from '../lib/shell-release.ts';
 import { readShotCred } from './shot-provenance.ts';
 import { CONSOLE_ASSET_HEADERS, consoleDocumentHeaders } from './console-headers.ts';
 import { mintToken, verifyToken } from '../iam/tokens.ts';
@@ -538,7 +539,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     pack: () => config.instance.pack, store, federation, ready: providersReady, pagedThreshold: serving.pagedProviderThreshold,
   });
   const catalogDelivery = createCatalogDelivery({ store, servedIndex, signing: catalogSigning, requireGeneration: productionMode(config),
-    shellDir: config.instance.shellDir,
+    shellDirectories: () => shellDirectories(config.instance),
     activePack: async () => (await brand.snapshot()).source.root,
     source: { pack: deploymentConfig.instance.pack, generation: deploymentConfig.instance.catalogPublicationGeneration,
       publicKey: deploymentConfig.instance.catalogPublicKey } });
@@ -5144,6 +5145,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   // the SPA fallback registered last. Absent shellDir → null, and neither does.
   const shellDir = config.instance.shellDir;
   const serveShell = shellDir ? async (req: IncomingMessage, res: ServerResponse, rel: string): Promise<void> => {
+    const directories = shellDirectories(config.instance), active = directories[0]!;
     const clean = normalize(rel.replace(/^\/+/, '')).replace(/^(\.\.[/\\])+/, '');
     if (clean.includes('..')) return sendError(res, 400, 'INVALID_INPUT', 'bad path');
     // A path ending in a file extension is a real asset. Anything else is an SPA
@@ -5153,14 +5155,15 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // here: serveShellDocs answers them first, from the same info/ pages.
     const asset = /\.[a-z0-9]+$/i.test(clean);
     const target = clean === '.well-known/lolly.json' ? 'info/well-known-lolly.json'
-      : asset && clean ? clean : (shellStubFor(clean, (r) => existsSync(join(shellDir, r))) ?? 'index.html');
+      : asset && clean ? clean : (shellStubFor(clean, (r) => existsSync(join(active, r))) ?? 'index.html');
     const delivery: DeliveryClass = publicStaticDeliveryClass('/' + target);
     setDeliveryClass(res, delivery);
     const policy = cachePolicy(delivery);
-    if (!await sendFile(req, res, shellDir, target, { contentType: contentType(target), ranges: true,
-      headers: { ...shellSecurityHeaders(rel, undefined, config.instance.connectorOrigins), 'cache-control': target === 'sw.js' ? SERVICE_WORKER_CACHE_CONTROL : policy.cacheControl } })) {
-      sendError(res, 404, 'NOT_FOUND', asset ? 'no such file' : 'shell index not found: check instance.shellDir');
+    for (const directory of delivery === 'public-immutable' ? directories : [active]) {
+      if (await sendFile(req, res, directory, target, { contentType: contentType(target), ranges: true,
+        headers: { ...shellSecurityHeaders(rel, undefined, config.instance.connectorOrigins), 'cache-control': target === 'sw.js' ? SERVICE_WORKER_CACHE_CONTROL : policy.cacheControl } })) return;
     }
+    sendError(res, 404, 'NOT_FOUND', asset ? 'no such file' : 'shell index not found: check instance.shellDir');
   } : null;
 
   // ── tool files (pack mount, the tool index's own per-caller visibility) ────
@@ -5222,7 +5225,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         if (!callerCanSeeTool(caller, card.toolId)) return sendError(res, 404, 'NOT_FOUND', 'no such catalog file');
         everyone = toolVisibleTo(overlays.get(card.toolId), []);
       }
-      for (const root of [config.instance.pack, ...(shellDir ? [shellDir] : [])]) {
+      const cardShells = shellDirectories(config.instance);
+      for (const root of [config.instance.pack, ...(publicStaticDeliveryClass('/catalog/' + card.rel) === 'public-immutable' ? cardShells : cardShells.slice(0, 1))]) {
         let bytes: Buffer;
         try {
           if (toolArtAddress(card.rel)) {
@@ -10347,8 +10351,9 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         return true;
       }
       try {
-        const root = await realpath(shellDir);
-        for (const candidate of doc.candidates) {
+        const directories = shellDirectories(config.instance);
+        for (const candidate of doc.candidates) for (const directory of publicStaticDeliveryClass('/' + candidate) === 'public-immutable' ? directories : directories.slice(0, 1)) {
+          const root = await realpath(directory);
           let target: string;
           let metadata: Awaited<ReturnType<typeof stat>>;
           try {
@@ -10365,7 +10370,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
           } else {
             const delivery = publicStaticDeliveryClass('/' + candidate);
             setDeliveryClass(res, delivery);
-            await sendFile(req, res, shellDir, candidate, { contentType: contentType(candidate), ranges: true,
+            await sendFile(req, res, directory, candidate, { contentType: contentType(candidate), ranges: true,
               headers: { ...shellSecurityHeaders(rel, undefined, config.instance.connectorOrigins), 'cache-control': cachePolicy(delivery).cacheControl } });
           }
           return true;
@@ -10378,7 +10383,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       res.writeHead(307, { location: '/review/agent-collaboration-review.mp4', 'cache-control': 'public, max-age=300' });
       res.end();
     });
-    router.add('GET', '/', (req, res) => void serveShell(req, res, 'index.html'), { delivery: 'public-revalidate' });
+    router.add('GET', '/', (req, res) => serveShell(req, res, 'index.html'), { delivery: 'public-revalidate' });
     router.add('GET', '/*', async (req, res, ctx) => {
       const p = ctx.params['*'] || '';
       if (RESERVED_PREFIX.test(p)) return sendError(res, 404, 'NOT_FOUND', `no route for GET /${p}`);

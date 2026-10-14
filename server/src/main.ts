@@ -25,6 +25,7 @@ import { expiringCredentials } from './catalog/credential-expiry.ts';
 import { auditHead } from './audit/head.ts';
 import { deriveAuditMacKey, retiredKeyNote } from './audit/chain.ts';
 import { checkShellDist } from './lib/shell-dist.ts';
+import { shellDirectory } from './lib/shell-release.ts';
 import { assessSetup } from './setup/checks.ts';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -77,7 +78,7 @@ if (config.dev.enabled && config.proxyAuth.enabled) {
 // posture as the pending-schema guard below); LW_ALLOW_STALE_SHELL=1 downgrades
 // the refusal to a loud warning for dev/dogfooding.
 if (config.instance.shellDir && config.policy.defaultAccessMode !== 'open') {
-  const shell = checkShellDist(config.instance.shellDir);
+  const shell = checkShellDist(shellDirectory(config.instance)!);
   if (!shell.present || !shell.hasOrgConfig) {
     const why = shell.present
       ? `shell dist at ${config.instance.shellDir} predates the org governance module (no org-config marker in assets/*.js)`

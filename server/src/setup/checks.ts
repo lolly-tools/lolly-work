@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 import { passwordIdpOf, type InstanceConfig, type Secrets } from '../config/instance.ts';
 import { checkShellDist } from '../lib/shell-dist.ts';
+import { shellDirectory } from '../lib/shell-release.ts';
 import { inspectPack, type PackCheck } from './pack.ts';
 
 export interface SetupCheck { id: string; status: 'pass' | 'fail' | 'warning' | 'not-tested'; message: string }
@@ -57,7 +58,7 @@ export function startupChecks(config: InstanceConfig, secrets: Secrets, durable:
   check('signer', !!config.render.c2pa.certFile === !!secrets.c2paSigningKey,
     'Signing configuration is consistent.', 'Configure both the signing certificate and LW_C2PA_SIGNING_KEY, or neither.');
   if (config.instance.shellDir || config.deployment.application === 'web') {
-    const shell = config.instance.shellDir ? checkShellDist(config.instance.shellDir) : null;
+    const shell = (() => { try { const directory = shellDirectory(config.instance); return directory ? checkShellDist(directory) : null; } catch { return null; } })();
     check('web-shell', !!(shell?.present && shell.hasOrgConfig) || !!config.instance.appUrl,
       'An employee shell is configured.', 'Install a current governed shell or configure its external appUrl.');
     checks.push({ id: 'shell-contract', status: 'not-tested', message: 'Exact shell compatibility has not been verified. Validate the matched release before acceptance.' });
