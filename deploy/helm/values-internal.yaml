@@ -11,6 +11,9 @@ config:
     defaultAccessMode: gated
     sessionTtlHours: 12
     # Optional usage analytics are off; security audit events remain enabled.
+    activity:
+      mode: "off"
+      auditSessionUpdates: false
     telemetry: "off"
     telemetryAttribution: opt-in
     guestLinks:

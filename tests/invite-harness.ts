@@ -181,7 +181,7 @@ export function postForm(base: string, path: string, fields: Record<string, stri
   return fetch(`${base}${path}`, {
     method: 'POST', redirect: 'manual',
     headers: {
-      'content-type': 'application/x-www-form-urlencoded', origin: base, 'sec-fetch-site': 'same-origin',
+      'content-type': 'application/x-www-form-urlencoded', origin: 'http://team.example', 'sec-fetch-site': 'same-origin',
       ...(cookie ? { cookie } : {}), ...headers,
     },
     body: new URLSearchParams(fields).toString(),

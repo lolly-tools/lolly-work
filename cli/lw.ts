@@ -46,6 +46,9 @@ const OPTIONS = {
     mapping: { type: 'string' },
     exposure: { type: 'string' },
     section: { type: 'string' },
+    category: { type: 'string' },
+    cursor: { type: 'string' },
+    limit: { type: 'string' },
     'remote-id': { type: 'string' },
     name: { type: 'string' },
     tags: { type: 'string' },
@@ -465,8 +468,17 @@ switch (cmd) {
   }
 
   case 'users': {
-    if (sub !== 'erase' && sub !== 'erase-preview') fail('usage: lw users erase|erase-preview <id>');
-    const id = positionals[2] ?? fail('usage: lw users erase|erase-preview <id>');
+    if (!['erase', 'erase-preview', 'subject-export', 'offboard-preview', 'offboard'].includes(sub ?? '')) fail('usage: lw users erase|erase-preview|subject-export|offboard-preview|offboard <id>');
+    const id = positionals[2] ?? fail('usage: lw users <action> <id>');
+    if (sub === 'subject-export') {
+      const query = new URLSearchParams();
+      for (const key of ['category', 'cursor', 'limit'] as const) if (values[key]) query.set(key, values[key]);
+      out(await call(`/api/v1/users/${encodeURIComponent(id)}/subject-export?${query}`)); break;
+    }
+    if (sub === 'offboard-preview') { out(await call(`/api/v1/users/${encodeURIComponent(id)}/offboarding-preview`)); break; }
+    if (sub === 'offboard') {
+      out(await call(`/api/v1/users/${encodeURIComponent(id)}/offboard`, { method: 'POST', body: { confirmUserId: id } })); break;
+    }
     if (sub === 'erase-preview') { out(await call(`/api/v1/users/${encodeURIComponent(id)}/erasure-preview`)); break; }
     const r = await call(`/api/v1/users/${encodeURIComponent(id)}`, { method: 'DELETE' }) as { scrubbed: number };
     console.log(`erased account identity ${id} - ${r.scrubbed} telemetry event(s) de-attributed. Other retained records, audit identifiers, external copies and backups require separate review; this is not complete personal-data erasure.`);
@@ -528,10 +540,10 @@ switch (cmd) {
     if (sub === 'create') {
       const label = values.label ?? fail('usage: lw tokens create --label ci --role admin');
       const role = values.role ?? fail('--role required (viewer|member|author|approver|admin|owner)');
-      const t = await call('/api/v1/tokens', { method: 'POST', body: { label, role } }) as { id: string; token: string; role: string };
+      const t = await call('/api/v1/tokens', { method: 'POST', body: { label, role, ...(values.days ? { ttlDays: Number(values.days) } : {}) } }) as { id: string; token: string; role: string; expiresAt: string };
       out(t);
       if (!values.json) {
-        console.log(`${t.id}  role ${t.role}`);
+        console.log(`${t.id}  role ${t.role}  expires ${t.expiresAt}`);
         console.log(`token (shown once, store it now): ${t.token}`);
         console.log('use it: LW_TOKEN=<token> lw … (or --token <token>)');
       }
@@ -544,11 +556,11 @@ switch (cmd) {
       break;
     }
     const { tokens } = await call('/api/v1/tokens') as {
-      tokens: Array<{ id: string; label: string; role: string; createdAt: string; lastUsedAt: string | null; revokedAt: string | null }>;
+      tokens: Array<{ id: string; label: string; role: string; createdAt: string; expiresAt: string | null; legacyUnbounded: boolean; lastUsedAt: string | null; revokedAt: string | null }>;
     };
     out(tokens);
     if (!values.json) for (const t of tokens) {
-      console.log(`${t.id}  ${t.label}  role ${t.role}  ${t.revokedAt ? `REVOKED ${t.revokedAt}` : `last used ${t.lastUsedAt ?? 'never'}`}`);
+      console.log(`${t.id}  ${t.label}  role ${t.role}  ${t.revokedAt ? `REVOKED ${t.revokedAt}` : `last used ${t.lastUsedAt ?? 'never'}`}  ${t.legacyUnbounded ? 'legacy without expiry: rotate' : `expires ${t.expiresAt}`}`);
     }
     break;
   }
@@ -718,10 +730,10 @@ switch (cmd) {
   // it is not recoverable from the stored hash - so it goes to stdout for the
   // operator to paste into the IdP connector, and never to the audit trail.
   case 'scim': {
-    if (sub !== 'token') fail('usage: lw scim token create --idp <label> | list | revoke <id>');
+    if (sub !== 'token') fail('usage: lw scim token create --idp <provider-id> | list | revoke <id>');
     const action = positionals[2];
     if (action === 'create') {
-      const idp = values.idp ?? fail('usage: lw scim token create --idp <label>');
+      const idp = values.idp ?? fail('usage: lw scim token create --idp <provider-id>');
       const rec = await call('/api/v1/scim/tokens', { method: 'POST', body: { idp } }) as { id: string; idp: string; token: string };
       out(rec);
       if (!values.json) {
@@ -1515,6 +1527,9 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   invite ls [--all] · invite rm <id>   open invitations (--all adds revoked ones); revoke one
   retention run              apply the stated retention policy and sweep expired uploads now (both also run daily on the long-lived server)
   users erase-preview <id>   read-only reference counts and account-erasure scope (owner)
+  users subject-export <id>  bounded partial metadata page (owner; --category, --cursor, --limit)
+  users offboard-preview <id> bounded direct issuance counts and remaining review (owner)
+  users offboard <id>        disable, end sessions and revoke direct issuance (owner; retains content)
   users erase <id>           atomic account-row removal + telemetry de-attribution (owner; retained references block it)
   projects transfer-preview <id> [--json] [--out new-file.json]   read-only project inventory (signed-in manager; not an export/import)
   brand                      inspect design-system sources and permissions
@@ -1551,7 +1566,7 @@ signing chain (leaf first) and set LW_C2PA_SIGNING_KEY to its PKCS#8 key instead
   catalog versions <id> · catalog rollback <id> <n> · catalog version-rm <id> <n>   the byte history, and moving the head
   catalog supersede <id> <replacementId> | --rm   retire an asset in favour of another (replacedBy)
   grants [list] · grants add|rm <principal> <action> [<resource>] --effect deny|allow
-  scim token create --idp <label> | list | revoke <id>   provisioning bearers for an IdP (SCIM /scim/v2)
+  scim token create --idp <provider-id> | list | revoke <id>   provisioning bearers for an IdP (SCIM /scim/v2)
   preview --groups a,b   what a member in those groups would receive
   msg send --title "…" [--body --kind --severity --groups a,b --shells tauri --max-engine 1.52.99]
 

@@ -668,3 +668,70 @@ test('(m) a worker widens the format tier: jpg + pdf render via /rasterise, jpeg
   assert.equal((await refused.json() as { error: { code: string } }).error.code, 'UNSUPPORTED_FORMAT');
   await closeServer(worker);
 });
+
+function assertInert(response: Response): void {
+  assert.match(response.headers.get('content-security-policy') ?? '', /sandbox/);
+  assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+}
+
+test('render delivery is inert on direct, revalidated, linked and API responses', async () => {
+  const fresh = await makeServer({ rateLimit: { enabled: false } });
+  const cookie = await login(fresh.base, 'admin@test');
+  const direct = await fetch(`${fresh.base}/render/test-card.svg`, { headers: { cookie } });
+  assert.equal(direct.status, 200); assertInert(direct);
+  const cached = await fetch(`${fresh.base}/render/test-card.svg`, { headers: { cookie, 'if-none-match': direct.headers.get('etag')! } });
+  assert.equal(cached.status, 304); assertInert(cached);
+  const api = await fetch(`${fresh.base}/api/v1/render`, {
+    method: 'POST', headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ toolId: 'test-card', format: 'svg' }),
+  });
+  assert.equal(api.status, 200); assertInert(api);
+  const link = await fetch(`${fresh.base}/api/v1/links`, {
+    method: 'POST', headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ kind: 'share', target: { toolId: 'test-card', format: 'svg' } }),
+  });
+  assert.equal(link.status, 201);
+  const value = await link.json() as { url: string };
+  const linked = await fetch(`${fresh.base}${new URL(value.url).pathname}${new URL(value.url).search}`);
+  assert.equal(linked.status, 200); assertInert(linked);
+});
+
+
+test('direct rendering respects anonymous modes, visibility and use permissions', async () => {
+  const perTool = await makeServer({ policy: { defaultAccessMode: 'per-tool' }, rateLimit: { enabled: false } });
+  assert.equal((await fetch(`${perTool.base}/render/test-card.svg`)).status, 401);
+  const open = await makeServer({ policy: { defaultAccessMode: 'open' }, rateLimit: { enabled: false } }, [HIDDEN_OVERLAY]);
+  assert.equal((await fetch(`${open.base}/render/test-card.svg`)).status, 200);
+  assert.equal((await fetch(`${open.base}/render/hidden-card.svg`)).status, 403);
+  const apiHidden = await fetch(`${open.base}/api/v1/render`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ toolId: 'hidden-card', format: 'svg' }) });
+  assert.equal(apiHidden.status, 403);
+  const admin = await login(open.base, 'admin@test');
+  assert.equal((await fetch(`${open.base}/render/hidden-card.svg`, { headers: { cookie: admin } })).status, 403);
+  await open.store.putGrant({ principal: 'group:admin', action: 'tool.use', resource: 'tool:test-card', effect: 'deny' });
+  assert.equal((await fetch(`${open.base}/render/test-card.svg`, { headers: { cookie: admin } })).status, 403);
+  const link = await fetch(`${open.base}/api/v1/links`, {
+    method: 'POST', headers: { cookie: admin, 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'share', target: { toolId: 'test-card' } }),
+  });
+  assert.equal(link.status, 403);
+});
+
+test('guest HTTP sessions follow link revocation and target tool scope', async () => {
+  const fresh = await makeServer({ policy: { guestLinks: { enabled: true } }, rateLimit: { enabled: false } });
+  const inviter = await login(fresh.base, 'admin@test');
+  const minted = await fetch(`${fresh.base}/api/v1/links`, {
+    method: 'POST', headers: { cookie: inviter, 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'guest-edit', target: { toolId: 'test-card' } }),
+  });
+  assert.equal(minted.status, 201);
+  const link = await minted.json() as { id: string; url: string };
+  const admitted = await fetch(`${fresh.base}${new URL(link.url).pathname}${new URL(link.url).search}`);
+  assert.equal(admitted.status, 200);
+  const cookie = admitted.headers.getSetCookie().find(c => c.startsWith('lw_guest='))!.split(';')[0]!;
+  assert.equal((await fetch(`${fresh.base}/api/auth/session`, { headers: { cookie } })).status, 200);
+  assert.equal((await fetch(`${fresh.base}/tools/test-card/tool.json`, { headers: { cookie } })).status, 200);
+  assert.equal((await fetch(`${fresh.base}/tools/fmt-card/tool.json`, { headers: { cookie } })).status, 404);
+  assert.equal((await fetch(`${fresh.base}/render/fmt-card.svg`, { headers: { cookie } })).status, 403);
+  await fresh.store.revokeLink(link.id, new Date().toISOString());
+  for (const path of ['/api/auth/session', '/tools/test-card/tool.json', '/render/test-card.svg', '/api/v1/catalog/assets']) {
+    assert.equal((await fetch(`${fresh.base}${path}`, { headers: { cookie } })).status, 401);
+  }
+});

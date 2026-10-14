@@ -4,8 +4,10 @@
  * Each event's hash covers the previous event's hash + the canonical JSON of
  * the event body, so truncation or in-place tampering breaks the chain at a
  * detectable seq. Payloads must already be privacy-safe (digests, field
- * names - never raw input values); this module doesn't inspect them.
+ * names - never raw input values). New bodies also pass through the
+ * shared privacy filter before hashing.
  */
+import { privateAuditBody } from './privacy.ts';
 import { canonicalJson, sha256Hex, hmac, macEquals, deriveKey } from '../lib/crypto.ts';
 
 export interface AuditEventBody {
@@ -46,8 +48,9 @@ export function macEvent(macKey: string, hash: string): string {
 export function nextEvent(tail: AuditEvent | null, body: AuditEventBody, macKey?: string): AuditEvent {
   const seq = (tail?.seq ?? 0) + 1;
   const prevHash = tail?.hash ?? GENESIS_HASH;
-  const hash = hashEvent(prevHash, seq, body);
-  return { ...body, seq, prevHash, hash, ...(macKey ? { mac: macEvent(macKey, hash) } : {}) };
+  const safeBody = privateAuditBody(body, macKey);
+  const hash = hashEvent(prevHash, seq, safeBody);
+  return { ...safeBody, seq, prevHash, hash, ...(macKey ? { mac: macEvent(macKey, hash) } : {}) };
 }
 
 /** The retention trim's high-water mark (plans/35 wave 3): the last trimmed

@@ -14,5 +14,6 @@ export function createMemoryOidcLogout(): OidcLogoutStore {
       return true;
     },
     async oidcSessionRevoked(s) { return sessionLogoutKeys(s).some(k => targets.has(k)); },
+    async localSessionRevoked(key) { return (targets.get(key) ?? 0) > Date.now() / 1000 - 31 * 86400; },
   };
 }

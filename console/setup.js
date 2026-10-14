@@ -28,10 +28,10 @@ export async function tokensView(main, { el, field, api, can, refresh }) {
           el('button', { type: 'button', onclick: () => { secret.value = ''; secretHost.replaceChildren(); void refresh(); } }, 'I have stored the token'));
         secret.focus(); secret.select();
       } catch (failure) { error.textContent = failure.message; create.disabled = false; }
-    } }, el('div', { class: 'formrow' }, field(kind === 'scim' ? 'Identity provider label' : 'Automation label', label),
+    } }, el('div', { class: 'formrow' }, field(kind === 'scim' ? 'Identity provider id' : 'Automation label', label),
       kind === 'service' ? field('Role', role) : null), el('p', {}, create), error, secretHost);
     main.append(el('section', { class: 'card stack' }, el('h2', {}, kind === 'scim' ? 'SCIM provisioning' : 'Service automation'),
-      kind === 'scim' ? el('p', {}, 'Provisioning endpoint: ', el('code', {}, `${location.origin}/scim/v2`)) : null,
+      kind === 'scim' ? el('p', {}, 'Use primary or a configured OIDC provider id. Tokens expire after 90 days. Provisioning endpoint: ', el('code', {}, `${location.origin}/scim/v2`)) : null,
       form,
       ...tokens.map(token => {
         const status = el('span', { role: 'status' });
@@ -42,6 +42,7 @@ export async function tokensView(main, { el, field, api, can, refresh }) {
         } }, 'Revoke');
         return el('p', {}, el('strong', {}, token.idp ?? token.label), ' ',
           token.role ? `${token.role}. ` : '', `Created ${new Date(token.createdAt).toLocaleString()}. `,
+          token.expiresAt ? `Expires ${new Date(token.expiresAt).toLocaleString()}. ` : '',
           token.lastUsedAt ? `Last used ${new Date(token.lastUsedAt).toLocaleString()}. ` : 'Not used yet. ',
           token.revokedAt ? 'Revoked' : revoke, ' ', status);
       })));

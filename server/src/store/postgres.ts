@@ -1,4 +1,5 @@
 import { createPostgresOidcLogout } from '../iam/oidc-logout-postgres.ts';
+import { createPostgresSubjects, guardLastOwner } from '../privacy/postgres.ts';
 import { COMMENT_THREAD_LIMIT, type CommentThread } from '@lolly-tools/core/canvas-review-v1';
 import type { CanvasCheckpoint, CanvasOp } from '@lolly-tools/core/canvas-op-v1';
 import { auditWhere } from '../audit/filter.ts';
@@ -60,6 +61,7 @@ function apiTokenFromRow(r: Record<string, unknown>): ApiTokenRecord {
     tokenHash: r.token_hash as string,
     createdBy: r.created_by as string,
     createdAt: new Date(r.created_at as string).toISOString(),
+    ...(r.expires_at ? { expiresAt: new Date(r.expires_at as string).toISOString() } : {}),
     ...(r.last_used_at ? { lastUsedAt: new Date(r.last_used_at as string).toISOString() } : {}),
     ...(r.revoked_at ? { revokedAt: new Date(r.revoked_at as string).toISOString() } : {}),
   };
@@ -237,6 +239,7 @@ function installRow(r: Record<string, unknown>): InstallRow {
 function scimTokenFromRow(r: Record<string, unknown>): ScimTokenRecord {
   return {
     id: r.id as string,
+    ...(r.expires_at ? { expiresAt: new Date(r.expires_at as string).toISOString() } : {}),
     idp: r.idp as string,
     tokenHash: r.token_hash as string,
     createdBy: r.created_by as string,
@@ -322,6 +325,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     const groups = (r.groups as string[]) ?? [];
     return {
       id: r.id as string,
+      ...(r.scim_idp ? { scimIdp: r.scim_idp as string } : {}),
       sub: r.sub as string,
       email: r.email as string,
       ...(r.firstname ? { firstname: r.firstname as string } : {}),
@@ -588,6 +592,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     ...createPostgresRenderStore(pool),
     ...createPostgresOidcLogout(pool),
     ...createPostgresPasskeys(pool),
+    ...createPostgresSubjects(pool, () => roleGroups),
     storageKind: 'postgres',
     brandPersistence: 'durable',
     async getBrandState() {
@@ -688,6 +693,10 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       );
       return { rows: rows.map(userFromRow), total };
     },
+    async setUserScimIdp(userId, idp) {
+      const { rows } = await pool.query('update users set scim_idp = $2 where id = $1 returning *', [userId, idp]);
+      return rows[0] ? userFromRow(rows[0]) : null;
+    },
     async setLocalGroups(userId, localGroups) {
       const { rows: existing } = await pool.query('select idp_groups from users where id = $1', [userId]);
       if (!existing[0]) return null;
@@ -701,11 +710,19 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       return rows[0] ? userFromRow(rows[0]) : null;
     },
     async setUserDisabled(userId, disabledAt) {
-      // Disabling is also a revocation: any live session dies on its next request.
-      const { rows } = disabledAt
-        ? await pool.query('update users set disabled_at = $2, session_epoch = session_epoch + 1 where id = $1 returning *', [userId, disabledAt])
-        : await pool.query('update users set disabled_at = null where id = $1 returning *', [userId]);
-      return rows[0] ? userFromRow(rows[0]) : null;
+      if (!disabledAt) {
+        const { rows } = await pool.query('update users set disabled_at = null where id = $1 returning *', [userId]);
+        return rows[0] ? userFromRow(rows[0]) : null;
+      }
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        await guardLastOwner(client, userId, roleGroups);
+        const { rows } = await client.query('update users set disabled_at = $2, session_epoch = session_epoch + 1 where id = $1 returning *', [userId, disabledAt]);
+        await client.query('commit');
+        return rows[0] ? userFromRow(rows[0]) : null;
+      } catch (error) { await client.query('rollback'); throw error; }
+      finally { client.release(); }
     },
     async bumpSessionEpoch(userId) {
       const { rows } = await pool.query('update users set session_epoch = session_epoch + 1 where id = $1 returning *', [userId]);
@@ -713,18 +730,19 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     },
 
     async listLocalGroups() {
-      const { rows } = await pool.query('select name, description, created_at from local_groups order by name');
+      const { rows } = await pool.query('select name, description, created_at, scim_idp from local_groups order by name');
       return rows.map((r) => ({
         name: r.name as string,
+        ...(r.scim_idp ? { scimIdp: r.scim_idp as string } : {}),
         ...(r.description ? { description: r.description as string } : {}),
         createdAt: new Date(r.created_at as string).toISOString(),
       })) as LocalGroupRecord[];
     },
     async putLocalGroup(group) {
       await pool.query(
-        `insert into local_groups (name, description, created_at) values ($1, $2, $3)
-         on conflict (name) do update set description = excluded.description`,
-        [group.name, group.description ?? null, group.createdAt],
+        `insert into local_groups (name, description, created_at, scim_idp) values ($1, $2, $3, $4)
+         on conflict (name) do update set description = excluded.description, scim_idp = coalesce(excluded.scim_idp, local_groups.scim_idp)`,
+        [group.name, group.description ?? null, group.createdAt, group.scimIdp ?? null],
       );
     },
     async deleteLocalGroup(name) {
@@ -745,10 +763,10 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
 
     async putScimToken(rec) {
       await pool.query(
-        `insert into scim_tokens (id, idp, token_hash, created_by, created_at, last_used_at, revoked_at)
-         values ($1, $2, $3, $4, $5, $6, $7)
-         on conflict (id) do update set idp = excluded.idp, last_used_at = excluded.last_used_at, revoked_at = excluded.revoked_at`,
-        [rec.id, rec.idp, rec.tokenHash, rec.createdBy, rec.createdAt, rec.lastUsedAt ?? null, rec.revokedAt ?? null],
+        `insert into scim_tokens (id, idp, token_hash, created_by, created_at, last_used_at, revoked_at, expires_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8)
+         on conflict (id) do update set last_used_at = excluded.last_used_at, revoked_at = excluded.revoked_at`,
+        [rec.id, rec.idp, rec.tokenHash, rec.createdBy, rec.createdAt, rec.lastUsedAt ?? null, rec.revokedAt ?? null, rec.expiresAt ?? null],
       );
     },
     async listScimTokens() {
@@ -772,15 +790,19 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
     // Service tokens (plans/35 wave 2) - the SCIM block's shapes, one row kind over.
     async putApiToken(rec) {
       await pool.query(
-        `insert into api_tokens (id, label, role, token_hash, created_by, created_at, last_used_at, revoked_at)
-         values ($1, $2, $3, $4, $5, $6, $7, $8)
+        `insert into api_tokens (id, label, role, token_hash, created_by, created_at, last_used_at, revoked_at, expires_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          on conflict (id) do update set label = excluded.label, last_used_at = excluded.last_used_at, revoked_at = excluded.revoked_at`,
-        [rec.id, rec.label, rec.role, rec.tokenHash, rec.createdBy, rec.createdAt, rec.lastUsedAt ?? null, rec.revokedAt ?? null],
+        [rec.id, rec.label, rec.role, rec.tokenHash, rec.createdBy, rec.createdAt, rec.lastUsedAt ?? null, rec.revokedAt ?? null, rec.expiresAt ?? null],
       );
     },
     async listApiTokens() {
       const { rows } = await pool.query('select * from api_tokens order by created_at desc');
       return rows.map(apiTokenFromRow);
+    },
+    async getApiToken(id) {
+      const { rows } = await pool.query('select * from api_tokens where id = $1', [id]);
+      return rows[0] ? apiTokenFromRow(rows[0]) : null;
     },
     async findApiTokenByHash(tokenHash) {
       const { rows } = await pool.query('select * from api_tokens where token_hash = $1', [tokenHash]);
@@ -1520,8 +1542,14 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       return rowCount ?? 0;
     },
     async deleteUser(id) {
-      const { rowCount } = await pool.query('delete from users where id = $1', [id]);
-      return (rowCount ?? 0) > 0;
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        const { rowCount } = await client.query('delete from users where id = $1', [id]);
+        if (rowCount) await client.query('update fleet_installs set user_id_last_seen = null where user_id_last_seen = $1', [id]);
+        await client.query('commit'); return (rowCount ?? 0) > 0;
+      } catch (error) { await client.query('rollback'); throw error; }
+      finally { client.release(); }
     },
 
     async previewUserErasure(id) {
@@ -1555,6 +1583,7 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
         );
         const deleted = await client.query('delete from users where id = $1 returning email', [id]);
         if (!deleted.rowCount) { await client.query('rollback'); return { status: 'not-found' }; }
+        await client.query('update fleet_installs set user_id_last_seen = null where user_id_last_seen = $1', [id]);
         const scrubbed = await client.query('update telemetry_events set user_id = null where user_id = $1', [id]);
         // The person's comment reads, received notices and mention sends went
         // with their row; the notices they caused go too (actor_id has no key).

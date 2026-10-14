@@ -21,6 +21,10 @@
 import { createHmac } from 'node:crypto';
 import type { InstanceConfig, Secrets } from '../config/instance.ts';
 import type { Store } from '../store/types.ts';
+import { serviceUrl } from '../lib/service-url.ts';
+import { productionMode } from '../setup/checks.ts';
+import { deriveAuditMacKey } from '../audit/chain.ts';
+import { AUDIT_PROJECTION_FORMAT, projectAuditEvent } from '../audit/projection.ts';
 
 export interface SiemForwarder {
   /** Forward one batch. Resolves with how many events were delivered (0 =
@@ -41,8 +45,9 @@ export interface SiemDeps {
 export function createSiemForwarder(deps: SiemDeps): SiemForwarder {
   const { config, secrets, store, onResult } = deps;
   const fetchImpl = deps.fetchImpl ?? fetch;
-  const url = config.siem.url;
-  if (!url) throw new Error('createSiemForwarder called without siem.url - the caller gates on it');
+  if (!config.siem.url) throw new Error('createSiemForwarder called without siem.url - the caller gates on it');
+  const url = serviceUrl(config.siem.url, productionMode(config));
+  if (productionMode(config) && process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0') throw new Error('SIEM TLS verification is required');
   if (!secrets.siem) throw new Error('siem.url is configured but LW_SIEM_SECRET is not set');
   const secret = secrets.siem;
 
@@ -50,12 +55,15 @@ export function createSiemForwarder(deps: SiemDeps): SiemForwarder {
     const cursor = await store.getSiemCursor();
     const events = await store.listAuditAfter(cursor, config.siem.batchSize);
     if (!events.length) return 0;
-    const body = JSON.stringify({ instance: config.instance.name, events });
+    const body = JSON.stringify({ format: AUDIT_PROJECTION_FORMAT, instance: config.instance.name,
+      events: events.map(event => projectAuditEvent(event, secret, secrets.session ? deriveAuditMacKey(secrets.session) : undefined)) });
     const ts = String(Date.now());
     const sig = createHmac('sha256', secret).update(`${ts}.${body}`).digest('hex');
     try {
       const res = await fetchImpl(url, {
         method: 'POST',
+        redirect: 'error',
+        signal: AbortSignal.timeout(20000),
         headers: {
           'content-type': 'application/json',
           'x-lolly-timestamp': ts,

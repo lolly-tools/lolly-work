@@ -35,6 +35,7 @@ any Lolly deployment. The console links there when this deploy serves or points 
 | [configuration](configuration.md) | Every `instance.json` key and `LW_*` variable, with defaults |
 | [enterprise identity](enterprise-identity.md) | Managed SSO installation, provider registration, MFA policy, SCIM/offboarding, logout, upgrades and rotation |
 | [identity](identity.md) | OIDC SSO, group→role mapping, member and guest sessions, offboarding |
+| [account lifecycle](account-lifecycle.md) | Bounded account metadata exports, scoped offboarding and review responsibilities |
 
 ## Govern
 

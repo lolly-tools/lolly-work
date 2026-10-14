@@ -34,7 +34,7 @@ import { verifyToolCoding, type ToolIdentity } from './tool-codings.ts';
 import { join, resolve } from 'node:path';
 import { canonicalJson } from '../lib/crypto.ts';
 import { regularSourceFile, safeDirectory, safeFile } from '../api/file-delivery.ts';
-import { filterToolIndex, toolVisibleTo, type ToolOverlay } from '../policy/overlay.ts';
+import { toolVisibleTo, type ToolOverlay } from '../policy/overlay.ts';
 
 /** Where the envelope is served, relative to the catalog root. */
 export const CATALOG_SIG_REL = 'tools/index.sig.json';
@@ -55,17 +55,16 @@ export interface CatalogCaller {
   guestToolId?: string;
 }
 
-/** The `/tools/*` visibility predicate: overlay visibility for the caller's
- *  groups, plus the one tool a guest link opens. */
+/** Group visibility for members and exact tool scope for guest links. */
 export function callerCanSeeTool(caller: CatalogCaller, toolId: string): boolean {
-  return toolId === caller.guestToolId || toolVisibleTo(caller.overlays.get(toolId), caller.groups);
+  const id = toolId.toLowerCase();
+  return caller.guestToolId ? id === caller.guestToolId.toLowerCase() : toolVisibleTo(caller.overlays.get(id), caller.groups);
 }
 
 export interface ServedToolIndex {
   /** The exact bytes the caller receives for tools/index.json. */
   bytes: Buffer;
-  /** True when the index parsed and was re-serialised as JSON; false when the
-   *  file was not the expected shape and is served as it is on disk. */
+  /** The index was parsed and serialized after visibility filtering. */
   json: boolean;
   /** The `/tools/*` visibility predicate for this caller. */
   visible: (toolId: string) => boolean;
@@ -74,9 +73,7 @@ export interface ServedToolIndex {
 /**
  * The ONE producer of a caller's tool index bytes. The index route serves these
  * bytes and the signature route hashes them, so the two always agree for the
- * same caller. Behaviour matches the unsigned route it replaced: parse, filter
- * `tools` by overlay visibility, serialise with `JSON.stringify`; anything that
- * does not parse into that shape is served raw. Null when the pack has no index.
+ * same caller. Missing or malformed indexes cannot produce a scoped catalog.
  */
 export async function servedToolIndexBytes(packDir: string, caller: CatalogCaller): Promise<ServedToolIndex | null> {
   let raw: Buffer;
@@ -88,10 +85,11 @@ export async function servedToolIndexBytes(packDir: string, caller: CatalogCalle
   const visible = (toolId: string): boolean => callerCanSeeTool(caller, toolId);
   try {
     const index = JSON.parse(raw.toString('utf8')) as { tools?: Array<{ id: string }> };
-    if (Array.isArray(index.tools)) index.tools = filterToolIndex(index.tools, caller.overlays, caller.groups);
+    if (!index || !Array.isArray(index.tools)) return null;
+    index.tools = index.tools.filter(tool => tool && typeof tool.id === 'string' && visible(tool.id));
     return { bytes: Buffer.from(JSON.stringify(index), 'utf8'), json: true, visible };
   } catch {
-    return { bytes: raw, json: false, visible };
+    return null;
   }
 }
 
@@ -108,6 +106,7 @@ interface UnsignedEnvelope {
   assetIndexHash?: string;
   slimHash?: string;
   toolDirs?: Record<string, string>;
+  resources?: Record<string, string>;
 }
 interface EngineIntegrity {
   CATALOG_SIG_ALG: string;
@@ -273,6 +272,7 @@ export interface CatalogBinding {
   catalogScope: string;
   assetIndexHash?: string;
   slimHash?: string;
+  resources?: Record<string, string>;
 }
 
 const EC_P256 = { name: 'ECDSA', namedCurve: 'P-256' } as const;

@@ -1,3 +1,4 @@
+import type { ActivityPolicy } from '../policy/activity.ts';
 /**
  * Instance configuration (plans/01 §4). One JSON file + secrets from env.
  * (YAML support arrives with the deps decision; JSON keeps the scaffold
@@ -13,6 +14,8 @@
  *                          var per entry; resolved at boot, never persisted
  */
 import { readFileSync } from 'node:fs';
+import { serviceUrl } from '../lib/service-url.ts';
+import { providerOrigins, type ProviderNetworkPolicy } from '../catalog/providers/egress.ts';
 import { randomId } from '../lib/crypto.ts';
 import { validateAiConfig } from '../policy/ai.ts';
 import { validateInvitePolicy, type InvitePolicyConfig } from '../policy/invites.ts';
@@ -219,6 +222,7 @@ export interface InstanceConfig {
      *  `sessionTtlHours`, which turns renewal off. Must be at least
      *  `sessionTtlHours` and at most 720. */
     sessionMaxHours?: number;
+    serviceTokens: { allowLegacyUnbounded: boolean };
     /** Catalog submit (plans/31 section 3) - the ORG policy half, so it belongs
      *  beside the other things an org tunes. Open to authors by default: anyone
      *  holding `catalog.submit` submits and the asset goes live immediately.
@@ -236,6 +240,7 @@ export interface InstanceConfig {
      *  states its policy, the product never assumes one. Audit trims keep the
      *  chain verifiable (the anchor) and never pass the SIEM cursor. */
     retention: { telemetryDays: number; auditDays: number };
+    activity: ActivityPolicy;
     /** Invites from inside Lolly (plans/74): who may invite new people by
      *  email, which domains, how long an invitation stays open and which
      *  project roles may be given. Absent means the defaults in
@@ -325,6 +330,7 @@ export interface InstanceConfig {
     pagedProviderThreshold: number;
     extCache: { maxBytes: number; maxItemBytes: number };
   };
+  network: { providers: ProviderNetworkPolicy };
   /**
    * Fixed organization-owned outbound targets. Credentials are per-entry env
    * refs, never part of org-config; personal device targets do not enter this
@@ -437,11 +443,10 @@ export function passwordIdpOf(config: { idp: { additional: AdditionalIdp[] } }):
 }
 
 /** Whether a sign-in from this IdP may join an existing person by a matching
- *  email. Default: yes when the IdP's own verified flag is checked (`claim`),
- *  no when every address is simply trusted (`trusted`), because a trusted
- *  address was never proven by the person. `linkByEmail` overrides either way. */
-export function linkByEmailFor(c: Pick<IdpConstraints, 'linkByEmail' | 'emailVerification'>): boolean {
-  return c.linkByEmail ?? (c.emailVerification ?? 'claim') === 'claim';
+ *  email. Additional IdPs require an explicit choice; the primary retains its
+ *  verified-claim default. */
+export function linkByEmailFor(c: Pick<IdpConstraints, 'linkByEmail' | 'emailVerification'>, primary = false): boolean {
+  return c.linkByEmail ?? (primary && (c.emailVerification ?? 'claim') === 'claim');
 }
 
 /** Per-IdP sign-in constraints (plans/74 W-ID-1), on the primary `idp` block
@@ -459,7 +464,7 @@ export interface IdpConstraints extends OidcPolicy {
   /** Extra authorization request parameters, from `AUTH_PARAM_ALLOWLIST` only. */
   authParams?: Partial<Record<typeof AUTH_PARAM_ALLOWLIST[number], string>>;
   /** Link a sign-in to an existing person with the same email. Read through
-   *  `linkByEmailFor`: absent means true under `claim`, false under `trusted`. */
+   *  `linkByEmailFor`: absent means false. */
   linkByEmail?: boolean;
 }
 
@@ -576,10 +581,12 @@ const DEFAULTS: InstanceConfig = {
     guestLinks: { enabled: true, maxTtlHours: 168, defaultTtlHours: 72 },
     nearby: { enabled: true },
     sessionTtlHours: 12,
+    serviceTokens: { allowLegacyUnbounded: true },
     submit: { maxBytes: 64 * 1024 * 1024, quota: { bytes: 0, count: 0 } },
     catalog: { versionKeep: 0 },
     fleet: {},
     retention: { telemetryDays: 0, auditDays: 0 },
+    activity: { mode: 'delegated', auditSessionUpdates: true },
     projectFiles: { ...PROJECT_FILE_DEFAULTS },
     requests: { join: false, project: true, ttlDays: 14, joinOpenMax: 50 },
   },
@@ -604,6 +611,7 @@ const DEFAULTS: InstanceConfig = {
     directory: null,
   },
   catalogProviders: [],
+  network: { providers: { allowedPrivateOrigins: [], redirectOrigins: [], maxBytes: 64 * 1024 * 1024 } },
   catalogServing: {
     maxProviderAssets: 100_000,
     pagedProviderThreshold: 2000,
@@ -893,6 +901,7 @@ export function parseConfig(json: string): InstanceConfig {
     throw new Error(`invalid telemetry level: ${cfg.policy.telemetry}`);
   }
   const ttl = cfg.policy.sessionTtlHours;
+  if (typeof cfg.policy.serviceTokens?.allowLegacyUnbounded !== 'boolean') throw new Error('policy.serviceTokens.allowLegacyUnbounded must be boolean');
   if (typeof ttl !== 'number' || !Number.isFinite(ttl) || ttl <= 0 || ttl > 720) {
     throw new Error(`invalid sessionTtlHours: ${ttl} (must be > 0 and <= 720)`);
   }
@@ -906,6 +915,8 @@ export function parseConfig(json: string): InstanceConfig {
   if (floor !== undefined && !/^\d+(\.\d+){0,3}$/.test(floor)) {
     throw new Error(`invalid policy.fleet.minEngine: ${floor} (dotted version, e.g. "1.140.0")`);
   }
+  if (!['off', 'owner-only', 'delegated'].includes(cfg.policy.activity.mode)) throw new Error('invalid policy.activity.mode');
+  if (typeof cfg.policy.activity.auditSessionUpdates !== 'boolean') throw new Error('policy.activity.auditSessionUpdates must be true or false');
   for (const k of ['telemetryDays', 'auditDays'] as const) {
     const v = cfg.policy.retention[k];
     if (!Number.isInteger(v) || v < 0) throw new Error(`invalid policy.retention.${k}: ${v} (days, 0 = keep forever)`);
@@ -1042,9 +1053,8 @@ export function parseConfig(json: string): InstanceConfig {
     if (!u || !/^https?:$/.test(u.protocol)) throw new Error('notify.webhook.url must be an http(s) URL');
   }
   if (cfg.siem.url !== undefined) {
-    let u: URL | null = null;
-    try { u = new URL(cfg.siem.url); } catch { /* refused below */ }
-    if (!u || !/^https?:$/.test(u.protocol)) throw new Error('siem.url must be an http(s) URL');
+    try { cfg.siem.url = serviceUrl(cfg.siem.url, cfg.deployment.mode === 'production' || (cfg.deployment.mode !== 'evaluation' && process.env.NODE_ENV === 'production')); }
+    catch { throw new Error('siem.url requires HTTPS; HTTP is only for explicit loopback evaluation, without credentials, query or fragment'); }
   }
   if (!Number.isInteger(cfg.siem.batchSize) || cfg.siem.batchSize < 1 || cfg.siem.batchSize > 1000) {
     throw new Error(`invalid siem.batchSize: ${cfg.siem.batchSize} (1-1000)`);
@@ -1053,6 +1063,16 @@ export function parseConfig(json: string): InstanceConfig {
     throw new Error(`invalid siem.intervalSeconds: ${cfg.siem.intervalSeconds} (>= 5)`);
   }
   const wt = cfg.render.worker.timeoutMs;
+  if (!cfg.network?.providers || typeof cfg.network.providers !== 'object') throw new Error('network.providers must be configured');
+  cfg.network.providers.allowedPrivateOrigins = providerOrigins(cfg.network.providers.allowedPrivateOrigins);
+  cfg.network.providers.redirectOrigins = providerOrigins(cfg.network.providers.redirectOrigins);
+  if (!Number.isInteger(cfg.network.providers.maxBytes) || cfg.network.providers.maxBytes < 1 || cfg.network.providers.maxBytes > 1024 * 1024 * 1024) {
+    throw new Error('network.providers.maxBytes must be an integer from 1 to 1073741824');
+  }
+  if (cfg.render.worker.url) {
+    try { cfg.render.worker.url = serviceUrl(cfg.render.worker.url, cfg.deployment.mode === 'production' || (cfg.deployment.mode !== 'evaluation' && process.env.NODE_ENV === 'production')); }
+    catch { throw new Error('render.worker.url requires HTTPS; HTTP is only for explicit loopback evaluation'); }
+  }
   if (cfg.render.worker.url && (!Number.isFinite(wt) || wt <= 0)) throw new Error(`invalid render.worker.timeoutMs: ${wt}`);
   const rl = cfg.rateLimit;
   if (!Number.isFinite(rl.trustedProxyHops) || rl.trustedProxyHops < 0) throw new Error('rateLimit.trustedProxyHops must be >= 0');
@@ -1212,9 +1232,13 @@ export function linkKeys(s: Secrets): readonly string[] {
 
 export function loadSecrets(env = process.env, cfg?: Pick<InstanceConfig, 'proxyAuth'> & Partial<Pick<InstanceConfig, 'deployment'>>): Secrets {
   const prod = cfg?.deployment?.mode === 'production' || (cfg?.deployment?.mode !== 'evaluation' && env.NODE_ENV === 'production');
+  if (prod && env.NODE_TLS_REJECT_UNAUTHORIZED === '0') throw new Error('Production requires TLS certificate verification');
   const need = (name: string): string => {
     const v = env[name];
-    if (v) return v;
+    if (v) {
+      if (prod && /^(?:eval-only-|dev-only-)/.test(v)) throw new Error(`${name} must be replaced with a production secret`);
+      return v;
+    }
     if (prod) {
       throw new Error(
         `${name} is required in production. Generate one with \`openssl rand -hex 32\` and set it ` +
@@ -1257,5 +1281,10 @@ export function loadSecrets(env = process.env, cfg?: Pick<InstanceConfig, 'proxy
   if (env.LW_RENDER_WORKER_SECRET) secrets.renderWorker = env.LW_RENDER_WORKER_SECRET;
   if (env.LW_C2PA_SIGNING_KEY) secrets.c2paSigningKey = env.LW_C2PA_SIGNING_KEY;
   if (env.LW_CATALOG_SIGNING_KEY) secrets.catalogSigningKey = env.LW_CATALOG_SIGNING_KEY;
+  if (prod) {
+    for (const [name, value] of Object.entries(secrets)) {
+      if (typeof value === 'string' && /^(?:eval-only-|dev-only-)/.test(value)) throw new Error(`${name} must be replaced with a production secret`);
+    }
+  }
   return secrets;
 }

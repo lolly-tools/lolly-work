@@ -1,8 +1,9 @@
+import { activityAvailable, type ActivityPolicy } from '../policy/activity.ts';
 // SPDX-License-Identifier: MPL-2.0
 import { evaluate, type PrincipalCtx, type Grant } from '../rbac/evaluate.ts';
 
 /** Mirror route requirements, including endpoints that still require an admin role. */
-export function consoleAccess(principal: PrincipalCtx, grants: Grant[]) {
+export function consoleAccess(principal: PrincipalCtx, grants: Grant[], activity: ActivityPolicy = { mode: 'delegated', auditSessionUpdates: true }) {
   const requirements: Record<string, string[]> = {
     overview: ['telemetry.view'], activity: ['audit.export'], agents: ['audit.export'], fleet: ['fleet.view'], rooms: ['telemetry.view'],
     links: ['link.revoke'], tools: ['policy.edit'], catalog: ['catalog.expire'], providers: ['catalog.provider.read'],
@@ -18,6 +19,8 @@ export function consoleAccess(principal: PrincipalCtx, grants: Grant[]) {
   ]))].filter(action => evaluate(principal, action, ['*'], grants));
   const views = Object.fromEntries(Object.entries(requirements).map(([id, requirements]) =>
     [id, requirements.some(action => actions.includes(action))]));
+  views.activity = !!views.activity && activityAvailable(activity, principal.role);
+  views.agents = !!views.agents && activityAvailable(activity, principal.role);
   views.instance = ['tools', 'catalog', 'providers', 'design', 'flags', 'injectables'].some(id => views[id]);
   views.users = principal.role === 'admin' || principal.role === 'owner';
   for (const id of ['messages', 'projects', 'approvals', 'docs', 'verify']) views[id] = true;

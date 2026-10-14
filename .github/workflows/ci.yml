@@ -52,14 +52,14 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 11.26.0
           run_install: false
 
-      - uses: actions/setup-node@v7.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26.11.1'
           cache: pnpm
@@ -91,6 +91,7 @@ jobs:
             /engine/src/catalog-integrity.ts
             /engine/src/canonical-json.ts
             /engine/src/x509.ts
+            /engine/src/x509-read.ts
             /engine/src/bytes.ts
             /engine/src/der-read.ts
             /scripts/sign-catalog.ts
@@ -114,14 +115,14 @@ jobs:
     name: typecheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 11.26.0
           run_install: false
 
-      - uses: actions/setup-node@v7.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26.11.1'
           cache: pnpm
@@ -143,14 +144,14 @@ jobs:
     name: npm audit (high+critical) + SBOM
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 11.26.0
           run_install: false
 
-      - uses: actions/setup-node@v7.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26.11.1'
           cache: pnpm
@@ -223,7 +224,7 @@ jobs:
             dockerfile: workers/render/Dockerfile
             context: workers/render
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Start checksum-pinned host BuildKit
         id: host-buildkit
@@ -285,7 +286,7 @@ jobs:
       - name: Qualify built worker with matched signed shell and real browser
         if: matrix.image == 'render-worker'
         timeout-minutes: 25
-        run: node scripts/qualify-render-worker-image.ts --lolly-root qualification-lolly --image lolly-render-worker:ci
+        run: node scripts/qualify-render-worker-image.ts --lolly-root qualification-lolly --image lolly-render-worker:ci --sandbox-profile chromium
       - name: Qualify native server rendering and release contracts
         if: matrix.image == 'server'
         run: |

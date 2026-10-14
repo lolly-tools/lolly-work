@@ -44,6 +44,7 @@ async function boot(): Promise<Booted> {
   await writeFile(join(pack, 'catalog', 'assets', 'index.json'), JSON.stringify({ version: 1, assets: [] }));
   const config = parseConfig(JSON.stringify({
     instance: { name: 'SCIM Hub', baseUrl: 'http://localhost', pack },
+    idp: { issuer: 'https://idp.example.org', clientId: 'scim-test', additional: [{ id: 'keycloak', issuer: 'https://extra.example.org', clientId: 'scim-extra', displayName: 'Additional' }] },
     rateLimit: { enabled: false },
     dev: { enabled: true, users: [
       { email: 'owner@test', groups: ['owner'] },
@@ -66,7 +67,7 @@ async function login(base: string, email: string): Promise<string> {
 }
 
 /** Mint a provisioning token as the owner and return its one-time secret. */
-async function mintToken(base: string, cookie: string, idp = 'keycloak'): Promise<string> {
+async function mintToken(base: string, cookie: string, idp = 'primary'): Promise<string> {
   const res = await fetch(`${base}/api/v1/scim/tokens`, {
     method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ idp }),
   });
@@ -380,6 +381,7 @@ test('a subject linked to an account created by another IdP is that account: fou
   const carol = await store.upsertUserBySub({ sub: 'github:7', email: 'carol@corp', groups: [], role: 'member' });
   const at = new Date().toISOString();
   assert.ok(await store.linkIdentity({ identitySub: '00uX', userId: carol.id, idp: 'primary', email: 'carol@corp', emailVerified: true, linkedAt: at }));
+  await store.setUserScimIdp(carol.id, 'primary');
 
   const found = await (await scim(base, token, 'GET', 'Users?filter=' + encodeURIComponent('externalId eq "00uX"'))).json() as { totalResults: number; Resources: Array<{ id: string }> };
   assert.equal(found.totalResults, 1, 'the IdP finds the account its subject signs in to');
@@ -388,4 +390,64 @@ test('a subject linked to an account created by another IdP is that account: fou
   const dup = await scim(base, token, 'POST', 'Users', { userName: 'carol2@corp', externalId: '00uX' });
   assert.equal(dup.status, 409, 'no second row to take the group pushes');
   assert.equal((await store.listUsers()).filter((u) => u.sub === '00uX').length, 0);
+});
+
+test('connectors manage only assigned users and groups, and cannot manage elevated accounts', async () => {
+  const { base, store } = await boot();
+  const ownerCookie = await login(base, 'owner@test');
+  const first = await mintToken(base, ownerCookie, 'primary');
+  const second = await mintToken(base, ownerCookie, 'keycloak');
+  const one = await (await scim(base, first, 'POST', 'Users', { userName: 'one@example.org', externalId: 'one' })).json() as { id: string };
+  const two = await (await scim(base, second, 'POST', 'Users', { userName: 'two@example.org', externalId: 'one' })).json() as { id: string; externalId: string };
+  assert.notEqual(one.id, two.id);
+  assert.equal(two.externalId, 'one');
+  assert.equal((await store.getUser(two.id))?.sub, 'keycloak:one');
+  for (const method of ['GET', 'PATCH', 'DELETE']) {
+    const body = method === 'PATCH' ? { Operations: [{ op: 'replace', path: 'active', value: false }] } : undefined;
+    assert.equal((await scim(base, second, method, `Users/${one.id}`, body)).status, 404);
+  }
+  const ownList = await (await scim(base, first, 'GET', 'Users')).json() as { totalResults: number };
+  assert.equal(ownList.totalResults, 1);
+  for (const displayName of ['owner', 'admin']) assert.equal((await scim(base, first, 'POST', 'Groups', { displayName })).status, 403);
+  const group = await scim(base, first, 'POST', 'Groups', { displayName: 'writers', members: [{ value: one.id }] });
+  assert.equal(group.status, 201);
+  assert.equal((await scim(base, second, 'PATCH', 'Groups/writers', { Operations: [{ op: 'remove', path: 'members' }] })).status, 404);
+  assert.equal((await scim(base, first, 'PATCH', 'Groups/writers', { Operations: [{ op: 'add', path: 'members', value: [{ value: two.id }] }] })).status, 404);
+  assert.equal((await store.getUser(two.id))?.localGroups.includes('writers'), false);
+  await store.setLocalGroups(one.id, ['admin']);
+  assert.equal((await scim(base, first, 'DELETE', `Users/${one.id}`)).status, 404);
+});
+
+test('provisioning tokens expire and legacy tokens require reissue', async () => {
+  const { base, store } = await boot();
+  const cookie = await login(base, 'owner@test');
+  const token = await mintToken(base, cookie);
+  const existing = (await store.listScimTokens())[0]!;
+  assert.ok(existing.expiresAt);
+  await store.putScimToken({ ...existing, expiresAt: new Date(Date.now() - 1000).toISOString() });
+  assert.equal((await scim(base, token, 'GET', 'Users')).status, 401);
+  const { expiresAt: _expires, ...legacy } = existing;
+  await store.putScimToken(legacy);
+  assert.equal((await scim(base, token, 'GET', 'Users')).status, 401);
+  for (const ttlDays of [0, -1, 366, '90']) {
+    const response = await fetch(`${base}/api/v1/scim/tokens`, {
+      method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ idp: 'primary', ttlDays }),
+    });
+    assert.equal(response.status, 400);
+  }
+});
+
+test('an owner assigns legacy resources before provisioning can manage them', async () => {
+  const { base, store } = await boot();
+  const cookie = await login(base, 'owner@test');
+  const token = await mintToken(base, cookie);
+  const user = await store.upsertUserBySub({ sub: 'legacy-sub', email: 'legacy@example.org', groups: [], role: 'member' });
+  await store.putLocalGroup({ name: 'legacy-group', createdAt: new Date().toISOString() });
+  assert.equal((await scim(base, token, 'GET', `Users/${user.id}`)).status, 404);
+  const assigned = await fetch(`${base}/api/v1/scim/ownership`, {
+    method: 'PUT', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ idp: 'primary', userIds: [user.id], groups: ['legacy-group'] }),
+  });
+  assert.equal(assigned.status, 200);
+  assert.equal((await scim(base, token, 'GET', `Users/${user.id}`)).status, 200);
+  assert.equal((await scim(base, token, 'GET', 'Groups/legacy-group')).status, 200);
 });

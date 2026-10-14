@@ -172,7 +172,9 @@ test('share and embed serve the asset inline to a bearer with no session; downlo
 test('TTL, passwords and revocation work unchanged on an asset target', async () => {
   const designer = await login('designer@test');
 
-  const expired = await mintOk(designer, { kind: 'share', target: { assetId: 'inst/hero' }, ttlHours: 0 });
+  const zeroTtl = await mint(designer, { kind: 'share', target: { assetId: 'inst/hero' }, ttlHours: 0 });
+  assert.equal(zeroTtl.status, 400);
+  const expired = await mintOk(designer, { kind: 'share', target: { assetId: 'inst/hero' }, ttlHours: 0.00001 });
   assert.equal((await fetch(expired.path)).status, 410, 'LINK_EXPIRED - the signature carries its own expiry');
 
   const guarded = await mintOk(designer, { kind: 'download', target: { assetId: 'inst/hero' }, password: 'hunter2' });

@@ -88,7 +88,7 @@ export function emailDomain(email: string): string {
 
 /** Whether this IdP vouches for the email address. */
 export function emailIsVerified(identity: AdmissionIdentity, idp: AdmissionIdp): boolean {
-  return (idp.emailVerification ?? 'claim') === 'trusted' || identity.emailVerified === true;
+  return identity.emailVerified === true || ((idp.emailVerification ?? 'claim') === 'trusted' && identity.emailVerified === undefined);
 }
 
 export function decideAdmission(

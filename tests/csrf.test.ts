@@ -28,14 +28,17 @@ test('verdict: the browser saying cross-site is enough on its own', () => {
   assert.equal(csrfVerdict('POST', { cookie: 'lw_session=x', 'sec-fetch-site': 'same-origin', host: 'work.example.org' }), null);
 });
 
-test('verdict: Origin is compared to Host by site, so sibling hosts and other ports pass', () => {
-  const host = 'work.example.org';
-  assert.equal(csrfVerdict('PUT', { cookie: 'c', origin: 'https://work.example.org', host }), null);
-  assert.equal(csrfVerdict('PUT', { cookie: 'c', origin: 'https://app.example.org', host }), null);
-  assert.equal(csrfVerdict('PUT', { cookie: 'c', origin: 'http://localhost:5173', host: 'localhost:8787' }), null);
-  assert.match(csrfVerdict('PUT', { cookie: 'c', origin: 'https://evil.example', host }) ?? '', /not this deployment/);
-  assert.match(csrfVerdict('DELETE', { cookie: 'c', origin: 'null', host }) ?? '', /opaque/);
-  assert.match(csrfVerdict('POST', { cookie: 'c', origin: 'not a url', host }) ?? '', /malformed/);
+test('verdict: only exact configured origins pass', () => {
+  const urls = ['https://work.example.org', 'https://app.example.org'];
+  const headers = { cookie: 'c', host: 'work.example.org' };
+  assert.equal(csrfVerdict('PUT', { ...headers, origin: urls[0] }, urls), null);
+  assert.equal(csrfVerdict('PUT', { ...headers, origin: urls[1] }, urls), null);
+  for (const origin of ['https://other.example.org', 'http://work.example.org', 'https://work.example.org:8443']) {
+    assert.match(csrfVerdict('PUT', { ...headers, origin }, urls) ?? '', /not this deployment/);
+  }
+  assert.match(csrfVerdict('DELETE', { ...headers, origin: 'null' }, urls) ?? '', /opaque/);
+  assert.match(csrfVerdict('POST', { ...headers, origin: 'not a url' }, urls) ?? '', /malformed/);
+  assert.match(csrfVerdict('POST', { ...headers, 'sec-fetch-site': 'same-site' }, urls) ?? '', /configured/);
 });
 
 const servers: Server[] = [];
@@ -73,7 +76,7 @@ test('over HTTP: a cross-site POST with the session cookie is refused, a first-p
   const foreignOrigin = await fetch(`${base}/api/v1/messages`, { method: 'POST', body, headers: { ...headers, origin: 'https://evil.example' } });
   assert.equal(foreignOrigin.status, 403);
 
-  const firstParty = await fetch(`${base}/api/v1/messages`, { method: 'POST', body, headers: { ...headers, 'sec-fetch-site': 'same-origin', origin: `http://127.0.0.1` } });
+  const firstParty = await fetch(`${base}/api/v1/messages`, { method: 'POST', body, headers: { ...headers, 'sec-fetch-site': 'same-origin', origin: 'http://localhost' } });
   assert.notEqual(firstParty.status, 403, `first-party mutation reached its route (${firstParty.status})`);
 
   const noCookie = await fetch(`${base}/api/v1/messages`, { method: 'POST', body, headers: { 'content-type': 'application/json', origin: 'https://evil.example' } });

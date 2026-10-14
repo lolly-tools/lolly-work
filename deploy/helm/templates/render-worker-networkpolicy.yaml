@@ -7,8 +7,7 @@ closes the same door at the network: ingress only from the control plane on the 
 port; egress only to cluster DNS, to public addresses on 80/443, and to the destinations
 you list in renderWorker.networkPolicy.extraEgress.
 
-Off by default, like the app's own policy, because it has to know where the shell lives.
-With renderWorker.webBase on a public address (https://lolly.tools, or your instance's
+Enabled by default when the worker is deployed. With renderWorker.webBase on a public address (https://lolly.tools, or your instance's
 public URL) the defaults work. A shell on a private address (an in-cluster Service, an
 internal load balancer) needs an extraEgress rule for it, and so does any origin you
 list in LW_RENDER_ALLOWED_ORIGINS.

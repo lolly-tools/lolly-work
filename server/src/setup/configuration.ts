@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { DOMAIN_NAME, parseConfig, type InstanceConfig } from '../config/instance.ts';
 import { roleFromGroups, type RoleGroups } from '../rbac/evaluate.ts';
 import { productionMode } from './checks.ts';
+import { serviceUrl } from '../lib/service-url.ts';
 
 export const SETUP_ROLES = ['owner', 'admin', 'approver', 'author', 'member', 'viewer'] as const;
 export class SetupInputError extends Error {
@@ -87,7 +88,11 @@ export function generateSetup(value: unknown, current: InstanceConfig) {
     if (!draft[key] && !required) return;
     let url: URL; try { url = new URL(draft[key]); } catch { throw new SetupInputError(key, 'Enter a complete HTTP or HTTPS URL.'); }
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new SetupInputError(key, 'Use a URL without credentials, query parameters or a fragment.');
-    if (draft.mode === 'production' && key !== 'workerUrl' && url.protocol !== 'https:') throw new SetupInputError(key, 'Use HTTPS for production.');
+    if (draft.mode === 'production' && url.protocol !== 'https:') throw new SetupInputError(key, 'Use HTTPS for production.');
+    if (key === 'workerUrl') {
+      try { serviceUrl(draft[key], draft.mode === 'production'); }
+      catch { throw new SetupInputError(key, 'Use HTTPS, or an explicit loopback HTTP endpoint for evaluation.'); }
+    }
   };
   checkUrl('baseUrl', true); checkUrl('issuer', draft.authentication === 'oidc'); checkUrl('appUrl'); checkUrl('workerUrl');
   if (!draft.name) throw new SetupInputError('name', 'Give the instance a name.');

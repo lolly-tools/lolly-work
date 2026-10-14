@@ -270,6 +270,21 @@ test('disabled users and revoked service tokens cannot execute persisted work', 
   assert.equal((await h.store.getRender(serviceRender.id, 'service:svc_render-ci'))?.error?.code, 'PRINCIPAL_UNAVAILABLE');
 });
 
+test('service credentials that expire after queueing cannot execute a persisted render', async t => {
+  const h = await harness(); t.after(() => h.close());
+  const secret = mintServiceSecret();
+  const token = { id: 'expiring-ci', label: 'CI', role: 'admin', tokenHash: secret.tokenHash, createdBy: 'system',
+    createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60000).toISOString() };
+  await h.store.putApiToken(token);
+  const response = await h.request('/api/v1/renders', 'POST', render, '', { authorization: `Bearer ${secret.secret}` });
+  assert.equal(response.status, 202, await response.clone().text());
+  const resource = await response.json() as RenderRecord;
+  await h.store.putApiToken({ ...token, expiresAt: '2020-01-01T00:00:00.000Z' });
+  await h.runner!.tick();
+  for (let n = 0; n < 100 && (await h.store.getRender(resource.id, 'service:svc_expiring-ci'))?.state === 'running'; n++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal((await h.store.getRender(resource.id, 'service:svc_expiring-ci'))?.error?.code, 'PRINCIPAL_UNAVAILABLE');
+});
+
 test('output retrieval reports missing and corrupted retained bytes distinctly', async (t) => {
   const h = await harness(); t.after(() => h.close());
   const r = await (await h.request('/api/v1/renders', 'POST', render)).json() as RenderRecord;

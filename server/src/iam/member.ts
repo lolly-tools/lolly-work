@@ -21,6 +21,7 @@
  */
 import type { Store, UserRecord } from '../store/types.ts';
 import { readPrincipal } from './sessions.ts';
+import { localSessionKey } from './local-logout.ts';
 
 export async function resolveMember(
   store: Store,
@@ -29,6 +30,8 @@ export async function resolveMember(
 ): Promise<UserRecord | null> {
   const p = readPrincipal(cookieHeader, sessionSecret);
   if (p?.kind !== 'member') return null;
+  const revocationKey = localSessionKey(p);
+  if (revocationKey && await store.localSessionRevoked(revocationKey)) return null;
   if (p.user.standingUntil !== undefined && Date.now() >= p.user.standingUntil) return null;
   if (p.user.oidc && await store.oidcSessionRevoked(p.user.oidc)) return null;
   const user = await store.getUserBySub(p.user.sub);

@@ -10,8 +10,15 @@
  * rasterises exactly like an in-process render (policy stays in the plane).
  */
 import { hmac, macEquals, canonicalJson, sha256Hex } from '../lib/crypto.ts';
+import { serviceUrl } from '../lib/service-url.ts';
 
-export interface WorkerConfig { url: string; secret: string; timeoutMs: number }
+export interface WorkerConfig { url: string; secret: string; timeoutMs: number; requireHttps?: boolean }
+
+export function workerEndpoint(cfg: WorkerConfig, path: string): string {
+  if (cfg.requireHttps && process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0') throw new WorkerError('Worker TLS verification is required');
+  try { return `${serviceUrl(cfg.url, cfg.requireHttps === true)}${path}`; }
+  catch { throw new WorkerError('Worker endpoint requires verified HTTPS or explicit loopback evaluation HTTP'); }
+}
 
 export interface WorkerEvidence { inputs?: Record<string, string>; version: 1; requestSha256: string; outputSha256: string; resources: { url: string; sha256: string; size: number }[]; limitations: string[] }
 export interface WorkerJob {
@@ -113,8 +120,9 @@ export async function renderViaWorker(
   const timer = setTimeout(() => ctrl.abort(), cfg.timeoutMs);
   let res: Response;
   try {
-    res = await fetchImpl(`${cfg.url.replace(/\/$/, '')}/render`, {
+    res = await fetchImpl(workerEndpoint(cfg, '/render'), {
       method: 'POST',
+      redirect: 'error',
       headers: { 'content-type': 'application/json', 'x-lw-render-sig': sig },
       body: payload,
       signal: opts.signal ? AbortSignal.any([opts.signal, ctrl.signal]) : ctrl.signal,
@@ -190,8 +198,9 @@ export async function rasteriseViaWorker(
   const timer = setTimeout(() => ctrl.abort(), cfg.timeoutMs);
   let res: Response;
   try {
-    res = await fetchImpl(`${cfg.url.replace(/\/$/, '')}/rasterise`, {
+    res = await fetchImpl(workerEndpoint(cfg, '/rasterise'), {
       method: 'POST',
+      redirect: 'error',
       headers: { 'content-type': 'application/json', 'x-lw-render-sig': sig },
       body: payload,
       signal: opts.signal ? AbortSignal.any([opts.signal, ctrl.signal]) : ctrl.signal,

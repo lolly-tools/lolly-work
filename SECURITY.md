@@ -89,11 +89,11 @@ before reporting.
   `sessionMaxHours` after the sign-in that started its chain. Each renewal
   re-checks the account, its epoch and admission, and a person ends all of
   their own sessions with `POST /api/v1/me/revoke-sessions`.
-- **CSRF stance is `SameSite=Lax` plus a site check.** All cookies are
+- **CSRF stance is `SameSite=Lax` plus configured origin checks.** All cookies are
   `HttpOnly; SameSite=Lax` (plus `Secure` on https instances). There is no
   per-request CSRF token; a cookie-authenticated mutation is refused before
-  routing when the browser reports `Sec-Fetch-Site: cross-site` or its
-  `Origin` is a different site from the `Host` (`server/src/iam/csrf.ts`).
+  routing when its `Origin` differs from the exact origin of `instance.baseUrl` or `instance.appUrl`
+  (`server/src/iam/csrf.ts`). Split development must configure its app origin.
   Sign-in routes still mint a session on a GET (`/api/auth/dev`,
   `/api/auth/proxy`, the OIDC callback), so a login-CSRF - being signed in as
   an attacker's account - is not prevented; it grants the attacker nothing.

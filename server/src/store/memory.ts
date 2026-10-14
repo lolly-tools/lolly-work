@@ -2,6 +2,8 @@ import { createMemoryOidcLogout } from '../iam/oidc-logout-memory.ts';
 import { COMMENT_THREAD_LIMIT, type CommentThread } from '@lolly-tools/core/canvas-review-v1';
 import type { CanvasCheckpoint, CanvasOp } from '@lolly-tools/core/canvas-op-v1';
 import { matchesAudit } from '../audit/filter.ts';
+import { createMemorySubjects } from '../privacy/memory.ts';
+import { LastOwnerError } from '../privacy/subject.ts';
 import { activeProjectFile, projectFileAssetId, projectFileCharge, type ProjectFileRecord } from '../projects/files.ts';
 import { initialBrandState } from '../brand/state.ts';
 import type { CollabReceipt } from './types.ts';
@@ -204,6 +206,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
   const liveProjectFiles = (now = Date.now()) => [...projectFiles.values()].filter((f) => activeProjectFile(f, now));
 
   return {
+    ...createMemorySubjects({ users, identities, projectMembers, apiTokens, links, passwordLinks, events, installs, audit, roles: () => roleGroups }),
     async catalogDeliverySequence(fingerprint, publication) {
       if (!/^[0-9a-f]{64}$/.test(fingerprint) || !/^[0-9a-f]{64}$/.test(publication.digest)
         || !Number.isSafeInteger(publication.generation) || publication.generation < 0) throw new Error('invalid catalog publication');
@@ -317,6 +320,13 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       });
       return { rows: rows.slice(opts.offset, opts.offset + opts.limit), total };
     },
+    async setUserScimIdp(userId, idp) {
+      for (const u of users.values()) {
+        if (u.id !== userId) continue;
+        const next = { ...u, scimIdp: idp }; users.set(u.sub, next); return mapped(next);
+      }
+      return null;
+    },
     async setLocalGroups(userId, local) {
       for (const u of users.values()) {
         if (u.id !== userId) continue;
@@ -331,6 +341,8 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     async setUserDisabled(userId, disabledAt) {
       for (const u of users.values()) {
         if (u.id !== userId) continue;
+        if (disabledAt && !u.disabledAt && roleFromGroups(u.groups, roleGroups) === 'owner'
+          && ![...users.values()].some(other => other.id !== userId && !other.disabledAt && roleFromGroups(other.groups, roleGroups) === 'owner')) throw new LastOwnerError();
         const next: UserRecord = { ...u };
         // Disabling is also a revocation: any live session dies on its next request.
         if (disabledAt) { next.disabledAt = disabledAt; next.sessionEpoch = u.sessionEpoch + 1; }
@@ -393,6 +405,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     async listApiTokens() {
       return [...apiTokens.values()].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
     },
+    async getApiToken(id) { const token = apiTokens.get(id); return token ? { ...token } : null; },
     async findApiTokenByHash(tokenHash) {
       for (const t of apiTokens.values()) if (t.tokenHash === tokenHash) return { ...t };
       return null;
@@ -908,6 +921,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
     async deleteUser(id) {
       for (const [sub, u] of users) {
         if (u.id === id) {
+          for (const [installId, row] of installs) if (row.userIdLastSeen === id) { const { userIdLastSeen: _removed, ...rest } = row; installs.set(installId, rest); }
           users.delete(sub);
           passkeys.forgetUser(id);
           // migration 0040: a membership row goes with its user.
@@ -941,6 +955,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
         events[i] = rest;
         scrubbed++;
       }
+      for (const [installId, row] of installs) if (row.userIdLastSeen === id) { const { userIdLastSeen: _removed, ...rest } = row; installs.set(installId, rest); }
       users.delete(user.sub);
       passkeys.forgetUser(id);
       forgetCommentState(id, true);

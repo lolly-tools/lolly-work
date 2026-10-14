@@ -9,6 +9,7 @@ import { canonicalJson, sha256Hex } from '../lib/crypto.ts';
 import { createToolDigestCache, servedToolIndexBytes, toolDirectoryDigests, type CatalogCaller, type CatalogSigning, type ServedToolIndex } from './signing.ts';
 import { servedToolSidecar } from './tool-sidecars.ts';
 import type { ServedIndexer, ServedIndex } from './served-index.ts';
+import { publisherResourceDigests, scopedResourceDigests } from './resource-proofs.ts';
 
 export type CatalogSnapshotKind = 'tools' | 'assets' | 'slim';
 export interface CatalogDeliveryView {
@@ -34,10 +35,11 @@ function ids(bytes: Buffer, field: 'tools' | 'assets'): string[] {
   catch { return []; }
 }
 
-export function createCatalogDelivery(deps: { store: Store; servedIndex: ServedIndexer; signing: CatalogSigning | null; source: { pack: string; generation?: number; publicKey?: Record<string, unknown> }; activePack?: () => Promise<string>; requireGeneration?: boolean; now?: () => number; maxBytes?: number }) {
+export function createCatalogDelivery(deps: { store: Store; servedIndex: ServedIndexer; signing: CatalogSigning | null; source: { pack: string; generation?: number; publicKey?: Record<string, unknown> }; shellDir?: string; activePack?: () => Promise<string>; requireGeneration?: boolean; now?: () => number; maxBytes?: number }) {
   const now = deps.now ?? Date.now, maxBytes = deps.maxBytes ?? MAX_SNAPSHOT_BYTES;
   let publication: Promise<CatalogPublication> | undefined;
   let preparation: Promise<void> | undefined;
+  let resourceProof: Promise<Record<string, string>> | undefined;
   const toolFiles = deps.signing?.fileDigests ?? createToolDigestCache();
   const sourcePublication = (): Promise<CatalogPublication> => publication ??= catalogPublication({ ...deps.source, signing: deps.signing,
     fileDigests: () => toolFiles(deps.source.pack),
@@ -65,6 +67,15 @@ export function createCatalogDelivery(deps: { store: Store; servedIndex: ServedI
     ]);
     if (!tools) return null;
     const slim = slimResult.kind === 'json' ? slimResult.bytes : null;
+    const parsed = (bytes: Buffer | null): unknown => { try { return bytes ? JSON.parse(bytes.toString()) : null; } catch { return null; } };
+    const entries = (bytes: Buffer | null): Array<{ id: string }> => {
+      const index = parsed(bytes) as { tools?: Array<{ id: string }> } | null;
+      return Array.isArray(index?.tools) ? index.tools.filter(tool => tool && typeof tool.id === 'string') : [];
+    };
+    const visibleTools = entries(tools.bytes);
+    const publisher = await (resourceProof ??= publisherResourceDigests({ ...deps.source, signing: deps.signing }));
+    const resources = await scopedResourceDigests({ pack, shellDir: deps.shellDir, publisher, caller,
+      visibleToolIds: new Set(visibleTools.map(tool => tool.id.toLowerCase())), visibleValues: [visibleTools, entries(slim), assets.index.assets ?? []] });
     const scope = catalogVisibilityScope(caller);
     const fingerprint = sha256Hex(canonicalJson({ assets: assets.sourceFingerprint,
       tools: sha256Hex(rawTools), slim: sha256Hex(rawSlim), files: allFiles,
@@ -78,6 +89,7 @@ export function createCatalogDelivery(deps: { store: Store; servedIndex: ServedI
     if (slim) await remember(scope, 'slim', slim);
     const envelope = deps.signing ? await deps.signing.envelopeFor(pack, tools, { seq, catalogScope: scope,
       ...(assets.status !== 'missing' ? { assetIndexHash: sha256Hex(assets.bytes) } : {}), ...(slim ? { slimHash: sha256Hex(slim) } : {}),
+      resources,
     }).catch(() => null) : null;
     return { tools, assets, slim, scope, seq, files, toolDirs, envelope };
   };

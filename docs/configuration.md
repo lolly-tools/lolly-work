@@ -75,11 +75,11 @@ For generated deployment files and a staged owner cutover, use [Customer setup](
 | `additional` | `[]` | further IdPs beside the primary - each `{ id, kind?, issuer, clientId, displayName, groupsClaim?, claimMap?, clientSecretRef? }`. `kind` is `oidc` (default), `github` or `password`. A GitHub entry takes no `issuer`, needs `clientSecretRef`, refuses `scopes`, `authParams`, `hostedDomain` and `tenantId`, and accepts only `emailVerification: "claim"` (see the [GitHub recipe](identity.md#provider-recipes)). A `password` entry is described below. Unset claims inherit the primary's; the secret rides the env var `clientSecretRef` names; subs store namespaced `<id>:<sub>`. With several houses, plain `/api/auth/login` serves a chooser. Each entry may also set the per-IdP keys below (`hostedDomain`, `tenantId`, `emailVerification`, `scopes`, `authParams`); those are never inherited from the primary. See [identity](identity.md#more-than-one-idp) |
 | `admission` | absent | who may sign in, checked on every OIDC, GitHub, password and proxy sign-in before a user row is written: `{ emails?: string[], domains?: string[], invitations?: boolean (default true) }`. Absent = every verified sign-in is admitted (production setup warns). `{}` admits invitations only. Admission by email, domain or invitation needs a verified email (see `emailVerification`). See [who may sign in](identity.md#who-may-sign-in) |
 | `linkedStandingDays` | `30` | whole days, 1-365. How long one sign-in's IdP groups, and the account's own sign-in's standing under `admission`, carry over to the person's other linked sign-ins. See [one person, several sign-ins](identity.md#one-person-several-sign-ins) |
-| `bootstrapOwners` | `[]` | emails that get the owner group (first `roleGroups.owner` name, else `owner`) at sign-in once admitted with a verified email. Audited as `auth.bootstrap-owner`. Each must be admitted by `admission.emails` or `admission.domains`; refused when `roleGroups.owner` is `[]` |
+| `bootstrapOwners` | `[]` | emails that get the owner group (first `roleGroups.owner` name, else `owner`) on first account creation once admitted with a verified email. The group remains in local membership until an owner removes it. Audited as `auth.bootstrap-owner`. Each must be admitted by `admission.emails` or `admission.domains`; refused when `roleGroups.owner` is `[]` |
 | `hostedDomain` | absent | per IdP. Google Workspace domain: the `hd` claim must equal it (a mismatch or missing claim refuses), and it is sent as the `hd` authorization parameter |
 | `tenantId` | absent | per IdP. Microsoft Entra directory id (GUID): the `tid` claim must equal it |
 | `emailVerification` | `claim` | per IdP. `claim`: email-based admission needs `email_verified: true`. `trusted`: every email this IdP sends counts as verified (tenant-pinned IdPs that omit the claim) |
-| `linkByEmail` | `true` under `claim`, `false` under `trusted` | per IdP. Whether a sign-in from this IdP may join an existing person whose email matches. The default links only when the IdP itself says the address is verified; set `true` to link from a `trusted` IdP (refused unless that IdP has a `hostedDomain` or `tenantId` pin), or `false` to never link from this one |
+| `linkByEmail` | primary: `true` under `claim`; additional: `false` | per IdP. Whether a sign-in from this IdP may join an existing person whose email matches. Additional providers require an explicit choice. Owner and admin accounts never join by email. The primary default requires a verified address; set `true` to link from a `trusted` IdP (refused unless that IdP has a `hostedDomain` or `tenantId` pin), or `false` to never link from this one |
 | `scopes` | `["openid", "profile", "email"]` | per IdP. Requested scopes, a list or a space-separated string; must include `openid` |
 | `authParams` | `{}` | per IdP. Extra authorization request parameters, allowlisted: `prompt`, `hd`, `domain_hint`, `login_hint`, `acr_values`. Any other key is refused; `hd` must equal `hostedDomain` when both are set |
 
@@ -206,6 +206,8 @@ See [email and password](identity.md#email-and-password) for the flow.
 | `submit.quota.count` | `0` | cumulative submission-count ceiling per group; `0` is unlimited |
 | `catalog.versionKeep` | `0` | how many versions of one instance asset to keep, head included. `0` keeps every version; a positive number trims oldest-first and deletes the trimmed bytes. The served version is never trimmed, and a held asset is never trimmed at all |
 | `fleet.minEngine` | *unset* | advisory engine version floor (dotted, e.g. `"1.140.0"`): below-floor engines are highlighted in the Fleet view with an upgrade nudge; nothing is blocked or force-upgraded |
+| `activity.mode` | `delegated` | `off` disables the activity timeline and agent activity dashboard; `owner-only` restricts them to owners; `delegated` also admits principals holding `audit.export`. Audit reads of those feeds record the reader and filter names, without query values. Security audit endpoints retain their own permissions |
+| `activity.auditSessionUpdates` | `true` | record routine API document saves as `session.update`. Set `false` to omit those new events; other security events and shared document history remain |
 | `retention.telemetryDays` | `0` | delete telemetry events older than this; `0` keeps everything |
 | `retention.auditDays` | `0` | trim audit rows older than this. The chain stays verifiable (the boundary's seq + hash are anchored before anything is deleted, and the head row is never trimmed), and a trim never passes the SIEM delivery cursor - an unreachable receiver pauses audit retention rather than losing events. See [operations](operations.md#retention-and-erasure) |
 | `projectFiles.enabled` | `true` | shared files inside team projects. They also need a durable store: on the memory store they are off whatever this says. See [sharing](sharing.md#shared-files) |
@@ -286,10 +288,35 @@ next authenticated request. Token expiry does not replace the offboarding integr
 | `c2pa.certFile` | `""` | signing-cert chain PEM (leaf first), public |
 | `c2pa.claimGenerator` | `""` | producer label in the signed manifest |
 
+Production worker and SIEM service URLs require HTTPS with verified server
+certificates. Requests cannot follow redirects or include URL credentials, query
+strings or fragments. HTTP is accepted only for explicit loopback evaluation
+fixtures. For an internal CA, mount its public PEM read-only and set
+`NODE_EXTRA_CA_CERTS` before starting Node. Keep hostname verification enabled;
+`NODE_TLS_REJECT_UNAUTHORIZED=0` is refused in production. The worker request HMAC
+continues to authenticate the control plane. TLS certificates and trust mounts
+need their own deployment qualification.
+
+`policy.serviceTokens.allowLegacyUnbounded` defaults to `true` for existing
+credentials without expiry. New service credentials always use a bounded expiry.
+Rotate the legacy integrations before deliberately setting the policy to `false`.
+
 Every tool in the committed `packs/demo` ships hooks, so `instance.example.json` and
 `values-eval.yaml` both set `allowHooksInFastPath: true` - that pack is curated in this
 repo end to end. Repoint `instance.pack` at a pack you do not fully control and this goes
 back to `false`, with a Chromium worker for the hooked tools.
+
+The Chromium worker always enables its browser sandbox. A bounded launch begins
+at startup, and `/readyz` stays unavailable until the browser connects. Failed
+startup or recovery stops the worker without an unsandboxed fallback.
+`LW_RENDER_BROWSER_STARTUP_TIMEOUT_MS` controls that budget (default `30000`,
+integer from `1000` to `120000`); Helm uses
+`renderWorker.browserStartupTimeoutMs`. Qualify the exact Linux image and target
+runtime with the existing non-root, seccomp and container permissions before
+rollout. A host that refuses the sandbox must remain out of service until its
+runtime is qualified. The separate evaluation `allowHooksInFastPath` setting runs
+curated demo hooks in `node:vm` and has no browser isolation; keep that setting
+false when preparing production packs.
 
 The worker itself takes `LW_RENDER_MAX_CONCURRENT` (default `4`, Helm
 `renderWorker.maxConcurrent`): its per-pod render/rasterise cap. At capacity it answers
@@ -518,6 +545,11 @@ cursor records the highest seq the receiver confirmed, and a refused batch repla
 Long-lived server only - on a serverless deploy, poll `GET /api/v1/audit` with a service
 token instead. Delivery lag is the `lw_siem_lag` gauge on `/metrics`.
 
+Batches use `lolly.audit-projection.v1` with privacy-filtered bodies, original
+source hash references and separate projection proofs. Qualify the receiver's
+adapter before rollout. Original rows and their retention policy remain unchanged;
+see [account lifecycle operations](account-lifecycle.md#siem-projection-format).
+
 | Key | Default | What it does |
 |---|---|---|
 | `url` | *unset* | the receiver; batches POST as JSON signed with `LW_SIEM_SECRET` (same header scheme as notify webhooks) |
@@ -525,6 +557,24 @@ token instead. Delivery lag is the `lw_siem_lag` gauge on `/metrics`.
 | `intervalSeconds` | `30` | forwarding cadence (>= 5) |
 
 ## `catalogProviders`
+
+Server-side catalog connectors use `network.providers` for outbound requests.
+Initial destinations must resolve entirely to public addresses unless their exact
+origin appears in `allowedPrivateOrigins`. Private deployments list only reviewed
+origins, including the intended scheme and port; paths and wildcards are refused.
+Native connections use a checked DNS answer while retaining the original Host and
+TLS hostname. For internal HTTPS services, use the same read-only CA trust setup
+described for other service connections.
+
+Cross-origin redirects require `redirectOrigins`, and only GET/HEAD reads may
+follow them. Credential and custom headers are removed on a cross-origin hop.
+Every hop is checked again, with at most three redirects. Explicit error/manual
+redirect modes retain their stricter caller behavior. The default private and
+cross-origin redirect lists are empty. `maxBytes` defaults to 64 MiB per request
+and decoded response, and accepts 1 to 1 GiB; review the required media sizes before
+changing that limit. Requests have a 30-second budget. These controls apply to
+catalog federation, setup/consent checks, preview, hosted catalog bytes and publish
+requests. They do not define the identity provider or delivery destination policy.
 
 Deploy-time (GitOps / air-gap) provider entries, upserted at boot as `managedBy: 'config'`
 and read-only in the API. Each entry: `id` (lowercase, dash-separated), `kind`, `label`,
@@ -567,15 +617,28 @@ instead ([hiding tags](catalog.md#hiding-tags)).
 | `LW_LOG_HTTP` | off | `1` writes an access line per request in text mode: request id, method, route label, status, ms |
 | `LW_PROXY_AUTH_SECRET` | with `proxyAuth.enabled` | the shared secret the reverse proxy injects as `x-lw-proxy-auth`. The name is `proxyAuth.secretRef`; `proxyAuth.directory.bindPasswordRef` names the LDAP bind password the same way |
 | `LW_CREDENTIAL_SECRET` | once a provider credential is stored | master key sealing credentials at rest (AES-256-GCM) |
-| `LW_METRICS_TOKEN` | to scrape remotely | bearer token for `/metrics`. Unset ⇒ loopback-only |
+| `LW_METRICS_TOKEN` | to scrape remotely | bearer token for `/metrics`. Required in production and proxied deployments; unset permits loopback only in an unproxied evaluation instance |
 | `LW_SMTP_PASSWORD` | with `notify.smtp.user` | the relay password (AUTH PLAIN) |
 | `LW_WEBHOOK_SECRET` | with `notify.webhook` | HMAC key signing every outbound webhook event |
 | `LW_SIEM_SECRET` | with `siem.url` | HMAC key signing every forwarded audit batch |
 | `LW_RENDER_WORKER_SECRET` | with a render worker | shared HMAC key; must match the worker |
 | `LW_C2PA_SIGNING_KEY` | to sign exports | PKCS#8 private-key PEM |
-| `LW_CATALOG_SIGNING_KEY` | when the shell pins a catalog key | ECDSA P-256 private key (PKCS#8 PEM or private JWK JSON) that signs each caller's tool index and tool file digests at `/catalog/tools/index.sig.json`. Unset: the catalog is served unsigned and that path answers 404, even when the pack carries a build-time signature, because that envelope can never match the index served per caller |
+| `LW_CATALOG_SIGNING_KEY` | when the shell pins a catalog key | ECDSA P-256 private key (PKCS#8 PEM or private JWK JSON) that signs each caller's tool index, tool file digests and verified optional media resources at `/catalog/tools/index.sig.json`. Unset: the catalog is served unsigned and that path answers 404, even when the pack carries a build-time signature, because that envelope can never match the index served per caller |
 | `LW_BLOBS_S3_CREDENTIAL` | with `blobs.driver: s3` | `<accessKeyId>:<secretAccessKey>` for the blob bucket |
 | `<credentialRef>` | per config-managed provider or delivery destination | resolved at boot, never persisted |
+
+Optional media proofs come from the mounted publisher's verified catalog
+envelope. Original bytes must match its full SHA-256 digest before Work signs a
+caller-scoped resource map. Visible tool and asset entries and the verified,
+deterministically filtered preview bundle select that map. Hidden entries never
+enter its bundle or tool file map; guest tool metadata is limited to the shared
+tool while the public asset feed retains its normal visibility.
+`/info/shots/` and fallback share cards can use exact verified bytes from the
+mounted `instance.shellDir`. Absent proofs, missing files or changed original
+bytes omit the optional resource and require the shell's safe preview fallback.
+Resource work is bounded to 4,096 referenced paths, 64 MiB per file and 256 MiB
+of checked bytes per view. A source pack without signed media proofs still
+supports tool rendering; qualify preview behavior with the paired shell release.
 
 In development, `LW_SESSION_SECRET` and `LW_LINK_SECRET` fall back to ephemeral randoms, so
 sessions die on restart. In production (`NODE_ENV=production`) their absence throws.

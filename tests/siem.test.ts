@@ -86,7 +86,7 @@ test('batches deliver in order, signed, and the cursor is the confirmed high-wat
   assert.equal(await fwd.tick(), 0, 'drained');
   assert.equal(await store.getSiemCursor(), 5);
 
-  const seqs = rx.got.flatMap((r) => (JSON.parse(r.body) as { events: Array<{ seq: number }> }).events.map((e) => e.seq));
+  const seqs = rx.got.flatMap((r) => (JSON.parse(r.body) as { events: Array<{ source: { seq: number } }> }).events.map((e) => e.source.seq));
   assert.deepEqual(seqs, [1, 2, 3, 4, 5], 'every event exactly once, in order');
   for (const r of rx.got) {
     const expected = `sha256=${createHmac('sha256', 'siem-secret').update(`${r.timestamp}.${r.body}`).digest('hex')}`;
@@ -106,7 +106,7 @@ test('a refused batch keeps the cursor and replays whole - loss-free by construc
 
   assert.equal(await fwd.tick(), 3, 'the same events replay whole');
   assert.equal(await store.getSiemCursor(), 3);
-  const seqs = (JSON.parse((rx.got[0] as Received).body) as { events: Array<{ seq: number }> }).events.map((e) => e.seq);
+  const seqs = (JSON.parse((rx.got[0] as Received).body) as { events: Array<{ source: { seq: number } }> }).events.map((e) => e.source.seq);
   assert.deepEqual(seqs, [1, 2, 3], 'nothing was dropped by the failed attempt');
 });
 

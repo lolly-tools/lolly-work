@@ -49,7 +49,7 @@ async function fixture(options: { sealing?: boolean; baseUrl?: string } = {}) {
   const config = parseConfig(JSON.stringify({ instance: { baseUrl: options.baseUrl ?? base }, dev: { enabled: true, users: [
     { email: 'owner@test', groups: ['owner'] }, { email: 'other@test', groups: ['owner'] }, { email: 'admin@test', groups: ['admin'] }, { email: 'member@test', groups: ['member'] },
   ] } }));
-  app = buildApp({ config, store, secrets: { session: 'session-fixture', link: 'link-fixture', ...(options.sealing === false ? {} : { credential: MASTER }) }, fetchImpl });
+  app = buildApp({ config, store, secrets: { session: 'session-fixture', link: 'link-fixture', ...(options.sealing === false ? {} : { credential: MASTER }) }, fetchImpl, providerResolver: async () => ['93.184.216.34'] });
   const login = async (email: string) => (await fetch(`${base}/api/auth/dev?email=${email}`, { redirect: 'manual' })).headers.getSetCookie().find(cookie => cookie.startsWith('lw_session='))!.split(';')[0]!;
   const owner = await login('owner@test'), other = await login('other@test'), admin = await login('admin@test'), member = await login('member@test');
   const request = (path: string, body?: unknown, cookie = owner, method = body === undefined ? 'GET' : 'POST') => fetch(`${base}${path}`, { method, redirect: 'manual', headers: { cookie, 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });

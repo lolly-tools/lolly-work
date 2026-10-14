@@ -43,6 +43,7 @@ export interface SignInSubject {
   /** The pin of a stored row's IdP: null for an unpinned IdP, undefined for
    *  one no longer configured (treated as pinned to something else). */
   pinOf?: (idp: string) => string | null | undefined;
+  linkableOf?: (idp: string) => boolean;
 }
 
 /** One string naming the directory an IdP is pinned to, or null when it has
@@ -65,11 +66,13 @@ export async function resolveSignIn(store: Store, s: SignInSubject): Promise<Sig
     const matches = await store.findUsersByVerifiedEmail(email);
     if (matches.length !== 1) return { via: 'new', candidates: matches.length };
     const user = matches[0]!;
+    if (user.role === 'owner' || user.role === 'admin') return { via: 'new', candidates: 0 };
     const pin = s.pin ?? null;
     const pinOf = s.pinOf ?? (() => null);
     // The rows that make this user a target. One of them from an unpinned
     // IdP, or from an IdP with this sign-in's own pin, is enough.
-    const proving = (await store.listIdentities(user.id)).filter((r) => r.emailVerified && r.email === email);
+    const proving = (await store.listIdentities(user.id)).filter(r => r.emailVerified && r.email === email && (s.linkableOf?.(r.idp) ?? true));
+    if (!proving.length) return { via: 'new', candidates: 0 };
     const joinable = proving.some((r) => {
       const p = pinOf(r.idp);
       return p === null || (p !== undefined && p === pin);

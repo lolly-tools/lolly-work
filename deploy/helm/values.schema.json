@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "renderWorker": {
+      "type": "object",
+      "properties": {
+        "browserStartupTimeoutMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 120000,
+          "description": "Maximum Chromium startup or recovery time. The browser sandbox is always required."
+        },
+        "tls": {
+          "type": "object",
+          "properties": {
+            "existingSecret": {
+              "type": "string"
+            },
+            "serverName": {
+              "type": "string"
+            },
+            "caSecret": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "existingSecret",
+            "caSecret"
+          ]
+        },
+        "seccompProfile": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "enum": [
+                "RuntimeDefault",
+                "Localhost"
+              ]
+            },
+            "localhostProfile": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]+(/[a-zA-Z0-9_-]+)*\\.json$"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  }
+}

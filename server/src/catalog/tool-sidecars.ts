@@ -29,7 +29,6 @@
  */
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { filterToolIndex } from '../policy/overlay.ts';
 import { callerCanSeeTool, type CatalogCaller } from './signing.ts';
 import { safeFile } from '../api/file-delivery.ts';
 import { sha256Hex } from '../lib/crypto.ts';
@@ -105,6 +104,17 @@ async function readJson(path: string): Promise<unknown> {
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
+export function filteredToolManifestBytes(bytes: Uint8Array, caller: CatalogCaller, toolIds: ReadonlySet<string>): Buffer | null {
+  let manifest: unknown;
+  try { manifest = JSON.parse(Buffer.from(bytes).toString()); } catch { return null; }
+  if (!isObject(manifest)) return null;
+  const kept = Object.fromEntries(Object.entries(manifest).filter(([key]) => {
+    const id = key.split(':', 1)[0]!.toLowerCase();
+    return toolIds.has(id) && callerCanSeeTool(caller, id);
+  }));
+  return Buffer.from(JSON.stringify(kept));
+}
+
 /**
  * Decide a tool-keyed catalog path for one caller. `tools/index.json`, and
  * `tools/index.sig.json` when a signing key is configured, are answered before
@@ -119,7 +129,7 @@ export async function servedToolSidecar(packDir: string, rel: string, caller: Ca
     const index = await readJson(join(packDir, 'catalog', 'tools', 'index.slim.json'));
     if (!isObject(index) || !Array.isArray(index.tools)) return { kind: 'not-found' };
     const tools = (index.tools as unknown[]).filter((t): t is { id: string } => isObject(t) && typeof t.id === 'string');
-    index.tools = filterToolIndex(tools, caller.overlays, caller.groups);
+    index.tools = tools.filter(tool => visible(tool.id));
     return { kind: 'json', bytes: Buffer.from(JSON.stringify(index), 'utf8') };
   }
 
@@ -130,13 +140,13 @@ export async function servedToolSidecar(packDir: string, rel: string, caller: Ca
   if (!name) return { kind: 'not-found' };
   const isManifest = !rest.includes('/') && (name.startsWith('.') || (dir === 'previews' && name.toLowerCase() === 'bundle.json'));
   if (isManifest) {
-    const manifest = await readJson(join(packDir, 'catalog', dir, name));
-    if (!isObject(manifest)) return { kind: 'not-found' };
-    const kept: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(manifest)) {
-      if (visible(key.split(':', 1)[0]!.toLowerCase())) kept[key] = value;
-    }
-    return { kind: 'json', bytes: Buffer.from(JSON.stringify(kept), 'utf8') };
+    const file = await safeFile(packDir, `catalog/${dir}/${name}`);
+    if (!file || file.size > 16 * 1024 * 1024) return { kind: 'not-found' };
+    const index = await readJson(join(packDir, 'catalog/tools/index.json'));
+    if (!isObject(index) || !Array.isArray(index.tools)) return { kind: 'not-found' };
+    const toolIds = new Set(index.tools.filter(isObject).map(tool => tool.id).filter((id): id is string => typeof id === 'string').map(id => id.toLowerCase()));
+    const bytes = filteredToolManifestBytes(await readFile(file.path), caller, toolIds);
+    return bytes ? { kind: 'json', bytes } : { kind: 'not-found' };
   }
   // `<toolId>.svg`, `<toolId>.look2.webp`, or a directory named after a tool.
   // Tool ids hold no dots, so the id is everything before the first one.

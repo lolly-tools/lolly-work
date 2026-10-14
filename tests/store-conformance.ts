@@ -1483,10 +1483,19 @@ export async function runStoreConformance(store: Store): Promise<void> {
   assert.equal(await store.setUserDisabled('nope', null), null, 'unknown id → null');
   assert.equal(await store.setLocalGroups('nope', []), null, 'unknown id → null');
 
+  const assigned = await store.setUserScimIdp(alice.id, 'primary');
+  assert.equal(assigned?.scimIdp, 'primary');
+  const synced = await store.upsertUserBySub({ sub: alice.sub, email: alice.email, groups: alice.idpGroups, role: alice.role });
+  assert.equal(synced.scimIdp, 'primary');
+  await store.putLocalGroup({ name: 'scoped-writers', scimIdp: 'primary', createdAt: now });
+  assert.equal((await store.listLocalGroups()).find(g => g.name === 'scoped-writers')?.scimIdp, 'primary');
+  assert.equal(await store.setUserScimIdp('missing', 'primary'), null);
+
   // ── SCIM provisioning tokens (plans/31 §8) ────────────────────────────────
-  await store.putScimToken({ id: 'sct_1', idp: 'keycloak', tokenHash: 'h1', createdBy: 'user:owner', createdAt: now });
+  await store.putScimToken({ id: 'sct_1', idp: 'keycloak', tokenHash: 'h1', createdBy: 'user:owner', createdAt: now, expiresAt: '2030-01-01T00:00:00.000Z' });
   await store.putScimToken({ id: 'sct_2', idp: 'okta', tokenHash: 'h2', createdBy: 'user:owner', createdAt: now });
   assert.deepEqual((await store.listScimTokens()).map((t) => t.id).sort(), ['sct_1', 'sct_2']);
+  assert.equal((await store.findScimTokenByHash('h1'))?.expiresAt, '2030-01-01T00:00:00.000Z');
   assert.equal((await store.findScimTokenByHash('h1'))?.idp, 'keycloak', 'found by hash');
   assert.equal(await store.findScimTokenByHash('nope'), null, 'unknown hash → null');
   // Never the secret, only its hash: nothing on the record is the cleartext token.

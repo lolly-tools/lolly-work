@@ -83,3 +83,7 @@ test('clientIp: default trusts socket only; XFF honored per declared hops', () =
   assert.equal(clientIp(req('10.0.0.1', '1.1.1.1, 2.2.2.2'), 1), '2.2.2.2'); // 1 hop → rightmost XFF
   assert.equal(clientIp(req('10.0.0.1', '1.1.1.1, 2.2.2.2'), 2), '1.1.1.1'); // 2 hops
 });
+
+test('direct renders share the automation request budget', () => {
+  assert.equal(rateLimitSurface('GET', '/render/card.svg'), 'automation');
+});

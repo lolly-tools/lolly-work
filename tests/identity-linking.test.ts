@@ -16,7 +16,7 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
-import { createSign, generateKeyPairSync } from 'node:crypto';
+import { createHash, createSign, generateKeyPairSync, randomUUID } from 'node:crypto';
 import { cp, mkdtemp, mkdir, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -50,6 +50,7 @@ interface Script {
   google: { sub: string; email: string; email_verified?: boolean; groups?: string[]; hd?: string };
   github: { id: number; login: string; emails: Array<{ email: string; primary: boolean; verified: boolean }> };
   nonce: string;
+  fixtureId: string;
 }
 
 function idpFetch(script: Script): typeof fetch {
@@ -88,7 +89,7 @@ async function boot(idpExtra: Record<string, unknown> = {}, seed?: (store: Store
     idp: {
       issuer: GOOGLE, clientId: 'g-client', displayName: 'Google',
       bootstrapOwners: ['owner@example.com'],
-      additional: [{ id: 'github', kind: 'github', clientId: 'gh-client', displayName: 'GitHub', clientSecretRef: SECRET_ENV }],
+      additional: [{ id: 'github', kind: 'github', clientId: 'gh-client', displayName: 'GitHub', clientSecretRef: SECRET_ENV, linkByEmail: true }],
       ...idpExtra,
     },
   }));
@@ -98,20 +99,43 @@ async function boot(idpExtra: Record<string, unknown> = {}, seed?: (store: Store
     google: { sub: 'g-1', email: 'ana@example.com', email_verified: true },
     github: { id: 101, login: 'ana-gh', emails: [{ email: 'ana@example.com', primary: true, verified: true }] },
     nonce: '',
+    fixtureId: randomUUID(),
   };
   const app = buildApp({ config, store, blobs: createMemoryBlobStore(), secrets: { session: 'sLink', link: 'lLink' }, fetchImpl: idpFetch(script) });
-  const server = createServer((req, res) => void app(req, res));
+  const server = createServer((req, res) => {
+    res.setHeader('x-lw-test-fixture', script.fixtureId);
+    void app(req, res);
+  });
   servers.push(server);
-  await new Promise<void>((r) => server.listen(0, () => r()));
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
   const addr = server.address();
-  return { base: `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`, store, script };
+  assert.ok(addr && typeof addr === 'object');
+  assert.equal(addr.address, '127.0.0.1', 'the fixture reserves the exact address used by its client');
+  assert.equal(addr.family, 'IPv4');
+  return { base: `http://${addr.address}:${addr.port}`, store, script };
 }
 
 /** Run one IdP round trip. `start` is the path that begins it (login or link);
  *  `session` rides along when a signed-in person starts a link. */
 async function roundTrip(base: string, script: Script, start: string, session?: string) {
   const started = await fetch(`${base}${start}`, { redirect: 'manual', headers: session ? { cookie: session } : {} });
-  assert.equal(started.status, 302, `start ${start}`);
+  const ownFixture = started.headers.get('x-lw-test-fixture') === script.fixtureId;
+  let diagnostic = '';
+  if (started.status !== 302 || !ownFixture) {
+    const reader = started.body?.getReader();
+    const chunk = reader ? (await reader.read()).value : undefined;
+    await reader?.cancel();
+    const prefix = chunk?.subarray(0, 512) ?? new Uint8Array();
+    let code: string | undefined;
+    try {
+      const candidate = JSON.parse(new TextDecoder().decode(prefix)).error?.code;
+      if (typeof candidate === 'string' && /^[A-Z_]{1,64}$/.test(candidate)) code = candidate;
+    } catch { /* A non-JSON response is identified by its digest. */ }
+    diagnostic = JSON.stringify({ ownFixture, contentType: started.headers.get('content-type'), code,
+      bodyPrefixSha256: createHash('sha256').update(prefix).digest('hex') });
+  }
+  assert.equal(started.status, 302, `start ${start} ${diagnostic}`);
+  assert.ok(ownFixture, `the sign-in response belongs to this fixture ${diagnostic}`);
   const authorize = new URL(started.headers.get('location') as string);
   if (authorize.origin === GOOGLE) script.nonce = authorize.searchParams.get('nonce') as string;
   const stateCookie = (started.headers.getSetCookie().find((c) => c.startsWith('lw_state=')) as string).split(';')[0] as string;
@@ -162,7 +186,7 @@ test('one person, two sign-ins: a verified email links GitHub to the Google acco
 
   const link = (await store.listAudit()).find((e) => e.action === 'identity.link');
   assert.equal(link?.actor, `user:${user.id}`);
-  assert.deepEqual(link?.payload, { via: 'email', provider: 'github', idp: 'github', email: 'ana@example.com' });
+  assert.deepEqual(link?.payload, { via: 'email', provider: 'github', idp: 'github', email: '[email omitted]' });
 
   // The profile view: two sign-ins, the account's own one stays.
   const { identities, available } = await myIdentities(base, ghSession);
@@ -230,7 +254,7 @@ test('an unpinned IdP never joins an account proven only through a pinned one', 
   assert.notEqual((await store.getUserByIdentity('github:101'))?.id, ana.id);
   assert.ok(!(await store.listAudit()).some((e) => e.action === 'identity.link'));
   const held = (await store.listAudit()).find((e) => e.action === 'identity.link-held');
-  assert.deepEqual(held?.payload, { provider: 'github', idp: 'github', email: 'ana@example.com', reason: 'pinned' });
+  assert.deepEqual(held?.payload, { provider: 'github', idp: 'github', email: '[email omitted]', reason: 'pinned' });
 
   // The person can still add GitHub by hand, proving both sides in one browser.
   script.github = { id: 102, login: 'ana-real', emails: [{ email: 'ana@example.com', primary: true, verified: true }] };
@@ -252,7 +276,7 @@ test('an email two accounts already prove links nothing and is audited', async (
   assert.equal((await me(base, github.session as string)).user?.sub, 'github:101', 'its own account');
   assert.equal((await store.listUsers()).length, 3);
   const ambiguous = (await store.listAudit()).find((e) => e.action === 'identity.link-ambiguous');
-  assert.deepEqual(ambiguous?.payload, { provider: 'github', idp: 'github', email: 'ana@example.com', candidates: 2 });
+  assert.deepEqual(ambiguous?.payload, { provider: 'github', idp: 'github', email: '[email omitted]', candidates: 2 });
   assert.ok(!(await store.listAudit()).some((e) => e.action === 'identity.link'));
 });
 
@@ -273,7 +297,7 @@ test('a signed-in member links an account with a different email; a stolen link 
   assert.equal(linked.authorize.searchParams.get('prompt'), 'select_account', 'the account picker by default');
   assert.equal((await store.getUserByIdentity('github:303'))?.id, owner.id);
   const audit = (await store.listAudit()).find((e) => e.action === 'identity.link');
-  assert.deepEqual(audit?.payload, { via: 'self', idp: 'github', email: 'ana.personal@mail.test' });
+  assert.deepEqual(audit?.payload, { via: 'self', idp: 'github', email: '[email omitted]' });
 
   // Signing in with that GitHub account now reaches the same person.
   const again = await signIn(base, script, 'github');
@@ -359,7 +383,7 @@ test('unlink: never the account sign-in, never the last one; admins can unlink f
   assert.equal(delGh.status, 204);
   assert.equal(await store.getUserByIdentity('github:606'), null);
   const unlink = (await store.listAudit()).find((e) => e.action === 'identity.unlink');
-  assert.deepEqual(unlink?.payload, { by: 'self', idp: 'github', email: 'ana2@mail.test', sessionsRevoked: true });
+  assert.deepEqual(unlink?.payload, { by: 'self', idp: 'github', email: '[email omitted]', sessionsRevoked: true });
   // Removing a sign-in puts out the sessions it made (every session carries
   // the account's sub, so all of them end) and keeps this device signed in.
   assert.equal((await fetch(`${base}/api/auth/session`, { headers: { cookie: viaGithub } })).status, 401, 'the removed sign-in session ends');
@@ -414,7 +438,8 @@ test('a user from before 0039 is found by users.sub and gets an identity row', a
 test('a linked sign-in keeps the work IdP groups and is refused when the person is disabled', async () => {
   const { base, store, script } = await boot();
   script.google = { sub: 'g-1', email: 'ana@example.com', email_verified: true, groups: ['admin'] };
-  await signIn(base, script, 'primary');
+  const primary = await signIn(base, script, 'primary');
+  await linkWhileSignedIn(base, script, 'github', primary.session as string);
   const gh = await signIn(base, script, 'github');
   assert.equal((await me(base, gh.session as string)).user?.role, 'admin', 'GitHub has no groups, and did not clear them');
   const user = (await store.getUserBySub('g-1'))!;
@@ -479,7 +504,8 @@ test('a linked sign-in does not outlive the work account: standing and groups la
 test('IdP groups lapse when the IdP that sent them has not been seen for the window', async () => {
   const { base, store, script } = await boot();
   script.google = { sub: 'g-1', email: 'ana@example.com', email_verified: true, groups: ['admin'] };
-  await signIn(base, script, 'primary');
+  const initial = await signIn(base, script, 'primary');
+  await linkWhileSignedIn(base, script, 'github', initial.session as string);
   const recent = await signIn(base, script, 'github');
   assert.equal((await me(base, recent.session as string)).user?.role, 'admin', 'carried over while the work sign-in is recent');
 
@@ -628,4 +654,56 @@ test('an active linked session stops at the standing deadline even before its co
   const later = Date.now() + 120_000;
   t.mock.method(Date, 'now', () => later);
   assert.equal((await fetch(`${base}/api/auth/session`, { headers: { cookie: personal.session! } })).status, 401);
+});
+
+test('email linking never joins an owner or admin account, even when explicitly enabled', async () => {
+  for (const role of ['owner', 'admin']) {
+    const { base, store, script } = await boot();
+    script.google = { sub: 'g-1', email: 'ana@example.com', email_verified: true, groups: [role] };
+    await signIn(base, script, 'primary');
+    const other = await signIn(base, script, 'github');
+    assert.equal((await me(base, other.session as string)).user?.sub, 'github:101');
+    assert.equal((await store.listUsers()).length, 2);
+  }
+});
+
+test('an additional provider has no automatic email linking by default', async () => {
+  const { base, store, script } = await boot({ additional: [{ id: 'github', kind: 'github', clientId: 'gh-client', displayName: 'GitHub', clientSecretRef: SECRET_ENV }] });
+  await signIn(base, script, 'primary');
+  const other = await signIn(base, script, 'github');
+  assert.equal((await me(base, other.session as string)).user?.sub, 'github:101');
+  assert.equal((await store.listUsers()).length, 2);
+});
+
+test('bootstrap ownership is durable at first creation and cannot restore a removed group', async () => {
+  const { base, store, script } = await boot({ bootstrapOwners: ['ana@example.com'] });
+  const first = await signIn(base, script, 'primary');
+  assert.equal((await me(base, first.session as string)).user?.role, 'owner');
+  const user = (await store.getUserBySub('g-1'))!;
+  assert.deepEqual(user.localGroups, ['owner']);
+  const repeat = await signIn(base, script, 'primary');
+  assert.equal((await me(base, repeat.session as string)).user?.role, 'owner');
+  await store.setLocalGroups(user.id, []);
+  const removed = await signIn(base, script, 'primary');
+  assert.equal((await me(base, removed.session as string)).user?.role, 'member');
+});
+
+
+test('bootstrap ownership cannot grant a second account for an existing email', async () => {
+  const { base, store, script } = await boot({ bootstrapOwners: ['ana@example.com'] });
+  const owner = await signIn(base, script, 'primary');
+  assert.equal((await me(base, owner.session as string)).user?.role, 'owner');
+  const second = await signIn(base, script, 'github');
+  assert.equal((await me(base, second.session as string)).user?.role, 'member');
+  assert.equal((await store.listUsers()).filter(user => user.role === 'owner').length, 1);
+});
+
+
+test('a provider without email linking cannot supply a matching target account', async () => {
+  const { base, store, script } = await boot({ additional: [{ id: 'github', kind: 'github', clientId: 'gh-client', displayName: 'GitHub', clientSecretRef: SECRET_ENV }] });
+  const github = await signIn(base, script, 'github');
+  assert.equal((await me(base, github.session as string)).user?.sub, 'github:101');
+  const primary = await signIn(base, script, 'primary');
+  assert.equal((await me(base, primary.session as string)).user?.sub, 'g-1');
+  assert.equal((await store.listUsers()).length, 2);
 });

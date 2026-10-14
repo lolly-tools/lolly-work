@@ -175,6 +175,8 @@ test('tool files come from the pack, with the index\'s own visibility', async ()
 });
 
 test('guest-link lifecycle: mint (admin) → password gate → guest session → revoke → 410', async () => {
+  const useGrant = { principal: 'group:admin', action: 'tool.use', resource: 'tool:event-badge', effect: 'allow' as const };
+  await store.putGrant(useGrant);
   const cookie = await login('admin@test');
   const mint = await fetch(`${base}/api/v1/links`, {
     method: 'POST',
@@ -202,6 +204,8 @@ test('guest-link lifecycle: mint (admin) → password gate → guest session →
   const revoke = await fetch(`${base}/api/v1/links/${id}/revoke`, { method: 'POST', headers: { cookie } });
   assert.equal(revoke.status, 200);
   assert.equal((await fetch(`${path}&pw=hunter2`)).status, 410);
+  assert.equal((await fetch(`${base}/api/auth/session`, { headers: { cookie: guestCookie as string } })).status, 401);
+  await store.deleteGrant(useGrant);
 });
 
 test('member cannot mint guest links; ordinary member CAN mint share links', async () => {

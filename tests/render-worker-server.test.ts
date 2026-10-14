@@ -54,6 +54,14 @@ function sign(body: string): Record<string, string> {
 function renderJob(toolId: string): string {
   return JSON.stringify({ toolId, query: 'title=Hi', overrides: {}, format: 'svg', profile: {}, ts: Date.now() });
 }
+
+test('a listening worker without a connected browser is live but not ready', async () => {
+  setBrowserGetter(null);
+  assert.equal((await fetch(`${base}/healthz`)).status, 200);
+  const response = await fetch(`${base}/readyz`);
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { ok: false, active: 0, capacity: 1 });
+});
 function rasterJob(): string {
   return JSON.stringify({ svg: '<svg xmlns="http://www.w3.org/2000/svg"></svg>', format: 'png', ts: Date.now() });
 }
@@ -148,10 +156,12 @@ function stubRenderBrowser(onContextOpen: () => void, hold: Promise<void>) {
           for (const [url, expected] of [
             ['https://web.test/models/ocr/model.onnx', 'abort'],
             ['https://models.test/weights.gguf', 'abort'],
-            ['https://web.test/assets/app.js', 'continue'],
+            ['https://web.test/assets/app.js', 'fulfill'],
           ]) {
             let action = '';
-            await handler({ request: () => ({ url: () => url }),
+            await handler({ request: () => ({ url: () => url, method: () => 'GET', headers: () => ({}) }),
+              fetch: async () => ({ status: () => 200, headers: () => ({}), body: async () => Buffer.alloc(0), dispose: async () => {} }),
+              fulfill: async () => { action = 'fulfill'; },
               abort: async () => { action = 'abort'; }, continue: async () => { action = 'continue'; } });
             assert.equal(action, expected);
           }
@@ -350,15 +360,15 @@ test('worker response signs observed resource bytes and the dispatched request',
 
 
 test('render read credentials stay on the instance catalog and do not follow redirects', async t => {
-  const fetched: string[] = [], continued: string[] = [];
+  const fetched: string[] = [], credentialed: string[] = [];
   setBrowserGetter(async () => ({ newContext: async () => ({
     addInitScript: async () => {}, close: async () => {},
     route: async (_pattern: string, handler: (route: any) => Promise<void>) => {
       for (const path of ['https://web.test/api/auth/config', 'https://web.test/catalog/assets/index.json', 'https://web.test/tools/design/tool.json', 'https://web.test/api/v1/projects', 'https://example.com/catalog/assets/index.json']) {
-        const response = { headers: () => ({ 'x-lolly-brand-revision': 'rev' }), status: () => 200 };
+        const response = { headers: () => ({ 'x-lolly-brand-revision': 'rev' }), status: () => 200, body: async () => Buffer.alloc(0), dispose: async () => {} };
         await handler({ request: () => ({ url: () => path, method: () => 'GET', headers: () => ({ accept: '*/*' }) }),
-          fetch: async (options: any) => { assert.equal(options.maxRedirects, 0); assert.equal(options.headers['x-lw-render-read'], 'read-token'); fetched.push(path); return response; },
-          fulfill: async () => {}, abort: async () => { assert.fail('unexpected refusal'); }, continue: async () => { continued.push(path); } });
+          fetch: async (options: any) => { assert.equal(options.maxRedirects, 0); fetched.push(path); if (options.headers['x-lw-render-read']) { assert.equal(options.headers['x-lw-render-read'], 'read-token'); credentialed.push(path); } return response; },
+          fulfill: async () => {}, abort: async () => { assert.fail('unexpected refusal'); }, continue: async () => { assert.fail('HTTP delivery must be checked'); } });
       }
     },
     newPage: async () => ({ goto: async () => {}, waitForEvent: async () => ({ createReadStream: async () => (async function* () { yield Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'); })(), delete: async () => {} }) }),
@@ -367,8 +377,8 @@ test('render read credentials stay on the instance catalog and do not follow red
   const body = JSON.stringify({ toolId: 'design', query: '', overrides: {}, format: 'svg', brandRevision: 'rev', readToken: 'read-token', ts: Date.now() });
   const res = await fetch(base+'/render', { method: 'POST', headers: sign(body), body });
   assert.equal(res.status, 200, JSON.stringify(await res.json()));
-  assert.deepEqual(fetched, ['https://web.test/api/auth/config', 'https://web.test/catalog/assets/index.json', 'https://web.test/tools/design/tool.json']);
-  assert.deepEqual(continued, ['https://web.test/api/v1/projects', 'https://example.com/catalog/assets/index.json']);
+  assert.equal(fetched.length, 5);
+  assert.deepEqual(credentialed, ['https://web.test/api/auth/config', 'https://web.test/catalog/assets/index.json', 'https://web.test/tools/design/tool.json']);
 });
 
 test('the project file read predicate admits only GET or HEAD of one file', async () => {
@@ -381,7 +391,7 @@ test('the project file read predicate admits only GET or HEAD of one file', asyn
 });
 
 test('render read credentials reach same-origin project file reads and no other API path', async t => {
-  const fetched: string[] = [], continued: string[] = [];
+  const fetched: string[] = [], credentialed: string[] = [];
   const requests: [string, string][] = [
     ['GET', 'https://web.test/api/v1/projects/prj_a/files/fil_a'],
     ['HEAD', 'https://web.test/api/v1/projects/prj_a/files/fil_b?download=1'],
@@ -399,19 +409,19 @@ test('render read credentials reach same-origin project file reads and no other 
     route: async (_pattern: string, handler: (route: any) => Promise<void>) => {
       for (const [method, path] of requests) {
         await handler({ request: () => ({ url: () => path, method: () => method, headers: () => ({ accept: '*/*' }) }),
-          fetch: async (options: any) => { assert.equal(options.maxRedirects, 0); assert.equal(options.headers['x-lw-render-read'], token); fetched.push(`${method} ${path}`); return {}; },
-          fulfill: async () => {}, abort: async () => { assert.fail('unexpected refusal'); }, continue: async () => { continued.push(`${method} ${path}`); } });
+          fetch: async (options: any) => { assert.equal(options.maxRedirects, 0); fetched.push(`${method} ${path}`); if (options.headers['x-lw-render-read']) { assert.equal(options.headers['x-lw-render-read'], token); credentialed.push(`${method} ${path}`); } return { status: () => 200, headers: () => ({}), body: async () => Buffer.alloc(0), dispose: async () => {} }; },
+          fulfill: async () => {}, abort: async () => { assert.fail('unexpected refusal'); }, continue: async () => { assert.fail('HTTP delivery must be checked'); } });
       }
     },
     newPage: async () => ({ goto: async () => {}, waitForEvent: async () => ({ createReadStream: async () => (async function* () { yield Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'); })(), delete: async () => {} }) }),
   }) }));
   t.after(() => setBrowserGetter(null));
   for (const readToken of ['read-token', undefined]) {
-    token = readToken; fetched.length = 0; continued.length = 0;
+    token = readToken; fetched.length = 0; credentialed.length = 0;
     const body = JSON.stringify({ toolId: 'design', query: '', overrides: {}, format: 'svg', ...(readToken ? { readToken } : {}), ts: Date.now() });
     const res = await fetch(base+'/render', { method: 'POST', headers: sign(body), body });
     assert.equal(res.status, 200, JSON.stringify(await res.json()));
-    assert.deepEqual(fetched, readToken ? ['GET https://web.test/api/v1/projects/prj_a/files/fil_a', 'HEAD https://web.test/api/v1/projects/prj_a/files/fil_b?download=1'] : []);
-    assert.deepEqual(continued, requests.map(([method, path]) => `${method} ${path}`).filter(row => !fetched.includes(row)));
+    assert.deepEqual(credentialed, readToken ? ['GET https://web.test/api/v1/projects/prj_a/files/fil_a', 'HEAD https://web.test/api/v1/projects/prj_a/files/fil_b?download=1'] : []);
+    assert.deepEqual(fetched, requests.map(([method, path]) => `${method} ${path}`));
   }
 });

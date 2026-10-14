@@ -2,7 +2,7 @@
   "name": "lolly-work",
   "private": true,
   "version": "1.1.0",
-  "description": "Lolly control plane — identity, provisioning, governance, serving, telemetry. MPL-2.0.",
+  "description": "Lolly control plane \u2014 identity, provisioning, governance, serving, telemetry. MPL-2.0.",
   "type": "module",
   "license": "MPL-2.0",
   "bin": {
@@ -45,7 +45,9 @@
     "update:npm-licenses": "node scripts/update-npm-licenses.ts pnpm-lock.yaml workers/render/pnpm-lock.yaml",
     "setup:apply": "node scripts/apply-setup.ts",
     "build:vercel": "node scripts/build-vercel-fn.mjs",
-    "check:vercel": "node --no-experimental-require-module scripts/check-vercel-fn.mjs"
+    "check:vercel": "node --no-experimental-require-module scripts/check-vercel-fn.mjs",
+    "check:secrets": "node scripts/scan-secrets.ts",
+    "check:code-source": "node scripts/scan-code.ts"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",

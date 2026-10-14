@@ -1,4 +1,5 @@
 import type { OidcLogoutStore } from '../iam/oidc-logout.ts';
+import type { SubjectStore } from '../privacy/subject.ts';
 import type { CommentThread } from '@lolly-tools/core/canvas-review-v1';
 import type { CanvasCheckpoint, CanvasOp } from '@lolly-tools/core/canvas-op-v1';
 import { createHash, randomInt } from 'node:crypto';
@@ -36,6 +37,7 @@ import type { ProjectAccess } from '../rbac/project-access.ts';
 import { sha256Hex } from '../lib/crypto.ts';
 
 export interface UserRecord {
+  scimIdp?: string;
   id: string;
   sub: string;
   email: string;
@@ -67,6 +69,7 @@ export interface UserRecord {
 /** A local group definition (the registry). IdP groups are NOT registered -
  *  they're discovered from users' idpGroups. */
 export interface LocalGroupRecord {
+  scimIdp?: string;
   name: string;
   description?: string;
   createdAt: string;
@@ -296,6 +299,7 @@ export interface AccessRequestCount {
 /** A SCIM provisioning bearer token (plans/31 §8). One per IdP connector; the
  *  opaque secret is shown once at mint and stored only as `tokenHash`. */
 export interface ScimTokenRecord {
+  expiresAt?: string;
   id: string;
   /** The operator's label for the IdP connector this token authorizes. */
   idp: string;
@@ -324,6 +328,8 @@ export interface ApiTokenRecord {
   /** 'user:<id>' who minted it. */
   createdBy: string;
   createdAt: string;
+  /** Absent only on legacy service credentials awaiting owner rotation. */
+  expiresAt?: string;
   lastUsedAt?: string;
   /** Set on revoke; a revoked token is kept so its trail survives. */
   revokedAt?: string;
@@ -987,7 +993,7 @@ export interface CatalogDeliverySnapshot {
   bytes: Buffer; until: number; toolIds: string[]; assetIds: string[];
 }
 
-export interface Store extends OidcLogoutStore, RenderStore, PasskeyStore {
+export interface Store extends OidcLogoutStore, RenderStore, PasskeyStore, SubjectStore {
   getCommentThread(id: string): Promise<CommentThread | null>;
   listCommentThreads(sessionId: string): Promise<CommentThread[]>;
   createCommentThread(thread: CommentThread): Promise<'created' | 'exists' | 'limit'>;
@@ -1068,6 +1074,7 @@ export interface Store extends OidcLogoutStore, RenderStore, PasskeyStore {
   listUsersPage(opts: ListUsersPageOpts): Promise<{ rows: UserRecord[]; total: number }>;
   /** Replace a user's localGroups (idpGroups untouched); recomputes the
    *  effective union + role. Returns the updated record, or null if unknown. */
+  setUserScimIdp(userId: string, idp: string): Promise<UserRecord | null>;
   setLocalGroups(userId: string, localGroups: string[]): Promise<UserRecord | null>;
   /** Set (ISO string) or clear (null) disabledAt. Disabling also bumps
    *  sessionEpoch (disable = lockout AND revocation); clearing does not.
@@ -1229,6 +1236,7 @@ export interface Store extends OidcLogoutStore, RenderStore, PasskeyStore {
   // Service tokens (plans/35 wave 2) - same contract shapes as the SCIM set.
   putApiToken(rec: ApiTokenRecord): Promise<void>;
   listApiTokens(): Promise<ApiTokenRecord[]>;
+  getApiToken(id: string): Promise<ApiTokenRecord | null>;
   findApiTokenByHash(tokenHash: string): Promise<ApiTokenRecord | null>;
   touchApiToken(id: string, at: string): Promise<void>;
   revokeApiToken(id: string, at: string): Promise<boolean>;

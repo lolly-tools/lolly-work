@@ -70,9 +70,9 @@ export function verifyGeneratedDocs(root: string, changes: { status: 'M' | 'D'; 
   return files.length;
 }
 
-interface CatalogInput { index: Buffer; files: Record<string, string>; assetIndex?: Buffer; slimIndex?: Buffer }
+interface CatalogInput { index: Buffer; files: Record<string, string>; resources?: Record<string, string>; documentationResources?: Record<string, string>; assetIndex?: Buffer; slimIndex?: Buffer }
 interface CatalogEnvelope { alg: string; keyId: string; indexHash: string; files: Record<string, string>; signature: string; signedAt: string;
-  seq?: number; expiresAt?: string; assetIndexHash?: string; slimHash?: string; catalogScope?: string; toolDirs?: Record<string, string> }
+  seq?: number; expiresAt?: string; assetIndexHash?: string; slimHash?: string; catalogScope?: string; toolDirs?: Record<string, string>; resources?: Record<string, string> }
 interface CatalogIntegrity {
   CATALOG_SIGNED_TOOL_FILES: readonly string[];
   CATALOG_SIGNED_I18N_SIDECAR: RegExp;
@@ -93,6 +93,62 @@ interface ContentResolver {
   readToolManifestText(id: string, roots: unknown): string;
   listToolFiles(id: string, roots: unknown): string[];
   catalogFile(file: string, roots: unknown): string;
+}
+
+/** Derive public resource proofs from bounded physical bytes, independently of the signer. */
+export function publicResourceDigests(root: string): Record<string, string> {
+  const canonicalRoot = realpathSync(root), resources: Record<string, string> = Object.create(null);
+  let entries = 0, files = 0;
+  const walk = (directory: string, depth: number): void => {
+    assert.ok(depth <= 32);
+    if (!existsSync(directory)) return;
+    const meta = lstatSync(directory);
+    assert.ok(meta.isDirectory() && !meta.isSymbolicLink() && realpathSync(directory).startsWith(canonicalRoot + sep));
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      assert.ok(++entries <= 100000 && !entry.isSymbolicLink());
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) { walk(path, depth + 1); continue; }
+      assert.ok(entry.isFile());
+      if (!/\.(svg|png|webp|avif|jpe?g|gif|webm|mp4|json)$/i.test(entry.name)) continue;
+      const logical = relative(canonicalRoot, path).split(sep).join('/');
+      assert.ok(logical.length < 1024 && !/[\\%?#\p{White_Space}\p{Cc}]/u.test(logical) &&
+        logical.split('/').every(part => part && part !== '.' && part !== '..') && ++files <= 20000);
+      resources[`/${logical}`] = sha256(boundedFile(canonicalRoot, path, true));
+    }
+  };
+  for (const prefix of ['catalog/previews', 'catalog/og', 'info/shots']) {
+    let directory = canonicalRoot;
+    for (const part of prefix.split('/')) {
+      directory = join(directory, part);
+      if (!existsSync(directory)) break;
+      assert.ok(lstatSync(directory).isDirectory() && !lstatSync(directory).isSymbolicLink());
+    }
+    walk(join(canonicalRoot, prefix), 0);
+  }
+  return resources;
+}
+
+/** Capture the exact documentation-shot mirror inputs before any build runs. */
+export function documentationResourceDigests(root: string): Record<string, string> {
+  const resources: Record<string, string> = Object.create(null);
+  let entries = 0, files = 0;
+  for (const suffix of ['', 'covers']) {
+    const directory = join(root, 'docs/shots', suffix);
+    if (!existsSync(directory)) continue;
+    for (const parent of ['docs', 'docs/shots', ...(suffix ? ['docs/shots/covers'] : [])]) {
+      const meta = lstatSync(join(root, parent)); assert.ok(meta.isDirectory() && !meta.isSymbolicLink());
+    }
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      assert.ok(++entries <= 100000 && !entry.isSymbolicLink());
+      if (entry.isDirectory()) continue;
+      assert.ok(entry.isFile());
+      if (!(suffix ? /\.(png|svg|jpg|webp|webm|mp4)$/ : /\.(png|svg|jpg)$/).test(entry.name)) continue;
+      const path = `/info/shots/${suffix ? `${suffix}/` : ''}${entry.name}`;
+      assert.ok(path.length <= 1024 && !/[\\%?#\p{White_Space}\p{Cc}]/u.test(path) && ++files <= 20000);
+      resources[path] = sha256(boundedFile(root, join(directory, entry.name), true));
+    }
+  }
+  return resources;
 }
 
 export async function authoredCatalog(root: string): Promise<CatalogInput> {
@@ -118,6 +174,8 @@ export async function authoredCatalog(root: string): Promise<CatalogInput> {
   assert.ok(Object.keys(files).length > 0 && Object.keys(files).length <= 100000);
   const assetPath = resolver.catalogFile('assets/index.json', roots), slimPath = resolver.catalogFile('tools/index.slim.json', roots);
   return { index: boundedFile(root, resolver.catalogFile('tools/index.json', roots)), files,
+    resources: publicResourceDigests(resolve(dirname(resolver.catalogFile('tools/index.json', roots)), '../..')),
+    documentationResources: documentationResourceDigests(root),
     ...(existsSync(assetPath) ? { assetIndex: boundedFile(root, assetPath) } : {}),
     ...(existsSync(slimPath) ? { slimIndex: boundedFile(root, slimPath) } : {}) };
 }
@@ -125,12 +183,19 @@ export async function authoredCatalog(root: string): Promise<CatalogInput> {
 export async function verifyGeneratedSignature(source: Uint8Array, dist: Uint8Array, expected: CatalogInput, publicMaterial: string): Promise<number> {
   assert.deepEqual(source, dist, 'The served envelope must be the source signing output');
   const envelope = JSON.parse(Buffer.from(source).toString('utf8')) as CatalogEnvelope;
-  const allowed = new Set(['alg', 'files', 'indexHash', 'keyId', 'signature', 'signedAt', 'seq', 'expiresAt', 'assetIndexHash', 'slimHash', 'catalogScope', 'toolDirs']);
+  const allowed = new Set(['alg', 'files', 'resources', 'indexHash', 'keyId', 'signature', 'signedAt', 'seq', 'expiresAt', 'assetIndexHash', 'slimHash', 'catalogScope', 'toolDirs']);
   assert.ok(envelope && !Array.isArray(envelope) && Object.keys(envelope).every(name => allowed.has(name)), 'Unknown signed envelope fields are refused');
   const integrity = await catalogIntegrity();
   const publicKey = await integrity.importSpkiOrJwkPublicKey(publicMaterial);
   assert.equal((await integrity.verifyCatalogEnvelope(envelope, expected.index, publicKey)).ok, true);
   assert.deepEqual(Object.entries(envelope.files).sort(), Object.entries(expected.files).sort());
+  if (envelope.resources !== undefined || expected.resources !== undefined) {
+    assert.ok(envelope.resources && typeof envelope.resources === 'object' && !Array.isArray(envelope.resources));
+    assert.ok(Object.keys(envelope.resources).length <= 20000 && Object.entries(envelope.resources).every(([path, digest]) =>
+      /^\/(?:catalog\/(?:previews|og)|info\/shots)\//.test(path) && path.length <= 1024 &&
+      !/[\\%?#\p{White_Space}\p{Cc}]/u.test(path) && path.slice(1).split('/').every(part => part && part !== '.' && part !== '..') && /^[a-f0-9]{64}$/.test(digest)));
+    assert.deepEqual(Object.entries(envelope.resources).sort(), Object.entries(expected.resources ?? {}).sort());
+  }
   assert.equal(envelope.indexHash, sha256(expected.index));
   for (const [field, bytes] of [['assetIndexHash', expected.assetIndex], ['slimHash', expected.slimIndex]] as const) {
     assert.equal(envelope[field], bytes ? sha256(bytes) : undefined, 'Every actual sibling index must be bound, without claiming absent bytes');
@@ -150,7 +215,7 @@ export async function verifyGeneratedRelease(root: string, expected: CatalogInpu
   assert.ok(Number.isSafeInteger(source.seq) && source.seq === 1, 'A fresh qualification lineage must begin at sequence one');
   const dist = join(root, 'shells/web/dist');
   const files = await derivedToolFiles(root, dist, expected);
-  const input: CatalogInput = { index: boundedFile(dist, 'catalog/tools/index.json'), files,
+  const input: CatalogInput = { index: boundedFile(dist, 'catalog/tools/index.json'), files, resources: publicResourceDigests(dist),
     ...(existsSync(join(dist, 'catalog/assets/index.json')) ? { assetIndex: boundedFile(dist, 'catalog/assets/index.json') } : {}),
     ...(existsSync(join(dist, 'catalog/tools/index.slim.json')) ? { slimIndex: boundedFile(dist, 'catalog/tools/index.slim.json') } : {}) };
   const bytes = boundedFile(dist, 'catalog/tools/index.sig.json');
@@ -209,19 +274,20 @@ async function derivedToolFiles(root: string, dist: string, expected: CatalogInp
       const target = join(projected, 'tools', path); mkdirSync(dirname(target), { recursive: true });
       writeFileSync(target, bytes, { flag: 'wx' });
     }
-    let imageEntries = 0;
-    const copyImages = (directory: string, depth = 0): void => {
-      assert.ok(depth <= 32);
-      if (!existsSync(directory)) return;
-      for (const entry of readdirSync(directory, { withFileTypes: true })) {
-        assert.ok(++imageEntries <= 100000 && !entry.isSymbolicLink()); const from = join(directory, entry.name);
-        if (entry.isDirectory()) { copyImages(from, depth + 1); continue; }
-        assert.ok(entry.isFile());
-        if (!/\.(svg|png|webp|avif|jpe?g|gif|webm|mp4)$/i.test(entry.name) || /\.[0-9a-f]{16}\.[a-z0-9]+$/i.test(entry.name)) continue;
-        const to = join(projected, relative(dist, from)); mkdirSync(dirname(to), { recursive: true }); linkSync(from, to);
-      }
-    };
-    for (const prefix of ['catalog/previews', 'catalog/og', 'info/shots']) copyImages(join(dist, prefix));
+    const releaseResources = publicResourceDigests(dist);
+    for (const path of Object.keys(releaseResources)) {
+      const authoredShot = expected.documentationResources?.[path] !== undefined;
+      if (/\.[0-9a-f]{16}\.[a-z0-9]+$/i.test(path) && expected.resources?.[path] === undefined && !authoredShot) continue;
+      const original = path.startsWith('/catalog/') ? resolver.catalogFile(path.slice('/catalog/'.length), roots)
+        : join(root, 'docs/shots', path.slice('/info/shots/'.length));
+      const bytes = boundedFile(root, original, true), digest = sha256(bytes);
+      if (path.startsWith('/catalog/')) assert.equal(digest, expected.resources?.[path], 'Every original catalog resource must remain authored');
+      else assert.equal(digest, expected.documentationResources?.[path], 'Every original documentation shot must match its pre-build input');
+      if (path !== '/catalog/previews/bundle.json') assert.equal(digest, releaseResources[path], 'Original resource bytes must remain exact');
+      const to = join(projected, path.slice(1)); mkdirSync(dirname(to), { recursive: true }); writeFileSync(to, bytes, { flag: 'wx' });
+    }
+    for (const path of Object.keys(expected.resources ?? {})) assert.ok(path in releaseResources, 'The release must retain every authored public resource');
+    for (const path of Object.keys(expected.documentationResources ?? {})) assert.ok(path in releaseResources, 'The release must retain every captured documentation shot');
     const writeIndex = (path: string, bytes: Buffer): void => {
       const to = join(projected, path); mkdirSync(dirname(to), { recursive: true }); writeFileSync(to, bytes, { flag: 'wx' });
     };
@@ -245,20 +311,23 @@ async function derivedToolFiles(root: string, dist: string, expected: CatalogInp
     assert.deepEqual(Object.entries(actual).sort(), Object.entries(derived).sort(), 'Final tool bytes must be the exact maintained derivation');
     assert.deepEqual(boundedFile(dist, 'catalog/tools/index.json'), boundedFile(projected, 'catalog/tools/index.json'));
     if (expected.slimIndex) assert.deepEqual(boundedFile(dist, 'catalog/tools/index.slim.json'), boundedFile(projected, 'catalog/tools/index.slim.json'));
+    assert.deepEqual(Object.entries(releaseResources).sort(), Object.entries(publicResourceDigests(projected)).sort(), 'Published resources must match the maintained materialization');
     return actual;
   } finally { rmSync(projected, { recursive: true }); }
 }
-export function imageArguments(args: string[]): { lollyRoot: string; image: string } {
+export function imageArguments(args: string[]): { lollyRoot: string; image: string; sandboxProfile: 'runtime-default' | 'chromium' } {
   const values = new Map<string, string>();
   for (let i = 0; i < args.length; i += 2) {
     const name = args[i] ?? '', value = args[i + 1];
-    if (!['--lolly-root', '--image'].includes(name) || values.has(name) || !value || value.startsWith('--')) throw new Error('Invalid image qualification arguments');
+    if (!['--lolly-root', '--image', '--sandbox-profile'].includes(name) || values.has(name) || !value || value.startsWith('--')) throw new Error('Invalid image qualification arguments');
     values.set(name, value);
   }
   const image = values.get('--image') ?? '';
   const lollyRoot = values.get('--lolly-root');
   if (!/^[a-z0-9][a-z0-9./:_@-]{0,255}$/.test(image) || !lollyRoot) throw new Error('A local image and matched Lolly checkout are required');
-  return { lollyRoot: realpathSync(lollyRoot), image };
+  const sandboxProfile = values.get('--sandbox-profile') ?? 'runtime-default';
+  if (sandboxProfile !== 'runtime-default' && sandboxProfile !== 'chromium') throw new Error('Invalid sandbox qualification profile');
+  return { lollyRoot: realpathSync(lollyRoot), image, sandboxProfile };
 }
 
 export function matchedShell(pin: unknown, source: string, engineVersion: string): string {
@@ -377,10 +446,10 @@ export function finishQualificationSource(fixture: QualificationSource): void {
 
 export async function main(args = process.argv.slice(2)): Promise<void> {
   phase = 'ARGUMENTS'; trackedChangeCount = 0;
-  const { lollyRoot, image } = imageArguments(args);
+  const { lollyRoot, image, sandboxProfile } = imageArguments(args);
   phase = 'PLATFORM';
   assert.equal(process.platform, 'linux', 'Install frozen Work dependencies on the Linux qualification host');
-  assert.equal(process.arch, 'x64', 'This image acceptance currently covers Linux amd64');
+  assert.ok(process.arch === 'x64' || process.arch === 'arm64', 'Image acceptance requires a supported Linux architecture');
   assert.equal(process.versions.node, '26.11.1', 'Use the worker Node version for this image acceptance');
   phase = 'MATCHED_SOURCE';
   const source = matchedShell(JSON.parse(readFileSync(join(ROOT, 'engine-pin.json'), 'utf8')),
@@ -395,17 +464,19 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   assert.match(context[0]?.Endpoints?.docker?.Host ?? '', /^unix:\/\//, 'Only a local Docker socket is allowed');
   const imageId = output('docker', ['image', 'inspect', image, '--format', '{{.Id}}']);
   assert.match(imageId, /^sha256:[a-f0-9]{64}$/);
+  assert.equal(output('docker', ['image', 'inspect', imageId, '--format', '{{.Os}}/{{.Architecture}}']),
+    `linux/${process.arch === 'x64' ? 'amd64' : 'arm64'}`, 'Qualify the image with the matching Linux architecture');
   const key = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
   const privateMaterial = key.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
   const publicMaterial = JSON.stringify(key.publicKey.export({ format: 'jwk' }));
   const fixture = await prepareQualificationSource(lollyRoot, source, publicMaterial);
-  try { await qualifyOwnedFixture(fixture.root, imageId, source, privateMaterial, publicMaterial); }
+  try { await qualifyOwnedFixture(fixture.root, imageId, source, privateMaterial, publicMaterial, sandboxProfile); }
   finally { finishQualificationSource(fixture); }
   console.log(JSON.stringify({ status: 'WORKER_FIXTURE_LINEAGE_CUSTODY', source,
     historicalEnvelopeSha256: fixture.originalEnvelopeSha256, receiptSha256: fixture.receiptSha256, originalCheckoutPreserved: true, productionAcceptance: false }));
 }
 
-async function qualifyOwnedFixture(lollyRoot: string, imageId: string, source: string, privateMaterial: string, publicMaterial: string): Promise<void> {
+async function qualifyOwnedFixture(lollyRoot: string, imageId: string, source: string, privateMaterial: string, publicMaterial: string, sandboxProfile: 'runtime-default' | 'chromium'): Promise<void> {
   phase = 'CATALOG_INPUT';
   const catalogInput = await authoredCatalog(lollyRoot);
   const buildEnv: NodeJS.ProcessEnv = {};
@@ -438,15 +509,19 @@ async function qualifyOwnedFixture(lollyRoot: string, imageId: string, source: s
   let cleanupFailed = false;
   try {
     phase = 'IMAGE_TEST';
+    const seccomp = join(ROOT, 'deploy/seccomp/chromium.json');
+    if (sandboxProfile === 'chromium') assert.equal(sha256(boundedFile(ROOT, 'deploy/seccomp/chromium.json')),
+      'c236f34373a302813102bb61295036ac1e4a109d8a0bf97f66cdb2b11e17dc98');
     const result = spawnSync('docker', ['run', '--rm', '--name', name,
       '--cidfile', cid, '--label', `org.lolly.qualification=${label}`, '--network', 'none',
       '--read-only', '--tmpfs', '/tmp:rw,size=1g,mode=1777', '--user', '1000:1000',
       '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--memory', '1g', '--cpus', '1', '--pids-limit', '256',
+      ...(sandboxProfile === 'chromium' ? ['--security-opt', `seccomp=${seccomp}`] : []),
       '--mount', `type=bind,src=${ROOT},dst=/qualification/work,readonly`,
       '--mount', `type=bind,src=${join(lollyRoot, 'shells/web/dist')},dst=/qualification/shell,readonly`,
       '--env', 'LW_CATALOG_SIGNING_KEY', '--env', 'LOLLY_TEST_CATALOG_PUBLIC_KEY_JWK',
-      '--env', 'LOLLY_TEST_SHELL_SOURCE', '--env', 'LOLLY_RENDER_IMAGE_TEST=1', '--entrypoint', 'node', imageId,
-      '--test', '/qualification/work/tests/render-worker-image.test.ts'],
+      '--env', 'LOLLY_TEST_SHELL_SOURCE', '--env', 'LOLLY_RENDER_IMAGE_TEST=1', '--env', 'LOLLY_RENDER_TLS_IMAGE_TEST=1', '--entrypoint', 'node', imageId,
+      '--test', '--test-concurrency=1', '/qualification/work/tests/render-worker-image.test.ts', '/qualification/work/tests/render-worker-tls.image.test.ts'],
     { env: { ...process.env, LW_CATALOG_SIGNING_KEY: privateMaterial, LOLLY_TEST_CATALOG_PUBLIC_KEY_JWK: publicMaterial,
       LOLLY_TEST_SHELL_SOURCE: source }, stdio: 'inherit', timeout: 150_000 });
     assert.ok(!result.error && result.status === 0, 'Real image acceptance must exit successfully');
@@ -473,7 +548,7 @@ async function qualifyOwnedFixture(lollyRoot: string, imageId: string, source: s
     phase = beforeCleanup;
   }
   console.log(JSON.stringify({ status: 'RENDER_WORKER_IMAGE_ACCEPTED', source, imageId,
-    fixtureProfile: 'lolly-start', fixtureKey: 'ephemeral-test-only', browserSandboxQualified: false,
+    fixtureProfile: 'lolly-start', fixtureKey: 'ephemeral-test-only', browserSandboxQualified: true, architecture: process.arch, sandboxProfile,
     productionAcceptance: false, physicalGpuQualification: false }));
 }
 

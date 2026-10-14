@@ -35,10 +35,13 @@ test('role mapping keeps legacy defaults, supports exact customer groups and app
 
 test('generated configuration preserves advanced settings, excludes secrets and matches the applied projection', () => {
   const config = configured(); config.idp.additional = [{ id: 'subsidiary', issuer: 'https://other.test', clientId: 'other', displayName: 'Other', groupsClaim: 'roles', claimMap: config.idp.claimMap, clientSecretRef: 'OTHER_SECRET' }];
+  config.policy.activity.mode = 'off';
+  config.policy.activity.auditSessionUpdates = false;
   const original = JSON.stringify(config);
-  const draft = setupDraft(config, ['Customer Owners']); draft.name = 'New name'; draft.workerUrl = 'http://renderer:9090';
+  const draft = setupDraft(config, ['Customer Owners']); draft.name = 'New name'; draft.workerUrl = 'https://renderer:9090';
   const proposal = generateSetup(draft, config);
   const next = parseConfig(JSON.stringify(mergeSetupPatch(config as unknown as Record<string, unknown>, proposal.patch)));
+  assert.deepEqual(next.policy.activity, config.policy.activity);
   assert.deepEqual(next.idp.additional, config.idp.additional); assert.equal(next.policy.sessionTtlHours, config.policy.sessionTtlHours);
   assert.equal(JSON.stringify(config), original);
   assert.equal(setupSettingsHash(setupDraft(next)), proposal.expectedSettingsHash);
@@ -134,7 +137,7 @@ test('an administrator provisions one identity, signs in as mapped owner and pro
     assert.equal((await call('/api/v1/system/setup/configuration', bootstrap, cutover)).status, 400);
     const discovery = await fetch(base + '/api/v1/system/setup/identity-test', { method: 'POST', headers: { cookie: bootstrap } });
     assert.equal((await discovery.json() as any).ok, true); assert.equal(discoveryCount, 1);
-    const minted = await (await call('/api/v1/scim/tokens', bootstrap, { idp: 'Customer' })).json() as any;
+    const minted = await (await call('/api/v1/scim/tokens', bootstrap, { idp: 'primary' })).json() as any;
     const provision = await fetch(base + '/scim/v2/Users', { method: 'POST', headers: { authorization: `Bearer ${minted.token}`, 'content-type': 'application/json' }, body: JSON.stringify({ externalId: 'customer-owner', userName: 'real@test', active: true }) });
     assert.equal(provision.status, 201); const scimUser = await provision.json() as any;
     const start = await fetch(base + '/api/auth/login?returnTo=%2Fadmin%23%2Fsetup', { redirect: 'manual' });
@@ -164,14 +167,16 @@ test('an administrator provisions one identity, signs in as mapped owner and pro
     assert.equal((await call('/api/v1/system/setup/tools/card', owner)).status, 403); assert.equal((await call(result.output.url, owner)).status, 403);
     const audit = await store.listAudit(); assert.doesNotMatch(JSON.stringify(audit), /PRIVATE client secret|setup-code|id_token/);
     const scim = (method: string, path: string, body: unknown) => fetch(`${base}/scim/v2/${path}`, { method, headers: { authorization: `Bearer ${minted.token}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
-    assert.equal((await scim('POST', 'Groups', { displayName: 'Customer Admins', members: [{ value: scimUser.id }] })).status, 201);
+    assert.equal((await scim('POST', 'Groups', { displayName: 'Customer Admins', members: [{ value: scimUser.id }] })).status, 403);
+    await store.setLocalGroups(scimUser.id, ['Customer Admins']);
     oidcGroups = [];
     const secondStart = await fetch(base + '/api/auth/login', { redirect: 'manual' });
     const secondAuthorize = new URL(secondStart.headers.get('location')!); nonce = secondAuthorize.searchParams.get('nonce')!;
     const secondCookie = secondStart.headers.getSetCookie().find(cookie => cookie.startsWith('lw_state='))!.split(';')[0]!;
     assert.equal((await fetch(`${base}/api/auth/callback?code=updated-groups&state=${secondAuthorize.searchParams.get('state')}`, { redirect: 'manual', headers: { cookie: secondCookie } })).status, 302);
     assert.equal((await (await call('/api/auth/session', owner)).json() as any).user.role, 'admin', 'existing session resolves the new IdP/local group union');
-    assert.equal((await scim('PATCH', 'Groups/Customer%20Admins', { Operations: [{ op: 'remove', path: 'members' }] })).status, 200);
+    assert.equal((await scim('PATCH', 'Groups/Customer%20Admins', { Operations: [{ op: 'remove', path: 'members' }] })).status, 404);
+    await store.setLocalGroups(scimUser.id, []);
     assert.equal((await scim('POST', 'Groups', { displayName: 'Read Only', members: [{ value: scimUser.id }] })).status, 201);
     assert.equal((await (await call('/api/auth/session', owner)).json() as any).user.role, 'viewer', 'SCIM group change applies the customer mapping to the existing session');
     const disabled = await fetch(`${base}/scim/v2/Users/${scimUser.id}`, { method: 'PATCH', headers: { authorization: `Bearer ${minted.token}`, 'content-type': 'application/json' },

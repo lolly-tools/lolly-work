@@ -25,12 +25,14 @@ test('account erasure rolls identity deletion back if telemetry scrubbing fails'
     try {
       const target = await store.upsertUserBySub({ sub: 'rollback-subject', email: 'synthetic@example.invalid', groups: [], role: 'member' });
       await store.putEvents([{ at: new Date().toISOString(), event: 'tool.open', attrs: {}, userId: target.id }]);
+      await store.upsertInstall('rollback-install', { shell: 'web' }, target.id);
       await admin.query(`create function fail_test_telemetry_update() returns trigger language plpgsql as $$
         begin raise exception 'synthetic scrub failure'; end $$;
         create trigger fail_test_telemetry before update on telemetry_events for each row execute function fail_test_telemetry_update();`);
       await assert.rejects(store.eraseUserAccount(target.id), /synthetic scrub failure/);
       assert.ok(await store.getUser(target.id), 'identity deletion rolled back');
       assert.equal((await store.listEvents())[0]?.userId, target.id, 'attribution preserved');
+      assert.equal((await store.listInstalls()).find(row => row.installId === 'rollback-install')?.userIdLastSeen, target.id, 'fleet attribution rolled back');
     } finally { await admin.end(); }
   });
 });

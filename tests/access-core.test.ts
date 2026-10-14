@@ -84,7 +84,7 @@ test('a project request is stored, told to the owner and managers only, and audi
   assert.equal(row?.actor, `user:${t.asker.id}`);
   assert.equal(row?.subject, `request:${r.id}`);
   assert.deepEqual(row?.payload, {
-    kind: 'project', requestId: r.id, email: 'sam@example.com', projectId: 'prj_b', viaSessionId: 'ses_1', role: 'editor', noteChars: 21,
+    kind: 'project', requestId: r.id, email: '[email omitted]', projectId: 'prj_b', viaSessionId: 'ses_1', role: 'editor', noteChars: 21,
   });
   assert.ok(!JSON.stringify(await t.store.listAudit()).includes('launch'), 'the note text is never audited');
 });
@@ -147,7 +147,7 @@ test('join caps: three per address in 30 days, then held and audited; the worksp
   assert.deepEqual(await fileRequest(t.d, { kind: 'join', identity }), { outcome: 'held' });
   const [held] = await t.audits('access.request.held');
   assert.equal(held?.subject, 'request');
-  assert.deepEqual(held?.payload, { kind: 'join', email: 'sam.k@gmail.com', reason: 'per-email' });
+  assert.deepEqual(held?.payload, { kind: 'join', email: '[email omitted]', reason: 'per-email' });
   t.tick(30 * DAY);
   assert.equal((await fileRequest(t.d, { kind: 'join', identity })).outcome, 'created', 'the window moves on');
 

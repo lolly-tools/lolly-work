@@ -5,7 +5,24 @@
 {{- end }}
 {{- end }}
 {{- include "lolly-work.validateWorkerWebBase" . }}
+{{- $startupMs := .Values.renderWorker.browserStartupTimeoutMs }}
+{{- $seccomp := .Values.renderWorker.seccompProfile }}
+{{- if not (and (kindIs "map" $seccomp) (has $seccomp.type (list "RuntimeDefault" "Localhost"))) }}
+{{- fail "renderWorker.seccompProfile must use RuntimeDefault or Localhost" }}
+{{- end }}
+{{- if and (eq $seccomp.type "Localhost") (not (regexMatch "^[a-zA-Z0-9_-]+(/[a-zA-Z0-9_-]+)*\\.json$" ($seccomp.localhostProfile | default ""))) }}
+{{- fail "renderWorker.seccompProfile.localhostProfile must name a reviewed relative JSON profile" }}
+{{- end }}
+{{- if or (not (or (kindIs "int" $startupMs) (kindIs "int64" $startupMs) (kindIs "float64" $startupMs))) (ne (float64 $startupMs) (float64 (int $startupMs))) (lt (int $startupMs) 1000) (gt (int $startupMs) 120000) }}
+{{- fail "renderWorker.browserStartupTimeoutMs must be an integer from 1000 to 120000" }}
+{{- end }}
 {{- $name := printf "%s-render-worker" (include "lolly-work.fullname" .) }}
+{{- $tlsSecret := required "renderWorker.tls.existingSecret is required when the worker is enabled" .Values.renderWorker.tls.existingSecret }}
+{{- $caSecret := required "renderWorker.tls.caSecret is required when the worker is enabled" .Values.renderWorker.tls.caSecret }}
+{{- $serverName := .Values.renderWorker.tls.serverName | default (printf "%s.%s.svc" $name .Release.Namespace) }}
+{{- if not (regexMatch "^[a-zA-Z0-9.-]+$" $serverName) }}
+{{- fail "renderWorker.tls.serverName must be a DNS name" }}
+{{- end }}
 {{- $image := include "lolly-work.imageRef" (dict "image" .Values.renderWorker.image "defaultTag" .Chart.AppVersion "name" "renderWorker.image") }}
 {{- $pullSecrets := .Values.imagePullSecrets }}
 {{- if kindIs "slice" .Values.renderWorker.imagePullSecrets }}
@@ -65,16 +82,25 @@ spec:
         - name: render-worker
           image: {{ $image | quote }}
           imagePullPolicy: {{ .Values.renderWorker.image.pullPolicy }}
-          # The worker launches Chromium (--no-sandbox); it needs a writable /tmp
-          # and cannot use readOnlyRootFilesystem, but stays non-root + drops caps.
           securityContext:
             allowPrivilegeEscalation: false
             runAsNonRoot: true
+            readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
             seccompProfile:
-              type: RuntimeDefault
+              {{- toYaml $seccomp | nindent 14 }}
           env:
+            - name: LW_RENDER_DEPLOYMENT_MODE
+              value: production
+            - name: LW_RENDER_TLS_CERT_FILE
+              value: /run/render-tls/tls.crt
+            - name: LW_RENDER_TLS_KEY_FILE
+              value: /run/render-tls/tls.key
+            - name: LW_RENDER_TLS_CA_FILE
+              value: /run/render-trust/ca.crt
+            - name: LW_RENDER_TLS_SERVER_NAME
+              value: {{ $serverName | quote }}
             - name: PORT
               value: {{ .Values.renderWorker.service.port | quote }}
             - name: LOLLY_WEB_BASE
@@ -86,35 +112,47 @@ spec:
             {{- end }}
             - name: LW_RENDER_MAX_CONCURRENT
               value: {{ .Values.renderWorker.maxConcurrent | quote }}
+            - name: LW_RENDER_BROWSER_STARTUP_TIMEOUT_MS
+              value: {{ $startupMs | quote }}
             - name: LW_RENDER_WORKER_SECRET
               valueFrom:
                 secretKeyRef:
                   name: {{ include "lolly-work.secretName" . }}
                   key: LW_RENDER_WORKER_SECRET
           ports:
-            - name: http
+            - name: https
               containerPort: {{ .Values.renderWorker.service.port }}
           # Liveness: is the process alive at all — independent of load, never
           # driven by the concurrency cap below.
           livenessProbe:
-            httpGet: { path: /healthz, port: http }
+            httpGet: { path: /healthz, port: https, scheme: HTTPS }
             initialDelaySeconds: 10
             periodSeconds: 20
-          # Readiness: is this pod able to take MORE work right now. /readyz
-          # flips to 503 the moment LW_RENDER_MAX_CONCURRENT contexts are open
-          # (plans/23 §3.C), so k8s stops routing new requests to a saturated
-          # pod without killing it — the "removed from readiness when
-          # saturated" line of plans/22 §5.
+          # Readiness requires a connected sandboxed browser and free capacity.
+          # Browser startup or recovery keeps the pod out of the Service.
           readinessProbe:
-            httpGet: { path: /readyz, port: http }
+            httpGet: { path: /readyz, port: https, scheme: HTTPS }
             initialDelaySeconds: 5
             periodSeconds: 10
           resources:
             {{- toYaml .Values.renderWorker.resources | nindent 12 }}
           volumeMounts:
+            - name: render-tls
+              mountPath: /run/render-tls
+              readOnly: true
+            - name: render-trust
+              mountPath: /run/render-trust
+              readOnly: true
             - name: tmp
               mountPath: /tmp
       volumes:
+        - name: render-tls
+          secret:
+            secretName: {{ $tlsSecret | quote }}
+        - name: render-trust
+          secret:
+            secretName: {{ $caSecret | quote }}
+            items: [{ key: ca.crt, path: ca.crt }]
         - name: tmp
           {{- include "lolly-work.emptyDir" (dict "sizeLimit" .Values.renderWorker.tmp.sizeLimit "name" "renderWorker.tmp.sizeLimit") | nindent 10 }}
 ---
@@ -131,7 +169,7 @@ spec:
     {{- include "lolly-work.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: render-worker
   ports:
-    - name: http
+    - name: https
       port: {{ .Values.renderWorker.service.port }}
-      targetPort: http
+      targetPort: https
 {{- end }}
