@@ -21,7 +21,7 @@
 {{- fail "renderWorker.userNamespace.enabled must be true or false" }}
 {{- end }}
 {{- /* An API server without user-namespace support drops hostUsers instead of rejecting
-       it, which would leave SYS_ADMIN in the node's namespace. The worker refuses that at
+       it, which would leave SYS_ADMIN and SYS_CHROOT in the node's namespace. The worker refuses that at
        startup as well (workers/render/src/user-namespace.ts). */}}
 {{- if and $userNamespace (not (semverCompare ">=1.33.0-0" .Capabilities.KubeVersion.Version)) }}
 {{- fail "renderWorker.userNamespace requires Kubernetes 1.33 or newer (hostUsers: false); pass --kube-version when rendering offline" }}
@@ -102,9 +102,10 @@ spec:
             capabilities:
               drop: ["ALL"]
               {{- if $userNamespace }}
-              # Scoped to the pod's own user namespace: lets the runtime's default
-              # seccomp profile permit Chromium's unshare(CLONE_NEWUSER).
-              add: ["SYS_ADMIN"]
+              # Scoped to the pod's own user namespace: the runtime's default seccomp
+              # profile permits Chromium's unshare(CLONE_NEWUSER) only with SYS_ADMIN
+              # and its chroot into the new namespace only with SYS_CHROOT.
+              add: ["SYS_ADMIN", "SYS_CHROOT"]
               {{- end }}
             seccompProfile:
               {{- toYaml $seccomp | nindent 14 }}

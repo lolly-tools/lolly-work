@@ -1,6 +1,6 @@
 /**
  * The render worker's user-namespace startup check (workers/render/src/user-namespace.ts):
- * when the chart grants CAP_SYS_ADMIN for Chromium's sandbox it also sets
+ * when the chart grants CAP_SYS_ADMIN and CAP_SYS_CHROOT for Chromium's sandbox it also sets
  * LW_RENDER_REQUIRE_USER_NAMESPACE=1, and the worker must refuse to start if its uid_map
  * reaches host UID 0 - the case where an API server silently dropped hostUsers: false.
  */

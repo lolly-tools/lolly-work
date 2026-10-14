@@ -53,7 +53,7 @@
           "properties": {
             "enabled": {
               "type": "boolean",
-              "description": "Run the worker with hostUsers: false and a user-namespace-scoped CAP_SYS_ADMIN for Chromium's sandbox. Requires Kubernetes 1.33+."
+              "description": "Run the worker with hostUsers: false and user-namespace-scoped CAP_SYS_ADMIN and CAP_SYS_CHROOT for Chromium's sandbox. Requires Kubernetes 1.33+."
             }
           },
           "required": [
