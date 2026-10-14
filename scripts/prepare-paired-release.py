@@ -103,6 +103,12 @@ def jobs_record(value, run, allow_shell_skip=False, required_names=(), allowed_s
     exact(value, {"total_count", "jobs"})
     jobs = value["jobs"]
     require(isinstance(jobs, list) and 1 <= len(jobs) <= 100 and type(value["total_count"]) is int and value["total_count"] == len(jobs), "Incomplete CI jobs")
+    # The trusted full-suite workflow skips its optional fast aggregate for a
+    # broad change. Require the scope and both full-tier gates from this run.
+    tier_checks = {"deployment scope", "test (public-ready UI)", "release-ready", "qualification"}
+    successes_in_run = {job.get("name") for job in jobs if isinstance(job, dict) and job.get("status") == "completed" and job.get("conclusion") == "success"}
+    if allow_shell_skip and tier_checks <= successes_in_run and run.get("status") == "completed" and run.get("conclusion") == "success":
+        allowed_skips = (*allowed_skips, "public-ready")
     ids, names, successes, skips = set(), {}, 0, 0
     for job in jobs:
         required = {"id", "run_id", "name", "status", "conclusion"}
@@ -117,8 +123,9 @@ def jobs_record(value, run, allow_shell_skip=False, required_names=(), allowed_s
         ids.add(job["id"])
         names[job["name"]] = names.get(job["name"], 0) + 1
         successes += int(success)
-        skips += int(skipped)
-    require(successes > 0 and (not allow_shell_skip or skips <= 1) and all(names.get(name) == 1 and any(job["name"] == name and job["conclusion"] == "success" for job in jobs) for name in required_names), "Missing or duplicate required CI job")
+        skips += int(skipped and job["name"] not in allowed_skips)
+    require(successes > 0 and all(count == 1 for count in names.values()) and (not allow_shell_skip or skips <= 1)
+            and all(names.get(name) == 1 and any(job["name"] == name and job["conclusion"] == "success" for job in jobs) for name in required_names), "Missing or duplicate required CI job")
 
 
 def artifact_record(value, run, name, stream):
