@@ -234,6 +234,14 @@ renderWorker:
   # RuntimeDefault unless the node operator installs a reviewed Chromium policy.
   # See ../seccomp/README.md; Unconfined is not accepted.
   seccompProfile: { type: RuntimeDefault }
+  # For clusters where no node profile can be installed (shared/managed clusters):
+  # run the worker in its own Kubernetes user namespace (hostUsers: false) and add
+  # CAP_SYS_ADMIN, which then applies only inside that namespace and lets the
+  # RuntimeDefault profile permit Chromium's user namespaces. Needs Kubernetes 1.33+,
+  # containerd 2.0+ and kernel 6.3+. The worker refuses to start if the pod still
+  # shares the node's user namespace. See ../seccomp/README.md.
+  userNamespace:
+    enabled: false
   replicaCount: 1
   image:
     repository: ghcr.io/lolly-tools/lolly-work-render-worker

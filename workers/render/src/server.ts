@@ -36,6 +36,7 @@ import type { Browser, BrowserContext, BrowserContextOptions } from 'playwright-
 import { createSemaphore } from './semaphore.ts';
 import { declaredOrigins, egressChecker } from './egress.ts';
 import { renderWebBase } from './web-base.ts';
+import { assertUserNamespace } from './user-namespace.ts';
 import { workerBrowserOptions } from './browser-launch.ts';
 import { createBrowserLifecycle } from './browser-lifecycle.ts';
 import { RequestLifecycle } from './request-lifecycle.ts';
@@ -59,6 +60,10 @@ catch (err) { console.error(`[render-worker] ${(err as Error).message}`); proces
 // worker here rather than failing every render later.
 let DECLARED_ORIGINS: Set<string>;
 try { DECLARED_ORIGINS = declaredOrigins(WEB_BASE, process.env.LW_RENDER_ALLOWED_ORIGINS ?? ''); }
+catch (err) { console.error(`[render-worker] ${(err as Error).message}`); process.exit(1); }
+// A worker granted CAP_SYS_ADMIN for the browser sandbox must be in its own user
+// namespace (./user-namespace.ts); refuse before Chromium starts if it is not.
+try { assertUserNamespace(process.env.LW_RENDER_REQUIRE_USER_NAMESPACE); }
 catch (err) { console.error(`[render-worker] ${(err as Error).message}`); process.exit(1); }
 
 /** Refuse a request the egress rule does not allow. Logs the origin and the reason, never

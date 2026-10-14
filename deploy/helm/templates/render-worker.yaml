@@ -16,6 +16,16 @@
 {{- if or (not (or (kindIs "int" $startupMs) (kindIs "int64" $startupMs) (kindIs "float64" $startupMs))) (ne (float64 $startupMs) (float64 (int $startupMs))) (lt (int $startupMs) 1000) (gt (int $startupMs) 120000) }}
 {{- fail "renderWorker.browserStartupTimeoutMs must be an integer from 1000 to 120000" }}
 {{- end }}
+{{- $userNamespace := .Values.renderWorker.userNamespace.enabled }}
+{{- if not (kindIs "bool" $userNamespace) }}
+{{- fail "renderWorker.userNamespace.enabled must be true or false" }}
+{{- end }}
+{{- /* An API server without user-namespace support drops hostUsers instead of rejecting
+       it, which would leave SYS_ADMIN in the node's namespace. The worker refuses that at
+       startup as well (workers/render/src/user-namespace.ts). */}}
+{{- if and $userNamespace (not (semverCompare ">=1.33.0-0" .Capabilities.KubeVersion.Version)) }}
+{{- fail "renderWorker.userNamespace requires Kubernetes 1.33 or newer (hostUsers: false); pass --kube-version when rendering offline" }}
+{{- end }}
 {{- $name := printf "%s-render-worker" (include "lolly-work.fullname" .) }}
 {{- $tlsSecret := required "renderWorker.tls.existingSecret is required when the worker is enabled" .Values.renderWorker.tls.existingSecret }}
 {{- $caSecret := required "renderWorker.tls.caSecret is required when the worker is enabled" .Values.renderWorker.tls.caSecret }}
@@ -57,6 +67,9 @@ spec:
       {{- end }}
       serviceAccountName: {{ include "lolly-work.serviceAccountName" . }}
       automountServiceAccountToken: false
+      {{- if $userNamespace }}
+      hostUsers: false
+      {{- end }}
       {{- with .Values.renderWorker.runtimeClassName }}
       runtimeClassName: {{ . }}
       {{- end }}
@@ -88,11 +101,20 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+              {{- if $userNamespace }}
+              # Scoped to the pod's own user namespace: lets the runtime's default
+              # seccomp profile permit Chromium's unshare(CLONE_NEWUSER).
+              add: ["SYS_ADMIN"]
+              {{- end }}
             seccompProfile:
               {{- toYaml $seccomp | nindent 14 }}
           env:
             - name: LW_RENDER_DEPLOYMENT_MODE
               value: production
+            {{- if $userNamespace }}
+            - name: LW_RENDER_REQUIRE_USER_NAMESPACE
+              value: "1"
+            {{- end }}
             - name: LW_RENDER_TLS_CERT_FILE
               value: /run/render-tls/tls.crt
             - name: LW_RENDER_TLS_KEY_FILE

@@ -47,6 +47,19 @@
             "type"
           ],
           "additionalProperties": false
+        },
+        "userNamespace": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Run the worker with hostUsers: false and a user-namespace-scoped CAP_SYS_ADMIN for Chromium's sandbox. Requires Kubernetes 1.33+."
+            }
+          },
+          "required": [
+            "enabled"
+          ],
+          "additionalProperties": false
         }
       }
     }

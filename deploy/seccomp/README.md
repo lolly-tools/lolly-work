@@ -19,6 +19,38 @@ directory. Configure `renderWorker.seccompProfile` with `type: Localhost` and
 `localhostProfile: lolly/chromium.json`. The chart cannot install node policies.
 Qualify the policy on the actual cluster kernel, AppArmor policy and runtime.
 
+## When no node profile can be installed
+
+On shared or managed clusters the platform team may not install node files at
+all. There, set `renderWorker.userNamespace.enabled: true` and keep
+`seccompProfile: { type: RuntimeDefault }`. The worker pod then gets its own
+Kubernetes user namespace (`hostUsers: false`) and `CAP_SYS_ADMIN`. The
+runtime's default profile permits `unshare(CLONE_NEWUSER)` only when that
+capability is present, and inside the pod's user namespace it reaches only the
+pod's own namespaces: container root maps to an unprivileged host UID range, and
+the non-root worker process still has an empty effective capability set, so the
+renderer evidence checks are unchanged.
+
+Measured on RKE2 1.35, containerd 2.2.6, SLES 15 SP7 kernel 6.4, running
+`unshare -U -r` and `unshare -U -r -p -f` as UID 1000 with no new privileges and
+a read-only root:
+
+| Pod | User namespace |
+| --- | --- |
+| `RuntimeDefault` | denied |
+| `Localhost` profile not installed on the node | container creation fails |
+| `hostUsers: false` + `RuntimeDefault` | denied |
+| `hostUsers: false` + `RuntimeDefault` + `SYS_ADMIN` | permitted, user and PID |
+
+It needs Kubernetes 1.33 or newer, containerd 2.0 or newer and kernel 6.3 or
+newer; the chart refuses older Kubernetes versions. An API server without
+user-namespace support drops `hostUsers` rather than rejecting it, so the chart
+also sets `LW_RENDER_REQUIRE_USER_NAMESPACE=1` and the worker refuses to start
+when its `uid_map` reaches host UID 0. Security review should accept the
+residual risk explicitly: the worker can mount and unshare inside its own
+namespaces, so kernel defects in those paths remain reachable, as they are with
+the Localhost profile.
+
 Local image qualification selects `--sandbox-profile chromium` explicitly.
 It keeps non-root execution, all capabilities dropped, no new privileges, a
 read-only root filesystem, bounded scratch, and no external network. The test
