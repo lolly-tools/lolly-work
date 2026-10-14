@@ -35,7 +35,7 @@ Refusal, require, exact = paired.Refusal, paired.require, paired.exact
 SHA, COMMIT = paired.SHA, paired.COMMIT
 STATUS = "PREPARED_NOT_RUNTIME_QUALIFIED_NOT_APPLIED"
 JSON_LIMIT = 32 * 1024 * 1024
-MAX_FILES, MAX_BYTES, MAX_DEPTH = 100_000, 8 * 1024**3, 64
+MAX_FILES, MAX_SHELL_FILES, MAX_TREE_ENTRIES, MAX_BYTES, MAX_DEPTH = 100_000, 120_000, 200_000, 8 * 1024**3, 64
 NAME = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,61}[a-z0-9])?\Z")
 WORK_JOBS = ("test", "typecheck", "npm audit (high+critical) + SBOM", "container image builds (server)", "container image builds (render-worker)")
 LOLLY_JOBS = ("secret history scan", "typecheck", "test (browser)", "validate catalog", "smoke (render every tool)",
@@ -160,14 +160,14 @@ def hash_file(path, limit=MAX_BYTES):
 
 
 class Tree:
-    def __init__(self, value, inputs):
+    def __init__(self, value, inputs, *, shell=False):
         exact(value, {"root", "manifest"})
         self.root = local_path(value["root"], inputs.base)
         require(self.root.is_dir(), "Tree root is not a directory")
         manifest = inputs.file(value["manifest"])
         exact(manifest, {"version", "files", "totalBytes"})
         require(type(manifest["version"]) is int and manifest["version"] == 1
-                and isinstance(manifest["files"], list) and 1 <= len(manifest["files"]) <= MAX_FILES
+                and isinstance(manifest["files"], list) and 1 <= len(manifest["files"]) <= (MAX_SHELL_FILES if shell else MAX_FILES)
                 and type(manifest["totalBytes"]) is int and 0 <= manifest["totalBytes"] <= MAX_BYTES, "Invalid complete tree manifest")
         self.files, self.identities, self.directories = {}, {}, {}
         paths, total = [], 0
@@ -190,7 +190,7 @@ class Tree:
             for name in names:
                 leaf = safe_path(f"{relative}/{name}" if relative else name)
                 entries[0] += 1
-                require(entries[0] <= MAX_FILES * 2, "Tree exceeds its entry bound")
+                require(entries[0] <= MAX_TREE_ENTRIES, "Tree exceeds its entry bound")
                 child = directory / name
                 if stat.S_ISDIR(child.lstat().st_mode):
                     walk(child, leaf, depth + 1)
@@ -703,7 +703,7 @@ def prepare(value, base, expected_public_pin, node="node", runner=git_command):
     require(brand_path.startswith("brands/") and runner(["git", "ls-tree", value["lolly"]["source"], "--", brand_path], lolly_root).strip().split()
             == ["160000", "commit", brand_commit, brand_path], "Private brand commit differs from source")
     require(isinstance(value["profile"], str) and NAME.fullmatch(value["profile"]) and value["profile"] not in {"community", "neutral", "public"}, "Profile must explicitly identify private content")
-    candidate, previous_shell, shell, raw = [Tree(value[key], inputs) for key in ("candidateShell", "previousShell", "shell", "rawPack")]
+    candidate, previous_shell, shell, raw = [Tree(value[key], inputs, shell=key != "rawPack") for key in ("candidateShell", "previousShell", "shell", "rawPack")]
     roots = [tree.root for tree in inputs.trees]
     require(len(set(roots)) == 4 and all(a not in b.parents for a in roots for b in roots if a != b), "Private input trees must be distinct and non-overlapping")
     retention(candidate, previous_shell, shell)

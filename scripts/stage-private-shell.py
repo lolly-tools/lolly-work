@@ -241,7 +241,7 @@ class Stage:
         self.pin = self.inputs.file(self.previous['enginePin']); self.public_key = self.inputs.file(value['publicKey']); self.source_map = self.inputs.file(value['sourceMap'])
         require(self.public_key.get('kty') == 'EC' and self.public_key.get('crv') == 'P-256' and 'd' not in self.public_key, 'Public-only P-256 key required')
         require(self.pin['generatedFrom'] == self.prepared['sources']['engine'] and self.previous['enginePin']['sha256'] == self.prepared['enginePinSha256'], 'Accepted engine pin differs')
-        self.old, self.new, self.pack = [cohort.Tree(value[key], self.inputs) for key in ('previousShell', 'shell', 'rawPack')]
+        self.old, self.new, self.pack = [cohort.Tree(value[key], self.inputs, shell=key != 'rawPack') for key in ('previousShell', 'shell', 'rawPack')]
         require(self.old.manifest_sha == self.previous['shell']['manifestSha256'] and self.old.shell_id == self.previous['shell']['releaseId']
                 and self.new.manifest_sha == self.prepared['shell']['manifestSha256'] and self.new.shell_id == self.prepared['shell']['releaseId']
                 and self.pack.manifest_sha == self.prepared['rawPack']['manifestSha256'] == self.previous['pack']['manifestSha256'], 'Complete accepted/prepared tree differs')

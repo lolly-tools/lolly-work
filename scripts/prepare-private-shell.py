@@ -601,7 +601,7 @@ def unchanged_raw_source(value, previous, raw, inputs, root, actual_catalog, exp
         require("rawDerivation" in value, "Accepted derived pack requires original release custody")
         derivation = value["rawDerivation"]
         exact(derivation, {"custody", "release"})
-        release = cohort.Tree(derivation["release"], inputs)
+        release = cohort.Tree(derivation["release"], inputs, shell=True)
         require(cohort.catalog(release, raw, inputs.file(value["publicPin"]), cohort.sha(expected_public_pin), node, previous=accepted_shell) == actual_catalog,
                 "Original derived release catalog differs from accepted catalog")
         original = {"lolly": {**value["lolly"], "source": previous["engineSource"]}, "profile": value["profile"],
@@ -630,7 +630,7 @@ def prepare(value, base, expected_public_pin, node="node", runner=git_command):
     exact(value["brand"], {"path", "commit"}); brand_path = cohort.safe_path(value["brand"]["path"]); brand = cohort.commit(value["brand"]["commit"])
     require(brand_path.startswith("brands/") and runner(["git", "ls-tree", value["lolly"]["source"], "--", brand_path], root).strip().split() == ["160000", "commit", brand, brand_path], "Unchanged private brand differs")
     require(isinstance(value["profile"], str) and cohort.NAME.fullmatch(value["profile"]) and value["profile"] not in {"community", "neutral", "public"}, "Private profile required")
-    candidate, old, shell, raw = [cohort.Tree(value[key], inputs) for key in ("candidateShell", "previousShell", "shell", "rawPack")]
+    candidate, old, shell, raw = [cohort.Tree(value[key], inputs, shell=key != "rawPack") for key in ("candidateShell", "previousShell", "shell", "rawPack")]
     roots = [tree.root for tree in inputs.trees]
     require(len(set(roots)) == 4 and all(a not in b.parents for a in roots for b in roots if a != b), "Distinct complete trees required")
     require(old.manifest_sha == previous["shell"]["manifestSha256"] and old.shell_id == previous["shell"]["releaseId"] and raw.manifest_sha == previous["pack"]["manifestSha256"], "Accepted shell/raw-pack snapshot differs")

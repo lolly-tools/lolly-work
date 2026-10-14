@@ -138,7 +138,7 @@ def baseline(value, inputs):
     require(cohort.digest(before.get("spec")) == cohort.sha(value["deploymentSpecSha256"]), "Accepted public full Deployment spec differs")
     manifest = inputs.file(value["staticManifest"])
     exact(manifest, {"version", "files", "totalBytes"})
-    require(type(manifest["version"]) is int and manifest["version"] == 1 and isinstance(manifest["files"], list) and 1 <= len(manifest["files"]) <= cohort.MAX_FILES, "Complete accepted public static manifest required")
+    require(type(manifest["version"]) is int and manifest["version"] == 1 and isinstance(manifest["files"], list) and 1 <= len(manifest["files"]) <= cohort.MAX_SHELL_FILES, "Complete accepted public static manifest required")
     files = {}; total = 0
     for row in manifest["files"]:
         exact(row, {"path", "size", "sha256"}); path = cohort.safe_path(row["path"]); cohort.sha(row["sha256"])
@@ -239,7 +239,7 @@ def prepare(value, base, node="node", runner=shared.git_command):
             and all(custody[k] == previous[k] for k in ("image", "profile", "settings", "publicCatalog", "publicKeySha256"))
             and custody["previousManifest"] == previous["staticManifest"] and custody["previousAcceptance"] == producer["previousAcceptance"] and custody["ci"] == producer["ci"], "Original public producer custody differs from baseline")
     compatibility = shared.compatibility(root, {"engineSource": previous["imageSource"], "shellSource": previous["shellSource"]}, producer["lollySource"], inputs.file(producer["classification"]), runner)
-    trees = {key: cohort.Tree(producer[key], inputs) for key in ("previous", "candidate", "shell", "overlay", "delta")}
+    trees = {key: cohort.Tree(producer[key], inputs, shell=True) for key in ("previous", "candidate", "shell", "overlay", "delta")}
     require(len({t.root for t in trees.values()}) == 5 and all(a.root not in b.root.parents for a in trees.values() for b in trees.values() if a != b), "Public artifact trees overlap")
     old, candidate, shell, overlay, delta = (trees[k] for k in ("previous", "candidate", "shell", "overlay", "delta"))
     require(old.files == old_files and shell.manifest_sha == producer["shellManifestSha256"], "Producer complete previous/prepared public manifest differs")

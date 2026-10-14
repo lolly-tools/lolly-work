@@ -56,9 +56,9 @@ def build_ci_snapshot(snapshot, final, source, repository, tier=None):
             or (snapshot['status'] == 'completed' and snapshot['conclusion'] == 'success'), 'Build CI observation was not pending or successful')
 
 
-def manifest_id(manifest):
+def manifest_id(manifest, *, shell_tree=False):
     exact(manifest, {'version', 'files', 'totalBytes'})
-    require(type(manifest['version']) is int and manifest['version'] == 1 and type(manifest['files']) is list and 1 <= len(manifest['files']) <= cohort.MAX_FILES and type(manifest['totalBytes']) is int, 'Bounded complete manifest required')
+    require(type(manifest['version']) is int and manifest['version'] == 1 and type(manifest['files']) is list and 1 <= len(manifest['files']) <= (cohort.MAX_SHELL_FILES if shell_tree else cohort.MAX_FILES) and type(manifest['totalBytes']) is int, 'Bounded complete manifest required')
     files = {}
     for row in manifest['files']:
         exact(row, {'path', 'size', 'sha256'}); path = cohort.safe_path(row['path'])
@@ -123,9 +123,9 @@ class Adapter:
         require(build_ci == self.ref(custody['ci'], base=Path(custody_ref['path']).parent), 'Producer CI custody differs')
         build_ci_snapshot(self.inputs.file(build_ci), run, self.candidate['source'], self.candidate['repository'], self.candidate.get('qualificationTier'))
         require(self.ref(produced['publicKey'], base=base) == public_pin and custody['publicKeySha256'] == public_pin['sha256'], 'Producer public pin differs')
-        old = self.tree(instance['previousShell'], Path(self.instance_ref['path']).parent)
-        candidate_tree, retained = [self.tree(produced[key], base, producer=True) for key in ('candidate', 'shell')]
-        producer_old = self.tree(produced['previous'], base, producer=True)
+        old = self.tree(instance['previousShell'], Path(self.instance_ref['path']).parent, shell_tree=True)
+        candidate_tree, retained = [self.tree(produced[key], base, producer=True, shell_tree=True) for key in ('candidate', 'shell')]
+        producer_old = self.tree(produced['previous'], base, producer=True, shell_tree=True)
         require(producer_old['root'] == old['root'] and producer_old['manifest']['sha256'] == old['manifest']['sha256'] and old['manifest']['sha256'] == previous['shell']['manifestSha256'] and self.ref(custody['previousManifest'], base=Path(custody_ref['path']).parent) == old['manifest'] and produced['shellManifestSha256'] == retained['manifest']['sha256'], 'Producer accepted snapshot/manifest differs')
         raw_pack = self.tree(profile['rawPack'], Path(self.profile_ref['path']).parent)
         require(raw_pack['manifest']['sha256'] == previous['pack']['manifestSha256'], 'Accepted raw pack differs')
@@ -215,11 +215,11 @@ class Adapter:
         require(type(value['size']) is int and Path(ref['path']).stat().st_size == value['size'], 'Original sized file differs')
         return ref
 
-    def tree(self, value, base, producer=False):
+    def tree(self, value, base, producer=False, shell_tree=False):
         exact(value, {'root', 'manifest', 'shellId', 'files'} if producer else {'root', 'manifest'})
         result = {'root': str(cohort.local_path(value['root'], base)), 'manifest': self.ref(value['manifest'], base=base)}
         self.tree_roots.add(Path(result['root']))
-        manifest = self.inputs.file(result['manifest']); identity = manifest_id(manifest)
+        manifest = self.inputs.file(result['manifest']); identity = manifest_id(manifest, shell_tree=shell_tree)
         require(type(manifest.get('version')) is int and manifest['version'] == 1 and type(manifest.get('files')) is list and len(manifest['files']) > 0, 'Complete original tree manifest required')
         if producer:
             require(type(value['files']) is int and value['files'] == len(manifest['files']) and value['shellId'] == identity, 'Producer tree count/identity differs')
