@@ -315,13 +315,16 @@ class Cohort(unittest.TestCase):
         self.assertTrue((Path(self.evidence["shell"]["root"]) / "catalog/tools/index.sig.json").is_file())
         self.assertFalse((Path(self.evidence["rawPack"]["root"]) / "catalog/tools/index.sig.json").exists())
 
-    def delivery_cohort(self):
+    def delivery_cohort(self, resources=None, envelope_only=False):
         directory = m.digest({path.split("/", 1)[1]: digest for path, digest in self.envelope["files"].items()})
         unsigned = {k: v for k, v in self.envelope.items() if k != "signature"}
         unsigned.update(seq=7, toolDirs={"fixture": directory})
+        if resources is not None:
+            unsigned["resources"] = resources
         signed = subprocess.run([NODE, "-e", "const c=require('node:crypto');let d='';process.stdin.on('data',x=>d+=x);process.stdin.on('end',()=>{const v=JSON.parse(d);process.stdout.write(c.sign('sha256',Buffer.from(v.payload,'base64'),{key:c.createPrivateKey({key:v.key,format:'jwk'}),dsaEncoding:'ieee-p1363'}).toString('base64url'));});"],
                                 input=raw({"key": self.keys["private"], "payload": __import__("base64").b64encode(raw(unsigned)).decode()}), capture_output=True, check=True)
         envelope = {**unsigned, "signature": signed.stdout.decode()}
+        if envelope_only: return envelope
         for name in ("candidateShell", "shell", "rawPack"):
             root = Path(self.evidence[name]["root"])
             files = {str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()}
@@ -342,6 +345,42 @@ class Cohort(unittest.TestCase):
         self.assertEqual(result["status"], m.STATUS)
         self.assertFalse(result["qualificationBoundary"]["productionMutation"])
         inputs.unchanged()
+
+    def test_signed_resources_require_exact_physical_bytes(self):
+        path, content = "/catalog/previews/fixture.svg", b"signed preview"
+        envelope = self.delivery_cohort({path: sha(content)})
+        modern, _ = m.catalog_envelope(envelope, self.keys["public"], NODE)
+        tree = m.Tree(self.evidence["shell"], m.Inputs(self.base))
+        with self.assertRaisesRegex(m.Refusal, "Signed resource bytes differ"):
+            m.catalog_content(tree, envelope, modern, node=NODE)
+        tree.files[path[1:]] = {"sha256": sha(content), "size": len(content)}
+        self.put(Path(self.evidence["shell"]["root"]), path[1:], content)
+        m.catalog_content(tree, envelope, modern, node=NODE)
+        tree.files[path[1:]]["sha256"] = "0" * 64
+        with self.assertRaisesRegex(m.Refusal, "Signed resource bytes differ"):
+            m.catalog_content(tree, envelope, modern, node=NODE)
+
+    def test_raw_pack_can_omit_shell_documentation_resources(self):
+        envelope = self.delivery_cohort({"/info/shots/fixture.svg": "a" * 64})
+        tree = m.Tree(self.evidence["rawPack"], m.Inputs(self.base))
+        m.catalog_content(tree, envelope, True, node=NODE, shell_only_resources=True)
+        with self.assertRaisesRegex(m.Refusal, "Signed resource bytes differ"):
+            m.catalog_content(tree, envelope, True, node=NODE)
+        tree.files["info/shots/fixture.svg"] = {"sha256": "b" * 64, "size": 1}
+        self.put(Path(self.evidence["rawPack"]["root"]), "info/shots/fixture.svg", b"x")
+        with self.assertRaisesRegex(m.Refusal, "Signed resource bytes differ"):
+            m.catalog_content(tree, envelope, True, node=NODE, shell_only_resources=True)
+
+    def test_signed_resources_reject_unsafe_paths_and_unverified_changes(self):
+        for path in ("/catalog/previews/../secret", "/catalog/previews/a%2fb", "/catalog/previews/a?b", "/catalog/previews/a b", "/catalog/previews/a\\b", "/catalog/previews//a", "/private/a", "/info/shots/a\x00b"):
+            with self.subTest(path=path):
+                envelope = self.delivery_cohort({path: "a" * 64}, envelope_only=True)
+                with self.assertRaisesRegex(m.Refusal, "Invalid signed resource path"):
+                    m.catalog_envelope(envelope, self.keys["public"], NODE)
+        envelope = self.delivery_cohort({"/info/shots/good.svg": "a" * 64}, envelope_only=True)
+        envelope["resources"]["/info/shots/good.svg"] = "b" * 64
+        with self.assertRaisesRegex(m.Refusal, "signature does not verify"):
+            m.catalog_envelope(envelope, self.keys["public"], NODE)
 
     def derived_cohort(self):
         self.delivery_cohort()

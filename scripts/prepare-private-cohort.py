@@ -325,7 +325,7 @@ def verify_signature(pin, envelope, node):
 
 CATALOG_LEGACY_FIELDS = {"alg", "keyId", "signedAt", "indexHash", "files", "signature"}
 CATALOG_DELIVERY_REQUIRED = {"seq", "toolDirs"}
-CATALOG_DELIVERY_OPTIONAL = {"catalogScope", "expiresAt", "assetIndexHash", "slimHash"}
+CATALOG_DELIVERY_OPTIONAL = {"catalogScope", "expiresAt", "assetIndexHash", "slimHash", "resources"}
 TOOL_ID = re.compile(r"[a-z0-9][a-z0-9-]*\Z", re.I)
 HASH_TOOL = re.compile(r"tools/([a-z0-9][a-z0-9-]*)@([0-9a-f]{16})/(.+)\Z", re.I)
 HASH_INDEX = re.compile(r"catalog/(tools/index(?:\.slim)?|assets/index)\.([0-9a-f]{16})\.json\Z")
@@ -349,6 +349,15 @@ def catalog_envelope(envelope, pin, node):
     if modern:
         require(type(envelope["seq"]) is int and 0 < envelope["seq"] <= 9007199254740991, "Invalid signed catalog sequence")
         require(isinstance(envelope["toolDirs"], dict), "Invalid signed tool directory map")
+        if "resources" in envelope:
+            resources = envelope["resources"]
+            require(isinstance(resources, dict) and len(resources) <= 20000, "Invalid signed resource map")
+            for path, expected in resources.items():
+                require(isinstance(path, str) and len(path) <= 1024
+                        and re.match(r"^/(?:catalog/(?:previews|og)|info/shots)/", path)
+                        and not any(c in "\\%?#" or c.isspace() or ord(c) < 32 or 127 <= ord(c) <= 159 for c in path)
+                        and all(part not in ("", ".", "..") for part in path[1:].split("/")), "Invalid signed resource path")
+                sha(expected)
         if "catalogScope" in envelope:
             sha(envelope["catalogScope"])
         from datetime import datetime, timezone
@@ -479,7 +488,7 @@ def delivery_inventory(tree):
     return result
 
 
-def catalog_content(tree, envelope, modern, previous=None, node="node"):
+def catalog_content(tree, envelope, modern, previous=None, node="node", shell_only_resources=False):
     """Check every logical signed byte and every actual immutable alias tree."""
     codings = verified_codings(tree, node)
     files, by_tool = envelope["files"], {}
@@ -493,6 +502,12 @@ def catalog_content(tree, envelope, modern, previous=None, node="node"):
         if path.startswith("tools/") and path.endswith("/tool.json") and not (modern and HASH_TOOL.fullmatch(path)):
             require(path[6:] in files, "Tool manifest is outside the signed catalog closure")
     if not modern: return
+    for path, expected in envelope.get("resources", {}).items():
+        # Unaddressed documentation images are served by the verified shell.
+        # The derived pack projection separately enforces its exact inventory.
+        if shell_only_resources and path.startswith("/info/shots/") and path[1:] not in tree.files:
+            continue
+        require(tree.files.get(path[1:], {}).get("sha256") == expected, "Signed resource bytes differ from catalog tree")
     require(set(envelope["toolDirs"]) == set(by_tool), "Signed tool directory ids differ from logical files")
     for tool_id, entries in by_tool.items():
         sha(envelope["toolDirs"][tool_id])
@@ -555,7 +570,7 @@ def catalog(shell, raw, public_pin, expected_public_pin, node, previous=None):
             require(path in shell.files and item == shell.files[path], "Raw tool/catalog payload differs from compiled private shell")
     require(raw.files.get("catalog/tools/index.json") == shell.files["catalog/tools/index.json"], "Raw catalog index differs")
     catalog_content(shell, envelope, modern, previous, node)
-    catalog_content(raw, envelope, modern, previous, node)
+    catalog_content(raw, envelope, modern, previous, node, shell_only_resources=True)
     return {"indexSha256": envelope["indexHash"], "envelopeSha256": shell.files["catalog/tools/index.sig.json"]["sha256"], "keyId": key_id, "signedFiles": len(envelope["files"])}
 
 
