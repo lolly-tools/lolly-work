@@ -40,6 +40,18 @@ classification grants no authority to change the edge configuration. The workflo
 release-gate and local build-configuration changes still require the matched
 release path.
 
+The exact `scripts/check-ui-performance.ts` browser harness may also accompany a
+UI change. It is a manually invoked measurement of an existing site, not a build
+or release qualification input. A harness-only change does not qualify; adjacent
+scripts, shared dependencies and release gates remain outside this lane.
+
+`scripts/vernacular-code-baseline.json` may record reduced or cleared counts for
+web or test source files changed in the same release. Both classifiers verify
+the generated JSON format and reject new entries, increased counts and unrelated
+reductions. The private preparer checks both the engine-to-previous-shell and
+previous-shell-to-candidate transitions, so an earlier reduction stays in force.
+The baseline alone never qualifies as a web update.
+
 ## Assemble the preparation input without release-specific scripts
 
 `scripts/assemble-private-shell-input.py` translates an original successful local
