@@ -16,7 +16,7 @@ name = "Lolly Work"
 description.en = "Governed Lolly for a team: one brand, locked tool inputs, approvals and audit, signed in with your YunoHost accounts"
 description.fr = "Lolly gouverné pour une équipe : une marque, des outils verrouillés, approbations et audit, connexion avec vos comptes YunoHost"
 
-version = "1.1.0~ynh3"
+version = "1.1.1~ynh1"
 
 maintainers = ["Andy Fitzsimon"]
 
@@ -78,8 +78,8 @@ ram.runtime = "512M"
     # The control plane at a release tag (server, console, vendored engine, docs),
     # without node_modules: the install script runs `pnpm install --frozen-lockfile --prod`. Built and
     # published by scripts/yunohost-release.ts; see deploy/yunohost/README.md.
-    url = "https://lolli.li/lolly-work-1.1.0-ynh3.tar.gz"
-    sha256 = "e7b70e269b261bfed4bc5f7c6dce69eec84885ce2b0bf9335143a1cc3ff2efbb"
+    url = "https://lolli.li/lolly-work-1.1.1-ynh1.tar.gz"
+    sha256 = "9f9ee96a49a4a19c0dbad4fa2b78b2d5bfd3cd004bc25d01463e4b509eba69e8"
     format = "tar.gz"
     in_subdir = true
 
@@ -89,8 +89,8 @@ ram.runtime = "512M"
     # the build carries the full community tool set and catalog, also the initial
     # instance pack. The same tarball the `lolly` YunoHost app installs; its pin is
     # copied from that package's manifest.
-    url = "https://lolli.li/lolly-web-1.1.0-ynh3.tar.gz"
-    sha256 = "8bc8121a68e6fee6dda3902ed48d5e2669353bcfd101ca3822990235a2099376"
+    url = "https://lolli.li/lolly-web-1.1.1-ynh1.tar.gz"
+    sha256 = "bc78012aa407983ecc818e63be98ae1b45ed7db1dcad3f4c8d4ffe0c371116c1"
     format = "tar.gz"
     in_subdir = false
 
