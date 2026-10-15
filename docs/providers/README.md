@@ -63,6 +63,23 @@ touches remote content), fetches are **host-pinned** (never an open proxy), and 
 not the platform credential - decides what federates. Bring your own tokens/apps; none ship
 in this repo.
 
+## Identity and authority qualification
+
+Qualify the selected file, its original/preview distinction and the source's revision behaviour
+for the intended task. The federated metadata version is a cache change token; exact historical
+bytes require a qualified revision or permitted retained copy and a verified digest. See
+[cache versions and exact source references](../catalog.md#cache-versions-and-exact-source-references).
+
+Record whether the connection exposes an administrator-selected subset through a shared
+service credential or delegates each member's upstream identity. A shared credential does
+not automatically preserve personal upstream permissions. Exposure and lifecycle gates must
+cover previews, originals, search, counts and any future recipe/history projection.
+
+Source access, outbound delivery and model processing require separate authority even when
+the same vendor supplies them. An upstream approved flag describes the mapped source state;
+review scope and territory/channel eligibility need their own evidence. These qualifications
+do not add a new provider, delegated-authentication mode or historical resolver.
+
 ## OAuth kinds
 
 Every OAuth kind here is BYOT: you register **your own** app on the platform - no client ids

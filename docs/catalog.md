@@ -649,6 +649,34 @@ naming the setting: the sync result, the provider record (`state.truncated`, `st
 and `GET /api/v1/catalog/sources` all show the mark, so a silent shortfall cannot happen.
 Providers with no cached fragment yet sync three at a time.
 
+### Cache versions and exact source references
+
+An asset group can have several files, including two with the same format. File selection
+uses attachment identity rather than an extension or list position. A thumbnail and a
+selected original remain separate resources.
+
+The federated entry's `version` is a cache change token calculated from the source's
+`updatedAt` and mapped file metadata (`server/src/catalog/federation.ts`). It does not hash
+the original bytes. Changed metadata can produce a new token for unchanged bytes; an upstream
+overwrite that leaves those fields unchanged can produce different bytes under the same token.
+The byte cache and ETag use that token. They do not establish a durable immutable source pin.
+
+The generic provider contract resolves the current file by asset and file reference. It has
+no general historical-revision argument. Before promising exact reopening of a federated
+revision, qualify source-native revision retrieval or a permitted retained copy, and verify
+the observed digest. An unavailable exact revision must be reported rather than substituted
+with the current head, another attachment or a preview. The existing instance-owned version
+history and explicit materialisation paths keep their own documented semantics.
+
+Source review, current access, contextual use eligibility and approval of final output bytes
+are also separate facts. `requireApproved` maps an upstream flag; it is not a general
+territory/channel evaluator or proof of approval for every historical file. Replacement of
+an admitted instance asset is curation, as described under Versions. Final-byte destination
+approval follows [outbound delivery](delivery.md#optional-human-approval).
+
+The document-model DAM amendment specifies richer observations, review subjects and history
+as requirements. Those shared contracts are not implemented by this documentation update.
+
 ### Large catalogs
 
 The feed at `/catalog/assets/index.json` is composed once per input state and per caller
