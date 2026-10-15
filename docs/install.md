@@ -1,5 +1,7 @@
 # Installing
 
+For release downloads and a platform chooser, start with [Run your own Lolly Work server](self-host.md). **YunoHost users who want server features should install Lolly Work** (`lolly-work_ynh`). The separate `lolly_ynh` package serves only the static app.
+
 For managed SSO, use [Enterprise identity deployment](enterprise-identity.md): provider
 registration, admission, optional MFA, SCIM/offboarding, logout and upgrade checks.
 
@@ -53,22 +55,58 @@ local or systemd deployment. Compose/Kubernetes images include it; YunoHost's
 package supplies its runtime. The server runs `.ts` sources through Node's native
 type-stripping.
 
-| | macOS | SLES / openSUSE Leap |
-|---|---|---|
-| **Package manager** | [Homebrew](https://brew.sh) | `zypper` (built in) |
-| **git** | `brew install git` (or Xcode CLT) | `sudo zypper install git` |
-| **Node 24** | `brew install node` | `sudo zypper install nodejs24 npm24` |
+### Linux
 
-If your distro doesn't package Node 24 yet (Leap 15.6 / SLES 15 ship older lines), use
-[**nvm**](https://github.com/nvm-sh/nvm):
+For Ubuntu or Debian, install Git, curl and certificate roots with
+`sudo apt-get update` then `sudo apt-get install git curl ca-certificates`.
+For SLES/openSUSE, use `sudo zypper install git curl ca-certificates`.
+Install **Node 24 or later** from your distribution if available, or follow
+[Node's installation instructions](https://nodejs.org/en/download) for that OS
+and architecture. Check `node --version` and `npm --version` before continuing;
+a distribution's unversioned `nodejs` package may be older than Work requires.
+
+For container installations, follow [Docker Engine's platform guide](https://docs.docker.com/engine/install/)
+and install the Compose v2 plugin. The container supplies Node; skip host Node
+and pnpm unless you will also run Work directly from source.
+
+### macOS
+
+For a local source installation on Apple silicon or Intel, install Git and Node
+24 with [Homebrew](https://brew.sh):
 
 ```bash
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
-# reopen your shell, then:
-nvm install 24 && nvm use 24
+brew install git node@24
+export PATH="$(brew --prefix node@24)/bin:$PATH"
+node --version
+npm --version
 ```
 
-Verify: `node -v` prints `v24.x`.
+Keep that PATH entry in your shell profile for later sessions. Continue with
+[the local demo](#1-local-demo). For Linux containers instead, install
+[Docker Desktop for Mac](https://docs.docker.com/desktop/setup/install/mac-install/),
+start it and check `docker compose version`, then follow section 5. The Lolly
+macOS desktop app is a client, not the Work server.
+
+### Windows
+
+Use **WSL 2** for these Linux shell commands. In an administrator PowerShell
+window, follow [Microsoft's WSL installation guide](https://learn.microsoft.com/en-us/windows/wsl/install):
+
+```powershell
+wsl --install -d Ubuntu
+```
+
+Restart if requested, open Ubuntu and create its Linux user. Keep your Work
+checkout under the Linux home directory (for example `~/lolly-work`). Follow
+[Linux prerequisites](#linux) and section 1 inside Ubuntu; do not paste Bash
+`export`, `sudo` or `$(...)` examples into PowerShell.
+
+For Compose, install [Docker Desktop for Windows](https://docs.docker.com/desktop/setup/install/windows-install/),
+select Linux containers and enable WSL integration for Ubuntu. Check
+`docker compose version` inside Ubuntu, then continue with section 5. Docker
+Desktop is not the deployment path for Windows Server; use a Linux VM or an
+existing Kubernetes platform there. Native Windows service installation has
+not been qualified for this release.
 
 **PostgreSQL** is required for durable state (section 3). Compose brings PostgreSQL
 17; the optional [SUSE profile](../deploy/suse/README.md) pins Application Collection
@@ -86,12 +124,16 @@ the above:
 
 ## 1. Local demo
 
+Use the published release tag so the server and vendored engine stay matched.
+The release source ZIP is an alternative to Git; extract it and open its root
+directory before running the package-manager commands.
+
 ```bash
-git clone https://github.com/lolly-tools/lolly-work.git
+git clone --branch v1.1.1 --depth 1 https://github.com/lolly-tools/lolly-work.git
 cd lolly-work
 # Install the pinned package manager once (or use Corepack).
 npm install --global pnpm@11.26.0
-pnpm install
+pnpm install --frozen-lockfile
 pnpm run demo            # http://localhost:8787   (PORT=8788 for another port)
 ```
 
@@ -252,10 +294,10 @@ configured server formats separately from other declared formats. It never execu
 or fetches remote assets. An optional second argument selects a source ID. With LW_CONFIG
 set, the command also uses that deployment's worker and server-rendering requirements.
 
-Work now consumes engine 1.248.0 and core 1.1.0 from committed upstream source, which accepts
-Design's `^1.248.0` requirement. A configured worker or a shell containing the governance marker
-does not prove an exact matched client release. Validate that release and representative
-renders before acceptance; signed release bundles and capability handshakes remain pending.
+Work's `engine-pin.json` records the exact bundled engine and core source. Use the
+matching Lolly web release and tool pack. A configured worker or a shell containing
+the governance marker does not prove an exact matched client release; validate
+the selected pack and representative renders before acceptance.
 
 Production startup refuses missing durable storage, development sign-in and invalid active
 packs. `/readyz` reports the actual store and removes production readiness when its checks
@@ -463,15 +505,30 @@ Put TLS (nginx / Caddy) in front, or terminate at your load balancer, and set
 
 ### YunoHost
 
+**Choose Lolly Work for the server features.** Its package repository is
+[`lolly-tools/lolly-work_ynh`](https://github.com/lolly-tools/lolly-work_ynh).
+The separate `lolly-tools/lolly_ynh` package is the static app and does not provide
+Work accounts, shared projects or a database.
+
 The same bare-metal shape, packaged: a [YunoHost](https://yunohost.org) app that
 installs the service, its PostgreSQL database and the Lolly web shell on a domain of
 its own, and signs members in with the host's accounts. The package is the
 `deploy/yunohost/` directory of this repository, mirrored to the
 `lolly-tools/lolly-work_ynh` app repository at each release.
 
+For a fresh install, use the exact Work package revision linked from the
+[published release](https://github.com/lolly-tools/lolly-work/releases/tag/v1.1.1).
+In YunoHost's custom-app installer, paste that `lolly-work_ynh` URL. The equivalent
+terminal command is below; replace the placeholder with the published revision:
+
 ```bash
-sudo yunohost app install https://github.com/lolly-tools/lolly-work_ynh
+sudo yunohost app install https://github.com/lolly-tools/lolly-work_ynh/tree/<published-package-revision>
 ```
+
+Use a dedicated domain and an existing YunoHost user as the first owner. The
+installer fetches the matching Work and web archives and checks both hashes.
+Do not substitute the plain `lolly_ynh` URL. The two apps have separate data and
+upgrade paths; moving from static Lolly means installing Work separately.
 
 Three questions: the domain (a whole one), the **first owner** (a YunoHost user), and
 the instance name. What you get is section 2's "real instance" with every setting
@@ -498,9 +555,11 @@ The package keeps the API, share links, render links and the instance card
 reachable for non-browser clients (the `lw` CLI, MCP, SCIM, an open-source Lolly
 client connecting to this instance), because the server authenticates those itself.
 
-The package has repository contracts and static linting; actual Linux
-install/upgrade/backup/restore qualification remains pending. Treat this as a
-package evaluation path until a release records those checks. The
+Qualification is specific to the selected version and architecture. The earlier
+1.1.0 beta passed fresh-install, backup/restore and same-version-upgrade checks on
+amd64; those results do not qualify 1.1.1 or an upgrade from an older release.
+Treat 1.1.1 as an evaluation package until its release records the actual Linux
+install/upgrade/backup/restore checks. The
 [YunoHost qualification guide](cloud-deployment.md#yunohost-qualification) lists
 the required run. Its current package does not provision a Chromium worker;
 available exports depend on the installed tool pack and renderer configuration.

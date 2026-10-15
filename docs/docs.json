@@ -14,6 +14,11 @@
       "title": "Start here",
       "docs": [
         {
+          "slug": "self-host",
+          "title": "Run your own server",
+          "summary": "Release downloads and installation paths for YunoHost, Linux, macOS, Windows and Kubernetes."
+        },
+        {
           "slug": "release-1-1-0",
           "title": "Release 1.1.0",
           "summary": "Shared Lolly and Work release candidate, matched component versions, qualification, migration and rollback."
@@ -26,7 +31,7 @@
         {
           "slug": "install",
           "title": "Installing",
-          "summary": "Nothing → a running, configured, governed instance: local demo, first config, sign-in, Postgres, secrets, Compose, systemd, Helm."
+          "summary": "Nothing \u2192 a running, configured, governed instance: local demo, first config, sign-in, Postgres, secrets, Compose, systemd, Helm."
         },
         {
           "slug": "enterprise-identity",
