@@ -14,6 +14,11 @@
       "title": "Start here",
       "docs": [
         {
+          "slug": "release-1-1-1",
+          "title": "Release 1.1.1",
+          "summary": "Work 1.1.1 paired with Lolly 1.1.1: matched components, changes since 1.1.0, migrations and qualification."
+        },
+        {
           "slug": "release-1-1-0",
           "title": "Release 1.1.0",
           "summary": "Shared Lolly and Work release candidate, matched component versions, qualification, migration and rollback."

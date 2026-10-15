@@ -350,8 +350,9 @@ test('immutable digests pin app, migration and worker while tag defaults still w
 
   const original = render([...SECRETS, ...WORKER]);
   assert.ok(original.ok, original.err);
-  assert.equal(deployment(original.out).spec.template.spec.containers[0].image, 'ghcr.io/lolly-tools/lolly-work-server:1.1.0');
-  assert.equal(deployment(original.out, true).spec.template.spec.containers[0].image, 'ghcr.io/lolly-tools/lolly-work-render-worker:1.1.0');
+  const appVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+  assert.equal(deployment(original.out).spec.template.spec.containers[0].image, `ghcr.io/lolly-tools/lolly-work-server:${appVersion}`);
+  assert.equal(deployment(original.out, true).spec.template.spec.containers[0].image, `ghcr.io/lolly-tools/lolly-work-render-worker:${appVersion}`);
   const tagged = render([...SECRETS, ...WORKER, '--set', 'image.tag=custom', '--set', 'renderWorker.image.tag=worker-custom']);
   assert.ok(tagged.ok, tagged.err);
   assert.equal(deployment(tagged.out).spec.template.spec.containers[0].image, 'ghcr.io/lolly-tools/lolly-work-server:custom');

@@ -18,6 +18,7 @@ any Lolly deployment. The console links there when this deploy serves or points 
 
 | Doc | What it covers |
 |---|---|
+| [release 1.1.1](release-1-1-1.md) | Lolly 1.1.1 pairing, changes since 1.1.0, migrations, qualification and YunoHost packaging |
 | [release 1.1.0](release-1-1-0.md) | Shared product versions, exact engine source, qualification, migration and rollback |
 | [overview](overview.md) | The control plane in one page: what it serves, the two-repo shape, the trust model |
 | [install](install.md) | The whole first deploy: local demo, first config, sign-in and the first owner, Postgres, secrets, Compose / systemd / Helm |
