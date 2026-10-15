@@ -146,6 +146,8 @@ export function demoLandingHtml(config: InstanceConfig): string {
     </div>
     <div class="row">
       <a class="btn" href="${REPO_URL}/releases/tag/v1.1.1" target="_blank" rel="noopener">Lolly Work 1.1.1 downloads ↗</a>
+      <a class="btn secondary" href="${REPO_URL}/releases/download/v1.1.1/lolly-work-0.3.1.tgz">Download Helm chart</a>
+      <a class="btn secondary" href="${REPO_URL}/archive/refs/tags/v1.1.1.zip">Download server source</a>
       <a class="btn secondary" href="/admin#/docs/self-host">Choose a package</a>
       <a class="btn secondary" href="https://github.com/lolly-tools/lolly-work_ynh" target="_blank" rel="noopener">YunoHost server package ↗</a>
     </div>

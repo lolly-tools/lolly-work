@@ -53,7 +53,8 @@ every ARM device; consult the release results for the tested architectures.
 
 ### Verify a downloaded file
 
-Download `SHA256SUMS` from the same Work release as the package. In the download
+Download the matching checksum file from the same Work release as the package
+(`lolly-work-0.3.1.tgz.sha256` for the chart, or `SHA256SUMS` for the other assets). In the download
 directory, compare the line for your file with:
 
 ```bash

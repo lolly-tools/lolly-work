@@ -396,8 +396,26 @@ demo values, and no later step notices.
 cd deploy/compose
 printf 'LW_SESSION_SECRET=%s\nLW_LINK_SECRET=%s\nPG_PASSWORD=%s\n' \
   "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" > .env
-docker compose up --build                  # :8787, Postgres 17 alongside
+# Use the published 1.1.1 server image; no local build is needed.
+cat > release-images.yaml <<'YAML'
+services:
+  server:
+    image: ghcr.io/lolly-tools/lolly-work-server:1.1.1
+YAML
+docker compose -f docker-compose.yml -f release-images.yaml pull
+docker compose -f docker-compose.yml -f release-images.yaml up -d --no-build
 ```
+
+Use the same two `-f` arguments for subsequent `logs`, `stop` and `up` commands.
+For a custom source build instead, omit the override and run
+the following command:
+
+```bash
+docker compose up --build
+```
+
+After checking the release's verified image digest,
+replace the version tag in `release-images.yaml` with that digest for production.
 
 All three lines of `.env` matter. The compose file refuses to start without the two
 `LW_` secrets. `PG_PASSWORD` feeds both the server's `DATABASE_URL` and the Postgres
