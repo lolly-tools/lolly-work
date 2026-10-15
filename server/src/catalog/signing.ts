@@ -53,6 +53,8 @@ export interface CatalogCaller {
   overlays: Map<string, ToolOverlay>;
   groups: string[];
   guestToolId?: string;
+  /** Opt-in bounded asset inventory; never an access grant. */
+  pagedAssets?: boolean;
 }
 
 /** Group visibility for members and exact tool scope for guest links. */

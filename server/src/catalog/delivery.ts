@@ -27,7 +27,7 @@ const MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024;
 
 /** Scope comes exclusively from the server's current resolved grants. */
 export function catalogVisibilityScope(caller: CatalogCaller): string {
-  return sha256Hex(canonicalJson({ groups: [...new Set(caller.groups)].sort(), guestTool: caller.guestToolId ?? null }));
+  return sha256Hex(canonicalJson({ groups: [...new Set(caller.groups)].sort(), guestTool: caller.guestToolId ?? null, ...(caller.pagedAssets ? { pagedAssets: true } : {}) }));
 }
 
 function ids(bytes: Buffer, field: 'tools' | 'assets'): string[] {
@@ -61,7 +61,7 @@ export function createCatalogDelivery(deps: { store: Store; servedIndex: ServedI
     const shellDirectories = deps.shellDirectories?.() ?? (deps.shellDir ? [deps.shellDir] : []);
     await prepare();
     const [tools, assets, slimResult, rawTools, rawSlim, allFiles] = await Promise.all([
-      servedToolIndexBytes(pack, caller), deps.servedIndex.forCaller({ groups: caller.groups }),
+      servedToolIndexBytes(pack, caller), deps.servedIndex.forCaller({ groups: caller.groups, paged: caller.pagedAssets, background: caller.pagedAssets }),
       servedToolSidecar(pack, 'tools/index.slim.json', caller),
       readFile(join(pack, 'catalog/tools/index.json')).catch(() => Buffer.alloc(0)),
       readFile(join(pack, 'catalog/tools/index.slim.json')).catch(() => Buffer.alloc(0)), toolFiles(pack),
@@ -107,7 +107,11 @@ export function createCatalogDelivery(deps: { store: Store; servedIndex: ServedI
       if (kind === 'assets') {
         const currentById = new Map((view.assets.index.assets ?? []).map(asset => [asset.id, asset]));
         try {
-          const historical = JSON.parse(entry.bytes.toString()).assets as Array<Record<string, unknown>>;
+          const index = JSON.parse(entry.bytes.toString()) as { assets: Array<Record<string, unknown>>; pagedProviders?: Array<{ id: string }>; pendingProviders?: string[] };
+          const allowedProviders = new Set([...view.assets.providers.map(provider => provider.id), ...((view.assets.index.pendingProviders ?? []) as string[])]);
+          if (index.pagedProviders?.some(provider => !allowedProviders.has(provider.id))) return null;
+          if (index.pendingProviders?.some(provider => !allowedProviders.has(provider))) return null;
+          const historical = index.assets;
           if (!Array.isArray(historical)) return null;
           for (const asset of historical) {
             const live = currentById.get(String(asset.id));
