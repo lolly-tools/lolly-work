@@ -3073,6 +3073,8 @@ const PROVIDER_INTEGRATIONS = [
   { kind: 'canto', name: 'Canto', blurb: 'Canto DAM — read-only, with the exit path (materialize → cut over) for off-boarding.', options: '{"tenant": "acme", "approvedStates": ["approved"]}' },
   { kind: 'acquia-dam', name: 'Acquia DAM / Widen', blurb: 'The Widen enterprise DAM — read-only, with native release/expiry dates and approval.', options: '{"query": "…", "approvedStatuses": ["active"]}' },
   { kind: 'intelligencebank', name: 'IntelligenceBank', blurb: 'IntelligenceBank — federate the v3 Graph API read-only, with the exit path for off-boarding.', options: '{"platformUrl": "https://acme.intelligencebank.com", "approvedStates": ["Approved"]}' },
+  { kind: 'cloudinary', name: 'Cloudinary', blurb: 'Read a shared media library by stable asset ID. Original downloads stay behind Work access checks.', options: '{"cloudName": "your-cloud", "assetFolder": "Brand/Approved", "region": "us"}' },
+  { kind: 'orange-logic', name: 'Orange Logic', blurb: 'Search an organisation DAM and use permitted renditions. Protected originals require a separate API.', options: '{"baseUrl": "https://dam.your-host.example", "query": "ParentFolderIdentifier:APPROVED", "formats": ["TR1", "WebHigh"]}' },
   { kind: 'mock', name: 'Mock (dev)', blurb: 'A synthetic in-memory source for local development.', options: '{}' },
 ];
 

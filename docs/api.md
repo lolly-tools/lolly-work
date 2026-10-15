@@ -170,6 +170,8 @@ published asset's lifecycle stops it, like every other surface that hands out by
 | `POST …/:id/publish` | `catalog.provider.publish` (**owner**) |
 
 Config-managed providers reject mutations with `409 CONFIG_MANAGED`.
+Cutover returns `422 ORIGINALS_UNAVAILABLE` for a source that explicitly provides renditions
+without protected originals. The refusal leaves identities, aliases and activation state unchanged.
 
 `GET …/setup` returns versioned public typed-form descriptors (WebDAV and Google Drive),
 credential sealing availability and the installed browser-consent redirect URI/scope,

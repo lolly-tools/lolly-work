@@ -8008,6 +8008,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     await providersReady;
     const rec = await store.getProvider(ctx.params.id as string);
     if (!rec) return sendError(res, 404, 'NOT_FOUND', 'no such provider');
+    if (federation.instantiate(rec).capabilities.originals === false) return sendError(res, 422, 'ORIGINALS_UNAVAILABLE', 'This source provides renditions only; protected originals are required for DAM cutover.');
     const { migrated } = await cutoverProvider({ store, blobs, federation }, rec);
     if (migrated) bustInstanceCatalog(); // identities moved into inst/* (plans/31 §6)
     // A db-managed provider is disabled here (its job is done). A config-managed

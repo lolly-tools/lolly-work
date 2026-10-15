@@ -158,6 +158,7 @@ export async function materializeAsset(deps: MaterializeDeps, rec: ProviderRecor
  *  the old blob URLs so already-rendered SVGs keep resolving. The caller
  *  (owner-gated route) disables the provider afterwards. */
 export async function cutoverProvider(deps: MaterializeDeps, rec: ProviderRecord): Promise<{ migrated: number }> {
+  if (deps.federation.instantiate(rec).capabilities.originals === false) throw new Error('This source cannot provide protected originals; rendition copies cannot complete a DAM cutover');
   const insts = (await deps.store.listInstanceAssets()).filter((r) => r.origin?.provider === rec.id);
   const grants = await deps.store.listGrants();
   for (const inst of insts) {

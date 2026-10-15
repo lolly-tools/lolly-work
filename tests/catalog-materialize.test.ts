@@ -70,6 +70,18 @@ async function login(email: string): Promise<string> {
 const feedIds = async (cookie: string): Promise<string[]> =>
   ((await (await fetch(`${base}/catalog/assets/index.json`, { headers: { cookie } })).json()) as { assets: Array<{ id: string }> }).assets.map((a) => a.id);
 
+test('a rendition-only source returns an actionable cutover refusal without changing state', async () => {
+  await store.putProvider({ id: 'renditions', kind: 'orange-logic', label: 'Renditions', managedBy: 'db', enabled: false,
+    options: { baseUrl: 'https://dam.example' }, mapping: {}, exposure: {}, sync: {}, state: { assetCount: 0 }, createdAt: '2026-10-15', updatedAt: '2026-10-15' });
+  const owner = await login('owner@test');
+  const aliases = await store.listAliases();
+  const response = await fetch(`${base}/api/v1/catalog/providers/renditions/cutover`, { method: 'POST', headers: { cookie: owner } });
+  assert.equal(response.status, 422);
+  assert.equal((await response.json() as { error: { code: string } }).error.code, 'ORIGINALS_UNAVAILABLE');
+  assert.deepEqual(await store.listAliases(), aliases);
+  assert.equal((await store.getProvider('renditions'))!.enabled, false);
+});
+
 test('(a) materialize is admin-gated and mints an instance asset per exposed federated asset', async () => {
   const designer = await login('designer@test');
   assert.equal((await fetch(`${base}/api/v1/catalog/providers/dam4/materialize`, { method: 'POST', headers: { cookie: designer } })).status, 403);

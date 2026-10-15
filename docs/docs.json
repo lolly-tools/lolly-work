@@ -31,7 +31,7 @@
         {
           "slug": "install",
           "title": "Installing",
-          "summary": "Nothing → a running, configured, governed instance: local demo, first config, sign-in, Postgres, secrets, Compose, systemd, Helm."
+          "summary": "Nothing \u2192 a running, configured, governed instance: local demo, first config, sign-in, Postgres, secrets, Compose, systemd, Helm."
         },
         {
           "slug": "enterprise-identity",
@@ -241,6 +241,30 @@
           "path": "providers/intelligencebank.md",
           "title": "IntelligenceBank",
           "summary": "The v3 Graph API only; native expiry, review dates and workflow states map straight across."
+        },
+        {
+          "slug": "provider-cloudinary",
+          "path": "providers/cloudinary.md",
+          "title": "Cloudinary",
+          "summary": "Read-only shared media by immutable asset ID, with original downloads and explicit tenant qualification."
+        },
+        {
+          "slug": "provider-orange-logic",
+          "path": "providers/orange-logic.md",
+          "title": "Orange Logic",
+          "summary": "Public Search v4 and permitted renditions, with protected originals explicitly unavailable."
+        },
+        {
+          "slug": "provider-cloudinary-live-verify",
+          "path": "providers/cloudinary-live-verify.md",
+          "title": "Cloudinary tenant verification",
+          "summary": "Qualify access, original fidelity, paging and costs on the organisation tenant."
+        },
+        {
+          "slug": "provider-orange-logic-live-verify",
+          "path": "providers/orange-logic-live-verify.md",
+          "title": "Orange Logic tenant verification",
+          "summary": "Qualify scoped discovery and permitted renditions without claiming original migration."
         },
         {
           "slug": "provider-penpot",

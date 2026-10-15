@@ -532,7 +532,14 @@ Kinds, the open and self-hostable ones first: `webdav` (RFC 4918 - Nextcloud, ow
 `gdrive`, `o365`/Graph, `penpot` (design-system source), `optimizely-cmp` (CMP DAM v3, OAuth2),
 `imagerelay` (v2, OAuth2, off-boarding source), `canto` (REST v1, OAuth2, off-boarding source),
 `acquia-dam` (Widen v2, bearer, native availability), `intelligencebank` (v3 Graph API, login
-handshake), `mock`. No SDKs, publicly documented endpoints only.
+handshake), `cloudinary` (asset-ID originals), `orange-logic` (public Search v4 renditions),
+`mock`. No SDKs, publicly documented endpoints only.
+
+Cloudinary and Orange Logic use the existing advanced source form and sealed credentials.
+Their files declare `original` or `rendition` in the served `meta.assetFiles` entries, with
+`providerOriginalsAvailable` alongside. Orange Logic protected originals are unsupported and
+DAM cutover is refused. See [Cloudinary](providers/cloudinary.md) and
+[Orange Logic](providers/orange-logic.md) for scope, API costs and tenant qualification.
 
 A DAM with no native availability field (`imagerelay`, `canto`) imports expiry from a
 custom-metadata field named in `mapping.availabilityFields` - the generic path for any DAM

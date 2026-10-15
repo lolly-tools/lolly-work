@@ -194,7 +194,7 @@ The control plane also provides:
 - OIDC/proxy identity, SCIM provisioning, member/guest sessions, current role mappings,
   deny-wins grants, service-token revocation and owner-only credential administration.
 - Tool and input governance, managed brand sources, approval chains, signed links,
-  catalog lifecycle, collections, versions and thirteen read-only provider kinds.
+  catalog lifecycle, collections, versions and fifteen read-only provider kinds.
 - Recoverable renders and batches, retained output/evidence downloads, fixed organization
   delivery targets and automation output references. Rendering uses the pinned, unmodified
   engine; available formats depend on the installed pack and worker.
