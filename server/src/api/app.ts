@@ -133,9 +133,10 @@ import { listSubmissions, settleSubmission, submitAsset } from '../catalog/submi
 import { isDataSubmissionType } from '../catalog/submit-data.ts';
 import {
   applyDescriptivePatch, applyFieldPatch, composeAssetMeta, descriptiveTouched, extractedHaystack,
-  fieldHaystack, normalizeCatalogField, normalizeExtractedText, parseDescriptivePatch, servedFields,
+  fieldHaystack, MAX_EXTRACTED_TEXT, normalizeCatalogField, normalizeExtractedText, parseDescriptivePatch, servedFields,
   type AssetMetaRecord, type DescriptiveKey,
 } from '../catalog/asset-meta.ts';
+import { textIndexFiles, textIndexRevision, textIndexView } from '../catalog/text-index.ts';
 import {
   collectionVisible, composeCollections, normalizeCollection, sortCollections,
   type CollectionRecord,
@@ -6093,6 +6094,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       // people that Save means 403. Descriptive fields are instance-owned
       // assets only, which the id already says.
       canEdit,
+      textIndex: textIndexView(entry, meta),
+      textIndexFiles: textIndexFiles(entry),
       ...(window ?? {}),
       ...(instAsset?.origin ? { origin: instAsset.origin } : {}),
       ...(credential?.status === 'embedded' ? { credential: 'embedded' } : {}),
@@ -6113,7 +6116,41 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       credentials: credential
         ? { status: credential.status, ...(credential.container ? { container: credential.container } : {}), sniffedAt: credential.sniffedAt, ...(credential.sourceUpdatedAt ? { sourceUpdatedAt: credential.sourceUpdatedAt } : {}) }
         : null,
-    }, { 'cache-control': 'private, max-age=30' });
+    }, { 'cache-control': 'private, no-store' });
+  });
+
+  router.add('PUT', '/api/v1/catalog/text-index/*', async (req, res, ctx) => {
+    const user = await requireAction(req, res, 'catalog.edit');
+    if (!user) return;
+    const id = ctx.params['*'] ?? '';
+    if (!/^(ext|inst)\/[A-Za-z0-9._/-]+$/.test(id) || id.includes('..')) return sendError(res, 400, 'INVALID_INPUT', 'bad asset id');
+    await providersReady;
+    if (!(await callerSeesAsset(user, id))) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
+    const body = await readJson(req) as Record<string, unknown> | null;
+    const entry = (await servedIndex.forCaller({ groups: user.groups })).index.assets?.find(asset => asset.id === id);
+    if (!entry) return sendError(res, 404, 'NOT_FOUND', 'no such asset');
+    if (!body || body.sourceRevision !== textIndexRevision(entry)) return sendError(res, 409, 'SOURCE_CHANGED', 'The indexed source has changed. Read the current file again.');
+    const stored = await store.getAssetMeta(id);
+    if (body.text === null) {
+      if (stored) {
+        const { extractedText: _text, extractedTextSource: _source, ...rest } = stored;
+        await store.putAssetMeta({ ...rest, updatedBy: `user:${user.id}`, updatedAt: new Date().toISOString() });
+      }
+      await audit(`user:${user.id}`, 'catalog.text-index.clear', `catalog:${id}`, { characters: stored?.extractedText?.length ?? 0 });
+      return sendJson(res, 200, { ok: true, textIndex: textIndexView(entry, null) }, { 'cache-control': 'no-store' });
+    }
+    if (typeof body.text !== 'string' || !body.text.trim() || body.text.length > MAX_EXTRACTED_TEXT
+      || (body.method !== 'ocr' && body.method !== 'digital') || !textIndexFiles(entry).some(file => file.id === body.fileId)) {
+      return sendError(res, 400, 'INVALID_INPUT', `reviewed text, method and a current file are required; text is limited to ${MAX_EXTRACTED_TEXT} characters`);
+    }
+    const meta: AssetMetaRecord = { ...stored, assetId: id, fields: stored?.fields ?? {},
+      extractedText: normalizeExtractedText(body.text)!,
+      extractedTextSource: { revision: textIndexRevision(entry), fileId: body.fileId as string, method: body.method,
+        reviewedBy: `user:${user.id}`, reviewedAt: new Date().toISOString() },
+      updatedBy: `user:${user.id}`, updatedAt: new Date().toISOString() };
+    await store.putAssetMeta(meta);
+    await audit(`user:${user.id}`, 'catalog.text-index.review', `catalog:${id}`, { characters: meta.extractedText!.length, source: meta.extractedTextSource });
+    sendJson(res, 200, { ok: true, textIndex: textIndexView(entry, meta) }, { 'cache-control': 'no-store' });
   });
 
   // ── org-defined metadata (plans/31 §4) ────────────────────────────────────
@@ -6373,7 +6410,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       meta = {
         assetId: id, fields: applied.values,
         ...(stored?.replacedBy ? { replacedBy: stored.replacedBy } : {}),
-        ...(stored?.extractedText ? { extractedText: stored.extractedText } : {}),
+        ...(stored?.extractedText ? { extractedText: stored.extractedText, ...(stored.extractedTextSource ? { extractedTextSource: stored.extractedTextSource } : {}) } : {}),
         updatedBy: `user:${user.id}`, updatedAt: new Date().toISOString(),
       };
       before.fields = servedFields(defs, stored);
@@ -6401,7 +6438,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         assetId: id,
         fields: base?.fields ?? {},
         ...(successor ? { replacedBy: successor } : {}),
-        ...(base?.extractedText ? { extractedText: base.extractedText } : {}),
+        ...(base?.extractedText ? { extractedText: base.extractedText, ...(base.extractedTextSource ? { extractedTextSource: base.extractedTextSource } : {}) } : {}),
         updatedBy: `user:${user.id}`,
         updatedAt: new Date().toISOString(),
       };
@@ -8169,8 +8206,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     // asset itself, is a value they will look it up by. The OCR text comes off
     // the overlay by id rather than off the entry, because it is deliberately
     // not carried on the feed.
-    const matches = (e: { id: string; name?: unknown; description?: unknown; tags?: unknown; fields?: unknown }): boolean =>
-      [e.id, e.name, e.description, ...(Array.isArray(e.tags) ? e.tags : []), ...fieldHaystack(e), ...extractedHaystack(metaById.get(e.id))]
+    const matches = (e: AssetIndexEntry): boolean =>
+      [e.id, e.name, e.description, ...(Array.isArray(e.tags) ? e.tags : []), ...fieldHaystack({ fields: e.fields }), ...extractedHaystack(metaById.get(e.id), e)]
         .some((v) => typeof v === 'string' && v.toLowerCase().includes(q));
     const results = new Map<string, unknown>();
     for (const e of composed.assets ?? []) {
