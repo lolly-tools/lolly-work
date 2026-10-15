@@ -80,6 +80,24 @@ the same vendor supplies them. An upstream approved flag describes the mapped so
 review scope and territory/channel eligibility need their own evidence. These qualifications
 do not add a new provider, delegated-authentication mode or historical resolver.
 
+For a proposed integration, keep a task-specific contract sheet with the following evidence.
+Documentation and fixture results are distinct from a tenant observation or release qualification.
+
+| Area | Evidence to qualify |
+|---|---|
+| API and identity | Product/module, API revision, tenant/workspace, service or delegated mode, scopes and live permission/revocation behaviour. |
+| Content and attributes | Selected original/file/version and observed digest; historical-byte retrieval separately from historical metadata, policy and review snapshots. |
+| Search | Allowed combinations per mode, required exact filters, paging/order, result caps, count/facet completeness and unavailable-source reporting. |
+| Readiness | The exact action/representation that can proceed; accepted transfer, pending processing, preview, original, review and publication are separate observations. |
+| Review | Subject, purpose/activation target, revision, origin and whether a person or an automated rule decided. A flag alone is incomplete evidence. |
+| Side effects | Explicit bounded targets, create/new-version/replace and conflict policy, destination authority, budget and reconciliation after uncertain completion. |
+| Portability | Content schema/revision/locale mappings where needed, retained evidence and a demonstrated exit with unsupported fields listed. |
+
+A viewer's current context must not silently become a batch's action targets or destination.
+Preview those targets, keep stable item identity through retries, and qualify per-item authority
+at admission and commit. This is an onboarding requirement for future operations; existing
+provider booleans and read-only guides do not implement the richer action contract.
+
 ## OAuth kinds
 
 Every OAuth kind here is BYOT: you register **your own** app on the platform - no client ids

@@ -677,6 +677,19 @@ approval follows [outbound delivery](delivery.md#optional-human-approval).
 The document-model DAM amendment specifies richer observations, review subjects and history
 as requirements. Those shared contracts are not implemented by this documentation update.
 
+Byte history and attribute history need separate qualification. A provider can retain older
+originals while exposing only current metadata. Record metadata/policy observations with their
+own time, origin, mapping revision and completeness; do not present current attributes as a
+historical snapshot. An unchanged byte digest or mapped cache token cannot preserve current
+access or review. The focused source-observation test exercises fresh `requireApproved`
+exposure after the source flag changes without changing bytes or its mapped token; it does
+not prove upstream revocation against an already cached fragment.
+
+Future source projections must distinguish transfer acceptance, processing, selected-original
+readiness, review and publication. Search support also needs allowed mode/filter combinations
+and completeness, rather than independent booleans alone. These requirements do not add fields
+to today's provider contract or enable semantic search.
+
 ### Large catalogs
 
 The feed at `/catalog/assets/index.json` is composed once per input state and per caller

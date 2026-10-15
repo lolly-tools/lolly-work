@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mapProviderAsset } from '../server/src/catalog/federation.ts';
+import { buildFragment, mapProviderAsset, passesExposure } from '../server/src/catalog/federation.ts';
 import { createBrandfolderProvider } from '../server/src/catalog/providers/brandfolder.ts';
 import type { ProviderRecord } from '../server/src/catalog/providers/types.ts';
 import { sha256Hex } from '../server/src/lib/crypto.ts';
@@ -17,11 +17,12 @@ const filesOf = (entry: ReturnType<typeof mapProviderAsset>): FileProjection[] =
   (entry.meta as { assetFiles: FileProjection[] }).assetFiles;
 
 function source() {
-  const state = { bytes: '<svg><path d="M0 0"/></svg>', updatedAt: '2026-10-15T10:00:00Z', reverse: false };
+  const state = { bytes: '<svg><path d="M0 0"/></svg>', updatedAt: '2026-10-15T10:00:00Z', reverse: false,
+    approved: true as boolean | undefined };
   const attachmentIds = ['wide', 'square'];
   const resource = () => ({
     id: 'artwork', type: 'generic_files',
-    attributes: { name: 'Artwork', updated_at: state.updatedAt, approved: true },
+    attributes: { name: 'Artwork', updated_at: state.updatedAt, approved: state.approved },
     relationships: { attachments: { data: (state.reverse ? [...attachmentIds].reverse() : attachmentIds)
       .map(id => ({ id, type: 'attachments' })) } },
   });
@@ -93,4 +94,23 @@ test('byte observations distinguish an overwrite that the metadata cache token c
   fixture.state.updatedAt = '2026-10-15T11:00:00Z';
   assert.notEqual((await fixture.entry()).version, after.version, 'a metadata change moves the cache token');
   assert.equal(sha256Hex(await fixture.original()), sha256Hex(replacement), 'the metadata change did not change bytes');
+});
+
+test('fresh exposure is independent of the byte digest and mapped cache token', async () => {
+  const fixture = source();
+  const restricted: ProviderRecord = { ...record, exposure: { groups: '*', requireApproved: true } };
+  const before = (await fixture.driver.listAssets()).assets[0]!;
+  const digest = sha256Hex(await fixture.original());
+  assert.equal(passesExposure(restricted, before), true);
+  assert.equal((await buildFragment(restricted, fixture.driver, () => 0)).assets.length, 1);
+
+  for (const approved of [false, undefined]) {
+    fixture.state.approved = approved;
+    const after = (await fixture.driver.listAssets()).assets[0]!;
+    assert.equal(mapProviderAsset(restricted, after).version, mapProviderAsset(restricted, before).version);
+    assert.equal(sha256Hex(await fixture.original()), digest);
+    assert.equal(passesExposure(restricted, after), false);
+    assert.equal((await buildFragment(restricted, fixture.driver, () => 0)).assets.length, 0);
+  }
+  assert.equal(before.approved, true, 'the earlier observation stays historical');
 });
