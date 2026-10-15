@@ -33,6 +33,22 @@ the signed shell/pack delivery in your instance values rather than assuming a
 Ready server provides the editing interface. After installation, use section 9
 when connecting a catalog source.
 
+## Connecting clients
+
+In an installed iOS, Android or desktop client, choose **Connect to a Lolly
+instance** and enter your workspace address. Sign in through the system browser
+and approve the displayed code, then return to Lolly. The client loads the
+workspace's brand and your account's projects and shared sessions.
+
+Web clients open the workspace at its own address so its login cookie also works
+for the private catalog and collaboration sockets.
+
+Native collaboration needs a matching Work server with
+`POST /api/v1/collab/sessions/:id/socket-ticket`. Each ticket lasts 30 seconds,
+works for one room and can be used once. The HTTP ticket request and WebSocket
+upgrade must reach the same Work process, following the supported single
+collaboration owner topology in [deployment](deployment.md).
+
 ## 0. Hosted demo (zero install)
 
 A public, passwordless sandbox runs at **<https://lolly.work>**: one-click sign-in as any

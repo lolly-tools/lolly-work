@@ -31,6 +31,7 @@ declare module 'ws' {
      *  to notice a peer that stopped READING (which no event reports). */
     readonly bufferedAmount: number;
     constructor(address: string, options?: { headers?: Record<string, string> });
+    constructor(address: string, protocols: string[], options?: { headers?: Record<string, string> });
     on(event: 'open', cb: () => void): this;
     on(event: 'message', cb: (data: RawData, isBinary: boolean) => void): this;
     on(event: 'close', cb: (code: number, reason: Buffer) => void): this;
