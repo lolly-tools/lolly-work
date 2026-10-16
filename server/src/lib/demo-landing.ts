@@ -127,12 +127,32 @@ export function demoLandingHtml(config: InstanceConfig): string {
 
   <p class="eyebrow">Explore Lolly Work</p>
   <div class="row">
-    <a class="btn" href="#security-platform">Explore the architecture ↓</a>
+    <a class="btn" href="#downloads">Run your own server ↓</a>
+    <a class="btn secondary" href="#security-platform">Explore the architecture ↓</a>
     <a class="btn secondary" href="/admin#/docs">Read the docs</a>
     <a class="btn secondary" href="/admin">Open the admin console</a>
     <a class="btn secondary" href="${REPO_URL}" target="_blank" rel="noopener">View on GitHub ↗</a>
   </div>
   <p class="lede tight">Read the setup and operator guides without signing in.</p>
+
+  <section id="downloads" aria-labelledby="downloads-title">
+    <h2 id="downloads-title">Run your own Lolly Work server</h2>
+    <p class="lede tight">Keep accounts, shared projects and your team’s tools on infrastructure you control. Choose the installation that fits your platform.</p>
+    <div class="features">
+      <div class="feature"><h3>YunoHost</h3><p><strong>Choose Lolly Work.</strong> Includes the web app, PostgreSQL, shared projects and sign-in with your host’s accounts. The separate Lolly package is the static app.</p><p><a href="/admin#/docs/install">Install Lolly Work for YunoHost →</a></p></div>
+      <div class="feature"><h3>Linux servers</h3><p>Run the Work server and PostgreSQL with Docker Compose, or use Node and systemd. Add your domain, HTTPS and identity provider.</p><p><a href="/admin#/docs/install">Linux installation →</a></p></div>
+      <div class="feature"><h3>Kubernetes and Rancher</h3><p>Use the Helm chart on your existing Kubernetes, K3s or RKE2 platform, with persistent storage and your organisation’s sign-in.</p><p><a href="/admin#/docs/platform-deployment">Platform guide →</a></p></div>
+      <div class="feature"><h3>macOS and Windows</h3><p>Evaluate on macOS with Node or Docker Desktop. On Windows, use WSL 2 or Linux containers. Desktop app downloads install the Lolly client.</p><p><a href="/admin#/docs/install">Platform prerequisites →</a></p></div>
+    </div>
+    <div class="row">
+      <a class="btn" href="${REPO_URL}/releases/tag/v1.1.1" target="_blank" rel="noopener">Lolly Work 1.1.1 downloads ↗</a>
+      <a class="btn secondary" href="${REPO_URL}/releases/download/v1.1.1/lolly-work-0.3.1.tgz">Download Helm chart</a>
+      <a class="btn secondary" href="${REPO_URL}/archive/refs/tags/v1.1.1.zip">Download server source</a>
+      <a class="btn secondary" href="/admin#/docs/self-host">Choose a package</a>
+      <a class="btn secondary" href="https://github.com/lolly-tools/lolly-work_ynh" target="_blank" rel="noopener">YunoHost server package ↗</a>
+    </div>
+    <p class="lede tight">The release page records available packages, checksums and tested platforms. Check the version’s YunoHost installation and upgrade results before using it for real work.</p>
+  </section>
 
   ${securityOverviewHtml()}
 
