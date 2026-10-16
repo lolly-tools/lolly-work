@@ -30,6 +30,13 @@ content paths and preserve the other settings. Domain/identity environment value
 are initial defaults, so change the stored configuration for an existing instance.
 Back up `state`, `keys` and `.env` together with PostgreSQL.
 
+Built-in email/password sign-in is the quick-start default. The host operator
+issues a single-use setup link for the configured owner with
+`node scripts/password-link.ts --email OWNER_EMAIL` in the running server.
+No external IdP or mail service is needed. Keep that link private; it grants an
+operator-authorized account and does not verify mailbox ownership. Organisation
+OIDC remains available through `LOLLY_AUTH_MODE=oidc` and its issuer/client values.
+
 Operator recipes live in [the installation guide](../../docs/install.md#10-official-neutral-package).
 The [installation directory](../../docs/official-installations.md) records what
 is published and qualified. A prepared blueprint is not an accepted marketplace

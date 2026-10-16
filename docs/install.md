@@ -834,26 +834,28 @@ on that new target. The neutral package also works on another qualified Docker
 Compose host. No existing Lolly production instance is a qualification target.
 
 Prepare a domain that points to the new host and allows TCP 80 and TCP/UDP 443.
-Keep Work, PostgreSQL and worker ports private. Register an OIDC client with
-callback `https://YOUR_DOMAIN/api/auth/callback`. Select the actual owner email;
-that account must be accepted and verified by the identity provider. The initial
+Keep Work, PostgreSQL and worker ports private. Select the actual owner email.
+The default uses built-in email/password sign-in with a host-issued setup link;
+no external identity account or mail service is required. The initial
 policy admits that address and invitations, with explicit privileged-role mapping.
 Set other admission/role rules through an operator-reviewed configuration later.
 
 From the source checkout on your workstation, install its dependencies and create
-a new private installation directory. If the OIDC client needs a secret, provide
-`LW_IDP_CLIENT_SECRET` through your workstation's secret environment before this
-command; do not put the secret in command arguments.
+a new private installation directory:
 
 ```bash
 pnpm install --frozen-lockfile
 node scripts/prepare-marketplace-instance.ts \
   --out ../my-lolly-work \
   --domain work.example.com \
-  --issuer https://identity.example.com/your-tenant \
-  --client YOUR_REGISTERED_CLIENT_ID \
   --owner owner@example.com
 ```
+
+For organisation SSO instead, register an OIDC client with callback
+`https://YOUR_DOMAIN/api/auth/callback` and add `--auth oidc --issuer HTTPS_ISSUER
+--client REGISTERED_CLIENT_ID` to that command. The owner email must be verified
+by that provider. If the client needs a secret, provide `LW_IDP_CLIENT_SECRET`
+through your workstation's secret environment; keep it out of command arguments.
 
 The directory contains `compose.yaml`, `Caddyfile`, the exact release record and a
 mode-0600 `.env` with fresh database/session/link/credential secrets. Copy it
@@ -876,8 +878,22 @@ database growth, backups and retained releases. It streams the download to disk;
 the archive is not held in container memory. Slow initial downloads can take
 several minutes. Caddy obtains HTTPS only after DNS and the challenge route work.
 
-Open `/admin`, sign in through the real provider, and confirm the expected owner
-role in **Customer setup**. Open Lolly at `/`, create and save a project, reload it,
+For built-in sign-in, issue the named owner's one-time setup link from that same
+directory:
+
+```bash
+docker compose --project-name lolly-work exec server \
+  node scripts/password-link.ts --email owner@example.com
+```
+
+Deliver the link privately to the owner, who sets their password before signing
+in. It works once, expires after seven days and sends no email. This is an
+operator-authorized account; the link does not prove mailbox ownership. Other
+members receive invitations and password links through **People**. See
+[identity](identity.md) for setup, recovery and optional SSO.
+
+Open `/admin`, sign in and confirm the expected owner role in **Customer setup**.
+Open Lolly at `/`, create and save a project, reload it,
 invite a second member and verify a checked output. Confirm an unauthenticated
 request cannot fetch the gated catalogue/private project. Restart Work and verify
 the saved content and both users again. A healthy API alone does not finish this
@@ -894,8 +910,11 @@ than expecting new environment defaults to replace operator settings.
 ### Dokploy
 
 Use the [upstream blueprint and import instructions](../deploy/dokploy/README.md).
-Before deploying, set the real domain, OIDC issuer/client and owner in the imported
-environment. Retain the generated database/session/link/credential secrets.
+Before deploying, set the real domain and owner in the imported environment.
+Built-in sign-in is the default; issue the owner's setup link in Dokploy's server
+terminal using `node scripts/password-link.ts --email OWNER_EMAIL`. For SSO, set
+`LOLLY_AUTH_MODE=oidc` and the OIDC issuer/client, plus its secret if required.
+Retain the generated database/session/link/credential secrets.
 Dokploy supplies HTTPS and proxy routing; the template exposes no host ports and
 adds no Caddy container. Perform the same owner/member, private-access, persistence,
 upgrade and restore checks as for the VM. Catalogue admission remains pending

@@ -20,7 +20,8 @@ Lolly Work is free software under MPL-2.0. Operators provide hosting, identity,
 domains and backups. Support is best-effort community support through the upstream
 repository; no service-level agreement is included. The default installation uses
 one writable collaboration owner and has no Chromium worker. Initial setup needs
-a real domain and configured OIDC client/owner. The neutral package downloads its
+a real domain and named owner; built-in password sign-in uses a private,
+host-issued setup link. Organisation OIDC is optional. The neutral package downloads its
 shell and on-demand models from `lolli.li`; see the installation directory for
 architecture, network and acceptance limits.
 
@@ -75,7 +76,8 @@ Prepared PR description:
 > Adds the upstream Lolly Work template using the official digest-pinned server,
 > checksum-pinned matched neutral shell and durable PostgreSQL. Dokploy supplies
 > HTTPS; application and database ports are not published. Operators configure
-> their domain, OIDC client and verified owner before deployment. Session/link/
+> their domain and named owner before deployment, then issue a private first-owner
+> password setup link from the server. Organisation OIDC is optional. Session/link/
 > credential keys, configuration and database persist through restarts/upgrades.
 > The software is MPL-2.0 and has no project billing or commission integration.
 > Add the exact blueprint source, Dokploy version, preview/import result, real
@@ -94,6 +96,6 @@ Prepared PR description:
 | Dokploy | Generated upstream blueprint with PR/update route | Isolated Dokploy acceptance, second-version installed upgrade, maintainer submission and catalogue review |
 
 Container rehearsal evidence must retain its limits: local-CA HTTPS, anonymous
-private-access refusal, restart/persistence and database round trip do not prove
-real customer OIDC, cross-version upgrade, a cloud image's boot or Dokploy UI
+private-access refusal, native first-owner sign-in, restart/persistence and database
+round trip do not prove real customer OIDC, cross-version upgrade, a cloud image's boot or Dokploy UI
 integration. Keep those steps pending until measured on their actual targets.

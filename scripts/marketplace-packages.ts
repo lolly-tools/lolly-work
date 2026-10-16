@@ -32,9 +32,10 @@ export function deploymentPackages() {
     server: {
       image: release.serverImage, ...safety,
       environment: {
-        NODE_ENV: 'production', LW_DISTRIBUTION_START: '1', ...pins,
-        LOLLY_DOMAIN: env('LOLLY_DOMAIN'), LOLLY_OIDC_ISSUER: env('LOLLY_OIDC_ISSUER'),
-        LOLLY_OIDC_CLIENT_ID: env('LOLLY_OIDC_CLIENT_ID'), LOLLY_OWNER_EMAIL: env('LOLLY_OWNER_EMAIL'),
+        NODE_ENV: 'production', LW_DISTRIBUTION_START: '1', LW_CONFIG: '/app/state/instance.json', ...pins,
+        LOLLY_DOMAIN: env('LOLLY_DOMAIN'), LOLLY_AUTH_MODE: '${LOLLY_AUTH_MODE:-password}',
+        LOLLY_OIDC_ISSUER: '${LOLLY_OIDC_ISSUER:-}',
+        LOLLY_OIDC_CLIENT_ID: '${LOLLY_OIDC_CLIENT_ID:-}', LOLLY_OWNER_EMAIL: env('LOLLY_OWNER_EMAIL'),
         LW_IDP_CLIENT_SECRET: '${LW_IDP_CLIENT_SECRET:-}',
         DATABASE_URL: 'postgres://lolly:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/lollywork',
         LW_SESSION_SECRET: env('LW_SESSION_SECRET'), LW_LINK_SECRET: env('LW_LINK_SECRET'), LW_CREDENTIAL_SECRET: env('LW_CREDENTIAL_SECRET'),
@@ -56,10 +57,10 @@ export function deploymentPackages() {
     volumes: { content: {}, keys: {}, state: {}, pgdata: {}, caddy_data: {}, caddy_config: {} },
   };
   const dokploy = { services, volumes: { content: {}, keys: {}, state: {}, pgdata: {} } };
-  const template = `[variables]\nmain_domain = "\${domain}"\n\n[[config.domains]]\nserviceName = "server"\nport = 8787\nhost = "\${main_domain}"\n\n[config.env]\nLOLLY_DOMAIN = "\${main_domain}"\nLOLLY_OIDC_ISSUER = ""\nLOLLY_OIDC_CLIENT_ID = ""\nLOLLY_OWNER_EMAIL = ""\nLW_IDP_CLIENT_SECRET = ""\nPOSTGRES_PASSWORD = "\${hash:64}"\nLW_SESSION_SECRET = "\${hash:64}"\nLW_LINK_SECRET = "\${hash:64}"\nLW_CREDENTIAL_SECRET = "\${hash:64}"\n`;
+  const template = `[variables]\nmain_domain = "\${domain}"\n\n[[config.domains]]\nserviceName = "server"\nport = 8787\nhost = "\${main_domain}"\n\n[config.env]\nLOLLY_DOMAIN = "\${main_domain}"\nLOLLY_AUTH_MODE = "password"\nLOLLY_OIDC_ISSUER = ""\nLOLLY_OIDC_CLIENT_ID = ""\nLOLLY_OWNER_EMAIL = ""\nLW_IDP_CLIENT_SECRET = ""\nPOSTGRES_PASSWORD = "\${hash:64}"\nLW_SESSION_SECRET = "\${hash:64}"\nLW_LINK_SECRET = "\${hash:64}"\nLW_CREDENTIAL_SECRET = "\${hash:64}"\n`;
   const meta = {
     id: 'lolly-work', name: 'Lolly Work', version: release.version,
-    description: 'Official open-source Lolly control plane with a neutral web shell, durable PostgreSQL and organisation sign-in. Configure your domain and OIDC provider before deploying.',
+    description: 'Official open-source Lolly control plane with a neutral web shell, durable PostgreSQL and built-in sign-in or OIDC. Configure your domain and named owner before deploying.',
     logo: 'lolly-work.svg',
     links: { github: 'https://github.com/lolly-tools/lolly-work', website: 'https://lolly.work', docs: 'https://github.com/lolly-tools/lolly-work/blob/main/docs/install.md#10-official-neutral-package' },
     tags: ['collaboration', 'design', 'productivity'],

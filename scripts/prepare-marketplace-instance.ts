@@ -10,6 +10,7 @@ export function prepareInstance(directory: string, settings: Record<string, stri
   const root = fileURLToPath(new URL('..', import.meta.url));
   const release = JSON.parse(readFileSync(join(root, 'deploy/marketplaces/release.json'), 'utf8'));
   const env: Record<string, string> = {
+    LOLLY_AUTH_MODE: 'password', LOLLY_OIDC_ISSUER: '', LOLLY_OIDC_CLIENT_ID: '',
     ...settings,
     LW_IDP_CLIENT_SECRET: process.env.LW_IDP_CLIENT_SECRET ?? '',
     POSTGRES_PASSWORD: randomBytes(32).toString('hex'),
@@ -25,10 +26,10 @@ export function prepareInstance(directory: string, settings: Record<string, stri
 }
 
 if (resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
-  const { values } = parseArgs({ options: { out: { type: 'string' }, domain: { type: 'string' }, issuer: { type: 'string' }, client: { type: 'string' }, owner: { type: 'string' } } });
-  if (!values.out || !values.domain || !values.issuer || !values.client || !values.owner) {
-    throw new Error('Usage: node scripts/prepare-marketplace-instance.ts --out NEW_DIRECTORY --domain work.example.com --issuer HTTPS_ISSUER --client CLIENT_ID --owner OWNER_EMAIL');
+  const { values } = parseArgs({ options: { out: { type: 'string' }, domain: { type: 'string' }, auth: { type: 'string' }, issuer: { type: 'string' }, client: { type: 'string' }, owner: { type: 'string' } } });
+  if (!values.out || !values.domain || !values.owner) {
+    throw new Error('Usage: node scripts/prepare-marketplace-instance.ts --out NEW_DIRECTORY --domain work.example.com --owner OWNER_EMAIL [--auth oidc --issuer HTTPS_ISSUER --client CLIENT_ID]');
   }
-  prepareInstance(resolve(values.out), { LOLLY_DOMAIN: values.domain, LOLLY_OIDC_ISSUER: values.issuer, LOLLY_OIDC_CLIENT_ID: values.client, LOLLY_OWNER_EMAIL: values.owner });
-  console.log('Prepared installation directory. Keep .env private and backed up; configure DNS and the OIDC callback before deployment.');
+  prepareInstance(resolve(values.out), { LOLLY_DOMAIN: values.domain, LOLLY_AUTH_MODE: values.auth ?? (values.issuer ? 'oidc' : 'password'), LOLLY_OIDC_ISSUER: values.issuer ?? '', LOLLY_OIDC_CLIENT_ID: values.client ?? '', LOLLY_OWNER_EMAIL: values.owner });
+  console.log('Prepared installation directory. Keep .env private and backed up; configure DNS, then issue the named owner link from the server after boot (or complete the selected OIDC registration).');
 }

@@ -7,12 +7,19 @@ pins the same public server image and neutral shell. There is no Caddy container
 or published application/database port: Dokploy owns HTTPS and proxy routing.
 
 Before deployment, edit the imported environment and domain to set
-`LOLLY_DOMAIN`, `LOLLY_OIDC_ISSUER`, `LOLLY_OIDC_CLIENT_ID` and
-`LOLLY_OWNER_EMAIL`; add `LW_IDP_CLIENT_SECRET` if the client requires it. The
+`LOLLY_DOMAIN` and `LOLLY_OWNER_EMAIL`. Built-in email/password sign-in is the
+default; it requires no external identity account or mail service. The
 template generates database/session/link/credential secrets. Keep those values
-on updates. The OIDC callback is `https://YOUR_DOMAIN/api/auth/callback`.
-The owner must prove that email through the configured provider. Other members
-need invitations or an operator-reviewed admission policy.
+on updates. After boot, use the server terminal to run
+`node scripts/password-link.ts --email OWNER_EMAIL`. Give the resulting single-use,
+seven-day setup link privately to the owner. It authorizes the account without
+proving mailbox ownership. Other members need invitations and password links
+from **People**, or an operator-reviewed admission policy.
+
+For SSO instead, set `LOLLY_AUTH_MODE=oidc`, `LOLLY_OIDC_ISSUER` and
+`LOLLY_OIDC_CLIENT_ID`; add `LW_IDP_CLIENT_SECRET` if required. The callback is
+`https://YOUR_DOMAIN/api/auth/callback`; the owner email must be verified by that
+provider.
 
 Import the Compose file and `template.toml` through Dokploy's template import
 flow. Confirm the generated domain uses HTTPS and WebSockets. First deployment

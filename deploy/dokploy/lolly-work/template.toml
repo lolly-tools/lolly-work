@@ -8,6 +8,7 @@ host = "${main_domain}"
 
 [config.env]
 LOLLY_DOMAIN = "${main_domain}"
+LOLLY_AUTH_MODE = "password"
 LOLLY_OIDC_ISSUER = ""
 LOLLY_OIDC_CLIENT_ID = ""
 LOLLY_OWNER_EMAIL = ""

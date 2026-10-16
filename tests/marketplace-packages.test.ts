@@ -17,7 +17,7 @@ import { mergeIndex } from '../scripts/package-helm-chart.ts';
 import { repositoryMetadata } from '../scripts/publish-helm-chart.ts';
 
 const settings = { LOLLY_DOMAIN: 'work.example.test', LOLLY_OIDC_ISSUER: 'https://idp.example.test/tenant', LOLLY_OIDC_CLIENT_ID: 'lolly-client', LOLLY_OWNER_EMAIL: 'owner@example.test' };
-const env = { ...settings, LW_SHELL_SHA256: release.shell.sha256, LW_CATALOG_GENERATION: '1',
+const env = { ...settings, LOLLY_AUTH_MODE: 'oidc', LW_SHELL_SHA256: release.shell.sha256, LW_CATALOG_GENERATION: '1',
   LW_SESSION_SECRET: 'session'.repeat(10), LW_LINK_SECRET: 'links'.repeat(10), LW_CREDENTIAL_SECRET: 'credential'.repeat(10), DATABASE_URL: 'postgres://operator:password@db/lollywork' };
 
 test('generated adapters retain exact shared runtime scripts after Compose interpolation', () => {
@@ -67,6 +67,15 @@ test('neutral production configuration admits the named owner and disables devel
   for (const value of ['https://work.example.test', 'work.example.test/path', 'work.example.test";bad']) assert.throws(() => instanceConfiguration({ ...env, LOLLY_DOMAIN: value }));
   assert.throws(() => instanceConfiguration({ ...env, LOLLY_OIDC_ISSUER: 'http://idp.example.test' }));
   assert.equal(parseConfig(JSON.stringify(instanceConfiguration({ ...env, LOLLY_OIDC_ISSUER: 'https://idp.example.test/' }))).idp.issuer, 'https://idp.example.test/');
+});
+
+test('built-in sign-in needs a host-controlled owner link and no external IdP', () => {
+  const cfg = parseConfig(JSON.stringify(instanceConfiguration({ ...env, LOLLY_AUTH_MODE: 'password', LOLLY_OIDC_ISSUER: '', LOLLY_OIDC_CLIENT_ID: '' })));
+  assert.equal(cfg.idp.issuer, '');
+  assert.equal(cfg.idp.additional[0]?.kind, 'password');
+  assert.deepEqual(cfg.idp.bootstrapOwners, ['owner@example.test']);
+  assert.equal(cfg.dev.enabled, false);
+  assert.equal(startupChecks(cfg, { session: env.LW_SESSION_SECRET, link: env.LW_LINK_SECRET }, true).find(c => c.id === 'identity')?.status, 'pass');
 });
 
 test('configuration survives operator changes and moves only managed content on upgrade', () => {

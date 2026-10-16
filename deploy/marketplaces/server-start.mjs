@@ -12,10 +12,14 @@ export function instanceConfiguration(env) {
   if (!/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{1,62}$/.test(domain)) {
     throw new Error('LOLLY_DOMAIN must be a DNS name without scheme, port or path');
   }
-  const issuerValue = required('LOLLY_OIDC_ISSUER');
-  const issuer = new URL(issuerValue);
-  if (issuer.protocol !== 'https:' || issuer.username || issuer.password || issuer.search || issuer.hash) {
-    throw new Error('LOLLY_OIDC_ISSUER must be an HTTPS issuer without credentials, query or fragment');
+  const mode = env.LOLLY_AUTH_MODE || 'password';
+  if (!['password', 'oidc'].includes(mode)) throw new Error('LOLLY_AUTH_MODE must be password or oidc');
+  const issuerValue = mode === 'oidc' ? required('LOLLY_OIDC_ISSUER') : '';
+  if (mode === 'oidc') {
+    const issuer = new URL(issuerValue);
+    if (issuer.protocol !== 'https:' || issuer.username || issuer.password || issuer.search || issuer.hash) {
+      throw new Error('LOLLY_OIDC_ISSUER must be an HTTPS issuer without credentials, query or fragment');
+    }
   }
   const owner = required('LOLLY_OWNER_EMAIL').toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(owner)) throw new Error('Set a valid LOLLY_OWNER_EMAIL');
@@ -35,7 +39,8 @@ export function instanceConfiguration(env) {
       catalogPublicationGeneration: generation,
     },
     idp: {
-      issuer: issuerValue, clientId: required('LOLLY_OIDC_CLIENT_ID'),
+      issuer: issuerValue, clientId: mode === 'oidc' ? required('LOLLY_OIDC_CLIENT_ID') : '',
+      additional: mode === 'password' ? [{ id: 'email', kind: 'password', label: 'Email and password' }] : [],
       admission: { emails: [owner], invitations: true }, bootstrapOwners: [owner],
       roleGroups: { owner: ['lolly-owner'], admin: [], approver: [], author: [] },
     },
