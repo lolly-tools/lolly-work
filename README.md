@@ -19,6 +19,10 @@ The source minimum remains Node 24.
 
 ## Getting started
 
+The [official installation directory](docs/official-installations.md) lists upstream
+images, Helm/Rancher, European cloud foundations, YunoHost and the neutral
+VM/Dokploy packages, with their publication and qualification status.
+
 A running web UI + CLI, dead easy. The one install guide is
 **[`docs/install.md`](docs/install.md)** (served in the console too, at `/admin#/docs`):
 

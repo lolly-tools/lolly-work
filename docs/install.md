@@ -187,10 +187,10 @@ server warns about that at boot. A `501 HOOKED_TOOL_NEEDS_CHROMIUM` on the rende
 
 ### The first owner
 
-**Role is derived from groups, never assigned.** A user is an owner if and only if their
-effective groups contain the literal string `owner` (`server/src/rbac/evaluate.ts`). There
-is no bootstrap owner, no first-user-wins and no break-glass environment variable. Without
-one, three actions are unreachable by anybody: `instance.config`,
+**Role is derived from groups**, using the defaults or explicit `idp.roleGroups`
+mapping. A configured `idp.bootstrapOwners` email gains the owner group after
+provider identity verification; it still needs to pass admission. Without an
+owner, three actions are unreachable by anybody: `instance.config`,
 `catalog.provider.credential` and `catalog.provider.publish` - which is everything needed
 to connect a real DAM.
 
@@ -199,6 +199,7 @@ to connect a real DAM.
 | Local (section 2) | `instance.example.json` ships `owner@example.test` in group `owner`. Sign in as that persona |
 | Kubernetes eval (section 7a) | `deploy/helm/values-eval.yaml` ships `owner@eval.example` in group `owner`. Different addresses from section 2; the section 2 ones `403` there |
 | SSO (section 4) | Create a group named exactly `owner` in your IdP, put the deploy operator in it, and make sure it arrives in the claim named by `idp.groupsClaim` (default `groups`) |
+| Named OIDC bootstrap | Set `idp.bootstrapOwners` to the intended verified email and include it in admission; use an explicit owner role-group mapping |
 | SSO where you cannot add that group | Any admin can mint one: `POST /api/v1/groups {"name":"owner"}` then `PUT /api/v1/users/<id>/local-groups {"groups":["owner"]}`. Both are `grant.edit`, which admin holds, and both are audited |
 | GitOps / air-gap | A `LW_SEED_CONFIG` document is trusted and may grant owner-only actions to a group before any human signs in (section 8, [governance](governance.md)) |
 
@@ -523,14 +524,14 @@ requirements. See [hosting choices](deployment.md#hosting-and-operating-system-c
 and the [SUSE deployment runbook](../deploy/suse/README.md).
 
 **The image comes first.** Multi-arch images (amd64 + arm64) publish to
-`ghcr.io/lolly-tools/lolly-work-server` and `...-render-worker` on every `v*` release, but
-those packages are **private today**, so a stock `helm install` gets `ImagePullBackOff`.
-Either add an `imagePullSecret` for GHCR, or build and push your own - which is the better
-air-gap posture anyway, and is the assumption in the commands below:
+`ghcr.io/lolly-tools/lolly-work-server` and `...-render-worker` on reviewed `v*`
+releases. The 1.1.1 packages are public and need no registry credentials. Pin their
+qualified digests for production. The commands below also support an operator-owned
+registry or disconnected mirror; build a custom image only when needed:
 
 ```bash
-docker build -f deploy/compose/Dockerfile -t <registry>/lolly-work-server:0.2.0 .
-docker push <registry>/lolly-work-server:0.2.0
+docker build -f deploy/compose/Dockerfile -t <registry>/lolly-work-server:1.1.1 .
+docker push <registry>/lolly-work-server:1.1.1
 ```
 
 Enabling the chart's optional `renderWorker` tier needs a second image, built the same
@@ -542,7 +543,7 @@ way from `workers/render/Dockerfile`.
 
 ```bash
 helm install lolly-work deploy/helm -f deploy/helm/values-eval.yaml \
-  --set image.repository=<registry>/lolly-work-server --set image.tag=0.2.0
+  --set image.repository=ghcr.io/lolly-tools/lolly-work-server --set image.tag=1.1.1
 ```
 
 The release is named `lolly-work` on purpose: Helm prefixes every object with the release
@@ -677,6 +678,28 @@ backup coverage. Later image-only releases use the
 [guarded application update workflow](https://github.com/lolly-tools/lolly-work/blob/main/deploy/helm/APP-UPDATES.md);
 database migrations and infrastructure/content changes remain separate operations.
 
+### 7c. Published chart repository and Rancher
+
+After the first successful chart publication, confirm the public `index.yaml` at
+the URL in [official installations](official-installations.md). Add that HTTP
+repository and select an exact chart version:
+
+```bash
+helm repo add lolly-work https://github.com/lolly-tools/lolly-work/releases/download/helm-index
+helm repo update lolly-work
+helm show chart lolly-work/lolly-work --version 0.3.2
+```
+
+In the production recipe above, replace the local `deploy/helm` chart argument
+with `lolly-work/lolly-work --version 0.3.2`; keep your reviewed values, configuration
+and stable Secret references. Verify the chart's Sigstore bundle and source record
+as described in the installation directory before applying it.
+
+In Rancher, add the same HTTP URL under **Apps > Repositories**. Choose Lolly Work
+and the reviewed version. The form collects connection settings; review the full
+YAML for TLS, PostgreSQL, identity admission/owner mapping and shell/pack mounts.
+Adding our repository does not add Lolly to a built-in Rancher catalogue.
+
 ## 8. The CLI
 
 Every governance action the console does is scriptable. From a checkout:
@@ -792,6 +815,126 @@ Microsoft 365. Start at
 Console equivalent of all of the above: **This Deploy → Providers**. Exposure governance
 (which groups see a source, approved-only, reference vs downloadable) is a separate
 decision on the same record: [catalog](catalog.md).
+
+## 10. Official neutral package
+
+The [official installation directory](official-installations.md) identifies the
+upstream sources, publication status and qualified architectures. This package
+combines the published Work server, matched neutral web shell, durable PostgreSQL
+and same-origin HTTPS. It is intended for a fresh VM or private server; it includes
+no private brand pack or production-instance configuration.
+
+### Prepare a fresh VM or UpCloud reference
+
+For UpCloud, use the [infrastructure module](../deploy/upcloud/README.md) with your
+reviewed image, region, administrator keys/CIDRs and measured network settings.
+Validate the plan before applying through your own infrastructure process. Follow
+the [openSUSE host preparation](../deploy/vm/README.md) for Docker and host security
+on that new target. The neutral package also works on another qualified Docker
+Compose host. No existing Lolly production instance is a qualification target.
+
+Prepare a domain that points to the new host and allows TCP 80 and TCP/UDP 443.
+Keep Work, PostgreSQL and worker ports private. Register an OIDC client with
+callback `https://YOUR_DOMAIN/api/auth/callback`. Select the actual owner email;
+that account must be accepted and verified by the identity provider. The initial
+policy admits that address and invitations, with explicit privileged-role mapping.
+Set other admission/role rules through an operator-reviewed configuration later.
+
+From the source checkout on your workstation, install its dependencies and create
+a new private installation directory. If the OIDC client needs a secret, provide
+`LW_IDP_CLIENT_SECRET` through your workstation's secret environment before this
+command; do not put the secret in command arguments.
+
+```bash
+pnpm install --frozen-lockfile
+node scripts/prepare-marketplace-instance.ts \
+  --out ../my-lolly-work \
+  --domain work.example.com \
+  --issuer https://identity.example.com/your-tenant \
+  --client YOUR_REGISTERED_CLIENT_ID \
+  --owner owner@example.com
+```
+
+The directory contains `compose.yaml`, `Caddyfile`, the exact release record and a
+mode-0600 `.env` with fresh database/session/link/credential secrets. Copy it
+securely to a dedicated private directory on the new host, preserving `.env`
+permissions. Keep its name and Compose project name stable. Never regenerate
+`.env` over an installed instance.
+
+On that host, from the prepared directory:
+
+```bash
+docker compose --project-name lolly-work up -d
+docker compose --project-name lolly-work ps
+curl --fail https://work.example.com/healthz
+```
+
+Initialisation downloads a 724 MB archive, verifies its full checksum, extracts the
+matched shell/neutral pack to disk and creates a persistent catalogue-signing key.
+Allow at least 6 GB free for extraction, copied content and container layers, plus
+database growth, backups and retained releases. It streams the download to disk;
+the archive is not held in container memory. Slow initial downloads can take
+several minutes. Caddy obtains HTTPS only after DNS and the challenge route work.
+
+Open `/admin`, sign in through the real provider, and confirm the expected owner
+role in **Customer setup**. Open Lolly at `/`, create and save a project, reload it,
+invite a second member and verify a checked output. Confirm an unauthenticated
+request cannot fetch the gated catalogue/private project. Restart Work and verify
+the saved content and both users again. A healthy API alone does not finish this
+acceptance. Record architecture, source/digests, host/network facts and the results.
+
+The default has no Chromium worker and makes no server-rendering promise for
+hooked tools. Telemetry, guest links and nearby discovery are off. Models load
+from `lolli.li` when needed, so this initial package is not a disconnected bundle.
+Configuration is stored in the private `state` volume after first boot; console
+changes survive restarts. The domain/identity environment values seed that first
+configuration. For an existing instance, change its stored configuration rather
+than expecting new environment defaults to replace operator settings.
+
+### Dokploy
+
+Use the [upstream blueprint and import instructions](../deploy/dokploy/README.md).
+Before deploying, set the real domain, OIDC issuer/client and owner in the imported
+environment. Retain the generated database/session/link/credential secrets.
+Dokploy supplies HTTPS and proxy routing; the template exposes no host ports and
+adds no Caddy container. Perform the same owner/member, private-access, persistence,
+upgrade and restore checks as for the VM. Catalogue admission remains pending
+until a tested submission is accepted.
+
+### Backup, restore and update
+
+Keep an encrypted independent copy of `.env`, configuration and the catalogue key volume and the
+release record, plus verified PostgreSQL backups. From this package's directory,
+the following creates new private backup files; choose unused filenames:
+
+```bash
+umask 077
+set -o noclobber
+docker compose --project-name lolly-work exec -T db \
+  pg_dump -U lolly -d lollywork --format=custom --no-owner --no-privileges > work-backup.dump
+docker compose --project-name lolly-work run --rm --no-deps --user 1000:1000 content \
+  tar -czf - -C / keys state > work-state.tar.gz
+sha256sum work-backup.dump work-state.tar.gz > work-backup.sha256
+sha256sum work-backup.dump | cut -d ' ' -f1 > work-backup.dump.sha256
+```
+
+Copy those files, both checksum files and `.env` to independent protected storage. Check the hashes and
+restore the dump into a newly created empty database on an isolated recovery
+target with PostgreSQL 17 client tools. The maintained
+[`postgres-backup.sh`](../deploy/vm/postgres-backup.sh) refuses existing objects and
+requires an exact database confirmation. Verify application records, signing-key
+continuity and owner/member access on the restored target before treating the
+backup as accepted. Archive readability alone does not prove recovery.
+
+For an upgrade, compare the new generated Compose/release files with the installed
+ones. Keep the existing `.env`, Compose project name, `pgdata`, `state` and `keys` volumes;
+retain previous content. After backup and the independent restore pass, replace
+only the reviewed package files, pull pinned images and run `up -d` with the same
+project name. Compose reruns changed content initialisation before starting the
+new server. Verify migrations, owner/member sign-in, saved projects, private-access
+denial and output. Keep the prior release's image/content/configuration references.
+PostgreSQL major changes need a separate migration. Never use `down --volumes` on
+an installed instance or rely on an image downgrade to reverse database changes.
 
 ## Checks
 

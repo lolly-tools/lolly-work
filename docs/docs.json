@@ -34,6 +34,11 @@
           "summary": "Nothing → a running, configured, governed instance: local demo, first config, sign-in, Postgres, secrets, Compose, systemd, Helm."
         },
         {
+          "slug": "official-installations",
+          "title": "Official installation routes",
+          "summary": "Project-owned images, Helm/Rancher, European clouds, YunoHost and neutral VM/Dokploy packages, with publication and qualification status."
+        },
+        {
           "slug": "enterprise-identity",
           "title": "Enterprise identity deployment",
           "summary": "Managed SSO registration, admission, optional MFA, SCIM offboarding, logout, upgrades and credential rotation."

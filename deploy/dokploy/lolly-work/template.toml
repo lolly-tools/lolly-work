@@ -1,0 +1,18 @@
+[variables]
+main_domain = "${domain}"
+
+[[config.domains]]
+serviceName = "server"
+port = 8787
+host = "${main_domain}"
+
+[config.env]
+LOLLY_DOMAIN = "${main_domain}"
+LOLLY_OIDC_ISSUER = ""
+LOLLY_OIDC_CLIENT_ID = ""
+LOLLY_OWNER_EMAIL = ""
+LW_IDP_CLIENT_SECRET = ""
+POSTGRES_PASSWORD = "${hash:64}"
+LW_SESSION_SECRET = "${hash:64}"
+LW_LINK_SECRET = "${hash:64}"
+LW_CREDENTIAL_SECRET = "${hash:64}"

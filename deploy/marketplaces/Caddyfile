@@ -1,0 +1,3 @@
+{$LOLLY_DOMAIN} {
+  reverse_proxy server:8787
+}

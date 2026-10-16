@@ -22,6 +22,7 @@ any Lolly deployment. The console links there when this deploy serves or points 
 | [release 1.1.0](release-1-1-0.md) | Shared product versions, exact engine source, qualification, migration and rollback |
 | [overview](overview.md) | The control plane in one page: what it serves, the two-repo shape, the trust model |
 | [install](install.md) | The whole first deploy: local demo, first config, sign-in and the first owner, Postgres, secrets, Compose / systemd / Helm |
+| [official installations](official-installations.md) | Upstream packages, signatures, online distribution and platform qualification status |
 | [customer setup](customer-setup.md) | Six steps from deployment settings and real owner sign-in to a checked, downloadable sample |
 | [deployment](deployment.md) | Helm/Rancher, Compose, Vercel, air-gap - what each path carries |
 | [UpCloud and Evroc](cloud-deployment.md) | OpenTofu/Terraform, database restore and reducing separate hosting services |
