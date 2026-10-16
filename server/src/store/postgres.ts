@@ -262,7 +262,7 @@ interface PgClient {
   /** `rowCount` is how a conditional UPDATE reports whether it matched - the CAS
    *  in `casSession` has no other way to tell "wrote" from "the row moved". */
   query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[]; rowCount: number | null }>;
-  release(): void;
+  release(destroy?: boolean): void;
 }
 
 const AUDIT_LOCK_KEY = 0x1011_0001;
@@ -1909,6 +1909,21 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
       await pool.query('delete from catalog_credentials where asset_id = $1', [assetId]);
     },
 
+    async claimCatalogSubmission(key) {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        const { rows } = await client.query('select pg_try_advisory_xact_lock(hashtextextended($1, 0)) as acquired', [`catalog-submit:${key}`]);
+        if (!rows[0]?.acquired) { await client.query('rollback'); client.release(); return null; }
+      } catch (error) { client.release(true); throw error; }
+      let released = false;
+      return async () => {
+        if (released) return;
+        released = true;
+        try { await client.query('rollback'); }
+        finally { client.release(true); }
+      };
+    },
     async putInstanceAsset(rec) {
       await pool.query(
         `insert into instance_assets (id, record) values ($1, $2::jsonb)

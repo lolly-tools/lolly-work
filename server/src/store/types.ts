@@ -1424,6 +1424,8 @@ export interface Store extends OidcLogoutStore, RenderStore, PasskeyStore, Subje
   deleteCredential(assetId: string): Promise<void>;
 
   // instance assets + catalog aliases (plans/26 §4, plans/27 §5)
+  /** Serialize one project-file admission across processes. Release in finally. */
+  claimCatalogSubmission(key: string): Promise<(() => Promise<void>) | null>;
   putInstanceAsset(rec: InstanceAssetRecord): Promise<void>;
   getInstanceAsset(id: string): Promise<InstanceAssetRecord | null>;
   listInstanceAssets(): Promise<InstanceAssetRecord[]>;

@@ -147,12 +147,30 @@ The [design-system administration contract](design-system-administration.md#revi
 | Route | Action | Notes |
 |---|---|---|
 | `POST /api/v1/catalog/submit?name=…` | `catalog.submit` | raw bytes in the body; `201` for a new asset, `200` with `duplicate: true` for identical bytes |
+| `POST /api/v1/catalog/submit?name=…&projectId=…&fileId=…&checksum=…` | `catalog.submit` and current project read access | empty body; admits the verified ready project original through the same scan, quota and review pipeline; project files must be enabled on a durable store; service tokens are refused |
 | `POST /api/v1/catalog/submit?type=template\|user-tool` | `catalog.submit` | a template or user tool as JSON; `toolId=` names the tool when the body does not; `422 INVALID_SUBMISSION` when the JSON or its tool is not one this pack can serve; `clientRef=` is echoed on the submission |
 | `POST /api/v1/catalog/submit?assetId=inst/…&note=…` | `catalog.edit` | the same pipeline, landing as the next VERSION of an existing asset; `groups`/`type`/`tags`/`description` are refused here and belong to `…/meta` |
 | `GET /api/v1/catalog/submissions` | `catalog.read` | the caller's own submissions plus the ones open on a step their groups may act on |
 | `GET /api/v1/catalog/submissions/:id/bytes` | `catalog.read` | preview before publication - submitter and reviewer only |
 | `PATCH /api/v1/catalog/submissions/:id` | `catalog.read` | correct a pending submission's `name`/`type`/`tags`/`description` and its org `fields`, and (with `catalog.collection.manage`) the `collectionId` it joins on approval; `409` once it has settled |
 | `POST /api/v1/catalog/submissions/:id/act` | member (the approvals engine gates it) | `approve` publishes, `reject` returns with the comment |
+
+Project-source intake requires the observed whole-file SHA-256. Work verifies every
+stored part and the complete file, then checks source access again after scanning.
+The source file stays unchanged. `groups=` selects library exposure independently
+of project membership; omitted groups mean every workspace member. Only groups the
+submitter belongs to are accepted. `type`, `toolId` and `assetId` cannot be combined
+with a project source. Source identifiers are retained privately in the submission
+and audit event, never in the public catalog entry.
+
+Retries for the same person, project file, checksum and audience return the existing
+live or pending submission. Concurrent admissions of the same source are serialized
+by a transaction advisory lock in Postgres; contention returns `409 SUBMISSION_BUSY`.
+A pending record left without an approval by an interrupted admission returns
+`503 SUBMISSION_INCOMPLETE` for administrator inspection instead of creating another
+asset or claiming review has started. A changed or inaccessible source returns
+`404 NOT_FOUND`; verification failures return `422 SOURCE_UNAVAILABLE`; access lost
+during scanning returns `403 SOURCE_CHANGED`.
 
 Refusals: `413 PAYLOAD_TOO_LARGE` over `policy.submit.maxBytes`, `409 QUOTA_EXCEEDED`,
 `422 SCAN_REJECTED` when the pre-store hook vetoes, `502 SCAN_UNAVAILABLE` when it cannot

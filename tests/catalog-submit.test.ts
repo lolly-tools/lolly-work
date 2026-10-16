@@ -23,6 +23,7 @@ import { parseConfig } from '../server/src/config/instance.ts';
 import { createMemoryStore } from '../server/src/store/memory.ts';
 import { createMemoryBlobStore } from '../server/src/blobs/memory.ts';
 import { buildApp } from '../server/src/api/app.ts';
+import { fileChecksum } from '../server/src/projects/files.ts';
 import { sniffBytes, quotaScopes, findByChecksum } from '../server/src/catalog/submit.ts';
 import { buildSigner } from '../server/src/render/c2pa-signer.ts';
 import type { AssetIndex } from '../server/src/catalog/lifecycle.ts';
@@ -39,9 +40,10 @@ const SVG = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="48" heig
 interface Booted {
   base: string;
   store: ReturnType<typeof createMemoryStore>;
+  blobs: ReturnType<typeof createMemoryBlobStore>;
 }
 
-async function boot(overrides: Record<string, unknown> = {}): Promise<Booted> {
+async function boot(overrides: Record<string, unknown> = {}, projectFiles = false): Promise<Booted> {
   const pack = await mkdtemp(join(tmpdir(), 'lw-submit-'));
   await mkdir(join(pack, 'catalog', 'assets'), { recursive: true });
   await writeFile(join(pack, 'catalog', 'assets', 'index.json'), JSON.stringify({ version: 1, assets: [] }));
@@ -58,15 +60,105 @@ async function boot(overrides: Record<string, unknown> = {}): Promise<Booted> {
     ...overrides,
   }));
   const store = createMemoryStore();
-  const app = buildApp({ config, store, blobs: createMemoryBlobStore(), secrets: { session: 'sS', link: 'lS' } });
+  if (projectFiles) Object.assign(store, { storageKind: 'postgres' });
+  const blobs = createMemoryBlobStore();
+  const app = buildApp({ config, store, blobs, secrets: { session: 'sS', link: 'lS' } });
   const server = createServer((req, res) => void app(req, res));
   servers.push(server);
   await new Promise<void>((r) => server.listen(0, () => r()));
   const addr = server.address();
-  return { base: `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`, store };
+  return { base: `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`, store, blobs };
 }
 
 after(() => { for (const s of servers) s.close(); });
+
+/** Exercise project admission on the real HTTP routes with a durable-labelled fixture. */
+async function projectSubmissionFixture(overrides: Record<string, unknown> = {}) {
+  const b = await boot(overrides, true), cookie = await login(b.base, 'author@test');
+  const headers = { cookie, 'content-type': 'application/json' };
+  const made = await fetch(`${b.base}/api/v1/projects`, { method: 'POST', headers, body: JSON.stringify({ name: 'Private campaign', visibility: 'private' }) });
+  assert.equal(made.status, 201, await made.clone().text());
+  const project = await made.json() as { id: string };
+  const checksum = fileChecksum(PNG);
+  const reserved = await fetch(`${b.base}/api/v1/projects/${project.id}/files`, { method: 'POST', headers, body: JSON.stringify({ name: 'Original.png', size: PNG.length, checksum, contentType: 'image/png', parts: [{ size: PNG.length, checksum }], asset: { type: 'raster', format: 'png' } }) });
+  assert.equal(reserved.status, 201, await reserved.clone().text());
+  const { file } = await reserved.json() as { file: { id: string } };
+  const path = `${b.base}/api/v1/projects/${project.id}/files/${file.id}`;
+  assert.equal((await fetch(`${path}/parts/0`, { method: 'PUT', headers: { cookie }, body: new Uint8Array(PNG) })).status, 204);
+  assert.equal((await fetch(`${path}/finalize`, { method: 'POST', headers, body: '{}' })).status, 200);
+  const params = { projectId: project.id, fileId: file.id, checksum, clientRef: `project:${file.id}`, groups: 'design' };
+  const send = (extra: Record<string, string> = {}, as = cookie, body = Buffer.alloc(0)) => submit(b.base, as, body, { ...params, ...extra });
+  return { ...b, cookie, project, file, params, send };
+}
+
+test('shared file admission copies verified original bytes, records private origin and retains the source', async () => {
+  const b = await projectSubmissionFixture();
+  const response = await b.send(); assert.equal(response.status, 201, await response.clone().text());
+  const answer = await response.json() as { assetId: string; checksum: string; state: string };
+  assert.equal(answer.checksum, fileChecksum(PNG)); assert.equal(answer.state, 'live');
+  const record = (await b.store.getInstanceAsset(answer.assetId))!;
+  assert.deepEqual(record.submission?.projectSource, { projectId: b.project.id, fileId: b.file.id, checksum: fileChecksum(PNG) });
+  assert.deepEqual(record.groups, ['design']);
+  assert.ok((await b.store.getProjectFile(b.file.id))?.ready);
+  const downloaded = await fetch(`${b.base}/catalog/${answer.assetId}/png`, { headers: { cookie: b.cookie } });
+  assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()), PNG);
+  const feed = await (await fetch(`${b.base}/catalog/assets/index.json`, { headers: { cookie: b.cookie } })).text();
+  assert.equal(feed.includes(b.project.id), false, 'private project identity never enters the public entry');
+  assert.equal((await b.send()).status, 200);
+  assert.equal((await b.store.listInstanceAssets()).length, 1);
+});
+
+test('shared admission requires source access, current checksum, an empty body and an allowed audience', async () => {
+  const b = await projectSubmissionFixture(), outsider = await login(b.base, 'author2@test');
+  assert.equal((await b.send({}, outsider)).status, 404);
+  assert.equal((await b.send({ checksum: '0'.repeat(64) })).status, 404);
+  assert.equal((await b.send({ groups: 'brand' })).status, 403);
+  assert.equal((await b.send({}, b.cookie, Buffer.from('x'))).status, 400);
+  assert.equal((await b.send({ type: 'template' })).status, 400);
+  assert.equal((await b.send({ projectId: 'another-project' })).status, 404);
+  assert.equal((await b.store.listInstanceAssets()).length, 0);
+});
+
+test('a pending shared admission is returned on retry, and simultaneous attempts cannot mint two records', async () => {
+  const b = await projectSubmissionFixture({ policy: { submit: { chain: 'brand-review' } } });
+  await b.store.putChain(CHAIN);
+  const results = await Promise.all([b.send(), b.send()]);
+  assert.ok(results.some(response => response.status === 201));
+  assert.ok(results.every(response => [200, 201, 409].includes(response.status)));
+  const replay = await b.send(); assert.equal(replay.status, 200);
+  const result = await replay.json() as { state: string; duplicate: boolean };
+  assert.equal(result.state, 'submitted'); assert.equal(result.duplicate, true);
+  assert.equal((await b.store.listInstanceAssets()).length, 1);
+  assert.equal((await b.store.listApprovals()).length, 1);
+  const record = (await b.store.listInstanceAssets())[0]!;
+  await b.store.putInstanceAsset({ ...record, submission: { ...record.submission!, approvalId: undefined } });
+  assert.equal((await b.send()).status, 503, 'an interrupted admission cannot claim that review has started');
+  assert.equal((await b.store.listInstanceAssets()).length, 1);
+});
+
+test('corrupt shared bytes and scanner rejection never enter the library', async () => {
+  const b = await projectSubmissionFixture();
+  await b.blobs.put(`project-file/${b.file.id}/0`, Buffer.from('corrupt'), 'image/png');
+  assert.equal((await b.send()).status, 422);
+  assert.equal((await b.store.listInstanceAssets()).length, 0);
+  const veto = await projectSubmissionFixture({ submit: { scanHook: { kind: 'exec', target: '/bin/sh', args: ['-c', 'cat > /dev/null; exit 1'], timeoutMs: 5000, onError: 'reject' } } });
+  assert.equal((await veto.send()).status, 422);
+  assert.equal((await veto.store.listInstanceAssets()).length, 0);
+  assert.ok((await veto.store.getProjectFile(veto.file.id))?.ready);
+});
+
+test('project access lost while scanning refuses admission before quota or storage', async () => {
+  let revoke = async () => {};
+  const scanner = createServer((_req, res) => { void revoke().then(() => { res.writeHead(200); res.end('clean'); }); });
+  servers.push(scanner); await new Promise<void>(resolve => scanner.listen(0, '127.0.0.1', resolve));
+  const port = (scanner.address() as { port: number }).port;
+  const b = await projectSubmissionFixture({ submit: { scanHook: { kind: 'http', target: `http://127.0.0.1:${port}/scan`, timeoutMs: 5000, onError: 'reject' } } });
+  const outsider = (await b.store.findUsersByEmail('author2@test'))[0] ?? (await login(b.base, 'author2@test'), (await b.store.findUsersByEmail('author2@test'))[0])!;
+  revoke = async () => { const project = (await b.store.getProject(b.project.id))!; await b.store.putProject({ ...project, ownerId: outsider.id }); };
+  const response = await b.send(); assert.equal(response.status, 403, await response.clone().text());
+  assert.equal((await b.store.listInstanceAssets()).length, 0);
+  assert.equal((await b.store.getSubmitQuota('design'))?.count ?? 0, 0);
+});
 
 async function login(base: string, email: string): Promise<string> {
   const res = await fetch(`${base}/api/auth/dev?email=${encodeURIComponent(email)}`, { redirect: 'manual' });

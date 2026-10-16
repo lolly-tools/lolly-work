@@ -43,6 +43,8 @@ export interface InstanceAssetOrigin {
 export type SubmissionState = 'submitted' | 'live' | 'returned';
 
 export interface AssetSubmission {
+  /** Server-verified private origin, never part of the public catalog entry. */
+  projectSource?: import('./project-source.ts').ProjectSubmissionSource;
   state: SubmissionState;
   /** 'user:<id>' who submitted it. */
   by: string;
