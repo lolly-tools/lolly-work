@@ -1255,6 +1255,8 @@ export interface Store extends OidcLogoutStore, RenderStore, PasskeyStore, Subje
   // Organization delivery history. Reads and idempotency lookup are scoped to
   // the requesting principal; destination credentials never enter this store.
   putDelivery(delivery: DeliveryRecord): Promise<void>;
+  /** Atomically own one queued, failed or newly approved attempt across replicas. */
+  claimDelivery(delivery: DeliveryRecord): Promise<DeliveryRecord | null>;
   getDelivery(id: string, principal: string): Promise<DeliveryRecord | null>;
   listDeliveries(principal: string): Promise<DeliveryRecord[]>;
   findDeliveryByIdempotency(principal: string, key: string): Promise<DeliveryRecord | null>;

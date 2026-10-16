@@ -130,7 +130,7 @@ import {
   applyVersionToRecord, backfillVersionOne, headVersionOf, orphanBlobIds, parseReplacedBy,
   versionsToTrim, versionView, type AssetVersionRecord,
 } from '../catalog/versions.ts';
-import { listSubmissions, settleSubmission, submitAsset } from '../catalog/submit.ts';
+import { listSubmissions, settleSubmission, submitAsset, runScanHook, sniffBytes } from '../catalog/submit.ts';
 import { isDataSubmissionType } from '../catalog/submit-data.ts';
 import {
   applyDescriptivePatch, applyFieldPatch, composeAssetMeta, descriptiveTouched, extractedHaystack,
@@ -157,6 +157,7 @@ import { createMemoryBlobStore } from '../blobs/memory.ts';
 import type { BlobStore } from '../blobs/types.ts';
 import { createDeliveryProvider } from '../delivery/registry.ts';
 import { deliveryContentType, destinationAvailableTo, destinationDescriptor, destinationVersion } from '../delivery/destinations.ts';
+import { assertProjectDeliveryAccess } from '../delivery/project-file.ts';
 import type { ConfigDeliveryDestination, DeliveryRecord } from '../delivery/types.ts';
 import { EXT_PREFIX, extAssetId, PROVIDER_KINDS, type CatalogProvider, type ProviderAssetRef, type ProviderKind, type ProviderRecord } from '../catalog/providers/types.ts';
 import { createProvider } from '../catalog/providers/registry.ts';
@@ -2849,14 +2850,8 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
   });
 
   const runDelivery = async (delivery: DeliveryRecord, supplied?: Uint8Array): Promise<DeliveryRecord> => {
-    const started: DeliveryRecord = {
-      ...delivery,
-      state: 'delivering',
-      attempt: delivery.attempt + 1,
-      updatedAt: new Date().toISOString(),
-    };
-    delete started.error;
-    await store.putDelivery(started);
+    let started = await store.claimDelivery(delivery);
+    if (!started) return (await store.getDelivery(delivery.id, delivery.principal)) ?? delivery;
     try {
       const destination = deliveryDestinations.get(delivery.destinationId);
       if (!destination || destination.enabled !== true) throw new Error('delivery destination is disabled or gone');
@@ -2872,9 +2867,26 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       if (bytes.byteLength !== delivery.size || sha256Hex(bytes) !== delivery.sha256) {
         throw new Error('delivery source bytes no longer match the immutable digest');
       }
+      const authorize = () => assertProjectDeliveryAccess(delivery, destination, { config, store, access: projectAccessOf });
+      await authorize();
+      if (delivery.projectSource && config.submit.scanHook) {
+        const verdict = await runScanHook(config.submit.scanHook, Buffer.from(bytes), {
+          checksum: delivery.sha256, filename: delivery.name, contentType: delivery.contentType,
+        }, fetchImpl);
+        if (verdict.verdict === 'reject' || (verdict.verdict === 'error' && config.submit.scanHook.onError !== 'allow')) {
+          throw new Error('Project file was refused by the configured scan policy; nothing was sent');
+        }
+      }
+      await authorize();
       const provider = createDeliveryProvider(destination, deliverySecrets.get(destination.id), fetchImpl);
       const receipt = await provider.deliver({
         deliveryId: delivery.id,
+        progress: started.providerProgress,
+        checkpoint: async (progress) => {
+          started = { ...started!, providerProgress: progress, updatedAt: new Date().toISOString() };
+          await store.putDelivery(started);
+        },
+        authorize,
         bytes,
         name: delivery.name,
         format: delivery.format,
@@ -2934,7 +2946,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (delivery.state !== 'awaiting-approval') return true;
     let settled: DeliveryRecord;
     if (approval.state === 'approved') {
-      settled = await runDelivery({ ...delivery, state: 'queued', updatedAt: new Date().toISOString() });
+      settled = await runDelivery(delivery);
     } else {
       const state = approval.state === 'withdrawn' ? 'cancelled' : 'rejected';
       settled = {
@@ -2956,7 +2968,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
         ? `Delivered: ${delivery.name}`
         : `Delivery ${settled.state}: ${delivery.name}`,
       body: settled.state === 'delivered'
-        ? 'Your approved export was delivered to its organization destination.'
+        ? 'Your approved file was delivered to its organization destination.'
         : (settled.error ?? `The delivery is ${settled.state}.`),
       cta: { label: 'View', url: '/admin#/approvals' },
       data: { deliveryId: delivery.id, approvalId: approval.id, state: settled.state },
@@ -3007,30 +3019,45 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
     if (approvalChain && user.id.startsWith('svc_')) {
       return sendError(res, 403, 'HUMAN_APPROVAL_REQUIRED', 'this destination requires a member to request human approval');
     }
-    const name = (ctx.url.searchParams.get('name') ?? '').trim();
-    const format = (ctx.url.searchParams.get('format') ?? '').trim().toLowerCase();
-    if (!name || name.length > 200 || !/^[a-z0-9][a-z0-9-]*$/i.test(format)) {
-      return sendError(res, 400, 'INVALID_INPUT', 'name (1-200 characters) and format are required');
-    }
-    if (!destination.formats.includes(format)) {
-      return sendError(res, 415, 'FORMAT_NOT_ALLOWED', `${format} is not allowed for this destination`);
-    }
     const maxBytes = Math.min(config.delivery.maxBytes, destination.maxBytes ?? config.delivery.maxBytes);
-    let bytes: Buffer;
-    try {
-      bytes = await readRaw(req, maxBytes);
-    } catch {
-      return sendError(res, 413, 'PAYLOAD_TOO_LARGE', `delivery exceeds the ${maxBytes} byte cap`);
+    const query = ctx.url.searchParams;
+    const selectingProject = ['projectId', 'fileId', 'checksum'].some(key => query.has(key));
+    let projectInput: Awaited<ReturnType<typeof projectSubmissionInput>> = null;
+    let bytes: Buffer, name: string, format: string, mime: string;
+    if (selectingProject) {
+      if (!destination.projectFiles) return sendError(res, 415, 'SUBJECT_NOT_ALLOWED', 'this destination accepts signed exports only');
+      if (query.has('name') || query.has('format')) return sendError(res, 400, 'INVALID_INPUT', 'project delivery uses the stored original name and format');
+      try {
+        if ((await readRaw(req, 1)).length) return sendError(res, 400, 'INVALID_INPUT', 'project-file delivery requires an empty body');
+        projectInput = await projectSubmissionInput(query, { config, store, blobs, user, maxBytes, currentUser: () => memberOf(req), access: projectAccessOf });
+      } catch (error) {
+        if (error instanceof ProjectSubmissionError) return sendError(res, error.status, error.code, error.message);
+        return sendError(res, 400, 'INVALID_INPUT', 'project-file delivery requires an empty body and a readable original');
+      }
+      if (!projectInput) return sendError(res, 400, 'INVALID_INPUT', 'project source is required');
+      bytes = projectInput.bytes; name = projectInput.name;
+      const sniffed = sniffBytes(bytes, { filename: name });
+      format = sniffed.format; mime = sniffed.contentType;
+      if (!await projectInput.stillReadable()) return sendError(res, 404, 'NOT_FOUND', 'project file is no longer readable');
+    } else {
+      name = (query.get('name') ?? '').trim();
+      format = (query.get('format') ?? '').trim().toLowerCase();
+      if (!name || name.length > 200 || !/^[a-z0-9][a-z0-9-]*$/i.test(format)) {
+        return sendError(res, 400, 'INVALID_INPUT', 'name (1-200 characters) and format are required');
+      }
+      if (!destination.formats.includes(format)) return sendError(res, 415, 'FORMAT_NOT_ALLOWED', `${format} is not allowed for this destination`);
+      try { bytes = await readRaw(req, maxBytes); }
+      catch { return sendError(res, 413, 'PAYLOAD_TOO_LARGE', `delivery exceeds the ${maxBytes} byte cap`); }
+      if (!bytes.length) return sendError(res, 400, 'INVALID_INPUT', 'empty delivery body');
+      const gate = await verifyLollyExport(bytes, format);
+      if (!gate.ok) return sendError(res, 422, 'NOT_LOLLY_EXPORT', gate.detail ?? 'only Lolly exports may be delivered');
+      mime = deliveryContentType(format);
     }
-    if (!bytes.length) return sendError(res, 400, 'INVALID_INPUT', 'empty delivery body');
-    const gate = await verifyLollyExport(bytes, format);
-    if (!gate.ok) return sendError(res, 422, 'NOT_LOLLY_EXPORT', gate.detail ?? 'only Lolly exports may be delivered');
-
-    const sha256 = sha256Hex(bytes);
-    const version = destinationVersion(destination);
-    // The verified format, not a caller-controlled header, owns the object MIME.
-    const mime = deliveryContentType(format);
-    const requestHash = sha256Hex(JSON.stringify({ destinationId, version, name, format, contentType: mime, size: bytes.length, sha256 }));
+    if (!destination.formats.includes(format)) return sendError(res, 415, 'FORMAT_NOT_ALLOWED', `${format} is not allowed for this destination`);
+    const sha256 = sha256Hex(bytes), version = destinationVersion(destination);
+    const requestHash = sha256Hex(JSON.stringify({ destinationId, version, name, format, contentType: mime, size: bytes.length, sha256,
+      ...(projectInput ? { projectSource: projectInput.source } : {}),
+    }));
     const idempotencyKey = String(req.headers['idempotency-key'] ?? '').trim();
     if (idempotencyKey.length > 200) return sendError(res, 400, 'INVALID_INPUT', 'Idempotency-Key is at most 200 characters');
     const principal = `user:${user.id}`;
@@ -3060,6 +3087,7 @@ export function buildApp(deps: AppDeps): (req: IncomingMessage, res: ServerRespo
       sha256,
       requestHash,
       sourceRef,
+      ...(projectInput ? { projectSource: projectInput.source } : {}),
       state: approvalChain ? 'awaiting-approval' : 'queued',
       attempt: 0,
       ...(approvalId ? { approvalId } : {}),

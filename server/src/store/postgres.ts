@@ -193,6 +193,8 @@ function deliveryFromRow(r: Record<string, unknown>): DeliveryRecord {
     sha256: r.sha256 as string,
     requestHash: r.request_hash as string,
     sourceRef: r.source_ref as string,
+    ...(r.project_source ? { projectSource: r.project_source as DeliveryRecord['projectSource'] } : {}),
+    ...(r.provider_progress ? { providerProgress: r.provider_progress as DeliveryRecord['providerProgress'] } : {}),
     ...(r.source_job_id ? { sourceJobId: r.source_job_id as string } : {}),
     state: r.state as DeliveryRecord['state'],
     attempt: Number(r.attempt ?? 0),
@@ -1309,9 +1311,10 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
            id, principal, destination_id, destination_version, name, format,
            content_type, size, sha256, request_hash, source_ref, source_job_id, state, attempt,
            approval_id, idempotency_key, remote_id, url, delivered_sha256, transformation,
-           error, created_at, updated_at, delivered_at)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
+           error, created_at, updated_at, delivered_at, project_source, provider_progress)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
          on conflict (id) do update set
+           provider_progress=excluded.provider_progress,
            state=excluded.state, attempt=excluded.attempt, remote_id=excluded.remote_id,
            url=excluded.url, delivered_sha256=excluded.delivered_sha256,
            transformation=excluded.transformation, error=excluded.error,
@@ -1323,8 +1326,17 @@ export async function createPostgresStore(databaseUrl: string): Promise<Store & 
           delivery.approvalId ?? null, delivery.idempotencyKey ?? null, delivery.remoteId ?? null, delivery.url ?? null,
           delivery.deliveredSha256 ?? null, delivery.transformation ?? null, delivery.error ?? null,
           delivery.createdAt, delivery.updatedAt, delivery.deliveredAt ?? null,
+          delivery.projectSource ? JSON.stringify(delivery.projectSource) : null,
+          delivery.providerProgress ? JSON.stringify(delivery.providerProgress) : null,
         ],
       );
+    },
+    async claimDelivery(delivery) {
+      const { rows } = await pool.query(`update deliveries set state='delivering', attempt=attempt+1,
+        error=null, updated_at=now() where id=$1 and principal=$2 and state=$3 and attempt=$4
+        and state in ('queued','failed','awaiting-approval') returning *`,
+        [delivery.id, delivery.principal, delivery.state, delivery.attempt]);
+      return rows[0] ? deliveryFromRow(rows[0]) : null;
     },
     async getDelivery(id, principal) {
       const { rows } = await pool.query('select * from deliveries where id=$1 and principal=$2', [id, principal]);

@@ -756,6 +756,7 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
         ...existing,
         state: delivery.state,
         attempt: delivery.attempt,
+        ...(delivery.providerProgress ? { providerProgress: delivery.providerProgress } : {}),
         updatedAt: delivery.updatedAt,
         ...(delivery.remoteId ? { remoteId: delivery.remoteId } : {}),
         ...(delivery.url ? { url: delivery.url } : {}),
@@ -766,6 +767,15 @@ export function createMemoryStore(seed?: { grants?: Grant[]; overlays?: ToolOver
       if (delivery.error) next.error = delivery.error;
       else delete next.error;
       deliveries.set(delivery.id, structuredClone(next));
+    },
+    async claimDelivery(delivery) {
+      const current = deliveries.get(delivery.id);
+      if (!current || current.principal !== delivery.principal || current.state !== delivery.state
+        || current.attempt !== delivery.attempt || !['queued', 'failed', 'awaiting-approval'].includes(current.state)) return null;
+      const claimed: DeliveryRecord = { ...current, state: 'delivering', attempt: current.attempt + 1, updatedAt: new Date().toISOString() };
+      delete claimed.error;
+      deliveries.set(claimed.id, structuredClone(claimed));
+      return structuredClone(claimed);
     },
     async getDelivery(id, principal) {
       const delivery = deliveries.get(id);
