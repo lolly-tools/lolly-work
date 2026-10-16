@@ -68,7 +68,10 @@ export function destinationDescriptor(destination: ConfigDeliveryDestination, gl
     label: destination.label,
     formats: [...destination.formats],
     maxBytes: Math.min(globalMaxBytes, destination.maxBytes ?? globalMaxBytes),
-    visibility: typeof destination.options.publicBaseUrl === 'string' ? 'public' : 'private',
+    visibility: destination.kind === 'brandfolder'
+      ? (destination.options.visibility as 'private' | 'public')
+      : typeof destination.options.publicBaseUrl === 'string' ? 'public' : 'private',
+    ...(destination.projectFiles ? { projectFiles: true as const } : {}),
   };
 }
 
@@ -86,6 +89,7 @@ export function destinationVersion(destination: ConfigDeliveryDestination): stri
     formats: destination.formats,
     maxBytes: destination.maxBytes ?? null,
     approvalChain: destination.approvalChain ?? null,
+    ...(destination.projectFiles ? { projectFiles: true } : {}),
     options: destination.options,
   })).slice(0, 16);
 }
