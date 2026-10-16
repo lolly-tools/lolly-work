@@ -188,7 +188,7 @@ function matchAndCount(served: ServedIndex, query: BrowseQuery, metaById: Map<st
     if (query.collection && !strings(meta.providerCollections).includes(query.collection)) return false;
     if (query.q) {
       const q = query.q;
-      const hay = [e.id, e.name, e.description, ...strings(e.tags), ...fieldHaystack({ fields: e.fields }), ...extractedHaystack(metaById.get(e.id))];
+      const hay = [e.id, e.name, e.description, ...strings(e.tags), ...fieldHaystack({ fields: e.fields }), ...extractedHaystack(metaById.get(e.id), e)];
       if (!hay.some((v) => typeof v === 'string' && v.toLowerCase().includes(q))) return false;
     }
     return true;

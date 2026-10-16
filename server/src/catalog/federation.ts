@@ -81,6 +81,7 @@ export function mapProviderAsset(rec: ProviderRecord, asset: ProviderAssetRef): 
       providerCollections: asset.collections ?? [],
       ...(asset.taxonomy ? { providerTaxonomy: asset.taxonomy } : {}),
       providerTags: asset.tags,
+      ...(typeof asset.approved === 'boolean' ? { providerApproved: asset.approved } : {}),
       ...(asset.originalsAvailable !== undefined ? { providerOriginalsAvailable: asset.originalsAvailable } : {}),
       assetFiles: asset.formats.filter((f, i, all) => f.format !== 'thumb' && all.findIndex(other => other.remoteRef === f.remoteRef) === i).map(f => ({
         id: sha256Hex(f.remoteRef).slice(0, 24), format: f.format,

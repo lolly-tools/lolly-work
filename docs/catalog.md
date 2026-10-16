@@ -818,3 +818,11 @@ project *includes an integration for* those services and is not affiliated with 
 - Serving and sharing what the catalog holds: [sharing](sharing.md)
 - Where provenance for federated assets comes from: [sharing](sharing.md#provenance) and
   [c2pa](c2pa.md)
+
+### Reviewed text from the Assets inspector
+
+The Assets inspector can offer locally extracted image, SVG and PDF text for a curator's review. Reading a file does not write to Work. A curator explicitly saves a reviewed excerpt through `PUT /api/v1/catalog/text-index/<assetId>` with `text`, `sourceRevision`, `fileId` and `method` (`ocr` or `digital`). Only visible `ext/*` and `inst/*` assets are accepted, and the caller needs `catalog.edit`. A nonblank excerpt is limited to 8192 characters; oversized text is refused rather than silently shortened. Supplying `text: null` clears the index while preserving organisation fields.
+
+Asset inspection returns `textIndex` status and `textIndexFiles` without returning extracted words. The revision describes the indexed asset version and file descriptions. A changed revision returns `409 SOURCE_CHANGED` on save. Reviewed text records the selected file, revision, method, reviewer and time. Both indexed browse and the local part of live search omit bound words when that indexed revision or file identity no longer matches. Organisation field edits preserve the binding. Ordinary feeds and audit events carry no extracted words; audit records counts and source identity.
+
+Legacy `extractedText` metadata edits remain supported. They create unverified text without a revision binding; the inspector identifies that state. Existing unbound text stays searchable for compatibility. Revision binding is an indexed snapshot check, not verification of historical bytes or a guarantee of instant upstream change detection. Real source updates and withdrawals remain subject to provider sync and file-access checks. The server never starts an OCR model for this workflow.
